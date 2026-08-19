@@ -1,25 +1,24 @@
-// <scanner-panel> — a framework-agnostic vanilla web component that wraps the
-// pure scanner core into a guided 6-face camera capture UI. It owns only
-// presentation + the camera lifecycle; all cube logic lives in the tested core.
+// <scanner-panel> — auto-capture, confirm-per-side camera scanner.
 //
-// Emits:
-//   'scan-complete' (detail: ScanResult) when a valid cube is scanned.
-//   'scan-invalid'  (detail: ScanResult) when the 6 faces don't form a solvable
-//                    cube — the UI then prompts a retake instead of guessing.
+// For each side the app asks for, the panel watches the live camera; once the
+// frame holds still and a face is located, it snaps, samples the 9 stickers, and
+// shows them for the user to accept (advance) or retake. No fiddly grid
+// alignment and no shutter button — the face can be held roughly however.
 //
-// This is the browser shell — verified manually in the app, not in unit tests.
+// OpenCV.js does the face-finding but is INJECTED via the `cv` property (the app
+// loads it and sets `panel.cv = window.cv`). Without it, the panel falls back to
+// sampling a centered square, so it degrades instead of breaking.
+//
+// Emits 'scan-complete' (valid cube) / 'scan-invalid' (prompt a fresh scan).
+// Browser shell — verified manually in the app, not in unit tests.
 
-import { type CubeScanner, createCubeScanner } from '../src/live-scanner.js';
-import type { Face, ScanResult } from '../src/types.js';
+import { AutoCubeScanner, type FaceDetector, type FaceProposal } from '../src/auto-scanner.js';
+import { type FrameSource, openCamera } from '../src/camera.js';
+import { type OpenCv, detectFaceQuad } from '../src/detect.js';
+import type { Quad } from '../src/homography.js';
+import type { Face, RGB, ScanResult } from '../src/types.js';
 
-interface FaceGuide {
-  color: string;
-  name: string;
-  swatch: string;
-}
-
-// Capture order URFDLB, with a beginner-friendly color + position for each.
-const GUIDE: Record<Face, FaceGuide> = {
+const GUIDE: Record<Face, { color: string; name: string; swatch: string }> = {
   U: { color: 'WHITE', name: 'Up', swatch: '#f6f7f8' },
   R: { color: 'RED', name: 'Right', swatch: '#d0202a' },
   F: { color: 'GREEN', name: 'Front', swatch: '#049e4a' },
@@ -27,50 +26,49 @@ const GUIDE: Record<Face, FaceGuide> = {
   L: { color: 'ORANGE', name: 'Left', swatch: '#ff6a00' },
   B: { color: 'BLUE', name: 'Back', swatch: '#0057c8' },
 };
+const ORDER: Face[] = ['U', 'R', 'F', 'D', 'L', 'B'];
+const TICK_MS = 150; // scan cadence (~7 fps): enough for steady + detection
 
 const TEMPLATE = `
 <style>
   :host { display: block; font: 14px/1.5 -apple-system, system-ui, sans-serif; color: #e6edf3; }
   .stage { position: relative; aspect-ratio: 1; background: #000; border-radius: 12px; overflow: hidden; }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .grid { position: absolute; inset: 12%; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr);
-    pointer-events: none; }
-  .grid > div { border: 1px solid rgba(255,255,255,.7); }
-  .swatch { width: 16px; height: 16px; border-radius: 4px; border: 1px solid rgba(0,0,0,.4);
+  .status { margin: 12px 0 4px; min-height: 22px; } .status b { color: #fff; }
+  .swatch { width: 15px; height: 15px; border-radius: 4px; border: 1px solid rgba(0,0,0,.4);
     display: inline-block; vertical-align: -3px; }
-  .status { margin: 12px 0; min-height: 40px; }
-  .status b { color: #fff; }
-  .tip { color: #8b949e; font-size: 12px; margin: 6px 0 0; }
   .dots { display: flex; gap: 6px; margin: 8px 0; }
   .dots span { width: 22px; height: 10px; border-radius: 3px; background: #30363d; }
   .dots span.done { background: #3fb950; }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .preview { display: none; grid-template-columns: repeat(3, 36px); gap: 4px; margin: 10px 0; }
+  .preview[data-show='1'] { display: grid; }
+  .preview i { width: 36px; height: 36px; border-radius: 6px; border: 1px solid rgba(0,0,0,.4); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
   button { font: inherit; border: 0; border-radius: 7px; padding: 8px 16px; font-weight: 600; cursor: pointer; }
   button.primary { background: #58a6ff; color: #06122b; }
   button.ghost { background: #21262d; color: #e6edf3; border: 1px solid #30363d; }
-  button:disabled { opacity: .5; cursor: default; }
-  .err { color: #f85149; } .ok { color: #3fb950; }
+  button[hidden] { display: none; }
+  .err { color: #f85149; } .ok { color: #3fb950; } .muted { color: #8b949e; }
 </style>
-<div class="stage">
-  <video id="video" playsinline muted></video>
-  <div class="grid"><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
-</div>
+<div class="stage"><video id="video" playsinline muted></video></div>
 <div class="dots" id="dots"></div>
-<div class="status" id="status">Click <b>Start camera</b> to begin scanning your cube.</div>
-<div class="tip">Hold the cube in one orientation — tilt to show each face, don't spin it in your hand.</div>
+<div class="status" id="status">Click <b>Start camera</b>, then show each side to the camera.</div>
+<div class="preview" id="preview"></div>
 <div class="row">
   <button class="primary" id="start">Start camera</button>
-  <button class="primary" id="capture" disabled>Capture face</button>
-  <button class="ghost" id="retake" disabled>Start over</button>
+  <button class="primary" id="accept" hidden>Yes, next side</button>
+  <button class="ghost" id="retake" hidden>Retake</button>
 </div>
 `;
 
-const ORDER: Face[] = ['U', 'R', 'F', 'D', 'L', 'B'];
-
 export class ScannerPanel extends HTMLElement {
   private readonly root: ShadowRoot;
-  private readonly scanner: CubeScanner = createCubeScanner();
-  private started = false;
+  /** OpenCV.js namespace, set by the app once loaded. Null => centered fallback. */
+  cv: OpenCv | null = null;
+
+  private scanner: AutoCubeScanner | null = null;
+  private source: FrameSource | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
   private startGen = 0;
 
   constructor() {
@@ -80,14 +78,28 @@ export class ScannerPanel extends HTMLElement {
 
   connectedCallback(): void {
     this.root.innerHTML = TEMPLATE;
-    this.renderDots();
-    this.el<HTMLButtonElement>('start').addEventListener('click', () => void this.start());
-    this.el<HTMLButtonElement>('capture').addEventListener('click', () => this.capture());
-    this.el<HTMLButtonElement>('retake').addEventListener('click', () => this.retake());
+    this.buildDots();
+    this.buildPreview();
+    this.btn('start').addEventListener('click', () => void this.start());
+    this.btn('accept').addEventListener('click', () => this.accept());
+    this.btn('retake').addEventListener('click', () => this.retake());
   }
 
   disconnectedCallback(): void {
     this.stop();
+  }
+
+  /** Release the camera + stop the loop. Safe before first render / repeatedly. */
+  stop(): void {
+    this.startGen++;
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    this.source?.stop();
+    this.source = null;
+    const start = this.root.getElementById('start') as HTMLButtonElement | null;
+    if (start) start.disabled = false;
   }
 
   private el<T extends HTMLElement>(id: string): T {
@@ -95,123 +107,130 @@ export class ScannerPanel extends HTMLElement {
     if (!node) throw new Error(`scanner-panel: missing #${id}`);
     return node as T;
   }
+  private btn(id: string): HTMLButtonElement {
+    return this.el<HTMLButtonElement>(id);
+  }
 
-  /**
-   * Release the camera. Safe to call repeatedly and before the first render
-   * (e.g. host unconditional cleanup), so it guards every DOM touch.
-   */
-  stop(): void {
-    this.startGen++; // invalidate any in-flight start()
-    this.scanner.detach();
-    this.started = false;
-    const start = this.root.getElementById('start') as HTMLButtonElement | null;
-    const capture = this.root.getElementById('capture') as HTMLButtonElement | null;
-    if (start) start.disabled = false;
-    if (capture) capture.disabled = true;
+  private detector(): FaceDetector {
+    const cv = this.cv;
+    if (cv) return (frame) => detectFaceQuad(cv, frame);
+    // Fallback with no OpenCV: assume the face fills a centered square.
+    return (frame): Quad => {
+      const size = Math.min(frame.width, frame.height) * 0.8;
+      const x = (frame.width - size) / 2;
+      const y = (frame.height - size) / 2;
+      return { tl: [x, y], tr: [x + size, y], br: [x + size, y + size], bl: [x, y + size] };
+    };
   }
 
   private async start(): Promise<void> {
-    // Disable synchronously so a double-click can't open two camera streams.
-    this.el<HTMLButtonElement>('start').disabled = true;
-    // If the previous scan already completed, begin a fresh one on restart.
-    if (this.scanner.next() === null) {
-      this.scanner.reset();
-      this.renderDots();
-    }
+    this.btn('start').disabled = true;
     const gen = ++this.startGen;
     try {
-      await this.scanner.attach(this.el<HTMLVideoElement>('video'));
-      if (gen !== this.startGen) return; // superseded by stop()/restart — don't touch UI
-      this.started = true;
-      this.el<HTMLButtonElement>('capture').disabled = false;
-      this.el<HTMLButtonElement>('retake').disabled = false;
-      this.guide();
+      this.source = await openCamera(this.el<HTMLVideoElement>('video'));
+      if (gen !== this.startGen) return; // superseded by stop()/restart
+      this.scanner = new AutoCubeScanner({ source: this.source, detectFace: this.detector() });
+      this.btn('start').hidden = true;
+      this.loop();
     } catch (err) {
-      if (gen !== this.startGen) return; // superseded — swallow (incl. AbortError)
-      this.el<HTMLButtonElement>('start').disabled = false; // allow a retry
-      const msg = String((err as Error)?.message ?? err);
-      this.setStatus(this.tinted('err', `Camera unavailable: ${msg}`));
+      if (gen !== this.startGen) return;
+      this.btn('start').disabled = false;
+      this.setStatus(
+        this.tinted('err', `Camera unavailable: ${String((err as Error)?.message ?? err)}`),
+      );
     }
   }
 
-  private capture(): void {
-    if (!this.started) return;
+  private loop(): void {
+    if (this.timer !== null) clearInterval(this.timer);
+    this.showPreview(null);
+    this.btn('accept').hidden = true;
+    this.btn('retake').hidden = true;
+    this.timer = setInterval(() => this.onTick(), TICK_MS);
+  }
+
+  private stopLoop(): void {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  private onTick(): void {
+    if (!this.scanner) return;
+    let status: ReturnType<AutoCubeScanner['tick']>;
     try {
+      status = this.scanner.tick();
+    } catch {
+      return; // camera not ready yet (0x0) — try again next tick
+    }
+    if (status.kind === 'searching') {
       const face = this.scanner.next();
-      if (!face) return;
-      this.scanner.captureFace(face);
-      this.renderDots();
-      if (this.scanner.next()) this.guide();
-      else this.finish();
-    } catch (err) {
-      const msg = String((err as Error)?.message ?? err);
-      this.setStatus(this.tinted('err', `Capture failed: ${msg}. Press Start over.`));
+      const hint = status.reason === 'no-face' ? 'point a side at the camera' : 'hold still';
+      if (face) {
+        const g = GUIDE[face];
+        this.setStatus(
+          'Show the ',
+          this.swatch(g.swatch),
+          ' ',
+          this.bold(g.color),
+          ` (${g.name}) side — `,
+          hint,
+          '…',
+        );
+      }
+    } else if (status.kind === 'proposed') {
+      this.stopLoop();
+      this.propose(status.proposal);
+    } else if (status.kind === 'complete') {
+      this.finish(status.result);
     }
   }
 
-  private finish(): void {
-    const result = this.scanner.result();
-    if (!result) return;
-    this.el<HTMLButtonElement>('capture').disabled = true; // all 6 captured
+  private propose(p: FaceProposal): void {
+    const g = GUIDE[p.face];
+    this.showPreview(p.samples);
+    this.setStatus('Read the ', this.bold(g.name), ' side. Looks right?');
+    this.btn('accept').hidden = false;
+    this.btn('retake').hidden = false;
+  }
 
-    // Only a valid AND unambiguous scan counts — never emit success on flagged,
-    // low-confidence guesses (the app would apply the wrong cube silently).
-    if (result.valid && result.lowConfidence.length === 0) {
-      this.setStatus(this.tinted('ok', 'Scan complete — solvable cube captured.'));
-      this.dispatchEvent(new CustomEvent<ScanResult>('scan-complete', { detail: result }));
-      this.stop(); // capture succeeded — release the camera
-      return;
-    }
-
-    if (result.valid) {
-      this.setStatus(
-        this.tinted('err', 'Some stickers were ambiguous'),
-        ` — press Start over and re-scan the ${this.flaggedFaces(result)} face(s).`,
-      );
-    } else {
-      this.setStatus(
-        this.tinted('err', "That doesn't look like a solvable cube"),
-        ' — press Start over and keep the cube in one orientation.',
-      );
-    }
-    this.dispatchEvent(new CustomEvent<ScanResult>('scan-invalid', { detail: result }));
+  private accept(): void {
+    if (!this.scanner) return;
+    const status = this.scanner.confirm();
+    this.buildDots();
+    if (status.kind === 'complete') this.finish(status.result);
+    else this.loop(); // next side
   }
 
   private retake(): void {
-    this.scanner.reset();
-    this.renderDots();
-    this.el<HTMLButtonElement>('capture').disabled = !this.started;
-    this.guide();
+    if (!this.scanner) return;
+    this.scanner.reject();
+    this.loop();
   }
 
-  private guide(): void {
-    const face = this.scanner.next();
-    if (!face) return;
-    const g = GUIDE[face];
-    const swatch = document.createElement('span');
-    swatch.className = 'swatch';
-    swatch.style.background = g.swatch;
-    this.setStatus(
-      'Show the ',
-      swatch,
-      ' ',
-      this.bold(g.color),
-      ' centre face (',
-      this.bold(g.name),
-      '), align it to the grid, then ',
-      this.bold('Capture'),
-      '.',
-    );
+  private finish(result: ScanResult): void {
+    this.stopLoop();
+    this.showPreview(null);
+    this.btn('accept').hidden = true;
+    this.btn('retake').hidden = true;
+    if (result.valid && result.lowConfidence.length === 0) {
+      this.setStatus(this.tinted('ok', 'Scan complete — solvable cube captured.'));
+      this.dispatchEvent(new CustomEvent<ScanResult>('scan-complete', { detail: result }));
+      this.stop();
+    } else {
+      const why = result.valid ? 'Some stickers were ambiguous' : "That isn't a solvable cube";
+      this.setStatus(this.tinted('err', `${why} — press Start over to re-scan.`));
+      this.dispatchEvent(new CustomEvent<ScanResult>('scan-invalid', { detail: result }));
+      this.scanner?.reset();
+      this.buildDots();
+      this.btn('start').hidden = false;
+      this.btn('start').disabled = false;
+    }
   }
 
-  private flaggedFaces(result: ScanResult): string {
-    const faces = new Set<Face>();
-    for (const idx of result.lowConfidence) faces.add(ORDER[Math.floor(idx / 9)]!);
-    return faces.size ? [...faces].map((f) => GUIDE[f].name).join(', ') : 'shown';
-  }
-
-  private renderDots(): void {
-    const done = new Set(this.scanner.progress());
+  private buildDots(): void {
+    const done = new Set(this.scanner?.progress() ?? []);
     const dots = this.el('dots');
     dots.textContent = '';
     for (const face of ORDER) {
@@ -222,20 +241,42 @@ export class ScannerPanel extends HTMLElement {
     }
   }
 
-  // Status is built from DOM nodes + text, never innerHTML — the same discipline
-  // the renderer uses, so no dynamic string is ever interpreted as markup.
+  private buildPreview(): void {
+    const p = this.el('preview');
+    p.textContent = '';
+    for (let i = 0; i < 9; i++) p.appendChild(document.createElement('i'));
+  }
+
+  private showPreview(samples: RGB[] | null): void {
+    const p = this.el('preview');
+    if (!samples) {
+      p.dataset.show = '0';
+      return;
+    }
+    const cells = p.querySelectorAll('i');
+    for (let i = 0; i < 9; i++) {
+      const [r, g, b] = samples[i]!;
+      (cells[i] as HTMLElement).style.background = `rgb(${r}, ${g}, ${b})`;
+    }
+    p.dataset.show = '1';
+  }
+
   private setStatus(...parts: (string | Node)[]): void {
     const status = this.el('status');
     status.textContent = '';
     status.append(...parts);
   }
-
   private bold(text: string): HTMLElement {
     const b = document.createElement('b');
     b.textContent = text;
     return b;
   }
-
+  private swatch(color: string): HTMLElement {
+    const s = document.createElement('span');
+    s.className = 'swatch';
+    s.style.background = color;
+    return s;
+  }
   private tinted(cls: 'ok' | 'err', text: string): HTMLElement {
     const span = document.createElement('span');
     span.className = cls;

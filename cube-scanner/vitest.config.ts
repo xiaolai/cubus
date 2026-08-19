@@ -16,6 +16,9 @@ export default defineConfig({
         'src/assemble.ts',
         'src/scanner.ts',
         'src/calibrate.ts',
+        'src/homography.ts',
+        'src/stability.ts',
+        'src/auto-scanner.ts',
       ],
       reporter: ['text', 'html'],
       thresholds: {
