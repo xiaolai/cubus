@@ -1,0 +1,13 @@
+{
+  "name": "cubus-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cubus desktop shell (Electron) — Web Bluetooth smart cube + camera scanner",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^43.4.1"
+  }
+}
