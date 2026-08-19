@@ -14,7 +14,9 @@
     "format": "biome format --write src tests scripts",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
-    "check": "npm run typecheck && npm run lint && npm run test"
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "spike:refresh": "tsx scripts/spike-refresh.ts",
+    "spike:serve": "tsx scripts/spike-server.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
