@@ -1,4 +1,4 @@
-# gan16-driver
+# gan-driver
 
 A verified BLE driver and diagnostic CLI for the **GAN16 ui** smart Rubik's cube
 on macOS.

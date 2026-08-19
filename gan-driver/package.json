@@ -1,5 +1,5 @@
 {
-  "name": "gan16-driver",
+  "name": "gan-driver",
   "version": "0.1.0",
   "type": "module",
   "description": "Verified BLE driver + diagnostic CLI for the GAN16 ui smart cube (GAN Gen4 protocol) on macOS",

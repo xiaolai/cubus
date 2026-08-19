@@ -6,12 +6,12 @@
 
 A beginner/kids Rubik's Cube tutor built on a verified GAN16 ui smart-cube driver.
 
-- **Layout**: the driver lives at `gan16-driver/` (TypeScript, **zero runtime deps**;
+- **Layout**: the driver lives at `gan-driver/` (TypeScript, **zero runtime deps**;
   its protocol/crypto/decode layer is transport-agnostic). The tutor app is not built
   yet — see `dev-docs/implementation-plan.md` for the roadmap and the two open
   architecture forks (where BLE lives in the app; porting the protocol off Node APIs).
 - **Verification is the contract**: protocol/crypto/decode claims must stay backed by
-  the fixture tests in `gan16-driver/tests` (they run with no hardware). The state
+  the fixture tests in `gan-driver/tests` (they run with no hardware). The state
   invariant — apply decoded moves → matches hardware facelets — is the core check.
 - **`cubejs` is a deliberate independent test oracle**, not a redundant dep. Do not
   "consolidate" it into cubing.js; a different implementation is what makes the
@@ -20,7 +20,7 @@ A beginner/kids Rubik's Cube tutor built on a verified GAN16 ui smart-cube drive
 - **Never fake hardware**: the cube reports only completed quarter-turns (no partial
   angle — proven in Experiment H). Animation is our synthesis, clearly labelled as such.
 - **Fail loud**: unknown packets and missed moves surface as events, never vanish.
-- **Quality gate** (`cd gan16-driver && npm run check`): strict `tsc`, Biome + a
+- **Quality gate** (`cd gan-driver && npm run check`): strict `tsc`, Biome + a
   type-aware ESLint pass, and vitest. Keep it green; CI enforces it on push.
 
 ## Shared Memory

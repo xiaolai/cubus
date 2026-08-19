@@ -8,11 +8,11 @@ on:
 
 jobs:
   driver:
-    name: gan16-driver (typecheck · lint · test · coverage)
+    name: gan-driver (typecheck · lint · test · coverage)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: gan16-driver
+        working-directory: gan-driver
     steps:
       - uses: actions/checkout@v4
 
@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: gan16-driver/package-lock.json
+          cache-dependency-path: gan-driver/package-lock.json
 
       - name: Install
         run: npm ci
