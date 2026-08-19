@@ -6,6 +6,8 @@
 
 A beginner/kids Rubik's Cube tutor built on a verified GAN16 ui smart-cube driver.
 
+- **Language**: always reply to the user, and write all code comments and
+  documentation, in English — regardless of the language the user writes in.
 - **Layout**: the driver lives at `gan-driver/` (TypeScript, **zero runtime deps**;
   its protocol/crypto/decode layer is transport-agnostic). The tutor app is not built
   yet — see `dev-docs/implementation-plan.md` for the roadmap and the two open
