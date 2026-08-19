@@ -1990,71 +1990,105 @@ var require_cubejs = __commonJS({
   }
 });
 
-// src/camera.ts
-function raceAbort(promise, signal) {
-  if (!signal) return promise;
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException("camera open aborted", "AbortError"));
-      return;
-    }
-    const onAbort = () => reject(new DOMException("camera open aborted", "AbortError"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (err) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(err);
-      }
-    );
-  });
-}
-async function openCamera(video, opts = {}, signal) {
-  if (signal?.aborted) throw new DOMException("camera open aborted", "AbortError");
-  const videoConstraints = {
-    facingMode: opts.facingMode ?? "environment"
-  };
-  if (opts.width) videoConstraints.width = { ideal: opts.width };
-  if (opts.height) videoConstraints.height = { ideal: opts.height };
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: videoConstraints,
-    audio: false
-  });
-  const release = () => {
-    for (const track of stream.getTracks()) track.stop();
-    if (video.srcObject === stream) video.srcObject = null;
-  };
-  const throwIfAborted = () => {
-    if (signal?.aborted) throw new DOMException("camera open aborted", "AbortError");
-  };
-  try {
-    throwIfAborted();
-    video.srcObject = stream;
-    await raceAbort(video.play(), signal);
-    throwIfAborted();
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) throw new Error("2D canvas context unavailable");
-    return {
-      grab() {
-        const w = video.videoWidth;
-        const h = video.videoHeight;
-        if (w === 0 || h === 0) throw new Error("camera not ready: video has no dimensions yet");
-        canvas.width = w;
-        canvas.height = h;
-        ctx.drawImage(video, 0, 0, w, h);
-        const img = ctx.getImageData(0, 0, w, h);
-        return { data: img.data, width: img.width, height: img.height };
-      },
-      stop: release
-    };
-  } catch (err) {
-    release();
-    throw err;
+// src/homography.ts
+function orderCorners(pts) {
+  if (pts.length !== 4) throw new Error(`orderCorners expects 4 points, got ${pts.length}`);
+  let tl = pts[0];
+  let br = pts[0];
+  let tr = pts[0];
+  let bl = pts[0];
+  for (const p4 of pts) {
+    const sum = p4[0] + p4[1];
+    const diff = p4[1] - p4[0];
+    if (sum < tl[0] + tl[1]) tl = p4;
+    if (sum > br[0] + br[1]) br = p4;
+    if (diff < tr[1] - tr[0]) tr = p4;
+    if (diff > bl[1] - bl[0]) bl = p4;
   }
+  return { tl, tr, br, bl };
+}
+function unitSquareToQuad(q) {
+  const [x0, y0] = q.tl;
+  const [x1, y1] = q.tr;
+  const [x2, y2] = q.br;
+  const [x3, y3] = q.bl;
+  const sx = x0 - x1 + x2 - x3;
+  const sy = y0 - y1 + y2 - y3;
+  if (Math.abs(sx) < 1e-9 && Math.abs(sy) < 1e-9) {
+    return { a: x1 - x0, b: x3 - x0, c: x0, d: y1 - y0, e: y3 - y0, f: y0, g: 0, h: 0 };
+  }
+  const dx1 = x1 - x2;
+  const dx2 = x3 - x2;
+  const dy1 = y1 - y2;
+  const dy2 = y3 - y2;
+  const den = dx1 * dy2 - dx2 * dy1;
+  const g = (sx * dy2 - dx2 * sy) / den;
+  const h = (dx1 * sy - sx * dy1) / den;
+  return {
+    a: x1 - x0 + g * x1,
+    b: x3 - x0 + h * x3,
+    c: x0,
+    d: y1 - y0 + g * y1,
+    e: y3 - y0 + h * y3,
+    f: y0,
+    g,
+    h
+  };
+}
+function project(t, u, v) {
+  const w = t.g * u + t.h * v + 1;
+  return [(t.a * u + t.b * v + t.c) / w, (t.d * u + t.e * v + t.f) / w];
+}
+function pixel(frame, x, y) {
+  const cx = Math.min(frame.width - 1, Math.max(0, Math.round(x)));
+  const cy = Math.min(frame.height - 1, Math.max(0, Math.round(y)));
+  const i = (cy * frame.width + cx) * 4;
+  return [frame.data[i], frame.data[i + 1], frame.data[i + 2]];
+}
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+}
+var RING = [0.35, 0.6];
+var ANGLES = 8;
+function assertFrame(frame) {
+  const { width, height, data } = frame;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new Error(`invalid frame dimensions: ${width}x${height}`);
+  }
+  if (data.length < width * height * 4) {
+    throw new Error(`frame buffer too small: ${data.length} < ${width * height * 4}`);
+  }
+}
+function sampleQuad(frame, quad) {
+  assertFrame(frame);
+  const t = unitSquareToQuad(quad);
+  const half = 1 / 6;
+  const out = [];
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      const cu = (col + 0.5) / 3;
+      const cv = (row + 0.5) / 3;
+      const rs = [];
+      const gs = [];
+      const bs = [];
+      for (const r of RING) {
+        for (let k4 = 0; k4 < ANGLES; k4++) {
+          const ang = 2 * Math.PI * k4 / ANGLES;
+          const u = cu + Math.cos(ang) * r * half;
+          const v = cv + Math.sin(ang) * r * half;
+          const [x, y] = project(t, u, v);
+          const [pr, pg, pb] = pixel(frame, x, y);
+          rs.push(pr);
+          gs.push(pg);
+          bs.push(pb);
+        }
+      }
+      out.push([median(rs), median(gs), median(bs)]);
+    }
+  }
+  return out;
 }
 
 // src/assemble.ts
@@ -5737,79 +5771,7 @@ function assemble(faces, threshold = LOW_CONFIDENCE_THRESHOLD) {
   return { facelets, valid, confidence: min, lowConfidence };
 }
 
-// src/grid.ts
-var INNER = 0.3;
-var OUTER = 0.8;
-function gridCells(region) {
-  const cw = region.w / 3;
-  const ch = region.h / 3;
-  const cells = [];
-  for (let row = 0; row < 3; row++) {
-    for (let col = 0; col < 3; col++) {
-      cells.push({ x: region.x + col * cw, y: region.y + row * ch, w: cw, h: ch });
-    }
-  }
-  return cells;
-}
-function assertFrame(frame) {
-  const { width, height, data } = frame;
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
-    throw new Error(`invalid frame dimensions: ${width}x${height}`);
-  }
-  if (data.length < width * height * 4) {
-    throw new Error(`frame buffer too small: ${data.length} < ${width * height * 4}`);
-  }
-}
-function pixel(frame, x, y) {
-  const cx = Math.min(frame.width - 1, Math.max(0, x));
-  const cy = Math.min(frame.height - 1, Math.max(0, y));
-  const i = (cy * frame.width + cx) * 4;
-  return [frame.data[i], frame.data[i + 1], frame.data[i + 2]];
-}
-function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
-}
-function sampleCell(frame, cell) {
-  assertFrame(frame);
-  const cx = cell.x + cell.w / 2;
-  const cy = cell.y + cell.h / 2;
-  const half = Math.min(cell.w, cell.h) / 2;
-  const inner = INNER * half;
-  const outer = OUTER * half;
-  const rs = [];
-  const gs = [];
-  const bs = [];
-  const x0 = Math.floor(cell.x);
-  const x1 = Math.ceil(cell.x + cell.w);
-  const y0 = Math.floor(cell.y);
-  const y1 = Math.ceil(cell.y + cell.h);
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
-      const dist = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
-      if (dist < inner || dist > outer) continue;
-      const [r, g, b] = pixel(frame, x, y);
-      rs.push(r);
-      gs.push(g);
-      bs.push(b);
-    }
-  }
-  if (rs.length === 0) return pixel(frame, Math.floor(cx), Math.floor(cy));
-  return [median(rs), median(gs), median(bs)];
-}
-function sampleGrid(frame, cells) {
-  return cells.map((cell) => sampleCell(frame, cell));
-}
-
 // src/scanner.ts
-var defaultRegion = (frame) => {
-  const size = Math.min(frame.width, frame.height) * 0.8;
-  return { x: (frame.width - size) / 2, y: (frame.height - size) / 2, w: size, h: size };
-};
-function sampleFace(frame, region = defaultRegion) {
-  return sampleGrid(frame, gridCells(region(frame)));
-}
 function validateOrder(order) {
   const copy = [...order];
   const unique = new Set(copy);
@@ -5861,46 +5823,94 @@ var ScanSession = class {
   }
 };
 
-// src/live-scanner.ts
-var LiveCubeScanner = class {
-  session;
-  region;
-  camera;
-  source;
-  attachGen = 0;
-  attachController = null;
+// src/stability.ts
+function frameDifference(a, b) {
+  if (a.width !== b.width || a.height !== b.height) return Number.POSITIVE_INFINITY;
+  const stepX = Math.max(1, Math.floor(a.width / 32));
+  const stepY = Math.max(1, Math.floor(a.height / 32));
+  let sum = 0;
+  let n = 0;
+  for (let y = 0; y < a.height; y += stepY) {
+    for (let x = 0; x < a.width; x += stepX) {
+      const i = (y * a.width + x) * 4;
+      sum += Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
+      n += 3;
+    }
+  }
+  return n ? sum / n : 0;
+}
+var SteadyDetector = class {
+  threshold;
+  framesNeeded;
+  prev = null;
+  steadyCount = 0;
   constructor(opts = {}) {
+    this.threshold = opts.threshold ?? 6;
+    this.framesNeeded = opts.framesNeeded ?? 4;
+  }
+  /** Feed the current frame; returns true once the frame has held still. */
+  push(frame) {
+    if (this.prev && frameDifference(this.prev, frame) <= this.threshold) {
+      this.steadyCount++;
+    } else {
+      this.steadyCount = 0;
+    }
+    this.prev = frame;
+    return this.steadyCount >= this.framesNeeded;
+  }
+  /** Motion 0..255 vs the previous frame (Infinity before the first frame). */
+  motion(frame) {
+    return this.prev ? frameDifference(this.prev, frame) : Number.POSITIVE_INFINITY;
+  }
+  reset() {
+    this.prev = null;
+    this.steadyCount = 0;
+  }
+};
+
+// src/auto-scanner.ts
+var AutoCubeScanner = class {
+  session;
+  steady;
+  source;
+  detectFace;
+  sample;
+  pending = null;
+  constructor(opts) {
     this.session = new ScanSession({
       order: opts.order,
       lowConfidenceThreshold: opts.lowConfidenceThreshold
     });
-    this.region = opts.region ?? defaultRegion;
-    this.camera = opts.camera ?? {};
-    this.source = opts.source ?? null;
+    this.steady = new SteadyDetector(opts.steady);
+    this.source = opts.source;
+    this.detectFace = opts.detectFace;
+    this.sample = opts.sample ?? sampleQuad;
   }
-  async attach(video) {
-    this.attachController?.abort();
-    this.source?.stop();
-    this.source = null;
-    const controller = new AbortController();
-    this.attachController = controller;
-    const gen = ++this.attachGen;
-    let source;
-    try {
-      source = await openCamera(video, this.camera, controller.signal);
-    } catch (err) {
-      if (controller.signal.aborted) return;
-      throw err;
-    }
-    if (gen !== this.attachGen) {
-      source.stop();
-      return;
-    }
-    this.source = source;
+  /** Process one camera frame and report what to do next. */
+  tick() {
+    if (this.session.complete()) return { kind: "complete", result: this.session.result() };
+    if (this.pending) return { kind: "proposed", proposal: this.pending };
+    const frame = this.source.grab();
+    if (!this.steady.push(frame)) return { kind: "searching", reason: "moving" };
+    const quad = this.detectFace(frame);
+    if (!quad) return { kind: "searching", reason: "no-face" };
+    const face = this.session.next();
+    if (!face) return { kind: "complete", result: this.session.result() };
+    this.pending = { face, samples: this.sample(frame, quad), quad };
+    return { kind: "proposed", proposal: this.pending };
   }
-  captureFace(face) {
-    if (!this.source) throw new Error("scanner not attached: call attach(video) first");
-    this.session.captureFace(face, sampleFace(this.source.grab(), this.region));
+  /** Accept the proposed face and advance; returns the next status. */
+  confirm() {
+    if (!this.pending) throw new Error("no proposed face to confirm");
+    this.session.captureFace(this.pending.face, this.pending.samples);
+    this.pending = null;
+    this.steady.reset();
+    return this.session.complete() ? { kind: "complete", result: this.session.result() } : { kind: "idle" };
+  }
+  /** Discard the proposed face and keep scanning the same side. */
+  reject() {
+    this.pending = null;
+    this.steady.reset();
   }
   next() {
     return this.session.next();
@@ -5913,17 +5923,124 @@ var LiveCubeScanner = class {
   }
   reset() {
     this.session.reset();
-  }
-  detach() {
-    this.attachController?.abort();
-    this.attachController = null;
-    this.attachGen++;
-    this.source?.stop();
-    this.source = null;
+    this.steady.reset();
+    this.pending = null;
   }
 };
-function createCubeScanner(opts = {}) {
-  return new LiveCubeScanner(opts);
+
+// src/camera.ts
+function raceAbort(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("camera open aborted", "AbortError"));
+      return;
+    }
+    const onAbort = () => reject(new DOMException("camera open aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+async function openCamera(video, opts = {}, signal) {
+  if (signal?.aborted) throw new DOMException("camera open aborted", "AbortError");
+  const videoConstraints = {
+    facingMode: opts.facingMode ?? "environment"
+  };
+  if (opts.width) videoConstraints.width = { ideal: opts.width };
+  if (opts.height) videoConstraints.height = { ideal: opts.height };
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: videoConstraints,
+    audio: false
+  });
+  const release = () => {
+    for (const track of stream.getTracks()) track.stop();
+    if (video.srcObject === stream) video.srcObject = null;
+  };
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new DOMException("camera open aborted", "AbortError");
+  };
+  try {
+    throwIfAborted();
+    video.srcObject = stream;
+    await raceAbort(video.play(), signal);
+    throwIfAborted();
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) throw new Error("2D canvas context unavailable");
+    return {
+      grab() {
+        const w = video.videoWidth;
+        const h = video.videoHeight;
+        if (w === 0 || h === 0) throw new Error("camera not ready: video has no dimensions yet");
+        canvas.width = w;
+        canvas.height = h;
+        ctx.drawImage(video, 0, 0, w, h);
+        const img = ctx.getImageData(0, 0, w, h);
+        return { data: img.data, width: img.width, height: img.height };
+      },
+      stop: release
+    };
+  } catch (err) {
+    release();
+    throw err;
+  }
+}
+
+// src/detect.ts
+function detectFaceQuad(cv, frame, opts = {}) {
+  const cannyLow = opts.cannyLow ?? 50;
+  const cannyHigh = opts.cannyHigh ?? 150;
+  const epsilon = opts.approxEpsilon ?? 0.05;
+  const minArea = (opts.minAreaFraction ?? 0.15) * frame.width * frame.height;
+  const src = cv.matFromImageData(frame);
+  const gray = new cv.Mat();
+  const edges = new cv.Mat();
+  const contours = new cv.MatVector();
+  const hierarchy = new cv.Mat();
+  const cleanup = [src, gray, edges, contours, hierarchy];
+  try {
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+    cv.Canny(gray, edges, cannyLow, cannyHigh);
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    cv.dilate(edges, edges, kernel);
+    kernel.delete();
+    cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+    let best = null;
+    let bestArea = minArea;
+    for (let i = 0; i < contours.size(); i++) {
+      const cnt = contours.get(i);
+      const approx = new cv.Mat();
+      cv.approxPolyDP(cnt, approx, epsilon * cv.arcLength(cnt, true), true);
+      if (approx.rows === 4 && cv.isContourConvex(approx)) {
+        const area = Math.abs(cv.contourArea(approx));
+        if (area > bestArea) {
+          bestArea = area;
+          const d = approx.data32S;
+          best = [
+            [d[0], d[1]],
+            [d[2], d[3]],
+            [d[4], d[5]],
+            [d[6], d[7]]
+          ];
+        }
+      }
+      approx.delete();
+      cnt.delete();
+    }
+    return best ? orderCorners(best) : null;
+  } finally {
+    for (const mat of cleanup) mat.delete();
+  }
 }
 
 // view/scanner-panel.ts
@@ -5935,47 +6052,46 @@ var GUIDE = {
   L: { color: "ORANGE", name: "Left", swatch: "#ff6a00" },
   B: { color: "BLUE", name: "Back", swatch: "#0057c8" }
 };
+var ORDER = ["U", "R", "F", "D", "L", "B"];
+var TICK_MS = 150;
 var TEMPLATE = `
 <style>
   :host { display: block; font: 14px/1.5 -apple-system, system-ui, sans-serif; color: #e6edf3; }
   .stage { position: relative; aspect-ratio: 1; background: #000; border-radius: 12px; overflow: hidden; }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .grid { position: absolute; inset: 12%; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr);
-    pointer-events: none; }
-  .grid > div { border: 1px solid rgba(255,255,255,.7); }
-  .swatch { width: 16px; height: 16px; border-radius: 4px; border: 1px solid rgba(0,0,0,.4);
+  .status { margin: 12px 0 4px; min-height: 22px; } .status b { color: #fff; }
+  .swatch { width: 15px; height: 15px; border-radius: 4px; border: 1px solid rgba(0,0,0,.4);
     display: inline-block; vertical-align: -3px; }
-  .status { margin: 12px 0; min-height: 40px; }
-  .status b { color: #fff; }
-  .tip { color: #8b949e; font-size: 12px; margin: 6px 0 0; }
   .dots { display: flex; gap: 6px; margin: 8px 0; }
   .dots span { width: 22px; height: 10px; border-radius: 3px; background: #30363d; }
   .dots span.done { background: #3fb950; }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .preview { display: none; grid-template-columns: repeat(3, 36px); gap: 4px; margin: 10px 0; }
+  .preview[data-show='1'] { display: grid; }
+  .preview i { width: 36px; height: 36px; border-radius: 6px; border: 1px solid rgba(0,0,0,.4); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
   button { font: inherit; border: 0; border-radius: 7px; padding: 8px 16px; font-weight: 600; cursor: pointer; }
   button.primary { background: #58a6ff; color: #06122b; }
   button.ghost { background: #21262d; color: #e6edf3; border: 1px solid #30363d; }
-  button:disabled { opacity: .5; cursor: default; }
-  .err { color: #f85149; } .ok { color: #3fb950; }
+  button[hidden] { display: none; }
+  .err { color: #f85149; } .ok { color: #3fb950; } .muted { color: #8b949e; }
 </style>
-<div class="stage">
-  <video id="video" playsinline muted></video>
-  <div class="grid"><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
-</div>
+<div class="stage"><video id="video" playsinline muted></video></div>
 <div class="dots" id="dots"></div>
-<div class="status" id="status">Click <b>Start camera</b> to begin scanning your cube.</div>
-<div class="tip">Hold the cube in one orientation \u2014 tilt to show each face, don't spin it in your hand.</div>
+<div class="status" id="status">Click <b>Start camera</b>, then show each side to the camera.</div>
+<div class="preview" id="preview"></div>
 <div class="row">
   <button class="primary" id="start">Start camera</button>
-  <button class="primary" id="capture" disabled>Capture face</button>
-  <button class="ghost" id="retake" disabled>Start over</button>
+  <button class="primary" id="accept" hidden>Yes, next side</button>
+  <button class="ghost" id="retake" hidden>Retake</button>
 </div>
 `;
-var ORDER = ["U", "R", "F", "D", "L", "B"];
 var ScannerPanel = class extends HTMLElement {
   root;
-  scanner = createCubeScanner();
-  started = false;
+  /** OpenCV.js namespace, set by the app once loaded. Null => centered fallback. */
+  cv = null;
+  scanner = null;
+  source = null;
+  timer = null;
   startGen = 0;
   constructor() {
     super();
@@ -5983,122 +6099,145 @@ var ScannerPanel = class extends HTMLElement {
   }
   connectedCallback() {
     this.root.innerHTML = TEMPLATE;
-    this.renderDots();
-    this.el("start").addEventListener("click", () => void this.start());
-    this.el("capture").addEventListener("click", () => this.capture());
-    this.el("retake").addEventListener("click", () => this.retake());
+    this.buildDots();
+    this.buildPreview();
+    this.btn("start").addEventListener("click", () => void this.start());
+    this.btn("accept").addEventListener("click", () => this.accept());
+    this.btn("retake").addEventListener("click", () => this.retake());
   }
   disconnectedCallback() {
     this.stop();
+  }
+  /** Release the camera + stop the loop. Safe before first render / repeatedly. */
+  stop() {
+    this.startGen++;
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    this.source?.stop();
+    this.source = null;
+    const start = this.root.getElementById("start");
+    if (start) start.disabled = false;
   }
   el(id) {
     const node = this.root.getElementById(id);
     if (!node) throw new Error(`scanner-panel: missing #${id}`);
     return node;
   }
-  /**
-   * Release the camera. Safe to call repeatedly and before the first render
-   * (e.g. host unconditional cleanup), so it guards every DOM touch.
-   */
-  stop() {
-    this.startGen++;
-    this.scanner.detach();
-    this.started = false;
-    const start = this.root.getElementById("start");
-    const capture = this.root.getElementById("capture");
-    if (start) start.disabled = false;
-    if (capture) capture.disabled = true;
+  btn(id) {
+    return this.el(id);
+  }
+  detector() {
+    const cv = this.cv;
+    if (cv) return (frame) => detectFaceQuad(cv, frame);
+    return (frame) => {
+      const size = Math.min(frame.width, frame.height) * 0.8;
+      const x = (frame.width - size) / 2;
+      const y = (frame.height - size) / 2;
+      return { tl: [x, y], tr: [x + size, y], br: [x + size, y + size], bl: [x, y + size] };
+    };
   }
   async start() {
-    this.el("start").disabled = true;
-    if (this.scanner.next() === null) {
-      this.scanner.reset();
-      this.renderDots();
-    }
+    this.btn("start").disabled = true;
     const gen = ++this.startGen;
     try {
-      await this.scanner.attach(this.el("video"));
+      this.source = await openCamera(this.el("video"));
       if (gen !== this.startGen) return;
-      this.started = true;
-      this.el("capture").disabled = false;
-      this.el("retake").disabled = false;
-      this.guide();
+      this.scanner = new AutoCubeScanner({ source: this.source, detectFace: this.detector() });
+      this.btn("start").hidden = true;
+      this.loop();
     } catch (err) {
       if (gen !== this.startGen) return;
-      this.el("start").disabled = false;
-      const msg = String(err?.message ?? err);
-      this.setStatus(this.tinted("err", `Camera unavailable: ${msg}`));
+      this.btn("start").disabled = false;
+      this.setStatus(
+        this.tinted("err", `Camera unavailable: ${String(err?.message ?? err)}`)
+      );
     }
   }
-  capture() {
-    if (!this.started) return;
+  loop() {
+    if (this.timer !== null) clearInterval(this.timer);
+    this.showPreview(null);
+    this.btn("accept").hidden = true;
+    this.btn("retake").hidden = true;
+    this.timer = setInterval(() => this.onTick(), TICK_MS);
+  }
+  stopLoop() {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+  onTick() {
+    if (!this.scanner) return;
+    let status;
     try {
+      status = this.scanner.tick();
+    } catch {
+      return;
+    }
+    if (status.kind === "searching") {
       const face = this.scanner.next();
-      if (!face) return;
-      this.scanner.captureFace(face);
-      this.renderDots();
-      if (this.scanner.next()) this.guide();
-      else this.finish();
-    } catch (err) {
-      const msg = String(err?.message ?? err);
-      this.setStatus(this.tinted("err", `Capture failed: ${msg}. Press Start over.`));
+      const hint = status.reason === "no-face" ? "point a side at the camera" : "hold still";
+      if (face) {
+        const g = GUIDE[face];
+        this.setStatus(
+          "Show the ",
+          this.swatch(g.swatch),
+          " ",
+          this.bold(g.color),
+          ` (${g.name}) side \u2014 `,
+          hint,
+          "\u2026"
+        );
+      }
+    } else if (status.kind === "proposed") {
+      this.stopLoop();
+      this.propose(status.proposal);
+    } else if (status.kind === "complete") {
+      this.finish(status.result);
     }
   }
-  finish() {
-    const result = this.scanner.result();
-    if (!result) return;
-    this.el("capture").disabled = true;
+  propose(p4) {
+    const g = GUIDE[p4.face];
+    this.showPreview(p4.samples);
+    this.setStatus("Read the ", this.bold(g.name), " side. Looks right?");
+    this.btn("accept").hidden = false;
+    this.btn("retake").hidden = false;
+  }
+  accept() {
+    if (!this.scanner) return;
+    const status = this.scanner.confirm();
+    this.buildDots();
+    if (status.kind === "complete") this.finish(status.result);
+    else this.loop();
+  }
+  retake() {
+    if (!this.scanner) return;
+    this.scanner.reject();
+    this.loop();
+  }
+  finish(result) {
+    this.stopLoop();
+    this.showPreview(null);
+    this.btn("accept").hidden = true;
+    this.btn("retake").hidden = true;
     if (result.valid && result.lowConfidence.length === 0) {
       this.setStatus(this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
       this.dispatchEvent(new CustomEvent("scan-complete", { detail: result }));
       this.stop();
-      return;
-    }
-    if (result.valid) {
-      this.setStatus(
-        this.tinted("err", "Some stickers were ambiguous"),
-        ` \u2014 press Start over and re-scan the ${this.flaggedFaces(result)} face(s).`
-      );
     } else {
-      this.setStatus(
-        this.tinted("err", "That doesn't look like a solvable cube"),
-        " \u2014 press Start over and keep the cube in one orientation."
-      );
+      const why = result.valid ? "Some stickers were ambiguous" : "That isn't a solvable cube";
+      this.setStatus(this.tinted("err", `${why} \u2014 press Start over to re-scan.`));
+      this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
+      this.scanner?.reset();
+      this.buildDots();
+      this.btn("start").hidden = false;
+      this.btn("start").disabled = false;
     }
-    this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
   }
-  retake() {
-    this.scanner.reset();
-    this.renderDots();
-    this.el("capture").disabled = !this.started;
-    this.guide();
-  }
-  guide() {
-    const face = this.scanner.next();
-    if (!face) return;
-    const g = GUIDE[face];
-    const swatch = document.createElement("span");
-    swatch.className = "swatch";
-    swatch.style.background = g.swatch;
-    this.setStatus(
-      "Show the ",
-      swatch,
-      " ",
-      this.bold(g.color),
-      " centre face (",
-      this.bold(g.name),
-      "), align it to the grid, then ",
-      this.bold("Capture"),
-      "."
-    );
-  }
-  flaggedFaces(result) {
-    const faces = /* @__PURE__ */ new Set();
-    for (const idx of result.lowConfidence) faces.add(ORDER[Math.floor(idx / 9)]);
-    return faces.size ? [...faces].map((f3) => GUIDE[f3].name).join(", ") : "shown";
-  }
-  renderDots() {
-    const done = new Set(this.scanner.progress());
+  buildDots() {
+    const done = new Set(this.scanner?.progress() ?? []);
     const dots = this.el("dots");
     dots.textContent = "";
     for (const face of ORDER) {
@@ -6108,8 +6247,24 @@ var ScannerPanel = class extends HTMLElement {
       dots.appendChild(span);
     }
   }
-  // Status is built from DOM nodes + text, never innerHTML — the same discipline
-  // the renderer uses, so no dynamic string is ever interpreted as markup.
+  buildPreview() {
+    const p4 = this.el("preview");
+    p4.textContent = "";
+    for (let i = 0; i < 9; i++) p4.appendChild(document.createElement("i"));
+  }
+  showPreview(samples) {
+    const p4 = this.el("preview");
+    if (!samples) {
+      p4.dataset.show = "0";
+      return;
+    }
+    const cells = p4.querySelectorAll("i");
+    for (let i = 0; i < 9; i++) {
+      const [r, g, b] = samples[i];
+      cells[i].style.background = `rgb(${r}, ${g}, ${b})`;
+    }
+    p4.dataset.show = "1";
+  }
   setStatus(...parts) {
     const status = this.el("status");
     status.textContent = "";
@@ -6119,6 +6274,12 @@ var ScannerPanel = class extends HTMLElement {
     const b = document.createElement("b");
     b.textContent = text;
     return b;
+  }
+  swatch(color) {
+    const s = document.createElement("span");
+    s.className = "swatch";
+    s.style.background = color;
+    return s;
   }
   tinted(cls, text) {
     const span = document.createElement("span");

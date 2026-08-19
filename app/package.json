@@ -5,7 +5,8 @@
   "description": "Cubus desktop shell (Electron) — Web Bluetooth smart cube + camera scanner",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "fetch:opencv": "curl -fsSL -o renderer/vendor/opencv.js https://cdn.jsdelivr.net/npm/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js"
   },
   "devDependencies": {
     "electron": "^43.4.1"

@@ -126,6 +126,10 @@
 
     <!-- Registers <scanner-panel>. Local, self-contained (culori + cubejs are
          inlined), so the camera scanner works offline and needs no bundler. -->
+    <!-- OpenCV.js (WASM) locates the cube face for the camera scanner. Vendored
+         locally (same-origin, offline-capable, no CDN/supply-chain exposure); if
+         it fails to load the panel falls back to sampling a centered square. -->
+    <script async src="./vendor/opencv.js"></script>
     <script type="module" src="./vendor/scanner-panel.js"></script>
 
     <script type="module">
@@ -215,6 +219,17 @@
         } catch(e){ lastEl.textContent='set-solved failed: '+(e&&e.message||e); } };
       // Camera scanner: open the panel, apply a validated scan to the twin.
       const scanModal=$('scanModal'), scanPanel=$('scanPanel');
+      // Hand OpenCV.js to the panel once its WASM runtime is ready (the vendored
+      // UMD build sets window.cv). Handles the classic (onRuntimeInitialized) and
+      // v5 thenable shapes; if it never loads the panel falls back to a centered
+      // square. Capped so we don't poll forever when opencv.js is absent.
+      (function awaitCv(tries){
+        const cv = window.cv;
+        if (cv && cv.Mat) { scanPanel.cv = cv; return; }
+        if (cv && typeof cv.then === 'function') { cv.then((m)=>{ scanPanel.cv = m || cv; }); return; }
+        if (cv && 'onRuntimeInitialized' in cv) { cv.onRuntimeInitialized = ()=>{ scanPanel.cv = cv; }; return; }
+        if (tries > 0) setTimeout(()=>awaitCv(tries-1), 200);
+      })(40);
       $('scanBtn').onclick=()=>{ scanModal.hidden=false; };
       $('scanClose').onclick=()=>{ scanModal.hidden=true; scanPanel.stop?.(); };
       scanPanel.addEventListener('scan-complete',(e)=>{ const f=e.detail.facelets;
