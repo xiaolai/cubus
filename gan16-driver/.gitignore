@@ -2,3 +2,8 @@ node_modules/
 scripts/scan-adv
 coverage/
 *.log
+
+# Raw broad BLE scans capture the whole RF neighbourhood (nearby device names,
+# hostnames) — kept locally, never committed. Cube-specific captures (.kv/.md)
+# under captures/ are fine.
+captures/discovery/*wake-scan.jsonl
