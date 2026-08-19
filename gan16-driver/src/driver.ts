@@ -2,11 +2,11 @@
 // and sends safe query commands via FFF5. Transport-agnostic (see Transport).
 
 import { EventEmitter } from 'node:events';
+import { type SafeCommand, buildCommand } from './gen4/commands.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
 import { decodeGen4 } from './gen4/decode.js';
-import { buildCommand, type SafeCommand } from './gen4/commands.js';
-import type { Transport } from './transport/blew.js';
 import type { CubeEvent, CubeFacelets, CubeGyro, CubeMove } from './gen4/types.js';
+import type { Transport } from './transport/blew.js';
 
 const STATE_CHAR = 'FFF6'; // notify: state/events
 const CMD_CHAR = 'FFF5'; // write: commands
@@ -43,6 +43,7 @@ export class GanCube extends EventEmitter {
       this.live = false;
       this.emit('reconnecting');
     });
+    sub.on('giveup', (e) => this.emit('giveup', e));
     sub.on('close', (code) => this.emit('disconnect', code));
   }
 
@@ -50,11 +51,15 @@ export class GanCube extends EventEmitter {
   private waitLive(timeoutMs = 5000): Promise<void> {
     if (this.live) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('subscription did not go live')), timeoutMs);
-      this.once('live', () => {
+      const onLive = () => {
         clearTimeout(timer);
         resolve();
-      });
+      };
+      const timer = setTimeout(() => {
+        this.off('live', onLive); // don't leak the listener on the timeout path
+        reject(new Error('subscription did not go live'));
+      }, timeoutMs);
+      this.once('live', onLive);
     });
   }
 
@@ -111,14 +116,14 @@ export class GanCube extends EventEmitter {
     // Emit a consolidated HARDWARE event once the 4 mapped fields are in.
     const needed = ['hardwareName', 'hardwareVersion', 'softwareVersion', 'productDate'];
     if (needed.every((k) => k in this.hwFields)) {
-      const name = this.hwFields.hardwareName;
+      const name = this.hwFields.hardwareName ?? '';
       const hw = {
         type: 'HARDWARE' as const,
         timestamp: ts,
         hardwareName: name,
-        hardwareVersion: this.hwFields.hardwareVersion,
-        softwareVersion: this.hwFields.softwareVersion,
-        productDate: this.hwFields.productDate,
+        hardwareVersion: this.hwFields.hardwareVersion ?? '',
+        softwareVersion: this.hwFields.softwareVersion ?? '',
+        productDate: this.hwFields.productDate ?? '',
         // GAN16 ui streams gyro; detect empirically (name starts GAN1x ui) rather
         // than by upstream's GAN12uiM-only allowlist.
         gyroSupported: /ui/i.test(name),
@@ -190,7 +195,11 @@ export class GanCube extends EventEmitter {
    * The command is sent only after the subscription is confirmed live, so the
    * cube's response is never missed to a subscribe/write race.
    */
-  private request<T = CubeEvent>(event: string, cmd: SafeCommand | null, timeoutMs: number): Promise<T> {
+  private request<T = CubeEvent>(
+    event: string,
+    cmd: SafeCommand | null,
+    timeoutMs: number,
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.off(event, onEvt);
@@ -203,7 +212,9 @@ export class GanCube extends EventEmitter {
       };
       this.once(event, onEvt);
       if (cmd) {
-        this.waitLive()
+        // Wait for the subscription within the caller's own budget, not a
+        // shorter hardcoded one — a slow BLE connect must not cap the timeout.
+        this.waitLive(timeoutMs)
           .then(() => this.send(cmd!))
           .catch((e) => {
             clearTimeout(timer);

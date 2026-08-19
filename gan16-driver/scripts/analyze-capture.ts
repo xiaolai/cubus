@@ -12,7 +12,13 @@ const [, , file, mac, expected] = process.argv;
 const cipher = new GanGen4Cipher(mac);
 
 const lines = readFileSync(file, 'utf8').split('\n');
-const events: { ts: number; type: string; notation?: string; serial?: number; facelets?: string }[] = [];
+const events: {
+  ts: number;
+  type: string;
+  notation?: string;
+  serial?: number;
+  facelets?: string;
+}[] = [];
 const hist: Record<string, number> = {};
 
 for (const line of lines) {
@@ -21,15 +27,17 @@ for (const line of lines) {
   if (!v) continue;
   const ev = decodeGen4(cipher.decrypt(Buffer.from(v[1], 'hex')), t ? Date.parse(t[1]) : 0);
   hist[ev.type] = (hist[ev.type] ?? 0) + 1;
-  if (ev.type === 'MOVE') events.push({ ts: ev.timestamp, type: 'MOVE', notation: ev.notation, serial: ev.serial });
-  else if (ev.type === 'FACELETS') events.push({ ts: ev.timestamp, type: 'FACELETS', facelets: ev.facelets, serial: ev.serial });
+  if (ev.type === 'MOVE')
+    events.push({ ts: ev.timestamp, type: 'MOVE', notation: ev.notation, serial: ev.serial });
+  else if (ev.type === 'FACELETS')
+    events.push({ ts: ev.timestamp, type: 'FACELETS', facelets: ev.facelets, serial: ev.serial });
 }
 
 console.log('event histogram:', hist);
 
 const moves = events.filter((e) => e.type === 'MOVE');
 console.log(`\nMOVES (${moves.length}):`);
-console.log('  ' + moves.map((m) => m.notation).join(' '));
+console.log(`  ${moves.map((m) => m.notation).join(' ')}`);
 
 // Serial continuity check
 let gaps = 0;
@@ -55,5 +63,7 @@ if (expected) {
     if (ok > best.ok) best = { off, ok };
   }
   console.log(`\nexpected pattern: ${pat.join(' ')} (repeating)`);
-  console.log(`best alignment: offset ${best.off}, ${best.ok}/${seq.length} match (${((100 * best.ok) / seq.length).toFixed(0)}%)`);
+  console.log(
+    `best alignment: offset ${best.off}, ${best.ok}/${seq.length} match (${((100 * best.ok) / seq.length).toFixed(0)}%)`,
+  );
 }

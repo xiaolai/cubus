@@ -10,7 +10,8 @@ import { GanGen4Cipher } from '../src/gen4/crypto.js';
 import { decodeGen4 } from '../src/gen4/decode.js';
 
 const cipher = new GanGen4Cipher(process.argv[3]);
-const rows: { t: number; type: string; evt: number; serial?: number; q?: number[]; raw: string }[] = [];
+const rows: { t: number; type: string; evt: number; serial?: number; q?: number[]; raw: string }[] =
+  [];
 let t0 = 0;
 for (const line of readFileSync(process.argv[2], 'utf8').split('\n')) {
   const v = line.match(/value=([0-9a-fA-F]{40})/);
@@ -20,7 +21,12 @@ for (const line of readFileSync(process.argv[2], 'utf8').split('\n')) {
   if (!t0) t0 = ts;
   const dec = cipher.decrypt(Buffer.from(v[1], 'hex'));
   const e = decodeGen4(dec, ts);
-  const row: (typeof rows)[number] = { t: ts - t0, type: e.type, evt: dec[0], raw: Buffer.from(dec).toString('hex') };
+  const row: (typeof rows)[number] = {
+    t: ts - t0,
+    type: e.type,
+    evt: dec[0],
+    raw: Buffer.from(dec).toString('hex'),
+  };
   if (e.type === 'FACELETS') row.serial = e.serial;
   if (e.type === 'GYRO') row.q = [e.quaternion.w, e.quaternion.x, e.quaternion.y, e.quaternion.z];
   rows.push(row);
@@ -39,7 +45,8 @@ while (i < rows.length) {
   let drift = 0;
   while (j < rows.length && rows[j].t - start <= HOLD_MS) {
     if (rows[j].type === 'MOVE') hasMove = true;
-    if (rows[j].q && q0) drift = Math.max(drift, Math.hypot(...rows[j].q!.map((v, k) => v - q0[k])));
+    if (rows[j].q && q0)
+      drift = Math.max(drift, Math.hypot(...rows[j].q!.map((v, k) => v - q0[k])));
     j++;
   }
   if (!hasMove && drift < GYRO_STILL && j - i >= 6) {
@@ -50,7 +57,9 @@ while (i < rows.length) {
   }
 }
 
-console.log(`captured ${rows.length} packets; found ${holds.length} still-hold windows (>=1.2s, steady gyro, no completed move)\n`);
+console.log(
+  `captured ${rows.length} packets; found ${holds.length} still-hold windows (>=1.2s, steady gyro, no completed move)\n`,
+);
 let anyAngle = false;
 for (const h of holds.slice(0, 12)) {
   const kinds: Record<string, number> = {};
@@ -64,15 +73,25 @@ for (const h of holds.slice(0, 12)) {
   // During a true still-hold, gyro payload should be ~constant and facelets serial fixed.
   const gyroVaries = gyroHashes.size > 3;
   if (gyroVaries) anyAngle = true;
-  console.log(`hold @${h.start}-${h.end}ms: ${JSON.stringify(kinds)}  facelets-serials=${[...serials].join(',')||'-'}  distinct-gyro-payloads=${gyroHashes.size}${gyroVaries ? '  <-- gyro changing while "still" (investigate)' : ''}`);
+  console.log(
+    `hold @${h.start}-${h.end}ms: ${JSON.stringify(kinds)}  facelets-serials=${[...serials].join(',') || '-'}  distinct-gyro-payloads=${gyroHashes.size}${gyroVaries ? '  <-- gyro changing while "still" (investigate)' : ''}`,
+  );
 }
 
 console.log('\n=== HOLD-TEST VERDICT ===');
 if (holds.length === 0) {
-  console.log('No clean still-hold window found (turns were continuous). Re-run holding a half-turn frozen for ~3s.');
+  console.log(
+    'No clean still-hold window found (turns were continuous). Re-run holding a half-turn frozen for ~3s.',
+  );
 } else if (!anyAngle) {
-  console.log('During every frozen-mid-turn hold, only steady GYRO + unchanged FACELETS were sent.');
-  console.log('=> The cube transmits NOTHING about partial layer angle. Only completed moves (H1 confirmed).');
+  console.log(
+    'During every frozen-mid-turn hold, only steady GYRO + unchanged FACELETS were sent.',
+  );
+  console.log(
+    '=> The cube transmits NOTHING about partial layer angle. Only completed moves (H1 confirmed).',
+  );
 } else {
-  console.log('Some holds showed a varying gyro payload while otherwise still — inspect those windows for a possible angle field.');
+  console.log(
+    'Some holds showed a varying gyro payload while otherwise still — inspect those windows for a possible angle field.',
+  );
 }

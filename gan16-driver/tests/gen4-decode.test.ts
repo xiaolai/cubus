@@ -1,10 +1,10 @@
 // Fixture-based tests. Runs with no hardware: decrypts real captured GAN16 ui
 // packets and asserts the decoder produces valid Gen4 events.
 
-import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
 import { GanGen4Cipher } from '../src/gen4/crypto.js';
 import { decodeGen4 } from '../src/gen4/decode.js';
 import { isValidFaceletCounts } from '../src/gen4/facelets.js';
@@ -28,7 +28,9 @@ describe('GAN16 ui = GAN Gen4 (fixture regression)', () => {
   });
 
   it('produces MOVE events with monotonic serials and valid notation', () => {
-    const moves = decoded.filter((e): e is Extract<CubeEvent, { type: 'MOVE' }> => e.type === 'MOVE');
+    const moves = decoded.filter(
+      (e): e is Extract<CubeEvent, { type: 'MOVE' }> => e.type === 'MOVE',
+    );
     expect(moves.length).toBeGreaterThan(0);
     for (const m of moves) {
       expect('URFDLB').toContain(m.face);
@@ -38,12 +40,14 @@ describe('GAN16 ui = GAN Gen4 (fixture regression)', () => {
     }
     // Serials increase by 1 per move (mod 256 on the low byte).
     for (let i = 1; i < moves.length; i++) {
-      expect((moves[i].serial - moves[i - 1].serial) & 0xff).toBe(1);
+      expect((moves[i]!.serial - moves[i - 1]!.serial) & 0xff).toBe(1);
     }
   });
 
   it('decodes FACELETS to a structurally valid cube (9 of each colour)', () => {
-    const fl = decoded.filter((e): e is Extract<CubeEvent, { type: 'FACELETS' }> => e.type === 'FACELETS');
+    const fl = decoded.filter(
+      (e): e is Extract<CubeEvent, { type: 'FACELETS' }> => e.type === 'FACELETS',
+    );
     expect(fl.length).toBeGreaterThan(0);
     for (const f of fl) {
       expect(f.facelets).toHaveLength(54);
@@ -67,9 +71,9 @@ describe('GAN16 ui = GAN Gen4 (fixture regression)', () => {
 
 describe('crypto round-trip', () => {
   it('encrypt(decrypt(x)) == x for a real packet', () => {
-    const enc = Buffer.from(fixture.packets[0].enc, 'hex');
+    const enc = Buffer.from(fixture.packets[0]!.enc, 'hex');
     const plain = cipher.decrypt(enc);
     const reenc = cipher.encrypt(plain);
-    expect(Buffer.from(reenc).toString('hex')).toBe(fixture.packets[0].enc);
+    expect(Buffer.from(reenc).toString('hex')).toBe(fixture.packets[0]!.enc);
   });
 });

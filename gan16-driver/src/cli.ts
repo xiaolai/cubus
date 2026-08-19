@@ -9,14 +9,14 @@
 //   gan16 record <name>        save a lossless capture under captures/
 
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { mkdirSync, createWriteStream } from 'node:fs';
-import { scanForCube, BlewTransport } from './transport/blew.js';
+import { fileURLToPath } from 'node:url';
+import { GanCube } from './driver.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
 import { decodeGen4 } from './gen4/decode.js';
 import { extractMacFromManufacturerData, macMatchesName } from './mac.js';
-import { GanCube } from './driver.js';
+import { BlewTransport, scanForCube } from './transport/blew.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCAN_ADV = join(ROOT, 'scripts', 'scan-adv');
@@ -29,7 +29,10 @@ async function findCube(windowSecs = 10, attempts = 6) {
     const cube = devices.find((d) => /gan/i.test(d.name) && d.manufacturerData);
     if (cube?.manufacturerData) {
       const mac = extractMacFromManufacturerData(cube.manufacturerData);
-      if (!mac) throw new Error(`found ${cube.name} but could not recover MAC from ${cube.manufacturerData}`);
+      if (!mac)
+        throw new Error(
+          `found ${cube.name} but could not recover MAC from ${cube.manufacturerData}`,
+        );
       return { ...cube, mac, macOk: macMatchesName(mac, cube.name) };
     }
     if (i === 0) console.error('no cube yet — give it a twist to wake it…');
@@ -39,14 +42,21 @@ async function findCube(windowSecs = 10, attempts = 6) {
 
 /** Render a Kociemba facelet string as a labelled 6-face map. */
 function faceMap(facelets: string): string {
-  const seg = (i: number) => facelets.slice(i, i + 9).match(/.{3}/g)!;
-  const [U, R, F, D, L, B] = [0, 9, 18, 27, 36, 45].map(seg);
+  const seg = (i: number): string[] => facelets.slice(i, i + 9).match(/.{3}/g) ?? [];
+  const [U, R, F, D, L, B] = [0, 9, 18, 27, 36, 45].map(seg) as [
+    string[],
+    string[],
+    string[],
+    string[],
+    string[],
+    string[],
+  ];
   const pad = '         ';
   const out = [...U.map((r) => `${pad} ${r}`)];
   for (let i = 0; i < 3; i++) out.push(`${L[i]} ${F[i]} ${R[i]} ${B[i]}`);
   out.push(...D.map((r) => `${pad} ${r}`));
   const solved = facelets === 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
-  return out.join('\n') + `\n\nsolved: ${solved ? 'YES' : 'no (scrambled)'}`;
+  return `${out.join('\n')}\n\nsolved: ${solved ? 'YES' : 'no (scrambled)'}`;
 }
 
 async function cmdScan() {
@@ -85,6 +95,8 @@ async function cmdState() {
   const c = await findCube();
   const cube = new GanCube({ mac: c.mac, transport: new BlewTransport(c.id) });
   cube.on('live', () => console.log(`CONNECTED ${c.name}`));
+  cube.on('error', (e) => console.error('error:', e.message));
+  cube.on('giveup', (e) => console.error(e.message));
   cube.connect();
   console.log('reading state — keep the cube gently moving (no face turns)…');
   try {
@@ -98,29 +110,39 @@ async function cmdState() {
   }
 }
 
-function notation(face: string, dir: string) {
-  return face + (dir === 'ccw' ? "'" : '');
-}
-
 async function cmdMonitor() {
   const c = await findCube();
   const transport = new BlewTransport(c.id);
   const cube = new GanCube({ mac: c.mac, transport });
   console.log(`connecting to ${c.name} (${c.mac}) — keep the cube moving…`);
   cube.on('live', () => console.log(`CONNECTED ${c.name}`));
+  cube.on('error', (e) => console.error('error:', e.message));
+  cube.on('giveup', (e) => {
+    console.error(e.message);
+    process.exit(1);
+  });
   cube.connect();
   keepAlive();
   cube.onFacelets((f) => console.log(`STATE  ${f.facelets}`));
-  cube.onMove((m) => console.log(`MOVE   ${notation(m.face, m.direction).padEnd(3)}  serial=${m.serial}  t=${m.cubeTimestamp}`));
-  cube.on('gap', (g) => console.log(`⚠ GAP   missed ${g.missing} move(s) between serial ${g.from}->${g.to}`));
-  cube.on('unknown', (u) => console.log(`? UNKNOWN evt=0x${(u.eventType ?? 0).toString(16)} ${u.rawHex ?? ''}`));
+  cube.onMove((m) =>
+    console.log(`MOVE   ${m.notation.padEnd(3)}  serial=${m.serial}  t=${m.cubeTimestamp}`),
+  );
+  cube.on('gap', (g) =>
+    console.log(`⚠ GAP   missed ${g.missing} move(s) between serial ${g.from}->${g.to}`),
+  );
+  cube.on('unknown', (u) =>
+    console.log(`? UNKNOWN evt=0x${(u.eventType ?? 0).toString(16)} ${u.rawHex ?? ''}`),
+  );
   let lastGyro = 0;
   cube.onGyro((g) => {
     const now = Date.now();
-    if (now - lastGyro > 500) { // throttle the fast gyro stream for readability
+    if (now - lastGyro > 500) {
+      // throttle the fast gyro stream for readability
       lastGyro = now;
       const q = g.quaternion;
-      console.log(`ORIENT q=(${q.w.toFixed(2)},${q.x.toFixed(2)},${q.y.toFixed(2)},${q.z.toFixed(2)})`);
+      console.log(
+        `ORIENT q=(${q.w.toFixed(2)},${q.x.toFixed(2)},${q.y.toFixed(2)},${q.z.toFixed(2)})`,
+      );
     }
   });
   await new Promise(() => {}); // run until Ctrl-C
@@ -132,6 +154,11 @@ async function cmdRaw(char = 'FFF6') {
   const transport = new BlewTransport(c.id);
   console.log(`RAW ${char}  ${c.name}  (Ctrl-C to stop)`);
   const sub = transport.subscribe(char);
+  sub.on('error', (e: Error) => console.error('error:', e.message));
+  sub.on('giveup', (e: Error) => {
+    console.error(e.message);
+    process.exit(1);
+  });
   sub.on('packet', (hex: string, ts: number) => {
     let decHex = '';
     let evt = '';
@@ -139,7 +166,7 @@ async function cmdRaw(char = 'FFF6') {
       const dec = cipher.decrypt(Buffer.from(hex, 'hex'));
       decHex = Buffer.from(dec).toString('hex');
       const e = decodeGen4(dec, ts);
-      evt = e.type + (e.type === 'MOVE' ? ` ${notation(e.face, e.direction)}` : '');
+      evt = e.type + (e.type === 'MOVE' ? ` ${e.notation}` : '');
     }
     console.log(`${new Date(ts).toISOString()}  enc=${hex}  dec=${decHex}  ${evt}`);
   });
@@ -155,10 +182,26 @@ async function cmdRecord(name: string) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const path = join(dir, `${stamp}-${name}.jsonl`);
   const out = createWriteStream(path);
-  out.write(JSON.stringify({ meta: { device: c.name, id: c.id, mac: c.mac, experiment: name, startedAt: new Date().toISOString() } }) + '\n');
+  out.write(
+    `${JSON.stringify({
+      meta: {
+        device: c.name,
+        id: c.id,
+        mac: c.mac,
+        experiment: name,
+        startedAt: new Date().toISOString(),
+      },
+    })}\n`,
+  );
   const cipher = new GanGen4Cipher(c.mac);
   const transport = new BlewTransport(c.id);
   const sub = transport.subscribe('FFF6');
+  sub.on('error', (e: Error) => console.error('error:', e.message));
+  sub.on('giveup', (e: Error) => {
+    out.end();
+    console.error(e.message);
+    process.exit(1);
+  });
   let n = 0;
   sub.on('packet', (hex: string, ts: number) => {
     const rec: Record<string, unknown> = { ts, char: 'FFF6', enc: hex };
@@ -167,11 +210,15 @@ async function cmdRecord(name: string) {
       rec.dec = Buffer.from(dec).toString('hex');
       rec.event = decodeGen4(dec, ts);
     }
-    out.write(JSON.stringify(rec) + '\n');
+    out.write(`${JSON.stringify(rec)}\n`);
     n++;
     process.stdout.write(`\rrecorded ${n} packets -> ${path}`);
   });
-  process.on('SIGINT', () => { out.end(); console.log('\nsaved.'); process.exit(0); });
+  process.on('SIGINT', () => {
+    out.end();
+    console.log('\nsaved.');
+    process.exit(0);
+  });
   console.log(`RECORDING '${name}' -> ${path}  (Ctrl-C to stop)`);
   keepAlive();
   await new Promise(() => {});
@@ -184,12 +231,15 @@ const run: Record<string, () => Promise<void>> = {
   state: cmdState,
   monitor: cmdMonitor,
   raw: () => cmdRaw(rest[0]),
-  record: () => cmdRecord(rest[0]),
+  record: () => cmdRecord(rest[0] ?? ''),
 };
-(run[cmd] ?? (async () => {
-  console.log('usage: gan16 <scan|inspect|state|monitor|raw|record>');
-  process.exit(1);
-}))().catch((e) => {
-  console.error('error:', e.message);
+(
+  run[cmd ?? ''] ??
+  (async () => {
+    console.log('usage: gan16 <scan|inspect|state|monitor|raw|record>');
+    process.exit(1);
+  })
+)().catch((e: unknown) => {
+  console.error('error:', e instanceof Error ? e.message : String(e));
   process.exit(1);
 });

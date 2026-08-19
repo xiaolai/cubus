@@ -1,11 +1,11 @@
 // One-shot "what is the cube right now" reader: scan → connect → print the
 // first FACELETS snapshot as a labelled face map, then exit. Tolerates the
 // cube's sleep/advertise cycle with a generous window.
-import { join, dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { scanForCube, BlewTransport } from '../src/transport/blew.js';
-import { extractMacFromManufacturerData } from '../src/mac.js';
 import { GanCube } from '../src/driver.js';
+import { extractMacFromManufacturerData } from '../src/mac.js';
+import { BlewTransport, scanForCube } from '../src/transport/blew.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCAN_ADV = join(ROOT, 'scripts', 'scan-adv');
@@ -20,7 +20,7 @@ function pretty(facelets: string): string {
   for (let i = 0; i < 3; i++) out.push(`${L[i]} ${F[i]} ${R[i]} ${B[i]}`);
   D.forEach((r) => out.push(`${pad} ${r}`));
   const solved = facelets === 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
-  return out.join('\n') + `\n\nsolved: ${solved ? 'YES' : 'no (scrambled)'}`;
+  return `${out.join('\n')}\n\nsolved: ${solved ? 'YES' : 'no (scrambled)'}`;
 }
 
 async function main() {

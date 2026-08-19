@@ -14,6 +14,9 @@
 
 /** @param manufacturerHex full CoreBluetooth manufacturer data as hex. */
 export function extractMacFromManufacturerData(manufacturerHex: string): string | null {
+  // Reject malformed hex up front — Buffer.from(...,'hex') silently truncates
+  // on odd length or non-hex chars, which would yield a plausible-but-wrong MAC.
+  if (!/^[0-9a-fA-F]*$/.test(manufacturerHex) || manufacturerHex.length % 2 !== 0) return null;
   const bytes = Buffer.from(manufacturerHex, 'hex');
   if (bytes.length < 11) return null;
   // company id little-endian; GAN uses 0xXX01, i.e. low byte 0x01
@@ -27,7 +30,7 @@ export function extractMacFromManufacturerData(manufacturerHex: string): string 
 /** Sanity-check a recovered MAC against the device-name suffix (e.g. _C8D3). */
 export function macMatchesName(mac: string, name: string): boolean {
   const m = name.match(/_([0-9a-fA-F]{4})$/);
-  if (!m) return true; // no suffix to check against
+  if (!m?.[1]) return true; // no suffix to check against
   const suffix = m[1].toUpperCase();
   const tail = mac.replace(/:/g, '').toUpperCase().slice(-4);
   return tail === suffix;

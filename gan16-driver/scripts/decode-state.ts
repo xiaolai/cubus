@@ -15,7 +15,9 @@ for (const line of readFileSync(process.argv[2], 'utf8').split('\n')) {
   if (e.type === 'FACELETS') last = e.facelets;
 }
 if (!last) {
-  console.log(`no FACELETS in capture (${count} packets). Cube likely never connected — keep it moving and retry.`);
+  console.log(
+    `no FACELETS in capture (${count} packets). Cube likely never connected — keep it moving and retry.`,
+  );
   process.exitCode = 1;
 } else {
   const seg = (i: number) => last!.slice(i, i + 9).match(/.{3}/g)!;

@@ -1,9 +1,9 @@
 // Behavioural fixtures for the controlled experiments, plus robustness cases.
 
-import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
 import { GanGen4Cipher } from '../src/gen4/crypto.js';
 import { decodeGen4 } from '../src/gen4/decode.js';
 
@@ -35,7 +35,9 @@ describe('Experiment G — whole-cube rotation', () => {
   });
   it('FACELETS serial stays constant (no state change without a face turn)', () => {
     const serials = new Set(
-      ev.filter((e): e is Extract<typeof e, { type: 'FACELETS' }> => e.type === 'FACELETS').map((e) => e.serial),
+      ev
+        .filter((e): e is Extract<typeof e, { type: 'FACELETS' }> => e.type === 'FACELETS')
+        .map((e) => e.serial),
     );
     expect(serials.size).toBe(1);
   });

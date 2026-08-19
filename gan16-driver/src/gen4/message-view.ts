@@ -15,7 +15,7 @@ export class MessageView {
   }
 
   byte(i: number): number {
-    return this.bytes[i];
+    return this.bytes[i] ?? 0; // reads past the end are tolerated as 0
   }
 
   getBitWord(startBit: number, bitLength: number, littleEndian = false): number {
@@ -25,7 +25,8 @@ export class MessageView {
         const bit = startBit + i;
         const byteIdx = bit >>> 3;
         const bitOff = 7 - (bit & 7);
-        result = (result << 1) | ((this.bytes[byteIdx] >>> bitOff) & 1);
+        // Out-of-range reads count as 0 — a tolerant parser over fixed frames.
+        result = (result << 1) | (((this.bytes[byteIdx] ?? 0) >>> bitOff) & 1);
       }
       return result >>> 0;
     }
@@ -35,9 +36,9 @@ export class MessageView {
     for (let i = 0; i < nBytes; i++) parts.push(this.getBitWord(startBit + 8 * i, 8));
     let result = 0;
     if (littleEndian) {
-      for (let i = 0; i < nBytes; i++) result |= parts[i] << (8 * i);
+      for (let i = 0; i < nBytes; i++) result |= (parts[i] ?? 0) << (8 * i);
     } else {
-      for (let i = 0; i < nBytes; i++) result = (result << 8) | parts[i];
+      for (let i = 0; i < nBytes; i++) result = (result << 8) | (parts[i] ?? 0);
     }
     return result >>> 0;
   }

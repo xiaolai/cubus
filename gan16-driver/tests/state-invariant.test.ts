@@ -6,11 +6,11 @@
 // MOVE decoder would desync the predicted state immediately, so passing this
 // across many snapshots is strong evidence the move mapping is correct.
 
-import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Cube from 'cubejs';
+import { describe, expect, it } from 'vitest';
 import { GanGen4Cipher } from '../src/gen4/crypto.js';
 import { decodeGen4 } from '../src/gen4/decode.js';
 
@@ -28,8 +28,10 @@ type Ev =
 const stream: Ev[] = [];
 for (const p of fixture.packets) {
   const e = decodeGen4(cipher.decrypt(Buffer.from(p.enc, 'hex')), 0);
-  if (e.type === 'MOVE') stream.push({ kind: 'MOVE', serial: e.serial & 0xff, notation: e.notation });
-  else if (e.type === 'FACELETS') stream.push({ kind: 'FACE', serial: e.serial & 0xff, facelets: e.facelets });
+  if (e.type === 'MOVE')
+    stream.push({ kind: 'MOVE', serial: e.serial & 0xff, notation: e.notation });
+  else if (e.type === 'FACELETS')
+    stream.push({ kind: 'FACE', serial: e.serial & 0xff, facelets: e.facelets });
 }
 
 function runInvariant() {
@@ -50,7 +52,10 @@ function runInvariant() {
             const d = (m.serial - lastFace!.serial) & 0xff;
             return d >= 1 && d <= span;
           })
-          .sort((a, b) => ((a.serial - lastFace!.serial) & 0xff) - ((b.serial - lastFace!.serial) & 0xff));
+          .sort(
+            (a, b) =>
+              ((a.serial - lastFace!.serial) & 0xff) - ((b.serial - lastFace!.serial) & 0xff),
+          );
         if (moves.length === span) {
           const cube = Cube.fromString(lastFace.facelets);
           for (const m of moves) cube.move(m.notation);

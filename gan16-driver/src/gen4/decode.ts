@@ -7,8 +7,8 @@
 // Bit layouts verified against a physical GAN16 ui (2026-08-19). Protocol from
 // afedotov/gan-web-bluetooth (MIT).
 
-import { MessageView } from './message-view.js';
 import { toKociembaFacelets } from './facelets.js';
+import { MessageView } from './message-view.js';
 import type { CubeEvent, Face } from './types.js';
 
 export const GEN4_EVENT = {
@@ -50,7 +50,8 @@ function decodeHardwareField(
   let value = '';
   let extra = false;
   switch (eventType) {
-    case 0xfa: { // product date
+    case 0xfa: {
+      // product date
       const year = msg.getBitWord(24, 16, true);
       const month = msg.getBitWord(40, 8);
       const day = msg.getBitWord(48, 8);
@@ -58,7 +59,8 @@ function decodeHardwareField(
       value = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       break;
     }
-    case 0xfc: { // hardware name
+    case 0xfc: {
+      // hardware name
       key = 'hardwareName';
       let s = '';
       for (let i = 0; i < dataLength - 1; i++) {
@@ -112,7 +114,7 @@ export function decodeGen4(decrypted: Uint8Array, timestamp: number): DecodeResu
     const dir = msg.getBitWord(64, 2);
     const faceIdx = MOVE_FACE_LUT.indexOf(msg.getBitWord(66, 6));
     if (faceIdx < 0) return { type: 'UNKNOWN', timestamp, eventType, rawHex };
-    const face = FACE_ORDER[faceIdx];
+    const face = FACE_ORDER[faceIdx]!; // faceIdx in 0..5 after the guard
     const direction = dir === 0 ? 'cw' : 'ccw';
     return {
       type: 'MOVE',
@@ -135,7 +137,7 @@ export function decodeGen4(decrypted: Uint8Array, timestamp: number): DecodeResu
       const faceIdx = HIST_FACE_LUT.indexOf(msg.getBitWord(24 + 4 * i, 3));
       const dir = msg.getBitWord(27 + 4 * i, 1);
       if (faceIdx >= 0) {
-        moves.push({ face: FACE_ORDER[faceIdx], direction: dir === 0 ? 'cw' : 'ccw', offset: i });
+        moves.push({ face: FACE_ORDER[faceIdx]!, direction: dir === 0 ? 'cw' : 'ccw', offset: i });
       }
     }
     return { type: 'MOVE_HISTORY', startSerial, moves };
@@ -169,7 +171,7 @@ export function decodeGen4(decrypted: Uint8Array, timestamp: number): DecodeResu
   }
 
   if (eventType === GEN4_EVENT.GYRO) {
-    const s16 = (v: number) => (1 - (v >> 15) * 2) * (v & 0x7fff) / 0x7fff;
+    const s16 = (v: number) => ((1 - (v >> 15) * 2) * (v & 0x7fff)) / 0x7fff;
     const s4 = (v: number) => (1 - (v >> 3) * 2) * (v & 0x7);
     return {
       type: 'GYRO',

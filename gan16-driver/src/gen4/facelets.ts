@@ -2,31 +2,50 @@
 // string (URFDLB order, 54 chars). Ported from afedotov/gan-web-bluetooth (MIT).
 
 const CORNER_FACELET = [
-  [8, 9, 20], [6, 18, 38], [0, 36, 47], [2, 45, 11],
-  [29, 26, 15], [27, 44, 24], [33, 53, 42], [35, 17, 51],
+  [8, 9, 20],
+  [6, 18, 38],
+  [0, 36, 47],
+  [2, 45, 11],
+  [29, 26, 15],
+  [27, 44, 24],
+  [33, 53, 42],
+  [35, 17, 51],
 ];
 const EDGE_FACELET = [
-  [5, 10], [7, 19], [3, 37], [1, 46], [32, 16], [28, 25],
-  [30, 43], [34, 52], [23, 12], [21, 41], [50, 39], [48, 14],
+  [5, 10],
+  [7, 19],
+  [3, 37],
+  [1, 46],
+  [32, 16],
+  [28, 25],
+  [30, 43],
+  [34, 52],
+  [23, 12],
+  [21, 41],
+  [50, 39],
+  [48, 14],
 ];
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 
-export function toKociembaFacelets(
-  cp: number[],
-  co: number[],
-  ep: number[],
-  eo: number[],
-): string {
-  const f: string[] = new Array(54);
-  for (let i = 0; i < 54; i++) f[i] = SOLVED[i];
+export function toKociembaFacelets(cp: number[], co: number[], ep: number[], eo: number[]): string {
+  // cp/co/ep/eo are validated permutations (built with parity checksums in the
+  // decoder), so all table indices below are in range by cube invariants — the
+  // non-null assertions document that, they don't paper over unchecked input.
+  const f: string[] = SOLVED.split('');
   for (let i = 0; i < 8; i++) {
+    const dst = CORNER_FACELET[i]!;
+    const src = CORNER_FACELET[cp[i]!]!;
+    const ori = co[i]!;
     for (let p = 0; p < 3; p++) {
-      f[CORNER_FACELET[i][(p + co[i]) % 3]] = SOLVED[CORNER_FACELET[cp[i]][p]];
+      f[dst[(p + ori) % 3]!] = SOLVED[src[p]!]!;
     }
   }
   for (let i = 0; i < 12; i++) {
+    const dst = EDGE_FACELET[i]!;
+    const src = EDGE_FACELET[ep[i]!]!;
+    const ori = eo[i]!;
     for (let p = 0; p < 2; p++) {
-      f[EDGE_FACELET[i][(p + eo[i]) % 2]] = SOLVED[EDGE_FACELET[ep[i]][p]];
+      f[dst[(p + ori) % 2]!] = SOLVED[src[p]!]!;
     }
   }
   return f.join('');

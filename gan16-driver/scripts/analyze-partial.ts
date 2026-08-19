@@ -62,7 +62,9 @@ if (!moves.length) console.log('  (no MOVE events — turn may not have complete
 for (const m of moves) {
   const win = rows.filter((r) => r.t >= m.t - 1500 && r.t <= m.t && r !== m);
   const kinds = new Set(win.map((r) => r.type));
-  console.log(`  MOVE ${m.info} @${m.t}ms  — preceding 1.5s carried: ${[...kinds].join(', ') || 'nothing'} (${win.length} pkts)`);
+  console.log(
+    `  MOVE ${m.info} @${m.t}ms  — preceding 1.5s carried: ${[...kinds].join(', ') || 'nothing'} (${win.length} pkts)`,
+  );
 }
 
 // Gyro stability: max pairwise quaternion drift across the whole capture.
@@ -74,14 +76,22 @@ if (gy.length > 1) {
     const d = Math.hypot(...q[i].map((v, j) => v - q[i - 1][j]));
     maxd = Math.max(maxd, d);
   }
-  console.log(`\ngyro frames: ${gy.length}, max frame-to-frame quaternion delta: ${maxd.toFixed(3)} (small => body held still)`);
+  console.log(
+    `\ngyro frames: ${gy.length}, max frame-to-frame quaternion delta: ${maxd.toFixed(3)} (small => body held still)`,
+  );
 }
 
 console.log('\n=== VERDICT ===');
 if (unexpected.length === 0) {
   console.log('No event type outside {MOVE, GYRO, FACELETS, hardware} appeared.');
-  console.log('=> No dedicated partial-turn/angular BLE data. Face turns surface only as completed MOVE events (H1).');
+  console.log(
+    '=> No dedicated partial-turn/angular BLE data. Face turns surface only as completed MOVE events (H1).',
+  );
 } else {
-  console.log(`Found ${unexpected.length} UNEXPECTED packets — possible partial-turn data. Samples:`);
-  unexpected.slice(0, 8).forEach((r) => console.log(`  @${r.t}ms 0x${r.evt.toString(16)} ${r.raw}`));
+  console.log(
+    `Found ${unexpected.length} UNEXPECTED packets — possible partial-turn data. Samples:`,
+  );
+  unexpected
+    .slice(0, 8)
+    .forEach((r) => console.log(`  @${r.t}ms 0x${r.evt.toString(16)} ${r.raw}`));
 }

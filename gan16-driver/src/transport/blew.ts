@@ -6,9 +6,9 @@
 // on the Transport interface below, so a noble-based transport can replace this
 // without touching the protocol or driver code.
 
-import { spawn, execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { promisify } from 'node:util';
 
 const execFileP = promisify(execFile);
 
@@ -31,13 +31,22 @@ export interface Transport {
 }
 
 /** One-shot advertisement scan via the compiled scan-adv helper (full mfg data). */
-export async function scanForCube(
-  scanAdvPath: string,
-  seconds = 12,
-): Promise<AdvDevice[]> {
+export async function scanForCube(scanAdvPath: string, seconds = 12): Promise<AdvDevice[]> {
   const { stdout } = await execFileP(scanAdvPath, [String(seconds), 'gan'], {
     maxBuffer: 16 * 1024 * 1024,
-  }).catch((e) => ({ stdout: e.stdout ?? '' }));
+  }).catch((e: NodeJS.ErrnoException & { stdout?: string }) => {
+    // A non-zero exit that still produced output (e.g. scan window ended) is
+    // fine — parse what we got. But a failure to even launch the helper
+    // (missing/uncompiled binary, no permission) must surface, not masquerade
+    // as "no cube found".
+    if (e.code === 'ENOENT') {
+      throw new Error(
+        `scan helper not found at ${scanAdvPath} — build it: swiftc -O -o scripts/scan-adv scripts/scan-adv.swift`,
+      );
+    }
+    if (!e.stdout) throw e;
+    return { stdout: e.stdout };
+  });
   const byId = new Map<string, AdvDevice>();
   for (const line of stdout.split('\n')) {
     if (!line.startsWith('{')) continue;
@@ -60,36 +69,61 @@ export async function scanForCube(
 export class BlewTransport implements Transport {
   private procs: ReturnType<typeof spawn>[] = [];
   private stopped = false;
-  constructor(private readonly deviceId: string, private readonly blew = 'blew') {}
+  constructor(
+    private readonly deviceId: string,
+    private readonly blew = 'blew',
+  ) {}
 
   /**
    * Subscribe to a characteristic. The cube stops advertising ~1 s after coming
    * to rest, so `blew sub` can drop; we auto-respawn until disconnect() is
    * called, emitting 'reconnecting' on each respawn so callers can log it.
+   *
+   * Backoff grows on consecutive respawns that never delivered a packet (a
+   * genuinely gone device or a bad id, where `blew` exits immediately) and
+   * resets the moment data flows again. After too many dead attempts we give up
+   * and emit 'giveup' rather than spin `blew` forever.
    */
   subscribe(charUuid: string): EventEmitter {
     const emitter = new EventEmitter();
+    const MAX_DEAD_ATTEMPTS = 12;
+    let deadAttempts = 0;
     const spawnOne = () => {
       if (this.stopped) return;
       const proc = spawn(this.blew, ['-o', 'kv', 'sub', '--id', this.deviceId, charUuid]);
       this.procs.push(proc);
+      let gotPacket = false;
       let buf = '';
       proc.stdout.on('data', (chunk: Buffer) => {
         buf += chunk.toString();
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) {
+        for (let nl = buf.indexOf('\n'); nl >= 0; nl = buf.indexOf('\n')) {
           const line = buf.slice(0, nl);
           buf = buf.slice(nl + 1);
           const m = line.match(/value=([0-9a-fA-F]+)/);
           const t = line.match(/ts=([^ ]+)/);
-          if (m) emitter.emit('packet', m[1], t ? Date.parse(t[1]) : Date.now());
+          if (m) {
+            gotPacket = true;
+            deadAttempts = 0; // a live connection resets the failure count
+            emitter.emit('packet', m[1], t?.[1] ? Date.parse(t[1]) : Date.now());
+          }
         }
       });
       proc.on('error', (e) => emitter.emit('error', e));
       proc.on('close', () => {
+        this.procs = this.procs.filter((p) => p !== proc); // don't retain dead handles
         if (this.stopped) return;
+        if (!gotPacket && ++deadAttempts >= MAX_DEAD_ATTEMPTS) {
+          emitter.emit(
+            'giveup',
+            new Error(
+              `gave up reconnecting to ${this.deviceId} after ${deadAttempts} attempts with no data`,
+            ),
+          );
+          return;
+        }
         emitter.emit('reconnecting');
-        setTimeout(spawnOne, 500); // brief backoff, then retry
+        const backoff = gotPacket ? 500 : Math.min(500 * 2 ** deadAttempts, 8000);
+        setTimeout(spawnOne, backoff);
       });
     };
     spawnOne();
@@ -98,7 +132,12 @@ export class BlewTransport implements Transport {
 
   async read(charUuid: string): Promise<string> {
     const { stdout } = await execFileP(this.blew, [
-      '-o', 'kv', 'read', '--id', this.deviceId, charUuid,
+      '-o',
+      'kv',
+      'read',
+      '--id',
+      this.deviceId,
+      charUuid,
     ]);
     return stdout.match(/value=([0-9a-fA-F]*)/)?.[1] ?? '';
   }

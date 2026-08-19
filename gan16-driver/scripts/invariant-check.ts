@@ -20,8 +20,10 @@ for (const line of lines) {
   const v = line.match(/value=([0-9a-fA-F]{40})/);
   if (!v) continue;
   const e = decodeGen4(cipher.decrypt(Buffer.from(v[1], 'hex')), 0);
-  if (e.type === 'MOVE') stream.push({ kind: 'MOVE', serial: e.serial & 0xff, notation: e.notation });
-  else if (e.type === 'FACELETS') stream.push({ kind: 'FACE', serial: e.serial & 0xff, facelets: e.facelets });
+  if (e.type === 'MOVE')
+    stream.push({ kind: 'MOVE', serial: e.serial & 0xff, notation: e.notation });
+  else if (e.type === 'FACELETS')
+    stream.push({ kind: 'FACE', serial: e.serial & 0xff, facelets: e.facelets });
 }
 
 // Walk the stream; between consecutive FACELETS snapshots, replay the moves.
@@ -44,14 +46,19 @@ for (const e of stream) {
         });
         // Only check when we captured exactly the right number of moves for the span.
         if (moves.length === span) {
-          moves.sort((a, b) => ((a.serial - lastFace!.serial) & 0xff) - ((b.serial - lastFace!.serial) & 0xff));
+          moves.sort(
+            (a, b) =>
+              ((a.serial - lastFace!.serial) & 0xff) - ((b.serial - lastFace!.serial) & 0xff),
+          );
           const cube = Cube.fromString(lastFace.facelets);
           for (const m of moves) cube.move(m.notation);
           checks++;
           const predicted = cube.asString();
           if (predicted === e.facelets) passed++;
           else {
-            console.log(`MISMATCH span ${lastFace.serial}->${e.serial} moves=[${moves.map((m) => m.notation).join(' ')}]`);
+            console.log(
+              `MISMATCH span ${lastFace.serial}->${e.serial} moves=[${moves.map((m) => m.notation).join(' ')}]`,
+            );
             console.log(`  predicted: ${predicted}`);
             console.log(`  hardware : ${e.facelets}`);
           }

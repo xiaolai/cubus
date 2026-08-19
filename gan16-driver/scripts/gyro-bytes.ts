@@ -17,7 +17,8 @@ console.log('byte : distinct  min  max   region');
 for (let b = 0; b < 20; b++) {
   const vals = gyros.map((g) => g[b]);
   const distinct = new Set(vals).size;
-  const region = b <= 1 ? 'header' : b <= 9 ? 'quaternion' : b <= 11 ? 'quat/velocity' : 'unused-by-upstream';
+  const region =
+    b <= 1 ? 'header' : b <= 9 ? 'quaternion' : b <= 11 ? 'quat/velocity' : 'unused-by-upstream';
   console.log(
     `  ${String(b).padStart(2)} : ${String(distinct).padStart(4)}     ${String(Math.min(...vals)).padStart(3)} ${String(Math.max(...vals)).padStart(3)}   ${region}`,
   );

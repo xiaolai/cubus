@@ -1,10 +1,10 @@
 // Experiment H regression: GAN16 exposes NO partial-turn angular data over BLE.
 // Locks in the two proofs from the hold-test capture.
 
-import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
 import { GanGen4Cipher } from '../src/gen4/crypto.js';
 import { decodeGen4 } from '../src/gen4/decode.js';
 

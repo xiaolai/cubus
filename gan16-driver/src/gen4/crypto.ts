@@ -12,12 +12,12 @@
 import { createCipheriv, createDecipheriv } from 'node:crypto';
 
 /** Base key/iv shared by GAN Gen2/Gen3/Gen4 cubes (afedotov/gan-web-bluetooth). */
-export const GAN_GEN4_BASE_KEY = Uint8Array.from(
-  [0x01, 0x02, 0x42, 0x28, 0x31, 0x91, 0x16, 0x07, 0x20, 0x05, 0x18, 0x54, 0x42, 0x11, 0x12, 0x53],
-);
-export const GAN_GEN4_BASE_IV = Uint8Array.from(
-  [0x11, 0x03, 0x32, 0x28, 0x21, 0x01, 0x76, 0x27, 0x20, 0x95, 0x78, 0x14, 0x32, 0x12, 0x02, 0x43],
-);
+export const GAN_GEN4_BASE_KEY = Uint8Array.from([
+  0x01, 0x02, 0x42, 0x28, 0x31, 0x91, 0x16, 0x07, 0x20, 0x05, 0x18, 0x54, 0x42, 0x11, 0x12, 0x53,
+]);
+export const GAN_GEN4_BASE_IV = Uint8Array.from([
+  0x11, 0x03, 0x32, 0x28, 0x21, 0x01, 0x76, 0x27, 0x20, 0x95, 0x78, 0x14, 0x32, 0x12, 0x02, 0x43,
+]);
 
 /**
  * Derive the device-specific key and IV from the 6-byte MAC salt.
@@ -32,15 +32,16 @@ export function deriveKeyIv(
   const key = Buffer.from(baseKey);
   const iv = Buffer.from(baseIv);
   for (let i = 0; i < 6; i++) {
-    key[i] = (baseKey[i] + salt[i]) % 0xff;
-    iv[i] = (baseIv[i] + salt[i]) % 0xff;
+    // i < 6 <= length of every operand (key/iv are 16, salt is checked 6 above).
+    key[i] = (baseKey[i]! + salt[i]!) % 0xff;
+    iv[i] = (baseIv[i]! + salt[i]!) % 0xff;
   }
   return { key, iv };
 }
 
 /** Convert a MAC string ("54:6C:50:89:C8:D3") to the reversed-byte salt. */
 export function macToSalt(mac: string): Uint8Array {
-  const bytes = mac.split(/[:\-\s]+/).map((h) => parseInt(h, 16));
+  const bytes = mac.split(/[:\-\s]+/).map((h) => Number.parseInt(h, 16));
   if (bytes.length !== 6 || bytes.some((b) => Number.isNaN(b))) {
     throw new Error(`invalid MAC: ${mac}`);
   }
