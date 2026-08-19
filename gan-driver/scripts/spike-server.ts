@@ -43,41 +43,70 @@ function setupAlgFor(facelets: string): string {
   return solution.trim().split(/\s+/).reverse().map(invert).join(' ');
 }
 
-// --- driver lifecycle: scan for MAC, connect, auto-recover ------------------
-let lastFacelets = '';
-async function runDriver(): Promise<void> {
-  broadcast({ type: 'status', status: 'connecting' });
-  let dev: Awaited<ReturnType<typeof scanForCube>>[number] | undefined;
-  while (!dev) {
-    const devices = await scanForCube(SCAN_ADV, 10);
-    dev = devices.find((d) => /gan/i.test(d.name) && d.manufacturerData);
-    if (!dev)
-      broadcast({ type: 'status', status: 'connecting', detail: 'twist the cube to wake it' });
-  }
-  const mac = extractMacFromManufacturerData(dev.manufacturerData!);
-  if (!mac) throw new Error('could not recover MAC');
-  const device = dev.name;
+// --- driver lifecycle ------------------------------------------------------
+// Scan ONCE to recover the MAC (needed for decryption); after that, blew
+// connects by device-id on its own — re-scanning was the failure point, so on
+// any drop we just spin up a fresh transport, never re-scan.
+let cachedFacelets = '';
+let cachedAlg = '';
+let device: { mac: string; id: string; name: string } | null = null;
 
-  const cube = new GanCube({ mac, transport: new BlewTransport(dev.id) });
+async function ensureDevice(): Promise<{ mac: string; id: string; name: string }> {
+  if (device) return device;
+  // Spike shortcut: if the cube's MAC + CoreBluetooth id are provided, skip
+  // scan-adv and let blew connect by id (its own scan is more persistent than
+  // our short windows). Both are stable per-Mac and safe to pass in dev.
+  if (process.env.GAN_MAC && process.env.GAN_ID) {
+    device = {
+      mac: process.env.GAN_MAC,
+      id: process.env.GAN_ID,
+      name: process.env.GAN_NAME ?? 'GAN cube',
+    };
+    return device;
+  }
+  broadcast({ type: 'status', status: 'connecting', detail: 'twist the cube to wake it' });
+  for (;;) {
+    const found = (await scanForCube(SCAN_ADV, 8)).find(
+      (d) => /gan/i.test(d.name) && d.manufacturerData,
+    );
+    const mac = found?.manufacturerData && extractMacFromManufacturerData(found.manufacturerData);
+    if (found && mac) {
+      device = { mac, id: found.id, name: found.name };
+      return device;
+    }
+  }
+}
+
+function startTransport(dev: { mac: string; id: string; name: string }): void {
+  const cube = new GanCube({ mac: dev.mac, transport: new BlewTransport(dev.id) });
   cube.on('error', (e: Error) => console.error('driver error:', e.message));
   cube.on('live', () => broadcast({ type: 'status', status: 'live' }));
   cube.on('reconnecting', () => broadcast({ type: 'status', status: 'reconnecting' }));
   cube.onFacelets((f) => {
-    if (f.facelets === lastFacelets) return; // only push on real change
-    lastFacelets = f.facelets;
+    if (f.facelets !== cachedFacelets) {
+      cachedFacelets = f.facelets;
+      cachedAlg = setupAlgFor(f.facelets); // recompute the alg only when the state changes
+    }
+    // Push on EVERY facelets (~1 Hz while connected) so the page's timestamp
+    // keeps advancing — that is how the page proves the feed is live vs. stale.
     broadcast({
       type: 'state',
-      device,
+      device: dev.name,
       facelets: f.facelets,
-      setupAlg: setupAlgFor(f.facelets),
+      setupAlg: cachedAlg,
       capturedAt: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
     });
   });
   cube.on('giveup', () => {
-    broadcast({ type: 'status', status: 'giveup', detail: 'cube unreachable — retrying in 5s' });
-    setTimeout(() => void runDriver(), 5000); // auto-reconnector
+    // Keep trying — no slow re-scan, just a fresh transport by the known id.
+    broadcast({ type: 'status', status: 'reconnecting', detail: 'retrying' });
+    setTimeout(() => startTransport(dev), 1500);
   });
   cube.connect();
+}
+
+async function runDriver(): Promise<void> {
+  startTransport(await ensureDevice());
 }
 
 // --- http + SSE -------------------------------------------------------------
@@ -97,7 +126,8 @@ const server = createServer((req, res) => {
     return;
   }
   if (url === '/retry' && req.method === 'POST') {
-    lastFacelets = '';
+    cachedFacelets = '';
+    device = null; // force a fresh scan in case the device id changed
     void runDriver();
     res.writeHead(204).end();
     return;
