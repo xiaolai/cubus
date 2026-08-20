@@ -24,6 +24,15 @@ export { type Classification, classify } from './classify.js';
 export { assemble, LOW_CONFIDENCE_THRESHOLD } from './assemble.js';
 
 export {
+  CORNER_ANCHORS,
+  CORNER_SHOTS,
+  type CornerScanOptions,
+  CornerScanSession,
+  type CornerShotResult,
+  assignCornerShot,
+} from './corner-scan.js';
+
+export {
   defaultRegion,
   type RegionFn,
   sampleFace,
