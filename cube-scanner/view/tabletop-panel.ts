@@ -1,24 +1,22 @@
-// <tabletop-scanner-panel> — fixed-grid cube scan (robust, à la Szostak21/Cube_Solver).
+// <tabletop-scanner-panel> — fixed-grid, GUIDED-order cube scan (robust, à la qbr /
+// Szostak21/Cube_Solver).
 //
-// NO auto-detection and NO OpenCV. A fixed 3x3 grid is drawn on the video; you align a cube
-// face to fill it and it samples the nine cells at those KNOWN positions. This removes every
-// fragility of finding-the-cube (background squares, the logo, size/angle sluggishness) —
-// the scanner never searches, so the desk/skin can't be mistaken for the cube. Each face is
-// identified by its center colour (HSV), auto-captured once the frame holds still (or with
-// the Capture button); after six faces it solves the per-face rotations into a solvable cube
-// (orient.ts), disambiguating red↔orange by solvability. Browser shell; the solver is tested.
+// NO auto-detection, NO OpenCV, and NO colour-identification — the three things that kept
+// failing. A fixed 3x3 grid is drawn on the video; the app asks for one colour at a time
+// ("show the white face", then green, …) and samples the nine cells at KNOWN positions when
+// the frame holds still. Because the order tells us which face is which, we never have to
+// identify a colour — and each face you show becomes that colour's CALIBRATED reference
+// under your light. Show each face any way up; after six, orient.ts solves the per-face
+// rotations into a solvable cube (balanced HSV classification + red/orange disambiguation).
+// Browser shell; the solver/classifier underneath is unit-tested.
 
 import { type CameraDevice, listCameras, openCamera } from '../src/camera.js';
-import { hsvDistance } from '../src/color.js';
-import { CORNER_ANCHORS } from '../src/corner-scan.js';
 import { type StickerCell, patchColor, ringColor } from '../src/grid-detect.js';
 import { type OrientationResult, solveOrientations } from '../src/orient.js';
 import { SteadyDetector } from '../src/stability.js';
 import { FACES, type Face, type Frame, type RGB, type ScanResult } from '../src/types.js';
 
 const TICK_MS = 100;
-const IDENTIFY_TOL = 1.0; // max HSV center↔anchor distance to accept a face
-const IDENTIFY_MARGIN = 0.82; // nearest must be this fraction of the runner-up (unambiguous)
 const GRID_FRAC = 0.56; // grid side as a fraction of the frame's short side
 const NAME: Record<Face, { name: string; sw: string }> = {
   U: { name: 'white', sw: '#f6f7f8' },
@@ -28,6 +26,17 @@ const NAME: Record<Face, { name: string; sw: string }> = {
   L: { name: 'orange', sw: '#ff6a00' },
   B: { name: 'blue', sw: '#0057c8' },
 };
+// Guided capture order: we ask for each colour in turn, so we never have to IDENTIFY a
+// colour (the step that kept failing). The face you show becomes that colour's calibrated
+// reference under your light. Show each face any way up — orient.ts finds the rotations.
+const ORDER: Face[] = ['U', 'F', 'R', 'B', 'L', 'D'];
+
+/** A plausible cube sticker is vivid (saturated) or bright — not a dark/empty grid. */
+function plausibleCenter([r, g, b]: RGB): boolean {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return max >= 60 && ((max - min) / (max || 1) >= 0.25 || max >= 150);
+}
 
 const TEMPLATE = `
 <style>
@@ -60,7 +69,7 @@ const TEMPLATE = `
 <div class="stage">
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
-  <div class="hint">Fill the grid with one cube face, then hold still</div>
+  <div class="hint">Show the colour I ask for — fill the grid, hold still</div>
 </div>
 <div class="row2">
   <div class="status" id="status">Press <b>Start camera</b>, then fill the grid with a cube face.</div>
@@ -88,13 +97,11 @@ export class TabletopScannerPanel extends HTMLElement {
   private steady = new SteadyDetector({ framesNeeded: 2 });
   private startGen = 0;
   private deviceId: string | undefined;
-  private pendingFace: Face | null = null;
+  private step = 0; // index into ORDER — which colour we're asking for
   private pendingCount = 0;
   private lastColors: RGB[] | null = null;
-  private lastFace: Face | null = null;
   private frameNo = 0;
   private lastHud = 0;
-  private lastStuck = 0;
   private hudLine = '';
   private readonly debugLog: string[] = [];
 
@@ -188,14 +195,14 @@ export class TabletopScannerPanel extends HTMLElement {
       this.applyCameraControls();
       void this.refreshCameras();
       this.captured.clear();
-      this.pendingFace = null;
+      this.step = 0;
       this.pendingCount = 0;
       this.frameNo = 0;
       this.debugLog.length = 0;
       this.hudLine = '';
       this.el('dbg').textContent = '';
       this.steady.reset();
-      this.log('start — fill the grid with each face');
+      this.log('start — show each colour when asked');
       this.buildDots();
       this.btn('start').hidden = true;
       this.btn('start').disabled = false;
@@ -245,24 +252,6 @@ export class TabletopScannerPanel extends HTMLElement {
     return cells;
   }
 
-  /** Identify a face by center color (HSV) — only if unambiguous, else null. */
-  private identify(center: RGB): Face | null {
-    let best: Face | null = null;
-    let d1 = Number.POSITIVE_INFINITY;
-    let d2 = Number.POSITIVE_INFINITY;
-    for (const f of FACES) {
-      const d = hsvDistance(center, CORNER_ANCHORS[f]);
-      if (d < d1) {
-        d2 = d1;
-        d1 = d;
-        best = f;
-      } else if (d < d2) {
-        d2 = d;
-      }
-    }
-    return d1 <= IDENTIFY_TOL && d1 <= IDENTIFY_MARGIN * d2 ? best : null;
-  }
-
   private onTick(): void {
     if (!this.source) return;
     let full: Frame;
@@ -278,61 +267,57 @@ export class TabletopScannerPanel extends HTMLElement {
     );
     this.lastColors = colors;
     const center = colors[4]!;
-    const face = this.identify(center);
-    this.lastFace = face;
     const steady = this.steady.push(full);
-    this.drawGrid(full, cells, face);
+    const expected = this.step < ORDER.length ? ORDER[this.step]! : null;
+    const ok = plausibleCenter(center);
+    this.drawGrid(full, cells, !!expected && ok);
     this.showRead(colors);
-    this.renderHud(face, center, steady);
+    this.renderHud(expected, center, steady);
+    if (!expected) return; // all six captured (a solve is in flight)
 
-    if (!face) {
-      this.pendingFace = null;
+    const g = NAME[expected];
+    if (!ok) {
       this.pendingCount = 0;
-      this.logStuck(center);
-      this.setStatus('Fill the grid with a cube face — center color unclear');
+      this.setStatus('Fill the grid with the ', this.swatch(g.sw), ` ${g.name} face`);
       return;
     }
-    if (face === this.pendingFace) this.pendingCount++;
-    else {
-      this.pendingFace = face;
-      this.pendingCount = 1;
-    }
-    if (this.captured.has(face)) {
-      this.setStatus(
-        'Have the ',
-        this.swatch(NAME[face].sw),
-        ` ${NAME[face].name} face ✓ — show another`,
-      );
-      return;
-    }
+    this.pendingCount++;
     if (!steady || this.pendingCount < 2) {
-      this.setStatus(
-        'Reading the ',
-        this.swatch(NAME[face].sw),
-        ` ${NAME[face].name} face — hold still…`,
-      );
+      this.setStatus('Hold the ', this.swatch(g.sw), ` ${g.name} face still…`);
       return;
     }
-    this.captureFace(face, colors);
+    this.captureStep(expected, colors);
   }
 
-  private captureFace(face: Face, colors: RGB[]): void {
+  /** Store the current face for the requested colour and advance the guided sequence. */
+  private captureStep(face: Face, colors: RGB[]): void {
     this.captured.set(face, colors);
+    this.step++;
+    this.pendingCount = 0;
+    this.steady.reset();
     this.log(
-      `cap ${face}(${NAME[face].name}) center=${colors[4]!.map(Math.round).join(',')} n=${this.captured.size}`,
+      `cap ${face}(${NAME[face].name}) center=${colors[4]!.map(Math.round).join(',')} step=${this.step}`,
     );
     this.buildDots();
-    if (this.captured.size === 6) this.trySolve();
-    else
-      this.setStatus(
-        this.tinted('ok', `${NAME[face].name} ✓  ${this.captured.size}/6 — show another face`),
-      );
+    if (this.captured.size === 6) {
+      this.trySolve();
+      return;
+    }
+    const next = NAME[ORDER[this.step]!];
+    this.setStatus(
+      this.tinted('ok', `${NAME[face].name} ✓`),
+      ' — now show the ',
+      this.swatch(next.sw),
+      ` ${next.name} face`,
+    );
   }
 
-  /** Manual capture: grab whatever face is aligned right now (overwrites if already have it). */
+  /** Manual capture: grab the face aligned right now for the requested colour. */
   private captureNow(): void {
-    if (this.lastFace && this.lastColors) this.captureFace(this.lastFace, this.lastColors);
-    else this.setStatus('No cube face in the grid yet — fill the grid first.');
+    const expected = this.step < ORDER.length ? ORDER[this.step]! : null;
+    if (expected && this.lastColors && plausibleCenter(this.lastColors[4]!))
+      this.captureStep(expected, this.lastColors);
+    else this.setStatus('Fill the grid with the requested face first.');
   }
 
   private trySolve(): void {
@@ -356,26 +341,23 @@ export class TabletopScannerPanel extends HTMLElement {
     } else {
       this.btn('retry').hidden = false;
       this.setStatus(
-        this.tinted('err', '⚠ Colors don’t form a solvable cube.'),
-        ' Re-capture any face by filling the grid, or press Retry.',
+        this.tinted('err', '⚠ Colors don’t form a solvable cube — a color was misread.'),
+        ' Press Retry to rescan (whiter light helps red/orange).',
       );
-      // Allow re-capturing already-scanned faces to fix a misread.
-      this.captured.clear();
-      for (const [f, c] of Object.entries(faces)) this.captured.set(f as Face, c);
     }
   }
 
   private retry(): void {
     this.captured.clear();
-    this.pendingFace = null;
+    this.step = 0;
     this.pendingCount = 0;
     this.btn('retry').hidden = true;
     this.buildDots();
     this.log('retry — cleared all faces');
-    this.setStatus('Restarted — fill the grid with each face.');
+    this.setStatus('Restarted — show each colour when asked.');
   }
 
-  private drawGrid(frame: Frame, cells: readonly StickerCell[], face: Face | null): void {
+  private drawGrid(frame: Frame, cells: readonly StickerCell[], face: boolean): void {
     const ctx = this.octx;
     if (!ctx) return;
     const c = this.el<HTMLCanvasElement>('ov');
@@ -422,25 +404,13 @@ export class TabletopScannerPanel extends HTMLElement {
     }
   }
 
-  private renderHud(face: Face | null, center: RGB, steady: boolean): void {
+  private renderHud(want: Face | null, center: RGB, steady: boolean): void {
     const now = performance.now();
     if (now - this.lastHud < 200) return;
     this.lastHud = now;
     const have = [...this.captured.keys()].join('') || '-';
-    this.hudLine = `f${this.frameNo} face=${face ?? '-'} center=${center.map(Math.round).join(',')} steady=${steady} have=${have}`;
+    this.hudLine = `f${this.frameNo} want=${want ?? '-'} center=${center.map(Math.round).join(',')} steady=${steady} have=${have}`;
     this.refreshDbg();
-  }
-
-  private logStuck(center: RGB): void {
-    const now = performance.now();
-    if (now - this.lastStuck < 1000) return;
-    this.lastStuck = now;
-    const ds = FACES.map((f) => ({ f, d: hsvDistance(center, CORNER_ANCHORS[f]) })).sort(
-      (a, b) => a.d - b.d,
-    );
-    this.log(
-      `unclear center=${center.map(Math.round).join(',')} near=${ds[0]!.f}(${ds[0]!.d.toFixed(2)}) ${ds[1]!.f}(${ds[1]!.d.toFixed(2)})`,
-    );
   }
 
   private async copyDebug(): Promise<void> {
