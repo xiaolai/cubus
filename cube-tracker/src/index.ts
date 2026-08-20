@@ -64,10 +64,16 @@ export {
 
 // Orchestrator + live loop
 export { type CameraObservation, CubeTracker } from './tracker.js';
-export { LiveTracker, type LiveTrackerOptions } from './live.js';
+export { type FrameDebug, LiveTracker, type LiveTrackerOptions } from './live.js';
 
 // Perception (pure parts)
 export { CANONICAL_CENTERS, classifySoft, ciede2000, type RGB } from './perception/color.js';
+export {
+  type CenterPalette,
+  nearestLabel,
+  rollingPalette,
+  staticPalette,
+} from './perception/palette.js';
 export {
   type Frame,
   frameDiff,
@@ -93,7 +99,7 @@ export {
 } from './perception/localize.js';
 
 // Camera (impure shell)
-export { type CameraHandle, openCamera } from './camera.js';
+export { type CameraDevice, type CameraHandle, listCameras, openCamera } from './camera.js';
 
 // Harness
 export { eventsMatch, scoreSession, type SessionMetrics, toQuarterTurns } from './harness.js';

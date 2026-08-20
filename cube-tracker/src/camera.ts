@@ -12,9 +12,31 @@ export interface CameraHandle {
   stop(): void;
 }
 
-export async function openCamera(video: HTMLVideoElement): Promise<CameraHandle> {
+/** One selectable camera. */
+export interface CameraDevice {
+  deviceId: string;
+  label: string;
+}
+
+/**
+ * List available video-input devices. Labels populate only after camera permission has
+ * been granted, so call this after a first `openCamera` for a labelled list (e.g. a
+ * machine with two webcams).
+ */
+export async function listCameras(): Promise<CameraDevice[]> {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices
+    .filter((d) => d.kind === 'videoinput')
+    .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
+}
+
+/** Open a camera. `deviceId` selects a specific one (default: the rear/environment camera). */
+export async function openCamera(
+  video: HTMLVideoElement,
+  deviceId?: string,
+): Promise<CameraHandle> {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: 'environment' },
+    video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' },
     audio: false,
   });
   video.srcObject = stream;

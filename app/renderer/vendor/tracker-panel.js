@@ -1,7 +1,11 @@
 // src/camera.ts
-async function openCamera(video) {
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((d) => d.kind === "videoinput").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
+}
+async function openCamera(video, deviceId) {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment" },
+    video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" },
     audio: false
   });
   video.srcObject = stream;
@@ -861,6 +865,7 @@ var LiveTracker = class {
   tracker;
   gate;
   prevLuma = null;
+  frameDebug = null;
   /** Seed with an acquired start state (from acquisition) — a fresh session. */
   seed(state) {
     this.tracker.seed(state);
@@ -869,12 +874,28 @@ var LiveTracker = class {
   }
   /** Drive one camera frame through localize → ROI motion-gate → track. */
   pushFrame(frame, t) {
-    const { cells, alignedGeometry, roi } = this.localizer.detect(frame);
+    const { cells, alignedGeometry, roi, centers } = this.localizer.detect(frame);
     const cur = toLuma(frame);
     const diff = this.prevLuma ? lumaDiff(this.prevLuma, cur, roi) : Number.POSITIVE_INFINITY;
     const stable = this.gate.push(diff);
     this.prevLuma = cur;
-    return this.tracker.update({ cells, stable, alignedGeometry, t });
+    const u = this.tracker.update({ cells, stable, alignedGeometry, t });
+    this.frameDebug = {
+      facesDetected: centers?.length ?? Math.floor(cells.length / 9),
+      cellsSeen: cells.length,
+      diff,
+      stable,
+      alignedGeometry,
+      roi,
+      centers: centers ?? [],
+      status: this.tracker.status(),
+      lastUpdate: u.kind
+    };
+    return u;
+  }
+  /** The last frame's inspection data (for a debug overlay / logs). */
+  lastDebug() {
+    return this.frameDebug;
   }
   state() {
     return this.tracker.state();
@@ -4388,6 +4409,42 @@ var CANONICAL_CENTERS = {
   B: [0, 80, 200]
 };
 
+// src/perception/palette.ts
+function clone(c2) {
+  return { U: [...c2.U], R: [...c2.R], F: [...c2.F], D: [...c2.D], L: [...c2.L], B: [...c2.B] };
+}
+function staticPalette(centers = CANONICAL_CENTERS) {
+  const c2 = clone(centers);
+  return { get: () => c2 };
+}
+function nearestLabel(rgb2, centers) {
+  let best = "U";
+  let bestD = Number.POSITIVE_INFINITY;
+  for (const f3 of FACES) {
+    const d = ciede2000(rgb2, centers[f3]);
+    if (d < bestD) {
+      bestD = d;
+      best = f3;
+    }
+  }
+  return best;
+}
+function rollingPalette(alpha = 0.1) {
+  const p4 = clone(CANONICAL_CENTERS);
+  return {
+    get: () => p4,
+    observe(rgb2) {
+      const f3 = nearestLabel(rgb2, p4);
+      const cur = p4[f3];
+      p4[f3] = [
+        cur[0] + alpha * (rgb2[0] - cur[0]),
+        cur[1] + alpha * (rgb2[1] - cur[1]),
+        cur[2] + alpha * (rgb2[2] - cur[2])
+      ];
+    }
+  };
+}
+
 // src/perception/localize.ts
 function computeHomography(quad) {
   const [p0, p1, p22, p32] = quad;
@@ -4470,12 +4527,13 @@ function sampleQuad(frame, quad) {
 function classifyCells(cells, centers = CANONICAL_CENTERS) {
   return cells.map((rgb2) => rgb2 === null ? unknownSoft() : classifySoft(rgb2, centers));
 }
-function createLocalizer(detector = nullDetector(), centersOf = () => CANONICAL_CENTERS) {
+function createLocalizer(detector = nullDetector(), palette = staticPalette()) {
   return {
     detect(frame) {
       const { faces, alignedGeometry } = detector.detect(frame);
-      const centers = centersOf();
+      const centers = palette.get();
       const cells = [];
+      const detectedCenters = [];
       let minX = Number.POSITIVE_INFINITY;
       let minY = Number.POSITIVE_INFINITY;
       let maxX = Number.NEGATIVE_INFINITY;
@@ -4483,6 +4541,11 @@ function createLocalizer(detector = nullDetector(), centersOf = () => CANONICAL_
       for (const face of faces) {
         const sampled = sampleQuad(frame, face.quad);
         if (sampled.every((s) => s === null)) continue;
+        const centerRgb = sampled[4];
+        if (centerRgb) {
+          palette.observe?.(centerRgb);
+          detectedCenters.push({ slot: face.slot, rgb: centerRgb });
+        }
         const soft = classifyCells(sampled, centers);
         const idx = faceIndices(face.slot);
         soft.forEach((s, k4) => cells.push({ slot: idx[k4], soft: s }));
@@ -4493,7 +4556,7 @@ function createLocalizer(detector = nullDetector(), centersOf = () => CANONICAL_
           maxY = Math.max(maxY, p4.y);
         }
       }
-      if (cells.length === 0) return { cells, alignedGeometry };
+      if (cells.length === 0) return { cells, alignedGeometry, centers: detectedCenters };
       const x = Math.max(0, minX);
       const y = Math.max(0, minY);
       const roi = {
@@ -4502,7 +4565,7 @@ function createLocalizer(detector = nullDetector(), centersOf = () => CANONICAL_
         w: Math.max(0, Math.min(frame.width, maxX) - x),
         h: Math.max(0, Math.min(frame.height, maxY) - y)
       };
-      return { cells, alignedGeometry, roi };
+      return { cells, alignedGeometry, roi, centers: detectedCenters };
     }
   };
 }
@@ -4640,23 +4703,58 @@ function opencvDetector(cv, opts = DEFAULT_OPENCV) {
 }
 
 // view/tracker-panel.ts
+var FACES2 = ["U", "R", "F", "D", "L", "B"];
+var css = (r, g, b) => `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
 var TrackerPanel = class extends HTMLElement {
   video = document.createElement("video");
+  picker = document.createElement("select");
   statusEl = document.createElement("div");
+  paletteEl = document.createElement("div");
+  debugEl = document.createElement("pre");
   cam = null;
   live = null;
   running = false;
+  palette = rollingPalette();
+  deviceId;
+  lastLog = 0;
   // The injected OpenCV.js module (set by the app once its WASM runtime is ready).
   cv = null;
   connectedCallback() {
     this.style.display = "block";
+    this.picker.style.cssText = "margin-bottom:8px;width:100%;padding:6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px";
+    this.picker.onchange = () => this.changeCamera(this.picker.value);
     this.video.setAttribute("playsinline", "true");
     this.video.muted = true;
-    this.video.style.width = "100%";
-    this.video.style.borderRadius = "8px";
+    this.video.style.cssText = "width:100%;border-radius:8px";
     this.statusEl.style.cssText = "color:#8b949e;font-size:12px;margin-top:8px";
     this.statusEl.textContent = "idle";
-    this.append(this.video, this.statusEl);
+    this.paletteEl.style.cssText = "display:flex;gap:4px;margin-top:8px;align-items:center";
+    this.debugEl.style.cssText = "margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;word-break:break-all";
+    this.append(this.picker, this.video, this.statusEl, this.paletteEl, this.debugEl);
+    void this.refreshCameras();
+  }
+  async refreshCameras() {
+    let cams = [];
+    try {
+      cams = await listCameras();
+    } catch {
+    }
+    this.picker.textContent = "";
+    for (const c2 of cams) {
+      const o = document.createElement("option");
+      o.value = c2.deviceId;
+      o.textContent = c2.label;
+      if (c2.deviceId === this.deviceId) o.selected = true;
+      this.picker.append(o);
+    }
+    this.picker.style.display = cams.length > 1 ? "block" : "none";
+  }
+  async changeCamera(deviceId) {
+    this.deviceId = deviceId || void 0;
+    if (this.running) {
+      this.cam?.stop();
+      this.cam = await openCamera(this.video, this.deviceId);
+    }
   }
   /** Seed from a known facelet state (from a scan or the smart cube) and start tracking. */
   async start(facelets) {
@@ -4669,9 +4767,10 @@ var TrackerPanel = class extends HTMLElement {
       this.statusEl.textContent = "OpenCV not ready";
       return;
     }
-    this.live = new LiveTracker(createLocalizer(opencvDetector(this.cv)));
+    this.live = new LiveTracker(createLocalizer(opencvDetector(this.cv), this.palette));
     this.live.seed(state);
-    this.cam = await openCamera(this.video);
+    this.cam = await openCamera(this.video, this.deviceId);
+    await this.refreshCameras();
     this.running = true;
     this.tick();
   }
@@ -4688,12 +4787,34 @@ var TrackerPanel = class extends HTMLElement {
           );
         }
       }
-      this.statusEl.textContent = `tracking: ${this.live.status()}`;
+      this.renderDebug(this.live.lastDebug());
     }
     const v = this.video;
     if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(this.tick);
     else requestAnimationFrame(this.tick);
   };
+  renderDebug(d) {
+    const p4 = this.palette.get();
+    this.paletteEl.textContent = "palette:";
+    for (const f3 of FACES2) {
+      const sw = document.createElement("span");
+      const [r, g, b] = p4[f3];
+      sw.title = `${f3} ${css(r, g, b)}`;
+      sw.style.cssText = `width:16px;height:16px;border-radius:3px;border:1px solid rgba(0,0,0,.4);background:${css(r, g, b)}`;
+      this.paletteEl.append(sw);
+    }
+    if (!d) return;
+    const centers = d.centers.map((c2) => `${c2.slot}=${css(c2.rgb[0], c2.rgb[1], c2.rgb[2])}`).join(" ");
+    const line = `status=${d.status} last=${d.lastUpdate} faces=${d.facesDetected} cells=${d.cellsSeen} diff=${Number.isFinite(d.diff) ? d.diff.toFixed(1) : "\u221E"} stable=${d.stable} aligned=${d.alignedGeometry}
+centers: ${centers || "(none \u2014 detector found no cube)"}`;
+    this.statusEl.textContent = `tracking: ${d.status}`;
+    this.debugEl.textContent = line;
+    const now = performance.now();
+    if (now - this.lastLog > 500) {
+      this.lastLog = now;
+      console.log("[tracker]", line.replace("\n", " | "));
+    }
+  }
   stop() {
     this.running = false;
     this.cam?.stop();

@@ -5,8 +5,16 @@
 // offline with an injected localizer; only the real camera + detector are hardware-bound.
 
 import type { CubeState, Face } from './cube.js';
+import type { RGB } from './perception/color.js';
 import type { Localizer } from './perception/localize.js';
-import { type Frame, type LumaGrid, StabilityGate, lumaDiff, toLuma } from './perception/motion.js';
+import {
+  type Frame,
+  type LumaGrid,
+  type Rect,
+  StabilityGate,
+  lumaDiff,
+  toLuma,
+} from './perception/motion.js';
 import type { RecoveryOptions } from './recovery.js';
 import { CubeTracker } from './tracker.js';
 import type { TrackStatus, TrackUpdate, TrackerConfig } from './types.js';
@@ -18,10 +26,24 @@ export interface LiveTrackerOptions {
   stabilityFrames?: number; // consecutive still frames before a stable read
 }
 
+/** Per-frame inspection data — what the detector saw and what the gate/tracker did. */
+export interface FrameDebug {
+  facesDetected: number;
+  cellsSeen: number;
+  diff: number; // motion diff (∞ = first frame / size mismatch)
+  stable: boolean;
+  alignedGeometry: boolean;
+  roi?: Rect;
+  centers: { slot: Face; rgb: RGB }[]; // raw center colors read this frame
+  status: TrackStatus;
+  lastUpdate: TrackUpdate['kind'];
+}
+
 export class LiveTracker {
   private readonly tracker: CubeTracker;
   private readonly gate: StabilityGate;
   private prevLuma: LumaGrid | null = null;
+  private frameDebug: FrameDebug | null = null;
 
   constructor(
     private readonly localizer: Localizer,
@@ -41,13 +63,30 @@ export class LiveTracker {
 
   /** Drive one camera frame through localize → ROI motion-gate → track. */
   pushFrame(frame: Frame, t: number): TrackUpdate {
-    const { cells, alignedGeometry, roi } = this.localizer.detect(frame); // localize first (§12/#17)
+    const { cells, alignedGeometry, roi, centers } = this.localizer.detect(frame); // localize first (§12/#17)
     const cur = toLuma(frame);
     // Motion measured within the cube ROI when known, else full-frame (re-entry search).
     const diff = this.prevLuma ? lumaDiff(this.prevLuma, cur, roi) : Number.POSITIVE_INFINITY;
     const stable = this.gate.push(diff);
     this.prevLuma = cur; // owned snapshot — never a reference to caller-mutable memory
-    return this.tracker.update({ cells, stable, alignedGeometry, t });
+    const u = this.tracker.update({ cells, stable, alignedGeometry, t });
+    this.frameDebug = {
+      facesDetected: centers?.length ?? Math.floor(cells.length / 9),
+      cellsSeen: cells.length,
+      diff,
+      stable,
+      alignedGeometry,
+      roi,
+      centers: centers ?? [],
+      status: this.tracker.status(),
+      lastUpdate: u.kind,
+    };
+    return u;
+  }
+
+  /** The last frame's inspection data (for a debug overlay / logs). */
+  lastDebug(): FrameDebug | null {
+    return this.frameDebug;
   }
 
   state(): CubeState | null {

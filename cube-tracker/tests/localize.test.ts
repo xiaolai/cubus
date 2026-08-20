@@ -153,18 +153,28 @@ describe('localizer composition', () => {
     faceIndices('F').forEach((idx, k) => expect(bySlot.get(idx)).toBe(PATTERN[k]));
   });
 
-  it('uses the supplied rolling-palette provider each frame', () => {
-    let calls = 0;
+  it('reads the palette each frame and feeds back the observed centers', () => {
+    let gets = 0;
+    let observes = 0;
     const detector: QuadDetector = {
       detect: () => ({ faces: [{ slot: 'F', quad: fullQuad(30) }], alignedGeometry: true }),
     };
-    const loc = createLocalizer(detector, () => {
-      calls++;
-      return CANONICAL_CENTERS;
-    });
+    const palette = {
+      get: () => {
+        gets++;
+        return CANONICAL_CENTERS;
+      },
+      observe: () => {
+        observes++;
+      },
+    };
+    const loc = createLocalizer(detector, palette);
     loc.detect(frameWithGrid(30, COLORS9));
     loc.detect(frameWithGrid(30, COLORS9));
-    expect(calls).toBe(2); // palette re-read per frame, not captured once
+    expect(gets).toBe(2); // palette re-read per frame, not captured once
+    expect(observes).toBe(2); // the center sticker is fed back each frame (rolling adaptation)
+    const res = loc.detect(frameWithGrid(30, COLORS9));
+    expect(res.centers?.[0]?.slot).toBe('F'); // raw center reported for debug
   });
 
   it('the null detector localizes nothing and yields no ROI', () => {

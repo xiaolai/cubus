@@ -23,6 +23,7 @@ export default defineConfig({
         'src/perception/motion.ts',
         'src/perception/localize.ts',
         'src/perception/geometry.ts',
+        'src/perception/palette.ts',
         'src/harness.ts',
       ],
       reporter: ['text', 'html'],
