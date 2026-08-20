@@ -134,11 +134,8 @@
         <h3>Track live <span class="scan">camera</span></h3>
         <tracker-panel id="trackPanel"></tracker-panel>
         <div class="pickFoot" style="margin-top: 14px">
-          <span class="muted">Seeds from the current state; commits are biased to false-negatives.</span>
-          <span style="display:flex;gap:8px">
-            <button id="trackStart">Start</button>
-            <button class="ghost" id="trackClose">Close</button>
-          </span>
+          <span class="muted">Follows an ordinary cube with the camera and mirrors it on screen.</span>
+          <button class="ghost" id="trackClose">Close</button>
         </div>
       </div>
     </div>
@@ -253,25 +250,30 @@
         if (cv && 'onRuntimeInitialized' in cv) { cv.onRuntimeInitialized = ()=>{ setCv(cv); }; return; }
         if (tries > 0) setTimeout(()=>awaitCv(tries-1), 200);
       })(40);
-      $('scanBtn').onclick=()=>{ scanModal.hidden=false; };
+      // When a scan finishes we normally just render it; but if the user reached the
+      // scanner FROM the live tracker (which needs a known start state), return to the
+      // tracker and seed it. resumeTrackAfterScan carries that intent across the modals.
+      let resumeTrackAfterScan=false;
+      function openTrack(){ trackModal.hidden=false;
+        if(lastFacelets) trackPanel.provideSeed(lastFacelets);
+        trackPanel.startCamera(); }
+      $('scanBtn').onclick=()=>{ resumeTrackAfterScan=false; scanModal.hidden=false; };
       $('scanClose').onclick=()=>{ scanModal.hidden=true; scanPanel.stop?.(); };
       scanPanel.addEventListener('scan-complete',(e)=>{ const f=e.detail.facelets;
-        renderState(f); scanModal.hidden=true;
-        lastEl.textContent='camera scan applied — renders the physical cube state'; });
+        renderState(f); scanModal.hidden=true; scanPanel.stop?.();
+        if(resumeTrackAfterScan){ resumeTrackAfterScan=false; openTrack(); }
+        else lastEl.textContent='camera scan applied — renders the physical cube state'; });
 
-      // Live camera tracker. The camera preview is DECOUPLED from tracking: opening the
-      // modal starts the camera immediately (this click is the user gesture getUserMedia
-      // needs), so you always get a live feed to inspect. Tracking then activates on its
-      // own once a start state (from a scan or the smart cube) AND OpenCV are both ready.
-      $('trackBtn').onclick=()=>{ trackModal.hidden=false;
-        if(lastFacelets) trackPanel.provideSeed(lastFacelets);
-        trackPanel.startCamera(); };
+      // Live camera tracker. Opening the modal starts the camera immediately (this click
+      // is the user gesture getUserMedia needs). Tracking activates on its own once a
+      // KNOWN start state (from a scan or the smart cube) AND OpenCV are both ready; until
+      // then the panel prompts to scan. The panel's Scan button asks us to run the scanner.
+      $('trackBtn').onclick=openTrack;
       $('trackClose').onclick=()=>{ trackModal.hidden=true; trackPanel.stop?.(); };
-      $('trackStart').onclick=()=>{
-        trackPanel.startCamera();
-        if(lastFacelets){ trackPanel.provideSeed(lastFacelets);
-          lastEl.textContent='camera live — tracking begins once OpenCV finishes loading'; }
-        else lastEl.textContent='camera live — connect the cube or scan a face to start tracking'; };
+      // Panel asked to scan: free the camera (one stream at a time), run the scanner, come back.
+      trackPanel.addEventListener('request-scan',()=>{
+        trackPanel.stop?.(); trackModal.hidden=true;
+        resumeTrackAfterScan=true; scanModal.hidden=false; });
       trackPanel.addEventListener('state-update',(e)=>{ renderState(e.detail.facelets); });
 
       if(!navigator.bluetooth) setConn('err','Web Bluetooth unavailable','This build needs a Chromium-based runtime.',null);

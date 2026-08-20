@@ -4706,11 +4706,16 @@ function opencvDetector(cv, opts = DEFAULT_OPENCV) {
 var FACES2 = ["U", "R", "F", "D", "L", "B"];
 var css = (r, g, b) => `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
 var TrackerPanel = class extends HTMLElement {
+  stage = document.createElement("div");
   video = document.createElement("video");
+  guide = document.createElement("div");
+  hint = document.createElement("div");
   picker = document.createElement("select");
-  startBtn = document.createElement("button");
-  stopBtn = document.createElement("button");
   statusEl = document.createElement("div");
+  scanBtn = document.createElement("button");
+  retryBtn = document.createElement("button");
+  debugToggle = document.createElement("button");
+  debugWrap = document.createElement("div");
   paletteEl = document.createElement("div");
   debugEl = document.createElement("pre");
   cam = null;
@@ -4719,6 +4724,7 @@ var TrackerPanel = class extends HTMLElement {
   seedFacelets = null;
   palette = rollingPalette();
   deviceId;
+  debugOn = false;
   lastLog = 0;
   loopGen = 0;
   _cv = null;
@@ -4726,43 +4732,62 @@ var TrackerPanel = class extends HTMLElement {
   set cv(m) {
     this._cv = m;
     this.tryStartTracking();
+    this.render();
   }
   get cv() {
     return this._cv;
   }
   connectedCallback() {
     this.style.display = "block";
-    this.picker.style.cssText = "margin-bottom:8px;width:100%;padding:6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px";
-    this.picker.onchange = () => void this.changeCamera(this.picker.value);
+    this.stage.style.cssText = "position:relative;width:100%;border-radius:10px;overflow:hidden;background:#000;aspect-ratio:4/3";
     this.video.setAttribute("playsinline", "true");
     this.video.muted = true;
     this.video.autoplay = true;
-    this.video.style.cssText = "width:100%;border-radius:8px;background:#000;min-height:200px";
-    this.startBtn.textContent = "Start camera";
-    this.startBtn.style.cssText = "margin-top:8px;padding:6px 14px;border:0;border-radius:7px;background:#58a6ff;color:#06122b;font-weight:600;cursor:pointer";
-    this.startBtn.onclick = () => void this.startCamera();
-    this.stopBtn.textContent = "Stop";
-    this.stopBtn.style.cssText = "margin:8px 0 0 8px;padding:6px 14px;border:1px solid #30363d;border-radius:7px;background:#21262d;color:#e6edf3;cursor:pointer";
-    this.stopBtn.onclick = () => this.stop();
-    this.statusEl.style.cssText = "color:#8b949e;font-size:12px;margin-top:8px";
-    this.statusEl.textContent = "idle \u2014 press Start camera";
+    this.video.style.cssText = "width:100%;height:100%;object-fit:cover;display:block";
+    this.guide.style.cssText = "position:absolute;inset:0;margin:auto;width:58%;aspect-ratio:1;border:3px dashed rgba(255,255,255,.75);border-radius:14px;pointer-events:none";
+    this.hint.textContent = "Hold your cube in the box \u2014 show 3 sides (top, right, front)";
+    this.hint.style.cssText = "position:absolute;left:0;right:0;bottom:8px;text-align:center;font-size:12px;color:#fff;text-shadow:0 1px 3px #000;pointer-events:none";
+    this.stage.append(this.video, this.guide, this.hint);
+    this.picker.style.cssText = "margin-top:8px;width:100%;padding:6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px";
+    this.picker.onchange = () => void this.changeCamera(this.picker.value);
+    this.picker.style.display = "none";
+    this.statusEl.style.cssText = "margin-top:10px;font-size:14px;font-weight:600;color:#e6edf3;min-height:20px";
+    this.scanBtn.textContent = "Scan your cube first";
+    this.scanBtn.style.cssText = "margin-top:8px;padding:8px 16px;border:0;border-radius:8px;background:#58a6ff;color:#06122b;font-weight:600;cursor:pointer";
+    this.scanBtn.onclick = () => this.dispatchEvent(new CustomEvent("request-scan"));
+    this.scanBtn.hidden = true;
+    this.retryBtn.textContent = "Start camera";
+    this.retryBtn.style.cssText = "margin-top:8px;padding:8px 16px;border:1px solid #30363d;border-radius:8px;background:#21262d;color:#e6edf3;cursor:pointer";
+    this.retryBtn.onclick = () => void this.startCamera();
+    this.retryBtn.hidden = true;
+    this.debugToggle.textContent = "Show debug";
+    this.debugToggle.style.cssText = "margin-top:12px;padding:0;border:0;background:none;color:#6e7681;font-size:11px;text-decoration:underline;cursor:pointer";
+    this.debugToggle.onclick = () => {
+      this.debugOn = !this.debugOn;
+      this.debugToggle.textContent = this.debugOn ? "Hide debug" : "Show debug";
+      this.debugWrap.hidden = !this.debugOn;
+    };
     this.paletteEl.style.cssText = "display:flex;gap:4px;margin-top:8px;align-items:center";
-    this.debugEl.style.cssText = "margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;word-break:break-all";
+    this.debugEl.style.cssText = "margin-top:6px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;word-break:break-all";
+    this.debugWrap.append(this.paletteEl, this.debugEl);
+    this.debugWrap.hidden = true;
     this.append(
+      this.stage,
       this.picker,
-      this.video,
-      this.startBtn,
-      this.stopBtn,
       this.statusEl,
-      this.paletteEl,
-      this.debugEl
+      this.scanBtn,
+      this.retryBtn,
+      this.debugToggle,
+      this.debugWrap
     );
+    this.render();
     void this.refreshCameras();
   }
   /** Provide the start state (from a scan or the smart cube); tracking begins once cv is ready too. */
   provideSeed(facelets) {
     this.seedFacelets = facelets || null;
     this.tryStartTracking();
+    this.render();
   }
   async refreshCameras() {
     let cams = [];
@@ -4778,7 +4803,7 @@ var TrackerPanel = class extends HTMLElement {
       if (c2.deviceId === this.deviceId) o.selected = true;
       this.picker.append(o);
     }
-    this.picker.style.display = cams.length > 1 ? "block" : "none";
+    this.picker.style.display = cams.length > 1 && this.cameraOn ? "block" : "none";
   }
   async changeCamera(deviceId) {
     if ((deviceId || void 0) === this.deviceId) return;
@@ -4796,13 +4821,14 @@ var TrackerPanel = class extends HTMLElement {
   /** Open the camera and show the live feed — independent of the seed / OpenCV. */
   async startCamera() {
     if (this.cameraOn && this.cam) return;
-    this.statusEl.textContent = "opening camera\u2026";
+    this.statusEl.textContent = "Opening camera\u2026";
     const gen = ++this.loopGen;
     let cam;
     try {
       cam = await openCamera(this.video, this.deviceId);
     } catch (e4) {
-      this.statusEl.textContent = `camera error: ${e4.message || e4}`;
+      this.statusEl.textContent = `Camera error: ${e4.message || e4}`;
+      this.retryBtn.hidden = false;
       return;
     }
     if (gen !== this.loopGen) {
@@ -4811,10 +4837,9 @@ var TrackerPanel = class extends HTMLElement {
     }
     this.cam = cam;
     this.cameraOn = true;
-    this.startBtn.hidden = true;
     void this.refreshCameras();
     this.tryStartTracking();
-    this.updateWaitingStatus();
+    this.render();
     this.tick(gen);
   }
   tryStartTracking() {
@@ -4827,12 +4852,34 @@ var TrackerPanel = class extends HTMLElement {
       }
     }
   }
-  updateWaitingStatus() {
-    if (this.live) return;
-    const missing = [];
-    if (!this.seedFacelets) missing.push("a start state (connect the cube or scan a face)");
-    if (!this._cv?.Mat) missing.push("OpenCV (loading\u2026)");
-    this.statusEl.textContent = `camera live \u2014 waiting for ${missing.join(" + ") || "tracking"}`;
+  /** Show/hide the contextual controls and set the plain-language status line. */
+  render() {
+    const cvReady = !!this._cv?.Mat;
+    const seeded = !!this.seedFacelets;
+    this.retryBtn.hidden = this.cameraOn;
+    this.scanBtn.hidden = !(this.cameraOn && cvReady && !seeded);
+    this.guide.style.display = this.cameraOn ? "block" : "none";
+    this.hint.style.display = this.cameraOn && this.live ? "block" : "none";
+    let text;
+    let tone = "#e6edf3";
+    if (!this.cameraOn) text = "Camera off";
+    else if (!cvReady) text = "Warming up the detector\u2026";
+    else if (!seeded) text = "To track your cube, its starting colors must be known.";
+    else {
+      const d = this.live?.lastDebug();
+      if (!d) text = "Point your cube at the box\u2026";
+      else if (d.status === "tracking") {
+        text = "Tracking your cube \u2713";
+        tone = "#3fb950";
+      } else if (d.facesDetected === 0)
+        text = "Searching \u2014 hold the cube in the box, showing 3 sides";
+      else if (d.status === "lost") {
+        text = "Lost the cube \u2014 show it to the camera again";
+        tone = "#d29922";
+      } else text = "Cube found \u2014 hold steady";
+    }
+    this.statusEl.textContent = text;
+    this.statusEl.style.color = tone;
   }
   tick = (gen) => {
     if (gen !== this.loopGen || !this.cameraOn || !this.cam) return;
@@ -4848,10 +4895,11 @@ var TrackerPanel = class extends HTMLElement {
             );
           }
         }
-        this.renderDebug(this.live.lastDebug());
+        this.render();
+        if (this.debugOn) this.renderDebug(this.live.lastDebug());
       } else {
         this.tryStartTracking();
-        this.updateWaitingStatus();
+        this.render();
       }
     }
     const next = () => this.tick(gen);
@@ -4873,7 +4921,6 @@ var TrackerPanel = class extends HTMLElement {
     const centers = d.centers.map((c2) => `${c2.slot}=${css(c2.rgb[0], c2.rgb[1], c2.rgb[2])}`).join(" ");
     const line = `status=${d.status} last=${d.lastUpdate} faces=${d.facesDetected} cells=${d.cellsSeen} diff=${Number.isFinite(d.diff) ? d.diff.toFixed(1) : "\u221E"} stable=${d.stable} aligned=${d.alignedGeometry}
 centers: ${centers || "(none \u2014 detector found no cube)"}`;
-    this.statusEl.textContent = `tracking: ${d.status}`;
     this.debugEl.textContent = line;
     const now = performance.now();
     if (now - this.lastLog > 500) {
@@ -4884,8 +4931,7 @@ centers: ${centers || "(none \u2014 detector found no cube)"}`;
   stop() {
     this.teardownCamera();
     this.live = null;
-    this.startBtn.hidden = false;
-    this.statusEl.textContent = "stopped";
+    this.render();
   }
 };
 if (!customElements.get("tracker-panel")) customElements.define("tracker-panel", TrackerPanel);
