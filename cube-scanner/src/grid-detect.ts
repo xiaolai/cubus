@@ -20,6 +20,20 @@ export interface StickerCell {
 }
 
 /**
+ * True when a color is plausibly a cube sticker: either VIVID (a saturated R/O/G/B/Y) or
+ * BRIGHT (a white sticker). A dull mid-tone (grey wall, beige, wood) is neither, so it's
+ * rejected. Note colour distance alone can't do this — white IS a grey, so a grey wall and
+ * a white sticker are indistinguishable by hue; saturation+brightness separates them.
+ */
+function looksLikeSticker([r, g, b]: RGB): boolean {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const sat = max > 0 ? (max - min) / max : 0;
+  const val = max / 255;
+  return sat >= 0.35 || val >= 0.8;
+}
+
+/**
  * Nearest-neighbour downscale so detection runs fast on a wide/high-res capture. Returns
  * the smaller frame and the scale factor (multiply detected coords by 1/scale to map back
  * to the full frame). A no-op when the frame is already within `targetW`.
@@ -157,10 +171,30 @@ export interface GridResult {
   grid: { colors: RGB[]; cells: StickerCell[] } | null;
 }
 
-/** Collect square sticker candidates from a binary mask (edges or threshold) into `out`. */
+/** Extract a sub-rectangle of a frame as a new Frame (for cropping/zooming to the cube). */
+export function cropFrame(frame: Frame, rx: number, ry: number, rw: number, rh: number): Frame {
+  const x = Math.max(0, Math.min(frame.width - 1, Math.round(rx)));
+  const y = Math.max(0, Math.min(frame.height - 1, Math.round(ry)));
+  const w = Math.max(1, Math.min(frame.width - x, Math.round(rw)));
+  const h = Math.max(1, Math.min(frame.height - y, Math.round(rh)));
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let j = 0; j < h; j++) {
+    const srow = ((y + j) * frame.width + x) * 4;
+    const drow = j * w * 4;
+    for (let k = 0; k < w * 4; k++) data[drow + k] = frame.data[srow + k]!;
+  }
+  return { data, width: w, height: h };
+}
+
+/**
+ * Collect square sticker candidates from a binary mask (edges or threshold) into `out`.
+ * A candidate is kept only if it is square-ish AND its center color is close to some cube
+ * color — so background rectangles (walls, wood, paper) that hold no cube color are dropped.
+ */
 function collectCandidates(
   cv: OpenCv,
   binary: OpenCv,
+  frame: Frame,
   minW: number,
   maxW: number,
   out: StickerCell[],
@@ -175,8 +209,11 @@ function collectCandidates(
       const { width: w, height: h } = rect;
       const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
       const solidity = w * h > 0 ? Math.abs(cv.contourArea(c)) / (w * h) : 0;
-      if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35)
-        out.push({ cx: rect.x + w / 2, cy: rect.y + h / 2, w });
+      if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35) {
+        const cx = rect.x + w / 2;
+        const cy = rect.y + h / 2;
+        if (looksLikeSticker(patchColor(frame, cx, cy, w * 0.2))) out.push({ cx, cy, w });
+      }
       c.delete();
     }
   } finally {
@@ -215,13 +252,13 @@ export function detectStickerGrid(cv: OpenCv, frame: Frame): GridResult {
     const hi = otsu >= 1 ? otsu : 150;
     cv.Canny(gray, edges, 0.5 * hi, hi);
     cv.dilate(edges, edges, kernel);
-    collectCandidates(cv, edges, minW, maxW, raw);
+    collectCandidates(cv, edges, frame, minW, maxW, raw);
     // Source 2 — adaptive threshold: each sticker is locally brighter than its dark gap
     // borders, so the cells segment even when the gaps are faint globally (even light) or
     // a face-on glossy sheen washes the surface out. This is the "only works at 45°" fix.
     const block = Math.max(3, Math.round(frame.width * 0.04) | 1); // odd, ~sticker-scale
     cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, block, 6);
-    collectCandidates(cv, thresh, minW, maxW, raw);
+    collectCandidates(cv, thresh, frame, minW, maxW, raw);
   } finally {
     for (const m of cleanup) m.delete();
   }

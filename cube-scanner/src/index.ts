@@ -37,6 +37,7 @@ export { type OrientationResult, rotateFace, solveOrientations } from './orient.
 export {
   type GridResult,
   type StickerCell,
+  cropFrame,
   dedupeCells,
   detectStickerGrid,
   downscaleFrame,

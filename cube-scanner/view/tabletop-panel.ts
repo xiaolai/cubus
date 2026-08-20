@@ -17,7 +17,12 @@ import { openCamera } from '../src/camera.js';
 import { rgbDistance } from '../src/color.js';
 import { CORNER_ANCHORS } from '../src/corner-scan.js';
 import type { OpenCv } from '../src/detect.js';
-import { type StickerCell, detectStickerGrid, downscaleFrame } from '../src/grid-detect.js';
+import {
+  type StickerCell,
+  cropFrame,
+  detectStickerGrid,
+  downscaleFrame,
+} from '../src/grid-detect.js';
 import { type OrientationResult, solveOrientations } from '../src/orient.js';
 import { SteadyDetector } from '../src/stability.js';
 import { FACES, type Face, type Frame, type RGB, type ScanResult } from '../src/types.js';
@@ -83,6 +88,8 @@ export class TabletopScannerPanel extends HTMLElement {
   private startGen = 0;
   private flashUntil = 0;
   private fixMode = false;
+  private roi: { x: number; y: number; w: number; h: number } | null = null;
+  private roiMiss = 0;
 
   constructor() {
     super();
@@ -137,6 +144,8 @@ export class TabletopScannerPanel extends HTMLElement {
       this.applyCameraControls();
       this.captured.clear();
       this.fixMode = false;
+      this.roi = null;
+      this.roiMiss = 0;
       this.steady.reset();
       this.buildDots();
       this.btn('start').hidden = true;
@@ -196,17 +205,28 @@ export class TabletopScannerPanel extends HTMLElement {
     } catch {
       return;
     }
-    // Detect on a scaled-down copy for speed, then map coords back onto the full frame.
-    const { frame: small, scale } = downscaleFrame(full, 960);
+    // Auto-zoom: once a face is found, detect INSIDE its region (cropped + upscaled) so the
+    // stickers are bigger and detection is easier — digital zoom, no camera motion. Search
+    // the whole frame again after a few misses.
+    const roi = this.roi;
+    const detSrc = roi ? cropFrame(full, roi.x, roi.y, roi.w, roi.h) : full;
+    const ox = roi ? roi.x : 0;
+    const oy = roi ? roi.y : 0;
+    const { frame: small, scale } = downscaleFrame(detSrc, 960);
     const { candidates, grid } = detectStickerGrid(this.cv, small);
     const back = (c: StickerCell): StickerCell => ({
-      cx: c.cx / scale,
-      cy: c.cy / scale,
+      cx: c.cx / scale + ox,
+      cy: c.cy / scale + oy,
       w: c.w / scale,
     });
-    this.drawOverlay(full, candidates.map(back), grid ? grid.cells.map(back) : []);
+    const cells = grid ? grid.cells.map(back) : [];
+    this.drawOverlay(full, candidates.map(back), cells);
     if (!grid) {
       this.showRead(null);
+      if (roi && ++this.roiMiss > 6) {
+        this.roi = null; // lost it — zoom back out and search the whole frame
+        this.roiMiss = 0;
+      }
       this.setStatus(
         candidates.length >= 4
           ? `Found ${candidates.length} squares — line up a full face`
@@ -214,6 +234,8 @@ export class TabletopScannerPanel extends HTMLElement {
       );
       return;
     }
+    this.roi = this.faceRoi(cells, full); // lock + zoom onto this face next frame
+    this.roiMiss = 0;
     const samples = grid.colors;
     this.showRead(samples);
     const face = this.identify(samples[4]!);
@@ -265,6 +287,33 @@ export class TabletopScannerPanel extends HTMLElement {
         this.tinted('err', "Colours don't form a solvable cube yet — re-show a face to fix it."),
       );
     }
+  }
+
+  /** Bounding box of a found face plus margin, clamped to the frame — the next zoom region. */
+  private faceRoi(
+    cells: readonly StickerCell[],
+    full: Frame,
+  ): { x: number; y: number; w: number; h: number } {
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const c of cells) {
+      minX = Math.min(minX, c.cx - c.w / 2);
+      minY = Math.min(minY, c.cy - c.w / 2);
+      maxX = Math.max(maxX, c.cx + c.w / 2);
+      maxY = Math.max(maxY, c.cy + c.w / 2);
+    }
+    const mx = (maxX - minX) * 0.4;
+    const my = (maxY - minY) * 0.4;
+    const x = Math.max(0, minX - mx);
+    const y = Math.max(0, minY - my);
+    return {
+      x,
+      y,
+      w: Math.min(full.width - x, maxX - minX + 2 * mx),
+      h: Math.min(full.height - y, maxY - minY + 2 * my),
+    };
   }
 
   private drawOverlay(

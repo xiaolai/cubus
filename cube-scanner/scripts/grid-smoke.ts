@@ -75,7 +75,26 @@ async function main(): Promise<void> {
   if (detectStickerGrid(cv, flat).grid !== null)
     throw new Error('FAIL: found a grid on a flat frame');
 
-  console.log('PASS: grid detector wiring OK (synthetic face found, flat frame rejected)');
+  // A structurally-perfect 3x3 grid of GRAY squares (no cube colours) must be rejected by
+  // the colour gate — this is the "too many non-cube squares" fix.
+  const grays: RGB[] = Array.from({ length: 9 }, (_, i) => {
+    const v = 90 + i * 12;
+    return [v, v, v];
+  });
+  const grayFace = makeFrame(240, 240, (x, y) => {
+    const gx = x - ORIGIN;
+    const gy = y - ORIGIN;
+    if (gx < 0 || gy < 0) return [15, 15, 15];
+    const col = Math.floor(gx / STEP);
+    const row = Math.floor(gy / STEP);
+    if (col > 2 || row > 2) return [15, 15, 15];
+    if (gx - col * STEP >= CELL || gy - row * STEP >= CELL) return [10, 10, 10];
+    return grays[row * 3 + col]!;
+  });
+  if (detectStickerGrid(cv, grayFace).grid !== null)
+    throw new Error('FAIL: accepted a grid of gray (non-cube) squares');
+
+  console.log('PASS: grid detector wiring OK (cube face found; flat + gray-grid rejected)');
 }
 
 main().catch((err) => {

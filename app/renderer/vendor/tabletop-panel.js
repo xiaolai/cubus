@@ -5724,6 +5724,13 @@ var CORNER_ANCHORS = {
 };
 
 // src/grid-detect.ts
+function looksLikeSticker([r, g, b]) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const sat = max > 0 ? (max - min) / max : 0;
+  const val = max / 255;
+  return sat >= 0.35 || val >= 0.8;
+}
 function downscaleFrame(frame, targetW) {
   if (frame.width <= targetW) return { frame, scale: 1 };
   const scale = targetW / frame.width;
@@ -5823,7 +5830,20 @@ function patchColor(frame, cx, cy, r) {
   const med = (a) => a.length ? a.sort((p4, q) => p4 - q)[a.length >> 1] : 0;
   return [med(rs), med(gs), med(bs)];
 }
-function collectCandidates(cv, binary, minW, maxW, out) {
+function cropFrame(frame, rx, ry, rw, rh) {
+  const x = Math.max(0, Math.min(frame.width - 1, Math.round(rx)));
+  const y = Math.max(0, Math.min(frame.height - 1, Math.round(ry)));
+  const w = Math.max(1, Math.min(frame.width - x, Math.round(rw)));
+  const h = Math.max(1, Math.min(frame.height - y, Math.round(rh)));
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let j = 0; j < h; j++) {
+    const srow = ((y + j) * frame.width + x) * 4;
+    const drow = j * w * 4;
+    for (let k4 = 0; k4 < w * 4; k4++) data[drow + k4] = frame.data[srow + k4];
+  }
+  return { data, width: w, height: h };
+}
+function collectCandidates(cv, binary, frame, minW, maxW, out) {
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
   try {
@@ -5834,8 +5854,11 @@ function collectCandidates(cv, binary, minW, maxW, out) {
       const { width: w, height: h } = rect;
       const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
       const solidity = w * h > 0 ? Math.abs(cv.contourArea(c2)) / (w * h) : 0;
-      if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35)
-        out.push({ cx: rect.x + w / 2, cy: rect.y + h / 2, w });
+      if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35) {
+        const cx = rect.x + w / 2;
+        const cy = rect.y + h / 2;
+        if (looksLikeSticker(patchColor(frame, cx, cy, w * 0.2))) out.push({ cx, cy, w });
+      }
       c2.delete();
     }
   } finally {
@@ -5862,10 +5885,10 @@ function detectStickerGrid(cv, frame) {
     const hi = otsu >= 1 ? otsu : 150;
     cv.Canny(gray, edges, 0.5 * hi, hi);
     cv.dilate(edges, edges, kernel);
-    collectCandidates(cv, edges, minW, maxW, raw);
+    collectCandidates(cv, edges, frame, minW, maxW, raw);
     const block = Math.max(3, Math.round(frame.width * 0.04) | 1);
     cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, block, 6);
-    collectCandidates(cv, thresh, minW, maxW, raw);
+    collectCandidates(cv, thresh, frame, minW, maxW, raw);
   } finally {
     for (const m of cleanup) m.delete();
   }
@@ -6051,6 +6074,8 @@ var TabletopScannerPanel = class extends HTMLElement {
   startGen = 0;
   flashUntil = 0;
   fixMode = false;
+  roi = null;
+  roiMiss = 0;
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
@@ -6097,6 +6122,8 @@ var TabletopScannerPanel = class extends HTMLElement {
       this.applyCameraControls();
       this.captured.clear();
       this.fixMode = false;
+      this.roi = null;
+      this.roiMiss = 0;
       this.steady.reset();
       this.buildDots();
       this.btn("start").hidden = true;
@@ -6154,21 +6181,32 @@ var TabletopScannerPanel = class extends HTMLElement {
     } catch {
       return;
     }
-    const { frame: small, scale } = downscaleFrame(full, 960);
+    const roi = this.roi;
+    const detSrc = roi ? cropFrame(full, roi.x, roi.y, roi.w, roi.h) : full;
+    const ox = roi ? roi.x : 0;
+    const oy = roi ? roi.y : 0;
+    const { frame: small, scale } = downscaleFrame(detSrc, 960);
     const { candidates, grid } = detectStickerGrid(this.cv, small);
     const back = (c2) => ({
-      cx: c2.cx / scale,
-      cy: c2.cy / scale,
+      cx: c2.cx / scale + ox,
+      cy: c2.cy / scale + oy,
       w: c2.w / scale
     });
-    this.drawOverlay(full, candidates.map(back), grid ? grid.cells.map(back) : []);
+    const cells = grid ? grid.cells.map(back) : [];
+    this.drawOverlay(full, candidates.map(back), cells);
     if (!grid) {
       this.showRead(null);
+      if (roi && ++this.roiMiss > 6) {
+        this.roi = null;
+        this.roiMiss = 0;
+      }
       this.setStatus(
         candidates.length >= 4 ? `Found ${candidates.length} squares \u2014 line up a full face` : "Show a cube face to the camera (anywhere in view)"
       );
       return;
     }
+    this.roi = this.faceRoi(cells, full);
+    this.roiMiss = 0;
     const samples = grid.colors;
     this.showRead(samples);
     const face = this.identify(samples[4]);
@@ -6219,6 +6257,29 @@ var TabletopScannerPanel = class extends HTMLElement {
         this.tinted("err", "Colours don't form a solvable cube yet \u2014 re-show a face to fix it.")
       );
     }
+  }
+  /** Bounding box of a found face plus margin, clamped to the frame — the next zoom region. */
+  faceRoi(cells, full) {
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const c2 of cells) {
+      minX = Math.min(minX, c2.cx - c2.w / 2);
+      minY = Math.min(minY, c2.cy - c2.w / 2);
+      maxX = Math.max(maxX, c2.cx + c2.w / 2);
+      maxY = Math.max(maxY, c2.cy + c2.w / 2);
+    }
+    const mx = (maxX - minX) * 0.4;
+    const my = (maxY - minY) * 0.4;
+    const x = Math.max(0, minX - mx);
+    const y = Math.max(0, minY - my);
+    return {
+      x,
+      y,
+      w: Math.min(full.width - x, maxX - minX + 2 * mx),
+      h: Math.min(full.height - y, maxY - minY + 2 * my)
+    };
   }
   drawOverlay(frame, candidates, gridCells) {
     const ctx = this.octx;
