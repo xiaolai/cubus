@@ -59,7 +59,10 @@ const TEMPLATE = `
   .row { display: flex; gap: 10px; margin-top: 6px; }
   button { font: inherit; border: 0; border-radius: 7px; padding: 8px 16px; font-weight: 600; cursor: pointer; }
   button.primary { background: #58a6ff; color: #06122b; }
+  button.ghost { background: #21262d; color: #e6edf3; border: 1px solid #30363d; padding: 6px 12px; font-weight: 400; font-size: 12px; }
   button[hidden] { display: none; }
+  .dbg { margin: 8px 0 0; font: 11px/1.4 ui-monospace, Menlo, monospace; color: #8b949e;
+    white-space: pre-wrap; word-break: break-all; max-height: 88px; overflow: auto; }
   .ok { color: #3fb950; } .err { color: #f85149; } .muted { color: #8b949e; }
 </style>
 <div class="stage">
@@ -73,7 +76,11 @@ const TEMPLATE = `
   <div class="read" id="read"></div>
 </div>
 <div class="dots" id="dots"></div>
-<div class="row"><button class="primary" id="start">Start camera</button></div>
+<pre class="dbg" id="dbg"></pre>
+<div class="row">
+  <button class="primary" id="start">Start camera</button>
+  <button class="ghost" id="copydbg">Copy debug</button>
+</div>
 `;
 
 export class TabletopScannerPanel extends HTMLElement {
@@ -88,6 +95,11 @@ export class TabletopScannerPanel extends HTMLElement {
   private startGen = 0;
   private roi: { x: number; y: number; w: number; h: number } | null = null;
   private roiMiss = 0;
+  private pendingFace: Face | null = null;
+  private pendingCount = 0;
+  private frameNo = 0;
+  private lastHud = 0;
+  private readonly debugLog: string[] = [];
 
   constructor() {
     super();
@@ -101,6 +113,26 @@ export class TabletopScannerPanel extends HTMLElement {
     this.buildDots();
     this.buildRead();
     this.btn('start').addEventListener('click', () => void this.start());
+    this.btn('copydbg').addEventListener('click', () => void this.copyDebug());
+  }
+
+  /** Copy the running debug log to the clipboard so it can be pasted for diagnosis. */
+  private async copyDebug(): Promise<void> {
+    const text = this.debugLog.join('\n') || '(no debug yet — start the camera and turn the cube)';
+    try {
+      await navigator.clipboard.writeText(text);
+      this.setStatus(this.tinted('ok', 'Debug log copied — paste it to report.'));
+    } catch {
+      console.log('[scan] debug log:\n', text); // clipboard blocked — fall back to console
+      this.setStatus('Debug log printed to the console (clipboard blocked).');
+    }
+  }
+
+  /** Record a debug line (kept in memory for Copy debug, and echoed to the console). */
+  private log(line: string): void {
+    this.debugLog.push(line);
+    if (this.debugLog.length > 400) this.debugLog.shift();
+    console.log('[scan]', line);
   }
 
   disconnectedCallback(): void {
@@ -143,6 +175,12 @@ export class TabletopScannerPanel extends HTMLElement {
       this.captured.clear();
       this.roi = null;
       this.roiMiss = 0;
+      this.pendingFace = null;
+      this.pendingCount = 0;
+      this.frameNo = 0;
+      this.debugLog.length = 0;
+      this.el('dbg').textContent = '';
+      this.log('start — turn the cube slowly');
       this.buildDots();
       this.btn('start').hidden = true;
       this.btn('start').disabled = false;
@@ -177,17 +215,26 @@ export class TabletopScannerPanel extends HTMLElement {
       track.applyConstraints({ advanced } as unknown as MediaTrackConstraints).catch(() => {});
   }
 
+  /**
+   * Identify a face by its center color, but only if UNAMBIGUOUS: nearest anchor within
+   * IDENTIFY_TOL and clearly closer than the runner-up. A glare/gray/between-colors center
+   * returns null → no capture (this is what stops phantom U/D captures from a misread).
+   */
   private identify(center: RGB): Face | null {
     let best: Face | null = null;
-    let bestD = IDENTIFY_TOL;
+    let d1 = Number.POSITIVE_INFINITY;
+    let d2 = Number.POSITIVE_INFINITY;
     for (const f of FACES) {
       const d = rgbDistance(center, CORNER_ANCHORS[f]);
-      if (d < bestD) {
-        bestD = d;
+      if (d < d1) {
+        d2 = d1;
+        d1 = d;
         best = f;
+      } else if (d < d2) {
+        d2 = d;
       }
     }
-    return best;
+    return d1 <= IDENTIFY_TOL && d1 <= 0.6 * d2 ? best : null;
   }
 
   private onTick(): void {
@@ -201,6 +248,7 @@ export class TabletopScannerPanel extends HTMLElement {
     } catch {
       return;
     }
+    this.frameNo++;
     // Auto-zoom: once a face is found, detect INSIDE its region (cropped + upscaled) so the
     // stickers are bigger and detection is easier — digital zoom, no camera motion. Search
     // the whole frame again after a few misses.
@@ -219,6 +267,9 @@ export class TabletopScannerPanel extends HTMLElement {
     this.drawOverlay(full, candidates.map(back), cells);
     if (!grid) {
       this.showRead(null);
+      this.pendingFace = null;
+      this.pendingCount = 0;
+      this.renderHud(candidates.length, 0, null, [0, 0, 0]);
       if (roi && ++this.roiMiss > 6) {
         this.roi = null; // lost it — zoom back out and search the whole frame
         this.roiMiss = 0;
@@ -234,24 +285,39 @@ export class TabletopScannerPanel extends HTMLElement {
     this.roiMiss = 0;
     const samples = grid.colors;
     this.showRead(samples);
-    const face = this.identify(samples[4]!);
+    const center = samples[4]!;
+    const face = this.identify(center);
+    this.renderHud(candidates.length, grid.real, face, center);
     if (!face) {
-      this.setStatus('Reading… turn a face toward the camera');
+      this.pendingFace = null;
+      this.pendingCount = 0;
+      this.setStatus('Reading… center color unclear — turn a face flat to the camera');
       return;
     }
-    // Rotate-and-collect: as each face passes the camera, keep its BEST read (the frame
-    // where the most stickers were really seen — i.e. face-on, no glare). No holding still.
+    // Stability: require the SAME confident face for a few frames with a near-complete read
+    // before capturing, so a transient glare/edge misread cannot add a phantom face.
+    if (face === this.pendingFace) this.pendingCount++;
+    else {
+      this.pendingFace = face;
+      this.pendingCount = 1;
+    }
+    if (this.pendingCount < 3 || grid.real < 8) {
+      this.setStatus(`Reading ${NAME[face].name}… hold it a moment`);
+      return;
+    }
+    // Rotate-and-collect: keep the BEST read per face (most stickers really seen).
     const prev = this.captured.get(face);
     if (!prev || grid.real > prev.real) {
       this.captured.set(face, { colors: samples, real: grid.real });
+      this.log(
+        `cap ${face}(${NAME[face].name}) real=${grid.real} center=${center.map(Math.round).join(',')} n=${this.captured.size}`,
+      );
       this.buildDots();
       if (this.captured.size === 6) this.trySolve();
-      else
+      else if (!prev)
         this.setStatus(
           this.tinted('ok', `${NAME[face].name} ✓  ${this.captured.size}/6 — keep turning`),
         );
-    } else {
-      this.setStatus(`Turning… ${this.captured.size}/6 faces — show any missing side`);
     }
   }
 
@@ -266,6 +332,7 @@ export class TabletopScannerPanel extends HTMLElement {
     } catch {
       return;
     }
+    this.log(`solve valid=${res.valid} facelets=${res.facelets}`);
     if (res.valid) {
       if (this.timer !== null) {
         clearInterval(this.timer);
@@ -278,6 +345,17 @@ export class TabletopScannerPanel extends HTMLElement {
       // All six read but not solvable → a misread; keep turning to improve any face.
       this.setStatus(this.tinted('err', 'Not solvable yet — keep turning so I re-read each face.'));
     }
+  }
+
+  /** Live per-frame readout (throttled) — what the detector sees right now. */
+  private renderHud(cands: number, real: number, face: Face | null, center: RGB): void {
+    const now = performance.now();
+    if (now - this.lastHud < 250) return; // ~4 Hz is enough to read
+    this.lastHud = now;
+    const have = [...this.captured.keys()].join('') || '-';
+    this.el('dbg').textContent =
+      `f${this.frameNo} cand=${cands} grid=${real}/9 face=${face ?? '-'} ` +
+      `center=${center.map(Math.round).join(',')} have=${have}`;
   }
 
   /** Bounding box of a found face plus margin, clamped to the frame — the next zoom region. */
