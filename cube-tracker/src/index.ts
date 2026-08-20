@@ -62,17 +62,24 @@ export {
   type RecoveryResult,
 } from './recovery.js';
 
-// Orchestrator
+// Orchestrator + live loop
 export { type CameraObservation, CubeTracker } from './tracker.js';
+export { LiveTracker, type LiveTrackerOptions } from './live.js';
 
 // Perception (pure parts)
 export { CANONICAL_CENTERS, classifySoft, ciede2000, type RGB } from './perception/color.js';
 export { type Frame, frameDiff, StabilityGate } from './perception/motion.js';
 export {
+  classifyCells,
   createLocalizer,
-  type LocalizedFace,
+  type DetectedFace,
   type Localizer,
   type LocalizerResult,
+  nullDetector,
+  type Point,
+  type Quad,
+  type QuadDetector,
+  sampleQuad,
 } from './perception/localize.js';
 
 // Camera (impure shell)
