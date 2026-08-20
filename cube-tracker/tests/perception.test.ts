@@ -3,7 +3,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Face } from '../src/cube.js';
 import { CANONICAL_CENTERS, type RGB, classifySoft } from '../src/perception/color.js';
-import { type Frame, StabilityGate, frameDiff } from '../src/perception/motion.js';
+import {
+  type Frame,
+  StabilityGate,
+  frameDiff,
+  lumaDiff,
+  toLuma,
+} from '../src/perception/motion.js';
 import type { SoftColor } from '../src/types.js';
 
 const FACES: Face[] = ['U', 'R', 'F', 'D', 'L', 'B'];
@@ -62,5 +68,38 @@ describe('motion gate', () => {
     expect(gate.push(2)).toBe(false);
     expect(gate.push(1)).toBe(true); // three consecutive below threshold
     expect(gate.push(50)).toBe(false); // motion breaks stability
+  });
+  it('StabilityGate rejects invalid construction args (§12/#11)', () => {
+    expect(() => new StabilityGate(6, 0)).toThrow(/positive integer/);
+    expect(() => new StabilityGate(Number.POSITIVE_INFINITY, 3)).toThrow(/finite/);
+  });
+  it('toLuma returns an OWNED copy — a reused capture buffer cannot read as zero motion (F6)', () => {
+    const f = frameOf(16, 16, 100);
+    const snap = toLuma(f);
+    f.data.fill(200); // the caller reuses / overwrites the same buffer
+    const cur = toLuma(f);
+    expect(snap.data[0]).not.toBe(cur.data[0]); // the earlier snapshot survived
+    expect(lumaDiff(snap, cur)).toBeGreaterThan(50); // motion is still detected
+  });
+  it('lumaDiff falls back to full-frame when the ROI has no sample lattice points', () => {
+    const a = toLuma(frameOf(24, 24, 100));
+    const b = toLuma(frameOf(24, 24, 150));
+    const d = lumaDiff(a, b, { x: 10, y: 10, w: 3, h: 3 }); // no grid point in [10,13)
+    expect(Number.isFinite(d)).toBe(true);
+    expect(d).toBeGreaterThan(0);
+  });
+  it('lumaDiff of different-size frames with equal grid dims is infinite, not zero', () => {
+    const a = toLuma(frameOf(9, 9, 100));
+    const b = toLuma(frameOf(16, 16, 100));
+    expect(a.gw).toBe(b.gw); // both collapse to the same grid size
+    expect(lumaDiff(a, b)).toBe(Number.POSITIVE_INFINITY); // ...but original dims differ
+  });
+  it('lumaDiff rejects grids sampled at different steps (incompatible lattices)', () => {
+    const f = frameOf(16, 16, 0);
+    for (let i = 0; i < f.data.length; i += 4) f.data[i] = f.data[i + 1] = f.data[i + 2] = i % 256; // gradient
+    const a = toLuma(f, 8);
+    const b = toLuma(f, 9);
+    expect(a.gw).toBe(b.gw); // both 2×2, same original dims
+    expect(lumaDiff(a, b)).toBe(Number.POSITIVE_INFINITY); // ...but different sample lattices
   });
 });

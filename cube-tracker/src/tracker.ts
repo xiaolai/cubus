@@ -63,6 +63,7 @@ export class CubeTracker {
   private lastStatus: TrackStatus = 'lost';
   private wasStable = false; // for detecting the motion→still transition (a new episode)
   private ambiguousCandidates: CubeState[] = []; // the real set when recovery is ambiguous (§12/#22)
+  private emptyStreak = 0; // consecutive no-detection frames — cube off-frame (§12/#7)
 
   constructor(cfg: TrackerConfig = DEFAULT_CONFIG, recOpts: RecoveryOptions = DEFAULT_RECOVERY) {
     this.cfg = cfg;
@@ -73,6 +74,9 @@ export class CubeTracker {
   seed(state: CubeState): void {
     this.beliefState = new Belief(state, IDENTITY_ORIENTATION, this.cfg);
     this.lastStatus = 'tracking';
+    this.emptyStreak = 0;
+    this.wasStable = false;
+    this.ambiguousCandidates = [];
   }
 
   state(): CubeState | null {
@@ -114,12 +118,31 @@ export class CubeTracker {
   reset(): void {
     this.beliefState = null;
     this.lastStatus = 'lost';
+    this.emptyStreak = 0;
+    this.wasStable = false;
+    this.ambiguousCandidates = [];
   }
 
   update(obs: CameraObservation): TrackUpdate {
     if (!this.beliefState) return { kind: 'lost' };
+    // No detection (cube off-frame / not found): after a timeout, surface `lost` but
+    // KEEP the belief so re-entry can recover it (§12/#7). Motion (cells present but
+    // not stable) does NOT count toward the timeout.
+    if (obs.cells.length === 0) {
+      this.wasStable = false;
+      if (++this.emptyStreak > this.cfg.maxEmptyFrames) {
+        this.lastStatus = 'lost';
+        return { kind: 'lost' };
+      }
+      return {
+        kind: 'hold',
+        status: this.lastStatus,
+        confidence: this.beliefState.currentConfidence(),
+      };
+    }
+    this.emptyStreak = 0; // the cube is in view
     // Perception gates: only stable, layer-aligned frames advance the belief (§12/#14).
-    if (!obs.stable || !obs.alignedGeometry || obs.cells.length === 0) {
+    if (!obs.stable || !obs.alignedGeometry) {
       this.wasStable = false; // motion / mid-turn — the next still frame starts a new episode
       return {
         kind: 'hold',

@@ -64,6 +64,7 @@ export interface TrackerConfig {
   noMovePrior: number; // mild bias toward identity, default 0.5
   absoluteFitFloor: number; // min mean per-cell likelihood to ALLOW a commit (§12/#4)
   lostFitFloor: number; // below this mean per-cell fit for the best candidate → lost/recovery (§12/#4)
+  maxEmptyFrames: number; // consecutive no-detection frames before status → lost (§12/#7)
 }
 
 export const DEFAULT_CONFIG: TrackerConfig = {
@@ -74,6 +75,7 @@ export const DEFAULT_CONFIG: TrackerConfig = {
   noMovePrior: 0.5,
   absoluteFitFloor: 0.5,
   lostFitFloor: 0.35,
+  maxEmptyFrames: 10,
 };
 
 export interface Tracker {

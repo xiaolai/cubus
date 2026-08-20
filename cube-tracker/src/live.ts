@@ -1,12 +1,12 @@
 // The live loop: the integration glue an app drives with camera frames. Per frame it
-// runs the motion gate (frame diff → stable?), localizes EVERY frame to define the ROI
-// (§12/#17), and folds the result into the tracker. This is the piece the Electron app
-// instantiates; its loop logic is tested offline with an injected localizer, and only
-// the real camera + real detector remain hardware-bound.
+// localizes FIRST to define the cube ROI (§12/#17), measures motion on an OWNED luma
+// snapshot restricted to that ROI (so background motion / a reused capture buffer can't
+// fool the gate — §12/#14), and folds the result into the tracker. Loop logic is tested
+// offline with an injected localizer; only the real camera + detector are hardware-bound.
 
 import type { CubeState, Face } from './cube.js';
 import type { Localizer } from './perception/localize.js';
-import { type Frame, StabilityGate, frameDiff } from './perception/motion.js';
+import { type Frame, type LumaGrid, StabilityGate, lumaDiff, toLuma } from './perception/motion.js';
 import type { RecoveryOptions } from './recovery.js';
 import { CubeTracker } from './tracker.js';
 import type { TrackStatus, TrackUpdate, TrackerConfig } from './types.js';
@@ -21,27 +21,32 @@ export interface LiveTrackerOptions {
 export class LiveTracker {
   private readonly tracker: CubeTracker;
   private readonly gate: StabilityGate;
-  private prev: Frame | null = null;
+  private prevLuma: LumaGrid | null = null;
 
   constructor(
     private readonly localizer: Localizer,
     opts: LiveTrackerOptions = {},
   ) {
     this.tracker = new CubeTracker(opts.config, opts.recOpts);
+    // StabilityGate validates its args and fails loud on invalid options (§12/#11).
     this.gate = new StabilityGate(opts.stabilityThreshold, opts.stabilityFrames);
   }
 
-  /** Seed with an acquired start state (from acquisition). */
+  /** Seed with an acquired start state (from acquisition) — a fresh session. */
   seed(state: CubeState): void {
     this.tracker.seed(state);
+    this.gate.reset();
+    this.prevLuma = null;
   }
 
-  /** Drive one camera frame through motion-gate → localize → track. */
+  /** Drive one camera frame through localize → ROI motion-gate → track. */
   pushFrame(frame: Frame, t: number): TrackUpdate {
-    const diff = this.prev ? frameDiff(frame, this.prev) : Number.POSITIVE_INFINITY;
+    const { cells, alignedGeometry, roi } = this.localizer.detect(frame); // localize first (§12/#17)
+    const cur = toLuma(frame);
+    // Motion measured within the cube ROI when known, else full-frame (re-entry search).
+    const diff = this.prevLuma ? lumaDiff(this.prevLuma, cur, roi) : Number.POSITIVE_INFINITY;
     const stable = this.gate.push(diff);
-    this.prev = frame;
-    const { cells, alignedGeometry } = this.localizer.detect(frame);
+    this.prevLuma = cur; // owned snapshot — never a reference to caller-mutable memory
     return this.tracker.update({ cells, stable, alignedGeometry, t });
   }
 
@@ -57,6 +62,6 @@ export class LiveTracker {
   reset(): void {
     this.tracker.reset();
     this.gate.reset();
-    this.prev = null;
+    this.prevLuma = null;
   }
 }
