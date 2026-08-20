@@ -1991,6 +1991,10 @@ var require_cubejs = __commonJS({
 });
 
 // src/camera.ts
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((d) => d.kind === "videoinput").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
+}
 function raceAbort(promise, signal) {
   if (!signal) return promise;
   return new Promise((resolve, reject) => {
@@ -2014,9 +2018,7 @@ function raceAbort(promise, signal) {
 }
 async function openCamera(video, opts = {}, signal) {
   if (signal?.aborted) throw new DOMException("camera open aborted", "AbortError");
-  const videoConstraints = {
-    facingMode: opts.facingMode ?? "environment"
-  };
+  const videoConstraints = opts.deviceId ? { deviceId: { exact: opts.deviceId } } : { facingMode: opts.facingMode ?? "environment" };
   if (opts.width) videoConstraints.width = { ideal: opts.width };
   if (opts.height) videoConstraints.height = { ideal: opts.height };
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -6132,8 +6134,11 @@ var TEMPLATE = `
   .dbg { margin: 8px 0 0; font: 11px/1.45 ui-monospace, Menlo, monospace; color: #8b949e;
     white-space: pre-wrap; word-break: break-all; max-height: 170px; overflow: auto;
     background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 6px; }
+  .camsel { width: 100%; margin: 0 0 8px; padding: 6px; background: #0d1117; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 6px; font: inherit; }
   .ok { color: #3fb950; } .err { color: #f85149; } .muted { color: #8b949e; }
 </style>
+<select class="camsel" id="camsel" hidden></select>
 <div class="stage">
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
@@ -6161,6 +6166,7 @@ var TabletopScannerPanel = class extends HTMLElement {
   octx = null;
   stageEl = null;
   startGen = 0;
+  deviceId;
   roi = null;
   roiMiss = 0;
   pendingFace = null;
@@ -6183,6 +6189,38 @@ var TabletopScannerPanel = class extends HTMLElement {
     this.btn("start").addEventListener("click", () => void this.start());
     this.btn("copydbg").addEventListener("click", () => void this.copyDebug());
     this.btn("retry").addEventListener("click", () => this.retry());
+    this.el("camsel").addEventListener("change", (e4) => {
+      void this.changeCamera(e4.target.value);
+    });
+    void this.refreshCameras();
+  }
+  /** Populate the camera picker; show it only when more than one camera is present. */
+  async refreshCameras() {
+    let cams = [];
+    try {
+      cams = await listCameras();
+    } catch {
+    }
+    const sel = this.el("camsel");
+    sel.textContent = "";
+    for (const c2 of cams) {
+      const o = document.createElement("option");
+      o.value = c2.deviceId;
+      o.textContent = c2.label;
+      if (c2.deviceId === this.deviceId) o.selected = true;
+      sel.append(o);
+    }
+    sel.hidden = cams.length <= 1;
+  }
+  /** Switch to a different camera and (if scanning) reopen the stream on it. */
+  async changeCamera(deviceId) {
+    if ((deviceId || void 0) === this.deviceId) return;
+    this.deviceId = deviceId || void 0;
+    if (this.source) {
+      this.source.stop();
+      this.source = null;
+      await this.start();
+    }
   }
   /** Drop all captured faces and scan again from scratch (camera stays on). */
   retry() {
@@ -6248,10 +6286,12 @@ var TabletopScannerPanel = class extends HTMLElement {
     try {
       this.source = await openCamera(this.el("video"), {
         width: 1280,
-        height: 720
+        height: 720,
+        deviceId: this.deviceId
       });
       if (gen !== this.startGen) return;
       this.applyCameraControls();
+      void this.refreshCameras();
       this.captured.clear();
       this.roi = null;
       this.roiMiss = 0;

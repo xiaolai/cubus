@@ -15,7 +15,7 @@
 //
 // OpenCV.js is INJECTED via `cv`. Browser shell — the detector/solver underneath IS tested.
 
-import { openCamera } from '../src/camera.js';
+import { type CameraDevice, listCameras, openCamera } from '../src/camera.js';
 import { hsvDistance } from '../src/color.js';
 import { CORNER_ANCHORS } from '../src/corner-scan.js';
 import type { OpenCv } from '../src/detect.js';
@@ -65,8 +65,11 @@ const TEMPLATE = `
   .dbg { margin: 8px 0 0; font: 11px/1.45 ui-monospace, Menlo, monospace; color: #8b949e;
     white-space: pre-wrap; word-break: break-all; max-height: 170px; overflow: auto;
     background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 6px; }
+  .camsel { width: 100%; margin: 0 0 8px; padding: 6px; background: #0d1117; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 6px; font: inherit; }
   .ok { color: #3fb950; } .err { color: #f85149; } .muted { color: #8b949e; }
 </style>
+<select class="camsel" id="camsel" hidden></select>
 <div class="stage">
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
@@ -96,6 +99,7 @@ export class TabletopScannerPanel extends HTMLElement {
   private octx: CanvasRenderingContext2D | null = null;
   private stageEl: HTMLElement | null = null;
   private startGen = 0;
+  private deviceId: string | undefined;
   private roi: { x: number; y: number; w: number; h: number } | null = null;
   private roiMiss = 0;
   private pendingFace: Face | null = null;
@@ -120,6 +124,41 @@ export class TabletopScannerPanel extends HTMLElement {
     this.btn('start').addEventListener('click', () => void this.start());
     this.btn('copydbg').addEventListener('click', () => void this.copyDebug());
     this.btn('retry').addEventListener('click', () => this.retry());
+    this.el<HTMLSelectElement>('camsel').addEventListener('change', (e) => {
+      void this.changeCamera((e.target as HTMLSelectElement).value);
+    });
+    void this.refreshCameras();
+  }
+
+  /** Populate the camera picker; show it only when more than one camera is present. */
+  private async refreshCameras(): Promise<void> {
+    let cams: CameraDevice[] = [];
+    try {
+      cams = await listCameras();
+    } catch {
+      /* enumeration needs permission — filled in after the first openCamera */
+    }
+    const sel = this.el<HTMLSelectElement>('camsel');
+    sel.textContent = '';
+    for (const c of cams) {
+      const o = document.createElement('option');
+      o.value = c.deviceId;
+      o.textContent = c.label;
+      if (c.deviceId === this.deviceId) o.selected = true;
+      sel.append(o);
+    }
+    sel.hidden = cams.length <= 1;
+  }
+
+  /** Switch to a different camera and (if scanning) reopen the stream on it. */
+  private async changeCamera(deviceId: string): Promise<void> {
+    if ((deviceId || undefined) === this.deviceId) return;
+    this.deviceId = deviceId || undefined;
+    if (this.source) {
+      this.source.stop();
+      this.source = null;
+      await this.start();
+    }
   }
 
   /** Drop all captured faces and scan again from scratch (camera stays on). */
@@ -196,9 +235,11 @@ export class TabletopScannerPanel extends HTMLElement {
       this.source = await openCamera(this.el<HTMLVideoElement>('video'), {
         width: 1280,
         height: 720,
+        deviceId: this.deviceId,
       });
       if (gen !== this.startGen) return;
       this.applyCameraControls();
+      void this.refreshCameras(); // labels are available now the grant exists
       this.captured.clear();
       this.roi = null;
       this.roiMiss = 0;

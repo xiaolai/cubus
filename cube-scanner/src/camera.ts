@@ -18,6 +18,25 @@ export interface CameraOptions {
   facingMode?: 'user' | 'environment';
   width?: number;
   height?: number;
+  /** Select a specific camera (overrides facingMode). Get IDs from `listCameras`. */
+  deviceId?: string;
+}
+
+/** One selectable camera. */
+export interface CameraDevice {
+  deviceId: string;
+  label: string;
+}
+
+/**
+ * List video-input devices. Labels are only populated after camera permission has been
+ * granted, so call this after a first `openCamera` for named entries (e.g. two webcams).
+ */
+export async function listCameras(): Promise<CameraDevice[]> {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices
+    .filter((d) => d.kind === 'videoinput')
+    .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
 }
 
 /** Reject as soon as `signal` aborts, even while `promise` is still pending. */
@@ -52,9 +71,9 @@ export async function openCamera(
   // Already cancelled before we start? Don't even prompt for the camera.
   if (signal?.aborted) throw new DOMException('camera open aborted', 'AbortError');
 
-  const videoConstraints: MediaTrackConstraints = {
-    facingMode: opts.facingMode ?? 'environment',
-  };
+  const videoConstraints: MediaTrackConstraints = opts.deviceId
+    ? { deviceId: { exact: opts.deviceId } }
+    : { facingMode: opts.facingMode ?? 'environment' };
   if (opts.width) videoConstraints.width = { ideal: opts.width };
   if (opts.height) videoConstraints.height = { ideal: opts.height };
 
