@@ -12,6 +12,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# On the training host the system Python is PEP-668 locked, so BlenderProc lives in a venv:
+#   BLENDERPROC=~/cubus-ml/venv/bin/blenderproc
+BLENDERPROC="${BLENDERPROC:-blenderproc}"
 SCENES="${SCENES:-1000}"
 POSES="${POSES:-40}"
 RES="${RES:-640}"
@@ -23,7 +26,7 @@ echo "Rendering $SCENES scenes x $POSES poses (~$((SCENES * POSES)) images) -> $
 mkdir -p "$OUT"
 
 for ((i = 0; i < SCENES; i++)); do
-  blenderproc run "$HERE/generate_cube_dataset.py" -- \
+  "$BLENDERPROC" run "$HERE/generate_cube_dataset.py" -- \
     --output_dir "$OUT" --hdri_dir "$HDRI_DIR" --num_poses "$POSES" --res "$RES" --seed "$i"
   if (( i % 50 == 0 )); then echo "  scene $i/$SCENES"; fi
 done

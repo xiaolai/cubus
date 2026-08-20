@@ -10,7 +10,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NGC_IMAGE="${NGC_IMAGE:-nvcr.io/nvidia/pytorch:25.01-py3}"  # TODO: pin to Alan's verified tag
+NGC_IMAGE="${NGC_IMAGE:-nvcr.io/nvidia/pytorch:26.01-py3}"  # cu13 arm64 — Alan verified GB10 sm_121
 DATASET="${DATASET:?set DATASET to the split dataset dir (contains images/ labels/)}"
 EPOCHS="${EPOCHS:-80}"
 IMGSZ="${IMGSZ:-640}"
