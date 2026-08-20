@@ -5541,36 +5541,6 @@ var import_cubejs = __toESM(require_cubejs(), 1);
 // src/types.ts
 var FACES = ["U", "R", "F", "D", "L", "B"];
 
-// src/classify.ts
-function classify(samples, centers) {
-  if (centers.length !== 6) throw new Error(`expected 6 centers, got ${centers.length}`);
-  const centerLabs = centers.map(toLab);
-  const letters = [];
-  const confidence = [];
-  for (const sample of samples) {
-    const lab2 = toLab(sample);
-    let nearest = Number.POSITIVE_INFINITY;
-    let second = Number.POSITIVE_INFINITY;
-    let nearestIdx = 0;
-    for (let k4 = 0; k4 < 6; k4++) {
-      const d = ciede2000(lab2, centerLabs[k4]);
-      const dist = Number.isFinite(d) ? d : Number.POSITIVE_INFINITY;
-      if (dist < nearest) {
-        second = nearest;
-        nearest = dist;
-        nearestIdx = k4;
-      } else if (dist < second) {
-        second = dist;
-      }
-    }
-    letters.push(FACES[nearestIdx]);
-    const raw = second === 0 ? 0 : 1 - nearest / second;
-    const conf = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0;
-    confidence.push(conf);
-  }
-  return { letters, confidence };
-}
-
 // src/facelet-cube.ts
 var SOLVED = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
 var CORNER_FACELET = [
@@ -5941,6 +5911,35 @@ function detectStickerGrid(cv, frame) {
 
 // src/orient.ts
 var import_cubejs2 = __toESM(require_cubejs(), 1);
+function classifyBalanced(samples, centers) {
+  const n = samples.length;
+  const k4 = centers.length;
+  const cap = Math.ceil(n / k4);
+  const dist = samples.map((s) => {
+    const sl = toLab(s);
+    return centers.map((c2) => ciede2000(sl, toLab(c2)));
+  });
+  const pairs = [];
+  for (let s = 0; s < n; s++) for (let c2 = 0; c2 < k4; c2++) pairs.push({ s, c: c2, d: dist[s][c2] });
+  pairs.sort((a, b) => a.d - b.d);
+  const assigned = new Array(n).fill(-1);
+  const count = new Array(k4).fill(0);
+  let done = 0;
+  for (const p4 of pairs) {
+    if (assigned[p4.s] !== -1 || count[p4.c] >= cap) continue;
+    assigned[p4.s] = p4.c;
+    count[p4.c]++;
+    if (++done === n) break;
+  }
+  const letters = assigned.map((c2) => FACES[c2]);
+  const confidence = assigned.map((a, s) => {
+    const row = dist[s];
+    let second = Number.POSITIVE_INFINITY;
+    for (let c2 = 0; c2 < k4; c2++) if (c2 !== a) second = Math.min(second, row[c2]);
+    return second === 0 ? 0 : Math.max(0, 1 - row[a] / second);
+  });
+  return { letters, confidence };
+}
 function rotateFace(cells, q) {
   const CW = [6, 3, 0, 7, 4, 1, 8, 5, 2];
   let out = cells.slice();
@@ -5963,7 +5962,7 @@ function solveOrientations(faces, threshold = LOW_CONFIDENCE_THRESHOLD) {
   const centers = FACES.map((f3) => faces[f3][4]);
   const samples = [];
   for (const f3 of FACES) for (const s of faces[f3]) samples.push(s);
-  const { letters, confidence } = classify(samples, centers);
+  const { letters, confidence } = classifyBalanced(samples, centers);
   const faceLetters = Object.fromEntries(
     FACES.map((f3, i) => [f3, letters.slice(i * 9, i * 9 + 9)])
   );
@@ -6291,8 +6290,7 @@ var TabletopScannerPanel = class extends HTMLElement {
       return;
     }
     const prev = this.captured.get(face);
-    const refreshing = this.captured.size === 6;
-    if (!prev || grid.real > prev.real || refreshing) {
+    if (!prev || grid.real > prev.real) {
       this.captured.set(face, { colors: samples, real: grid.real });
       this.log(
         `cap ${face}(${NAME[face].name}) real=${grid.real} center=${center.map(Math.round).join(",")} n=${this.captured.size}`

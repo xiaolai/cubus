@@ -335,12 +335,10 @@ export class TabletopScannerPanel extends HTMLElement {
       this.setStatus(`Reading ${NAME[face].name}… hold it a moment`);
       return;
     }
-    // Rotate-and-collect: keep the BEST read per face. But once all six are in and it's
-    // still not solvable (a misread), let a fresh re-show REPLACE a face so re-turning it
-    // fixes the read — then re-solve.
+    // Rotate-and-collect: keep the BEST read per face (most stickers really seen). Do NOT
+    // overwrite a good read with a worse one — that degraded clean reads and never converged.
     const prev = this.captured.get(face);
-    const refreshing = this.captured.size === 6; // stuck at six → accept fresh reads
-    if (!prev || grid.real > prev.real || refreshing) {
+    if (!prev || grid.real > prev.real) {
       this.captured.set(face, { colors: samples, real: grid.real });
       this.log(
         `cap ${face}(${NAME[face].name}) real=${grid.real} center=${center.map(Math.round).join(',')} n=${this.captured.size}`,

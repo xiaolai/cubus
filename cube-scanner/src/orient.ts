@@ -7,9 +7,50 @@
 
 import Cube from 'cubejs';
 import { LOW_CONFIDENCE_THRESHOLD } from './assemble.js';
-import { classify } from './classify.js';
+import { ciede2000, toLab } from './color.js';
 import { isStructurallyValid } from './facelet-cube.js';
 import { FACES, type Face, type RGB, type ScanResult } from './types.js';
+
+/**
+ * Assign the 54 sticker colours to the 6 center colours with EXACTLY 9 per colour — a
+ * balanced greedy assignment (smallest distances first, each center capped at 9). Enforcing
+ * equal counts is what fixes the red↔orange / yellow↔orange confusion a plain nearest-colour
+ * classify gets wrong (e.g. 12 orange, 7 red → never a valid cube). Centers are in FACES
+ * order, so assignment index k maps to FACES[k]. Confidence is 1 - d(assigned)/d(next), so a
+ * balance-forced sticker (assigned not its nearest) is flagged low-confidence.
+ */
+export function classifyBalanced(
+  samples: readonly RGB[],
+  centers: readonly RGB[],
+): { letters: string[]; confidence: number[] } {
+  const n = samples.length;
+  const k = centers.length;
+  const cap = Math.ceil(n / k);
+  const dist = samples.map((s) => {
+    const sl = toLab(s);
+    return centers.map((c) => ciede2000(sl, toLab(c)));
+  });
+  const pairs: { s: number; c: number; d: number }[] = [];
+  for (let s = 0; s < n; s++) for (let c = 0; c < k; c++) pairs.push({ s, c, d: dist[s]![c]! });
+  pairs.sort((a, b) => a.d - b.d);
+  const assigned = new Array<number>(n).fill(-1);
+  const count = new Array<number>(k).fill(0);
+  let done = 0;
+  for (const p of pairs) {
+    if (assigned[p.s] !== -1 || count[p.c]! >= cap) continue;
+    assigned[p.s] = p.c;
+    count[p.c]!++;
+    if (++done === n) break;
+  }
+  const letters = assigned.map((c) => FACES[c]!);
+  const confidence = assigned.map((a, s) => {
+    const row = dist[s]!;
+    let second = Number.POSITIVE_INFINITY;
+    for (let c = 0; c < k; c++) if (c !== a) second = Math.min(second, row[c]!);
+    return second === 0 ? 0 : Math.max(0, 1 - row[a]! / second);
+  });
+  return { letters, confidence };
+}
 
 /** Rotate a 3x3 face (row-major, 9 cells) clockwise by `q` quarter-turns. */
 export function rotateFace<T>(cells: readonly T[], q: number): T[] {
@@ -52,7 +93,7 @@ export function solveOrientations(
   const centers = FACES.map((f) => faces[f][4]!);
   const samples: RGB[] = [];
   for (const f of FACES) for (const s of faces[f]) samples.push(s);
-  const { letters, confidence } = classify(samples, centers);
+  const { letters, confidence } = classifyBalanced(samples, centers);
   const faceLetters = Object.fromEntries(
     FACES.map((f, i) => [f, letters.slice(i * 9, i * 9 + 9)]),
   ) as Record<Face, string[]>;

@@ -3,7 +3,7 @@
 import Cube from 'cubejs';
 import { describe, expect, it } from 'vitest';
 import { CORNER_ANCHORS } from '../src/corner-scan.js';
-import { rotateFace, solveOrientations } from '../src/orient.js';
+import { classifyBalanced, rotateFace, solveOrientations } from '../src/orient.js';
 import { FACES, type Face, type RGB } from '../src/types.js';
 
 /** A deterministic scrambled, solvable cube as facelets (URFDLB, 9 each). */
@@ -24,6 +24,23 @@ function facesFrom(facelets: string): Record<Face, RGB[]> {
   });
   return out;
 }
+
+describe('classifyBalanced', () => {
+  it('assigns exactly nine stickers to each color even when some reds look orange', () => {
+    const centers = FACES.map((f) => CORNER_ANCHORS[f]);
+    const samples: RGB[] = [];
+    for (const f of FACES) for (let i = 0; i < 9; i++) samples.push([...CORNER_ANCHORS[f]] as RGB);
+    // Corrupt three RED stickers (R = FACES[1] → indices 9..17) toward reddish-orange, the
+    // exact confusion that made a plain nearest-color classify report 12 orange / 7 red.
+    samples[9] = [220, 80, 30];
+    samples[10] = [225, 90, 28];
+    samples[11] = [228, 100, 26];
+    const { letters } = classifyBalanced(samples, centers);
+    const counts: Record<string, number> = {};
+    for (const l of letters) counts[l] = (counts[l] ?? 0) + 1;
+    for (const f of FACES) expect(counts[f]).toBe(9);
+  });
+});
 
 describe('solveOrientations', () => {
   it('returns the cube unchanged when every face is already upright', () => {
