@@ -43,12 +43,13 @@ describe('findGrid', () => {
     ];
     const found = findGrid(all);
     expect(found).not.toBeNull();
-    expect(found).toHaveLength(9);
+    expect(found!.cells).toHaveLength(9);
+    expect(found!.real).toBe(9);
     // The nine found cells are exactly the grid's nine (as a set), not the noise.
-    const set = new Set(found!.map((c) => `${c.cx},${c.cy}`));
+    const set = new Set(found!.cells.map((c) => `${c.cx},${c.cy}`));
     for (const c of cells) expect(set.has(`${c.cx},${c.cy}`)).toBe(true);
     // The middle of the lattice order is the grid's center sticker.
-    expect([found![4]!.cx, found![4]!.cy]).toEqual([140, 140]);
+    expect([found!.cells[4]!.cx, found!.cells[4]!.cy]).toEqual([140, 140]);
   });
 
   it('finds a rotated (tilted) 3x3 grid — not only axis-aligned', () => {
@@ -65,8 +66,8 @@ describe('findGrid', () => {
     });
     const found = findGrid(rotated);
     expect(found).not.toBeNull();
-    expect(found).toHaveLength(9);
-    expect([Math.round(found![4]!.cx), Math.round(found![4]!.cy)]).toEqual([40, 40]);
+    expect(found!.cells).toHaveLength(9);
+    expect([Math.round(found!.cells[4]!.cx), Math.round(found!.cells[4]!.cy)]).toEqual([40, 40]);
   });
 
   it('tolerates a missing sticker (a center logo / occlusion) and fills its predicted spot', () => {
@@ -74,9 +75,10 @@ describe('findGrid', () => {
     const withoutCenter = cells.filter((_, i) => i !== 4); // drop the CENTER (the logo case)
     const found = findGrid(withoutCenter);
     expect(found).not.toBeNull();
-    expect(found).toHaveLength(9);
+    expect(found!.cells).toHaveLength(9);
+    expect(found!.real).toBe(8); // eight real, the center predicted
     // the center is reconstructed at its predicted position
-    expect([Math.round(found![4]!.cx), Math.round(found![4]!.cy)]).toEqual([140, 140]);
+    expect([Math.round(found!.cells[4]!.cx), Math.round(found!.cells[4]!.cy)]).toEqual([140, 140]);
   });
 
   it('returns null when candidates do not form a grid', () => {

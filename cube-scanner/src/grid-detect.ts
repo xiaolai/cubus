@@ -154,9 +154,12 @@ function gridFrom(
 
 /**
  * Find a 3x3 sticker lattice (any rotation / mild perspective, up to 2 stickers missing) and
- * return the nine cells in reading order, or null. Structural gate: furniture has no lattice.
+ * return the nine cells in reading order plus how many were really seen (`real`, 7..9), or
+ * null. Structural gate: furniture has no lattice. `real` lets a caller keep the best frame.
  */
-export function findGrid(cands: readonly StickerCell[]): StickerCell[] | null {
+export function findGrid(
+  cands: readonly StickerCell[],
+): { cells: StickerCell[]; real: number } | null {
   if (cands.length < MIN_GRID_CELLS) return null;
   let best: { cells: StickerCell[]; count: number } | null = null;
   for (let i = 0; i < cands.length; i++) {
@@ -164,7 +167,7 @@ export function findGrid(cands: readonly StickerCell[]): StickerCell[] | null {
     if (res && (!best || res.count > best.count)) best = res;
     if (best && best.count === 9) break;
   }
-  return best ? best.cells : null;
+  return best ? { cells: best.cells, real: best.count } : null;
 }
 
 /** Median color of a small patch centred at (cx,cy) — samples the sticker's middle. */
@@ -191,8 +194,8 @@ export function patchColor(frame: Frame, cx: number, cy: number, r: number): RGB
 export interface GridResult {
   /** Every sticker-square candidate that passed the size/shape filter (for the overlay). */
   candidates: StickerCell[];
-  /** The nine stickers + their colors when a 3x3 grid is present, else null. */
-  grid: { colors: RGB[]; cells: StickerCell[] } | null;
+  /** The nine stickers + colors + how many were really seen (7..9), when a grid is present. */
+  grid: { colors: RGB[]; cells: StickerCell[]; real: number } | null;
 }
 
 /** Extract a sub-rectangle of a frame as a new Frame (for cropping/zooming to the cube). */
@@ -288,9 +291,13 @@ export function detectStickerGrid(cv: OpenCv, frame: Frame): GridResult {
   }
 
   const candidates = dedupeCells(raw);
-  const cells = findGrid(candidates);
-  const grid = cells
-    ? { cells, colors: cells.map((c) => patchColor(frame, c.cx, c.cy, c.w * 0.25)) }
+  const g = findGrid(candidates);
+  const grid = g
+    ? {
+        cells: g.cells,
+        real: g.real,
+        colors: g.cells.map((c) => patchColor(frame, c.cx, c.cy, c.w * 0.25)),
+      }
     : null;
   return { candidates, grid };
 }

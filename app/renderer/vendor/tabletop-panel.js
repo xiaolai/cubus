@@ -5827,7 +5827,7 @@ function findGrid(cands) {
     if (res && (!best || res.count > best.count)) best = res;
     if (best && best.count === 9) break;
   }
-  return best ? best.cells : null;
+  return best ? { cells: best.cells, real: best.count } : null;
 }
 function patchColor(frame, cx, cy, r) {
   const rs = [];
@@ -5911,8 +5911,12 @@ function detectStickerGrid(cv, frame) {
     for (const m of cleanup) m.delete();
   }
   const candidates = dedupeCells(raw);
-  const cells = findGrid(candidates);
-  const grid = cells ? { cells, colors: cells.map((c2) => patchColor(frame, c2.cx, c2.cy, c2.w * 0.25)) } : null;
+  const g = findGrid(candidates);
+  const grid = g ? {
+    cells: g.cells,
+    real: g.real,
+    colors: g.cells.map((c2) => patchColor(frame, c2.cx, c2.cy, c2.w * 0.25))
+  } : null;
   return { candidates, grid };
 }
 
@@ -5983,61 +5987,16 @@ function solveOrientations(faces, threshold = LOW_CONFIDENCE_THRESHOLD) {
   return { facelets, valid: false, confidence: min, lowConfidence };
 }
 
-// src/stability.ts
-function frameDifference(a, b) {
-  if (a.width !== b.width || a.height !== b.height) return Number.POSITIVE_INFINITY;
-  const stepX = Math.max(1, Math.floor(a.width / 32));
-  const stepY = Math.max(1, Math.floor(a.height / 32));
-  let sum = 0;
-  let n = 0;
-  for (let y = 0; y < a.height; y += stepY) {
-    for (let x = 0; x < a.width; x += stepX) {
-      const i = (y * a.width + x) * 4;
-      sum += Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
-      n += 3;
-    }
-  }
-  return n ? sum / n : 0;
-}
-var SteadyDetector = class {
-  threshold;
-  framesNeeded;
-  prev = null;
-  steadyCount = 0;
-  constructor(opts = {}) {
-    this.threshold = opts.threshold ?? 6;
-    this.framesNeeded = opts.framesNeeded ?? 4;
-  }
-  /** Feed the current frame; returns true once the frame has held still. */
-  push(frame) {
-    if (this.prev && frameDifference(this.prev, frame) <= this.threshold) {
-      this.steadyCount++;
-    } else {
-      this.steadyCount = 0;
-    }
-    this.prev = frame;
-    return this.steadyCount >= this.framesNeeded;
-  }
-  /** Motion 0..255 vs the previous frame (Infinity before the first frame). */
-  motion(frame) {
-    return this.prev ? frameDifference(this.prev, frame) : Number.POSITIVE_INFINITY;
-  }
-  reset() {
-    this.prev = null;
-    this.steadyCount = 0;
-  }
-};
-
 // view/tabletop-panel.ts
 var TICK_MS = 120;
 var IDENTIFY_TOL = 30;
 var NAME = {
-  U: { name: "white", sw: "#f6f7f8" },
-  R: { name: "red", sw: "#d0202a" },
-  F: { name: "green", sw: "#049e4a" },
-  D: { name: "yellow", sw: "#ffd400" },
-  L: { name: "orange", sw: "#ff6a00" },
-  B: { name: "blue", sw: "#0057c8" }
+  U: { name: "white" },
+  R: { name: "red" },
+  F: { name: "green" },
+  D: { name: "yellow" },
+  L: { name: "orange" },
+  B: { name: "blue" }
 };
 var TEMPLATE = `
 <style>
@@ -6066,10 +6025,10 @@ var TEMPLATE = `
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
   <div class="box"></div>
-  <div class="hint">Show a cube face anywhere in view \u2014 I search the whole frame</div>
+  <div class="hint">Turn the cube slowly \u2014 each face is grabbed as it passes</div>
 </div>
 <div class="row2">
-  <div class="status" id="status">Press <b>Start camera</b>, then show a cube face to the camera.</div>
+  <div class="status" id="status">Press <b>Start camera</b>, then slowly turn the cube so every face faces the camera.</div>
   <div class="read" id="read"></div>
 </div>
 <div class="dots" id="dots"></div>
@@ -6079,14 +6038,11 @@ var TabletopScannerPanel = class extends HTMLElement {
   root;
   cv = null;
   captured = /* @__PURE__ */ new Map();
-  steady = new SteadyDetector({ framesNeeded: 3 });
   source = null;
   timer = null;
   octx = null;
   stageEl = null;
   startGen = 0;
-  flashUntil = 0;
-  fixMode = false;
   roi = null;
   roiMiss = 0;
   constructor() {
@@ -6134,10 +6090,8 @@ var TabletopScannerPanel = class extends HTMLElement {
       if (gen !== this.startGen) return;
       this.applyCameraControls();
       this.captured.clear();
-      this.fixMode = false;
       this.roi = null;
       this.roiMiss = 0;
-      this.steady.reset();
       this.buildDots();
       this.btn("start").hidden = true;
       this.btn("start").disabled = false;
@@ -6214,7 +6168,7 @@ var TabletopScannerPanel = class extends HTMLElement {
         this.roiMiss = 0;
       }
       this.setStatus(
-        candidates.length >= 4 ? `Found ${candidates.length} squares \u2014 line up a full face` : "Show a cube face to the camera (anywhere in view)"
+        candidates.length >= 4 ? `${candidates.length} squares \u2014 turn a full face toward the camera` : "Turn the cube slowly so each face faces the camera"
       );
       return;
     }
@@ -6223,33 +6177,25 @@ var TabletopScannerPanel = class extends HTMLElement {
     const samples = grid.colors;
     this.showRead(samples);
     const face = this.identify(samples[4]);
-    const steady = this.steady.push(full);
     if (!face) {
-      this.setStatus("That doesn't look like a cube face \u2014 center it in the box");
+      this.setStatus("Reading\u2026 turn a face toward the camera");
       return;
     }
-    if (performance.now() < this.flashUntil) return;
-    if (!steady) {
-      this.setStatus(
-        "Reading the ",
-        this.swatch(NAME[face].sw),
-        ` ${NAME[face].name} face \u2014 hold still\u2026`
-      );
-      return;
+    const prev = this.captured.get(face);
+    if (!prev || grid.real > prev.real) {
+      this.captured.set(face, { colors: samples, real: grid.real });
+      this.buildDots();
+      if (this.captured.size === 6) this.trySolve();
+      else
+        this.setStatus(
+          this.tinted("ok", `${NAME[face].name} \u2713  ${this.captured.size}/6 \u2014 keep turning`)
+        );
+    } else {
+      this.setStatus(`Turning\u2026 ${this.captured.size}/6 faces \u2014 show any missing side`);
     }
-    if (this.captured.has(face) && !this.fixMode) {
-      this.setStatus(`Got the ${NAME[face].name} face \u2713 \u2014 show another`);
-      return;
-    }
-    this.captured.set(face, samples);
-    this.steady.reset();
-    this.flashUntil = performance.now() + 600;
-    this.buildDots();
-    this.setStatus(this.tinted("ok", `Captured ${NAME[face].name} (${this.captured.size}/6)`));
-    if (this.captured.size === 6) this.trySolve();
   }
   trySolve() {
-    const faces = Object.fromEntries(this.captured);
+    const faces = Object.fromEntries([...this.captured].map(([f3, r]) => [f3, r.colors]));
     let res;
     try {
       res = solveOrientations(faces);
@@ -6265,10 +6211,7 @@ var TabletopScannerPanel = class extends HTMLElement {
       this.dispatchEvent(new CustomEvent("scan-complete", { detail: res }));
       this.stop();
     } else {
-      this.fixMode = true;
-      this.setStatus(
-        this.tinted("err", "Colours don't form a solvable cube yet \u2014 re-show a face to fix it.")
-      );
+      this.setStatus(this.tinted("err", "Not solvable yet \u2014 keep turning so I re-read each face."));
     }
   }
   /** Bounding box of a found face plus margin, clamped to the frame — the next zoom region. */
@@ -6352,11 +6295,6 @@ var TabletopScannerPanel = class extends HTMLElement {
     const status = this.el("status");
     status.textContent = "";
     status.append(...parts);
-  }
-  swatch(color) {
-    const s = document.createElement("span");
-    s.style.cssText = `display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;background:${color}`;
-    return s;
   }
   tinted(cls, text) {
     const span = document.createElement("span");

@@ -1,12 +1,14 @@
-// <tabletop-scanner-panel> — the camera cube scan.
+// <tabletop-scanner-panel> — the camera cube scan (rotate-and-collect).
 //
-// Show any face to the camera (held up or flat on the table), ANYWHERE in view — the frame
-// is captured WIDE + high-res and the whole thing is searched for a face's 3x3 sticker grid
-// (app-side digital PTZ: no need to center the cube in a box). Detection runs on a
-// scaled-down copy for speed and maps back to the full frame. Faces can be shown in any
-// order and any rotation; each is identified by center colour and auto-captured once still.
-// When all six are in it solves the per-face rotations for a solvable cube (orient.ts); a
-// misread leaves it unsolvable and asks you to re-show a face.
+// Turn the cube slowly (e.g. hold two opposite centers and spin the four sides; then the
+// other two). Each frame is captured WIDE + high-res and searched for a face's 3x3 sticker
+// grid; whenever a face passes the camera it's identified by center colour and its BEST
+// read (the frame with the most stickers actually seen — i.e. face-on, no glare) is kept.
+// Rotation sweeps every face through its clean angle, so there's no holding still and no
+// fighting glare. Detection runs on a scaled copy for speed and, once a face is found,
+// crops into its region (digital zoom) so the stickers are bigger. When all six faces are
+// collected it solves the per-face rotations for a solvable cube (orient.ts); if not yet
+// solvable, keep turning and better reads replace worse ones.
 //
 // Camera controls (focus/exposure/white-balance) are applied best-effort and the camera's
 // capabilities are logged, so we can see whether it also exposes native (digital) PTZ.
@@ -24,18 +26,17 @@ import {
   downscaleFrame,
 } from '../src/grid-detect.js';
 import { type OrientationResult, solveOrientations } from '../src/orient.js';
-import { SteadyDetector } from '../src/stability.js';
 import { FACES, type Face, type Frame, type RGB, type ScanResult } from '../src/types.js';
 
 const TICK_MS = 120;
 const IDENTIFY_TOL = 30; // max CIEDE2000 center↔anchor distance to accept a cube face
-const NAME: Record<Face, { name: string; sw: string }> = {
-  U: { name: 'white', sw: '#f6f7f8' },
-  R: { name: 'red', sw: '#d0202a' },
-  F: { name: 'green', sw: '#049e4a' },
-  D: { name: 'yellow', sw: '#ffd400' },
-  L: { name: 'orange', sw: '#ff6a00' },
-  B: { name: 'blue', sw: '#0057c8' },
+const NAME: Record<Face, { name: string }> = {
+  U: { name: 'white' },
+  R: { name: 'red' },
+  F: { name: 'green' },
+  D: { name: 'yellow' },
+  L: { name: 'orange' },
+  B: { name: 'blue' },
 };
 
 const TEMPLATE = `
@@ -65,10 +66,10 @@ const TEMPLATE = `
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
   <div class="box"></div>
-  <div class="hint">Show a cube face anywhere in view — I search the whole frame</div>
+  <div class="hint">Turn the cube slowly — each face is grabbed as it passes</div>
 </div>
 <div class="row2">
-  <div class="status" id="status">Press <b>Start camera</b>, then show a cube face to the camera.</div>
+  <div class="status" id="status">Press <b>Start camera</b>, then slowly turn the cube so every face faces the camera.</div>
   <div class="read" id="read"></div>
 </div>
 <div class="dots" id="dots"></div>
@@ -79,15 +80,12 @@ export class TabletopScannerPanel extends HTMLElement {
   private readonly root: ShadowRoot;
   cv: OpenCv | null = null;
 
-  private readonly captured = new Map<Face, RGB[]>();
-  private steady = new SteadyDetector({ framesNeeded: 3 });
+  private readonly captured = new Map<Face, { colors: RGB[]; real: number }>();
   private source: Awaited<ReturnType<typeof openCamera>> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private octx: CanvasRenderingContext2D | null = null;
   private stageEl: HTMLElement | null = null;
   private startGen = 0;
-  private flashUntil = 0;
-  private fixMode = false;
   private roi: { x: number; y: number; w: number; h: number } | null = null;
   private roiMiss = 0;
 
@@ -143,10 +141,8 @@ export class TabletopScannerPanel extends HTMLElement {
       if (gen !== this.startGen) return;
       this.applyCameraControls();
       this.captured.clear();
-      this.fixMode = false;
       this.roi = null;
       this.roiMiss = 0;
-      this.steady.reset();
       this.buildDots();
       this.btn('start').hidden = true;
       this.btn('start').disabled = false;
@@ -229,8 +225,8 @@ export class TabletopScannerPanel extends HTMLElement {
       }
       this.setStatus(
         candidates.length >= 4
-          ? `Found ${candidates.length} squares — line up a full face`
-          : 'Show a cube face to the camera (anywhere in view)',
+          ? `${candidates.length} squares — turn a full face toward the camera`
+          : 'Turn the cube slowly so each face faces the camera',
       );
       return;
     }
@@ -239,34 +235,31 @@ export class TabletopScannerPanel extends HTMLElement {
     const samples = grid.colors;
     this.showRead(samples);
     const face = this.identify(samples[4]!);
-    const steady = this.steady.push(full);
     if (!face) {
-      this.setStatus("That doesn't look like a cube face — center it in the box");
+      this.setStatus('Reading… turn a face toward the camera');
       return;
     }
-    if (performance.now() < this.flashUntil) return;
-    if (!steady) {
-      this.setStatus(
-        'Reading the ',
-        this.swatch(NAME[face].sw),
-        ` ${NAME[face].name} face — hold still…`,
-      );
-      return;
+    // Rotate-and-collect: as each face passes the camera, keep its BEST read (the frame
+    // where the most stickers were really seen — i.e. face-on, no glare). No holding still.
+    const prev = this.captured.get(face);
+    if (!prev || grid.real > prev.real) {
+      this.captured.set(face, { colors: samples, real: grid.real });
+      this.buildDots();
+      if (this.captured.size === 6) this.trySolve();
+      else
+        this.setStatus(
+          this.tinted('ok', `${NAME[face].name} ✓  ${this.captured.size}/6 — keep turning`),
+        );
+    } else {
+      this.setStatus(`Turning… ${this.captured.size}/6 faces — show any missing side`);
     }
-    if (this.captured.has(face) && !this.fixMode) {
-      this.setStatus(`Got the ${NAME[face].name} face ✓ — show another`);
-      return;
-    }
-    this.captured.set(face, samples);
-    this.steady.reset();
-    this.flashUntil = performance.now() + 600;
-    this.buildDots();
-    this.setStatus(this.tinted('ok', `Captured ${NAME[face].name} (${this.captured.size}/6)`));
-    if (this.captured.size === 6) this.trySolve();
   }
 
   private trySolve(): void {
-    const faces = Object.fromEntries(this.captured) as Record<Face, RGB[]>;
+    const faces = Object.fromEntries([...this.captured].map(([f, r]) => [f, r.colors])) as Record<
+      Face,
+      RGB[]
+    >;
     let res: OrientationResult;
     try {
       res = solveOrientations(faces);
@@ -282,10 +275,8 @@ export class TabletopScannerPanel extends HTMLElement {
       this.dispatchEvent(new CustomEvent<ScanResult>('scan-complete', { detail: res }));
       this.stop();
     } else {
-      this.fixMode = true;
-      this.setStatus(
-        this.tinted('err', "Colours don't form a solvable cube yet — re-show a face to fix it."),
-      );
+      // All six read but not solvable → a misread; keep turning to improve any face.
+      this.setStatus(this.tinted('err', 'Not solvable yet — keep turning so I re-read each face.'));
     }
   }
 
@@ -384,11 +375,6 @@ export class TabletopScannerPanel extends HTMLElement {
     const status = this.el('status');
     status.textContent = '';
     status.append(...parts);
-  }
-  private swatch(color: string): HTMLElement {
-    const s = document.createElement('span');
-    s.style.cssText = `display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;background:${color}`;
-    return s;
   }
   private tinted(cls: 'ok' | 'err', text: string): HTMLElement {
     const span = document.createElement('span');
