@@ -43,6 +43,7 @@ export {
   downscaleFrame,
   findGrid,
   patchColor,
+  ringColor,
 } from './grid-detect.js';
 
 export {

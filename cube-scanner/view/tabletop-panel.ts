@@ -99,6 +99,7 @@ export class TabletopScannerPanel extends HTMLElement {
   private pendingCount = 0;
   private frameNo = 0;
   private lastHud = 0;
+  private lastStuck = 0;
   private readonly debugLog: string[] = [];
 
   constructor() {
@@ -291,6 +292,7 @@ export class TabletopScannerPanel extends HTMLElement {
     if (!face) {
       this.pendingFace = null;
       this.pendingCount = 0;
+      this.logStuck(center); // record WHY: the center color and the two nearest cube colors
       this.setStatus('Reading… center color unclear — turn a face flat to the camera');
       return;
     }
@@ -345,6 +347,21 @@ export class TabletopScannerPanel extends HTMLElement {
       // All six read but not solvable → a misread; keep turning to improve any face.
       this.setStatus(this.tinted('err', 'Not solvable yet — keep turning so I re-read each face.'));
     }
+  }
+
+  /** Log (throttled) an unidentifiable center: its color and the two nearest cube colors.
+   *  This is what reveals a stuck face — e.g. a white center reading as blue over the logo. */
+  private logStuck(center: RGB): void {
+    const now = performance.now();
+    if (now - this.lastStuck < 1000) return;
+    this.lastStuck = now;
+    const ds = FACES.map((f) => ({ f, d: rgbDistance(center, CORNER_ANCHORS[f]) })).sort(
+      (a, b) => a.d - b.d,
+    );
+    const have = [...this.captured.keys()].join('') || '-';
+    this.log(
+      `unclear center=${center.map(Math.round).join(',')} near=${ds[0]!.f}(${Math.round(ds[0]!.d)}) ${ds[1]!.f}(${Math.round(ds[1]!.d)}) have=${have}`,
+    );
   }
 
   /** Live per-frame readout (throttled) — what the detector sees right now. */

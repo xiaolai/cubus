@@ -5829,6 +5829,23 @@ function findGrid(cands) {
   }
   return best ? { cells: best.cells, real: best.count } : null;
 }
+function ringColor(frame, cx, cy, r) {
+  const rs = [];
+  const gs = [];
+  const bs = [];
+  for (let k4 = 0; k4 < 12; k4++) {
+    const a = k4 / 12 * 2 * Math.PI;
+    const px = Math.round(cx + r * Math.cos(a));
+    const py = Math.round(cy + r * Math.sin(a));
+    if (px < 0 || px >= frame.width || py < 0 || py >= frame.height) continue;
+    const i = (py * frame.width + px) * 4;
+    rs.push(frame.data[i]);
+    gs.push(frame.data[i + 1]);
+    bs.push(frame.data[i + 2]);
+  }
+  const med = (a) => a.length ? a.sort((p4, q) => p4 - q)[a.length >> 1] : 0;
+  return [med(rs), med(gs), med(bs)];
+}
 function patchColor(frame, cx, cy, r) {
   const rs = [];
   const gs = [];
@@ -5915,7 +5932,9 @@ function detectStickerGrid(cv, frame) {
   const grid = g ? {
     cells: g.cells,
     real: g.real,
-    colors: g.cells.map((c2) => patchColor(frame, c2.cx, c2.cy, c2.w * 0.25))
+    colors: g.cells.map(
+      (c2, i) => i === 4 ? ringColor(frame, c2.cx, c2.cy, c2.w * 0.34) : patchColor(frame, c2.cx, c2.cy, c2.w * 0.25)
+    )
   } : null;
   return { candidates, grid };
 }
@@ -6056,6 +6075,7 @@ var TabletopScannerPanel = class extends HTMLElement {
   pendingCount = 0;
   frameNo = 0;
   lastHud = 0;
+  lastStuck = 0;
   debugLog = [];
   constructor() {
     super();
@@ -6231,6 +6251,7 @@ var TabletopScannerPanel = class extends HTMLElement {
     if (!face) {
       this.pendingFace = null;
       this.pendingCount = 0;
+      this.logStuck(center);
       this.setStatus("Reading\u2026 center color unclear \u2014 turn a face flat to the camera");
       return;
     }
@@ -6277,6 +6298,20 @@ var TabletopScannerPanel = class extends HTMLElement {
     } else {
       this.setStatus(this.tinted("err", "Not solvable yet \u2014 keep turning so I re-read each face."));
     }
+  }
+  /** Log (throttled) an unidentifiable center: its color and the two nearest cube colors.
+   *  This is what reveals a stuck face — e.g. a white center reading as blue over the logo. */
+  logStuck(center) {
+    const now = performance.now();
+    if (now - this.lastStuck < 1e3) return;
+    this.lastStuck = now;
+    const ds = FACES.map((f3) => ({ f: f3, d: rgbDistance(center, CORNER_ANCHORS[f3]) })).sort(
+      (a, b) => a.d - b.d
+    );
+    const have = [...this.captured.keys()].join("") || "-";
+    this.log(
+      `unclear center=${center.map(Math.round).join(",")} near=${ds[0].f}(${Math.round(ds[0].d)}) ${ds[1].f}(${Math.round(ds[1].d)}) have=${have}`
+    );
   }
   /** Live per-frame readout (throttled) — what the detector sees right now. */
   renderHud(cands, real, face, center) {

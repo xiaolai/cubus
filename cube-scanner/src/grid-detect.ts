@@ -170,6 +170,28 @@ export function findGrid(
   return best ? { cells: best.cells, real: best.count } : null;
 }
 
+/**
+ * Median color of a RING around (cx,cy) — reads a sticker's color while skipping a center
+ * logo (e.g. the GAN 冠 printed on the white center), which a central patch would sample.
+ */
+export function ringColor(frame: Frame, cx: number, cy: number, r: number): RGB {
+  const rs: number[] = [];
+  const gs: number[] = [];
+  const bs: number[] = [];
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * 2 * Math.PI;
+    const px = Math.round(cx + r * Math.cos(a));
+    const py = Math.round(cy + r * Math.sin(a));
+    if (px < 0 || px >= frame.width || py < 0 || py >= frame.height) continue;
+    const i = (py * frame.width + px) * 4;
+    rs.push(frame.data[i]!);
+    gs.push(frame.data[i + 1]!);
+    bs.push(frame.data[i + 2]!);
+  }
+  const med = (a: number[]): number => (a.length ? a.sort((p, q) => p - q)[a.length >> 1]! : 0);
+  return [med(rs), med(gs), med(bs)];
+}
+
 /** Median color of a small patch centred at (cx,cy) — samples the sticker's middle. */
 export function patchColor(frame: Frame, cx: number, cy: number, r: number): RGB {
   const rs: number[] = [];
@@ -292,11 +314,17 @@ export function detectStickerGrid(cv: OpenCv, frame: Frame): GridResult {
 
   const candidates = dedupeCells(raw);
   const g = findGrid(candidates);
+  // The 8 outer stickers: median of a central patch. The CENTER (index 4): a ring, so a
+  // printed center logo (the GAN 冠) is skipped and the true sticker color is read.
   const grid = g
     ? {
         cells: g.cells,
         real: g.real,
-        colors: g.cells.map((c) => patchColor(frame, c.cx, c.cy, c.w * 0.25)),
+        colors: g.cells.map((c, i) =>
+          i === 4
+            ? ringColor(frame, c.cx, c.cy, c.w * 0.34)
+            : patchColor(frame, c.cx, c.cy, c.w * 0.25),
+        ),
       }
     : null;
   return { candidates, grid };
