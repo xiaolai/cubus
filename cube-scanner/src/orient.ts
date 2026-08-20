@@ -7,7 +7,7 @@
 
 import Cube from 'cubejs';
 import { LOW_CONFIDENCE_THRESHOLD } from './assemble.js';
-import { ciede2000, toLab } from './color.js';
+import { hsvDistance } from './color.js';
 import { isStructurallyValid } from './facelet-cube.js';
 import { FACES, type Face, type RGB, type ScanResult } from './types.js';
 
@@ -26,10 +26,7 @@ export function classifyBalanced(
   const n = samples.length;
   const k = centers.length;
   const cap = Math.ceil(n / k);
-  const dist = samples.map((s) => {
-    const sl = toLab(s);
-    return centers.map((c) => ciede2000(sl, toLab(c)));
-  });
+  const dist = samples.map((s) => centers.map((c) => hsvDistance(s, c)));
   const pairs: { s: number; c: number; d: number }[] = [];
   for (let s = 0; s < n; s++) for (let c = 0; c < k; c++) pairs.push({ s, c, d: dist[s]![c]! });
   pairs.sort((a, b) => a.d - b.d);

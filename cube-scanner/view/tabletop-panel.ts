@@ -16,7 +16,7 @@
 // OpenCV.js is INJECTED via `cv`. Browser shell — the detector/solver underneath IS tested.
 
 import { openCamera } from '../src/camera.js';
-import { rgbDistance } from '../src/color.js';
+import { hsvDistance } from '../src/color.js';
 import { CORNER_ANCHORS } from '../src/corner-scan.js';
 import type { OpenCv } from '../src/detect.js';
 import {
@@ -29,7 +29,7 @@ import { type OrientationResult, solveOrientations } from '../src/orient.js';
 import { FACES, type Face, type Frame, type RGB, type ScanResult } from '../src/types.js';
 
 const TICK_MS = 120;
-const IDENTIFY_TOL = 36; // max CIEDE2000 center↔anchor distance to accept a cube face
+const IDENTIFY_TOL = 1.0; // max HSV center↔anchor distance to accept a cube face
 const IDENTIFY_MARGIN = 0.78; // nearest must be this fraction of the runner-up (lower = stricter)
 const NAME: Record<Face, { name: string }> = {
   U: { name: 'white' },
@@ -254,7 +254,7 @@ export class TabletopScannerPanel extends HTMLElement {
     let d1 = Number.POSITIVE_INFINITY;
     let d2 = Number.POSITIVE_INFINITY;
     for (const f of FACES) {
-      const d = rgbDistance(center, CORNER_ANCHORS[f]);
+      const d = hsvDistance(center, CORNER_ANCHORS[f]);
       if (d < d1) {
         d2 = d1;
         d1 = d;
@@ -390,7 +390,7 @@ export class TabletopScannerPanel extends HTMLElement {
     const now = performance.now();
     if (now - this.lastStuck < 1000) return;
     this.lastStuck = now;
-    const ds = FACES.map((f) => ({ f, d: rgbDistance(center, CORNER_ANCHORS[f]) })).sort(
+    const ds = FACES.map((f) => ({ f, d: hsvDistance(center, CORNER_ANCHORS[f]) })).sort(
       (a, b) => a.d - b.d,
     );
     const have = [...this.captured.keys()].join('') || '-';

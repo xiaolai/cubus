@@ -5524,15 +5524,34 @@ var yiq = useMode(definition_default28);
 // src/color.ts
 var toLabColor = converter_default("lab65");
 var dE00 = differenceCiede2000();
-function toLab([r, g, b]) {
-  const c2 = toLabColor({ mode: "rgb", r: r / 255, g: g / 255, b: b / 255 });
-  return { l: c2.l, a: c2.a, b: c2.b };
+function rgbToHsv([r, g, b]) {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const d = max - min;
+  let h = 0;
+  if (d > 1e-9) {
+    if (max === rn) h = (gn - bn) / d % 6;
+    else if (max === gn) h = (bn - rn) / d + 2;
+    else h = (rn - gn) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return [h, max === 0 ? 0 : d / max, max];
 }
-function ciede2000(a, b) {
-  return dE00({ mode: "lab65", l: a.l, a: a.a, b: a.b }, { mode: "lab65", l: b.l, a: b.a, b: b.b });
-}
-function rgbDistance(a, b) {
-  return ciede2000(toLab(a), toLab(b));
+function hsvDistance(a, b) {
+  const [ha, sa, va] = rgbToHsv(a);
+  const [hb, sb, vb] = rgbToHsv(b);
+  const ra = ha * Math.PI / 180;
+  const rb = hb * Math.PI / 180;
+  const wc = 1.6;
+  return Math.hypot(
+    wc * (sa * Math.cos(ra) - sb * Math.cos(rb)),
+    wc * (sa * Math.sin(ra) - sb * Math.sin(rb)),
+    va - vb
+  );
 }
 
 // src/assemble.ts
@@ -5919,10 +5938,7 @@ function classifyBalanced(samples, centers) {
   const n = samples.length;
   const k4 = centers.length;
   const cap = Math.ceil(n / k4);
-  const dist = samples.map((s) => {
-    const sl = toLab(s);
-    return centers.map((c2) => ciede2000(sl, toLab(c2)));
-  });
+  const dist = samples.map((s) => centers.map((c2) => hsvDistance(s, c2)));
   const pairs = [];
   for (let s = 0; s < n; s++) for (let c2 = 0; c2 < k4; c2++) pairs.push({ s, c: c2, d: dist[s][c2] });
   pairs.sort((a, b) => a.d - b.d);
@@ -6066,7 +6082,7 @@ function solveOrientations(faces, threshold = LOW_CONFIDENCE_THRESHOLD) {
 
 // view/tabletop-panel.ts
 var TICK_MS = 120;
-var IDENTIFY_TOL = 36;
+var IDENTIFY_TOL = 1;
 var IDENTIFY_MARGIN = 0.78;
 var NAME = {
   U: { name: "white" },
@@ -6275,7 +6291,7 @@ var TabletopScannerPanel = class extends HTMLElement {
     let d1 = Number.POSITIVE_INFINITY;
     let d2 = Number.POSITIVE_INFINITY;
     for (const f3 of FACES) {
-      const d = rgbDistance(center, CORNER_ANCHORS[f3]);
+      const d = hsvDistance(center, CORNER_ANCHORS[f3]);
       if (d < d1) {
         d2 = d1;
         d1 = d;
@@ -6394,7 +6410,7 @@ var TabletopScannerPanel = class extends HTMLElement {
     const now = performance.now();
     if (now - this.lastStuck < 1e3) return;
     this.lastStuck = now;
-    const ds = FACES.map((f3) => ({ f: f3, d: rgbDistance(center, CORNER_ANCHORS[f3]) })).sort(
+    const ds = FACES.map((f3) => ({ f: f3, d: hsvDistance(center, CORNER_ANCHORS[f3]) })).sort(
       (a, b) => a.d - b.d
     );
     const have = [...this.captured.keys()].join("") || "-";
