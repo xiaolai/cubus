@@ -1,89 +1,76 @@
-// <tabletop-scanner-panel> — the camera cube scan (rotate-and-collect).
+// <tabletop-scanner-panel> — fixed-grid cube scan (robust, à la Szostak21/Cube_Solver).
 //
-// Turn the cube slowly (e.g. hold two opposite centers and spin the four sides; then the
-// other two). Each frame is captured WIDE + high-res and searched for a face's 3x3 sticker
-// grid; whenever a face passes the camera it's identified by center colour and its BEST
-// read (the frame with the most stickers actually seen — i.e. face-on, no glare) is kept.
-// Rotation sweeps every face through its clean angle, so there's no holding still and no
-// fighting glare. Detection runs on a scaled copy for speed and, once a face is found,
-// crops into its region (digital zoom) so the stickers are bigger. When all six faces are
-// collected it solves the per-face rotations for a solvable cube (orient.ts); if not yet
-// solvable, keep turning and better reads replace worse ones.
-//
-// Camera controls (focus/exposure/white-balance) are applied best-effort and the camera's
-// capabilities are logged, so we can see whether it also exposes native (digital) PTZ.
-//
-// OpenCV.js is INJECTED via `cv`. Browser shell — the detector/solver underneath IS tested.
+// NO auto-detection and NO OpenCV. A fixed 3x3 grid is drawn on the video; you align a cube
+// face to fill it and it samples the nine cells at those KNOWN positions. This removes every
+// fragility of finding-the-cube (background squares, the logo, size/angle sluggishness) —
+// the scanner never searches, so the desk/skin can't be mistaken for the cube. Each face is
+// identified by its center colour (HSV), auto-captured once the frame holds still (or with
+// the Capture button); after six faces it solves the per-face rotations into a solvable cube
+// (orient.ts), disambiguating red↔orange by solvability. Browser shell; the solver is tested.
 
 import { type CameraDevice, listCameras, openCamera } from '../src/camera.js';
 import { hsvDistance } from '../src/color.js';
 import { CORNER_ANCHORS } from '../src/corner-scan.js';
-import type { OpenCv } from '../src/detect.js';
-import {
-  type StickerCell,
-  cropFrame,
-  detectStickerGrid,
-  downscaleFrame,
-} from '../src/grid-detect.js';
+import { type StickerCell, patchColor, ringColor } from '../src/grid-detect.js';
 import { type OrientationResult, solveOrientations } from '../src/orient.js';
+import { SteadyDetector } from '../src/stability.js';
 import { FACES, type Face, type Frame, type RGB, type ScanResult } from '../src/types.js';
 
-const TICK_MS = 120;
-const IDENTIFY_TOL = 1.0; // max HSV center↔anchor distance to accept a cube face
-const IDENTIFY_MARGIN = 0.78; // nearest must be this fraction of the runner-up (lower = stricter)
-const NAME: Record<Face, { name: string }> = {
-  U: { name: 'white' },
-  R: { name: 'red' },
-  F: { name: 'green' },
-  D: { name: 'yellow' },
-  L: { name: 'orange' },
-  B: { name: 'blue' },
+const TICK_MS = 100;
+const IDENTIFY_TOL = 1.0; // max HSV center↔anchor distance to accept a face
+const IDENTIFY_MARGIN = 0.82; // nearest must be this fraction of the runner-up (unambiguous)
+const GRID_FRAC = 0.56; // grid side as a fraction of the frame's short side
+const NAME: Record<Face, { name: string; sw: string }> = {
+  U: { name: 'white', sw: '#f6f7f8' },
+  R: { name: 'red', sw: '#d0202a' },
+  F: { name: 'green', sw: '#049e4a' },
+  D: { name: 'yellow', sw: '#ffd400' },
+  L: { name: 'orange', sw: '#ff6a00' },
+  B: { name: 'blue', sw: '#0057c8' },
 };
 
 const TEMPLATE = `
 <style>
   :host { display: block; font: 14px/1.5 -apple-system, system-ui, sans-serif; color: #e6edf3; }
+  .camsel { width: 100%; margin: 0 0 8px; padding: 6px; background: #0d1117; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 6px; font: inherit; }
   .stage { position: relative; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 4/3; }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
   canvas.ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  .box { position: absolute; inset: 0; margin: auto; width: 60%; aspect-ratio: 1;
-    border: 3px dashed rgba(255,255,255,.7); border-radius: 14px; pointer-events: none; }
   .hint { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; font-size: 12px;
     color: #fff; text-shadow: 0 1px 3px #000; pointer-events: none; }
   .row2 { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
   .status { min-height: 22px; font-weight: 600; flex: 1; } .status b { color: #fff; }
-  .read { display: grid; grid-template-columns: repeat(3, 14px); gap: 2px; }
-  .read i { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,.4); background: #161b22; }
+  .read { display: grid; grid-template-columns: repeat(3, 16px); gap: 2px; }
+  .read i { width: 16px; height: 16px; border-radius: 3px; border: 1px solid rgba(0,0,0,.4); background: #161b22; }
   .dots { display: flex; gap: 5px; margin: 10px 0 4px; }
-  .dots span { width: 28px; height: 10px; border-radius: 3px; background: #30363d; position: relative; }
+  .dots span { width: 28px; height: 10px; border-radius: 3px; background: #30363d; }
   .dots span.done { background: #3fb950; }
-  .row { display: flex; gap: 10px; margin-top: 6px; }
+  .row { display: flex; gap: 10px; margin-top: 6px; align-items: center; flex-wrap: wrap; }
   button { font: inherit; border: 0; border-radius: 7px; padding: 8px 16px; font-weight: 600; cursor: pointer; }
   button.primary { background: #58a6ff; color: #06122b; }
   button.ghost { background: #21262d; color: #e6edf3; border: 1px solid #30363d; padding: 6px 12px; font-weight: 400; font-size: 12px; }
   button[hidden] { display: none; }
   .dbg { margin: 8px 0 0; font: 11px/1.45 ui-monospace, Menlo, monospace; color: #8b949e;
-    white-space: pre-wrap; word-break: break-all; max-height: 170px; overflow: auto;
+    white-space: pre-wrap; word-break: break-all; max-height: 150px; overflow: auto;
     background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 6px; }
-  .camsel { width: 100%; margin: 0 0 8px; padding: 6px; background: #0d1117; color: #e6edf3;
-    border: 1px solid #30363d; border-radius: 6px; font: inherit; }
   .ok { color: #3fb950; } .err { color: #f85149; } .muted { color: #8b949e; }
 </style>
 <select class="camsel" id="camsel" hidden></select>
 <div class="stage">
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
-  <div class="box"></div>
-  <div class="hint">Turn the cube slowly — each face is grabbed as it passes</div>
+  <div class="hint">Fill the grid with one cube face, then hold still</div>
 </div>
 <div class="row2">
-  <div class="status" id="status">Press <b>Start camera</b>, then slowly turn the cube so every face faces the camera.</div>
+  <div class="status" id="status">Press <b>Start camera</b>, then fill the grid with a cube face.</div>
   <div class="read" id="read"></div>
 </div>
 <div class="dots" id="dots"></div>
 <pre class="dbg" id="dbg"></pre>
 <div class="row">
   <button class="primary" id="start">Start camera</button>
+  <button class="primary" id="capture" hidden>Capture face</button>
   <button class="ghost" id="retry" hidden>Retry</button>
   <button class="ghost" id="copydbg">Copy debug</button>
 </div>
@@ -91,19 +78,20 @@ const TEMPLATE = `
 
 export class TabletopScannerPanel extends HTMLElement {
   private readonly root: ShadowRoot;
-  cv: OpenCv | null = null;
+  cv: unknown = null; // ignored — the fixed-grid scan needs no OpenCV
 
-  private readonly captured = new Map<Face, { colors: RGB[]; real: number }>();
+  private readonly captured = new Map<Face, RGB[]>();
   private source: Awaited<ReturnType<typeof openCamera>> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private octx: CanvasRenderingContext2D | null = null;
   private stageEl: HTMLElement | null = null;
+  private steady = new SteadyDetector({ framesNeeded: 2 });
   private startGen = 0;
   private deviceId: string | undefined;
-  private roi: { x: number; y: number; w: number; h: number } | null = null;
-  private roiMiss = 0;
   private pendingFace: Face | null = null;
   private pendingCount = 0;
+  private lastColors: RGB[] | null = null;
+  private lastFace: Face | null = null;
   private frameNo = 0;
   private lastHud = 0;
   private lastStuck = 0;
@@ -122,15 +110,42 @@ export class TabletopScannerPanel extends HTMLElement {
     this.buildDots();
     this.buildRead();
     this.btn('start').addEventListener('click', () => void this.start());
-    this.btn('copydbg').addEventListener('click', () => void this.copyDebug());
+    this.btn('capture').addEventListener('click', () => this.captureNow());
     this.btn('retry').addEventListener('click', () => this.retry());
+    this.btn('copydbg').addEventListener('click', () => void this.copyDebug());
     this.el<HTMLSelectElement>('camsel').addEventListener('change', (e) => {
       void this.changeCamera((e.target as HTMLSelectElement).value);
     });
     void this.refreshCameras();
   }
 
-  /** Populate the camera picker; show it only when more than one camera is present. */
+  disconnectedCallback(): void {
+    this.stop();
+  }
+
+  stop(): void {
+    this.startGen++;
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    this.source?.stop();
+    this.source = null;
+    const start = this.root.getElementById('start') as HTMLButtonElement | null;
+    if (start) start.hidden = false;
+    const cap = this.root.getElementById('capture') as HTMLButtonElement | null;
+    if (cap) cap.hidden = true;
+  }
+
+  private el<T extends HTMLElement>(id: string): T {
+    const n = this.root.getElementById(id);
+    if (!n) throw new Error(`tabletop-panel: missing #${id}`);
+    return n as T;
+  }
+  private btn(id: string): HTMLButtonElement {
+    return this.el<HTMLButtonElement>(id);
+  }
+
   private async refreshCameras(): Promise<void> {
     let cams: CameraDevice[] = [];
     try {
@@ -150,7 +165,6 @@ export class TabletopScannerPanel extends HTMLElement {
     sel.hidden = cams.length <= 1;
   }
 
-  /** Switch to a different camera and (if scanning) reopen the stream on it. */
   private async changeCamera(deviceId: string): Promise<void> {
     if ((deviceId || undefined) === this.deviceId) return;
     this.deviceId = deviceId || undefined;
@@ -161,77 +175,10 @@ export class TabletopScannerPanel extends HTMLElement {
     }
   }
 
-  /** Drop all captured faces and scan again from scratch (camera stays on). */
-  private retry(): void {
-    this.captured.clear();
-    this.roi = null;
-    this.roiMiss = 0;
-    this.pendingFace = null;
-    this.pendingCount = 0;
-    this.btn('retry').hidden = true;
-    this.buildDots();
-    this.log('retry — cleared all faces');
-    this.setStatus('Restarted — turn the cube so every face faces the camera.');
-  }
-
-  /** Copy the running debug log to the clipboard so it can be pasted for diagnosis. */
-  private async copyDebug(): Promise<void> {
-    const text = this.debugLog.join('\n') || '(no debug yet — start the camera and turn the cube)';
-    try {
-      await navigator.clipboard.writeText(text);
-      this.setStatus(this.tinted('ok', 'Debug log copied — paste it to report.'));
-    } catch {
-      console.log('[scan] debug log:\n', text); // clipboard blocked — fall back to console
-      this.setStatus('Debug log printed to the console (clipboard blocked).');
-    }
-  }
-
-  /** Record a debug line (shown on screen, kept for Copy debug, echoed to the console). */
-  private log(line: string): void {
-    this.debugLog.push(line);
-    if (this.debugLog.length > 400) this.debugLog.shift();
-    console.log('[scan]', line);
-    this.refreshDbg();
-  }
-
-  /** Paint the live HUD line + the recent log onto the on-screen debug area (screenshot-able). */
-  private refreshDbg(): void {
-    const dbg = this.root.getElementById('dbg');
-    if (dbg)
-      dbg.textContent = [this.hudLine, ...this.debugLog.slice(-12)].filter(Boolean).join('\n');
-  }
-
-  disconnectedCallback(): void {
-    this.stop();
-  }
-
-  stop(): void {
-    this.startGen++;
-    if (this.timer !== null) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    this.source?.stop();
-    this.source = null;
-    const start = this.root.getElementById('start') as HTMLButtonElement | null;
-    if (start) start.hidden = false;
-  }
-
-  private el<T extends HTMLElement>(id: string): T {
-    const n = this.root.getElementById(id);
-    if (!n) throw new Error(`tabletop-panel: missing #${id}`);
-    return n as T;
-  }
-  private btn(id: string): HTMLButtonElement {
-    return this.el<HTMLButtonElement>(id);
-  }
-
   private async start(): Promise<void> {
     this.btn('start').disabled = true;
     const gen = ++this.startGen;
     try {
-      // Capture WIDE + high-res so the cube can sit anywhere in view and still be read
-      // (app-side digital PTZ: search the whole frame, no need to center it).
       this.source = await openCamera(this.el<HTMLVideoElement>('video'), {
         width: 1280,
         height: 720,
@@ -239,21 +186,21 @@ export class TabletopScannerPanel extends HTMLElement {
       });
       if (gen !== this.startGen) return;
       this.applyCameraControls();
-      void this.refreshCameras(); // labels are available now the grant exists
+      void this.refreshCameras();
       this.captured.clear();
-      this.roi = null;
-      this.roiMiss = 0;
       this.pendingFace = null;
       this.pendingCount = 0;
       this.frameNo = 0;
       this.debugLog.length = 0;
       this.hudLine = '';
       this.el('dbg').textContent = '';
-      this.btn('retry').hidden = true;
-      this.log('start — turn the cube slowly');
+      this.steady.reset();
+      this.log('start — fill the grid with each face');
       this.buildDots();
       this.btn('start').hidden = true;
       this.btn('start').disabled = false;
+      this.btn('capture').hidden = false;
+      this.btn('retry').hidden = true;
       this.timer = setInterval(() => this.onTick(), TICK_MS);
     } catch (err) {
       if (gen !== this.startGen) return;
@@ -264,7 +211,7 @@ export class TabletopScannerPanel extends HTMLElement {
     }
   }
 
-  /** Log the camera's capabilities and best-effort enable continuous focus/exposure/WB. */
+  /** Best-effort continuous focus/exposure/white-balance + log the camera capabilities. */
   private applyCameraControls(): void {
     const stream = this.el<HTMLVideoElement>('video').srcObject as MediaStream | null;
     const track = stream?.getVideoTracks()[0];
@@ -285,11 +232,20 @@ export class TabletopScannerPanel extends HTMLElement {
       track.applyConstraints({ advanced } as unknown as MediaTrackConstraints).catch(() => {});
   }
 
-  /**
-   * Identify a face by its center color, but only if UNAMBIGUOUS: nearest anchor within
-   * IDENTIFY_TOL and clearly closer than the runner-up. A glare/gray/between-colors center
-   * returns null → no capture (this is what stops phantom U/D captures from a misread).
-   */
+  /** The nine fixed sampling cells, in reading order, for a frame of the given size. */
+  private gridCells(fw: number, fh: number): StickerCell[] {
+    const side = Math.min(fw, fh) * GRID_FRAC;
+    const cell = side / 3;
+    const ox = (fw - side) / 2;
+    const oy = (fh - side) / 2;
+    const cells: StickerCell[] = [];
+    for (let r = 0; r < 3; r++)
+      for (let c = 0; c < 3; c++)
+        cells.push({ cx: ox + (c + 0.5) * cell, cy: oy + (r + 0.5) * cell, w: cell });
+    return cells;
+  }
+
+  /** Identify a face by center color (HSV) — only if unambiguous, else null. */
   private identify(center: RGB): Face | null {
     let best: Face | null = null;
     let d1 = Number.POSITIVE_INFINITY;
@@ -308,10 +264,7 @@ export class TabletopScannerPanel extends HTMLElement {
   }
 
   private onTick(): void {
-    if (!this.source || !this.cv) {
-      if (!this.cv) this.setStatus('Warming up the detector…');
-      return;
-    }
+    if (!this.source) return;
     let full: Frame;
     try {
       full = this.source.grab();
@@ -319,90 +272,76 @@ export class TabletopScannerPanel extends HTMLElement {
       return;
     }
     this.frameNo++;
-    // Auto-zoom: once a face is found, detect INSIDE its region (cropped + upscaled) so the
-    // stickers are bigger and detection is easier — digital zoom, no camera motion. Search
-    // the whole frame again after a few misses.
-    const roi = this.roi;
-    const detSrc = roi ? cropFrame(full, roi.x, roi.y, roi.w, roi.h) : full;
-    const ox = roi ? roi.x : 0;
-    const oy = roi ? roi.y : 0;
-    const { frame: small, scale } = downscaleFrame(detSrc, 960);
-    const { candidates, grid } = detectStickerGrid(this.cv, small);
-    const back = (c: StickerCell): StickerCell => ({
-      cx: c.cx / scale + ox,
-      cy: c.cy / scale + oy,
-      w: c.w / scale,
-    });
-    const cells = grid ? grid.cells.map(back) : [];
-    this.drawOverlay(full, candidates.map(back), cells);
-    if (!grid) {
-      this.showRead(null);
-      this.pendingFace = null;
-      this.pendingCount = 0;
-      this.renderHud(candidates.length, 0, null, [0, 0, 0]);
-      if (roi && ++this.roiMiss > 6) {
-        this.roi = null; // lost it — zoom back out and search the whole frame
-        this.roiMiss = 0;
-      }
-      this.setStatus(
-        candidates.length >= 4
-          ? `${candidates.length} squares — turn a full face toward the camera`
-          : 'Turn the cube slowly so each face faces the camera',
-      );
-      return;
-    }
-    this.roi = this.faceRoi(cells, full); // lock + zoom onto this face next frame
-    this.roiMiss = 0;
-    const samples = grid.colors;
-    this.showRead(samples);
-    const center = samples[4]!;
+    const cells = this.gridCells(full.width, full.height);
+    const colors = cells.map((c, i) =>
+      i === 4 ? ringColor(full, c.cx, c.cy, c.w * 0.34) : patchColor(full, c.cx, c.cy, c.w * 0.28),
+    );
+    this.lastColors = colors;
+    const center = colors[4]!;
     const face = this.identify(center);
-    this.renderHud(candidates.length, grid.real, face, center);
+    this.lastFace = face;
+    const steady = this.steady.push(full);
+    this.drawGrid(full, cells, face);
+    this.showRead(colors);
+    this.renderHud(face, center, steady);
+
     if (!face) {
       this.pendingFace = null;
       this.pendingCount = 0;
-      this.logStuck(center); // record WHY: the center color and the two nearest cube colors
-      this.setStatus('Reading… center color unclear — turn a face flat to the camera');
+      this.logStuck(center);
+      this.setStatus('Fill the grid with a cube face — center color unclear');
       return;
     }
-    // Stability: require the SAME confident face for a few frames with a near-complete read
-    // before capturing, so a transient glare/edge misread cannot add a phantom face.
     if (face === this.pendingFace) this.pendingCount++;
     else {
       this.pendingFace = face;
       this.pendingCount = 1;
     }
-    if (this.pendingCount < 3 || grid.real < 8) {
-      this.setStatus(`Reading ${NAME[face].name}… hold it a moment`);
+    if (this.captured.has(face)) {
+      this.setStatus(
+        'Have the ',
+        this.swatch(NAME[face].sw),
+        ` ${NAME[face].name} face ✓ — show another`,
+      );
       return;
     }
-    // Rotate-and-collect: keep the BEST read per face (most stickers really seen). Do NOT
-    // overwrite a good read with a worse one — that degraded clean reads and never converged.
-    const prev = this.captured.get(face);
-    if (!prev || grid.real > prev.real) {
-      this.captured.set(face, { colors: samples, real: grid.real });
-      this.log(
-        `cap ${face}(${NAME[face].name}) real=${grid.real} center=${center.map(Math.round).join(',')} n=${this.captured.size}`,
+    if (!steady || this.pendingCount < 2) {
+      this.setStatus(
+        'Reading the ',
+        this.swatch(NAME[face].sw),
+        ` ${NAME[face].name} face — hold still…`,
       );
-      this.buildDots();
-      if (this.captured.size === 6) this.trySolve();
-      else if (!prev)
-        this.setStatus(
-          this.tinted('ok', `${NAME[face].name} ✓  ${this.captured.size}/6 — keep turning`),
-        );
+      return;
     }
+    this.captureFace(face, colors);
+  }
+
+  private captureFace(face: Face, colors: RGB[]): void {
+    this.captured.set(face, colors);
+    this.log(
+      `cap ${face}(${NAME[face].name}) center=${colors[4]!.map(Math.round).join(',')} n=${this.captured.size}`,
+    );
+    this.buildDots();
+    if (this.captured.size === 6) this.trySolve();
+    else
+      this.setStatus(
+        this.tinted('ok', `${NAME[face].name} ✓  ${this.captured.size}/6 — show another face`),
+      );
+  }
+
+  /** Manual capture: grab whatever face is aligned right now (overwrites if already have it). */
+  private captureNow(): void {
+    if (this.lastFace && this.lastColors) this.captureFace(this.lastFace, this.lastColors);
+    else this.setStatus('No cube face in the grid yet — fill the grid first.');
   }
 
   private trySolve(): void {
-    const faces = Object.fromEntries([...this.captured].map(([f, r]) => [f, r.colors])) as Record<
-      Face,
-      RGB[]
-    >;
+    const faces = Object.fromEntries(this.captured) as Record<Face, RGB[]>;
     let res: OrientationResult;
     try {
       res = solveOrientations(faces);
     } catch (e) {
-      this.log(`solve ERROR ${(e as Error)?.message ?? e}`); // fail loud, don't swallow
+      this.log(`solve ERROR ${(e as Error)?.message ?? e}`);
       return;
     }
     this.log(`solve valid=${res.valid} facelets=${res.facelets}`);
@@ -415,75 +354,28 @@ export class TabletopScannerPanel extends HTMLElement {
       this.dispatchEvent(new CustomEvent<ScanResult>('scan-complete', { detail: res }));
       this.stop();
     } else {
-      // All six read but not solvable → a colour was misread. Say so loudly and offer Retry;
-      // meanwhile fresh re-shows of any face keep replacing reads (refreshing above).
       this.btn('retry').hidden = false;
       this.setStatus(
-        this.tinted('err', '⚠ All 6 read, but a colour was misread (not a solvable cube).'),
-        ' Turn a face to re-read it, or press Retry.',
+        this.tinted('err', '⚠ Colors don’t form a solvable cube.'),
+        ' Re-capture any face by filling the grid, or press Retry.',
       );
+      // Allow re-capturing already-scanned faces to fix a misread.
+      this.captured.clear();
+      for (const [f, c] of Object.entries(faces)) this.captured.set(f as Face, c);
     }
   }
 
-  /** Log (throttled) an unidentifiable center: its color and the two nearest cube colors.
-   *  This is what reveals a stuck face — e.g. a white center reading as blue over the logo. */
-  private logStuck(center: RGB): void {
-    const now = performance.now();
-    if (now - this.lastStuck < 1000) return;
-    this.lastStuck = now;
-    const ds = FACES.map((f) => ({ f, d: hsvDistance(center, CORNER_ANCHORS[f]) })).sort(
-      (a, b) => a.d - b.d,
-    );
-    const have = [...this.captured.keys()].join('') || '-';
-    this.log(
-      `unclear center=${center.map(Math.round).join(',')} near=${ds[0]!.f}(${Math.round(ds[0]!.d)}) ${ds[1]!.f}(${Math.round(ds[1]!.d)}) have=${have}`,
-    );
+  private retry(): void {
+    this.captured.clear();
+    this.pendingFace = null;
+    this.pendingCount = 0;
+    this.btn('retry').hidden = true;
+    this.buildDots();
+    this.log('retry — cleared all faces');
+    this.setStatus('Restarted — fill the grid with each face.');
   }
 
-  /** Live per-frame readout (throttled) — what the detector sees right now. */
-  private renderHud(cands: number, real: number, face: Face | null, center: RGB): void {
-    const now = performance.now();
-    if (now - this.lastHud < 250) return; // ~4 Hz is enough to read
-    this.lastHud = now;
-    const have = [...this.captured.keys()].join('') || '-';
-    this.hudLine =
-      `f${this.frameNo} cand=${cands} grid=${real}/9 face=${face ?? '-'} ` +
-      `center=${center.map(Math.round).join(',')} have=${have}`;
-    this.refreshDbg();
-  }
-
-  /** Bounding box of a found face plus margin, clamped to the frame — the next zoom region. */
-  private faceRoi(
-    cells: readonly StickerCell[],
-    full: Frame,
-  ): { x: number; y: number; w: number; h: number } {
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    for (const c of cells) {
-      minX = Math.min(minX, c.cx - c.w / 2);
-      minY = Math.min(minY, c.cy - c.w / 2);
-      maxX = Math.max(maxX, c.cx + c.w / 2);
-      maxY = Math.max(maxY, c.cy + c.w / 2);
-    }
-    const mx = (maxX - minX) * 0.4;
-    const my = (maxY - minY) * 0.4;
-    const x = Math.max(0, minX - mx);
-    const y = Math.max(0, minY - my);
-    return {
-      x,
-      y,
-      w: Math.min(full.width - x, maxX - minX + 2 * mx),
-      h: Math.min(full.height - y, maxY - minY + 2 * my),
-    };
-  }
-
-  private drawOverlay(
-    frame: Frame,
-    candidates: readonly StickerCell[],
-    gridCells: readonly StickerCell[],
-  ): void {
+  private drawGrid(frame: Frame, cells: readonly StickerCell[], face: Face | null): void {
     const ctx = this.octx;
     if (!ctx) return;
     const c = this.el<HTMLCanvasElement>('ov');
@@ -493,23 +385,11 @@ export class TabletopScannerPanel extends HTMLElement {
       if (this.stageEl) this.stageEl.style.aspectRatio = `${frame.width} / ${frame.height}`;
     }
     ctx.clearRect(0, 0, frame.width, frame.height);
-    const inGrid = new Set(gridCells.map((g) => `${g.cx},${g.cy}`));
-    // Every candidate square dim, so near-misses are visible…
-    ctx.lineWidth = Math.max(1, frame.width / 320);
-    ctx.strokeStyle = 'rgba(210,153,34,0.7)';
-    for (const cell of candidates) {
-      if (inGrid.has(`${cell.cx},${cell.cy}`)) continue;
-      ctx.strokeRect(cell.cx - cell.w / 2, cell.cy - cell.w / 2, cell.w, cell.w);
-    }
-    // …and the locked 3x3 bright green.
-    ctx.lineWidth = Math.max(2, frame.width / 200);
-    ctx.strokeStyle = '#3fb950';
-    ctx.fillStyle = 'rgba(63,185,80,0.15)';
-    for (const cell of gridCells) {
-      ctx.beginPath();
-      ctx.rect(cell.cx - cell.w / 2, cell.cy - cell.w / 2, cell.w, cell.w);
-      ctx.fill();
-      ctx.stroke();
+    ctx.lineWidth = Math.max(2, frame.width / 240);
+    ctx.strokeStyle = face ? '#3fb950' : 'rgba(255,255,255,0.85)';
+    for (const cell of cells) {
+      const s = cell.w * 0.92;
+      ctx.strokeRect(cell.cx - s / 2, cell.cy - s / 2, s, s);
     }
   }
 
@@ -534,19 +414,68 @@ export class TabletopScannerPanel extends HTMLElement {
     const cells = this.el('read').querySelectorAll('i');
     for (let i = 0; i < 9; i++) {
       const cell = cells[i] as HTMLElement;
-      if (!samples) {
-        cell.style.background = '#161b22';
-      } else {
+      if (!samples) cell.style.background = '#161b22';
+      else {
         const [r, g, b] = samples[i]!;
         cell.style.background = `rgb(${r}, ${g}, ${b})`;
       }
     }
   }
 
+  private renderHud(face: Face | null, center: RGB, steady: boolean): void {
+    const now = performance.now();
+    if (now - this.lastHud < 200) return;
+    this.lastHud = now;
+    const have = [...this.captured.keys()].join('') || '-';
+    this.hudLine = `f${this.frameNo} face=${face ?? '-'} center=${center.map(Math.round).join(',')} steady=${steady} have=${have}`;
+    this.refreshDbg();
+  }
+
+  private logStuck(center: RGB): void {
+    const now = performance.now();
+    if (now - this.lastStuck < 1000) return;
+    this.lastStuck = now;
+    const ds = FACES.map((f) => ({ f, d: hsvDistance(center, CORNER_ANCHORS[f]) })).sort(
+      (a, b) => a.d - b.d,
+    );
+    this.log(
+      `unclear center=${center.map(Math.round).join(',')} near=${ds[0]!.f}(${ds[0]!.d.toFixed(2)}) ${ds[1]!.f}(${ds[1]!.d.toFixed(2)})`,
+    );
+  }
+
+  private async copyDebug(): Promise<void> {
+    const text = this.debugLog.join('\n') || '(no debug yet)';
+    try {
+      await navigator.clipboard.writeText(text);
+      this.setStatus(this.tinted('ok', 'Debug log copied.'));
+    } catch {
+      console.log('[scan] debug log:\n', text);
+      this.setStatus('Debug log printed to the console.');
+    }
+  }
+
+  private log(line: string): void {
+    this.debugLog.push(line);
+    if (this.debugLog.length > 400) this.debugLog.shift();
+    console.log('[scan]', line);
+    this.refreshDbg();
+  }
+
+  private refreshDbg(): void {
+    const dbg = this.root.getElementById('dbg');
+    if (dbg)
+      dbg.textContent = [this.hudLine, ...this.debugLog.slice(-11)].filter(Boolean).join('\n');
+  }
+
   private setStatus(...parts: (string | Node)[]): void {
     const status = this.el('status');
     status.textContent = '';
     status.append(...parts);
+  }
+  private swatch(color: string): HTMLElement {
+    const s = document.createElement('span');
+    s.style.cssText = `display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;background:${color}`;
+    return s;
   }
   private tinted(cls: 'ok' | 'err', text: string): HTMLElement {
     const span = document.createElement('span');

@@ -5715,126 +5715,6 @@ var CORNER_ANCHORS = {
 };
 
 // src/grid-detect.ts
-function looksLikeSticker([r, g, b]) {
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const sat = max > 0 ? (max - min) / max : 0;
-  const val = max / 255;
-  return sat >= 0.35 || val >= 0.82 && sat < 0.2;
-}
-function downscaleFrame(frame, targetW) {
-  if (frame.width <= targetW) return { frame, scale: 1 };
-  const scale = targetW / frame.width;
-  const w = Math.max(1, Math.round(frame.width * scale));
-  const h = Math.max(1, Math.round(frame.height * scale));
-  const data = new Uint8ClampedArray(w * h * 4);
-  for (let y = 0; y < h; y++) {
-    const sy = Math.min(frame.height - 1, Math.floor(y / scale));
-    for (let x = 0; x < w; x++) {
-      const sx = Math.min(frame.width - 1, Math.floor(x / scale));
-      const si = (sy * frame.width + sx) * 4;
-      const di = (y * w + x) * 4;
-      data[di] = frame.data[si];
-      data[di + 1] = frame.data[si + 1];
-      data[di + 2] = frame.data[si + 2];
-      data[di + 3] = 255;
-    }
-  }
-  return { frame: { data, width: w, height: h }, scale };
-}
-function dedupeCells(cands) {
-  const kept = [];
-  for (const c2 of cands) {
-    if (!kept.some((k4) => Math.hypot(k4.cx - c2.cx, k4.cy - c2.cy) < Math.min(k4.w, c2.w) * 0.4))
-      kept.push(c2);
-  }
-  return kept;
-}
-function keepDominantSize(cands) {
-  if (cands.length < 9) return [...cands];
-  const near = (a, b) => a >= b * 0.65 && a <= b * 1.5;
-  let bestW = cands[0].w;
-  let bestCount = -1;
-  for (const c2 of cands) {
-    let n = 0;
-    for (const o of cands) if (near(o.w, c2.w)) n++;
-    if (n > bestCount) {
-      bestCount = n;
-      bestW = c2.w;
-    }
-  }
-  return cands.filter((c2) => near(c2.w, bestW));
-}
-var ROLE = [-1, 0, 1];
-var MIN_GRID_CELLS = 7;
-function gridFrom(cands, i) {
-  const a = cands[i];
-  const others = [];
-  for (let j = 0; j < cands.length; j++) {
-    if (j === i) continue;
-    const dx = cands[j].cx - a.cx;
-    const dy = cands[j].cy - a.cy;
-    const d = Math.hypot(dx, dy);
-    if (d > 1) others.push({ j, dx, dy, d });
-  }
-  if (others.length < 2) return null;
-  others.sort((p4, q) => p4.d - q.d);
-  const u = others[0];
-  let v = null;
-  for (const o of others) {
-    const cos = (o.dx * u.dx + o.dy * u.dy) / (o.d * u.d);
-    const cross = u.dx * o.dy - u.dy * o.dx;
-    if (Math.abs(cos) < 0.55 && o.d > u.d * 0.5 && o.d < u.d * 2 && cross > 0) {
-      v = o;
-      break;
-    }
-  }
-  if (!v) return null;
-  const tol = Math.min(u.d, v.d) * 0.6;
-  let best = null;
-  for (const rj of ROLE) {
-    for (const ri of ROLE) {
-      const cells = [];
-      const used = /* @__PURE__ */ new Set();
-      let count = 0;
-      for (const gj of ROLE) {
-        for (const gi of ROLE) {
-          const px = a.cx + (gi - ri) * u.dx + (gj - rj) * v.dx;
-          const py = a.cy + (gi - ri) * u.dy + (gj - rj) * v.dy;
-          let bi = -1;
-          let bd = tol;
-          for (let k4 = 0; k4 < cands.length; k4++) {
-            if (used.has(k4)) continue;
-            const d = Math.hypot(cands[k4].cx - px, cands[k4].cy - py);
-            if (d < bd) {
-              bd = d;
-              bi = k4;
-            }
-          }
-          if (bi >= 0) {
-            used.add(bi);
-            cells.push(cands[bi]);
-            count++;
-          } else {
-            cells.push({ cx: px, cy: py, w: a.w });
-          }
-        }
-      }
-      if (count >= MIN_GRID_CELLS && (!best || count > best.count)) best = { cells, count };
-    }
-  }
-  return best;
-}
-function findGrid(cands) {
-  if (cands.length < MIN_GRID_CELLS) return null;
-  let best = null;
-  for (let i = 0; i < cands.length; i++) {
-    const res = gridFrom(cands, i);
-    if (res && (!best || res.count > best.count)) best = res;
-    if (best && best.count === 9) break;
-  }
-  return best ? { cells: best.cells, real: best.count } : null;
-}
 function ringColor(frame, cx, cy, r) {
   const rs = [];
   const gs = [];
@@ -5870,83 +5750,6 @@ function patchColor(frame, cx, cy, r) {
   }
   const med = (a) => a.length ? a.sort((p4, q) => p4 - q)[a.length >> 1] : 0;
   return [med(rs), med(gs), med(bs)];
-}
-function cropFrame(frame, rx, ry, rw, rh) {
-  const x = Math.max(0, Math.min(frame.width - 1, Math.round(rx)));
-  const y = Math.max(0, Math.min(frame.height - 1, Math.round(ry)));
-  const w = Math.max(1, Math.min(frame.width - x, Math.round(rw)));
-  const h = Math.max(1, Math.min(frame.height - y, Math.round(rh)));
-  const data = new Uint8ClampedArray(w * h * 4);
-  for (let j = 0; j < h; j++) {
-    const srow = ((y + j) * frame.width + x) * 4;
-    const drow = j * w * 4;
-    for (let k4 = 0; k4 < w * 4; k4++) data[drow + k4] = frame.data[srow + k4];
-  }
-  return { data, width: w, height: h };
-}
-function collectCandidates(cv, binary, frame, minW, maxW, out) {
-  const contours = new cv.MatVector();
-  const hierarchy = new cv.Mat();
-  try {
-    cv.findContours(binary, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-    for (let i = 0; i < contours.size(); i++) {
-      const c2 = contours.get(i);
-      const rect = cv.boundingRect(c2);
-      const { width: w, height: h } = rect;
-      const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
-      const solidity = w * h > 0 ? Math.abs(cv.contourArea(c2)) / (w * h) : 0;
-      if (w >= minW && w <= maxW && aspect >= 0.5 && solidity > 0.35) {
-        const cx = rect.x + w / 2;
-        const cy = rect.y + h / 2;
-        if (looksLikeSticker(patchColor(frame, cx, cy, w * 0.2))) out.push({ cx, cy, w });
-      }
-      c2.delete();
-    }
-  } finally {
-    contours.delete();
-    hierarchy.delete();
-  }
-}
-function detectStickerGrid(cv, frame) {
-  const src = cv.matFromImageData(frame);
-  const gray = new cv.Mat();
-  const edges = new cv.Mat();
-  const thresh = new cv.Mat();
-  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-  const cleanup = [src, gray, edges, thresh, kernel];
-  const minW = frame.width * 0.02;
-  const maxW = frame.width * 0.5;
-  const raw = [];
-  try {
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
-    const bin = new cv.Mat();
-    const otsu = cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
-    bin.delete();
-    const hi = otsu >= 1 ? otsu : 150;
-    cv.Canny(gray, edges, 0.5 * hi, hi);
-    cv.dilate(edges, edges, kernel);
-    collectCandidates(cv, edges, frame, minW, maxW, raw);
-    const block = Math.max(3, Math.round(frame.width * 0.04) | 1);
-    cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, block, 6);
-    collectCandidates(cv, thresh, frame, minW, maxW, raw);
-  } finally {
-    for (const m of cleanup) m.delete();
-  }
-  const candidates = keepDominantSize(dedupeCells(raw));
-  const g = findGrid(candidates);
-  const grid = g ? {
-    cells: g.cells,
-    real: g.real,
-    colors: g.cells.map(
-      (c2, i) => (
-        // Center: a wider ring (0.40w) to fully clear a large center logo (the GAN 冠),
-        // which was bleeding blue into the white face's center read.
-        i === 4 ? ringColor(frame, c2.cx, c2.cy, c2.w * 0.4) : patchColor(frame, c2.cx, c2.cy, c2.w * 0.25)
-      )
-    )
-  } : null;
-  return { candidates, grid };
 }
 
 // src/orient.ts
@@ -6097,62 +5900,106 @@ function solveOrientations(faces, threshold = LOW_CONFIDENCE_THRESHOLD) {
   return { facelets, valid: false, confidence: min, lowConfidence };
 }
 
+// src/stability.ts
+function frameDifference(a, b) {
+  if (a.width !== b.width || a.height !== b.height) return Number.POSITIVE_INFINITY;
+  const stepX = Math.max(1, Math.floor(a.width / 32));
+  const stepY = Math.max(1, Math.floor(a.height / 32));
+  let sum = 0;
+  let n = 0;
+  for (let y = 0; y < a.height; y += stepY) {
+    for (let x = 0; x < a.width; x += stepX) {
+      const i = (y * a.width + x) * 4;
+      sum += Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
+      n += 3;
+    }
+  }
+  return n ? sum / n : 0;
+}
+var SteadyDetector = class {
+  threshold;
+  framesNeeded;
+  prev = null;
+  steadyCount = 0;
+  constructor(opts = {}) {
+    this.threshold = opts.threshold ?? 6;
+    this.framesNeeded = opts.framesNeeded ?? 4;
+  }
+  /** Feed the current frame; returns true once the frame has held still. */
+  push(frame) {
+    if (this.prev && frameDifference(this.prev, frame) <= this.threshold) {
+      this.steadyCount++;
+    } else {
+      this.steadyCount = 0;
+    }
+    this.prev = frame;
+    return this.steadyCount >= this.framesNeeded;
+  }
+  /** Motion 0..255 vs the previous frame (Infinity before the first frame). */
+  motion(frame) {
+    return this.prev ? frameDifference(this.prev, frame) : Number.POSITIVE_INFINITY;
+  }
+  reset() {
+    this.prev = null;
+    this.steadyCount = 0;
+  }
+};
+
 // view/tabletop-panel.ts
-var TICK_MS = 120;
+var TICK_MS = 100;
 var IDENTIFY_TOL = 1;
-var IDENTIFY_MARGIN = 0.78;
+var IDENTIFY_MARGIN = 0.82;
+var GRID_FRAC = 0.56;
 var NAME = {
-  U: { name: "white" },
-  R: { name: "red" },
-  F: { name: "green" },
-  D: { name: "yellow" },
-  L: { name: "orange" },
-  B: { name: "blue" }
+  U: { name: "white", sw: "#f6f7f8" },
+  R: { name: "red", sw: "#d0202a" },
+  F: { name: "green", sw: "#049e4a" },
+  D: { name: "yellow", sw: "#ffd400" },
+  L: { name: "orange", sw: "#ff6a00" },
+  B: { name: "blue", sw: "#0057c8" }
 };
 var TEMPLATE = `
 <style>
   :host { display: block; font: 14px/1.5 -apple-system, system-ui, sans-serif; color: #e6edf3; }
+  .camsel { width: 100%; margin: 0 0 8px; padding: 6px; background: #0d1117; color: #e6edf3;
+    border: 1px solid #30363d; border-radius: 6px; font: inherit; }
   .stage { position: relative; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 4/3; }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
   canvas.ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  .box { position: absolute; inset: 0; margin: auto; width: 60%; aspect-ratio: 1;
-    border: 3px dashed rgba(255,255,255,.7); border-radius: 14px; pointer-events: none; }
   .hint { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; font-size: 12px;
     color: #fff; text-shadow: 0 1px 3px #000; pointer-events: none; }
   .row2 { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
   .status { min-height: 22px; font-weight: 600; flex: 1; } .status b { color: #fff; }
-  .read { display: grid; grid-template-columns: repeat(3, 14px); gap: 2px; }
-  .read i { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,.4); background: #161b22; }
+  .read { display: grid; grid-template-columns: repeat(3, 16px); gap: 2px; }
+  .read i { width: 16px; height: 16px; border-radius: 3px; border: 1px solid rgba(0,0,0,.4); background: #161b22; }
   .dots { display: flex; gap: 5px; margin: 10px 0 4px; }
-  .dots span { width: 28px; height: 10px; border-radius: 3px; background: #30363d; position: relative; }
+  .dots span { width: 28px; height: 10px; border-radius: 3px; background: #30363d; }
   .dots span.done { background: #3fb950; }
-  .row { display: flex; gap: 10px; margin-top: 6px; }
+  .row { display: flex; gap: 10px; margin-top: 6px; align-items: center; flex-wrap: wrap; }
   button { font: inherit; border: 0; border-radius: 7px; padding: 8px 16px; font-weight: 600; cursor: pointer; }
   button.primary { background: #58a6ff; color: #06122b; }
   button.ghost { background: #21262d; color: #e6edf3; border: 1px solid #30363d; padding: 6px 12px; font-weight: 400; font-size: 12px; }
   button[hidden] { display: none; }
   .dbg { margin: 8px 0 0; font: 11px/1.45 ui-monospace, Menlo, monospace; color: #8b949e;
-    white-space: pre-wrap; word-break: break-all; max-height: 170px; overflow: auto;
+    white-space: pre-wrap; word-break: break-all; max-height: 150px; overflow: auto;
     background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 6px; }
-  .camsel { width: 100%; margin: 0 0 8px; padding: 6px; background: #0d1117; color: #e6edf3;
-    border: 1px solid #30363d; border-radius: 6px; font: inherit; }
   .ok { color: #3fb950; } .err { color: #f85149; } .muted { color: #8b949e; }
 </style>
 <select class="camsel" id="camsel" hidden></select>
 <div class="stage">
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
-  <div class="box"></div>
-  <div class="hint">Turn the cube slowly \u2014 each face is grabbed as it passes</div>
+  <div class="hint">Fill the grid with one cube face, then hold still</div>
 </div>
 <div class="row2">
-  <div class="status" id="status">Press <b>Start camera</b>, then slowly turn the cube so every face faces the camera.</div>
+  <div class="status" id="status">Press <b>Start camera</b>, then fill the grid with a cube face.</div>
   <div class="read" id="read"></div>
 </div>
 <div class="dots" id="dots"></div>
 <pre class="dbg" id="dbg"></pre>
 <div class="row">
   <button class="primary" id="start">Start camera</button>
+  <button class="primary" id="capture" hidden>Capture face</button>
   <button class="ghost" id="retry" hidden>Retry</button>
   <button class="ghost" id="copydbg">Copy debug</button>
 </div>
@@ -6160,17 +6007,19 @@ var TEMPLATE = `
 var TabletopScannerPanel = class extends HTMLElement {
   root;
   cv = null;
+  // ignored — the fixed-grid scan needs no OpenCV
   captured = /* @__PURE__ */ new Map();
   source = null;
   timer = null;
   octx = null;
   stageEl = null;
+  steady = new SteadyDetector({ framesNeeded: 2 });
   startGen = 0;
   deviceId;
-  roi = null;
-  roiMiss = 0;
   pendingFace = null;
   pendingCount = 0;
+  lastColors = null;
+  lastFace = null;
   frameNo = 0;
   lastHud = 0;
   lastStuck = 0;
@@ -6187,14 +6036,38 @@ var TabletopScannerPanel = class extends HTMLElement {
     this.buildDots();
     this.buildRead();
     this.btn("start").addEventListener("click", () => void this.start());
-    this.btn("copydbg").addEventListener("click", () => void this.copyDebug());
+    this.btn("capture").addEventListener("click", () => this.captureNow());
     this.btn("retry").addEventListener("click", () => this.retry());
+    this.btn("copydbg").addEventListener("click", () => void this.copyDebug());
     this.el("camsel").addEventListener("change", (e4) => {
       void this.changeCamera(e4.target.value);
     });
     void this.refreshCameras();
   }
-  /** Populate the camera picker; show it only when more than one camera is present. */
+  disconnectedCallback() {
+    this.stop();
+  }
+  stop() {
+    this.startGen++;
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    this.source?.stop();
+    this.source = null;
+    const start = this.root.getElementById("start");
+    if (start) start.hidden = false;
+    const cap = this.root.getElementById("capture");
+    if (cap) cap.hidden = true;
+  }
+  el(id) {
+    const n = this.root.getElementById(id);
+    if (!n) throw new Error(`tabletop-panel: missing #${id}`);
+    return n;
+  }
+  btn(id) {
+    return this.el(id);
+  }
   async refreshCameras() {
     let cams = [];
     try {
@@ -6212,7 +6085,6 @@ var TabletopScannerPanel = class extends HTMLElement {
     }
     sel.hidden = cams.length <= 1;
   }
-  /** Switch to a different camera and (if scanning) reopen the stream on it. */
   async changeCamera(deviceId) {
     if ((deviceId || void 0) === this.deviceId) return;
     this.deviceId = deviceId || void 0;
@@ -6221,64 +6093,6 @@ var TabletopScannerPanel = class extends HTMLElement {
       this.source = null;
       await this.start();
     }
-  }
-  /** Drop all captured faces and scan again from scratch (camera stays on). */
-  retry() {
-    this.captured.clear();
-    this.roi = null;
-    this.roiMiss = 0;
-    this.pendingFace = null;
-    this.pendingCount = 0;
-    this.btn("retry").hidden = true;
-    this.buildDots();
-    this.log("retry \u2014 cleared all faces");
-    this.setStatus("Restarted \u2014 turn the cube so every face faces the camera.");
-  }
-  /** Copy the running debug log to the clipboard so it can be pasted for diagnosis. */
-  async copyDebug() {
-    const text = this.debugLog.join("\n") || "(no debug yet \u2014 start the camera and turn the cube)";
-    try {
-      await navigator.clipboard.writeText(text);
-      this.setStatus(this.tinted("ok", "Debug log copied \u2014 paste it to report."));
-    } catch {
-      console.log("[scan] debug log:\n", text);
-      this.setStatus("Debug log printed to the console (clipboard blocked).");
-    }
-  }
-  /** Record a debug line (shown on screen, kept for Copy debug, echoed to the console). */
-  log(line) {
-    this.debugLog.push(line);
-    if (this.debugLog.length > 400) this.debugLog.shift();
-    console.log("[scan]", line);
-    this.refreshDbg();
-  }
-  /** Paint the live HUD line + the recent log onto the on-screen debug area (screenshot-able). */
-  refreshDbg() {
-    const dbg = this.root.getElementById("dbg");
-    if (dbg)
-      dbg.textContent = [this.hudLine, ...this.debugLog.slice(-12)].filter(Boolean).join("\n");
-  }
-  disconnectedCallback() {
-    this.stop();
-  }
-  stop() {
-    this.startGen++;
-    if (this.timer !== null) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    this.source?.stop();
-    this.source = null;
-    const start = this.root.getElementById("start");
-    if (start) start.hidden = false;
-  }
-  el(id) {
-    const n = this.root.getElementById(id);
-    if (!n) throw new Error(`tabletop-panel: missing #${id}`);
-    return n;
-  }
-  btn(id) {
-    return this.el(id);
   }
   async start() {
     this.btn("start").disabled = true;
@@ -6293,19 +6107,19 @@ var TabletopScannerPanel = class extends HTMLElement {
       this.applyCameraControls();
       void this.refreshCameras();
       this.captured.clear();
-      this.roi = null;
-      this.roiMiss = 0;
       this.pendingFace = null;
       this.pendingCount = 0;
       this.frameNo = 0;
       this.debugLog.length = 0;
       this.hudLine = "";
       this.el("dbg").textContent = "";
-      this.btn("retry").hidden = true;
-      this.log("start \u2014 turn the cube slowly");
+      this.steady.reset();
+      this.log("start \u2014 fill the grid with each face");
       this.buildDots();
       this.btn("start").hidden = true;
       this.btn("start").disabled = false;
+      this.btn("capture").hidden = false;
+      this.btn("retry").hidden = true;
       this.timer = setInterval(() => this.onTick(), TICK_MS);
     } catch (err) {
       if (gen !== this.startGen) return;
@@ -6315,7 +6129,7 @@ var TabletopScannerPanel = class extends HTMLElement {
       );
     }
   }
-  /** Log the camera's capabilities and best-effort enable continuous focus/exposure/WB. */
+  /** Best-effort continuous focus/exposure/white-balance + log the camera capabilities. */
   applyCameraControls() {
     const stream = this.el("video").srcObject;
     const track = stream?.getVideoTracks()[0];
@@ -6336,11 +6150,19 @@ var TabletopScannerPanel = class extends HTMLElement {
       track.applyConstraints({ advanced }).catch(() => {
       });
   }
-  /**
-   * Identify a face by its center color, but only if UNAMBIGUOUS: nearest anchor within
-   * IDENTIFY_TOL and clearly closer than the runner-up. A glare/gray/between-colors center
-   * returns null → no capture (this is what stops phantom U/D captures from a misread).
-   */
+  /** The nine fixed sampling cells, in reading order, for a frame of the given size. */
+  gridCells(fw, fh) {
+    const side = Math.min(fw, fh) * GRID_FRAC;
+    const cell = side / 3;
+    const ox = (fw - side) / 2;
+    const oy = (fh - side) / 2;
+    const cells = [];
+    for (let r = 0; r < 3; r++)
+      for (let c2 = 0; c2 < 3; c2++)
+        cells.push({ cx: ox + (c2 + 0.5) * cell, cy: oy + (r + 0.5) * cell, w: cell });
+    return cells;
+  }
+  /** Identify a face by center color (HSV) — only if unambiguous, else null. */
   identify(center) {
     let best = null;
     let d1 = Number.POSITIVE_INFINITY;
@@ -6358,10 +6180,7 @@ var TabletopScannerPanel = class extends HTMLElement {
     return d1 <= IDENTIFY_TOL && d1 <= IDENTIFY_MARGIN * d2 ? best : null;
   }
   onTick() {
-    if (!this.source || !this.cv) {
-      if (!this.cv) this.setStatus("Warming up the detector\u2026");
-      return;
-    }
+    if (!this.source) return;
     let full;
     try {
       full = this.source.grab();
@@ -6369,45 +6188,23 @@ var TabletopScannerPanel = class extends HTMLElement {
       return;
     }
     this.frameNo++;
-    const roi = this.roi;
-    const detSrc = roi ? cropFrame(full, roi.x, roi.y, roi.w, roi.h) : full;
-    const ox = roi ? roi.x : 0;
-    const oy = roi ? roi.y : 0;
-    const { frame: small, scale } = downscaleFrame(detSrc, 960);
-    const { candidates, grid } = detectStickerGrid(this.cv, small);
-    const back = (c2) => ({
-      cx: c2.cx / scale + ox,
-      cy: c2.cy / scale + oy,
-      w: c2.w / scale
-    });
-    const cells = grid ? grid.cells.map(back) : [];
-    this.drawOverlay(full, candidates.map(back), cells);
-    if (!grid) {
-      this.showRead(null);
-      this.pendingFace = null;
-      this.pendingCount = 0;
-      this.renderHud(candidates.length, 0, null, [0, 0, 0]);
-      if (roi && ++this.roiMiss > 6) {
-        this.roi = null;
-        this.roiMiss = 0;
-      }
-      this.setStatus(
-        candidates.length >= 4 ? `${candidates.length} squares \u2014 turn a full face toward the camera` : "Turn the cube slowly so each face faces the camera"
-      );
-      return;
-    }
-    this.roi = this.faceRoi(cells, full);
-    this.roiMiss = 0;
-    const samples = grid.colors;
-    this.showRead(samples);
-    const center = samples[4];
+    const cells = this.gridCells(full.width, full.height);
+    const colors = cells.map(
+      (c2, i) => i === 4 ? ringColor(full, c2.cx, c2.cy, c2.w * 0.34) : patchColor(full, c2.cx, c2.cy, c2.w * 0.28)
+    );
+    this.lastColors = colors;
+    const center = colors[4];
     const face = this.identify(center);
-    this.renderHud(candidates.length, grid.real, face, center);
+    this.lastFace = face;
+    const steady = this.steady.push(full);
+    this.drawGrid(full, cells, face);
+    this.showRead(colors);
+    this.renderHud(face, center, steady);
     if (!face) {
       this.pendingFace = null;
       this.pendingCount = 0;
       this.logStuck(center);
-      this.setStatus("Reading\u2026 center color unclear \u2014 turn a face flat to the camera");
+      this.setStatus("Fill the grid with a cube face \u2014 center color unclear");
       return;
     }
     if (face === this.pendingFace) this.pendingCount++;
@@ -6415,26 +6212,43 @@ var TabletopScannerPanel = class extends HTMLElement {
       this.pendingFace = face;
       this.pendingCount = 1;
     }
-    if (this.pendingCount < 3 || grid.real < 8) {
-      this.setStatus(`Reading ${NAME[face].name}\u2026 hold it a moment`);
+    if (this.captured.has(face)) {
+      this.setStatus(
+        "Have the ",
+        this.swatch(NAME[face].sw),
+        ` ${NAME[face].name} face \u2713 \u2014 show another`
+      );
       return;
     }
-    const prev = this.captured.get(face);
-    if (!prev || grid.real > prev.real) {
-      this.captured.set(face, { colors: samples, real: grid.real });
-      this.log(
-        `cap ${face}(${NAME[face].name}) real=${grid.real} center=${center.map(Math.round).join(",")} n=${this.captured.size}`
+    if (!steady || this.pendingCount < 2) {
+      this.setStatus(
+        "Reading the ",
+        this.swatch(NAME[face].sw),
+        ` ${NAME[face].name} face \u2014 hold still\u2026`
       );
-      this.buildDots();
-      if (this.captured.size === 6) this.trySolve();
-      else if (!prev)
-        this.setStatus(
-          this.tinted("ok", `${NAME[face].name} \u2713  ${this.captured.size}/6 \u2014 keep turning`)
-        );
+      return;
     }
+    this.captureFace(face, colors);
+  }
+  captureFace(face, colors) {
+    this.captured.set(face, colors);
+    this.log(
+      `cap ${face}(${NAME[face].name}) center=${colors[4].map(Math.round).join(",")} n=${this.captured.size}`
+    );
+    this.buildDots();
+    if (this.captured.size === 6) this.trySolve();
+    else
+      this.setStatus(
+        this.tinted("ok", `${NAME[face].name} \u2713  ${this.captured.size}/6 \u2014 show another face`)
+      );
+  }
+  /** Manual capture: grab whatever face is aligned right now (overwrites if already have it). */
+  captureNow() {
+    if (this.lastFace && this.lastColors) this.captureFace(this.lastFace, this.lastColors);
+    else this.setStatus("No cube face in the grid yet \u2014 fill the grid first.");
   }
   trySolve() {
-    const faces = Object.fromEntries([...this.captured].map(([f3, r]) => [f3, r.colors]));
+    const faces = Object.fromEntries(this.captured);
     let res;
     try {
       res = solveOrientations(faces);
@@ -6454,58 +6268,23 @@ var TabletopScannerPanel = class extends HTMLElement {
     } else {
       this.btn("retry").hidden = false;
       this.setStatus(
-        this.tinted("err", "\u26A0 All 6 read, but a colour was misread (not a solvable cube)."),
-        " Turn a face to re-read it, or press Retry."
+        this.tinted("err", "\u26A0 Colors don\u2019t form a solvable cube."),
+        " Re-capture any face by filling the grid, or press Retry."
       );
+      this.captured.clear();
+      for (const [f3, c2] of Object.entries(faces)) this.captured.set(f3, c2);
     }
   }
-  /** Log (throttled) an unidentifiable center: its color and the two nearest cube colors.
-   *  This is what reveals a stuck face — e.g. a white center reading as blue over the logo. */
-  logStuck(center) {
-    const now = performance.now();
-    if (now - this.lastStuck < 1e3) return;
-    this.lastStuck = now;
-    const ds = FACES.map((f3) => ({ f: f3, d: hsvDistance(center, CORNER_ANCHORS[f3]) })).sort(
-      (a, b) => a.d - b.d
-    );
-    const have = [...this.captured.keys()].join("") || "-";
-    this.log(
-      `unclear center=${center.map(Math.round).join(",")} near=${ds[0].f}(${Math.round(ds[0].d)}) ${ds[1].f}(${Math.round(ds[1].d)}) have=${have}`
-    );
+  retry() {
+    this.captured.clear();
+    this.pendingFace = null;
+    this.pendingCount = 0;
+    this.btn("retry").hidden = true;
+    this.buildDots();
+    this.log("retry \u2014 cleared all faces");
+    this.setStatus("Restarted \u2014 fill the grid with each face.");
   }
-  /** Live per-frame readout (throttled) — what the detector sees right now. */
-  renderHud(cands, real, face, center) {
-    const now = performance.now();
-    if (now - this.lastHud < 250) return;
-    this.lastHud = now;
-    const have = [...this.captured.keys()].join("") || "-";
-    this.hudLine = `f${this.frameNo} cand=${cands} grid=${real}/9 face=${face ?? "-"} center=${center.map(Math.round).join(",")} have=${have}`;
-    this.refreshDbg();
-  }
-  /** Bounding box of a found face plus margin, clamped to the frame — the next zoom region. */
-  faceRoi(cells, full) {
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    for (const c2 of cells) {
-      minX = Math.min(minX, c2.cx - c2.w / 2);
-      minY = Math.min(minY, c2.cy - c2.w / 2);
-      maxX = Math.max(maxX, c2.cx + c2.w / 2);
-      maxY = Math.max(maxY, c2.cy + c2.w / 2);
-    }
-    const mx = (maxX - minX) * 0.4;
-    const my = (maxY - minY) * 0.4;
-    const x = Math.max(0, minX - mx);
-    const y = Math.max(0, minY - my);
-    return {
-      x,
-      y,
-      w: Math.min(full.width - x, maxX - minX + 2 * mx),
-      h: Math.min(full.height - y, maxY - minY + 2 * my)
-    };
-  }
-  drawOverlay(frame, candidates, gridCells) {
+  drawGrid(frame, cells, face) {
     const ctx = this.octx;
     if (!ctx) return;
     const c2 = this.el("ov");
@@ -6515,21 +6294,11 @@ var TabletopScannerPanel = class extends HTMLElement {
       if (this.stageEl) this.stageEl.style.aspectRatio = `${frame.width} / ${frame.height}`;
     }
     ctx.clearRect(0, 0, frame.width, frame.height);
-    const inGrid = new Set(gridCells.map((g) => `${g.cx},${g.cy}`));
-    ctx.lineWidth = Math.max(1, frame.width / 320);
-    ctx.strokeStyle = "rgba(210,153,34,0.7)";
-    for (const cell of candidates) {
-      if (inGrid.has(`${cell.cx},${cell.cy}`)) continue;
-      ctx.strokeRect(cell.cx - cell.w / 2, cell.cy - cell.w / 2, cell.w, cell.w);
-    }
-    ctx.lineWidth = Math.max(2, frame.width / 200);
-    ctx.strokeStyle = "#3fb950";
-    ctx.fillStyle = "rgba(63,185,80,0.15)";
-    for (const cell of gridCells) {
-      ctx.beginPath();
-      ctx.rect(cell.cx - cell.w / 2, cell.cy - cell.w / 2, cell.w, cell.w);
-      ctx.fill();
-      ctx.stroke();
+    ctx.lineWidth = Math.max(2, frame.width / 240);
+    ctx.strokeStyle = face ? "#3fb950" : "rgba(255,255,255,0.85)";
+    for (const cell of cells) {
+      const s = cell.w * 0.92;
+      ctx.strokeRect(cell.cx - s / 2, cell.cy - s / 2, s, s);
     }
   }
   buildDots() {
@@ -6551,18 +6320,62 @@ var TabletopScannerPanel = class extends HTMLElement {
     const cells = this.el("read").querySelectorAll("i");
     for (let i = 0; i < 9; i++) {
       const cell = cells[i];
-      if (!samples) {
-        cell.style.background = "#161b22";
-      } else {
+      if (!samples) cell.style.background = "#161b22";
+      else {
         const [r, g, b] = samples[i];
         cell.style.background = `rgb(${r}, ${g}, ${b})`;
       }
     }
   }
+  renderHud(face, center, steady) {
+    const now = performance.now();
+    if (now - this.lastHud < 200) return;
+    this.lastHud = now;
+    const have = [...this.captured.keys()].join("") || "-";
+    this.hudLine = `f${this.frameNo} face=${face ?? "-"} center=${center.map(Math.round).join(",")} steady=${steady} have=${have}`;
+    this.refreshDbg();
+  }
+  logStuck(center) {
+    const now = performance.now();
+    if (now - this.lastStuck < 1e3) return;
+    this.lastStuck = now;
+    const ds = FACES.map((f3) => ({ f: f3, d: hsvDistance(center, CORNER_ANCHORS[f3]) })).sort(
+      (a, b) => a.d - b.d
+    );
+    this.log(
+      `unclear center=${center.map(Math.round).join(",")} near=${ds[0].f}(${ds[0].d.toFixed(2)}) ${ds[1].f}(${ds[1].d.toFixed(2)})`
+    );
+  }
+  async copyDebug() {
+    const text = this.debugLog.join("\n") || "(no debug yet)";
+    try {
+      await navigator.clipboard.writeText(text);
+      this.setStatus(this.tinted("ok", "Debug log copied."));
+    } catch {
+      console.log("[scan] debug log:\n", text);
+      this.setStatus("Debug log printed to the console.");
+    }
+  }
+  log(line) {
+    this.debugLog.push(line);
+    if (this.debugLog.length > 400) this.debugLog.shift();
+    console.log("[scan]", line);
+    this.refreshDbg();
+  }
+  refreshDbg() {
+    const dbg = this.root.getElementById("dbg");
+    if (dbg)
+      dbg.textContent = [this.hudLine, ...this.debugLog.slice(-11)].filter(Boolean).join("\n");
+  }
   setStatus(...parts) {
     const status = this.el("status");
     status.textContent = "";
     status.append(...parts);
+  }
+  swatch(color) {
+    const s = document.createElement("span");
+    s.style.cssText = `display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;background:${color}`;
+    return s;
   }
   tinted(cls, text) {
     const span = document.createElement("span");
