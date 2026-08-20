@@ -97,3 +97,19 @@ export { type CameraHandle, openCamera } from './camera.js';
 
 // Harness
 export { eventsMatch, scoreSession, type SessionMetrics, toQuarterTurns } from './harness.js';
+
+// e2e: record → replay → score (dev-only, smart-cube oracle)
+export {
+  type LatencyMs,
+  replaySession,
+  type Session,
+  type SessionFrame,
+  type SessionReport,
+} from './replay.js';
+export { type RecordedMove, SessionRecorder } from './record.js';
+export { assignSlots, centroid, orderCorners } from './perception/geometry.js';
+export {
+  DEFAULT_OPENCV,
+  opencvDetector,
+  type OpencvDetectorOptions,
+} from './perception/opencv-detector.js';
