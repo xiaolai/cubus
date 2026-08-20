@@ -5748,6 +5748,21 @@ function dedupeCells(cands) {
   }
   return kept;
 }
+function keepDominantSize(cands) {
+  if (cands.length < 9) return [...cands];
+  const near = (a, b) => a >= b * 0.65 && a <= b * 1.5;
+  let bestW = cands[0].w;
+  let bestCount = -1;
+  for (const c2 of cands) {
+    let n = 0;
+    for (const o of cands) if (near(o.w, c2.w)) n++;
+    if (n > bestCount) {
+      bestCount = n;
+      bestW = c2.w;
+    }
+  }
+  return cands.filter((c2) => near(c2.w, bestW));
+}
 var ROLE = [-1, 0, 1];
 var MIN_GRID_CELLS = 7;
 function gridFrom(cands, i) {
@@ -5767,13 +5782,13 @@ function gridFrom(cands, i) {
   for (const o of others) {
     const cos = (o.dx * u.dx + o.dy * u.dy) / (o.d * u.d);
     const cross = u.dx * o.dy - u.dy * o.dx;
-    if (Math.abs(cos) < 0.4 && o.d > u.d * 0.5 && o.d < u.d * 1.8 && cross > 0) {
+    if (Math.abs(cos) < 0.55 && o.d > u.d * 0.5 && o.d < u.d * 2 && cross > 0) {
       v = o;
       break;
     }
   }
   if (!v) return null;
-  const tol = Math.min(u.d, v.d) * 0.5;
+  const tol = Math.min(u.d, v.d) * 0.6;
   let best = null;
   for (const rj of ROLE) {
     for (const ri of ROLE) {
@@ -5878,7 +5893,7 @@ function collectCandidates(cv, binary, frame, minW, maxW, out) {
       const { width: w, height: h } = rect;
       const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
       const solidity = w * h > 0 ? Math.abs(cv.contourArea(c2)) / (w * h) : 0;
-      if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35) {
+      if (w >= minW && w <= maxW && aspect >= 0.5 && solidity > 0.35) {
         const cx = rect.x + w / 2;
         const cy = rect.y + h / 2;
         if (looksLikeSticker(patchColor(frame, cx, cy, w * 0.2))) out.push({ cx, cy, w });
@@ -5916,7 +5931,7 @@ function detectStickerGrid(cv, frame) {
   } finally {
     for (const m of cleanup) m.delete();
   }
-  const candidates = dedupeCells(raw);
+  const candidates = keepDominantSize(dedupeCells(raw));
   const g = findGrid(candidates);
   const grid = g ? {
     cells: g.cells,

@@ -6,6 +6,7 @@ import {
   dedupeCells,
   downscaleFrame,
   findGrid,
+  keepDominantSize,
   patchColor,
 } from '../src/grid-detect.js';
 import type { Frame, RGB } from '../src/types.js';
@@ -92,6 +93,24 @@ describe('findGrid', () => {
 
   it('returns null with too few candidates', () => {
     expect(findGrid(grid(0, 0, 40, 36).slice(0, 6))).toBeNull();
+  });
+});
+
+describe('keepDominantSize', () => {
+  it('keeps the nine same-size stickers and drops size-outlier rectangles', () => {
+    const cells = grid(100, 100, 40, 36); // nine cells, width 36
+    const outliers: StickerCell[] = [
+      { cx: 400, cy: 60, w: 120 }, // a big background rectangle
+      { cx: 40, cy: 400, w: 9 }, // a tiny speck
+      { cx: 520, cy: 300, w: 130 },
+    ];
+    const kept = keepDominantSize([...cells, ...outliers]);
+    expect(kept).toHaveLength(9);
+    for (const c of cells) expect(kept.some((k) => k.cx === c.cx && k.cy === c.cy)).toBe(true);
+  });
+
+  it('passes everything through when there are fewer than nine', () => {
+    expect(keepDominantSize(grid(0, 0, 40, 36).slice(0, 5))).toHaveLength(5);
   });
 });
 

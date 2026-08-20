@@ -71,6 +71,28 @@ export function dedupeCells(cands: readonly StickerCell[]): StickerCell[] {
   return kept;
 }
 
+/**
+ * A cube face's nine stickers are all the SAME size, so keep only the dominant-size cluster
+ * and drop size-outliers (a lone big rectangle, a tiny speck). The dominant size is the one
+ * with the most similar-width candidates; keep those within [0.65, 1.5]× of it. This both
+ * de-noises the overlay and lets the grid search lock on at more angles.
+ */
+export function keepDominantSize(cands: readonly StickerCell[]): StickerCell[] {
+  if (cands.length < 9) return [...cands];
+  const near = (a: number, b: number): boolean => a >= b * 0.65 && a <= b * 1.5;
+  let bestW = cands[0]!.w;
+  let bestCount = -1;
+  for (const c of cands) {
+    let n = 0;
+    for (const o of cands) if (near(o.w, c.w)) n++;
+    if (n > bestCount) {
+      bestCount = n;
+      bestW = c.w;
+    }
+  }
+  return cands.filter((c) => near(c.w, bestW));
+}
+
 interface Neighbor {
   j: number;
   dx: number;
@@ -110,13 +132,13 @@ function gridFrom(
   for (const o of others) {
     const cos = (o.dx * u.dx + o.dy * u.dy) / (o.d * u.d);
     const cross = u.dx * o.dy - u.dy * o.dx;
-    if (Math.abs(cos) < 0.4 && o.d > u.d * 0.5 && o.d < u.d * 1.8 && cross > 0) {
+    if (Math.abs(cos) < 0.55 && o.d > u.d * 0.5 && o.d < u.d * 2 && cross > 0) {
       v = o;
       break;
     }
   }
   if (!v) return null;
-  const tol = Math.min(u.d, v.d) * 0.5;
+  const tol = Math.min(u.d, v.d) * 0.6;
   let best: { cells: StickerCell[]; count: number } | null = null;
   for (const rj of ROLE) {
     for (const ri of ROLE) {
@@ -258,7 +280,7 @@ function collectCandidates(
       const { width: w, height: h } = rect;
       const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
       const solidity = w * h > 0 ? Math.abs(cv.contourArea(c)) / (w * h) : 0;
-      if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35) {
+      if (w >= minW && w <= maxW && aspect >= 0.5 && solidity > 0.35) {
         const cx = rect.x + w / 2;
         const cy = rect.y + h / 2;
         if (looksLikeSticker(patchColor(frame, cx, cy, w * 0.2))) out.push({ cx, cy, w });
@@ -312,7 +334,9 @@ export function detectStickerGrid(cv: OpenCv, frame: Frame): GridResult {
     for (const m of cleanup) m.delete();
   }
 
-  const candidates = dedupeCells(raw);
+  // Dedupe, then keep only the dominant-size cluster — the nine same-size stickers — so
+  // size-outlier background rectangles are ignored (the user's insight).
+  const candidates = keepDominantSize(dedupeCells(raw));
   const g = findGrid(candidates);
   // The 8 outer stickers: median of a central patch. The CENTER (index 4): a ring, so a
   // printed center logo (the GAN 冠) is skipped and the true sticker color is read.
