@@ -35,9 +35,11 @@ export {
 export { type OrientationResult, rotateFace, solveOrientations } from './orient.js';
 
 export {
+  type GridResult,
   type StickerCell,
   dedupeCells,
   detectStickerGrid,
+  downscaleFrame,
   findGrid,
   patchColor,
 } from './grid-detect.js';

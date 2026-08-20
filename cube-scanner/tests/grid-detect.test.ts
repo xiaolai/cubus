@@ -1,7 +1,13 @@
 // The 3x3 sticker-grid geometry: find nine same-size squares in a lattice among noise,
 // reject non-grids, and read colors in reading order. Pure — no OpenCV.
 import { describe, expect, it } from 'vitest';
-import { type StickerCell, dedupeCells, findGrid, patchColor } from '../src/grid-detect.js';
+import {
+  type StickerCell,
+  dedupeCells,
+  downscaleFrame,
+  findGrid,
+  patchColor,
+} from '../src/grid-detect.js';
 import type { Frame, RGB } from '../src/types.js';
 
 /** Build a 3x3 lattice of cells at (ox,oy) with spacing `step` and width `w`. */
@@ -86,6 +92,32 @@ describe('dedupeCells', () => {
       { cx: 200, cy: 100, w: 40 },
     ];
     expect(dedupeCells(cells)).toHaveLength(2);
+  });
+});
+
+describe('downscaleFrame', () => {
+  it('halves a wide frame and reports the scale, preserving color', () => {
+    const w = 8;
+    const h = 8;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      data[i * 4] = 10;
+      data[i * 4 + 1] = 150;
+      data[i * 4 + 2] = 70;
+      data[i * 4 + 3] = 255;
+    }
+    const { frame, scale } = downscaleFrame({ data, width: w, height: h }, 4);
+    expect(scale).toBe(0.5);
+    expect(frame.width).toBe(4);
+    expect(frame.height).toBe(4);
+    expect([frame.data[0], frame.data[1], frame.data[2]]).toEqual([10, 150, 70]);
+  });
+
+  it('is a no-op when the frame is already small enough', () => {
+    const f: Frame = { data: new Uint8ClampedArray(4), width: 1, height: 1 };
+    const { frame, scale } = downscaleFrame(f, 640);
+    expect(scale).toBe(1);
+    expect(frame).toBe(f);
   });
 });
 

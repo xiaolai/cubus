@@ -5724,6 +5724,26 @@ var CORNER_ANCHORS = {
 };
 
 // src/grid-detect.ts
+function downscaleFrame(frame, targetW) {
+  if (frame.width <= targetW) return { frame, scale: 1 };
+  const scale = targetW / frame.width;
+  const w = Math.max(1, Math.round(frame.width * scale));
+  const h = Math.max(1, Math.round(frame.height * scale));
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(frame.height - 1, Math.floor(y / scale));
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(frame.width - 1, Math.floor(x / scale));
+      const si = (sy * frame.width + sx) * 4;
+      const di = (y * w + x) * 4;
+      data[di] = frame.data[si];
+      data[di + 1] = frame.data[si + 1];
+      data[di + 2] = frame.data[si + 2];
+      data[di + 3] = 255;
+    }
+  }
+  return { frame: { data, width: w, height: h }, scale };
+}
 function dedupeCells(cands) {
   const kept = [];
   for (const c2 of cands) {
@@ -5998,7 +6018,7 @@ var TEMPLATE = `
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
   <div class="box"></div>
-  <div class="hint">Show a cube face \u2014 held up or flat, any side, any way up</div>
+  <div class="hint">Show a cube face anywhere in view \u2014 I search the whole frame</div>
 </div>
 <div class="row2">
   <div class="status" id="status">Press <b>Start camera</b>, then show a cube face to the camera.</div>
@@ -6057,7 +6077,10 @@ var TabletopScannerPanel = class extends HTMLElement {
     this.btn("start").disabled = true;
     const gen = ++this.startGen;
     try {
-      this.source = await openCamera(this.el("video"));
+      this.source = await openCamera(this.el("video"), {
+        width: 1280,
+        height: 720
+      });
       if (gen !== this.startGen) return;
       this.applyCameraControls();
       this.captured.clear();
@@ -6113,25 +6136,31 @@ var TabletopScannerPanel = class extends HTMLElement {
       if (!this.cv) this.setStatus("Warming up the detector\u2026");
       return;
     }
-    let frame;
+    let full;
     try {
-      frame = this.source.grab();
+      full = this.source.grab();
     } catch {
       return;
     }
-    const { candidates, grid } = detectStickerGrid(this.cv, frame);
-    this.drawOverlay(frame, candidates, grid ? grid.cells : []);
+    const { frame: small, scale } = downscaleFrame(full, 960);
+    const { candidates, grid } = detectStickerGrid(this.cv, small);
+    const back = (c2) => ({
+      cx: c2.cx / scale,
+      cy: c2.cy / scale,
+      w: c2.w / scale
+    });
+    this.drawOverlay(full, candidates.map(back), grid ? grid.cells.map(back) : []);
     if (!grid) {
       this.showRead(null);
       this.setStatus(
-        candidates.length >= 4 ? `Line up a full face \u2014 ${candidates.length} squares seen` : "Show a cube face to the camera (held up or flat)"
+        candidates.length >= 4 ? `Found ${candidates.length} squares \u2014 line up a full face` : "Show a cube face to the camera (anywhere in view)"
       );
       return;
     }
     const samples = grid.colors;
     this.showRead(samples);
     const face = this.identify(samples[4]);
-    const steady = this.steady.push(frame);
+    const steady = this.steady.push(full);
     if (!face) {
       this.setStatus("That doesn't look like a cube face \u2014 center it in the box");
       return;

@@ -19,6 +19,32 @@ export interface StickerCell {
   w: number;
 }
 
+/**
+ * Nearest-neighbour downscale so detection runs fast on a wide/high-res capture. Returns
+ * the smaller frame and the scale factor (multiply detected coords by 1/scale to map back
+ * to the full frame). A no-op when the frame is already within `targetW`.
+ */
+export function downscaleFrame(frame: Frame, targetW: number): { frame: Frame; scale: number } {
+  if (frame.width <= targetW) return { frame, scale: 1 };
+  const scale = targetW / frame.width;
+  const w = Math.max(1, Math.round(frame.width * scale));
+  const h = Math.max(1, Math.round(frame.height * scale));
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(frame.height - 1, Math.floor(y / scale));
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(frame.width - 1, Math.floor(x / scale));
+      const si = (sy * frame.width + sx) * 4;
+      const di = (y * w + x) * 4;
+      data[di] = frame.data[si]!;
+      data[di + 1] = frame.data[si + 1]!;
+      data[di + 2] = frame.data[si + 2]!;
+      data[di + 3] = 255;
+    }
+  }
+  return { frame: { data, width: w, height: h }, scale };
+}
+
 /** Collapse near-duplicate candidates (Canny yields inner+outer edges of each sticker). */
 export function dedupeCells(cands: readonly StickerCell[]): StickerCell[] {
   const kept: StickerCell[] = [];

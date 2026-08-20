@@ -1,15 +1,15 @@
-// <tabletop-scanner-panel> — the tabletop cube scan (the easy one).
+// <tabletop-scanner-panel> — the camera cube scan.
 //
-// Put the cube on the table, aim a camera down at it. Each face is read FLAT and STILL —
-// the best possible geometry — so there's no holding steady and no aligning: show each of
-// the six faces in ANY order and ANY rotation. The panel detects the face, shows the nine
-// colours it read, and auto-captures once the cube is still. When all six are in it solves
-// the per-face rotations for a solvable cube (orient.ts); a misread leaves it unsolvable
-// and asks you to re-show a face.
+// Show any face to the camera (held up or flat on the table), ANYWHERE in view — the frame
+// is captured WIDE + high-res and the whole thing is searched for a face's 3x3 sticker grid
+// (app-side digital PTZ: no need to center the cube in a box). Detection runs on a
+// scaled-down copy for speed and maps back to the full frame. Faces can be shown in any
+// order and any rotation; each is identified by center colour and auto-captured once still.
+// When all six are in it solves the per-face rotations for a solvable cube (orient.ts); a
+// misread leaves it unsolvable and asks you to re-show a face.
 //
-// "Focus on the cube": the detected outline is drawn on the video and the read is shown as
-// a 3x3 preview. Camera controls (focus/exposure/white-balance) are applied best-effort and
-// the camera's capabilities are logged so we can see exactly what your webcam exposes.
+// Camera controls (focus/exposure/white-balance) are applied best-effort and the camera's
+// capabilities are logged, so we can see whether it also exposes native (digital) PTZ.
 //
 // OpenCV.js is INJECTED via `cv`. Browser shell — the detector/solver underneath IS tested.
 
@@ -17,7 +17,7 @@ import { openCamera } from '../src/camera.js';
 import { rgbDistance } from '../src/color.js';
 import { CORNER_ANCHORS } from '../src/corner-scan.js';
 import type { OpenCv } from '../src/detect.js';
-import { type StickerCell, detectStickerGrid } from '../src/grid-detect.js';
+import { type StickerCell, detectStickerGrid, downscaleFrame } from '../src/grid-detect.js';
 import { type OrientationResult, solveOrientations } from '../src/orient.js';
 import { SteadyDetector } from '../src/stability.js';
 import { FACES, type Face, type Frame, type RGB, type ScanResult } from '../src/types.js';
@@ -60,7 +60,7 @@ const TEMPLATE = `
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
   <div class="box"></div>
-  <div class="hint">Show a cube face — held up or flat, any side, any way up</div>
+  <div class="hint">Show a cube face anywhere in view — I search the whole frame</div>
 </div>
 <div class="row2">
   <div class="status" id="status">Press <b>Start camera</b>, then show a cube face to the camera.</div>
@@ -127,7 +127,12 @@ export class TabletopScannerPanel extends HTMLElement {
     this.btn('start').disabled = true;
     const gen = ++this.startGen;
     try {
-      this.source = await openCamera(this.el<HTMLVideoElement>('video'));
+      // Capture WIDE + high-res so the cube can sit anywhere in view and still be read
+      // (app-side digital PTZ: search the whole frame, no need to center it).
+      this.source = await openCamera(this.el<HTMLVideoElement>('video'), {
+        width: 1280,
+        height: 720,
+      });
       if (gen !== this.startGen) return;
       this.applyCameraControls();
       this.captured.clear();
@@ -185,27 +190,34 @@ export class TabletopScannerPanel extends HTMLElement {
       if (!this.cv) this.setStatus('Warming up the detector…');
       return;
     }
-    let frame: Frame;
+    let full: Frame;
     try {
-      frame = this.source.grab();
+      full = this.source.grab();
     } catch {
       return;
     }
-    const { candidates, grid } = detectStickerGrid(this.cv, frame);
-    this.drawOverlay(frame, candidates, grid ? grid.cells : []);
+    // Detect on a scaled-down copy for speed, then map coords back onto the full frame.
+    const { frame: small, scale } = downscaleFrame(full, 960);
+    const { candidates, grid } = detectStickerGrid(this.cv, small);
+    const back = (c: StickerCell): StickerCell => ({
+      cx: c.cx / scale,
+      cy: c.cy / scale,
+      w: c.w / scale,
+    });
+    this.drawOverlay(full, candidates.map(back), grid ? grid.cells.map(back) : []);
     if (!grid) {
       this.showRead(null);
       this.setStatus(
         candidates.length >= 4
-          ? `Line up a full face — ${candidates.length} squares seen`
-          : 'Show a cube face to the camera (held up or flat)',
+          ? `Found ${candidates.length} squares — line up a full face`
+          : 'Show a cube face to the camera (anywhere in view)',
       );
       return;
     }
     const samples = grid.colors;
     this.showRead(samples);
     const face = this.identify(samples[4]!);
-    const steady = this.steady.push(frame);
+    const steady = this.steady.push(full);
     if (!face) {
       this.setStatus("That doesn't look like a cube face — center it in the box");
       return;
