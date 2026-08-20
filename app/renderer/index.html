@@ -259,14 +259,19 @@
         renderState(f); scanModal.hidden=true;
         lastEl.textContent='camera scan applied — renders the physical cube state'; });
 
-      // Live camera tracker: seed from the current on-screen state (from a scan or the
-      // smart cube), then drive the twin from the tracker's committed moves/resyncs.
-      $('trackBtn').onclick=()=>{ trackModal.hidden=false; };
+      // Live camera tracker. The camera preview is DECOUPLED from tracking: opening the
+      // modal starts the camera immediately (this click is the user gesture getUserMedia
+      // needs), so you always get a live feed to inspect. Tracking then activates on its
+      // own once a start state (from a scan or the smart cube) AND OpenCV are both ready.
+      $('trackBtn').onclick=()=>{ trackModal.hidden=false;
+        if(lastFacelets) trackPanel.provideSeed(lastFacelets);
+        trackPanel.startCamera(); };
       $('trackClose').onclick=()=>{ trackModal.hidden=true; trackPanel.stop?.(); };
       $('trackStart').onclick=()=>{
-        if(lastFacelets){ trackPanel.start(lastFacelets);
-          lastEl.textContent='live tracking started — the OpenCV detector needs on-device tuning to lock on'; }
-        else lastEl.textContent='no start state — connect the cube or scan a face first'; };
+        trackPanel.startCamera();
+        if(lastFacelets){ trackPanel.provideSeed(lastFacelets);
+          lastEl.textContent='camera live — tracking begins once OpenCV finishes loading'; }
+        else lastEl.textContent='camera live — connect the cube or scan a face to start tracking'; };
       trackPanel.addEventListener('state-update',(e)=>{ renderState(e.detail.facelets); });
 
       if(!navigator.bluetooth) setConn('err','Web Bluetooth unavailable','This build needs a Chromium-based runtime.',null);

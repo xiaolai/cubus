@@ -1,11 +1,9 @@
 // <tracker-panel> — the app-facing web component for continuous camera tracking.
-// Mirrors <scanner-panel>: the app hands it OpenCV.js via `panel.cv = cv`, seeds it
-// with a known start state, and listens for `state-update` events to drive the twin.
-// Adds a camera picker (for machines with several webcams), a per-session ROLLING
-// PALETTE (classification adapts to the cube's own centers — handles non-standard /
-// metallic colors), and a live DEBUG readout + throttled console logs so you can
-// inspect what the camera sees while showing a cube. Browser-only glue; the heavy
-// logic is the offline-verified core.
+// The camera preview is DECOUPLED from tracking: the camera opens immediately (so you
+// always get a live feed to inspect), and tracking activates on its own once a start
+// state AND OpenCV are both available. Adds a camera picker (multiple webcams), a
+// per-session rolling palette (adapts to the cube's own colors), and a live debug
+// readout + throttled console logs. Browser-only glue; the heavy logic is the core.
 
 import { type CameraDevice, listCameras, openCamera } from '../src/camera.js';
 import { type Face, decodeFacelets, encodeFacelets } from '../src/cube.js';
@@ -21,33 +19,67 @@ const css = (r: number, g: number, b: number): string =>
 export class TrackerPanel extends HTMLElement {
   private readonly video = document.createElement('video');
   private readonly picker = document.createElement('select');
+  private readonly startBtn = document.createElement('button');
+  private readonly stopBtn = document.createElement('button');
   private readonly statusEl = document.createElement('div');
   private readonly paletteEl = document.createElement('div');
   private readonly debugEl = document.createElement('pre');
   private cam: Awaited<ReturnType<typeof openCamera>> | null = null;
   private live: LiveTracker | null = null;
-  private running = false;
+  private cameraOn = false;
+  private seedFacelets: string | null = null;
   private readonly palette: CenterPalette = rollingPalette();
   private deviceId: string | undefined;
   private lastLog = 0;
+  private _cv: any = null;
+
   // The injected OpenCV.js module (set by the app once its WASM runtime is ready).
-  cv: any = null;
+  set cv(m: any) {
+    this._cv = m;
+    this.tryStartTracking();
+  }
+  get cv(): any {
+    return this._cv;
+  }
 
   connectedCallback(): void {
     this.style.display = 'block';
     this.picker.style.cssText =
       'margin-bottom:8px;width:100%;padding:6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px';
-    this.picker.onchange = () => this.changeCamera(this.picker.value);
+    this.picker.onchange = () => void this.changeCamera(this.picker.value);
     this.video.setAttribute('playsinline', 'true');
     this.video.muted = true;
-    this.video.style.cssText = 'width:100%;border-radius:8px';
+    this.video.autoplay = true;
+    this.video.style.cssText = 'width:100%;border-radius:8px;background:#000;min-height:200px';
+    this.startBtn.textContent = 'Start camera';
+    this.startBtn.style.cssText =
+      'margin-top:8px;padding:6px 14px;border:0;border-radius:7px;background:#58a6ff;color:#06122b;font-weight:600;cursor:pointer';
+    this.startBtn.onclick = () => void this.startCamera();
+    this.stopBtn.textContent = 'Stop';
+    this.stopBtn.style.cssText =
+      'margin:8px 0 0 8px;padding:6px 14px;border:1px solid #30363d;border-radius:7px;background:#21262d;color:#e6edf3;cursor:pointer';
+    this.stopBtn.onclick = () => this.stop();
     this.statusEl.style.cssText = 'color:#8b949e;font-size:12px;margin-top:8px';
-    this.statusEl.textContent = 'idle';
+    this.statusEl.textContent = 'idle — press Start camera';
     this.paletteEl.style.cssText = 'display:flex;gap:4px;margin-top:8px;align-items:center';
     this.debugEl.style.cssText =
       'margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;word-break:break-all';
-    this.append(this.picker, this.video, this.statusEl, this.paletteEl, this.debugEl);
-    void this.refreshCameras(); // best-effort (labels fill in after permission)
+    this.append(
+      this.picker,
+      this.video,
+      this.startBtn,
+      this.stopBtn,
+      this.statusEl,
+      this.paletteEl,
+      this.debugEl,
+    );
+    void this.refreshCameras();
+  }
+
+  /** Provide the start state (from a scan or the smart cube); tracking begins once cv is ready too. */
+  provideSeed(facelets: string): void {
+    this.seedFacelets = facelets || null;
+    this.tryStartTracking();
   }
 
   private async refreshCameras(): Promise<void> {
@@ -55,7 +87,7 @@ export class TrackerPanel extends HTMLElement {
     try {
       cams = await listCameras();
     } catch {
-      /* enumeration needs permission — populated after start */
+      /* enumeration needs permission — populated after the camera opens */
     }
     this.picker.textContent = '';
     for (const c of cams) {
@@ -65,50 +97,73 @@ export class TrackerPanel extends HTMLElement {
       if (c.deviceId === this.deviceId) o.selected = true;
       this.picker.append(o);
     }
-    this.picker.style.display = cams.length > 1 ? 'block' : 'none'; // only show a picker when there's a choice
+    this.picker.style.display = cams.length > 1 ? 'block' : 'none';
   }
 
   private async changeCamera(deviceId: string): Promise<void> {
     this.deviceId = deviceId || undefined;
-    if (this.running) {
+    if (this.cameraOn) {
       this.cam?.stop();
-      this.cam = await openCamera(this.video, this.deviceId);
+      await this.startCamera();
     }
   }
 
-  /** Seed from a known facelet state (from a scan or the smart cube) and start tracking. */
-  async start(facelets: string): Promise<void> {
-    const state = decodeFacelets(facelets);
-    if (!state) {
-      this.statusEl.textContent = 'invalid start state';
+  /** Open the camera and show the live feed — independent of the seed / OpenCV. */
+  async startCamera(): Promise<void> {
+    if (this.cameraOn && this.cam) return;
+    this.statusEl.textContent = 'opening camera…';
+    try {
+      this.cam = await openCamera(this.video, this.deviceId);
+    } catch (e) {
+      this.statusEl.textContent = `camera error: ${(e as Error).message || e}`;
       return;
     }
-    if (!this.cv || !this.cv.Mat) {
-      this.statusEl.textContent = 'OpenCV not ready';
-      return;
-    }
-    this.live = new LiveTracker(createLocalizer(opencvDetector(this.cv), this.palette));
-    this.live.seed(state);
-    this.cam = await openCamera(this.video, this.deviceId);
-    await this.refreshCameras(); // labels now available
-    this.running = true;
+    this.cameraOn = true;
+    this.startBtn.hidden = true;
+    void this.refreshCameras(); // labels are available now
+    this.tryStartTracking();
+    this.updateWaitingStatus();
     this.tick();
   }
 
+  private tryStartTracking(): void {
+    if (this.live || !this.cameraOn) return;
+    if (this._cv?.Mat && this.seedFacelets) {
+      const state = decodeFacelets(this.seedFacelets);
+      if (state) {
+        this.live = new LiveTracker(createLocalizer(opencvDetector(this._cv), this.palette));
+        this.live.seed(state);
+      }
+    }
+  }
+
+  private updateWaitingStatus(): void {
+    if (this.live) return;
+    const missing: string[] = [];
+    if (!this.seedFacelets) missing.push('a start state (connect the cube or scan a face)');
+    if (!this._cv?.Mat) missing.push('OpenCV (loading…)');
+    this.statusEl.textContent = `camera live — waiting for ${missing.join(' + ') || 'tracking'}`;
+  }
+
   private readonly tick = (): void => {
-    if (!this.running || !this.cam || !this.live) return;
+    if (!this.cameraOn || !this.cam) return;
     const frame = this.cam.grab();
     if (frame) {
-      const u = this.live.pushFrame(frame, performance.now());
-      if (u.kind === 'move' || u.kind === 'resync') {
-        const st = this.live.state();
-        if (st) {
-          this.dispatchEvent(
-            new CustomEvent('state-update', { detail: { facelets: encodeFacelets(st) } }),
-          );
+      if (this.live) {
+        const u = this.live.pushFrame(frame, performance.now());
+        if (u.kind === 'move' || u.kind === 'resync') {
+          const st = this.live.state();
+          if (st) {
+            this.dispatchEvent(
+              new CustomEvent('state-update', { detail: { facelets: encodeFacelets(st) } }),
+            );
+          }
         }
+        this.renderDebug(this.live.lastDebug());
+      } else {
+        this.tryStartTracking();
+        this.updateWaitingStatus();
       }
-      this.renderDebug(this.live.lastDebug());
     }
     const v = this.video as unknown as { requestVideoFrameCallback?: (cb: () => void) => void };
     if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(this.tick);
@@ -116,7 +171,6 @@ export class TrackerPanel extends HTMLElement {
   };
 
   private renderDebug(d: FrameDebug | null): void {
-    // palette swatches — see what the rolling palette has learned about YOUR cube
     const p = this.palette.get();
     this.paletteEl.textContent = 'palette:';
     for (const f of FACES) {
@@ -136,7 +190,6 @@ export class TrackerPanel extends HTMLElement {
       `centers: ${centers || '(none — detector found no cube)'}`;
     this.statusEl.textContent = `tracking: ${d.status}`;
     this.debugEl.textContent = line;
-    // throttled console log so it can be copied out while showing a cube
     const now = performance.now();
     if (now - this.lastLog > 500) {
       this.lastLog = now;
@@ -145,10 +198,11 @@ export class TrackerPanel extends HTMLElement {
   }
 
   stop(): void {
-    this.running = false;
+    this.cameraOn = false;
     this.cam?.stop();
     this.cam = null;
     this.live = null;
+    this.startBtn.hidden = false;
     this.statusEl.textContent = 'stopped';
   }
 }

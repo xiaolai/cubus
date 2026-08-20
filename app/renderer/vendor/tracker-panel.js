@@ -4708,30 +4708,60 @@ var css = (r, g, b) => `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`
 var TrackerPanel = class extends HTMLElement {
   video = document.createElement("video");
   picker = document.createElement("select");
+  startBtn = document.createElement("button");
+  stopBtn = document.createElement("button");
   statusEl = document.createElement("div");
   paletteEl = document.createElement("div");
   debugEl = document.createElement("pre");
   cam = null;
   live = null;
-  running = false;
+  cameraOn = false;
+  seedFacelets = null;
   palette = rollingPalette();
   deviceId;
   lastLog = 0;
+  _cv = null;
   // The injected OpenCV.js module (set by the app once its WASM runtime is ready).
-  cv = null;
+  set cv(m) {
+    this._cv = m;
+    this.tryStartTracking();
+  }
+  get cv() {
+    return this._cv;
+  }
   connectedCallback() {
     this.style.display = "block";
     this.picker.style.cssText = "margin-bottom:8px;width:100%;padding:6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px";
-    this.picker.onchange = () => this.changeCamera(this.picker.value);
+    this.picker.onchange = () => void this.changeCamera(this.picker.value);
     this.video.setAttribute("playsinline", "true");
     this.video.muted = true;
-    this.video.style.cssText = "width:100%;border-radius:8px";
+    this.video.autoplay = true;
+    this.video.style.cssText = "width:100%;border-radius:8px;background:#000;min-height:200px";
+    this.startBtn.textContent = "Start camera";
+    this.startBtn.style.cssText = "margin-top:8px;padding:6px 14px;border:0;border-radius:7px;background:#58a6ff;color:#06122b;font-weight:600;cursor:pointer";
+    this.startBtn.onclick = () => void this.startCamera();
+    this.stopBtn.textContent = "Stop";
+    this.stopBtn.style.cssText = "margin:8px 0 0 8px;padding:6px 14px;border:1px solid #30363d;border-radius:7px;background:#21262d;color:#e6edf3;cursor:pointer";
+    this.stopBtn.onclick = () => this.stop();
     this.statusEl.style.cssText = "color:#8b949e;font-size:12px;margin-top:8px";
-    this.statusEl.textContent = "idle";
+    this.statusEl.textContent = "idle \u2014 press Start camera";
     this.paletteEl.style.cssText = "display:flex;gap:4px;margin-top:8px;align-items:center";
     this.debugEl.style.cssText = "margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#8b949e;white-space:pre-wrap;word-break:break-all";
-    this.append(this.picker, this.video, this.statusEl, this.paletteEl, this.debugEl);
+    this.append(
+      this.picker,
+      this.video,
+      this.startBtn,
+      this.stopBtn,
+      this.statusEl,
+      this.paletteEl,
+      this.debugEl
+    );
     void this.refreshCameras();
+  }
+  /** Provide the start state (from a scan or the smart cube); tracking begins once cv is ready too. */
+  provideSeed(facelets) {
+    this.seedFacelets = facelets || null;
+    this.tryStartTracking();
   }
   async refreshCameras() {
     let cams = [];
@@ -4751,43 +4781,64 @@ var TrackerPanel = class extends HTMLElement {
   }
   async changeCamera(deviceId) {
     this.deviceId = deviceId || void 0;
-    if (this.running) {
+    if (this.cameraOn) {
       this.cam?.stop();
-      this.cam = await openCamera(this.video, this.deviceId);
+      await this.startCamera();
     }
   }
-  /** Seed from a known facelet state (from a scan or the smart cube) and start tracking. */
-  async start(facelets) {
-    const state = decodeFacelets(facelets);
-    if (!state) {
-      this.statusEl.textContent = "invalid start state";
+  /** Open the camera and show the live feed — independent of the seed / OpenCV. */
+  async startCamera() {
+    if (this.cameraOn && this.cam) return;
+    this.statusEl.textContent = "opening camera\u2026";
+    try {
+      this.cam = await openCamera(this.video, this.deviceId);
+    } catch (e4) {
+      this.statusEl.textContent = `camera error: ${e4.message || e4}`;
       return;
     }
-    if (!this.cv || !this.cv.Mat) {
-      this.statusEl.textContent = "OpenCV not ready";
-      return;
-    }
-    this.live = new LiveTracker(createLocalizer(opencvDetector(this.cv), this.palette));
-    this.live.seed(state);
-    this.cam = await openCamera(this.video, this.deviceId);
-    await this.refreshCameras();
-    this.running = true;
+    this.cameraOn = true;
+    this.startBtn.hidden = true;
+    void this.refreshCameras();
+    this.tryStartTracking();
+    this.updateWaitingStatus();
     this.tick();
   }
+  tryStartTracking() {
+    if (this.live || !this.cameraOn) return;
+    if (this._cv?.Mat && this.seedFacelets) {
+      const state = decodeFacelets(this.seedFacelets);
+      if (state) {
+        this.live = new LiveTracker(createLocalizer(opencvDetector(this._cv), this.palette));
+        this.live.seed(state);
+      }
+    }
+  }
+  updateWaitingStatus() {
+    if (this.live) return;
+    const missing = [];
+    if (!this.seedFacelets) missing.push("a start state (connect the cube or scan a face)");
+    if (!this._cv?.Mat) missing.push("OpenCV (loading\u2026)");
+    this.statusEl.textContent = `camera live \u2014 waiting for ${missing.join(" + ") || "tracking"}`;
+  }
   tick = () => {
-    if (!this.running || !this.cam || !this.live) return;
+    if (!this.cameraOn || !this.cam) return;
     const frame = this.cam.grab();
     if (frame) {
-      const u = this.live.pushFrame(frame, performance.now());
-      if (u.kind === "move" || u.kind === "resync") {
-        const st = this.live.state();
-        if (st) {
-          this.dispatchEvent(
-            new CustomEvent("state-update", { detail: { facelets: encodeFacelets(st) } })
-          );
+      if (this.live) {
+        const u = this.live.pushFrame(frame, performance.now());
+        if (u.kind === "move" || u.kind === "resync") {
+          const st = this.live.state();
+          if (st) {
+            this.dispatchEvent(
+              new CustomEvent("state-update", { detail: { facelets: encodeFacelets(st) } })
+            );
+          }
         }
+        this.renderDebug(this.live.lastDebug());
+      } else {
+        this.tryStartTracking();
+        this.updateWaitingStatus();
       }
-      this.renderDebug(this.live.lastDebug());
     }
     const v = this.video;
     if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(this.tick);
@@ -4816,10 +4867,11 @@ centers: ${centers || "(none \u2014 detector found no cube)"}`;
     }
   }
   stop() {
-    this.running = false;
+    this.cameraOn = false;
     this.cam?.stop();
     this.cam = null;
     this.live = null;
+    this.startBtn.hidden = false;
     this.statusEl.textContent = "stopped";
   }
 };
