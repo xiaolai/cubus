@@ -1,0 +1,14 @@
+# YOLO dataset config for cube sticker-color detection.
+# Paths are relative to this file's dir (or override with an absolute `path`).
+path: ./dataset
+train: images/train
+val: images/val
+
+# category_id in the synthetic generator == these class indices.
+names:
+  0: white
+  1: red
+  2: green
+  3: yellow
+  4: orange
+  5: blue
