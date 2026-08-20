@@ -41,15 +41,14 @@ describe('findGrid', () => {
       cells[4]!,
       cells[6]!,
     ];
-    const idx = findGrid(all);
-    expect(idx).not.toBeNull();
-    expect(new Set(idx!).size).toBe(9); // nine distinct cells
-    const ordered = idx!.map((i) => all[i]!);
+    const found = findGrid(all);
+    expect(found).not.toBeNull();
+    expect(found).toHaveLength(9);
     // The nine found cells are exactly the grid's nine (as a set), not the noise.
-    const found = new Set(ordered.map((c) => `${c.cx},${c.cy}`));
-    for (const c of cells) expect(found.has(`${c.cx},${c.cy}`)).toBe(true);
+    const set = new Set(found!.map((c) => `${c.cx},${c.cy}`));
+    for (const c of cells) expect(set.has(`${c.cx},${c.cy}`)).toBe(true);
     // The middle of the lattice order is the grid's center sticker.
-    expect([ordered[4]!.cx, ordered[4]!.cy]).toEqual([140, 140]);
+    expect([found![4]!.cx, found![4]!.cy]).toEqual([140, 140]);
   });
 
   it('finds a rotated (tilted) 3x3 grid — not only axis-aligned', () => {
@@ -64,10 +63,20 @@ describe('findGrid', () => {
       const dy = c.cy - cy;
       return { cx: cx + dx * cos - dy * sin, cy: cy + dx * sin + dy * cos, w: c.w };
     });
-    const idx = findGrid(rotated);
-    expect(idx).not.toBeNull();
-    expect(new Set(idx!).size).toBe(9);
-    expect(idx![4]).toBe(4); // middle of the lattice order is still the center sticker
+    const found = findGrid(rotated);
+    expect(found).not.toBeNull();
+    expect(found).toHaveLength(9);
+    expect([Math.round(found![4]!.cx), Math.round(found![4]!.cy)]).toEqual([40, 40]);
+  });
+
+  it('tolerates a missing sticker (a center logo / occlusion) and fills its predicted spot', () => {
+    const cells = grid(100, 100, 40, 36);
+    const withoutCenter = cells.filter((_, i) => i !== 4); // drop the CENTER (the logo case)
+    const found = findGrid(withoutCenter);
+    expect(found).not.toBeNull();
+    expect(found).toHaveLength(9);
+    // the center is reconstructed at its predicted position
+    expect([Math.round(found![4]!.cx), Math.round(found![4]!.cy)]).toEqual([140, 140]);
   });
 
   it('returns null when candidates do not form a grid', () => {
@@ -79,8 +88,8 @@ describe('findGrid', () => {
     expect(findGrid(scattered)).toBeNull();
   });
 
-  it('returns null with fewer than nine candidates', () => {
-    expect(findGrid(grid(0, 0, 40, 36).slice(0, 8))).toBeNull();
+  it('returns null with too few candidates', () => {
+    expect(findGrid(grid(0, 0, 40, 36).slice(0, 6))).toBeNull();
   });
 });
 

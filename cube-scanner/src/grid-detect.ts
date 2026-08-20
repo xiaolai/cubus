@@ -30,7 +30,9 @@ function looksLikeSticker([r, g, b]: RGB): boolean {
   const min = Math.min(r, g, b);
   const sat = max > 0 ? (max - min) / max : 0;
   const val = max / 255;
-  return sat >= 0.35 || val >= 0.8;
+  // Vivid (a saturated cube colour) OR a bright NEUTRAL white. Skin/wood/beige are bright
+  // but tinted (mid saturation), so they fail both — that's what drops the background.
+  return sat >= 0.35 || (val >= 0.82 && sat < 0.2);
 }
 
 /**
@@ -76,28 +78,34 @@ interface Neighbor {
   d: number;
 }
 
+const ROLE = [-1, 0, 1] as const;
+const MIN_GRID_CELLS = 7; // accept a face with up to 2 stickers missing (logo, glare, finger)
+
 /**
- * Try candidate `i` as the grid center: estimate the lattice basis from its own neighbors
- * (so a rotated / perspective-tilted face is fine, not just an axis-aligned one), then
- * require a distinct candidate at each of the nine lattice positions. Returns the nine
- * indices in LATTICE reading order — a pure rotation of the true face, which the
- * orientation solver then resolves — or null.
+ * Fit a 3x3 lattice using candidate `i` as an anchor and its two nearest neighbors as the
+ * basis (so a rotated / perspective-tilted face is fine). `i` may occupy ANY of the nine
+ * positions — so a missing or logo-obscured CENTER doesn't block the fit. Returns the nine
+ * cells in reading order (a gap filled at its predicted spot) with the count of real
+ * matches, or null if fewer than MIN_GRID_CELLS line up.
  */
-function tryGrid(cands: readonly StickerCell[], i: number): number[] | null {
-  const c = cands[i]!;
+function gridFrom(
+  cands: readonly StickerCell[],
+  i: number,
+): { cells: StickerCell[]; count: number } | null {
+  const a = cands[i]!;
   const others: Neighbor[] = [];
   for (let j = 0; j < cands.length; j++) {
     if (j === i) continue;
-    const dx = cands[j]!.cx - c.cx;
-    const dy = cands[j]!.cy - c.cy;
+    const dx = cands[j]!.cx - a.cx;
+    const dy = cands[j]!.cy - a.cy;
     const d = Math.hypot(dx, dy);
     if (d > 1) others.push({ j, dx, dy, d });
   }
-  if (others.length < 3) return null;
-  others.sort((a, b) => a.d - b.d);
+  if (others.length < 2) return null;
+  others.sort((p, q) => p.d - q.d);
   const u = others[0]!; // nearest neighbor → one grid axis
-  // The other axis: nearest neighbor roughly perpendicular to u, similar length, and on the
-  // right-handed side (screen y-down) so the reading is a rotation of the true face, never a mirror.
+  // Other axis: nearest neighbor roughly perpendicular to u, similar length, right-handed
+  // (screen y-down) so the reading is a rotation of the true face, never a mirror.
   let v: Neighbor | null = null;
   for (const o of others) {
     const cos = (o.dx * u.dx + o.dy * u.dy) / (o.d * u.d);
@@ -109,38 +117,54 @@ function tryGrid(cands: readonly StickerCell[], i: number): number[] | null {
   }
   if (!v) return null;
   const tol = Math.min(u.d, v.d) * 0.5;
-  const grid: number[] = [];
-  for (let gj = -1; gj <= 1; gj++) {
-    for (let gi = -1; gi <= 1; gi++) {
-      const px = c.cx + gi * u.dx + gj * v.dx;
-      const py = c.cy + gi * u.dy + gj * v.dy;
-      let bi = -1;
-      let bd = tol;
-      for (let k = 0; k < cands.length; k++) {
-        const d = Math.hypot(cands[k]!.cx - px, cands[k]!.cy - py);
-        if (d < bd) {
-          bd = d;
-          bi = k;
+  let best: { cells: StickerCell[]; count: number } | null = null;
+  for (const rj of ROLE) {
+    for (const ri of ROLE) {
+      const cells: StickerCell[] = [];
+      const used = new Set<number>();
+      let count = 0;
+      for (const gj of ROLE) {
+        for (const gi of ROLE) {
+          const px = a.cx + (gi - ri) * u.dx + (gj - rj) * v.dx;
+          const py = a.cy + (gi - ri) * u.dy + (gj - rj) * v.dy;
+          let bi = -1;
+          let bd = tol;
+          for (let k = 0; k < cands.length; k++) {
+            if (used.has(k)) continue;
+            const d = Math.hypot(cands[k]!.cx - px, cands[k]!.cy - py);
+            if (d < bd) {
+              bd = d;
+              bi = k;
+            }
+          }
+          if (bi >= 0) {
+            used.add(bi);
+            cells.push(cands[bi]!);
+            count++;
+          } else {
+            cells.push({ cx: px, cy: py, w: a.w }); // predicted gap (logo/glare/occlusion)
+          }
         }
       }
-      if (bi < 0) return null;
-      grid.push(bi);
+      if (count >= MIN_GRID_CELLS && (!best || count > best.count)) best = { cells, count };
     }
   }
-  return new Set(grid).size === 9 ? grid : null;
+  return best;
 }
 
 /**
- * Find nine candidates forming a 3x3 lattice (any rotation / mild perspective) and return
- * their indices in reading order, or null. Structural gate: furniture has no such lattice.
+ * Find a 3x3 sticker lattice (any rotation / mild perspective, up to 2 stickers missing) and
+ * return the nine cells in reading order, or null. Structural gate: furniture has no lattice.
  */
-export function findGrid(cands: readonly StickerCell[]): number[] | null {
-  if (cands.length < 9) return null;
+export function findGrid(cands: readonly StickerCell[]): StickerCell[] | null {
+  if (cands.length < MIN_GRID_CELLS) return null;
+  let best: { cells: StickerCell[]; count: number } | null = null;
   for (let i = 0; i < cands.length; i++) {
-    const g = tryGrid(cands, i);
-    if (g) return g;
+    const res = gridFrom(cands, i);
+    if (res && (!best || res.count > best.count)) best = res;
+    if (best && best.count === 9) break;
   }
-  return null;
+  return best ? best.cells : null;
 }
 
 /** Median color of a small patch centred at (cx,cy) — samples the sticker's middle. */
@@ -264,14 +288,9 @@ export function detectStickerGrid(cv: OpenCv, frame: Frame): GridResult {
   }
 
   const candidates = dedupeCells(raw);
-  const idx = findGrid(candidates);
-  const grid = idx
-    ? {
-        cells: idx.map((i) => candidates[i]!),
-        colors: idx.map((i) =>
-          patchColor(frame, candidates[i]!.cx, candidates[i]!.cy, candidates[i]!.w * 0.25),
-        ),
-      }
+  const cells = findGrid(candidates);
+  const grid = cells
+    ? { cells, colors: cells.map((c) => patchColor(frame, c.cx, c.cy, c.w * 0.25)) }
     : null;
   return { candidates, grid };
 }

@@ -5729,7 +5729,7 @@ function looksLikeSticker([r, g, b]) {
   const min = Math.min(r, g, b);
   const sat = max > 0 ? (max - min) / max : 0;
   const val = max / 255;
-  return sat >= 0.35 || val >= 0.8;
+  return sat >= 0.35 || val >= 0.82 && sat < 0.2;
 }
 function downscaleFrame(frame, targetW) {
   if (frame.width <= targetW) return { frame, scale: 1 };
@@ -5759,18 +5759,20 @@ function dedupeCells(cands) {
   }
   return kept;
 }
-function tryGrid(cands, i) {
-  const c2 = cands[i];
+var ROLE = [-1, 0, 1];
+var MIN_GRID_CELLS = 7;
+function gridFrom(cands, i) {
+  const a = cands[i];
   const others = [];
   for (let j = 0; j < cands.length; j++) {
     if (j === i) continue;
-    const dx = cands[j].cx - c2.cx;
-    const dy = cands[j].cy - c2.cy;
+    const dx = cands[j].cx - a.cx;
+    const dy = cands[j].cy - a.cy;
     const d = Math.hypot(dx, dy);
     if (d > 1) others.push({ j, dx, dy, d });
   }
-  if (others.length < 3) return null;
-  others.sort((a, b) => a.d - b.d);
+  if (others.length < 2) return null;
+  others.sort((p4, q) => p4.d - q.d);
   const u = others[0];
   let v = null;
   for (const o of others) {
@@ -5783,33 +5785,49 @@ function tryGrid(cands, i) {
   }
   if (!v) return null;
   const tol = Math.min(u.d, v.d) * 0.5;
-  const grid = [];
-  for (let gj = -1; gj <= 1; gj++) {
-    for (let gi = -1; gi <= 1; gi++) {
-      const px = c2.cx + gi * u.dx + gj * v.dx;
-      const py = c2.cy + gi * u.dy + gj * v.dy;
-      let bi = -1;
-      let bd = tol;
-      for (let k4 = 0; k4 < cands.length; k4++) {
-        const d = Math.hypot(cands[k4].cx - px, cands[k4].cy - py);
-        if (d < bd) {
-          bd = d;
-          bi = k4;
+  let best = null;
+  for (const rj of ROLE) {
+    for (const ri of ROLE) {
+      const cells = [];
+      const used = /* @__PURE__ */ new Set();
+      let count = 0;
+      for (const gj of ROLE) {
+        for (const gi of ROLE) {
+          const px = a.cx + (gi - ri) * u.dx + (gj - rj) * v.dx;
+          const py = a.cy + (gi - ri) * u.dy + (gj - rj) * v.dy;
+          let bi = -1;
+          let bd = tol;
+          for (let k4 = 0; k4 < cands.length; k4++) {
+            if (used.has(k4)) continue;
+            const d = Math.hypot(cands[k4].cx - px, cands[k4].cy - py);
+            if (d < bd) {
+              bd = d;
+              bi = k4;
+            }
+          }
+          if (bi >= 0) {
+            used.add(bi);
+            cells.push(cands[bi]);
+            count++;
+          } else {
+            cells.push({ cx: px, cy: py, w: a.w });
+          }
         }
       }
-      if (bi < 0) return null;
-      grid.push(bi);
+      if (count >= MIN_GRID_CELLS && (!best || count > best.count)) best = { cells, count };
     }
   }
-  return new Set(grid).size === 9 ? grid : null;
+  return best;
 }
 function findGrid(cands) {
-  if (cands.length < 9) return null;
+  if (cands.length < MIN_GRID_CELLS) return null;
+  let best = null;
   for (let i = 0; i < cands.length; i++) {
-    const g = tryGrid(cands, i);
-    if (g) return g;
+    const res = gridFrom(cands, i);
+    if (res && (!best || res.count > best.count)) best = res;
+    if (best && best.count === 9) break;
   }
-  return null;
+  return best ? best.cells : null;
 }
 function patchColor(frame, cx, cy, r) {
   const rs = [];
@@ -5893,13 +5911,8 @@ function detectStickerGrid(cv, frame) {
     for (const m of cleanup) m.delete();
   }
   const candidates = dedupeCells(raw);
-  const idx = findGrid(candidates);
-  const grid = idx ? {
-    cells: idx.map((i) => candidates[i]),
-    colors: idx.map(
-      (i) => patchColor(frame, candidates[i].cx, candidates[i].cy, candidates[i].w * 0.25)
-    )
-  } : null;
+  const cells = findGrid(candidates);
+  const grid = cells ? { cells, colors: cells.map((c2) => patchColor(frame, c2.cx, c2.cy, c2.w * 0.25)) } : null;
   return { candidates, grid };
 }
 
