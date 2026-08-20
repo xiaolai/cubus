@@ -95,6 +95,9 @@ def main() -> None:
     if hdris:
         bproc.world.set_world_background_hdr_img(rng.choice(hdris), strength=rng.uniform(0.4, 1.6))
     else:
+        # No HDRIs → plain sun. Fine for a smoke test, but shout so a mistyped/unexpanded
+        # --hdri_dir can't silently produce a whole background-less production dataset.
+        print(f"WARNING: no .hdr/.exr in --hdri_dir '{args.hdri_dir}'; using sun fallback", file=sys.stderr)
         light = bproc.types.Light()
         light.set_type("SUN")
         light.set_energy(rng.uniform(2.0, 5.0))
@@ -119,7 +122,7 @@ def main() -> None:
     bproc.renderer.enable_segmentation_output(
         map_by=["category_id", "instance"], default_values={"category_id": 0}
     )
-    bproc.renderer.set_max_amount_of_samples(rng.randint(24, 64))  # some noise variety, keep it fast
+    bproc.renderer.set_max_amount_of_samples(rng.randint(8, 24))  # low = fast; residual noise ~ sensor noise
     data = bproc.renderer.render()
 
     bproc.writer.write_coco_annotations(
