@@ -16,8 +16,8 @@
 import { openCamera } from '../src/camera.js';
 import { rgbDistance } from '../src/color.js';
 import { CORNER_ANCHORS } from '../src/corner-scan.js';
-import { type OpenCv, detectFaceQuad } from '../src/detect.js';
-import { type Quad, sampleQuad } from '../src/homography.js';
+import type { OpenCv } from '../src/detect.js';
+import { type StickerCell, detectStickerGrid } from '../src/grid-detect.js';
 import { type OrientationResult, solveOrientations } from '../src/orient.js';
 import { SteadyDetector } from '../src/stability.js';
 import { FACES, type Face, type Frame, type RGB, type ScanResult } from '../src/types.js';
@@ -191,14 +191,14 @@ export class TabletopScannerPanel extends HTMLElement {
     } catch {
       return;
     }
-    const quad = detectFaceQuad(this.cv, frame, { minAreaFraction: 0.05 });
-    this.drawOverlay(frame, quad ? [quad] : []);
-    if (!quad) {
+    const grid = detectStickerGrid(this.cv, frame);
+    this.drawOverlay(frame, grid ? grid.cells : []);
+    if (!grid) {
       this.showRead(null);
-      this.setStatus('Place a cube face flat in the box');
+      this.setStatus('Place a cube face flat in the box (I look for its 3×3 stickers)');
       return;
     }
-    const samples = sampleQuad(frame, quad);
+    const samples = grid.colors;
     this.showRead(samples);
     const face = this.identify(samples[4]!);
     const steady = this.steady.push(frame);
@@ -251,7 +251,7 @@ export class TabletopScannerPanel extends HTMLElement {
     }
   }
 
-  private drawOverlay(frame: Frame, quads: readonly Quad[]): void {
+  private drawOverlay(frame: Frame, cells: readonly StickerCell[]): void {
     const ctx = this.octx;
     if (!ctx) return;
     const c = this.el<HTMLCanvasElement>('ov');
@@ -261,16 +261,13 @@ export class TabletopScannerPanel extends HTMLElement {
       if (this.stageEl) this.stageEl.style.aspectRatio = `${frame.width} / ${frame.height}`;
     }
     ctx.clearRect(0, 0, frame.width, frame.height);
-    ctx.lineWidth = Math.max(2, frame.width / 160);
+    ctx.lineWidth = Math.max(2, frame.width / 200);
     ctx.strokeStyle = '#3fb950';
     ctx.fillStyle = 'rgba(63,185,80,0.15)';
-    for (const q of quads) {
+    for (const cell of cells) {
+      const s = cell.w;
       ctx.beginPath();
-      ctx.moveTo(q.tl[0], q.tl[1]);
-      ctx.lineTo(q.tr[0], q.tr[1]);
-      ctx.lineTo(q.br[0], q.br[1]);
-      ctx.lineTo(q.bl[0], q.bl[1]);
-      ctx.closePath();
+      ctx.rect(cell.cx - s / 2, cell.cy - s / 2, s, s);
       ctx.fill();
       ctx.stroke();
     }

@@ -5554,13 +5554,13 @@ function classify(samples, centers) {
     let nearestIdx = 0;
     for (let k4 = 0; k4 < 6; k4++) {
       const d = ciede2000(lab2, centerLabs[k4]);
-      const dist2 = Number.isFinite(d) ? d : Number.POSITIVE_INFINITY;
-      if (dist2 < nearest) {
+      const dist = Number.isFinite(d) ? d : Number.POSITIVE_INFINITY;
+      if (dist < nearest) {
         second = nearest;
-        nearest = dist2;
+        nearest = dist;
         nearestIdx = k4;
-      } else if (dist2 < second) {
-        second = dist2;
+      } else if (dist < second) {
+        second = dist;
       }
     }
     letters.push(FACES[nearestIdx]);
@@ -5707,107 +5707,6 @@ function isStructurallyValid(f3) {
 // src/assemble.ts
 var LOW_CONFIDENCE_THRESHOLD = 0.15;
 
-// src/homography.ts
-function orderCorners(pts) {
-  if (pts.length !== 4) throw new Error(`orderCorners expects 4 points, got ${pts.length}`);
-  let tl = pts[0];
-  let br = pts[0];
-  let tr = pts[0];
-  let bl = pts[0];
-  for (const p4 of pts) {
-    const sum = p4[0] + p4[1];
-    const diff = p4[1] - p4[0];
-    if (sum < tl[0] + tl[1]) tl = p4;
-    if (sum > br[0] + br[1]) br = p4;
-    if (diff < tr[1] - tr[0]) tr = p4;
-    if (diff > bl[1] - bl[0]) bl = p4;
-  }
-  return { tl, tr, br, bl };
-}
-function unitSquareToQuad(q) {
-  const [x0, y0] = q.tl;
-  const [x1, y1] = q.tr;
-  const [x2, y2] = q.br;
-  const [x3, y3] = q.bl;
-  const sx = x0 - x1 + x2 - x3;
-  const sy = y0 - y1 + y2 - y3;
-  if (Math.abs(sx) < 1e-9 && Math.abs(sy) < 1e-9) {
-    return { a: x1 - x0, b: x3 - x0, c: x0, d: y1 - y0, e: y3 - y0, f: y0, g: 0, h: 0 };
-  }
-  const dx1 = x1 - x2;
-  const dx2 = x3 - x2;
-  const dy1 = y1 - y2;
-  const dy2 = y3 - y2;
-  const den = dx1 * dy2 - dx2 * dy1;
-  const g = (sx * dy2 - dx2 * sy) / den;
-  const h = (dx1 * sy - sx * dy1) / den;
-  return {
-    a: x1 - x0 + g * x1,
-    b: x3 - x0 + h * x3,
-    c: x0,
-    d: y1 - y0 + g * y1,
-    e: y3 - y0 + h * y3,
-    f: y0,
-    g,
-    h
-  };
-}
-function project(t, u, v) {
-  const w = t.g * u + t.h * v + 1;
-  return [(t.a * u + t.b * v + t.c) / w, (t.d * u + t.e * v + t.f) / w];
-}
-function pixel(frame, x, y) {
-  const cx = Math.min(frame.width - 1, Math.max(0, Math.round(x)));
-  const cy = Math.min(frame.height - 1, Math.max(0, Math.round(y)));
-  const i = (cy * frame.width + cx) * 4;
-  return [frame.data[i], frame.data[i + 1], frame.data[i + 2]];
-}
-function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
-}
-var RING = [0.35, 0.6];
-var ANGLES = 8;
-function assertFrame(frame) {
-  const { width, height, data } = frame;
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
-    throw new Error(`invalid frame dimensions: ${width}x${height}`);
-  }
-  if (data.length < width * height * 4) {
-    throw new Error(`frame buffer too small: ${data.length} < ${width * height * 4}`);
-  }
-}
-function sampleQuad(frame, quad) {
-  assertFrame(frame);
-  const t = unitSquareToQuad(quad);
-  const half = 1 / 6;
-  const out = [];
-  for (let row = 0; row < 3; row++) {
-    for (let col = 0; col < 3; col++) {
-      const cu = (col + 0.5) / 3;
-      const cv = (row + 0.5) / 3;
-      const rs = [];
-      const gs = [];
-      const bs = [];
-      for (const r of RING) {
-        for (let k4 = 0; k4 < ANGLES; k4++) {
-          const ang = 2 * Math.PI * k4 / ANGLES;
-          const u = cu + Math.cos(ang) * r * half;
-          const v = cv + Math.sin(ang) * r * half;
-          const [x, y] = project(t, u, v);
-          const [pr, pg, pb] = pixel(frame, x, y);
-          rs.push(pr);
-          gs.push(pg);
-          bs.push(pb);
-        }
-      }
-      out.push([median(rs), median(gs), median(bs)]);
-    }
-  }
-  return out;
-}
-
 // src/corner-scan.ts
 var CORNER_ANCHORS = {
   U: [235, 235, 235],
@@ -5824,62 +5723,80 @@ var CORNER_ANCHORS = {
   // blue
 };
 
-// src/detect.ts
-function dist(a, b) {
-  return Math.hypot(a[0] - b[0], a[1] - b[1]);
-}
-function centroid(pts) {
-  let x = 0;
-  let y = 0;
-  for (const p4 of pts) {
-    x += p4[0];
-    y += p4[1];
+// src/grid-detect.ts
+var GRID_OFFSETS = [
+  [-1, -1],
+  [0, -1],
+  [1, -1],
+  [-1, 0],
+  [0, 0],
+  [1, 0],
+  [-1, 1],
+  [0, 1],
+  [1, 1]
+];
+function dedupeCells(cands) {
+  const kept = [];
+  for (const c2 of cands) {
+    if (!kept.some((k4) => Math.hypot(k4.cx - c2.cx, k4.cy - c2.cy) < Math.min(k4.w, c2.w) * 0.4))
+      kept.push(c2);
   }
-  return [x / pts.length, y / pts.length];
+  return kept;
 }
-function squareness(pts) {
-  const s = [
-    dist(pts[0], pts[1]),
-    dist(pts[1], pts[2]),
-    dist(pts[2], pts[3]),
-    dist(pts[3], pts[0])
-  ];
-  const min = Math.min(...s);
-  const max = Math.max(...s);
-  return max === 0 ? 0 : min / max;
-}
-function polyArea(pts) {
-  let a = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const p4 = pts[i];
-    const q = pts[(i + 1) % pts.length];
-    a += p4[0] * q[1] - q[0] * p4[1];
+function readingOrder(idx, cands) {
+  const byRow = [...idx].sort((a, b) => cands[a].cy - cands[b].cy);
+  const out = [];
+  for (let r = 0; r < 3; r++) {
+    out.push(...byRow.slice(r * 3, r * 3 + 3).sort((a, b) => cands[a].cx - cands[b].cx));
   }
-  return Math.abs(a) / 2;
+  return out;
 }
-function boxCorners(r) {
-  const a = r.angle * Math.PI / 180;
-  const c2 = Math.cos(a);
-  const s = Math.sin(a);
-  const hw = r.size.width / 2;
-  const hh = r.size.height / 2;
-  const cx = r.center.x;
-  const cy = r.center.y;
-  return [
-    [-hw, -hh],
-    [hw, -hh],
-    [hw, hh],
-    [-hw, hh]
-  ].map(([x, y]) => [cx + x * c2 - y * s, cy + x * s + y * c2]);
+function findGrid(cands) {
+  if (cands.length < 9) return null;
+  for (let i = 0; i < cands.length; i++) {
+    const c2 = cands[i];
+    const step = c2.w * 1.15;
+    const tol = c2.w * 0.6;
+    const matched = [];
+    for (const [dx, dy] of GRID_OFFSETS) {
+      const px = c2.cx + dx * step;
+      const py = c2.cy + dy * step;
+      let bi = -1;
+      let bd = tol;
+      for (let j = 0; j < cands.length; j++) {
+        const d = Math.hypot(cands[j].cx - px, cands[j].cy - py);
+        if (d < bd) {
+          bd = d;
+          bi = j;
+        }
+      }
+      if (bi < 0) break;
+      matched.push(bi);
+    }
+    if (matched.length === 9 && new Set(matched).size === 9) return readingOrder(matched, cands);
+  }
+  return null;
 }
-function detectQuadCorners(cv, frame, opts, maxFaces) {
-  const epsilon = opts.approxEpsilon ?? 0.04;
-  const maxVerts = opts.maxApproxVerts ?? 6;
-  const fillMin = opts.fillMin ?? 0.6;
-  const squarenessMin = opts.squarenessMin ?? 0.45;
-  const frameArea = frame.width * frame.height;
-  const minArea = (opts.minAreaFraction ?? 0.15) * frameArea;
-  const maxArea = (opts.maxAreaFraction ?? 0.9) * frameArea;
+function patchColor(frame, cx, cy, r) {
+  const rs = [];
+  const gs = [];
+  const bs = [];
+  const x0 = Math.max(0, Math.round(cx - r));
+  const x1 = Math.min(frame.width - 1, Math.round(cx + r));
+  const y0 = Math.max(0, Math.round(cy - r));
+  const y1 = Math.min(frame.height - 1, Math.round(cy + r));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = (y * frame.width + x) * 4;
+      rs.push(frame.data[i]);
+      gs.push(frame.data[i + 1]);
+      bs.push(frame.data[i + 2]);
+    }
+  }
+  const med = (a) => a.length ? a.sort((p4, q) => p4 - q)[a.length >> 1] : 0;
+  return [med(rs), med(gs), med(bs)];
+}
+function detectStickerGrid(cv, frame) {
   const src = cv.matFromImageData(frame);
   const gray = new cv.Mat();
   const edges = new cv.Mat();
@@ -5887,68 +5804,38 @@ function detectQuadCorners(cv, frame, opts, maxFaces) {
   const hierarchy = new cv.Mat();
   const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
   const cleanup = [src, gray, edges, contours, hierarchy, kernel];
-  const candidates = [];
+  const minW = frame.width * 0.03;
+  const maxW = frame.width * 0.32;
+  const raw = [];
   try {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
-    let lo = opts.cannyLow ?? 50;
-    let hi = opts.cannyHigh ?? 150;
-    if (opts.autoCanny ?? true) {
-      const bin = new cv.Mat();
-      const otsu = cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
-      bin.delete();
-      if (otsu >= 1) {
-        hi = otsu;
-        lo = 0.5 * otsu;
-      }
-    }
-    cv.Canny(gray, edges, lo, hi);
+    cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
+    const bin = new cv.Mat();
+    const otsu = cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+    bin.delete();
+    const hi = otsu >= 1 ? otsu : 150;
+    cv.Canny(gray, edges, 0.5 * hi, hi);
     cv.dilate(edges, edges, kernel);
     cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
     for (let i = 0; i < contours.size(); i++) {
-      const cnt = contours.get(i);
-      const contArea = Math.abs(cv.contourArea(cnt));
-      if (contArea >= minArea && contArea <= maxArea) {
-        const approx = new cv.Mat();
-        cv.approxPolyDP(cnt, approx, epsilon * cv.arcLength(cnt, true), true);
-        let corners = null;
-        if (approx.rows === 4 && cv.isContourConvex(approx)) {
-          const d = approx.data32S;
-          corners = [
-            [d[0], d[1]],
-            [d[2], d[3]],
-            [d[4], d[5]],
-            [d[6], d[7]]
-          ];
-        } else if (approx.rows >= 4 && approx.rows <= maxVerts) {
-          corners = boxCorners(cv.minAreaRect(cnt));
-        }
-        approx.delete();
-        if (corners) {
-          const boxArea = polyArea(corners);
-          const fill = boxArea > 0 ? contArea / boxArea : 0;
-          if (fill >= fillMin && squareness(corners) >= squarenessMin)
-            candidates.push({ corners, area: boxArea });
-        }
-      }
-      cnt.delete();
+      const c2 = contours.get(i);
+      const rect = cv.boundingRect(c2);
+      const { width: w, height: h } = rect;
+      const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
+      const solidity = w * h > 0 ? Math.abs(cv.contourArea(c2)) / (w * h) : 0;
+      if (w >= minW && w <= maxW && aspect >= 0.7 && solidity > 0.4)
+        raw.push({ cx: rect.x + w / 2, cy: rect.y + h / 2, w });
+      c2.delete();
     }
   } finally {
-    for (const mat of cleanup) mat.delete();
+    for (const m of cleanup) m.delete();
   }
-  candidates.sort((a, b) => b.area - a.area);
-  const kept = [];
-  for (const cand of candidates) {
-    const cc = centroid(cand.corners);
-    const near = kept.some((k4) => dist(centroid(k4), cc) < 0.5 * Math.sqrt(cand.area));
-    if (!near) kept.push(cand.corners);
-    if (kept.length === maxFaces) break;
-  }
-  return kept;
-}
-function detectFaceQuad(cv, frame, opts = {}) {
-  const corners = detectQuadCorners(cv, frame, opts, 1);
-  return corners[0] ? orderCorners(corners[0]) : null;
+  const cands = dedupeCells(raw);
+  const grid = findGrid(cands);
+  if (!grid) return null;
+  const cells = grid.map((i) => cands[i]);
+  const colors = cells.map((cell) => patchColor(frame, cell.cx, cell.cy, cell.w * 0.25));
+  return { colors, cells };
 }
 
 // src/orient.ts
@@ -6222,14 +6109,14 @@ var TabletopScannerPanel = class extends HTMLElement {
     } catch {
       return;
     }
-    const quad = detectFaceQuad(this.cv, frame, { minAreaFraction: 0.05 });
-    this.drawOverlay(frame, quad ? [quad] : []);
-    if (!quad) {
+    const grid = detectStickerGrid(this.cv, frame);
+    this.drawOverlay(frame, grid ? grid.cells : []);
+    if (!grid) {
       this.showRead(null);
-      this.setStatus("Place a cube face flat in the box");
+      this.setStatus("Place a cube face flat in the box (I look for its 3\xD73 stickers)");
       return;
     }
-    const samples = sampleQuad(frame, quad);
+    const samples = grid.colors;
     this.showRead(samples);
     const face = this.identify(samples[4]);
     const steady = this.steady.push(frame);
@@ -6280,7 +6167,7 @@ var TabletopScannerPanel = class extends HTMLElement {
       );
     }
   }
-  drawOverlay(frame, quads) {
+  drawOverlay(frame, cells) {
     const ctx = this.octx;
     if (!ctx) return;
     const c2 = this.el("ov");
@@ -6290,16 +6177,13 @@ var TabletopScannerPanel = class extends HTMLElement {
       if (this.stageEl) this.stageEl.style.aspectRatio = `${frame.width} / ${frame.height}`;
     }
     ctx.clearRect(0, 0, frame.width, frame.height);
-    ctx.lineWidth = Math.max(2, frame.width / 160);
+    ctx.lineWidth = Math.max(2, frame.width / 200);
     ctx.strokeStyle = "#3fb950";
     ctx.fillStyle = "rgba(63,185,80,0.15)";
-    for (const q of quads) {
+    for (const cell of cells) {
+      const s = cell.w;
       ctx.beginPath();
-      ctx.moveTo(q.tl[0], q.tl[1]);
-      ctx.lineTo(q.tr[0], q.tr[1]);
-      ctx.lineTo(q.br[0], q.br[1]);
-      ctx.lineTo(q.bl[0], q.bl[1]);
-      ctx.closePath();
+      ctx.rect(cell.cx - s / 2, cell.cy - s / 2, s, s);
       ctx.fill();
       ctx.stroke();
     }
