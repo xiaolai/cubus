@@ -12,6 +12,14 @@ async function openCamera(video, deviceId) {
   video.setAttribute("playsinline", "true");
   video.muted = true;
   await video.play();
+  const [track] = stream.getVideoTracks();
+  const caps = track?.getCapabilities?.() ?? {};
+  if (track && caps.focusMode?.includes("continuous")) {
+    track.applyConstraints({
+      advanced: [{ focusMode: "continuous" }]
+    }).catch(() => {
+    });
+  }
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   return {
@@ -28,7 +36,7 @@ async function openCamera(video, deviceId) {
       return { data: img.data, width: w, height: h };
     },
     stop() {
-      for (const track of stream.getTracks()) track.stop();
+      for (const track2 of stream.getTracks()) track2.stop();
       video.srcObject = null;
     }
   };
@@ -874,7 +882,7 @@ var LiveTracker = class {
   }
   /** Drive one camera frame through localize → ROI motion-gate → track. */
   pushFrame(frame, t) {
-    const { cells, alignedGeometry, roi, centers } = this.localizer.detect(frame);
+    const { cells, alignedGeometry, roi, centers, quads } = this.localizer.detect(frame);
     const cur = toLuma(frame);
     const diff = this.prevLuma ? lumaDiff(this.prevLuma, cur, roi) : Number.POSITIVE_INFINITY;
     const stable = this.gate.push(diff);
@@ -888,6 +896,7 @@ var LiveTracker = class {
       alignedGeometry,
       roi,
       centers: centers ?? [],
+      quads: quads ?? [],
       status: this.tracker.status(),
       lastUpdate: u.kind
     };
@@ -4534,6 +4543,7 @@ function createLocalizer(detector = nullDetector(), palette = staticPalette()) {
       const centers = palette.get();
       const cells = [];
       const detectedCenters = [];
+      const quads = [];
       let minX = Number.POSITIVE_INFINITY;
       let minY = Number.POSITIVE_INFINITY;
       let maxX = Number.NEGATIVE_INFINITY;
@@ -4549,6 +4559,7 @@ function createLocalizer(detector = nullDetector(), palette = staticPalette()) {
         const soft = classifyCells(sampled, centers);
         const idx = faceIndices(face.slot);
         soft.forEach((s, k4) => cells.push({ slot: idx[k4], soft: s }));
+        quads.push(face.quad);
         for (const p4 of face.quad) {
           minX = Math.min(minX, p4.x);
           minY = Math.min(minY, p4.y);
@@ -4556,7 +4567,7 @@ function createLocalizer(detector = nullDetector(), palette = staticPalette()) {
           maxY = Math.max(maxY, p4.y);
         }
       }
-      if (cells.length === 0) return { cells, alignedGeometry, centers: detectedCenters };
+      if (cells.length === 0) return { cells, alignedGeometry, centers: detectedCenters, quads };
       const x = Math.max(0, minX);
       const y = Math.max(0, minY);
       const roi = {
@@ -4565,7 +4576,7 @@ function createLocalizer(detector = nullDetector(), palette = staticPalette()) {
         w: Math.max(0, Math.min(frame.width, maxX) - x),
         h: Math.max(0, Math.min(frame.height, maxY) - y)
       };
-      return { cells, alignedGeometry, roi, centers: detectedCenters };
+      return { cells, alignedGeometry, roi, centers: detectedCenters, quads };
     }
   };
 }
@@ -4624,11 +4635,15 @@ function assignSlots(centroids) {
 
 // src/perception/opencv-detector.ts
 var DEFAULT_OPENCV = {
-  minFaceAreaFrac: 0.01,
+  minFaceAreaFrac: 8e-3,
+  maxFaceAreaFrac: 0.6,
+  autoCanny: true,
   cannyLow: 50,
   cannyHigh: 150,
   approxEps: 0.04,
-  squarenessMin: 0.6
+  maxApproxVerts: 6,
+  fillMin: 0.6,
+  squarenessMin: 0.5
 };
 function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -4638,6 +4653,29 @@ function squareness(q) {
   const min = Math.min(...sides);
   const max = Math.max(...sides);
   return max === 0 ? 0 : min / max;
+}
+function polyArea(q) {
+  let s = 0;
+  for (let i = 0; i < q.length; i++) {
+    const a = q[i];
+    const b = q[(i + 1) % q.length];
+    s += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(s) / 2;
+}
+function boxCorners(r) {
+  const a = r.angle * Math.PI / 180;
+  const c2 = Math.cos(a);
+  const s = Math.sin(a);
+  const hw = r.size.width / 2;
+  const hh = r.size.height / 2;
+  const { x: cx, y: cy } = r.center;
+  return [
+    [-hw, -hh],
+    [hw, -hh],
+    [hw, hh],
+    [-hw, hh]
+  ].map(([x, y]) => ({ x: cx + x * c2 - y * s, y: cy + x * s + y * c2 }));
 }
 function opencvDetector(cv, opts = DEFAULT_OPENCV) {
   return {
@@ -4651,29 +4689,52 @@ function opencvDetector(cv, opts = DEFAULT_OPENCV) {
       const edges = new cv.Mat();
       const contours = new cv.MatVector();
       const hierarchy = new cv.Mat();
-      const minArea = opts.minFaceAreaFrac * frame.width * frame.height;
+      const kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+      const frameArea = frame.width * frame.height;
+      const minArea = opts.minFaceAreaFrac * frameArea;
+      const maxArea = opts.maxFaceAreaFrac * frameArea;
       const candidates = [];
       try {
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
         cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-        cv.Canny(gray, edges, opts.cannyLow, opts.cannyHigh);
-        cv.dilate(edges, edges, cv.Mat.ones(3, 3, cv.CV_8U));
-        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        let lo = opts.cannyLow;
+        let hi = opts.cannyHigh;
+        if (opts.autoCanny) {
+          const bin = new cv.Mat();
+          const otsu = cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+          bin.delete();
+          if (otsu >= 1) {
+            hi = otsu;
+            lo = 0.5 * otsu;
+          }
+        }
+        cv.Canny(gray, edges, lo, hi);
+        cv.dilate(edges, edges, kernel);
+        cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
         for (let i = 0; i < contours.size(); i++) {
           const c2 = contours.get(i);
-          const peri = cv.arcLength(c2, true);
-          const approx = new cv.Mat();
-          cv.approxPolyDP(c2, approx, opts.approxEps * peri, true);
-          if (approx.rows === 4 && cv.isContourConvex(approx)) {
-            const area = cv.contourArea(approx);
-            if (area >= minArea) {
-              const corners = [];
+          const contArea = cv.contourArea(c2);
+          if (contArea >= minArea && contArea <= maxArea) {
+            const peri = cv.arcLength(c2, true);
+            const approx = new cv.Mat();
+            cv.approxPolyDP(c2, approx, opts.approxEps * peri, true);
+            let corners = null;
+            if (approx.rows === 4 && cv.isContourConvex(approx)) {
+              corners = [];
               for (let k4 = 0; k4 < 4; k4++)
                 corners.push({ x: approx.data32S[k4 * 2], y: approx.data32S[k4 * 2 + 1] });
-              candidates.push({ corners, area, sq: squareness(corners) });
+            } else if (approx.rows >= 4 && approx.rows <= opts.maxApproxVerts) {
+              corners = boxCorners(cv.minAreaRect(c2));
+            }
+            approx.delete();
+            if (corners) {
+              const boxArea = polyArea(corners);
+              const fill = boxArea > 0 ? contArea / boxArea : 0;
+              const sq = squareness(corners);
+              if (fill >= opts.fillMin && sq >= opts.squarenessMin)
+                candidates.push({ corners, area: boxArea, sq });
             }
           }
-          approx.delete();
           c2.delete();
         }
       } finally {
@@ -4682,6 +4743,7 @@ function opencvDetector(cv, opts = DEFAULT_OPENCV) {
         edges.delete();
         contours.delete();
         hierarchy.delete();
+        kernel.delete();
       }
       candidates.sort((a, b) => b.area - a.area);
       const kept = [];
@@ -4708,6 +4770,8 @@ var css = (r, g, b) => `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`
 var TrackerPanel = class extends HTMLElement {
   stage = document.createElement("div");
   video = document.createElement("video");
+  overlay = document.createElement("canvas");
+  octx = null;
   guide = document.createElement("div");
   hint = document.createElement("div");
   picker = document.createElement("select");
@@ -4744,10 +4808,12 @@ var TrackerPanel = class extends HTMLElement {
     this.video.muted = true;
     this.video.autoplay = true;
     this.video.style.cssText = "width:100%;height:100%;object-fit:cover;display:block";
+    this.overlay.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none";
+    this.octx = this.overlay.getContext("2d");
     this.guide.style.cssText = "position:absolute;inset:0;margin:auto;width:58%;aspect-ratio:1;border:3px dashed rgba(255,255,255,.75);border-radius:14px;pointer-events:none";
     this.hint.textContent = "Hold your cube in the box \u2014 show 3 sides (top, right, front)";
     this.hint.style.cssText = "position:absolute;left:0;right:0;bottom:8px;text-align:center;font-size:12px;color:#fff;text-shadow:0 1px 3px #000;pointer-events:none";
-    this.stage.append(this.video, this.guide, this.hint);
+    this.stage.append(this.video, this.overlay, this.guide, this.hint);
     this.picker.style.cssText = "margin-top:8px;width:100%;padding:6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px";
     this.picker.onchange = () => void this.changeCamera(this.picker.value);
     this.picker.style.display = "none";
@@ -4896,6 +4962,7 @@ var TrackerPanel = class extends HTMLElement {
           }
         }
         this.render();
+        this.drawOverlay(frame.width, frame.height, this.live.lastDebug());
         if (this.debugOn) this.renderDebug(this.live.lastDebug());
       } else {
         this.tryStartTracking();
@@ -4907,6 +4974,30 @@ var TrackerPanel = class extends HTMLElement {
     if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(next);
     else requestAnimationFrame(next);
   };
+  /** Draw the detected face outlines onto the overlay canvas (frame pixel coords). */
+  drawOverlay(fw, fh, d) {
+    const ctx = this.octx;
+    if (!ctx) return;
+    if (this.overlay.width !== fw || this.overlay.height !== fh) {
+      this.overlay.width = fw;
+      this.overlay.height = fh;
+      this.stage.style.aspectRatio = `${fw} / ${fh}`;
+    }
+    ctx.clearRect(0, 0, fw, fh);
+    const quads = d?.quads ?? [];
+    if (quads.length === 0) return;
+    ctx.lineWidth = Math.max(2, fw / 160);
+    ctx.strokeStyle = "#3fb950";
+    ctx.fillStyle = "rgba(63,185,80,0.15)";
+    for (const q of quads) {
+      ctx.beginPath();
+      ctx.moveTo(q[0].x, q[0].y);
+      for (let i = 1; i < q.length; i++) ctx.lineTo(q[i].x, q[i].y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
   renderDebug(d) {
     const p4 = this.palette.get();
     this.paletteEl.textContent = "palette:";
@@ -4931,6 +5022,7 @@ centers: ${centers || "(none \u2014 detector found no cube)"}`;
   stop() {
     this.teardownCamera();
     this.live = null;
+    if (this.octx) this.octx.clearRect(0, 0, this.overlay.width, this.overlay.height);
     this.render();
   }
 };

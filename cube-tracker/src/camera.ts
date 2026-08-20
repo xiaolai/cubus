@@ -44,6 +44,19 @@ export async function openCamera(
   video.muted = true;
   await video.play();
 
+  // Best-effort continuous auto-focus: a sharp frame gives the detector clean edges. Not
+  // every webcam exposes focusMode; applyConstraints rejects silently when unsupported.
+  const [track] = stream.getVideoTracks();
+  const caps = (track?.getCapabilities?.() ?? {}) as { focusMode?: string[] };
+  if (track && caps.focusMode?.includes('continuous')) {
+    // focusMode isn't in the standard DOM types yet — cast through unknown.
+    track
+      .applyConstraints({
+        advanced: [{ focusMode: 'continuous' }],
+      } as unknown as MediaTrackConstraints)
+      .catch(() => {}); // unsupported / busy — leave the camera on its default focus
+  }
+
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 

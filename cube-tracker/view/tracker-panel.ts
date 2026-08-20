@@ -21,6 +21,8 @@ const css = (r: number, g: number, b: number): string =>
 export class TrackerPanel extends HTMLElement {
   private readonly stage = document.createElement('div');
   private readonly video = document.createElement('video');
+  private readonly overlay = document.createElement('canvas');
+  private octx: CanvasRenderingContext2D | null = null;
   private readonly guide = document.createElement('div');
   private readonly hint = document.createElement('div');
   private readonly picker = document.createElement('select');
@@ -61,13 +63,18 @@ export class TrackerPanel extends HTMLElement {
     this.video.muted = true;
     this.video.autoplay = true;
     this.video.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block';
+    // Overlay canvas: the detector's found face outlines, drawn in frame coords (the
+    // stage aspect is matched to the frame so 100%×100% maps 1:1 — no cover-crop skew).
+    this.overlay.style.cssText =
+      'position:absolute;inset:0;width:100%;height:100%;pointer-events:none';
+    this.octx = this.overlay.getContext('2d');
     // Framing guide: a rounded square the cube should fill, centered over the feed.
     this.guide.style.cssText =
       'position:absolute;inset:0;margin:auto;width:58%;aspect-ratio:1;border:3px dashed rgba(255,255,255,.75);border-radius:14px;pointer-events:none';
     this.hint.textContent = 'Hold your cube in the box — show 3 sides (top, right, front)';
     this.hint.style.cssText =
       'position:absolute;left:0;right:0;bottom:8px;text-align:center;font-size:12px;color:#fff;text-shadow:0 1px 3px #000;pointer-events:none';
-    this.stage.append(this.video, this.guide, this.hint);
+    this.stage.append(this.video, this.overlay, this.guide, this.hint);
 
     this.picker.style.cssText =
       'margin-top:8px;width:100%;padding:6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px';
@@ -241,6 +248,7 @@ export class TrackerPanel extends HTMLElement {
           }
         }
         this.render();
+        this.drawOverlay(frame.width, frame.height, this.live.lastDebug());
         if (this.debugOn) this.renderDebug(this.live.lastDebug());
       } else {
         this.tryStartTracking();
@@ -252,6 +260,31 @@ export class TrackerPanel extends HTMLElement {
     if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(next);
     else requestAnimationFrame(next);
   };
+
+  /** Draw the detected face outlines onto the overlay canvas (frame pixel coords). */
+  private drawOverlay(fw: number, fh: number, d: FrameDebug | null): void {
+    const ctx = this.octx;
+    if (!ctx) return;
+    if (this.overlay.width !== fw || this.overlay.height !== fh) {
+      this.overlay.width = fw;
+      this.overlay.height = fh;
+      this.stage.style.aspectRatio = `${fw} / ${fh}`; // keep the feed 1:1 with the overlay
+    }
+    ctx.clearRect(0, 0, fw, fh);
+    const quads = d?.quads ?? [];
+    if (quads.length === 0) return;
+    ctx.lineWidth = Math.max(2, fw / 160);
+    ctx.strokeStyle = '#3fb950';
+    ctx.fillStyle = 'rgba(63,185,80,0.15)';
+    for (const q of quads) {
+      ctx.beginPath();
+      ctx.moveTo(q[0].x, q[0].y);
+      for (let i = 1; i < q.length; i++) ctx.lineTo(q[i]!.x, q[i]!.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
 
   private renderDebug(d: FrameDebug | null): void {
     const p = this.palette.get();
@@ -282,6 +315,7 @@ export class TrackerPanel extends HTMLElement {
   stop(): void {
     this.teardownCamera();
     this.live = null;
+    if (this.octx) this.octx.clearRect(0, 0, this.overlay.width, this.overlay.height);
     this.render();
   }
 }

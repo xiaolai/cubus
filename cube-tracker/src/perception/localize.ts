@@ -37,6 +37,7 @@ export interface LocalizerResult {
   alignedGeometry: boolean;
   roi?: Rect; // bounding box of the detected faces — for ROI-restricted motion (§12/#17)
   centers?: { slot: Face; rgb: RGB }[]; // raw center-sticker colors — rolling palette + debug
+  quads?: Quad[]; // image outlines of the detected faces — for the on-video overlay
 }
 
 export interface Localizer {
@@ -177,6 +178,7 @@ export function createLocalizer(
       const centers = palette.get();
       const cells: CameraCell[] = [];
       const detectedCenters: { slot: Face; rgb: RGB }[] = [];
+      const quads: Quad[] = [];
       let minX = Number.POSITIVE_INFINITY;
       let minY = Number.POSITIVE_INFINITY;
       let maxX = Number.NEGATIVE_INFINITY;
@@ -194,6 +196,7 @@ export function createLocalizer(
         const soft = classifyCells(sampled, centers);
         const idx = faceIndices(face.slot);
         soft.forEach((s, k) => cells.push({ slot: idx[k]!, soft: s }));
+        quads.push(face.quad);
         for (const p of face.quad) {
           minX = Math.min(minX, p.x);
           minY = Math.min(minY, p.y);
@@ -201,7 +204,7 @@ export function createLocalizer(
           maxY = Math.max(maxY, p.y);
         }
       }
-      if (cells.length === 0) return { cells, alignedGeometry, centers: detectedCenters };
+      if (cells.length === 0) return { cells, alignedGeometry, centers: detectedCenters, quads };
       const x = Math.max(0, minX);
       const y = Math.max(0, minY);
       const roi: Rect = {
@@ -210,7 +213,7 @@ export function createLocalizer(
         w: Math.max(0, Math.min(frame.width, maxX) - x),
         h: Math.max(0, Math.min(frame.height, maxY) - y),
       };
-      return { cells, alignedGeometry, roi, centers: detectedCenters };
+      return { cells, alignedGeometry, roi, centers: detectedCenters, quads };
     },
   };
 }

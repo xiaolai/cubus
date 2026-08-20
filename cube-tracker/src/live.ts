@@ -6,7 +6,7 @@
 
 import type { CubeState, Face } from './cube.js';
 import type { RGB } from './perception/color.js';
-import type { Localizer } from './perception/localize.js';
+import type { Localizer, Quad } from './perception/localize.js';
 import {
   type Frame,
   type LumaGrid,
@@ -35,6 +35,7 @@ export interface FrameDebug {
   alignedGeometry: boolean;
   roi?: Rect;
   centers: { slot: Face; rgb: RGB }[]; // raw center colors read this frame
+  quads: Quad[]; // detected face outlines (frame pixel coords) — for the on-video overlay
   status: TrackStatus;
   lastUpdate: TrackUpdate['kind'];
 }
@@ -63,7 +64,7 @@ export class LiveTracker {
 
   /** Drive one camera frame through localize → ROI motion-gate → track. */
   pushFrame(frame: Frame, t: number): TrackUpdate {
-    const { cells, alignedGeometry, roi, centers } = this.localizer.detect(frame); // localize first (§12/#17)
+    const { cells, alignedGeometry, roi, centers, quads } = this.localizer.detect(frame); // localize first (§12/#17)
     const cur = toLuma(frame);
     // Motion measured within the cube ROI when known, else full-frame (re-entry search).
     const diff = this.prevLuma ? lumaDiff(this.prevLuma, cur, roi) : Number.POSITIVE_INFINITY;
@@ -78,6 +79,7 @@ export class LiveTracker {
       alignedGeometry,
       roi,
       centers: centers ?? [],
+      quads: quads ?? [],
       status: this.tracker.status(),
       lastUpdate: u.kind,
     };
