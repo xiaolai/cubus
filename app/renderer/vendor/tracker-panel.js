@@ -4720,6 +4720,7 @@ var TrackerPanel = class extends HTMLElement {
   palette = rollingPalette();
   deviceId;
   lastLog = 0;
+  loopGen = 0;
   _cv = null;
   // The injected OpenCV.js module (set by the app once its WASM runtime is ready).
   set cv(m) {
@@ -4780,28 +4781,41 @@ var TrackerPanel = class extends HTMLElement {
     this.picker.style.display = cams.length > 1 ? "block" : "none";
   }
   async changeCamera(deviceId) {
+    if ((deviceId || void 0) === this.deviceId) return;
     this.deviceId = deviceId || void 0;
-    if (this.cameraOn) {
-      this.cam?.stop();
-      await this.startCamera();
-    }
+    if (this.cameraOn) this.teardownCamera();
+    await this.startCamera();
+  }
+  /** Stop the current stream and kill its frame loop, without clearing the tracker. */
+  teardownCamera() {
+    this.loopGen++;
+    this.cameraOn = false;
+    this.cam?.stop();
+    this.cam = null;
   }
   /** Open the camera and show the live feed — independent of the seed / OpenCV. */
   async startCamera() {
     if (this.cameraOn && this.cam) return;
     this.statusEl.textContent = "opening camera\u2026";
+    const gen = ++this.loopGen;
+    let cam;
     try {
-      this.cam = await openCamera(this.video, this.deviceId);
+      cam = await openCamera(this.video, this.deviceId);
     } catch (e4) {
       this.statusEl.textContent = `camera error: ${e4.message || e4}`;
       return;
     }
+    if (gen !== this.loopGen) {
+      cam.stop();
+      return;
+    }
+    this.cam = cam;
     this.cameraOn = true;
     this.startBtn.hidden = true;
     void this.refreshCameras();
     this.tryStartTracking();
     this.updateWaitingStatus();
-    this.tick();
+    this.tick(gen);
   }
   tryStartTracking() {
     if (this.live || !this.cameraOn) return;
@@ -4820,8 +4834,8 @@ var TrackerPanel = class extends HTMLElement {
     if (!this._cv?.Mat) missing.push("OpenCV (loading\u2026)");
     this.statusEl.textContent = `camera live \u2014 waiting for ${missing.join(" + ") || "tracking"}`;
   }
-  tick = () => {
-    if (!this.cameraOn || !this.cam) return;
+  tick = (gen) => {
+    if (gen !== this.loopGen || !this.cameraOn || !this.cam) return;
     const frame = this.cam.grab();
     if (frame) {
       if (this.live) {
@@ -4840,9 +4854,10 @@ var TrackerPanel = class extends HTMLElement {
         this.updateWaitingStatus();
       }
     }
+    const next = () => this.tick(gen);
     const v = this.video;
-    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(this.tick);
-    else requestAnimationFrame(this.tick);
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(next);
+    else requestAnimationFrame(next);
   };
   renderDebug(d) {
     const p4 = this.palette.get();
@@ -4867,9 +4882,7 @@ centers: ${centers || "(none \u2014 detector found no cube)"}`;
     }
   }
   stop() {
-    this.cameraOn = false;
-    this.cam?.stop();
-    this.cam = null;
+    this.teardownCamera();
     this.live = null;
     this.startBtn.hidden = false;
     this.statusEl.textContent = "stopped";

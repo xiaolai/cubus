@@ -31,6 +31,7 @@ export class TrackerPanel extends HTMLElement {
   private readonly palette: CenterPalette = rollingPalette();
   private deviceId: string | undefined;
   private lastLog = 0;
+  private loopGen = 0;
   private _cv: any = null;
 
   // The injected OpenCV.js module (set by the app once its WASM runtime is ready).
@@ -101,29 +102,46 @@ export class TrackerPanel extends HTMLElement {
   }
 
   private async changeCamera(deviceId: string): Promise<void> {
+    if ((deviceId || undefined) === this.deviceId) return;
     this.deviceId = deviceId || undefined;
-    if (this.cameraOn) {
-      this.cam?.stop();
-      await this.startCamera();
-    }
+    // Tear the old stream down FIRST so startCamera's re-open guard doesn't short-circuit
+    // (leaving a stopped stream on screen — the "goes dark on switch" bug). The tracker
+    // (this.live) is intentionally kept across the switch.
+    if (this.cameraOn) this.teardownCamera();
+    await this.startCamera();
+  }
+
+  /** Stop the current stream and kill its frame loop, without clearing the tracker. */
+  private teardownCamera(): void {
+    this.loopGen++; // orphan any in-flight tick loop
+    this.cameraOn = false;
+    this.cam?.stop();
+    this.cam = null;
   }
 
   /** Open the camera and show the live feed — independent of the seed / OpenCV. */
   async startCamera(): Promise<void> {
     if (this.cameraOn && this.cam) return;
     this.statusEl.textContent = 'opening camera…';
+    const gen = ++this.loopGen;
+    let cam: Awaited<ReturnType<typeof openCamera>>;
     try {
-      this.cam = await openCamera(this.video, this.deviceId);
+      cam = await openCamera(this.video, this.deviceId);
     } catch (e) {
       this.statusEl.textContent = `camera error: ${(e as Error).message || e}`;
       return;
     }
+    if (gen !== this.loopGen) {
+      cam.stop(); // superseded by another switch/stop while we awaited
+      return;
+    }
+    this.cam = cam;
     this.cameraOn = true;
     this.startBtn.hidden = true;
     void this.refreshCameras(); // labels are available now
     this.tryStartTracking();
     this.updateWaitingStatus();
-    this.tick();
+    this.tick(gen);
   }
 
   private tryStartTracking(): void {
@@ -145,8 +163,8 @@ export class TrackerPanel extends HTMLElement {
     this.statusEl.textContent = `camera live — waiting for ${missing.join(' + ') || 'tracking'}`;
   }
 
-  private readonly tick = (): void => {
-    if (!this.cameraOn || !this.cam) return;
+  private readonly tick = (gen: number): void => {
+    if (gen !== this.loopGen || !this.cameraOn || !this.cam) return;
     const frame = this.cam.grab();
     if (frame) {
       if (this.live) {
@@ -165,9 +183,10 @@ export class TrackerPanel extends HTMLElement {
         this.updateWaitingStatus();
       }
     }
+    const next = () => this.tick(gen);
     const v = this.video as unknown as { requestVideoFrameCallback?: (cb: () => void) => void };
-    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(this.tick);
-    else requestAnimationFrame(this.tick);
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(next);
+    else requestAnimationFrame(next);
   };
 
   private renderDebug(d: FrameDebug | null): void {
@@ -198,9 +217,7 @@ export class TrackerPanel extends HTMLElement {
   }
 
   stop(): void {
-    this.cameraOn = false;
-    this.cam?.stop();
-    this.cam = null;
+    this.teardownCamera();
     this.live = null;
     this.startBtn.hidden = false;
     this.statusEl.textContent = 'stopped';
