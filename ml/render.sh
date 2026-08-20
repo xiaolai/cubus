@@ -25,10 +25,13 @@ HDRI_DIR="${HDRI_DIR:?set HDRI_DIR to a folder of .hdr/.exr environment maps}"
 OUT="${OUT:?set OUT to the dataset output dir (on fast scratch)}"
 VAL_FRACTION="${VAL_FRACTION:-0.1}"
 
-# A leading ~ passed as an `env VAR=~/x` argument is NOT tilde-expanded by the shell, which
-# silently yields a literal "~" directory. Expand it here so callers can't get burned by it.
+# A leading ~ passed as an `env VAR=~/x` argument is NOT tilde-expanded by the shell — it stays
+# a literal "~", yielding a bogus "~" directory (paths) or a not-found binary (executables).
+# Expand it here for every path-like input so callers can't get burned by it.
 HDRI_DIR="${HDRI_DIR/#\~/$HOME}"
 OUT="${OUT/#\~/$HOME}"
+BLENDERPROC="${BLENDERPROC/#\~/$HOME}"
+PYTHON="${PYTHON/#\~/$HOME}"
 
 # Fail loud if HDRI_DIR has no environment maps: the generator would otherwise fall back to a
 # plain sun for EVERY scene, producing a background-less dataset that looks fine until training
