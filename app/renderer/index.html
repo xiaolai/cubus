@@ -111,15 +111,15 @@
       </div>
     </div>
 
-    <!-- Camera scanner (guided 6-face capture). The <scanner-panel> element is
-         registered by the self-contained bundle built from cube-scanner/view
-         via `npm run build:panel`. -->
+    <!-- Camera scanner (fast two-corner capture: 3 faces per shot). The
+         <corner-scanner-panel> element is registered by the self-contained bundle built
+         from cube-scanner/view via `npm run build:panel`. -->
     <div class="picker" id="scanModal" hidden>
       <div class="pickerBox" style="width: min(520px, 94vw)">
         <h3>Scan your cube <span class="scan">camera</span></h3>
-        <scanner-panel id="scanPanel"></scanner-panel>
+        <corner-scanner-panel id="scanPanel"></corner-scanner-panel>
         <div class="pickFoot" style="margin-top: 14px">
-          <span class="muted">Each face is validated before it is applied — no silent guesses.</span>
+          <span class="muted">Show two corners; each face is checked by its center color and the cube by solvability.</span>
           <button class="ghost" id="scanClose">Close</button>
         </div>
       </div>
@@ -140,13 +140,13 @@
       </div>
     </div>
 
-    <!-- Registers <scanner-panel>. Local, self-contained (culori + cubejs are
-         inlined), so the camera scanner works offline and needs no bundler. -->
-    <!-- OpenCV.js (WASM) locates the cube face for the camera scanner. Vendored
-         locally (same-origin, offline-capable, no CDN/supply-chain exposure); if
-         it fails to load the panel falls back to sampling a centered square. -->
+    <!-- Registers <corner-scanner-panel> (fast two-corner scan). Local, self-contained
+         (culori + cubejs are inlined), so it works offline and needs no bundler. -->
+    <!-- OpenCV.js (WASM) locates the cube faces. Vendored locally (same-origin,
+         offline-capable, no CDN/supply-chain exposure); the scanner needs it to detect
+         faces, so it warms up before capture. -->
     <script async src="./vendor/opencv.js"></script>
-    <script type="module" src="./vendor/scanner-panel.js"></script>
+    <script type="module" src="./vendor/corner-panel.js"></script>
     <script type="module" src="./vendor/tracker-panel.js"></script>
 
     <script type="module">
