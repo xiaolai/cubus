@@ -32,6 +32,8 @@ export {
   assignCornerShot,
 } from './corner-scan.js';
 
+export { type OrientationResult, rotateFace, solveOrientations } from './orient.js';
+
 export {
   defaultRegion,
   type RegionFn,
