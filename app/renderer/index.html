@@ -81,6 +81,7 @@
         <button id="btn">Connect</button>
         <button id="reset" class="ghost" disabled title="Anchor the cube's internal state to solved">Set solved</button>
         <button id="scanBtn" class="ghost" title="Read the physical cube with the camera">Scan with camera</button>
+        <button id="trackBtn" class="ghost" title="Track an ordinary cube continuously with the camera (seeded from the current state)">Track live</button>
       </div>
       <div class="last" id="last">— no events yet —</div>
 
@@ -124,6 +125,24 @@
       </div>
     </div>
 
+    <!-- Continuous camera tracker (uninstrumented cube). The <tracker-panel> element
+         is registered by the self-contained bundle built from cube-tracker/view via
+         `cd cube-tracker && npm run build:panel`. Seeded from the current state; the
+         OpenCV detector's thresholds are tuned on-device (see dev-docs/cube-tracker-e2e.md). -->
+    <div class="picker" id="trackModal" hidden>
+      <div class="pickerBox" style="width: min(520px, 94vw)">
+        <h3>Track live <span class="scan">camera</span></h3>
+        <tracker-panel id="trackPanel"></tracker-panel>
+        <div class="pickFoot" style="margin-top: 14px">
+          <span class="muted">Seeds from the current state; commits are biased to false-negatives.</span>
+          <span style="display:flex;gap:8px">
+            <button id="trackStart">Start</button>
+            <button class="ghost" id="trackClose">Close</button>
+          </span>
+        </div>
+      </div>
+    </div>
+
     <!-- Registers <scanner-panel>. Local, self-contained (culori + cubejs are
          inlined), so the camera scanner works offline and needs no bundler. -->
     <!-- OpenCV.js (WASM) locates the cube face for the camera scanner. Vendored
@@ -131,6 +150,7 @@
          it fails to load the panel falls back to sampling a centered square. -->
     <script async src="./vendor/opencv.js"></script>
     <script type="module" src="./vendor/scanner-panel.js"></script>
+    <script type="module" src="./vendor/tracker-panel.js"></script>
 
     <script type="module">
       import { connectGanCube } from 'https://esm.sh/gan-web-bluetooth@3';
@@ -219,15 +239,18 @@
         } catch(e){ lastEl.textContent='set-solved failed: '+(e&&e.message||e); } };
       // Camera scanner: open the panel, apply a validated scan to the twin.
       const scanModal=$('scanModal'), scanPanel=$('scanPanel');
-      // Hand OpenCV.js to the panel once its WASM runtime is ready (the vendored
-      // UMD build sets window.cv). Handles the classic (onRuntimeInitialized) and
-      // v5 thenable shapes; if it never loads the panel falls back to a centered
-      // square. Capped so we don't poll forever when opencv.js is absent.
+      const trackModal=$('trackModal'), trackPanel=$('trackPanel');
+      // Hand OpenCV.js to BOTH the scanner and the live tracker once its WASM runtime
+      // is ready (the vendored build sets window.cv). Handles the classic
+      // (onRuntimeInitialized) and v5 thenable shapes; capped so we don't poll forever
+      // when opencv.js is absent. The scanner falls back to a centered square without
+      // it; the tracker's detector simply finds nothing until cv is present.
+      const setCv=(m)=>{ scanPanel.cv=m; if(trackPanel) trackPanel.cv=m; };
       (function awaitCv(tries){
         const cv = window.cv;
-        if (cv && cv.Mat) { scanPanel.cv = cv; return; }
-        if (cv && typeof cv.then === 'function') { cv.then((m)=>{ scanPanel.cv = m || cv; }); return; }
-        if (cv && 'onRuntimeInitialized' in cv) { cv.onRuntimeInitialized = ()=>{ scanPanel.cv = cv; }; return; }
+        if (cv && cv.Mat) { setCv(cv); return; }
+        if (cv && typeof cv.then === 'function') { cv.then((m)=>{ setCv(m || cv); }); return; }
+        if (cv && 'onRuntimeInitialized' in cv) { cv.onRuntimeInitialized = ()=>{ setCv(cv); }; return; }
         if (tries > 0) setTimeout(()=>awaitCv(tries-1), 200);
       })(40);
       $('scanBtn').onclick=()=>{ scanModal.hidden=false; };
@@ -235,6 +258,16 @@
       scanPanel.addEventListener('scan-complete',(e)=>{ const f=e.detail.facelets;
         renderState(f); scanModal.hidden=true;
         lastEl.textContent='camera scan applied — renders the physical cube state'; });
+
+      // Live camera tracker: seed from the current on-screen state (from a scan or the
+      // smart cube), then drive the twin from the tracker's committed moves/resyncs.
+      $('trackBtn').onclick=()=>{ trackModal.hidden=false; };
+      $('trackClose').onclick=()=>{ trackModal.hidden=true; trackPanel.stop?.(); };
+      $('trackStart').onclick=()=>{
+        if(lastFacelets){ trackPanel.start(lastFacelets);
+          lastEl.textContent='live tracking started — the OpenCV detector needs on-device tuning to lock on'; }
+        else lastEl.textContent='no start state — connect the cube or scan a face first'; };
+      trackPanel.addEventListener('state-update',(e)=>{ renderState(e.detail.facelets); });
 
       if(!navigator.bluetooth) setConn('err','Web Bluetooth unavailable','This build needs a Chromium-based runtime.',null);
     </script>
