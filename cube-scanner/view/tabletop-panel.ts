@@ -29,7 +29,8 @@ import { type OrientationResult, solveOrientations } from '../src/orient.js';
 import { FACES, type Face, type Frame, type RGB, type ScanResult } from '../src/types.js';
 
 const TICK_MS = 120;
-const IDENTIFY_TOL = 30; // max CIEDE2000 center↔anchor distance to accept a cube face
+const IDENTIFY_TOL = 36; // max CIEDE2000 center↔anchor distance to accept a cube face
+const IDENTIFY_MARGIN = 0.78; // nearest must be this fraction of the runner-up (lower = stricter)
 const NAME: Record<Face, { name: string }> = {
   U: { name: 'white' },
   R: { name: 'red' },
@@ -61,8 +62,9 @@ const TEMPLATE = `
   button.primary { background: #58a6ff; color: #06122b; }
   button.ghost { background: #21262d; color: #e6edf3; border: 1px solid #30363d; padding: 6px 12px; font-weight: 400; font-size: 12px; }
   button[hidden] { display: none; }
-  .dbg { margin: 8px 0 0; font: 11px/1.4 ui-monospace, Menlo, monospace; color: #8b949e;
-    white-space: pre-wrap; word-break: break-all; max-height: 88px; overflow: auto; }
+  .dbg { margin: 8px 0 0; font: 11px/1.45 ui-monospace, Menlo, monospace; color: #8b949e;
+    white-space: pre-wrap; word-break: break-all; max-height: 170px; overflow: auto;
+    background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 6px; }
   .ok { color: #3fb950; } .err { color: #f85149; } .muted { color: #8b949e; }
 </style>
 <div class="stage">
@@ -101,6 +103,7 @@ export class TabletopScannerPanel extends HTMLElement {
   private frameNo = 0;
   private lastHud = 0;
   private lastStuck = 0;
+  private hudLine = '';
   private readonly debugLog: string[] = [];
 
   constructor() {
@@ -144,11 +147,19 @@ export class TabletopScannerPanel extends HTMLElement {
     }
   }
 
-  /** Record a debug line (kept in memory for Copy debug, and echoed to the console). */
+  /** Record a debug line (shown on screen, kept for Copy debug, echoed to the console). */
   private log(line: string): void {
     this.debugLog.push(line);
     if (this.debugLog.length > 400) this.debugLog.shift();
     console.log('[scan]', line);
+    this.refreshDbg();
+  }
+
+  /** Paint the live HUD line + the recent log onto the on-screen debug area (screenshot-able). */
+  private refreshDbg(): void {
+    const dbg = this.root.getElementById('dbg');
+    if (dbg)
+      dbg.textContent = [this.hudLine, ...this.debugLog.slice(-12)].filter(Boolean).join('\n');
   }
 
   disconnectedCallback(): void {
@@ -195,6 +206,7 @@ export class TabletopScannerPanel extends HTMLElement {
       this.pendingCount = 0;
       this.frameNo = 0;
       this.debugLog.length = 0;
+      this.hudLine = '';
       this.el('dbg').textContent = '';
       this.btn('retry').hidden = true;
       this.log('start — turn the cube slowly');
@@ -251,7 +263,7 @@ export class TabletopScannerPanel extends HTMLElement {
         d2 = d;
       }
     }
-    return d1 <= IDENTIFY_TOL && d1 <= 0.6 * d2 ? best : null;
+    return d1 <= IDENTIFY_TOL && d1 <= IDENTIFY_MARGIN * d2 ? best : null;
   }
 
   private onTick(): void {
@@ -395,9 +407,10 @@ export class TabletopScannerPanel extends HTMLElement {
     if (now - this.lastHud < 250) return; // ~4 Hz is enough to read
     this.lastHud = now;
     const have = [...this.captured.keys()].join('') || '-';
-    this.el('dbg').textContent =
+    this.hudLine =
       `f${this.frameNo} cand=${cands} grid=${real}/9 face=${face ?? '-'} ` +
       `center=${center.map(Math.round).join(',')} have=${have}`;
+    this.refreshDbg();
   }
 
   /** Bounding box of a found face plus margin, clamped to the frame — the next zoom region. */
