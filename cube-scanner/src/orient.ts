@@ -22,7 +22,7 @@ import { FACES, type Face, type RGB, type ScanResult } from './types.js';
 export function classifyBalanced(
   samples: readonly RGB[],
   centers: readonly RGB[],
-): { letters: string[]; confidence: number[] } {
+): { letters: string[]; confidence: number[]; dist: number[][] } {
   const n = samples.length;
   const k = centers.length;
   const cap = Math.ceil(n / k);
@@ -49,7 +49,104 @@ export function classifyBalanced(
     for (let c = 0; c < k; c++) if (c !== a) second = Math.min(second, row[c]!);
     return second === 0 ? 0 : Math.max(0, 1 - row[a]! / second);
   });
-  return { letters, confidence };
+  return { letters, confidence, dist };
+}
+
+/**
+ * When the balanced read isn't a real cube, the errors are AMBIGUOUS stickers that landed on
+ * the wrong side of a close color pair (red↔orange, white↔yellow). Generate alternative
+ * labelings by SWAPPING such a pair's stickers (a swap keeps the 9-each counts), most-
+ * ambiguous first, single then double, capped — one of these is the real cube.
+ */
+function ambiguousSwaps(
+  letters: readonly string[],
+  dist: readonly number[][],
+  cap = 40,
+): string[][] {
+  const idxOf = (l: string): number => FACES.indexOf(l as Face);
+  // Per sticker: assigned color, its best alternative, and how ambiguous (ratio ~1 = coin-flip).
+  const flex: { s: number; a: number; alt: number; ratio: number }[] = [];
+  for (let s = 0; s < letters.length; s++) {
+    const a = idxOf(letters[s]!);
+    const row = dist[s]!;
+    let alt = -1;
+    let altD = Number.POSITIVE_INFINITY;
+    for (let c = 0; c < row.length; c++) if (c !== a && row[c]! < altD) [altD, alt] = [row[c]!, c];
+    if (alt >= 0 && altD <= 1.6 * (row[a]! || 1e-6))
+      flex.push({ s, a, alt, ratio: altD / (row[a]! || 1e-6) });
+  }
+  flex.sort((p, q) => p.ratio - q.ratio);
+  // Group into a swappable pool per unordered color pair.
+  const pairKey = (x: number, y: number): string => (x < y ? `${x},${y}` : `${y},${x}`);
+  const pools = new Map<string, { A: number[]; B: number[]; a: number; b: number }>();
+  for (const f of flex) {
+    const key = pairKey(f.a, f.alt);
+    const [a, b] = f.a < f.alt ? [f.a, f.alt] : [f.alt, f.a];
+    const pool = pools.get(key) ?? { A: [], B: [], a, b };
+    (f.a === a ? pool.A : pool.B).push(f.s);
+    pools.set(key, pool);
+  }
+  const out: string[][] = [];
+  for (const { A, B, a, b } of pools.values()) {
+    const la = FACES[a]!;
+    const lb = FACES[b]!;
+    for (const i of A)
+      for (const j of B) {
+        if (out.length >= cap) return out;
+        const alt = [...letters];
+        alt[i] = lb;
+        alt[j] = la;
+        out.push(alt);
+      }
+    // A couple of double swaps for cases needing two corrections.
+    for (let x = 0; x < A.length && x < 3; x++)
+      for (let y = x + 1; y < A.length && y < 4; y++)
+        for (let p = 0; p < B.length && p < 3; p++)
+          for (let q = p + 1; q < B.length && q < 4; q++) {
+            if (out.length >= cap) return out;
+            const alt = [...letters];
+            alt[A[x]!] = lb;
+            alt[A[y]!] = lb;
+            alt[B[p]!] = la;
+            alt[B[q]!] = la;
+            out.push(alt);
+          }
+  }
+  return out;
+}
+
+/** The 4^6 rotation search for one color labeling — returns a valid result or null. */
+function solveRotations(
+  faceLetters: Record<Face, string[]>,
+  faceConf: Record<Face, number[]>,
+  threshold: number,
+): OrientationResult | null {
+  for (let code = 0; code < 4096; code++) {
+    const turns: Record<Face, number> = {
+      U: code & 3,
+      R: (code >> 2) & 3,
+      F: (code >> 4) & 3,
+      D: (code >> 6) & 3,
+      L: (code >> 8) & 3,
+      B: (code >> 10) & 3,
+    };
+    let facelets = '';
+    for (const f of FACES) facelets += rotateFace(faceLetters[f], turns[f]).join('');
+    if (isStructurallyValid(facelets) && cubejsRoundTrips(facelets)) {
+      let min = 1;
+      const lowConfidence: number[] = [];
+      let idx = 0;
+      for (const f of FACES) {
+        for (const c of rotateFace(faceConf[f], turns[f])) {
+          if (c < min) min = c;
+          if (c < threshold) lowConfidence.push(idx);
+          idx++;
+        }
+      }
+      return { facelets, valid: true, confidence: min, lowConfidence, rotations: turns };
+    }
+  }
+  return null;
 }
 
 /** Rotate a 3x3 face (row-major, 9 cells) clockwise by `q` quarter-turns. */
@@ -93,44 +190,27 @@ export function solveOrientations(
   const centers = FACES.map((f) => faces[f][4]!);
   const samples: RGB[] = [];
   for (const f of FACES) for (const s of faces[f]) samples.push(s);
-  const { letters, confidence } = classifyBalanced(samples, centers);
-  const faceLetters = Object.fromEntries(
-    FACES.map((f, i) => [f, letters.slice(i * 9, i * 9 + 9)]),
-  ) as Record<Face, string[]>;
+  const { letters, confidence, dist } = classifyBalanced(samples, centers);
   const faceConf = Object.fromEntries(
     FACES.map((f, i) => [f, confidence.slice(i * 9, i * 9 + 9)]),
   ) as Record<Face, number[]>;
+  const facesOf = (lts: readonly string[]): Record<Face, string[]> =>
+    Object.fromEntries(FACES.map((f, i) => [f, lts.slice(i * 9, i * 9 + 9)])) as Record<
+      Face,
+      string[]
+    >;
 
-  // Decode each candidate as base-4 over all six faces (2 bits each, 12 bits total).
-  for (let code = 0; code < 4096; code++) {
-    const turns: Record<Face, number> = {
-      U: code & 3,
-      R: (code >> 2) & 3,
-      F: (code >> 4) & 3,
-      D: (code >> 6) & 3,
-      L: (code >> 8) & 3,
-      B: (code >> 10) & 3,
-    };
-    let facelets = '';
-    for (const f of FACES) facelets += rotateFace(faceLetters[f], turns[f]).join('');
-    if (isStructurallyValid(facelets) && cubejsRoundTrips(facelets)) {
-      let min = 1;
-      const lowConfidence: number[] = [];
-      let idx = 0;
-      for (const f of FACES) {
-        for (const c of rotateFace(faceConf[f], turns[f])) {
-          if (c < min) min = c;
-          if (c < threshold) lowConfidence.push(idx);
-          idx++;
-        }
-      }
-      return { facelets, valid: true, confidence: min, lowConfidence, rotations: turns };
-    }
+  // First the balanced read; then, if it's not a real cube, alternative labelings that swap
+  // ambiguous close-color stickers (red↔orange, white↔yellow) until one solves.
+  const r0 = solveRotations(facesOf(letters), faceConf, threshold);
+  if (r0) return r0;
+  for (const alt of ambiguousSwaps(letters, dist)) {
+    const r = solveRotations(facesOf(alt), faceConf, threshold);
+    if (r) return r;
   }
 
-  // No solvable combination — return the identity arrangement, flagged invalid.
-  let facelets = '';
-  for (const f of FACES) facelets += faceLetters[f].join('');
+  // Nothing solved — return the identity arrangement, flagged invalid.
+  const facelets = FACES.map((f) => facesOf(letters)[f].join('')).join('');
   let min = 1;
   const lowConfidence: number[] = [];
   confidence.forEach((c, i) => {

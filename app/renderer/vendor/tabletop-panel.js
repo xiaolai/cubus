@@ -5938,7 +5938,84 @@ function classifyBalanced(samples, centers) {
     for (let c2 = 0; c2 < k4; c2++) if (c2 !== a) second = Math.min(second, row[c2]);
     return second === 0 ? 0 : Math.max(0, 1 - row[a] / second);
   });
-  return { letters, confidence };
+  return { letters, confidence, dist };
+}
+function ambiguousSwaps(letters, dist, cap = 40) {
+  const idxOf = (l) => FACES.indexOf(l);
+  const flex = [];
+  for (let s = 0; s < letters.length; s++) {
+    const a = idxOf(letters[s]);
+    const row = dist[s];
+    let alt = -1;
+    let altD = Number.POSITIVE_INFINITY;
+    for (let c2 = 0; c2 < row.length; c2++) if (c2 !== a && row[c2] < altD) [altD, alt] = [row[c2], c2];
+    if (alt >= 0 && altD <= 1.6 * (row[a] || 1e-6))
+      flex.push({ s, a, alt, ratio: altD / (row[a] || 1e-6) });
+  }
+  flex.sort((p4, q) => p4.ratio - q.ratio);
+  const pairKey = (x, y) => x < y ? `${x},${y}` : `${y},${x}`;
+  const pools = /* @__PURE__ */ new Map();
+  for (const f3 of flex) {
+    const key = pairKey(f3.a, f3.alt);
+    const [a, b] = f3.a < f3.alt ? [f3.a, f3.alt] : [f3.alt, f3.a];
+    const pool = pools.get(key) ?? { A: [], B: [], a, b };
+    (f3.a === a ? pool.A : pool.B).push(f3.s);
+    pools.set(key, pool);
+  }
+  const out = [];
+  for (const { A, B, a, b } of pools.values()) {
+    const la = FACES[a];
+    const lb = FACES[b];
+    for (const i of A)
+      for (const j of B) {
+        if (out.length >= cap) return out;
+        const alt = [...letters];
+        alt[i] = lb;
+        alt[j] = la;
+        out.push(alt);
+      }
+    for (let x = 0; x < A.length && x < 3; x++)
+      for (let y = x + 1; y < A.length && y < 4; y++)
+        for (let p4 = 0; p4 < B.length && p4 < 3; p4++)
+          for (let q = p4 + 1; q < B.length && q < 4; q++) {
+            if (out.length >= cap) return out;
+            const alt = [...letters];
+            alt[A[x]] = lb;
+            alt[A[y]] = lb;
+            alt[B[p4]] = la;
+            alt[B[q]] = la;
+            out.push(alt);
+          }
+  }
+  return out;
+}
+function solveRotations(faceLetters, faceConf, threshold) {
+  for (let code = 0; code < 4096; code++) {
+    const turns = {
+      U: code & 3,
+      R: code >> 2 & 3,
+      F: code >> 4 & 3,
+      D: code >> 6 & 3,
+      L: code >> 8 & 3,
+      B: code >> 10 & 3
+    };
+    let facelets = "";
+    for (const f3 of FACES) facelets += rotateFace(faceLetters[f3], turns[f3]).join("");
+    if (isStructurallyValid(facelets) && cubejsRoundTrips(facelets)) {
+      let min = 1;
+      const lowConfidence = [];
+      let idx = 0;
+      for (const f3 of FACES) {
+        for (const c2 of rotateFace(faceConf[f3], turns[f3])) {
+          if (c2 < min) min = c2;
+          if (c2 < threshold) lowConfidence.push(idx);
+          idx++;
+        }
+      }
+      return { facelets, valid: true, confidence: min, lowConfidence, rotations: turns };
+    }
+  }
+  return null;
 }
 function rotateFace(cells, q) {
   const CW = [6, 3, 0, 7, 4, 1, 8, 5, 2];
@@ -5962,40 +6039,18 @@ function solveOrientations(faces, threshold = LOW_CONFIDENCE_THRESHOLD) {
   const centers = FACES.map((f3) => faces[f3][4]);
   const samples = [];
   for (const f3 of FACES) for (const s of faces[f3]) samples.push(s);
-  const { letters, confidence } = classifyBalanced(samples, centers);
-  const faceLetters = Object.fromEntries(
-    FACES.map((f3, i) => [f3, letters.slice(i * 9, i * 9 + 9)])
-  );
+  const { letters, confidence, dist } = classifyBalanced(samples, centers);
   const faceConf = Object.fromEntries(
     FACES.map((f3, i) => [f3, confidence.slice(i * 9, i * 9 + 9)])
   );
-  for (let code = 0; code < 4096; code++) {
-    const turns = {
-      U: code & 3,
-      R: code >> 2 & 3,
-      F: code >> 4 & 3,
-      D: code >> 6 & 3,
-      L: code >> 8 & 3,
-      B: code >> 10 & 3
-    };
-    let facelets2 = "";
-    for (const f3 of FACES) facelets2 += rotateFace(faceLetters[f3], turns[f3]).join("");
-    if (isStructurallyValid(facelets2) && cubejsRoundTrips(facelets2)) {
-      let min2 = 1;
-      const lowConfidence2 = [];
-      let idx = 0;
-      for (const f3 of FACES) {
-        for (const c2 of rotateFace(faceConf[f3], turns[f3])) {
-          if (c2 < min2) min2 = c2;
-          if (c2 < threshold) lowConfidence2.push(idx);
-          idx++;
-        }
-      }
-      return { facelets: facelets2, valid: true, confidence: min2, lowConfidence: lowConfidence2, rotations: turns };
-    }
+  const facesOf = (lts) => Object.fromEntries(FACES.map((f3, i) => [f3, lts.slice(i * 9, i * 9 + 9)]));
+  const r0 = solveRotations(facesOf(letters), faceConf, threshold);
+  if (r0) return r0;
+  for (const alt of ambiguousSwaps(letters, dist)) {
+    const r = solveRotations(facesOf(alt), faceConf, threshold);
+    if (r) return r;
   }
-  let facelets = "";
-  for (const f3 of FACES) facelets += faceLetters[f3].join("");
+  const facelets = FACES.map((f3) => facesOf(letters)[f3].join("")).join("");
   let min = 1;
   const lowConfidence = [];
   confidence.forEach((c2, i) => {

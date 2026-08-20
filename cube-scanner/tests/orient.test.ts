@@ -42,6 +42,25 @@ describe('classifyBalanced', () => {
   });
 });
 
+describe('solveOrientations red/orange disambiguation', () => {
+  it('recovers a solvable cube when balance swaps an ambiguous red/orange pair', () => {
+    const s = scramble();
+    const letters = s.split('') as Face[];
+    const samples: RGB[] = letters.map((l) => [...CORNER_ANCHORS[l]] as RGB);
+    // A non-center red and non-center orange sticker, given ambiguous reddish-orange colours
+    // straddling the boundary so balance swaps them (unsolvable) and the search must fix it.
+    const rPos = letters.findIndex((l, i) => l === 'R' && i % 9 !== 4);
+    const lPos = letters.findIndex((l, i) => l === 'L' && i % 9 !== 4);
+    samples[rPos] = [224, 72, 30]; // leans orange (balance assigns it L) but ambiguous
+    samples[lPos] = [220, 70, 32]; // leans red (balance assigns it R) but ambiguous
+    const faces = Object.fromEntries(
+      FACES.map((f, i) => [f, samples.slice(i * 9, i * 9 + 9)]),
+    ) as Record<Face, RGB[]>;
+    const res = solveOrientations(faces);
+    expect(res.valid).toBe(true);
+  });
+});
+
 describe('solveOrientations', () => {
   it('returns the cube unchanged when every face is already upright', () => {
     const s = scramble();
