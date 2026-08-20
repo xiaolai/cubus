@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.log
 
-# Large vendored OpenCV.js (~13 MB) — fetch with `npm run fetch:opencv`.
+# Large vendored OpenCV.js (~13 MB) — `npm start` fetches it on first run if missing.
 # The camera scanner degrades to a centered-square sample without it.
 renderer/vendor/opencv.js
+renderer/vendor/opencv.js.tmp
