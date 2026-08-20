@@ -2059,6 +2059,50 @@ async function openCamera(video, opts = {}, signal) {
   }
 }
 
+// src/grid-detect.ts
+function ringColor(frame, cx, cy, r) {
+  const rs = [];
+  const gs = [];
+  const bs = [];
+  for (let k4 = 0; k4 < 12; k4++) {
+    const a = k4 / 12 * 2 * Math.PI;
+    const px = Math.round(cx + r * Math.cos(a));
+    const py = Math.round(cy + r * Math.sin(a));
+    if (px < 0 || px >= frame.width || py < 0 || py >= frame.height) continue;
+    const i = (py * frame.width + px) * 4;
+    rs.push(frame.data[i]);
+    gs.push(frame.data[i + 1]);
+    bs.push(frame.data[i + 2]);
+  }
+  const med = (a) => a.length ? a.sort((p4, q) => p4 - q)[a.length >> 1] : 0;
+  return [med(rs), med(gs), med(bs)];
+}
+function patchColor(frame, cx, cy, r) {
+  const rs = [];
+  const gs = [];
+  const bs = [];
+  const x0 = Math.max(0, Math.round(cx - r));
+  const x1 = Math.min(frame.width - 1, Math.round(cx + r));
+  const y0 = Math.max(0, Math.round(cy - r));
+  const y1 = Math.min(frame.height - 1, Math.round(cy + r));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = (y * frame.width + x) * 4;
+      rs.push(frame.data[i]);
+      gs.push(frame.data[i + 1]);
+      bs.push(frame.data[i + 2]);
+    }
+  }
+  const med = (a) => a.length ? a.sort((p4, q) => p4 - q)[a.length >> 1] : 0;
+  return [med(rs), med(gs), med(bs)];
+}
+
+// src/orient.ts
+var import_cubejs2 = __toESM(require_cubejs(), 1);
+
+// src/assemble.ts
+var import_cubejs = __toESM(require_cubejs(), 1);
+
 // node_modules/culori/src/rgb/parseNumber.js
 var parseNumber = (color, len) => {
   if (typeof color !== "number") return;
@@ -5556,9 +5600,6 @@ function hsvDistance(a, b) {
   );
 }
 
-// src/assemble.ts
-var import_cubejs = __toESM(require_cubejs(), 1);
-
 // src/types.ts
 var FACES = ["U", "R", "F", "D", "L", "B"];
 
@@ -5698,62 +5739,7 @@ function isStructurallyValid(f3) {
 // src/assemble.ts
 var LOW_CONFIDENCE_THRESHOLD = 0.15;
 
-// src/corner-scan.ts
-var CORNER_ANCHORS = {
-  U: [235, 235, 235],
-  // white
-  R: [185, 30, 35],
-  // red
-  F: [0, 155, 70],
-  // green
-  D: [255, 215, 0],
-  // yellow
-  L: [255, 110, 25],
-  // orange
-  B: [0, 80, 180]
-  // blue
-};
-
-// src/grid-detect.ts
-function ringColor(frame, cx, cy, r) {
-  const rs = [];
-  const gs = [];
-  const bs = [];
-  for (let k4 = 0; k4 < 12; k4++) {
-    const a = k4 / 12 * 2 * Math.PI;
-    const px = Math.round(cx + r * Math.cos(a));
-    const py = Math.round(cy + r * Math.sin(a));
-    if (px < 0 || px >= frame.width || py < 0 || py >= frame.height) continue;
-    const i = (py * frame.width + px) * 4;
-    rs.push(frame.data[i]);
-    gs.push(frame.data[i + 1]);
-    bs.push(frame.data[i + 2]);
-  }
-  const med = (a) => a.length ? a.sort((p4, q) => p4 - q)[a.length >> 1] : 0;
-  return [med(rs), med(gs), med(bs)];
-}
-function patchColor(frame, cx, cy, r) {
-  const rs = [];
-  const gs = [];
-  const bs = [];
-  const x0 = Math.max(0, Math.round(cx - r));
-  const x1 = Math.min(frame.width - 1, Math.round(cx + r));
-  const y0 = Math.max(0, Math.round(cy - r));
-  const y1 = Math.min(frame.height - 1, Math.round(cy + r));
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const i = (y * frame.width + x) * 4;
-      rs.push(frame.data[i]);
-      gs.push(frame.data[i + 1]);
-      bs.push(frame.data[i + 2]);
-    }
-  }
-  const med = (a) => a.length ? a.sort((p4, q) => p4 - q)[a.length >> 1] : 0;
-  return [med(rs), med(gs), med(bs)];
-}
-
 // src/orient.ts
-var import_cubejs2 = __toESM(require_cubejs(), 1);
 function classifyBalanced(samples, centers) {
   const n = samples.length;
   const k4 = centers.length;
@@ -5947,8 +5933,6 @@ var SteadyDetector = class {
 
 // view/tabletop-panel.ts
 var TICK_MS = 100;
-var IDENTIFY_TOL = 1;
-var IDENTIFY_MARGIN = 0.82;
 var GRID_FRAC = 0.56;
 var NAME = {
   U: { name: "white", sw: "#f6f7f8" },
@@ -5958,6 +5942,12 @@ var NAME = {
   L: { name: "orange", sw: "#ff6a00" },
   B: { name: "blue", sw: "#0057c8" }
 };
+var ORDER = ["U", "F", "R", "B", "L", "D"];
+function plausibleCenter([r, g, b]) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return max >= 60 && ((max - min) / (max || 1) >= 0.25 || max >= 150);
+}
 var TEMPLATE = `
 <style>
   :host { display: block; font: 14px/1.5 -apple-system, system-ui, sans-serif; color: #e6edf3; }
@@ -5989,7 +5979,7 @@ var TEMPLATE = `
 <div class="stage">
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
-  <div class="hint">Fill the grid with one cube face, then hold still</div>
+  <div class="hint">Show the colour I ask for \u2014 fill the grid, hold still</div>
 </div>
 <div class="row2">
   <div class="status" id="status">Press <b>Start camera</b>, then fill the grid with a cube face.</div>
@@ -6016,13 +6006,12 @@ var TabletopScannerPanel = class extends HTMLElement {
   steady = new SteadyDetector({ framesNeeded: 2 });
   startGen = 0;
   deviceId;
-  pendingFace = null;
+  step = 0;
+  // index into ORDER — which colour we're asking for
   pendingCount = 0;
   lastColors = null;
-  lastFace = null;
   frameNo = 0;
   lastHud = 0;
-  lastStuck = 0;
   hudLine = "";
   debugLog = [];
   constructor() {
@@ -6107,14 +6096,14 @@ var TabletopScannerPanel = class extends HTMLElement {
       this.applyCameraControls();
       void this.refreshCameras();
       this.captured.clear();
-      this.pendingFace = null;
+      this.step = 0;
       this.pendingCount = 0;
       this.frameNo = 0;
       this.debugLog.length = 0;
       this.hudLine = "";
       this.el("dbg").textContent = "";
       this.steady.reset();
-      this.log("start \u2014 fill the grid with each face");
+      this.log("start \u2014 show each colour when asked");
       this.buildDots();
       this.btn("start").hidden = true;
       this.btn("start").disabled = false;
@@ -6162,23 +6151,6 @@ var TabletopScannerPanel = class extends HTMLElement {
         cells.push({ cx: ox + (c2 + 0.5) * cell, cy: oy + (r + 0.5) * cell, w: cell });
     return cells;
   }
-  /** Identify a face by center color (HSV) — only if unambiguous, else null. */
-  identify(center) {
-    let best = null;
-    let d1 = Number.POSITIVE_INFINITY;
-    let d2 = Number.POSITIVE_INFINITY;
-    for (const f3 of FACES) {
-      const d = hsvDistance(center, CORNER_ANCHORS[f3]);
-      if (d < d1) {
-        d2 = d1;
-        d1 = d;
-        best = f3;
-      } else if (d < d2) {
-        d2 = d;
-      }
-    }
-    return d1 <= IDENTIFY_TOL && d1 <= IDENTIFY_MARGIN * d2 ? best : null;
-  }
   onTick() {
     if (!this.source) return;
     let full;
@@ -6194,58 +6166,54 @@ var TabletopScannerPanel = class extends HTMLElement {
     );
     this.lastColors = colors;
     const center = colors[4];
-    const face = this.identify(center);
-    this.lastFace = face;
     const steady = this.steady.push(full);
-    this.drawGrid(full, cells, face);
+    const expected = this.step < ORDER.length ? ORDER[this.step] : null;
+    const ok = plausibleCenter(center);
+    this.drawGrid(full, cells, !!expected && ok);
     this.showRead(colors);
-    this.renderHud(face, center, steady);
-    if (!face) {
-      this.pendingFace = null;
+    this.renderHud(expected, center, steady);
+    if (!expected) return;
+    const g = NAME[expected];
+    if (!ok) {
       this.pendingCount = 0;
-      this.logStuck(center);
-      this.setStatus("Fill the grid with a cube face \u2014 center color unclear");
+      this.setStatus("Fill the grid with the ", this.swatch(g.sw), ` ${g.name} face`);
       return;
     }
-    if (face === this.pendingFace) this.pendingCount++;
-    else {
-      this.pendingFace = face;
-      this.pendingCount = 1;
-    }
-    if (this.captured.has(face)) {
-      this.setStatus(
-        "Have the ",
-        this.swatch(NAME[face].sw),
-        ` ${NAME[face].name} face \u2713 \u2014 show another`
-      );
-      return;
-    }
+    this.pendingCount++;
     if (!steady || this.pendingCount < 2) {
-      this.setStatus(
-        "Reading the ",
-        this.swatch(NAME[face].sw),
-        ` ${NAME[face].name} face \u2014 hold still\u2026`
-      );
+      this.setStatus("Hold the ", this.swatch(g.sw), ` ${g.name} face still\u2026`);
       return;
     }
-    this.captureFace(face, colors);
+    this.captureStep(expected, colors);
   }
-  captureFace(face, colors) {
+  /** Store the current face for the requested colour and advance the guided sequence. */
+  captureStep(face, colors) {
     this.captured.set(face, colors);
+    this.step++;
+    this.pendingCount = 0;
+    this.steady.reset();
     this.log(
-      `cap ${face}(${NAME[face].name}) center=${colors[4].map(Math.round).join(",")} n=${this.captured.size}`
+      `cap ${face}(${NAME[face].name}) center=${colors[4].map(Math.round).join(",")} step=${this.step}`
     );
     this.buildDots();
-    if (this.captured.size === 6) this.trySolve();
-    else
-      this.setStatus(
-        this.tinted("ok", `${NAME[face].name} \u2713  ${this.captured.size}/6 \u2014 show another face`)
-      );
+    if (this.captured.size === 6) {
+      this.trySolve();
+      return;
+    }
+    const next = NAME[ORDER[this.step]];
+    this.setStatus(
+      this.tinted("ok", `${NAME[face].name} \u2713`),
+      " \u2014 now show the ",
+      this.swatch(next.sw),
+      ` ${next.name} face`
+    );
   }
-  /** Manual capture: grab whatever face is aligned right now (overwrites if already have it). */
+  /** Manual capture: grab the face aligned right now for the requested colour. */
   captureNow() {
-    if (this.lastFace && this.lastColors) this.captureFace(this.lastFace, this.lastColors);
-    else this.setStatus("No cube face in the grid yet \u2014 fill the grid first.");
+    const expected = this.step < ORDER.length ? ORDER[this.step] : null;
+    if (expected && this.lastColors && plausibleCenter(this.lastColors[4]))
+      this.captureStep(expected, this.lastColors);
+    else this.setStatus("Fill the grid with the requested face first.");
   }
   trySolve() {
     const faces = Object.fromEntries(this.captured);
@@ -6268,21 +6236,19 @@ var TabletopScannerPanel = class extends HTMLElement {
     } else {
       this.btn("retry").hidden = false;
       this.setStatus(
-        this.tinted("err", "\u26A0 Colors don\u2019t form a solvable cube."),
-        " Re-capture any face by filling the grid, or press Retry."
+        this.tinted("err", "\u26A0 Colors don\u2019t form a solvable cube \u2014 a color was misread."),
+        " Press Retry to rescan (whiter light helps red/orange)."
       );
-      this.captured.clear();
-      for (const [f3, c2] of Object.entries(faces)) this.captured.set(f3, c2);
     }
   }
   retry() {
     this.captured.clear();
-    this.pendingFace = null;
+    this.step = 0;
     this.pendingCount = 0;
     this.btn("retry").hidden = true;
     this.buildDots();
     this.log("retry \u2014 cleared all faces");
-    this.setStatus("Restarted \u2014 fill the grid with each face.");
+    this.setStatus("Restarted \u2014 show each colour when asked.");
   }
   drawGrid(frame, cells, face) {
     const ctx = this.octx;
@@ -6327,24 +6293,13 @@ var TabletopScannerPanel = class extends HTMLElement {
       }
     }
   }
-  renderHud(face, center, steady) {
+  renderHud(want, center, steady) {
     const now = performance.now();
     if (now - this.lastHud < 200) return;
     this.lastHud = now;
     const have = [...this.captured.keys()].join("") || "-";
-    this.hudLine = `f${this.frameNo} face=${face ?? "-"} center=${center.map(Math.round).join(",")} steady=${steady} have=${have}`;
+    this.hudLine = `f${this.frameNo} want=${want ?? "-"} center=${center.map(Math.round).join(",")} steady=${steady} have=${have}`;
     this.refreshDbg();
-  }
-  logStuck(center) {
-    const now = performance.now();
-    if (now - this.lastStuck < 1e3) return;
-    this.lastStuck = now;
-    const ds = FACES.map((f3) => ({ f: f3, d: hsvDistance(center, CORNER_ANCHORS[f3]) })).sort(
-      (a, b) => a.d - b.d
-    );
-    this.log(
-      `unclear center=${center.map(Math.round).join(",")} near=${ds[0].f}(${ds[0].d.toFixed(2)}) ${ds[1].f}(${ds[1].d.toFixed(2)})`
-    );
   }
   async copyDebug() {
     const text = this.debugLog.join("\n") || "(no debug yet)";
