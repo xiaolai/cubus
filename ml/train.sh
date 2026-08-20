@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Fine-tune YOLOv11n on the synthetic (+ real) cube dataset, inside an NVIDIA NGC arm64
+# PyTorch container on the training host (GB10 Blackwell). NGC is used because a plain `pip install
+# torch` on this arm64 box may lack Blackwell (sm_121) kernels; the NGC image ships them.
+#
+# The exact NGC tag is filled in from Alan's container-verification result (the image proven
+# to see the GB10). Override with NGC_IMAGE=... if needed.
+#
+# Usage: DATASET=~/datasets/cube/dataset ml/train.sh
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NGC_IMAGE="${NGC_IMAGE:-nvcr.io/nvidia/pytorch:25.01-py3}"  # TODO: pin to Alan's verified tag
+DATASET="${DATASET:?set DATASET to the split dataset dir (contains images/ labels/)}"
+EPOCHS="${EPOCHS:-80}"
+IMGSZ="${IMGSZ:-640}"
+BATCH="${BATCH:-64}"           # GB10 has ~113GB unified memory — batch can be large
+MODEL="${MODEL:-yolo11n.pt}"   # nano; use yolo11s.pt for a little more headroom
+
+# data.yaml pointed at the dataset (copy so relative paths resolve).
+cp "$HERE/data.yaml" "$DATASET/data.yaml"
+sed -i "s#^path:.*#path: /work/dataset#" "$DATASET/data.yaml"
+
+docker run --rm --gpus all --ipc=host \
+  -v "$HERE":/ml -v "$DATASET":/work/dataset \
+  -w /work "$NGC_IMAGE" bash -lc "
+    set -e
+    pip install --no-input ultralytics onnx onnxruntime >/dev/null
+    yolo detect train model=$MODEL data=/work/dataset/data.yaml \
+      epochs=$EPOCHS imgsz=$IMGSZ batch=$BATCH device=0 project=/work/runs name=cube
+    # Export the best weights to ONNX (int8 dynamic) for onnxruntime-web in the app.
+    yolo export model=/work/runs/cube/weights/best.pt format=onnx opset=12 simplify=True
+    echo 'ONNX at /work/runs/cube/weights/best.onnx'
+  "
+echo "Trained. Copy best.onnx into app/renderer/vendor/ and wire onnxruntime-web (see README)."
