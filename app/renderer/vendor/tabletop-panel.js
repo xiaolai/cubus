@@ -5903,7 +5903,11 @@ function detectStickerGrid(cv, frame) {
     cells: g.cells,
     real: g.real,
     colors: g.cells.map(
-      (c2, i) => i === 4 ? ringColor(frame, c2.cx, c2.cy, c2.w * 0.34) : patchColor(frame, c2.cx, c2.cy, c2.w * 0.25)
+      (c2, i) => (
+        // Center: a wider ring (0.40w) to fully clear a large center logo (the GAN 冠),
+        // which was bleeding blue into the white face's center read.
+        i === 4 ? ringColor(frame, c2.cx, c2.cy, c2.w * 0.4) : patchColor(frame, c2.cx, c2.cy, c2.w * 0.25)
+      )
     )
   } : null;
   return { candidates, grid };

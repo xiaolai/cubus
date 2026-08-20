@@ -321,8 +321,10 @@ export function detectStickerGrid(cv: OpenCv, frame: Frame): GridResult {
         cells: g.cells,
         real: g.real,
         colors: g.cells.map((c, i) =>
+          // Center: a wider ring (0.40w) to fully clear a large center logo (the GAN 冠),
+          // which was bleeding blue into the white face's center read.
           i === 4
-            ? ringColor(frame, c.cx, c.cy, c.w * 0.34)
+            ? ringColor(frame, c.cx, c.cy, c.w * 0.4)
             : patchColor(frame, c.cx, c.cy, c.w * 0.25),
         ),
       }
