@@ -1,0 +1,82 @@
+// Public API for @cubus/perception (cube-tracker).
+
+// Core cube engine
+export {
+  applyMove,
+  applySequence,
+  type CubeState,
+  cloneState,
+  decodeFacelets,
+  encodeFacelets,
+  type Face,
+  faceIndices,
+  isSolvable,
+  isStructurallyValid,
+  type Move,
+  MOVE_NAMES,
+  MOVES,
+  type Orientation,
+  ORIENTATIONS,
+  SOLVED_STATE,
+  stateKey,
+  statesEqual,
+} from './cube.js';
+
+// Contract types
+export {
+  DEFAULT_CONFIG,
+  type FaceObs,
+  type Hypothesis,
+  type MoveEvent,
+  type Observation,
+  type SoftColor,
+  type Tracker,
+  type TrackerConfig,
+  type TrackStatus,
+  type TrackUpdate,
+} from './types.js';
+
+// Belief + likelihood
+export { Belief } from './belief.js';
+export { type CubeView, discrimCells, scoreView, type ViewCell } from './likelihood.js';
+
+// Orientation
+export {
+  bestOrientationMatch,
+  type CameraCell,
+  faceMapOf,
+  ORIENTATION_COUNT,
+  render,
+  resolveOrientations,
+  toCubeView,
+} from './orientation.js';
+
+// Recovery + acquisition
+export {
+  acquireState,
+  ballWithinDepth,
+  DEFAULT_RECOVERY,
+  exactDepthShell,
+  recoverState,
+  type RecoveryOptions,
+  type RecoveryResult,
+} from './recovery.js';
+
+// Orchestrator
+export { type CameraObservation, CubeTracker } from './tracker.js';
+
+// Perception (pure parts)
+export { CANONICAL_CENTERS, classifySoft, ciede2000, type RGB } from './perception/color.js';
+export { type Frame, frameDiff, StabilityGate } from './perception/motion.js';
+export {
+  createLocalizer,
+  type LocalizedFace,
+  type Localizer,
+  type LocalizerResult,
+} from './perception/localize.js';
+
+// Camera (impure shell)
+export { type CameraHandle, openCamera } from './camera.js';
+
+// Harness
+export { eventsMatch, scoreSession, type SessionMetrics, toQuarterTurns } from './harness.js';
