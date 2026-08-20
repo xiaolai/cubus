@@ -79,6 +79,7 @@ const TEMPLATE = `
 <pre class="dbg" id="dbg"></pre>
 <div class="row">
   <button class="primary" id="start">Start camera</button>
+  <button class="ghost" id="retry" hidden>Retry</button>
   <button class="ghost" id="copydbg">Copy debug</button>
 </div>
 `;
@@ -115,6 +116,20 @@ export class TabletopScannerPanel extends HTMLElement {
     this.buildRead();
     this.btn('start').addEventListener('click', () => void this.start());
     this.btn('copydbg').addEventListener('click', () => void this.copyDebug());
+    this.btn('retry').addEventListener('click', () => this.retry());
+  }
+
+  /** Drop all captured faces and scan again from scratch (camera stays on). */
+  private retry(): void {
+    this.captured.clear();
+    this.roi = null;
+    this.roiMiss = 0;
+    this.pendingFace = null;
+    this.pendingCount = 0;
+    this.btn('retry').hidden = true;
+    this.buildDots();
+    this.log('retry — cleared all faces');
+    this.setStatus('Restarted — turn the cube so every face faces the camera.');
   }
 
   /** Copy the running debug log to the clipboard so it can be pasted for diagnosis. */
@@ -181,6 +196,7 @@ export class TabletopScannerPanel extends HTMLElement {
       this.frameNo = 0;
       this.debugLog.length = 0;
       this.el('dbg').textContent = '';
+      this.btn('retry').hidden = true;
       this.log('start — turn the cube slowly');
       this.buildDots();
       this.btn('start').hidden = true;
@@ -307,9 +323,12 @@ export class TabletopScannerPanel extends HTMLElement {
       this.setStatus(`Reading ${NAME[face].name}… hold it a moment`);
       return;
     }
-    // Rotate-and-collect: keep the BEST read per face (most stickers really seen).
+    // Rotate-and-collect: keep the BEST read per face. But once all six are in and it's
+    // still not solvable (a misread), let a fresh re-show REPLACE a face so re-turning it
+    // fixes the read — then re-solve.
     const prev = this.captured.get(face);
-    if (!prev || grid.real > prev.real) {
+    const refreshing = this.captured.size === 6; // stuck at six → accept fresh reads
+    if (!prev || grid.real > prev.real || refreshing) {
       this.captured.set(face, { colors: samples, real: grid.real });
       this.log(
         `cap ${face}(${NAME[face].name}) real=${grid.real} center=${center.map(Math.round).join(',')} n=${this.captured.size}`,
@@ -331,7 +350,8 @@ export class TabletopScannerPanel extends HTMLElement {
     let res: OrientationResult;
     try {
       res = solveOrientations(faces);
-    } catch {
+    } catch (e) {
+      this.log(`solve ERROR ${(e as Error)?.message ?? e}`); // fail loud, don't swallow
       return;
     }
     this.log(`solve valid=${res.valid} facelets=${res.facelets}`);
@@ -340,12 +360,17 @@ export class TabletopScannerPanel extends HTMLElement {
         clearInterval(this.timer);
         this.timer = null;
       }
-      this.setStatus(this.tinted('ok', 'Scan complete — solvable cube captured.'));
+      this.setStatus(this.tinted('ok', '✓ Scan complete — cube captured!'));
       this.dispatchEvent(new CustomEvent<ScanResult>('scan-complete', { detail: res }));
       this.stop();
     } else {
-      // All six read but not solvable → a misread; keep turning to improve any face.
-      this.setStatus(this.tinted('err', 'Not solvable yet — keep turning so I re-read each face.'));
+      // All six read but not solvable → a colour was misread. Say so loudly and offer Retry;
+      // meanwhile fresh re-shows of any face keep replacing reads (refreshing above).
+      this.btn('retry').hidden = false;
+      this.setStatus(
+        this.tinted('err', '⚠ All 6 read, but a colour was misread (not a solvable cube).'),
+        ' Turn a face to re-read it, or press Retry.',
+      );
     }
   }
 

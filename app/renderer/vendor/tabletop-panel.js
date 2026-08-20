@@ -6057,6 +6057,7 @@ var TEMPLATE = `
 <pre class="dbg" id="dbg"></pre>
 <div class="row">
   <button class="primary" id="start">Start camera</button>
+  <button class="ghost" id="retry" hidden>Retry</button>
   <button class="ghost" id="copydbg">Copy debug</button>
 </div>
 `;
@@ -6089,6 +6090,19 @@ var TabletopScannerPanel = class extends HTMLElement {
     this.buildRead();
     this.btn("start").addEventListener("click", () => void this.start());
     this.btn("copydbg").addEventListener("click", () => void this.copyDebug());
+    this.btn("retry").addEventListener("click", () => this.retry());
+  }
+  /** Drop all captured faces and scan again from scratch (camera stays on). */
+  retry() {
+    this.captured.clear();
+    this.roi = null;
+    this.roiMiss = 0;
+    this.pendingFace = null;
+    this.pendingCount = 0;
+    this.btn("retry").hidden = true;
+    this.buildDots();
+    this.log("retry \u2014 cleared all faces");
+    this.setStatus("Restarted \u2014 turn the cube so every face faces the camera.");
   }
   /** Copy the running debug log to the clipboard so it can be pasted for diagnosis. */
   async copyDebug() {
@@ -6147,6 +6161,7 @@ var TabletopScannerPanel = class extends HTMLElement {
       this.frameNo = 0;
       this.debugLog.length = 0;
       this.el("dbg").textContent = "";
+      this.btn("retry").hidden = true;
       this.log("start \u2014 turn the cube slowly");
       this.buildDots();
       this.btn("start").hidden = true;
@@ -6265,7 +6280,8 @@ var TabletopScannerPanel = class extends HTMLElement {
       return;
     }
     const prev = this.captured.get(face);
-    if (!prev || grid.real > prev.real) {
+    const refreshing = this.captured.size === 6;
+    if (!prev || grid.real > prev.real || refreshing) {
       this.captured.set(face, { colors: samples, real: grid.real });
       this.log(
         `cap ${face}(${NAME[face].name}) real=${grid.real} center=${center.map(Math.round).join(",")} n=${this.captured.size}`
@@ -6283,7 +6299,8 @@ var TabletopScannerPanel = class extends HTMLElement {
     let res;
     try {
       res = solveOrientations(faces);
-    } catch {
+    } catch (e4) {
+      this.log(`solve ERROR ${e4?.message ?? e4}`);
       return;
     }
     this.log(`solve valid=${res.valid} facelets=${res.facelets}`);
@@ -6292,11 +6309,15 @@ var TabletopScannerPanel = class extends HTMLElement {
         clearInterval(this.timer);
         this.timer = null;
       }
-      this.setStatus(this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
+      this.setStatus(this.tinted("ok", "\u2713 Scan complete \u2014 cube captured!"));
       this.dispatchEvent(new CustomEvent("scan-complete", { detail: res }));
       this.stop();
     } else {
-      this.setStatus(this.tinted("err", "Not solvable yet \u2014 keep turning so I re-read each face."));
+      this.btn("retry").hidden = false;
+      this.setStatus(
+        this.tinted("err", "\u26A0 All 6 read, but a colour was misread (not a solvable cube)."),
+        " Turn a face to re-read it, or press Retry."
+      );
     }
   }
   /** Log (throttled) an unidentifiable center: its color and the two nearest cube colors.
