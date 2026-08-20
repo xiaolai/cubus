@@ -46,6 +46,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_poses", type=int, default=40, help="camera poses (images) per scene")
     p.add_argument("--res", type=int, default=640)
     p.add_argument("--seed", type=int, default=0)
+    # Device: "gpu" (METAL/CUDA) is ~2-3x faster per scene here, but there's one GPU, so run a
+    # single gpu worker — parallel gpu workers just serialise on the device. "cpu" is slower per
+    # scene but lets several render.sh workers run at once (they share the many CPU cores).
+    p.add_argument("--device", choices=["cpu", "gpu"], default="gpu")
     return p.parse_args(argv)
 
 
@@ -61,6 +65,9 @@ def main() -> None:
     rng = random.Random(args.seed)
     np.random.seed(args.seed)
     bproc.init()
+    # Pick the render device explicitly (BlenderProc otherwise defaults to METAL here, which is
+    # slower for this trivial scene and can't be shared across parallel workers).
+    bproc.renderer.set_render_devices(use_only_cpu=(args.device == "cpu"))
 
     # Black cube body behind the stickers (fills the gaps, gives the real look).
     body = bproc.object.create_primitive("PLANE")
