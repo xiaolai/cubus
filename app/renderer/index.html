@@ -111,15 +111,15 @@
       </div>
     </div>
 
-    <!-- Camera scanner (fast two-corner capture: 3 faces per shot). The
-         <corner-scanner-panel> element is registered by the self-contained bundle built
-         from cube-scanner/view via `npm run build:panel`. -->
+    <!-- Camera scanner (tabletop: cube on the table, camera aimed down, one flat face at a
+         time in any order/rotation). The <tabletop-scanner-panel> element is registered by
+         the self-contained bundle built from cube-scanner/view via `npm run build:panel`. -->
     <div class="picker" id="scanModal" hidden>
       <div class="pickerBox" style="width: min(520px, 94vw)">
         <h3>Scan your cube <span class="scan">camera</span></h3>
-        <corner-scanner-panel id="scanPanel"></corner-scanner-panel>
+        <tabletop-scanner-panel id="scanPanel"></tabletop-scanner-panel>
         <div class="pickFoot" style="margin-top: 14px">
-          <span class="muted">Show two corners; each face is checked by its center color and the cube by solvability.</span>
+          <span class="muted">Cube on the table, camera aimed down. Show all six faces — any order, any way up.</span>
           <button class="ghost" id="scanClose">Close</button>
         </div>
       </div>
@@ -140,13 +140,13 @@
       </div>
     </div>
 
-    <!-- Registers <corner-scanner-panel> (fast two-corner scan). Local, self-contained
+    <!-- Registers <tabletop-scanner-panel> (tabletop scan). Local, self-contained
          (culori + cubejs are inlined), so it works offline and needs no bundler. -->
-    <!-- OpenCV.js (WASM) locates the cube faces. Vendored locally (same-origin,
+    <!-- OpenCV.js (WASM) locates the cube face. Vendored locally (same-origin,
          offline-capable, no CDN/supply-chain exposure); the scanner needs it to detect
-         faces, so it warms up before capture. -->
+         the face, so it warms up before capture. -->
     <script async src="./vendor/opencv.js"></script>
-    <script type="module" src="./vendor/corner-panel.js"></script>
+    <script type="module" src="./vendor/tabletop-panel.js"></script>
     <script type="module" src="./vendor/tracker-panel.js"></script>
 
     <script type="module">
