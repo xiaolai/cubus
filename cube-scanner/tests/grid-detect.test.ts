@@ -37,19 +37,31 @@ describe('findGrid', () => {
     ];
     const idx = findGrid(all);
     expect(idx).not.toBeNull();
+    expect(new Set(idx!).size).toBe(9); // nine distinct cells
     const ordered = idx!.map((i) => all[i]!);
-    // Reading order: cy non-decreasing across rows, cx increasing within each row.
-    expect(ordered.map((c) => [c.cx, c.cy])).toEqual([
-      [100, 100],
-      [140, 100],
-      [180, 100],
-      [100, 140],
-      [140, 140],
-      [180, 140],
-      [100, 180],
-      [140, 180],
-      [180, 180],
-    ]);
+    // The nine found cells are exactly the grid's nine (as a set), not the noise.
+    const found = new Set(ordered.map((c) => `${c.cx},${c.cy}`));
+    for (const c of cells) expect(found.has(`${c.cx},${c.cy}`)).toBe(true);
+    // The middle of the lattice order is the grid's center sticker.
+    expect([ordered[4]!.cx, ordered[4]!.cy]).toEqual([140, 140]);
+  });
+
+  it('finds a rotated (tilted) 3x3 grid — not only axis-aligned', () => {
+    const base = grid(0, 0, 40, 34); // centered on the middle cell (index 4) at (40,40)
+    const cx = base[4]!.cx;
+    const cy = base[4]!.cy;
+    const a = (30 * Math.PI) / 180;
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    const rotated: StickerCell[] = base.map((c) => {
+      const dx = c.cx - cx;
+      const dy = c.cy - cy;
+      return { cx: cx + dx * cos - dy * sin, cy: cy + dx * sin + dy * cos, w: c.w };
+    });
+    const idx = findGrid(rotated);
+    expect(idx).not.toBeNull();
+    expect(new Set(idx!).size).toBe(9);
+    expect(idx![4]).toBe(4); // middle of the lattice order is still the center sticker
   });
 
   it('returns null when candidates do not form a grid', () => {

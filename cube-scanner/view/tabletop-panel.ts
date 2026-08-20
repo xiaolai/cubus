@@ -60,10 +60,10 @@ const TEMPLATE = `
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
   <div class="box"></div>
-  <div class="hint">Put a cube face flat in the box — any side, any way up</div>
+  <div class="hint">Show a cube face — held up or flat, any side, any way up</div>
 </div>
 <div class="row2">
-  <div class="status" id="status">Press <b>Start camera</b>, aim it down at the cube on the table.</div>
+  <div class="status" id="status">Press <b>Start camera</b>, then show a cube face to the camera.</div>
   <div class="read" id="read"></div>
 </div>
 <div class="dots" id="dots"></div>
@@ -191,11 +191,15 @@ export class TabletopScannerPanel extends HTMLElement {
     } catch {
       return;
     }
-    const grid = detectStickerGrid(this.cv, frame);
-    this.drawOverlay(frame, grid ? grid.cells : []);
+    const { candidates, grid } = detectStickerGrid(this.cv, frame);
+    this.drawOverlay(frame, candidates, grid ? grid.cells : []);
     if (!grid) {
       this.showRead(null);
-      this.setStatus('Place a cube face flat in the box (I look for its 3×3 stickers)');
+      this.setStatus(
+        candidates.length >= 4
+          ? `Line up a full face — ${candidates.length} squares seen`
+          : 'Show a cube face to the camera (held up or flat)',
+      );
       return;
     }
     const samples = grid.colors;
@@ -251,7 +255,11 @@ export class TabletopScannerPanel extends HTMLElement {
     }
   }
 
-  private drawOverlay(frame: Frame, cells: readonly StickerCell[]): void {
+  private drawOverlay(
+    frame: Frame,
+    candidates: readonly StickerCell[],
+    gridCells: readonly StickerCell[],
+  ): void {
     const ctx = this.octx;
     if (!ctx) return;
     const c = this.el<HTMLCanvasElement>('ov');
@@ -261,13 +269,21 @@ export class TabletopScannerPanel extends HTMLElement {
       if (this.stageEl) this.stageEl.style.aspectRatio = `${frame.width} / ${frame.height}`;
     }
     ctx.clearRect(0, 0, frame.width, frame.height);
+    const inGrid = new Set(gridCells.map((g) => `${g.cx},${g.cy}`));
+    // Every candidate square dim, so near-misses are visible…
+    ctx.lineWidth = Math.max(1, frame.width / 320);
+    ctx.strokeStyle = 'rgba(210,153,34,0.7)';
+    for (const cell of candidates) {
+      if (inGrid.has(`${cell.cx},${cell.cy}`)) continue;
+      ctx.strokeRect(cell.cx - cell.w / 2, cell.cy - cell.w / 2, cell.w, cell.w);
+    }
+    // …and the locked 3x3 bright green.
     ctx.lineWidth = Math.max(2, frame.width / 200);
     ctx.strokeStyle = '#3fb950';
     ctx.fillStyle = 'rgba(63,185,80,0.15)';
-    for (const cell of cells) {
-      const s = cell.w;
+    for (const cell of gridCells) {
       ctx.beginPath();
-      ctx.rect(cell.cx - s / 2, cell.cy - s / 2, s, s);
+      ctx.rect(cell.cx - cell.w / 2, cell.cy - cell.w / 2, cell.w, cell.w);
       ctx.fill();
       ctx.stroke();
     }

@@ -19,18 +19,6 @@ export interface StickerCell {
   w: number;
 }
 
-const GRID_OFFSETS: readonly (readonly [number, number])[] = [
-  [-1, -1],
-  [0, -1],
-  [1, -1],
-  [-1, 0],
-  [0, 0],
-  [1, 0],
-  [-1, 1],
-  [0, 1],
-  [1, 1],
-];
-
 /** Collapse near-duplicate candidates (Canny yields inner+outer edges of each sticker). */
 export function dedupeCells(cands: readonly StickerCell[]): StickerCell[] {
   const kept: StickerCell[] = [];
@@ -41,44 +29,76 @@ export function dedupeCells(cands: readonly StickerCell[]): StickerCell[] {
   return kept;
 }
 
-/** Sort nine candidate indices into reading order (rows top→bottom, each row left→right). */
-function readingOrder(idx: readonly number[], cands: readonly StickerCell[]): number[] {
-  const byRow = [...idx].sort((a, b) => cands[a]!.cy - cands[b]!.cy);
-  const out: number[] = [];
-  for (let r = 0; r < 3; r++) {
-    out.push(...byRow.slice(r * 3, r * 3 + 3).sort((a, b) => cands[a]!.cx - cands[b]!.cx));
-  }
-  return out;
+interface Neighbor {
+  j: number;
+  dx: number;
+  dy: number;
+  d: number;
 }
 
 /**
- * Find nine candidates forming a 3x3 lattice and return their indices in reading order,
- * or null. For each candidate treated as the center, predict the 3x3 grid at one-sticker
- * spacing and require a distinct real candidate near every one of the nine positions.
+ * Try candidate `i` as the grid center: estimate the lattice basis from its own neighbors
+ * (so a rotated / perspective-tilted face is fine, not just an axis-aligned one), then
+ * require a distinct candidate at each of the nine lattice positions. Returns the nine
+ * indices in LATTICE reading order — a pure rotation of the true face, which the
+ * orientation solver then resolves — or null.
+ */
+function tryGrid(cands: readonly StickerCell[], i: number): number[] | null {
+  const c = cands[i]!;
+  const others: Neighbor[] = [];
+  for (let j = 0; j < cands.length; j++) {
+    if (j === i) continue;
+    const dx = cands[j]!.cx - c.cx;
+    const dy = cands[j]!.cy - c.cy;
+    const d = Math.hypot(dx, dy);
+    if (d > 1) others.push({ j, dx, dy, d });
+  }
+  if (others.length < 3) return null;
+  others.sort((a, b) => a.d - b.d);
+  const u = others[0]!; // nearest neighbor → one grid axis
+  // The other axis: nearest neighbor roughly perpendicular to u, similar length, and on the
+  // right-handed side (screen y-down) so the reading is a rotation of the true face, never a mirror.
+  let v: Neighbor | null = null;
+  for (const o of others) {
+    const cos = (o.dx * u.dx + o.dy * u.dy) / (o.d * u.d);
+    const cross = u.dx * o.dy - u.dy * o.dx;
+    if (Math.abs(cos) < 0.4 && o.d > u.d * 0.5 && o.d < u.d * 1.8 && cross > 0) {
+      v = o;
+      break;
+    }
+  }
+  if (!v) return null;
+  const tol = Math.min(u.d, v.d) * 0.5;
+  const grid: number[] = [];
+  for (let gj = -1; gj <= 1; gj++) {
+    for (let gi = -1; gi <= 1; gi++) {
+      const px = c.cx + gi * u.dx + gj * v.dx;
+      const py = c.cy + gi * u.dy + gj * v.dy;
+      let bi = -1;
+      let bd = tol;
+      for (let k = 0; k < cands.length; k++) {
+        const d = Math.hypot(cands[k]!.cx - px, cands[k]!.cy - py);
+        if (d < bd) {
+          bd = d;
+          bi = k;
+        }
+      }
+      if (bi < 0) return null;
+      grid.push(bi);
+    }
+  }
+  return new Set(grid).size === 9 ? grid : null;
+}
+
+/**
+ * Find nine candidates forming a 3x3 lattice (any rotation / mild perspective) and return
+ * their indices in reading order, or null. Structural gate: furniture has no such lattice.
  */
 export function findGrid(cands: readonly StickerCell[]): number[] | null {
   if (cands.length < 9) return null;
   for (let i = 0; i < cands.length; i++) {
-    const c = cands[i]!;
-    const step = c.w * 1.15; // sticker width + a thin gap ≈ center-to-center spacing
-    const tol = c.w * 0.6;
-    const matched: number[] = [];
-    for (const [dx, dy] of GRID_OFFSETS) {
-      const px = c.cx + dx * step;
-      const py = c.cy + dy * step;
-      let bi = -1;
-      let bd = tol;
-      for (let j = 0; j < cands.length; j++) {
-        const d = Math.hypot(cands[j]!.cx - px, cands[j]!.cy - py);
-        if (d < bd) {
-          bd = d;
-          bi = j;
-        }
-      }
-      if (bi < 0) break;
-      matched.push(bi);
-    }
-    if (matched.length === 9 && new Set(matched).size === 9) return readingOrder(matched, cands);
+    const g = tryGrid(cands, i);
+    if (g) return g;
   }
   return null;
 }
@@ -104,14 +124,19 @@ export function patchColor(frame: Frame, cx: number, cy: number, r: number): RGB
   return [med(rs), med(gs), med(bs)];
 }
 
+export interface GridResult {
+  /** Every sticker-square candidate that passed the size/shape filter (for the overlay). */
+  candidates: StickerCell[];
+  /** The nine stickers + their colors when a 3x3 grid is present, else null. */
+  grid: { colors: RGB[]; cells: StickerCell[] } | null;
+}
+
 /**
- * Detect a cube face as a 3x3 grid of stickers and read their nine colors (reading order),
- * or null when no grid is present. This is the structural gate that rejects "any rectangle".
+ * Detect a cube face as a 3x3 grid of stickers. Returns all square candidates (so the UI
+ * can show near-misses) plus the nine-sticker grid + colors when a lattice is found. This
+ * is the structural gate that rejects "any rectangle" — furniture has no 3x3 lattice.
  */
-export function detectStickerGrid(
-  cv: OpenCv,
-  frame: Frame,
-): { colors: RGB[]; cells: StickerCell[] } | null {
+export function detectStickerGrid(cv: OpenCv, frame: Frame): GridResult {
   const src = cv.matFromImageData(frame);
   const gray = new cv.Mat();
   const edges = new cv.Mat();
@@ -119,8 +144,8 @@ export function detectStickerGrid(
   const hierarchy = new cv.Mat();
   const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
   const cleanup = [src, gray, edges, contours, hierarchy, kernel];
-  const minW = frame.width * 0.03;
-  const maxW = frame.width * 0.32;
+  const minW = frame.width * 0.02;
+  const maxW = frame.width * 0.42; // a close cube's stickers are large — don't reject them
   const raw: StickerCell[] = [];
   try {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
@@ -138,7 +163,7 @@ export function detectStickerGrid(
       const { width: w, height: h } = rect;
       const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
       const solidity = w * h > 0 ? Math.abs(cv.contourArea(c)) / (w * h) : 0;
-      if (w >= minW && w <= maxW && aspect >= 0.7 && solidity > 0.4)
+      if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35)
         raw.push({ cx: rect.x + w / 2, cy: rect.y + h / 2, w });
       c.delete();
     }
@@ -146,10 +171,15 @@ export function detectStickerGrid(
     for (const m of cleanup) m.delete();
   }
 
-  const cands = dedupeCells(raw);
-  const grid = findGrid(cands);
-  if (!grid) return null;
-  const cells = grid.map((i) => cands[i]!);
-  const colors = cells.map((cell) => patchColor(frame, cell.cx, cell.cy, cell.w * 0.25));
-  return { colors, cells };
+  const candidates = dedupeCells(raw);
+  const idx = findGrid(candidates);
+  const grid = idx
+    ? {
+        cells: idx.map((i) => candidates[i]!),
+        colors: idx.map((i) =>
+          patchColor(frame, candidates[i]!.cx, candidates[i]!.cy, candidates[i]!.w * 0.25),
+        ),
+      }
+    : null;
+  return { candidates, grid };
 }

@@ -5724,17 +5724,6 @@ var CORNER_ANCHORS = {
 };
 
 // src/grid-detect.ts
-var GRID_OFFSETS = [
-  [-1, -1],
-  [0, -1],
-  [1, -1],
-  [-1, 0],
-  [0, 0],
-  [1, 0],
-  [-1, 1],
-  [0, 1],
-  [1, 1]
-];
 function dedupeCells(cands) {
   const kept = [];
   for (const c2 of cands) {
@@ -5743,37 +5732,55 @@ function dedupeCells(cands) {
   }
   return kept;
 }
-function readingOrder(idx, cands) {
-  const byRow = [...idx].sort((a, b) => cands[a].cy - cands[b].cy);
-  const out = [];
-  for (let r = 0; r < 3; r++) {
-    out.push(...byRow.slice(r * 3, r * 3 + 3).sort((a, b) => cands[a].cx - cands[b].cx));
+function tryGrid(cands, i) {
+  const c2 = cands[i];
+  const others = [];
+  for (let j = 0; j < cands.length; j++) {
+    if (j === i) continue;
+    const dx = cands[j].cx - c2.cx;
+    const dy = cands[j].cy - c2.cy;
+    const d = Math.hypot(dx, dy);
+    if (d > 1) others.push({ j, dx, dy, d });
   }
-  return out;
+  if (others.length < 3) return null;
+  others.sort((a, b) => a.d - b.d);
+  const u = others[0];
+  let v = null;
+  for (const o of others) {
+    const cos = (o.dx * u.dx + o.dy * u.dy) / (o.d * u.d);
+    const cross = u.dx * o.dy - u.dy * o.dx;
+    if (Math.abs(cos) < 0.4 && o.d > u.d * 0.5 && o.d < u.d * 1.8 && cross > 0) {
+      v = o;
+      break;
+    }
+  }
+  if (!v) return null;
+  const tol = Math.min(u.d, v.d) * 0.5;
+  const grid = [];
+  for (let gj = -1; gj <= 1; gj++) {
+    for (let gi = -1; gi <= 1; gi++) {
+      const px = c2.cx + gi * u.dx + gj * v.dx;
+      const py = c2.cy + gi * u.dy + gj * v.dy;
+      let bi = -1;
+      let bd = tol;
+      for (let k4 = 0; k4 < cands.length; k4++) {
+        const d = Math.hypot(cands[k4].cx - px, cands[k4].cy - py);
+        if (d < bd) {
+          bd = d;
+          bi = k4;
+        }
+      }
+      if (bi < 0) return null;
+      grid.push(bi);
+    }
+  }
+  return new Set(grid).size === 9 ? grid : null;
 }
 function findGrid(cands) {
   if (cands.length < 9) return null;
   for (let i = 0; i < cands.length; i++) {
-    const c2 = cands[i];
-    const step = c2.w * 1.15;
-    const tol = c2.w * 0.6;
-    const matched = [];
-    for (const [dx, dy] of GRID_OFFSETS) {
-      const px = c2.cx + dx * step;
-      const py = c2.cy + dy * step;
-      let bi = -1;
-      let bd = tol;
-      for (let j = 0; j < cands.length; j++) {
-        const d = Math.hypot(cands[j].cx - px, cands[j].cy - py);
-        if (d < bd) {
-          bd = d;
-          bi = j;
-        }
-      }
-      if (bi < 0) break;
-      matched.push(bi);
-    }
-    if (matched.length === 9 && new Set(matched).size === 9) return readingOrder(matched, cands);
+    const g = tryGrid(cands, i);
+    if (g) return g;
   }
   return null;
 }
@@ -5804,8 +5811,8 @@ function detectStickerGrid(cv, frame) {
   const hierarchy = new cv.Mat();
   const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
   const cleanup = [src, gray, edges, contours, hierarchy, kernel];
-  const minW = frame.width * 0.03;
-  const maxW = frame.width * 0.32;
+  const minW = frame.width * 0.02;
+  const maxW = frame.width * 0.42;
   const raw = [];
   try {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
@@ -5823,19 +5830,22 @@ function detectStickerGrid(cv, frame) {
       const { width: w, height: h } = rect;
       const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
       const solidity = w * h > 0 ? Math.abs(cv.contourArea(c2)) / (w * h) : 0;
-      if (w >= minW && w <= maxW && aspect >= 0.7 && solidity > 0.4)
+      if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35)
         raw.push({ cx: rect.x + w / 2, cy: rect.y + h / 2, w });
       c2.delete();
     }
   } finally {
     for (const m of cleanup) m.delete();
   }
-  const cands = dedupeCells(raw);
-  const grid = findGrid(cands);
-  if (!grid) return null;
-  const cells = grid.map((i) => cands[i]);
-  const colors = cells.map((cell) => patchColor(frame, cell.cx, cell.cy, cell.w * 0.25));
-  return { colors, cells };
+  const candidates = dedupeCells(raw);
+  const idx = findGrid(candidates);
+  const grid = idx ? {
+    cells: idx.map((i) => candidates[i]),
+    colors: idx.map(
+      (i) => patchColor(frame, candidates[i].cx, candidates[i].cy, candidates[i].w * 0.25)
+    )
+  } : null;
+  return { candidates, grid };
 }
 
 // src/orient.ts
@@ -5988,10 +5998,10 @@ var TEMPLATE = `
   <video id="video" playsinline muted></video>
   <canvas class="ov" id="ov"></canvas>
   <div class="box"></div>
-  <div class="hint">Put a cube face flat in the box \u2014 any side, any way up</div>
+  <div class="hint">Show a cube face \u2014 held up or flat, any side, any way up</div>
 </div>
 <div class="row2">
-  <div class="status" id="status">Press <b>Start camera</b>, aim it down at the cube on the table.</div>
+  <div class="status" id="status">Press <b>Start camera</b>, then show a cube face to the camera.</div>
   <div class="read" id="read"></div>
 </div>
 <div class="dots" id="dots"></div>
@@ -6109,11 +6119,13 @@ var TabletopScannerPanel = class extends HTMLElement {
     } catch {
       return;
     }
-    const grid = detectStickerGrid(this.cv, frame);
-    this.drawOverlay(frame, grid ? grid.cells : []);
+    const { candidates, grid } = detectStickerGrid(this.cv, frame);
+    this.drawOverlay(frame, candidates, grid ? grid.cells : []);
     if (!grid) {
       this.showRead(null);
-      this.setStatus("Place a cube face flat in the box (I look for its 3\xD73 stickers)");
+      this.setStatus(
+        candidates.length >= 4 ? `Line up a full face \u2014 ${candidates.length} squares seen` : "Show a cube face to the camera (held up or flat)"
+      );
       return;
     }
     const samples = grid.colors;
@@ -6167,7 +6179,7 @@ var TabletopScannerPanel = class extends HTMLElement {
       );
     }
   }
-  drawOverlay(frame, cells) {
+  drawOverlay(frame, candidates, gridCells) {
     const ctx = this.octx;
     if (!ctx) return;
     const c2 = this.el("ov");
@@ -6177,13 +6189,19 @@ var TabletopScannerPanel = class extends HTMLElement {
       if (this.stageEl) this.stageEl.style.aspectRatio = `${frame.width} / ${frame.height}`;
     }
     ctx.clearRect(0, 0, frame.width, frame.height);
+    const inGrid = new Set(gridCells.map((g) => `${g.cx},${g.cy}`));
+    ctx.lineWidth = Math.max(1, frame.width / 320);
+    ctx.strokeStyle = "rgba(210,153,34,0.7)";
+    for (const cell of candidates) {
+      if (inGrid.has(`${cell.cx},${cell.cy}`)) continue;
+      ctx.strokeRect(cell.cx - cell.w / 2, cell.cy - cell.w / 2, cell.w, cell.w);
+    }
     ctx.lineWidth = Math.max(2, frame.width / 200);
     ctx.strokeStyle = "#3fb950";
     ctx.fillStyle = "rgba(63,185,80,0.15)";
-    for (const cell of cells) {
-      const s = cell.w;
+    for (const cell of gridCells) {
       ctx.beginPath();
-      ctx.rect(cell.cx - s / 2, cell.cy - s / 2, s, s);
+      ctx.rect(cell.cx - cell.w / 2, cell.cy - cell.w / 2, cell.w, cell.w);
       ctx.fill();
       ctx.stroke();
     }

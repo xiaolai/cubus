@@ -61,7 +61,7 @@ async function main(): Promise<void> {
   console.log('OpenCV.js ready. Mat is', typeof cv.Mat);
 
   const frame = makeFrame(240, 240, faceColor);
-  const grid = detectStickerGrid(cv, frame);
+  const { grid } = detectStickerGrid(cv, frame);
   if (!grid) throw new Error('FAIL: no 3x3 grid detected on a synthetic cube face');
   if (grid.colors.length !== 9)
     throw new Error(`FAIL: expected 9 stickers, got ${grid.colors.length}`);
@@ -72,7 +72,8 @@ async function main(): Promise<void> {
   console.log('detected 9 stickers, center colour', grid.colors[4]);
 
   const flat = makeFrame(200, 200, () => [128, 128, 128]);
-  if (detectStickerGrid(cv, flat) !== null) throw new Error('FAIL: found a grid on a flat frame');
+  if (detectStickerGrid(cv, flat).grid !== null)
+    throw new Error('FAIL: found a grid on a flat frame');
 
   console.log('PASS: grid detector wiring OK (synthetic face found, flat frame rejected)');
 }
