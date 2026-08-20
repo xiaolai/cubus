@@ -2,8 +2,16 @@
 
 Train a YOLOv11n model that detects the 9 sticker colors of a cube face, robustly, under any
 lighting — by generating **synthetic** cube images with domain randomization (perfect
-auto-labels), so it generalizes to any user's cube without hand-labeling. Runs on **the training host**
-(NVIDIA GB10 Blackwell, arm64).
+auto-labels), so it generalizes to any user's cube without hand-labeling.
+
+## Two-machine split (why)
+Blender publishes **no Linux ARM64 build** (only linux-x64; conda-forge/pip `bpy` are x86_64
+too), so BlenderProc can't render on the training host's arm64 GB10 without compiling Blender from
+source. But Blender has **native macOS Apple-Silicon builds with Metal GPU Cycles**, so:
+
+- **Render on a Mac** (Apple Silicon + Metal) — `a MacBook Pro` / `a Mac mini`, or this box.
+- **Train on the training host** (GB10 CUDA, NGC container — Alan verified `--gpus all` sees the GB10).
+- Move the dataset between them over the **LAN** (fast; the internet egress is a slow US proxy).
 
 ## Why synthetic
 Public real datasets are tiny (~600 images total on Roboflow) and don't generalize across
@@ -25,24 +33,32 @@ environments), **glossy materials** (physically-correct glare), **perspective**,
 
 Run the pure tests locally: `python3 ml/test_pipeline.py`
 
-## Run on the training host (host: `ssh the training host`, GPU idle)
+## Run: render on a Mac → train on the training host
+
+### 1. Render on a Mac (Apple Silicon + Metal)
+BlenderProc lives in a venv; on first run it downloads a native macOS-arm64 Blender. The
+generator is validated end-to-end here (all 9 stickers labelled per frame, COCO→YOLO clean).
 ```bash
-# 0. Get assets (use the LAN/torrent lane — egress is a slow US proxy; see network notes).
-#    HDRIs: ~200+ CC0 .hdr from Poly Haven → ~/datasets/hdris
-#    (optional) the ~600 real Roboflow images → mix into the dataset for realism.
-
-# 1. Render (BlenderProc fetches an ARM64 Blender on first run).
-pip install --user blenderproc
-SCENES=1000 POSES=40 HDRI_DIR=~/datasets/hdris OUT=~/datasets/cube bash ml/render.sh
-#    → ~40k images at ~/datasets/cube/dataset
-
-# 2. Train + export ONNX (in the NGC arm64 container that Alan verified sees the GB10).
-DATASET=~/datasets/cube/dataset bash ml/train.sh
-#    → best.onnx
+python3.11 -m venv ml/venv && ml/venv/bin/pip install blenderproc
+# Get HDRIs (CC0) → some folder; more environments = more lighting/background variety.
+#    ~200+ Poly Haven .hdr → ~/datasets/hdris   (fetch over the LAN, egress is a slow US proxy)
+BLENDERPROC=ml/venv/bin/blenderproc \
+  SCENES=1000 POSES=40 HDRI_DIR=~/datasets/hdris OUT=~/datasets/cube bash ml/render.sh
+#    → ~40k images + YOLO labels at ~/datasets/cube/dataset
+```
+Smoke test with no HDRIs (falls back to a plain sun so renders aren't black):
+```bash
+ml/venv/bin/blenderproc run ml/generate_cube_dataset.py -- \
+  --output_dir /tmp/out --hdri_dir /nonexistent --num_poses 3 --res 320 --seed 1
 ```
 
-Transfer the dataset over the **LAN** (`192.168.88.18`), not the proxy. Batch can be large
-(GB10 shares ~113 GB unified memory).
+### 2. Train + export ONNX on the training host (GB10 CUDA)
+Move `~/datasets/cube/dataset` to the training host over the **LAN** (fast), not the internet proxy.
+```bash
+DATASET=~/datasets/cube/dataset bash ml/train.sh   # in the NGC arm64 container Alan verified
+#    → best.onnx
+```
+Batch can be large (GB10 shares ~113 GB unified memory).
 
 ## Then wire it into the app
 - Copy `best.onnx` → `app/renderer/vendor/cube-yolo.onnx`.
@@ -51,10 +67,11 @@ Transfer the dataset over the **LAN** (`192.168.88.18`), not the proxy. Batch ca
   9 colors into the existing `solveOrientations` (balanced HSV + red/orange disambiguation).
 - Keep the guided fixed-grid scan as the no-download default; AI mode is the robust option.
 
-## Open items (pending Alan / decisions)
+## Status & open items
+- [x] **Generator validated on macOS-arm64** — Blender 4.2 Cycles renders; all 9 stickers are
+      labelled per frame; COCO→YOLO shift + body-drop verified (`test_pipeline.py` guards it).
+- [ ] **HDRIs** — fetch ~200+ Poly Haven CC0 `.hdr` over the LAN (not the proxy) and scale the
+      render. Right now the smoke test uses the plain-sun fallback (no environment variety).
 - [ ] **NGC image tag** — pin `train.sh`'s `NGC_IMAGE` to the arm64 CUDA image Alan verified.
-- [ ] **ARM64 Blender** — confirm BlenderProc fetches the aarch64 Linux build on the training host.
-- [ ] **Scratch dir** — put `OUT` on the fast disk Alan points to (~2.8 T free).
-- [ ] **HDRIs + real Roboflow images** — fetch via LAN/torrent (not the proxy).
-- [ ] First-render debug — the generator's BlenderProc API calls are unverified off-GPU;
-      expect to shake out 1–2 API details on the first `blenderproc run`.
+- [ ] **Move dataset to the training host** over the LAN; put it on the fast scratch disk (~2.8 T free).
+- [ ] **(optional) real Roboflow images** — mix the ~600 real shots in for extra realism.

@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 dataset/
 out/
+# Local validation artifacts (Blender venv, smoke-test renders, run logs).
+venv/
+out_test/
+*.log

@@ -55,14 +55,17 @@ def convert(coco_path: str, out_dir: str, catid_to_class: dict[int, int]) -> int
     for img_id, img in images.items():
         lines = coco_to_yolo_lines(per_image.get(img_id, []), img["width"], img["height"], catid_to_class)
         stem = os.path.splitext(os.path.basename(img["file_name"]))[0]
+        # Newline-terminate every line (an image with no visible sticker → an empty file, which
+        # is how YOLO encodes "no objects"). Trailing newlines also keep files concatenation-safe.
         with open(os.path.join(out_dir, f"{stem}.txt"), "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+            f.write("".join(f"{line}\n" for line in lines))
     return len(images)
 
 
-# COCO category_id → YOLO class index. BlenderProc assigns category_id from each object's
-# "category_id" custom property; we set those to 0..5 in the generator, so this is identity.
-DEFAULT_MAP = {i: i for i in range(6)}
+# COCO category_id → YOLO class index. The generator stores colours 1-indexed (white=1..blue=6)
+# because BlenderProc reserves category_id 0 for background and drops it; the body is 7. Shift
+# 1..6 back to 0..5 here; 7 (body) has no entry, so coco_to_yolo_lines skips it.
+DEFAULT_MAP = {i + 1: i for i in range(6)}
 
 
 if __name__ == "__main__":

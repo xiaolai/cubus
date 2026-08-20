@@ -35,7 +35,8 @@ def test_cube_geometry() -> None:
 
 
 def test_coco_to_yolo() -> None:
-    # A 100x200 image with two boxes: one red (cat 1), one green (cat 2), one tiny (dropped).
+    # COCO ids are 1-indexed (white=1..blue=6, body=7); DEFAULT_MAP shifts 1..6 → classes 0..5.
+    # A 100x200 image: one white (cat 1 → class 0), one red (cat 2 → class 1), one tiny (dropped).
     anns = [
         {"category_id": 1, "bbox": [10, 20, 30, 40]},  # cx=25,cy=40 → 0.25,0.20 ; w=0.30,h=0.20
         {"category_id": 2, "bbox": [50, 100, 20, 20]},
@@ -43,11 +44,16 @@ def test_coco_to_yolo() -> None:
     ]
     lines = coco_to_yolo_lines(anns, img_w=100, img_h=200, catid_to_class=DEFAULT_MAP)
     assert len(lines) == 2, lines
-    assert lines[0] == "1 0.250000 0.200000 0.300000 0.200000", lines[0]
-    assert lines[1] == "2 0.600000 0.550000 0.200000 0.100000", lines[1]
+    assert lines[0] == "0 0.250000 0.200000 0.300000 0.200000", lines[0]
+    assert lines[1] == "1 0.600000 0.550000 0.200000 0.100000", lines[1]
+    # Regression guard for the BlenderProc background bug: category_id 0 (background) and 7 (the
+    # cube body) must never emit a label — only the six colour ids 1..6 are mapped.
+    assert 0 not in DEFAULT_MAP and 7 not in DEFAULT_MAP, DEFAULT_MAP
+    assert coco_to_yolo_lines([{"category_id": 0, "bbox": [0, 0, 50, 50]}], 100, 100, DEFAULT_MAP) == []
+    assert coco_to_yolo_lines([{"category_id": 7, "bbox": [0, 0, 50, 50]}], 100, 100, DEFAULT_MAP) == []
     # unknown category is skipped
     assert coco_to_yolo_lines([{"category_id": 99, "bbox": [0, 0, 50, 50]}], 100, 100, DEFAULT_MAP) == []
-    print("PASS coco_to_yolo: normalization, area filter, unknown-category skip")
+    print("PASS coco_to_yolo: 1-indexed shift, normalization, area filter, background/body/unknown skip")
 
 
 if __name__ == "__main__":
