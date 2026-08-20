@@ -10,7 +10,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NGC_IMAGE="${NGC_IMAGE:-nvcr.io/nvidia/pytorch:26.01-py3}"  # cu13 arm64 — Alan verified GB10 sm_121
+NGC_IMAGE="${NGC_IMAGE:-nvcr.io/nvidia/pytorch:26.01-py3}"  # arm64; Alan verified: cached on the training host,
+                                                            # cuda.is_available()=True, GB10 sm_121, onnx preinstalled
 DATASET="${DATASET:?set DATASET to the split dataset dir (contains images/ labels/)}"
 EPOCHS="${EPOCHS:-80}"
 IMGSZ="${IMGSZ:-640}"
@@ -21,14 +22,21 @@ MODEL="${MODEL:-yolo11n.pt}"   # nano; use yolo11s.pt for a little more headroom
 cp "$HERE/data.yaml" "$DATASET/data.yaml"
 sed -i "s#^path:.*#path: /work/dataset#" "$DATASET/data.yaml"
 
+# Flags Alan verified on the training host (each prevents a real failure):
+#   --gpus all           : the training host's Docker default-runtime is runc, so without it there's no GPU.
+#   --ipc=host + ulimits : the NGC image's default 64 MB /dev/shm bus-errors YOLO DataLoader workers.
+# And inside: install libGL — ultralytics pulls opencv-python, which needs libGL.so.1 that this
+# headless server lacks (else `import ultralytics` throws libGL.so.1: cannot open shared object).
 docker run --rm --gpus all --ipc=host \
+  --ulimit memlock=-1 --ulimit stack=67108864 \
   -v "$HERE":/ml -v "$DATASET":/work/dataset \
   -w /work "$NGC_IMAGE" bash -lc "
     set -e
-    pip install --no-input ultralytics onnx onnxruntime >/dev/null
+    apt-get update >/dev/null && apt-get install -y libgl1 libglib2.0-0 >/dev/null
+    pip install --no-input ultralytics onnxruntime >/dev/null   # onnx already in the NGC image
     yolo detect train model=$MODEL data=/work/dataset/data.yaml \
       epochs=$EPOCHS imgsz=$IMGSZ batch=$BATCH device=0 project=/work/runs name=cube
-    # Export the best weights to ONNX (int8 dynamic) for onnxruntime-web in the app.
+    # Export the best weights to ONNX for onnxruntime-web in the app.
     yolo export model=/work/runs/cube/weights/best.pt format=onnx opset=12 simplify=True
     echo 'ONNX at /work/runs/cube/weights/best.onnx'
   "
