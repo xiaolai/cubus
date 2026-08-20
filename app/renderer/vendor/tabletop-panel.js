@@ -5823,16 +5823,35 @@ function patchColor(frame, cx, cy, r) {
   const med = (a) => a.length ? a.sort((p4, q) => p4 - q)[a.length >> 1] : 0;
   return [med(rs), med(gs), med(bs)];
 }
+function collectCandidates(cv, binary, minW, maxW, out) {
+  const contours = new cv.MatVector();
+  const hierarchy = new cv.Mat();
+  try {
+    cv.findContours(binary, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+    for (let i = 0; i < contours.size(); i++) {
+      const c2 = contours.get(i);
+      const rect = cv.boundingRect(c2);
+      const { width: w, height: h } = rect;
+      const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
+      const solidity = w * h > 0 ? Math.abs(cv.contourArea(c2)) / (w * h) : 0;
+      if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35)
+        out.push({ cx: rect.x + w / 2, cy: rect.y + h / 2, w });
+      c2.delete();
+    }
+  } finally {
+    contours.delete();
+    hierarchy.delete();
+  }
+}
 function detectStickerGrid(cv, frame) {
   const src = cv.matFromImageData(frame);
   const gray = new cv.Mat();
   const edges = new cv.Mat();
-  const contours = new cv.MatVector();
-  const hierarchy = new cv.Mat();
+  const thresh = new cv.Mat();
   const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-  const cleanup = [src, gray, edges, contours, hierarchy, kernel];
+  const cleanup = [src, gray, edges, thresh, kernel];
   const minW = frame.width * 0.02;
-  const maxW = frame.width * 0.42;
+  const maxW = frame.width * 0.5;
   const raw = [];
   try {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
@@ -5843,17 +5862,10 @@ function detectStickerGrid(cv, frame) {
     const hi = otsu >= 1 ? otsu : 150;
     cv.Canny(gray, edges, 0.5 * hi, hi);
     cv.dilate(edges, edges, kernel);
-    cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-    for (let i = 0; i < contours.size(); i++) {
-      const c2 = contours.get(i);
-      const rect = cv.boundingRect(c2);
-      const { width: w, height: h } = rect;
-      const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
-      const solidity = w * h > 0 ? Math.abs(cv.contourArea(c2)) / (w * h) : 0;
-      if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35)
-        raw.push({ cx: rect.x + w / 2, cy: rect.y + h / 2, w });
-      c2.delete();
-    }
+    collectCandidates(cv, edges, minW, maxW, raw);
+    const block = Math.max(3, Math.round(frame.width * 0.04) | 1);
+    cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, block, 6);
+    collectCandidates(cv, thresh, minW, maxW, raw);
   } finally {
     for (const m of cleanup) m.delete();
   }

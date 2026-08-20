@@ -157,32 +157,18 @@ export interface GridResult {
   grid: { colors: RGB[]; cells: StickerCell[] } | null;
 }
 
-/**
- * Detect a cube face as a 3x3 grid of stickers. Returns all square candidates (so the UI
- * can show near-misses) plus the nine-sticker grid + colors when a lattice is found. This
- * is the structural gate that rejects "any rectangle" — furniture has no 3x3 lattice.
- */
-export function detectStickerGrid(cv: OpenCv, frame: Frame): GridResult {
-  const src = cv.matFromImageData(frame);
-  const gray = new cv.Mat();
-  const edges = new cv.Mat();
+/** Collect square sticker candidates from a binary mask (edges or threshold) into `out`. */
+function collectCandidates(
+  cv: OpenCv,
+  binary: OpenCv,
+  minW: number,
+  maxW: number,
+  out: StickerCell[],
+): void {
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
-  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-  const cleanup = [src, gray, edges, contours, hierarchy, kernel];
-  const minW = frame.width * 0.02;
-  const maxW = frame.width * 0.42; // a close cube's stickers are large — don't reject them
-  const raw: StickerCell[] = [];
   try {
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
-    const bin = new cv.Mat();
-    const otsu = cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
-    bin.delete();
-    const hi = otsu >= 1 ? otsu : 150;
-    cv.Canny(gray, edges, 0.5 * hi, hi);
-    cv.dilate(edges, edges, kernel);
-    cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+    cv.findContours(binary, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
     for (let i = 0; i < contours.size(); i++) {
       const c = contours.get(i);
       const rect = cv.boundingRect(c);
@@ -190,9 +176,52 @@ export function detectStickerGrid(cv: OpenCv, frame: Frame): GridResult {
       const aspect = w > 0 && h > 0 ? Math.min(w, h) / Math.max(w, h) : 0;
       const solidity = w * h > 0 ? Math.abs(cv.contourArea(c)) / (w * h) : 0;
       if (w >= minW && w <= maxW && aspect >= 0.6 && solidity > 0.35)
-        raw.push({ cx: rect.x + w / 2, cy: rect.y + h / 2, w });
+        out.push({ cx: rect.x + w / 2, cy: rect.y + h / 2, w });
       c.delete();
     }
+  } finally {
+    contours.delete();
+    hierarchy.delete();
+  }
+}
+
+/**
+ * Detect a cube face as a 3x3 grid of stickers. Returns all square candidates (so the UI
+ * can show near-misses) plus the nine-sticker grid + colors when a lattice is found. This
+ * is the structural gate that rejects "any rectangle" — furniture has no 3x3 lattice.
+ *
+ * Two INDEPENDENT candidate sources are merged so a face-on flat cube is found, not only a
+ * tilted one: (1) auto-Canny edges (good with strong border contrast) and (2) an adaptive
+ * local threshold (finds the stickers even under even lighting or glare, where the thin
+ * gaps are low-contrast globally). Either one supplying the nine is enough.
+ */
+export function detectStickerGrid(cv: OpenCv, frame: Frame): GridResult {
+  const src = cv.matFromImageData(frame);
+  const gray = new cv.Mat();
+  const edges = new cv.Mat();
+  const thresh = new cv.Mat();
+  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+  const cleanup = [src, gray, edges, thresh, kernel];
+  const minW = frame.width * 0.02;
+  const maxW = frame.width * 0.5; // a close, face-on cube's stickers are large — keep them
+  const raw: StickerCell[] = [];
+  try {
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
+    // Source 1 — auto-Canny edges.
+    const bin = new cv.Mat();
+    const otsu = cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+    bin.delete();
+    const hi = otsu >= 1 ? otsu : 150;
+    cv.Canny(gray, edges, 0.5 * hi, hi);
+    cv.dilate(edges, edges, kernel);
+    collectCandidates(cv, edges, minW, maxW, raw);
+    // Source 2 — adaptive threshold: each sticker is locally brighter than its dark gap
+    // borders, so the cells segment even when the gaps are faint globally (even light) or
+    // a face-on glossy sheen washes the surface out. This is the "only works at 45°" fix.
+    const block = Math.max(3, Math.round(frame.width * 0.04) | 1); // odd, ~sticker-scale
+    cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, block, 6);
+    collectCandidates(cv, thresh, minW, maxW, raw);
   } finally {
     for (const m of cleanup) m.delete();
   }
