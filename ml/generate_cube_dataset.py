@@ -1,31 +1,25 @@
-"""BlenderProc synthetic cube-FACE generator with domain randomization + auto YOLO labels.
+import blenderproc as bproc  # MUST be the ABSOLUTE first line — before any docstring/comment.
 
-Renders a single cube face (nine glossy sticker tiles on a black body) under randomized
-lighting (HDRI environments), perspective (camera on a frontal hemisphere), materials
-(palette + gloss jitter, so glare emerges physically) and background — the exact conditions
-that broke the classical scanner. Each sticker is a separate object tagged with its colour
-category, so BlenderProc emits per-sticker bounding boxes (occlusion-aware) with zero manual
-labelling. Output is COCO; convert to YOLO with coco_to_yolo.py.
+# BlenderProc synthetic cube-FACE generator with domain randomization + auto YOLO labels.
+# Renders a single cube face (nine glossy sticker tiles on a black body) under randomized
+# lighting (HDRI), perspective (camera on a frontal hemisphere), materials (palette + gloss
+# jitter → physical glare) and background — the conditions that broke the classical scanner.
+# Each sticker is a separate object tagged with its colour category, so BlenderProc emits
+# per-sticker occlusion-aware boxes with zero manual labelling. Output COCO → coco_to_yolo.py.
+# Run ONE scene (scramble + HDRI) with K camera poses; render.sh loops it over seeds.
+#   blenderproc run generate_cube_dataset.py -- --output_dir out --hdri_dir hdris \
+#       --num_poses 40 --res 640 --seed 123
+# YOLO classes: 0 white 1 red 2 green 3 yellow 4 orange 5 blue (see data.yaml). In the COCO
+# file these are stored 1-indexed (white=1..blue=6, body=7) because BlenderProc reserves
+# category_id 0 for background; coco_to_yolo.py shifts them back to 0..5.
 
-Run ONE scene (one scramble + one HDRI) with K camera poses per invocation; the render.sh
-loop calls this many times with different seeds for colour/lighting variety:
+import argparse  # noqa: E402
+import glob  # noqa: E402
+import os  # noqa: E402
+import random  # noqa: E402
+import sys  # noqa: E402
 
-    blenderproc run ml/generate_cube_dataset.py -- \
-        --output_dir out --hdri_dir hdris --num_poses 40 --res 640 --seed 123
-
-Classes (category_id): 0 white  1 red  2 green  3 yellow  4 orange  5 blue  (see data.yaml).
-"""
-
-from __future__ import annotations
-
-import argparse
-import glob
-import os
-import random
-import sys
-
-import blenderproc as bproc  # noqa: E402  (must import before other blender-touching code)
-import numpy as np
+import numpy as np  # noqa: E402
 
 # Reuse the unit-tested face geometry (the flat 'U' face lives in the XY plane).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -43,7 +37,9 @@ BASE_COLORS = [
 
 
 def parse_args() -> argparse.Namespace:
-    argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+    # BlenderProc forwards the args after `--` to the script (and strips the `--` itself), so
+    # they land in sys.argv[1:]. Handle both: an explicit `--` marker, or the stripped form.
+    argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else sys.argv[1:]
     p = argparse.ArgumentParser()
     p.add_argument("--output_dir", required=True)
     p.add_argument("--hdri_dir", required=True, help="folder of .hdr/.exr environment maps")
@@ -74,6 +70,9 @@ def main() -> None:
     black.set_principled_shader_value("Base Color", [0.02, 0.02, 0.02, 1.0])
     black.set_principled_shader_value("Roughness", rng.uniform(0.3, 0.8))
     body.replace_materials(black)
+    # category_id is 1-indexed: BlenderProc's COCO writer treats id 0 as background and DROPS it
+    # (CocoWriterUtility "skip background"), so colours are 1..6 and the body is 7 (dropped later).
+    body.set_cp("category_id", 7)
 
     # Nine sticker tiles (the flat 'U' face), each its own object + colour category.
     gloss = rng.uniform(0.05, 0.5)  # one gloss level per scene → varied glare across scenes
@@ -86,15 +85,20 @@ def main() -> None:
         mat = bproc.material.create(f"stk_{st.row}_{st.col}")
         mat.set_principled_shader_value("Base Color", jitter_color(BASE_COLORS[color_id], rng))
         mat.set_principled_shader_value("Roughness", gloss)
-        mat.set_principled_shader_value("Specular", rng.uniform(0.3, 0.9))
+        mat.set_principled_shader_value("Specular IOR Level", rng.uniform(0.3, 0.9))
         tile.replace_materials(mat)
-        tile.set_cp("category_id", color_id)
+        tile.set_cp("category_id", color_id + 1)  # 1-indexed (0 == background, dropped)
 
-    # Lighting + background: a random real-world HDRI environment.
+    # Lighting + background: a random real-world HDRI environment when available; otherwise a
+    # plain sun so validation renders (no HDRI folder) aren't black.
     hdris = glob.glob(os.path.join(args.hdri_dir, "*.hdr")) + glob.glob(os.path.join(args.hdri_dir, "*.exr"))
     if hdris:
-        strength = rng.uniform(0.4, 1.6)
-        bproc.world.set_world_background_hdr_img(rng.choice(hdris), strength=strength)
+        bproc.world.set_world_background_hdr_img(rng.choice(hdris), strength=rng.uniform(0.4, 1.6))
+    else:
+        light = bproc.types.Light()
+        light.set_type("SUN")
+        light.set_energy(rng.uniform(2.0, 5.0))
+        light.set_location([rng.uniform(-3, 3), rng.uniform(-3, 3), 6.0])
 
     # Camera: frontal hemisphere (mostly looking at the face), random distance/roll/FOV.
     bproc.camera.set_resolution(args.res, args.res)
@@ -112,7 +116,9 @@ def main() -> None:
         bproc.camera.add_camera_pose(bproc.math.build_transformation_mat(loc, rot))
         bproc.camera.set_intrinsics_from_blender_params(lens=rng.uniform(0.6, 1.2), lens_unit="FOV")
 
-    bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
+    bproc.renderer.enable_segmentation_output(
+        map_by=["category_id", "instance"], default_values={"category_id": 0}
+    )
     bproc.renderer.set_max_amount_of_samples(rng.randint(24, 64))  # some noise variety, keep it fast
     data = bproc.renderer.render()
 
