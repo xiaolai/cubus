@@ -25,9 +25,11 @@ environments), **glossy materials** (physically-correct glare), **perspective**,
 |---|---|---|
 | `cube_geometry.py` | 54-sticker geometry (pure) | ✅ `test_pipeline.py` |
 | `coco_to_yolo.py` | BlenderProc COCO → YOLO labels (pure) | ✅ `test_pipeline.py` |
+| `merge_parts.py` | merge parallel worker parts → one YOLO set (pure) | — |
 | `split_dataset.py` | train/val split into YOLO layout | — |
-| `generate_cube_dataset.py` | **BlenderProc generator** (needs Blender/GPU) | run on the training host |
-| `render.sh` | render N scenes → COCO → YOLO → split | the training host |
+| `fetch_hdris.py` | download CC0 Poly Haven HDRIs (stdlib, no key) | — |
+| `generate_cube_dataset.py` | **BlenderProc generator** (needs Blender) | validated on Mac |
+| `render.sh` | parallel render → merge → YOLO → split (on a Mac) | — |
 | `train.sh` | YOLOv11n fine-tune in NGC arm64 container → ONNX | the training host |
 | `data.yaml` | 6-class dataset config | — |
 
@@ -35,18 +37,24 @@ Run the pure tests locally: `python3 ml/test_pipeline.py`
 
 ## Run: render on a Mac → train on the training host
 
-### 1. Render on a Mac (Apple Silicon + Metal)
+### 1. Render on a Mac (Apple Silicon)
 BlenderProc lives in a venv; on first run it downloads a native macOS-arm64 Blender. The
 generator is validated end-to-end here (all 9 stickers labelled per frame, COCO→YOLO clean).
+One render only saturates ~3 cores, so `render.sh` runs `WORKERS` of them in parallel — on a
+10-core M-series the full 40k render is a few hours, not a day. (Counterintuitively CPU beats
+Metal GPU for this trivial scene — GPU per-frame launch overhead dominates.)
 ```bash
 python3.11 -m venv ml/venv && ml/venv/bin/pip install blenderproc
-# Get HDRIs (CC0) → some folder; more environments = more lighting/background variety.
-#    ~200+ Poly Haven .hdr → ~/datasets/hdris   (fetch over the LAN, egress is a slow US proxy)
-BLENDERPROC=ml/venv/bin/blenderproc \
-  SCENES=1000 POSES=40 HDRI_DIR=~/datasets/hdris OUT=~/datasets/cube bash ml/render.sh
+# HDRIs drive both lighting and the visible background — variety here is the whole point.
+ml/venv/bin/python ml/fetch_hdris.py --out ~/datasets/hdris --count 200   # CC0, ~300 MB
+
+# Use ABSOLUTE paths for HDRI_DIR/OUT (a ~ passed as `env VAR=~/x` is not expanded).
+BLENDERPROC=ml/venv/bin/blenderproc PYTHON=ml/venv/bin/python WORKERS=4 \
+  SCENES=1000 POSES=40 HDRI_DIR="$HOME/datasets/hdris" OUT="$HOME/datasets/cube" bash ml/render.sh
 #    → ~40k images + YOLO labels at ~/datasets/cube/dataset
+#    render.sh fails loud if HDRI_DIR has no .hdr, so a bad path can't yield a background-less set.
 ```
-Smoke test with no HDRIs (falls back to a plain sun so renders aren't black):
+Smoke test with no HDRIs (falls back to a plain sun, with a warning, so renders aren't black):
 ```bash
 ml/venv/bin/blenderproc run ml/generate_cube_dataset.py -- \
   --output_dir /tmp/out --hdri_dir /nonexistent --num_poses 3 --res 320 --seed 1
@@ -70,8 +78,8 @@ Batch can be large (GB10 shares ~113 GB unified memory).
 ## Status & open items
 - [x] **Generator validated on macOS-arm64** — Blender 4.2 Cycles renders; all 9 stickers are
       labelled per frame; COCO→YOLO shift + body-drop verified (`test_pipeline.py` guards it).
-- [ ] **HDRIs** — fetch ~200+ Poly Haven CC0 `.hdr` over the LAN (not the proxy) and scale the
-      render. Right now the smoke test uses the plain-sun fallback (no environment variety).
+- [x] **HDRIs** — 200 Poly Haven CC0 `.hdr` fetched (`fetch_hdris.py`); parallel render + merge
+      + split validated end-to-end (part-prefixed, no filename collisions).
 - [ ] **NGC image tag** — pin `train.sh`'s `NGC_IMAGE` to the arm64 CUDA image Alan verified.
 - [ ] **Move dataset to the training host** over the LAN; put it on the fast scratch disk (~2.8 T free).
 - [ ] **(optional) real Roboflow images** — mix the ~600 real shots in for extra realism.
