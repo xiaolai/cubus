@@ -62,6 +62,17 @@ Built like `gan-driver`: a pure, tested core with a thin browser shell.
 
 OpenCV.js itself is a ~13 MB WASM asset. In the app it is loaded from `app/renderer/vendor/opencv.js` (git-ignored; fetch with `cd app && npm run fetch:opencv`); the scanner degrades to a centered-square sample without it.
 
+**Wiring the AI-scan mode into the app** (three steps, the last needs an app run to validate):
+1. `npm run build:panel` bundles `<ai-scan-panel>` to `app/renderer/vendor/ai-scan-panel.js`
+   (committed); the model is `app/renderer/vendor/cube-yolo.onnx` (committed, 2.9 MB int8).
+2. **Serve the onnxruntime-web wasm** the same way OpenCV.js is: copy
+   `node_modules/onnxruntime-web/dist/*.wasm` into `app/renderer/vendor/` (a `prestart`
+   fetch/copy step) and set `ort.env.wasm.wasmPaths = './vendor/'` before `createModelRunner`.
+3. In `app/renderer/index.html`, load the bundle
+   (`<script type="module" src="./vendor/ai-scan-panel.js">`) and place `<ai-scan-panel>` as a
+   scan-mode option alongside the classical `<tabletop-scanner-panel>`; wire its
+   `scan-complete` / `scan-invalid` events exactly like the existing panel.
+
 ## Usage
 
 ```ts
