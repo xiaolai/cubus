@@ -46,6 +46,14 @@ export {
   fitFace,
   nms,
 } from './onnx-postprocess.js';
+export {
+  type DetectOptions,
+  type Preprocessed,
+  type RunModel,
+  IMG_SIZE,
+  detectFace,
+  preprocess,
+} from './onnx-detect.js';
 
 export {
   type GridResult,
