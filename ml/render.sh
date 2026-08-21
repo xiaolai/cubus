@@ -16,6 +16,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BLENDERPROC="${BLENDERPROC:-blenderproc}"
 PYTHON="${PYTHON:-python3}"        # for the pure merge/split steps (any python3 with stdlib)
+GEN="${GEN:-generate_cube_dataset.py}"  # generate_cube3d.py for the v2 3D/hard-case generator
 DEVICE="${DEVICE:-gpu}"            # gpu (METAL/CUDA) is fastest here — but there's one GPU, so…
 WORKERS="${WORKERS:-1}"            # …keep WORKERS=1 for gpu. WORKERS>1 only helps with DEVICE=cpu.
 SCENES="${SCENES:-1000}"
@@ -53,7 +54,7 @@ render_worker() {
   local w="$1" part="$OUT/part_$1"
   mkdir -p "$part"
   for ((s = w; s < SCENES; s += WORKERS)); do
-    "$BLENDERPROC" run "$HERE/generate_cube_dataset.py" -- \
+    "$BLENDERPROC" run "$HERE/$GEN" -- \
       --output_dir "$part" --hdri_dir "$HDRI_DIR" --num_poses "$POSES" --res "$RES" \
       --seed "$s" --device "$DEVICE"
   done
