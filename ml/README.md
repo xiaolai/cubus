@@ -28,6 +28,8 @@ environments), **glossy materials** (physically-correct glare), **perspective**,
 | `merge_parts.py` | merge parallel worker parts → one YOLO set (pure) | — |
 | `split_dataset.py` | train/val split into YOLO layout | — |
 | `fetch_hdris.py` | download CC0 Poly Haven HDRIs (stdlib, no key) | — |
+| `fetch_roboflow.py` | download the real Roboflow cube datasets (needs a free key) | — |
+| `merge_real.py` | remap/merge those into our 6-class YOLO set (pure) | — |
 | `generate_cube_dataset.py` | **BlenderProc generator** (needs Blender) | validated on Mac |
 | `render.sh` | parallel render → merge → YOLO → split (on a Mac) | — |
 | `train.sh` | YOLOv11n fine-tune in NGC arm64 container → ONNX | the training host |
@@ -67,6 +69,19 @@ DATASET=~/datasets/cube/dataset bash ml/train.sh   # in the NGC arm64 container 
 #    → best.onnx
 ```
 Batch can be large (GB10 shares ~113 GB unified memory).
+
+## Real data (domain adaptation + a real test set)
+Synthetic is the volume backbone, but real photos close the sim-to-real gap. Public real cube
+data is scarce (~1k unique labeled images total — many "datasets" are vaporware), so we use what
+exists: the Roboflow Universe sets (real photos, per-sticker colour boxes, CC BY 4.0).
+```bash
+ROBOFLOW_API_KEY=xxxx python fetch_roboflow.py --out ~/datasets/real_cube/roboflow
+python merge_real.py --roboflow ~/datasets/real_cube/roboflow --out ~/datasets/real_cube/merged
+#    → ~2.3k real images (train/val/test), classes remapped to ours, face/center dropped
+```
+Mix `merged/{train,val}` into synthetic training; hold out `merged/test` as the real benchmark.
+Also useful: `dwalton76/rubiks-cube-tracker` (MIT, real color ground-truth) and the eyeeco /
+arXiv 1901.03470 color tables for red↔orange calibration.
 
 ## Then wire it into the app
 - Copy `best.onnx` → `app/renderer/vendor/cube-yolo.onnx`.
