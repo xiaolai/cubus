@@ -121,6 +121,46 @@ def build_cube(rng: random.Random, origin=(0.0, 0.0, 0.0)) -> None:
         tile.set_cp("category_id", color_id + 1)
 
 
+def add_distractors(rng: random.Random, n: int) -> None:
+    """Random coloured primitives (category 0 → unlabelled) so the detector learns that a
+    coloured object is NOT a sticker unless it's a raised tile in a cube's grid."""
+    for _ in range(n):
+        shape = rng.choice(["CUBE", "SPHERE", "CYLINDER", "CONE", "MONKEY"])
+        obj = bproc.object.create_primitive(shape)
+        obj.set_location([rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(-1.5, 1.5)])
+        obj.set_rotation_euler([rng.uniform(0, 6.28) for _ in range(3)])
+        s = rng.uniform(0.3, 1.4)
+        obj.set_scale([s, s, s])
+        mat = bproc.material.create("distractor")
+        mat.set_principled_shader_value("Base Color", [rng.random(), rng.random(), rng.random(), 1.0])
+        mat.set_principled_shader_value("Roughness", rng.uniform(0.1, 0.9))
+        obj.replace_materials(mat)
+        obj.set_cp("category_id", 0)  # background → dropped, but it still renders + occludes
+
+
+def build_scene(rng: random.Random) -> np.ndarray:
+    """Compose the scene; return the point-of-interest for the camera. Scene types:
+    ~10% pure negative (no cube, just distractors), else 1 cube (sometimes 2 = multi-cube),
+    with distractors sprinkled in ~35% of cube scenes."""
+    roll = rng.random()
+    if roll < 0.10:  # pure negative → empty labels → teaches NO_FACE / abstention
+        add_distractors(rng, rng.randint(2, 5))
+        return np.array([rng.uniform(-1, 1), rng.uniform(-1, 1), rng.uniform(-1, 1)])
+    if roll < 0.25:  # multi-cube (detection ambiguity)
+        axis = rng.randrange(3)
+        for sign in (-1, 1):
+            o = [0.0, 0.0, 0.0]
+            o[axis] = sign * 1.5
+            build_cube(rng, origin=tuple(o))
+        if rng.random() < 0.35:
+            add_distractors(rng, rng.randint(1, 3))
+        return np.array([0.0, 0.0, 0.0])
+    build_cube(rng)  # single cube
+    if rng.random() < 0.35:
+        add_distractors(rng, rng.randint(1, 4))
+    return np.array([0.0, 0.0, 0.0])
+
+
 def setup_light(rng: random.Random, hdri_dir: str) -> None:
     """HDRI environment (varied strength = exposure) plus an optional coloured key light for
     warm indoor / cool LED / mixed casts — the illumination that shifts white<->yellow, red<->orange."""
@@ -148,7 +188,7 @@ def main() -> None:
     bproc.init()
     bproc.renderer.set_render_devices(use_only_cpu=(args.device == "cpu"))
 
-    build_cube(rng)
+    poi_base = build_scene(rng)
     setup_light(rng, args.hdri_dir)
 
     bproc.camera.set_resolution(args.res, args.res)
@@ -161,8 +201,8 @@ def main() -> None:
             dist * np.sin(elev) * np.sin(az),
             dist * np.cos(elev),
         ])
-        # jitter the look-at off cube centre → cube drifts off-centre / partially out of frame
-        poi = np.array([rng.uniform(-0.7, 0.7), rng.uniform(-0.7, 0.7), rng.uniform(-0.7, 0.7)])
+        # jitter the look-at off scene centre → cube drifts off-centre / partially out of frame
+        poi = poi_base + np.array([rng.uniform(-0.7, 0.7), rng.uniform(-0.7, 0.7), rng.uniform(-0.7, 0.7)])
         rot = bproc.camera.rotation_from_forward_vec(poi - loc, inplane_rot=np.deg2rad(rng.uniform(-180, 180)))
         bproc.camera.add_camera_pose(bproc.math.build_transformation_mat(loc, rot))
         bproc.camera.set_intrinsics_from_blender_params(lens=rng.uniform(0.45, 1.4), lens_unit="FOV")
