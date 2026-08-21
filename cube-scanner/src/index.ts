@@ -34,6 +34,19 @@ export {
 
 export { type OrientationResult, rotateFace, solveOrientations } from './orient.js';
 
+// AI-scan path: the ONNX detector's output → validated cube state, reusing the same
+// facelet/cubejs verifier as the classical path.
+export { type ColorFace, assembleColors } from './ai-assemble.js';
+export {
+  type Detection,
+  type FaceFit,
+  type FitReason,
+  type FitResult,
+  decodeDetections,
+  fitFace,
+  nms,
+} from './onnx-postprocess.js';
+
 export {
   type GridResult,
   type StickerCell,
