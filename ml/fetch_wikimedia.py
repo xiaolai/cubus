@@ -28,8 +28,24 @@ IMG_EXT = (".jpg", ".jpeg", ".png")
 DELAY = 0.5  # polite gap between API calls; Commons rate-limits bursts with HTTP 429
 
 
+def _safe_name(title: str) -> str:
+    """Remote titles are untrusted → reduce to a bare filename (no path traversal via ../ or /)."""
+    name = title[len("File:") :] if title.startswith("File:") else title
+    name = os.path.basename(name.replace(" ", "_").replace("\\", "/"))  # kill any path components
+    name = name.lstrip(".") or ""  # no leading dots (., ..)
+    return name
+
+
+def _csv_safe(value: str) -> str:
+    """Neutralize spreadsheet formula injection (a field starting with = + - @ can execute)."""
+    value = value or ""
+    return "'" + value if value[:1] in ("=", "+", "-", "@") else value
+
+
 def _fetch(url: str, timeout: int = 60, tries: int = 5) -> bytes:
     """GET with exponential backoff on 429/503 (Commons throttles bursts). Raises on give-up."""
+    if urllib.parse.urlparse(url).scheme not in ("http", "https"):
+        raise ValueError(f"refusing non-http(s) URL: {url!r}")  # SSRF guard (file://, ftp://, …)
     for attempt in range(tries):
         try:
             req = urllib.request.Request(url, headers=UA)
@@ -122,15 +138,21 @@ def main() -> None:
     with open(manifest, "w", newline="", encoding="utf-8") as mf:
         w = csv.writer(mf)
         w.writerow(["filename", "source_url", "license", "attribution_html"])
+        out_abs = os.path.abspath(args.out)
         for title in files:
             meta = info.get(title, {})
             url = meta.get("url")
             if not url:
                 fail += 1
                 continue
-            safe = title[len("File:") :].replace(" ", "_") if title.startswith("File:") else title
+            safe = _safe_name(title)
             dest = os.path.join(args.out, safe)
-            w.writerow([safe, url, meta.get("license", "unknown"), meta.get("artist", "")])
+            # defense in depth: never write outside the output dir
+            if not safe or os.path.commonpath([os.path.abspath(dest), out_abs]) != out_abs:
+                fail += 1
+                continue
+            w.writerow([_csv_safe(safe), _csv_safe(url), _csv_safe(meta.get("license", "unknown")),
+                        _csv_safe(meta.get("artist", ""))])
             if os.path.exists(dest) and os.path.getsize(dest) > 0:
                 skip += 1
                 continue
