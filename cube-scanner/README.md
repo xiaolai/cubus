@@ -32,7 +32,7 @@ Built like `gan-driver`: a pure, tested core with a thin browser shell.
   the front 3×3 grid and **abstains** (`NO_FACE`/`PARTIAL_FACE`/`BAD_GEOMETRY`) on a frame
   that isn't a clean single face → `assembleColors` maps the 6 faces' colour classes to a
   validated `ScanResult` through the *same* dual verifier. Robust where the classical HSV
-  path fails (red↔orange under lighting); see `ml/MODEL_CARD.md` (0.960 real-test mAP50).
+  path fails (red↔orange under lighting); see `ml/MODEL_CARD.md` (0.971 real-test mAP50).
 
   ```ts
   import { createModelRunner } from 'cube-scanner/view/onnx-runtime';

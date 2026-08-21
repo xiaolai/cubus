@@ -23,14 +23,17 @@ Combined **30,738 images** = synthetic (breadth) + real (authenticity):
 
 ## Measured accuracy (169 held-out REAL photos, 2,261 stickers)
 
+80-epoch final model (trained to convergence on the GB10):
+
 | Model | mAP50 | mAP50-95 | Precision | Recall | Size |
 |---|---|---|---|---|---|
-| fp32 | **0.965** | 0.789 | 0.921 | 0.909 | 10.1 MB |
-| **int8 (shipped)** | **0.960** | 0.781 | 0.930 | 0.898 | **2.9 MB** |
+| fp32 | **0.973** | 0.798 | 0.939 | 0.887 | 10.1 MB |
+| **int8 (shipped)** | **0.971** | 0.796 | 0.953 | 0.892 | **2.9 MB** |
 
-All six colours are balanced (every class mAP50 > 0.93); **orange — the field's documented hard
-class ("colour drifting" under lighting) — is solved** (0.966 mAP50), which was the whole point.
-int8 dynamic quantization cost ~0.005 mAP50 for a 3.5× size cut.
+All six colours are balanced; **orange — the field's documented hard class ("colour drifting"
+under lighting) — is solved** (its precision climbed from 0.75 at epoch 1 to on par with every
+other colour), which was the whole point. int8 dynamic quantization cost ~0.002 mAP50 for a
+3.5× size cut. Real-test mAP50 climbed 0.888 (epoch 1) → 0.965 (epoch 22) → **0.971** (epoch 80).
 
 ## Deployment
 `cube-scanner` consumes it with no wasm dep in its pure core: `preprocess` (pure letterbox) →
