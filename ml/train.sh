@@ -29,9 +29,12 @@ sed -i "s#^path:.*#path: /work/dataset#" "$DATASET/data.yaml"
 # headless server lacks (else `import ultralytics` throws libGL.so.1: cannot open shared object).
 docker run --rm --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
+  -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   -v "$HERE":/ml -v "$DATASET":/work/dataset \
   -w /work "$NGC_IMAGE" bash -lc "
     set -e
+    rm -rf /work/dataset/runs   # drop any prior (root-owned) run so name=cube isn't auto-incremented
+    export DEBIAN_FRONTEND=noninteractive   # apt with stdin from /dev/null must not prompt
     apt-get update >/dev/null && apt-get install -y libgl1 libglib2.0-0 >/dev/null
     pip install --no-input ultralytics onnxruntime >/dev/null   # onnx already in the NGC image
     # project MUST live under the mounted /work/dataset, else runs/ (and best.onnx) are written
@@ -40,6 +43,7 @@ docker run --rm --gpus all --ipc=host \
       epochs=$EPOCHS imgsz=$IMGSZ batch=$BATCH device=0 project=/work/dataset/runs name=cube
     # Export the best weights to ONNX for onnxruntime-web in the app.
     yolo export model=/work/dataset/runs/cube/weights/best.pt format=onnx opset=12 simplify=True
+    chown -R \$HOST_UID:\$HOST_GID /work/dataset/runs   # hand outputs back to the host user (docker runs as root)
     echo 'ONNX at /work/dataset/runs/cube/weights/best.onnx'
   "
 echo "Trained. best.onnx is at \$DATASET/runs/cube/weights/best.onnx — copy into app/renderer/vendor/ (see README)."
