@@ -14,7 +14,7 @@ Built like `gan-driver`: a pure, tested core with a thin browser shell.
 | Browser shell | `camera` (getUserMedia), `live-scanner` (manual grid `CubeScanner`), `detect` (OpenCV.js face-finding) | Only these touch the webcam / OpenCV. |
 | View | `view/scanner-panel.ts` | Vanilla `<scanner-panel>` web component (auto-capture + confirm per side). |
 
-## Two capture modes
+## Three capture modes
 
 - **Auto-capture (default `<scanner-panel>`):** for each side, wait until the frame
   holds still (`stability`), locate the face with **OpenCV.js** (`detect`), warp-sample
@@ -25,6 +25,23 @@ Built like `gan-driver`: a pure, tested core with a thin browser shell.
   falls back to sampling a centered square.
 - **Manual grid (`live-scanner`, `createCubeScanner`):** the original guided 3×3-grid
   capture, kept as a dependency-free fallback.
+- **AI scan (`onnx-detect` + `onnx-postprocess` + `ai-assemble`):** run the trained
+  YOLOv11 sticker detector (`app/renderer/vendor/cube-yolo.onnx`, 2.9 MB int8) per face.
+  `preprocess` (pure letterbox) → the panel's onnxruntime-web run (`view/onnx-runtime.ts`
+  `createModelRunner`, **injected like OpenCV**) → `decodeDetections`/`nms`/`fitFace` picks
+  the front 3×3 grid and **abstains** (`NO_FACE`/`PARTIAL_FACE`/`BAD_GEOMETRY`) on a frame
+  that isn't a clean single face → `assembleColors` maps the 6 faces' colour classes to a
+  validated `ScanResult` through the *same* dual verifier. Robust where the classical HSV
+  path fails (red↔orange under lighting); see `ml/MODEL_CARD.md` (0.960 real-test mAP50).
+
+  ```ts
+  import { createModelRunner } from 'cube-scanner/view/onnx-runtime';
+  import { detectFace, assembleColors } from 'cube-scanner';
+  const run = await createModelRunner('./vendor/cube-yolo.onnx'); // once, reuse
+  const fit = await detectFace(frame, run);        // FaceFit | { ok:false, reason }
+  // collect 6 faces (URFDLB) of fit.face → { colors, confidence }, then:
+  const result = assembleColors(faces);            // { facelets, valid, confidence, … }
+  ```
 
 - **Color:** `culori` (CIELAB + CIEDE2000) — never hand-rolled.
 - **Classification:** nearest of the 6 live face-centers by CIEDE2000 — lighting-tolerant, calibration-free.
