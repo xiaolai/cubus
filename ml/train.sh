@@ -34,10 +34,12 @@ docker run --rm --gpus all --ipc=host \
     set -e
     apt-get update >/dev/null && apt-get install -y libgl1 libglib2.0-0 >/dev/null
     pip install --no-input ultralytics onnxruntime >/dev/null   # onnx already in the NGC image
+    # project MUST live under the mounted /work/dataset, else runs/ (and best.onnx) are written
+    # inside the ephemeral container and lost when it exits.
     yolo detect train model=$MODEL data=/work/dataset/data.yaml \
-      epochs=$EPOCHS imgsz=$IMGSZ batch=$BATCH device=0 project=/work/runs name=cube
+      epochs=$EPOCHS imgsz=$IMGSZ batch=$BATCH device=0 project=/work/dataset/runs name=cube
     # Export the best weights to ONNX for onnxruntime-web in the app.
-    yolo export model=/work/runs/cube/weights/best.pt format=onnx opset=12 simplify=True
-    echo 'ONNX at /work/runs/cube/weights/best.onnx'
+    yolo export model=/work/dataset/runs/cube/weights/best.pt format=onnx opset=12 simplify=True
+    echo 'ONNX at /work/dataset/runs/cube/weights/best.onnx'
   "
-echo "Trained. Copy best.onnx into app/renderer/vendor/ and wire onnxruntime-web (see README)."
+echo "Trained. best.onnx is at \$DATASET/runs/cube/weights/best.onnx — copy into app/renderer/vendor/ (see README)."
