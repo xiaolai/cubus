@@ -47,16 +47,30 @@ def parse_args() -> argparse.Namespace:
 
 def jitter_color(rgb, rng: random.Random, wide: bool) -> list[float]:
     """Perturb a base colour. `wide` spans brands / fading / white-balance: bigger brightness,
-    hue drift (the red<->orange continuum) and desaturation."""
+    hue drift (the red<->orange continuum) and desaturation.
+
+    Crucially, a white-balance cast is added *additively* so it can tint near-neutral colours.
+    White's base saturation is 0, so a purely multiplicative jitter (`s *= k`) leaves it a perfect
+    grey forever — but a real white sticker goes cream under tungsten and bluish under LED. Without
+    this, the model learns "white = neutral grey" and misses tinted real whites (measured: white
+    recall 0.62 on held-out data). The cast is scaled by neutrality (1 - s) so saturated stickers
+    like red are untouched, only whites/pale faces pick up the tint."""
     r, g, b = rgb
     h, s, v = colorsys.rgb_to_hsv(r, g, b)
     if wide:
         h = (h + rng.uniform(-0.04, 0.04)) % 1.0  # hue drift → red<->orange, blue<->green
         s = min(max(s * rng.uniform(0.55, 1.1), 0.0), 1.0)  # fading desaturates
-        v = min(max(v * rng.uniform(0.6, 1.25), 0.0), 1.0)
+        v = min(max(v * rng.uniform(0.5, 1.3), 0.0), 1.0)  # wider: dingy shadow → blown-out
     else:
         v = min(max(v * rng.uniform(0.8, 1.12), 0.0), 1.0)
         s = min(max(s * rng.uniform(0.85, 1.05), 0.0), 1.0)
+    # White-balance cast: ONLY near-neutral colours (white) adopt a warm (cream) or cool (bluish)
+    # tint. Saturated stickers (red, blue, …) keep their own hue — the cast must not recolour them.
+    if s < 0.15:
+        cast = rng.uniform(0.0, 0.18 if wide else 0.09)
+        if cast > 0.01:
+            h = rng.uniform(0.06, 0.13) if rng.random() < 0.5 else rng.uniform(0.55, 0.66)  # warm|cool
+            s = min(max(s + cast, 0.0), 1.0)
     r, g, b = colorsys.hsv_to_rgb(h, s, v)
     return [r, g, b, 1.0]
 
