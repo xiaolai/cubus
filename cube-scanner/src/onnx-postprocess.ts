@@ -21,9 +21,6 @@ export interface Detection {
 export interface FaceFit {
   colors: number[]; // 9 colour classes, reading order (row-major)
   confidence: number[]; // 9 per-sticker confidences
-  boxes: Detection[]; // the 9 grid stickers, reading order — so the caller can sample their
-  // true pixel colours and classify RELATIVE to the cube's own centres (lighting-robust),
-  // instead of trusting the detector's absolute class (which drifts red↔orange under lighting).
 }
 
 export type FitResult = { ok: true; face: FaceFit } | { ok: false; reason: FitReason };
@@ -130,10 +127,6 @@ export function fitFace(dets: Detection[], minConf = 0.25): FitResult {
   if (!grid) return { ok: false, reason: 'BAD_GEOMETRY' };
   return {
     ok: true,
-    face: {
-      colors: grid.map((d) => d.classId),
-      confidence: grid.map((d) => d.confidence),
-      boxes: grid,
-    },
+    face: { colors: grid.map((d) => d.classId), confidence: grid.map((d) => d.confidence) },
   };
 }

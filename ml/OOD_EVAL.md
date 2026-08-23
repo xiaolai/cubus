@@ -121,3 +121,32 @@ real classes genuinely overlap. If red/orange is ever revisited, the lever is th
 labelled coverage of the overlap (correct labels on warm-red / cool-orange), or a non-hue
 discriminator (value/saturation) — not separation. Given it's a ~4% issue the verifier (9-per-colour
 + solvability) already absorbs at scan-assembly, the better use of effort is the webcam test above.
+
+## Rejected experiment 2: relative-to-centers colour in the AI path — refuted by verification
+
+Next idea (grounded in qbr + the "colour drifting" paper): stop trusting the detector's ABSOLUTE
+colour class and instead classify each sticker's sampled pixel colour RELATIVE to the cube's own
+6 centres (CIEDE2000) — the classical path's method. Built as a hybrid (YOLO localizes, `assemble`
+classifies) and committed.
+
+**Verification refuted it** (`verify_relative.py` — a same-stickers A/B on held-out, n=2087):
+
+| | absolute (detector) | relative (per-cube refs) |
+|---|---|---|
+| overall colour accuracy | **99.1%** | 90.6% |
+| red / orange | 96.3% / 99.7% | 90.7% / 83.7% |
+| red→orange errors | 13 | 29 |
+
+Relative was **worse on every colour**. Reverted.
+
+**Why the premise was wrong:** "absolute caps at ~94%" was a *naive hue-threshold* baseline, not the
+actual detector. A 30k-image YOLO is a far stronger absolute classifier than the ELM/SVM the
+"relative wins" literature assumes — it already hits **99% colour accuracy** on matched stickers
+(matches `color_eval`'s 99.0%). The fix aimed at a problem the detector doesn't really have. (Relative's
+theoretical edge is under adverse-lighting drift, which single-face held-out data can't test — but
+that's speculative, and the testable evidence says the detector wins. Revisit only if real deployment
+captures show the detector actually drifting.)
+
+**Lesson:** measure a proposed fix against the ACTUAL system, not a naive baseline, BEFORE building on
+it. Two red/orange fixes now tried and rejected by measurement — the honest state is that the shipped
+detector's colour is already ~99% on clean stickers, and the remaining gain is the webcam test above.

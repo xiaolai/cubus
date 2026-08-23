@@ -4,9 +4,9 @@
 //
 // Usage in a panel:
 //   const run = await createModelRunner('./vendor/cube-yolo.onnx');
-//   const fit = await detectFace(frame, run);           // DetectResult (face.rgb sampled) | abstain
-//   // …collect 6 faces' fit.face.rgb in URFDLB order, then:
-//   const result = assemble(rgbFaces);                  // relative classify + validated ScanResult
+//   const fit = await detectFace(frame, run);           // FaceFit | abstain
+//   // …collect 6 faces in URFDLB order, then:
+//   const result = assembleColors(faces);               // validated ScanResult
 
 import * as ort from 'onnxruntime-web';
 import type { RunModel } from '../src/onnx-detect.js';
