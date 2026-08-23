@@ -14,7 +14,11 @@ import type { RunModel } from '../src/onnx-detect.js';
 export interface ModelRunnerOptions {
   /** onnxruntime-web execution providers, in preference order. wasm is the safe default. */
   executionProviders?: ort.InferenceSession.ExecutionProviderConfig[];
-  /** Folder holding onnxruntime-web's .wasm/.mjs, resolved relative to this bundle. Default './'. */
+  /**
+   * URL of the folder holding onnxruntime-web's .wasm/.mjs. Relative values resolve
+   * inconsistently — the .wasm resolves against the document but the dynamically-imported
+   * .mjs glue against this bundle — so callers should pass an ABSOLUTE directory URL. Default './'.
+   */
   wasmPaths?: string;
 }
 
@@ -29,10 +33,12 @@ export async function createModelRunner(
   opts: ModelRunnerOptions = {},
 ): Promise<RunModel> {
   // Run single-threaded so no SharedArrayBuffer / cross-origin-isolation headers are needed.
-  // wasmPaths is resolved relative to THIS bundle; the Electron app serves it (and the vendored
-  // onnxruntime-web dist/*.wasm) from the same vendor/ folder over the app:// origin, so './' loads
-  // them locally and OFFLINE — no CDN. (This needs a fetch-capable origin: under a plain file://
-  // page pass opts.wasmPaths pointing at an https CDN instead, since file:// can't fetch local wasm.)
+  // wasmPaths resolves INCONSISTENTLY across onnxruntime-web — the .wasm against the document but
+  // the dynamically-imported .mjs glue against this bundle — so callers should pass an ABSOLUTE
+  // directory URL (see the option's JSDoc). The default './' below is a bare fallback and is
+  // unreliable when the bundle and page live in different folders. Whatever URL is used must be a
+  // fetch-capable origin: under a plain file:// page pass an https CDN, since file:// can't fetch
+  // a local .wasm.
   ort.env.wasm.numThreads = 1;
   ort.env.wasm.wasmPaths = opts.wasmPaths ?? './';
 

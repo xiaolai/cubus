@@ -50,17 +50,18 @@ const result = assembleColors(faces);            // { facelets, valid, confidenc
 |---|---|
 | `npm run check` | Strict `tsc` + Biome + type-aware ESLint + vitest (the gate). |
 | `npm run coverage` | Coverage over the pure core. |
-| `npm run build:panel` | Bundle `view/ai-scan-panel.ts` (+ cubejs) into `../app/renderer/vendor/ai-scan-panel.js`, a self-contained ESM the bundler-less Electron renderer loads. Re-run after editing the component. |
+| `npm run build:panel` | Bundle `view/ai-scan-panel.ts` (+ cubejs) into `../web/vendor/ai-scan-panel.js`, a self-contained ESM the bundler-less SPA loads. Re-run after editing the component. |
 
-## App wiring (in `app/renderer/index.html`)
+## App wiring (in `web/index.html`)
 
-The `<ai-scan-panel>` bundle (`app/renderer/vendor/ai-scan-panel.js`), the model
-(`cube-yolo.onnx`), and onnxruntime-web's `dist/*.wasm` are all served from `app/renderer/vendor/`;
+The `<ai-scan-panel>` bundle (`web/vendor/ai-scan-panel.js`), the model
+(`cube-yolo.onnx`), and onnxruntime-web's `dist/*.wasm` are all served from `web/vendor/`;
 the panel's `scan-complete` is applied to the 3D twin. Two notes:
 
 - **Camera-first:** the panel opens the camera *before* loading the model, so a slow model load
   never blanks the preview.
-- **wasm loading:** the Electron app serves the renderer over a custom `app://` origin (see
-  `app/main.js`) so the page can `fetch()` its own local wasm — the model loads **offline, no CDN**.
-  (`createModelRunner`'s `opts.wasmPaths` defaults to `./`; on a plain `file://` page pass an https
-  CDN instead, since `file://` can't fetch a local `.wasm`.)
+- **wasm loading:** the SPA is served as static files over an http(s) origin (in dev via
+  `cd web && npm run dev`, which also copies the wasm into `web/vendor/`), so the page can
+  `fetch()` its own local wasm — the model loads **offline, no CDN**. (`createModelRunner`'s
+  `opts.wasmPaths` defaults to `./`; on a plain `file://` page pass an https CDN instead, since
+  `file://` can't fetch a local `.wasm`.)
