@@ -1,19 +1,18 @@
 // <ai-scan-panel> — the AI (YOLOv11) capture mode. Same guided, confirm-per-side flow as
 // <scanner-panel>, but detection is the ONNX sticker detector, which is robust where the
 // classical HSV path fails (red↔orange under lighting). onnxruntime-web is loaded via
-// createModelRunner (this panel owns the wasm dep; the pure core stays clean). The detector
-// LOCATES the 9 stickers (its robust strength); the model ABSTAINS on a frame that isn't a clean
-// single face. The final COLOUR is decided relatively: each sticker's sampled pixel colour is
-// classified vs the cube's own 6 centres by the classical `assemble` — lighting-robust, so it
-// avoids the detector's absolute red↔orange drift. Emits 'scan-complete' / 'scan-invalid'.
+// createModelRunner (this panel owns the wasm dep; the pure core stays clean). Each face is
+// read as 9 colour classes; the model ABSTAINS on a frame that isn't a clean single face.
+// After 6 faces, `assembleColors` runs the same dual verifier. Emits 'scan-complete'
+// (valid cube) / 'scan-invalid' (prompt a fresh scan).
 //
 // Browser shell — verified by typecheck + esbuild bundle, exercised manually in the app.
 
-import { assemble } from '../src/assemble.js';
+import { type ColorFace, assembleColors } from '../src/ai-assemble.js';
 import { type FrameSource, openCamera } from '../src/camera.js';
-import { type DetectedFace, type RunModel, detectFace } from '../src/onnx-detect.js';
+import { type RunModel, detectFace } from '../src/onnx-detect.js';
 import type { FitReason } from '../src/onnx-postprocess.js';
-import { FACES, type Face, type RGB, type ScanResult } from '../src/types.js';
+import { FACES, type Face, type ScanResult } from '../src/types.js';
 import { createModelRunner } from './onnx-runtime.js';
 
 const GUIDE: Record<Face, { color: string; name: string; swatch: string }> = {
@@ -77,11 +76,11 @@ export class AiScanPanel extends HTMLElement {
   private startGen = 0;
   private busy = false;
 
-  private readonly faces = {} as Record<Face, DetectedFace>;
+  private readonly faces = {} as Record<Face, ColorFace>;
   private faceIdx = 0;
   private lastColors = '';
   private stableCount = 0;
-  private proposed: DetectedFace | null = null;
+  private proposed: ColorFace | null = null;
 
   constructor() {
     super();
@@ -149,7 +148,7 @@ export class AiScanPanel extends HTMLElement {
     this.lastColors = '';
     this.stableCount = 0;
     this.proposed = null;
-    for (const f of FACES) delete (this.faces as Partial<Record<Face, DetectedFace>>)[f];
+    for (const f of FACES) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
     this.buildDots();
   }
 
@@ -207,7 +206,7 @@ export class AiScanPanel extends HTMLElement {
     }
   }
 
-  private propose(face: DetectedFace): void {
+  private propose(face: ColorFace): void {
     this.proposed = face;
     this.showPreview(face.colors);
     const g = GUIDE[FACES[this.faceIdx]!];
@@ -221,14 +220,8 @@ export class AiScanPanel extends HTMLElement {
     this.faces[FACES[this.faceIdx]!] = this.proposed;
     this.faceIdx++;
     this.buildDots();
-    if (this.faceIdx >= FACES.length) {
-      // Final colour verdict is RELATIVE, not the detector's absolute class: feed each sticker's
-      // sampled pixel colour to the classical `assemble`, which classifies vs the cube's own 6
-      // centres (CIEDE2000) — lighting-robust, and fixes red↔orange drift.
-      const rgbFaces = {} as Record<Face, RGB[]>;
-      for (const f of FACES) rgbFaces[f] = this.faces[f]!.rgb;
-      this.finish(assemble(rgbFaces));
-    } else this.loop();
+    if (this.faceIdx >= FACES.length) this.finish(assembleColors(this.faces));
+    else this.loop();
   }
 
   private retake(): void {
