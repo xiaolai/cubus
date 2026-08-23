@@ -2,7 +2,7 @@ node_modules/
 dist/
 *.log
 
-# Large vendored OpenCV.js (~13 MB) — `npm start` fetches it on first run if missing.
-# The camera scanner degrades to a centered-square sample without it.
-renderer/vendor/opencv.js
-renderer/vendor/opencv.js.tmp
+# onnxruntime-web wasm/loader assets — copied from cube-scanner's node_modules by `prestart`
+# on first run (the AI scanner fetches them at runtime over app://). Not committed (large).
+renderer/vendor/ort-wasm-*
+renderer/vendor/ort.*

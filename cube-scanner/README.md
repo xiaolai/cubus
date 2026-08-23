@@ -4,88 +4,63 @@ A webcam scanner that reads a physical Rubik's Cube's 6 faces and outputs its
 true Kociemba facelet string (`URFDLB`, 54 chars) plus a per-sticker confidence
 signal — so the app can show/verify the real cube **without** solving it first.
 
-Built like `gan-driver`: a pure, tested core with a thin browser shell.
+Built like `gan-driver`: a pure, tested core with a thin browser shell. The scanner is the
+trained **YOLOv11** sticker detector; the classical OpenCV scanner and the live tracker were
+removed (see git history if you need them).
 
 ## Layout
 
 | Layer | Files | Notes |
 |---|---|---|
-| Pure core (Node-testable, no DOM) | `types`, `color`, `grid`, `classify`, `facelet-cube`, `assemble`, `scanner`, `calibrate`, `homography`, `stability`, `auto-scanner` | Operates on a plain `Frame = { data; width; height }`, never DOM `ImageData`. |
-| Browser shell | `camera` (getUserMedia), `live-scanner` (manual grid `CubeScanner`), `detect` (OpenCV.js face-finding) | Only these touch the webcam / OpenCV. |
-| View | `view/scanner-panel.ts` | Vanilla `<scanner-panel>` web component (auto-capture + confirm per side). |
+| Pure core (Node-testable, no DOM) | `types`, `facelet-cube`, `onnx-postprocess`, `onnx-detect`, `ai-assemble` | Operates on a plain `Frame = { data; width; height }`, never DOM `ImageData`. The model run is *injected*, so the core imports no wasm runtime. |
+| Browser shell | `camera` (getUserMedia), `view/onnx-runtime` (onnxruntime-web), `view/ai-scan-panel` (`<ai-scan-panel>`) | Only these touch the webcam / wasm. |
 
-## Three capture modes
+## How a scan works
 
-- **Auto-capture (default `<scanner-panel>`):** for each side, wait until the frame
-  holds still (`stability`), locate the face with **OpenCV.js** (`detect`), warp-sample
-  the 9 stickers from that quad (`homography.sampleQuad`), and show them for the user
-  to accept or retake (`auto-scanner`). The face can be held roughly however — the
-  perspective sampler handles offset/rotation/skew. OpenCV.js is **injected**, not
-  bundled: the app loads it and sets `panel.cv = window.cv`; without it the panel
-  falls back to sampling a centered square.
-- **Manual grid (`live-scanner`, `createCubeScanner`):** the original guided 3×3-grid
-  capture, kept as a dependency-free fallback.
-- **AI scan (`onnx-detect` + `onnx-postprocess` + `ai-assemble`):** run the trained
-  YOLOv11 sticker detector (`app/renderer/vendor/cube-yolo.onnx`, 3.0 MB int8) per face.
-  `preprocess` (pure letterbox) → the panel's onnxruntime-web run (`view/onnx-runtime.ts`
-  `createModelRunner`, **injected like OpenCV**) → `decodeDetections`/`nms`/`fitFace` picks
-  the front 3×3 grid and **abstains** (`NO_FACE`/`PARTIAL_FACE`/`BAD_GEOMETRY`) on a frame
-  that isn't a clean single face → `assembleColors` maps the 6 faces' colour classes to a
-  validated `ScanResult` through the *same* dual verifier. It also **solves each face's rotation**
-  — the camera can't know which way is up, so it searches all 4⁶ per-face rotations and keeps the
-  unique solvable one; the user can show each side ANY way up. See `ml/MODEL_CARD.md`.
+1. **`preprocess`** (pure letterbox → 640×640 CHW float) → the panel's onnxruntime-web run
+   (`view/onnx-runtime.ts` `createModelRunner`, **injected** so the core stays wasm-free).
+2. **`decodeDetections` / `nms` / `fitFace`** pick the front 3×3 grid and **abstain**
+   (`NO_FACE` / `PARTIAL_FACE` / `BAD_GEOMETRY`) on a frame that isn't a clean single face.
+3. **`assembleColors`** maps the 6 faces' colour classes to a validated `ScanResult`, and
+   **solves each face's rotation**: the camera can't know which way is up, so it searches all
+   4⁶ per-face rotations and keeps the unique solvable one (guaranteed correct — the true combo
+   is always in the solvable set). No solvable rotation ⇒ a colour misread (re-scan); more than
+   one ⇒ rotationally ambiguous. **The user can show each side any way up.**
 
-  ```ts
-  import { createModelRunner } from 'cube-scanner/view/onnx-runtime';
-  import { detectFace, assembleColors } from 'cube-scanner';
-  const run = await createModelRunner('./vendor/cube-yolo.onnx'); // once, reuse
-  const fit = await detectFace(frame, run);        // FitResult: ok → face.colors/confidence | abstain
-  // collect the 6 faces (URFDLB) of fit.face, then (per-face rotation is auto-solved):
-  const result = assembleColors(faces);            // { facelets, valid, confidence, reason?, ambiguous? }
-  ```
+```ts
+import { createModelRunner } from 'cube-scanner/view/onnx-runtime';
+import { detectFace, assembleColors } from 'cube-scanner';
+const run = await createModelRunner('./vendor/cube-yolo.onnx'); // once, reuse
+const fit = await detectFace(frame, run);        // FitResult: ok → face.colors/confidence | abstain
+// collect the 6 faces (URFDLB) of fit.face, then (per-face rotation is auto-solved):
+const result = assembleColors(faces);            // { facelets, valid, confidence, reason?, ambiguous? }
+```
 
-- **Color:** `culori` (CIELAB + CIEDE2000) — never hand-rolled.
-- **Classification:** nearest of the 6 live face-centers by CIEDE2000 — lighting-tolerant, calibration-free.
-- **Validation:** own parity math **and** a cubejs round-trip (an independent
-  oracle). cubejs `solve()` is deliberately not used as a validity gate — Kociemba
+- **Colour:** the detector classifies each sticker into the 6 colours (`ml/data.yaml`); robust
+  where the classical HSV path failed (red↔orange under lighting). See `ml/MODEL_CARD.md`.
+- **Validation:** own facelet-parity math (`facelet-cube`) **and** a cubejs round-trip (an
+  independent oracle). cubejs `solve()` is deliberately not used as a validity gate — Kociemba
   solvers assume solvable input and can hang on the unsolvable scans we must reject.
-- **Confidence:** `1 − nearest/secondNearest` per sticker; low-confidence stickers
-  are surfaced for re-capture, never silently guessed.
+- **Confidence:** the detector's per-sticker score; low-confidence stickers are surfaced for
+  re-capture, never silently guessed.
 
 ## Scripts
 
 | Command | Does |
 |---|---|
 | `npm run check` | Strict `tsc` + Biome + type-aware ESLint + vitest (the gate). |
-| `npm run coverage` | Coverage over the pure core (85% gate). |
-| `npm run build:panel` | Bundle `view/scanner-panel.ts` (+ culori + cubejs) into `../app/renderer/vendor/scanner-panel.js`, a self-contained ESM the bundler-less Electron renderer loads. Re-run after editing the component. |
-| `npm run smoke:detect` | Load OpenCV.js (Node build) and run `detect.ts` against a synthetic square — verifies the OpenCV wiring (not real-world accuracy, which needs a real cube + on-device tuning). |
+| `npm run coverage` | Coverage over the pure core. |
+| `npm run build:panel` | Bundle `view/ai-scan-panel.ts` (+ cubejs) into `../app/renderer/vendor/ai-scan-panel.js`, a self-contained ESM the bundler-less Electron renderer loads. Re-run after editing the component. |
 
-OpenCV.js itself is a ~13 MB WASM asset. In the app it is loaded from `app/renderer/vendor/opencv.js` (git-ignored; fetch with `cd app && npm run fetch:opencv`); the scanner degrades to a centered-square sample without it.
+## App wiring (in `app/renderer/index.html`)
 
-**AI-scan wiring (done — in `app/renderer/index.html`):** the `<ai-scan-panel>` bundle
-(`app/renderer/vendor/ai-scan-panel.js`) and the model (`cube-yolo.onnx`) are loaded, and the
-panel's `scan-complete` is applied to the twin exactly like the classical scanner. Two notes:
-- **Camera-first:** the panel opens the camera *before* loading the model, so a slow or failed model
-  load can never blank the preview.
-- **wasm source:** `createModelRunner` loads onnxruntime-web's wasm from the version-matched
-  jsDelivr CDN, because Electron's `file://` origin can't `fetch()` a local `.wasm` (same reason the
-  app already imports its other libs over https). This needs internet. For a fully-offline build,
-  serve the renderer over `http`/a custom protocol and pass `opts.wasmPaths='./'` with the
-  onnxruntime-web `dist/*.wasm` vendored into `app/renderer/vendor/`.
+The `<ai-scan-panel>` bundle (`app/renderer/vendor/ai-scan-panel.js`), the model
+(`cube-yolo.onnx`), and onnxruntime-web's `dist/*.wasm` are all served from `app/renderer/vendor/`;
+the panel's `scan-complete` is applied to the 3D twin. Two notes:
 
-## Usage
-
-```ts
-import { createCubeScanner } from 'cube-scanner';
-
-const scanner = createCubeScanner();
-await scanner.attach(videoEl);
-// capture each face the UI asks for:
-scanner.captureFace(scanner.next()!);
-// once all 6 are in:
-const result = scanner.result(); // { facelets, valid, confidence, lowConfidence }
-```
-
-The `<scanner-panel>` web component wraps this flow and emits `scan-complete`
-(valid cube) or `scan-invalid` (prompt a retake) events.
+- **Camera-first:** the panel opens the camera *before* loading the model, so a slow model load
+  never blanks the preview.
+- **wasm loading:** the Electron app serves the renderer over a custom `app://` origin (see
+  `app/main.js`) so the page can `fetch()` its own local wasm — the model loads **offline, no CDN**.
+  (`createModelRunner`'s `opts.wasmPaths` defaults to `./`; on a plain `file://` page pass an https
+  CDN instead, since `file://` can't fetch a local `.wasm`.)

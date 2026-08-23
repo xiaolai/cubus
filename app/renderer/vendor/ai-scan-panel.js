@@ -12942,7 +12942,7 @@ Object.defineProperty(_e.versions, "web", { value: as, enumerable: true });
 // view/onnx-runtime.ts
 async function createModelRunner(modelUrl, opts = {}) {
   _e.wasm.numThreads = 1;
-  _e.wasm.wasmPaths = opts.wasmPaths ?? "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
+  _e.wasm.wasmPaths = opts.wasmPaths ?? "./";
   const session = await _f.create(modelUrl, {
     executionProviders: opts.executionProviders ?? ["wasm"],
     graphOptimizationLevel: "all"
