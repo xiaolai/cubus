@@ -8,12 +8,15 @@ A beginner/kids Rubik's Cube tutor built on a verified GAN16 ui smart-cube drive
 
 - **Language**: always reply to the user, and write all code comments and
   documentation, in English — regardless of the language the user writes in.
-- **Layout**: the driver lives at `gan-driver/` (TypeScript, **zero runtime deps**;
-  its protocol/crypto/decode layer is transport-agnostic). The tutor app is not built
-  yet — see `dev-docs/implementation-plan.md` for the roadmap and the two open
-  architecture forks (where BLE lives in the app; porting the protocol off Node APIs).
+- **Layout** (pnpm + Cargo monorepo): the verified driver lives at `packages/gan-driver/`
+  (TypeScript, browser-safe, one tiny runtime dep `aes-js`, transport-agnostic); the AI scanner at
+  `packages/cube-scanner/`; the web SPA at `apps/web/` (also the Tauri webview); the native
+  BLE bridge at `crates/gan-ble/` (btleplug). The Tauri desktop app (`apps/desktop/`) reuses
+  `apps/web` as its webview and owns BLE natively; a runtime transport seam (`window.__TAURI__`)
+  feeds the same `gan-driver` from either Web Bluetooth or the Rust backend — proven end-to-end
+  on hardware. See `dev-docs/implementation-plan.md` for the dual web+Tauri architecture.
 - **Verification is the contract**: protocol/crypto/decode claims must stay backed by
-  the fixture tests in `gan-driver/tests` (they run with no hardware). The state
+  the fixture tests in `packages/gan-driver/tests` (they run with no hardware). The state
   invariant — apply decoded moves → matches hardware facelets — is the core check.
 - **`cubejs` is a deliberate independent test oracle**, not a redundant dep. Do not
   "consolidate" it into cubing.js; a different implementation is what makes the
@@ -22,8 +25,8 @@ A beginner/kids Rubik's Cube tutor built on a verified GAN16 ui smart-cube drive
 - **Never fake hardware**: the cube reports only completed quarter-turns (no partial
   angle — proven in Experiment H). Animation is our synthesis, clearly labelled as such.
 - **Fail loud**: unknown packets and missed moves surface as events, never vanish.
-- **Quality gate** (`cd gan-driver && npm run check`): strict `tsc`, Biome + a
-  type-aware ESLint pass, and vitest. Keep it green; CI enforces it on push.
+- **Quality gate** (`pnpm check` — runs each TS package's strict `tsc`, Biome + a
+  type-aware ESLint pass, and vitest). Keep it green; CI enforces it on push.
 
 ## Shared Memory
 
