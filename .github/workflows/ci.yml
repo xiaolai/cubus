@@ -7,56 +7,24 @@ on:
     branches: [main]
 
 jobs:
-  driver:
-    name: gan-driver (typecheck · lint · test · coverage)
+  ts:
+    name: TS packages (typecheck · lint · test · coverage)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: gan-driver
     steps:
       - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: gan-driver/package-lock.json
+          cache: pnpm
 
       - name: Install
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: gan-driver — check
+        run: pnpm --filter gan-driver run check
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Test with coverage
-        run: npm run coverage
-
-  scanner:
-    name: cube-scanner (typecheck · lint · test · coverage)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: cube-scanner
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: cube-scanner/package-lock.json
-
-      - name: Install
-        run: npm ci
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Test with coverage
-        run: npm run coverage
+      - name: cube-scanner — check
+        run: pnpm --filter cube-scanner run check

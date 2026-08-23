@@ -7,6 +7,9 @@ node_modules/
 # ML training + validation output (YOLO / ultralytics)
 runs/
 
+# Rust workspace build output
+/target
+
 # >>> cc-suite >>>
 # cc-suite-schema: 7
 # AI assistant local state

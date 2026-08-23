@@ -11,11 +11,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const src = join(here, '..', 'cube-scanner', 'node_modules', 'onnxruntime-web', 'dist');
+const src = join(here, '..', '..', 'packages', 'cube-scanner', 'node_modules', 'onnxruntime-web', 'dist');
 const dest = join(here, 'vendor');
 
 if (!existsSync(src)) {
-  console.error(`onnxruntime-web not found at:\n  ${src}\nRun \`cd cube-scanner && npm install\` first.`);
+  console.error(`onnxruntime-web not found at:\n  ${src}\nRun \`pnpm install\` at the repo root first.`);
   process.exit(1);
 }
 
