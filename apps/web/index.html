@@ -281,47 +281,112 @@
         paintNet(f); $('fx').textContent=f; render3D(f); }
 
       function setConn(kind,title,detail,btnLabel){ dot.className='dot '+kind; who.textContent=title; sub.textContent=detail;
-        if(btnLabel){ btn.textContent=btnLabel; btn.disabled=false; } resetBtn.disabled = kind!=='ok'; }
+        if(btnLabel){ btn.textContent=btnLabel; btn.disabled=false; } }
       let lastEventAt=0;
       setInterval(()=>{ if(!lastEventAt) return; const age=Math.round((performance.now()-lastEventAt)/1000);
         lastEl.textContent=`last event ${age<1?'just now':age+'s ago'}`+(age>=3?' — cube may be asleep (move it)':''); },500);
 
-      // In a real browser, connectGanCube() calls navigator.bluetooth.requestDevice(),
-      // which shows the browser's own native device chooser — no in-app picker needed.
+      // --- Transport seam -------------------------------------------------------
+      // The verified browser-safe gan-driver decodes packets; only how the packets ARRIVE
+      // differs by host. In the Tauri app, native Rust BLE (crates/gan-ble) owns the radio
+      // and forwards each FFF6 notification as a `cube-packet` event. In a Chromium browser,
+      // navigator.bluetooth talks to the cube directly. Same driver, same decode — the seam
+      // is picked at runtime by window.__TAURI__.
+      const isTauri = typeof window.__TAURI__ !== 'undefined';
+
+      // Tauri: relay Rust `cube-packet`/`cube-disconnect` events onto a driver Transport.
+      function makeTauriTransport(TinyEmitter){
+        const T=window.__TAURI__, bus=new TinyEmitter();
+        let offPacket=null, offDisc=null;
+        return {
+          // Register listeners BEFORE connect_cube runs, so no notification is missed.
+          async start(){
+            offPacket=await T.event.listen('cube-packet',(e)=>bus.emit('packet',e.payload,performance.now()));
+            offDisc  =await T.event.listen('cube-disconnect',()=>bus.emit('close',0));
+          },
+          subscribe(){ return bus; },
+          async write(_char,hex){ await T.core.invoke('write_fff5',{ hexData: hex }); },
+          async read(){ throw new Error('read not supported over the Tauri transport'); },
+          disconnect(){ try{ T.core.invoke('disconnect_cube'); }catch{}
+            try{ offPacket&&offPacket(); }catch{} try{ offDisc&&offDisc(); }catch{} },
+        };
+      }
+
+      // Web Bluetooth: GATT notifications on FFF6 → 'packet'; writes go to FFF5. FFF5/FFF6
+      // live under the 0xFFF0 service (btleplug finds chars directly; Web Bluetooth needs
+      // the service named in optionalServices to reach them).
+      const GAN_SERVICE=0xfff0, GAN_NOTIFY=0xfff6, GAN_WRITE=0xfff5;
+      function makeWebBluetoothTransport(TinyEmitter){
+        const bus=new TinyEmitter();
+        let device=null, server=null, writeChar=null;
+        return {
+          async start(){
+            device=await navigator.bluetooth.requestDevice({ filters:[{namePrefix:'GAN'}], optionalServices:[GAN_SERVICE] });
+            device.addEventListener('gattserverdisconnected',()=>bus.emit('close',0));
+            server=await device.gatt.connect();
+            const svc=await server.getPrimaryService(GAN_SERVICE);
+            const notify=await svc.getCharacteristic(GAN_NOTIFY);
+            writeChar=await svc.getCharacteristic(GAN_WRITE);
+            notify.addEventListener('characteristicvaluechanged',(ev)=>{
+              const dv=ev.target.value; let hex='';
+              for(let i=0;i<dv.byteLength;i++) hex+=dv.getUint8(i).toString(16).padStart(2,'0');
+              bus.emit('packet',hex,performance.now());
+            });
+            await notify.startNotifications();
+          },
+          subscribe(){ return bus; },
+          async write(_char,hex){ await writeChar.writeValueWithoutResponse(Uint8Array.from(hex.match(/../g).map((h)=>parseInt(h,16)))); },
+          async read(){ throw new Error('read not used'); },
+          disconnect(){ try{ server&&server.disconnect(); }catch{} },
+        };
+      }
 
       let conn=null;
       async function connect(){
-        btn.disabled=true; setConn('warn','Connecting…','pick your cube in the browser prompt',null);
-        let candidate=null, sub=null;
+        btn.disabled=true;
+        setConn('warn','Connecting…', isTauri?'scanning for your cube…':'pick your cube in the browser prompt', null);
+        let transport=null;
         try {
-          const mac=macInput.value.trim();
-          // Lazy-load the BLE lib so a CDN failure degrades to Bluetooth-only — the local camera
-          // scanner, 2D net, and controls (which don't need it) still load and work.
-          const { connectGanCube }=await import('https://esm.sh/gan-web-bluetooth@3');
-          candidate=await connectGanCube(async()=>mac||null);
-          sub=candidate.events$.subscribe((e)=>{ lastEventAt=performance.now();
-            if(e.type==='FACELETS') renderState(e.facelets);
-            else if(e.type==='DISCONNECT'){ setConn('err','Disconnected','cube slept or dropped — move it, then Reconnect','Reconnect');
-              lastEventAt=0; lastEl.textContent='— disconnected —'; } });
-          await candidate.sendCubeCommand({type:'REQUEST_FACELETS'});
-          conn=candidate;
-          try { if(mac) localStorage.setItem('cubeMac', mac); } catch {}
-          setConn('ok',`Connected · ${candidate.deviceName}`, candidate.deviceMAC,'Reconnect');
+          // Local, browser-safe driver (bundled from packages/gan-driver) — no CDN dependency.
+          const { GanCube, TinyEmitter }=await import('./vendor/gan-driver.js');
+          let mac=macInput.value.trim(), name='GAN cube';
+          if(isTauri){
+            transport=makeTauriTransport(TinyEmitter);
+            await transport.start();                                  // listen before connect_cube
+            const info=await window.__TAURI__.core.invoke('connect_cube');
+            name=info.name||name;
+            mac=info.mac||mac;                                        // prefer the MAC Rust recovered
+            if(!mac) throw new Error('cube MAC unavailable — enter it in the MAC field and reconnect');
+          } else {
+            if(!navigator.bluetooth) throw new Error('Web Bluetooth unavailable in this browser');
+            if(!mac) throw new Error('enter your cube’s MAC first (macOS hides it from the browser)');
+            transport=makeWebBluetoothTransport(TinyEmitter);
+            await transport.start();
+          }
+          const cube=new GanCube({ mac, transport });
+          cube.onFacelets((f)=>{ lastEventAt=performance.now(); renderState(f.facelets); });
+          cube.on('disconnect',()=>{ setConn('err','Disconnected','cube slept or dropped — move it, then Reconnect','Reconnect');
+            lastEventAt=0; lastEl.textContent='— disconnected —'; conn=null; });
+          cube.on('error',(e)=>{ lastEl.textContent='cube error: '+(e&&e.message||e); });
+          cube.connect();
+          conn=cube;
+          try { if(mac){ macInput.value=mac; localStorage.setItem('cubeMac', mac); } } catch {}
+          setConn('ok',`Connected · ${name}`, mac, 'Reconnect');
+          // Nudge for an immediate snapshot; periodic FACELETS keep it fresh regardless.
+          cube.getState({ active:true }).then((f)=>renderState(f.facelets)).catch(()=>{});
         } catch(err){
-          // A failed init must not leave a live connection/subscription behind a "failed" UI.
-          try { sub?.unsubscribe?.(); } catch {}
-          if(candidate){ try { await candidate.disconnect(); } catch {} }
+          // A failed init must not leave a live transport behind a "failed" UI.
+          try { transport&&transport.disconnect(); } catch {}
           conn=null;
           setConn('err','Connection failed', String(err&&err.message||err),'Connect');
         }
       }
-      btn.onclick=async()=>{ if(conn){ try{ await conn.disconnect(); }catch{} conn=null; } connect(); };
-      resetBtn.onclick=async()=>{ if(!conn) return;
-        if(!confirm('Is your cube FULLY SOLVED?\n\nThis anchors the cube’s internal baseline to solved so the screen matches your real cube. Only click when it is physically solved.')) return;
-        try { await conn.sendCubeCommand({type:'REQUEST_RESET'});
-          lastEl.textContent='baseline set to solved — now scramble; the screen should track your real cube';
-          setTimeout(()=>{ conn&&conn.sendCubeCommand({type:'REQUEST_FACELETS'}); },300);
-        } catch(e){ lastEl.textContent='set-solved failed: '+(e&&e.message||e); } };
+      btn.onclick=async()=>{ if(conn){ try{ conn.disconnect(); }catch{} conn=null; } connect(); };
+      // "Set solved" (REQUEST_RESET) is deliberately excluded from gan-driver's safe command
+      // set, so it's unavailable on this driver path — use the camera scan to establish ground
+      // truth instead. Left visible-but-disabled with an explanatory tooltip.
+      resetBtn.disabled=true;
+      resetBtn.title='Set-solved needs REQUEST_RESET, which the verified driver excludes by design. Use the camera scan to set the cube state.';
       // AI scanner (YOLOv11): orderless auto-capture. The panel owns its own camera + "Start
       // camera" button, so opening the modal just shows it. A validated 6-face scan emits
       // scan-complete (apply to the twin); an unsolvable read emits scan-invalid (auto-rescan).
@@ -333,7 +398,9 @@
         lastEl.textContent='camera scan applied — renders the physical cube state'; });
       aiPanel.addEventListener('scan-invalid',()=>{ lastEl.textContent='scan invalid — re-scan (show each face flat & centred)'; });
 
-      if(!navigator.bluetooth) setConn('err','Web Bluetooth unavailable','Use Chrome or Edge (desktop) or Chrome on Android. Safari, Firefox, and all iOS browsers lack Web Bluetooth — the camera scan still works there.',null);
+      // Host-aware initial connection hint.
+      if(isTauri) setConn('warn','Ready','click Connect to scan for your cube',null);
+      else if(!navigator.bluetooth) setConn('err','Web Bluetooth unavailable','Use Chrome or Edge (desktop) or Chrome on Android. Safari, Firefox, and all iOS browsers lack Web Bluetooth — the camera scan still works there.',null);
     </script>
   </body>
 </html>
