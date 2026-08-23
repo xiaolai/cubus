@@ -11,8 +11,10 @@ A beginner/kids Rubik's Cube tutor built on a verified GAN16 ui smart-cube drive
 - **Layout** (pnpm + Cargo monorepo): the verified driver lives at `packages/gan-driver/`
   (TypeScript, browser-safe, one tiny runtime dep `aes-js`, transport-agnostic); the AI scanner at
   `packages/cube-scanner/`; the web SPA at `apps/web/` (also the Tauri webview); the native
-  BLE bridge at `crates/gan-ble/` (btleplug). The Tauri desktop app (`apps/desktop/`) is being
-  built — see `dev-docs/implementation-plan.md` for the dual web+Tauri roadmap.
+  BLE bridge at `crates/gan-ble/` (btleplug). The Tauri desktop app (`apps/desktop/`) reuses
+  `apps/web` as its webview and owns BLE natively; a runtime transport seam (`window.__TAURI__`)
+  feeds the same `gan-driver` from either Web Bluetooth or the Rust backend — proven end-to-end
+  on hardware. See `dev-docs/implementation-plan.md` for the dual web+Tauri architecture.
 - **Verification is the contract**: protocol/crypto/decode claims must stay backed by
   the fixture tests in `packages/gan-driver/tests` (they run with no hardware). The state
   invariant — apply decoded moves → matches hardware facelets — is the core check.

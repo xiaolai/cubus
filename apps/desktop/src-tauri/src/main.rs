@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-  cubus_desktop_lib::run();
+    cubus_desktop_lib::run();
 }
