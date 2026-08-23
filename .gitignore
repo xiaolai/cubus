@@ -1,6 +1,12 @@
 # macOS
 .DS_Store
 
+# Dependencies — subpackages ignore their own; this covers any root-level install
+node_modules/
+
+# ML training + validation output (YOLO / ultralytics)
+runs/
+
 # >>> cc-suite >>>
 # cc-suite-schema: 7
 # AI assistant local state
