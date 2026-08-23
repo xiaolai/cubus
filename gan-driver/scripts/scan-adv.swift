@@ -72,6 +72,14 @@ final class Scanner: NSObject, CBCentralManagerDelegate {
             print(line)
             fflush(stdout)
         }
+        // Early exit: when filtering for a specific cube, stop as soon as we
+        // have a match WITH manufacturer data (needed to recover the MAC) — no
+        // point scanning the full window once the target is found.
+        if let filter = nameFilter, !filter.isEmpty,
+           advertisementData[CBAdvertisementDataManufacturerDataKey] != nil {
+            self.central.stopScan()
+            exit(0)
+        }
     }
 }
 
