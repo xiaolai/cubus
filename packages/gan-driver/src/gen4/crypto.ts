@@ -46,10 +46,15 @@ export function deriveKeyIv(
 
 /** Convert a MAC string ("54:6C:50:89:C8:D3") to the reversed-byte salt. */
 export function macToSalt(mac: string): Uint8Array {
-  const bytes = mac.split(/[:\-\s]+/).map((h) => Number.parseInt(h, 16));
-  if (bytes.length !== 6 || bytes.some((b) => Number.isNaN(b))) {
+  // Require exactly six two-hex-digit octets separated by ':', '-', or whitespace. A permissive
+  // parseInt accepts "5G" as 0x05 (and "123" as an out-of-range octet), which would derive a
+  // wrong key and decode valid packets as garbage instead of failing loud — so validate every
+  // octet against the whole string before converting.
+  const parts = mac.trim().split(/[:\-\s]+/);
+  if (parts.length !== 6 || !parts.every((p) => /^[0-9a-fA-F]{2}$/.test(p))) {
     throw new Error(`invalid MAC: ${mac}`);
   }
+  const bytes = parts.map((h) => Number.parseInt(h, 16));
   return Uint8Array.from(bytes.reverse());
 }
 
