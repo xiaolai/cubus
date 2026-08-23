@@ -80,9 +80,7 @@
         <input id="mac" value="54:6C:50:89:C8:D3" title="cube MAC (needed on macOS)" />
         <button id="btn">Connect</button>
         <button id="reset" class="ghost" disabled title="Anchor the cube's internal state to solved">Set solved</button>
-        <button id="scanBtn" class="ghost" title="Read the physical cube with the camera">Scan with camera</button>
-        <button id="trackBtn" class="ghost" title="Track an ordinary cube continuously with the camera (seeded from the current state)">Track live</button>
-        <button id="aiScanBtn" class="ghost" title="Scan with the AI model (YOLOv11) — guided, one face at a time">AI scan</button>
+        <button id="aiScanBtn" class="ghost" title="Read the physical cube with the camera (YOLOv11), one side at a time">Scan with camera</button>
       </div>
       <div class="last" id="last">— no events yet —</div>
 
@@ -112,35 +110,6 @@
       </div>
     </div>
 
-    <!-- Camera scanner (tabletop: cube on the table, camera aimed down, one flat face at a
-         time in any order/rotation). The <tabletop-scanner-panel> element is registered by
-         the self-contained bundle built from cube-scanner/view via `npm run build:panel`. -->
-    <div class="picker" id="scanModal" hidden>
-      <div class="pickerBox" style="width: min(520px, 94vw)">
-        <h3>Scan your cube <span class="scan">camera</span></h3>
-        <tabletop-scanner-panel id="scanPanel"></tabletop-scanner-panel>
-        <div class="pickFoot" style="margin-top: 14px">
-          <span class="muted">Hold two opposite centers and slowly spin the four sides past the camera; then the other two. Any order, any way up.</span>
-          <button class="ghost" id="scanClose">Close</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Continuous camera tracker (uninstrumented cube). The <tracker-panel> element
-         is registered by the self-contained bundle built from cube-tracker/view via
-         `cd cube-tracker && npm run build:panel`. Seeded from the current state; the
-         OpenCV detector's thresholds are tuned on-device (see dev-docs/cube-tracker-e2e.md). -->
-    <div class="picker" id="trackModal" hidden>
-      <div class="pickerBox" style="width: min(520px, 94vw)">
-        <h3>Track live <span class="scan">camera</span></h3>
-        <tracker-panel id="trackPanel"></tracker-panel>
-        <div class="pickFoot" style="margin-top: 14px">
-          <span class="muted">Follows an ordinary cube with the camera and mirrors it on screen.</span>
-          <button class="ghost" id="trackClose">Close</button>
-        </div>
-      </div>
-    </div>
-
     <!-- AI camera scanner (YOLOv11): guided, one face at a time (U R F D L B). The
          <ai-scan-panel> element is registered by ./vendor/ai-scan-panel.js (built from
          cube-scanner/view). It owns onnxruntime-web; the model + wasm are served from ./vendor/. -->
@@ -155,14 +124,9 @@
       </div>
     </div>
 
-    <!-- Registers <tabletop-scanner-panel> (tabletop scan). Local, self-contained
-         (culori + cubejs are inlined), so it works offline and needs no bundler. -->
-    <!-- OpenCV.js (WASM) locates the cube face. Vendored locally (same-origin,
-         offline-capable, no CDN/supply-chain exposure); the scanner needs it to detect
-         the face, so it warms up before capture. -->
-    <script async src="./vendor/opencv.js"></script>
-    <script type="module" src="./vendor/tabletop-panel.js"></script>
-    <script type="module" src="./vendor/tracker-panel.js"></script>
+    <!-- Registers <ai-scan-panel> (the only scanner). Self-contained (cubejs inlined); it owns
+         onnxruntime-web and loads the model + wasm from ./vendor/ over the app:// origin. No
+         OpenCV — the classical scanner and live tracker were removed. -->
     <script type="module" src="./vendor/ai-scan-panel.js"></script>
 
     <script type="module">
@@ -250,48 +214,6 @@
           lastEl.textContent='baseline set to solved — now scramble; the screen should track your real cube';
           setTimeout(()=>{ conn&&conn.sendCubeCommand({type:'REQUEST_FACELETS'}); },300);
         } catch(e){ lastEl.textContent='set-solved failed: '+(e&&e.message||e); } };
-      // Camera scanner: open the panel, apply a validated scan to the twin.
-      const scanModal=$('scanModal'), scanPanel=$('scanPanel');
-      const trackModal=$('trackModal'), trackPanel=$('trackPanel');
-      // Hand OpenCV.js to BOTH the scanner and the live tracker once its WASM runtime
-      // is ready (the vendored build sets window.cv). Handles the classic
-      // (onRuntimeInitialized) and v5 thenable shapes; capped so we don't poll forever
-      // when opencv.js is absent. The scanner falls back to a centered square without
-      // it; the tracker's detector simply finds nothing until cv is present.
-      const setCv=(m)=>{ scanPanel.cv=m; if(trackPanel) trackPanel.cv=m; };
-      (function awaitCv(tries){
-        const cv = window.cv;
-        if (cv && cv.Mat) { setCv(cv); return; }
-        if (cv && typeof cv.then === 'function') { cv.then((m)=>{ setCv(m || cv); }); return; }
-        if (cv && 'onRuntimeInitialized' in cv) { cv.onRuntimeInitialized = ()=>{ setCv(cv); }; return; }
-        if (tries > 0) setTimeout(()=>awaitCv(tries-1), 200);
-      })(40);
-      // When a scan finishes we normally just render it; but if the user reached the
-      // scanner FROM the live tracker (which needs a known start state), return to the
-      // tracker and seed it. resumeTrackAfterScan carries that intent across the modals.
-      let resumeTrackAfterScan=false;
-      function openTrack(){ trackModal.hidden=false;
-        if(lastFacelets) trackPanel.provideSeed(lastFacelets);
-        trackPanel.startCamera(); }
-      $('scanBtn').onclick=()=>{ resumeTrackAfterScan=false; scanModal.hidden=false; };
-      $('scanClose').onclick=()=>{ scanModal.hidden=true; scanPanel.stop?.(); };
-      scanPanel.addEventListener('scan-complete',(e)=>{ const f=e.detail.facelets;
-        renderState(f); scanModal.hidden=true; scanPanel.stop?.();
-        if(resumeTrackAfterScan){ resumeTrackAfterScan=false; openTrack(); }
-        else lastEl.textContent='camera scan applied — renders the physical cube state'; });
-
-      // Live camera tracker. Opening the modal starts the camera immediately (this click
-      // is the user gesture getUserMedia needs). Tracking activates on its own once a
-      // KNOWN start state (from a scan or the smart cube) AND OpenCV are both ready; until
-      // then the panel prompts to scan. The panel's Scan button asks us to run the scanner.
-      $('trackBtn').onclick=openTrack;
-      $('trackClose').onclick=()=>{ trackModal.hidden=true; trackPanel.stop?.(); };
-      // Panel asked to scan: free the camera (one stream at a time), run the scanner, come back.
-      trackPanel.addEventListener('request-scan',()=>{
-        trackPanel.stop?.(); trackModal.hidden=true;
-        resumeTrackAfterScan=true; scanModal.hidden=false; });
-      trackPanel.addEventListener('state-update',(e)=>{ renderState(e.detail.facelets); });
-
       // AI scanner (YOLOv11): guided per-face capture. The panel owns its own camera + "Start
       // camera" button, so opening the modal just shows it. A validated 6-face scan emits
       // scan-complete (apply to the twin); an unsolvable read emits scan-invalid (prompt re-scan).
@@ -300,8 +222,8 @@
       $('aiScanClose').onclick=()=>{ aiScanModal.hidden=true; aiPanel.stop?.(); };
       aiPanel.addEventListener('scan-complete',(e)=>{ renderState(e.detail.facelets);
         aiScanModal.hidden=true; aiPanel.stop?.();
-        lastEl.textContent='AI camera scan applied — renders the physical cube state'; });
-      aiPanel.addEventListener('scan-invalid',()=>{ lastEl.textContent='AI scan invalid — re-scan (show each face flat & centred)'; });
+        lastEl.textContent='camera scan applied — renders the physical cube state'; });
+      aiPanel.addEventListener('scan-invalid',()=>{ lastEl.textContent='scan invalid — re-scan (show each face flat & centred)'; });
 
       if(!navigator.bluetooth) setConn('err','Web Bluetooth unavailable','This build needs a Chromium-based runtime.',null);
     </script>

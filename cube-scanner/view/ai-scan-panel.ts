@@ -1,6 +1,6 @@
-// <ai-scan-panel> — the AI (YOLOv11) capture mode. Same guided, confirm-per-side flow as
-// <scanner-panel>, but detection is the ONNX sticker detector, which is robust where the
-// classical HSV path fails (red↔orange under lighting). onnxruntime-web is loaded via
+// <ai-scan-panel> — the cube scanner: a guided, confirm-per-side capture driven by the ONNX
+// (YOLOv11) sticker detector, robust where the old classical HSV path failed (red↔orange under
+// lighting). It is the only scanner (the OpenCV path was removed). onnxruntime-web is loaded via
 // createModelRunner (this panel owns the wasm dep; the pure core stays clean). Each face is
 // read as 9 colour classes; the model ABSTAINS on a frame that isn't a clean single face.
 // After 6 faces, `assembleColors` runs the same dual verifier. Emits 'scan-complete'
