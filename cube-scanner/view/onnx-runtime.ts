@@ -14,6 +14,8 @@ import type { RunModel } from '../src/onnx-detect.js';
 export interface ModelRunnerOptions {
   /** onnxruntime-web execution providers, in preference order. wasm is the safe default. */
   executionProviders?: ort.InferenceSession.ExecutionProviderConfig[];
+  /** Folder holding onnxruntime-web's .wasm/.mjs, resolved relative to this bundle. Default './'. */
+  wasmPaths?: string;
 }
 
 /**
@@ -26,6 +28,16 @@ export async function createModelRunner(
   modelUrl: string,
   opts: ModelRunnerOptions = {},
 ): Promise<RunModel> {
+  // Run single-threaded so no SharedArrayBuffer / cross-origin-isolation headers are needed.
+  // Load the wasm from the version-matched CDN: under Electron's file:// origin Chromium CANNOT
+  // fetch() a local .wasm (the .mjs imports fine, but the wasm binary fetch is blocked), whereas an
+  // https fetch IS allowed — which is exactly how this app already loads esm.sh / cubing.net. Pin
+  // the version to onnxruntime-web in package.json. For a fully-offline build, serve the app over
+  // http(s) (or a custom protocol) instead of file:// and pass opts.wasmPaths = './' (vendored wasm).
+  ort.env.wasm.numThreads = 1;
+  ort.env.wasm.wasmPaths =
+    opts.wasmPaths ?? 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/';
+
   const session = await ort.InferenceSession.create(modelUrl, {
     executionProviders: opts.executionProviders ?? ['wasm'],
     graphOptimizationLevel: 'all',

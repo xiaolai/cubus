@@ -1,9 +1,15 @@
 // Assemble a validated ScanResult from the AI detector's per-sticker COLOUR CLASSES
-// (0..5) — the AI path's analogue of assemble.ts, which works on RGB samples and the
-// classical `classify`. The guided-scan contract is identical: the caller supplies the
-// 6 faces in URFDLB order, each 9 colour classes in reading order. Each sticker's face
-// letter is the face whose CENTRE carries the same colour; then the SAME dual verifier
-// (facelet parity in facelet-cube + an independent cubejs round-trip) gates `valid`.
+// (0..5). The guided scan gives us 6 faces (identified by their centre colour) but each face is
+// captured at an ARBITRARY rotation — the camera doesn't know which way is "up". A wrong per-face
+// rotation lands the 8 outer stickers in the wrong facelet slots, so the cube reads as unsolvable.
+//
+// We recover the rotations by search: the user's real cube IS solvable, so the true rotation combo
+// is always among the solvable ones. Try all 4^6 per-face rotations, keep the DISTINCT solvable
+// facelet strings, then:
+//   • exactly one  -> it must be the true cube (the true combo is guaranteed to be in the set) → use it.
+//   • none         -> no rotation fixes it → the failure is a COLOUR misread → reject for re-scan.
+//   • more than one -> rotationally ambiguous colours (solved/symmetric cubes) → reject as ambiguous.
+// This means the user can show each side ANY way up; orientation is solved for them.
 //
 // Colour-class indices match ml/data.yaml: 0 white 1 red 2 green 3 yellow 4 orange 5 blue.
 
@@ -17,6 +23,19 @@ export interface ColorFace {
   confidence: number[]; // 9 per-sticker detector confidences (0..1)
 }
 
+/** ScanResult plus AI-path extras: a human reason and whether the failure was rotational ambiguity. */
+export type AiScanResult = ScanResult & { reason?: string; ambiguous?: boolean };
+
+/** 90° clockwise position map for a 3x3 face in reading order; the centre (index 4) is fixed. */
+const ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2] as const;
+
+/** Rotate a 9-element face array 90° CW, `k` times (k is taken mod 4). */
+function rotateFace<T>(a: T[], k: number): T[] {
+  let out = a;
+  for (let t = 0; t < ((k % 4) + 4) % 4; t++) out = ROT90.map((i) => out[i]!);
+  return out;
+}
+
 function cubejsRoundTrips(facelets: string): boolean {
   try {
     return Cube.fromString(facelets).asString() === facelets;
@@ -25,27 +44,25 @@ function cubejsRoundTrips(facelets: string): boolean {
   }
 }
 
-function reject(reason: string): ScanResult & { reason: string } {
+function reject(reason: string, ambiguous = false): AiScanResult {
   return {
     facelets: '',
     valid: false,
     confidence: 0,
     lowConfidence: [...Array(54).keys()],
     reason,
+    ambiguous,
   };
 }
 
 /**
- * Turn 6 detected faces (colour classes) into a validated ScanResult. Rejects a scan
- * whose 6 centres are not 6 distinct colours (not a real cube) before it can reach the
- * verifier, and reports a `reason` so the UI can say WHY rather than silently failing.
+ * Turn 6 detected faces (colour classes, any rotation) into a validated ScanResult by solving each
+ * face's rotation. Rejects a scan whose 6 centres are not 6 distinct colours (not a real cube), a
+ * colour misread (no rotation is solvable), and a rotationally ambiguous read — each with a `reason`.
  */
-export function assembleColors(
-  faces: Record<Face, ColorFace>,
-  threshold = 0.15,
-): ScanResult & { reason?: string } {
-  // Map each face's centre colour -> that face's letter. Two faces sharing a centre
-  // colour is impossible on a real cube, so bail out loudly.
+export function assembleColors(faces: Record<Face, ColorFace>, threshold = 0.15): AiScanResult {
+  // Centre colour → face letter. Centres don't move under rotation, so this is fixed. Two faces
+  // sharing a centre colour is impossible on a real cube, so bail out loudly.
   const centreOwner = new Map<number, Face>();
   for (const face of FACES) {
     const f = faces[face];
@@ -58,24 +75,54 @@ export function assembleColors(
   }
   if (centreOwner.size !== 6) return reject('the 6 centres are not 6 distinct colours');
 
-  const letters: string[] = [];
-  const lowConfidence: number[] = [];
-  let min = 1;
-  let idx = 0;
-  for (const face of FACES) {
-    const f = faces[face];
-    for (let i = 0; i < 9; i++) {
-      const owner = centreOwner.get(f.colors[i]!);
-      letters.push(owner ?? '?'); // a colour not among the 6 centres can't be placed
-      const c = f.confidence[i]!;
-      if (c < min) min = c;
-      if (c < threshold) lowConfidence.push(idx);
-      idx++;
+  // Build the 54-char facelet string for one per-face rotation combo, or null if any sticker's
+  // colour isn't one of the 6 centre colours (can't be placed on a real cube).
+  const buildFacelets = (rots: number[]): string | null => {
+    const letters: string[] = [];
+    for (let fi = 0; fi < 6; fi++) {
+      const rc = rotateFace(faces[FACES[fi]!]!.colors, rots[fi]!);
+      for (let i = 0; i < 9; i++) {
+        const owner = centreOwner.get(rc[i]!);
+        if (owner === undefined) return null;
+        letters.push(owner);
+      }
+    }
+    return letters.join('');
+  };
+
+  // Search all 4^6 rotation combos; keep the FIRST combo producing each DISTINCT solvable string
+  // (n=0 is the all-zero combo, so an already-correct capture is preferred on ties).
+  const solvable = new Map<string, number[]>();
+  const rots = [0, 0, 0, 0, 0, 0];
+  for (let n = 0; n < 4096; n++) {
+    for (let i = 0; i < 6; i++) rots[i] = (n >> (2 * i)) & 3;
+    const fl = buildFacelets(rots);
+    if (fl && !solvable.has(fl) && isStructurallyValid(fl) && cubejsRoundTrips(fl)) {
+      solvable.set(fl, [...rots]);
     }
   }
 
-  const facelets = letters.join('');
-  const valid =
-    !letters.includes('?') && isStructurallyValid(facelets) && cubejsRoundTrips(facelets);
-  return { facelets, valid, confidence: min, lowConfidence };
+  if (solvable.size === 0) {
+    return reject('no orientation of the faces is solvable — a colour was misread; re-scan');
+  }
+  if (solvable.size > 1) {
+    return reject(
+      `${solvable.size} orientations are solvable — the colours are rotationally ambiguous; re-scan one face`,
+      true,
+    );
+  }
+
+  // Unique solvable state = the real cube. Rotate the confidences the same way for the report.
+  const [facelets, chosen] = [...solvable.entries()][0]!;
+  const conf: number[] = [];
+  for (let fi = 0; fi < 6; fi++) {
+    for (const c of rotateFace(faces[FACES[fi]!]!.confidence, chosen[fi]!)) conf.push(c);
+  }
+  let min = 1;
+  const lowConfidence: number[] = [];
+  conf.forEach((c, i) => {
+    if (c < min) min = c;
+    if (c < threshold) lowConfidence.push(i);
+  });
+  return { facelets, valid: true, confidence: min, lowConfidence };
 }
