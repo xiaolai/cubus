@@ -31,7 +31,11 @@ pub struct GanCube {
 pub fn mac_from_manufacturer_data(data: &HashMap<u16, Vec<u8>>) -> Option<String> {
     for (company_id, payload) in data {
         if (company_id & 0xff) == 0x01 && payload.len() >= 9 {
-            let mac: Vec<String> = payload[3..9].iter().rev().map(|b| format!("{b:02X}")).collect();
+            let mac: Vec<String> = payload[3..9]
+                .iter()
+                .rev()
+                .map(|b| format!("{b:02X}"))
+                .collect();
             return Some(mac.join(":"));
         }
     }
@@ -56,7 +60,9 @@ pub async fn find_gan_cube(central: &Adapter, timeout: Duration) -> Result<Optio
     let deadline = tokio::time::Instant::now() + timeout;
     let found = 'scan: loop {
         for p in central.peripherals().await? {
-            let Some(props) = p.properties().await? else { continue };
+            let Some(props) = p.properties().await? else {
+                continue;
+            };
             let name = props.local_name.clone().unwrap_or_default();
             if name.starts_with("GAN") {
                 break 'scan Some(GanCube {

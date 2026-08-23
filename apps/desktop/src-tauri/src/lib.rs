@@ -35,16 +35,25 @@ async fn connect_cube(app: AppHandle, state: State<'_, CubeState>) -> Result<Cub
 
     let peripheral = cube.peripheral;
     peripheral.connect().await.map_err(|e| e.to_string())?;
-    peripheral.discover_services().await.map_err(|e| e.to_string())?;
+    peripheral
+        .discover_services()
+        .await
+        .map_err(|e| e.to_string())?;
 
     let notify = peripheral
         .characteristics()
         .into_iter()
         .find(|c| c.uuid == FFF6_NOTIFY)
         .ok_or_else(|| "FFF6 notify characteristic not found".to_string())?;
-    peripheral.subscribe(&notify).await.map_err(|e| e.to_string())?;
+    peripheral
+        .subscribe(&notify)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    let mut stream = peripheral.notifications().await.map_err(|e| e.to_string())?;
+    let mut stream = peripheral
+        .notifications()
+        .await
+        .map_err(|e| e.to_string())?;
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(v) = stream.next().await {
