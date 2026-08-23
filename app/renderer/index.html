@@ -82,6 +82,7 @@
         <button id="reset" class="ghost" disabled title="Anchor the cube's internal state to solved">Set solved</button>
         <button id="scanBtn" class="ghost" title="Read the physical cube with the camera">Scan with camera</button>
         <button id="trackBtn" class="ghost" title="Track an ordinary cube continuously with the camera (seeded from the current state)">Track live</button>
+        <button id="aiScanBtn" class="ghost" title="Scan with the AI model (YOLOv11) — guided, one face at a time">AI scan</button>
       </div>
       <div class="last" id="last">— no events yet —</div>
 
@@ -140,6 +141,20 @@
       </div>
     </div>
 
+    <!-- AI camera scanner (YOLOv11): guided, one face at a time (U R F D L B). The
+         <ai-scan-panel> element is registered by ./vendor/ai-scan-panel.js (built from
+         cube-scanner/view). It owns onnxruntime-web; the model + wasm are served from ./vendor/. -->
+    <div class="picker" id="aiScanModal" hidden>
+      <div class="pickerBox" style="width: min(520px, 94vw)">
+        <h3>AI scan <span class="scan">camera · YOLO</span></h3>
+        <ai-scan-panel id="aiPanel"></ai-scan-panel>
+        <div class="pickFoot" style="margin-top: 14px">
+          <span class="muted">Show each side the app asks for (U R F D L B), held flat and centred; accept each read.</span>
+          <button class="ghost" id="aiScanClose">Close</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Registers <tabletop-scanner-panel> (tabletop scan). Local, self-contained
          (culori + cubejs are inlined), so it works offline and needs no bundler. -->
     <!-- OpenCV.js (WASM) locates the cube face. Vendored locally (same-origin,
@@ -148,6 +163,7 @@
     <script async src="./vendor/opencv.js"></script>
     <script type="module" src="./vendor/tabletop-panel.js"></script>
     <script type="module" src="./vendor/tracker-panel.js"></script>
+    <script type="module" src="./vendor/ai-scan-panel.js"></script>
 
     <script type="module">
       import { connectGanCube } from 'https://esm.sh/gan-web-bluetooth@3';
@@ -275,6 +291,17 @@
         trackPanel.stop?.(); trackModal.hidden=true;
         resumeTrackAfterScan=true; scanModal.hidden=false; });
       trackPanel.addEventListener('state-update',(e)=>{ renderState(e.detail.facelets); });
+
+      // AI scanner (YOLOv11): guided per-face capture. The panel owns its own camera + "Start
+      // camera" button, so opening the modal just shows it. A validated 6-face scan emits
+      // scan-complete (apply to the twin); an unsolvable read emits scan-invalid (prompt re-scan).
+      const aiScanModal=$('aiScanModal'), aiPanel=$('aiPanel');
+      $('aiScanBtn').onclick=()=>{ aiScanModal.hidden=false; };
+      $('aiScanClose').onclick=()=>{ aiScanModal.hidden=true; aiPanel.stop?.(); };
+      aiPanel.addEventListener('scan-complete',(e)=>{ renderState(e.detail.facelets);
+        aiScanModal.hidden=true; aiPanel.stop?.();
+        lastEl.textContent='AI camera scan applied — renders the physical cube state'; });
+      aiPanel.addEventListener('scan-invalid',()=>{ lastEl.textContent='AI scan invalid — re-scan (show each face flat & centred)'; });
 
       if(!navigator.bluetooth) setConn('err','Web Bluetooth unavailable','This build needs a Chromium-based runtime.',null);
     </script>

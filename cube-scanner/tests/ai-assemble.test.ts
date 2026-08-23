@@ -56,4 +56,20 @@ describe('assembleColors', () => {
     const r = assembleColors(f);
     expect(r.valid).toBe(false);
   });
+
+  it('auto-corrects a face captured at the wrong rotation (orientation search)', () => {
+    // 90°-CW position map for a 3x3 face (centre fixed) — same as ai-assemble's internal one.
+    const ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2];
+    const rot = (a: number[], k: number) => {
+      let o = a;
+      for (let t = 0; t < k; t++) o = ROT90.map((i) => o[i]!);
+      return o;
+    };
+    const f = scrambleFacelets("R U R' U' F2 L D'");
+    const fc = faces(f);
+    fc.F.colors = rot(fc.F.colors, 1); // the user showed the F side turned 90° CW
+    const r = assembleColors(fc);
+    expect(r.valid).toBe(true); // the search un-rotates it…
+    expect(r.facelets).toBe(f); // …recovering the exact true cube, no orientation prompt needed
+  });
 });

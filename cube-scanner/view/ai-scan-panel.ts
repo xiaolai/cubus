@@ -126,18 +126,22 @@ export class AiScanPanel extends HTMLElement {
     this.btn('start').disabled = true;
     const gen = ++this.startGen;
     try {
+      // Camera FIRST — it must never wait on the model download. The model loads over the network,
+      // so gating the camera behind it means a slow/failed/offline load leaves a dead panel with no
+      // camera at all. Open the camera, THEN load the model behind the live preview.
+      this.source = await openCamera(this.el<HTMLVideoElement>('video'));
+      if (gen !== this.startGen) return;
+      this.btn('start').hidden = true;
+      this.reset();
       if (!this.run) {
-        this.setStatus('Loading the model…');
+        this.setStatus('Camera ready — loading the model…');
         this.run = await createModelRunner(this.modelUrl);
         if (gen !== this.startGen) return;
       }
-      this.source = await openCamera(this.el<HTMLVideoElement>('video'));
-      if (gen !== this.startGen) return;
-      this.reset();
-      this.btn('start').hidden = true;
       this.loop();
     } catch (err) {
       if (gen !== this.startGen) return;
+      this.btn('start').hidden = false; // re-offer Start so the user can retry
       this.btn('start').disabled = false;
       this.setStatus(this.tinted('err', `Cannot start: ${String((err as Error)?.message ?? err)}`));
     }

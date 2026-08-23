@@ -2136,6 +2136,12 @@ function isStructurallyValid(f) {
 var FACES = ["U", "R", "F", "D", "L", "B"];
 
 // src/ai-assemble.ts
+var ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2];
+function rotateFace(a, k2) {
+  let out = a;
+  for (let t = 0; t < (k2 % 4 + 4) % 4; t++) out = ROT90.map((i) => out[i]);
+  return out;
+}
 function cubejsRoundTrips(facelets) {
   try {
     return import_cubejs.default.fromString(facelets).asString() === facelets;
@@ -2143,13 +2149,14 @@ function cubejsRoundTrips(facelets) {
     return false;
   }
 }
-function reject(reason) {
+function reject(reason, ambiguous = false) {
   return {
     facelets: "",
     valid: false,
     confidence: 0,
     lowConfidence: [...Array(54).keys()],
-    reason
+    reason,
+    ambiguous
   };
 }
 function assembleColors(faces, threshold = 0.15) {
@@ -2164,24 +2171,48 @@ function assembleColors(faces, threshold = 0.15) {
     centreOwner.set(centre, face);
   }
   if (centreOwner.size !== 6) return reject("the 6 centres are not 6 distinct colours");
-  const letters = [];
-  const lowConfidence = [];
-  let min = 1;
-  let idx = 0;
-  for (const face of FACES) {
-    const f = faces[face];
-    for (let i = 0; i < 9; i++) {
-      const owner = centreOwner.get(f.colors[i]);
-      letters.push(owner ?? "?");
-      const c = f.confidence[i];
-      if (c < min) min = c;
-      if (c < threshold) lowConfidence.push(idx);
-      idx++;
+  const buildFacelets = (rots2) => {
+    const letters = [];
+    for (let fi = 0; fi < 6; fi++) {
+      const rc2 = rotateFace(faces[FACES[fi]].colors, rots2[fi]);
+      for (let i = 0; i < 9; i++) {
+        const owner = centreOwner.get(rc2[i]);
+        if (owner === void 0) return null;
+        letters.push(owner);
+      }
+    }
+    return letters.join("");
+  };
+  const solvable = /* @__PURE__ */ new Map();
+  const rots = [0, 0, 0, 0, 0, 0];
+  for (let n = 0; n < 4096; n++) {
+    for (let i = 0; i < 6; i++) rots[i] = n >> 2 * i & 3;
+    const fl2 = buildFacelets(rots);
+    if (fl2 && !solvable.has(fl2) && isStructurallyValid(fl2) && cubejsRoundTrips(fl2)) {
+      solvable.set(fl2, [...rots]);
     }
   }
-  const facelets = letters.join("");
-  const valid = !letters.includes("?") && isStructurallyValid(facelets) && cubejsRoundTrips(facelets);
-  return { facelets, valid, confidence: min, lowConfidence };
+  if (solvable.size === 0) {
+    return reject("no orientation of the faces is solvable \u2014 a colour was misread; re-scan");
+  }
+  if (solvable.size > 1) {
+    return reject(
+      `${solvable.size} orientations are solvable \u2014 the colours are rotationally ambiguous; re-scan one face`,
+      true
+    );
+  }
+  const [facelets, chosen] = [...solvable.entries()][0];
+  const conf = [];
+  for (let fi = 0; fi < 6; fi++) {
+    for (const c of rotateFace(faces[FACES[fi]].confidence, chosen[fi])) conf.push(c);
+  }
+  let min = 1;
+  const lowConfidence = [];
+  conf.forEach((c, i) => {
+    if (c < min) min = c;
+    if (c < threshold) lowConfidence.push(i);
+  });
+  return { facelets, valid: true, confidence: min, lowConfidence };
 }
 
 // src/camera.ts
@@ -12910,6 +12941,8 @@ Object.defineProperty(_e.versions, "web", { value: as, enumerable: true });
 
 // view/onnx-runtime.ts
 async function createModelRunner(modelUrl, opts = {}) {
+  _e.wasm.numThreads = 1;
+  _e.wasm.wasmPaths = opts.wasmPaths ?? "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
   const session = await _f.create(modelUrl, {
     executionProviders: opts.executionProviders ?? ["wasm"],
     graphOptimizationLevel: "all"
@@ -13028,18 +13061,19 @@ var AiScanPanel = class extends HTMLElement {
     this.btn("start").disabled = true;
     const gen = ++this.startGen;
     try {
+      this.source = await openCamera(this.el("video"));
+      if (gen !== this.startGen) return;
+      this.btn("start").hidden = true;
+      this.reset();
       if (!this.run) {
-        this.setStatus("Loading the model\u2026");
+        this.setStatus("Camera ready \u2014 loading the model\u2026");
         this.run = await createModelRunner(this.modelUrl);
         if (gen !== this.startGen) return;
       }
-      this.source = await openCamera(this.el("video"));
-      if (gen !== this.startGen) return;
-      this.reset();
-      this.btn("start").hidden = true;
       this.loop();
     } catch (err) {
       if (gen !== this.startGen) return;
+      this.btn("start").hidden = false;
       this.btn("start").disabled = false;
       this.setStatus(this.tinted("err", `Cannot start: ${String(err?.message ?? err)}`));
     }
