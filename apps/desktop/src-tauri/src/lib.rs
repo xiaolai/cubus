@@ -3,15 +3,21 @@
 // (hex), FFF5 commands come back via `write_fff5`. The browser-safe gan-driver decodes in the
 // webview — this is Fork 1 (native BLE bridge, TS decode).
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::StreamExt;
-use gan_ble::btleplug::api::{Peripheral as _, WriteType};
+use futures::{Stream, StreamExt};
+use gan_ble::btleplug::api::{
+    Central, CentralEvent, Peripheral as _, ValueNotification, WriteType,
+};
 use gan_ble::btleplug::platform::Peripheral;
 use gan_ble::{default_adapter, find_gan_cube, FFF5_WRITE, FFF6_NOTIFY};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
+
+/// The FFF6 notification stream btleplug hands back (owned, 'static).
+type NotifyStream = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
 
 /// The currently-connected cube (if any).
 #[derive(Default)]
@@ -23,23 +29,13 @@ struct CubeInfo {
     mac: Option<String>,
 }
 
-/// Scan → connect → subscribe FFF6. Each notification is emitted to the webview as a
-/// `cube-packet` event carrying the raw 20-byte packet as hex; gan-driver decodes it there.
-#[tauri::command]
-async fn connect_cube(app: AppHandle, state: State<'_, CubeState>) -> Result<CubeInfo, String> {
-    let central = default_adapter().await.map_err(|e| e.to_string())?;
-    let cube = find_gan_cube(&central, Duration::from_secs(20))
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no GAN cube found — is it awake and advertising?".to_string())?;
-
-    let peripheral = cube.peripheral;
-    peripheral.connect().await.map_err(|e| e.to_string())?;
+/// Discover services, find FFF6, subscribe, and open the notification stream. Split out so
+/// `connect_cube` can tear the peripheral down if any step here fails.
+async fn init_notifications(peripheral: &Peripheral) -> Result<NotifyStream, String> {
     peripheral
         .discover_services()
         .await
         .map_err(|e| e.to_string())?;
-
     let notify = peripheral
         .characteristics()
         .into_iter()
@@ -49,15 +45,59 @@ async fn connect_cube(app: AppHandle, state: State<'_, CubeState>) -> Result<Cub
         .subscribe(&notify)
         .await
         .map_err(|e| e.to_string())?;
+    peripheral.notifications().await.map_err(|e| e.to_string())
+}
 
-    let mut stream = peripheral
-        .notifications()
+/// Scan → connect → subscribe FFF6. Each notification is emitted to the webview as a
+/// `cube-packet` event carrying the raw 20-byte packet as hex; gan-driver decodes it there.
+#[tauri::command]
+async fn connect_cube(app: AppHandle, state: State<'_, CubeState>) -> Result<CubeInfo, String> {
+    let central = default_adapter().await.map_err(|e| e.to_string())?;
+    // Subscribe to adapter events BEFORE connecting so a fast disconnect can't slip past us.
+    let events = central.events().await.map_err(|e| e.to_string())?;
+    let cube = find_gan_cube(&central, Duration::from_secs(20))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no GAN cube found — is it awake and advertising?".to_string())?;
+
+    let peripheral = cube.peripheral;
+    peripheral.connect().await.map_err(|e| e.to_string())?;
+
+    // The peripheral is now connected; if any initialization step fails, disconnect it before
+    // returning so we never leak an open BLE link behind an error the frontend can't clean up
+    // (its disconnect_cube would run against an empty CubeState).
+    let stream = match init_notifications(&peripheral).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = peripheral.disconnect().await;
+            return Err(e);
+        }
+    };
+
+    // Forward FFF6 notifications as `cube-packet`, and detect a real disconnect from the adapter's
+    // DeviceDisconnected event — NOT from stream exhaustion. On CoreBluetooth the notifications
+    // stream can stay open after the cube drops, so relying on it would leave the UI "Connected"
+    // forever and leak this task; the event fires on a genuine disconnect and ends the task.
     let app_for_task = app.clone();
+    let pid = peripheral.id();
     tauri::async_runtime::spawn(async move {
-        while let Some(v) = stream.next().await {
-            let _ = app_for_task.emit("cube-packet", hex::encode(&v.value));
+        let _central = central; // keep the adapter alive so its event stream stays fed
+        let mut stream = stream;
+        let mut events = events;
+        loop {
+            tokio::select! {
+                packet = stream.next() => match packet {
+                    Some(v) => {
+                        let _ = app_for_task.emit("cube-packet", hex::encode(&v.value));
+                    }
+                    None => break,
+                },
+                event = events.next() => match event {
+                    Some(CentralEvent::DeviceDisconnected(id)) if id == pid => break,
+                    Some(_) => {}
+                    None => break,
+                },
+            }
         }
         let _ = app_for_task.emit("cube-disconnect", ());
     });

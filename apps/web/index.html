@@ -287,71 +287,24 @@
         lastEl.textContent=`last event ${age<1?'just now':age+'s ago'}`+(age>=3?' — cube may be asleep (move it)':''); },500);
 
       // --- Transport seam -------------------------------------------------------
-      // The verified browser-safe gan-driver decodes packets; only how the packets ARRIVE
-      // differs by host. In the Tauri app, native Rust BLE (crates/gan-ble) owns the radio
-      // and forwards each FFF6 notification as a `cube-packet` event. In a Chromium browser,
-      // navigator.bluetooth talks to the cube directly. Same driver, same decode — the seam
-      // is picked at runtime by window.__TAURI__.
+      // The verified browser-safe gan-driver decodes packets; only how packets ARRIVE differs by
+      // host, picked at runtime by window.__TAURI__ (Tauri native BLE vs navigator.bluetooth).
+      // The transports live in ./lib/cube-transport.js — extracted so they're unit-testable
+      // (subscribe/notify race + reconnect ordering); see test/cube-transport.test.mjs.
       const isTauri = typeof window.__TAURI__ !== 'undefined';
 
-      // Tauri: relay Rust `cube-packet`/`cube-disconnect` events onto a driver Transport.
-      function makeTauriTransport(TinyEmitter){
-        const T=window.__TAURI__, bus=new TinyEmitter();
-        let offPacket=null, offDisc=null;
-        return {
-          // Register listeners BEFORE connect_cube runs, so no notification is missed.
-          async start(){
-            offPacket=await T.event.listen('cube-packet',(e)=>bus.emit('packet',e.payload,performance.now()));
-            offDisc  =await T.event.listen('cube-disconnect',()=>bus.emit('close',0));
-          },
-          subscribe(){ return bus; },
-          async write(_char,hex){ await T.core.invoke('write_fff5',{ hexData: hex }); },
-          async read(){ throw new Error('read not supported over the Tauri transport'); },
-          disconnect(){ try{ T.core.invoke('disconnect_cube'); }catch{}
-            try{ offPacket&&offPacket(); }catch{} try{ offDisc&&offDisc(); }catch{} },
-        };
-      }
-
-      // Web Bluetooth: GATT notifications on FFF6 → 'packet'; writes go to FFF5. FFF5/FFF6
-      // live under the 0xFFF0 service (btleplug finds chars directly; Web Bluetooth needs
-      // the service named in optionalServices to reach them).
-      const GAN_SERVICE=0xfff0, GAN_NOTIFY=0xfff6, GAN_WRITE=0xfff5;
-      function makeWebBluetoothTransport(TinyEmitter){
-        const bus=new TinyEmitter();
-        let device=null, server=null, writeChar=null;
-        return {
-          async start(){
-            device=await navigator.bluetooth.requestDevice({ filters:[{namePrefix:'GAN'}], optionalServices:[GAN_SERVICE] });
-            device.addEventListener('gattserverdisconnected',()=>bus.emit('close',0));
-            server=await device.gatt.connect();
-            const svc=await server.getPrimaryService(GAN_SERVICE);
-            const notify=await svc.getCharacteristic(GAN_NOTIFY);
-            writeChar=await svc.getCharacteristic(GAN_WRITE);
-            notify.addEventListener('characteristicvaluechanged',(ev)=>{
-              const dv=ev.target.value; let hex='';
-              for(let i=0;i<dv.byteLength;i++) hex+=dv.getUint8(i).toString(16).padStart(2,'0');
-              bus.emit('packet',hex,performance.now());
-            });
-            await notify.startNotifications();
-          },
-          subscribe(){ return bus; },
-          async write(_char,hex){ await writeChar.writeValueWithoutResponse(Uint8Array.from(hex.match(/../g).map((h)=>parseInt(h,16)))); },
-          async read(){ throw new Error('read not used'); },
-          disconnect(){ try{ server&&server.disconnect(); }catch{} },
-        };
-      }
-
-      let conn=null;
+      let conn=null, transport=null;
       async function connect(){
         btn.disabled=true;
         setConn('warn','Connecting…', isTauri?'scanning for your cube…':'pick your cube in the browser prompt', null);
-        let transport=null;
+        transport=null;
         try {
-          // Local, browser-safe driver (bundled from packages/gan-driver) — no CDN dependency.
-          const { GanCube, TinyEmitter }=await import('./vendor/gan-driver.js');
+          // Local, browser-safe driver + transports (bundled from packages/gan-driver) — no CDN.
+          const { GanCube }=await import('./vendor/gan-driver.js');
+          const { makeTauriTransport, makeWebBluetoothTransport }=await import('./lib/cube-transport.js');
           let mac=macInput.value.trim(), name='GAN cube';
           if(isTauri){
-            transport=makeTauriTransport(TinyEmitter);
+            transport=makeTauriTransport();
             await transport.start();                                  // listen before connect_cube
             const info=await window.__TAURI__.core.invoke('connect_cube');
             name=info.name||name;
@@ -360,7 +313,7 @@
           } else {
             if(!navigator.bluetooth) throw new Error('Web Bluetooth unavailable in this browser');
             if(!mac) throw new Error('enter your cube’s MAC first (macOS hides it from the browser)');
-            transport=makeWebBluetoothTransport(TinyEmitter);
+            transport=makeWebBluetoothTransport();
             await transport.start();
           }
           const cube=new GanCube({ mac, transport });
@@ -372,16 +325,20 @@
           conn=cube;
           try { if(mac){ macInput.value=mac; localStorage.setItem('cubeMac', mac); } } catch {}
           setConn('ok',`Connected · ${name}`, mac, 'Reconnect');
-          // Nudge for an immediate snapshot; periodic FACELETS keep it fresh regardless.
-          cube.getState({ active:true }).then((f)=>renderState(f.facelets)).catch(()=>{});
+          // Nudge for an immediate snapshot; periodic FACELETS keep it fresh regardless. Surface a
+          // failed nudge (e.g. a native write error) instead of hiding it behind a green UI.
+          cube.getState({ active:true }).then((f)=>renderState(f.facelets))
+            .catch((e)=>{ lastEl.textContent='state request failed: '+(e&&e.message||e)+' — waiting for a periodic update'; });
         } catch(err){
           // A failed init must not leave a live transport behind a "failed" UI.
-          try { transport&&transport.disconnect(); } catch {}
-          conn=null;
+          try { if(transport) await transport.disconnect(); } catch {}
+          transport=null; conn=null;
           setConn('err','Connection failed', String(err&&err.message||err),'Connect');
         }
       }
-      btn.onclick=async()=>{ if(conn){ try{ conn.disconnect(); }catch{} conn=null; } connect(); };
+      // Reconnect: await the native teardown before scanning again, so a fresh connect can't
+      // overlap the old peripheral mid-disconnect.
+      btn.onclick=async()=>{ if(transport){ try{ await transport.disconnect(); }catch{} } conn=null; transport=null; connect(); };
       // "Set solved" (REQUEST_RESET) is deliberately excluded from gan-driver's safe command
       // set, so it's unavailable on this driver path — use the camera scan to establish ground
       // truth instead. Left visible-but-disabled with an explanatory tooltip.
