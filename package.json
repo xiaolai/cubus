@@ -1,0 +1,10 @@
+{
+  "name": "cubus",
+  "version": "0.0.0",
+  "private": true,
+  "description": "cubus-im — a beginner/kids Rubik's Cube tutor (SPA) built on a verified GAN16 smart-cube driver.",
+  "scripts": {
+    "dev": "npm --prefix web run dev",
+    "build:panel": "npm --prefix cube-scanner run build:panel"
+  }
+}

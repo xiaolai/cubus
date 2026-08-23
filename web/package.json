@@ -1,0 +1,13 @@
+{
+  "name": "cubus-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cubus SPA — Web Bluetooth smart cube + camera (YOLO) scanner. Served as a static site; no bundler, zero runtime dependencies.",
+  "scripts": {
+    "copy-ort": "node copy-ort.mjs",
+    "predev": "node copy-ort.mjs",
+    "dev": "node serve.mjs",
+    "test": "node --test"
+  }
+}

@@ -12969,7 +12969,7 @@ var GUIDE = {
   L: { color: "ORANGE", name: "Left", swatch: "#ff6a00" },
   B: { color: "BLUE", name: "Back", swatch: "#0057c8" }
 };
-var CLASS_SWATCH = ["#f6f7f8", "#d0202a", "#049e4a", "#ffd400", "#ff6a00", "#0057c8"];
+var CLASS_SWATCH = FACES.map((f) => GUIDE[f].swatch);
 var HINT = {
   NO_FACE: "point a side at the camera",
   PARTIAL_FACE: "show the whole face, centred",
@@ -12981,13 +12981,17 @@ var TEMPLATE = `
 <style>
   :host { display: block; font: 14px/1.5 -apple-system, system-ui, sans-serif; color: #e6edf3; }
   .stage { position: relative; aspect-ratio: 1; background: #000; border-radius: 12px; overflow: hidden; }
+  .stage.flash { animation: cap .5s ease; }
+  @keyframes cap {
+    0% { box-shadow: inset 0 0 0 0 rgba(63,185,80,0); }
+    30% { box-shadow: inset 0 0 0 6px #3fb950; }
+    100% { box-shadow: inset 0 0 0 0 rgba(63,185,80,0); }
+  }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
   .status { margin: 12px 0 4px; min-height: 22px; } .status b { color: #fff; }
-  .swatch { width: 15px; height: 15px; border-radius: 4px; border: 1px solid rgba(0,0,0,.4);
-    display: inline-block; vertical-align: -3px; }
   .dots { display: flex; gap: 6px; margin: 8px 0; }
-  .dots span { width: 22px; height: 10px; border-radius: 3px; background: #30363d; }
-  .dots span.done { background: #3fb950; }
+  .dots span { width: 26px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,.4); opacity: .28; }
+  .dots span.done { opacity: 1; box-shadow: 0 0 0 2px rgba(63,185,80,.45); }
   .preview { display: none; grid-template-columns: repeat(3, 36px); gap: 4px; margin: 10px 0; }
   .preview[data-show='1'] { display: grid; }
   .preview i { width: 36px; height: 36px; border-radius: 6px; border: 1px solid rgba(0,0,0,.4); }
@@ -13004,8 +13008,7 @@ var TEMPLATE = `
 <div class="preview" id="preview"></div>
 <div class="row">
   <button class="primary" id="start">Start camera</button>
-  <button class="primary" id="accept" hidden>Yes, next side</button>
-  <button class="ghost" id="retake" hidden>Retake</button>
+  <button class="ghost" id="restart" hidden>Start over</button>
 </div>
 `;
 var AiScanPanel = class extends HTMLElement {
@@ -13018,10 +13021,10 @@ var AiScanPanel = class extends HTMLElement {
   startGen = 0;
   busy = false;
   faces = {};
-  faceIdx = 0;
   lastColors = "";
   stableCount = 0;
-  proposed = null;
+  scanEpoch = 0;
+  // bumped by loop()/stop(); rejects stale in-flight inferences
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
@@ -13031,8 +13034,7 @@ var AiScanPanel = class extends HTMLElement {
     this.buildDots();
     this.buildPreview();
     this.btn("start").addEventListener("click", () => void this.start());
-    this.btn("accept").addEventListener("click", () => this.accept());
-    this.btn("retake").addEventListener("click", () => this.retake());
+    this.btn("restart").addEventListener("click", () => this.restart());
   }
   disconnectedCallback() {
     this.stop();
@@ -13040,6 +13042,7 @@ var AiScanPanel = class extends HTMLElement {
   /** Release the camera + stop the loop. Safe repeatedly and before first render. */
   stop() {
     this.startGen++;
+    this.scanEpoch++;
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
@@ -13047,7 +13050,12 @@ var AiScanPanel = class extends HTMLElement {
     this.source?.stop();
     this.source = null;
     const start = this.root.getElementById("start");
-    if (start) start.disabled = false;
+    if (start) {
+      start.disabled = false;
+      start.hidden = false;
+    }
+    const restart = this.root.getElementById("restart");
+    if (restart) restart.hidden = true;
   }
   el(id) {
     const node = this.root.getElementById(id);
@@ -13060,40 +13068,48 @@ var AiScanPanel = class extends HTMLElement {
   async start() {
     this.btn("start").disabled = true;
     const gen = ++this.startGen;
+    this.source?.stop();
+    this.source = null;
+    let source = null;
     try {
-      this.source = await openCamera(this.el("video"));
-      if (gen !== this.startGen) return;
+      source = await openCamera(this.el("video"));
+      if (gen !== this.startGen) {
+        source.stop();
+        return;
+      }
+      this.source = source;
       this.btn("start").hidden = true;
       this.reset();
       if (!this.run) {
         this.setStatus("Camera ready \u2014 loading the model\u2026");
-        this.run = await createModelRunner(this.modelUrl);
+        const wasmPaths = new URL(this.modelUrl.replace(/[^/]+$/, "") || "./", document.baseURI).href;
+        this.run = await createModelRunner(this.modelUrl, { wasmPaths });
         if (gen !== this.startGen) return;
       }
       this.loop();
     } catch (err) {
-      if (gen !== this.startGen) return;
+      if (gen !== this.startGen) {
+        source?.stop();
+        return;
+      }
       this.btn("start").hidden = false;
       this.btn("start").disabled = false;
       this.setStatus(this.tinted("err", `Cannot start: ${String(err?.message ?? err)}`));
     }
   }
   reset() {
-    this.faceIdx = 0;
     this.lastColors = "";
     this.stableCount = 0;
-    this.proposed = null;
     for (const f of FACES) delete this.faces[f];
     this.buildDots();
   }
   loop() {
     if (this.timer !== null) clearInterval(this.timer);
+    this.scanEpoch++;
     this.showPreview(null);
-    this.btn("accept").hidden = true;
-    this.btn("retake").hidden = true;
-    this.proposed = null;
     this.stableCount = 0;
     this.lastColors = "";
+    this.btn("restart").hidden = false;
     this.timer = setInterval(() => void this.onTick(), TICK_MS);
   }
   stopLoop() {
@@ -13105,83 +13121,123 @@ var AiScanPanel = class extends HTMLElement {
   async onTick() {
     if (this.busy || !this.source || !this.run) return;
     this.busy = true;
+    const epoch = this.scanEpoch;
     try {
       const frame = this.source.grab();
       const fit = await detectFace(frame, this.run);
-      if (this.timer === null) return;
-      const face = FACES[this.faceIdx];
-      const g = GUIDE[face];
+      if (this.scanEpoch !== epoch || this.timer === null) return;
       if (!fit.ok) {
         this.stableCount = 0;
-        this.setStatus(
-          "Show the ",
-          this.swatch(g.swatch),
-          " ",
-          this.bold(g.color),
-          ` (${g.name}) side \u2014 ${HINT[fit.reason]}\u2026`
-        );
+        this.lastColors = "";
+        this.showPreview(null);
+        this.setStatus(`Show any side to the camera \u2014 ${HINT[fit.reason]}\u2026`);
         return;
       }
       const key = fit.face.colors.join(",");
       this.stableCount = key === this.lastColors ? this.stableCount + 1 : 1;
       this.lastColors = key;
-      if (this.stableCount >= STABLE) {
-        this.stopLoop();
-        this.propose(fit.face);
-      } else {
-        this.setStatus("Reading the ", this.bold(g.name), " side \u2014 hold still\u2026");
+      this.showPreview(fit.face.colors);
+      if (this.stableCount < STABLE) {
+        this.setStatus("Reading a side \u2014 hold still\u2026");
+        return;
       }
+      const centre = fit.face.colors[4];
+      const face = centre === void 0 ? void 0 : FACES[centre];
+      if (face === void 0) {
+        this.setStatus(this.tinted("err", "Couldn't read the centre \u2014 hold it steadier."));
+        return;
+      }
+      if (this.faces[face]) {
+        this.setStatus(
+          "Already have the ",
+          this.bold(GUIDE[face].name),
+          " side \u2014 show a different one."
+        );
+        return;
+      }
+      this.capture(face, fit.face);
     } catch {
     } finally {
       this.busy = false;
     }
   }
-  propose(face) {
-    this.proposed = face;
-    this.showPreview(face.colors);
-    const g = GUIDE[FACES[this.faceIdx]];
-    this.setStatus("Read the ", this.bold(g.name), " side. Looks right?");
-    this.btn("accept").hidden = false;
-    this.btn("retake").hidden = false;
-  }
-  accept() {
-    if (!this.proposed) return;
-    this.faces[FACES[this.faceIdx]] = this.proposed;
-    this.faceIdx++;
+  /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
+  capture(face, read) {
+    this.faces[face] = read;
+    this.stableCount = 0;
+    this.lastColors = "";
     this.buildDots();
-    if (this.faceIdx >= FACES.length) this.finish(assembleColors(this.faces));
-    else this.loop();
+    this.flash();
+    const done = this.capturedCount();
+    if (done >= FACES.length) {
+      this.stopLoop();
+      this.showPreview(null);
+      this.setStatus(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
+      let result;
+      try {
+        result = assembleColors(this.faces);
+      } catch (err) {
+        this.setStatus(
+          this.tinted(
+            "err",
+            `Couldn't assemble the scan (${String(err?.message ?? err)}) \u2014 starting over.`
+          )
+        );
+        this.reset();
+        this.loop();
+        return;
+      }
+      this.finish(result);
+      return;
+    }
+    this.setStatus(
+      "Got the ",
+      this.bold(GUIDE[face].name),
+      ` side \u2014 ${done}/6. Show another side\u2026`
+    );
   }
-  retake() {
+  capturedCount() {
+    return FACES.reduce((n, f) => n + (this.faces[f] ? 1 : 0), 0);
+  }
+  /** Clear all captured faces and keep scanning; the camera stays open. */
+  restart() {
+    this.reset();
     this.loop();
+  }
+  /** Brief green border pulse on the stage to confirm a capture. */
+  flash() {
+    const stage = this.root.querySelector(".stage");
+    if (!(stage instanceof HTMLElement)) return;
+    stage.classList.remove("flash");
+    void stage.offsetWidth;
+    stage.classList.add("flash");
   }
   finish(result) {
     this.stopLoop();
     this.showPreview(null);
-    this.btn("accept").hidden = true;
-    this.btn("retake").hidden = true;
     if (result.valid && result.lowConfidence.length === 0) {
       this.setStatus(this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
       this.dispatchEvent(new CustomEvent("scan-complete", { detail: result }));
       this.stop();
     } else {
-      const why = result.valid ? "Some stickers were ambiguous" : "That isn't a solvable cube";
-      this.setStatus(this.tinted("err", `${why} \u2014 press Start camera to re-scan.`));
+      const why = result.valid ? "Some stickers were unclear" : "That isn't a solvable cube yet";
+      this.setStatus(this.tinted("err", `${why} \u2014 starting over, show each side again.`));
       this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
       this.reset();
-      this.btn("start").hidden = false;
-      this.btn("start").disabled = false;
+      this.loop();
     }
   }
   buildDots() {
     const dots = this.el("dots");
     dots.textContent = "";
-    FACES.forEach((face, i) => {
+    for (const face of FACES) {
+      const g = GUIDE[face];
       const span = document.createElement("span");
-      span.className = i < this.faceIdx ? "done" : "";
-      span.title = GUIDE[face].name;
+      span.style.background = g.swatch;
+      span.className = this.faces[face] ? "done" : "";
+      span.title = this.faces[face] ? `${g.name} \u2014 captured` : `${g.name} \u2014 needed`;
       dots.appendChild(span);
-    });
+    }
   }
   buildPreview() {
     const p = this.el("preview");
@@ -13209,12 +13265,6 @@ var AiScanPanel = class extends HTMLElement {
     const b = document.createElement("b");
     b.textContent = text;
     return b;
-  }
-  swatch(color) {
-    const s = document.createElement("span");
-    s.className = "swatch";
-    s.style.background = color;
-    return s;
   }
   tinted(cls, text) {
     const span = document.createElement("span");
