@@ -100,3 +100,24 @@ ground-truth labels, and the labels that predict *app* success are on **your own
 4. `yolo val` (or a small mAP script) against the corrected labels → the honest deployment number.
 
 That number, not 0.971, is the one to track as the model improves.
+
+## Rejected experiment: red/orange hue-separation (v4) — a negative result
+
+After v3, per-face analysis (`face_eval.py`) showed **red↔orange** was the next per-face limiter
+(~4% of reds read as orange). The synthetic reds and oranges *did* overlap in hue ~14% of the time
+(base hues only ~0.07 apart, ±0.04 drift), so the hypothesis was: clamp red below and orange above
+a hue midpoint so their labels stay separable, then re-render + retrain (v4).
+
+**It failed.** On the same held-out set the confusion got slightly *worse* (18 → 23 reds called
+orange), and v4 was otherwise a wash vs v3 (mAP 0.905 vs 0.888 and per-face 79.6% vs 76.0% are
+within noise on ~200 images, with no working mechanism). The change was reverted; v3 stays shipped.
+
+**Why the hypothesis was wrong (the lesson):** the *synthetic* overlap was real but wasn't the cause
+of the *real* confusion. Real red and orange are fundamentally hue-adjacent — real red under warm
+light genuinely *is* orange-hued. Clamping synthetic red away from orange **removed the training
+coverage for exactly those real warm-reds**, so the model called them orange *more*. Removing
+domain-randomization variation to make classes "cleaner" in synthetic hurts real robustness when the
+real classes genuinely overlap. If red/orange is ever revisited, the lever is the opposite — *more*
+labelled coverage of the overlap (correct labels on warm-red / cool-orange), or a non-hue
+discriminator (value/saturation) — not separation. Given it's a ~4% issue the verifier (9-per-colour
++ solvability) already absorbs at scan-assembly, the better use of effort is the webcam test above.
