@@ -9,7 +9,7 @@ A beginner/kids Rubik's Cube tutor built on a verified GAN16 ui smart-cube drive
 - **Language**: always reply to the user, and write all code comments and
   documentation, in English — regardless of the language the user writes in.
 - **Layout** (pnpm + Cargo monorepo): the verified driver lives at `packages/gan-driver/`
-  (TypeScript, **zero runtime deps**, transport-agnostic); the AI scanner at
+  (TypeScript, browser-safe, one tiny runtime dep `aes-js`, transport-agnostic); the AI scanner at
   `packages/cube-scanner/`; the web SPA at `apps/web/` (also the Tauri webview); the native
   BLE bridge at `crates/gan-ble/` (btleplug). The Tauri desktop app (`apps/desktop/`) is being
   built — see `dev-docs/implementation-plan.md` for the dual web+Tauri roadmap.
