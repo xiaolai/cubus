@@ -64,6 +64,8 @@ describe('fitFace', () => {
     if (r.ok) {
       expect(r.face.colors).toEqual(colors);
       expect(r.face.confidence).toHaveLength(9);
+      expect(r.face.boxes).toHaveLength(9); // ordered grid boxes for RGB sampling
+      expect(r.face.boxes[0]!.cx).toBe(100); // reading order: top-left first
     }
   });
 
