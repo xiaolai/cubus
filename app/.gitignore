@@ -1,8 +1,0 @@
-node_modules/
-dist/
-*.log
-
-# onnxruntime-web wasm/loader assets — copied from cube-scanner's node_modules by `prestart`
-# on first run (the AI scanner fetches them at runtime over app://). Not committed (large).
-renderer/vendor/ort-wasm-*
-renderer/vendor/ort.*

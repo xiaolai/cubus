@@ -11,7 +11,7 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "check": "npm run typecheck && npm run lint && npm run test",
-    "build:panel": "esbuild view/ai-scan-panel.ts --bundle --format=esm --target=es2022 --outfile=../app/renderer/vendor/ai-scan-panel.js"
+    "build:panel": "esbuild view/ai-scan-panel.ts --bundle --format=esm --target=es2022 --outfile=../web/vendor/ai-scan-panel.js"
   },
   "peerDependencies": {
     "cubejs": "^1.3.2"

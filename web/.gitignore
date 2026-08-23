@@ -1,0 +1,8 @@
+node_modules/
+*.log
+
+# onnxruntime-web wasm/loader assets — copied from cube-scanner's node_modules by
+# `npm run copy-ort`. The AI scanner fetches them at runtime from ./vendor/. Large;
+# regenerated from the pinned dependency, not committed.
+vendor/ort-wasm-*
+vendor/ort.*
