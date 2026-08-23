@@ -1,11 +1,12 @@
 // GAN16 ui driver: turns encrypted FFF6 notifications into typed cube events,
 // and sends safe query commands via FFF5. Transport-agnostic (see Transport).
 
-import { EventEmitter } from 'node:events';
+import { TinyEmitter } from './emitter.js';
 import { type SafeCommand, buildCommand } from './gen4/commands.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
 import { decodeGen4 } from './gen4/decode.js';
 import type { CubeEvent, CubeFacelets, CubeGyro, CubeMove } from './gen4/types.js';
+import { bytesToHex, hexToBytes } from './hex.js';
 import type { Transport } from './transport/blew.js';
 
 const STATE_CHAR = 'FFF6'; // notify: state/events
@@ -19,7 +20,7 @@ export interface GanCubeOptions {
   transport: Transport;
 }
 
-export class GanCube extends EventEmitter {
+export class GanCube extends TinyEmitter {
   private readonly cipher: GanGen4Cipher;
   private readonly transport: Transport;
   private lastSerial = -1;
@@ -79,7 +80,7 @@ export class GanCube extends EventEmitter {
     }
     let decrypted: Uint8Array;
     try {
-      decrypted = this.cipher.decrypt(Buffer.from(hex, 'hex'));
+      decrypted = this.cipher.decrypt(hexToBytes(hex));
     } catch (e) {
       this.emit('error', e);
       return;
@@ -171,7 +172,7 @@ export class GanCube extends EventEmitter {
 
   private async send(cmd: SafeCommand): Promise<void> {
     const enc = this.cipher.encrypt(buildCommand(cmd));
-    await this.transport.write(CMD_CHAR, Buffer.from(enc).toString('hex'));
+    await this.transport.write(CMD_CHAR, bytesToHex(enc));
   }
 
   /**

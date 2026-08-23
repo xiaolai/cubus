@@ -8,8 +8,13 @@
 // chunk at the start and the chunk aligned to the end (they overlap for the
 // 20-byte messages GAN uses). Key and IV are per-device: the first 6 bytes are
 // salted by adding the cube's MAC bytes (in reverse) modulo 0xFF.
+//
+// Uses aes-js (tiny, pure-JS — what upstream gan-web-bluetooth uses) instead of
+// node:crypto, so the driver runs in the browser + Tauri webview as well as Node.
+// Each chunk is one CBC block, so a FRESH cipher (fresh IV) is used per chunk —
+// equivalent to the previous createDecipheriv-per-chunk with setAutoPadding(false).
 
-import { createCipheriv, createDecipheriv } from 'node:crypto';
+import aesjs from 'aes-js';
 
 /** Base key/iv shared by GAN Gen2/Gen3/Gen4 cubes (afedotov/gan-web-bluetooth). */
 export const GAN_GEN4_BASE_KEY = Uint8Array.from([
@@ -27,10 +32,10 @@ export function deriveKeyIv(
   salt: Uint8Array,
   baseKey = GAN_GEN4_BASE_KEY,
   baseIv = GAN_GEN4_BASE_IV,
-): { key: Buffer; iv: Buffer } {
+): { key: Uint8Array; iv: Uint8Array } {
   if (salt.length !== 6) throw new Error('salt must be 6 bytes');
-  const key = Buffer.from(baseKey);
-  const iv = Buffer.from(baseIv);
+  const key = Uint8Array.from(baseKey);
+  const iv = Uint8Array.from(baseIv);
   for (let i = 0; i < 6; i++) {
     // i < 6 <= length of every operand (key/iv are 16, salt is checked 6 above).
     key[i] = (baseKey[i]! + salt[i]!) % 0xff;
@@ -49,31 +54,27 @@ export function macToSalt(mac: string): Uint8Array {
 }
 
 export class GanGen4Cipher {
-  private readonly key: Buffer;
-  private readonly iv: Buffer;
+  private readonly key: Uint8Array;
+  private readonly iv: Uint8Array;
 
   constructor(mac: string) {
     ({ key: this.key, iv: this.iv } = deriveKeyIv(macToSalt(mac)));
   }
 
-  /** Decrypt one 16-byte block (single CBC block, no padding). */
-  private decChunk(buf: Buffer, offset: number): void {
-    const d = createDecipheriv('aes-128-cbc', this.key, this.iv);
-    d.setAutoPadding(false);
-    const out = Buffer.concat([d.update(buf.subarray(offset, offset + 16)), d.final()]);
-    out.copy(buf, offset);
+  /** Decrypt one 16-byte block in place (single CBC block, no padding, fresh IV). */
+  private decChunk(buf: Uint8Array, offset: number): void {
+    const cbc = new aesjs.ModeOfOperation.cbc(this.key, this.iv);
+    buf.set(cbc.decrypt(buf.slice(offset, offset + 16)), offset);
   }
 
-  private encChunk(buf: Buffer, offset: number): void {
-    const c = createCipheriv('aes-128-cbc', this.key, this.iv);
-    c.setAutoPadding(false);
-    const out = Buffer.concat([c.update(buf.subarray(offset, offset + 16)), c.final()]);
-    out.copy(buf, offset);
+  private encChunk(buf: Uint8Array, offset: number): void {
+    const cbc = new aesjs.ModeOfOperation.cbc(this.key, this.iv);
+    buf.set(cbc.encrypt(buf.slice(offset, offset + 16)), offset);
   }
 
   decrypt(data: Uint8Array): Uint8Array {
     if (data.length < 16) throw new Error('message must be at least 16 bytes');
-    const res = Buffer.from(data);
+    const res = Uint8Array.from(data);
     if (res.length > 16) this.decChunk(res, res.length - 16); // end chunk first
     this.decChunk(res, 0); // then start chunk
     return res;
@@ -81,7 +82,7 @@ export class GanGen4Cipher {
 
   encrypt(data: Uint8Array): Uint8Array {
     if (data.length < 16) throw new Error('message must be at least 16 bytes');
-    const res = Buffer.from(data);
+    const res = Uint8Array.from(data);
     this.encChunk(res, 0); // start chunk first
     if (res.length > 16) this.encChunk(res, res.length - 16); // then end chunk
     return res;

@@ -45,10 +45,17 @@ importers:
         version: 2.1.9(@types/node@22.20.1)
 
   packages/gan-driver:
+    dependencies:
+      aes-js:
+        specifier: ^3.1.2
+        version: 3.1.2
     devDependencies:
       '@biomejs/biome':
         specifier: ^1.9.4
         version: 1.9.4
+      '@types/aes-js':
+        specifier: ^3.1.4
+        version: 3.1.4
       '@types/node':
         specifier: ^22.20.1
         version: 22.20.1
@@ -706,6 +713,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@types/aes-js@3.1.4':
+    resolution: {integrity: sha512-v3D66IptpUqh+pHKVNRxY8yvp2ESSZXe0rTzsGdzUhEwag7ljVfgCllkWv2YgiYXDhWFBrEywll4A5JToyTNFA==}
+
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
 
@@ -821,6 +831,9 @@ packages:
     resolution: {integrity: sha512-lGq+9yr1/GuAWaVYIHRjvvySG5/4VfKIvC8EWxStPdcDh/Ka7FG3twP6v4d5BkravUilhIAsG4Qj83t02LWUPQ==}
     engines: {node: '>=0.4.0'}
     hasBin: true
+
+  aes-js@3.1.2:
+    resolution: {integrity: sha512-e5pEa2kBnBOgR4Y/p20pskXI74UEz7de8ZGVo58asOtvSVG5YAbJeELPZxOmt+Bnz3rX753YKhfIn4X4l1PPRQ==}
 
   ajv@6.15.0:
     resolution: {integrity: sha512-fgFx7Hfoq60ytK2c7DhnF8jIvzYgOMxfugjLOSMHjLIPgenqa7S7oaagATUq99mV6IYvN2tRmC0wnTYX6iPbMw==}
@@ -1988,6 +2001,8 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.5':
     optional: true
 
+  '@types/aes-js@3.1.4': {}
+
   '@types/estree@1.0.9': {}
 
   '@types/json-schema@7.0.15': {}
@@ -2150,6 +2165,8 @@ snapshots:
       acorn: 8.18.0
 
   acorn@8.18.0: {}
+
+  aes-js@3.1.2: {}
 
   ajv@6.15.0:
     dependencies:

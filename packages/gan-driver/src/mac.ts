@@ -12,12 +12,14 @@
 // read in reverse. Cross-check: it must end with the 2 bytes in the device
 // name suffix (e.g. "GAN16ui_C8D3" -> ...:C8:D3).
 
+import { hexToBytes } from './hex.js';
+
 /** @param manufacturerHex full CoreBluetooth manufacturer data as hex. */
 export function extractMacFromManufacturerData(manufacturerHex: string): string | null {
   // Reject malformed hex up front — Buffer.from(...,'hex') silently truncates
   // on odd length or non-hex chars, which would yield a plausible-but-wrong MAC.
   if (!/^[0-9a-fA-F]*$/.test(manufacturerHex) || manufacturerHex.length % 2 !== 0) return null;
-  const bytes = Buffer.from(manufacturerHex, 'hex');
+  const bytes = hexToBytes(manufacturerHex);
   if (bytes.length < 11) return null;
   // company id little-endian; GAN uses 0xXX01, i.e. low byte 0x01
   if (bytes[0] !== 0x01) return null;

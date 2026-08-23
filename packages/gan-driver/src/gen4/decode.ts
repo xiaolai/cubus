@@ -7,6 +7,7 @@
 // Bit layouts verified against a physical GAN16 ui (2026-08-19). Protocol from
 // afedotov/gan-web-bluetooth (MIT).
 
+import { bytesToHex } from '../hex.js';
 import { toKociembaFacelets } from './facelets.js';
 import { MessageView } from './message-view.js';
 import type { CubeEvent, Face } from './types.js';
@@ -106,7 +107,7 @@ export function decodeGen4(decrypted: Uint8Array, timestamp: number): DecodeResu
   const msg = new MessageView(decrypted);
   const eventType = msg.getBitWord(0, 8);
   const dataLength = msg.getBitWord(8, 8);
-  const rawHex = Buffer.from(decrypted).toString('hex');
+  const rawHex = bytesToHex(decrypted);
 
   if (eventType === GEN4_EVENT.MOVE) {
     const cubeTimestamp = msg.getBitWord(16, 32, true);
