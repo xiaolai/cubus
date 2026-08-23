@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cubus — smart cube</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0d1117; --panel: #161b22; --line: #30363d; --text: #e6edf3; --muted: #8b949e;
+        --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+        --U: #f6f7f8; --R: #d0202a; --F: #049e4a; --D: #ffd400; --L: #ff6a00; --B: #0057c8;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--text); padding: 24px;
+        font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+      .wrap { max-width: 960px; margin: 0 auto; }
+      h1 { font-size: 20px; margin: 0 0 16px; } h1 span { color: var(--muted); font-weight: 400; }
+      .conn { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+        padding: 16px 18px; margin-bottom: 12px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+      .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+      .dot.ok { background: var(--ok); box-shadow: 0 0 0 4px rgba(63,185,80,.18); }
+      .dot.warn { background: var(--warn); animation: pulse 1s infinite; }
+      .dot.err { background: var(--err); }
+      @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+      .who { font-weight: 600; } .sub { color: var(--muted); font-size: 13px; } .spacer { flex: 1; }
+      input, button { font: inherit; }
+      #mac { background: #0d1117; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+        padding: 6px 10px; width: 180px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+      button { background: var(--accent); color: #06122b; border: 0; border-radius: 7px;
+        padding: 8px 16px; font-weight: 600; cursor: pointer; }
+      button.ghost { background: #21262d; color: var(--text); border: 1px solid var(--line); }
+      button:disabled { opacity: .5; cursor: default; }
+      .last { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+      main { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+      @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+      .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+        margin: 0 0 14px; font-weight: 600; }
+      #cube { width: 100%; height: 400px; display: flex; align-items: center; justify-content: center; }
+      twisty-player { width: 100%; height: 400px; }
+      .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+      .solve { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+      .viewctl { display: flex; gap: 14px; margin-top: 10px; font-size: 12px; color: var(--muted); align-items: center; flex-wrap: wrap; }
+      .viewctl input[type="number"] { width: 64px; background: #0d1117; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
+      .viewctl select { background: #0d1117; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
+      .movelist { margin-top: 10px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text); word-break: break-word; line-height: 1.9; letter-spacing: .03em; }
+      .net { display: grid; grid-template-columns: repeat(12,1fr); grid-template-rows: repeat(9,1fr);
+        gap: var(--net-gap, 3px); aspect-ratio: 12/9; max-width: var(--net-w, 360px); margin: 0 auto; }
+      .face { display: grid; grid-template-columns: repeat(3,1fr); grid-template-rows: repeat(3,1fr); gap: 2px; }
+      .sticker { border-radius: var(--sticker-r, 3px); border: 1px solid rgba(0,0,0,.35); transition: background var(--fade, .15s); }
+      .U{background:var(--U)} .R{background:var(--R)} .F{background:var(--F)}
+      .D{background:var(--D)} .L{background:var(--L)} .B{background:var(--B)}
+      .facelets { font-family: ui-monospace, Menlo, monospace; font-size: 12px; word-break: break-all;
+        color: var(--muted); margin-top: 14px; line-height: 1.7; }
+
+      /* Modal overlay — used by the AI camera-scan panel */
+      .picker { position: fixed; inset: 0; background: rgba(1,4,9,.72); display: grid; place-items: center; z-index: 50; }
+      .picker[hidden] { display: none; }
+      .pickerBox { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+        padding: 20px; width: min(440px, 92vw); }
+      .pickerBox h3 { margin: 0 0 4px; font-size: 16px; }
+      .pickerBox .scan { color: var(--warn); font-size: 13px; font-weight: 400; }
+      .pickFoot { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+      .muted { color: var(--muted); font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Cubus <span>· smart cube (Web Bluetooth)</span></h1>
+
+      <div class="conn">
+        <span class="dot" id="dot"></span>
+        <div>
+          <div class="who" id="who">Not connected</div>
+          <div class="sub" id="sub">Click Connect, then pick your cube in the browser prompt.</div>
+        </div>
+        <span class="spacer"></span>
+        <input id="mac" value="" placeholder="cube MAC (macOS)" title="cube MAC — required on macOS, where the browser hides it in advertisements" />
+        <button id="btn">Connect</button>
+        <button id="reset" class="ghost" disabled title="Anchor the cube's internal state to solved">Set solved</button>
+        <button id="aiScanBtn" class="ghost" title="Read the physical cube with the camera (YOLOv11), one side at a time">Scan with camera</button>
+        <button id="randBtn" class="ghost" title="Load a random scrambled cube — test the twin + solver with no hardware">Random cube</button>
+      </div>
+      <div class="last" id="last">— no events yet —</div>
+
+      <main>
+        <section class="card">
+          <h2>3D twin</h2>
+          <div id="cube"></div>
+          <div class="note" id="note">3D loads from the cubing.js CDN.</div>
+          <div class="viewctl">
+            <label>ghost distance <input type="number" id="hintElev" value="4" min="0" max="24" step="0.5" /></label>
+            <label>camera <input type="number" id="camDist" value="12" min="3" max="48" step="1" /></label>
+            <label>tilt <input type="number" id="camLat" value="35" min="-90" max="90" step="5" /></label>
+            <label>rotate <input type="number" id="camLon" value="45" min="-180" max="180" step="5" /></label>
+            <label>sticker <input type="number" id="facScale" value="0.9" min="0.3" max="1" step="0.05" /></label>
+            <label>speed <input type="number" id="tempo" value="0.5" min="0.25" max="5" step="0.25" /></label>
+            <label><input type="checkbox" id="hintOn" checked /> ghosts</label>
+            <label>back <select id="backView"><option value="none">none</option><option value="top-right">inset</option><option value="side-by-side">side</option></select></label>
+          </div>
+          <div class="solve">
+            <button id="solveBtn" disabled>Solve it ▶</button>
+            <span class="sub" id="solveInfo">scan or connect a cube first</span>
+          </div>
+          <div class="movelist" id="moveList"></div>
+        </section>
+        <section class="card">
+          <h2>2D net — current arrangement</h2>
+          <div class="net" id="net"></div>
+          <div class="viewctl">
+            <label>net size <input type="number" id="netW" value="360" min="160" max="640" step="20" /></label>
+            <label>gap <input type="number" id="netGap" value="3" min="0" max="10" step="1" /></label>
+            <label>radius <input type="number" id="stickR" value="3" min="0" max="14" step="1" /></label>
+            <label>fade <input type="number" id="fade" value="0.15" min="0" max="1.5" step="0.05" /></label>
+          </div>
+          <div class="facelets"><b style="color:var(--text)">URFDLB:</b><br /><span id="fx">—</span></div>
+        </section>
+      </main>
+    </div>
+
+    <!-- AI camera scanner (YOLOv11): show the six sides in any order — each captured automatically. The
+         <ai-scan-panel> element is registered by ./vendor/ai-scan-panel.js (built from
+         cube-scanner/view). It owns onnxruntime-web; the model + wasm are served from ./vendor/. -->
+    <div class="picker" id="aiScanModal" hidden>
+      <div class="pickerBox" style="width: min(520px, 94vw)">
+        <h3>AI scan <span class="scan">camera · YOLO</span></h3>
+        <ai-scan-panel id="aiPanel"></ai-scan-panel>
+        <div class="pickFoot" style="margin-top: 14px">
+          <span class="muted">Show each side in any order, held flat and centred — each is captured automatically.</span>
+          <button class="ghost" id="aiScanClose">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Registers <ai-scan-panel> (the only scanner). Self-contained (cubejs inlined); it owns
+         onnxruntime-web and loads the model + wasm from ./vendor/ (fetched over the page's
+         http(s) origin). No OpenCV — the classical scanner and live tracker were removed. -->
+    <script type="module" src="./vendor/ai-scan-panel.js"></script>
+
+    <script type="module">
+      const FACE = ['U','R','F','D','L','B'];
+      const POS = { U:[1,4], L:[4,1], F:[4,4], R:[4,7], B:[4,10], D:[7,4] };
+      const $ = (id) => document.getElementById(id);
+      const dot=$('dot'), who=$('who'), sub=$('sub'), btn=$('btn'), lastEl=$('last'), macInput=$('mac'), resetBtn=$('reset');
+      // Remember the last-used cube MAC (needed on macOS, where the browser hides it) across reloads.
+      try { macInput.value = localStorage.getItem('cubeMac') || ''; } catch {}
+
+      // 2D net
+      const net=$('net'), cells=[];
+      FACE.forEach((f)=>{ const d=document.createElement('div'); d.className='face';
+        const [r,c]=POS[f]; d.style.gridRow=`${r}/span 3`; d.style.gridColumn=`${c}/span 3`;
+        for(let i=0;i<9;i++){const s=document.createElement('div');s.className='sticker';d.appendChild(s);cells.push(s);}
+        net.appendChild(d); });
+      const paintNet=(f)=>{ for(let i=0;i<54;i++) cells[i].className='sticker '+f[i]; };
+
+      // 3D + solver. cubejs (fast, already loaded) parses facelets → the setup alg that shows the
+      // scrambled state, and stays our independent ORACLE. cubing.js's own solver (min2phase)
+      // produces the solution we animate — a native Alg for the player, typically ~2 moves shorter
+      // than cubejs. We cross-check cubing.js's solution against cubejs before animating it.
+      let TwistyPlayer=null, Cube=null, player=null, solverReady=false;
+      let lastSetupAlg='', solvable=false;
+      let cjSolve=null, cjPuzzle=null; // cubing.js solver + 3x3x3 puzzle, loaded on first solve
+      const solveBtn=$('solveBtn'), solveInfo=$('solveInfo'), moveList=$('moveList');
+      const hintElev=$('hintElev'), camDist=$('camDist'), camLat=$('camLat'), camLon=$('camLon');
+      const facScale=$('facScale'), tempo=$('tempo'), hintOn=$('hintOn'), backSel=$('backView');
+      const netW=$('netW'), netGap=$('netGap'), stickR=$('stickR'), fade=$('fade');
+      // Persist the view controls across reloads: read saved values into the controls NOW (before the
+      // first build, so the twin starts with them), and re-save on every change.
+      const viewNums={hintElev,camDist,camLat,camLon,facScale,tempo,netW,netGap,stickR,fade};
+      try { const s=JSON.parse(localStorage.getItem('cubeView')||'{}');
+        for(const k in viewNums) if(s[k]!=null) viewNums[k].value=s[k];
+        if(s.hintOn!=null) hintOn.checked=s.hintOn; if(s.backView!=null) backSel.value=s.backView;
+      } catch {}
+      function saveView(){ try { const o={}; for(const k in viewNums) o[k]=viewNums[k].value;
+        o.hintOn=hintOn.checked; o.backView=backSel.value;
+        localStorage.setItem('cubeView',JSON.stringify(o)); } catch {} }
+      // The 2D net is a plain CSS grid — its only params are cosmetic (size / gap / sticker radius),
+      // driven via CSS custom properties. (No library, so nothing like the 3D twin's rich params.)
+      function applyNet(){ const r=document.documentElement.style;
+        r.setProperty('--net-w',(Number(netW.value)||360)+'px');
+        r.setProperty('--net-gap',(Number(netGap.value)||3)+'px');
+        r.setProperty('--sticker-r',(Number(stickR.value)||3)+'px');
+        r.setProperty('--fade',(Number(fade.value)||0)+'s'); } // sticker repaint/fade time; 0 = instant
+      applyNet();
+      for(const el of [netW,netGap,stickR,fade]){ el.addEventListener('input',applyNet); el.addEventListener('change',saveView); }
+      let solutionAlg=''; // solution alg currently on the twin ('' when just viewing a state)
+      let stepPatterns=[], stepFacelets=[]; // per-move (KPattern, facelets) so the 2D net co-moves during solve
+      // LIVE-reactive props — take effect instantly on the existing player:
+      function applyView(){ if(!player) return;
+        player.experimentalHintFaceletsElevation=Number(hintElev.value)||0; // (only honoured at build time)
+        player.cameraDistance=Number(camDist.value)||10;
+        player.cameraLatitude=Number(camLat.value)||0;
+        player.cameraLongitude=Number(camLon.value)||0;
+        player.experimentalFaceletScale=Number(facScale.value)||1;
+        player.tempoScale=Number(tempo.value)||1; }
+      // hintFacelets, backView, controlPanel and hint elevation are baked into the 3D scene at BUILD
+      // time — setting them on a live player does nothing — so those go through a full rebuild of the
+      // twin (cheap; only on a control change or a solve, never per animation frame).
+      function makeTwin(){
+        const p=new TwistyPlayer({puzzle:'3x3x3',experimentalSetupAlg:lastSetupAlg,alg:solutionAlg,
+          hintFacelets:hintOn.checked?'floating':'none',background:'none',
+          controlPanel:solutionAlg?'bottom-row':'none',backView:backSel.value});
+        const old=player; player=p; $('cube').appendChild(p); if(old) old.remove();
+        applyView();
+        // Co-move the 2D net with the twin: on each animation step (play / scrub / step) match the
+        // twin's live KPattern to a precomputed solve step and paint the net. No-ops until solving.
+        player.experimentalModel?.currentPattern?.addFreshListener?.((pattern)=>{
+          if(!stepPatterns.length || typeof pattern?.isIdentical!=='function') return;
+          for(let k=0;k<stepPatterns.length;k++){ if(pattern.isIdentical(stepPatterns[k])){ paintNet(stepFacelets[k]); break; } }
+        });
+      }
+      for(const el of [camDist,camLat,camLon,facScale,tempo]){
+        el.addEventListener('input',applyView); el.addEventListener('change',saveView); }
+      for(const el of [hintElev,hintOn,backSel]) el.addEventListener('change',()=>{ if(player) makeTwin(); saveView(); });
+      (async()=>{ try {
+        ({ TwistyPlayer } = await import('https://cdn.cubing.net/v0/js/cubing/twisty'));
+        Cube = (await import('https://esm.sh/cubejs@1.3.2')).default; Cube.initSolver(); solverReady=true;
+        $('note').textContent='cubing.js ready · drag to rotate';
+        if(lastFacelets) render3D(lastFacelets); // replay a state that arrived before the renderer was ready
+        else solveInfo.textContent='scan or connect a cube first';
+      } catch { $('note').textContent='3D unavailable — 2D net still shows the state.';
+        solveInfo.textContent='solver unavailable (offline?)'; } })();
+
+      const invMove=(m)=>m.endsWith('2')?m:m.endsWith("'")?m[0]:m+"'";
+      function render3D(facelets){ if(!TwistyPlayer||!solverReady) return;
+        let sol; try { sol=Cube.fromString(facelets).solve(); } catch { return; }
+        const moves=sol.trim()?sol.trim().split(/\s+/):[];
+        lastSetupAlg=moves.slice().reverse().map(invMove).join(' '); // solved -> scrambled (for display)
+        solvable=moves.length>0;
+        const wasSolving=!!solutionAlg;
+        solutionAlg=''; moveList.textContent=''; stepPatterns=[]; stepFacelets=[]; // fresh state: drop solution + net co-move
+        // First build, or leaving solve-mode, needs a rebuild (control bar is build-time); otherwise
+        // update the state incrementally (experimentalSetupAlg IS live — cheap for smart-cube play).
+        if(!player || wasSolving) makeTwin();
+        else { player.alg=''; player.experimentalSetupAlg=lastSetupAlg; player.controlPanel='none'; applyView(); }
+        solveBtn.disabled=!solvable;
+        solveInfo.textContent=solvable?'ready — press Solve it':'already solved ✓';
+      }
+
+      async function solveIt(){
+        if(!player||!solvable) return;
+        solveBtn.disabled=true; solveInfo.textContent='solving…';
+        try {
+          if(!cjSolve){ // lazy-load cubing.js's solver + puzzle only when first needed
+            ({ experimentalSolve3x3x3IgnoringCenters: cjSolve } = await import('https://cdn.cubing.net/v0/js/cubing/search'));
+            ({ cube3x3x3: cjPuzzle } = await import('https://cdn.cubing.net/v0/js/cubing/puzzles'));
+          }
+          const kpuzzle=await cjPuzzle.kpuzzle();
+          const pattern=kpuzzle.defaultPattern().applyAlg(lastSetupAlg); // scanned state, via universal move notation
+          const solution=(await cjSolve(pattern)).toString();
+          const moves=solution.trim()?solution.trim().split(/\s+/):[];
+          // Oracle cross-check: only a definite refutation (cubejs parses it AND it doesn't solve) blocks.
+          let verified=null; try { verified=Cube.fromString(lastFacelets).move(solution).isSolved(); } catch {}
+          if(verified===false){ solveInfo.textContent='solver check failed — re-scan and try again'; solveBtn.disabled=false; return; }
+          solutionAlg=solution;
+          makeTwin(); // rebuild WITH the solution alg + control bar (both are build-time settings)
+          // Precompute per-step facelets (cubejs) + patterns (cubing.js) so the 2D net co-moves.
+          try {
+            const base=Cube.fromString(lastFacelets); const sf=[base.asString()];
+            for(const m of moves){ base.move(m); sf.push(base.asString()); }
+            let p=pattern; const sp=[p]; for(const m of moves){ p=p.applyMove(m); sp.push(p); }
+            stepFacelets=sf; stepPatterns=sp;
+          } catch { stepFacelets=[]; stepPatterns=[]; }
+          moveList.textContent=solution; // show the actual moves
+          solveInfo.textContent=`Solution · ${moves.length} moves — press ▶ to animate; follow on your cube`;
+          solveBtn.disabled=false;
+        } catch(e){ solveInfo.textContent='solve failed: '+String(e&&e.message||e); solveBtn.disabled=false; }
+      }
+      solveBtn.onclick=()=>{ void solveIt(); };
+      // Random cube: cubejs generates a fresh VALID scramble each click — feeds the same renderState
+      // path as the scanner, so the 2D net, twin, and Solve-it all update. Handy for testing with no cube.
+      $('randBtn').onclick=()=>{
+        if(!Cube||!solverReady){ lastEl.textContent='solver still loading — try again in a moment'; return; }
+        renderState(Cube.random().asString());
+        lastEl.textContent='loaded a random cube — press Solve it';
+      };
+
+      let lastFacelets='';
+      function renderState(f){ if(f===lastFacelets) return; lastFacelets=f;
+        paintNet(f); $('fx').textContent=f; render3D(f); }
+
+      function setConn(kind,title,detail,btnLabel){ dot.className='dot '+kind; who.textContent=title; sub.textContent=detail;
+        if(btnLabel){ btn.textContent=btnLabel; btn.disabled=false; } }
+      let lastEventAt=0;
+      setInterval(()=>{ if(!lastEventAt) return; const age=Math.round((performance.now()-lastEventAt)/1000);
+        lastEl.textContent=`last event ${age<1?'just now':age+'s ago'}`+(age>=3?' — cube may be asleep (move it)':''); },500);
+
+      // --- Transport seam -------------------------------------------------------
+      // The verified browser-safe gan-driver decodes packets; only how packets ARRIVE differs by
+      // host, picked at runtime by window.__TAURI__ (Tauri native BLE vs navigator.bluetooth).
+      // The transports live in ./lib/cube-transport.js — extracted so they're unit-testable
+      // (subscribe/notify race + reconnect ordering); see test/cube-transport.test.mjs.
+      const isTauri = typeof window.__TAURI__ !== 'undefined';
+
+      let conn=null, transport=null;
+      async function connect(){
+        btn.disabled=true;
+        setConn('warn','Connecting…', isTauri?'scanning for your cube…':'pick your cube in the browser prompt', null);
+        transport=null;
+        try {
+          // Local, browser-safe driver + transports (bundled from packages/gan-driver) — no CDN.
+          const { GanCube }=await import('./vendor/gan-driver.js');
+          const { makeTauriTransport, makeWebBluetoothTransport }=await import('./lib/cube-transport.js');
+          let mac=macInput.value.trim(), name='GAN cube';
+          if(isTauri){
+            transport=makeTauriTransport();
+            await transport.start();                                  // listen before connect_cube
+            const info=await window.__TAURI__.core.invoke('connect_cube');
+            name=info.name||name;
+            mac=info.mac||mac;                                        // prefer the MAC Rust recovered
+            if(!mac) throw new Error('cube MAC unavailable — enter it in the MAC field and reconnect');
+          } else {
+            if(!navigator.bluetooth) throw new Error('Web Bluetooth unavailable in this browser');
+            if(!mac) throw new Error('enter your cube’s MAC first (macOS hides it from the browser)');
+            transport=makeWebBluetoothTransport();
+            await transport.start();
+          }
+          const cube=new GanCube({ mac, transport });
+          cube.onFacelets((f)=>{ lastEventAt=performance.now(); renderState(f.facelets); });
+          cube.on('disconnect',()=>{ setConn('err','Disconnected','cube slept or dropped — move it, then Reconnect','Reconnect');
+            lastEventAt=0; lastEl.textContent='— disconnected —'; conn=null; });
+          cube.on('error',(e)=>{ lastEl.textContent='cube error: '+(e&&e.message||e); });
+          cube.connect();
+          conn=cube;
+          try { if(mac){ macInput.value=mac; localStorage.setItem('cubeMac', mac); } } catch {}
+          setConn('ok',`Connected · ${name}`, mac, 'Reconnect');
+          // Nudge for an immediate snapshot; periodic FACELETS keep it fresh regardless. Surface a
+          // failed nudge (e.g. a native write error) instead of hiding it behind a green UI.
+          cube.getState({ active:true }).then((f)=>renderState(f.facelets))
+            .catch((e)=>{ lastEl.textContent='state request failed: '+(e&&e.message||e)+' — waiting for a periodic update'; });
+        } catch(err){
+          // A failed init must not leave a live transport behind a "failed" UI.
+          try { if(transport) await transport.disconnect(); } catch {}
+          transport=null; conn=null;
+          setConn('err','Connection failed', String(err&&err.message||err),'Connect');
+        }
+      }
+      // Reconnect: await the native teardown before scanning again, so a fresh connect can't
+      // overlap the old peripheral mid-disconnect.
+      btn.onclick=async()=>{ if(transport){ try{ await transport.disconnect(); }catch{} } conn=null; transport=null; connect(); };
+      // "Set solved" (REQUEST_RESET) is deliberately excluded from gan-driver's safe command
+      // set, so it's unavailable on this driver path — use the camera scan to establish ground
+      // truth instead. Left visible-but-disabled with an explanatory tooltip.
+      resetBtn.disabled=true;
+      resetBtn.title='Set-solved needs REQUEST_RESET, which the verified driver excludes by design. Use the camera scan to set the cube state.';
+      // AI scanner (YOLOv11): orderless auto-capture. The panel owns its own camera + "Start
+      // camera" button, so opening the modal just shows it. A validated 6-face scan emits
+      // scan-complete (apply to the twin); an unsolvable read emits scan-invalid (auto-rescan).
+      const aiScanModal=$('aiScanModal'), aiPanel=$('aiPanel');
+      $('aiScanBtn').onclick=()=>{ aiScanModal.hidden=false; };
+      $('aiScanClose').onclick=()=>{ aiScanModal.hidden=true; aiPanel.stop?.(); };
+      aiPanel.addEventListener('scan-complete',(e)=>{ renderState(e.detail.facelets);
+        aiScanModal.hidden=true; aiPanel.stop?.();
+        lastEl.textContent='camera scan applied — renders the physical cube state'; });
+      aiPanel.addEventListener('scan-invalid',()=>{ lastEl.textContent='scan invalid — re-scan (show each face flat & centred)'; });
+
+      // Host-aware initial connection hint.
+      if(isTauri) setConn('warn','Ready','click Connect to scan for your cube',null);
+      else if(!navigator.bluetooth) setConn('err','Web Bluetooth unavailable','Use Chrome or Edge (desktop) or Chrome on Android. Safari, Firefox, and all iOS browsers lack Web Bluetooth — the camera scan still works there.',null);
+    </script>
+  </body>
+</html>

@@ -7,56 +7,57 @@ on:
     branches: [main]
 
 jobs:
-  driver:
-    name: gan-driver (typecheck · lint · test · coverage)
+  ts:
+    name: TS packages (typecheck · lint · test · coverage)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: gan-driver
     steps:
       - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: gan-driver/package-lock.json
+          cache: pnpm
 
       - name: Install
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: gan-driver — check
+        run: pnpm --filter gan-driver run check
 
-      - name: Lint
-        run: npm run lint
+      - name: cube-scanner — check
+        run: pnpm --filter cube-scanner run check
 
-      - name: Test with coverage
-        run: npm run coverage
+      - name: cubus-web — test (static server + transport seam)
+        run: pnpm --filter cubus-web test
 
-  scanner:
-    name: cube-scanner (typecheck · lint · test · coverage)
+  rust:
+    name: Rust (fmt · clippy · check)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: cube-scanner
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      # Tauri (webkit2gtk/appindicator/rsvg) + btleplug's Linux backend (bluez/dbus)
+      # must be present for the workspace to compile on Linux.
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: cube-scanner/package-lock.json
+          components: rustfmt, clippy
 
-      - name: Install
-        run: npm ci
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: fmt
+        run: cargo fmt --all -- --check
 
-      - name: Lint
-        run: npm run lint
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test with coverage
-        run: npm run coverage
+      - name: check
+        run: cargo check --workspace
