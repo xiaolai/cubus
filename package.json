@@ -2,9 +2,14 @@
   "name": "cubus",
   "version": "0.0.0",
   "private": true,
-  "description": "cubus-im — a beginner/kids Rubik's Cube tutor (SPA) built on a verified GAN16 smart-cube driver.",
+  "description": "cubus-im — a beginner/kids Rubik's Cube tutor. Web SPA + Tauri app on a verified GAN16 smart-cube driver.",
+  "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "dev": "npm --prefix web run dev",
-    "build:panel": "npm --prefix cube-scanner run build:panel"
+    "dev": "pnpm --filter cubus-web dev",
+    "build:panel": "pnpm --filter cube-scanner build:panel",
+    "check": "pnpm -r run check"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["@biomejs/biome", "esbuild", "protobufjs"]
   }
 }
