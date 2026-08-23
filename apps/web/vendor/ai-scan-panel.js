@@ -30,9 +30,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/cubejs/lib/cube.js
+// ../../node_modules/.pnpm/cubejs@1.3.2/node_modules/cubejs/lib/cube.js
 var require_cube = __commonJS({
-  "node_modules/cubejs/lib/cube.js"(exports, module) {
+  "../../node_modules/.pnpm/cubejs@1.3.2/node_modules/cubejs/lib/cube.js"(exports, module) {
     (function() {
       var B, BL, BR, Cube2, D, DB, DBL, DF, DFR, DL, DLF, DR, DRB, F, FL, FR, L, R, U2, UB, UBR, UF, UFL, UL, ULB, UR, URF, centerColor, centerFacelet, cornerColor, cornerFacelet, edgeColor, edgeFacelet;
       [U2, R, F, D, L, B] = [0, 1, 2, 3, 4, 5];
@@ -1167,9 +1167,9 @@ var require_cube = __commonJS({
   }
 });
 
-// node_modules/cubejs/lib/solve.js
+// ../../node_modules/.pnpm/cubejs@1.3.2/node_modules/cubejs/lib/solve.js
 var require_solve = __commonJS({
-  "node_modules/cubejs/lib/solve.js"(exports) {
+  "../../node_modules/.pnpm/cubejs@1.3.2/node_modules/cubejs/lib/solve.js"(exports) {
     (function() {
       var B, BL, BR, Cnk, Cube2, D, DB, DBL, DF, DFR, DL, DLF, DR, DRB, F, FL, FR, Include, L, N_FLIP, N_FRtoBR, N_PARITY, N_SLICE1, N_SLICE2, N_TWIST, N_UBtoDF, N_URFtoDLF, N_URtoDF, N_URtoUL, R, U2, UB, UBR, UF, UFL, UL, ULB, UR, URF, allMoves1, allMoves2, computeMoveTable, computePruningTable, faceNames, faceNums, factorial, key, max, mergeURtoDF, moveTableParams, nextMoves1, nextMoves2, permutationIndex, pruning, pruningTableParams, rotateLeft, rotateRight, value, indexOf = [].indexOf;
       Cube2 = this.Cube || require_cube();
@@ -1988,9 +1988,9 @@ var require_solve = __commonJS({
   }
 });
 
-// node_modules/cubejs/index.js
+// ../../node_modules/.pnpm/cubejs@1.3.2/node_modules/cubejs/index.js
 var require_cubejs = __commonJS({
-  "node_modules/cubejs/index.js"(exports, module) {
+  "../../node_modules/.pnpm/cubejs@1.3.2/node_modules/cubejs/index.js"(exports, module) {
     module.exports = require_cube();
     require_solve();
   }
@@ -2407,7 +2407,7 @@ async function detectFace(frame, run, opts = {}) {
   return fitFace(dets, minConf);
 }
 
-// node_modules/onnxruntime-web/dist/ort.bundle.min.mjs
+// ../../node_modules/.pnpm/onnxruntime-web@1.27.0/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs
 var Wn = Object.defineProperty;
 var ff = Object.getOwnPropertyDescriptor;
 var hf = Object.getOwnPropertyNames;
