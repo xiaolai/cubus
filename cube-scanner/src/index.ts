@@ -34,9 +34,9 @@ export {
 
 export { type OrientationResult, rotateFace, solveOrientations } from './orient.js';
 
-// AI-scan path: the ONNX detector's output → validated cube state, reusing the same
-// facelet/cubejs verifier as the classical path.
-export { type ColorFace, assembleColors } from './ai-assemble.js';
+// AI-scan path: the ONNX detector LOCATES stickers; their sampled pixel colours feed the SAME
+// relative classifier + verifier as the classical path (`assemble`), so red↔orange is resolved
+// by lighting-invariant per-cube comparison, not the detector's drifting absolute class.
 export {
   type Detection,
   type FaceFit,
@@ -48,11 +48,14 @@ export {
 } from './onnx-postprocess.js';
 export {
   type DetectOptions,
+  type DetectResult,
+  type DetectedFace,
   type Preprocessed,
   type RunModel,
   IMG_SIZE,
   detectFace,
   preprocess,
+  sampleMedianRgb,
 } from './onnx-detect.js';
 
 export {
