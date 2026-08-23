@@ -4,14 +4,14 @@
 // driver decoded the SAME physical configuration, isolating "stale state" from
 // "wrong decode/anchor". Usage: tsx scripts/compare-reading.ts <facelets>
 
-// User's reading (row-major as written), keyed by face letter.
+// User's reading (row-major as written), keyed by face letter (by center colour).
 const userFaces: Record<string, string> = {
-  U: 'OBYGWWYYB', // white-center (top)
-  R: 'YRGBROWYB', // red-center (right)
-  F: 'BRROGRGWR', // green-center (front)
-  D: 'OOROYYBBR', // yellow-center (down)
-  L: 'WROGOWWGY', // orange-center (left)
-  B: 'OYGBBWWGG', // blue-center (back)
+  U: 'BOOWWGYBO', // white-center
+  R: 'WRWORBWGY', // red-center
+  F: 'OYGOGBOGG', // green-center
+  D: 'BYYBYORYR', // yellow-center
+  L: 'RRGGOWRRB', // orange-center
+  B: 'BYWRBWGWY', // blue-center
 };
 const toColor: Record<string, string> = { U: 'W', R: 'R', F: 'G', D: 'Y', L: 'O', B: 'B' };
 const multiset = (s: string) => [...s].sort().join('');
