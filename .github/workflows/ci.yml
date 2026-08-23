@@ -29,6 +29,9 @@ jobs:
       - name: cube-scanner — check
         run: pnpm --filter cube-scanner run check
 
+      - name: cubus-web — test (static server + transport seam)
+        run: pnpm --filter cubus-web test
+
   rust:
     name: Rust (fmt · clippy · check)
     runs-on: ubuntu-latest

@@ -684,10 +684,11 @@ function deriveKeyIv(salt, baseKey = GAN_GEN4_BASE_KEY, baseIv = GAN_GEN4_BASE_I
   return { key, iv };
 }
 function macToSalt(mac) {
-  const bytes = mac.split(/[:\-\s]+/).map((h) => Number.parseInt(h, 16));
-  if (bytes.length !== 6 || bytes.some((b) => Number.isNaN(b))) {
+  const parts = mac.trim().split(/[:\-\s]+/);
+  if (parts.length !== 6 || !parts.every((p) => /^[0-9a-fA-F]{2}$/.test(p))) {
     throw new Error(`invalid MAC: ${mac}`);
   }
+  const bytes = parts.map((h) => Number.parseInt(h, 16));
   return Uint8Array.from(bytes.reverse());
 }
 var GanGen4Cipher = class {
