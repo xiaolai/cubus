@@ -20,7 +20,7 @@ import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT) || 5173;
+const PORT = Number(process.env.PORT) || 15173;
 const HOST = '127.0.0.1';
 const RELOAD_PATH = '/__livereload';
 
@@ -113,6 +113,18 @@ const server = createServer(async (req, res) => {
   } catch {
     res.writeHead(404).end('not found');
   }
+});
+
+// Fail with a clear, actionable message instead of an unhandled-error stack trace when the port
+// is taken (usually a dev server left running from an earlier session).
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use — another dev server is probably still running.`);
+    console.error(`  Free it:      lsof -ti tcp:${PORT} | xargs kill`);
+    console.error(`  Or pick one:  PORT=15174 npm run dev`);
+    process.exit(1);
+  }
+  throw err;
 });
 
 server.listen(PORT, HOST, () => {

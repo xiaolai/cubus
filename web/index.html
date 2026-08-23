@@ -37,13 +37,18 @@
       .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
       .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
         margin: 0 0 14px; font-weight: 600; }
-      #cube { width: 100%; height: 340px; display: flex; align-items: center; justify-content: center; }
-      twisty-player { width: 100%; height: 340px; }
+      #cube { width: 100%; height: 400px; display: flex; align-items: center; justify-content: center; }
+      twisty-player { width: 100%; height: 400px; }
       .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+      .solve { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+      .viewctl { display: flex; gap: 14px; margin-top: 10px; font-size: 12px; color: var(--muted); align-items: center; flex-wrap: wrap; }
+      .viewctl input[type="number"] { width: 64px; background: #0d1117; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
+      .viewctl select { background: #0d1117; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
+      .movelist { margin-top: 10px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text); word-break: break-word; line-height: 1.9; letter-spacing: .03em; }
       .net { display: grid; grid-template-columns: repeat(12,1fr); grid-template-rows: repeat(9,1fr);
-        gap: 3px; aspect-ratio: 12/9; max-width: 360px; margin: 0 auto; }
+        gap: var(--net-gap, 3px); aspect-ratio: 12/9; max-width: var(--net-w, 360px); margin: 0 auto; }
       .face { display: grid; grid-template-columns: repeat(3,1fr); grid-template-rows: repeat(3,1fr); gap: 2px; }
-      .sticker { border-radius: 3px; border: 1px solid rgba(0,0,0,.35); transition: background .15s; }
+      .sticker { border-radius: var(--sticker-r, 3px); border: 1px solid rgba(0,0,0,.35); transition: background var(--fade, .15s); }
       .U{background:var(--U)} .R{background:var(--R)} .F{background:var(--F)}
       .D{background:var(--D)} .L{background:var(--L)} .B{background:var(--B)}
       .facelets { font-family: ui-monospace, Menlo, monospace; font-size: 12px; word-break: break-all;
@@ -75,6 +80,7 @@
         <button id="btn">Connect</button>
         <button id="reset" class="ghost" disabled title="Anchor the cube's internal state to solved">Set solved</button>
         <button id="aiScanBtn" class="ghost" title="Read the physical cube with the camera (YOLOv11), one side at a time">Scan with camera</button>
+        <button id="randBtn" class="ghost" title="Load a random scrambled cube — test the twin + solver with no hardware">Random cube</button>
       </div>
       <div class="last" id="last">— no events yet —</div>
 
@@ -83,10 +89,31 @@
           <h2>3D twin</h2>
           <div id="cube"></div>
           <div class="note" id="note">3D loads from the cubing.js CDN.</div>
+          <div class="viewctl">
+            <label>ghost distance <input type="number" id="hintElev" value="4" min="0" max="24" step="0.5" /></label>
+            <label>camera <input type="number" id="camDist" value="12" min="3" max="48" step="1" /></label>
+            <label>tilt <input type="number" id="camLat" value="35" min="-90" max="90" step="5" /></label>
+            <label>rotate <input type="number" id="camLon" value="45" min="-180" max="180" step="5" /></label>
+            <label>sticker <input type="number" id="facScale" value="0.9" min="0.3" max="1" step="0.05" /></label>
+            <label>speed <input type="number" id="tempo" value="0.5" min="0.25" max="5" step="0.25" /></label>
+            <label><input type="checkbox" id="hintOn" checked /> ghosts</label>
+            <label>back <select id="backView"><option value="none">none</option><option value="top-right">inset</option><option value="side-by-side">side</option></select></label>
+          </div>
+          <div class="solve">
+            <button id="solveBtn" disabled>Solve it ▶</button>
+            <span class="sub" id="solveInfo">scan or connect a cube first</span>
+          </div>
+          <div class="movelist" id="moveList"></div>
         </section>
         <section class="card">
           <h2>2D net — current arrangement</h2>
           <div class="net" id="net"></div>
+          <div class="viewctl">
+            <label>net size <input type="number" id="netW" value="360" min="160" max="640" step="20" /></label>
+            <label>gap <input type="number" id="netGap" value="3" min="0" max="10" step="1" /></label>
+            <label>radius <input type="number" id="stickR" value="3" min="0" max="14" step="1" /></label>
+            <label>fade <input type="number" id="fade" value="0.15" min="0" max="1.5" step="0.05" /></label>
+          </div>
           <div class="facelets"><b style="color:var(--text)">URFDLB:</b><br /><span id="fx">—</span></div>
         </section>
       </main>
@@ -125,26 +152,133 @@
         const [r,c]=POS[f]; d.style.gridRow=`${r}/span 3`; d.style.gridColumn=`${c}/span 3`;
         for(let i=0;i<9;i++){const s=document.createElement('div');s.className='sticker';d.appendChild(s);cells.push(s);}
         net.appendChild(d); });
+      const paintNet=(f)=>{ for(let i=0;i<54;i++) cells[i].className='sticker '+f[i]; };
 
-      // 3D (best-effort: cubejs solves the state into a setup alg for twisty-player)
+      // 3D + solver. cubejs (fast, already loaded) parses facelets → the setup alg that shows the
+      // scrambled state, and stays our independent ORACLE. cubing.js's own solver (min2phase)
+      // produces the solution we animate — a native Alg for the player, typically ~2 moves shorter
+      // than cubejs. We cross-check cubing.js's solution against cubejs before animating it.
       let TwistyPlayer=null, Cube=null, player=null, solverReady=false;
+      let lastSetupAlg='', solvable=false;
+      let cjSolve=null, cjPuzzle=null; // cubing.js solver + 3x3x3 puzzle, loaded on first solve
+      const solveBtn=$('solveBtn'), solveInfo=$('solveInfo'), moveList=$('moveList');
+      const hintElev=$('hintElev'), camDist=$('camDist'), camLat=$('camLat'), camLon=$('camLon');
+      const facScale=$('facScale'), tempo=$('tempo'), hintOn=$('hintOn'), backSel=$('backView');
+      const netW=$('netW'), netGap=$('netGap'), stickR=$('stickR'), fade=$('fade');
+      // Persist the view controls across reloads: read saved values into the controls NOW (before the
+      // first build, so the twin starts with them), and re-save on every change.
+      const viewNums={hintElev,camDist,camLat,camLon,facScale,tempo,netW,netGap,stickR,fade};
+      try { const s=JSON.parse(localStorage.getItem('cubeView')||'{}');
+        for(const k in viewNums) if(s[k]!=null) viewNums[k].value=s[k];
+        if(s.hintOn!=null) hintOn.checked=s.hintOn; if(s.backView!=null) backSel.value=s.backView;
+      } catch {}
+      function saveView(){ try { const o={}; for(const k in viewNums) o[k]=viewNums[k].value;
+        o.hintOn=hintOn.checked; o.backView=backSel.value;
+        localStorage.setItem('cubeView',JSON.stringify(o)); } catch {} }
+      // The 2D net is a plain CSS grid — its only params are cosmetic (size / gap / sticker radius),
+      // driven via CSS custom properties. (No library, so nothing like the 3D twin's rich params.)
+      function applyNet(){ const r=document.documentElement.style;
+        r.setProperty('--net-w',(Number(netW.value)||360)+'px');
+        r.setProperty('--net-gap',(Number(netGap.value)||3)+'px');
+        r.setProperty('--sticker-r',(Number(stickR.value)||3)+'px');
+        r.setProperty('--fade',(Number(fade.value)||0)+'s'); } // sticker repaint/fade time; 0 = instant
+      applyNet();
+      for(const el of [netW,netGap,stickR,fade]){ el.addEventListener('input',applyNet); el.addEventListener('change',saveView); }
+      let solutionAlg=''; // solution alg currently on the twin ('' when just viewing a state)
+      let stepPatterns=[], stepFacelets=[]; // per-move (KPattern, facelets) so the 2D net co-moves during solve
+      // LIVE-reactive props — take effect instantly on the existing player:
+      function applyView(){ if(!player) return;
+        player.experimentalHintFaceletsElevation=Number(hintElev.value)||0; // (only honoured at build time)
+        player.cameraDistance=Number(camDist.value)||10;
+        player.cameraLatitude=Number(camLat.value)||0;
+        player.cameraLongitude=Number(camLon.value)||0;
+        player.experimentalFaceletScale=Number(facScale.value)||1;
+        player.tempoScale=Number(tempo.value)||1; }
+      // hintFacelets, backView, controlPanel and hint elevation are baked into the 3D scene at BUILD
+      // time — setting them on a live player does nothing — so those go through a full rebuild of the
+      // twin (cheap; only on a control change or a solve, never per animation frame).
+      function makeTwin(){
+        const p=new TwistyPlayer({puzzle:'3x3x3',experimentalSetupAlg:lastSetupAlg,alg:solutionAlg,
+          hintFacelets:hintOn.checked?'floating':'none',background:'none',
+          controlPanel:solutionAlg?'bottom-row':'none',backView:backSel.value});
+        const old=player; player=p; $('cube').appendChild(p); if(old) old.remove();
+        applyView();
+        // Co-move the 2D net with the twin: on each animation step (play / scrub / step) match the
+        // twin's live KPattern to a precomputed solve step and paint the net. No-ops until solving.
+        player.experimentalModel?.currentPattern?.addFreshListener?.((pattern)=>{
+          if(!stepPatterns.length || typeof pattern?.isIdentical!=='function') return;
+          for(let k=0;k<stepPatterns.length;k++){ if(pattern.isIdentical(stepPatterns[k])){ paintNet(stepFacelets[k]); break; } }
+        });
+      }
+      for(const el of [camDist,camLat,camLon,facScale,tempo]){
+        el.addEventListener('input',applyView); el.addEventListener('change',saveView); }
+      for(const el of [hintElev,hintOn,backSel]) el.addEventListener('change',()=>{ if(player) makeTwin(); saveView(); });
       (async()=>{ try {
         ({ TwistyPlayer } = await import('https://cdn.cubing.net/v0/js/cubing/twisty'));
         Cube = (await import('https://esm.sh/cubejs@1.3.2')).default; Cube.initSolver(); solverReady=true;
         $('note').textContent='cubing.js ready · drag to rotate';
         if(lastFacelets) render3D(lastFacelets); // replay a state that arrived before the renderer was ready
-      } catch { $('note').textContent='3D unavailable — 2D net still shows the state.'; } })();
-      function render3D(facelets){ if(!TwistyPlayer||!solverReady) return; let alg='';
-        try { const sol=Cube.fromString(facelets).solve();
-          const inv=(m)=>m.endsWith('2')?m:m.endsWith("'")?m[0]:m+"'";
-          alg=sol.trim().split(/\s+/).reverse().map(inv).join(' '); } catch { return; }
-        if(!player){ player=new TwistyPlayer({puzzle:'3x3x3',alg:'',experimentalSetupAlg:alg,
-          hintFacelets:'none',background:'none',controlPanel:'none',backView:'top-right'});
-          $('cube').appendChild(player); } else player.experimentalSetupAlg=alg; }
+        else solveInfo.textContent='scan or connect a cube first';
+      } catch { $('note').textContent='3D unavailable — 2D net still shows the state.';
+        solveInfo.textContent='solver unavailable (offline?)'; } })();
+
+      const invMove=(m)=>m.endsWith('2')?m:m.endsWith("'")?m[0]:m+"'";
+      function render3D(facelets){ if(!TwistyPlayer||!solverReady) return;
+        let sol; try { sol=Cube.fromString(facelets).solve(); } catch { return; }
+        const moves=sol.trim()?sol.trim().split(/\s+/):[];
+        lastSetupAlg=moves.slice().reverse().map(invMove).join(' '); // solved -> scrambled (for display)
+        solvable=moves.length>0;
+        const wasSolving=!!solutionAlg;
+        solutionAlg=''; moveList.textContent=''; stepPatterns=[]; stepFacelets=[]; // fresh state: drop solution + net co-move
+        // First build, or leaving solve-mode, needs a rebuild (control bar is build-time); otherwise
+        // update the state incrementally (experimentalSetupAlg IS live — cheap for smart-cube play).
+        if(!player || wasSolving) makeTwin();
+        else { player.alg=''; player.experimentalSetupAlg=lastSetupAlg; player.controlPanel='none'; applyView(); }
+        solveBtn.disabled=!solvable;
+        solveInfo.textContent=solvable?'ready — press Solve it':'already solved ✓';
+      }
+
+      async function solveIt(){
+        if(!player||!solvable) return;
+        solveBtn.disabled=true; solveInfo.textContent='solving…';
+        try {
+          if(!cjSolve){ // lazy-load cubing.js's solver + puzzle only when first needed
+            ({ experimentalSolve3x3x3IgnoringCenters: cjSolve } = await import('https://cdn.cubing.net/v0/js/cubing/search'));
+            ({ cube3x3x3: cjPuzzle } = await import('https://cdn.cubing.net/v0/js/cubing/puzzles'));
+          }
+          const kpuzzle=await cjPuzzle.kpuzzle();
+          const pattern=kpuzzle.defaultPattern().applyAlg(lastSetupAlg); // scanned state, via universal move notation
+          const solution=(await cjSolve(pattern)).toString();
+          const moves=solution.trim()?solution.trim().split(/\s+/):[];
+          // Oracle cross-check: only a definite refutation (cubejs parses it AND it doesn't solve) blocks.
+          let verified=null; try { verified=Cube.fromString(lastFacelets).move(solution).isSolved(); } catch {}
+          if(verified===false){ solveInfo.textContent='solver check failed — re-scan and try again'; solveBtn.disabled=false; return; }
+          solutionAlg=solution;
+          makeTwin(); // rebuild WITH the solution alg + control bar (both are build-time settings)
+          // Precompute per-step facelets (cubejs) + patterns (cubing.js) so the 2D net co-moves.
+          try {
+            const base=Cube.fromString(lastFacelets); const sf=[base.asString()];
+            for(const m of moves){ base.move(m); sf.push(base.asString()); }
+            let p=pattern; const sp=[p]; for(const m of moves){ p=p.applyMove(m); sp.push(p); }
+            stepFacelets=sf; stepPatterns=sp;
+          } catch { stepFacelets=[]; stepPatterns=[]; }
+          moveList.textContent=solution; // show the actual moves
+          solveInfo.textContent=`Solution · ${moves.length} moves — press ▶ to animate; follow on your cube`;
+          solveBtn.disabled=false;
+        } catch(e){ solveInfo.textContent='solve failed: '+String(e&&e.message||e); solveBtn.disabled=false; }
+      }
+      solveBtn.onclick=()=>{ void solveIt(); };
+      // Random cube: cubejs generates a fresh VALID scramble each click — feeds the same renderState
+      // path as the scanner, so the 2D net, twin, and Solve-it all update. Handy for testing with no cube.
+      $('randBtn').onclick=()=>{
+        if(!Cube||!solverReady){ lastEl.textContent='solver still loading — try again in a moment'; return; }
+        renderState(Cube.random().asString());
+        lastEl.textContent='loaded a random cube — press Solve it';
+      };
 
       let lastFacelets='';
       function renderState(f){ if(f===lastFacelets) return; lastFacelets=f;
-        for(let i=0;i<54;i++) cells[i].className='sticker '+f[i]; $('fx').textContent=f; render3D(f); }
+        paintNet(f); $('fx').textContent=f; render3D(f); }
 
       function setConn(kind,title,detail,btnLabel){ dot.className='dot '+kind; who.textContent=title; sub.textContent=detail;
         if(btnLabel){ btn.textContent=btnLabel; btn.disabled=false; } resetBtn.disabled = kind!=='ok'; }
