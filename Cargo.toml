@@ -2,4 +2,4 @@
 # the app backend + a precise solver). apps/desktop/src-tauri joins as a member in Phase 3.
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "apps/desktop/src-tauri"]
