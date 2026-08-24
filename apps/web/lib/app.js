@@ -778,12 +778,19 @@ function followMoves(seq) {
   go('viewer');
 }
 
+/** One walking speed, not a setting. With no smart cube connected there is nothing to pace
+ * against, so there is no choice to offer — see the transport row. The renderer's base is 190ms
+ * per quarter turn divided by this, so 0.1 is 1.9s a turn: slow enough to copy by hand. It is a
+ * source constant rather than a saved one because the view sliders that used to write `cubeView`
+ * are gone, and a leftover tempo in a returning user's localStorage would silently outrank it. */
+const WALK_TEMPO = 0.1;
+
 const faceName = (m) => ({ R: 'right', L: 'left', U: 'up', D: 'down', F: 'front', B: 'back' }[m[0]] || 'right');
 
 SCREENS.viewer = () => {
   // No controls on this screen any more, so these are read but never written here. Left on
   // `cubeView` rather than hard-coded so they stay tunable without a rebuild.
-  const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, tempo: 0.25, ghosts: true });
+  const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, ghosts: true });
   const seq = following;
   following = null;
   const walking = Boolean(seq) || state.cube.solvable;
@@ -792,7 +799,7 @@ SCREENS.viewer = () => {
   const VIEW_ATTRS = [
     ['hintElev', 'ghost-elevation'], ['camDist', 'camera-distance'],
     ['camLat', 'camera-latitude'], ['camLon', 'camera-longitude'],
-    ['facScale', 'facelet-scale'], ['tempo', 'tempo-scale'],
+    ['facScale', 'facelet-scale'],
   ];
   return {
     html: `<div class="cols">
@@ -809,9 +816,8 @@ SCREENS.viewer = () => {
           <button class="tbtn" id="repeatBtn" title="Show that move again">${icon('refresh', 18)}</button>
           <button class="tbtn" id="nextBtn" title="Next move">${icon('chevron-right', 20)}</button>
           <button class="tbtn primary" id="playBtn" title="Play from here to the end">${icon('play', 18)}</button>
-          <span class="spacer"></span>
-          <button class="pill on" data-mode="slow">Slowest</button>
-          <button class="pill" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>
+          <div class="progress" title="How far through the solution you are"><span id="progBar"></span></div>
+          ${state.connected ? `<button class="pill on" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
           <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:64px;text-align:right">0 / 0</span>
         </div>
       </div>` : ''}
@@ -833,6 +839,7 @@ SCREENS.viewer = () => {
       paintNet(state.cube.facelets);
       cube.setAttribute('ghosts', v.ghosts ? 'floating' : 'none');
       for (const [k, attr] of VIEW_ATTRS) cube.setAttribute(attr, String(v[k]));
+      cube.setAttribute('tempo-scale', String(WALK_TEMPO));
 
       // Re-entering the screen is what makes a new cube take effect: the solution, the move list
       // and the step count are all built at mount, so repainting in place would leave a fresh cube
@@ -881,6 +888,7 @@ SCREENS.viewer = () => {
         at = i;
         chips.forEach((ch, k) => { ch.classList.toggle('played', k < i); ch.classList.toggle('cur', k === i); });
         $('#stepLbl', root).textContent = `${i} / ${total}`;
+        $('#progBar', root).style.width = total ? `${(i / total) * 100}%` : '0%';
         // A button that cannot do anything says so, rather than swallowing the press.
         $('#prevBtn', root).disabled = i === 0;
         $('#repeatBtn', root).disabled = i === 0;
@@ -901,34 +909,37 @@ SCREENS.viewer = () => {
       $('#playBtn', root).onclick = () => setPlaying(!playing);
       $('#nextBtn', root).onclick = () => { setPlaying(false); cube.step(); };
       $('#prevBtn', root).onclick = () => { setPlaying(false); cube.seek(Math.max(0, at - 1)); };
-      // Back and repeat are different questions. Back undoes a move; repeat answers "show me that
-      // again" — seek is instant, so stepping straight after it replays the same move's animation
-      // and lands where it started.
+      // Back and repeat are different questions. Back jumps to the previous step with no animation
+      // — you already know that move, you just want to be standing before it. Repeat answers "show
+      // me that again": it plays the move backwards and then forwards, both animated, so you watch
+      // the turn come undone and happen again. The renderer's queue is FIFO and pulls the next
+      // move only when the current one finishes, so pushing both here plays them in order.
       $('#repeatBtn', root).onclick = () => {
         if (at === 0) return;
         setPlaying(false);
-        cube.seek(at - 1);
+        cube.stepBack();
         cube.step();
       };
 
-      // Two modes, not a speed. Slowest is for following along by hand; Follow cube hands the
-      // pacing to the physical cube, so the guide advances only when the move is actually made.
-      // It needs both a connected cube and per-step states to compare against, so it says no
-      // rather than pretending when either is missing.
-      const canFollow = state.connected && steps.length === total + 1;
-      let mode = 'slow';
+      // One pacing control, and only when there is a cube to pace against. With nothing connected
+      // there is no choice to offer: walking the moves by hand is the only behaviour there is, so a
+      // button naming it would be a switch with one position. Connected, following is what you want
+      // by default, so the control is a single toggle that starts on.
       const followBtn = root.querySelector('[data-mode="cube"]');
-      if (!canFollow) {
-        followBtn.disabled = true;
-        followBtn.title = state.connected
-          ? 'Needs a solve worked out on this screen'
-          : 'Connect a smart cube on the Smart cube screen first';
-      }
-      for (const b of root.querySelectorAll('[data-mode]')) {
-        b.onclick = () => {
-          if (b.disabled) return;
-          mode = b.dataset.mode;
-          for (const o of root.querySelectorAll('[data-mode]')) o.classList.toggle('on', o === b);
+      let mode = 'slow';
+      if (followBtn) {
+        // Following compares the real cube against the state each move produces, so it needs one
+        // state per step. It says no rather than pretending when the solve did not supply them.
+        if (steps.length === total + 1) mode = 'cube';
+        else {
+          followBtn.disabled = true;
+          followBtn.classList.remove('on');
+          followBtn.title = 'Needs a solve worked out on this screen';
+        }
+        followBtn.onclick = () => {
+          if (followBtn.disabled) return;
+          mode = mode === 'cube' ? 'slow' : 'cube';
+          followBtn.classList.toggle('on', mode === 'cube');
           if (mode === 'cube') setPlaying(false);
         };
       }
@@ -936,9 +947,9 @@ SCREENS.viewer = () => {
       liveUpdate = (f) => {
         $('#viewState', root).textContent = f;
         paintNet(f);
-        // In Follow-cube mode a turn on the real cube is the input: when it arrives at the state
-        // the next move produces, the guide takes that step. Anything else is ignored, so a wrong
-        // turn simply leaves the guide where it was.
+        // In Follow-cube mode a turn on the real cube IS the Next button: when the cube arrives at
+        // the state the next move produces, the guide takes exactly that one step. Anything else is
+        // ignored, so a wrong turn simply leaves the guide where it was.
         if (mode === 'cube' && steps[at + 1] === f) cube.step();
       };
       sync(0);
