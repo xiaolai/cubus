@@ -1,6 +1,6 @@
 # cube-yolo — Rubik's cube sticker-colour detector
 
-`app/renderer/vendor/cube-yolo.onnx` — the model the app's **AI-scan** mode runs in-browser.
+`apps/web/vendor/cube-yolo.onnx` — the model the app's **AI-scan** mode runs in-browser.
 
 ## What it does
 A **YOLOv11n** object detector that finds each sticker on a cube face and classifies its

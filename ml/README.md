@@ -84,7 +84,7 @@ Also useful: `dwalton76/rubiks-cube-tracker` (MIT, real color ground-truth) and 
 arXiv 1901.03470 color tables for red↔orange calibration.
 
 ## Then wire it into the app
-- Copy `best.onnx` → `app/renderer/vendor/cube-yolo.onnx`.
+- Copy `best.onnx` → `apps/web/vendor/cube-yolo.onnx`.
 - Add an **"AI scan" mode** to the scanner that runs the model via `onnxruntime-web`:
   letterbox the frame to 640 → run → NMS → map the 9 sticker detections to a face → feed the
   9 colors into the existing `solveOrientations` (balanced HSV + red/orange disambiguation).
