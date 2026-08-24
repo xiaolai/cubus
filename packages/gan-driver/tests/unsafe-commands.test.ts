@@ -1,19 +1,25 @@
-// REQUEST_RESET: encoding pinned, and proof that nothing can send it.
+// REQUEST_RESET: encoding pinned, and proof that only the guard can send it.
 //
 // This command tells the cube to treat its current physical position as solved,
 // rewriting the reference the move stream is relative to. Sent while the cube is
 // not actually solved, the driver's state and the hardware diverge permanently
 // and silently — the failure the state invariant exists to catch.
 //
-// So there are two things worth testing, and one that CANNOT be tested here:
+// It IS sent now, but only through CubeDriver.anchorSolved(), which refuses
+// unless the cube already reports a solved state — at which point resetting the
+// reference to solved is state-neutral and nothing can diverge. That guard's
+// behaviour is tested in anchor-solved.test.ts.
 //
-//   1. the bytes are what upstream says they are         (pinned below)
-//   2. no code path can transmit them                    (asserted below)
-//   3. the physical cube's response to them              (NOT VERIFIABLE — needs
+// This file covers the two structural properties that keep the guard the only
+// way in, and pins the encoding:
+//
+//   1. the bytes are what upstream says they are          (pinned below)
+//   2. the ONLY path to transmitting them is anchorSolved (asserted below)
+//   3. the physical cube's response to them               (NOT VERIFIABLE — needs
 //      a GAN16 and a person turning it; see docs/protocol.md)
 //
-// Point 3 is why the command is encoded but unwired. A green run of this file
-// says the packet is correctly formed, never that it is safe to send.
+// A green run of this file says the packet is correctly formed and unreachable
+// except through the guard. It never says the cube does what upstream claims.
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -63,8 +69,35 @@ describe('REQUEST_RESET containment', () => {
     expect(union).toMatch(/REQUEST_FACELETS/);
   });
 
-  it('is never referenced by the driver', () => {
-    expect(src('../src/driver.ts')).not.toMatch(/REQUEST_RESET|buildUnsafeCommand/);
+  it('is built in exactly one place in the driver, inside sendUnsafe', () => {
+    const driver = src('../src/driver.ts');
+    const calls = driver.match(/buildUnsafeCommand\(/g) ?? [];
+    expect(calls).toHaveLength(1);
+    // …and that call sits in sendUnsafe, not scattered somewhere new.
+    const sendUnsafe = /private async sendUnsafe\([^)]*\)[^{]*\{([\s\S]*?)\n {2}\}/.exec(
+      driver,
+    )?.[1];
+    expect(sendUnsafe, 'sendUnsafe not found — did it get renamed?').toBeTruthy();
+    expect(sendUnsafe).toMatch(/buildUnsafeCommand\(/);
+  });
+
+  it('is transmitted only via anchorSolved, which owns the precondition', () => {
+    const driver = src('../src/driver.ts');
+    // Every sendUnsafe call site except its own declaration.
+    const callers = (driver.match(/this\.sendUnsafe\(/g) ?? []).length;
+    expect(callers).toBe(1);
+    const anchor = /async anchorSolved\([\s\S]*?\n {2}\}/.exec(driver)?.[0];
+    expect(anchor, 'anchorSolved not found — did it get renamed?').toBeTruthy();
+    expect(anchor).toMatch(/this\.sendUnsafe\('REQUEST_RESET'\)/);
+    // The guard must precede the send, not follow it.
+    expect(anchor!.indexOf('refusing to anchor')).toBeLessThan(anchor!.indexOf('this.sendUnsafe'));
+  });
+
+  it('cannot reach the safe send() path', () => {
+    const driver = src('../src/driver.ts');
+    const send = /private async send\(cmd: SafeCommand\)[\s\S]*?\n {2}\}/.exec(driver)?.[0];
+    expect(send, 'send() not found — did its signature change?').toBeTruthy();
+    expect(send).not.toMatch(/Unsafe|REQUEST_RESET/);
   });
 
   it('is not re-exported from the package entry point', () => {
