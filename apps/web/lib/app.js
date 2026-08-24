@@ -79,7 +79,7 @@ const invMove = (m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : m + "'");
 async function loadSolver() {
   if (solverReady) return true;
   try {
-    Cube = (await import('https://esm.sh/cubejs@1.3.2')).default;
+    Cube = (await import('../vendor/cubejs.js')).default;
     Cube.initSolver();
     solverReady = true;
     return true;
@@ -107,8 +107,9 @@ async function solve() {
   if (solverReady && c.facelets !== SOLVED && !c.setupAlg) setFacelets(c.facelets);
   if (c.solution) return c.solution;
   if (!cjSolve) {
-    ({ experimentalSolve3x3x3IgnoringCenters: cjSolve } = await import('https://cdn.cubing.net/v0/js/cubing/search'));
-    ({ cube3x3x3: cjPuzzle } = await import('https://cdn.cubing.net/v0/js/cubing/puzzles'));
+    // Vendored, not fetched: see vendor-cubing.mjs. Both entry points come from one bundle, and
+    // its Web Worker lives beside it as vendor/search-worker-entry.js.
+    ({ experimentalSolve3x3x3IgnoringCenters: cjSolve, cube3x3x3: cjPuzzle } = await import('../vendor/cubing.js'));
   }
   const kpuzzle = await cjPuzzle.kpuzzle();
   const pattern = kpuzzle.defaultPattern().applyAlg(c.setupAlg);
