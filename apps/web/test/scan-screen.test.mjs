@@ -130,7 +130,9 @@ test('a failure surfaces on the screen and offers a retry', () => {
   progress({ phase: 'error', message: 'Cannot start: Permission denied', captured: [], live: null });
   assert.ok($('#scanMsg').classList.contains('err'), 'an error must read as one');
   assert.equal($('#scanMsg').textContent, 'Cannot start: Permission denied');
-  assert.equal($('#scanRedo').textContent, 'Try again');
+  // With no camera running the webcam button is the way back, and says so.
+  assert.ok(!$('.scan-cam').classList.contains('on'), 'the lens must not read as live');
+  assert.match($('#scanCamBtn').title, /click to turn it on/);
 });
 
 // Which camera answered matters more here than anywhere, because the pane shows no picture: a
@@ -141,9 +143,12 @@ test('a stored camera choice is pinned as an attribute, not a property', () => {
   assert.equal(panel().getAttribute('device-id'), 'stored-cam');
 });
 
-test('the pane offers a camera picker', () => {
+test('the pane offers a camera picker, and a webcam button that always stays', () => {
   const cam = $('#scanCam');
   assert.ok(cam, 'there must be a way to change camera');
+  // The button is the camera's status light and the way back from a refusal, so it is never
+  // conditional — unlike the picker beside it.
+  assert.ok($('#scanCamBtn'), 'the webcam button must be present');
   assert.equal(cam.options[0].value, '', 'the first option means "let the platform choose"');
   assert.equal(cam.options[0].textContent, 'Default camera');
 });
@@ -160,7 +165,7 @@ test('the picker names the camera that actually answered', async () => {
   assert.deepEqual([...cam.options].map((o) => o.textContent),
     ['Default camera', 'MacBook Air Camera', 'iPhone Camera']);
   assert.equal(cam.value, 'builtin', 'the live camera must be the one shown as selected');
-  assert.equal($('.scan-cam').hidden, false, 'two cameras — the choice must be offered');
+  assert.ok($('.scan-cam').classList.contains('pick'), 'two cameras — the choice must be offered');
 });
 
 test('the picker hides when there is only one camera and nothing pinned', async () => {
@@ -172,7 +177,8 @@ test('the picker hides when there is only one camera and nothing pinned', async 
   progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
     captured: [], live: null, device: { deviceId: 'solo', label: 'MacBook Air Camera' } });
   await tick();
-  assert.equal($('.scan-cam').hidden, true, 'one camera and no pin — nothing to choose between');
+  assert.ok(!$('.scan-cam').classList.contains('pick'), 'one camera and no pin — nothing to choose');
+  assert.ok($('#scanCamBtn'), 'but the webcam button stays');
 });
 
 test('a live camera missing from the list falls back to Default rather than rendering blank', async () => {

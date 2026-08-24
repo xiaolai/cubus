@@ -209,7 +209,7 @@
          is drawn HERE, in the app's own type and colour. The raw camera picture is deliberately
          never shown — what the user needs to see is what the scanner READ, not what the lens saw,
          and the live 3×3 below is exactly that. */
-      .scanboard { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s-9); text-align: center; }
+      .scanboard { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s-9); text-align: center; }
       .scan-live { display: grid; grid-template-columns: repeat(3,1fr); gap: 5px; width: 150px; padding: 9px; border-radius: var(--r-5); background: var(--panel-sunk); }
       .scan-live > i { aspect-ratio: 1; border-radius: 4px; background: var(--facelet-off); opacity: .3; transition: background var(--fade), opacity var(--fade); }
       .scan-live.reading > i { opacity: 1; }
@@ -217,8 +217,21 @@
       .scan-msg.ok { color: var(--ok); }
       .scan-msg.err { color: var(--err); }
       .scan-count { font-family: var(--font-num); font-size: var(--fs-body-s); color: var(--ink-4); margin-top: 4px; }
-      .scan-faces { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
-      .scan-face { width: 58px; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+      /* The six sides laid out as the cube's net — U above F, D below it, L R B across the middle
+         row — so the tiles sit where the faces do. With every tile edged in its neighbours'
+         colours, touching tiles now show each other's colour across the join, which is what makes
+         the arrangement worth more than a row: the net is self-explaining. */
+      /* Row gap far tighter than the column gap on purpose: the label under each tile already adds
+         vertical space, and without compensating the three rows read as three rows instead of a
+         cross. */
+      .scan-faces { display: grid; grid-template-columns: repeat(4, 58px); column-gap: 7px; row-gap: 2px; justify-content: center; }
+      .scan-face[data-face="U"] { grid-area: 1 / 2; }
+      .scan-face[data-face="L"] { grid-area: 2 / 1; }
+      .scan-face[data-face="F"] { grid-area: 2 / 2; }
+      .scan-face[data-face="R"] { grid-area: 2 / 3; }
+      .scan-face[data-face="B"] { grid-area: 2 / 4; }
+      .scan-face[data-face="D"] { grid-area: 3 / 2; }
+      .scan-face { display: flex; flex-direction: column; align-items: center; gap: 2px; }
       /* The four edges are painted in the NEIGHBOURING faces' colours (set inline — they follow the
          chosen palette), which tells the user which way up to hold that side without a caption.
          Solid, not dashed: four dashed colours are unreadable at this size. Captured vs pending is
@@ -230,7 +243,7 @@
          guidance most. Dimness is carried by the cells alone. */
       .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 4px; border-radius: var(--r-4); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; grid-template-columns: repeat(3,1fr); gap: 2px; }
       .scan-face .tile > i { border-radius: 2px; background: var(--facelet-off); opacity: .3; }
-      .scan-face .lbl { font-size: var(--fs-caption); font-weight: 600; color: var(--ink-5); }
+      .scan-face .lbl { font-size: var(--fs-micro); font-weight: 700; letter-spacing: .04em; color: var(--ink-5); }
       .scan-face.done .tile > i { opacity: 1; }
       .scan-face.done .lbl { color: var(--ok); }
       /* The side the scanner is waiting to be shown again, to settle a reading it cannot settle
@@ -239,8 +252,16 @@
          which is exactly what those colours say. The halo carries the attention instead. */
       .scan-face.asked .tile { box-shadow: 0 0 0 1px var(--line), 0 0 0 4px color-mix(in srgb, var(--accent) 32%, transparent); }
       .scan-face.asked .lbl { color: var(--accent); }
-      .scan-cam { display: flex; align-items: center; gap: 10px; }
-      .scan-cam[hidden] { display: none; }
+      /* Camera control, out of the centred column so it does not shift the scan. The lens fills and
+         pulses while a camera is open: with no video on screen, that is the only thing telling a
+         user the camera is actually running. */
+      .scan-cam { position: absolute; top: 12px; right: 14px; display: flex; align-items: center; gap: 8px; }
+      .scan-cam #scanCamBtn { width: 34px; height: 34px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-5); }
+      .scan-cam #scanCamBtn:hover { background: var(--panel-sunk); color: var(--ink-2); }
+      .scan-cam.on #scanCamBtn { color: var(--ok); }
+      .scan-cam.on #scanCamBtn .lens { fill: currentColor; animation: cubusPulse var(--pulse) infinite; }
+      .scan-cam .select { display: none; }
+      .scan-cam.pick .select { display: inline-flex; }
 
       /* 2D net */
       .net { display: grid; grid-template-columns: repeat(12,1fr); grid-template-rows: repeat(9,1fr); gap: 3px; aspect-ratio: 12/9; max-width: 320px; margin: 0 auto; }

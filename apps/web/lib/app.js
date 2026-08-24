@@ -39,6 +39,7 @@ const P = {
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   minus: '<path d="M5 12h14"/>',
   square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
+  webcam: '<circle cx="12" cy="10" r="8"/><circle class="lens" cx="12" cy="10" r="3"/><path d="M7 22h10"/><path d="M12 22v-4"/>',
 };
 const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${P[name] || '<circle cx="12" cy="12" r="2"/>'}</svg>`;
 
@@ -407,11 +408,10 @@ SCREENS.scan = () => {
         <div class="bar" style="width:220px"><i id="scanBar" style="width:0%"></i></div>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
-        <div style="display:flex;gap:10px">
-          <button class="btn outline" id="scanRedo">Start over</button>
-          <button class="btn outline" data-go="viewer">Skip to viewer</button>
+        <div class="scan-cam">
+          <label class="select"><select id="scanCam"></select></label>
+          <button id="scanCamBtn" title="Camera">${icon('webcam', 20)}</button>
         </div>
-        <div class="scan-cam"><span class="eyebrow">Camera</span><label class="select"><select id="scanCam"></select></label></div>
       </div>
     </div>
     <div class="aside">
@@ -426,18 +426,17 @@ SCREENS.scan = () => {
       $('#scanCube', root).appendChild(newCube());
       const panel = $('ai-scan-panel', root);
       const live = $('#scanLive', root), msg = $('#scanMsg', root);
-      const count = $('#scanCount', root), bar = $('#scanBar', root), redo = $('#scanRedo', root);
+      const count = $('#scanCount', root), bar = $('#scanBar', root);
       const liveCells = [...live.querySelectorAll('i')];
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.background = classColor(colors[i]); });
-      let phase = 'starting';
 
       // Which camera. This machine class routinely has several — a built-in, a virtual camera, a
       // Continuity Camera (an iPhone) — and with no video preview the user cannot tell which one
       // answered. The pin is an ATTRIBUTE, not a property: mount() runs before the element's
       // deferred autostart, but a property set before the element upgrades would be clobbered by
       // its own class fields, whereas an attribute survives and start() re-reads it.
-      const cam = $('#scanCam', root), camRow = $('.scan-cam', root);
+      const cam = $('#scanCam', root), camRow = $('.scan-cam', root), camBtn = $('#scanCamBtn', root);
       const pin = (id) => { if (id) panel.setAttribute('device-id', id); else panel.removeAttribute('device-id'); };
       pin(settings.cameraId);
       let camsKey = null;
@@ -453,10 +452,11 @@ SCREENS.scan = () => {
         add('', 'Default camera');
         for (const d of list) add(d.deviceId, d.label);
         cam.value = settings.cameraId || '';
-        // Only offer the choice when there IS one. The exception is a camera already pinned: that
-        // row is the only way to un-pin it, so hiding it would strand anyone whose chosen camera
-        // has since been unplugged.
-        camRow.hidden = list.length < 2 && !settings.cameraId;
+        // Only offer the CHOICE when there is one — the webcam button itself always stays, since
+        // it reports whether a camera is running and is the way back from a refusal. The exception
+        // is a camera already pinned: the picker is the only way to un-pin it, so hiding it would
+        // strand anyone whose chosen camera has since been unplugged.
+        camRow.classList.toggle('pick', list.length >= 2 || Boolean(settings.cameraId));
       };
       void fillCams();
       // Cameras come and go — a webcam is plugged in, an iPhone wanders out of Continuity range.
@@ -470,12 +470,17 @@ SCREENS.scan = () => {
         pin(cam.value);
         void panel.start?.();
       };
+      // The webcam button replaces the two buttons that used to sit under the tiles: with the
+      // camera dark it turns it on (the recovery path after a permission refusal), and with the
+      // camera live it starts the scan over. Its lens fills and pulses while a camera is open, so
+      // a screen that shows no picture still says plainly whether one is running.
+      let camOn = false;
+      camBtn.onclick = () => { if (camOn) panel.restart?.(); else void panel.start?.(); };
 
       panel.addEventListener('scan-progress', (e) => {
         const p = e.detail;
-        phase = p.phase;
         msg.textContent = p.message;
-        msg.className = 'scan-msg' + (phase === 'error' ? ' err' : phase === 'checking' || phase === 'done' ? ' ok' : '');
+        msg.className = 'scan-msg' + (p.phase === 'error' ? ' err' : p.phase === 'checking' || p.phase === 'done' ? ' ok' : '');
         // The live 3x3 is the viewfinder: it shows the side the scanner can see right now, and
         // goes dim when it cannot see one — the same information a video feed would carry, minus
         // everything else in the room.
@@ -498,6 +503,9 @@ SCREENS.scan = () => {
         // first time a camera actually answers — and the select then shows which one that was.
         // Keyed on the device, not on cam.value: a device that never appears in the list would
         // otherwise re-trigger this on every tick.
+        camOn = Boolean(p.device);
+        camRow.classList.toggle('on', camOn);
+        camBtn.title = camOn ? `${p.device.label} — click to start the scan over` : 'Camera off — click to turn it on';
         if (p.device && p.device.deviceId !== shownDevice) {
           const id = p.device.deviceId;
           shownDevice = id;
@@ -510,7 +518,6 @@ SCREENS.scan = () => {
         }
         count.textContent = `${p.captured.length} / ${NET_FACES.length} sides`;
         bar.style.width = `${(p.captured.length / NET_FACES.length) * 100}%`;
-        redo.textContent = phase === 'error' ? 'Try again' : 'Start over';
       });
       // A rejected scan restarts itself and explains why through scan-progress, so there is
       // nothing to do here; only a validated cube leaves this screen.
@@ -518,7 +525,6 @@ SCREENS.scan = () => {
         onFacelets(e.detail.facelets);
         go(settings.autosolve ? 'guide' : 'viewer');
       });
-      redo.onclick = () => { if (phase === 'error') void panel.start?.(); else panel.restart?.(); };
       // Removing the element releases the camera through disconnectedCallback, but a live camera
       // is not something to leave to a lifecycle callback firing — stop it explicitly first.
       cleanup = () => {
