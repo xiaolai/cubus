@@ -289,7 +289,10 @@
          on one line. There is no speed control — Slowest is for following by hand, Follow cube
          hands the pacing to the cube in your hands. */
       .transport { display: flex; align-items: center; gap: 8px; }
-      .transport .spacer { flex: 1; }
+      /* Takes the old spacer's job: it has to be the flexible gap anyway, so the gap may as well
+         say how far through the solution you are. --track/--bar are the groove/fill token pair. */
+      .transport .progress { flex: 1; height: 6px; border-radius: 999px; background: var(--track); overflow: hidden; }
+      .transport .progress > span { display: block; height: 100%; width: 0; border-radius: 999px; background: var(--bar); transition: width .18s ease; }
       .tbtn { width: 42px; height: 42px; border-radius: var(--r-4); display: grid; place-items: center; border: 1px solid var(--line-strong); color: var(--ink-2); }
       .tbtn:hover { border-color: var(--ink-5); color: var(--ink); }
       .tbtn.primary { background: var(--invert-bg); color: var(--invert-fg); border-color: var(--invert-bg); }
