@@ -425,7 +425,10 @@ SCREENS.scan = () => {
         <ai-scan-panel headless autostart></ai-scan-panel>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
-        <div class="scan-cam"><button id="scanCamBtn" title="Camera">${icon('webcam', 20)}</button></div>
+        <div class="scan-cam">
+          <button id="scanResetBtn" title="Throw the whole scan away and start again">${icon('refresh', 19)}</button>
+          <button id="scanCamBtn" title="Camera">${icon('webcam', 20)}</button>
+        </div>
       </div>
     </div>
     <div class="aside">
@@ -449,6 +452,7 @@ SCREENS.scan = () => {
       // deferred autostart, but a property set before the element upgrades would be clobbered by
       // its own class fields, whereas an attribute survives and start() re-reads it.
       const camRow = $('.scan-cam', root), camBtn = $('#scanCamBtn', root);
+      const resetBtn = $('#scanResetBtn', root);
       const pin = (id) => { if (id) panel.setAttribute('device-id', id); else panel.removeAttribute('device-id'); };
       pin(settings.cameraId);
       // The webcam button IS the camera menu: one control in the corner rather than a button and a
@@ -475,7 +479,6 @@ SCREENS.scan = () => {
         const active = items.some((b) => b.dataset.value === settings.cameraId) ? settings.cameraId : '';
         for (const b of items) b.classList.toggle('now', b.dataset.value === active);
       };
-      const actionLabel = () => (camOn ? 'Start the scan over' : 'Turn the camera on');
       const fillCams = async () => {
         let list = [];
         try { list = (await panel.cameras?.()) ?? []; } catch { list = []; }
@@ -492,11 +495,6 @@ SCREENS.scan = () => {
         };
         add('', 'Default camera');
         for (const d of list) add(d.deviceId, d.label);
-        menu.appendChild(document.createElement('hr'));
-        const act = document.createElement('button');
-        act.type = 'button'; act.className = 'act'; act.id = 'scanAct'; act.textContent = actionLabel();
-        act.onclick = () => { closePops(); if (camOn) panel.restart?.(); else void panel.start?.(); };
-        menu.appendChild(act);
         markActive();
       };
       void fillCams();
@@ -505,6 +503,9 @@ SCREENS.scan = () => {
       const onDevices = () => { void fillCams(); };
       navigator.mediaDevices?.addEventListener?.('devicechange', onDevices);
       let shownDevice = null;
+      // Throw the whole scan away. With the camera dark this is also the way back on, since a
+      // refused permission leaves nothing else to press.
+      resetBtn.onclick = () => { closePops(); if (camOn) panel.restart?.(); else void panel.start?.(); };
       camBtn.onclick = (ev) => {
         const open = menu.hidden;
         closePops();
@@ -546,8 +547,6 @@ SCREENS.scan = () => {
         camOn = Boolean(p.device);
         camRow.classList.toggle('on', camOn);
         camBtn.title = camOn ? `${p.device.label} — camera and scan` : 'Camera off — click to turn it on';
-        const act = menu.querySelector('#scanAct');
-        if (act) act.textContent = actionLabel();
         // Labels are only readable once permission is granted, so the list is worth rebuilding the
         // first time a camera actually answers.
         if (p.device && p.device.deviceId !== shownDevice) {
@@ -561,11 +560,10 @@ SCREENS.scan = () => {
         onFacelets(e.detail.facelets);
         go(settings.autosolve ? 'guide' : 'viewer');
       });
-      // The detector is good, not perfect, so let a person overrule it: click any sticker on any
-      // side and pick the right colour. A side with nothing read yet starts from its centre
-      // colour, which makes this a way in for a side the camera simply cannot manage. Delegated
-      // rather than 54 listeners. The centre is the one sticker not offered — a centre colour IS
-      // the face's identity, so changing it would rename the face rather than correct it.
+      // The detector is good, not perfect, so let a person overrule it: on a side the camera has
+      // READ, click any sticker and pick the right colour. Delegated rather than 54 listeners. The
+      // centre is the one sticker not offered a colour — a centre colour IS the face's identity,
+      // so changing it would rename the face rather than correct it; it re-reads the side instead.
       const swatches = document.createElement('div');
       swatches.className = 'swatches';
       swatches.hidden = true;
@@ -597,6 +595,9 @@ SCREENS.scan = () => {
           if (tile.classList.contains('done')) panel.rescanFace?.(tile.dataset.face);
           return;
         }
+        // Only a side the camera has read can be corrected — there is nothing to overrule on one
+        // it has not seen, and nine guesses is not a correction.
+        if (!tile.classList.contains('done')) return;
         closePops();
         editing = { face: tile.dataset.face, index };
         cellEl.classList.add('editing');

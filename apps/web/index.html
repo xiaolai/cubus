@@ -224,8 +224,11 @@
          sticker colour — a fixed ink or paper colour would vanish on one of the six. */
       .scan-face .tile > i:nth-child(5) { display: grid; place-items: center; }
       .scan-face .tile > i:nth-child(5) > .ic { opacity: 0; color: #fff; transition: opacity var(--fade); }
-      .scan-face.done .tile > i:nth-child(5) { cursor: pointer; }
-      .scan-face.done .tile > i:nth-child(5):hover { box-shadow: inset 0 0 0 100px rgba(0,0,0,.45); }
+      /* Shown, not hidden behind a hover: it is how a user learns the centre re-reads its side, and
+         it appears exactly when that is possible — once the side has been read. */
+      .scan-face.done .tile > i:nth-child(5) { cursor: pointer; box-shadow: inset 0 0 0 100px rgba(0,0,0,.3); }
+      .scan-face.done .tile > i:nth-child(5) > .ic { opacity: .8; }
+      .scan-face.done .tile > i:nth-child(5):hover { box-shadow: inset 0 0 0 100px rgba(0,0,0,.5); }
       .scan-face.done .tile > i:nth-child(5):hover > .ic { opacity: 1; }
       .scan-face .cell.editing { box-shadow: 0 0 0 2px var(--accent); }
 
@@ -247,9 +250,9 @@
       /* Camera control, out of the centred column so it does not shift the scan. The lens fills and
          pulses while a camera is open: with no video on screen, that is the only thing telling a
          user the camera is actually running. */
-      .scan-cam { position: absolute; top: 12px; right: 14px; }
-      .scan-cam #scanCamBtn { width: 34px; height: 34px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-5); }
-      .scan-cam #scanCamBtn:hover { background: var(--panel-sunk); color: var(--ink-2); }
+      .scan-cam { position: absolute; top: 12px; right: 14px; display: flex; align-items: center; gap: 2px; }
+      .scan-cam > button { width: 34px; height: 34px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-5); }
+      .scan-cam > button:hover { background: var(--panel-sunk); color: var(--ink-2); }
       .scan-cam.on #scanCamBtn { color: var(--ok); }
       .scan-cam.on #scanCamBtn .lens { fill: currentColor; animation: cubusPulse var(--pulse) infinite; }
       /* A menu, not a native <select>: the webcam button is the only control in that corner, and a
