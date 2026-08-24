@@ -117,7 +117,7 @@ evolve smoothly. This is **whole-cube orientation**, not face angle. **VERIFIED.
 | REQUEST_FACELETS | `DD 04 00 ED 00 00` | yes | `0xED` FACELETS |
 | REQUEST_HARDWARE | `DF 03 00 00 00` | yes | `0xFA/FC/FD/FE` (+ GAN16 extras) |
 | REQUEST_BATTERY | `DD 04 00 EF 00 00` | yes | `0xEF` BATTERY |
-| REQUEST_RESET | `D2 0D 05 39 77 00 00 01 23 45 67 89 AB 00 00 00` | **NO — encoded but unsendable** | rewrites solved reference |
+| REQUEST_RESET | `D2 0D 05 39 77 00 00 01 23 45 67 89 AB 00 00 00` | **guarded — only via `anchorSolved()`** | rewrites solved reference |
 
 ### REQUEST_RESET — encoding verified, behaviour NOT verified
 
@@ -134,17 +134,41 @@ recorded here already, is the whole basis for trusting it.
 **What is not:** anything the physical cube does in response. No GAN16 has been
 sent this command from this codebase. A fixture test cannot establish it.
 
-It is therefore encoded in `buildUnsafeCommand()` and deliberately excluded from
-the `SafeCommand` union that `CubeDriver.send()` accepts, so no code path can
-transmit it. Tests assert that containment and fail if it is added to
-`SafeCommand`, referenced from the driver, or re-exported from `src/index.ts`.
+### How it is made safe to send
 
-Why the care: REQUEST_RESET tells the cube to treat its **current physical
-position** as solved. Sent when the cube is not actually solved, the driver's
-tracked state and the hardware diverge permanently and silently — precisely what
-the state invariant (apply decoded moves → matches hardware facelets) exists to
-catch. Before wiring it up, confirm on hardware that the cube is solved at the
-moment it is sent, and re-establish the invariant immediately afterwards.
+REQUEST_RESET tells the cube to treat its **current position** as solved. The
+danger is not the packet, it is the state it is sent in:
+
+| Cube reports | Effect of reset |
+|---|---|
+| not solved | Adopts a scrambled position as the new origin. Driver and hardware diverge **permanently and silently** — exactly what the state invariant exists to catch. |
+| solved | Sets the reference to the value already in effect. **State-neutral**, so nothing can diverge. |
+
+`GanCube.anchorSolved()` is the only way to transmit it, and it refuses unless
+the cube already reports `SOLVED_FACELETS`. That does not reduce the risk, it
+removes the mechanism: the command is only ever sent in the one state where it
+cannot cause divergence. It then re-reads the state and throws if the cube is
+anywhere other than solved.
+
+The residual case the guard cannot see is a cube that **reports** solved while
+physically scrambled. Facelets come from the cube's own state, so BLE cannot
+distinguish it, and neither can this method. Such a cube has already drifted
+before `anchorSolved()` is called; the camera scan is the ground-truth anchor
+for it. This path neither causes that case nor worsens it.
+
+Containment is enforced by tests, not convention. `buildUnsafeCommand()` takes an
+`UnsafeCommand` type that `send()` cannot accept; it is built in exactly one
+place, called from exactly one place, and not re-exported from `src/index.ts`.
+Adding a second call site, or moving the send above the precondition, both turn
+the suite red — the latter fails three tests, including one asserting that a
+refusal transmits nothing.
+
+**Still unconfirmed on hardware.** Before trusting the anchor step in practice,
+run it against a real GAN16 with the cube genuinely solved, and re-establish the
+state invariant immediately afterwards. Note that a cube which silently ignored
+the command is indistinguishable from one that honoured it, since both report
+solved — so confirming it works means checking that a subsequent drift is
+actually corrected, not merely that the call succeeds.
 
 `REQUEST_HARDWARE` verified live: returned name `GAN16ui`, hw 1.0, sw 2.4, date
 2026-01-09, plus extras 0xF5/0xF6/0xFF.

@@ -2,9 +2,15 @@
 // and sends safe query commands via FFF5. Transport-agnostic (see Transport).
 
 import { TinyEmitter } from './emitter.js';
-import { type SafeCommand, buildCommand } from './gen4/commands.js';
+import {
+  type SafeCommand,
+  type UnsafeCommand,
+  buildCommand,
+  buildUnsafeCommand,
+} from './gen4/commands.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
 import { decodeGen4 } from './gen4/decode.js';
+import { SOLVED_FACELETS } from './gen4/facelets.js';
 import type { CubeEvent, CubeFacelets, CubeGyro, CubeMove } from './gen4/types.js';
 import { bytesToHex, hexToBytes } from './hex.js';
 import type { Transport } from './transport/blew.js';
@@ -189,6 +195,75 @@ export class GanCube extends TinyEmitter {
   }
   requestHardware(timeoutMs = 4000): Promise<CubeEvent> {
     return this.request('hardware', 'REQUEST_HARDWARE', timeoutMs);
+  }
+
+  // ---- Anchor step (the one command that rewrites cube state) ---------------
+
+  /**
+   * Anchor the cube's internal solved reference — the pairing flow's
+   * "solve once to calibrate" step. Sends REQUEST_RESET, but ONLY when the cube
+   * already reports a solved state.
+   *
+   * That precondition is what makes this safe, and it is not a formality.
+   * REQUEST_RESET tells the cube to treat its CURRENT position as solved:
+   *
+   *  - Sent while the cube reports something other than solved, it would adopt a
+   *    scrambled position as the new origin. Driver state and hardware then
+   *    diverge permanently and silently — the failure the state invariant
+   *    (apply decoded moves -> matches hardware facelets) exists to catch.
+   *  - Sent while the cube already reports solved, it sets the reference to the
+   *    value already in effect. The operation is state-neutral, so there is no
+   *    divergence to create.
+   *
+   * So the guard does not reduce the risk, it removes the mechanism.
+   *
+   * The residual case the guard cannot see: a cube that REPORTS solved while
+   * physically scrambled. Facelets come from the cube's own state, so BLE cannot
+   * distinguish that, and this method cannot either. Such a cube has already
+   * drifted before this is called; the camera scan is the ground-truth anchor
+   * for it. This neither causes that case nor worsens it.
+   *
+   * Throws rather than returning a status: a silently skipped anchor step would
+   * leave the caller believing the cube was calibrated.
+   *
+   * NOT CONFIRMED ON HARDWARE. The packet matches upstream and the guard is
+   * tested, but no physical GAN16 has been sent this command from this codebase.
+   * See docs/protocol.md.
+   */
+  async anchorSolved(opts: { timeoutMs?: number } = {}): Promise<CubeFacelets> {
+    const { timeoutMs = 4000 } = opts;
+
+    const before = await this.getState({ active: true, timeoutMs });
+    if (before.facelets !== SOLVED_FACELETS) {
+      throw new Error(
+        `refusing to anchor: the cube reports an unsolved state, and anchoring now would adopt it as the new solved reference, desyncing the driver from the cube permanently. Solve the cube first.\n  reported: ${before.facelets}\n  expected: ${SOLVED_FACELETS}`,
+      );
+    }
+
+    await this.sendUnsafe('REQUEST_RESET');
+
+    // Re-establish the invariant rather than assuming the write landed. This
+    // cannot prove the command took effect — a cube that ignored it also reports
+    // solved — but it does catch a cube left in any OTHER state, which is the
+    // only outcome that would be dangerous.
+    const after = await this.getState({ active: true, timeoutMs });
+    if (after.facelets !== SOLVED_FACELETS) {
+      throw new Error(
+        `anchor failed: the cube did not report a solved state afterwards. Treat the driver's tracked state as untrusted and re-scan.\n  reported: ${after.facelets}`,
+      );
+    }
+    return after;
+  }
+
+  /**
+   * Deliberately separate from send(): its parameter type is UnsafeCommand, so
+   * no SafeCommand call site can reach this and no new caller can appear without
+   * naming the unsafe type. Private, and used only by anchorSolved() above,
+   * which owns the precondition.
+   */
+  private async sendUnsafe(cmd: UnsafeCommand): Promise<void> {
+    const enc = this.cipher.encrypt(buildUnsafeCommand(cmd));
+    await this.transport.write(CMD_CHAR, bytesToHex(enc));
   }
 
   /**
