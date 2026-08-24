@@ -24,6 +24,7 @@ import {
   type ColorFace,
   type ConfirmRequest,
   assembleColors,
+  assemblePainted,
 } from '../src/ai-assemble.js';
 import { type CameraDevice, type FrameSource, listCameras, openCamera } from '../src/camera.js';
 import { type RunModel, detectFace } from '../src/onnx-detect.js';
@@ -50,6 +51,7 @@ const HINT: Record<FitReason, string> = {
 const TICK_MS = 200; // ~5 fps; the model run dominates the budget
 const STABLE = 3; // identical reads in a row before we auto-capture a face
 const OPENING = 'Show any side to the camera — held flat and centred.';
+const PAINTING = 'Painting by hand — tap any sticker and pick its colour.';
 // A permission prompt can sit unanswered for a long time, and a host that never answers one
 // (a WKWebView with no camera entitlement, say) looks identical from here: getUserMedia simply
 // never settles. After this long, stop showing 'Opening the camera…' as if it were progress.
@@ -62,6 +64,7 @@ export type ScanPhase =
   | 'starting'
   | 'loading'
   | 'scanning'
+  | 'painting'
   | 'confirm'
   | 'checking'
   | 'done'
@@ -164,6 +167,8 @@ export class AiScanPanel extends HTMLElement {
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   private confirmed: Partial<Record<Face, ColorFace>> = {};
   private awaiting: ConfirmRequest | null = null;
+  /** Hand-painting mode: the camera is off and every non-centre sticker is settable. */
+  private painting = false;
   /** Contradictory confirmations in a row; two means the instruction is not landing. */
   private mismatches = 0;
   private scanEpoch = 0; // bumped by loop()/stop(); rejects stale in-flight inferences
@@ -460,19 +465,47 @@ export class AiScanPanel extends HTMLElement {
   setSticker(face: Face, index: number, colour: number): void {
     if (!Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
     if (!Number.isInteger(colour) || colour < 0 || colour >= FACES.length) return;
-    // Only a side the camera has actually read can be corrected. Hand-building a side the scanner
-    // never saw is a different act with a different failure mode — nine guesses instead of one
-    // correction — and it would let a stray tap turn an unscanned tile into a face the camera then
-    // refuses to read. Correcting a reading is the job; supplying one is not.
-    const read = this.faces[face];
-    if (read === undefined) return;
-    if (read.colors[index] === colour) return;
+    // Outside painting, only a side the camera has actually read can be corrected. Hand-building
+    // one the scanner never saw is a different act with a different failure mode — nine guesses
+    // instead of one correction — and it would let a stray tap turn an unscanned tile into a face
+    // the camera then refuses to read. Correcting a reading is the job; supplying one is not.
+    // Painting is where supplying one IS the job, so there the side is created on first touch,
+    // starting from its own centre colour.
+    let read = this.faces[face];
+    if (read === undefined) {
+      if (!this.painting) return;
+      read = {
+        colors: Array<number>(9).fill(FACES.indexOf(face)),
+        confidence: Array<number>(9).fill(1),
+      };
+      this.faces[face] = read;
+      this.buildDots();
+    } else if (read.colors[index] === colour) {
+      return;
+    }
     read.colors[index] = colour;
     read.confidence[index] = 1; // a person looked at it, which beats the detector's guess
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
-    if (this.capturedFaces().length < FACES.length) {
+    const done = this.capturedFaces().length;
+    if (this.painting) {
+      // Every stroke is checked, and only a finished cube is acted on. Half-painted states are
+      // invalid by definition, so reporting each one as a failure would be noise, not news.
+      if (done === FACES.length) {
+        const result = assemblePainted(this.faces);
+        if (result.valid) {
+          this.finish(result);
+          return;
+        }
+      }
+      this.report(
+        'painting',
+        `Painted the ${GUIDE[face].name} side — ${done}/${FACES.length} sides.`,
+      );
+      return;
+    }
+    if (done < FACES.length) {
       this.report('scanning', `Corrected the ${GUIDE[face].name} side. Show another side…`);
       return;
     }
@@ -480,6 +513,22 @@ export class AiScanPanel extends HTMLElement {
     this.showPreview(null);
     this.report('checking', this.tinted('ok', 'Corrected — checking…'));
     this.assemble();
+  }
+
+  /**
+   * Turn hand-painting on or off. The two are exclusive by nature, not by policy: painting means
+   * the user is authoring the cube, and a camera that kept reading would overwrite what they typed
+   * in. So turning it on releases the camera, and turning it off opens it again from scratch.
+   */
+  setPainting(on: boolean): void {
+    if (on === this.painting) return;
+    this.painting = on;
+    if (on) {
+      this.stop(); // stop() clears the device, so a host stops showing a live lens
+      this.report('painting', PAINTING);
+      return;
+    }
+    void this.start();
   }
 
   /**
@@ -520,6 +569,10 @@ export class AiScanPanel extends HTMLElement {
   /** Clear all captured faces and keep scanning; the camera stays open. Public for host UIs. */
   restart(): void {
     this.reset();
+    if (this.painting) {
+      this.report('painting', PAINTING);
+      return;
+    }
     this.loop('scanning');
   }
 
