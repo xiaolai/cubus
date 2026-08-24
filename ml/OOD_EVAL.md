@@ -29,7 +29,7 @@ This doc is the out-of-distribution (OOD) evaluation harness and what it found.
 ```bash
 cd ml && source venv/bin/activate          # needs: onnxruntime pillow numpy requests
 python fetch_wikimedia.py --out /tmp/ood --category "Rubik's Cube" --recurse 0
-python ood_eval.py    --model ../app/renderer/vendor/cube-yolo.onnx --images /tmp/ood --out /tmp/ood_out
+python ood_eval.py    --model ../apps/web/vendor/cube-yolo.onnx --images /tmp/ood --out /tmp/ood_out
 python ood_gallery.py --out /tmp/ood_out                                   # local review grid
 python ood_report.py  --out /tmp/ood_out --dest ../dev-docs/artifacts/cube-yolo-ood-report.html \
                       --highlights highlights.json
