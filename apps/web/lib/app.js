@@ -525,6 +525,10 @@ SCREENS.scan = () => {
         sayTitle.textContent = (p.message && SAY_TITLE[p.phase]) || 'How it works';
         for (const tile of tiles) {
           const f = tile.dataset.face;
+          // The centre carries the rescan affordance, revealed on hover over a captured side.
+          const centreCell = tile.querySelectorAll('i')[4];
+          if (!centreCell.firstChild) centreCell.innerHTML = icon('refresh', 15);
+          centreCell.title = `Scan the ${SCAN_FACE_NAME[f]} side again`;
           const got = p.captured.find((c) => c.face === f);
           const cells = [...tile.querySelectorAll('i')];
           tile.classList.toggle('done', Boolean(got));
@@ -586,7 +590,13 @@ SCREENS.scan = () => {
         const tile = ev.target.closest('.scan-face');
         if (!cellEl || !tile) return;
         const index = [...cellEl.parentElement.children].indexOf(cellEl);
-        if (index === 4) return; // the centre names the face; it is not a correction
+        // The centre cannot be colour-corrected — it names the face — so it does the other useful
+        // thing: throws that side's reading away so the camera reads it again.
+        if (index === 4) {
+          closePops();
+          if (tile.classList.contains('done')) panel.rescanFace?.(tile.dataset.face);
+          return;
+        }
         closePops();
         editing = { face: tile.dataset.face, index };
         cellEl.classList.add('editing');
