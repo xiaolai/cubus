@@ -95,6 +95,13 @@ async function loadSolver() {
 
 // Given a scanned/known facelet state, derive the setup alg (solved -> scrambled, for the 3D
 // animation) and whether it needs solving. cubejs is the oracle here.
+//
+// PRECONDITION: `f` must be a SOLVABLE cube, not merely a well-formed string. cubejs's solve() is
+// a Kociemba search that assumes solvability; hand a it a state with the right colour counts and
+// centres but broken parity and it searches forever, freezing the tab — no throw, no timeout. Both
+// callers hold up their end: assembleColors clears a scan through the parity gate before emitting
+// it, and the driver's facelets come from hardware the state invariant checks. A future caller
+// that does neither would hang here, and nothing in this function can tell.
 function setFacelets(f) {
   const c = state.cube;
   c.facelets = f; c.solution = ''; c.moves = []; c.stepFacelets = [];
@@ -440,7 +447,14 @@ SCREENS.scan = () => {
       <button class="btn accent-outline block" data-go="guide">Solve this cube</button>
     </div></div>`,
     mount(root) {
-      $('#scanCube', root).appendChild(newCube());
+      // Kept, so a finished scan can update the aside in place. Re-rendering the screen would tear
+      // down the scanner element and reopen the camera for a scan that has just ended.
+      const stateCube = newCube();
+      $('#scanCube', root).appendChild(stateCube);
+      const showState = (f) => {
+        $('#scanState', root).textContent = f;
+        stateCube.setAttribute('facelets', f);
+      };
       const panel = $('ai-scan-panel', root);
       const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root);
       const tiles = [...root.querySelectorAll('.scan-face')];
@@ -558,7 +572,13 @@ SCREENS.scan = () => {
       // nothing to do here; only a validated cube leaves this screen.
       panel.addEventListener('scan-complete', (e) => {
         onFacelets(e.detail.facelets);
-        go(settings.autosolve ? 'guide' : 'viewer');
+        // Stay put. Jumping to another screen took the six tiles away at the moment they finally
+        // mean something, and with them the chance to check the read or fix a sticker. The aside
+        // shows the cube that was found, and "Solve this cube" is right beside it. Anyone who
+        // wants the jump has the "Auto-solve after scan" setting, which this now actually honours
+        // — it read "jump straight to the guide" while the code jumped to the viewer regardless.
+        showState(e.detail.facelets);
+        if (settings.autosolve) go('guide');
       });
       // The detector is good, not perfect, so let a person overrule it: on a side the camera has
       // READ, click any sticker and pick the right colour. Delegated rather than 54 listeners. The
