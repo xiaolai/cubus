@@ -121,7 +121,6 @@
       .cube-status b { font-size: var(--fs-body-s); font-weight: 600; }
       .cube-status .sub { font-size: var(--fs-caption); color: var(--ink-4); margin-top: 3px; }
       @keyframes cubusPulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
-      @keyframes cubusScan { from { transform: translateY(0) } to { transform: translateY(230px) } }
 
       /* main column */
       .main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding-top: var(--titlebar-h); }
@@ -162,6 +161,28 @@
       .bar { height: 6px; background: var(--panel-sunk); border-radius: 3px; overflow: hidden; }
       .bar > i { display: block; height: 100%; background: var(--accent); }
       .field { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-3); padding: 7px 10px; font-family: var(--font-num); font-size: var(--fs-body-s); }
+      /* Native <select> pulled into the .btn.outline idiom: appearance:none strips the OS control,
+         and the chevron is drawn in CSS so it inherits currentColor and costs no asset or request.
+         The popup list itself is OS-drawn — tokens.css's `color-scheme: light dark` is what keeps
+         that in theme. Deliberately NOT .field: that is a text input, and its --font-num is for
+         numerals, times and algs, never UI text like a device name. */
+      .select { position: relative; display: inline-flex; align-items: center; }
+      .select > select {
+        appearance: none; -webkit-appearance: none;
+        height: 32px; max-width: 260px; padding: 0 32px 0 12px; text-align: left;
+        border: 1px solid var(--line-strong); border-radius: var(--r-4);
+        background: var(--panel); color: var(--ink-2);
+        font-family: var(--font-ui); font-size: var(--fs-body-s); font-weight: 600;
+        text-overflow: ellipsis; transition: border-color var(--fade), color var(--fade);
+      }
+      .select > select:hover { border-color: var(--ink-5); color: var(--ink); }
+      .select > select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      .select::after {
+        content: ''; position: absolute; right: 13px; top: 50%; width: 6px; height: 6px;
+        border-right: 1.75px solid currentColor; border-bottom: 1.75px solid currentColor;
+        transform: translateY(-70%) rotate(45deg); color: var(--ink-5); pointer-events: none;
+      }
+      .select:hover::after { color: var(--ink-3); }
       .toggle { width: 40px; height: 22px; border-radius: 12px; background: var(--track); position: relative; flex: none; }
       .toggle.on { background: var(--accent); }
       .toggle > i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left var(--fade); }
@@ -179,23 +200,30 @@
       .row { display: grid; align-items: center; padding: 9px 18px; border-bottom: 1px solid var(--line-faint); font-size: var(--fs-body); }
       .link { color: var(--accent); font-size: var(--fs-body-s); }
 
-      /* lens / camera */
-      .lens { position: relative; flex: 1; min-height: 220px; border-radius: var(--r-6); background: var(--lens); overflow: hidden; display: flex; align-items: center; justify-content: center; }
-      .lens .veil { position: absolute; inset: 0; background: radial-gradient(120% 90% at 50% 40%, rgba(90,82,68,.55), rgba(20,18,14,.95)); }
-      .lens .scanline { position: absolute; left: 0; right: 0; top: 60px; height: 2px; background: rgba(46,107,255,.7); animation: cubusScan 2.6s ease-in-out infinite alternate; }
-      .lens .grid { position: relative; width: 250px; height: 250px; }
-      .lens .grid .cells { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(3,1fr); grid-template-rows: repeat(3,1fr); gap: 6px; }
-      .lens .grid .cells > div { border-radius: 4px; border: 1.5px solid rgba(246,242,233,.5); }
-      .bracket { position: absolute; width: 26px; height: 26px; }
-      .bracket.tl { left: -14px; top: -14px; border-left: 3px solid var(--accent); border-top: 3px solid var(--accent); }
-      .bracket.tr { right: -14px; top: -14px; border-right: 3px solid var(--accent); border-top: 3px solid var(--accent); }
-      .bracket.bl { left: -14px; bottom: -14px; border-left: 3px solid var(--accent); border-bottom: 3px solid var(--accent); }
-      .bracket.br { right: -14px; bottom: -14px; border-right: 3px solid var(--accent); border-bottom: 3px solid var(--accent); }
-      .lens .tag { position: absolute; left: 18px; top: 16px; display: flex; gap: 8px; align-items: center; }
-      .lens .tag b { background: rgba(46,107,255,.92); color: #fff; font-size: var(--fs-caption); font-weight: 700; letter-spacing: .08em; border-radius: 4px; padding: 4px 9px; }
-      .lens .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 18px; background: linear-gradient(transparent, rgba(16,14,11,.9)); color: var(--on-lens); }
-      .lens .cap .p { font-size: var(--fs-body-l); font-weight: 600; }
-      .lens .cap .h { font-size: var(--fs-body-s); color: var(--on-lens-dim); margin-top: 2px; }
+      /* camera scan.
+         The pane owns the whole six-face flow. <ai-scan-panel headless autostart> sits inside it
+         invisibly, owning only the camera + model, and reports through `scan-progress`; the scan
+         is drawn HERE, in the app's own type and colour. The raw camera picture is deliberately
+         never shown — what the user needs to see is what the scanner READ, not what the lens saw,
+         and the live 3×3 below is exactly that. */
+      .scanboard { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s-9); text-align: center; }
+      .scan-live { display: grid; grid-template-columns: repeat(3,1fr); gap: 5px; width: 150px; padding: 9px; border-radius: var(--r-5); background: var(--panel-sunk); }
+      .scan-live > i { aspect-ratio: 1; border-radius: 4px; background: var(--facelet-off); opacity: .3; transition: background var(--fade), opacity var(--fade); }
+      .scan-live.reading > i { opacity: 1; }
+      .scan-msg { font-size: var(--fs-title-s); font-weight: 600; max-width: 460px; }
+      .scan-msg.ok { color: var(--ok); }
+      .scan-msg.err { color: var(--err); }
+      .scan-count { font-family: var(--font-num); font-size: var(--fs-body-s); color: var(--ink-4); margin-top: 4px; }
+      .scan-faces { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+      .scan-face { width: 58px; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+      .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 4px; border-radius: var(--r-4); border: 1.5px dashed var(--line-strong); display: grid; grid-template-columns: repeat(3,1fr); gap: 2px; }
+      .scan-face .tile > i { border-radius: 2px; background: var(--facelet-off); opacity: .3; }
+      .scan-face .lbl { font-size: var(--fs-caption); font-weight: 600; color: var(--ink-5); }
+      .scan-face.done .tile { border-style: solid; border-color: var(--ok); }
+      .scan-face.done .tile > i { opacity: 1; }
+      .scan-face.done .lbl { color: var(--ok); }
+      .scan-cam { display: flex; align-items: center; gap: 10px; }
+      .scan-cam[hidden] { display: none; }
 
       /* 2D net */
       .net { display: grid; grid-template-columns: repeat(12,1fr); grid-template-rows: repeat(9,1fr); gap: 3px; aspect-ratio: 12/9; max-width: 320px; margin: 0 auto; }
@@ -206,12 +234,6 @@
       .chip-m { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-5); border-radius: 4px; padding: 4px 9px; }
       .chip-m.played { background: var(--panel-sunk); color: var(--ink); }
       .chip-m.cur { background: var(--invert-bg); color: var(--invert-fg); border-color: var(--invert-bg); }
-
-      /* modal (AI scan owns its own camera) */
-      .modal { position: fixed; inset: 0; background: rgba(1,4,9,.72); display: grid; place-items: center; z-index: 50; }
-      .modal[hidden] { display: none; }
-      .modal .box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-6); padding: 20px; width: min(560px, 94vw); }
-      .modal h3 { margin: 0 0 12px; font-size: var(--fs-title-s); }
 
       @media (max-width: 1120px) { .app { padding: 0; } .win { border-radius: 0; } }
     </style>
@@ -250,20 +272,10 @@
       </div>
     </div>
 
-    <!-- AI camera scanner (YOLOv11): show the six sides in any order, each captured automatically.
-         Registered by ./vendor/ai-scan-panel.js; owns onnxruntime-web (model + wasm from ./vendor/). -->
-    <div class="modal" id="scanModal" hidden>
-      <div class="box">
-        <h3>Camera scan <span class="eyebrow" style="color:var(--warn)">YOLO</span></h3>
-        <ai-scan-panel id="aiPanel"></ai-scan-panel>
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
-          <span class="sub" style="color:var(--ink-4)">Show each side flat and centred — each is captured automatically.</span>
-          <button class="btn outline sm" id="scanClose">Close</button>
-        </div>
-      </div>
-    </div>
-
     <script type="module" src="./vendor/cubus-cube.js"></script>
+    <!-- AI camera scanner (YOLOv11): registers <ai-scan-panel>, which the Camera scan screen
+         mounts headless + autostart. It owns the camera and onnxruntime-web (model + wasm from
+         ./vendor/) and reports through `scan-progress`; the screen draws the scan itself. -->
     <script type="module" src="./vendor/ai-scan-panel.js"></script>
     <script type="module" src="./lib/app.js"></script>
   </body>

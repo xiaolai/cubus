@@ -50,18 +50,40 @@ const result = assembleColors(faces);            // { facelets, valid, confidenc
 |---|---|
 | `npm run check` | Strict `tsc` + Biome + type-aware ESLint + vitest (the gate). |
 | `npm run coverage` | Coverage over the pure core. |
-| `npm run build:panel` | Bundle `view/ai-scan-panel.ts` (+ cubejs) into `../web/vendor/ai-scan-panel.js`, a self-contained ESM the bundler-less SPA loads. Re-run after editing the component. |
+| `npm run build:panel` | Bundle `view/ai-scan-panel.ts` (+ cubejs) into `apps/web/vendor/ai-scan-panel.js`, a self-contained ESM the bundler-less SPA loads. The bundle is committed, so re-run **and commit it** after editing the component. |
 
-## App wiring (in `web/index.html`)
+## The `<ai-scan-panel>` element
 
-The `<ai-scan-panel>` bundle (`web/vendor/ai-scan-panel.js`), the model
-(`cube-yolo.onnx`), and onnxruntime-web's `dist/*.wasm` are all served from `web/vendor/`;
-the panel's `scan-complete` is applied to the 3D twin. Two notes:
+The element owns the camera, the model and the capture state machine. Two attributes decide how
+much UI it owns on top of that:
+
+| Attribute | Effect |
+|---|---|
+| `autostart` | Opens the camera as soon as the element connects — no click. Deferred by one microtask, so a host that inserts the element and attaches its listeners in the same synchronous block still sees the first report. |
+| `headless` | Draws nothing: no preview, no dots, no buttons. The host draws the scan from `scan-progress`. The `<video>` is still laid out (clipped to 1px) because a `display:none` video stops delivering frames in some browsers. |
+
+| Event | Detail | When |
+|---|---|---|
+| `scan-progress` | `{ phase, message, captured, live }` — `phase` is `starting`/`loading`/`scanning`/`checking`/`done`/`error`, `message` is a finished sentence, `captured` is `{ face, colors }[]` in URFDLB order, `live` is the 9 colour classes in view or `null` | Every state change. The built-in status line and this event always agree — they go through one code path. |
+| `scan-complete` | `ScanResult` | A validated, solvable six-face read. The element stops itself. |
+| `scan-invalid` | `ScanResult` | The read did not validate. The element resets and keeps scanning; the reason arrives as the next `scan-progress`. |
+
+Methods: `start()` (open the camera / retry after an error), `restart()` (drop the captured sides,
+keep the camera), `stop()` (release the camera; also runs on disconnect).
+
+## App wiring (in `apps/web/index.html`)
+
+The `<ai-scan-panel>` bundle (`apps/web/vendor/ai-scan-panel.js`), the model (`cube-yolo.onnx`),
+and onnxruntime-web's `dist/*.wasm` are all served from `apps/web/vendor/`. The app mounts the
+element **headless + autostart** on its Camera scan screen: the camera opens with the screen, the
+screen draws the six-face flow itself from `scan-progress`, and the raw camera picture is
+deliberately never shown — what a user needs to see is what the scanner *read*. `scan-complete` is
+applied to the 3D twin. Two notes:
 
 - **Camera-first:** the panel opens the camera *before* loading the model, so a slow model load
-  never blanks the preview.
+  never blanks the scan.
 - **wasm loading:** the SPA is served as static files over an http(s) origin (in dev via
-  `cd web && npm run dev`, which also copies the wasm into `web/vendor/`), so the page can
-  `fetch()` its own local wasm — the model loads **offline, no CDN**. (`createModelRunner`'s
+  `pnpm --filter cubus-web dev`, which also copies the wasm into `apps/web/vendor/`), so the page
+  can `fetch()` its own local wasm — the model loads **offline, no CDN**. (`createModelRunner`'s
   `opts.wasmPaths` defaults to `./`; on a plain `file://` page pass an https CDN instead, since
   `file://` can't fetch a local `.wasm`.)

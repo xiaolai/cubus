@@ -65,7 +65,7 @@ const TITLES = {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspection: true, autosolve: false });
+const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspection: true, autosolve: false, cameraId: '' });
 const state = {
   screen: 'home',
   connected: false, cubeName: '', battery: '',
@@ -355,40 +355,159 @@ SCREENS.home = () => {
           <div style="font-size:var(--fs-meta);color:var(--ink-5)">${d}</div></div>`).join('')}</div>
         <div class="sub" style="color:var(--ink-4);margin-top:14px">Average dropped 2.6s since Monday. Cross is now your fastest stage.</div></div>
     </div></div>`,
-    mount(root) { $('#scanCta', root).onclick = openScan; },
+    mount(root) { $('#scanCta', root).onclick = () => go('scan'); },
   };
 };
 
-SCREENS.scan = () => ({
-  html: `<div class="cols">
+// Camera scan. The camera opens the moment this screen mounts — <ai-scan-panel headless autostart>
+// sits in the markup invisibly, owning the camera, the model and the capture state machine, and
+// reports every change through `scan-progress`. The whole six-face flow happens right here: no
+// modal, and deliberately no camera picture. What the user needs to see is what the scanner READ,
+// so the live 3x3 below is the viewfinder. Colour class i <-> FACES[i] <-> NET_FACES[i], so a
+// scanned sticker is painted in the app's own palette, matching the 3D cube beside it.
+const SCAN_FACE_NAME = { U: 'Up', R: 'Right', F: 'Front', D: 'Down', L: 'Left', B: 'Back' };
+
+SCREENS.scan = () => {
+  const pal = NET_COLORS[settings.palette] || NET_COLORS.muted;
+  const classColor = (i) => pal[NET_FACES[i]] || 'var(--facelet-off)';
+  const cell = (bg) => `<i style="background:${bg}"></i>`;
+  // A pending tile is nine dim wells with the face's own colour in the centre, so the board reads
+  // "the yellow side is still missing" without a legend.
+  const pending = (f) => Array.from({ length: 9 }, (_, i) => cell(i === 4 ? pal[f] : 'var(--facelet-off)')).join('');
+  const blank = Array.from({ length: 9 }, () => cell('var(--facelet-off)')).join('');
+  // The panel is registered by a module script; if that has not landed yet the element is still
+  // inert, so say so rather than claiming a camera is opening.
+  const registered = Boolean(customElements.get('ai-scan-panel'));
+  return {
+    html: `<div class="cols">
     <div class="col">
-      <div class="lens">
-        <div class="veil"></div><div class="scanline"></div>
-        <div class="grid"><div class="cells" id="scanCells"></div>
-          <div class="bracket tl"></div><div class="bracket tr"></div><div class="bracket bl"></div><div class="bracket br"></div></div>
-        <div class="tag"><b>LIVE TRACKING</b><span class="num" style="color:var(--on-lens-dim)">confidence 0.97</span></div>
-        <div class="cap"><div class="p">Show any face — held flat and centred</div><div class="h">Each side is captured automatically, in any order.</div></div>
+      <div class="card scanboard">
+        <ai-scan-panel headless autostart></ai-scan-panel>
+        <div class="scan-live" id="scanLive">${blank}</div>
+        <div>
+          <div class="scan-msg" id="scanMsg">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
+          <div class="scan-count" id="scanCount">0 / ${NET_FACES.length} sides</div>
+        </div>
+        <div class="bar" style="width:220px"><i id="scanBar" style="width:0%"></i></div>
+        <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
+          <div class="tile">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
+        <div style="display:flex;gap:10px">
+          <button class="btn outline" id="scanRedo">Start over</button>
+          <button class="btn outline" data-go="viewer">Skip to viewer</button>
+        </div>
+        <div class="scan-cam"><span class="eyebrow">Camera</span><label class="select"><select id="scanCam"></select></label></div>
       </div>
-      <div style="display:flex;gap:10px"><button class="btn primary" id="openScan" style="flex:1">Open camera scanner</button>
-        <button class="btn outline" data-go="viewer">Skip to viewer</button></div>
     </div>
     <div class="aside">
       <div class="card"><div class="eyebrow">DETECTED STATE</div>
         <div class="cube-slot" id="scanCube" style="height:230px;margin-top:6px"></div>
         <div class="mono" id="scanState" style="margin-top:6px">${state.cube.facelets}</div></div>
       <div class="card"><b style="font-size:var(--fs-body-l)">How it works</b>
-        <div class="sub" style="color:var(--ink-4);margin-top:4px">The YOLO scanner reads stickers on device. A validated six-face read jumps straight to the solve guide.</div></div>
-      <button class="btn accent-outline block" data-go="guide" id="solveScanned">Solve this cube</button>
+        <div class="sub" style="color:var(--ink-4);margin-top:4px">The camera opens with this screen and the YOLO scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still.</div></div>
+      <button class="btn accent-outline block" data-go="guide">Solve this cube</button>
     </div></div>`,
-  mount(root) {
-    const p = NET_COLORS[settings.palette] || NET_COLORS.muted;
-    const cells = $('#scanCells', root);
-    const order = state.cube.facelets.slice(18, 27); // show the F face as a preview grid
-    cells.innerHTML = order.split('').map((ch) => `<div style="background:${p[ch] || '#333'}"></div>`).join('');
-    $('#scanCube', root).appendChild(newCube());
-    $('#openScan', root).onclick = openScan;
-  },
-});
+    mount(root) {
+      $('#scanCube', root).appendChild(newCube());
+      const panel = $('ai-scan-panel', root);
+      const live = $('#scanLive', root), msg = $('#scanMsg', root);
+      const count = $('#scanCount', root), bar = $('#scanBar', root), redo = $('#scanRedo', root);
+      const liveCells = [...live.querySelectorAll('i')];
+      const tiles = [...root.querySelectorAll('.scan-face')];
+      const paint = (cells, colors) => cells.forEach((c, i) => { c.style.background = classColor(colors[i]); });
+      let phase = 'starting';
+
+      // Which camera. This machine class routinely has several — a built-in, a virtual camera, a
+      // Continuity Camera (an iPhone) — and with no video preview the user cannot tell which one
+      // answered. The pin is an ATTRIBUTE, not a property: mount() runs before the element's
+      // deferred autostart, but a property set before the element upgrades would be clobbered by
+      // its own class fields, whereas an attribute survives and start() re-reads it.
+      const cam = $('#scanCam', root), camRow = $('.scan-cam', root);
+      const pin = (id) => { if (id) panel.setAttribute('device-id', id); else panel.removeAttribute('device-id'); };
+      pin(settings.cameraId);
+      let camsKey = null;
+      const fillCams = async () => {
+        let list = [];
+        try { list = (await panel.cameras?.()) ?? []; } catch { list = []; }
+        const key = list.map((d) => d.deviceId).join('|');
+        if (key === camsKey) return;
+        camsKey = key;
+        cam.textContent = '';
+        // Device labels come from the OS — set as text, never interpolated into HTML.
+        const add = (value, label) => { const o = document.createElement('option'); o.value = value; o.textContent = label; cam.appendChild(o); };
+        add('', 'Default camera');
+        for (const d of list) add(d.deviceId, d.label);
+        cam.value = settings.cameraId || '';
+        // Only offer the choice when there IS one. The exception is a camera already pinned: that
+        // row is the only way to un-pin it, so hiding it would strand anyone whose chosen camera
+        // has since been unplugged.
+        camRow.hidden = list.length < 2 && !settings.cameraId;
+      };
+      void fillCams();
+      // Cameras come and go — a webcam is plugged in, an iPhone wanders out of Continuity range.
+      // Without this the row's visibility would only ever be re-evaluated when the ACTIVE camera
+      // changed, so a second camera appearing would never offer the choice.
+      const onDevices = () => { void fillCams(); };
+      navigator.mediaDevices?.addEventListener?.('devicechange', onDevices);
+      let shownDevice = null;
+      cam.onchange = () => {
+        settings.cameraId = cam.value; save('cubusSettings', settings);
+        pin(cam.value);
+        void panel.start?.();
+      };
+
+      panel.addEventListener('scan-progress', (e) => {
+        const p = e.detail;
+        phase = p.phase;
+        msg.textContent = p.message;
+        msg.className = 'scan-msg' + (phase === 'error' ? ' err' : phase === 'checking' || phase === 'done' ? ' ok' : '');
+        // The live 3x3 is the viewfinder: it shows the side the scanner can see right now, and
+        // goes dim when it cannot see one — the same information a video feed would carry, minus
+        // everything else in the room.
+        live.classList.toggle('reading', Boolean(p.live));
+        if (p.live) paint(liveCells, p.live);
+        else liveCells.forEach((c) => { c.style.background = 'var(--facelet-off)'; });
+        for (const tile of tiles) {
+          const f = tile.dataset.face;
+          const got = p.captured.find((c) => c.face === f);
+          const cells = [...tile.querySelectorAll('i')];
+          tile.classList.toggle('done', Boolean(got));
+          if (got) paint(cells, got.colors);
+          else cells.forEach((c, i) => { c.style.background = i === 4 ? pal[f] : 'var(--facelet-off)'; });
+        }
+        // Names are only readable once permission is granted, so the list is worth refilling the
+        // first time a camera actually answers — and the select then shows which one that was.
+        // Keyed on the device, not on cam.value: a device that never appears in the list would
+        // otherwise re-trigger this on every tick.
+        if (p.device && p.device.deviceId !== shownDevice) {
+          const id = p.device.deviceId;
+          shownDevice = id;
+          void fillCams().then(() => {
+            // Only adopt it if the list actually offers it. Assigning an unknown value to a
+            // <select> selects nothing and the control renders EMPTY — worse than saying
+            // "Default camera", and it would hide which camera is live rather than reveal it.
+            cam.value = [...cam.options].some((o) => o.value === id) ? id : '';
+          });
+        }
+        count.textContent = `${p.captured.length} / ${NET_FACES.length} sides`;
+        bar.style.width = `${(p.captured.length / NET_FACES.length) * 100}%`;
+        redo.textContent = phase === 'error' ? 'Try again' : 'Start over';
+      });
+      // A rejected scan restarts itself and explains why through scan-progress, so there is
+      // nothing to do here; only a validated cube leaves this screen.
+      panel.addEventListener('scan-complete', (e) => {
+        onFacelets(e.detail.facelets);
+        go(settings.autosolve ? 'guide' : 'viewer');
+      });
+      redo.onclick = () => { if (phase === 'error') void panel.start?.(); else panel.restart?.(); };
+      // Removing the element releases the camera through disconnectedCallback, but a live camera
+      // is not something to leave to a lifecycle callback firing — stop it explicitly first.
+      cleanup = () => {
+        navigator.mediaDevices?.removeEventListener?.('devicechange', onDevices);
+        panel.stop?.();
+      };
+    },
+  };
+};
 
 SCREENS.viewer = () => {
   const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, tempo: 0.5, ghosts: false, back: 'none' });
@@ -726,9 +845,6 @@ function go(id) { if (!router.go(id)) applyRoute(); }
 window.addEventListener('hashchange', applyRoute);
 window.cubusGo = go;
 
-function openScan() { $('#scanModal').hidden = false; }
-function closeScan() { $('#scanModal').hidden = true; $('#aiPanel').stop?.(); }
-
 async function boot() {
   const platform = detectPlatform();
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
@@ -737,12 +853,9 @@ async function boot() {
   // Resolve the deep link before the first paint, and canonicalise the URL so a bogus hash does
   // not sit in the address bar contradicting the screen on show.
   applyTheme(); applyNetColors(); router.normalize(); applyRoute();
-  // Wire the scan modal (the panel owns its camera).
-  $('#scanClose').onclick = closeScan;
-  const panel = $('#aiPanel');
-  panel.addEventListener('scan-complete', (e) => { onFacelets(e.detail.facelets); closeScan(); go(settings.autosolve ? 'guide' : 'viewer'); });
-  panel.addEventListener('scan-invalid', () => {});
-  // Load the solver in the background so Random / Solve / Timer are ready.
-  if (await loadSolver()) { setFacelets(state.cube.facelets); if (['home', 'viewer', 'timer', 'scan'].includes(state.screen)) renderScreen(); }
+  // Load the solver in the background so Random / Solve / Timer are ready. 'scan' is deliberately
+  // NOT in that list: nothing on it depends on the solver, and re-rendering it would tear down a
+  // camera that just opened and open a second one.
+  if (await loadSolver()) { setFacelets(state.cube.facelets); if (['home', 'viewer', 'timer'].includes(state.screen)) renderScreen(); }
 }
 boot();
