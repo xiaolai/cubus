@@ -34,6 +34,10 @@ const P = {
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
   dice: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.2"/><circle cx="16" cy="16" r="1.2"/><circle cx="8" cy="16" r="1.2"/><circle cx="16" cy="8" r="1.2"/><circle cx="12" cy="12" r="1.2"/>',
+  'panel-left': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  minus: '<path d="M5 12h14"/>',
+  square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
 };
 const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${P[name] || '<circle cx="12" cy="12" r="2"/>'}</svg>`;
 
@@ -191,6 +195,43 @@ function detectPlatform() {
   if (/Mac|iPhone|iPad|iPod/.test(ua)) return 'macos';
   if (/Win/.test(ua)) return 'windows';
   return 'linux';
+}
+
+// Build the titlebar zones per platform (paper-one TitleBar): macOS puts the traffic lights (real
+// in Tauri, preview-only in a browser) leading; Windows/Linux put app controls leading and caption
+// buttons trailing. The caption buttons drive the Tauri window; in a browser they only preview.
+function buildChrome(platform) {
+  const lead = document.getElementById('tbLead');
+  const trail = document.getElementById('tbTrail');
+  if (!lead || !trail) return;
+  const ctl = (name, on = false) => `<button class="tb-ctl${on ? ' on' : ''}" tabindex="-1" aria-hidden="true">${icon(name, 18)}</button>`;
+  const cap = (name, win, round = false) => `<button class="tb-cap ${win}${round ? ' round' : ''}" data-win="${win}" title="${win}">${icon(name, round ? 14 : 16)}</button>`;
+  if (platform === 'macos') {
+    const preview = new URLSearchParams(window.location.search).get('chrome') === 'preview';
+    lead.className = 'tb-zone tb-lights';
+    lead.innerHTML = (!isTauri && preview) ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('') : '';
+    trail.className = 'tb-zone tb-macos-trail';
+    trail.innerHTML = '';
+    return;
+  }
+  // Windows / Linux: a real 44px row — app controls lead, caption buttons trail.
+  lead.className = 'tb-zone tb-apps';
+  lead.innerHTML = ctl('panel-left', true) + ctl('search');
+  const round = platform === 'linux';
+  trail.className = `tb-zone tb-caption ${platform}`;
+  trail.innerHTML = cap('minus', 'min', round) + cap('square', 'max', round) + cap('x', 'close', round);
+  wireWindowButtons(trail);
+}
+
+// Wire the drawn caption buttons to the Tauri window (no-ops in a browser preview).
+function wireWindowButtons(root) {
+  if (!isTauri) return;
+  const win = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (!win) return;
+  const on = (sel, fn) => root.querySelector(sel)?.addEventListener('click', () => { void Promise.resolve(fn()).catch(() => {}); });
+  on('[data-win="min"]', () => win.minimize());
+  on('[data-win="max"]', () => win.toggleMaximize());
+  on('[data-win="close"]', () => win.close());
 }
 
 let conn = null, transport = null, connMac = '';
@@ -642,16 +683,7 @@ async function boot() {
   const platform = detectPlatform();
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
-  // Traffic lights: real (AppKit) in Tauri → draw nothing over the reserved zone. In a browser
-  // draw preview dots ONLY behind ?chrome=preview, so the web build doesn't double the browser's
-  // own window controls.
-  const lights = document.querySelector('.lights');
-  const preview = new URLSearchParams(window.location.search).get('chrome') === 'preview';
-  if (lights) {
-    lights.innerHTML = (platform === 'macos' && !isTauri && preview)
-      ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('')
-      : '';
-  }
+  buildChrome(platform);
   applyTheme(); applyNetColors(); renderNav(); renderScreen();
   // Wire the scan modal (the panel owns its camera).
   $('#scanClose').onclick = closeScan;
