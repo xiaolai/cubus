@@ -160,15 +160,20 @@ test('the cube screen applies every saved view setting, not just the ones it sho
   );
 });
 
-// The cube card carries the cube and nothing else, and the transport is one row: four buttons,
-// the pacing toggle if a cube is connected, and the step count. Everything else that used to sit there said something
-// the chips, the animation or the nav were already saying.
+// The cube card carries the cube and one corner tool, and the transport is one row: four buttons,
+// the progress bar, the pacing toggle if a cube is connected, and the step count. Everything else
+// that used to sit there said something the chips, the animation or the nav were already saying.
 test('the cube screen is the cube, one transport row, and nothing else', async () => {
   win.location.hash = '#/viewer';
   await tick();
   const cubeCard = win.document.querySelector('#stage .cols > .col > .card');
-  assert.equal(cubeCard.querySelectorAll('button').length, 0, 'no controls over the cube');
-  for (const gone of ['#coach', '#scrub', '[data-speed]', '#validity', '#copyState', '#viewCard']) {
+  // One tool over the cube, in the corner: the speed menu. Nothing else draws on top of it.
+  assert.deepEqual(
+    [...cubeCard.querySelectorAll('button')].map((b) => b.id),
+    ['speedBtn'],
+    'the cube card carries exactly one control',
+  );
+  for (const gone of ['#coach', '#scrub', '#validity', '#copyState', '#viewCard']) {
     assert.equal(win.document.querySelector(gone), null, `${gone} should be gone`);
   }
   // With no smart cube there is nothing to pace against, so there is no pacing control at all.
@@ -239,5 +244,62 @@ test('the pacing toggle appears only with a smart cube, and defaults to followin
     );
   } finally {
     state.connected = false;
+  }
+});
+
+// Speed went from a fixed constant to a three-way choice in the cube card's corner. The wiring sits
+// ahead of the solve on purpose, so it is live even here, where there is no solver to reach.
+test('the speed menu offers three speeds, defaults to normal, and drives the renderer', async () => {
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/viewer';
+  await tick();
+
+  const opts = [...win.document.querySelectorAll('.menu [data-speed]')];
+  assert.deepEqual(opts.map((b) => b.dataset.speed), ['slow', 'normal', 'fast']);
+  assert.deepEqual(opts.map((b) => b.textContent), ['Slow', 'Normal', 'Fast']);
+  assert.deepEqual(
+    opts.filter((b) => b.className === 'now').map((b) => b.dataset.speed),
+    ['normal'],
+    'exactly one speed is marked current, and it is the default',
+  );
+
+  const cube = win.document.querySelector('#viewCube > cubus-cube');
+  assert.equal(cube.getAttribute('tempo-scale'), '0.1', 'normal is 1.9s per quarter turn');
+
+  // A bigger tempo-scale is FASTER: the renderer divides its 190ms base by it.
+  opts.find((b) => b.dataset.speed === 'fast').click();
+  assert.equal(cube.getAttribute('tempo-scale'), '0.2');
+  opts.find((b) => b.dataset.speed === 'slow').click();
+  assert.equal(cube.getAttribute('tempo-scale'), '0.05');
+
+  // It has to survive re-entering the screen, which Random cube does on every press.
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/viewer';
+  await tick();
+  const again = win.document.querySelector('#viewCube > cubus-cube');
+  assert.equal(again.getAttribute('tempo-scale'), '0.05', 'the choice is remembered');
+  assert.deepEqual(
+    [...win.document.querySelectorAll('.menu [data-speed]')]
+      .filter((b) => b.className === 'now').map((b) => b.dataset.speed),
+    ['slow'],
+    'and the menu says so',
+  );
+  win.localStorage.removeItem('walkSpeed');
+});
+
+// localStorage is a boundary, so a value that is no longer a speed must not reach setAttribute.
+test('a junk saved speed falls back to the default instead of being trusted', async () => {
+  win.localStorage.setItem('walkSpeed', JSON.stringify({ id: 'ludicrous' }));
+  try {
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/viewer';
+    await tick();
+    const cube = win.document.querySelector('#viewCube > cubus-cube');
+    assert.equal(cube.getAttribute('tempo-scale'), '0.1', 'unknown id must not become a tempo');
+  } finally {
+    win.localStorage.removeItem('walkSpeed');
   }
 });

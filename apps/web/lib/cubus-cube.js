@@ -477,7 +477,9 @@ class CubusCube extends HTMLElement {
     this._queue.push({ ...m, angle: -m.angle, delta: -1 });
     this._next();
   }
-  // Instant seek to solution move k (no animation) — drives the playback scrubber.
+  // Instant seek to solution move k, no animation. The app walks the solution with step()/
+  // stepBack() and no longer calls this; it stays as renderer API for jumping to a position
+  // (a scrubber, a deep link into a solve) where animating every move in between is wrong.
   seek(k) {
     const target = Math.max(0, Math.min(Math.round(k), this._sol.length));
     this.reset();
