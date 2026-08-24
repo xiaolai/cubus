@@ -176,6 +176,23 @@ function applyTheme() {
 
 // ---- transport seam (Web Bluetooth / Tauri) --------------------------------------------------
 const isTauri = typeof window.__TAURI__ !== 'undefined';
+
+// Which window chrome to draw (paper-one platform.ts): a UA sniff is enough — the platform can't
+// change under a running window. `?platform=macos|windows|linux` pins it for design review
+// (persisted); `?platform=auto` clears. Only macOS draws a custom overlay titlebar.
+function detectPlatform() {
+  try {
+    const q = new URLSearchParams(window.location.search).get('platform');
+    if (q === 'macos' || q === 'windows' || q === 'linux') { localStorage.setItem('cubus.platform', q); return q; }
+    if (q === 'auto') localStorage.removeItem('cubus.platform');
+    const s = localStorage.getItem('cubus.platform'); if (s) return s;
+  } catch {}
+  const ua = navigator.userAgent;
+  if (/Mac|iPhone|iPad|iPod/.test(ua)) return 'macos';
+  if (/Win/.test(ua)) return 'windows';
+  return 'linux';
+}
+
 let conn = null, transport = null, connMac = '';
 try { connMac = localStorage.getItem('cubeMac') || ''; } catch {}
 
@@ -622,8 +639,19 @@ function openScan() { $('#scanModal').hidden = false; }
 function closeScan() { $('#scanModal').hidden = true; $('#aiPanel').stop?.(); }
 
 async function boot() {
-  // Draw the titlebar/traffic-light strip only in the Tauri app; a browser draws its own window.
+  const platform = detectPlatform();
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
+  document.documentElement.dataset.platform = platform;
+  // Traffic lights: real (AppKit) in Tauri → draw nothing over the reserved zone. In a browser
+  // draw preview dots ONLY behind ?chrome=preview, so the web build doesn't double the browser's
+  // own window controls.
+  const lights = document.querySelector('.lights');
+  const preview = new URLSearchParams(window.location.search).get('chrome') === 'preview';
+  if (lights) {
+    lights.innerHTML = (platform === 'macos' && !isTauri && preview)
+      ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('')
+      : '';
+  }
   applyTheme(); applyNetColors(); renderNav(); renderScreen();
   // Wire the scan modal (the panel owns its camera).
   $('#scanClose').onclick = closeScan;

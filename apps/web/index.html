@@ -22,11 +22,12 @@
         font-family: var(--font-ui); font-size: var(--fs-body); line-height: var(--lh-body);
         -webkit-font-smoothing: antialiased;
       }
-      /* The window IS the OS window — no fake desk/frame. In a browser there is no titlebar; in
-         the Tauri app the real macOS traffic lights overlay a reserved 52px strip (see
-         tauri.conf.json titleBarStyle "Overlay"). --titlebar-h is the space that strip reserves. */
+      /* The window IS the OS window — no fake desk/frame (paper-one WindowShell). macOS gets a
+         custom overlay titlebar; the OS paints the real traffic lights over it in Tauri. Windows
+         and Linux use the native title bar, so we draw none. --titlebar-h is the strip the macOS
+         overlay reserves; 0 elsewhere. */
       :root { --titlebar-h: 0px; }
-      html[data-host="tauri"] { --titlebar-h: var(--titlebar-macos); }
+      html[data-platform="macos"] { --titlebar-h: var(--titlebar-macos); }
       .num { font-family: var(--font-num); } /* Zilla Slab — every numeral, time, alg */
       button, input, select { font: inherit; color: inherit; }
       button { cursor: pointer; border: 0; background: none; }
@@ -36,14 +37,16 @@
       /* ---- window + panes ------------------------------------------------- */
       .app { height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
       .win { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
-      /* Titlebar: only in Tauri (draggable strip for the OS-drawn overlay traffic lights + a
-         centred chip). Hidden in a browser — the browser draws the window. Never painted dots. */
-      .titlebar {
-        position: absolute; top: 0; left: 0; right: 0; height: var(--titlebar-macos);
-        z-index: 5; display: none; align-items: center; gap: 10px; padding: 0 12px;
+      /* macOS overlay titlebar: a draggable strip. The reserved system zone holds the traffic
+         lights — real (AppKit) in Tauri, preview dots in a browser only with ?chrome=preview — and
+         the chip centres over the content. */
+      .titlebar { display: none; }
+      html[data-platform="macos"] .titlebar {
+        display: flex; position: absolute; top: 0; left: 0; right: 0; z-index: 5;
+        height: var(--titlebar-h); align-items: center; gap: 10px; padding: 0 12px;
       }
-      html[data-host="tauri"] .titlebar { display: flex; }
-      .lights { flex: 0 0 var(--sys-zone-macos); } /* reserves the OS traffic-light zone */
+      .lights { flex: 0 0 var(--sys-zone-macos); display: flex; align-items: center; gap: var(--light-gap); padding-left: 6px; }
+      .tl { width: var(--light-size); height: var(--light-size); border-radius: var(--r-pill); box-shadow: inset 0 0 0 .5px rgba(0,0,0,.18); }
       .titlebar .chip { flex: 1; display: flex; justify-content: center; align-items: center; gap: 8px; font-size: var(--fs-body-s); }
       .titlebar .chip b { font-weight: 600; } .titlebar .chip span { color: var(--ink-4); }
 
@@ -51,11 +54,15 @@
 
       /* leading nav pane */
       .pane {
-        flex: 0 0 var(--pane-w); min-width: var(--pane-min); background: var(--panel);
+        flex: 0 1 var(--pane-w); min-width: var(--pane-min); background: var(--panel);
         border-radius: var(--r-card); box-shadow: var(--shadow-card);
-        margin: var(--inset); margin-top: max(var(--inset), calc(var(--titlebar-h) - var(--inset)));
-        padding: 16px 0 12px; display: flex; flex-direction: column; overflow: hidden;
+        margin: var(--inset); padding: 16px 0 12px;
+        display: flex; flex-direction: column; overflow: hidden;
       }
+      /* macOS: the leading card slides UNDER the overlay titlebar. margin clears the window edge
+         (8px); padding-top clears the 52px titlebar measured from the card's own top — already 8px
+         down — so it subtracts the inset (= 44px). Straight from paper-one's LeadingCard. */
+      html[data-platform="macos"] .pane { padding-top: calc(var(--titlebar-h) - var(--inset)); }
       .brand { padding: 0 16px 22px; display: flex; align-items: baseline; gap: 8px; }
       .brand b { font-family: var(--font-num); font-weight: 700; font-size: var(--fs-wordmark); letter-spacing: -.01em; }
       .brand span { font-size: var(--fs-meta); color: var(--ink-5); letter-spacing: .08em; }
