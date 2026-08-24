@@ -177,6 +177,11 @@
       /* card header/list */
       .card-h { padding: 14px 18px 10px; display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid var(--panel-sunk); }
       .card-h b { font-size: var(--fs-body-l); font-weight: 700; }
+      /* An eyebrow with a tool on the same line. align-items:center is what makes the icon line up
+         with the label; the negative margin keeps a 28px button from inflating an 15px row. */
+      .eyebrow-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .eyebrow-row > button { width: 28px; height: 28px; margin: -6px -4px -6px 0; border-radius: var(--r-3); display: grid; place-items: center; color: var(--ink-5); }
+      .eyebrow-row > button:hover { background: var(--panel-sunk); color: var(--ink-2); }
       .list { flex: 1; min-height: 0; overflow-y: auto; }
       .row { display: grid; align-items: center; padding: 9px 18px; border-bottom: 1px solid var(--line-faint); font-size: var(--fs-body); }
       .link { color: var(--accent); font-size: var(--fs-body-s); }
