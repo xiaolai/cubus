@@ -69,6 +69,9 @@ const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspec
 const state = {
   screen: 'home',
   connected: false, cubeName: '', battery: '',
+  // Whether the cube's solved reference has been anchored this session (pair screen step 4).
+  // Not persisted: it describes the live connection, and a new one starts unanchored.
+  anchored: false,
   cube: { facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [] },
 };
 
@@ -241,6 +244,9 @@ try { connMac = localStorage.getItem('cubeMac') || ''; } catch {}
 
 function setConnected(on, name = '', battery = '') {
   state.connected = on; state.cubeName = name; state.battery = battery;
+  // The anchor belongs to a connection, not to the app. A reconnect (or a different
+  // cube) starts unanchored, so step 4 must not keep claiming it is done.
+  if (!on) state.anchored = false;
   const box = $('#cubeStatus');
   box.classList.toggle('on', on);
   $('#cubeStatusLabel').textContent = on ? `${name || 'Smart cube'} connected` : 'No smart cube';
@@ -547,7 +553,7 @@ SCREENS.pair = () => {
           <div><div style="font-weight:600">${name}</div><div class="sub" style="color:var(--ink-4);font-size:var(--fs-caption)">${meta}</div></div>
           <div style="font-weight:600;color:${paired ? 'var(--ok)' : 'var(--accent)'}">${paired ? 'Connected' : 'Pair'}</div></div>`).join('')}</div>
       <div class="card"><div class="eyebrow">SETUP</div>${steps.map(([t, s], i) => `<div style="display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--line-faint)">
-        <div class="num" style="width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid ${on && i < 3 ? 'var(--ok)' : 'var(--line)'};display:grid;place-items:center;font-size:var(--fs-meta)">${i + 1}</div>
+        <div class="num" style="width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid ${on && (i < 3 || state.anchored) ? 'var(--ok)' : 'var(--line)'};display:grid;place-items:center;font-size:var(--fs-meta)">${i + 1}</div>
         <div><div style="font-weight:600">${t}</div><div class="sub" style="color:var(--ink-4)">${s}</div></div></div>`).join('')}</div>
     </div>
     <div class="col"><div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">
@@ -555,16 +561,44 @@ SCREENS.pair = () => {
       <div class="num" style="font-size:var(--fs-title);font-weight:600">${on ? state.cubeName + ' · live' : 'Nothing connected'}</div>
       <div class="sub" style="color:var(--ink-4);text-align:center;max-width:360px">${on ? 'Every turn streams into cubus. The 3D view follows the cube in your hands.' : 'Cubus solves from the camera alone. Pair a smart cube for move-level analysis and auto timing.'}</div>
       ${on ? `<div style="display:flex;gap:22px">${[['78%', 'battery'], ['18ms', 'latency'], ['1.2.7', 'firmware']].map(([v, l]) => `<div style="text-align:center"><div class="num" style="font-size:var(--fs-title-s);font-weight:600">${v}</div><div class="eyebrow" style="letter-spacing:.04em">${l}</div></div>`).join('')}</div>` : `<input class="field" id="macIn" placeholder="cube MAC (macOS)" style="width:220px;text-align:center">`}
-      <button class="btn ${on ? 'outline' : 'primary'}" id="pairBtn">${on ? 'Disconnect' : 'Pair selected cube'}</button>
-      <div class="sub" id="pairMsg" style="color:var(--err);min-height:18px"></div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <button class="btn ${on ? 'outline' : 'primary'}" id="pairBtn">${on ? 'Disconnect' : 'Pair selected cube'}</button>
+        ${on ? '<button class="btn accent-outline" id="anchorBtn">Anchor solved state</button>' : ''}
+      </div>
+      <div class="sub" id="pairMsg" style="min-height:18px;text-align:center;max-width:360px"></div>
     </div></div></div>`,
     mount(root) {
       $('#pairCube', root).appendChild(newCube());
       const mi = $('#macIn', root); if (mi) mi.value = connMac; // set as a property, never interpolated into HTML
+      const say = (text, colour) => { const m = $('#pairMsg', root); m.style.color = colour; m.textContent = text; };
       $('#pairBtn', root).onclick = async () => {
         if (state.connected) { try { await transport?.disconnect(); } catch {} conn = null; transport = null; setConnected(false); return; }
-        $('#pairMsg', root).textContent = isTauri ? 'scanning…' : 'pick your cube in the browser prompt';
-        try { await doConnect($('#macIn', root)?.value); } catch (e) { $('#pairMsg', root).textContent = String(e.message || e); }
+        say(isTauri ? 'scanning…' : 'pick your cube in the browser prompt', 'var(--ink-4)');
+        try { await doConnect($('#macIn', root)?.value); } catch (e) { say(String(e.message || e), 'var(--err)'); }
+      };
+      // Step 4, "Solve once". anchorSolved() sends REQUEST_RESET only if the cube already
+      // reports a solved state — it throws otherwise rather than adopting a scrambled
+      // position as the origin, which would desync the driver from the cube for good.
+      // The button is deliberately not disabled when the cube is unsolved: the driver's
+      // refusal explains WHY, which teaches the step. A dead button would not.
+      const anchorBtn = $('#anchorBtn', root);
+      if (anchorBtn) anchorBtn.onclick = async () => {
+        if (!conn) { say('not connected', 'var(--err)'); return; }
+        anchorBtn.disabled = true; // one in flight at a time
+        say('anchoring…', 'var(--ink-4)');
+        try {
+          await conn.anchorSolved();
+          state.anchored = true;
+          say('Anchored — the cube agrees it is solved.', 'var(--ok)');
+          renderScreen(); // step 4 now shows complete
+        } catch (e) {
+          state.anchored = false;
+          // The driver's message carries the offending facelet string after a newline;
+          // show the human sentence here and leave the detail to the thrown error.
+          say(String(e.message || e).split('\n')[0], 'var(--err)');
+        } finally {
+          anchorBtn.disabled = false;
+        }
       };
     },
   };

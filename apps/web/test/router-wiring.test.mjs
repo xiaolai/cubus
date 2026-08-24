@@ -89,6 +89,31 @@ test('an unknown hash falls back to home rather than rendering nothing', async (
   assert.ok(win.document.querySelector('#stage .screen.active'), 'home must render');
 });
 
+// Every screen must at least render. A template literal that throws — an unbalanced brace, a
+// reference to a field that does not exist — produces a blank stage, and nothing else here would
+// notice, because the other tests only visit four of the twelve.
+test('all twelve screens render without throwing', async () => {
+  const SCREENS = [
+    'home', 'scan', 'guide', 'playback', 'timer', 'stats',
+    'trainer', 'drill', 'viewer', 'pair', 'lessons', 'settings',
+  ];
+  const errors = [];
+  const onError = (e) => errors.push(`${e.message ?? e}`);
+  win.addEventListener('error', onError);
+
+  for (const id of SCREENS) {
+    win.location.hash = `#/${id}`;
+    await tick();
+    assert.equal(activeNav(), id, `${id} should be the active screen`);
+    const stage = win.document.querySelector('#stage .screen.active');
+    assert.ok(stage, `${id} rendered no screen element`);
+    assert.ok(stage.innerHTML.trim().length > 0, `${id} rendered an empty stage`);
+  }
+
+  win.removeEventListener('error', onError);
+  assert.deepEqual(errors, [], 'no screen should raise while rendering');
+});
+
 // Setting an identical hash fires no hashchange, so this path is driven by go()'s direct render.
 // The scan flow depends on it: go('viewer') while viewer is open must still refresh.
 test('navigating onto the current screen still re-renders', async () => {
