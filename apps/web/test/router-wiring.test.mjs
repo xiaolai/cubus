@@ -140,6 +140,26 @@ test('every nav item lands on its own screen, including ones not built yet', asy
   }
 });
 
+// The Cube screen persists its view settings, and for a long time applied only one of them: the
+// sliders rendered the saved numbers while the cube drew at the renderer's defaults, so the screen
+// claimed a camera angle it was not using and a reload silently undid any adjustment.
+test('the cube screen applies every saved view setting, not just the ones it shows', async () => {
+  win.localStorage.setItem('cubeView', JSON.stringify({
+    hintElev: 8, camDist: 27, camLat: -60, camLon: 170, facScale: 0.4, tempo: 2, ghosts: true, coach: true,
+  }));
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/viewer';
+  await tick();
+  const cube = win.document.querySelector('#viewCube > cubus-cube');
+  assert.deepEqual(
+    ['ghosts', 'ghost-elevation', 'camera-distance', 'camera-latitude', 'camera-longitude', 'facelet-scale']
+      .map((a) => `${a}=${cube.getAttribute(a)}`),
+    ['ghosts=floating', 'ghost-elevation=8', 'camera-distance=27',
+     'camera-latitude=-60', 'camera-longitude=170', 'facelet-scale=0.4'],
+  );
+});
+
 // Solve guide and Playback were absorbed into the cube screen. Their links are already out in the
 // wild, and an unknown id falls back to HOME — so without an alias, someone who saved a solve link
 // lands somewhere unrelated and nothing says why.
