@@ -1,4 +1,4 @@
-// The Camera scan screen: the camera opens with the screen, and the six-face scan happens on the
+// The Restore screen (route id `scan`): the camera opens with the screen, and the six-face scan happens on the
 // screen itself — no modal, and no camera picture.
 //
 // Both of those are easy to break invisibly. Drop `autostart` and the screen looks identical but
