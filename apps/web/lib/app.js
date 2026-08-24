@@ -366,6 +366,19 @@ SCREENS.home = () => {
 // so the live 3x3 below is the viewfinder. Colour class i <-> FACES[i] <-> NET_FACES[i], so a
 // scanned sticker is painted in the app's own palette, matching the 3D cube beside it.
 const SCAN_FACE_NAME = { U: 'Up', R: 'Right', F: 'Front', D: 'Down', L: 'Left', B: 'Back' };
+// Which side neighbours each face, in the canonical URFDLB facelet layout — so a tile can paint
+// its four edges in the neighbours' colours and show, without words, which way up to hold that
+// side. Not invented here: derived from EDGE_FACELET in packages/cube-scanner/src/facelet-cube.ts,
+// whose twelve facelet pairs give all 24 (face, side) answers. A test in that package re-derives
+// it and asserts this exact table, so a layout change fails there and names this file.
+const FACE_EDGES = {
+  U: { top: 'B', right: 'R', bottom: 'F', left: 'L' },
+  R: { top: 'U', right: 'B', bottom: 'D', left: 'F' },
+  F: { top: 'U', right: 'R', bottom: 'D', left: 'L' },
+  D: { top: 'F', right: 'R', bottom: 'B', left: 'L' },
+  L: { top: 'U', right: 'F', bottom: 'D', left: 'B' },
+  B: { top: 'U', right: 'L', bottom: 'D', left: 'R' },
+};
 
 SCREENS.scan = () => {
   const pal = NET_COLORS[settings.palette] || NET_COLORS.muted;
@@ -375,6 +388,9 @@ SCREENS.scan = () => {
   // "the yellow side is still missing" without a legend.
   const pending = (f) => Array.from({ length: 9 }, (_, i) => cell(i === 4 ? pal[f] : 'var(--facelet-off)')).join('');
   const blank = Array.from({ length: 9 }, () => cell('var(--facelet-off)')).join('');
+  // border-color takes top/right/bottom/left in that order — the same order FACE_EDGES names.
+  const e = (f) => FACE_EDGES[f];
+  const edgeColors = (f) => `${pal[e(f).top]} ${pal[e(f).right]} ${pal[e(f).bottom]} ${pal[e(f).left]}`;
   // The panel is registered by a module script; if that has not landed yet the element is still
   // inert, so say so rather than claiming a camera is opening.
   const registered = Boolean(customElements.get('ai-scan-panel'));
@@ -390,7 +406,7 @@ SCREENS.scan = () => {
         </div>
         <div class="bar" style="width:220px"><i id="scanBar" style="width:0%"></i></div>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
-          <div class="tile">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
+          <div class="tile" style="border-color:${edgeColors(f)}">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
         <div style="display:flex;gap:10px">
           <button class="btn outline" id="scanRedo">Start over</button>
           <button class="btn outline" data-go="viewer">Skip to viewer</button>
@@ -403,7 +419,7 @@ SCREENS.scan = () => {
         <div class="cube-slot" id="scanCube" style="height:230px;margin-top:6px"></div>
         <div class="mono" id="scanState" style="margin-top:6px">${state.cube.facelets}</div></div>
       <div class="card"><b style="font-size:var(--fs-body-l)">How it works</b>
-        <div class="sub" style="color:var(--ink-4);margin-top:4px">The camera opens with this screen and the YOLO scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still.</div></div>
+        <div class="sub" style="color:var(--ink-4);margin-top:4px">The camera opens with this screen and the YOLO scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still. Each tile is edged in the colours of its neighbours: hold a side that way up and the scan needs nothing more from you.</div></div>
       <button class="btn accent-outline block" data-go="guide">Solve this cube</button>
     </div></div>`,
     mount(root) {

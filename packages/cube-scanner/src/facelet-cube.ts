@@ -6,7 +6,7 @@
 // the standard Kociemba face-cube maps (the same tables gan-driver uses to
 // encode the hardware state).
 
-import type { Face } from './types.js';
+import { FACES, type Face } from './types.js';
 
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 
@@ -41,6 +41,46 @@ const EDGE_FACELET: readonly (readonly number[])[] = [
 // Solved-color letters of each cubie, in the slot's own facelet order.
 const CORNER_COLOR: readonly string[][] = CORNER_FACELET.map((t) => t.map((i) => SOLVED[i]!));
 const EDGE_COLOR: readonly string[][] = EDGE_FACELET.map((t) => t.map((i) => SOLVED[i]!));
+
+/** The four sides of a face, in the order CSS `border-color` takes them. */
+export type Side = 'top' | 'right' | 'bottom' | 'left';
+
+/** Face-relative position of each edge-centre facelet, in a face's reading order. */
+const SIDE_OF_POSITION: Readonly<Record<number, Side>> = {
+  1: 'top',
+  5: 'right',
+  7: 'bottom',
+  3: 'left',
+};
+
+/**
+ * Which face borders each face on each side, with every face held in its canonical URFDLB
+ * orientation — e.g. U has B above, R right, F below, L left.
+ *
+ * DERIVED from EDGE_FACELET rather than written out, because the twelve edge pairs already
+ * contain all 24 (face, side) answers: each pair names two edge-centre facelets that touch, and
+ * an edge-centre's position within its face IS the side it lies on. Writing the table by hand
+ * would let it drift from the layout the solvability gate uses.
+ *
+ * The scan screen paints each face tile's four edges in these colours, so a user can see which
+ * way up to hold a side. `apps/web/lib/app.js` carries a copy (it cannot import TypeScript);
+ * `tests/facelet-cube.test.ts` pins the two equal.
+ */
+export const FACE_NEIGHBOURS: Readonly<Record<Face, Readonly<Record<Side, Face>>>> = (() => {
+  const out = {} as Record<Face, Record<Side, Face>>;
+  for (const f of FACES) out[f] = {} as Record<Side, Face>;
+  for (const pair of EDGE_FACELET) {
+    const [a, b] = [pair[0]!, pair[1]!];
+    for (const [from, to] of [
+      [a, b],
+      [b, a],
+    ] as const) {
+      const side = SIDE_OF_POSITION[from % 9];
+      if (side !== undefined) out[FACES[Math.floor(from / 9)]!]![side] = FACES[Math.floor(to / 9)]!;
+    }
+  }
+  return out;
+})();
 
 /** A cube as cubie permutations + orientations. */
 export interface CubeState {
