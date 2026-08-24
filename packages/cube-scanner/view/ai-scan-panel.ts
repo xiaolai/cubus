@@ -164,8 +164,6 @@ export class AiScanPanel extends HTMLElement {
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   private confirmed: Partial<Record<Face, ColorFace>> = {};
   private awaiting: ConfirmRequest | null = null;
-  /** Sides typed in by hand rather than read. A camera read is allowed to replace one. */
-  private readonly handEntered = new Set<Face>();
   /** Contradictory confirmations in a row; two means the instruction is not landing. */
   private mismatches = 0;
   private scanEpoch = 0; // bumped by loop()/stop(); rejects stale in-flight inferences
@@ -313,7 +311,6 @@ export class AiScanPanel extends HTMLElement {
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
-    this.handEntered.clear();
     for (const f of FACES) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
     this.buildDots();
   }
@@ -390,8 +387,7 @@ export class AiScanPanel extends HTMLElement {
         this.report('scanning', this.tinted('err', "Couldn't read the centre — hold it steadier."));
         return;
       }
-      // A side entered by hand is a placeholder, so a real read of it is an upgrade, not a repeat.
-      if (this.faces[face] && !this.handEntered.has(face)) {
+      if (this.faces[face]) {
         this.report(
           'scanning',
           'Already have the ',
@@ -400,7 +396,6 @@ export class AiScanPanel extends HTMLElement {
         );
         return;
       }
-      this.handEntered.delete(face);
       this.capture(face, fit.face);
     } catch {
       // camera not ready (0x0) — try again next tick
@@ -447,9 +442,10 @@ export class AiScanPanel extends HTMLElement {
    * not perfect — held-out colour accuracy is ~90%, and orange and white are its weak classes —
    * so a scan can fail on a single misread sticker that a person can see at a glance.
    *
-   * `index` is into the capture AS SHOWN, which is what a host displays, so a click maps straight
-   * through. The centre is not correctable: a face's centre colour is its identity, and changing
-   * one would rename the face rather than fix it.
+   * Only a side already READ can be corrected — there is nothing to overrule otherwise. `index` is
+   * into the capture as shown, which is what a host displays, so a click maps straight through.
+   * The centre is not correctable: a face's centre colour is its identity, and changing one would
+   * rename the face rather than fix it.
    *
    * Any confirmations already gathered are dropped, because they were answers about a reading
    * that no longer exists.
@@ -457,38 +453,20 @@ export class AiScanPanel extends HTMLElement {
   setSticker(face: Face, index: number, colour: number): void {
     if (!Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
     if (!Number.isInteger(colour) || colour < 0 || colour >= FACES.length) return;
-    let read = this.faces[face];
-    const started = read === undefined;
-    if (read === undefined) {
-      // Nothing read for this side yet. Start one from its own centre colour, so a side the
-      // camera cannot manage — roughly half of real photographs need more than one frame, and
-      // some never settle — can still be entered by hand. Flagged, so a camera read later
-      // REPLACES it instead of being turned away as a side we already have; otherwise one stray
-      // tap on an unscanned tile would lock the camera out of that side for the rest of the scan.
-      read = {
-        colors: Array<number>(9).fill(FACES.indexOf(face)),
-        confidence: Array<number>(9).fill(1),
-      };
-      this.faces[face] = read;
-      this.handEntered.add(face);
-      this.buildDots();
-    }
-    const changed = read.colors[index] !== colour;
-    if (changed) {
-      read.colors[index] = colour;
-      read.confidence[index] = 1; // a person looked at it, which beats the detector's guess
-    }
-    if (!changed && !started) return;
+    // Only a side the camera has actually read can be corrected. Hand-building a side the scanner
+    // never saw is a different act with a different failure mode — nine guesses instead of one
+    // correction — and it would let a stray tap turn an unscanned tile into a face the camera then
+    // refuses to read. Correcting a reading is the job; supplying one is not.
+    const read = this.faces[face];
+    if (read === undefined) return;
+    if (read.colors[index] === colour) return;
+    read.colors[index] = colour;
+    read.confidence[index] = 1; // a person looked at it, which beats the detector's guess
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
     if (this.capturedFaces().length < FACES.length) {
-      this.report(
-        'scanning',
-        started
-          ? `Started the ${GUIDE[face].name} side by hand. Show another side…`
-          : `Corrected the ${GUIDE[face].name} side. Show another side…`,
-      );
+      this.report('scanning', `Corrected the ${GUIDE[face].name} side. Show another side…`);
       return;
     }
     this.stopLoop();
@@ -508,7 +486,6 @@ export class AiScanPanel extends HTMLElement {
   rescanFace(face: Face): void {
     if (!this.faces[face]) return;
     delete (this.faces as Partial<Record<Face, ColorFace>>)[face];
-    this.handEntered.delete(face);
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;

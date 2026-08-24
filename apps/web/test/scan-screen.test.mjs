@@ -141,9 +141,8 @@ test('the webcam button is the camera menu', () => {
   assert.equal($('.menu').hidden, false, 'clicking it opens the camera list');
   const items = [...$('.menu').querySelectorAll('button')].map((b) => b.textContent);
   assert.equal(items[0], 'Default camera', 'first entry hands the choice back to the platform');
-  // The scan action lives here now that the buttons under the tiles are gone; with no camera
-  // running it offers the way back rather than a restart that would do nothing.
-  assert.equal(items.at(-1), 'Turn the camera on');
+  // Cameras and nothing else — starting over has its own button beside the webcam.
+  assert.ok(items.every((t) => t !== 'Start the scan over'));
   btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.menu').hidden, true, 'and clicking again closes it');
 });
@@ -163,8 +162,6 @@ test('the menu lists the cameras and marks the one in use', async () => {
   // not what gets used — the panel falls back to the platform default, so that is what is ticked.
   // Ticking nothing would leave the menu mute about which camera is in force.
   assert.deepEqual([...$('.menu').querySelectorAll('.now')].map((b) => b.textContent), ['Default camera']);
-  // With a camera running the action becomes the restart.
-  assert.equal($('#scanAct').textContent, 'Start the scan over');
   $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
 });
 
@@ -234,17 +231,39 @@ test('the centre of a side with nothing read yet has nothing to re-read', () => 
   assert.deepEqual(rescans, []);
 });
 
-// Every sticker on EVERY side, not just the ones the camera managed to read: a side the detector
-// cannot settle on is exactly the side a person needs to be able to enter by hand.
-test('a side with nothing read yet is still correctable', () => {
+// Correcting means overruling a reading, so there has to BE one. Hand-building a side the camera
+// never saw is nine guesses, not a correction, and it would leave a face the camera then refuses.
+test('a side with nothing read yet offers nothing to correct', () => {
   const calls = [];
   panel().setSticker = (...args) => calls.push(args);
-  const tile = $('.scan-face[data-face="B"]');
-  assert.ok(!tile.classList.contains('done'), 'B has not been captured');
+  assert.ok(!$('.scan-face[data-face="B"]').classList.contains('done'), 'B has not been captured');
   all('.scan-face[data-face="B"] .tile > i')[7].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-  assert.equal($('.swatches').hidden, false, 'the colours must be offered here too');
-  $('.swatches').querySelectorAll('button')[0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-  assert.deepEqual(calls, [['B', 7, 0]]);
+  assert.equal($('.swatches').hidden, true, 'no colours offered on an unread side');
+  assert.deepEqual(calls, []);
+});
+
+test('the restart button throws the whole scan away', () => {
+  let restarts = 0, starts = 0;
+  panel().restart = () => { restarts++; };
+  panel().start = () => { starts++; };
+  // Say a camera is running, so this is a restart rather than a re-open. Stated here rather than
+  // inherited from whichever test ran last.
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null,
+    device: { deviceId: 'builtin', label: 'MacBook Air Camera' }, confirm: null });
+  $('#scanResetBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(restarts, 1);
+  assert.equal(starts, 0);
+});
+
+test('with the camera dark, the restart button is the way back on', () => {
+  let restarts = 0, starts = 0;
+  panel().restart = () => { restarts++; };
+  panel().start = () => { starts++; };
+  progress({ phase: 'error', message: 'Cannot start: Permission denied',
+    captured: [], live: null, device: null, confirm: null });
+  $('#scanResetBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(starts, 1, 'restarting a scan that has no camera would do nothing');
+  assert.equal(restarts, 0);
 });
 
 // Left last: it navigates away, which tears the screen down.
