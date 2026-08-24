@@ -164,6 +164,8 @@ export class AiScanPanel extends HTMLElement {
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   private confirmed: Partial<Record<Face, ColorFace>> = {};
   private awaiting: ConfirmRequest | null = null;
+  /** Sides typed in by hand rather than read. A camera read is allowed to replace one. */
+  private readonly handEntered = new Set<Face>();
   /** Contradictory confirmations in a row; two means the instruction is not landing. */
   private mismatches = 0;
   private scanEpoch = 0; // bumped by loop()/stop(); rejects stale in-flight inferences
@@ -311,6 +313,7 @@ export class AiScanPanel extends HTMLElement {
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
+    this.handEntered.clear();
     for (const f of FACES) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
     this.buildDots();
   }
@@ -387,7 +390,8 @@ export class AiScanPanel extends HTMLElement {
         this.report('scanning', this.tinted('err', "Couldn't read the centre — hold it steadier."));
         return;
       }
-      if (this.faces[face]) {
+      // A side entered by hand is a placeholder, so a real read of it is an upgrade, not a repeat.
+      if (this.faces[face] && !this.handEntered.has(face)) {
         this.report(
           'scanning',
           'Already have the ',
@@ -396,6 +400,7 @@ export class AiScanPanel extends HTMLElement {
         );
         return;
       }
+      this.handEntered.delete(face);
       this.capture(face, fit.face);
     } catch {
       // camera not ready (0x0) — try again next tick
@@ -450,17 +455,40 @@ export class AiScanPanel extends HTMLElement {
    * that no longer exists.
    */
   setSticker(face: Face, index: number, colour: number): void {
-    const read = this.faces[face];
-    if (!read || !Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
+    if (!Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
     if (!Number.isInteger(colour) || colour < 0 || colour >= FACES.length) return;
-    if (read.colors[index] === colour) return;
-    read.colors[index] = colour;
-    read.confidence[index] = 1; // a person looked at it, which beats the detector's guess
+    let read = this.faces[face];
+    const started = read === undefined;
+    if (read === undefined) {
+      // Nothing read for this side yet. Start one from its own centre colour, so a side the
+      // camera cannot manage — roughly half of real photographs need more than one frame, and
+      // some never settle — can still be entered by hand. Flagged, so a camera read later
+      // REPLACES it instead of being turned away as a side we already have; otherwise one stray
+      // tap on an unscanned tile would lock the camera out of that side for the rest of the scan.
+      read = {
+        colors: Array<number>(9).fill(FACES.indexOf(face)),
+        confidence: Array<number>(9).fill(1),
+      };
+      this.faces[face] = read;
+      this.handEntered.add(face);
+      this.buildDots();
+    }
+    const changed = read.colors[index] !== colour;
+    if (changed) {
+      read.colors[index] = colour;
+      read.confidence[index] = 1; // a person looked at it, which beats the detector's guess
+    }
+    if (!changed && !started) return;
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
     if (this.capturedFaces().length < FACES.length) {
-      this.report('scanning', `Corrected the ${GUIDE[face].name} side. Show another side…`);
+      this.report(
+        'scanning',
+        started
+          ? `Started the ${GUIDE[face].name} side by hand. Show another side…`
+          : `Corrected the ${GUIDE[face].name} side. Show another side…`,
+      );
       return;
     }
     this.stopLoop();

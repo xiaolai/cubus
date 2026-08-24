@@ -13159,6 +13159,8 @@ var AiScanPanel = class extends HTMLElement {
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   confirmed = {};
   awaiting = null;
+  /** Sides typed in by hand rather than read. A camera read is allowed to replace one. */
+  handEntered = /* @__PURE__ */ new Set();
   /** Contradictory confirmations in a row; two means the instruction is not landing. */
   mismatches = 0;
   scanEpoch = 0;
@@ -13276,6 +13278,7 @@ var AiScanPanel = class extends HTMLElement {
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
+    this.handEntered.clear();
     for (const f of FACES) delete this.faces[f];
     this.buildDots();
   }
@@ -13342,7 +13345,7 @@ var AiScanPanel = class extends HTMLElement {
         this.report("scanning", this.tinted("err", "Couldn't read the centre \u2014 hold it steadier."));
         return;
       }
-      if (this.faces[face]) {
+      if (this.faces[face] && !this.handEntered.has(face)) {
         this.report(
           "scanning",
           "Already have the ",
@@ -13351,6 +13354,7 @@ var AiScanPanel = class extends HTMLElement {
         );
         return;
       }
+      this.handEntered.delete(face);
       this.capture(face, fit.face);
     } catch {
     } finally {
@@ -13401,17 +13405,33 @@ var AiScanPanel = class extends HTMLElement {
    * that no longer exists.
    */
   setSticker(face, index, colour) {
-    const read = this.faces[face];
-    if (!read || !Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
+    if (!Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
     if (!Number.isInteger(colour) || colour < 0 || colour >= FACES.length) return;
-    if (read.colors[index] === colour) return;
-    read.colors[index] = colour;
-    read.confidence[index] = 1;
+    let read = this.faces[face];
+    const started = read === void 0;
+    if (read === void 0) {
+      read = {
+        colors: Array(9).fill(FACES.indexOf(face)),
+        confidence: Array(9).fill(1)
+      };
+      this.faces[face] = read;
+      this.handEntered.add(face);
+      this.buildDots();
+    }
+    const changed = read.colors[index] !== colour;
+    if (changed) {
+      read.colors[index] = colour;
+      read.confidence[index] = 1;
+    }
+    if (!changed && !started) return;
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
     if (this.capturedFaces().length < FACES.length) {
-      this.report("scanning", `Corrected the ${GUIDE[face].name} side. Show another side\u2026`);
+      this.report(
+        "scanning",
+        started ? `Started the ${GUIDE[face].name} side by hand. Show another side\u2026` : `Corrected the ${GUIDE[face].name} side. Show another side\u2026`
+      );
       return;
     }
     this.stopLoop();
