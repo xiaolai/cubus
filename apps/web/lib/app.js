@@ -622,6 +622,8 @@ function openScan() { $('#scanModal').hidden = false; }
 function closeScan() { $('#scanModal').hidden = true; $('#aiPanel').stop?.(); }
 
 async function boot() {
+  // Draw the titlebar/traffic-light strip only in the Tauri app; a browser draws its own window.
+  document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   applyTheme(); applyNetColors(); renderNav(); renderScreen();
   // Wire the scan modal (the panel owns its camera).
   $('#scanClose').onclick = closeScan;

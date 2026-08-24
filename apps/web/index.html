@@ -18,10 +18,15 @@
       * { box-sizing: border-box; }
       html, body { height: 100%; }
       body {
-        margin: 0; background: var(--desk); color: var(--ink);
+        margin: 0; background: var(--bg); color: var(--ink);
         font-family: var(--font-ui); font-size: var(--fs-body); line-height: var(--lh-body);
         -webkit-font-smoothing: antialiased;
       }
+      /* The window IS the OS window — no fake desk/frame. In a browser there is no titlebar; in
+         the Tauri app the real macOS traffic lights overlay a reserved 52px strip (see
+         tauri.conf.json titleBarStyle "Overlay"). --titlebar-h is the space that strip reserves. */
+      :root { --titlebar-h: 0px; }
+      html[data-host="tauri"] { --titlebar-h: var(--titlebar-macos); }
       .num { font-family: var(--font-num); } /* Zilla Slab — every numeral, time, alg */
       button, input, select { font: inherit; color: inherit; }
       button { cursor: pointer; border: 0; background: none; }
@@ -29,22 +34,16 @@
       .eyebrow { font-size: var(--fs-meta); font-weight: 700; letter-spacing: .13em; color: var(--ink-5); text-transform: uppercase; }
 
       /* ---- window + panes ------------------------------------------------- */
-      .app {
-        height: 100vh; padding: 22px; display: flex; flex-direction: column; gap: 14px;
-      }
-      .win {
-        flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column;
-        background: var(--bg); border-radius: var(--r-win-macos); overflow: hidden;
-        box-shadow: var(--shadow-win);
-      }
-      /* macOS titlebar overlay (traffic lights sit on the title's optical line). */
+      .app { height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
+      .win { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
+      /* Titlebar: only in Tauri (draggable strip for the OS-drawn overlay traffic lights + a
+         centred chip). Hidden in a browser — the browser draws the window. Never painted dots. */
       .titlebar {
         position: absolute; top: 0; left: 0; right: 0; height: var(--titlebar-macos);
-        z-index: 5; display: flex; align-items: center; gap: 10px; padding: 0 12px;
+        z-index: 5; display: none; align-items: center; gap: 10px; padding: 0 12px;
       }
-      .lights { flex: 0 0 var(--sys-zone-macos); display: flex; align-items: center; gap: var(--light-gap); padding-left: 6px; }
-      .light { width: var(--light-size); height: var(--light-size); border-radius: 999px; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.18); }
-      .light.r { background: #E8695E; } .light.y { background: #E0B341; } .light.g { background: #5FB55F; }
+      html[data-host="tauri"] .titlebar { display: flex; }
+      .lights { flex: 0 0 var(--sys-zone-macos); } /* reserves the OS traffic-light zone */
       .titlebar .chip { flex: 1; display: flex; justify-content: center; align-items: center; gap: 8px; font-size: var(--fs-body-s); }
       .titlebar .chip b { font-weight: 600; } .titlebar .chip span { color: var(--ink-4); }
 
@@ -54,10 +53,10 @@
       .pane {
         flex: 0 0 var(--pane-w); min-width: var(--pane-min); background: var(--panel);
         border-radius: var(--r-card); box-shadow: var(--shadow-card);
-        margin: var(--inset); margin-top: calc(var(--titlebar-macos) - var(--inset));
-        padding: 0 0 12px; display: flex; flex-direction: column; overflow: hidden;
+        margin: var(--inset); margin-top: max(var(--inset), calc(var(--titlebar-h) - var(--inset)));
+        padding: 16px 0 12px; display: flex; flex-direction: column; overflow: hidden;
       }
-      .brand { padding: 0 16px 22px; padding-top: calc(var(--titlebar-macos) - var(--inset)); display: flex; align-items: baseline; gap: 8px; }
+      .brand { padding: 0 16px 22px; display: flex; align-items: baseline; gap: 8px; }
       .brand b { font-family: var(--font-num); font-weight: 700; font-size: var(--fs-wordmark); letter-spacing: -.01em; }
       .brand span { font-size: var(--fs-meta); color: var(--ink-5); letter-spacing: .08em; }
       .nav { flex: 1; min-height: 0; overflow-y: auto; }
@@ -82,7 +81,7 @@
       @keyframes cubusScan { from { transform: translateY(0) } to { transform: translateY(230px) } }
 
       /* main column */
-      .main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding-top: var(--titlebar-macos); }
+      .main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding-top: var(--titlebar-h); }
       .topbar {
         flex: none; padding: 20px 30px 14px; border-bottom: 1px solid var(--line);
         display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
@@ -177,8 +176,8 @@
   <body>
     <div class="app">
       <div class="win">
-        <div class="titlebar" id="titlebar">
-          <div class="lights"><span class="light r"></span><span class="light y"></span><span class="light g"></span></div>
+        <div class="titlebar" id="titlebar" data-tauri-drag-region>
+          <div class="lights"></div>
           <div class="chip"><b>cubus</b><span>3×3 · CFOP · session 14</span></div>
           <div style="flex:0 0 var(--sys-zone-macos)"></div>
         </div>
