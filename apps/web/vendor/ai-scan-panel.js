@@ -13291,6 +13291,10 @@ var AiScanPanel = class extends HTMLElement {
     this.lastColors = "";
     const restart = this.maybe("restart");
     if (restart) restart.hidden = false;
+    if (this.source === null) {
+      this.report("error", this.tinted("err", "The camera is off \u2014 turn it on to scan again."));
+      return;
+    }
     this.report(phase, ...opening.length > 0 ? opening : [OPENING]);
     this.timer = setInterval(() => void this.onTick(), TICK_MS);
   }
@@ -13495,9 +13499,9 @@ var AiScanPanel = class extends HTMLElement {
     this.stopLoop();
     this.showPreview(null);
     if (result.valid && result.lowConfidence.length === 0) {
+      this.stop();
       this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
       this.dispatchEvent(new CustomEvent("scan-complete", { detail: result }));
-      this.stop();
       return;
     }
     if (result.confirm) {
