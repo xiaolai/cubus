@@ -59,6 +59,22 @@ if (missing.length) {
   throw new Error(`build: dist/ is missing referenced assets:\n  ${missing.join('\n  ')}`);
 }
 
+// The solver bundles are reached by dynamic import from app.js, so they appear nowhere in
+// index.html and the scan above cannot see them. They are also gitignored and regenerated, so a
+// fresh checkout that skips `pnpm vendor:libs` would produce a dist/ that looks complete and
+// silently cannot solve a cube — app.js try/catches the import. Assert them explicitly.
+//
+// search-worker-entry.js is not imported by anything: cubing resolves it from import.meta.url at
+// runtime, so nothing statically references it and only this check keeps it honest.
+const SOLVER = ['vendor/cubejs.js', 'vendor/cubing.js', 'vendor/search-worker-entry.js'];
+const absentSolver = SOLVER.filter((f) => !existsSync(join(dist, f)));
+if (absentSolver.length) {
+  throw new Error(
+    `build: dist/ is missing vendored solver files:\n  ${absentSolver.join('\n  ')}\n` +
+      '  Run `pnpm vendor:libs` first — without these the app loads but cannot solve.',
+  );
+}
+
 // The esbuild bundle must be newer than its source, or beforeBuildCommand ran
 // out of order and we would ship a stale renderer that still looks fine.
 //
