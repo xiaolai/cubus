@@ -264,9 +264,12 @@
       /* Camera control, out of the centred column so it does not shift the scan. The lens fills and
          pulses while a camera is open: with no video on screen, that is the only thing telling a
          user the camera is actually running. */
-      .scan-cam { position: absolute; top: 12px; right: 14px; display: flex; align-items: center; gap: 2px; }
-      .scan-cam > button { width: 34px; height: 34px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-5); }
-      .scan-cam > button:hover { background: var(--panel-sunk); color: var(--ink-2); }
+      /* Tools parked in a card's top-right corner: the scan screen's camera/paint/reset group and
+         the cube screen's speed menu. The card must be position:relative. */
+      .card-tools { position: absolute; top: 12px; right: 14px; z-index: 2; display: flex; align-items: center; gap: 2px; }
+      .card-tools > button { width: 34px; height: 34px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-5); }
+      .card-tools > button:hover { background: var(--panel-sunk); color: var(--ink-2); }
+      .card-tools > button.open { background: var(--panel-sunk); color: var(--ink); }
       .scan-cam.on #scanCamBtn { color: var(--ok); }
       /* Painting is a mode, so it reads as held down rather than as a nudge, and the camera dims
          beside it — the two cannot both be true. */
