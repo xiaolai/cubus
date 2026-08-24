@@ -11,10 +11,24 @@ export interface FrameSource {
   grab(): Frame;
   /** Release the underlying camera tracks. */
   stop(): void;
+  /**
+   * The camera actually selected. A host that shows no video preview has no other way to tell
+   * WHICH of several cameras it got — and getting the wrong one looks identical to a broken one.
+   */
+  readonly device: CameraDevice;
 }
 
 export interface CameraOptions {
-  /** 'environment' (rear) is the sane default for scanning a held cube. */
+  /**
+   * Ask for a front ('user') or rear ('environment') camera. Deliberately UNSET by default.
+   *
+   * 'environment' looks like the obvious default for scanning a held cube, and on a phone it is.
+   * On a Mac it is a trap: the only device that reports itself rear-facing is a Continuity Camera,
+   * i.e. the user's iPhone. Defaulting to 'environment' therefore reaches straight past the
+   * built-in camera and wakes the phone — which macOS engages as a paired camera AND microphone,
+   * so the mic indicator lights up while the camera handoff may never complete. Someone sitting
+   * at a laptop never meant that. A host that genuinely wants the rear camera must say so.
+   */
   facingMode?: 'user' | 'environment';
   width?: number;
   height?: number;
@@ -71,9 +85,12 @@ export async function openCamera(
   // Already cancelled before we start? Don't even prompt for the camera.
   if (signal?.aborted) throw new DOMException('camera open aborted', 'AbortError');
 
-  const videoConstraints: MediaTrackConstraints = opts.deviceId
-    ? { deviceId: { exact: opts.deviceId } }
-    : { facingMode: opts.facingMode ?? 'environment' };
+  // An empty dict means "any camera", which is what we want when the caller expressed no
+  // preference: let the platform hand over its default rather than steering to a facing mode
+  // that, on a desktop, names a different physical machine (see CameraOptions.facingMode).
+  const videoConstraints: MediaTrackConstraints = {};
+  if (opts.deviceId) videoConstraints.deviceId = { exact: opts.deviceId };
+  else if (opts.facingMode) videoConstraints.facingMode = opts.facingMode;
   if (opts.width) videoConstraints.width = { ideal: opts.width };
   if (opts.height) videoConstraints.height = { ideal: opts.height };
 
@@ -108,7 +125,16 @@ export async function openCamera(
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error('2D canvas context unavailable');
 
+    // Read back what we actually got, rather than what we asked for. `label` is only populated
+    // once permission has been granted — which it has, by the time we are here.
+    const track = stream.getVideoTracks()[0];
+    const device: CameraDevice = {
+      deviceId: track?.getSettings().deviceId ?? '',
+      label: track?.label || 'Camera',
+    };
+
     return {
+      device,
       grab(): Frame {
         const w = video.videoWidth;
         const h = video.videoHeight;
