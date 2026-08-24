@@ -127,14 +127,6 @@
 
       /* main column */
       .main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding-top: var(--titlebar-h); }
-      .topbar {
-        flex: none; padding: 20px 30px 14px; border-bottom: 1px solid var(--line);
-        display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
-      }
-      .topbar h1 { font-family: var(--font-num); font-size: var(--fs-title-l); font-weight: 600; line-height: 1.1; margin: 0; }
-      .topbar .sub { font-size: var(--fs-body); color: var(--ink-4); margin-top: 3px; }
-      .topbar .right { display: flex; align-items: center; gap: 10px; }
-      .badge { font-family: var(--font-num); font-size: var(--fs-caption); color: var(--ink-4); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 4px 11px; }
       .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--invert-bg); color: var(--invert-fg); display: grid; place-items: center; font-size: var(--fs-body-s); font-weight: 700; }
 
       .stage { flex: 1; min-height: 0; overflow: hidden; padding: 24px 30px; }
@@ -281,7 +273,10 @@
              actual mousedown target has the attribute, and these zones cover the whole bar. -->
         <div class="titlebar" id="titlebar" data-tauri-drag-region>
           <div class="tb-zone" id="tbLead" data-tauri-drag-region></div>
-          <div class="chip" data-tauri-drag-region><b>cubus</b><span>3×3 · CFOP · session 14</span></div>
+          <!-- The screen's name lives here, not in a bar of its own. On Windows and Linux the Tauri
+               build hides this row and uses the native title bar, so app.js also sets the window
+               title — the name follows whichever bar the platform actually draws. -->
+          <div class="chip" data-tauri-drag-region><b id="title">Cubus</b><span>3×3 · CFOP</span></div>
           <div class="tb-zone" id="tbTrail" data-tauri-drag-region></div>
         </div>
 
@@ -300,10 +295,6 @@
 
           <!-- main -->
           <div class="main">
-            <div class="topbar">
-              <div><h1 id="title">Cubus</h1><div class="sub" id="subtitle"></div></div>
-              <div class="right"><span class="badge">3×3 · CFOP</span><span class="avatar">M</span></div>
-            </div>
             <div class="stage" id="stage"><!-- screens injected here --></div>
           </div>
         </div>

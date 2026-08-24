@@ -50,19 +50,22 @@ const NAV = [
   ['CUBE', [['viewer', '3D viewer', '', 'box'], ['pair', 'Smart cube', '', 'bluetooth']]],
   ['LEARN', [['lessons', 'Lessons', '9', 'book'], ['settings', 'Settings', '', 'settings']]],
 ];
+// Each screen's name. It is shown in the title bar rather than in a bar of its own, so there is no
+// second line of chrome restating what the nav already highlights. The subtitles that used to sit
+// under these were restatements of what each screen says itself, and went with the bar.
 const TITLES = {
-  home: ['Welcome back', 'Scan a cube to solve it, or open the timer'],
-  scan: ['Camera scan', 'Six faces, any order. Held flat and centred, each is captured automatically.'],
-  guide: ['Solve guide', 'Step by step — follow each move on your cube'],
-  playback: ['Solution playback', 'Scrub the full solution, chunked by CFOP stage'],
-  timer: ['Timer', 'Click or press space to start · WCA inspection'],
-  stats: ['Session stats', 'Your recent solves at a glance'],
-  trainer: ['Algorithm trainer', 'OLL + PLL · spaced repetition on recall'],
-  drill: ['Drill', 'Rate each rep to schedule the next'],
-  viewer: ['Cube state', 'Read, orbit, and export the current state'],
-  pair: ['Smart cube', 'Bluetooth LE — optional; everything works without it'],
-  lessons: ['Lessons', 'Beginner layer method through full CFOP'],
-  settings: ['Settings', 'Appearance, cube colours, and timer'],
+  home: 'Welcome back',
+  scan: 'Camera scan',
+  guide: 'Solve guide',
+  playback: 'Solution playback',
+  timer: 'Timer',
+  stats: 'Session stats',
+  trainer: 'Algorithm trainer',
+  drill: 'Drill',
+  viewer: 'Cube state',
+  pair: 'Smart cube',
+  lessons: 'Lessons',
+  settings: 'Settings',
 };
 
 // ---- app state -------------------------------------------------------------------------------
@@ -227,6 +230,22 @@ function buildChrome(platform) {
   trail.className = `tb-zone tb-caption ${platform}`;
   trail.innerHTML = cap('minus', 'min', round) + cap('square', 'max', round) + cap('x', 'close', round);
   wireWindowButtons(trail);
+}
+
+/**
+ * Show the screen's name in the title bar — all of them. The custom overlay chip is the one macOS
+ * and the browser draw, but the Tauri build on Windows and Linux hides that row in favour of the
+ * native title bar, so the name would simply vanish there. Setting the window title covers that,
+ * and puts the screen in the taskbar and window switcher besides; document.title does the same for
+ * a browser tab.
+ */
+function setTitle(name) {
+  const el = $('#title');
+  if (el) el.textContent = name;
+  document.title = `${name} · Cubus`;
+  if (isTauri) {
+    try { void window.__TAURI__?.window?.getCurrentWindow?.()?.setTitle?.(`${name} · Cubus`); } catch {}
+  }
 }
 
 // Wire the drawn caption buttons to the Tauri window (no-ops in a browser preview).
@@ -916,7 +935,7 @@ function renderNav() {
 }
 function renderScreen() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
-  const [t, s] = TITLES[state.screen] || ['', '']; $('#title').textContent = t; $('#subtitle').textContent = s;
+  setTitle(TITLES[state.screen] ?? 'Cubus');
   const build = SCREENS[state.screen] || SCREENS.home;
   const spec = build();
   const stage = $('#stage'); stage.innerHTML = `<div class="screen active">${spec.html}</div>`;
