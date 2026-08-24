@@ -8,10 +8,19 @@
 // After all six, `assembleColors` runs the dual verifier. Emits 'scan-complete' (valid cube) /
 // 'scan-invalid' (auto-restarts the scan).
 //
+// Attributes:
+//   autostart — open the camera as soon as the element connects, with no click.
+//   device-id — pin a specific camera (from `cameras()`); re-read on every start().
+//   facing    — 'user' | 'environment'. UNSET by default, on purpose: see CameraOptions.
+//   headless  — draw nothing at all: the host draws the scan from the 'scan-progress' events
+//               this emits on every state change, and the element only owns the camera, the
+//               model and the capture state machine. The <video> is still laid out (clipped to
+//               1px), because a display:none video stops delivering frames in some browsers.
+//
 // Browser shell — verified by typecheck + esbuild bundle, exercised manually in the app.
 
 import { type ColorFace, assembleColors } from '../src/ai-assemble.js';
-import { type FrameSource, openCamera } from '../src/camera.js';
+import { type CameraDevice, type FrameSource, listCameras, openCamera } from '../src/camera.js';
 import { type RunModel, detectFace } from '../src/onnx-detect.js';
 import type { FitReason } from '../src/onnx-postprocess.js';
 import { FACES, type Face, type ScanResult } from '../src/types.js';
@@ -35,6 +44,39 @@ const HINT: Record<FitReason, string> = {
 };
 const TICK_MS = 200; // ~5 fps; the model run dominates the budget
 const STABLE = 3; // identical reads in a row before we auto-capture a face
+const OPENING = 'Show any side to the camera — held flat and centred.';
+// A permission prompt can sit unanswered for a long time, and a host that never answers one
+// (a WKWebView with no camera entitlement, say) looks identical from here: getUserMedia simply
+// never settles. After this long, stop showing 'Opening the camera…' as if it were progress.
+const SLOW_OPEN_MS = 8000;
+const SLOW_OPEN = 'The camera has not opened. Allow camera access for this app, then try again.';
+const PINNED_GONE = 'The camera you chose is unavailable — using the default one.';
+
+/** Where a scan is. Coarse on purpose: enough for a host to style around, no more. */
+export type ScanPhase = 'starting' | 'loading' | 'scanning' | 'checking' | 'done' | 'error';
+
+/** One captured side: which face it turned out to be, and the 9 colours read off it. */
+export interface CapturedFace {
+  face: Face;
+  /** 9 colour-class indices in reading order; class i ↔ FACES[i]. */
+  colors: number[];
+}
+
+/**
+ * `scan-progress` detail — everything a host needs to draw the scan itself. Emitted on every
+ * state change, so a headless host is never left guessing what the scanner is doing.
+ */
+export interface ScanProgress {
+  phase: ScanPhase;
+  /** A finished sentence, safe to show verbatim. */
+  message: string;
+  /** Sides captured so far, in URFDLB order. */
+  captured: CapturedFace[];
+  /** The 9 colour classes in view right now, or null when no clean side is. */
+  live: number[] | null;
+  /** The camera actually in use, or null before one opens. A host showing no preview needs it. */
+  device: CameraDevice | null;
+}
 
 const TEMPLATE = `
 <style>
@@ -71,6 +113,19 @@ const TEMPLATE = `
 </div>
 `;
 
+// Headless: the host draws the scan from 'scan-progress'; this element only owns the camera.
+// The <video> stays laid out — a display:none video stops delivering frames in some browsers —
+// so it is clipped to a 1px box instead of hidden.
+const HEADLESS_TEMPLATE = `
+<style>
+  :host {
+    position: fixed; left: 0; top: 0; width: 1px; height: 1px;
+    overflow: hidden; clip-path: inset(50%); pointer-events: none;
+  }
+</style>
+<video id="video" playsinline muted></video>
+`;
+
 export class AiScanPanel extends HTMLElement {
   private readonly root: ShadowRoot;
   /** Model URL; the app can override before the element renders. */
@@ -81,10 +136,14 @@ export class AiScanPanel extends HTMLElement {
   private timer: ReturnType<typeof setInterval> | null = null;
   private startGen = 0;
   private busy = false;
+  /** `headless`: draw nothing, and let the host draw from 'scan-progress'. */
+  private headless = false;
 
   private readonly faces = {} as Record<Face, ColorFace>;
   private lastColors = '';
   private stableCount = 0;
+  private live: number[] | null = null;
+  private device: CameraDevice | null = null;
   private scanEpoch = 0; // bumped by loop()/stop(); rejects stale in-flight inferences
 
   constructor() {
@@ -93,11 +152,18 @@ export class AiScanPanel extends HTMLElement {
   }
 
   connectedCallback(): void {
-    this.root.innerHTML = TEMPLATE;
-    this.buildDots();
-    this.buildPreview();
-    this.btn('start').addEventListener('click', () => void this.start());
-    this.btn('restart').addEventListener('click', () => this.restart());
+    this.headless = this.hasAttribute('headless');
+    this.root.innerHTML = this.headless ? HEADLESS_TEMPLATE : TEMPLATE;
+    if (!this.headless) {
+      this.buildDots();
+      this.buildPreview();
+      this.maybe<HTMLButtonElement>('start')?.addEventListener('click', () => void this.start());
+      this.maybe<HTMLButtonElement>('restart')?.addEventListener('click', () => this.restart());
+    }
+    // Deferred by a microtask on purpose: a host that inserts this element and attaches its
+    // 'scan-progress' listener in the same synchronous block would otherwise miss the very
+    // first report, because connectedCallback runs during the insertion.
+    if (this.hasAttribute('autostart')) queueMicrotask(() => void this.start());
   }
 
   disconnectedCallback(): void {
@@ -114,12 +180,13 @@ export class AiScanPanel extends HTMLElement {
     }
     this.source?.stop();
     this.source = null;
-    const start = this.root.getElementById('start') as HTMLButtonElement | null;
+    this.device = null;
+    const start = this.maybe<HTMLButtonElement>('start');
     if (start) {
       start.disabled = false;
       start.hidden = false;
     }
-    const restart = this.root.getElementById('restart') as HTMLButtonElement | null;
+    const restart = this.maybe<HTMLButtonElement>('restart');
     if (restart) restart.hidden = true;
   }
 
@@ -128,23 +195,50 @@ export class AiScanPanel extends HTMLElement {
     if (!node) throw new Error(`ai-scan-panel: missing #${id}`);
     return node as T;
   }
-  private btn(id: string): HTMLButtonElement {
-    return this.el<HTMLButtonElement>(id);
+  /** Same lookup, but tolerant: headless renders none of the status/preview chrome. */
+  private maybe<T extends HTMLElement>(id: string): T | null {
+    return this.root.getElementById(id) as T | null;
   }
 
-  private async start(): Promise<void> {
-    this.btn('start').disabled = true;
+  /** Open the camera and begin scanning. Public so a host can autostart it, or retry an error. */
+  async start(): Promise<void> {
+    const startBtn = this.maybe<HTMLButtonElement>('start');
+    if (startBtn) startBtn.disabled = true;
     const gen = ++this.startGen;
+    this.report('starting', 'Opening the camera…');
     // Release any camera a prior attempt left open (e.g. a failed model load under the
     // camera-first design) before opening a fresh one, so streams can't accumulate.
     this.source?.stop();
     this.source = null;
+    // Deliberately does NOT abort the open: a user answering a permission prompt slowly must not
+    // be cut off. It only stops the silence — and a late grant still resolves, reports 'scanning'
+    // and overwrites this. Cleared in the finally below, so it can only fire while still opening.
+    const slowOpen = setTimeout(() => {
+      if (gen === this.startGen && this.source === null) {
+        this.report('error', this.tinted('err', SLOW_OPEN));
+      }
+    }, SLOW_OPEN_MS);
     let source: FrameSource | null = null;
+    let fellBack = false;
     try {
       // Camera FIRST — it must never wait on the model download. The model loads over the network,
       // so gating the camera behind it means a slow/failed/offline load leaves a dead panel with no
       // camera at all. Open the camera, THEN load the model behind the live preview.
-      source = await openCamera(this.el<HTMLVideoElement>('video'));
+      const facing = this.getAttribute('facing');
+      const facingMode = facing === 'user' || facing === 'environment' ? facing : undefined;
+      const pinned = this.getAttribute('device-id') || undefined;
+      const video = this.el<HTMLVideoElement>('video');
+      try {
+        source = await openCamera(video, { deviceId: pinned, facingMode });
+      } catch (err) {
+        // A pinned camera can simply go away — a webcam unplugged, or a Continuity Camera whose
+        // phone wandered off. Falling back beats dead-ending on an exact-deviceId constraint that
+        // can no longer be satisfied. The pin is deliberately KEPT, so the preferred camera is
+        // picked up again the moment it returns.
+        if (pinned === undefined || gen !== this.startGen) throw err;
+        fellBack = true;
+        source = await openCamera(video, { facingMode });
+      }
       // Cancelled (stop()/restart bumped the generation) while opening → this stream is orphaned;
       // stop it here rather than letting it overwrite this.source and linger.
       if (gen !== this.startGen) {
@@ -152,10 +246,11 @@ export class AiScanPanel extends HTMLElement {
         return;
       }
       this.source = source;
-      this.btn('start').hidden = true;
+      this.device = source.device;
+      if (startBtn) startBtn.hidden = true;
       this.reset();
       if (!this.run) {
-        this.setStatus('Camera ready — loading the model…');
+        this.report('loading', 'Camera ready — loading the model…');
         // onnxruntime-web resolves wasmPaths inconsistently: the .wasm relative to the document,
         // but the dynamically-imported .mjs glue relative to THIS bundle (…/vendor/) — so a
         // relative "./vendor/" doubles into "/vendor/vendor/…mjs" and a relative "./" puts the
@@ -166,33 +261,48 @@ export class AiScanPanel extends HTMLElement {
         this.run = await createModelRunner(this.modelUrl, { wasmPaths });
         if (gen !== this.startGen) return; // stop() already released this.source
       }
-      this.loop();
+      if (fellBack) this.loop(this.tinted('err', PINNED_GONE), ' ', OPENING);
+      else this.loop();
     } catch (err) {
       if (gen !== this.startGen) {
         source?.stop(); // orphaned camera on a cancelled attempt
         return;
       }
       // Keep the camera preview alive (camera-first) but re-offer Start so the user can retry.
-      this.btn('start').hidden = false;
-      this.btn('start').disabled = false;
-      this.setStatus(this.tinted('err', `Cannot start: ${String((err as Error)?.message ?? err)}`));
+      if (startBtn) {
+        startBtn.hidden = false;
+        startBtn.disabled = false;
+      }
+      this.report(
+        'error',
+        this.tinted('err', `Cannot start: ${String((err as Error)?.message ?? err)}`),
+      );
+    } finally {
+      clearTimeout(slowOpen);
     }
   }
 
   private reset(): void {
     this.lastColors = '';
     this.stableCount = 0;
+    this.live = null;
     for (const f of FACES) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
     this.buildDots();
   }
 
-  private loop(): void {
+  /**
+   * (Re)start the capture loop. `opening` replaces the standard prompt, so a message explaining
+   * why we are starting over survives instead of being overwritten within one tick.
+   */
+  private loop(...opening: (string | Node)[]): void {
     if (this.timer !== null) clearInterval(this.timer);
     this.scanEpoch++;
     this.showPreview(null);
     this.stableCount = 0;
     this.lastColors = '';
-    this.btn('restart').hidden = false;
+    const restart = this.maybe<HTMLButtonElement>('restart');
+    if (restart) restart.hidden = false;
+    this.report('scanning', ...(opening.length > 0 ? opening : [OPENING]));
     this.timer = setInterval(() => void this.onTick(), TICK_MS);
   }
 
@@ -217,7 +327,7 @@ export class AiScanPanel extends HTMLElement {
         this.stableCount = 0;
         this.lastColors = '';
         this.showPreview(null);
-        this.setStatus(`Show any side to the camera — ${HINT[fit.reason]}…`);
+        this.report('scanning', `Show any side to the camera — ${HINT[fit.reason]}…`);
         return;
       }
       // Require a few identical reads in a row so we never capture a blurred / moving frame.
@@ -226,7 +336,7 @@ export class AiScanPanel extends HTMLElement {
       this.lastColors = key;
       this.showPreview(fit.face.colors);
       if (this.stableCount < STABLE) {
-        this.setStatus('Reading a side — hold still…');
+        this.report('scanning', 'Reading a side — hold still…');
         return;
       }
       // A face's CENTRE colour is its identity (centres never move): colour class i ↔ FACES[i].
@@ -234,11 +344,12 @@ export class AiScanPanel extends HTMLElement {
       const centre = fit.face.colors[4];
       const face = centre === undefined ? undefined : FACES[centre];
       if (face === undefined) {
-        this.setStatus(this.tinted('err', "Couldn't read the centre — hold it steadier."));
+        this.report('scanning', this.tinted('err', "Couldn't read the centre — hold it steadier."));
         return;
       }
       if (this.faces[face]) {
-        this.setStatus(
+        this.report(
+          'scanning',
           'Already have the ',
           this.bold(GUIDE[face].name),
           ' side — show a different one.',
@@ -260,42 +371,52 @@ export class AiScanPanel extends HTMLElement {
     this.lastColors = '';
     this.buildDots();
     this.flash();
-    const done = this.capturedCount();
+    const done = this.capturedFaces().length;
     if (done >= FACES.length) {
       this.stopLoop();
       this.showPreview(null);
-      this.setStatus(this.tinted('ok', 'All six sides captured — checking…'));
+      this.report('checking', this.tinted('ok', 'All six sides captured — checking…'));
       let result: ScanResult;
       try {
         result = assembleColors(this.faces);
       } catch (err) {
         // Six well-formed faces should never throw, but never freeze on "checking…" if they do.
-        this.setStatus(
-          this.tinted(
-            'err',
-            `Couldn't assemble the scan (${String((err as Error)?.message ?? err)}) — starting over.`,
-          ),
-        );
+        const why = String((err as Error)?.message ?? err);
         this.reset();
-        this.loop();
+        this.loop(this.tinted('err', `Couldn't assemble the scan (${why}) — starting over.`));
         return;
       }
       this.finish(result);
       return;
     }
-    this.setStatus(
+    this.report(
+      'scanning',
       'Got the ',
       this.bold(GUIDE[face].name),
       ` side — ${done}/6. Show another side…`,
     );
   }
 
-  private capturedCount(): number {
-    return FACES.reduce((n, f) => n + (this.faces[f] ? 1 : 0), 0);
+  /** The sides captured so far, in URFDLB order — the shape hosts draw progress from. */
+  private capturedFaces(): CapturedFace[] {
+    const out: CapturedFace[] = [];
+    for (const face of FACES) {
+      const read = this.faces[face];
+      if (read) out.push({ face, colors: [...read.colors] });
+    }
+    return out;
   }
 
-  /** Clear all captured faces and keep scanning; the camera stays open. */
-  private restart(): void {
+  /**
+   * The selectable cameras. Labels are only filled in once camera permission has been granted,
+   * so a host gets named entries by calling this after the first successful start().
+   */
+  async cameras(): Promise<CameraDevice[]> {
+    return listCameras();
+  }
+
+  /** Clear all captured faces and keep scanning; the camera stays open. Public for host UIs. */
+  restart(): void {
     this.reset();
     this.loop();
   }
@@ -313,20 +434,22 @@ export class AiScanPanel extends HTMLElement {
     this.stopLoop();
     this.showPreview(null);
     if (result.valid && result.lowConfidence.length === 0) {
-      this.setStatus(this.tinted('ok', 'Scan complete — solvable cube captured.'));
+      this.report('done', this.tinted('ok', 'Scan complete — solvable cube captured.'));
       this.dispatchEvent(new CustomEvent<ScanResult>('scan-complete', { detail: result }));
       this.stop();
     } else {
       const why = result.valid ? 'Some stickers were unclear' : "That isn't a solvable cube yet";
-      this.setStatus(this.tinted('err', `${why} — starting over, show each side again.`));
       this.dispatchEvent(new CustomEvent<ScanResult>('scan-invalid', { detail: result }));
       this.reset();
-      this.loop(); // auto-resume scanning; the camera stays open
+      // Auto-resume scanning; the camera stays open. The reason rides along as the opening
+      // message so it is not wiped by the standard prompt.
+      this.loop(this.tinted('err', `${why} — starting over, show each side again.`));
     }
   }
 
   private buildDots(): void {
-    const dots = this.el('dots');
+    const dots = this.maybe('dots');
+    if (!dots) return;
     dots.textContent = '';
     for (const face of FACES) {
       const g = GUIDE[face];
@@ -339,13 +462,16 @@ export class AiScanPanel extends HTMLElement {
   }
 
   private buildPreview(): void {
-    const p = this.el('preview');
+    const p = this.maybe('preview');
+    if (!p) return;
     p.textContent = '';
     for (let i = 0; i < 9; i++) p.appendChild(document.createElement('i'));
   }
 
   private showPreview(colors: number[] | null): void {
-    const p = this.el('preview');
+    this.live = colors;
+    const p = this.maybe('preview');
+    if (!p) return;
     if (!colors) {
       p.dataset.show = '0';
       return;
@@ -357,11 +483,30 @@ export class AiScanPanel extends HTMLElement {
     p.dataset.show = '1';
   }
 
-  private setStatus(...parts: (string | Node)[]): void {
-    const status = this.el('status');
-    status.textContent = '';
-    status.append(...parts);
+  /**
+   * Show `parts` on the built-in status line (when there is one) AND tell the host what changed.
+   * Every status change goes through here, so a headless host sees exactly what a visible one does.
+   */
+  private report(phase: ScanPhase, ...parts: (string | Node)[]): void {
+    const message = parts.map((p) => (typeof p === 'string' ? p : (p.textContent ?? ''))).join('');
+    const status = this.maybe('status');
+    if (status) {
+      status.textContent = '';
+      status.append(...parts);
+    }
+    this.dispatchEvent(
+      new CustomEvent<ScanProgress>('scan-progress', {
+        detail: {
+          phase,
+          message,
+          captured: this.capturedFaces(),
+          live: this.live,
+          device: this.device,
+        },
+      }),
+    );
   }
+
   private bold(text: string): HTMLElement {
     const b = document.createElement('b');
     b.textContent = text;
