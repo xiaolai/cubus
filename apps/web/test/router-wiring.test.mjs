@@ -324,3 +324,77 @@ test('the state card is the net plus a dice, and says which state it is', async 
   assert.equal(dice.parentElement.firstElementChild.className, 'eyebrow', 'label first, tool second');
   assert.equal(dice.textContent.trim(), '', 'an icon button, not a labelled one');
 });
+
+// Scramble stopped being a placeholder and became the cube screen walked from the other end.
+//
+// Unlike the solve path, this one runs to completion here: generating a scramble needs only
+// cubejs, which is vendored and imports fine in Node. So these are real behaviour tests, not
+// markup tests — the first version of this file asserted only labels and buttons, and mutating
+// `setup` and the stage names did not turn it red.
+
+/** Poll until `fn()` is true. The scramble is generated asynchronously behind loadSolver(). */
+const waitFor = async (fn, ms = 20000) => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (fn()) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+};
+
+const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+
+test('scramble is the same screen, not a mirrored transport', async () => {
+  win.location.hash = '#/scramble';
+  await tick();
+
+  assert.ok(!win.document.querySelector('#stage').textContent.includes('not built yet'));
+  assert.deepEqual(
+    [...win.document.querySelectorAll('.transport .tbtn')].map((b) => b.id),
+    ['prevBtn', 'repeatBtn', 'nextBtn', 'playBtn'],
+    'four buttons, the same four',
+  );
+  assert.ok(win.document.querySelector('#speedBtn'), 'and the same speed menu');
+  assert.equal(win.document.querySelector('.card-h b').textContent, 'Scramble');
+  // The net means the opposite thing here, so it must not claim to be the initial state.
+  assert.equal(win.document.querySelector('.aside .eyebrow-row .eyebrow').textContent, 'TARGET STATE');
+  assert.match(win.document.querySelector('#randCube').title, /scramble/i);
+});
+
+test('scramble starts solved and lands exactly where the net says', async () => {
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/scramble';
+  await tick();
+  const ready = await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0);
+  assert.ok(ready, 'no scramble was ever generated');
+
+  const cube = win.document.querySelector('#viewCube > cubus-cube');
+  const moves = [...win.document.querySelectorAll('#solList .chip-m')].map((b) => b.textContent);
+
+  assert.equal(cube.getAttribute('scramble'), '', 'the cube must START solved, not from a scan');
+  assert.equal(cube.getAttribute('alg').trim(), moves.join(' '), 'the chips are the moves it plays');
+  // CROSS/F2L/OLL/PLL are phases of a solve; pinning them here would invent structure.
+  assert.deepEqual(
+    [...win.document.querySelectorAll('#solList .eyebrow')].map((e) => e.textContent),
+    ['SCRAMBLE'],
+  );
+
+  // The whole correctness claim of this screen: the net shows a target, and the moves on display
+  // are the ones that get there. Replaying them on a fresh cube is independent of how the app
+  // derived them (it inverts a solution), which is the part that could be wrong.
+  const net = [...win.document.querySelectorAll('#viewNet .sticker')]
+    .map((e) => e.className.split(' ')[1]).join('');
+  const Cube = (await import('../lib/../vendor/cubejs.js')).default;
+  const replay = Cube.fromString(SOLVED_FACELETS);
+  for (const m of moves) replay.move(m);
+  assert.equal(replay.asString(), net, 'the net is not where these moves actually land');
+  assert.notEqual(net, SOLVED_FACELETS, 'a scramble that leaves the cube solved is not a scramble');
+});
+
+test('solve mode still names its own end of the walk', async () => {
+  win.location.hash = '#/viewer';
+  await tick();
+  assert.equal(win.document.querySelector('.aside .eyebrow-row .eyebrow').textContent, 'INITIAL STATE');
+  assert.equal(win.document.querySelector('.card-h b').textContent, 'Solution');
+});
