@@ -160,8 +160,8 @@ test('the cube screen applies every saved view setting, not just the ones it sho
   );
 });
 
-// The cube card carries the cube and nothing else, and the transport is one row: three buttons,
-// the two pacing modes, and the step count. Everything else that used to sit there said something
+// The cube card carries the cube and nothing else, and the transport is one row: four buttons,
+// the pacing toggle if a cube is connected, and the step count. Everything else that used to sit there said something
 // the chips, the animation or the nav were already saying.
 test('the cube screen is the cube, one transport row, and nothing else', async () => {
   win.location.hash = '#/viewer';
@@ -171,13 +171,23 @@ test('the cube screen is the cube, one transport row, and nothing else', async (
   for (const gone of ['#coach', '#scrub', '[data-speed]', '#validity', '#copyState', '#viewCard']) {
     assert.equal(win.document.querySelector(gone), null, `${gone} should be gone`);
   }
+  // With no smart cube there is nothing to pace against, so there is no pacing control at all.
+  // "Slowest" was a switch with one position: it named the only behaviour the screen has.
   const modes = [...win.document.querySelectorAll('[data-mode]')].map((b) => b.dataset.mode);
-  assert.deepEqual(modes, ['slow', 'cube'], 'two pacing modes, not a speed');
+  assert.deepEqual(modes, [], 'no pacing control offline');
+  assert.ok(!win.document.querySelector('.transport').textContent.includes('Slowest'));
   // Back and repeat are different questions — undo a move, versus show that one again.
   assert.deepEqual(
     [...win.document.querySelectorAll('.transport .tbtn')].map((b) => b.id),
     ['prevBtn', 'repeatBtn', 'nextBtn', 'playBtn'],
   );
+
+  // The progress bar sits after the play button and took the old spacer's job, so the row has no
+  // inert flexible gap left in it.
+  const row = [...win.document.querySelector('.transport').children].map((el) => el.id || el.className);
+  assert.equal(row.indexOf('progress'), row.indexOf('playBtn') + 1, 'progress bar follows play');
+  assert.equal(win.document.querySelector('.transport .spacer'), null, 'the spacer is gone');
+  assert.ok(win.document.querySelector('#progBar'), 'the bar has a fill element to drive');
 });
 
 // Solve guide and Playback were absorbed into the cube screen. Their links are already out in the
@@ -203,4 +213,31 @@ test('navigating onto the current screen still re-renders', async () => {
   const second = win.document.querySelector('#stage .screen.active');
   assert.equal(activeNav(), 'viewer');
   assert.notEqual(first, second, 'the screen element should have been rebuilt, not left in place');
+});
+
+// Connecting a smart cube is what makes pacing a choice, so the toggle appears with the cube and
+// starts on. The state module is exported for exactly this kind of check.
+test('the pacing toggle appears only with a smart cube, and defaults to following', async () => {
+  const { state } = await import('../lib/app.js');
+  assert.equal(state.connected, false, 'precondition: nothing connected');
+
+  state.connected = true;
+  try {
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/viewer'; // re-render, since the markup is built once at mount
+    await tick();
+
+    const follow = win.document.querySelector('.transport [data-mode]');
+    assert.ok(follow, 'a connected cube should offer the toggle');
+    assert.equal(follow.dataset.mode, 'cube');
+    assert.ok(follow.classList.contains('on'), 'following is the default, not an opt-in');
+    assert.equal(
+      win.document.querySelectorAll('.transport [data-mode]').length,
+      1,
+      'one toggle, not a pair of mutually exclusive pills',
+    );
+  } finally {
+    state.connected = false;
+  }
 });
