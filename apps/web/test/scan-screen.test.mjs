@@ -85,7 +85,7 @@ test('each face tile is edged in its neighbours colours, so the way to hold it i
   // cell is painted its own face colour. So this asserts the RELATIONSHIP rather than a set of
   // hex values, and keeps working if the palette changes.
   const colourOf = Object.fromEntries(all('.scan-face').map((t) =>
-    [t.dataset.face, t.querySelectorAll('.tile > i')[4].style.background]));
+    [t.dataset.face, t.querySelectorAll('.tile > i')[4].style.backgroundColor]));
   const bordersOf = (f) => $(`.scan-face[data-face="${f}"] .tile`)
     .getAttribute('style').replace('border-color:', '').trim().split(/\s+/);
   // The canonical URFDLB layout — derived from EDGE_FACELET in the scanner package and pinned by
@@ -317,6 +317,45 @@ test('toggling paint off hands the cube back to the camera', () => {
   // and back to camera rules: an unread side stops offering colours
   all('.scan-face[data-face="B"] .tile > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, true);
+});
+
+// The twin is meant to show what has been READ, so an unread side must not look like a solved one.
+test('the detected-state twin fills in side by side, unread stickers marked unknown', () => {
+  progress({ phase: 'scanning', message: 'x', captured: [face('U'), face('R')],
+    live: null, device: null, confirm: null });
+  const twin = $('#scanCube > cubus-cube');
+  const fl = twin.getAttribute('facelets');
+  assert.equal(fl.length, 54);
+  assert.equal(fl.slice(0, 9), 'UUUUUUUUU', 'a read side shows its colours');
+  assert.equal((fl.match(/\?/g) ?? []).length, 36, 'the four unread sides are unknown, not solved');
+  assert.equal(twin.getAttribute('ghosts'), 'floating', 'all six faces readable at once');
+});
+
+// Which way up each side was held stops mattering once the cube reads as solvable: the validated
+// string IS the canonical layout, so the tiles are repainted from it and a tile's edge colours
+// finally agree with the stickers inside it.
+test('a solvable scan settles the tiles into the canonical layout', async () => {
+  const FL = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  const NET = ['U', 'R', 'F', 'D', 'L', 'B'];
+  // Shown deliberately wrong-way-up, so a repaint that does nothing would leave a mismatch.
+  progress({ phase: 'scanning', message: 'x',
+    captured: NET.map((f) => ({ face: f, colors: Array(9).fill(NET.indexOf(f)) })),
+    live: null, device: null, confirm: null });
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: FL, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  assert.ok($('.scan-faces').classList.contains('settling'), 'it fades before it swaps');
+  await new Promise((r) => setTimeout(r, 260));
+  const palette = Object.fromEntries(NET.map((f) => [f,
+    all(`.scan-face[data-face="${f}"] .tile > i`)[4].style.backgroundColor]));
+  let mismatches = 0;
+  NET.forEach((f, fi) => {
+    all(`.scan-face[data-face="${f}"] .tile > i`).forEach((c, i) => {
+      if (c.style.backgroundColor !== palette[FL[fi * 9 + i]]) mismatches++;
+    });
+  });
+  assert.equal(mismatches, 0, 'all 54 stickers repainted from the validated layout');
+  assert.ok(!$('.scan-faces').classList.contains('settling'), 'and the fade is over');
 });
 
 // A finished scan used to jump straight to another screen, which took the six tiles away exactly
