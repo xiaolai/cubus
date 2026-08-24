@@ -22,12 +22,15 @@
         font-family: var(--font-ui); font-size: var(--fs-body); line-height: var(--lh-body);
         -webkit-font-smoothing: antialiased;
       }
-      /* The window IS the OS window — no fake desk/frame (paper-one WindowShell). macOS gets a
-         custom overlay titlebar; the OS paints the real traffic lights over it in Tauri. Windows
-         and Linux use the native title bar, so we draw none. --titlebar-h is the strip the macOS
-         overlay reserves; 0 elsewhere. */
+      /* The window IS the OS window — no fake desk/frame (paper-one WindowShell). The titlebar is
+         always an OVERLAY, so the leading card runs FULL HEIGHT under it on every platform. macOS
+         shows it always (the OS paints real traffic lights over it); Windows/Linux show it in a
+         browser preview (?platform=…) and use the native title bar in the Tauri app. --titlebar-h is
+         the overlay clearance the pane/main leave for it. */
       :root { --titlebar-h: 0px; }
       html[data-platform="macos"] { --titlebar-h: var(--titlebar-macos); }
+      html[data-platform="windows"][data-host="web"],
+      html[data-platform="linux"][data-host="web"] { --titlebar-h: var(--titlebar-other); }
       .num { font-family: var(--font-num); } /* Zilla Slab — every numeral, time, alg */
       button, input, select { font: inherit; color: inherit; }
       button { cursor: pointer; border: 0; background: none; }
@@ -37,20 +40,17 @@
       /* ---- window + panes ------------------------------------------------- */
       .app { height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
       .win { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
-      /* Window chrome per platform (paper-one TitleBar). macOS: an absolute overlay strip the OS
-         paints the traffic lights over. Windows/Linux: a real 44px row, shown in a browser preview
-         (?platform=windows|linux); the Tauri build uses the native title bar there, so the custom
-         row is hidden in-app to avoid a double bar. --titlebar-h is the OVERLAY clearance (macOS 52;
-         0 elsewhere — the real row occupies its own space). */
-      .titlebar { display: none; align-items: center; gap: 10px; padding: 0 12px; }
-      html[data-platform="macos"] .titlebar {
-        display: flex; position: absolute; top: 0; left: 0; right: 0; z-index: 5; height: var(--titlebar-macos);
+      /* Chrome (paper-one TitleBar), always an overlay so the leading card is full height. macOS
+         shows it on any host; Windows/Linux show it only as a browser preview (the Tauri build uses
+         the native title bar). The bar itself is transparent — controls float over the content, the
+         card runs to the top edge beneath them. */
+      .titlebar {
+        display: none; position: absolute; top: 0; left: 0; right: 0; z-index: 5;
+        height: var(--titlebar-h); align-items: center; gap: 10px; padding: 0 12px;
       }
+      html[data-platform="macos"] .titlebar,
       html[data-platform="windows"][data-host="web"] .titlebar,
-      html[data-platform="linux"][data-host="web"] .titlebar {
-        display: flex; position: relative; flex: 0 0 auto; height: var(--titlebar-other);
-        background: var(--panel-sunk); border-bottom: 1px solid var(--line); z-index: 2;
-      }
+      html[data-platform="linux"][data-host="web"] .titlebar { display: flex; }
       .titlebar .chip { flex: 1; display: flex; justify-content: center; align-items: center; gap: 8px; font-size: var(--fs-body-s); }
       /* The chip's text must not swallow the mousedown, or the drag target becomes the <b>/<span>
          (no drag attribute) and the window won't move. */
@@ -77,16 +77,16 @@
       .body { flex: 1; display: flex; min-height: 0; }
 
       /* leading nav pane */
+      /* The leading card runs FULL HEIGHT on every platform (margin: --inset, top to bottom) and
+         slides under the overlay titlebar: padding-top clears the bar measured from the card's own
+         top — already --inset down, so it subtracts the inset — with a 16px floor when there is no
+         overlay (Windows/Linux Tauri, native title bar). Per paper-one's LeadingCard. */
       .pane {
         flex: 0 1 var(--pane-w); min-width: var(--pane-min); background: var(--panel);
         border-radius: var(--r-card); box-shadow: var(--shadow-card);
-        margin: var(--inset); padding: 16px 0 12px;
+        margin: var(--inset); padding: max(16px, calc(var(--titlebar-h) - var(--inset))) 0 12px;
         display: flex; flex-direction: column; overflow: hidden;
       }
-      /* macOS: the leading card slides UNDER the overlay titlebar. margin clears the window edge
-         (8px); padding-top clears the 52px titlebar measured from the card's own top — already 8px
-         down — so it subtracts the inset (= 44px). Straight from paper-one's LeadingCard. */
-      html[data-platform="macos"] .pane { padding-top: calc(var(--titlebar-h) - var(--inset)); }
       .brand { padding: 0 16px 22px; display: flex; align-items: baseline; gap: 8px; }
       .brand b { font-family: var(--font-num); font-weight: 700; font-size: var(--fs-wordmark); letter-spacing: -.01em; }
       .brand span { font-size: var(--fs-meta); color: var(--ink-5); letter-spacing: .08em; }
