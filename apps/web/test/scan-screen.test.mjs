@@ -266,6 +266,17 @@ test('with the camera dark, the restart button is the way back on', () => {
   assert.equal(restarts, 0);
 });
 
+// Clicking a sticker used to place a real text caret in it — invisible in Chrome, blinking in the
+// WKWebView the desktop app runs in. The cure is `user-select: none` on the shell, and the half
+// that is easy to lose is the other one: restoring selection for the facelet string, which is the
+// one thing on these screens worth copying and has no Copy button on every screen that shows it.
+// Asserted against the stylesheet text because the test DOM has no layout engine to compute it.
+test('the shell takes no text caret, but the facelet string stays copyable', () => {
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  assert.match(css, /body\s*\{[^}]*user-select:\s*none/, 'the shell must not take a caret');
+  assert.match(css, /\.mono[^{]*\{[^}]*user-select:\s*text/, 'the facelet string must stay selectable');
+});
+
 // Left last: it navigates away, which tears the screen down.
 test('leaving the screen releases the camera', async () => {
   let stopped = 0;
