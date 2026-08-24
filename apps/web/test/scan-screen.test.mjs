@@ -133,17 +133,22 @@ test('a stored camera choice is pinned as an attribute, not a property', () => {
   assert.equal(panel().getAttribute('device-id'), 'stored-cam');
 });
 
-test('the pane offers a camera picker, and a webcam button that always stays', () => {
-  const cam = $('#scanCam');
-  assert.ok(cam, 'there must be a way to change camera');
-  // The button is the camera's status light and the way back from a refusal, so it is never
-  // conditional — unlike the picker beside it.
-  assert.ok($('#scanCamBtn'), 'the webcam button must be present');
-  assert.equal(cam.options[0].value, '', 'the first option means "let the platform choose"');
-  assert.equal(cam.options[0].textContent, 'Default camera');
+test('the webcam button is the camera menu', () => {
+  const btn = $('#scanCamBtn');
+  assert.ok(btn, 'the webcam button must be present');
+  assert.equal($('.menu').hidden, true, 'closed until asked for');
+  btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('.menu').hidden, false, 'clicking it opens the camera list');
+  const items = [...$('.menu').querySelectorAll('button')].map((b) => b.textContent);
+  assert.equal(items[0], 'Default camera', 'first entry hands the choice back to the platform');
+  // The scan action lives here now that the buttons under the tiles are gone; with no camera
+  // running it offers the way back rather than a restart that would do nothing.
+  assert.equal(items.at(-1), 'Turn the camera on');
+  btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('.menu').hidden, true, 'and clicking again closes it');
 });
 
-test('the picker names the camera that actually answered', async () => {
+test('the menu lists the cameras and marks the one in use', async () => {
   panel().cameras = async () => [
     { deviceId: 'builtin', label: 'MacBook Air Camera' },
     { deviceId: 'iphone', label: 'iPhone Camera' }, // a Continuity Camera, the case that started this
@@ -151,34 +156,28 @@ test('the picker names the camera that actually answered', async () => {
   progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
     captured: [], live: null, device: { deviceId: 'builtin', label: 'MacBook Air Camera' } });
   await tick();
-  const cam = $('#scanCam');
-  assert.deepEqual([...cam.options].map((o) => o.textContent),
-    ['Default camera', 'MacBook Air Camera', 'iPhone Camera']);
-  assert.equal(cam.value, 'builtin', 'the live camera must be the one shown as selected');
-  assert.ok($('.scan-cam').classList.contains('pick'), 'two cameras — the choice must be offered');
+  $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  const cams = [...$('.menu').querySelectorAll('[data-value]')].map((b) => b.textContent);
+  assert.deepEqual(cams, ['Default camera', 'MacBook Air Camera', 'iPhone Camera']);
+  // The camera pinned earlier in this file is not attached now, and a pin to a missing device is
+  // not what gets used — the panel falls back to the platform default, so that is what is ticked.
+  // Ticking nothing would leave the menu mute about which camera is in force.
+  assert.deepEqual([...$('.menu').querySelectorAll('.now')].map((b) => b.textContent), ['Default camera']);
+  // With a camera running the action becomes the restart.
+  assert.equal($('#scanAct').textContent, 'Start the scan over');
+  $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
 });
 
-test('the picker hides when there is only one camera and nothing pinned', async () => {
-  const cam = $('#scanCam');
-  cam.value = ''; // "Default camera" — hand the choice back to the platform
-  cam.dispatchEvent(new win.Event('change'));
-  assert.equal(panel().hasAttribute('device-id'), false, 'choosing the default must clear the pin');
-  panel().cameras = async () => [{ deviceId: 'solo', label: 'MacBook Air Camera' }];
-  progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
-    captured: [], live: null, device: { deviceId: 'solo', label: 'MacBook Air Camera' } });
-  await tick();
-  assert.ok(!$('.scan-cam').classList.contains('pick'), 'one camera and no pin — nothing to choose');
-  assert.ok($('#scanCamBtn'), 'but the webcam button stays');
-});
-
-test('a live camera missing from the list falls back to Default rather than rendering blank', async () => {
-  panel().cameras = async () => [{ deviceId: 'a', label: 'Camera A' }, { deviceId: 'b', label: 'Camera B' }];
-  progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
-    captured: [], live: null, device: { deviceId: 'not-in-the-list', label: 'Ghost' } });
-  await tick();
-  const cam = $('#scanCam');
-  assert.equal(cam.value, '', 'an unknown value selects nothing and the control renders empty');
-  assert.equal(cam.selectedOptions[0].textContent, 'Default camera');
+test('choosing a camera pins it and remembers it', async () => {
+  let started = 0;
+  panel().start = () => { started++; };
+  $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  [...$('.menu').querySelectorAll('[data-value]')].find((b) => b.dataset.value === 'iphone')
+    .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(panel().getAttribute('device-id'), 'iphone', 'pinned as an attribute');
+  assert.equal(JSON.parse(win.localStorage.getItem('cubusSettings')).cameraId, 'iphone', 'and remembered');
+  assert.equal(started, 1, 'and the camera reopens on the chosen device');
+  assert.equal($('.menu').hidden, true, 'the menu closes on choosing');
 });
 
 test('a nearly-solved cube points at the one side it needs shown again', () => {
