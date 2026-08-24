@@ -750,27 +750,17 @@ SCREENS.scan = () => {
   };
 };
 
-// Scramble — not built. It exists in the nav because the pair is the point: Restore reads a cube
-// so it can be solved, Scramble tells you how to mix one up. Without a screen behind it the router
-// would fall back to home on a click, which reads as a bug rather than as work not yet done.
-SCREENS.scramble = () => ({
-  html: `<div class="cols"><div class="col">
-    <div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center">
-      <div style="color:var(--ink-5)">${icon('grid-filled', 44)}</div>
-      <div class="num" style="font-size:var(--fs-title);font-weight:600">Scramble — not built yet</div>
-      <div class="sub" style="color:var(--ink-4);max-width:420px">A WCA-style scramble to apply to a solved cube — the mirror of Restore. It will hand the moves to the cube screen through <span class="mono">followMoves</span>, the same way Restore hands it a solution.</div>
-      <button class="btn outline" data-go="scan" style="margin-top:6px">Restore a cube instead</button>
-    </div></div></div>`,
-  mount() {},
-});
-
 // The cube screen: where a sequence of moves gets FOLLOWED, and where a cube gets looked at.
 //
 // One screen, because it was always one object. Solve guide and Playback were the same function
 // behind a boolean — `solveScreen({ guide })` — and the 3D viewer was the same cube again with the
 // transport taken away. Three nav items differing by a flag and a couple of cards taught nobody
-// anything. Restore reads a cube; this is the next step. Scramble and History will hand it their
-// own sequences the same way, through `following`.
+// anything. Restore reads a cube; this is the next step.
+//
+// Scramble is the SAME screen again, and this one earns its flag where those did not: it is not a
+// card hidden or a button greyed out, it is the opposite end of the same walk. Restore reads a
+// cube so it can be solved; Scramble starts from solved and tells you how to mix one up. History
+// will hand it a sequence the same way, through `following`.
 //
 // A live smart cube updates this screen IN PLACE (see liveUpdate): a full re-render on every
 // quarter turn would restart an animation the user is halfway through following.
@@ -796,14 +786,26 @@ const DEFAULT_SPEED = 'normal';
 
 const faceName = (m) => ({ R: 'right', L: 'left', U: 'up', D: 'down', F: 'front', B: 'back' }[m[0]] || 'right');
 
-SCREENS.viewer = () => {
+/** Solve and Scramble are the same screen walked from opposite ends.
+ *
+ * Solve starts at YOUR cube and ends solved; Scramble starts SOLVED and ends at a random state.
+ * Both walk a list of moves forwards, which is the whole reason this is one screen and not a
+ * mirrored transport: a scramble played forwards names the turn you actually make. Playing a
+ * solution backwards would not — the chips render each move literally, so the label would read R
+ * while your hand does R'.
+ */
+const cubeScreen = (screenMode) => {
+  const scrambling = screenMode === 'scramble';
   // No controls on this screen any more, so these are read but never written here. Left on
   // `cubeView` rather than hard-coded so they stay tunable without a rebuild.
   const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, ghosts: true });
   const seq = following;
   following = null;
-  const walking = Boolean(seq) || state.cube.solvable;
-  const label = seq?.label ?? 'Solution';
+  // A scramble is always available: it is generated here rather than read off the cube, so there is
+  // no state that makes this screen have nothing to do.
+  const walking = scrambling || Boolean(seq) || state.cube.solvable;
+  const label = scrambling ? 'Scramble' : (seq?.label ?? 'Solution');
+  const walked = scrambling ? 'scramble' : 'solution';
   // Saved key → renderer attribute. Named for what it is now that the sliders it fed are gone.
   const VIEW_ATTRS = [
     ['hintElev', 'ghost-elevation'], ['camDist', 'camera-distance'],
@@ -828,7 +830,7 @@ SCREENS.viewer = () => {
           <button class="tbtn" id="repeatBtn" title="Show that move again">${icon('refresh', 18)}</button>
           <button class="tbtn" id="nextBtn" title="Next move">${icon('chevron-right', 20)}</button>
           <button class="tbtn primary" id="playBtn" title="Play from here to the end">${icon('play', 18)}</button>
-          <div class="progress" title="How far through the solution you are"><span id="progBar"></span></div>
+          <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
           ${state.connected ? `<button class="pill on" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
           <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:64px;text-align:right">0 / 0</span>
         </div>
@@ -839,8 +841,8 @@ SCREENS.viewer = () => {
         <div class="card-h"><b>${label}</b><span class="num sub" id="moveCount">—</span></div>
         <div class="list" id="solList" style="padding:6px 0"></div></div>` : ''}
       <div class="card">
-        <div class="eyebrow-row"><div class="eyebrow">INITIAL STATE</div>
-          <button id="randCube" title="Load a random scrambled cube">${icon('dice', 18)}</button></div>
+        <div class="eyebrow-row"><div class="eyebrow">${scrambling ? 'TARGET STATE' : 'INITIAL STATE'}</div>
+          <button id="randCube" title="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}">${icon('dice', 18)}</button></div>
         <div class="net" id="viewNet" style="margin-top:12px"></div></div>
     </div></div>`,
     async mount(root) {
@@ -848,7 +850,7 @@ SCREENS.viewer = () => {
       $('#viewCube', root).appendChild(cube);
       applyNetColors();
       const paintNet = buildNet($('#viewNet', root));
-      paintNet(state.cube.facelets);
+      paintNet(scrambling ? SOLVED : state.cube.facelets);
       cube.setAttribute('ghosts', v.ghosts ? 'floating' : 'none');
       for (const [k, attr] of VIEW_ATTRS) cube.setAttribute(attr, String(v[k]));
 
@@ -912,6 +914,9 @@ SCREENS.viewer = () => {
       // wearing the old cube's solution. This is the wiring the button was missing.
       $('#randCube', root).onclick = () => {
         if (!solverReady) return;
+        // Re-entering is what rolls a new one: the moves, the chips and the step count are all
+        // built at mount, so repainting in place would leave a new cube wearing the old list.
+        if (scrambling) { go('scramble'); return; }
         onFacelets(randomScramble());
         go('viewer');
       };
@@ -928,7 +933,20 @@ SCREENS.viewer = () => {
       setStatus('working…');
       let setup, alg, moves, steps = [];
       try {
-        if (seq) {
+        if (scrambling) {
+          if (!solverReady) await loadSolver();
+          // randomScramble() returns the state it lands on and leaves the alg that gets there from
+          // solved in `currentScramble`. That alg is what we walk, so `setup` stays empty and the
+          // cube starts solved.
+          const target = randomScramble();
+          if (!target || !currentScramble) throw new Error('no scramble');
+          setup = ''; alg = currentScramble; moves = alg.trim().split(/\s+/);
+          // Per-step states for Follow cube, built the same way the solve path builds its own.
+          const b = Cube.fromString(SOLVED);
+          steps = [b.asString()];
+          for (const m of moves) { b.move(m); steps.push(b.asString()); }
+          paintNet(target);
+        } else if (seq) {
           ({ setup, alg } = seq);
           moves = seq.moves ?? (alg.trim() ? alg.trim().split(/\s+/) : []);
         } else {
@@ -943,7 +961,9 @@ SCREENS.viewer = () => {
       const total = moves.length;
       cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
       setStatus(total + ' moves');
-      const stages = stageSplit(total);
+      // A scramble has no stages — CROSS/F2L/OLL/PLL are phases of solving, and pinning them on a
+      // scramble would invent structure that is not there.
+      const stages = scrambling ? [['SCRAMBLE', 0, total]] : stageSplit(total);
       solList.innerHTML = stages.map(([name, a, b]) => `<div style="padding:10px 16px 14px">
         <div style="display:flex;justify-content:space-between"><span class="eyebrow">${name}</span><span class="num sub">${b - a}</span></div>
         <div class="move-chips" style="margin-top:8px">${moves.slice(a, b).map((m, k) => `<button class="chip-m" data-i="${a + k}" title="Jump to this move">${m}</button>`).join('')}</div></div>`).join('');
@@ -1036,6 +1056,9 @@ SCREENS.viewer = () => {
     },
   };
 };
+
+SCREENS.viewer = () => cubeScreen('solve');
+SCREENS.scramble = () => cubeScreen('scramble');
 
 SCREENS.timer = () => {
   return { html: `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px">
