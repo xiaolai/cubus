@@ -164,28 +164,6 @@
       .bar { height: 6px; background: var(--panel-sunk); border-radius: 3px; overflow: hidden; }
       .bar > i { display: block; height: 100%; background: var(--accent); }
       .field { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-3); padding: 7px 10px; font-family: var(--font-num); font-size: var(--fs-body-s); }
-      /* Native <select> pulled into the .btn.outline idiom: appearance:none strips the OS control,
-         and the chevron is drawn in CSS so it inherits currentColor and costs no asset or request.
-         The popup list itself is OS-drawn — tokens.css's `color-scheme: light dark` is what keeps
-         that in theme. Deliberately NOT .field: that is a text input, and its --font-num is for
-         numerals, times and algs, never UI text like a device name. */
-      .select { position: relative; display: inline-flex; align-items: center; }
-      .select > select {
-        appearance: none; -webkit-appearance: none;
-        height: 32px; max-width: 260px; padding: 0 32px 0 12px; text-align: left;
-        border: 1px solid var(--line-strong); border-radius: var(--r-4);
-        background: var(--panel); color: var(--ink-2);
-        font-family: var(--font-ui); font-size: var(--fs-body-s); font-weight: 600;
-        text-overflow: ellipsis; transition: border-color var(--fade), color var(--fade);
-      }
-      .select > select:hover { border-color: var(--ink-5); color: var(--ink); }
-      .select > select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-      .select::after {
-        content: ''; position: absolute; right: 13px; top: 50%; width: 6px; height: 6px;
-        border-right: 1.75px solid currentColor; border-bottom: 1.75px solid currentColor;
-        transform: translateY(-70%) rotate(45deg); color: var(--ink-5); pointer-events: none;
-      }
-      .select:hover::after { color: var(--ink-3); }
       .toggle { width: 40px; height: 22px; border-radius: 12px; background: var(--track); position: relative; flex: none; }
       .toggle.on { background: var(--accent); }
       .toggle > i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left var(--fade); }
@@ -266,13 +244,22 @@
       /* Camera control, out of the centred column so it does not shift the scan. The lens fills and
          pulses while a camera is open: with no video on screen, that is the only thing telling a
          user the camera is actually running. */
-      .scan-cam { position: absolute; top: 12px; right: 14px; display: flex; align-items: center; gap: 8px; }
+      .scan-cam { position: absolute; top: 12px; right: 14px; }
       .scan-cam #scanCamBtn { width: 34px; height: 34px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-5); }
       .scan-cam #scanCamBtn:hover { background: var(--panel-sunk); color: var(--ink-2); }
       .scan-cam.on #scanCamBtn { color: var(--ok); }
       .scan-cam.on #scanCamBtn .lens { fill: currentColor; animation: cubusPulse var(--pulse) infinite; }
-      .scan-cam .select { display: none; }
-      .scan-cam.pick .select { display: inline-flex; }
+      /* A menu, not a native <select>: the webcam button is the only control in that corner, and a
+         dropdown that has to sit beside it defeats the point. Same popover treatment as the sticker
+         colour picker below. */
+      .menu { position: fixed; z-index: 60; min-width: 190px; padding: 5px; border-radius: var(--r-4); background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow-raise, 0 6px 20px rgba(0,0,0,.18)); }
+      .menu[hidden] { display: none; }
+      .menu > button { display: block; width: 100%; padding: 7px 10px; border-radius: var(--r-3); text-align: left; font-size: var(--fs-body-s); color: var(--ink-2); white-space: nowrap; }
+      .menu > button:hover { background: var(--panel-sunk); color: var(--ink); }
+      .menu > button.now { font-weight: 700; color: var(--ink); }
+      .menu > button.now::before { content: '✓ '; color: var(--ok); }
+      .menu > button.act { color: var(--accent); font-weight: 600; }
+      .menu > hr { height: 1px; border: 0; margin: 5px 6px; background: var(--line); }
 
       /* 2D net */
       .net { display: grid; grid-template-columns: repeat(12,1fr); grid-template-rows: repeat(9,1fr); gap: 3px; aspect-ratio: 12/9; max-width: 320px; margin: 0 auto; }

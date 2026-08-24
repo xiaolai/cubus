@@ -406,10 +406,7 @@ SCREENS.scan = () => {
         <ai-scan-panel headless autostart></ai-scan-panel>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
-        <div class="scan-cam">
-          <label class="select"><select id="scanCam"></select></label>
-          <button id="scanCamBtn" title="Camera">${icon('webcam', 20)}</button>
-        </div>
+        <div class="scan-cam"><button id="scanCamBtn" title="Camera">${icon('webcam', 20)}</button></div>
       </div>
     </div>
     <div class="aside">
@@ -432,46 +429,75 @@ SCREENS.scan = () => {
       // answered. The pin is an ATTRIBUTE, not a property: mount() runs before the element's
       // deferred autostart, but a property set before the element upgrades would be clobbered by
       // its own class fields, whereas an attribute survives and start() re-reads it.
-      const cam = $('#scanCam', root), camRow = $('.scan-cam', root), camBtn = $('#scanCamBtn', root);
+      const camRow = $('.scan-cam', root), camBtn = $('#scanCamBtn', root);
       const pin = (id) => { if (id) panel.setAttribute('device-id', id); else panel.removeAttribute('device-id'); };
       pin(settings.cameraId);
+      // The webcam button IS the camera menu: one control in the corner rather than a button and a
+      // dropdown competing for the same space. Its lens fills and pulses while a camera is open,
+      // so a screen that shows no picture still says plainly whether one is running. The menu also
+      // carries the scan action, which would otherwise have nowhere left to live.
+      const menu = document.createElement('div');
+      menu.className = 'menu';
+      menu.hidden = true;
+      root.appendChild(menu);
+      let camOn = false;
       let camsKey = null;
+      const choose = (id) => {
+        settings.cameraId = id; save('cubusSettings', settings);
+        pin(id);
+        closePops();
+        void panel.start?.();
+      };
+      const markActive = () => {
+        const items = [...menu.querySelectorAll('[data-value]')];
+        // A pinned camera that is no longer attached is not what will be used — the panel falls
+        // back to the platform default — so mark THAT rather than ticking nothing and leaving the
+        // menu mute about which camera is in force.
+        const active = items.some((b) => b.dataset.value === settings.cameraId) ? settings.cameraId : '';
+        for (const b of items) b.classList.toggle('now', b.dataset.value === active);
+      };
+      const actionLabel = () => (camOn ? 'Start the scan over' : 'Turn the camera on');
       const fillCams = async () => {
         let list = [];
         try { list = (await panel.cameras?.()) ?? []; } catch { list = []; }
         const key = list.map((d) => d.deviceId).join('|');
-        if (key === camsKey) return;
+        if (key === camsKey) { markActive(); return; }
         camsKey = key;
-        cam.textContent = '';
+        menu.textContent = '';
         // Device labels come from the OS — set as text, never interpolated into HTML.
-        const add = (value, label) => { const o = document.createElement('option'); o.value = value; o.textContent = label; cam.appendChild(o); };
+        const add = (value, label) => {
+          const b = document.createElement('button');
+          b.type = 'button'; b.dataset.value = value; b.textContent = label;
+          b.onclick = () => choose(value);
+          menu.appendChild(b);
+        };
         add('', 'Default camera');
         for (const d of list) add(d.deviceId, d.label);
-        cam.value = settings.cameraId || '';
-        // Only offer the CHOICE when there is one — the webcam button itself always stays, since
-        // it reports whether a camera is running and is the way back from a refusal. The exception
-        // is a camera already pinned: the picker is the only way to un-pin it, so hiding it would
-        // strand anyone whose chosen camera has since been unplugged.
-        camRow.classList.toggle('pick', list.length >= 2 || Boolean(settings.cameraId));
+        menu.appendChild(document.createElement('hr'));
+        const act = document.createElement('button');
+        act.type = 'button'; act.className = 'act'; act.id = 'scanAct'; act.textContent = actionLabel();
+        act.onclick = () => { closePops(); if (camOn) panel.restart?.(); else void panel.start?.(); };
+        menu.appendChild(act);
+        markActive();
       };
       void fillCams();
-      // Cameras come and go — a webcam is plugged in, an iPhone wanders out of Continuity range.
-      // Without this the row's visibility would only ever be re-evaluated when the ACTIVE camera
-      // changed, so a second camera appearing would never offer the choice.
+      // Cameras come and go — a webcam is plugged in, an iPhone wanders out of Continuity range —
+      // and the menu is built once, so without this a newly attached camera would never appear.
       const onDevices = () => { void fillCams(); };
       navigator.mediaDevices?.addEventListener?.('devicechange', onDevices);
       let shownDevice = null;
-      cam.onchange = () => {
-        settings.cameraId = cam.value; save('cubusSettings', settings);
-        pin(cam.value);
-        void panel.start?.();
+      camBtn.onclick = (ev) => {
+        const open = menu.hidden;
+        closePops();
+        if (!open) return;
+        void fillCams();
+        menu.hidden = false;
+        const r = camBtn.getBoundingClientRect();
+        const w = menu.offsetWidth;
+        menu.style.left = `${Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8)}px`;
+        menu.style.top = `${r.bottom + 6}px`;
+        ev.stopPropagation();
       };
-      // The webcam button replaces the two buttons that used to sit under the tiles: with the
-      // camera dark it turns it on (the recovery path after a permission refusal), and with the
-      // camera live it starts the scan over. Its lens fills and pulses while a camera is open, so
-      // a screen that shows no picture still says plainly whether one is running.
-      let camOn = false;
-      camBtn.onclick = () => { if (camOn) panel.restart?.(); else void panel.start?.(); };
 
       panel.addEventListener('scan-progress', (e) => {
         const p = e.detail;
@@ -496,16 +522,14 @@ SCREENS.scan = () => {
         // otherwise re-trigger this on every tick.
         camOn = Boolean(p.device);
         camRow.classList.toggle('on', camOn);
-        camBtn.title = camOn ? `${p.device.label} — click to start the scan over` : 'Camera off — click to turn it on';
+        camBtn.title = camOn ? `${p.device.label} — camera and scan` : 'Camera off — click to turn it on';
+        const act = menu.querySelector('#scanAct');
+        if (act) act.textContent = actionLabel();
+        // Labels are only readable once permission is granted, so the list is worth rebuilding the
+        // first time a camera actually answers.
         if (p.device && p.device.deviceId !== shownDevice) {
-          const id = p.device.deviceId;
-          shownDevice = id;
-          void fillCams().then(() => {
-            // Only adopt it if the list actually offers it. Assigning an unknown value to a
-            // <select> selects nothing and the control renders EMPTY — worse than saying
-            // "Default camera", and it would hide which camera is live rather than reveal it.
-            cam.value = [...cam.options].some((o) => o.value === id) ? id : '';
-          });
+          shownDevice = p.device.deviceId;
+          void fillCams();
         }
       });
       // A rejected scan restarts itself and explains why through scan-progress, so there is
@@ -524,6 +548,7 @@ SCREENS.scan = () => {
       root.appendChild(swatches);
       let editing = null;
       const closeSwatches = () => { swatches.hidden = true; editing = null; root.querySelector('.scan-face .cell.editing')?.classList.remove('editing'); };
+      const closePops = () => { closeSwatches(); menu.hidden = true; };
       for (const f of NET_FACES) {
         const b = document.createElement('button');
         b.type = 'button';
@@ -543,7 +568,7 @@ SCREENS.scan = () => {
         const index = [...cellEl.parentElement.children].indexOf(cellEl);
         if (index === 4) return; // the centre names the face; it is not a correction
         if (!tile.classList.contains('done')) return; // nothing read yet, so nothing to correct
-        closeSwatches();
+        closePops();
         editing = { face: tile.dataset.face, index };
         cellEl.classList.add('editing');
         // Mark the colour already there, so the picker shows what it is changing FROM.
@@ -560,8 +585,11 @@ SCREENS.scan = () => {
         swatches.style.top = `${tileRect.bottom + 6}px`;
         ev.stopPropagation();
       };
-      const onAway = (ev) => { if (!swatches.hidden && !swatches.contains(ev.target)) closeSwatches(); };
-      const onEsc = (ev) => { if (ev.key === 'Escape') closeSwatches(); };
+      const onAway = (ev) => {
+        if (!swatches.hidden && !swatches.contains(ev.target)) closeSwatches();
+        if (!menu.hidden && !menu.contains(ev.target) && ev.target !== camBtn) menu.hidden = true;
+      };
+      const onEsc = (ev) => { if (ev.key === 'Escape') closePops(); };
       document.addEventListener('click', onAway);
       document.addEventListener('keydown', onEsc);
 
