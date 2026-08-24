@@ -303,3 +303,24 @@ test('a junk saved speed falls back to the default instead of being trusted', as
     win.localStorage.removeItem('walkSpeed');
   }
 });
+
+// The state card names what it shows and carries one tool. The raw 54-character facelet string it
+// used to print said nothing the net beside it was not already showing in colour.
+test('the state card is the net plus a dice, and says which state it is', async () => {
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/viewer';
+  await tick();
+
+  const card = [...win.document.querySelectorAll('#stage .aside > .card')].at(-1);
+  assert.equal(card.querySelector('.eyebrow').textContent, 'INITIAL STATE');
+  assert.equal(win.document.querySelector('#viewState'), null, 'the facelet string is gone');
+  assert.ok(card.querySelector('#viewNet'), 'the net stays');
+
+  // The dice sits on the eyebrow's own line, which is what puts it level with the label.
+  const dice = card.querySelector('#randCube');
+  assert.ok(dice, 'random cube is still reachable');
+  assert.equal(dice.parentElement.className, 'eyebrow-row');
+  assert.equal(dice.parentElement.firstElementChild.className, 'eyebrow', 'label first, tool second');
+  assert.equal(dice.textContent.trim(), '', 'an icon button, not a labelled one');
+});
