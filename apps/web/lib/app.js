@@ -428,7 +428,11 @@ const FACE_EDGES = {
 SCREENS.scan = () => {
   const pal = NET_COLORS[settings.palette] || NET_COLORS.muted;
   const classColor = (i) => pal[NET_FACES[i]] || 'var(--facelet-off)';
-  const cell = (bg) => `<i class="cell" style="background:${bg}"></i>`;
+  // background-COLOR, not the shorthand: a colour is all this ever sets, and the shorthand would
+  // reset background-image and friends alongside it. (It is also the only form a DOM can report
+  // back reliably — happy-dom drops `style.background = '#hex'` silently, which quietly blinded
+  // every test that tried to assert what a sticker had been painted.)
+  const cell = (bg) => `<i class="cell" style="background-color:${bg}"></i>`;
   // A pending tile is nine dim wells with the face's own colour in the centre, so the board reads
   // "the yellow side is still missing" without a legend.
   const pending = (f) => Array.from({ length: 9 }, (_, i) => cell(i === 4 ? pal[f] : 'var(--facelet-off)')).join('');
@@ -469,15 +473,45 @@ SCREENS.scan = () => {
       // Kept, so a finished scan can update the aside in place. Re-rendering the screen would tear
       // down the scanner element and reopen the camera for a scan that has just ended.
       const stateCube = newCube();
+      // Ghosts float the faces the camera angle hides, so all six are readable at once — which is
+      // the whole job of a twin meant to show what has been read so far.
+      stateCube.setAttribute('ghosts', 'floating');
       $('#scanCube', root).appendChild(stateCube);
       const showState = (f) => {
         $('#scanState', root).textContent = f;
         stateCube.setAttribute('facelets', f);
       };
+      // What has been read so far, as a facelet string. Unread stickers are '?', which the renderer
+      // draws as unknown rather than falling back to the face's own colour — otherwise a cube
+      // nobody has scanned would render as solved. Captured sides appear in the rotation they were
+      // SHOWN in; their true rotation is not known until all six are in, which is what the settle
+      // at the end is for.
+      const partialFacelets = (captured) => {
+        const byFace = new Map(captured.map((c) => [c.face, c.colors]));
+        return NET_FACES.map((f) => {
+          const colors = byFace.get(f);
+          return colors ? colors.map((c) => NET_FACES[c] ?? '?').join('') : '?'.repeat(9);
+        }).join('');
+      };
+      // Which way up each side was held stops mattering the moment the cube reads as solvable: the
+      // validated string IS the canonical layout. The tiles are repainted from it, so the edge
+      // colours on a tile finally agree with the stickers inside it. Faded down and back, with the
+      // swap at the low point, so it reads as the scan settling rather than as stickers twitching.
+      let settled = false;
+      let settleTimer = 0;
+      const repaintCanonical = (fl) => {
+        for (const tile of tiles) {
+          const fi = NET_FACES.indexOf(tile.dataset.face);
+          const letters = fl.slice(fi * 9, fi * 9 + 9);
+          [...tile.querySelectorAll('i')].forEach((c, i) => {
+            c.style.backgroundColor = pal[letters[i]] ?? 'var(--facelet-off)';
+          });
+        }
+      };
       const panel = $('ai-scan-panel', root);
       const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root);
       const tiles = [...root.querySelectorAll('.scan-face')];
-      const paint = (cells, colors) => cells.forEach((c, i) => { c.style.background = classColor(colors[i]); });
+      const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
 
       // Which camera. This machine class routinely has several — a built-in, a virtual camera, a
       // Continuity Camera (an iPhone) — and with no video preview the user cannot tell which one
@@ -571,6 +605,9 @@ SCREENS.scan = () => {
 
       panel.addEventListener('scan-progress', (e) => {
         const p = e.detail;
+        // Anything other than a finished scan means the orientation is open again — a correction
+        // that breaks validity must not leave canonically-repainted tiles claiming otherwise.
+        if (p.phase !== 'done') settled = false;
         say.textContent = p.message || HOW;
         say.className = 'sub scan-say' + (p.phase === 'error' ? ' err' : p.phase === 'checking' || p.phase === 'done' ? ' ok' : '');
         sayTitle.textContent = (p.message && SAY_TITLE[p.phase]) || 'How it works';
@@ -588,12 +625,10 @@ SCREENS.scan = () => {
           // child hunt through six tiles for the colour it named.
           tile.classList.toggle('asked', p.confirm?.face === f);
           if (got) paint(cells, got.colors);
-          else cells.forEach((c, i) => { c.style.background = i === 4 ? pal[f] : 'var(--facelet-off)'; });
+          else cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? pal[f] : 'var(--facelet-off)'; });
         }
-        // Names are only readable once permission is granted, so the list is worth refilling the
-        // first time a camera actually answers — and the select then shows which one that was.
-        // Keyed on the device, not on cam.value: a device that never appears in the list would
-        // otherwise re-trigger this on every tick.
+        // The twin follows the scan side by side rather than waiting for all six.
+        if (!settled) stateCube.setAttribute('facelets', partialFacelets(p.captured));
         camOn = Boolean(p.device);
         camRow.classList.toggle('on', camOn);
         camBtn.title = camOn ? `${p.device.label} — camera and scan` : 'Camera off — click to turn it on';
@@ -607,6 +642,12 @@ SCREENS.scan = () => {
       // A rejected scan restarts itself and explains why through scan-progress, so there is
       // nothing to do here; only a validated cube leaves this screen.
       panel.addEventListener('scan-complete', (e) => {
+        settled = true;
+        const fl = e.detail.facelets;
+        const faces = $('.scan-faces', root);
+        faces.classList.add('settling');
+        clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => { repaintCanonical(fl); faces.classList.remove('settling'); }, 190);
         onFacelets(e.detail.facelets);
         // Stay put. Jumping to another screen took the six tiles away at the moment they finally
         // mean something, and with them the chance to check the read or fix a sticker. The aside
@@ -630,7 +671,7 @@ SCREENS.scan = () => {
       for (const f of NET_FACES) {
         const b = document.createElement('button');
         b.type = 'button';
-        b.style.background = pal[f];
+        b.style.backgroundColor = pal[f];
         b.title = SCAN_FACE_NAME[f];
         b.dataset.face = f;
         b.onclick = () => {
@@ -659,8 +700,8 @@ SCREENS.scan = () => {
         editing = { face: tile.dataset.face, index };
         cellEl.classList.add('editing');
         // Mark the colour already there, so the picker shows what it is changing FROM.
-        const current = cellEl.style.background;
-        for (const b of swatches.children) b.classList.toggle('now', b.style.background === current);
+        const current = cellEl.style.backgroundColor;
+        for (const b of swatches.children) b.classList.toggle('now', b.style.backgroundColor === current);
         swatches.hidden = false;
         // Anchored below the TILE, not below the sticker: a picker covering the very sticker you
         // are correcting hides the thing you need to look at. Fixed to the viewport so there is no
@@ -683,6 +724,7 @@ SCREENS.scan = () => {
       // Removing the element releases the camera through disconnectedCallback, but a live camera
       // is not something to leave to a lifecycle callback firing — stop it explicitly first.
       cleanup = () => {
+        clearTimeout(settleTimer);
         navigator.mediaDevices?.removeEventListener?.('devicechange', onDevices);
         document.removeEventListener('click', onAway);
         document.removeEventListener('keydown', onEsc);
