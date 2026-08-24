@@ -16,6 +16,7 @@
   --line:          #E2DACA;  /* hairline on panel */
   --line-strong:   #D3C9B4;  /* hairline on desk */
   --line-faint:    #F3EEE3;  /* row dividers inside cards */
+  --row-sel:       #F6F2E9;  /* selected row inside a card */
 
   --ink:           #241F18;  /* primary text, inverted surfaces */
   --ink-2:         #4A4237;  /* secondary on sunk surfaces */
@@ -25,6 +26,19 @@
   --ink-6:         #C4BAA9;  /* disabled, chevrons */
   --on-ink:        #F6F2E9;  /* text on --ink */
   --on-ink-dim:    #BDB3A2;  /* secondary text on --ink */
+  --on-ink-2:      #E7E0D2;  /* body text on --ink */
+
+  /* The inverted-surface pair, and the groove/fill pair. These are ROLES, not
+   * aliases: in light the inverted surface is dark, in dark it is light, so
+   * neither can be derived from --ink. Every theme block must declare all four.
+   * A var() naming an undefined property does not fall back to anything — the
+   * whole declaration becomes `unset`, so one missing light value renders every
+   * primary button, dark card and current-move chip as a transparent box, with
+   * nothing logged. These four were declared only in the dark blocks. */
+  --invert-bg:     #241F18;  /* dark card on a light window */
+  --invert-fg:     #F6F2E9;
+  --track:         #DCD4C4;  /* slider / progress groove */
+  --bar:           #B8AFA0;  /* its filled portion */
 
   /* ---- accent & status ------------------------------------------------ */
   --accent:        #2E6BFF;
