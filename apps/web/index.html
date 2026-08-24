@@ -29,6 +29,14 @@
          system); this file only arranges them. Cube sticker colours live in cubus-cube.js. */
       * { box-sizing: border-box; }
       html, body { height: 100%; }
+      /* Chrome is not a document. Clicking a sticker, a nav item or a button placed a real text
+         caret (getSelection().type === 'Caret') inside it; Chrome does not paint one, but the
+         WKWebView the desktop app runs in does, so clicking a cube face blinked an insertion point
+         in it. Selection is restored below for the things worth copying, since turning it off
+         everywhere would make the facelet string unselectable — and it has no Copy button on every
+         screen that shows it. */
+      body { user-select: none; -webkit-user-select: none; }
+      .mono, input, select, textarea, .chip-m { user-select: text; -webkit-user-select: text; }
       body {
         margin: 0; background: var(--bg); color: var(--ink);
         font-family: var(--font-ui); font-size: var(--fs-body); line-height: var(--lh-body);
