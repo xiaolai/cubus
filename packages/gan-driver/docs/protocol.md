@@ -117,7 +117,34 @@ evolve smoothly. This is **whole-cube orientation**, not face angle. **VERIFIED.
 | REQUEST_FACELETS | `DD 04 00 ED 00 00` | yes | `0xED` FACELETS |
 | REQUEST_HARDWARE | `DF 03 00 00 00` | yes | `0xFA/FC/FD/FE` (+ GAN16 extras) |
 | REQUEST_BATTERY | `DD 04 00 EF 00 00` | yes | `0xEF` BATTERY |
-| REQUEST_RESET | `D2 0D 05 …` | **NO — omitted** | rewrites solved reference |
+| REQUEST_RESET | `D2 0D 05 39 77 00 00 01 23 45 67 89 AB 00 00 00` | **NO — encoded but unsendable** | rewrites solved reference |
+
+### REQUEST_RESET — encoding verified, behaviour NOT verified
+
+This row used to read `D2 0D 05 …`. The elision was not harmless: it meant the
+one command in the table that is dangerous was also the one nobody could check,
+and re-deriving it would have meant guessing protocol bytes.
+
+The full sequence is now pinned by `tests/unsafe-commands.test.ts`, taken from
+afedotov/gan-web-bluetooth (MIT) — the same source as the three safe packets,
+which match this repo byte for byte. That agreement, plus the `D2 0D 05` prefix
+recorded here already, is the whole basis for trusting it.
+
+**What is verified:** the packet is formed as upstream forms it.
+**What is not:** anything the physical cube does in response. No GAN16 has been
+sent this command from this codebase. A fixture test cannot establish it.
+
+It is therefore encoded in `buildUnsafeCommand()` and deliberately excluded from
+the `SafeCommand` union that `CubeDriver.send()` accepts, so no code path can
+transmit it. Tests assert that containment and fail if it is added to
+`SafeCommand`, referenced from the driver, or re-exported from `src/index.ts`.
+
+Why the care: REQUEST_RESET tells the cube to treat its **current physical
+position** as solved. Sent when the cube is not actually solved, the driver's
+tracked state and the hardware diverge permanently and silently — precisely what
+the state invariant (apply decoded moves → matches hardware facelets) exists to
+catch. Before wiring it up, confirm on hardware that the cube is solved at the
+moment it is sent, and re-establish the invariant immediately afterwards.
 
 `REQUEST_HARDWARE` verified live: returned name `GAN16ui`, hw 1.0, sw 2.4, date
 2026-01-09, plus extras 0xF5/0xF6/0xFF.
