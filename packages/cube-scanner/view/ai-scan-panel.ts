@@ -327,6 +327,13 @@ export class AiScanPanel extends HTMLElement {
     this.lastColors = '';
     const restart = this.maybe<HTMLButtonElement>('restart');
     if (restart) restart.hidden = false;
+    // Asking for a side with no camera open is a promise nothing can keep — and it reads exactly
+    // like a scan that is working, because the ticks just return. Reachable now that a host can
+    // stay on the screen after a scan finishes and correct a sticker into an invalid cube.
+    if (this.source === null) {
+      this.report('error', this.tinted('err', 'The camera is off — turn it on to scan again.'));
+      return;
+    }
     this.report(phase, ...(opening.length > 0 ? opening : [OPENING]));
     this.timer = setInterval(() => void this.onTick(), TICK_MS);
   }
@@ -558,9 +565,11 @@ export class AiScanPanel extends HTMLElement {
     this.stopLoop();
     this.showPreview(null);
     if (result.valid && result.lowConfidence.length === 0) {
+      // Release the camera BEFORE reporting, so the 'done' report carries device: null and a host
+      // that stays on the scan screen stops showing a live lens over a finished scan.
+      this.stop();
       this.report('done', this.tinted('ok', 'Scan complete — solvable cube captured.'));
       this.dispatchEvent(new CustomEvent<ScanResult>('scan-complete', { detail: result }));
-      this.stop();
       return;
     }
     if (result.confirm) {

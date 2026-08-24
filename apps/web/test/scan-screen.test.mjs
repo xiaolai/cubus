@@ -277,6 +277,23 @@ test('the shell takes no text caret, but the facelet string stays copyable', () 
   assert.match(css, /\.mono[^{]*\{[^}]*user-select:\s*text/, 'the facelet string must stay selectable');
 });
 
+// A finished scan used to jump straight to another screen, which took the six tiles away exactly
+// when they first meant something — and with them any chance to check the read.
+test('a completed scan stays on the screen and shows what was found', () => {
+  // A REAL cube — `R U R' U'` from solved. Not a hand-mangled string: swapping stickers keeps the
+  // colour counts and centres right, so cubejs accepts it, and then solve() searches an
+  // unreachable state until the process is killed. setFacelets solves whatever it is handed.
+  const scrambled = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: scrambled, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  assert.equal(win.location.hash, '#/scan', 'it must not navigate away');
+  assert.ok($('#stage ai-scan-panel'), 'the scanner is still mounted');
+  assert.equal($('#scanState').textContent, scrambled, 'the aside shows the state that was found');
+  assert.equal($('#scanCube').firstElementChild.getAttribute('facelets'), scrambled,
+    'and the 3D twin follows it, without re-rendering the screen');
+});
+
 // Left last: it navigates away, which tears the screen down.
 test('leaving the screen releases the camera', async () => {
   let stopped = 0;
