@@ -1,6 +1,6 @@
 # cubedet — Rubik's cube sticker-colour detector
 
-`app/renderer/vendor/cubedet.onnx` — the model the app's **AI-scan** mode runs in-browser.
+`apps/web/vendor/cubedet.onnx` — the model the app's **AI-scan** mode runs in-browser.
 
 ## What it does
 A **v3n** object detector that finds each sticker on a cube face and classifies its
