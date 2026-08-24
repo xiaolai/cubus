@@ -97,11 +97,10 @@ much UI it owns on top of that:
 
 Methods: `start()` (open the camera / retry after an error), `restart()` (drop the captured sides,
 keep the camera), `stop()` (release the camera; also runs on disconnect), `cameras()` (the
-selectable devices), `setSticker(face, index, colour)` (overrule one sticker and re-check — index
-is into the capture *as shown*, the centre is refused, and a side with nothing read yet is started
-from its centre colour and left open to a later camera read), `rescanFace(face)` (drop one side's
-reading and resume the loop so it is read again — what a centre sticker does, since a centre cannot
-be recoloured).
+selectable devices), `setSticker(face, index, colour)` (overrule one sticker of a side already
+READ and re-check — index is into the capture *as shown*; the centre is refused, and so is a side
+with nothing read yet), `rescanFace(face)` (drop one side's reading and resume the loop so it is
+read again — what a centre sticker does, since a centre cannot be recoloured).
 
 ## App wiring (in `apps/web/index.html`)
 
