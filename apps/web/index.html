@@ -212,10 +212,9 @@
       .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 6px; border-radius: var(--r-5); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; grid-template-columns: repeat(3,1fr); gap: 3px; }
       .scan-face .tile > i { border-radius: 3px; background: var(--facelet-off); opacity: .3; }
       .scan-face .lbl { font-size: var(--fs-caption); font-weight: 700; letter-spacing: .03em; color: var(--ink-5); }
-      /* Only a captured side has a reading to correct, and only its eight outer stickers: the
-         centre names the face. */
-      .scan-face.done .tile > i:not(:nth-child(5)) { cursor: pointer; }
-      .scan-face.done .tile > i:not(:nth-child(5)):hover { box-shadow: 0 0 0 2px var(--ink); }
+      /* Every sticker but the centre is correctable, on every side — the centre names the face. */
+      .scan-face .tile > i:not(:nth-child(5)) { cursor: pointer; }
+      .scan-face .tile > i:not(:nth-child(5)):hover { box-shadow: 0 0 0 2px var(--ink); opacity: 1; }
       .scan-face .cell.editing { box-shadow: 0 0 0 2px var(--accent); }
 
       /* Colour picker for a misread sticker. Fixed to the viewport so it never has to reason about

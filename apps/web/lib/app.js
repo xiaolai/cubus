@@ -557,10 +557,11 @@ SCREENS.scan = () => {
         onFacelets(e.detail.facelets);
         go(settings.autosolve ? 'guide' : 'viewer');
       });
-      // The detector is good, not perfect, so let a person overrule it: click any sticker of a
-      // captured side and pick the right colour. Delegated rather than 54 listeners, and the
-      // centre is deliberately not offered — a centre colour IS the face's identity, so changing
-      // one would rename the face rather than correct it.
+      // The detector is good, not perfect, so let a person overrule it: click any sticker on any
+      // side and pick the right colour. A side with nothing read yet starts from its centre
+      // colour, which makes this a way in for a side the camera simply cannot manage. Delegated
+      // rather than 54 listeners. The centre is the one sticker not offered — a centre colour IS
+      // the face's identity, so changing it would rename the face rather than correct it.
       const swatches = document.createElement('div');
       swatches.className = 'swatches';
       swatches.hidden = true;
@@ -586,7 +587,6 @@ SCREENS.scan = () => {
         if (!cellEl || !tile) return;
         const index = [...cellEl.parentElement.children].indexOf(cellEl);
         if (index === 4) return; // the centre names the face; it is not a correction
-        if (!tile.classList.contains('done')) return; // nothing read yet, so nothing to correct
         closePops();
         editing = { face: tile.dataset.face, index };
         cellEl.classList.add('editing');
