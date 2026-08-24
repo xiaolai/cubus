@@ -947,7 +947,7 @@ SCREENS.viewer = () => {
       const stages = stageSplit(total);
       solList.innerHTML = stages.map(([name, a, b]) => `<div style="padding:10px 16px 14px">
         <div style="display:flex;justify-content:space-between"><span class="eyebrow">${name}</span><span class="num sub">${b - a}</span></div>
-        <div class="move-chips" style="margin-top:8px">${moves.slice(a, b).map((m, k) => `<span class="chip-m" data-i="${a + k}">${m}</span>`).join('')}</div></div>`).join('');
+        <div class="move-chips" style="margin-top:8px">${moves.slice(a, b).map((m, k) => `<button class="chip-m" data-i="${a + k}" title="Jump to this move">${m}</button>`).join('')}</div></div>`).join('');
       const chips = [...solList.querySelectorAll('.chip-m')];
       let at = 0;
       function sync(i) {
@@ -981,6 +981,16 @@ SCREENS.viewer = () => {
       // The renderer's queue is FIFO and pulls the next move only when the current one finishes,
       // so pushing both halves of a repeat here plays them in order.
       $('#prevBtn', root).onclick = () => { setPlaying(false); cube.stepBack(); };
+      // A move in the list is a place in the solution, so clicking one goes there. seek() is instant
+      // on purpose: jumping twelve moves is not something to sit through, which is exactly the case
+      // step()/stepBack() do not cover. The clicked move becomes the CURRENT one — the one you are
+      // about to make — rather than the one just made, so the highlight lands where you clicked.
+      solList.onclick = (ev) => {
+        const chip = ev.target.closest('.chip-m');
+        if (!chip) return;
+        setPlaying(false);
+        cube.seek(Number(chip.dataset.i));
+      };
       $('#repeatBtn', root).onclick = () => {
         // Not merely belt-and-braces with the disabled attribute: stepBack() self-guards at step 0
         // but step() does not, so without this a repeat at the start would go FORWARD one move.
