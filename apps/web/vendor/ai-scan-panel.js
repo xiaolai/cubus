@@ -2221,6 +2221,39 @@ function pickVerification(survivorCombos, weak, confirmed) {
   });
   return best === void 0 || bestScore < 1 ? void 0 : { face: best, up: TOP_NEIGHBOUR[best] };
 }
+function assemblePainted(faces, threshold = 0.15) {
+  const centreOwner = /* @__PURE__ */ new Map();
+  for (const face of FACES) {
+    const f = faces[face];
+    if (!f || f.colors.length !== 9 || f.confidence.length !== 9) {
+      throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
+    }
+    const centre = f.colors[4];
+    if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
+    centreOwner.set(centre, face);
+  }
+  if (centreOwner.size !== 6) return reject("the 6 centres are not 6 distinct colours");
+  const letters = [];
+  for (const face of FACES) {
+    for (const colour of faces[face].colors) {
+      const owner = centreOwner.get(colour);
+      if (owner === void 0) return reject("a sticker is not one of the six centre colours");
+      letters.push(owner);
+    }
+  }
+  const facelets = letters.join("");
+  if (!isStructurallyValid(facelets) || !cubejsRoundTrips(facelets)) {
+    return reject("not a solvable cube yet \u2014 keep painting");
+  }
+  const conf = FACES.flatMap((f) => faces[f].confidence);
+  let min = 1;
+  const lowConfidence = [];
+  conf.forEach((c, i) => {
+    if (c < min) min = c;
+    if (c < threshold) lowConfidence.push(i);
+  });
+  return { facelets, valid: true, confidence: min, lowConfidence };
+}
 function assembleColors(faces, threshold = 0.15, confirmed = {}) {
   const centreOwner = /* @__PURE__ */ new Map();
   for (const face of FACES) {
@@ -13094,6 +13127,7 @@ var HINT = {
 var TICK_MS = 200;
 var STABLE = 3;
 var OPENING = "Show any side to the camera \u2014 held flat and centred.";
+var PAINTING = "Painting by hand \u2014 tap any sticker and pick its colour.";
 var SLOW_OPEN_MS = 8e3;
 var SLOW_OPEN = "The camera has not opened. Allow camera access for this app, then try again.";
 var PINNED_GONE = "The camera you chose is unavailable \u2014 using the default one.";
@@ -13159,6 +13193,8 @@ var AiScanPanel = class extends HTMLElement {
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   confirmed = {};
   awaiting = null;
+  /** Hand-painting mode: the camera is off and every non-centre sticker is settable. */
+  painting = false;
   /** Contradictory confirmations in a row; two means the instruction is not landing. */
   mismatches = 0;
   scanEpoch = 0;
@@ -13408,15 +13444,39 @@ var AiScanPanel = class extends HTMLElement {
   setSticker(face, index, colour) {
     if (!Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
     if (!Number.isInteger(colour) || colour < 0 || colour >= FACES.length) return;
-    const read = this.faces[face];
-    if (read === void 0) return;
-    if (read.colors[index] === colour) return;
+    let read = this.faces[face];
+    if (read === void 0) {
+      if (!this.painting) return;
+      read = {
+        colors: Array(9).fill(FACES.indexOf(face)),
+        confidence: Array(9).fill(1)
+      };
+      this.faces[face] = read;
+      this.buildDots();
+    } else if (read.colors[index] === colour) {
+      return;
+    }
     read.colors[index] = colour;
     read.confidence[index] = 1;
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
-    if (this.capturedFaces().length < FACES.length) {
+    const done = this.capturedFaces().length;
+    if (this.painting) {
+      if (done === FACES.length) {
+        const result = assemblePainted(this.faces);
+        if (result.valid) {
+          this.finish(result);
+          return;
+        }
+      }
+      this.report(
+        "painting",
+        `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
+      );
+      return;
+    }
+    if (done < FACES.length) {
       this.report("scanning", `Corrected the ${GUIDE[face].name} side. Show another side\u2026`);
       return;
     }
@@ -13424,6 +13484,21 @@ var AiScanPanel = class extends HTMLElement {
     this.showPreview(null);
     this.report("checking", this.tinted("ok", "Corrected \u2014 checking\u2026"));
     this.assemble();
+  }
+  /**
+   * Turn hand-painting on or off. The two are exclusive by nature, not by policy: painting means
+   * the user is authoring the cube, and a camera that kept reading would overwrite what they typed
+   * in. So turning it on releases the camera, and turning it off opens it again from scratch.
+   */
+  setPainting(on2) {
+    if (on2 === this.painting) return;
+    this.painting = on2;
+    if (on2) {
+      this.stop();
+      this.report("painting", PAINTING);
+      return;
+    }
+    void this.start();
   }
   /**
    * Forget one side's reading so the camera can read it again — the sensible thing for a centre
@@ -13459,6 +13534,10 @@ var AiScanPanel = class extends HTMLElement {
   /** Clear all captured faces and keep scanning; the camera stays open. Public for host UIs. */
   restart() {
     this.reset();
+    if (this.painting) {
+      this.report("painting", PAINTING);
+      return;
+    }
     this.loop("scanning");
   }
   /** Brief green border pulse on the stage to confirm a capture. */

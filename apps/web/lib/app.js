@@ -40,6 +40,7 @@ const P = {
   minus: '<path d="M5 12h14"/>',
   square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
   webcam: '<circle cx="12" cy="10" r="8"/><circle class="lens" cx="12" cy="10" r="3"/><path d="M7 22h10"/><path d="M12 22v-4"/>',
+  'paint-roller': '<rect width="16" height="6" x="2" y="2" rx="2"/><path d="M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect width="4" height="6" x="8" y="16" rx="1"/>',
 };
 const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${P[name] || '<circle cx="12" cy="12" r="2"/>'}</svg>`;
 
@@ -434,6 +435,7 @@ SCREENS.scan = () => {
           <div class="tile" style="border-color:${edgeColors(f)}">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
         <div class="scan-cam">
           <button id="scanResetBtn" title="Throw the whole scan away and start again">${icon('refresh', 19)}</button>
+          <button id="scanPaintBtn" title="Paint the cube by hand instead of scanning it">${icon('paint-roller', 19)}</button>
           <button id="scanCamBtn" title="Camera">${icon('webcam', 20)}</button>
         </div>
       </div>
@@ -466,7 +468,16 @@ SCREENS.scan = () => {
       // deferred autostart, but a property set before the element upgrades would be clobbered by
       // its own class fields, whereas an attribute survives and start() re-reads it.
       const camRow = $('.scan-cam', root), camBtn = $('#scanCamBtn', root);
-      const resetBtn = $('#scanResetBtn', root);
+      const resetBtn = $('#scanResetBtn', root), paintBtn = $('#scanPaintBtn', root);
+      // Painting and the camera are exclusive: one authors the cube, the other reads it.
+      let painting = false;
+      const setPainting = (on) => {
+        painting = on;
+        camRow.classList.toggle('paint', on);
+        paintBtn.title = on ? 'Stop painting and use the camera' : 'Paint the cube by hand instead of scanning it';
+        panel.setPainting?.(on);
+      };
+      paintBtn.onclick = () => { closePops(); setPainting(!painting); };
       const pin = (id) => { if (id) panel.setAttribute('device-id', id); else panel.removeAttribute('device-id'); };
       pin(settings.cameraId);
       // The webcam button IS the camera menu: one control in the corner rather than a button and a
@@ -483,7 +494,10 @@ SCREENS.scan = () => {
         settings.cameraId = id; save('cubusSettings', settings);
         pin(id);
         closePops();
-        void panel.start?.();
+        // Picking a camera is asking to scan, so it leaves painting; otherwise the camera would
+        // open under a mode that exists to keep it shut.
+        if (painting) setPainting(false);
+        else void panel.start?.();
       };
       const markActive = () => {
         const items = [...menu.querySelectorAll('[data-value]')];
@@ -519,7 +533,12 @@ SCREENS.scan = () => {
       let shownDevice = null;
       // Throw the whole scan away. With the camera dark this is also the way back on, since a
       // refused permission leaves nothing else to press.
-      resetBtn.onclick = () => { closePops(); if (camOn) panel.restart?.(); else void panel.start?.(); };
+      resetBtn.onclick = () => {
+        closePops();
+        // While painting there is no camera to reopen — restart() clears the canvas and stays.
+        if (painting || camOn) panel.restart?.();
+        else void panel.start?.();
+      };
       camBtn.onclick = (ev) => {
         const open = menu.hidden;
         closePops();
@@ -612,12 +631,13 @@ SCREENS.scan = () => {
         // thing: throws that side's reading away so the camera reads it again.
         if (index === 4) {
           closePops();
-          if (tile.classList.contains('done')) panel.rescanFace?.(tile.dataset.face);
+          // Re-reading needs something to read with, so the centre does nothing while painting.
+          if (!painting && tile.classList.contains('done')) panel.rescanFace?.(tile.dataset.face);
           return;
         }
-        // Only a side the camera has read can be corrected — there is nothing to overrule on one
-        // it has not seen, and nine guesses is not a correction.
-        if (!tile.classList.contains('done')) return;
+        // Correcting needs a reading to overrule; painting is where supplying one is the point, so
+        // there all 48 outer stickers are open whether the camera has seen that side or not.
+        if (!painting && !tile.classList.contains('done')) return;
         closePops();
         editing = { face: tile.dataset.face, index };
         cellEl.classList.add('editing');

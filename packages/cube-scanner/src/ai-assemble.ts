@@ -173,6 +173,52 @@ function pickVerification(
 }
 
 /**
+ * Validate six faces whose orientation is already KNOWN — painted by hand straight into the
+ * canonical net rather than shown to a camera.
+ *
+ * No rotation search, deliberately. The 4^6 search exists because a camera cannot see which way up
+ * a face is; someone painting a net has already answered that, and running the search anyway would
+ * be worse than pointless — it could find a second legal reading of the same paint and start asking
+ * to be shown a side, in a mode where the camera is off. The painted layout IS the answer; the only
+ * question left is whether it is a legal cube.
+ */
+export function assemblePainted(faces: Record<Face, ColorFace>, threshold = 0.15): AiScanResult {
+  const centreOwner = new Map<number, Face>();
+  for (const face of FACES) {
+    const f = faces[face];
+    if (!f || f.colors.length !== 9 || f.confidence.length !== 9) {
+      throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
+    }
+    const centre = f.colors[4]!;
+    if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
+    centreOwner.set(centre, face);
+  }
+  if (centreOwner.size !== 6) return reject('the 6 centres are not 6 distinct colours');
+
+  const letters: string[] = [];
+  for (const face of FACES) {
+    for (const colour of faces[face]!.colors) {
+      const owner = centreOwner.get(colour);
+      if (owner === undefined) return reject('a sticker is not one of the six centre colours');
+      letters.push(owner);
+    }
+  }
+  const facelets = letters.join('');
+  if (!isStructurallyValid(facelets) || !cubejsRoundTrips(facelets)) {
+    return reject('not a solvable cube yet — keep painting');
+  }
+
+  const conf = FACES.flatMap((f) => faces[f]!.confidence);
+  let min = 1;
+  const lowConfidence: number[] = [];
+  conf.forEach((c, i) => {
+    if (c < min) min = c;
+    if (c < threshold) lowConfidence.push(i);
+  });
+  return { facelets, valid: true, confidence: min, lowConfidence };
+}
+
+/**
  * Turn 6 detected faces (colour classes, any rotation) into a validated ScanResult by solving each
  * face's rotation. Rejects a scan whose 6 centres are not 6 distinct colours (not a real cube) and
  * a colour misread (no rotation is solvable). When several readings survive, returns a `confirm`
