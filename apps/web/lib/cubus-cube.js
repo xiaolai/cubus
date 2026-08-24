@@ -219,7 +219,9 @@ class CubusCube extends HTMLElement {
         if (k >= 1) {
           this._bake(a.temp);
           this._anim = null;
-          this._applied += 1;
+          // A move queued by stepBack() carries delta -1: it undoes a solution move, so the step
+          // index must count down. Anything else is a forward move and counts up.
+          this._applied += a.m.delta ?? 1;
           // Host apps sync a move list / 2D net / scrubber to this.
           this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: this._applied, total: this._sol.length } }));
           this._next();
@@ -433,7 +435,11 @@ class CubusCube extends HTMLElement {
     // While playing, pull the next solution move so pause() can stop cleanly between moves.
     if (!m && this._playing && this._cursor < this._sol.length) m = this._sol[this._cursor++];
     if (!m) { this._playing = false; return; }
-    const tempo = Math.max(0.25, this._num('tempo-scale', 1));
+    // The floor is a guard, not a speed policy: at tempo <= 0 the duration is Infinity (or
+    // negative) and the turn never completes, freezing the cube mid-move. It used to sit at 0.25,
+    // which silently doubled as the slowest speed anyone could ask for — 760ms per quarter turn,
+    // and a smaller tempo-scale was clamped away with nothing said. 0.05 is 3.8s per quarter turn.
+    const tempo = Math.max(0.05, this._num('tempo-scale', 1));
     this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: (190 / tempo) * m.turns };
   }
 
@@ -463,6 +469,14 @@ class CubusCube extends HTMLElement {
   play() { this._playing = true; this._next(); }
   pause() { this._playing = false; } // the in-flight quarter turn finishes, then it stops
   step() { if (this._cursor < this._sol.length) { this._queue.push(this._sol[this._cursor++]); this._next(); } }
+  // Animated undo — the same turn played backwards. seek() also moves back a step but jumps there
+  // instantly; this is for showing someone what the last move actually was.
+  stepBack() {
+    if (this._cursor <= 0) return;
+    const m = this._sol[--this._cursor];
+    this._queue.push({ ...m, angle: -m.angle, delta: -1 });
+    this._next();
+  }
   // Instant seek to solution move k (no animation) — drives the playback scrubber.
   seek(k) {
     const target = Math.max(0, Math.min(Math.round(k), this._sol.length));

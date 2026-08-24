@@ -20600,7 +20600,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
         if (k >= 1) {
           this._bake(a.temp);
           this._anim = null;
-          this._applied += 1;
+          this._applied += a.m.delta ?? 1;
           this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: this._applied, total: this._sol.length } }));
           this._next();
         }
@@ -20813,7 +20813,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._playing = false;
       return;
     }
-    const tempo = Math.max(0.25, this._num("tempo-scale", 1));
+    const tempo = Math.max(0.05, this._num("tempo-scale", 1));
     this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: 190 / tempo * m.turns };
   }
   reset() {
@@ -20854,6 +20854,14 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._queue.push(this._sol[this._cursor++]);
       this._next();
     }
+  }
+  // Animated undo — the same turn played backwards. seek() also moves back a step but jumps there
+  // instantly; this is for showing someone what the last move actually was.
+  stepBack() {
+    if (this._cursor <= 0) return;
+    const m = this._sol[--this._cursor];
+    this._queue.push({ ...m, angle: -m.angle, delta: -1 });
+    this._next();
   }
   // Instant seek to solution move k (no animation) — drives the playback scrubber.
   seek(k) {
