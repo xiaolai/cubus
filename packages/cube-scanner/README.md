@@ -96,7 +96,10 @@ much UI it owns on top of that:
 | `scan-invalid` | `ScanResult` | The read did not validate. The element resets and keeps scanning; the reason arrives as the next `scan-progress`. |
 
 Methods: `start()` (open the camera / retry after an error), `restart()` (drop the captured sides,
-keep the camera), `stop()` (release the camera; also runs on disconnect).
+keep the camera), `stop()` (release the camera; also runs on disconnect), `cameras()` (the
+selectable devices), `setSticker(face, index, colour)` (overrule one sticker and re-check — index
+is into the capture *as shown*, the centre is refused, and a side with nothing read yet is started
+from its centre colour and left open to a later camera read).
 
 ## App wiring (in `apps/web/index.html`)
 

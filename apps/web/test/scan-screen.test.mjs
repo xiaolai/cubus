@@ -223,9 +223,17 @@ test('the centre sticker is not correctable — it names the face', () => {
   assert.deepEqual(calls, []);
 });
 
-test('a side with nothing read yet has nothing to correct', () => {
-  all('.scan-face[data-face="B"] .tile > i')[0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-  assert.equal($('.swatches').hidden, true);
+// Every sticker on EVERY side, not just the ones the camera managed to read: a side the detector
+// cannot settle on is exactly the side a person needs to be able to enter by hand.
+test('a side with nothing read yet is still correctable', () => {
+  const calls = [];
+  panel().setSticker = (...args) => calls.push(args);
+  const tile = $('.scan-face[data-face="B"]');
+  assert.ok(!tile.classList.contains('done'), 'B has not been captured');
+  all('.scan-face[data-face="B"] .tile > i')[7].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('.swatches').hidden, false, 'the colours must be offered here too');
+  $('.swatches').querySelectorAll('button')[0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(calls, [['B', 7, 0]]);
 });
 
 // Left last: it navigates away, which tears the screen down.
