@@ -805,9 +805,10 @@ SCREENS.viewer = () => {
       </div>
       ${walking ? `<div class="card">
         <div class="transport">
-          <button class="tbtn" id="prevBtn" title="Repeat the previous move">${icon('chevron-left', 20)}</button>
+          <button class="tbtn" id="prevBtn" title="Back a move">${icon('chevron-left', 20)}</button>
+          <button class="tbtn" id="repeatBtn" title="Show that move again">${icon('refresh', 18)}</button>
           <button class="tbtn" id="nextBtn" title="Next move">${icon('chevron-right', 20)}</button>
-          <button class="tbtn primary" id="playBtn" title="Play to the end">${icon('play', 18)}</button>
+          <button class="tbtn primary" id="playBtn" title="Play from here to the end">${icon('play', 18)}</button>
           <span class="spacer"></span>
           <button class="pill on" data-mode="slow">Slowest</button>
           <button class="pill" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>
@@ -880,6 +881,11 @@ SCREENS.viewer = () => {
         at = i;
         chips.forEach((ch, k) => { ch.classList.toggle('played', k < i); ch.classList.toggle('cur', k === i); });
         $('#stepLbl', root).textContent = `${i} / ${total}`;
+        // A button that cannot do anything says so, rather than swallowing the press.
+        $('#prevBtn', root).disabled = i === 0;
+        $('#repeatBtn', root).disabled = i === 0;
+        $('#nextBtn', root).disabled = i >= total;
+        $('#playBtn', root).disabled = i >= total;
         // The only thing left to say over the cube: it is done. A move label repeated what the
         // highlighted chip and the animation were both already showing.
         $('#doneMark', root).hidden = i < total;
@@ -895,6 +901,15 @@ SCREENS.viewer = () => {
       $('#playBtn', root).onclick = () => setPlaying(!playing);
       $('#nextBtn', root).onclick = () => { setPlaying(false); cube.step(); };
       $('#prevBtn', root).onclick = () => { setPlaying(false); cube.seek(Math.max(0, at - 1)); };
+      // Back and repeat are different questions. Back undoes a move; repeat answers "show me that
+      // again" — seek is instant, so stepping straight after it replays the same move's animation
+      // and lands where it started.
+      $('#repeatBtn', root).onclick = () => {
+        if (at === 0) return;
+        setPlaying(false);
+        cube.seek(at - 1);
+        cube.step();
+      };
 
       // Two modes, not a speed. Slowest is for following along by hand; Follow cube hands the
       // pacing to the physical cube, so the guide advances only when the move is actually made.

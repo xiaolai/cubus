@@ -173,6 +173,11 @@ test('the cube screen is the cube, one transport row, and nothing else', async (
   }
   const modes = [...win.document.querySelectorAll('[data-mode]')].map((b) => b.dataset.mode);
   assert.deepEqual(modes, ['slow', 'cube'], 'two pacing modes, not a speed');
+  // Back and repeat are different questions — undo a move, versus show that one again.
+  assert.deepEqual(
+    [...win.document.querySelectorAll('.transport .tbtn')].map((b) => b.id),
+    ['prevBtn', 'repeatBtn', 'nextBtn', 'playBtn'],
+  );
 });
 
 // Solve guide and Playback were absorbed into the cube screen. Their links are already out in the
