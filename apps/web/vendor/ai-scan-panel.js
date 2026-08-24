@@ -1999,6 +1999,9 @@ var require_cubejs = __commonJS({
 // src/ai-assemble.ts
 var import_cubejs = __toESM(require_cubejs(), 1);
 
+// src/types.ts
+var FACES = ["U", "R", "F", "D", "L", "B"];
+
 // src/facelet-cube.ts
 var SOLVED = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
 var CORNER_FACELET = [
@@ -2027,6 +2030,27 @@ var EDGE_FACELET = [
 ];
 var CORNER_COLOR = CORNER_FACELET.map((t) => t.map((i) => SOLVED[i]));
 var EDGE_COLOR = EDGE_FACELET.map((t) => t.map((i) => SOLVED[i]));
+var SIDE_OF_POSITION = {
+  1: "top",
+  5: "right",
+  7: "bottom",
+  3: "left"
+};
+var FACE_NEIGHBOURS = (() => {
+  const out = {};
+  for (const f of FACES) out[f] = {};
+  for (const pair of EDGE_FACELET) {
+    const [a, b] = [pair[0], pair[1]];
+    for (const [from, to2] of [
+      [a, b],
+      [b, a]
+    ]) {
+      const side = SIDE_OF_POSITION[from % 9];
+      if (side !== void 0) out[FACES[Math.floor(from / 9)]][side] = FACES[Math.floor(to2 / 9)];
+    }
+  }
+  return out;
+})();
 var CENTER_INDEX = {
   U: 4,
   R: 13,
@@ -2131,9 +2155,6 @@ function isStructurallyValid(f) {
   const state = decodeFacelets(f);
   return state !== null && isSolvable(state);
 }
-
-// src/types.ts
-var FACES = ["U", "R", "F", "D", "L", "B"];
 
 // src/ai-assemble.ts
 var ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2];
