@@ -1,0 +1,233 @@
+/* cubus design tokens — single source of truth for the UI shell.
+ *
+ * Extracted from the approved mockups (Cubus App / Cubus Mobile) by audit.
+ * Naming follows the convention already in apps/web/index.html (:root vars).
+ * Cube sticker colors stay in cubus-cube.js PALETTES — they are puzzle data,
+ * not UI theme, and must not be reachable as UI colors.
+ */
+:root {
+  color-scheme: light dark;
+
+  /* ---- surface & ink -------------------------------------------------- */
+  --desk:          #E1D9C8;  /* outside the window; mockup only */
+  --bg:            #F6F2E9;  /* window background */
+  --panel:         #FFFDF7;  /* cards, leading pane */
+  --panel-sunk:    #EFE9DC;  /* titlebar, inset wells */
+  --line:          #E2DACA;  /* hairline on panel */
+  --line-strong:   #D3C9B4;  /* hairline on desk */
+  --line-faint:    #F3EEE3;  /* row dividers inside cards */
+
+  --ink:           #241F18;  /* primary text, inverted surfaces */
+  --ink-2:         #4A4237;  /* secondary on sunk surfaces */
+  --ink-3:         #6B6154;  /* body dim */
+  --ink-4:         #8B8072;  /* captions */
+  --ink-5:         #7A7266;  /* eyebrow labels — 4.5:1 on --panel */
+  --ink-6:         #C4BAA9;  /* disabled, chevrons */
+  --on-ink:        #F6F2E9;  /* text on --ink */
+  --on-ink-dim:    #BDB3A2;  /* secondary text on --ink */
+
+  /* ---- accent & status ------------------------------------------------ */
+  --accent:        #2E6BFF;
+  --accent-hover:  #1B4FCC;
+  --accent-wash:   #E4EBFF;  /* M3 secondary container */
+  --accent-ink:    #16357E;  /* text on --accent-wash */
+  --accent-ink-2:  #3E5288;
+  --ok:            #4E8C6A;
+  --warn:          #C87A3C;
+  --err:           #B8503F;
+
+  /* ---- camera / AR surfaces ------------------------------------------ */
+  --lens:          #17150F;
+  /* Unsolved-facelet fill inside OLL/PLL diagrams. NOT a lens color: it sits on
+   * --panel and must contrast with the CARD, so it inverts with the theme. */
+  --facelet-off:   #3A332A;
+  /* Text and chrome ON the viewfinder. The lens is a real dark sensor image in
+   * BOTH themes, so these three are declared identically in every theme block —
+   * they must never flip. --on-lens-inverse is for badges that sit on a fixed
+   * light wash over the lens. */
+  --on-lens:         #F6F2E9;
+  --on-lens-dim:     #BDB3A2;
+  --on-lens-inverse: #241F18;
+
+  /* ---- type ----------------------------------------------------------- */
+  --font-ui:    'Alegreya Sans', system-ui, sans-serif;
+  --font-num:   'Zilla Slab', serif;      /* times, algs, all numerals */
+  --font-ios:   -apple-system, 'SF Pro', system-ui, sans-serif;
+  --font-md:    Roboto, system-ui, sans-serif;
+
+  --fs-micro:    10px;  /* eyebrow caps only */
+  --fs-meta:     11px;
+  --fs-caption:  12px;
+  --fs-body-s:   13px;
+  --fs-body:     14px;
+  --fs-body-l:   15px;
+  --fs-title-s:  18px;
+  --fs-title:    20px;
+  --fs-title-l:  24px;
+  --fs-wordmark: 26px;
+  --fs-display-s: 32px;
+  --fs-display:   40px;
+  --fs-display-l: 58px;
+  --fs-timer:    150px;
+
+  --lh-tight: 1.1;
+  --lh-body:  1.45;
+  --lh-prose: 1.55;
+
+  /* ---- space (4px base) ----------------------------------------------- */
+  --s-1:  2px;  --s-2:  4px;  --s-3:  6px;  --s-4:  8px;
+  --s-5: 10px;  --s-6: 12px;  --s-7: 14px;  --s-8: 16px;
+  --s-9: 18px;  --s-10: 20px; --s-11: 22px; --s-12: 26px;
+  --s-13: 30px;
+
+  /* ---- radius --------------------------------------------------------- */
+  --r-1:    2px;
+  --r-2:    4px;
+  --r-3:    6px;
+  --r-4:    8px;
+  --r-5:   10px;
+  --r-6:   12px;
+  --r-card: 13px;  /* concentric: --r-win-macos − --inset */
+  --r-pill: 999px;
+
+  /* ---- elevation ------------------------------------------------------ */
+  --shadow-card:  0 1px 2px rgba(36,31,24,.06), 0 8px 24px rgba(36,31,24,.07);
+  --shadow-raise: 0 6px 16px rgba(36,31,24,.28);
+  --shadow-win:   0 26px 70px rgba(36,31,24,.30), 0 0 0 .5px rgba(36,31,24,.22);
+  --shadow-sheet: 0 -20px 50px rgba(0,0,0,.40);
+
+  /* ---- motion --------------------------------------------------------- */
+  --fade:       .15s;
+  --turn-ms:    190ms;  /* one quarter turn at tempo 1 */
+  --pulse:      2.4s;
+
+  /* ---- window chrome, per platform ------------------------------------
+   * WINDOW_RADIUS on macOS is MEASURED off a Tauri window and is not
+   * settable from tauri.conf.json. The card radius is derived from it:
+   * --r-card = --r-win-macos − --inset. Traffic lights are 12pt at
+   * trafficLightPosition { x: 18, y: 28 } (button_top = y − 9), which puts
+   * their centre on the title's optical line. macOSPrivateApi must be true
+   * or trafficLightPosition is ignored silently.
+   * -------------------------------------------------------------------- */
+  --inset:            8px;   /* concentric inset, all platforms */
+  --titlebar-macos:   52px;  /* overlay: content runs beneath it */
+  --titlebar-other:   44px;  /* a real row in the column */
+  --r-win-macos:      21px;
+  --r-win-windows:     8px;
+  --r-win-linux:      12px;
+  --sys-zone-macos:   82px;
+  --sys-zone-windows: 138px; /* 3 × 46px caption buttons, contiguous */
+  --sys-zone-linux:   96px;
+  --caption-w:        46px;
+  --caption-h:        32px;
+  --light-size:       12px;
+  --light-gap:      11.75px; /* measured, not chosen */
+
+  /* ---- panes ---------------------------------------------------------- */
+  --pane-w:        236px;  /* desktop leading pane */
+  --pane-w-ipad:   320px;
+  --pane-min:      200px;
+  --aside-w:       300px;  /* desktop trailing column, shrinkable */
+  --aside-min:     240px;
+  --win-min-w:    1120px;
+  --win-max-w:    1600px;
+  --win-min-h:     640px;
+
+  /* ---- mobile --------------------------------------------------------- */
+  --tabbar-ios:      49px;  /* + safe area */
+  --safe-bottom-ios: 34px;
+  --appbar-md:       64px;
+  --navbar-md:       80px;
+  --touch-min:       44px;  /* never smaller, either platform */
+  --fab-h:           56px;
+  --r-sheet:         26px;  /* iOS */
+  --r-sheet-md:      28px;  /* Material 3 */
+
+  /* ---- 3D renderer defaults (cubus-cube attributes) ------------------- */
+  --cube-camera-distance:  12;
+  --cube-camera-latitude:  35;
+  --cube-camera-longitude:  45;
+  --cube-facelet-scale:    0.9;
+  --cube-ghost-elevation:    4;
+  --cube-ghost-opacity:   0.45;
+}
+
+/* ---- dark theme ------------------------------------------------------------
+ * Warm, not slate: the paper direction inverted rather than swapped for a
+ * generic blue-black. Two roles that light mode conflates must stay split —
+ * --ink is text, --invert-bg/--invert-fg are the inverted-surface pair, and in
+ * dark that surface becomes LIGHT (an inverted card inverts against its theme).
+ * Cube sticker colors do not appear here: they are puzzle data and identical
+ * in both themes.
+ * ------------------------------------------------------------------------- */
+@media (prefers-color-scheme: dark) { :root { color-scheme: dark; } }
+
+[data-theme="dark"] {
+  --desk:          #14120E;
+  --bg:            #1B1814;
+  --panel:         #232019;
+  --panel-sunk:    #1E1B16;
+  --line:          #332E26;
+  --line-strong:   #3E382E;
+  --line-faint:    #2A251F;
+  --row-sel:       #2A251F;
+
+  --ink:           #EDE7DA;
+  --ink-2:         #D2C9B8;
+  --ink-3:         #B5AC9C;
+  --ink-4:         #978E80;
+  --ink-5:         #9A9184;
+  --ink-6:         #5C5449;
+
+  --invert-bg:     #EDE7DA;  /* light card on a dark window */
+  --invert-fg:     #1B1814;
+  --on-ink-dim:    #6B6154;
+  --on-ink-2:      #3A342B;
+  --track:         #3E382E;
+  --bar:           #5C5449;
+
+  --accent:        #5B8CFF;  /* lifted for contrast against --bg */
+  --accent-hover:  #7FA6FF;
+  --accent-wash:   #1E2A4A;
+  --accent-ink:    #B9CCFF;
+  --accent-ink-2:  #8EA6DA;
+  --ok:            #6BA987;
+  --warn:          #D9955A;
+  --err:           #D4705E;
+
+  --lens:          #0F0D0A;
+  --facelet-off:   #7A7266;  /* lighter than --panel in dark, ~3.4:1 */
+  --on-lens:         #F6F2E9;  /* identical to light — the lens does not flip */
+  --on-lens-dim:     #BDB3A2;
+  --on-lens-inverse: #241F18;
+
+  --shadow-card:  0 1px 2px rgba(0,0,0,.40), 0 8px 24px rgba(0,0,0,.34);
+  --shadow-raise: 0 6px 16px rgba(0,0,0,.50);
+  --shadow-win:   0 26px 70px rgba(0,0,0,.55), 0 0 0 .5px rgba(237,231,218,.10);
+  --shadow-sheet: 0 -20px 50px rgba(0,0,0,.60);
+}
+
+/* OS-owned colors are theme-invariant: macOS traffic lights, the Windows
+ * close-button red, and the camera viewfinder (a real dark sensor image). */
+
+/* Same values applied automatically when the OS asks for dark and the app has
+ * not been pinned to light. Kept as a separate rule because a media query
+ * cannot be part of a selector list. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --desk:#14120E; --bg:#1B1814; --panel:#232019; --panel-sunk:#1E1B16;
+    --line:#332E26; --line-strong:#3E382E; --line-faint:#2A251F; --row-sel:#2A251F;
+    --ink:#EDE7DA; --ink-2:#D2C9B8; --ink-3:#B5AC9C; --ink-4:#978E80; --ink-5:#9A9184; --ink-6:#5C5449;
+    --invert-bg:#EDE7DA; --invert-fg:#1B1814; --on-ink-dim:#6B6154; --on-ink-2:#3A342B;
+    --track:#3E382E; --bar:#5C5449;
+    --accent:#5B8CFF; --accent-hover:#7FA6FF; --accent-wash:#1E2A4A;
+    --accent-ink:#B9CCFF; --accent-ink-2:#8EA6DA;
+    --ok:#6BA987; --warn:#D9955A; --err:#D4705E;
+    --lens:#0F0D0A; --facelet-off:#7A7266;
+    --on-lens:#F6F2E9; --on-lens-dim:#BDB3A2; --on-lens-inverse:#241F18;
+    --shadow-card:0 1px 2px rgba(0,0,0,.40), 0 8px 24px rgba(0,0,0,.34);
+    --shadow-raise:0 6px 16px rgba(0,0,0,.50);
+    --shadow-win:0 26px 70px rgba(0,0,0,.55), 0 0 0 .5px rgba(237,231,218,.10);
+    --shadow-sheet:0 -20px 50px rgba(0,0,0,.60);
+  }
+}

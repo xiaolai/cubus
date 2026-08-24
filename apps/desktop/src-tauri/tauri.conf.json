@@ -7,7 +7,7 @@
     "frontendDist": "../../web",
     "devUrl": "http://localhost:15173",
     "beforeDevCommand": "pnpm --filter cubus-web dev",
-    "beforeBuildCommand": "pnpm --filter cube-scanner build:panel && pnpm --filter gan-driver build:driver && pnpm --filter cubus-web copy-ort"
+    "beforeBuildCommand": "pnpm --filter cube-scanner build:panel && pnpm --filter gan-driver build:driver && pnpm --filter cubus-web build:cube && pnpm --filter cubus-web copy-ort"
   },
   "app": {
     "withGlobalTauri": true,

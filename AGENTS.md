@@ -15,13 +15,18 @@ A beginner/kids Rubik's Cube tutor built on a verified GAN16 ui smart-cube drive
   `apps/web` as its webview and owns BLE natively; a runtime transport seam (`window.__TAURI__`)
   feeds the same `gan-driver` from either Web Bluetooth or the Rust backend — proven end-to-end
   on hardware. See `dev-docs/implementation-plan.md` for the dual web+Tauri architecture.
+- **Design system**: the approved UI kit lives in `dev-docs/design/` — read
+  `dev-docs/design/README.md` before any `apps/web` UI work. Adopted into the app:
+  `apps/web/tokens.css` (warm-paper tokens, light/dark) and `<cubus-cube>` (a purpose-built
+  three.js renderer that replaced twisty-player; draws only — state/solving stay with
+  cubejs + cubing.js). Numerals/times/algs use Zilla Slab; UI text Alegreya Sans.
 - **Verification is the contract**: protocol/crypto/decode claims must stay backed by
   the fixture tests in `packages/gan-driver/tests` (they run with no hardware). The state
   invariant — apply decoded moves → matches hardware facelets — is the core check.
 - **`cubejs` is a deliberate independent test oracle**, not a redundant dep. Do not
   "consolidate" it into cubing.js; a different implementation is what makes the
-  invariant a real cross-check. cubing.js (twisty-player + kpuzzle) is the chosen
-  renderer/state-brain for the app.
+  invariant a real cross-check. cubing.js (kpuzzle + search) is the state-brain and
+  solver; `<cubus-cube>` is the renderer (see Design system above).
 - **Never fake hardware**: the cube reports only completed quarter-turns (no partial
   angle — proven in Experiment H). Animation is our synthesis, clearly labelled as such.
 - **Fail loud**: unknown packets and missed moves surface as events, never vanish.

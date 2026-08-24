@@ -3,11 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Cubus SPA — Web Bluetooth smart cube + camera (YOLO) scanner. Served as a static site; no bundler, zero runtime dependencies.",
+  "description": "Cubus SPA — Web Bluetooth / Tauri smart cube + camera (YOLO) scanner. Served as a static site; the only build steps are self-contained vendor bundles.",
   "scripts": {
     "copy-ort": "node copy-ort.mjs",
+    "build:cube": "esbuild lib/cubus-cube.js --bundle --format=esm --target=es2022 --outfile=vendor/cubus-cube.js",
     "predev": "node copy-ort.mjs",
     "dev": "node serve.mjs",
     "test": "node --test"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5",
+    "three": "^0.169.0"
   }
 }
