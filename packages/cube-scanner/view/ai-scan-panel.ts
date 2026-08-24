@@ -19,7 +19,12 @@
 //
 // Browser shell — verified by typecheck + esbuild bundle, exercised manually in the app.
 
-import { type ColorFace, assembleColors } from '../src/ai-assemble.js';
+import {
+  type AiScanResult,
+  type ColorFace,
+  type ConfirmRequest,
+  assembleColors,
+} from '../src/ai-assemble.js';
 import { type CameraDevice, type FrameSource, listCameras, openCamera } from '../src/camera.js';
 import { type RunModel, detectFace } from '../src/onnx-detect.js';
 import type { FitReason } from '../src/onnx-postprocess.js';
@@ -53,7 +58,14 @@ const SLOW_OPEN = 'The camera has not opened. Allow camera access for this app, 
 const PINNED_GONE = 'The camera you chose is unavailable — using the default one.';
 
 /** Where a scan is. Coarse on purpose: enough for a host to style around, no more. */
-export type ScanPhase = 'starting' | 'loading' | 'scanning' | 'checking' | 'done' | 'error';
+export type ScanPhase =
+  | 'starting'
+  | 'loading'
+  | 'scanning'
+  | 'confirm'
+  | 'checking'
+  | 'done'
+  | 'error';
 
 /** One captured side: which face it turned out to be, and the 9 colours read off it. */
 export interface CapturedFace {
@@ -76,6 +88,11 @@ export interface ScanProgress {
   live: number[] | null;
   /** The camera actually in use, or null before one opens. A host showing no preview needs it. */
   device: CameraDevice | null;
+  /**
+   * Set while the scan is waiting for one specific side, held a specific way up, to settle a
+   * reading it cannot settle alone. Null at every other moment.
+   */
+  confirm: ConfirmRequest | null;
 }
 
 const TEMPLATE = `
@@ -144,6 +161,11 @@ export class AiScanPanel extends HTMLElement {
   private stableCount = 0;
   private live: number[] | null = null;
   private device: CameraDevice | null = null;
+  /** Captures known to be in canonical rotation, from answering a `confirm` request. */
+  private confirmed: Partial<Record<Face, ColorFace>> = {};
+  private awaiting: ConfirmRequest | null = null;
+  /** Contradictory confirmations in a row; two means the instruction is not landing. */
+  private mismatches = 0;
   private scanEpoch = 0; // bumped by loop()/stop(); rejects stale in-flight inferences
 
   constructor() {
@@ -261,8 +283,8 @@ export class AiScanPanel extends HTMLElement {
         this.run = await createModelRunner(this.modelUrl, { wasmPaths });
         if (gen !== this.startGen) return; // stop() already released this.source
       }
-      if (fellBack) this.loop(this.tinted('err', PINNED_GONE), ' ', OPENING);
-      else this.loop();
+      if (fellBack) this.loop('scanning', this.tinted('err', PINNED_GONE), ' ', OPENING);
+      else this.loop('scanning');
     } catch (err) {
       if (gen !== this.startGen) {
         source?.stop(); // orphaned camera on a cancelled attempt
@@ -286,6 +308,9 @@ export class AiScanPanel extends HTMLElement {
     this.lastColors = '';
     this.stableCount = 0;
     this.live = null;
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
     for (const f of FACES) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
     this.buildDots();
   }
@@ -294,7 +319,7 @@ export class AiScanPanel extends HTMLElement {
    * (Re)start the capture loop. `opening` replaces the standard prompt, so a message explaining
    * why we are starting over survives instead of being overwritten within one tick.
    */
-  private loop(...opening: (string | Node)[]): void {
+  private loop(phase: ScanPhase, ...opening: (string | Node)[]): void {
     if (this.timer !== null) clearInterval(this.timer);
     this.scanEpoch++;
     this.showPreview(null);
@@ -302,7 +327,7 @@ export class AiScanPanel extends HTMLElement {
     this.lastColors = '';
     const restart = this.maybe<HTMLButtonElement>('restart');
     if (restart) restart.hidden = false;
-    this.report('scanning', ...(opening.length > 0 ? opening : [OPENING]));
+    this.report(phase, ...(opening.length > 0 ? opening : [OPENING]));
     this.timer = setInterval(() => void this.onTick(), TICK_MS);
   }
 
@@ -336,13 +361,28 @@ export class AiScanPanel extends HTMLElement {
       this.lastColors = key;
       this.showPreview(fit.face.colors);
       if (this.stableCount < STABLE) {
-        this.report('scanning', 'Reading a side — hold still…');
+        this.report(this.awaiting ? 'confirm' : 'scanning', 'Reading a side — hold still…');
         return;
       }
       // A face's CENTRE colour is its identity (centres never move): colour class i ↔ FACES[i].
       // So sides can be shown in any order — file each stable read under the face it belongs to.
       const centre = fit.face.colors[4];
       const face = centre === undefined ? undefined : FACES[centre];
+      // While confirming, only the side we asked for counts, and it is taken as a CANONICAL
+      // capture rather than filed as a new face: its rotation is the whole point of asking.
+      if (this.awaiting) {
+        if (face !== this.awaiting.face) {
+          this.report('confirm', ...this.confirmWords(this.awaiting));
+          return;
+        }
+        this.confirmed[face] = fit.face;
+        this.awaiting = null;
+        this.stopLoop();
+        this.showPreview(null);
+        this.flash();
+        this.assemble();
+        return;
+      }
       if (face === undefined) {
         this.report('scanning', this.tinted('err', "Couldn't read the centre — hold it steadier."));
         return;
@@ -376,17 +416,7 @@ export class AiScanPanel extends HTMLElement {
       this.stopLoop();
       this.showPreview(null);
       this.report('checking', this.tinted('ok', 'All six sides captured — checking…'));
-      let result: ScanResult;
-      try {
-        result = assembleColors(this.faces);
-      } catch (err) {
-        // Six well-formed faces should never throw, but never freeze on "checking…" if they do.
-        const why = String((err as Error)?.message ?? err);
-        this.reset();
-        this.loop(this.tinted('err', `Couldn't assemble the scan (${why}) — starting over.`));
-        return;
-      }
-      this.finish(result);
+      this.assemble();
       return;
     }
     this.report(
@@ -418,7 +448,7 @@ export class AiScanPanel extends HTMLElement {
   /** Clear all captured faces and keep scanning; the camera stays open. Public for host UIs. */
   restart(): void {
     this.reset();
-    this.loop();
+    this.loop('scanning');
   }
 
   /** Brief green border pulse on the stage to confirm a capture. */
@@ -430,21 +460,79 @@ export class AiScanPanel extends HTMLElement {
     stage.classList.add('flash');
   }
 
-  private finish(result: ScanResult): void {
+  /** "Show the GREEN side again, with WHITE facing up." — the whole instruction, as nodes. */
+  private confirmWords(req: ConfirmRequest): (string | Node)[] {
+    return [
+      'Show the ',
+      this.bold(GUIDE[req.face].color),
+      ' side again, with ',
+      this.bold(GUIDE[req.up].color),
+      ' facing up.',
+    ];
+  }
+
+  /** Read the six faces (plus any confirmations) into a cube, and act on what comes back. */
+  private assemble(): void {
+    let result: AiScanResult;
+    try {
+      result = assembleColors(this.faces, undefined, this.confirmed);
+    } catch (err) {
+      // Six well-formed faces should never throw, but never freeze on "checking…" if they do.
+      const why = String((err as Error)?.message ?? err);
+      this.reset();
+      this.loop(
+        'scanning',
+        this.tinted('err', `Couldn't assemble the scan (${why}) — starting over.`),
+      );
+      return;
+    }
+    this.finish(result);
+  }
+
+  private finish(result: AiScanResult): void {
     this.stopLoop();
     this.showPreview(null);
     if (result.valid && result.lowConfidence.length === 0) {
       this.report('done', this.tinted('ok', 'Scan complete — solvable cube captured.'));
       this.dispatchEvent(new CustomEvent<ScanResult>('scan-complete', { detail: result }));
       this.stop();
-    } else {
-      const why = result.valid ? 'Some stickers were unclear' : "That isn't a solvable cube yet";
-      this.dispatchEvent(new CustomEvent<ScanResult>('scan-invalid', { detail: result }));
-      this.reset();
-      // Auto-resume scanning; the camera stays open. The reason rides along as the opening
-      // message so it is not wiped by the standard prompt.
-      this.loop(this.tinted('err', `${why} — starting over, show each side again.`));
+      return;
     }
+    if (result.confirm) {
+      // Contradictory confirmations mean one was held the wrong way up, and which one is not
+      // knowable — so drop them all rather than loop on the last. Twice in a row means the
+      // instruction is not landing, and re-showing the six sides is the better offer.
+      if (result.mismatch) {
+        this.confirmed = {};
+        if (++this.mismatches >= 2) {
+          this.dispatchEvent(new CustomEvent<ScanResult>('scan-invalid', { detail: result }));
+          this.reset();
+          this.loop(
+            'scanning',
+            this.tinted('err', "Those looks didn't line up — let's show all six sides again."),
+          );
+          return;
+        }
+        this.awaiting = result.confirm;
+        this.loop(
+          'confirm',
+          this.tinted('err', 'Those two looks disagree. '),
+          ...this.confirmWords(result.confirm),
+        );
+        return;
+      }
+      this.awaiting = result.confirm;
+      this.loop('confirm', ...this.confirmWords(result.confirm));
+      return;
+    }
+    const why = result.valid
+      ? 'Some stickers were unclear'
+      : (result.reason ?? "That isn't a solvable cube yet");
+    this.dispatchEvent(new CustomEvent<ScanResult>('scan-invalid', { detail: result }));
+    this.reset();
+    // Auto-resume scanning; the camera stays open. The reason rides along as the opening
+    // message so it is not wiped by the standard prompt.
+    this.loop('scanning', this.tinted('err', `${why} — starting over, show each side again.`));
   }
 
   private buildDots(): void {
@@ -502,6 +590,7 @@ export class AiScanPanel extends HTMLElement {
           captured: this.capturedFaces(),
           live: this.live,
           device: this.device,
+          confirm: this.awaiting,
         },
       }),
     );

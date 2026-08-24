@@ -2137,6 +2137,14 @@ var FACES = ["U", "R", "F", "D", "L", "B"];
 
 // src/ai-assemble.ts
 var ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2];
+var TOP_NEIGHBOUR = {
+  U: "B",
+  R: "U",
+  F: "U",
+  D: "F",
+  L: "U",
+  B: "U"
+};
 function rotateFace(a, k2) {
   let out = a;
   for (let t = 0; t < (k2 % 4 + 4) % 4; t++) out = ROT90.map((i) => out[i]);
@@ -2149,17 +2157,50 @@ function cubejsRoundTrips(facelets) {
     return false;
   }
 }
-function reject(reason, ambiguous = false) {
+function reject(reason, extra = {}) {
   return {
     facelets: "",
     valid: false,
     confidence: 0,
     lowConfidence: [...Array(54).keys()],
     reason,
-    ambiguous
+    ...extra
   };
 }
-function assembleColors(faces, threshold = 0.15) {
+function matchingRotations(original, confirmed) {
+  const want = confirmed.colors.join(",");
+  const out = /* @__PURE__ */ new Set();
+  for (let k2 = 0; k2 < 4; k2++) {
+    if (rotateFace(original.colors, k2).join(",") === want) out.add(k2);
+  }
+  return out;
+}
+function pickConfirm(candidates, confirmed) {
+  const useful = FACES.filter((face2, fi) => {
+    if (confirmed[face2]) return false;
+    const perCandidate = candidates.map(
+      ([, combos]) => [...new Set(combos.map((c) => c[fi]))].sort().join(",")
+    );
+    return new Set(perCandidate).size > 1;
+  });
+  const face = useful.find((f) => TOP_NEIGHBOUR[f] === "U") ?? useful[0];
+  return face === void 0 ? void 0 : { face, up: TOP_NEIGHBOUR[face] };
+}
+function pickVerification(survivorCombos, weak, confirmed) {
+  let best;
+  let bestScore = 0;
+  FACES.forEach((face, fi) => {
+    if (confirmed[face]) return;
+    const ours = new Set(survivorCombos.map((c) => c[fi]));
+    const score = weak.filter(([, combos]) => combos.every((c) => !ours.has(c[fi]))).length + (TOP_NEIGHBOUR[face] === "U" ? 0.5 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = face;
+    }
+  });
+  return best === void 0 || bestScore < 1 ? void 0 : { face: best, up: TOP_NEIGHBOUR[best] };
+}
+function assembleColors(faces, threshold = 0.15, confirmed = {}) {
   const centreOwner = /* @__PURE__ */ new Map();
   for (const face of FACES) {
     const f = faces[face];
@@ -2183,25 +2224,67 @@ function assembleColors(faces, threshold = 0.15) {
     }
     return letters.join("");
   };
-  const solvable = /* @__PURE__ */ new Map();
+  const seen = /* @__PURE__ */ new Map();
   const rots = [0, 0, 0, 0, 0, 0];
   for (let n = 0; n < 4096; n++) {
     for (let i = 0; i < 6; i++) rots[i] = n >> 2 * i & 3;
     const fl2 = buildFacelets(rots);
-    if (fl2 && !solvable.has(fl2) && isStructurallyValid(fl2) && cubejsRoundTrips(fl2)) {
-      solvable.set(fl2, [...rots]);
+    if (fl2 === null) continue;
+    let combos2 = seen.get(fl2);
+    if (combos2 === void 0) {
+      combos2 = isStructurallyValid(fl2) && cubejsRoundTrips(fl2) ? [] : null;
+      seen.set(fl2, combos2);
     }
+    if (combos2 !== null) combos2.push([...rots]);
   }
-  if (solvable.size === 0) {
+  const all = [...seen].filter((e) => e[1] !== null);
+  if (all.length === 0) {
     return reject("no orientation of the faces is solvable \u2014 a colour was misread; re-scan");
   }
-  if (solvable.size > 1) {
+  const confirmedFaces = FACES.filter((f) => confirmed[f]);
+  const allowed = /* @__PURE__ */ new Map();
+  for (const face of confirmedFaces) {
+    allowed.set(face, matchingRotations(faces[face], confirmed[face]));
+  }
+  const candidates = all.map(([fl2, combos2]) => [
+    fl2,
+    combos2.filter(
+      (c) => confirmedFaces.every((face) => allowed.get(face).has(c[FACES.indexOf(face)]))
+    )
+  ]).filter(([, combos2]) => combos2.length > 0);
+  if (candidates.length === 0) {
+    const last = confirmedFaces[confirmedFaces.length - 1];
+    return reject("those two looks disagree \u2014 one was held the wrong way up; try again", {
+      mismatch: true,
+      confirm: { face: last, up: TOP_NEIGHBOUR[last] }
+    });
+  }
+  if (candidates.length > 1) {
+    const confirm = pickConfirm(candidates, confirmed);
     return reject(
-      `${solvable.size} orientations are solvable \u2014 the colours are rotationally ambiguous; re-scan one face`,
-      true
+      `${candidates.length} readings fit \u2014 this cube is close to solved, so one more look decides it`,
+      { ambiguous: true, ...confirm ? { confirm } : {} }
     );
   }
-  const [facelets, chosen] = [...solvable.entries()][0];
+  const [facelets, combos] = candidates[0];
+  const contradictions = (candidate) => confirmedFaces.filter((face) => {
+    const fi = FACES.indexOf(face);
+    return candidate.every((c) => !allowed.get(face).has(c[fi]));
+  }).length;
+  const weak = all.filter(([fl2, c]) => fl2 !== facelets && contradictions(c) < 2);
+  if (weak.length > 0) {
+    const check = pickVerification(all.find(([fl2]) => fl2 === facelets)[1], weak, confirmed);
+    if (check) {
+      return reject("one more look to be sure \u2014 a single look could be held wrong", {
+        confirm: check
+      });
+    }
+    return reject(
+      "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
+      { ambiguous: true }
+    );
+  }
+  const chosen = combos[0];
   const conf = [];
   for (let fi = 0; fi < 6; fi++) {
     for (const c of rotateFace(faces[FACES[fi]].confidence, chosen[fi])) conf.push(c);
@@ -13052,6 +13135,11 @@ var AiScanPanel = class extends HTMLElement {
   stableCount = 0;
   live = null;
   device = null;
+  /** Captures known to be in canonical rotation, from answering a `confirm` request. */
+  confirmed = {};
+  awaiting = null;
+  /** Contradictory confirmations in a row; two means the instruction is not landing. */
+  mismatches = 0;
   scanEpoch = 0;
   // bumped by loop()/stop(); rejects stale in-flight inferences
   constructor() {
@@ -13141,8 +13229,8 @@ var AiScanPanel = class extends HTMLElement {
         this.run = await createModelRunner(this.modelUrl, { wasmPaths });
         if (gen !== this.startGen) return;
       }
-      if (fellBack) this.loop(this.tinted("err", PINNED_GONE), " ", OPENING);
-      else this.loop();
+      if (fellBack) this.loop("scanning", this.tinted("err", PINNED_GONE), " ", OPENING);
+      else this.loop("scanning");
     } catch (err) {
       if (gen !== this.startGen) {
         source?.stop();
@@ -13164,6 +13252,9 @@ var AiScanPanel = class extends HTMLElement {
     this.lastColors = "";
     this.stableCount = 0;
     this.live = null;
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
     for (const f of FACES) delete this.faces[f];
     this.buildDots();
   }
@@ -13171,7 +13262,7 @@ var AiScanPanel = class extends HTMLElement {
    * (Re)start the capture loop. `opening` replaces the standard prompt, so a message explaining
    * why we are starting over survives instead of being overwritten within one tick.
    */
-  loop(...opening) {
+  loop(phase, ...opening) {
     if (this.timer !== null) clearInterval(this.timer);
     this.scanEpoch++;
     this.showPreview(null);
@@ -13179,7 +13270,7 @@ var AiScanPanel = class extends HTMLElement {
     this.lastColors = "";
     const restart = this.maybe("restart");
     if (restart) restart.hidden = false;
-    this.report("scanning", ...opening.length > 0 ? opening : [OPENING]);
+    this.report(phase, ...opening.length > 0 ? opening : [OPENING]);
     this.timer = setInterval(() => void this.onTick(), TICK_MS);
   }
   stopLoop() {
@@ -13208,11 +13299,24 @@ var AiScanPanel = class extends HTMLElement {
       this.lastColors = key;
       this.showPreview(fit.face.colors);
       if (this.stableCount < STABLE) {
-        this.report("scanning", "Reading a side \u2014 hold still\u2026");
+        this.report(this.awaiting ? "confirm" : "scanning", "Reading a side \u2014 hold still\u2026");
         return;
       }
       const centre = fit.face.colors[4];
       const face = centre === void 0 ? void 0 : FACES[centre];
+      if (this.awaiting) {
+        if (face !== this.awaiting.face) {
+          this.report("confirm", ...this.confirmWords(this.awaiting));
+          return;
+        }
+        this.confirmed[face] = fit.face;
+        this.awaiting = null;
+        this.stopLoop();
+        this.showPreview(null);
+        this.flash();
+        this.assemble();
+        return;
+      }
       if (face === void 0) {
         this.report("scanning", this.tinted("err", "Couldn't read the centre \u2014 hold it steadier."));
         return;
@@ -13244,16 +13348,7 @@ var AiScanPanel = class extends HTMLElement {
       this.stopLoop();
       this.showPreview(null);
       this.report("checking", this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
-      let result;
-      try {
-        result = assembleColors(this.faces);
-      } catch (err) {
-        const why = String(err?.message ?? err);
-        this.reset();
-        this.loop(this.tinted("err", `Couldn't assemble the scan (${why}) \u2014 starting over.`));
-        return;
-      }
-      this.finish(result);
+      this.assemble();
       return;
     }
     this.report(
@@ -13282,7 +13377,7 @@ var AiScanPanel = class extends HTMLElement {
   /** Clear all captured faces and keep scanning; the camera stays open. Public for host UIs. */
   restart() {
     this.reset();
-    this.loop();
+    this.loop("scanning");
   }
   /** Brief green border pulse on the stage to confirm a capture. */
   flash() {
@@ -13292,6 +13387,32 @@ var AiScanPanel = class extends HTMLElement {
     void stage.offsetWidth;
     stage.classList.add("flash");
   }
+  /** "Show the GREEN side again, with WHITE facing up." — the whole instruction, as nodes. */
+  confirmWords(req) {
+    return [
+      "Show the ",
+      this.bold(GUIDE[req.face].color),
+      " side again, with ",
+      this.bold(GUIDE[req.up].color),
+      " facing up."
+    ];
+  }
+  /** Read the six faces (plus any confirmations) into a cube, and act on what comes back. */
+  assemble() {
+    let result;
+    try {
+      result = assembleColors(this.faces, void 0, this.confirmed);
+    } catch (err) {
+      const why = String(err?.message ?? err);
+      this.reset();
+      this.loop(
+        "scanning",
+        this.tinted("err", `Couldn't assemble the scan (${why}) \u2014 starting over.`)
+      );
+      return;
+    }
+    this.finish(result);
+  }
   finish(result) {
     this.stopLoop();
     this.showPreview(null);
@@ -13299,12 +13420,36 @@ var AiScanPanel = class extends HTMLElement {
       this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
       this.dispatchEvent(new CustomEvent("scan-complete", { detail: result }));
       this.stop();
-    } else {
-      const why = result.valid ? "Some stickers were unclear" : "That isn't a solvable cube yet";
-      this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
-      this.reset();
-      this.loop(this.tinted("err", `${why} \u2014 starting over, show each side again.`));
+      return;
     }
+    if (result.confirm) {
+      if (result.mismatch) {
+        this.confirmed = {};
+        if (++this.mismatches >= 2) {
+          this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
+          this.reset();
+          this.loop(
+            "scanning",
+            this.tinted("err", "Those looks didn't line up \u2014 let's show all six sides again.")
+          );
+          return;
+        }
+        this.awaiting = result.confirm;
+        this.loop(
+          "confirm",
+          this.tinted("err", "Those two looks disagree. "),
+          ...this.confirmWords(result.confirm)
+        );
+        return;
+      }
+      this.awaiting = result.confirm;
+      this.loop("confirm", ...this.confirmWords(result.confirm));
+      return;
+    }
+    const why = result.valid ? "Some stickers were unclear" : result.reason ?? "That isn't a solvable cube yet";
+    this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
+    this.reset();
+    this.loop("scanning", this.tinted("err", `${why} \u2014 starting over, show each side again.`));
   }
   buildDots() {
     const dots = this.maybe("dots");
@@ -13357,7 +13502,8 @@ var AiScanPanel = class extends HTMLElement {
           message,
           captured: this.capturedFaces(),
           live: this.live,
-          device: this.device
+          device: this.device,
+          confirm: this.awaiting
         }
       })
     );

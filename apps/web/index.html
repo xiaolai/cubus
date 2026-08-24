@@ -225,6 +225,10 @@
       .scan-face.done .tile { border-style: solid; border-color: var(--ok); }
       .scan-face.done .tile > i { opacity: 1; }
       .scan-face.done .lbl { color: var(--ok); }
+      /* The side the scanner is waiting to be shown again, to settle a reading it cannot settle
+         from the six captures alone. Outranks .done: it has been captured, that is the point. */
+      .scan-face.asked .tile { border-style: solid; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+      .scan-face.asked .lbl { color: var(--accent); }
       .scan-cam { display: flex; align-items: center; gap: 10px; }
       .scan-cam[hidden] { display: none; }
 
