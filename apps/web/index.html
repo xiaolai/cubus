@@ -52,6 +52,9 @@
         background: var(--panel-sunk); border-bottom: 1px solid var(--line); z-index: 2;
       }
       .titlebar .chip { flex: 1; display: flex; justify-content: center; align-items: center; gap: 8px; font-size: var(--fs-body-s); }
+      /* The chip's text must not swallow the mousedown, or the drag target becomes the <b>/<span>
+         (no drag attribute) and the window won't move. */
+      .titlebar .chip > * { pointer-events: none; }
       .tb-zone { display: flex; align-items: center; }
       .tb-lights { flex: 0 0 var(--sys-zone-macos); gap: var(--light-gap); padding-left: 6px; }
       html[data-platform="macos"] .tb-macos-trail { flex: 0 0 var(--sys-zone-macos); }
@@ -204,10 +207,12 @@
   <body>
     <div class="app">
       <div class="win">
+        <!-- Every non-interactive zone carries data-tauri-drag-region: Tauri drags only when the
+             actual mousedown target has the attribute, and these zones cover the whole bar. -->
         <div class="titlebar" id="titlebar" data-tauri-drag-region>
-          <div class="tb-zone" id="tbLead"></div>
-          <div class="chip"><b>cubus</b><span>3×3 · CFOP · session 14</span></div>
-          <div class="tb-zone" id="tbTrail"></div>
+          <div class="tb-zone" id="tbLead" data-tauri-drag-region></div>
+          <div class="chip" data-tauri-drag-region><b>cubus</b><span>3×3 · CFOP · session 14</span></div>
+          <div class="tb-zone" id="tbTrail" data-tauri-drag-region></div>
         </div>
 
         <div class="body">
