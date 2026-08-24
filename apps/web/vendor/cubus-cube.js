@@ -20366,7 +20366,7 @@ var PALETTES = {
   classic: { U: "#F4F2EC", D: "#F0C000", F: "#00A651", B: "#0051BA", R: "#C41E3A", L: "#FF6C00" },
   colorsafe: { U: "#EFEAE0", D: "#E9C46A", F: "#6A9FB5", B: "#20405C", R: "#D1495B", L: "#8C5E8A" }
 };
-var UNKNOWN_STICKER = "#8C8578";
+var UNKNOWN_STICKER = "#C4BFB4";
 var FACES = [
   { key: "R", axis: "x", sign: 1, n: [1, 0, 0] },
   { key: "L", axis: "x", sign: -1, n: [-1, 0, 0] },

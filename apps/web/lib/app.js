@@ -474,8 +474,21 @@ SCREENS.scan = () => {
       // down the scanner element and reopen the camera for a scan that has just ended.
       const stateCube = newCube();
       // Ghosts float the faces the camera angle hides, so all six are readable at once — which is
-      // the whole job of a twin meant to show what has been read so far.
+      // the whole job of a twin meant to show what has been read so far. The rest match the
+      // renderer's own defaults today and are pinned anyway: this twin has a job (read six sides at
+      // a glance) that a future change to those defaults should not quietly retune.
       stateCube.setAttribute('ghosts', 'floating');
+      // Tuned by eye against a half-finished scan, not inherited: this twin has one job — read all
+      // six sides at a glance — and the renderer's defaults are set for a cube you orbit, not one
+      // you read. Ghosts are thrown further out than the Cube screen's slider even offers (9, past
+      // its 0–8) so the hidden three clear the solid ones; the camera pulls back to 18 to fit them;
+      // stickers go full-bleed at 1 so a nine-grid stays legible at this size.
+      stateCube.setAttribute('ghost-elevation', '9');
+      stateCube.setAttribute('camera-distance', '18');
+      stateCube.setAttribute('camera-latitude', '35');
+      stateCube.setAttribute('camera-longitude', '45');
+      stateCube.setAttribute('facelet-scale', '1');
+
       $('#scanCube', root).appendChild(stateCube);
       const showState = (f) => {
         $('#scanState', root).textContent = f;
