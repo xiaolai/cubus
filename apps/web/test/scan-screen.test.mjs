@@ -370,9 +370,9 @@ test('a completed scan stays on the screen and shows what was found', () => {
   }));
   assert.equal(win.location.hash, '#/scan', 'it must not navigate away');
   assert.ok($('#stage ai-scan-panel'), 'the scanner is still mounted');
-  assert.equal($('#scanState').textContent, scrambled, 'the aside shows the state that was found');
+  assert.equal($('#scanState'), null, 'the 54-char string belongs on the Cube screen, with its Copy button');
   assert.equal($('#scanCube').firstElementChild.getAttribute('facelets'), scrambled,
-    'and the 3D twin follows it, without re-rendering the screen');
+    'the 3D twin shows what was found, without re-rendering the screen');
 });
 
 // Left last: it navigates away, which tears the screen down.
