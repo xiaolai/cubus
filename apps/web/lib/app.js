@@ -4,6 +4,7 @@
 // The 3D cube is <cubus-cube> (Renderer B) — it draws only; state and solving stay here.
 
 import { makeTauriTransport, makeWebBluetoothTransport } from './cube-transport.js';
+import { makeRouter } from './router.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
@@ -673,7 +674,21 @@ function renderScreen() {
   for (const b of root.querySelectorAll('[data-go]')) b.onclick = () => go(b.dataset.go);
   try { spec.mount?.(root); } catch (e) { console.error('screen mount failed', e); }
 }
-function go(id) { state.screen = id; renderNav(); renderScreen(); }
+// Screens are addressable as #/<id>, so a reload or a shared link lands where it left off, and the
+// webview's Back/Forward walk the screens. SCREENS is the routable set — an unknown id resolves to
+// home rather than rendering nothing.
+const router = makeRouter({
+  screens: SCREENS,
+  defaultScreen: 'home',
+  location: window.location,
+  history: window.history,
+});
+function applyRoute() { state.screen = router.current(); renderNav(); renderScreen(); }
+// A hash assignment only fires hashchange when the value actually differs, so navigating onto the
+// screen already showing would do nothing. go() renders directly in that case, preserving the
+// always-re-render behaviour the scan flow depends on (go('viewer') while on viewer).
+function go(id) { if (!router.go(id)) applyRoute(); }
+window.addEventListener('hashchange', applyRoute);
 window.cubusGo = go;
 
 function openScan() { $('#scanModal').hidden = false; }
@@ -684,7 +699,9 @@ async function boot() {
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
   buildChrome(platform);
-  applyTheme(); applyNetColors(); renderNav(); renderScreen();
+  // Resolve the deep link before the first paint, and canonicalise the URL so a bogus hash does
+  // not sit in the address bar contradicting the screen on show.
+  applyTheme(); applyNetColors(); router.normalize(); applyRoute();
   // Wire the scan modal (the panel owns its camera).
   $('#scanClose').onclick = closeScan;
   const panel = $('#aiPanel');
