@@ -210,9 +210,6 @@
          never shown — what the user needs to see is what the scanner READ, not what the lens saw,
          and the live 3×3 below is exactly that. */
       .scanboard { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s-9); text-align: center; }
-      .scan-live { display: grid; grid-template-columns: repeat(3,1fr); gap: 5px; width: 150px; padding: 9px; border-radius: var(--r-5); background: var(--panel-sunk); }
-      .scan-live > i { aspect-ratio: 1; border-radius: 4px; background: var(--facelet-off); opacity: .3; transition: background var(--fade), opacity var(--fade); }
-      .scan-live.reading > i { opacity: 1; }
       /* The scanner speaks through the aside card rather than a status line under the tiles: one
          voice instead of a caption competing with an explanation that says the same thing. */
       .scan-say { color: var(--ink-4); }
