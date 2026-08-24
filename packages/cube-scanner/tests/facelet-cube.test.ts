@@ -5,13 +5,16 @@
 import Cube from 'cubejs';
 import { describe, expect, it } from 'vitest';
 import {
+  FACE_NEIGHBOURS,
   SOLVED_FACELETS,
+  type Side,
   centersOk,
   decodeFacelets,
   encodeFacelets,
   isSolvable,
   isStructurallyValid,
 } from '../src/facelet-cube.js';
+import type { Face } from '../src/types.js';
 import { scrambleFacelets } from './helpers.js';
 
 const SCRAMBLES = [
@@ -105,5 +108,42 @@ describe('solvability gate agrees with cubejs (independent oracle)', () => {
     expect(isSolvable({ ...s, eo: [] })).toBe(false); // wrong eo length
     expect(isSolvable({ ...s, co: [3, 0, 0, 0, 0, 0, 0, 0] })).toBe(false); // co out of {0,1,2}
     expect(isSolvable({ ...s, eo: [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] })).toBe(false); // eo out of {0,1}
+  });
+});
+
+// The scan screen paints each face tile's four edges in its neighbours' colours, so a user can
+// see which way up to hold a side without being told. That table lives in apps/web/lib/app.js
+// (which cannot import TypeScript), so this pins the copy against the derivation. If the facelet
+// layout ever changed, this fails here and names the file to update.
+describe('FACE_NEIGHBOURS', () => {
+  it('matches the table apps/web/lib/app.js paints the scan tiles from', () => {
+    expect(FACE_NEIGHBOURS).toEqual({
+      U: { top: 'B', right: 'R', bottom: 'F', left: 'L' },
+      R: { top: 'U', right: 'B', bottom: 'D', left: 'F' },
+      F: { top: 'U', right: 'R', bottom: 'D', left: 'L' },
+      D: { top: 'F', right: 'R', bottom: 'B', left: 'L' },
+      L: { top: 'U', right: 'F', bottom: 'D', left: 'B' },
+      B: { top: 'U', right: 'L', bottom: 'D', left: 'R' },
+    });
+  });
+
+  it('is a consistent map: every neighbour names it back on the opposite side', () => {
+    const OPPOSITE = { top: 'bottom', right: 'left', bottom: 'top', left: 'right' } as const;
+    for (const [face, sides] of Object.entries(FACE_NEIGHBOURS)) {
+      for (const [side, neighbour] of Object.entries(sides)) {
+        // A face never borders itself or the face across the cube from it.
+        expect(neighbour).not.toBe(face);
+        // ...and the adjacency is symmetric, which a hand-written table gets wrong.
+        const back = FACE_NEIGHBOURS[neighbour as Face];
+        expect(Object.values(back)).toContain(face);
+        expect(back[OPPOSITE[side as Side]]).toBeDefined();
+      }
+    }
+  });
+
+  it('gives each face four distinct neighbours', () => {
+    for (const sides of Object.values(FACE_NEIGHBOURS)) {
+      expect(new Set(Object.values(sides)).size).toBe(4);
+    }
   });
 });

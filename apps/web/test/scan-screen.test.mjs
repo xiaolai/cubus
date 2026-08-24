@@ -79,6 +79,27 @@ test('the six sides start pending, with nothing captured', () => {
   assert.equal($('#scanBar').style.width, '0%');
 });
 
+// Must run before anything repaints the tiles.
+test('each face tile is edged in its neighbours colours, so the way to hold it is visible', () => {
+  // Read the palette out of the tiles themselves: with nothing captured yet, each tile's centre
+  // cell is painted its own face colour. So this asserts the RELATIONSHIP rather than a set of
+  // hex values, and keeps working if the palette changes.
+  const colourOf = Object.fromEntries(all('.scan-face').map((t) =>
+    [t.dataset.face, t.querySelectorAll('.tile > i')[4].style.background]));
+  const bordersOf = (f) => $(`.scan-face[data-face="${f}"] .tile`)
+    .getAttribute('style').replace('border-color:', '').trim().split(/\s+/);
+  // The canonical URFDLB layout — derived from EDGE_FACELET in the scanner package and pinned by
+  // its own test. Up is the one worth reading against a cube: white centre, blue above, red to
+  // the right, green below, orange to the left.
+  const EXPECT = {
+    U: ['B', 'R', 'F', 'L'], R: ['U', 'B', 'D', 'F'], F: ['U', 'R', 'D', 'L'],
+    D: ['F', 'R', 'B', 'L'], L: ['U', 'F', 'D', 'B'], B: ['U', 'L', 'D', 'R'],
+  };
+  for (const [face, sides] of Object.entries(EXPECT)) {
+    assert.deepEqual(bordersOf(face), sides.map((n) => colourOf[n]), `${face} tile edges`);
+  }
+});
+
 test('progress marks exactly the captured sides and moves the count', () => {
   progress({ phase: 'scanning', message: 'Got the Front side — 2/6. Show another side…',
     captured: [face('R'), face('F')], live: null });

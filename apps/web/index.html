@@ -219,15 +219,25 @@
       .scan-count { font-family: var(--font-num); font-size: var(--fs-body-s); color: var(--ink-4); margin-top: 4px; }
       .scan-faces { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
       .scan-face { width: 58px; display: flex; flex-direction: column; align-items: center; gap: 5px; }
-      .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 4px; border-radius: var(--r-4); border: 1.5px dashed var(--line-strong); display: grid; grid-template-columns: repeat(3,1fr); gap: 2px; }
+      /* The four edges are painted in the NEIGHBOURING faces' colours (set inline — they follow the
+         chosen palette), which tells the user which way up to hold that side without a caption.
+         Solid, not dashed: four dashed colours are unreadable at this size. Captured vs pending is
+         carried by the cells and the label, which is signal enough without spending the border. */
+      /* The hairline outside the border is load-bearing, not decoration: four of the six faces have
+         WHITE on top, and a white edge on a cream card is invisible without it — which would hide
+         the single most common instruction ("hold white up"). The edge colours stay at full
+         strength on pending tiles too; those are the sides still to be shown, so they need the
+         guidance most. Dimness is carried by the cells alone. */
+      .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 4px; border-radius: var(--r-4); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; grid-template-columns: repeat(3,1fr); gap: 2px; }
       .scan-face .tile > i { border-radius: 2px; background: var(--facelet-off); opacity: .3; }
       .scan-face .lbl { font-size: var(--fs-caption); font-weight: 600; color: var(--ink-5); }
-      .scan-face.done .tile { border-style: solid; border-color: var(--ok); }
       .scan-face.done .tile > i { opacity: 1; }
       .scan-face.done .lbl { color: var(--ok); }
       /* The side the scanner is waiting to be shown again, to settle a reading it cannot settle
          from the six captures alone. Outranks .done: it has been captured, that is the point. */
-      .scan-face.asked .tile { border-style: solid; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+      /* Keeps its edge colours: the point of asking is that this side be held a particular way up,
+         which is exactly what those colours say. The halo carries the attention instead. */
+      .scan-face.asked .tile { box-shadow: 0 0 0 1px var(--line), 0 0 0 4px color-mix(in srgb, var(--accent) 32%, transparent); }
       .scan-face.asked .lbl { color: var(--accent); }
       .scan-cam { display: flex; align-items: center; gap: 10px; }
       .scan-cam[hidden] { display: none; }
