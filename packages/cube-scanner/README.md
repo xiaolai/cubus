@@ -100,7 +100,10 @@ keep the camera), `stop()` (release the camera; also runs on disconnect), `camer
 selectable devices), `setSticker(face, index, colour)` (overrule one sticker of a side already
 READ and re-check — index is into the capture *as shown*; the centre is refused, and so is a side
 with nothing read yet), `rescanFace(face)` (drop one side's reading and resume the loop so it is
-read again — what a centre sticker does, since a centre cannot be recoloured).
+read again — what a centre sticker does, since a centre cannot be recoloured), `setPainting(on)`
+(hand-painting mode: releases the camera, lets `setSticker` author a side from nothing, and
+validates through `assemblePainted` with no rotation search — the two are exclusive because one
+authors the cube and the other reads it).
 
 ## App wiring (in `apps/web/index.html`)
 

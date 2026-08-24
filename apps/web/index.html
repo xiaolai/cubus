@@ -262,6 +262,10 @@
       .scan-cam > button { width: 34px; height: 34px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-5); }
       .scan-cam > button:hover { background: var(--panel-sunk); color: var(--ink-2); }
       .scan-cam.on #scanCamBtn { color: var(--ok); }
+      /* Painting is a mode, so it reads as held down rather than as a nudge, and the camera dims
+         beside it — the two cannot both be true. */
+      .scan-cam.paint #scanPaintBtn { background: var(--accent); color: #fff; }
+      .scan-cam.paint #scanCamBtn { opacity: .45; }
       .scan-cam.on #scanCamBtn .lens { fill: currentColor; animation: cubusPulse var(--pulse) infinite; }
       /* A menu, not a native <select>: the webcam button is the only control in that corner, and a
          dropdown that has to sit beside it defeats the point. Same popover treatment as the sticker

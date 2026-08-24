@@ -277,6 +277,48 @@ test('the shell takes no text caret, but the facelet string stays copyable', () 
   assert.match(css, /\.mono[^{]*\{[^}]*user-select:\s*text/, 'the facelet string must stay selectable');
 });
 
+// Painting and the camera are exclusive: one authors the cube, the other reads it.
+test('the paint toggle releases the camera and opens all 48 outer stickers', () => {
+  const paints = [], sets = [];
+  panel().setPainting = (on) => paints.push(on);
+  panel().setSticker = (...args) => sets.push(args);
+  const unread = $('.scan-face[data-face="B"]');
+  assert.ok(!unread.classList.contains('done'), 'B has not been read');
+
+  // camera mode: an unread side offers nothing
+  all('.scan-face[data-face="B"] .tile > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('.swatches').hidden, true);
+
+  $('#scanPaintBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(paints, [true], 'the panel is told to release the camera');
+  assert.ok($('.scan-cam').classList.contains('paint'), 'and the button reads as held down');
+
+  // paint mode: the same sticker is now paintable
+  all('.scan-face[data-face="B"] .tile > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('.swatches').hidden, false, 'an unread side is paintable while painting');
+  $('.swatches').querySelectorAll('button')[2].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(sets, [['B', 3, 2]]);
+});
+
+test('the centre does nothing while painting — there is no camera to re-read with', () => {
+  const rescans = [];
+  panel().rescanFace = (...args) => rescans.push(args);
+  progress({ phase: 'painting', message: 'x', captured: [face('R')], live: null, device: null, confirm: null });
+  all('.scan-face[data-face="R"] .tile > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(rescans, []);
+});
+
+test('toggling paint off hands the cube back to the camera', () => {
+  const paints = [];
+  panel().setPainting = (on) => paints.push(on);
+  $('#scanPaintBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(paints, [false]);
+  assert.ok(!$('.scan-cam').classList.contains('paint'));
+  // and back to camera rules: an unread side stops offering colours
+  all('.scan-face[data-face="B"] .tile > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('.swatches').hidden, true);
+});
+
 // A finished scan used to jump straight to another screen, which took the six tiles away exactly
 // when they first meant something — and with them any chance to check the read.
 test('a completed scan stays on the screen and shows what was found', () => {
