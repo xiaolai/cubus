@@ -53,7 +53,7 @@ const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="wi
 
 // ---- navigation model ------------------------------------------------------------------------
 const NAV = [
-  ['SOLVE', [['home', 'Home', '', 'house'], ['scan', 'Restore', '', 'grid'], ['scramble', 'Scramble', '', 'grid-filled'], ['guide', 'Solve guide', '', 'route'], ['playback', 'Playback', '', 'film']]],
+  ['SOLVE', [['home', 'Home', '', 'house'], ['scan', 'Restore', '', 'grid'], ['scramble', 'Scramble', '', 'grid-filled']]],
   ['PRACTICE', [['timer', 'Timer', '', 'timer'], ['stats', 'Session stats', '', 'chart'], ['trainer', 'Alg trainer', '78', 'cap'], ['drill', 'Drill', '12', 'repeat']]],
   ['CUBE', [['viewer', '3D viewer', '', 'box'], ['pair', 'Smart cube', '', 'bluetooth']]],
   ['LEARN', [['lessons', 'Lessons', '9', 'book'], ['settings', 'Settings', '', 'settings']]],
@@ -65,13 +65,11 @@ const TITLES = {
   home: 'Welcome back',
   scan: 'Restore',
   scramble: 'Scramble',
-  guide: 'Solve guide',
-  playback: 'Solution playback',
   timer: 'Timer',
   stats: 'Session stats',
   trainer: 'Algorithm trainer',
   drill: 'Drill',
-  viewer: 'Cube state',
+  viewer: 'Cube',
   pair: 'Smart cube',
   lessons: 'Lessons',
   settings: 'Settings',
@@ -322,7 +320,12 @@ async function doConnect(macFromUi) {
 }
 
 // New physical state (from the cube or the scanner): recompute + refresh the active screen.
-function onFacelets(f) { if (!f || f === state.cube.facelets) return; setFacelets(f); if (state.screen === 'viewer' || state.screen === 'home') renderScreen(); }
+function onFacelets(f) {
+  if (!f || f === state.cube.facelets) return;
+  setFacelets(f);
+  if (liveUpdate) liveUpdate(f);
+  else if (state.screen === 'home') renderScreen();
+}
 
 // ---- session store (recent solves) -----------------------------------------------------------
 const SAMPLE_SOLVES = [
@@ -353,6 +356,10 @@ export { state };
 // ===============================================================================================
 const SCREENS = {};
 let cleanup = null;
+// Set by a screen that can take a new cube state in place. Without it, a live smart cube rebuilds
+// the screen on every quarter turn — which on the cube screen means restarting an animation the
+// user is halfway through following.
+let liveUpdate = null;
 
 SCREENS.home = () => {
   const solves = recentSolves();
@@ -456,7 +463,7 @@ SCREENS.scan = () => {
         <div class="mono" id="scanState" style="margin-top:6px">${state.cube.facelets}</div></div>
       <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
         <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div></div>
-      <button class="btn accent-outline block" data-go="guide">Solve this cube</button>
+      <button class="btn accent-outline block" data-go="viewer">Solve this cube</button>
     </div></div>`,
     mount(root) {
       // Kept, so a finished scan can update the aside in place. Re-rendering the screen would tear
@@ -607,7 +614,7 @@ SCREENS.scan = () => {
         // wants the jump has the "Auto-solve after scan" setting, which this now actually honours
         // — it read "jump straight to the guide" while the code jumped to the viewer regardless.
         showState(e.detail.facelets);
-        if (settings.autosolve) go('guide');
+        if (settings.autosolve) go('viewer');
       });
       // The detector is good, not perfect, so let a person overrule it: on a side the camera has
       // READ, click any sticker and pick the right colour. Delegated rather than 54 listeners. The
@@ -693,49 +700,101 @@ SCREENS.scramble = () => ({
     <div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center">
       <div style="color:var(--ink-5)">${icon('grid-filled', 44)}</div>
       <div class="num" style="font-size:var(--fs-title);font-weight:600">Scramble — not built yet</div>
-      <div class="sub" style="color:var(--ink-4);max-width:420px">A WCA-style scramble to apply to a solved cube, with the moves to follow — the mirror of Restore, which reads a cube you have already mixed up.</div>
+      <div class="sub" style="color:var(--ink-4);max-width:420px">A WCA-style scramble to apply to a solved cube — the mirror of Restore. It will hand the moves to the cube screen through <span class="mono">followMoves</span>, the same way Restore hands it a solution.</div>
       <button class="btn outline" data-go="scan" style="margin-top:6px">Restore a cube instead</button>
     </div></div></div>`,
   mount() {},
 });
 
+// The cube screen: where a sequence of moves gets FOLLOWED, and where a cube gets looked at.
+//
+// One screen, because it was always one object. Solve guide and Playback were the same function
+// behind a boolean — `solveScreen({ guide })` — and the 3D viewer was the same cube again with the
+// transport taken away. Three nav items differing by a flag and a couple of cards taught nobody
+// anything. Restore reads a cube; this is the next step. Scramble and History will hand it their
+// own sequences the same way, through `following`.
+//
+// A live smart cube updates this screen IN PLACE (see liveUpdate): a full re-render on every
+// quarter turn would restart an animation the user is halfway through following.
+
+/** A sequence handed over by whichever screen sent the user here. Consumed once, on arrival. */
+let following = null; // { label, setup, alg, moves }
+
+/** Hand the cube screen a sequence to walk through, and go there. */
+function followMoves(seq) {
+  following = seq;
+  go('viewer');
+}
+
+const faceName = (m) => ({ R: 'right', L: 'left', U: 'up', D: 'down', F: 'front', B: 'back' }[m[0]] || 'right');
+
 SCREENS.viewer = () => {
-  const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, tempo: 0.5, ghosts: false, back: 'none' });
+  const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, tempo: 0.5, ghosts: false, coach: true });
+  const seq = following;
+  following = null;
+  // Something to follow: either handed to us, or this cube needs solving and we can work it out.
+  const walking = Boolean(seq) || state.cube.solvable;
+  const label = seq?.label ?? 'Solution';
   const sliders = [
     ['ghost distance', 'hintElev', 0, 8, 0.5, 'ghost-elevation'], ['camera', 'camDist', 6, 30, 1, 'camera-distance'],
     ['tilt', 'camLat', -90, 90, 5, 'camera-latitude'], ['rotate', 'camLon', -180, 180, 5, 'camera-longitude'],
     ['sticker', 'facScale', 0.3, 1, 0.05, 'facelet-scale'], ['speed', 'tempo', 0.25, 4, 0.25, 'tempo-scale'],
   ];
-  return { html: `<div class="cols">
+  return {
+    html: `<div class="cols">
     <div class="col">
-      <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center">
-        <div class="cube-slot" id="viewCube" style="flex:1"></div>
+      <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;position:relative">
+        <div style="position:relative;flex:1;min-height:0;width:100%">
+          <div class="cube-slot" id="viewCube" style="height:100%"></div>
+          ${walking ? `<div class="coach" id="coach"${v.coach ? '' : ' hidden'}>
+            <div class="eyebrow" id="stageLbl">—</div>
+            <div class="num" id="moveLbl">—</div>
+            <div class="sub" id="moveHint"></div></div>` : ''}
+        </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:8px">
           ${['Isometric', 'Front', 'Top', 'Exploded'].map((l) => `<button class="pill" data-preset="${l}">${l}</button>`).join('')}
           <button class="pill" id="ghostToggle">${v.ghosts ? 'Ghosts on' : 'Ghosts off'}</button>
+          ${walking ? `<button class="pill ${v.coach ? 'on' : ''}" id="coachToggle">Coaching</button>` : ''}
+          <button class="pill" id="viewToggle">Adjust view</button>
         </div>
         <div class="sub" style="color:var(--ink-4);margin-top:8px">Drag to orbit · scroll to zoom</div>
       </div>
-      <div class="card"><div class="eyebrow">VIEW</div>
-        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 16px;margin-top:10px">
+      ${walking ? `<div class="card"><div style="display:flex;align-items:center;gap:16px">
+        <button class="btn primary" id="playBtn" style="width:46px;height:46px;border-radius:50%;padding:0">${icon('play', 20)}</button>
+        <div style="flex:1"><input type="range" id="scrub" min="0" max="1" value="0" style="width:100%">
+          <div style="display:flex;justify-content:space-between" class="num sub"><span id="scrubLbl">move 0</span><span id="scrubStage"></span></div></div>
+        <div style="display:flex;gap:8px">${['0.5', '1', '2'].map((s) => `<button class="btn ${s === '1' ? 'primary' : 'outline'} sm" data-speed="${s}">${s}×</button>`).join('')}</div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:12px"><button class="btn outline" id="prevBtn">Back</button><button class="btn accent" id="nextBtn" style="flex:1">Next move</button></div>
+      </div>` : ''}
+    </div>
+    <div class="aside" style="overflow-y:auto">
+      ${walking ? `<div class="card tight" style="flex:1;min-height:140px;display:flex;flex-direction:column">
+        <div class="card-h"><b>${label}</b><span class="num sub" id="moveCount">—</span></div>
+        <div class="list" id="solList" style="padding:6px 0"></div></div>` : ''}
+      <div class="card"><div class="eyebrow">CUBE STATE</div>
+        <div class="net" id="viewNet" style="margin-top:12px"></div>
+        <div class="mono" id="viewState" style="margin-top:12px">${state.cube.facelets}</div>
+        <div class="sub" id="validity" style="color:var(--ok);margin-top:8px">${state.cube.solvable ? 'Solvable' : state.cube.facelets === SOLVED ? 'Solved ✓' : 'checking…'}</div>
+        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn outline sm" id="copyState" style="flex:1">Copy</button>
+          <button class="btn outline sm" data-go="scan" style="flex:1">Re-scan</button>
+          <button class="btn outline sm" id="randCube" title="Random cube">${icon('dice')}</button></div></div>
+      <div class="card" id="viewCard" hidden><div class="eyebrow">VIEW</div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin-top:10px">
         ${sliders.map(([lbl, k, min, max, step, attr]) => `<label style="font-size:var(--fs-body-s);color:var(--ink-3);display:flex;flex-direction:column;gap:4px">${lbl}
           <input type="range" data-attr="${attr}" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${v[k]}"></label>`).join('')}
         </div>
       </div>
-    </div>
-    <div class="aside">
-      <div class="card"><div class="eyebrow">UNFOLDED NET</div><div class="net" id="viewNet" style="margin-top:12px"></div></div>
-      <div class="card"><div class="eyebrow">STATE (URFDLB)</div><div class="mono" id="viewState" style="margin-top:8px">${state.cube.facelets}</div>
-        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn outline sm" id="copyState" style="flex:1">Copy</button>
-          <button class="btn primary sm" data-go="guide" style="flex:1">Solve</button>
-          <button class="btn outline sm" id="randCube" title="Random cube">${icon('dice')}</button></div></div>
-      <div class="card"><b style="font-size:var(--fs-body-l)">Validity</b><div class="sub" id="validity" style="color:var(--ok);margin-top:4px">${state.cube.solvable ? 'Solvable' : state.cube.facelets === SOLVED ? 'Solved ✓' : 'checking…'}</div></div>
     </div></div>`,
-    mount(root) {
-      const cube = newCube(); $('#viewCube', root).appendChild(cube);
+    async mount(root) {
+      const cube = newCube({ animate: walking });
+      $('#viewCube', root).appendChild(cube);
       applyNetColors();
-      const paintNet = buildNet($('#viewNet', root)); paintNet(state.cube.facelets);
-      const applyGhost = () => cube.setAttribute('ghosts', v.ghosts ? 'floating' : 'none'); applyGhost();
+      const paintNet = buildNet($('#viewNet', root));
+      paintNet(state.cube.facelets);
+
+      const applyGhost = () => cube.setAttribute('ghosts', v.ghosts ? 'floating' : 'none');
+      applyGhost();
       for (const inp of root.querySelectorAll('input[data-attr]')) {
         inp.oninput = () => { v[inp.dataset.k] = Number(inp.value); cube.setAttribute(inp.dataset.attr, inp.value); };
         inp.onchange = () => save('cubeView', v);
@@ -743,52 +802,39 @@ SCREENS.viewer = () => {
       $('#ghostToggle', root).onclick = (e) => { v.ghosts = !v.ghosts; applyGhost(); e.target.textContent = v.ghosts ? 'Ghosts on' : 'Ghosts off'; save('cubeView', v); };
       const PRESETS = { Isometric: [35, 45], Front: [0, 0], Top: [80, 0], Exploded: [25, 30] };
       for (const b of root.querySelectorAll('[data-preset]')) b.onclick = () => { const [lat, lon] = PRESETS[b.dataset.preset]; cube.setAttribute('camera-latitude', lat); cube.setAttribute('camera-longitude', lon); };
+      // The renderer knobs are for tuning, not for solving a cube, so they start out of the way.
+      $('#viewToggle', root).onclick = (e) => { const c = $('#viewCard', root); c.hidden = !c.hidden; e.target.classList.toggle('on', !c.hidden); };
       $('#copyState', root).onclick = () => { navigator.clipboard?.writeText(state.cube.facelets); };
-      $('#randCube', root).onclick = () => { if (!solverReady) return; const f = randomScramble(); onFacelets(f); };
-    },
-  };
-};
+      $('#randCube', root).onclick = () => { if (!solverReady) return; onFacelets(randomScramble()); };
 
-// Playback + Guide share the solve/animation engine.
-function solveScreen({ guide }) {
-  return {
-    html: `<div class="cols">
-      <div class="col">
-        <div class="card" style="flex:1;min-height:0;display:flex;align-items:center;justify-content:center;position:relative">
-          <div class="cube-slot" id="solveCube"></div>
-          ${guide ? `<div style="position:absolute;left:0;right:0;bottom:0;padding:18px 20px;background:linear-gradient(transparent,rgba(16,14,11,.0))">
-            <div class="eyebrow" id="stageLbl" style="color:var(--ink-4)">—</div>
-            <div class="num" id="moveLbl" style="font-size:var(--fs-display-l);font-weight:600;line-height:1.05">—</div>
-            <div class="sub" id="moveHint" style="color:var(--ink-4)"></div></div>` : ''}
-        </div>
-        <div class="card"><div style="display:flex;align-items:center;gap:16px">
-          <button class="btn primary" id="playBtn" style="width:46px;height:46px;border-radius:50%;padding:0">${icon('play', 20)}</button>
-          <div style="flex:1"><input type="range" id="scrub" min="0" max="1" value="0" style="width:100%">
-            <div style="display:flex;justify-content:space-between" class="num sub"><span id="scrubLbl">move 0</span><span id="scrubStage"></span></div></div>
-          <div style="display:flex;gap:8px">${['0.5', '1', '2'].map((s) => `<button class="btn ${s === '1' ? 'primary' : 'outline'} sm" data-speed="${s}">${s}×</button>`).join('')}</div>
-        </div>
-        ${guide ? '<div style="display:flex;gap:10px;margin-top:12px"><button class="btn outline" id="prevBtn">Back</button><button class="btn accent" id="nextBtn" style="flex:1">Next move</button></div>' : ''}
-        </div>
-      </div>
-      <div class="aside">
-        <div class="card tight" style="flex:1;min-height:0;display:flex;flex-direction:column">
-          <div class="card-h"><b>Solution</b><span class="num sub" id="moveCount">—</span></div>
-          <div class="list" id="solList" style="padding:6px 0"></div>
-        </div>
-      </div></div>`,
-    async mount(root) {
-      const cube = newCube({ animate: true }); $('#solveCube', root).appendChild(cube);
+      // A live smart cube changes the state under us. Repaint what shows it, rather than rebuilding
+      // the screen and throwing away a sequence the user is partway through.
+      liveUpdate = (f) => {
+        $('#viewState', root).textContent = f;
+        paintNet(f);
+        $('#validity', root).textContent = state.cube.solvable ? 'Solvable' : f === SOLVED ? 'Solved ✓' : 'checking…';
+        if (!walking) cube.setAttribute('facelets', f);
+      };
+
+      if (!walking) return;
+
       const solList = $('#solList', root), scrub = $('#scrub', root);
-      let paintNet = null; // guide/playback don't show the net; kept null
       const setStatus = (msg) => { $('#moveCount', root).textContent = msg; };
-      setStatus('solving…');
+      setStatus('working…');
+      let setup, alg, moves;
       try {
-        if (!solverReady) await loadSolver();
-        await solve();
-      } catch (e) { setStatus('solve failed'); return; }
-      const c = state.cube; const moves = c.moves; const total = moves.length;
-      cube.setAttribute('scramble', c.setupAlg); cube.removeAttribute('facelets'); cube.setAttribute('alg', c.solution);
-      cube.setAttribute('tempo-scale', String(load('cubeView', { tempo: 0.5 }).tempo || 0.5));
+        if (seq) {
+          ({ setup, alg } = seq);
+          moves = seq.moves ?? (alg.trim() ? alg.trim().split(/\s+/) : []);
+        } else {
+          if (!solverReady) await loadSolver();
+          await solve();
+          setup = state.cube.setupAlg; alg = state.cube.solution; moves = state.cube.moves;
+        }
+      } catch { setStatus('could not work it out'); return; }
+      const total = moves.length;
+      cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
+      cube.setAttribute('tempo-scale', String(v.tempo || 0.5));
       scrub.max = String(total); setStatus(total + ' moves');
       const stages = stageSplit(total);
       solList.innerHTML = stages.map(([name, a, b]) => `<div style="padding:10px 16px 14px">
@@ -801,26 +847,25 @@ function solveScreen({ guide }) {
         $('#scrubLbl', root).textContent = 'move ' + i + ' / ' + total;
         $('#scrubStage', root).textContent = stageOf(Math.min(i, total - 1));
         scrub.value = String(i);
-        if (guide) {
-          const m = moves[Math.min(i, total - 1)] || '—';
-          $('#moveLbl', root).textContent = i >= total ? 'Solved' : m;
-          $('#stageLbl', root).textContent = i >= total ? 'DONE' : stageOf(i) + ' · MOVE ' + (i + 1) + ' OF ' + total;
-          $('#moveHint', root).textContent = i >= total ? '' : 'Turn the ' + faceName(m) + ' face ' + (m.includes("'") ? 'counter-clockwise' : 'clockwise');
-        }
+        const m = moves[Math.min(i, total - 1)] || '—';
+        $('#moveLbl', root).textContent = i >= total ? 'Done' : m;
+        $('#stageLbl', root).textContent = i >= total ? 'DONE' : stageOf(i) + ' · MOVE ' + (i + 1) + ' OF ' + total;
+        $('#moveHint', root).textContent = i >= total ? '' : 'Turn the ' + faceName(m) + ' face ' + (m.includes("'") ? 'counter-clockwise' : 'clockwise');
       }
       cube.addEventListener('cubus-step', (e) => sync(e.detail.index));
       let playing = false;
       $('#playBtn', root).onclick = () => { playing = !playing; $('#playBtn', root).innerHTML = icon(playing ? 'pause' : 'play', 20); if (playing) cube.play(); else cube.pause(); };
       scrub.oninput = () => { cube.pause(); playing = false; $('#playBtn', root).innerHTML = icon('play', 20); cube.seek(Number(scrub.value)); };
       for (const b of root.querySelectorAll('[data-speed]')) b.onclick = () => { cube.setAttribute('tempo-scale', b.dataset.speed); for (const o of root.querySelectorAll('[data-speed]')) o.className = 'btn ' + (o === b ? 'primary' : 'outline') + ' sm'; };
-      if (guide) { $('#nextBtn', root).onclick = () => cube.step(); $('#prevBtn', root).onclick = () => cube.seek(Math.max(0, cube._applied - 1)); }
+      $('#nextBtn', root).onclick = () => cube.step();
+      $('#prevBtn', root).onclick = () => cube.seek(Math.max(0, cube._applied - 1));
+      // Coaching is what used to separate Solve guide from Playback: the same screen, with the
+      // move called out or not. A toggle says that honestly; two nav items did not.
+      $('#coachToggle', root).onclick = (e) => { v.coach = !v.coach; $('#coach', root).hidden = !v.coach; e.target.classList.toggle('on', v.coach); save('cubeView', v); };
       sync(0);
     },
   };
-}
-const faceName = (m) => ({ R: 'right', L: 'left', U: 'up', D: 'down', F: 'front', B: 'back' }[m[0]] || 'right');
-SCREENS.playback = () => solveScreen({ guide: false });
-SCREENS.guide = () => solveScreen({ guide: true });
+};
 
 SCREENS.timer = () => {
   return { html: `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px">
@@ -1010,6 +1055,7 @@ function renderNav() {
 }
 function renderScreen() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
+  liveUpdate = null;
   setTitle(TITLES[state.screen] ?? 'Cubus');
   const build = SCREENS[state.screen] || SCREENS.home;
   const spec = build();
@@ -1027,12 +1073,24 @@ const router = makeRouter({
   location: window.location,
   history: window.history,
 });
+// Solve guide and Playback were absorbed into the cube screen. Their links are already out in
+// bookmarks and in anything the app has ever put in an address bar, and an unknown id falls back to
+// home — which would send someone who saved a solve link somewhere unrelated. Rewritten silently,
+// before the router gets a chance to canonicalise them to home.
+const ALIAS = { guide: 'viewer', playback: 'viewer' };
+function resolveAlias() {
+  const raw = String(window.location.hash || '').replace(/^#\/?/, '').trim();
+  const target = ALIAS[raw];
+  if (!target) return;
+  try { window.history.replaceState(null, '', `#/${target}`); }
+  catch { window.location.hash = `#/${target}`; }
+}
 function applyRoute() { state.screen = router.current(); renderNav(); renderScreen(); }
 // A hash assignment only fires hashchange when the value actually differs, so navigating onto the
 // screen already showing would do nothing. go() renders directly in that case, preserving the
 // always-re-render behaviour the scan flow depends on (go('viewer') while on viewer).
 function go(id) { if (!router.go(id)) applyRoute(); }
-window.addEventListener('hashchange', applyRoute);
+window.addEventListener('hashchange', () => { resolveAlias(); applyRoute(); });
 window.cubusGo = go;
 
 async function boot() {
@@ -1042,7 +1100,7 @@ async function boot() {
   buildChrome(platform);
   // Resolve the deep link before the first paint, and canonicalise the URL so a bogus hash does
   // not sit in the address bar contradicting the screen on show.
-  applyTheme(); applyNetColors(); router.normalize(); applyRoute();
+  applyTheme(); applyNetColors(); resolveAlias(); router.normalize(); applyRoute();
   // Load the solver in the background so Random / Solve / Timer are ready. 'scan' is deliberately
   // NOT in that list: nothing on it depends on the solver, and re-rendering it would tear down a
   // camera that just opened and open a second one.

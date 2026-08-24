@@ -73,7 +73,7 @@ test('hashchange re-renders — Back and Forward will walk the screens', async (
   win.location.hash = '#/viewer';
   await tick();
   assert.equal(activeNav(), 'viewer');
-  assert.equal(screenTitle(), 'Cube state');
+  assert.equal(screenTitle(), 'Cube');
 });
 
 test('go() moves the URL as well as the screen', async () => {
@@ -95,7 +95,7 @@ test('an unknown hash falls back to home rather than rendering nothing', async (
 // notice, because the other tests only visit four of them.
 test('every screen renders without throwing', async () => {
   const SCREENS = [
-    'home', 'scan', 'scramble', 'guide', 'playback', 'timer', 'stats',
+    'home', 'scan', 'scramble', 'timer', 'stats',
     'trainer', 'drill', 'viewer', 'pair', 'lessons', 'settings',
   ];
   const errors = [];
@@ -137,6 +137,18 @@ test('every nav item lands on its own screen, including ones not built yet', asy
     win.location.hash = `#/${id}`;
     await tick();
     assert.equal(activeNav(), id, `${id} must not fall back to another screen`);
+  }
+});
+
+// Solve guide and Playback were absorbed into the cube screen. Their links are already out in the
+// wild, and an unknown id falls back to HOME — so without an alias, someone who saved a solve link
+// lands somewhere unrelated and nothing says why.
+test('links to the absorbed screens land on the screen that absorbed them', async () => {
+  for (const legacy of ['guide', 'playback']) {
+    win.location.hash = `#/${legacy}`;
+    await tick();
+    assert.equal(activeNav(), 'viewer', `#/${legacy} must not fall back to home`);
+    assert.equal(win.location.hash, '#/viewer', 'and the URL is rewritten to the canonical one');
   }
 });
 
