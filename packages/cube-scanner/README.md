@@ -109,7 +109,7 @@ authors the cube and the other reads it).
 
 The `<ai-scan-panel>` bundle (`apps/web/vendor/ai-scan-panel.js`), the model (`cube-yolo.onnx`),
 and onnxruntime-web's `dist/*.wasm` are all served from `apps/web/vendor/`. The app mounts the
-element **headless + autostart** on its Camera scan screen: the camera opens with the screen, the
+element **headless + autostart** on its Restore screen (named Camera scan in the design kit): the camera opens with the screen, the
 screen draws the six-face flow itself from `scan-progress`, and the raw camera picture is
 deliberately never shown — what a user needs to see is what the scanner *read*. `scan-complete` is
 applied to the 3D twin. Two notes:

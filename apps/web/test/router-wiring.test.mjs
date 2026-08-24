@@ -92,10 +92,10 @@ test('an unknown hash falls back to home rather than rendering nothing', async (
 
 // Every screen must at least render. A template literal that throws — an unbalanced brace, a
 // reference to a field that does not exist — produces a blank stage, and nothing else here would
-// notice, because the other tests only visit four of the twelve.
-test('all twelve screens render without throwing', async () => {
+// notice, because the other tests only visit four of them.
+test('every screen renders without throwing', async () => {
   const SCREENS = [
-    'home', 'scan', 'guide', 'playback', 'timer', 'stats',
+    'home', 'scan', 'scramble', 'guide', 'playback', 'timer', 'stats',
     'trainer', 'drill', 'viewer', 'pair', 'lessons', 'settings',
   ];
   const errors = [];
@@ -125,7 +125,19 @@ test('the screen name also reaches the window title, not just the drawn chip', a
   assert.equal(win.document.title, 'Settings · Cubus');
   win.location.hash = '#/scan';
   await tick();
-  assert.equal(win.document.title, 'Camera scan · Cubus', 'and it follows the screen');
+  assert.equal(win.document.title, 'Restore · Cubus', 'and it follows the screen');
+});
+
+// A nav item with no screen behind it falls back to home, which reads as a bug rather than as work
+// not yet done. Scramble is in the nav before it is built, so this is the shape to guard.
+test('every nav item lands on its own screen, including ones not built yet', async () => {
+  const items = [...win.document.querySelectorAll('[data-nav]')].map((b) => b.dataset.nav);
+  assert.ok(items.includes('scramble'), 'Scramble is offered in the nav');
+  for (const id of items) {
+    win.location.hash = `#/${id}`;
+    await tick();
+    assert.equal(activeNav(), id, `${id} must not fall back to another screen`);
+  }
 });
 
 // Setting an identical hash fires no hashchange, so this path is driven by go()'s direct render.

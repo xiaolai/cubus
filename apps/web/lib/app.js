@@ -16,6 +16,13 @@ const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } cat
 const P = {
   house: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
   'scan-line': '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/>',
+  // A cube face as a nine-grid, drawn twice: empty for Restore (a solved side), part-filled for
+  // Scramble. The pair reads by contrast — order against disorder — which is the whole distinction
+  // between the two screens. `fill` is a presentation attribute so it beats the `fill: none`
+  // inherited from svg.ic; `stroke="none"` keeps a filled cell from looking a stroke-width bigger
+  // than an empty one.
+  grid: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>',
+  'grid-filled': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/><rect x="4" y="4" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/><rect x="16" y="10" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/><rect x="10" y="16" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/>',
   route: '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
   film: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 12h18M3 7.5h4M3 16.5h4M17 7.5h4M17 16.5h4"/>',
   timer: '<line x1="10" y1="2" x2="14" y2="2"/><line x1="12" y1="14" x2="15" y2="11"/><circle cx="12" cy="14" r="8"/>',
@@ -46,7 +53,7 @@ const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="wi
 
 // ---- navigation model ------------------------------------------------------------------------
 const NAV = [
-  ['SOLVE', [['home', 'Home', '', 'house'], ['scan', 'Camera scan', '', 'scan-line'], ['guide', 'Solve guide', '', 'route'], ['playback', 'Playback', '', 'film']]],
+  ['SOLVE', [['home', 'Home', '', 'house'], ['scan', 'Restore', '', 'grid'], ['scramble', 'Scramble', '', 'grid-filled'], ['guide', 'Solve guide', '', 'route'], ['playback', 'Playback', '', 'film']]],
   ['PRACTICE', [['timer', 'Timer', '', 'timer'], ['stats', 'Session stats', '', 'chart'], ['trainer', 'Alg trainer', '78', 'cap'], ['drill', 'Drill', '12', 'repeat']]],
   ['CUBE', [['viewer', '3D viewer', '', 'box'], ['pair', 'Smart cube', '', 'bluetooth']]],
   ['LEARN', [['lessons', 'Lessons', '9', 'book'], ['settings', 'Settings', '', 'settings']]],
@@ -56,7 +63,8 @@ const NAV = [
 // under these were restatements of what each screen says itself, and went with the bar.
 const TITLES = {
   home: 'Welcome back',
-  scan: 'Camera scan',
+  scan: 'Restore',
+  scramble: 'Scramble',
   guide: 'Solve guide',
   playback: 'Solution playback',
   timer: 'Timer',
@@ -387,7 +395,9 @@ SCREENS.home = () => {
   };
 };
 
-// Camera scan. The camera opens the moment this screen mounts — <ai-scan-panel headless autostart>
+// Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
+// renaming it is not worth breaking every #/scan link and bookmark already in the wild.
+// The camera opens the moment this screen mounts — <ai-scan-panel headless autostart>
 // sits in the markup invisibly, owning the camera, the model and the capture state machine, and
 // reports every change through `scan-progress`. The whole six-face flow happens right here: no
 // modal, and deliberately no camera picture. What the user needs to see is what the scanner READ,
@@ -674,6 +684,20 @@ SCREENS.scan = () => {
     },
   };
 };
+
+// Scramble — not built. It exists in the nav because the pair is the point: Restore reads a cube
+// so it can be solved, Scramble tells you how to mix one up. Without a screen behind it the router
+// would fall back to home on a click, which reads as a bug rather than as work not yet done.
+SCREENS.scramble = () => ({
+  html: `<div class="cols"><div class="col">
+    <div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center">
+      <div style="color:var(--ink-5)">${icon('grid-filled', 44)}</div>
+      <div class="num" style="font-size:var(--fs-title);font-weight:600">Scramble — not built yet</div>
+      <div class="sub" style="color:var(--ink-4);max-width:420px">A WCA-style scramble to apply to a solved cube, with the moves to follow — the mirror of Restore, which reads a cube you have already mixed up.</div>
+      <button class="btn outline" data-go="scan" style="margin-top:6px">Restore a cube instead</button>
+    </div></div></div>`,
+  mount() {},
+});
 
 SCREENS.viewer = () => {
   const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, tempo: 0.5, ghosts: false, back: 'none' });
