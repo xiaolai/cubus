@@ -99,9 +99,12 @@
         margin: var(--inset); padding: max(16px, calc(var(--titlebar-h) - var(--inset))) 0 12px;
         display: flex; flex-direction: column; overflow: hidden;
       }
-      .brand { padding: 0 16px 22px; display: flex; align-items: baseline; gap: 8px; }
+      /* The mark is icons/icon.svg — the transparent variant, so it reads on --panel in both
+         themes without a tile behind it. Centred rather than baseline-aligned: baseline was for
+         sitting the version number next to the wordmark, and the version lives in Settings. */
+      .brand { padding: 0 16px 22px; display: flex; align-items: center; gap: 9px; }
+      .brand .mark { flex: none; width: 26px; height: 26px; display: block; }
       .brand b { font-family: var(--font-num); font-weight: 700; font-size: var(--fs-wordmark); letter-spacing: -.01em; }
-      .brand span { font-size: var(--fs-meta); color: var(--ink-5); letter-spacing: .08em; }
       .nav { flex: 1; min-height: 0; overflow-y: auto; }
       .nav-group { margin-bottom: 16px; }
       .nav-group > .eyebrow { padding: 0 16px 6px; }
@@ -252,7 +255,9 @@
         <div class="body">
           <!-- leading nav pane -->
           <nav class="pane">
-            <div class="brand"><b>cubus</b><span>0.4.2</span></div>
+            <!-- alt="" on purpose: the wordmark beside it already names the app, so the mark is
+                 decorative and a screen reader should not say "cubus" twice. -->
+            <div class="brand"><img class="mark" src="./icons/icon.svg" alt="" width="26" height="26" /><b>cubus</b></div>
             <div class="nav" id="nav"></div>
             <div class="cube-status" id="cubeStatus">
               <div class="row"><span class="pulse"></span><b id="cubeStatusLabel">No smart cube</b></div>
