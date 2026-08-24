@@ -838,10 +838,10 @@ SCREENS.viewer = () => {
       ${walking ? `<div class="card tight" style="flex:1;min-height:140px;display:flex;flex-direction:column">
         <div class="card-h"><b>${label}</b><span class="num sub" id="moveCount">—</span></div>
         <div class="list" id="solList" style="padding:6px 0"></div></div>` : ''}
-      <div class="card"><div class="eyebrow">CUBE STATE</div>
-        <div class="net" id="viewNet" style="margin-top:12px"></div>
-        <div class="mono" id="viewState" style="margin-top:12px">${state.cube.facelets}</div>
-        <button class="btn outline sm block" id="randCube" style="margin-top:12px">${icon('dice')} Random cube</button></div>
+      <div class="card">
+        <div class="eyebrow-row"><div class="eyebrow">INITIAL STATE</div>
+          <button id="randCube" title="Load a random scrambled cube">${icon('dice', 18)}</button></div>
+        <div class="net" id="viewNet" style="margin-top:12px"></div></div>
     </div></div>`,
     async mount(root) {
       const cube = newCube({ animate: walking });
@@ -917,7 +917,6 @@ SCREENS.viewer = () => {
       };
 
       liveUpdate = (f) => {
-        $('#viewState', root).textContent = f;
         paintNet(f);
         if (!walking) cube.setAttribute('facelets', f);
       };
@@ -1024,8 +1023,10 @@ SCREENS.viewer = () => {
       }
 
       liveUpdate = (f) => {
-        $('#viewState', root).textContent = f;
-        paintNet(f);
+        // The net is NOT repainted here. While a solution is being walked, that card shows the
+        // state the solution was computed from — it says INITIAL STATE — and following live turns
+        // would leave the label describing something the user is no longer looking at.
+        //
         // In Follow-cube mode a turn on the real cube IS the Next button: when the cube arrives at
         // the state the next move produces, the guide takes exactly that one step. Anything else is
         // ignored, so a wrong turn simply leaves the guide where it was.
