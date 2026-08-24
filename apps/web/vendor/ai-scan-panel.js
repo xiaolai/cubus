@@ -13440,6 +13440,31 @@ var AiScanPanel = class extends HTMLElement {
     this.assemble();
   }
   /**
+   * Forget one side's reading so the camera can read it again — the sensible thing for a centre
+   * sticker to do, since a centre cannot be colour-corrected without renaming the face.
+   *
+   * Every confirmation gathered so far answered a question about a reading that included this
+   * side, so they go too. The capture loop is restarted, because it stops once six sides are in
+   * and dropping one means there is something to look for again.
+   */
+  rescanFace(face) {
+    if (!this.faces[face]) return;
+    delete this.faces[face];
+    this.handEntered.delete(face);
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
+    this.buildDots();
+    if (this.source === null) {
+      this.report(
+        "error",
+        this.tinted("err", "The camera is not running \u2014 turn it on to scan that side again.")
+      );
+      return;
+    }
+    this.loop("scanning", `Show the ${GUIDE[face].color} side again \u2014 it will be read fresh.`);
+  }
+  /**
    * The selectable cameras. Labels are only filled in once camera permission has been granted,
    * so a host gets named entries by calling this after the first successful start().
    */

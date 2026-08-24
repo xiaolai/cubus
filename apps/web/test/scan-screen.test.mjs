@@ -215,12 +215,23 @@ test('a sticker on a captured side opens a colour picker and reports the correct
   assert.equal($('.swatches').hidden, true, 'and it closes on choosing');
 });
 
-test('the centre sticker is not correctable — it names the face', () => {
-  const calls = [];
-  panel().setSticker = (...args) => calls.push(args);
+// A centre cannot be recoloured without renaming the face, so it does the other useful thing.
+test('the centre re-reads its side instead of offering colours', () => {
+  const colours = [], rescans = [];
+  panel().setSticker = (...args) => colours.push(args);
+  panel().rescanFace = (...args) => rescans.push(args);
   all('.scan-face[data-face="R"] .tile > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-  assert.equal($('.swatches').hidden, true, 'no picker for the centre');
-  assert.deepEqual(calls, []);
+  assert.equal($('.swatches').hidden, true, 'no colour picker for the centre');
+  assert.deepEqual(colours, [], 'and never a colour change, which would rename the face');
+  assert.deepEqual(rescans, [['R']], 'it throws that side away so the camera reads it again');
+});
+
+test('the centre of a side with nothing read yet has nothing to re-read', () => {
+  const rescans = [];
+  panel().rescanFace = (...args) => rescans.push(args);
+  assert.ok(!$('.scan-face[data-face="B"]').classList.contains('done'));
+  all('.scan-face[data-face="B"] .tile > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(rescans, []);
 });
 
 // Every sticker on EVERY side, not just the ones the camera managed to read: a side the detector
