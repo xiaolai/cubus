@@ -463,11 +463,10 @@ SCREENS.scan = () => {
     </div>
     <div class="aside">
       <div class="card"><div class="eyebrow">DETECTED STATE</div>
-        <div class="cube-slot" id="scanCube" style="height:230px;margin-top:6px"></div>
-        <div class="mono" id="scanState" style="margin-top:6px">${state.cube.facelets}</div></div>
+        <div class="cube-slot" id="scanCube" style="height:230px;margin-top:6px"></div></div>
       <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
         <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div></div>
-      <button class="btn accent-outline block" data-go="viewer">Solve this cube</button>
+      <button class="btn accent-outline block" data-go="viewer" style="margin-top:auto">Solve this cube</button>
     </div></div>`,
     mount(root) {
       // Kept, so a finished scan can update the aside in place. Re-rendering the screen would tear
@@ -490,10 +489,7 @@ SCREENS.scan = () => {
       stateCube.setAttribute('facelet-scale', '1');
 
       $('#scanCube', root).appendChild(stateCube);
-      const showState = (f) => {
-        $('#scanState', root).textContent = f;
-        stateCube.setAttribute('facelets', f);
-      };
+      const showState = (f) => { stateCube.setAttribute('facelets', f); };
       // What has been read so far, as a facelet string. Unread stickers are '?', which the renderer
       // draws as unknown rather than falling back to the face's own colour — otherwise a cube
       // nobody has scanned would render as solved. Captured sides appear in the rotation they were
