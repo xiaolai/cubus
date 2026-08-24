@@ -2216,6 +2216,10 @@ function assembleColors(faces, threshold = 0.15) {
 }
 
 // src/camera.ts
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((d) => d.kind === "videoinput").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
+}
 function raceAbort(promise, signal) {
   if (!signal) return promise;
   return new Promise((resolve, reject2) => {
@@ -2239,7 +2243,9 @@ function raceAbort(promise, signal) {
 }
 async function openCamera(video, opts = {}, signal) {
   if (signal?.aborted) throw new DOMException("camera open aborted", "AbortError");
-  const videoConstraints = opts.deviceId ? { deviceId: { exact: opts.deviceId } } : { facingMode: opts.facingMode ?? "environment" };
+  const videoConstraints = {};
+  if (opts.deviceId) videoConstraints.deviceId = { exact: opts.deviceId };
+  else if (opts.facingMode) videoConstraints.facingMode = opts.facingMode;
   if (opts.width) videoConstraints.width = { ideal: opts.width };
   if (opts.height) videoConstraints.height = { ideal: opts.height };
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -2261,7 +2267,13 @@ async function openCamera(video, opts = {}, signal) {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) throw new Error("2D canvas context unavailable");
+    const track = stream.getVideoTracks()[0];
+    const device = {
+      deviceId: track?.getSettings().deviceId ?? "",
+      label: track?.label || "Camera"
+    };
     return {
+      device,
       grab() {
         const w = video.videoWidth;
         const h = video.videoHeight;
@@ -12977,6 +12989,10 @@ var HINT = {
 };
 var TICK_MS = 200;
 var STABLE = 3;
+var OPENING = "Show any side to the camera \u2014 held flat and centred.";
+var SLOW_OPEN_MS = 8e3;
+var SLOW_OPEN = "The camera has not opened. Allow camera access for this app, then try again.";
+var PINNED_GONE = "The camera you chose is unavailable \u2014 using the default one.";
 var TEMPLATE = `
 <style>
   :host { display: block; font: 14px/1.5 -apple-system, system-ui, sans-serif; color: #e6edf3; }
@@ -13011,6 +13027,15 @@ var TEMPLATE = `
   <button class="ghost" id="restart" hidden>Start over</button>
 </div>
 `;
+var HEADLESS_TEMPLATE = `
+<style>
+  :host {
+    position: fixed; left: 0; top: 0; width: 1px; height: 1px;
+    overflow: hidden; clip-path: inset(50%); pointer-events: none;
+  }
+</style>
+<video id="video" playsinline muted></video>
+`;
 var AiScanPanel = class extends HTMLElement {
   root;
   /** Model URL; the app can override before the element renders. */
@@ -13020,9 +13045,13 @@ var AiScanPanel = class extends HTMLElement {
   timer = null;
   startGen = 0;
   busy = false;
+  /** `headless`: draw nothing, and let the host draw from 'scan-progress'. */
+  headless = false;
   faces = {};
   lastColors = "";
   stableCount = 0;
+  live = null;
+  device = null;
   scanEpoch = 0;
   // bumped by loop()/stop(); rejects stale in-flight inferences
   constructor() {
@@ -13030,11 +13059,15 @@ var AiScanPanel = class extends HTMLElement {
     this.root = this.attachShadow({ mode: "open" });
   }
   connectedCallback() {
-    this.root.innerHTML = TEMPLATE;
-    this.buildDots();
-    this.buildPreview();
-    this.btn("start").addEventListener("click", () => void this.start());
-    this.btn("restart").addEventListener("click", () => this.restart());
+    this.headless = this.hasAttribute("headless");
+    this.root.innerHTML = this.headless ? HEADLESS_TEMPLATE : TEMPLATE;
+    if (!this.headless) {
+      this.buildDots();
+      this.buildPreview();
+      this.maybe("start")?.addEventListener("click", () => void this.start());
+      this.maybe("restart")?.addEventListener("click", () => this.restart());
+    }
+    if (this.hasAttribute("autostart")) queueMicrotask(() => void this.start());
   }
   disconnectedCallback() {
     this.stop();
@@ -13049,12 +13082,13 @@ var AiScanPanel = class extends HTMLElement {
     }
     this.source?.stop();
     this.source = null;
-    const start = this.root.getElementById("start");
+    this.device = null;
+    const start = this.maybe("start");
     if (start) {
       start.disabled = false;
       start.hidden = false;
     }
-    const restart = this.root.getElementById("restart");
+    const restart = this.maybe("restart");
     if (restart) restart.hidden = true;
   }
   el(id) {
@@ -13062,54 +13096,90 @@ var AiScanPanel = class extends HTMLElement {
     if (!node) throw new Error(`ai-scan-panel: missing #${id}`);
     return node;
   }
-  btn(id) {
-    return this.el(id);
+  /** Same lookup, but tolerant: headless renders none of the status/preview chrome. */
+  maybe(id) {
+    return this.root.getElementById(id);
   }
+  /** Open the camera and begin scanning. Public so a host can autostart it, or retry an error. */
   async start() {
-    this.btn("start").disabled = true;
+    const startBtn = this.maybe("start");
+    if (startBtn) startBtn.disabled = true;
     const gen = ++this.startGen;
+    this.report("starting", "Opening the camera\u2026");
     this.source?.stop();
     this.source = null;
+    const slowOpen = setTimeout(() => {
+      if (gen === this.startGen && this.source === null) {
+        this.report("error", this.tinted("err", SLOW_OPEN));
+      }
+    }, SLOW_OPEN_MS);
     let source = null;
+    let fellBack = false;
     try {
-      source = await openCamera(this.el("video"));
+      const facing = this.getAttribute("facing");
+      const facingMode = facing === "user" || facing === "environment" ? facing : void 0;
+      const pinned = this.getAttribute("device-id") || void 0;
+      const video = this.el("video");
+      try {
+        source = await openCamera(video, { deviceId: pinned, facingMode });
+      } catch (err) {
+        if (pinned === void 0 || gen !== this.startGen) throw err;
+        fellBack = true;
+        source = await openCamera(video, { facingMode });
+      }
       if (gen !== this.startGen) {
         source.stop();
         return;
       }
       this.source = source;
-      this.btn("start").hidden = true;
+      this.device = source.device;
+      if (startBtn) startBtn.hidden = true;
       this.reset();
       if (!this.run) {
-        this.setStatus("Camera ready \u2014 loading the model\u2026");
+        this.report("loading", "Camera ready \u2014 loading the model\u2026");
         const wasmPaths = new URL(this.modelUrl.replace(/[^/]+$/, "") || "./", document.baseURI).href;
         this.run = await createModelRunner(this.modelUrl, { wasmPaths });
         if (gen !== this.startGen) return;
       }
-      this.loop();
+      if (fellBack) this.loop(this.tinted("err", PINNED_GONE), " ", OPENING);
+      else this.loop();
     } catch (err) {
       if (gen !== this.startGen) {
         source?.stop();
         return;
       }
-      this.btn("start").hidden = false;
-      this.btn("start").disabled = false;
-      this.setStatus(this.tinted("err", `Cannot start: ${String(err?.message ?? err)}`));
+      if (startBtn) {
+        startBtn.hidden = false;
+        startBtn.disabled = false;
+      }
+      this.report(
+        "error",
+        this.tinted("err", `Cannot start: ${String(err?.message ?? err)}`)
+      );
+    } finally {
+      clearTimeout(slowOpen);
     }
   }
   reset() {
     this.lastColors = "";
     this.stableCount = 0;
+    this.live = null;
     for (const f of FACES) delete this.faces[f];
     this.buildDots();
   }
-  loop() {
+  /**
+   * (Re)start the capture loop. `opening` replaces the standard prompt, so a message explaining
+   * why we are starting over survives instead of being overwritten within one tick.
+   */
+  loop(...opening) {
     if (this.timer !== null) clearInterval(this.timer);
     this.scanEpoch++;
     this.showPreview(null);
     this.stableCount = 0;
     this.lastColors = "";
-    this.btn("restart").hidden = false;
+    const restart = this.maybe("restart");
+    if (restart) restart.hidden = false;
+    this.report("scanning", ...opening.length > 0 ? opening : [OPENING]);
     this.timer = setInterval(() => void this.onTick(), TICK_MS);
   }
   stopLoop() {
@@ -13130,7 +13200,7 @@ var AiScanPanel = class extends HTMLElement {
         this.stableCount = 0;
         this.lastColors = "";
         this.showPreview(null);
-        this.setStatus(`Show any side to the camera \u2014 ${HINT[fit.reason]}\u2026`);
+        this.report("scanning", `Show any side to the camera \u2014 ${HINT[fit.reason]}\u2026`);
         return;
       }
       const key = fit.face.colors.join(",");
@@ -13138,17 +13208,18 @@ var AiScanPanel = class extends HTMLElement {
       this.lastColors = key;
       this.showPreview(fit.face.colors);
       if (this.stableCount < STABLE) {
-        this.setStatus("Reading a side \u2014 hold still\u2026");
+        this.report("scanning", "Reading a side \u2014 hold still\u2026");
         return;
       }
       const centre = fit.face.colors[4];
       const face = centre === void 0 ? void 0 : FACES[centre];
       if (face === void 0) {
-        this.setStatus(this.tinted("err", "Couldn't read the centre \u2014 hold it steadier."));
+        this.report("scanning", this.tinted("err", "Couldn't read the centre \u2014 hold it steadier."));
         return;
       }
       if (this.faces[face]) {
-        this.setStatus(
+        this.report(
+          "scanning",
           "Already have the ",
           this.bold(GUIDE[face].name),
           " side \u2014 show a different one."
@@ -13168,38 +13239,47 @@ var AiScanPanel = class extends HTMLElement {
     this.lastColors = "";
     this.buildDots();
     this.flash();
-    const done = this.capturedCount();
+    const done = this.capturedFaces().length;
     if (done >= FACES.length) {
       this.stopLoop();
       this.showPreview(null);
-      this.setStatus(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
+      this.report("checking", this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
       let result;
       try {
         result = assembleColors(this.faces);
       } catch (err) {
-        this.setStatus(
-          this.tinted(
-            "err",
-            `Couldn't assemble the scan (${String(err?.message ?? err)}) \u2014 starting over.`
-          )
-        );
+        const why = String(err?.message ?? err);
         this.reset();
-        this.loop();
+        this.loop(this.tinted("err", `Couldn't assemble the scan (${why}) \u2014 starting over.`));
         return;
       }
       this.finish(result);
       return;
     }
-    this.setStatus(
+    this.report(
+      "scanning",
       "Got the ",
       this.bold(GUIDE[face].name),
       ` side \u2014 ${done}/6. Show another side\u2026`
     );
   }
-  capturedCount() {
-    return FACES.reduce((n, f) => n + (this.faces[f] ? 1 : 0), 0);
+  /** The sides captured so far, in URFDLB order — the shape hosts draw progress from. */
+  capturedFaces() {
+    const out = [];
+    for (const face of FACES) {
+      const read = this.faces[face];
+      if (read) out.push({ face, colors: [...read.colors] });
+    }
+    return out;
   }
-  /** Clear all captured faces and keep scanning; the camera stays open. */
+  /**
+   * The selectable cameras. Labels are only filled in once camera permission has been granted,
+   * so a host gets named entries by calling this after the first successful start().
+   */
+  async cameras() {
+    return listCameras();
+  }
+  /** Clear all captured faces and keep scanning; the camera stays open. Public for host UIs. */
   restart() {
     this.reset();
     this.loop();
@@ -13216,19 +13296,19 @@ var AiScanPanel = class extends HTMLElement {
     this.stopLoop();
     this.showPreview(null);
     if (result.valid && result.lowConfidence.length === 0) {
-      this.setStatus(this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
+      this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
       this.dispatchEvent(new CustomEvent("scan-complete", { detail: result }));
       this.stop();
     } else {
       const why = result.valid ? "Some stickers were unclear" : "That isn't a solvable cube yet";
-      this.setStatus(this.tinted("err", `${why} \u2014 starting over, show each side again.`));
       this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
       this.reset();
-      this.loop();
+      this.loop(this.tinted("err", `${why} \u2014 starting over, show each side again.`));
     }
   }
   buildDots() {
-    const dots = this.el("dots");
+    const dots = this.maybe("dots");
+    if (!dots) return;
     dots.textContent = "";
     for (const face of FACES) {
       const g = GUIDE[face];
@@ -13240,12 +13320,15 @@ var AiScanPanel = class extends HTMLElement {
     }
   }
   buildPreview() {
-    const p = this.el("preview");
+    const p = this.maybe("preview");
+    if (!p) return;
     p.textContent = "";
     for (let i = 0; i < 9; i++) p.appendChild(document.createElement("i"));
   }
   showPreview(colors) {
-    const p = this.el("preview");
+    this.live = colors;
+    const p = this.maybe("preview");
+    if (!p) return;
     if (!colors) {
       p.dataset.show = "0";
       return;
@@ -13256,10 +13339,28 @@ var AiScanPanel = class extends HTMLElement {
     }
     p.dataset.show = "1";
   }
-  setStatus(...parts) {
-    const status = this.el("status");
-    status.textContent = "";
-    status.append(...parts);
+  /**
+   * Show `parts` on the built-in status line (when there is one) AND tell the host what changed.
+   * Every status change goes through here, so a headless host sees exactly what a visible one does.
+   */
+  report(phase, ...parts) {
+    const message = parts.map((p) => typeof p === "string" ? p : p.textContent ?? "").join("");
+    const status = this.maybe("status");
+    if (status) {
+      status.textContent = "";
+      status.append(...parts);
+    }
+    this.dispatchEvent(
+      new CustomEvent("scan-progress", {
+        detail: {
+          phase,
+          message,
+          captured: this.capturedFaces(),
+          live: this.live,
+          device: this.device
+        }
+      })
+    );
   }
   bold(text) {
     const b = document.createElement("b");
