@@ -293,6 +293,8 @@
       .tbtn { width: 42px; height: 42px; border-radius: var(--r-4); display: grid; place-items: center; border: 1px solid var(--line-strong); color: var(--ink-2); }
       .tbtn:hover { border-color: var(--ink-5); color: var(--ink); }
       .tbtn.primary { background: var(--invert-bg); color: var(--invert-fg); border-color: var(--invert-bg); }
+      .tbtn[disabled] { opacity: .35; }
+      .tbtn[disabled]:hover { border-color: var(--line-strong); color: var(--ink-2); }
       .pill[disabled] { opacity: .4; cursor: default; }
       .pill[disabled]:hover { background: none; }
       /* Shown only when the last move lands. The move label it replaced repeated what the
