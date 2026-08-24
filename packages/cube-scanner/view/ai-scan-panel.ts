@@ -438,6 +438,38 @@ export class AiScanPanel extends HTMLElement {
   }
 
   /**
+   * Correct one sticker of an already-captured side, and re-check the cube. The detector is good,
+   * not perfect — held-out colour accuracy is ~90%, and orange and white are its weak classes —
+   * so a scan can fail on a single misread sticker that a person can see at a glance.
+   *
+   * `index` is into the capture AS SHOWN, which is what a host displays, so a click maps straight
+   * through. The centre is not correctable: a face's centre colour is its identity, and changing
+   * one would rename the face rather than fix it.
+   *
+   * Any confirmations already gathered are dropped, because they were answers about a reading
+   * that no longer exists.
+   */
+  setSticker(face: Face, index: number, colour: number): void {
+    const read = this.faces[face];
+    if (!read || !Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
+    if (!Number.isInteger(colour) || colour < 0 || colour >= FACES.length) return;
+    if (read.colors[index] === colour) return;
+    read.colors[index] = colour;
+    read.confidence[index] = 1; // a person looked at it, which beats the detector's guess
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
+    if (this.capturedFaces().length < FACES.length) {
+      this.report('scanning', `Corrected the ${GUIDE[face].name} side. Show another side…`);
+      return;
+    }
+    this.stopLoop();
+    this.showPreview(null);
+    this.report('checking', this.tinted('ok', 'Corrected — checking…'));
+    this.assemble();
+  }
+
+  /**
    * The selectable cameras. Labels are only filled in once camera permission has been granted,
    * so a host gets named entries by calling this after the first successful start().
    */

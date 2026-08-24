@@ -213,10 +213,11 @@
       .scan-live { display: grid; grid-template-columns: repeat(3,1fr); gap: 5px; width: 150px; padding: 9px; border-radius: var(--r-5); background: var(--panel-sunk); }
       .scan-live > i { aspect-ratio: 1; border-radius: 4px; background: var(--facelet-off); opacity: .3; transition: background var(--fade), opacity var(--fade); }
       .scan-live.reading > i { opacity: 1; }
-      .scan-msg { font-size: var(--fs-title-s); font-weight: 600; max-width: 460px; }
-      .scan-msg.ok { color: var(--ok); }
-      .scan-msg.err { color: var(--err); }
-      .scan-count { font-family: var(--font-num); font-size: var(--fs-body-s); color: var(--ink-4); margin-top: 4px; }
+      /* The scanner speaks through the aside card rather than a status line under the tiles: one
+         voice instead of a caption competing with an explanation that says the same thing. */
+      .scan-say { color: var(--ink-4); }
+      .scan-say.ok { color: var(--ok); }
+      .scan-say.err { color: var(--err); }
       /* The six sides laid out as the cube's net — U above F, D below it, L R B across the middle
          row — so the tiles sit where the faces do. With every tile edged in its neighbours'
          colours, touching tiles now show each other's colour across the join, which is what makes
@@ -224,14 +225,14 @@
       /* Row gap far tighter than the column gap on purpose: the label under each tile already adds
          vertical space, and without compensating the three rows read as three rows instead of a
          cross. */
-      .scan-faces { display: grid; grid-template-columns: repeat(4, 58px); column-gap: 7px; row-gap: 2px; justify-content: center; }
+      .scan-faces { width: 80%; display: grid; grid-template-columns: repeat(4, 1fr); column-gap: 10px; row-gap: 2px; }
       .scan-face[data-face="U"] { grid-area: 1 / 2; }
       .scan-face[data-face="L"] { grid-area: 2 / 1; }
       .scan-face[data-face="F"] { grid-area: 2 / 2; }
       .scan-face[data-face="R"] { grid-area: 2 / 3; }
       .scan-face[data-face="B"] { grid-area: 2 / 4; }
       .scan-face[data-face="D"] { grid-area: 3 / 2; }
-      .scan-face { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+      .scan-face { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
       /* The four edges are painted in the NEIGHBOURING faces' colours (set inline — they follow the
          chosen palette), which tells the user which way up to hold that side without a caption.
          Solid, not dashed: four dashed colours are unreadable at this size. Captured vs pending is
@@ -241,9 +242,22 @@
          the single most common instruction ("hold white up"). The edge colours stay at full
          strength on pending tiles too; those are the sides still to be shown, so they need the
          guidance most. Dimness is carried by the cells alone. */
-      .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 4px; border-radius: var(--r-4); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; grid-template-columns: repeat(3,1fr); gap: 2px; }
-      .scan-face .tile > i { border-radius: 2px; background: var(--facelet-off); opacity: .3; }
-      .scan-face .lbl { font-size: var(--fs-micro); font-weight: 700; letter-spacing: .04em; color: var(--ink-5); }
+      .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 6px; border-radius: var(--r-5); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; grid-template-columns: repeat(3,1fr); gap: 3px; }
+      .scan-face .tile > i { border-radius: 3px; background: var(--facelet-off); opacity: .3; }
+      .scan-face .lbl { font-size: var(--fs-caption); font-weight: 700; letter-spacing: .03em; color: var(--ink-5); }
+      /* Only a captured side has a reading to correct, and only its eight outer stickers: the
+         centre names the face. */
+      .scan-face.done .tile > i:not(:nth-child(5)) { cursor: pointer; }
+      .scan-face.done .tile > i:not(:nth-child(5)):hover { box-shadow: 0 0 0 2px var(--ink); }
+      .scan-face .cell.editing { box-shadow: 0 0 0 2px var(--accent); }
+
+      /* Colour picker for a misread sticker. Fixed to the viewport so it never has to reason about
+         an offset parent, and clamped in JS so a sticker at the edge of the net keeps it on screen. */
+      .swatches { position: fixed; z-index: 60; display: flex; gap: 6px; padding: 8px; border-radius: var(--r-4); background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow-raise, 0 6px 20px rgba(0,0,0,.18)); }
+      .swatches[hidden] { display: none; }
+      .swatches > button { width: 30px; height: 30px; border-radius: var(--r-3); box-shadow: inset 0 0 0 1px rgba(0,0,0,.22); }
+      .swatches > button:hover { transform: scale(1.08); }
+      .swatches > button.now { box-shadow: inset 0 0 0 1px rgba(0,0,0,.22), 0 0 0 2px var(--ink); }
       .scan-face.done .tile > i { opacity: 1; }
       .scan-face.done .lbl { color: var(--ok); }
       /* The side the scanner is waiting to be shown again, to settle a reading it cannot settle
