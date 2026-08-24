@@ -160,6 +160,21 @@ test('the cube screen applies every saved view setting, not just the ones it sho
   );
 });
 
+// The cube card carries the cube and nothing else, and the transport is one row: three buttons,
+// the two pacing modes, and the step count. Everything else that used to sit there said something
+// the chips, the animation or the nav were already saying.
+test('the cube screen is the cube, one transport row, and nothing else', async () => {
+  win.location.hash = '#/viewer';
+  await tick();
+  const cubeCard = win.document.querySelector('#stage .cols > .col > .card');
+  assert.equal(cubeCard.querySelectorAll('button').length, 0, 'no controls over the cube');
+  for (const gone of ['#coach', '#scrub', '[data-speed]', '#validity', '#copyState', '#viewCard']) {
+    assert.equal(win.document.querySelector(gone), null, `${gone} should be gone`);
+  }
+  const modes = [...win.document.querySelectorAll('[data-mode]')].map((b) => b.dataset.mode);
+  assert.deepEqual(modes, ['slow', 'cube'], 'two pacing modes, not a speed');
+});
+
 // Solve guide and Playback were absorbed into the cube screen. Their links are already out in the
 // wild, and an unknown id falls back to HOME — so without an alias, someone who saved a solve link
 // lands somewhere unrelated and nothing says why.

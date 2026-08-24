@@ -285,13 +285,20 @@
       .menu > button.act { color: var(--accent); font-weight: 600; }
       .menu > hr { height: 1px; border: 0; margin: 5px 6px; background: var(--line); }
 
-      /* Coaching overlay on the cube screen — the move being followed, called out over the cube.
-         Absolutely placed so it never pushes the cube smaller as the text changes length. */
-      .coach { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 20px; pointer-events: none; }
-      .coach[hidden] { display: none; }
-      .coach .eyebrow { color: var(--ink-4); }
-      .coach .num { font-size: var(--fs-display-l); font-weight: 600; line-height: 1.05; }
-      .coach .sub { color: var(--ink-4); }
+      /* Transport on the cube screen: three buttons, the step count, and the two pacing modes, all
+         on one line. There is no speed control — Slowest is for following by hand, Follow cube
+         hands the pacing to the cube in your hands. */
+      .transport { display: flex; align-items: center; gap: 8px; }
+      .transport .spacer { flex: 1; }
+      .tbtn { width: 42px; height: 42px; border-radius: var(--r-4); display: grid; place-items: center; border: 1px solid var(--line-strong); color: var(--ink-2); }
+      .tbtn:hover { border-color: var(--ink-5); color: var(--ink); }
+      .tbtn.primary { background: var(--invert-bg); color: var(--invert-fg); border-color: var(--invert-bg); }
+      .pill[disabled] { opacity: .4; cursor: default; }
+      .pill[disabled]:hover { background: none; }
+      /* Shown only when the last move lands. The move label it replaced repeated what the
+         highlighted chip and the animation were both already saying. */
+      .done-mark { position: absolute; right: 14px; bottom: 10px; width: 46px; height: 46px; border-radius: var(--r-pill); display: grid; place-items: center; color: #fff; background: var(--ok); }
+      .done-mark[hidden] { display: none; }
 
       /* 2D net */
       .net { display: grid; grid-template-columns: repeat(12,1fr); grid-template-rows: repeat(9,1fr); gap: 3px; aspect-ratio: 12/9; max-width: 320px; margin: 0 auto; }
