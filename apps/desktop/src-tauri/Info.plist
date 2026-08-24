@@ -3,7 +3,20 @@
 <!--
   Merged into the generated Info.plist by tauri.conf.json's
   `bundle.macOS.infoPlist`. Tauri owns every other key in there; this file adds
-  only the one it has no setting for.
+  only the ones it has no setting for.
+
+  NSCameraUsageDescription is not optional: macOS refuses camera access to any
+  app whose Info.plist does not declare a purpose string, so without it the
+  Camera scan screen's getUserMedia never yields a stream in the packaged app
+  (it works in a browser, which carries the browser's own declaration). There is
+  deliberately NO NSMicrophoneUsageDescription — the scanner asks for
+  `{ video: …, audio: false }`, so WebKit requests the camera alone, and
+  declaring a microphone purpose we never use would be a privacy claim we do not
+  need to make.
+
+  When this app is signed with the hardened runtime for notarization it will
+  ALSO need the `com.apple.security.device.camera` entitlement; the plist key
+  alone covers the current unsigned/local build.
 
   CFBundleIconName points at the app icon inside Contents/Resources/Assets.car,
   which is how macOS 26 finds the layered icon and gives it the Liquid Glass
@@ -21,5 +34,7 @@
 <dict>
 	<key>CFBundleIconName</key>
 	<string>Cubus</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Cubus reads your cube's six sides through the camera. Everything happens on this device — no image is stored or sent anywhere.</string>
 </dict>
 </plist>
