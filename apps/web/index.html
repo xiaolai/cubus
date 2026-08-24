@@ -279,10 +279,27 @@
       .menu > button.act { color: var(--accent); font-weight: 600; }
       .menu > hr { height: 1px; border: 0; margin: 5px 6px; background: var(--line); }
 
+      /* Coaching overlay on the cube screen — the move being followed, called out over the cube.
+         Absolutely placed so it never pushes the cube smaller as the text changes length. */
+      .coach { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 20px; pointer-events: none; }
+      .coach[hidden] { display: none; }
+      .coach .eyebrow { color: var(--ink-4); }
+      .coach .num { font-size: var(--fs-display-l); font-weight: 600; line-height: 1.05; }
+      .coach .sub { color: var(--ink-4); }
+
       /* 2D net */
       .net { display: grid; grid-template-columns: repeat(12,1fr); grid-template-rows: repeat(9,1fr); gap: 3px; aspect-ratio: 12/9; max-width: 320px; margin: 0 auto; }
       .net .face { display: grid; grid-template-columns: repeat(3,1fr); grid-template-rows: repeat(3,1fr); gap: 2px; }
       .net .sticker { border-radius: 3px; border: 1px solid rgba(0,0,0,.28); transition: background var(--fade); }
+      /* The rules that actually paint the net. buildNet sets `class="sticker U"` and applyNetColors
+         sets --net-U..B, but nothing joined the two, so every net has rendered as empty outlines
+         since it was written — visible now that the cube screen shows one next to the 3D twin. */
+      .net .sticker.U { background: var(--net-U); }
+      .net .sticker.R { background: var(--net-R); }
+      .net .sticker.F { background: var(--net-F); }
+      .net .sticker.D { background: var(--net-D); }
+      .net .sticker.L { background: var(--net-L); }
+      .net .sticker.B { background: var(--net-B); }
       .mono { font-family: var(--font-num); font-size: var(--fs-caption); color: var(--ink-4); line-height: 1.6; word-break: break-all; }
       .move-chips { display: flex; flex-wrap: wrap; gap: 6px; }
       .chip-m { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-5); border-radius: 4px; padding: 4px 9px; }
