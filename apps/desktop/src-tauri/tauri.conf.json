@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "im.cubus.app",
   "build": {
-    "frontendDist": "../../web",
+    "frontendDist": "../../web/dist",
     "devUrl": "http://localhost:15173",
     "beforeDevCommand": "pnpm --filter cubus-web dev",
-    "beforeBuildCommand": "pnpm --filter cube-scanner build:panel && pnpm --filter gan-driver build:driver && pnpm --filter cubus-web build:cube && pnpm --filter cubus-web copy-ort"
+    "beforeBuildCommand": "pnpm --filter cube-scanner build:panel && pnpm --filter gan-driver build:driver && pnpm --filter cubus-web build:cube && pnpm --filter cubus-web copy-ort && pnpm --filter cubus-web build:dist"
   },
   "app": {
     "withGlobalTauri": true,
@@ -17,7 +17,10 @@
         "title": "Cubus",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 18, "y": 28 },
+        "trafficLightPosition": {
+          "x": 18,
+          "y": 28
+        },
         "width": 1280,
         "height": 832,
         "minWidth": 1120,
