@@ -41,6 +41,7 @@ const P = {
   sliders: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
   refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
   dice: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.2"/><circle cx="16" cy="16" r="1.2"/><circle cx="8" cy="16" r="1.2"/><circle cx="16" cy="8" r="1.2"/><circle cx="12" cy="12" r="1.2"/>',
   'panel-left': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
@@ -356,6 +357,14 @@ export { state };
 // Screens
 // ===============================================================================================
 const SCREENS = {};
+/** Drop a fixed-position `.menu` under a corner button, clamped inside the viewport. */
+const placeMenuUnder = (btn, menu) => {
+  const r = btn.getBoundingClientRect();
+  const w = menu.offsetWidth;
+  menu.style.left = `${Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8)}px`;
+  menu.style.top = `${r.bottom + 6}px`;
+};
+
 let cleanup = null;
 // Set by a screen that can take a new cube state in place. Without it, a live smart cube rebuilds
 // the screen on every quarter turn — which on the cube screen means restarting an animation the
@@ -455,7 +464,7 @@ SCREENS.scan = () => {
         <ai-scan-panel headless autostart></ai-scan-panel>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
-        <div class="scan-cam">
+        <div class="scan-cam card-tools">
           <button id="scanResetBtn" title="Throw the whole scan away and start again">${icon('refresh', 19)}</button>
           <button id="scanPaintBtn" title="Paint the cube by hand instead of scanning it">${icon('paint-roller', 19)}</button>
           <button id="scanCamBtn" title="Camera">${icon('webcam', 20)}</button>
@@ -606,10 +615,7 @@ SCREENS.scan = () => {
         if (!open) return;
         void fillCams();
         menu.hidden = false;
-        const r = camBtn.getBoundingClientRect();
-        const w = menu.offsetWidth;
-        menu.style.left = `${Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8)}px`;
-        menu.style.top = `${r.bottom + 6}px`;
+        placeMenuUnder(camBtn, menu);
         ev.stopPropagation();
       };
 
@@ -778,12 +784,15 @@ function followMoves(seq) {
   go('viewer');
 }
 
-/** One walking speed, not a setting. With no smart cube connected there is nothing to pace
- * against, so there is no choice to offer — see the transport row. The renderer's base is 190ms
- * per quarter turn divided by this, so 0.1 is 1.9s a turn: slow enough to copy by hand. It is a
- * source constant rather than a saved one because the view sliders that used to write `cubeView`
- * are gone, and a leftover tempo in a returning user's localStorage would silently outrank it. */
-const WALK_TEMPO = 0.1;
+/** The three walking speeds, as renderer tempo-scale values. The renderer divides a 190ms base by
+ * this, so a LARGER number is faster. None of them is quick: Fast is 0.95s per quarter turn, still
+ * slower than the 760ms that used to be the only speed and was the complaint that prompted this. */
+const SPEEDS = [
+  { id: 'slow', label: 'Slow', tempo: 0.05 },     // 3.8s per quarter turn
+  { id: 'normal', label: 'Normal', tempo: 0.1 },  // 1.9s
+  { id: 'fast', label: 'Fast', tempo: 0.2 },      // 0.95s
+];
+const DEFAULT_SPEED = 'normal';
 
 const faceName = (m) => ({ R: 'right', L: 'left', U: 'up', D: 'down', F: 'front', B: 'back' }[m[0]] || 'right');
 
@@ -805,6 +814,9 @@ SCREENS.viewer = () => {
     html: `<div class="cols">
     <div class="col">
       <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;position:relative">
+        ${walking ? `<div class="card-tools">
+          <button id="speedBtn" title="Animation speed">${icon('gauge', 20)}</button>
+        </div>` : ''}
         <div style="position:relative;flex:1;min-height:0;width:100%">
           <div class="cube-slot" id="viewCube" style="height:100%"></div>
           ${walking ? `<div class="done-mark" id="doneMark" hidden>${icon('check', 34)}</div>` : ''}
@@ -839,7 +851,61 @@ SCREENS.viewer = () => {
       paintNet(state.cube.facelets);
       cube.setAttribute('ghosts', v.ghosts ? 'floating' : 'none');
       for (const [k, attr] of VIEW_ATTRS) cube.setAttribute(attr, String(v[k]));
-      cube.setAttribute('tempo-scale', String(WALK_TEMPO));
+
+      // Speed sits in the card's corner, not in the transport row: it is a preference you set once
+      // and forget, whereas the row is the solution you are walking. Same idiom as the scan
+      // screen's camera menu. Wired before the solve so a screen that fails to solve still honours
+      // the setting. The renderer reads tempo-scale per move, so a change lands on the next turn.
+      const speedBtn = $('#speedBtn', root);
+      const speedMenu = document.createElement('div');
+      let speedId = DEFAULT_SPEED;
+      let closeSpeed = () => {};
+      if (speedBtn) {
+        speedMenu.className = 'menu';
+        speedMenu.hidden = true;
+        root.appendChild(speedMenu);
+        // localStorage is untrusted input: an id no longer in SPEEDS must not reach setAttribute.
+        const saved = load('walkSpeed', { id: DEFAULT_SPEED }).id;
+        if (SPEEDS.some((o) => o.id === saved)) speedId = saved;
+        closeSpeed = () => { speedMenu.hidden = true; speedBtn.classList.remove('open'); };
+
+        const applySpeed = () => {
+          const chosen = SPEEDS.find((o) => o.id === speedId);
+          cube.setAttribute('tempo-scale', String(chosen.tempo));
+          speedBtn.title = `Animation speed — ${chosen.label}`;
+          speedMenu.textContent = '';
+          for (const o of SPEEDS) {
+            const b = document.createElement('button');
+            b.textContent = o.label;
+            b.dataset.speed = o.id;
+            if (o.id === speedId) b.className = 'now';
+            b.onclick = () => { speedId = o.id; save('walkSpeed', { id: o.id }); applySpeed(); closeSpeed(); };
+            speedMenu.appendChild(b);
+          }
+        };
+        applySpeed();
+
+        speedBtn.onclick = (ev) => {
+          const wasClosed = speedMenu.hidden;
+          closeSpeed();
+          if (!wasClosed) return;
+          speedMenu.hidden = false;
+          speedBtn.classList.add('open');
+          placeMenuUnder(speedBtn, speedMenu);
+          ev.stopPropagation();
+        };
+        const onAway = (ev) => {
+          if (!speedMenu.hidden && !speedMenu.contains(ev.target) && !speedBtn.contains(ev.target)) closeSpeed();
+        };
+        const onEsc = (ev) => { if (ev.key === 'Escape') closeSpeed(); };
+        document.addEventListener('click', onAway);
+        document.addEventListener('keydown', onEsc);
+        // Without this the listeners outlive the screen and stack up one pair per visit.
+        cleanup = () => {
+          document.removeEventListener('click', onAway);
+          document.removeEventListener('keydown', onEsc);
+        };
+      }
 
       // Re-entering the screen is what makes a new cube take effect: the solution, the move list
       // and the step count are all built at mount, so repainting in place would leave a fresh cube
@@ -908,13 +974,16 @@ SCREENS.viewer = () => {
       };
       $('#playBtn', root).onclick = () => setPlaying(!playing);
       $('#nextBtn', root).onclick = () => { setPlaying(false); cube.step(); };
-      $('#prevBtn', root).onclick = () => { setPlaying(false); cube.seek(Math.max(0, at - 1)); };
-      // Back and repeat are different questions. Back jumps to the previous step with no animation
-      // — you already know that move, you just want to be standing before it. Repeat answers "show
-      // me that again": it plays the move backwards and then forwards, both animated, so you watch
-      // the turn come undone and happen again. The renderer's queue is FIFO and pulls the next
-      // move only when the current one finishes, so pushing both here plays them in order.
+      // Back and repeat are both animated, at the one walking speed, and differ only in where they
+      // leave you. Back undoes the last move and stops there. Repeat answers "show me that again":
+      // it undoes the move and then makes it again, so you end up where you started having watched
+      // it twice. Neither jumps: a cut to a new state teaches nothing about the turn that got there.
+      // The renderer's queue is FIFO and pulls the next move only when the current one finishes,
+      // so pushing both halves of a repeat here plays them in order.
+      $('#prevBtn', root).onclick = () => { setPlaying(false); cube.stepBack(); };
       $('#repeatBtn', root).onclick = () => {
+        // Not merely belt-and-braces with the disabled attribute: stepBack() self-guards at step 0
+        // but step() does not, so without this a repeat at the start would go FORWARD one move.
         if (at === 0) return;
         setPlaying(false);
         cube.stepBack();
