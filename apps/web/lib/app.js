@@ -780,7 +780,10 @@ function followMoves(seq) {
 const faceName = (m) => ({ R: 'right', L: 'left', U: 'up', D: 'down', F: 'front', B: 'back' }[m[0]] || 'right');
 
 SCREENS.viewer = () => {
-  const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, tempo: 0.5, ghosts: false, coach: true });
+  // Ghosts default ON: this screen's job is reading a cube, and the three faces you cannot see are
+  // half of it. The rest match the renderer's own defaults, which is what makes it easy to miss
+  // that they were never being applied — see applyView below.
+  const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, tempo: 1, ghosts: true, coach: true });
   const seq = following;
   following = null;
   // Something to follow: either handed to us, or this cube needs solving and we can work it out.
@@ -845,7 +848,16 @@ SCREENS.viewer = () => {
       paintNet(state.cube.facelets);
 
       const applyGhost = () => cube.setAttribute('ghosts', v.ghosts ? 'floating' : 'none');
-      applyGhost();
+      // Every saved setting, pushed to the cube on arrival. Without this only `ghosts` was ever
+      // applied: the sliders rendered the saved numbers, so the screen claimed a camera angle and
+      // sticker scale it was not drawing, and moving a slider "fixed" it until the next reload.
+      // Driven off the same `sliders` table the inputs are built from, so the key→attribute map
+      // cannot drift between what is shown and what is set.
+      const applyView = () => {
+        applyGhost();
+        for (const [, k, , , , attr] of sliders) cube.setAttribute(attr, String(v[k]));
+      };
+      applyView();
       for (const inp of root.querySelectorAll('input[data-attr]')) {
         inp.oninput = () => { v[inp.dataset.k] = Number(inp.value); cube.setAttribute(inp.dataset.attr, inp.value); };
         inp.onchange = () => save('cubeView', v);
@@ -885,7 +897,6 @@ SCREENS.viewer = () => {
       } catch { setStatus('could not work it out'); return; }
       const total = moves.length;
       cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
-      cube.setAttribute('tempo-scale', String(v.tempo || 0.5));
       scrub.max = String(total); setStatus(total + ' moves');
       const stages = stageSplit(total);
       solList.innerHTML = stages.map(([name, a, b]) => `<div style="padding:10px 16px 14px">
