@@ -66,8 +66,8 @@ test('the screen never shows the camera picture', () => {
 
 test('an absent scanner bundle says so rather than claiming a camera is opening', () => {
   // <ai-scan-panel> is undefined here, so nothing will ever report — the screen must not sit on
-  // an "Opening the camera…" it cannot deliver.
-  assert.equal($('#scanMsg').textContent, 'Loading the scanner…');
+  // an "Opening the camera…" it cannot deliver. The scanner speaks through the aside card.
+  assert.equal($('#scanHow').textContent, 'Loading the scanner…');
 });
 
 test('the six sides start pending, with nothing captured', () => {
@@ -75,7 +75,6 @@ test('the six sides start pending, with nothing captured', () => {
   assert.equal(tiles.length, 6);
   assert.deepEqual(tiles.map((t) => t.dataset.face), FACES);
   assert.equal(tiles.filter((t) => t.classList.contains('done')).length, 0);
-  assert.equal($('#scanCount').textContent, '0 / 6 sides');
   assert.equal($('#scanBar').style.width, '0%');
 });
 
@@ -105,9 +104,8 @@ test('progress marks exactly the captured sides and moves the count', () => {
     captured: [face('R'), face('F')], live: null });
   const done = all('.scan-face').filter((t) => t.classList.contains('done'));
   assert.deepEqual(done.map((t) => t.dataset.face), ['R', 'F']);
-  assert.equal($('#scanCount').textContent, '2 / 6 sides');
   assert.equal($('#scanBar').style.width, `${(2 / 6) * 100}%`);
-  assert.equal($('#scanMsg').textContent, 'Got the Front side — 2/6. Show another side…');
+  assert.equal($('#scanHow').textContent, 'Got the Front side — 2/6. Show another side…');
 });
 
 test('the live 3x3 is the viewfinder: lit while a side is in view, dim when it is not', () => {
@@ -123,13 +121,15 @@ test('a restart un-captures the sides again rather than leaving them marked done
   progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
     captured: [], live: null });
   assert.equal(all('.scan-face.done').length, 0);
-  assert.equal($('#scanCount').textContent, '0 / 6 sides');
+  assert.equal($('#scanBar').style.width, '0%');
 });
 
 test('a failure surfaces on the screen and offers a retry', () => {
   progress({ phase: 'error', message: 'Cannot start: Permission denied', captured: [], live: null });
-  assert.ok($('#scanMsg').classList.contains('err'), 'an error must read as one');
-  assert.equal($('#scanMsg').textContent, 'Cannot start: Permission denied');
+  assert.ok($('#scanHow').classList.contains('err'), 'an error must read as one');
+  assert.equal($('#scanHow').textContent, 'Cannot start: Permission denied');
+  // ...and the card must not still be headed "How it works" over an error.
+  assert.equal($('#scanHowTitle').textContent, 'Camera trouble');
   // With no camera running the webcam button is the way back, and says so.
   assert.ok(!$('.scan-cam').classList.contains('on'), 'the lens must not read as live');
   assert.match($('#scanCamBtn').title, /click to turn it on/);
@@ -198,14 +198,45 @@ test('a nearly-solved cube points at the one side it needs shown again', () => {
   progress({ phase: 'confirm', message: 'Show the GREEN side again, with WHITE facing up.',
     captured: FACES.map(face), live: null, confirm: { face: 'F', up: 'U' } });
   assert.deepEqual(all('.scan-face.asked').map((t) => t.dataset.face), ['F']);
-  assert.equal($('#scanMsg').textContent, 'Show the GREEN side again, with WHITE facing up.');
-  assert.equal($('#scanCount').textContent, '6 / 6 sides', 'the six sides are still captured');
+  assert.equal($('#scanHow').textContent, 'Show the GREEN side again, with WHITE facing up.');
+  assert.equal($('#scanHowTitle').textContent, 'One more look');
+  assert.equal($('#scanBar').style.width, '100%', 'the six sides are still captured');
 });
 
 test('the pointer clears once the scan moves on', () => {
   progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
     captured: [], live: null, confirm: null });
   assert.deepEqual(all('.scan-face.asked'), []);
+});
+
+// The detector's held-out colour accuracy is ~90%, so a scan can fail on one sticker a person can
+// see at a glance. Clicking it must offer the six colours and push the correction back.
+test('a sticker on a captured side opens a colour picker and reports the correction', () => {
+  progress({ phase: 'scanning', message: 'Got the Right side — 1/6. Show another side…',
+    captured: [face('R')], live: null, confirm: null });
+  const calls = [];
+  panel().setSticker = (...args) => calls.push(args);
+  const cells = all('.scan-face[data-face="R"] .tile > i');
+  cells[0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  const pick = $('.swatches');
+  assert.ok(pick && !pick.hidden, 'clicking a captured sticker must offer the colours');
+  assert.equal(pick.querySelectorAll('button').length, 6, 'all six cube colours');
+  pick.querySelectorAll('button')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(calls, [['R', 0, 3]], 'face, sticker index, chosen colour class');
+  assert.equal($('.swatches').hidden, true, 'and it closes on choosing');
+});
+
+test('the centre sticker is not correctable — it names the face', () => {
+  const calls = [];
+  panel().setSticker = (...args) => calls.push(args);
+  all('.scan-face[data-face="R"] .tile > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('.swatches').hidden, true, 'no picker for the centre');
+  assert.deepEqual(calls, []);
+});
+
+test('a side with nothing read yet has nothing to correct', () => {
+  all('.scan-face[data-face="B"] .tile > i')[0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('.swatches').hidden, true);
 });
 
 // Left last: it navigates away, which tears the screen down.

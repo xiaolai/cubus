@@ -384,7 +384,7 @@ const FACE_EDGES = {
 SCREENS.scan = () => {
   const pal = NET_COLORS[settings.palette] || NET_COLORS.muted;
   const classColor = (i) => pal[NET_FACES[i]] || 'var(--facelet-off)';
-  const cell = (bg) => `<i style="background:${bg}"></i>`;
+  const cell = (bg) => `<i class="cell" style="background:${bg}"></i>`;
   // A pending tile is nine dim wells with the face's own colour in the centre, so the board reads
   // "the yellow side is still missing" without a legend.
   const pending = (f) => Array.from({ length: 9 }, (_, i) => cell(i === 4 ? pal[f] : 'var(--facelet-off)')).join('');
@@ -395,16 +395,17 @@ SCREENS.scan = () => {
   // The panel is registered by a module script; if that has not landed yet the element is still
   // inert, so say so rather than claiming a camera is opening.
   const registered = Boolean(customElements.get('ai-scan-panel'));
+  // Shown when the scanner is not saying anything more specific. The scan's own messages replace
+  // it, so the aside is one voice rather than a caption competing with a status line.
+  const HOW = 'The camera opens with this screen and the YOLO scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still. Each tile is edged in the colours of its neighbours: hold a side that way up and the scan needs nothing more from you. Got a sticker wrong? Click it and pick the right colour.';
+  // What to call the aside while the scanner is speaking, so "How it works" never heads an error.
+  const SAY_TITLE = { error: 'Camera trouble', confirm: 'One more look', checking: 'Checking', done: 'Scanned' };
   return {
     html: `<div class="cols">
     <div class="col">
       <div class="card scanboard">
         <ai-scan-panel headless autostart></ai-scan-panel>
         <div class="scan-live" id="scanLive">${blank}</div>
-        <div>
-          <div class="scan-msg" id="scanMsg">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
-          <div class="scan-count" id="scanCount">0 / ${NET_FACES.length} sides</div>
-        </div>
         <div class="bar" style="width:220px"><i id="scanBar" style="width:0%"></i></div>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
@@ -418,15 +419,15 @@ SCREENS.scan = () => {
       <div class="card"><div class="eyebrow">DETECTED STATE</div>
         <div class="cube-slot" id="scanCube" style="height:230px;margin-top:6px"></div>
         <div class="mono" id="scanState" style="margin-top:6px">${state.cube.facelets}</div></div>
-      <div class="card"><b style="font-size:var(--fs-body-l)">How it works</b>
-        <div class="sub" style="color:var(--ink-4);margin-top:4px">The camera opens with this screen and the YOLO scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still. Each tile is edged in the colours of its neighbours: hold a side that way up and the scan needs nothing more from you.</div></div>
+      <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
+        <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div></div>
       <button class="btn accent-outline block" data-go="guide">Solve this cube</button>
     </div></div>`,
     mount(root) {
       $('#scanCube', root).appendChild(newCube());
       const panel = $('ai-scan-panel', root);
-      const live = $('#scanLive', root), msg = $('#scanMsg', root);
-      const count = $('#scanCount', root), bar = $('#scanBar', root);
+      const live = $('#scanLive', root), bar = $('#scanBar', root);
+      const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root);
       const liveCells = [...live.querySelectorAll('i')];
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.background = classColor(colors[i]); });
@@ -479,8 +480,9 @@ SCREENS.scan = () => {
 
       panel.addEventListener('scan-progress', (e) => {
         const p = e.detail;
-        msg.textContent = p.message;
-        msg.className = 'scan-msg' + (p.phase === 'error' ? ' err' : p.phase === 'checking' || p.phase === 'done' ? ' ok' : '');
+        say.textContent = p.message || HOW;
+        say.className = 'sub scan-say' + (p.phase === 'error' ? ' err' : p.phase === 'checking' || p.phase === 'done' ? ' ok' : '');
+        sayTitle.textContent = (p.message && SAY_TITLE[p.phase]) || 'How it works';
         // The live 3x3 is the viewfinder: it shows the side the scanner can see right now, and
         // goes dim when it cannot see one — the same information a video feed would carry, minus
         // everything else in the room.
@@ -516,7 +518,6 @@ SCREENS.scan = () => {
             cam.value = [...cam.options].some((o) => o.value === id) ? id : '';
           });
         }
-        count.textContent = `${p.captured.length} / ${NET_FACES.length} sides`;
         bar.style.width = `${(p.captured.length / NET_FACES.length) * 100}%`;
       });
       // A rejected scan restarts itself and explains why through scan-progress, so there is
@@ -525,10 +526,63 @@ SCREENS.scan = () => {
         onFacelets(e.detail.facelets);
         go(settings.autosolve ? 'guide' : 'viewer');
       });
+      // The detector is good, not perfect, so let a person overrule it: click any sticker of a
+      // captured side and pick the right colour. Delegated rather than 54 listeners, and the
+      // centre is deliberately not offered — a centre colour IS the face's identity, so changing
+      // one would rename the face rather than correct it.
+      const swatches = document.createElement('div');
+      swatches.className = 'swatches';
+      swatches.hidden = true;
+      root.appendChild(swatches);
+      let editing = null;
+      const closeSwatches = () => { swatches.hidden = true; editing = null; root.querySelector('.scan-face .cell.editing')?.classList.remove('editing'); };
+      for (const f of NET_FACES) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.style.background = pal[f];
+        b.title = SCAN_FACE_NAME[f];
+        b.dataset.face = f;
+        b.onclick = () => {
+          if (editing) panel.setSticker?.(editing.face, editing.index, NET_FACES.indexOf(f));
+          closeSwatches();
+        };
+        swatches.appendChild(b);
+      }
+      $('.scan-faces', root).onclick = (ev) => {
+        const cellEl = ev.target.closest('.cell');
+        const tile = ev.target.closest('.scan-face');
+        if (!cellEl || !tile) return;
+        const index = [...cellEl.parentElement.children].indexOf(cellEl);
+        if (index === 4) return; // the centre names the face; it is not a correction
+        if (!tile.classList.contains('done')) return; // nothing read yet, so nothing to correct
+        closeSwatches();
+        editing = { face: tile.dataset.face, index };
+        cellEl.classList.add('editing');
+        // Mark the colour already there, so the picker shows what it is changing FROM.
+        const current = cellEl.style.background;
+        for (const b of swatches.children) b.classList.toggle('now', b.style.background === current);
+        swatches.hidden = false;
+        // Anchored below the TILE, not below the sticker: a picker covering the very sticker you
+        // are correcting hides the thing you need to look at. Fixed to the viewport so there is no
+        // offset-parent arithmetic, and clamped so an edge tile keeps it on screen.
+        const cellRect = cellEl.getBoundingClientRect();
+        const tileRect = tile.getBoundingClientRect();
+        const w = swatches.offsetWidth;
+        swatches.style.left = `${Math.min(Math.max(8, cellRect.left + cellRect.width / 2 - w / 2), window.innerWidth - w - 8)}px`;
+        swatches.style.top = `${tileRect.bottom + 6}px`;
+        ev.stopPropagation();
+      };
+      const onAway = (ev) => { if (!swatches.hidden && !swatches.contains(ev.target)) closeSwatches(); };
+      const onEsc = (ev) => { if (ev.key === 'Escape') closeSwatches(); };
+      document.addEventListener('click', onAway);
+      document.addEventListener('keydown', onEsc);
+
       // Removing the element releases the camera through disconnectedCallback, but a live camera
       // is not something to leave to a lifecycle callback firing — stop it explicitly first.
       cleanup = () => {
         navigator.mediaDevices?.removeEventListener?.('devicechange', onDevices);
+        document.removeEventListener('click', onAway);
+        document.removeEventListener('keydown', onEsc);
         panel.stop?.();
       };
     },
