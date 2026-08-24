@@ -4,6 +4,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Cubus</title>
+    <!-- Icons. All generated from dev-docs/design/icons/cubus-icon-flat.svg by
+         scripts/build-icons.sh — see dev-docs/icons.md. icon.svg is listed first so
+         browsers that support it skip the rasters entirely; favicon.ico stays for the
+         address bar and for anything that still asks for /favicon.ico by convention.
+         apple-touch-icon is deliberately opaque: iOS composites a transparent one
+         against black, which rings the tile. -->
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./icons/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#F6F2E9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#241F18" media="(prefers-color-scheme: dark)" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <!-- Fonts degrade to the system-ui / serif fallbacks in tokens.css when offline (Tauri). -->
