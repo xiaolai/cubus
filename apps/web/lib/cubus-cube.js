@@ -16,7 +16,12 @@ const PALETTES = {
 // PALETTES: those are puzzle data, six real sticker colours, and "unknown" is not one of them. It
 // exists so a half-finished scan can be drawn honestly; without it an unread sticker falls through
 // to its own face colour below and a cube nobody has scanned renders as solved.
-const UNKNOWN_STICKER = '#8C8578';
+//
+// Light on purpose. It is drawn at two weights — solid on a face you can see, and again at 0.45
+// as a floating ghost for one you cannot — and a mid grey that looked right as a ghost read as a
+// dark stone slab on the cube itself. Pitched so the two weights sit close together, and so an
+// unread face still reads as absent rather than as another sticker colour.
+const UNKNOWN_STICKER = '#C4BFB4';
 
 const FACES = [
   { key:'R', axis:'x', sign: 1, n:[ 1, 0, 0] },
