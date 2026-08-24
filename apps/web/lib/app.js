@@ -471,6 +471,10 @@ SCREENS.scan = () => {
           const got = p.captured.find((c) => c.face === f);
           const cells = [...tile.querySelectorAll('i')];
           tile.classList.toggle('done', Boolean(got));
+          // A nearly-solved cube can read as several different cubes; the scanner then names one
+          // side to show again, held a stated way up. Point at it — the sentence alone makes a
+          // child hunt through six tiles for the colour it named.
+          tile.classList.toggle('asked', p.confirm?.face === f);
           if (got) paint(cells, got.colors);
           else cells.forEach((c, i) => { c.style.background = i === 4 ? pal[f] : 'var(--facelet-off)'; });
         }

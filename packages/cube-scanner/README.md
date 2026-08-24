@@ -23,9 +23,36 @@ removed (see git history if you need them).
    (`NO_FACE` / `PARTIAL_FACE` / `BAD_GEOMETRY`) on a frame that isn't a clean single face.
 3. **`assembleColors`** maps the 6 faces' colour classes to a validated `ScanResult`, and
    **solves each face's rotation**: the camera can't know which way is up, so it searches all
-   4⁶ per-face rotations and keeps the unique solvable one (guaranteed correct — the true combo
-   is always in the solvable set). No solvable rotation ⇒ a colour misread (re-scan); more than
-   one ⇒ rotationally ambiguous. **The user can show each side any way up.**
+   4⁶ per-face rotations and keeps the solvable ones. No solvable rotation ⇒ a colour misread
+   (re-scan). **The user can show each side any way up.**
+
+### More than one solvable rotation is normal, and is not a failure
+
+Six face photographs with no known up-direction do not determine the cube. Turn the four side
+faces of a once-turned cube upside down and *one U turn from solved* reads as *one D turn from
+solved* — both legal, both solvable. Measured over random per-face rotations of states a known
+distance from solved, the share of scans with a single reading:
+
+| moves from solved | 0 | 1 | 2 | 3 | 4 | 5 | 10 | 20+ |
+|---|---|---|---|---|---|---|---|---|
+| one reading | 100% | **0%** | 10% | 34% | 50% | 70% | 96% | 100% |
+
+That is the worst possible shape for a beginner's tutor — a nearly-solved cube is the one it
+cannot read — and re-scanning cannot help, because the ambiguity belongs to the cube's state, not
+to how the faces were held.
+
+So `assembleColors` returns a **`confirm`** request instead of giving up: show one named side
+again, held with a named side facing up. Feed that capture back through the `confirmed` argument.
+With the confirmations answered, recovery is 196–200 out of 200 at every distance from solved,
+needing on average 2 extra looks for a once-turned cube and none for a scrambled one.
+
+**A confirmation is user input, so it can be a lie.** A look held a quarter-turn off eliminates
+the true reading and leaves an equally legal impostor — measured, that returned a confidently
+wrong cube in ~5% of ambiguous scans. So no reading is discarded on the strength of one look:
+every discarded reading must be contradicted by **two** confirmations. An honest look can never
+contradict the real cube, so a single mis-hold can no longer eliminate it — the worst it does is
+leave the scan ambiguous. When no remaining side could tell two readings apart, `assembleColors`
+says so and asks for a face to be turned, rather than guessing.
 
 ```ts
 import { createModelRunner } from 'cube-scanner/view/onnx-runtime';
@@ -64,7 +91,7 @@ much UI it owns on top of that:
 
 | Event | Detail | When |
 |---|---|---|
-| `scan-progress` | `{ phase, message, captured, live }` — `phase` is `starting`/`loading`/`scanning`/`checking`/`done`/`error`, `message` is a finished sentence, `captured` is `{ face, colors }[]` in URFDLB order, `live` is the 9 colour classes in view or `null` | Every state change. The built-in status line and this event always agree — they go through one code path. |
+| `scan-progress` | `{ phase, message, captured, live, device, confirm }` — `phase` is `starting`/`loading`/`scanning`/`confirm`/`checking`/`done`/`error`, `message` is a finished sentence, `captured` is `{ face, colors }[]` in URFDLB order, `live` is the 9 colour classes in view or `null`, `confirm` names the side being asked for | Every state change. The built-in status line and this event always agree — they go through one code path. |
 | `scan-complete` | `ScanResult` | A validated, solvable six-face read. The element stops itself. |
 | `scan-invalid` | `ScanResult` | The read did not validate. The element resets and keeps scanning; the reason arrives as the next `scan-progress`. |
 

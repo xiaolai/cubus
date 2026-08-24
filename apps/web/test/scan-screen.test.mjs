@@ -164,6 +164,23 @@ test('a live camera missing from the list falls back to Default rather than rend
   assert.equal(cam.selectedOptions[0].textContent, 'Default camera');
 });
 
+test('a nearly-solved cube points at the one side it needs shown again', () => {
+  // Six unoriented face photos genuinely do not determine a nearly-solved cube, so the scanner
+  // asks for one side back, held a stated way up. The sentence alone would send a child hunting
+  // through six tiles for the colour it named.
+  progress({ phase: 'confirm', message: 'Show the GREEN side again, with WHITE facing up.',
+    captured: FACES.map(face), live: null, confirm: { face: 'F', up: 'U' } });
+  assert.deepEqual(all('.scan-face.asked').map((t) => t.dataset.face), ['F']);
+  assert.equal($('#scanMsg').textContent, 'Show the GREEN side again, with WHITE facing up.');
+  assert.equal($('#scanCount').textContent, '6 / 6 sides', 'the six sides are still captured');
+});
+
+test('the pointer clears once the scan moves on', () => {
+  progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
+    captured: [], live: null, confirm: null });
+  assert.deepEqual(all('.scan-face.asked'), []);
+});
+
 // Left last: it navigates away, which tears the screen down.
 test('leaving the screen releases the camera', async () => {
   let stopped = 0;

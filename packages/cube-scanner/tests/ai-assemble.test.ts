@@ -73,3 +73,125 @@ describe('assembleColors', () => {
     expect(r.facelets).toBe(f); // …recovering the exact true cube, no orientation prompt needed
   });
 });
+
+// 90°-CW position map for a 3x3 face (centre fixed) — same as ai-assemble's internal one.
+const ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2];
+const rot = (a: number[], k: number): number[] => {
+  let o = a;
+  for (let t = 0; t < ((k % 4) + 4) % 4; t++) o = ROT90.map((i) => o[i]!);
+  return o;
+};
+/** The canonical (correctly held) capture of one side of a known cube. */
+const canonical = (facelets: string, face: Face, misHold = 0): ColorFace => ({
+  colors: rot(faces(facelets)[face]!.colors, misHold),
+  confidence: Array(9).fill(1),
+});
+
+/** Show all six sides at the given rotations, the way a user holds them: any way up. */
+const shownAs = (facelets: string, rots: number[]): Record<Face, ColorFace> => {
+  const f = faces(facelets);
+  FACES.forEach((face, fi) => {
+    f[face]!.colors = rot(f[face]!.colors, rots[fi]!);
+  });
+  return f;
+};
+
+/** Answer every `confirm` request, optionally mis-holding the nth one. Returns the final result. */
+function scanWithConfirmations(truth: string, rots: number[], misHoldNth = -1) {
+  const shown = shownAs(truth, rots);
+  let confirmed: Partial<Record<Face, ColorFace>> = {};
+  let looks = 0;
+  for (let round = 0; round < 8; round++) {
+    const r = assembleColors(shown, 0.15, confirmed);
+    if (r.valid || !r.confirm) return { ...r, looks };
+    if (r.mismatch) {
+      confirmed = {};
+      continue;
+    }
+    confirmed = {
+      ...confirmed,
+      [r.confirm.face]: canonical(truth, r.confirm.face, looks === misHoldNth ? 1 : 0),
+    };
+    looks++;
+  }
+  return { valid: false, facelets: '', looks, reason: 'gave up' } as const;
+}
+
+describe('assembleColors — cubes that six face photographs cannot pin down', () => {
+  // Six unoriented face images genuinely do not determine the cube: turn the four side faces of a
+  // once-turned cube upside down and "one U turn from solved" reads as "one D turn from solved".
+  // Both are legal. This is not a detector failure and re-scanning cannot fix it.
+  const oneTurn = scrambleFacelets('U');
+
+  it('asks for one more look instead of calling a perfectly good cube unsolvable', () => {
+    const r = assembleColors(faces(oneTurn));
+    expect(r.valid).toBe(false);
+    expect(r.ambiguous).toBe(true);
+    // The old behaviour said "that isn't a solvable cube yet" about a cube one turn from solved.
+    expect(r.reason).not.toMatch(/unsolvable|misread/);
+    expect(r.confirm).toBeDefined();
+    // A side face, so the instruction is the easy one: "hold the white side up".
+    expect(r.confirm?.up).toBe('U');
+  });
+
+  it('recovers the true cube once the confirmations are answered', () => {
+    const r = scanWithConfirmations(oneTurn, [0, 0, 0, 0, 0, 0]);
+    expect(r.valid).toBe(true);
+    expect(r.facelets).toBe(oneTurn);
+    expect(r.looks).toBeGreaterThan(0); // it genuinely needed the extra looks
+  });
+
+  it('a solved cube still needs no extra look — every rotation reads the same', () => {
+    const r = scanWithConfirmations(SOLVED_FACELETS, [1, 2, 3, 0, 1, 2]);
+    expect(r.valid).toBe(true);
+    expect(r.facelets).toBe(SOLVED_FACELETS);
+    expect(r.looks).toBe(0);
+  });
+
+  // The property that matters more than any of the above: a confirmation is USER INPUT, and a
+  // user who holds one look a quarter-turn off is feeding the search a lie. A lie must never be
+  // able to produce a confident WRONG cube — only no cube. Requiring every discarded reading to
+  // be contradicted TWICE is what buys this, since an honest look can never contradict the truth.
+  //
+  // "U R" is the case that proves it rather than decorating it: with the first look mis-held, a
+  // scanner that trusts a single confirmation discards the truth and returns an equally legal
+  // impostor. Relaxing the two-contradiction rule turns these rows red.
+  it('never returns a wrong cube when one confirmation is mis-held', () => {
+    const CASES: [string, number[]][] = [
+      ['U R', [0, 0, 0, 0, 0, 0]],
+      ['U R', [1, 0, 2, 0, 3, 0]],
+      ['U R', [0, 1, 0, 2, 0, 3]],
+      ['U R', [2, 2, 2, 2, 2, 2]],
+      ['U', [0, 0, 0, 0, 0, 0]],
+      ["R U'", [1, 1, 1, 1, 1, 1]],
+      ["F' D", [0, 2, 0, 2, 0, 2]],
+      ['L2 B', [3, 0, 1, 0, 3, 0]],
+      ["R U R' U'", [0, 1, 2, 3, 0, 1]],
+      ["F R U2 B'", [2, 0, 3, 1, 0, 2]],
+    ];
+    for (const [alg, rots] of CASES) {
+      const truth = scrambleFacelets(alg);
+      const r = scanWithConfirmations(truth, rots, 0);
+      // Refusing is fine. Returning someone else's cube is not.
+      if (r.valid) expect(`${alg}: ${r.facelets}`).toBe(`${alg}: ${truth}`);
+    }
+  });
+
+  it('still recovers those same cubes when the looks are held correctly', () => {
+    for (const alg of ['U R', 'U', "R U'", "R U R' U'"]) {
+      const truth = scrambleFacelets(alg);
+      const r = scanWithConfirmations(truth, [0, 1, 2, 3, 0, 1]);
+      expect(`${alg}: ${r.facelets}`).toBe(`${alg}: ${truth}`);
+    }
+  });
+
+  it('says so plainly when no further look could settle it, rather than guessing', () => {
+    // Exercised through the same path: whatever it returns must never be a confident wrong cube.
+    for (const alg of ['U2 D2', 'R2 L2', 'F2 B2', 'U2 D2 R2 L2']) {
+      const truth = scrambleFacelets(alg);
+      const r = scanWithConfirmations(truth, [0, 1, 2, 3, 0, 1]);
+      if (r.valid) expect(r.facelets).toBe(truth);
+      else expect(r.reason).toBeDefined();
+    }
+  });
+});
