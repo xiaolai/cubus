@@ -75,7 +75,8 @@ test('the six sides start pending, with nothing captured', () => {
   assert.equal(tiles.length, 6);
   assert.deepEqual(tiles.map((t) => t.dataset.face), FACES);
   assert.equal(tiles.filter((t) => t.classList.contains('done')).length, 0);
-  assert.equal($('#scanBar').style.width, '0%');
+  assert.equal($('#scanLive'), null, 'no separate viewfinder — the tiles and the aside say it all');
+  assert.equal($('#scanBar'), null, 'no progress bar — the tiles are the progress');
 });
 
 // Must run before anything repaints the tiles.
@@ -104,24 +105,13 @@ test('progress marks exactly the captured sides and moves the count', () => {
     captured: [face('R'), face('F')], live: null });
   const done = all('.scan-face').filter((t) => t.classList.contains('done'));
   assert.deepEqual(done.map((t) => t.dataset.face), ['R', 'F']);
-  assert.equal($('#scanBar').style.width, `${(2 / 6) * 100}%`);
   assert.equal($('#scanHow').textContent, 'Got the Front side — 2/6. Show another side…');
-});
-
-test('the live 3x3 is the viewfinder: lit while a side is in view, dim when it is not', () => {
-  progress({ phase: 'scanning', message: 'Reading a side — hold still…',
-    captured: [face('R'), face('F')], live: Array(9).fill(0) });
-  assert.ok($('#scanLive').classList.contains('reading'));
-  progress({ phase: 'scanning', message: 'Show any side to the camera — point a side at the camera…',
-    captured: [face('R'), face('F')], live: null });
-  assert.ok(!$('#scanLive').classList.contains('reading'));
 });
 
 test('a restart un-captures the sides again rather than leaving them marked done', () => {
   progress({ phase: 'scanning', message: 'Show any side to the camera — held flat and centred.',
     captured: [], live: null });
   assert.equal(all('.scan-face.done').length, 0);
-  assert.equal($('#scanBar').style.width, '0%');
 });
 
 test('a failure surfaces on the screen and offers a retry', () => {
@@ -200,7 +190,7 @@ test('a nearly-solved cube points at the one side it needs shown again', () => {
   assert.deepEqual(all('.scan-face.asked').map((t) => t.dataset.face), ['F']);
   assert.equal($('#scanHow').textContent, 'Show the GREEN side again, with WHITE facing up.');
   assert.equal($('#scanHowTitle').textContent, 'One more look');
-  assert.equal($('#scanBar').style.width, '100%', 'the six sides are still captured');
+  assert.equal(all('.scan-face.done').length, 6, 'the six sides are still captured');
 });
 
 test('the pointer clears once the scan moves on', () => {

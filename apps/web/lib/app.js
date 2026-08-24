@@ -388,7 +388,6 @@ SCREENS.scan = () => {
   // A pending tile is nine dim wells with the face's own colour in the centre, so the board reads
   // "the yellow side is still missing" without a legend.
   const pending = (f) => Array.from({ length: 9 }, (_, i) => cell(i === 4 ? pal[f] : 'var(--facelet-off)')).join('');
-  const blank = Array.from({ length: 9 }, () => cell('var(--facelet-off)')).join('');
   // border-color takes top/right/bottom/left in that order — the same order FACE_EDGES names.
   const e = (f) => FACE_EDGES[f];
   const edgeColors = (f) => `${pal[e(f).top]} ${pal[e(f).right]} ${pal[e(f).bottom]} ${pal[e(f).left]}`;
@@ -405,8 +404,6 @@ SCREENS.scan = () => {
     <div class="col">
       <div class="card scanboard">
         <ai-scan-panel headless autostart></ai-scan-panel>
-        <div class="scan-live" id="scanLive">${blank}</div>
-        <div class="bar" style="width:220px"><i id="scanBar" style="width:0%"></i></div>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
         <div class="scan-cam">
@@ -426,9 +423,7 @@ SCREENS.scan = () => {
     mount(root) {
       $('#scanCube', root).appendChild(newCube());
       const panel = $('ai-scan-panel', root);
-      const live = $('#scanLive', root), bar = $('#scanBar', root);
       const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root);
-      const liveCells = [...live.querySelectorAll('i')];
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.background = classColor(colors[i]); });
 
@@ -483,12 +478,6 @@ SCREENS.scan = () => {
         say.textContent = p.message || HOW;
         say.className = 'sub scan-say' + (p.phase === 'error' ? ' err' : p.phase === 'checking' || p.phase === 'done' ? ' ok' : '');
         sayTitle.textContent = (p.message && SAY_TITLE[p.phase]) || 'How it works';
-        // The live 3x3 is the viewfinder: it shows the side the scanner can see right now, and
-        // goes dim when it cannot see one — the same information a video feed would carry, minus
-        // everything else in the room.
-        live.classList.toggle('reading', Boolean(p.live));
-        if (p.live) paint(liveCells, p.live);
-        else liveCells.forEach((c) => { c.style.background = 'var(--facelet-off)'; });
         for (const tile of tiles) {
           const f = tile.dataset.face;
           const got = p.captured.find((c) => c.face === f);
@@ -518,7 +507,6 @@ SCREENS.scan = () => {
             cam.value = [...cam.options].some((o) => o.value === id) ? id : '';
           });
         }
-        bar.style.width = `${(p.captured.length / NET_FACES.length) * 100}%`;
       });
       // A rejected scan restarts itself and explains why through scan-progress, so there is
       // nothing to do here; only a validated cube leaves this screen.
