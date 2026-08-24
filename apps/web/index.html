@@ -209,7 +209,11 @@
          the single most common instruction ("hold white up"). The edge colours stay at full
          strength on pending tiles too; those are the sides still to be shown, so they need the
          guidance most. Dimness is carried by the cells alone. */
-      .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 6px; border-radius: var(--r-5); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; grid-template-columns: repeat(3,1fr); gap: 3px; }
+      /* Rows are declared, not left implicit. Implicit rows are auto-sized, so they were only equal
+         while every cell was empty — putting a glyph in the centre gave the middle row a content
+         height and stretched that whole row (33/48/33 instead of 38/38/38). A sticker grid must be
+         square whatever a cell happens to contain. */
+      .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 6px; border-radius: var(--r-5); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; grid-template-columns: repeat(3,1fr); grid-template-rows: repeat(3,1fr); gap: 3px; }
       .scan-face .tile > i { border-radius: 3px; background: var(--facelet-off); opacity: .3; }
       .scan-face .lbl { font-size: var(--fs-caption); font-weight: 700; letter-spacing: .03em; color: var(--ink-5); }
       /* Every sticker but the centre is correctable, on every side. */
