@@ -58,10 +58,10 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Pro
   if (!signal) return promise;
   return new Promise<T>((resolve, reject) => {
     if (signal.aborted) {
-      reject(new DOMException('camera open aborted', 'AbortError'));
+      reject(abortError());
       return;
     }
-    const onAbort = () => reject(new DOMException('camera open aborted', 'AbortError'));
+    const onAbort = () => reject(abortError());
     signal.addEventListener('abort', onAbort, { once: true });
     promise.then(
       (value) => {
@@ -76,6 +76,10 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Pro
   });
 }
 
+/** The one abort rejection. Four sites built this by hand; the message is what callers match on,
+ * so a typo in any one of them was a silent behaviour change. */
+const abortError = () => new DOMException('camera open aborted', 'AbortError');
+
 /** Open the webcam into the given <video> and return a frame grabber. */
 export async function openCamera(
   video: HTMLVideoElement,
@@ -83,7 +87,7 @@ export async function openCamera(
   signal?: AbortSignal,
 ): Promise<FrameSource> {
   // Already cancelled before we start? Don't even prompt for the camera.
-  if (signal?.aborted) throw new DOMException('camera open aborted', 'AbortError');
+  if (signal?.aborted) throw abortError();
 
   // An empty dict means "any camera", which is what we want when the caller expressed no
   // preference: let the platform hand over its default rather than steering to a facing mode
@@ -107,7 +111,7 @@ export async function openCamera(
     if (video.srcObject === stream) video.srcObject = null;
   };
   const throwIfAborted = (): void => {
-    if (signal?.aborted) throw new DOMException('camera open aborted', 'AbortError');
+    if (signal?.aborted) throw abortError();
   };
 
   // After acquisition, any failure OR cancellation (a newer open / a detach)
