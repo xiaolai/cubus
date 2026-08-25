@@ -1182,14 +1182,16 @@ var GanCube = class extends TinyEmitter {
    * See docs/protocol.md.
    */
   async anchorSolved(opts = {}) {
-    const { timeoutMs = 4e3 } = opts;
-    const before = await this.getState({ active: true, timeoutMs });
-    if (before.facelets !== SOLVED_FACELETS) {
-      throw new Error(
-        `refusing to anchor: the cube reports an unsolved state, and anchoring now would adopt it as the new solved reference, desyncing the driver from the cube permanently. Solve the cube first.
+    const { timeoutMs = 4e3, force = false } = opts;
+    if (!force) {
+      const before = await this.getState({ active: true, timeoutMs });
+      if (before.facelets !== SOLVED_FACELETS) {
+        throw new Error(
+          `refusing to anchor: the cube reports an unsolved state, and anchoring now would adopt it as the new solved reference, desyncing the driver from the cube permanently. Solve the cube first \u2014 or, if it IS solved and the cube's own reference has drifted, anchor with { force: true }.
   reported: ${before.facelets}
   expected: ${SOLVED_FACELETS}`
-      );
+        );
+      }
     }
     await this.sendUnsafe("REQUEST_RESET");
     const after = await this.getState({ active: true, timeoutMs });

@@ -1253,7 +1253,8 @@ SCREENS.settings = () => {
         ${steps.map(([t, sub], i) => `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line-faint)">
           <div class="num" style="width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid ${done(i) ? 'var(--ok)' : 'var(--line)'};display:grid;place-items:center;font-size:var(--fs-meta);color:${done(i) ? 'var(--ok)' : 'var(--ink-5)'}">${done(i) ? '✓' : i + 1}</div>
           <div style="flex:1"><div style="font-weight:600">${t}</div><div class="sub" style="color:var(--ink-4)">${sub}</div></div>
-          ${i === 2 && on ? `<button class="btn accent-outline sm" id="anchorBtn" style="flex:none">${state.anchored ? 'Re-mark' : 'Mark it solved'}</button>` : ''}
+          ${i === 2 && on ? `<button class="btn accent-outline sm" id="anchorBtn" style="flex:none">${state.anchored ? 'Re-mark' : 'Mark it solved'}</button>
+          <button class="btn sm" id="anchorForceBtn" hidden style="flex:none;border:1px solid var(--warn);color:var(--warn)">It is solved — anchor anyway</button>` : ''}
         </div>`).join('')}
       </div>`; })()}
       <div class="card"><div class="eyebrow">TIMER & CAMERA</div>
@@ -1328,21 +1329,36 @@ SCREENS.settings = () => {
       // otherwise rather than adopting a scrambled position as the origin. The button is
       // deliberately not disabled when the cube is unsolved: the driver's refusal explains WHY,
       // which teaches the step. A dead button would not.
-      const anchorBtn = $('#anchorBtn', root);
-      if (anchorBtn) anchorBtn.onclick = async () => {
+      const anchorBtn = $('#anchorBtn', root), forceBtn = $('#anchorForceBtn', root);
+      // The precondition can dead-end an honest user, so the refusal has to offer a way through.
+      //
+      // A cube whose internal solved-reference has drifted reports an unsolved state WHILE SITTING
+      // SOLVED on the desk, and REQUEST_RESET is the only thing that repairs it — so refusing
+      // outright locks the repair away in the exact case it exists for. Nothing here can tell that
+      // apart from a genuinely scrambled cube; the person holding it can. So the override is
+      // offered, never taken automatically, and it says what it will do.
+      const anchor = async (force) => {
         if (!conn) { say('not connected', 'var(--err)'); return; }
-        anchorBtn.disabled = true;
-        say('anchoring…', 'var(--ink-4)');
+        anchorBtn.disabled = true; forceBtn.disabled = true;
+        say(force ? 'anchoring anyway…' : 'anchoring…', 'var(--ink-4)');
         try {
-          await conn.anchorSolved();
+          await conn.anchorSolved(force ? { force: true } : {});
           state.anchored = true;
           say('Anchored — the cube agrees it is solved.', 'var(--ok)');
           renderScreen();
         } catch (e) {
           state.anchored = false;
-          say(String(e.message || e).split('\n')[0], 'var(--err)');
-        } finally { anchorBtn.disabled = false; }
+          const msg = String(e.message || e).split('\n')[0];
+          if (!force && /refusing to anchor/i.test(msg)) {
+            say('The cube reports it is not solved. If it IS solved in front of you, its own reference has drifted — anchoring will reset it to this position.', 'var(--warn)');
+            forceBtn.hidden = false;
+          } else {
+            say(msg, 'var(--err)');
+          }
+        } finally { anchorBtn.disabled = false; forceBtn.disabled = false; }
       };
+      if (anchorBtn) anchorBtn.onclick = () => { forceBtn.hidden = true; void anchor(false); };
+      if (forceBtn) forceBtn.onclick = () => { void anchor(true); };
 
       for (const b of root.querySelectorAll('[data-nav-toggle]')) b.onclick = () => {
         const id = b.dataset.navToggle;

@@ -136,3 +136,43 @@ describe('anchorSolved — fails loud if the cube ends up elsewhere', () => {
     await expect(sim.cube.anchorSolved()).rejects.toThrow(/anchor failed/i);
   });
 });
+
+// The precondition alone is a catch-22: a cube whose internal reference has drifted reports an
+// unsolved state while being physically solved, and REQUEST_RESET is what repairs exactly that.
+// Refusing unconditionally puts the repair out of reach in the one case it is for. The driver
+// cannot distinguish "solved cube, drifted reference" from "scrambled cube" — both look identical
+// from here — so the override belongs to whoever can see the cube, and is never inferred.
+describe('anchorSolved({ force }) — the drifted-reference escape hatch', () => {
+  it('anchors a cube that reports unsolved when a human vouches for it', async () => {
+    const { cube, writes, state } = simulateCube(SCRAMBLED);
+    // A real reset makes the cube report solved from then on; the simulator has to do the same or
+    // the post-write re-read would fail for the wrong reason.
+    const p = cube.anchorSolved({ force: true });
+    state.facelets = SOLVED_FACELETS;
+    await expect(p).resolves.toMatchObject({ facelets: SOLVED_FACELETS });
+    expect(writes).toContain(expectedResetHex);
+  });
+
+  it('still refuses without force, and transmits nothing', async () => {
+    const { cube, writes } = simulateCube(SCRAMBLED);
+    await expect(cube.anchorSolved()).rejects.toThrow(/refusing to anchor/i);
+    await tick();
+    expect(writes).not.toContain(expectedResetHex);
+  });
+
+  // force skips the BEFORE check only. The after-read still runs, so a cube that ignored the
+  // command entirely is still caught -- it cannot catch a wrongly-forced anchor, because a reset
+  // makes the cube report solved either way. That distinction is the human's, and only theirs.
+  it('still re-reads afterwards: a cube that stayed unsolved is caught', async () => {
+    const { cube, state } = simulateCube(SCRAMBLED);
+    state.facelets = SCRAMBLED; // the reset did not take
+    await expect(cube.anchorSolved({ force: true })).rejects.toThrow(
+      /did not report a solved state/i,
+    );
+  });
+
+  it('the refusal explains the escape hatch rather than dead-ending', async () => {
+    const { cube } = simulateCube(SCRAMBLED);
+    await expect(cube.anchorSolved()).rejects.toThrow(/force/i);
+  });
+});
