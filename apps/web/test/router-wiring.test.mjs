@@ -750,3 +750,32 @@ test('a snapshot from off the plan is named, and clears once the cube rejoins', 
     state.connected = false; state.cubeName = '';
   }
 });
+
+// The off-track note lives at the FOOT OF THE SOLUTION CARD, and that placement is the fix, not a
+// preference. In the transport row, showing it changed that card's height, which resized the cube
+// card above it — so every stray turn made the whole page flash. In the solution card it takes its
+// space from #solList, which is `flex:1` and scrolls, and the aside is a separate column from the
+// cube. Measured at the time: showing it changes ONLY #solList's height (477px -> 395px); the cube
+// card, the canvas, the transport and the card's own box are all unchanged to the pixel.
+test('the off-track note sits in the solution card, not in the transport', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    const note = win.document.querySelector('#followNote');
+    assert.ok(note, 'the note is in the markup');
+
+    const card = note.closest('.card');
+    assert.ok(card, 'it is inside a card');
+    assert.ok(card.contains(win.document.querySelector('#solList')), 'that card is the solution card');
+    assert.equal(card.contains(win.document.querySelector('.transport')), false, 'and not the transport card');
+
+    // It must be the LAST child, or it would push the list around from the middle.
+    assert.equal(card.lastElementChild, note, 'it is the foot of the card');
+
+    // The list has to be the thing that gives up the space.
+    const listCls = win.document.querySelector('#solList').className;
+    assert.match(listCls, /\blist\b/, '#solList must keep the .list class that makes it flex:1 and scroll');
+  } finally {
+    state.connected = false; state.cubeName = '';
+  }
+});
