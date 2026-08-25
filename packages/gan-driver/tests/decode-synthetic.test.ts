@@ -3,7 +3,7 @@
 // hand-build the exact Gen4 plaintext frames and assert the decode, no hardware.
 
 import { describe, expect, it } from 'vitest';
-import { buildCommand } from '../src/gen4/commands.js';
+import { buildCommand, buildUnsafeCommand } from '../src/gen4/commands.js';
 import { decodeGen4 } from '../src/gen4/decode.js';
 
 /** Build a 20-byte message from a hex prefix, zero-padded. */
@@ -25,6 +25,17 @@ describe('buildCommand', () => {
       0xdd, 0x04, 0x00, 0xef, 0x00, 0x00,
     ]);
     expect(buildCommand('REQUEST_FACELETS')).toHaveLength(20);
+  });
+
+  // The switch used to fall through on an unrecognised name and return its zero-filled frame. That
+  // frame is indistinguishable from a real packet by the time it reaches the cipher, so a typo or a
+  // newly added command someone forgot to encode would be encrypted and written to the cube as
+  // twenty bytes of nothing. TypeScript blocks it at compile time; plain-JS consumers are not.
+  it('refuses an unknown command instead of encoding a zero frame', () => {
+    // @ts-expect-error — deliberately violating the union, which is what a JS caller can do
+    expect(() => buildCommand('REQUEST_NONSENSE')).toThrow(/unknown safe command/);
+    // @ts-expect-error — same, for the unsafe builder
+    expect(() => buildUnsafeCommand('NOT_A_COMMAND')).toThrow(/unknown unsafe command/);
   });
 });
 
