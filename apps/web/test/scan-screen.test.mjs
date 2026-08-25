@@ -268,13 +268,19 @@ test('with the camera dark, the restart button is the way back on', () => {
 
 // Clicking a sticker used to place a real text caret in it — invisible in Chrome, blinking in the
 // WKWebView the desktop app runs in. The cure is `user-select: none` on the shell, and the half
-// that is easy to lose is the other one: restoring selection for the facelet string, which is the
-// one thing on these screens worth copying and has no Copy button on every screen that shows it.
+// that is easy to lose is the other one: putting selection BACK where a user genuinely needs it.
+//
+// That second half used to name `.mono`, the raw facelet string. Both screens that printed one
+// dropped it (the Restore card, then the cube screen's state card), so the exception guarded a
+// class no element carries and the audit flagged the rule as dead. Real form controls are what is
+// left that must stay selectable — a text input you cannot put a cursor in is broken, and that is
+// the failure `user-select: none` on the shell would cause if the exception were ever lost.
 // Asserted against the stylesheet text because the test DOM has no layout engine to compute it.
-test('the shell takes no text caret, but the facelet string stays copyable', () => {
+test('the shell takes no text caret, but real inputs stay selectable', () => {
   const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
   assert.match(css, /body\s*\{[^}]*user-select:\s*none/, 'the shell must not take a caret');
-  assert.match(css, /\.mono[^{]*\{[^}]*user-select:\s*text/, 'the facelet string must stay selectable');
+  assert.match(css, /input[^{]*\{[^}]*user-select:\s*text/, 'form controls must stay selectable');
+  assert.doesNotMatch(css, /\.mono\s*\{/, 'the .mono rule is dead — no element carries the class');
 });
 
 // Painting and the camera are exclusive: one authors the cube, the other reads it.
@@ -384,4 +390,118 @@ test('leaving the screen releases the camera', async () => {
   await tick();
   assert.equal(stopped, 1, 'the panel must be stopped, not left to a lifecycle callback');
   assert.equal(panel(), null, 'and removed from the page');
+});
+
+// The centre sticker must show its TRUE colour.
+//
+// It is the one sticker whose colour is certain — it names the face, and the eight around it are
+// read against it. An earlier version laid `inset 0 0 0 100px rgba(0,0,0,.3)` over it so the white
+// rescan glyph stayed legible, which rendered every centre as a darkened version of itself: six
+// faces showing a seventh and eighth colour the cube does not have.
+//
+// Asserted against the stylesheet text because the test DOM computes no styles. Measured in a real
+// browser at the time of the fix: centre and edge resolve to the same rgb() on all six colours,
+// and the glyph stays at 0.92 opacity carried by its own drop-shadow.
+test('nothing paints over the centre sticker', () => {
+  const css = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  const centreRules = css
+    .split('}')
+    .filter((r) => /\.scan-face[^{]*nth-child\(5\)(?![^{]*\.ic)/.test(r.split('{')[0] ?? ''));
+  assert.ok(centreRules.length > 0, 'the centre rules moved — update this test');
+  for (const rule of centreRules) {
+    assert.doesNotMatch(rule, /inset/, `an inset shadow tints the centre: ${rule.trim().slice(0, 90)}`);
+    assert.doesNotMatch(rule, /background/, `a background overrides the read colour: ${rule.trim().slice(0, 90)}`);
+  }
+  // The glyph stays readable on all six by its own contrast, not by darkening the sticker.
+  assert.match(css, /nth-child\(5\) > \.ic[^}]*drop-shadow/, 'the glyph needs its own halo');
+});
+
+// The handoff itself: does "Solve this cube" carry the CURRENT read across to the cube screen?
+//
+// This is the seam that a screen rename silently breaks. The button is a `data-go`, so retargeting
+// it during the Home/viewer restructure changed where the scan lands without touching the code
+// that produces the state — and nothing else in the suite followed the state across the jump.
+test('Solve this cube hands the cube screen the arrangement that was scanned', async () => {
+  // Same real `R U R' U'` state. cubejs runs here, so setFacelets derives a genuine setup alg.
+  const scrambled = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  const { state } = await import('../lib/app.js');
+
+  win.location.hash = '#/scan';
+  await tick();
+  await new Promise((r) => setTimeout(r, 50));
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: scrambled, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  assert.equal(state.cube.facelets, scrambled, 'the scan reaches shared state');
+  assert.ok(state.cube.solvable, 'and is recognised as solvable, or the cube screen has nothing to walk');
+
+  const solve = [...win.document.querySelectorAll('[data-go]')]
+    .find((b) => b.textContent.includes('Solve this cube'));
+  assert.ok(solve, 'the button is on the scan screen');
+  solve.click();
+  await tick();
+  await new Promise((r) => setTimeout(r, 50));
+
+  assert.equal(win.location.hash, '#/home', 'it lands on the cube screen');
+  assert.equal(state.cube.facelets, scrambled, 'and the state survived the navigation');
+
+  // INITIAL STATE draws from the same string: each sticker carries its facelet letter as a class,
+  // so the net can be read back and compared character for character.
+  const net = [...win.document.querySelectorAll('#viewNet .sticker')]
+    .map((e) => e.className.split(' ')[1]).join('');
+  assert.equal(net, scrambled, 'the cube screen shows the arrangement that was scanned');
+});
+
+// The other half of the handoff: a CORRECTED read must be the one that travels.
+//
+// Corrections do not go through the app at all — clicking a swatch calls panel.setSticker(), the
+// panel re-validates, and only a fresh scan-complete puts anything back into shared state. So the
+// path is real but indirect, and "the cube screen solves the cube you scanned before you fixed it"
+// is a failure with no error attached to it. This drives the panel the way a swatch click does.
+test('a corrected sticker is what reaches the cube screen, not the original read', async () => {
+  const first = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  // The same cube one more turn on: a different, still-solvable state, standing in for whatever
+  // the panel re-validates to after a sticker is overruled.
+  const corrected = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+  const { state } = await import('../lib/app.js');
+
+  win.location.hash = '#/scan';
+  await tick();
+  await new Promise((r) => setTimeout(r, 50));
+
+  // Editing is gated on a side having been READ — a sticker nobody has seen has nothing to
+  // correct. That state arrives via scan-progress, not scan-complete, so mark the sides first.
+  progress({ phase: 'scanning', message: 'Got every side.', captured: FACES.map(face), live: null });
+  assert.equal(all('.scan-face.done').length, 6, 'precondition: every side reads as captured');
+
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: first, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  assert.equal(state.cube.facelets, first, 'the first read lands');
+
+  // A swatch click ends in panel.setSticker(); the panel answers with a fresh scan-complete.
+  const calls = [];
+  panel().setSticker = (...args) => calls.push(args);
+  const cell = $('.scan-face[data-face="U"] .tile > i:nth-child(1)');
+  cell.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  const swatch = $('.swatches button[data-face="R"]');
+  assert.ok(swatch, 'the six-colour picker opened on a read side');
+  swatch.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(calls.length, 1, 'the correction is handed to the panel, which owns validation');
+
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: corrected, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  assert.equal(state.cube.facelets, corrected, 'the re-validated read replaces the first');
+
+  [...win.document.querySelectorAll('[data-go]')]
+    .find((b) => b.textContent.includes('Solve this cube'))
+    .click();
+  await tick();
+  await new Promise((r) => setTimeout(r, 50));
+
+  const net = [...win.document.querySelectorAll('#viewNet .sticker')]
+    .map((e) => e.className.split(' ')[1]).join('');
+  assert.equal(net, corrected, 'the cube screen shows the CORRECTED cube');
+  assert.notEqual(net, first, 'and not the read it replaced');
 });

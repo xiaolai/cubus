@@ -4,8 +4,10 @@
 // it. It has no workers and no dynamic imports, so a plain bundle is safe here — unlike cubing,
 // which spawns a worker and is copied wholesale instead (see vendor-cubing.mjs).
 //
-// This replaces a runtime fetch of cubejs@1.3.2 from esm.sh. The dependency is pinned in
-// package.json now, so the version is reviewable and the app works offline.
+// This replaces a runtime fetch of cubejs@1.3.2 from esm.sh. It is a normal `dependencies` entry
+// now (`^1.3.2`, resolved exactly by pnpm-lock.yaml), so the version is reviewable and the app
+// works offline. Note it is a caret range, not a pin — the lockfile is what fixes the version, and
+// `pnpm update` can move it.
 //
 // Written without a literal remote import expression on purpose: solver-offline.test.mjs greps
 // these sources for one, and a quoted example in a comment would trip it. Weakening the grep to
