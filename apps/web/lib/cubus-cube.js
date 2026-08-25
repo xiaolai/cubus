@@ -85,16 +85,22 @@ class CubusCube extends HTMLElement {
     super();
     // Defaults match the codebase player's control panel, except ghosts:
     // those are opt-in here because they crowd a small embedded cube.
-    this._attrs = {
-      palette: 'muted', ghosts: 'none', 'ghost-elevation': '4',
-      'camera-distance': '12', 'camera-latitude': '35', 'camera-longitude': '45',
-      'facelet-scale': '0.9', 'tempo-scale': '1', 'back-view': 'none',
-    };
+    this._attrs = { ...CubusCube.DEFAULTS };
   }
+  /** Attribute defaults. Also what a REMOVED attribute falls back to — see _set(). */
+  static DEFAULTS = {
+    palette: 'muted', ghosts: 'none', 'ghost-elevation': '4',
+    'camera-distance': '12', 'camera-latitude': '35', 'camera-longitude': '45',
+    'facelet-scale': '0.9', 'tempo-scale': '1', 'back-view': 'none',
+  };
+
   attributeChangedCallback(name, _old, val) { this._set(name, val); }
   _set(name, val) {
     name = CubusCube.ALIAS[String(name).toLowerCase()] || name;
-    this._attrs[name] = val;
+    // removeAttribute() arrives here with val === null. Storing that raw meant `ghosts` read as
+    // neither 'none' nor 'false' and so counted as ENABLED — removing the attribute turned ghosts
+    // on rather than off. A removed attribute means "back to the default", not "null".
+    this._attrs[name] = val == null ? CubusCube.DEFAULTS[name] : val;
     if (!this._ghostMeshes) return;
     if (name === 'palette') this._paint();
     else if (name === 'ghosts') { this._ghostVisible(); this._paint(); this._applyCamera(); }
@@ -463,7 +469,9 @@ class CubusCube extends HTMLElement {
       }
     }
     this._dirty = true;
-    this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: 0, total: this._sol.length } }));
+    if (!this._quiet) {
+      this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: 0, total: this._sol.length } }));
+    }
   }
 
   play() { this._playing = true; this._next(); }
@@ -481,8 +489,15 @@ class CubusCube extends HTMLElement {
   // stepBack() and no longer calls this; it stays as renderer API for jumping to a position
   // (a scrubber, a deep link into a solve) where animating every move in between is wrong.
   seek(k) {
-    const target = Math.max(0, Math.min(Math.round(k), this._sol.length));
-    this.reset();
+    // A non-finite k made target NaN, which then became _cursor and _applied — and from there
+    // step() read _sol[NaN] and the transport quietly stopped responding, with nothing thrown.
+    const n = Number(k);
+    const target = Number.isFinite(n) ? Math.max(0, Math.min(Math.round(n), this._sol.length)) : 0;
+    // reset() announces index 0. Without suppressing it, every seek emitted TWO cubus-step events
+    // — 0 then the target — so hosts saw the step counter and progress bar snap to zero and back
+    // on each jump.
+    this._quiet = true;
+    try { this.reset(); } finally { this._quiet = false; }
     for (let i = 0; i < target; i++) {
       const m = this._sol[i];
       const t = this._grab(m);
