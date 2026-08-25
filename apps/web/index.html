@@ -280,6 +280,12 @@
       .card-tools > .ind[hidden] { display: none; }
       .card-tools > .ind .ic { animation: cubusPulse var(--pulse) infinite; }
       .scan-cam.on #scanCamBtn { color: var(--ok); }
+      /* Asking whether the cube's own report matches the cube in your hands. Sits directly under the
+         2D net, because the net is what you compare against — it shows all six sides at once,
+         where the 3D twin shows three and the other half is a guess. */
+      .cube-confirm { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: var(--s-9); text-align: center; max-width: 460px; }
+      .cube-confirm[hidden] { display: none; }
+      .cube-confirm .acts { display: flex; gap: 8px; }
       /* Painting is a mode, so it reads as held down rather than as a nudge, and the camera dims
          beside it — the two cannot both be true. */
       .scan-cam.paint #scanPaintBtn { background: var(--accent); color: #fff; }

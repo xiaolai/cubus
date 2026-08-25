@@ -505,3 +505,106 @@ test('a corrected sticker is what reaches the cube screen, not the original read
   assert.equal(net, corrected, 'the cube screen shows the CORRECTED cube');
   assert.notEqual(net, first, 'and not the read it replaced');
 });
+
+// ---- Reading from a connected cube -------------------------------------------------------
+//
+// A connected cube already knows its arrangement, so asking the camera to re-derive it is eight
+// seconds spent on something available instantly. But the cube tracks turns rather than seeing
+// itself: disconnect it, turn it, reconnect, and it reports a confidently wrong state that no
+// amount of software can distinguish from a right one. So we show what it claims and ask.
+test('with a cube connected, Restore reads the cube instead of opening the camera', async () => {
+  const { state } = await import('../lib/app.js');
+  const SCRAMBLED = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  state.connected = true;
+  state.cubeName = 'GAN-test';
+  try {
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/scan';
+    await tick();
+
+    // The panel must NOT be told to autostart — the camera is the fallback here, not the default.
+    const el = $('#stage ai-scan-panel');
+    assert.ok(el, 'the scanner element is still mounted');
+    assert.equal(el.hasAttribute('autostart'), false, 'the camera does not open on its own');
+  } finally {
+    state.connected = false;
+    state.cubeName = '';
+  }
+});
+
+test('with no cube, Restore opens the camera exactly as before', async () => {
+  win.location.hash = '#/home';
+  await tick();
+  win.location.hash = '#/scan';
+  await tick();
+  assert.equal($('#stage ai-scan-panel').hasAttribute('autostart'), true, 'the camera still leads');
+  assert.equal($('#cubeConfirm'), null, 'and nothing asks about a cube that is not there');
+});
+
+test('confirming the cube adopts its state without ever opening the camera', async () => {
+  const { state } = await import('../lib/app.js');
+  const SCRAMBLED = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  win.location.hash = '#/home';
+  await tick();
+  win.cubusFeed.useConnection({ getState: async () => ({ facelets: SCRAMBLED }) });
+  win.location.hash = '#/scan';
+  await tick();
+  await new Promise((r) => setTimeout(r, 100));
+  try {
+    assert.equal($('#cubeConfirm')?.hidden, false, 'it asks before trusting the cube');
+
+    // The question must be answerable by looking. A centre never moves, so a question about one
+    // reads identically for every cube and cannot fail — the first version did that, and a check
+    // that always passes manufactures confidence rather than earning it.
+    const q = $('#cubeConfirmMsg').textContent;
+    assert.match(q, /corner/, 'it names a corner, which moves');
+    assert.doesNotMatch(q, /centre/i, 'not a centre, which does not');
+
+    $('#cubeYes').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await tick();
+    assert.equal(state.cube.facelets, SCRAMBLED, 'the cube state is adopted');
+    assert.equal($('#cubeConfirm').hidden, true);
+    assert.match($('#scanHowTitle').textContent, /Read from your cube/);
+  } finally {
+    win.cubusFeed.useConnection(null);
+  }
+});
+
+test('declining falls back to the camera and clears what the cube claimed', async () => {
+  const SCRAMBLED = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  win.location.hash = '#/home';
+  await tick();
+  win.cubusFeed.useConnection({ getState: async () => ({ facelets: SCRAMBLED }) });
+  win.location.hash = '#/scan';
+  await tick();
+  await new Promise((r) => setTimeout(r, 100));
+  try {
+    const starts = [];
+    panel().start = () => starts.push(1);
+    $('#cubeNo').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await tick();
+    assert.equal(starts.length, 1, 'the camera starts only now, when it is actually needed');
+    assert.equal($('#cubeConfirm').hidden, true);
+    assert.ok(all('.scan-face').every((t) => !t.classList.contains('done')), 'the cube read is cleared');
+  } finally {
+    win.cubusFeed.useConnection(null);
+  }
+});
+
+// A flag saying "connected" with no driver behind it must not strand the user on a screen with no
+// camera and no cube. Falling back is the only safe answer.
+test('connected with no working connection falls back to the camera', async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/home';
+  await tick();
+  state.connected = true;             // flag on, but conn is null
+  try {
+    win.location.hash = '#/scan';
+    await tick();
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal($('#cubeConfirm').hidden, true, 'nothing is claimed about a cube we cannot ask');
+  } finally {
+    state.connected = false;
+  }
+});
