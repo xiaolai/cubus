@@ -32,11 +32,11 @@
       /* Chrome is not a document. Clicking a sticker, a nav item or a button placed a real text
          caret (getSelection().type === 'Caret') inside it; Chrome does not paint one, but the
          WKWebView the desktop app runs in does, so clicking a cube face blinked an insertion point
-         in it. Selection is restored below for the things worth copying, since turning it off
-         everywhere would make the facelet string unselectable — and it has no Copy button on every
-         screen that shows it. */
+         in it. Selection is restored below for real form controls: a text input you cannot put a
+         cursor in is broken. It used to be restored for .mono, the raw facelet string, but both
+         screens that printed one dropped it, so that exception guarded nothing and is gone. */
       body { user-select: none; -webkit-user-select: none; }
-      .mono, input, select, textarea { user-select: text; -webkit-user-select: text; }
+      input, select, textarea { user-select: text; -webkit-user-select: text; }
       body {
         margin: 0; background: var(--bg); color: var(--ink);
         font-family: var(--font-ui); font-size: var(--fs-body); line-height: var(--lh-body);
@@ -114,8 +114,6 @@
       .brand .mark { flex: none; width: 26px; height: 26px; display: block; }
       .brand b { font-family: var(--font-num); font-weight: 700; font-size: var(--fs-wordmark); letter-spacing: -.01em; }
       .nav { flex: 1; min-height: 0; overflow-y: auto; }
-      .nav-group { margin-bottom: 16px; }
-      .nav-group > .eyebrow { padding: 0 16px 6px; }
       .nav-item {
         display: flex; align-items: center; gap: 10px; padding: 7px 16px; width: 100%;
         border-left: 3px solid transparent; color: var(--ink-3); font-size: var(--fs-body-l); text-align: left;
@@ -125,12 +123,6 @@
       .nav-item .ico { display: grid; place-items: center; width: 16px; }
       .nav-item .lbl { flex: 1; }
       .nav-item .meta { font-family: var(--font-num); font-size: var(--fs-meta); color: var(--ink-5); }
-      .cube-status { margin: 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-4); background: var(--bg); }
-      .cube-status .row { display: flex; align-items: center; gap: 8px; }
-      .cube-status .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); animation: cubusPulse var(--pulse) infinite; }
-      .cube-status.on .pulse { background: var(--ok); }
-      .cube-status b { font-size: var(--fs-body-s); font-weight: 600; }
-      .cube-status .sub { font-size: var(--fs-caption); color: var(--ink-4); margin-top: 3px; }
       @keyframes cubusPulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
 
       /* main column */
@@ -148,7 +140,6 @@
       .card { border: 1px solid var(--line); border-radius: var(--r-5); background: var(--panel); padding: 16px 18px; }
       .card.tight { padding: 0; overflow: hidden; }
       .card.dark { background: var(--invert-bg); color: var(--invert-fg); border-color: var(--invert-bg); }
-      .stat { }
       .stat .v { font-family: var(--font-num); font-size: var(--fs-display); font-weight: 600; letter-spacing: -.02em; }
       .stat .d { font-size: var(--fs-body-s); color: var(--ink-4); }
       .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
@@ -232,16 +223,24 @@
       /* Every sticker but the centre is correctable, on every side. */
       .scan-face .tile > i:not(:nth-child(5)) { cursor: pointer; }
       .scan-face .tile > i:not(:nth-child(5)):hover { box-shadow: 0 0 0 2px var(--ink); opacity: 1; }
-      /* The centre names the face, so it cannot be recoloured; it re-reads the side instead. The
-         glyph appears on hover over a captured side, on a scrim so it stays legible over any
-         sticker colour — a fixed ink or paper colour would vanish on one of the six. */
+      /* The centre names the face, so it cannot be recoloured; it re-reads the side instead.
+         It must show its TRUE colour: it is the one sticker whose colour is certain, and the eight
+         around it are read against it. An earlier version laid a 30% black scrim over it to keep
+         the glyph legible, which made every centre render as a darkened version of itself and read
+         as a seventh colour the cube does not have.
+         The glyph carries its own contrast instead — a dark halo under a white mark reads on all
+         six colours, and tints none of them. */
       .scan-face .tile > i:nth-child(5) { display: grid; place-items: center; }
-      .scan-face .tile > i:nth-child(5) > .ic { opacity: 0; color: #fff; transition: opacity var(--fade); }
+      .scan-face .tile > i:nth-child(5) > .ic {
+        opacity: 0; color: #fff; transition: opacity var(--fade);
+        filter: drop-shadow(0 0 1px rgba(0,0,0,.95)) drop-shadow(0 0 3px rgba(0,0,0,.55));
+      }
       /* Shown, not hidden behind a hover: it is how a user learns the centre re-reads its side, and
-         it appears exactly when that is possible — once the side has been read. */
-      .scan-face.done .tile > i:nth-child(5) { cursor: pointer; box-shadow: inset 0 0 0 100px rgba(0,0,0,.3); }
-      .scan-face.done .tile > i:nth-child(5) > .ic { opacity: .8; }
-      .scan-face.done .tile > i:nth-child(5):hover { box-shadow: inset 0 0 0 100px rgba(0,0,0,.5); }
+         it appears exactly when that is possible — once the side has been read. Hover uses the same
+         outline ring the other stickers use, rather than darkening the swatch. */
+      .scan-face.done .tile > i:nth-child(5) { cursor: pointer; }
+      .scan-face.done .tile > i:nth-child(5) > .ic { opacity: .92; }
+      .scan-face.done .tile > i:nth-child(5):hover { box-shadow: 0 0 0 2px var(--ink); }
       .scan-face.done .tile > i:nth-child(5):hover > .ic { opacity: 1; }
       /* The scan settling. Once the cube reads as solvable its true orientation is known and the
          tiles are repainted from the validated layout. The class comes off in the same tick as the
@@ -275,6 +274,11 @@
       .card-tools > button { width: 34px; height: 34px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-5); }
       .card-tools > button:hover { background: var(--panel-sunk); color: var(--ink-2); }
       .card-tools > button.open { background: var(--panel-sunk); color: var(--ink); }
+      /* Connection indicator, not a control: same box as the tools beside it so the row stays even,
+         but no hover and no pointer. It exists only while a cube is connected. */
+      .card-tools > .ind { width: 28px; height: 28px; display: grid; place-items: center; color: var(--ok); }
+      .card-tools > .ind[hidden] { display: none; }
+      .card-tools > .ind .ic { animation: cubusPulse var(--pulse) infinite; }
       .scan-cam.on #scanCamBtn { color: var(--ok); }
       /* Painting is a mode, so it reads as held down rather than as a nudge, and the camera dims
          beside it — the two cannot both be true. */
@@ -293,19 +297,25 @@
       .menu > button.act { color: var(--accent); font-weight: 600; }
       .menu > hr { height: 1px; border: 0; margin: 5px 6px; background: var(--line); }
 
-      /* Transport on the cube screen: three buttons, the step count, and the two pacing modes, all
-         on one line. There is no speed control — Slowest is for following by hand, Follow cube
-         hands the pacing to the cube in your hands. */
+      /* Transport on the cube screen, all on one line: four buttons (back, repeat, next, play), the
+         progress bar, a Follow-cube toggle when a smart cube is connected, and the step count.
+         Speed is not here — it lives in the cube card's corner, because it is a preference you set
+         once rather than part of walking the solution. */
       .transport { display: flex; align-items: center; gap: 8px; }
       /* Takes the old spacer's job: it has to be the flexible gap anyway, so the gap may as well
          say how far through the solution you are. --track/--bar are the groove/fill token pair. */
-      .transport .progress { flex: 1; height: 6px; border-radius: 999px; background: var(--track); overflow: hidden; }
-      .transport .progress > span { display: block; height: 100%; width: 0; border-radius: 999px; background: var(--bar); transition: width .18s ease; }
-      .tbtn { width: 42px; height: 42px; border-radius: var(--r-4); display: grid; place-items: center; border: 1px solid var(--line-strong); color: var(--ink-2); }
-      .tbtn:hover { border-color: var(--ink-5); color: var(--ink); }
-      .tbtn.primary { background: var(--invert-bg); color: var(--invert-fg); border-color: var(--invert-bg); }
-      .tbtn[disabled] { opacity: .35; }
-      .tbtn[disabled]:hover { border-color: var(--line-strong); color: var(--ink-2); }
+      .transport .progress { flex: 1; height: 6px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
+      .transport .progress > span { display: block; height: 100%; width: 0; border-radius: var(--r-pill); background: var(--bar); transition: width .18s ease; }
+      /* Transport controls are glyphs, not boxes. Four outlined squares in a row read as a toolbar
+         of equal-weight objects and fight the cube for attention; the icons alone say the same
+         thing. Play carries its emphasis in ink weight rather than a filled box.
+         Hover gets a soft ground — the same affordance .card-tools uses — so there is feedback
+         without a border sitting there permanently. */
+      .tbtn { width: 38px; height: 38px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-3); transition: background var(--fade), color var(--fade); }
+      .tbtn:hover { background: var(--panel-sunk); color: var(--ink); }
+      .tbtn.primary { color: var(--ink); }
+      .tbtn[disabled] { opacity: .3; }
+      .tbtn[disabled]:hover { background: none; color: var(--ink-3); }
       .pill[disabled] { opacity: .4; cursor: default; }
       .pill[disabled]:hover { background: none; }
       /* Shown only when the last move lands. The move label it replaced repeated what the
@@ -326,7 +336,6 @@
       .net .sticker.D { background: var(--net-D); }
       .net .sticker.L { background: var(--net-L); }
       .net .sticker.B { background: var(--net-B); }
-      .mono { font-family: var(--font-num); font-size: var(--fs-caption); color: var(--ink-4); line-height: 1.6; word-break: break-all; }
       .move-chips { display: flex; flex-wrap: wrap; gap: 6px; }
       .chip-m { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-5); border-radius: 4px; padding: 4px 9px; }
       .chip-m.played { background: var(--panel-sunk); color: var(--ink); }
@@ -334,7 +343,6 @@
       .chip-m.cur:hover { border-color: var(--invert-bg); color: var(--invert-fg); }
       .chip-m.cur { background: var(--invert-bg); color: var(--invert-fg); border-color: var(--invert-bg); }
 
-      @media (max-width: 1120px) { .app { padding: 0; } .win { border-radius: 0; } }
     </style>
   </head>
   <body>
@@ -358,10 +366,6 @@
                  decorative and a screen reader should not say "cubus" twice. -->
             <div class="brand"><img class="mark" src="./icons/icon.svg" alt="" width="26" height="26" /><b>cubus</b></div>
             <div class="nav" id="nav"></div>
-            <div class="cube-status" id="cubeStatus">
-              <div class="row"><span class="pulse"></span><b id="cubeStatusLabel">No smart cube</b></div>
-              <div class="sub" id="cubeStatusSub">Camera works on its own</div>
-            </div>
           </nav>
 
           <!-- main -->

@@ -9,13 +9,18 @@ import { makeRouter } from './router.js';
 const $ = (sel, root = document) => root.querySelector(sel);
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const PALETTE_ATTR = { muted: 'muted', classic: 'classic', colorsafe: 'colorsafe' };
+/** Escape text destined for an innerHTML template. A Bluetooth device name is chosen by whatever
+ * is advertising, so it is untrusted input that must never be parsed as markup. Screens that can
+ * use textContent do; this is for the ones building an HTML string. */
+const escHtml = (v) =>
+  String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
 const load = (k, fb) => { try { return { ...fb, ...JSON.parse(localStorage.getItem(k) || '{}') }; } catch { return { ...fb }; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
 // ---- inline icons (lucide paths; offline, no CDN) --------------------------------------------
 const P = {
   house: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
-  'scan-line': '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/>',
   // A cube face as a nine-grid, drawn twice: empty for Restore (a solved side), part-filled for
   // Scramble. The pair reads by contrast — order against disorder — which is the whole distinction
   // between the two screens. `fill` is a presentation attribute so it beats the `fill: none`
@@ -23,8 +28,6 @@ const P = {
   // than an empty one.
   grid: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>',
   'grid-filled': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/><rect x="4" y="4" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/><rect x="16" y="10" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/><rect x="10" y="16" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/>',
-  route: '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
-  film: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 12h18M3 7.5h4M3 16.5h4M17 7.5h4M17 16.5h4"/>',
   timer: '<line x1="10" y1="2" x2="14" y2="2"/><line x1="12" y1="14" x2="15" y2="11"/><circle cx="12" cy="14" r="8"/>',
   chart: '<path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="7"/><rect x="12" y="6" width="3" height="11"/><rect x="17" y="13" width="3" height="4"/>',
   cap: '<path d="M22 10 12 5 2 10l10 5 10-5Z"/><path d="M6 12v5c0 1 3 2 6 2s6-1 6-2v-5"/>',
@@ -37,8 +40,6 @@ const P = {
   pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
   'chevron-right': '<path d="m9 18 6-6-6-6"/>',
   'chevron-left': '<path d="m15 18-6-6 6-6"/>',
-  'rotate-cw': '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
-  sliders: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
@@ -54,31 +55,60 @@ const P = {
 const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${P[name] || '<circle cx="12" cy="12" r="2"/>'}</svg>`;
 
 // ---- navigation model ------------------------------------------------------------------------
+// One flat list. The SOLVE / PRACTICE / LEARN headings were a taxonomy for nine items, which is
+// fewer than the number of rows a person can scan at a glance — the labels cost three lines of
+// chrome and a level of hierarchy to sort a list short enough not to need sorting.
 const NAV = [
-  ['SOLVE', [['home', 'Home', '', 'house'], ['scan', 'Restore', '', 'grid'], ['scramble', 'Scramble', '', 'grid-filled']]],
-  ['PRACTICE', [['timer', 'Timer', '', 'timer'], ['stats', 'Session stats', '', 'chart'], ['trainer', 'Alg trainer', '78', 'cap'], ['drill', 'Drill', '12', 'repeat']]],
-  ['CUBE', [['viewer', '3D viewer', '', 'box'], ['pair', 'Smart cube', '', 'bluetooth']]],
-  ['LEARN', [['lessons', 'Lessons', '9', 'book'], ['settings', 'Settings', '', 'settings']]],
+  ['home', 'Home', '', 'box'],
+  ['scan', 'Restore', '', 'grid'],
+  ['scramble', 'Scramble', '', 'grid-filled'],
+  ['timer', 'Timer', '', 'timer'],
+  ['stats', 'Stats', '', 'chart'],
+  ['trainer', 'Alg trainer', '78', 'cap'],
+  ['drill', 'Drill', '12', 'repeat'],
+  ['lessons', 'Lessons', '9', 'book'],
+  ['settings', 'Settings', '', 'settings'],
 ];
 // Each screen's name. It is shown in the title bar rather than in a bar of its own, so there is no
 // second line of chrome restating what the nav already highlights. The subtitles that used to sit
 // under these were restatements of what each screen says itself, and went with the bar.
 const TITLES = {
-  home: 'Welcome back',
+  home: 'Cube',
   scan: 'Restore',
   scramble: 'Scramble',
   timer: 'Timer',
-  stats: 'Session stats',
+  stats: 'Stats',
   trainer: 'Algorithm trainer',
   drill: 'Drill',
-  viewer: 'Cube',
-  pair: 'Smart cube',
   lessons: 'Lessons',
   settings: 'Settings',
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspection: true, autosolve: false, cameraId: '' });
+const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspection: true, autosolve: false, cameraId: '', navHidden: [] });
+
+/** Is the Advanced section revealed? Deliberately NOT part of `settings`, so it is not persisted:
+ * a section you reach with an undocumented chord should start closed every time, not stay open
+ * forever because you once looked at it. What it CONTROLS (navHidden) is a real preference and is
+ * saved; the disclosure itself lasts for this page only.
+ *
+ * Earlier versions stored it, so drop any leftover key rather than letting `save()` keep rewriting
+ * a field nothing reads. */
+delete settings.advanced;
+let advancedOpen = false;
+
+/** Sidebar entries the Advanced section can hide. These are the screens still carrying
+ * placeholder data, so being able to take them out of the way is the point. Hiding is cosmetic:
+ * the route keeps working, so a deep link or a typed #/trainer still gets you there. */
+const HIDEABLE = [['trainer', 'Alg trainer'], ['drill', 'Drill'], ['lessons', 'Lessons']];
+
+// localStorage is untrusted input: anything in here that is not a hideable id is dropped rather
+// than allowed to silently remove some other nav entry.
+const HIDEABLE_IDS = new Set(HIDEABLE.map(([id]) => id));
+settings.navHidden = (Array.isArray(settings.navHidden) ? settings.navHidden : []).filter((id) => HIDEABLE_IDS.has(id));
+// Checked per call, not just once at load: a stored id that is not hideable must never be able to
+// hide some OTHER nav entry (a stray "home" in there would take Home out of the sidebar).
+const navHidden = (id) => HIDEABLE_IDS.has(id) && settings.navHidden.includes(id);
 const state = {
   screen: 'home',
   connected: false, cubeName: '', battery: '',
@@ -92,14 +122,25 @@ const state = {
 let Cube = null, solverReady = false, cjSolve = null, cjPuzzle = null;
 const invMove = (m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : m + "'");
 
+// Single-flight: boot and an async screen mount both call this, and initSolver() builds the
+// Kociemba tables — running it twice is seconds of wasted main-thread work, and both callers
+// racing on `Cube` is worse. The in-flight promise is shared; a failure clears it so a later
+// call can retry rather than being stuck with a rejected one.
+let solverLoading = null;
 async function loadSolver() {
   if (solverReady) return true;
-  try {
-    Cube = (await import('../vendor/cubejs.js')).default;
-    Cube.initSolver();
-    solverReady = true;
-    return true;
-  } catch { return false; }
+  solverLoading ??= (async () => {
+    try {
+      Cube = (await import('../vendor/cubejs.js')).default;
+      Cube.initSolver();
+      solverReady = true;
+      return true;
+    } catch {
+      solverLoading = null;
+      return false;
+    }
+  })();
+  return solverLoading;
 }
 
 // Given a scanned/known facelet state, derive the setup alg (solved -> scrambled, for the 3D
@@ -140,16 +181,25 @@ async function solve() {
   const moves = solution.trim() ? solution.trim().split(/\s+/) : [];
   // Oracle cross-check: only a definite refutation (parses AND does not solve) blocks.
   let verified = null;
-  try { verified = Cube.fromString(c.facelets).move(solution).isSolved(); } catch {}
+  try { verified = Cube.fromString(c.facelets).move(solution).isSolved(); } catch (err) {
+    // Deliberately non-blocking: an oracle that cannot PARSE the alg has refuted nothing, and
+    // failing closed here would take solving down whenever cubing.js emits notation cubejs does
+    // not read. But it must not be silent — a cross-check that quietly stops running looks
+    // exactly like one that keeps passing.
+    console.warn('cubejs cross-check could not run; solution accepted unverified', err);
+  }
   if (verified === false) throw new Error('solver cross-check failed — re-scan');
   // Per-step facelets so the 2D net + move list can co-move with the 3D animation.
   const sf = [];
-  try { const b = Cube.fromString(c.facelets); sf.push(b.asString()); for (const m of moves) { b.move(m); sf.push(b.asString()); } } catch {}
+  // Silence here disables Follow-cube with no explanation: the mode needs one state per step and
+  // simply reports "needs a solve worked out on this screen" when the array is short.
+  try { const b = Cube.fromString(c.facelets); sf.push(b.asString()); for (const m of moves) { b.move(m); sf.push(b.asString()); } } catch (err) {
+    console.warn('per-step facelets unavailable; Follow cube will stay off', err);
+  }
   c.solution = solution; c.moves = moves; c.stepFacelets = sf;
   return solution;
 }
 
-const STAGES = [['CROSS', 0, 0], ['F2L', 0, 0], ['OLL', 0, 0], ['PLL', 0, 0]];
 // Rough CFOP stage split of a min2phase solution for display chunking (proportional, not exact
 // CFOP — min2phase is two-phase, so this is a readable approximation labelled as such).
 function stageSplit(n) {
@@ -260,7 +310,9 @@ function setTitle(name) {
   if (el) el.textContent = name;
   document.title = `${name} · Cubus`;
   if (isTauri) {
-    try { void window.__TAURI__?.window?.getCurrentWindow?.()?.setTitle?.(`${name} · Cubus`); } catch {}
+    // try/catch only covers the synchronous reach into the API — a rejected setTitle() would
+    // escape it as an unhandled rejection, so the promise gets its own catch.
+    try { window.__TAURI__?.window?.getCurrentWindow?.()?.setTitle?.(`${name} · Cubus`)?.catch?.(() => {}); } catch {}
   }
 }
 
@@ -283,11 +335,17 @@ function setConnected(on, name = '', battery = '') {
   // The anchor belongs to a connection, not to the app. A reconnect (or a different
   // cube) starts unanchored, so step 4 must not keep claiming it is done.
   if (!on) state.anchored = false;
-  const box = $('#cubeStatus');
-  box.classList.toggle('on', on);
-  $('#cubeStatusLabel').textContent = on ? `${name || 'Smart cube'} connected` : 'No smart cube';
-  $('#cubeStatusSub').textContent = on ? (battery ? `${battery} battery` : 'live') : 'Camera works on its own';
-  if (state.screen === 'pair') renderScreen();
+  // Updated in place rather than by re-rendering: the cube screen may be part-way through a walk,
+  // and rebuilding it on connect would restart the animation and lose the step you were on.
+  // The element only exists while that screen is mounted, hence the optional chaining.
+  const live = $('#cubeLive');
+  if (live) {
+    live.hidden = !on;
+    live.title = on ? `${name || 'Smart cube'} connected${battery ? ` · ${battery} battery` : ''}` : '';
+  }
+  // Settings, not 'pair' — the smart-cube card lives there now, and it renders its own connected
+  // state, the anchor button and the setup ticks. A stale id here left all three frozen.
+  if (state.screen === 'settings') renderScreen();
 }
 
 // gan-driver bundle lives at ../vendor relative to this module (apps/web/lib/app.js).
@@ -366,51 +424,15 @@ const placeMenuUnder = (btn, menu) => {
 };
 
 let cleanup = null;
+
+/** Bumped by every render. An async mount that awaits a solver load or a Kociemba search can
+ * outlive the screen that started it; comparing this on the far side of an await is how such a
+ * mount learns it is obsolete and stops before writing to shared state like `liveUpdate`. */
+let screenGen = 0;
 // Set by a screen that can take a new cube state in place. Without it, a live smart cube rebuilds
 // the screen on every quarter turn — which on the cube screen means restarting an animation the
 // user is halfway through following.
 let liveUpdate = null;
-
-SCREENS.home = () => {
-  const solves = recentSolves();
-  const rows = solves.slice(0, 6).map((s) => `<div class="row" style="grid-template-columns:34px 1fr 70px 74px;gap:12px">
-      <div class="num" style="color:var(--ink-5)">${s.n}</div>
-      <div class="num" style="color:var(--ink-3);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${s.scramble}</div>
-      <div class="sub" style="color:var(--ink-4);font-size:var(--fs-body-s)">${s.tps ? s.tps + ' tps' : ''}</div>
-      <div class="num" style="font-size:var(--fs-title-s);font-weight:600;text-align:right">${s.time}</div></div>`).join('');
-  return { html: `<div class="cols">
-    <div class="col">
-      <div class="grid3">
-        <div class="card stat"><div class="eyebrow">SINGLE BEST</div><div class="v">14.82</div><div class="d" style="color:var(--ok)">−1.3s this week</div></div>
-        <div class="card stat"><div class="eyebrow">AO5</div><div class="v">21.44</div><div class="d">37 solves today</div></div>
-        <div class="card stat"><div class="eyebrow">ALG MASTERY</div><div class="v">42<span style="font-size:var(--fs-title);color:var(--ink-5)">/78</span></div><div class="d">OLL + PLL</div></div>
-      </div>
-      <button class="card dark" id="scanCta" style="display:flex;align-items:center;justify-content:space-between;text-align:left;gap:16px;cursor:pointer">
-        <div><div class="num" style="font-size:var(--fs-title-l);font-weight:600">Scan a scrambled cube</div>
-        <div class="sub" style="color:var(--on-ink-dim);margin-top:4px">Point the camera at the cube. Six faces, about eight seconds.</div></div>
-        <span class="btn" style="border:1px solid var(--invert-fg);color:var(--invert-fg)">Open camera</span>
-      </button>
-      <div class="card tight" style="flex:1;min-height:0;display:flex;flex-direction:column">
-        <div class="card-h"><b>Recent solves</b><button class="link" data-go="stats">Session stats</button></div>
-        <div class="list">${rows}</div>
-      </div>
-    </div>
-    <div class="aside">
-      <div class="card"><div class="eyebrow">PICK UP WHERE YOU LEFT OFF</div>
-        <div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:8px">OLL — dot cases</div>
-        <div class="sub" style="color:var(--ink-4);margin-top:2px">3 of 12 drilled</div>
-        <div class="bar" style="margin-top:12px"><i style="width:25%"></i></div>
-        <button class="btn accent-outline block" data-go="drill" style="margin-top:14px">Resume drill</button></div>
-      <div class="card" style="flex:1;min-height:0"><div class="eyebrow">WEEK</div>
-        <div style="display:flex;align-items:flex-end;gap:8px;height:110px;margin-top:14px">
-        ${[['M', 54], ['T', 72], ['W', 40], ['T', 86], ['F', 63], ['S', 96], ['S', 48]].map(([d, h], i) => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end">
-          <div style="width:100%;border-radius:3px 3px 0 0;height:${h}%;background:${i === 5 ? 'var(--accent)' : 'var(--ink-6)'}"></div>
-          <div style="font-size:var(--fs-meta);color:var(--ink-5)">${d}</div></div>`).join('')}</div>
-        <div class="sub" style="color:var(--ink-4);margin-top:14px">Average dropped 2.6s since Monday. Cross is now your fastest stage.</div></div>
-    </div></div>`,
-    mount(root) { $('#scanCta', root).onclick = () => go('scan'); },
-  };
-};
 
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
 // renaming it is not worth breaking every #/scan link and bookmark already in the wild.
@@ -476,7 +498,7 @@ SCREENS.scan = () => {
         <div class="cube-slot" id="scanCube" style="height:230px;margin-top:6px"></div></div>
       <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
         <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div></div>
-      <button class="btn accent-outline block" data-go="viewer" style="margin-top:auto">Solve this cube</button>
+      <button class="btn accent-outline block" data-go="home" style="margin-top:auto">Solve this cube</button>
     </div></div>`,
     mount(root) {
       // Kept, so a finished scan can update the aside in place. Re-rendering the screen would tear
@@ -671,7 +693,7 @@ SCREENS.scan = () => {
         // wants the jump has the "Auto-solve after scan" setting, which this now actually honours
         // — it read "jump straight to the guide" while the code jumped to the viewer regardless.
         showState(e.detail.facelets);
-        if (settings.autosolve) go('viewer');
+        if (settings.autosolve) go('home');
       });
       // The detector is good, not perfect, so let a person overrule it: on a side the camera has
       // READ, click any sticker and pick the right colour. Delegated rather than 54 listeners. The
@@ -759,20 +781,14 @@ SCREENS.scan = () => {
 //
 // Scramble is the SAME screen again, and this one earns its flag where those did not: it is not a
 // card hidden or a button greyed out, it is the opposite end of the same walk. Restore reads a
-// cube so it can be solved; Scramble starts from solved and tells you how to mix one up. History
-// will hand it a sequence the same way, through `following`.
+// cube so it can be solved; Scramble starts from solved and tells you how to mix one up.
+//
+// There was a `followMoves(seq)` handoff here for a third caller to push its own alg through. It
+// had no callers, so its branch in the walk was unreachable; it is gone rather than kept warm for
+// a History screen that does not exist yet. Re-add it when there is something to add it for.
 //
 // A live smart cube updates this screen IN PLACE (see liveUpdate): a full re-render on every
 // quarter turn would restart an animation the user is halfway through following.
-
-/** A sequence handed over by whichever screen sent the user here. Consumed once, on arrival. */
-let following = null; // { label, setup, alg, moves }
-
-/** Hand the cube screen a sequence to walk through, and go there. */
-function followMoves(seq) {
-  following = seq;
-  go('viewer');
-}
 
 /** The three walking speeds, as renderer tempo-scale values. The renderer divides a 190ms base by
  * this, so a LARGER number is faster. None of them is quick: Fast is 0.95s per quarter turn, still
@@ -783,8 +799,6 @@ const SPEEDS = [
   { id: 'fast', label: 'Fast', tempo: 0.2 },      // 0.95s
 ];
 const DEFAULT_SPEED = 'normal';
-
-const faceName = (m) => ({ R: 'right', L: 'left', U: 'up', D: 'down', F: 'front', B: 'back' }[m[0]] || 'right');
 
 /** Solve and Scramble are the same screen walked from opposite ends.
  *
@@ -799,12 +813,10 @@ const cubeScreen = (screenMode) => {
   // No controls on this screen any more, so these are read but never written here. Left on
   // `cubeView` rather than hard-coded so they stay tunable without a rebuild.
   const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, ghosts: true });
-  const seq = following;
-  following = null;
   // A scramble is always available: it is generated here rather than read off the cube, so there is
   // no state that makes this screen have nothing to do.
-  const walking = scrambling || Boolean(seq) || state.cube.solvable;
-  const label = scrambling ? 'Scramble' : (seq?.label ?? 'Solution');
+  const walking = scrambling || state.cube.solvable;
+  const label = scrambling ? 'Scramble' : 'Solution';
   const walked = scrambling ? 'scramble' : 'solution';
   // Saved key → renderer attribute. Named for what it is now that the sliders it fed are gone.
   const VIEW_ATTRS = [
@@ -817,6 +829,7 @@ const cubeScreen = (screenMode) => {
     <div class="col">
       <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;position:relative">
         ${walking ? `<div class="card-tools">
+          <span class="ind" id="cubeLive" ${state.connected ? '' : 'hidden'} title="${state.connected ? escHtml(state.cubeName) + ' connected' : ''}">${icon('bluetooth', 17)}</span>
           <button id="speedBtn" title="Animation speed">${icon('gauge', 20)}</button>
         </div>` : ''}
         <div style="position:relative;flex:1;min-height:0;width:100%">
@@ -846,6 +859,10 @@ const cubeScreen = (screenMode) => {
         <div class="net" id="viewNet" style="margin-top:12px"></div></div>
     </div></div>`,
     async mount(root) {
+      // Captured before the first await. A solve can take seconds, and navigating away meanwhile
+      // must not let this mount come back and install its liveUpdate over the new screen's.
+      const gen = screenGen;
+      const stale = () => gen !== screenGen;
       const cube = newCube({ animate: walking });
       $('#viewCube', root).appendChild(cube);
       applyNetColors();
@@ -918,7 +935,7 @@ const cubeScreen = (screenMode) => {
         // built at mount, so repainting in place would leave a new cube wearing the old list.
         if (scrambling) { go('scramble'); return; }
         onFacelets(randomScramble());
-        go('viewer');
+        go('home');
       };
 
       liveUpdate = (f) => {
@@ -934,7 +951,7 @@ const cubeScreen = (screenMode) => {
       let setup, alg, moves, steps = [];
       try {
         if (scrambling) {
-          if (!solverReady) await loadSolver();
+          if (!solverReady && !(await loadSolver())) throw new Error('solver unavailable');
           // randomScramble() returns the state it lands on and leaves the alg that gets there from
           // solved in `currentScramble`. That alg is what we walk, so `setup` stays empty and the
           // cube starts solved.
@@ -946,18 +963,16 @@ const cubeScreen = (screenMode) => {
           steps = [b.asString()];
           for (const m of moves) { b.move(m); steps.push(b.asString()); }
           paintNet(target);
-        } else if (seq) {
-          ({ setup, alg } = seq);
-          moves = seq.moves ?? (alg.trim() ? alg.trim().split(/\s+/) : []);
         } else {
-          if (!solverReady) await loadSolver();
+          if (!solverReady && !(await loadSolver())) throw new Error('solver unavailable');
           await solve();
           setup = state.cube.setupAlg; alg = state.cube.solution; moves = state.cube.moves;
           // Snapshotted: setFacelets() clears stepFacelets on every live update, and following a
           // physical cube needs the states to compare against to outlive the next turn.
           steps = state.cube.stepFacelets.slice();
         }
-      } catch { setStatus('could not work it out'); return; }
+      } catch { if (!stale()) setStatus('could not work it out'); return; }
+      if (stale()) return; // navigated away while solving — leave the new screen alone
       const total = moves.length;
       cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
       setStatus(total + ' moves');
@@ -1057,7 +1072,9 @@ const cubeScreen = (screenMode) => {
   };
 };
 
-SCREENS.viewer = () => cubeScreen('solve');
+// Home is the cube. There is no separate "3D viewer" entry any more: it was the same screen
+// reached by a second name, and the app's front door is the thing it is for.
+SCREENS.home = () => cubeScreen('solve');
 SCREENS.scramble = () => cubeScreen('scramble');
 
 SCREENS.timer = () => {
@@ -1080,73 +1097,16 @@ SCREENS.timer = () => {
         else { running = true; t0 = performance.now(); clock.style.color = 'var(--accent)'; $('#timerHint', root).textContent = 'Running — click or press space to stop'; tick(); }
       };
       clock.onclick = toggle; $('#newScr', root).onclick = newScr;
-      const onKey = (e) => { if (e.code === 'Space' && state.screen === 'timer') { e.preventDefault(); toggle(); } };
+      // e.repeat: holding the key down fires keydown continuously, which start/stopped the clock
+      // dozens of times a second and wrote a run of nonsense times into the solve history.
+      const onKey = (e) => {
+        if (e.repeat || e.code !== 'Space' || state.screen !== 'timer') return;
+        e.preventDefault();
+        toggle();
+      };
       document.addEventListener('keydown', onKey);
       cleanup = () => { cancelAnimationFrame(raf); document.removeEventListener('keydown', onKey); };
       renderLast(); newScr();
-    },
-  };
-};
-
-SCREENS.pair = () => {
-  const on = state.connected;
-  const devices = [['GAN 356 i3', 'GAN', on ? 'Connected · live' : 'Not paired', on], ['MoYu AI 2023', 'MOY', '−64 dBm', false], ['Giiker Super Cube', 'GII', '−81 dBm', false]];
-  const steps = [['Turn the cube', 'Any quarter turn wakes the radio'], ['Select it above', 'Cubus matches by advertisement'], ['Connect', 'Streams moves + state live'], ['Solve once', 'Establishes the ground-truth state']];
-  return { html: `<div class="cols">
-    <div class="aside" style="flex:0 1 420px">
-      <div class="card tight"><div class="card-h"><b>Nearby cubes</b><span class="link">${isTauri ? 'native BLE' : 'Web Bluetooth'}</span></div>
-        ${devices.map(([name, abbr, meta, paired], i) => `<div class="row" style="grid-template-columns:34px 1fr auto;gap:14px;cursor:pointer" data-dev="${i}">
-          <div class="avatar num" style="border-radius:8px;font-size:var(--fs-body-s)">${abbr}</div>
-          <div><div style="font-weight:600">${name}</div><div class="sub" style="color:var(--ink-4);font-size:var(--fs-caption)">${meta}</div></div>
-          <div style="font-weight:600;color:${paired ? 'var(--ok)' : 'var(--accent)'}">${paired ? 'Connected' : 'Pair'}</div></div>`).join('')}</div>
-      <div class="card"><div class="eyebrow">SETUP</div>${steps.map(([t, s], i) => `<div style="display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--line-faint)">
-        <div class="num" style="width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid ${on && (i < 3 || state.anchored) ? 'var(--ok)' : 'var(--line)'};display:grid;place-items:center;font-size:var(--fs-meta)">${i + 1}</div>
-        <div><div style="font-weight:600">${t}</div><div class="sub" style="color:var(--ink-4)">${s}</div></div></div>`).join('')}</div>
-    </div>
-    <div class="col"><div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">
-      <div class="cube-slot" id="pairCube" style="height:240px"></div>
-      <div class="num" style="font-size:var(--fs-title);font-weight:600">${on ? state.cubeName + ' · live' : 'Nothing connected'}</div>
-      <div class="sub" style="color:var(--ink-4);text-align:center;max-width:360px">${on ? 'Every turn streams into cubus. The 3D view follows the cube in your hands.' : 'Cubus solves from the camera alone. Pair a smart cube for move-level analysis and auto timing.'}</div>
-      ${on ? `<div style="display:flex;gap:22px">${[['78%', 'battery'], ['18ms', 'latency'], ['1.2.7', 'firmware']].map(([v, l]) => `<div style="text-align:center"><div class="num" style="font-size:var(--fs-title-s);font-weight:600">${v}</div><div class="eyebrow" style="letter-spacing:.04em">${l}</div></div>`).join('')}</div>` : `<input class="field" id="macIn" placeholder="cube MAC (macOS)" style="width:220px;text-align:center">`}
-      <div style="display:flex;gap:10px;align-items:center">
-        <button class="btn ${on ? 'outline' : 'primary'}" id="pairBtn">${on ? 'Disconnect' : 'Pair selected cube'}</button>
-        ${on ? '<button class="btn accent-outline" id="anchorBtn">Anchor solved state</button>' : ''}
-      </div>
-      <div class="sub" id="pairMsg" style="min-height:18px;text-align:center;max-width:360px"></div>
-    </div></div></div>`,
-    mount(root) {
-      $('#pairCube', root).appendChild(newCube());
-      const mi = $('#macIn', root); if (mi) mi.value = connMac; // set as a property, never interpolated into HTML
-      const say = (text, colour) => { const m = $('#pairMsg', root); m.style.color = colour; m.textContent = text; };
-      $('#pairBtn', root).onclick = async () => {
-        if (state.connected) { try { await transport?.disconnect(); } catch {} conn = null; transport = null; setConnected(false); return; }
-        say(isTauri ? 'scanning…' : 'pick your cube in the browser prompt', 'var(--ink-4)');
-        try { await doConnect($('#macIn', root)?.value); } catch (e) { say(String(e.message || e), 'var(--err)'); }
-      };
-      // Step 4, "Solve once". anchorSolved() sends REQUEST_RESET only if the cube already
-      // reports a solved state — it throws otherwise rather than adopting a scrambled
-      // position as the origin, which would desync the driver from the cube for good.
-      // The button is deliberately not disabled when the cube is unsolved: the driver's
-      // refusal explains WHY, which teaches the step. A dead button would not.
-      const anchorBtn = $('#anchorBtn', root);
-      if (anchorBtn) anchorBtn.onclick = async () => {
-        if (!conn) { say('not connected', 'var(--err)'); return; }
-        anchorBtn.disabled = true; // one in flight at a time
-        say('anchoring…', 'var(--ink-4)');
-        try {
-          await conn.anchorSolved();
-          state.anchored = true;
-          say('Anchored — the cube agrees it is solved.', 'var(--ok)');
-          renderScreen(); // step 4 now shows complete
-        } catch (e) {
-          state.anchored = false;
-          // The driver's message carries the offending facelet string after a newline;
-          // show the human sentence here and leave the detail to the thrown error.
-          say(String(e.message || e).split('\n')[0], 'var(--err)');
-        } finally {
-          anchorBtn.disabled = false;
-        }
-      };
     },
   };
 };
@@ -1159,6 +1119,40 @@ SCREENS.settings = () => {
       <div class="card"><div class="eyebrow">APPEARANCE</div>
         <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Theme</div><div class="sub" style="color:var(--ink-4)">Warm paper, light or dark</div></div>
           <div style="display:flex;gap:6px">${themes.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-theme="${t}">${t}</button>`).join('')}</div></div></div>
+      ${(() => {
+        const on = state.connected;
+        // Step 3 is not decoration: anchorSolved() is what tells the cube which position counts as
+        // solved. Naming it "Anchor solved state" and parking the button away from the step it
+        // belongs to was the confusing part — the button now lives IN its own step.
+        const steps = [
+          ['Turn the cube', 'Any quarter turn wakes its radio'],
+          ['Pair it', 'Moves and state then stream in live'],
+          ['Solve it once', 'Teaches the cube which position counts as solved'],
+        ];
+        const done = (i) => on && (i < 2 || state.anchored);
+        return `<div class="card"><div class="eyebrow">SMART CUBE</div>
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 0">
+          <span class="ico" style="color:${on ? 'var(--ok)' : 'var(--ink-5)'}">${icon('bluetooth', 18)}</span>
+          <div style="flex:1">
+            <div style="font-weight:600">${on ? escHtml(state.cubeName) + ' · live' : 'No cube paired'}</div>
+            <div class="sub" id="btNote" style="color:var(--ink-4)">${on ? 'Every turn streams into cubus.' : 'Optional — cubus solves from the camera alone. A cube adds move-by-move following.'}</div>
+          </div>
+        </div>
+        ${on ? '' : `<div id="macRow" hidden style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-faint)">
+          <div style="flex:1"><div style="font-weight:600">Cube Bluetooth address</div>
+            <div class="sub" style="color:var(--ink-4)">The cube encrypts everything with this as the key, and browsers on macOS will not reveal it. Copy it from the GAN app, under your cube's details.</div></div>
+          <input class="field" id="macIn" placeholder="AB:CD:EF:12:34:56" style="width:180px;flex:none">
+        </div>`}
+        <div style="display:flex;gap:10px;align-items:center;padding:12px 0">
+          <button class="btn ${on ? 'outline' : 'primary'} sm" id="pairBtn">${on ? 'Disconnect' : 'Pair a cube'}</button>
+          <span class="sub" id="pairMsg" style="flex:1"></span>
+        </div>
+        ${steps.map(([t, sub], i) => `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line-faint)">
+          <div class="num" style="width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid ${done(i) ? 'var(--ok)' : 'var(--line)'};display:grid;place-items:center;font-size:var(--fs-meta);color:${done(i) ? 'var(--ok)' : 'var(--ink-5)'}">${done(i) ? '✓' : i + 1}</div>
+          <div style="flex:1"><div style="font-weight:600">${t}</div><div class="sub" style="color:var(--ink-4)">${sub}</div></div>
+          ${i === 2 && on ? `<button class="btn accent-outline sm" id="anchorBtn" style="flex:none">${state.anchored ? 'Re-mark' : 'Mark it solved'}</button>` : ''}
+        </div>`).join('')}
+      </div>`; })()}
       <div class="card"><div class="eyebrow">TIMER & CAMERA</div>
         ${toggles.map(([k, t, s]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">${t}</div><div class="sub" style="color:var(--ink-4)">${s}</div></div>
@@ -1168,6 +1162,12 @@ SCREENS.settings = () => {
       <div class="card"><div class="eyebrow">CUBE COLOURS</div>
         <div style="display:flex;gap:6px;margin-top:12px" id="palSwatch"></div>
         <div style="display:flex;gap:6px;margin-top:12px">${pals.map((p) => `<button class="pill ${settings.palette === p ? 'on' : ''}" data-pal="${p}" style="flex:1;justify-content:center">${p}</button>`).join('')}</div></div>
+      ${advancedOpen ? `<div class="card"><div class="eyebrow">ADVANCED</div>
+        <div class="sub" style="color:var(--ink-4);margin-top:6px;line-height:1.5">Sidebar entries. Hiding one only takes it out of the list — its address still works.</div>
+        ${HIDEABLE.map(([id, lbl]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
+          <div style="flex:1"><div style="font-weight:600">${lbl}</div><div class="sub" style="color:var(--ink-4)">${navHidden(id) ? 'Hidden from the sidebar' : 'Shown in the sidebar'}</div></div>
+          <button class="toggle ${navHidden(id) ? '' : 'on'}" data-nav-toggle="${id}"><i></i></button></div>`).join('')}
+        <div class="sub" style="color:var(--ink-5);margin-top:12px">⌃⌥⌘D hides this section again.</div></div>` : ''}
       <div class="card"><div class="eyebrow">ABOUT</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.55">cubus 0.4.2 · ${isTauri ? 'Tauri build' : 'Web'}<br>Solver and vision run locally. Nothing leaves the device.</div>
         <div class="link" style="margin-top:12px">cubus.im</div></div>
     </div></div>`,
@@ -1177,22 +1177,127 @@ SCREENS.settings = () => {
       for (const b of root.querySelectorAll('[data-theme]')) b.onclick = () => { settings.theme = b.dataset.theme; save('cubusSettings', settings); applyTheme(); renderScreen(); };
       for (const b of root.querySelectorAll('[data-pal]')) b.onclick = () => { settings.palette = b.dataset.pal; save('cubusSettings', settings); applyNetColors(); renderScreen(); };
       for (const b of root.querySelectorAll('[data-toggle]')) b.onclick = () => { const k = b.dataset.toggle; settings[k] = !settings[k]; save('cubusSettings', settings); b.classList.toggle('on', settings[k]); };
+      // Smart-cube setup moved here from its own screen. The mock "nearby cubes" list and the
+      // hardcoded battery/latency/firmware readout did not come with it: both were invented data
+      // presented as live hardware telemetry, which an audit of this branch flagged.
+      const mi = $('#macIn', root); if (mi) mi.value = connMac; // a property, never interpolated
+
+      const say = (text, colour) => { const m = $('#pairMsg', root); if (m) { m.style.color = colour; m.textContent = text; } };
+      const pairBtn = $('#pairBtn', root);
+
+      // What CAN be detected, and what cannot.
+      //
+      // Nearby cubes: not in a browser. Web Bluetooth has no scan-without-permission by design —
+      // discovery only happens inside the chooser the browser itself shows, behind a user gesture.
+      // So there is no honest "1 cube found" line to draw here, and the old screen's list of
+      // nearby cubes with signal strengths was invented data.
+      //
+      // Whether pairing is possible at all: yes. getAvailability() reports whether this machine
+      // has a usable Bluetooth radio, which is the difference between "press Pair" and "pressing
+      // Pair cannot work". Saying so up front beats a button that fails for unexplained reasons.
+      //
+      // The address field is asked for ONLY where it is genuinely needed. The native build learns
+      // the address from the scan it already does; a browser cannot, so the user must supply it.
+      const btNote = $('#btNote', root), macRow = $('#macRow', root);
+      if (pairBtn && !state.connected) {
+        if (isTauri) {
+          if (btNote) btNote.textContent = 'Native Bluetooth — cubus finds the cube itself.';
+        } else if (!navigator.bluetooth) {
+          if (btNote) btNote.textContent = 'This browser cannot use Bluetooth. The desktop app can, and the camera works either way.';
+          pairBtn.disabled = true;
+        } else {
+          if (macRow) macRow.hidden = false;
+          void navigator.bluetooth.getAvailability?.().then((ok) => {
+            if (ok === false && btNote) {
+              btNote.textContent = 'No Bluetooth radio available on this machine — turn it on, then reload.';
+              pairBtn.disabled = true;
+            }
+          }).catch(() => {}); // an engine without getAvailability tells us nothing; leave the button alone
+        }
+      }
+
+      if (pairBtn) pairBtn.onclick = async () => {
+        if (state.connected) { try { await transport?.disconnect(); } catch {} conn = null; transport = null; setConnected(false); return; }
+        say(isTauri ? 'scanning…' : 'pick your cube in the browser prompt', 'var(--ink-4)');
+        try { await doConnect($('#macIn', root)?.value); } catch (e) { say(String(e.message || e), 'var(--err)'); }
+      };
+      // anchorSolved() sends REQUEST_RESET only if the cube already reports solved — it throws
+      // otherwise rather than adopting a scrambled position as the origin. The button is
+      // deliberately not disabled when the cube is unsolved: the driver's refusal explains WHY,
+      // which teaches the step. A dead button would not.
+      const anchorBtn = $('#anchorBtn', root);
+      if (anchorBtn) anchorBtn.onclick = async () => {
+        if (!conn) { say('not connected', 'var(--err)'); return; }
+        anchorBtn.disabled = true;
+        say('anchoring…', 'var(--ink-4)');
+        try {
+          await conn.anchorSolved();
+          state.anchored = true;
+          say('Anchored — the cube agrees it is solved.', 'var(--ok)');
+          renderScreen();
+        } catch (e) {
+          state.anchored = false;
+          say(String(e.message || e).split('\n')[0], 'var(--err)');
+        } finally { anchorBtn.disabled = false; }
+      };
+
+      for (const b of root.querySelectorAll('[data-nav-toggle]')) b.onclick = () => {
+        const id = b.dataset.navToggle;
+        settings.navHidden = navHidden(id) ? settings.navHidden.filter((x) => x !== id) : [...settings.navHidden, id];
+        save('cubusSettings', settings);
+        renderNav();
+        // Hiding the screen you are standing on would leave the sidebar with nothing marked
+        // active. You are on Settings when you press this, so that only bites via a deep link.
+        if (navHidden(state.screen)) { go('home'); return; }
+        renderScreen(); // repaints this card's own labels, so it cannot describe the old state
+      };
     },
   };
 };
 
 // Data-driven screens (design layout with representative data; interactions where cheap).
+// Stats — the session dashboard. This absorbed the old Home screen when Home became the cube:
+// the headline numbers, the recent-solve list and the week chart were never a landing page, they
+// were this screen's content sitting one nav entry too far to the left.
+//
+// The one thing not carried over is the "Scan a scrambled cube" call to action. It was a front-door
+// affordance, and a stats page is not a front door — Restore has its own nav entry.
 SCREENS.stats = () => {
-  const rows = [['Cross', '2.41', '18%', '1.88', 'var(--ok)'], ['F2L', '9.86', '46%', '8.12', 'var(--accent)'], ['OLL', '4.02', '19%', '3.11', 'var(--warn)'], ['PLL', '3.60', '17%', '2.74', 'var(--err)']];
-  return { html: `<div class="cols"><div class="col">
-    <div class="card"><div class="eyebrow">SESSION · ${recentSolves().length} SOLVES</div>
-      <div style="display:flex;align-items:flex-end;gap:4px;height:150px;margin-top:16px">${[72, 64, 80, 58, 66, 52, 74, 49, 61, 45, 70, 55, 42, 58, 50, 64, 44, 52, 38, 47].map((h, i) => `<div style="flex:1;background:${i % 5 === 4 ? 'var(--accent)' : 'var(--ink-6)'};height:${h}%;border-radius:2px 2px 0 0"></div>`).join('')}</div></div>
-    <div class="card tight" style="flex:1;min-height:0;overflow-y:auto">
-      <div class="row eyebrow" style="grid-template-columns:1fr 1fr 1fr 1fr">${['STAGE', 'AVG', 'SHARE', 'BEST'].map((h) => `<div>${h}</div>`).join('')}</div>
-      ${rows.map(([stage, avg, pct, best, color]) => `<div class="row" style="grid-template-columns:1fr 1fr 1fr 1fr"><div style="font-weight:600">${stage}</div><div class="num" style="font-size:var(--fs-title-s);font-weight:600">${avg}</div><div><div class="bar" style="max-width:130px"><i style="width:${pct};background:${color}"></i></div></div><div class="num" style="color:var(--ink-3)">${best}</div></div>`).join('')}</div>
+  const solves = recentSolves();
+  const stages = [['Cross', '2.41', '18%', '1.88', 'var(--ok)'], ['F2L', '9.86', '46%', '8.12', 'var(--accent)'], ['OLL', '4.02', '19%', '3.11', 'var(--warn)'], ['PLL', '3.60', '17%', '2.74', 'var(--err)']];
+  const rows = solves.slice(0, 8).map((so) => `<div class="row" style="grid-template-columns:34px 1fr 70px 74px;gap:12px">
+      <div class="num" style="color:var(--ink-5)">${so.n}</div>
+      <div class="num" style="color:var(--ink-3);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${escHtml(so.scramble)}</div>
+      <div class="sub" style="color:var(--ink-4);font-size:var(--fs-body-s)">${so.tps ? escHtml(so.tps) + ' tps' : ''}</div>
+      <div class="num" style="font-size:var(--fs-title-s);font-weight:600;text-align:right">${escHtml(so.time)}</div></div>`).join('');
+  return { html: `<div class="cols">
+    <div class="col">
+      <div class="grid3">
+        <div class="card stat"><div class="eyebrow">SINGLE BEST</div><div class="v">14.82</div><div class="d" style="color:var(--ok)">−1.3s this week</div></div>
+        <div class="card stat"><div class="eyebrow">AO5</div><div class="v">21.44</div><div class="d">37 solves today</div></div>
+        <div class="card stat"><div class="eyebrow">ALG MASTERY</div><div class="v">42<span style="font-size:var(--fs-title);color:var(--ink-5)">/78</span></div><div class="d">OLL + PLL</div></div>
+      </div>
+      <div class="card"><div class="eyebrow">SESSION · ${solves.length} SOLVES</div>
+        <div style="display:flex;align-items:flex-end;gap:4px;height:130px;margin-top:16px">${[72, 64, 80, 58, 66, 52, 74, 49, 61, 45, 70, 55, 42, 58, 50, 64, 44, 52, 38, 47].map((h, i) => `<div style="flex:1;background:${i % 5 === 4 ? 'var(--accent)' : 'var(--ink-6)'};height:${h}%;border-radius:2px 2px 0 0"></div>`).join('')}</div></div>
+      <div class="card tight" style="flex:1;min-height:0;display:flex;flex-direction:column">
+        <div class="card-h"><b>Recent solves</b><span class="num sub">${solves.length}</span></div>
+        <div class="list" style="overflow-y:auto">${rows}</div></div>
     </div>
-    <div class="aside">
+    <div class="aside" style="overflow-y:auto">
+      <div class="card tight" style="flex:none"><div class="card-h"><b>By stage</b><span class="num sub">avg</span></div>
+        ${stages.map(([stage, avg, pct, best, color]) => `<div class="row" style="grid-template-columns:1fr auto"><div><div style="font-weight:600">${stage}</div><div class="bar" style="max-width:150px;margin-top:6px"><i style="width:${pct};background:${color}"></i></div></div><div style="text-align:right"><div class="num" style="font-size:var(--fs-title-s);font-weight:600">${avg}</div><div class="sub" style="color:var(--ink-4)">best ${best}</div></div></div>`).join('')}</div>
       <div class="card"><div class="eyebrow">PERSONAL BESTS</div>${[['single', '14.82'], ['ao5', '19.44'], ['ao12', '21.10'], ['ao100', '23.68']].map(([k, v]) => `<div class="row" style="grid-template-columns:1fr auto;border-color:var(--line-faint)"><div style="color:var(--ink-3)">${k}</div><div class="num" style="font-size:var(--fs-title);font-weight:600">${v}</div></div>`).join('')}</div>
+      <div class="card"><div class="eyebrow">PICK UP WHERE YOU LEFT OFF</div>
+        <div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:8px">OLL — dot cases</div>
+        <div class="sub" style="color:var(--ink-4);margin-top:2px">3 of 12 drilled</div>
+        <div class="bar" style="margin-top:12px"><i style="width:25%"></i></div>
+        <button class="btn accent-outline block" data-go="drill" style="margin-top:14px">Resume drill</button></div>
+      <div class="card"><div class="eyebrow">WEEK</div>
+        <div style="display:flex;align-items:flex-end;gap:8px;height:110px;margin-top:14px">
+        ${[['M', 54], ['T', 72], ['W', 40], ['T', 86], ['F', 63], ['S', 96], ['S', 48]].map(([d, h], i) => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end">
+          <div style="width:100%;border-radius:3px 3px 0 0;height:${h}%;background:${i === 5 ? 'var(--accent)' : 'var(--ink-6)'}"></div>
+          <div style="font-size:var(--fs-meta);color:var(--ink-5)">${d}</div></div>`).join('')}</div>
+        <div class="sub" style="color:var(--ink-4);margin-top:14px">Average dropped 2.6s since Monday. Cross is now your fastest stage.</div></div>
       <div class="card dark"><div class="eyebrow" style="color:var(--on-ink-dim)">WHERE THE TIME GOES</div><div style="margin-top:8px;line-height:1.5;color:var(--on-ink-2)">F2L takes 46% of your average. Two slot cases account for most of it.</div><button class="btn block" data-go="trainer" style="border:1px solid var(--invert-fg);color:var(--invert-fg);margin-top:14px">Open trainer</button></div>
     </div></div>`, mount() {} };
 };
@@ -1242,8 +1347,26 @@ SCREENS.lessons = () => {
 // ===============================================================================================
 // Router + boot
 // ===============================================================================================
+// ⌃⌥⌘D reveals (and hides) the Advanced section in Settings.
+//
+// `e.code`, not `e.key`: on macOS Option rewrites the character, so this chord arrives as `∂` and
+// a key-based check would never match. `code` is the physical key and is layout-independent.
+// Every modifier is required, so this cannot collide with a plain typing shortcut.
+function installAdvancedShortcut() {
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyD' || !e.ctrlKey || !e.altKey || !e.metaKey) return;
+    e.preventDefault();
+    advancedOpen = !advancedOpen;
+    // Turning it on somewhere else would be invisible, so go and show it. Turning it off only
+    // needs a repaint, and only if the section is on screen to disappear from.
+    if (advancedOpen && state.screen !== 'settings') go('settings');
+    else if (state.screen === 'settings') renderScreen();
+  });
+}
+
 function renderNav() {
-  $('#nav').innerHTML = NAV.map(([label, items]) => `<div class="nav-group"><div class="eyebrow">${label}</div>${items.map(([id, lbl, meta, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"><span class="ico">${icon(ic)}</span><span class="lbl">${lbl}</span><span class="meta">${meta}</span></button>`).join('')}</div>`).join('');
+  const items = NAV.filter(([id]) => !navHidden(id));
+  $('#nav').innerHTML = items.map(([id, lbl, meta, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"><span class="ico">${icon(ic)}</span><span class="lbl">${lbl}</span><span class="meta">${meta}</span></button>`).join('');
   for (const b of $('#nav').querySelectorAll('[data-nav]')) b.onclick = () => go(b.dataset.nav);
 }
 function renderScreen() {
@@ -1252,10 +1375,15 @@ function renderScreen() {
   setTitle(TITLES[state.screen] ?? 'Cubus');
   const build = SCREENS[state.screen] || SCREENS.home;
   const spec = build();
+  screenGen += 1; // async mounts compare against this to detect that they are obsolete
   const stage = $('#stage'); stage.innerHTML = `<div class="screen active">${spec.html}</div>`;
   const root = stage.firstElementChild;
   for (const b of root.querySelectorAll('[data-go]')) b.onclick = () => go(b.dataset.go);
-  try { spec.mount?.(root); } catch (e) { console.error('screen mount failed', e); }
+  // Two failure modes, and try/catch only covers one: cubeScreen's mount is async, so anything it
+  // throws after its first await escapes as an unhandled rejection instead of reaching here.
+  try {
+    Promise.resolve(spec.mount?.(root)).catch((e) => console.error('screen mount failed', e));
+  } catch (e) { console.error('screen mount failed', e); }
 }
 // Screens are addressable as #/<id>, so a reload or a shared link lands where it left off, and the
 // webview's Back/Forward walk the screens. SCREENS is the routable set — an unknown id resolves to
@@ -1270,7 +1398,9 @@ const router = makeRouter({
 // bookmarks and in anything the app has ever put in an address bar, and an unknown id falls back to
 // home — which would send someone who saved a solve link somewhere unrelated. Rewritten silently,
 // before the router gets a chance to canonicalise them to home.
-const ALIAS = { guide: 'viewer', playback: 'viewer' };
+// `viewer` joins them: the cube screen is Home now. `pair` too — smart-cube setup moved into
+// Settings, so #/pair lands where the controls actually are.
+const ALIAS = { guide: 'home', playback: 'home', viewer: 'home', pair: 'settings' };
 function resolveAlias() {
   const raw = String(window.location.hash || '').replace(/^#\/?/, '').trim();
   const target = ALIAS[raw];
@@ -1281,7 +1411,7 @@ function resolveAlias() {
 function applyRoute() { state.screen = router.current(); renderNav(); renderScreen(); }
 // A hash assignment only fires hashchange when the value actually differs, so navigating onto the
 // screen already showing would do nothing. go() renders directly in that case, preserving the
-// always-re-render behaviour the scan flow depends on (go('viewer') while on viewer).
+// always-re-render behaviour the scan flow depends on (go('home') while on home).
 function go(id) { if (!router.go(id)) applyRoute(); }
 window.addEventListener('hashchange', () => { resolveAlias(); applyRoute(); });
 window.cubusGo = go;
@@ -1291,6 +1421,7 @@ async function boot() {
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
   buildChrome(platform);
+  installAdvancedShortcut();
   // Resolve the deep link before the first paint, and canonicalise the URL so a bogus hash does
   // not sit in the address bar contradicting the screen on show.
   applyTheme(); applyNetColors(); resolveAlias(); router.normalize(); applyRoute();

@@ -41,6 +41,11 @@ export function makeRouter({ screens, defaultScreen = DEFAULT, location, history
       } catch {
         // Some engines reject replaceState on file:// documents. The rewrite is cosmetic, so
         // degrade to assigning the hash instead of throwing during boot.
+        //
+        // Known tradeoff, kept on purpose: unlike replaceState this DOES push a history entry and
+        // DOES fire hashchange, so the boot navigation re-enters once and Back has an extra stop.
+        // The alternative — skipping the rewrite — leaves the address bar showing a screen the app
+        // is not on, which is worse and is what router.test.mjs pins. Only file:// reaches here.
         location.hash = href(id);
       }
     }
