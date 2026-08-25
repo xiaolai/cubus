@@ -14,9 +14,19 @@
   declaring a microphone purpose we never use would be a privacy claim we do not
   need to make.
 
+  NSBluetoothAlwaysUsageDescription is the same deal for the smart cube, and its
+  absence is why the packaged app could not connect while `cargo run -p gan-ble`
+  could: the CLI inherits Terminal's Bluetooth permission, an app bundle has only
+  what it declares. Without the key CoreBluetooth reports `unauthorized`, btleplug
+  then sees no peripherals, and the failure surfaces as "no cube found" — which
+  reads as a cube problem rather than a permission one. Verified against the same
+  cube: the native scan finds GAN16ui_C8D3 and streams FFF6 packets from a
+  terminal, so nothing below this layer is at fault.
+
   When this app is signed with the hardened runtime for notarization it will
-  ALSO need the `com.apple.security.device.camera` entitlement; the plist key
-  alone covers the current unsigned/local build.
+  ALSO need the `com.apple.security.device.camera` and
+  `com.apple.security.device.bluetooth` entitlements; the plist keys alone cover
+  the current unsigned/local build.
 
   CFBundleIconName points at the app icon inside Contents/Resources/Assets.car,
   which is how macOS 26 finds the layered icon and gives it the Liquid Glass
@@ -34,6 +44,8 @@
 <dict>
 	<key>CFBundleIconName</key>
 	<string>Cubus</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Cubus talks to your GAN smart cube over Bluetooth, so it can follow the moves you make. It connects only to a cube you choose.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Cubus reads your cube's six sides through the camera. Everything happens on this device — no image is stored or sent anywhere.</string>
 </dict>
