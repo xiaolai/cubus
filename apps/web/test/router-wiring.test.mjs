@@ -70,9 +70,9 @@ test('the stage actually rendered that screen', () => {
 
 // The listener is the thing most easily left off: every rule can be correct and nothing happens.
 test('hashchange re-renders — Back and Forward will walk the screens', async () => {
-  win.location.hash = '#/viewer';
+  win.location.hash = '#/home';
   await tick();
-  assert.equal(activeNav(), 'viewer');
+  assert.equal(activeNav(), 'home');
   assert.equal(screenTitle(), 'Cube');
 });
 
@@ -96,7 +96,7 @@ test('an unknown hash falls back to home rather than rendering nothing', async (
 test('every screen renders without throwing', async () => {
   const SCREENS = [
     'home', 'scan', 'scramble', 'timer', 'stats',
-    'trainer', 'drill', 'viewer', 'pair', 'lessons', 'settings',
+    'trainer', 'drill', 'lessons', 'settings',
   ];
   const errors = [];
   const onError = (e) => errors.push(`${e.message ?? e}`);
@@ -149,7 +149,7 @@ test('the cube screen applies every saved view setting, not just the ones it sho
   }));
   win.location.hash = '#/timer';
   await tick();
-  win.location.hash = '#/viewer';
+  win.location.hash = '#/home';
   await tick();
   const cube = win.document.querySelector('#viewCube > cubus-cube');
   assert.deepEqual(
@@ -164,7 +164,7 @@ test('the cube screen applies every saved view setting, not just the ones it sho
 // the progress bar, the pacing toggle if a cube is connected, and the step count. Everything else
 // that used to sit there said something the chips, the animation or the nav were already saying.
 test('the cube screen is the cube, one transport row, and nothing else', async () => {
-  win.location.hash = '#/viewer';
+  win.location.hash = '#/home';
   await tick();
   const cubeCard = win.document.querySelector('#stage .cols > .col > .card');
   // One tool over the cube, in the corner: the speed menu. Nothing else draws on top of it.
@@ -195,28 +195,29 @@ test('the cube screen is the cube, one transport row, and nothing else', async (
   assert.ok(win.document.querySelector('#progBar'), 'the bar has a fill element to drive');
 });
 
-// Solve guide and Playback were absorbed into the cube screen. Their links are already out in the
-// wild, and an unknown id falls back to HOME — so without an alias, someone who saved a solve link
-// lands somewhere unrelated and nothing says why.
+// Screens that were absorbed rather than deleted: Solve guide and Playback became the cube screen,
+// the cube screen then became Home, and Smart cube became a card in Settings. Those links are
+// already out in the wild, and an unknown id falls back to HOME — which is silently right for
+// three of them and silently WRONG for #/pair, whose controls are in Settings.
 test('links to the absorbed screens land on the screen that absorbed them', async () => {
-  for (const legacy of ['guide', 'playback']) {
+  for (const [legacy, landing] of [['guide', 'home'], ['playback', 'home'], ['viewer', 'home'], ['pair', 'settings']]) {
     win.location.hash = `#/${legacy}`;
     await tick();
-    assert.equal(activeNav(), 'viewer', `#/${legacy} must not fall back to home`);
-    assert.equal(win.location.hash, '#/viewer', 'and the URL is rewritten to the canonical one');
+    assert.equal(activeNav(), landing, `#/${legacy} must land on ${landing}`);
+    assert.equal(win.location.hash, `#/${landing}`, 'and the URL is rewritten to the canonical one');
   }
 });
 
 // Setting an identical hash fires no hashchange, so this path is driven by go()'s direct render.
-// The scan flow depends on it: go('viewer') while viewer is open must still refresh.
+// The scan flow depends on it: go('home') while the cube screen is open must still refresh.
 test('navigating onto the current screen still re-renders', async () => {
-  win.location.hash = '#/viewer';
+  win.location.hash = '#/home';
   await tick();
   const first = win.document.querySelector('#stage .screen.active');
-  win.cubusGo('viewer');
+  win.cubusGo('home');
   await tick();
   const second = win.document.querySelector('#stage .screen.active');
-  assert.equal(activeNav(), 'viewer');
+  assert.equal(activeNav(), 'home');
   assert.notEqual(first, second, 'the screen element should have been rebuilt, not left in place');
 });
 
@@ -230,7 +231,7 @@ test('the pacing toggle appears only with a smart cube, and defaults to followin
   try {
     win.location.hash = '#/timer';
     await tick();
-    win.location.hash = '#/viewer'; // re-render, since the markup is built once at mount
+    win.location.hash = '#/home'; // re-render, since the markup is built once at mount
     await tick();
 
     const follow = win.document.querySelector('.transport [data-mode]');
@@ -252,7 +253,7 @@ test('the pacing toggle appears only with a smart cube, and defaults to followin
 test('the speed menu offers three speeds, defaults to normal, and drives the renderer', async () => {
   win.location.hash = '#/timer';
   await tick();
-  win.location.hash = '#/viewer';
+  win.location.hash = '#/home';
   await tick();
 
   const opts = [...win.document.querySelectorAll('.menu [data-speed]')];
@@ -276,7 +277,7 @@ test('the speed menu offers three speeds, defaults to normal, and drives the ren
   // It has to survive re-entering the screen, which Random cube does on every press.
   win.location.hash = '#/timer';
   await tick();
-  win.location.hash = '#/viewer';
+  win.location.hash = '#/home';
   await tick();
   const again = win.document.querySelector('#viewCube > cubus-cube');
   assert.equal(again.getAttribute('tempo-scale'), '0.05', 'the choice is remembered');
@@ -295,7 +296,7 @@ test('a junk saved speed falls back to the default instead of being trusted', as
   try {
     win.location.hash = '#/timer';
     await tick();
-    win.location.hash = '#/viewer';
+    win.location.hash = '#/home';
     await tick();
     const cube = win.document.querySelector('#viewCube > cubus-cube');
     assert.equal(cube.getAttribute('tempo-scale'), '0.1', 'unknown id must not become a tempo');
@@ -309,7 +310,7 @@ test('a junk saved speed falls back to the default instead of being trusted', as
 test('the state card is the net plus a dice, and says which state it is', async () => {
   win.location.hash = '#/timer';
   await tick();
-  win.location.hash = '#/viewer';
+  win.location.hash = '#/home';
   await tick();
 
   const card = [...win.document.querySelectorAll('#stage .aside > .card')].at(-1);
@@ -393,8 +394,272 @@ test('scramble starts solved and lands exactly where the net says', async () => 
 });
 
 test('solve mode still names its own end of the walk', async () => {
-  win.location.hash = '#/viewer';
+  win.location.hash = '#/home';
   await tick();
   assert.equal(win.document.querySelector('.aside .eyebrow-row .eyebrow').textContent, 'INITIAL STATE');
   assert.equal(win.document.querySelector('.card-h b').textContent, 'Solution');
+});
+
+// An async mount outliving its screen is invisible until it writes: cubeScreen awaits a solver
+// load and a Kociemba search, and on the far side installs liveUpdate and paints a cube that may
+// belong to a screen the user already left. The generation counter is what makes it notice.
+test('a screen navigated away from mid-mount does not clobber the next one', async () => {
+  win.location.hash = '#/home';
+  await tick();
+  win.location.hash = '#/timer'; // leave immediately, while the cube mount is still awaiting
+  await tick();
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(win.document.querySelector('.nav-item.active')?.dataset.nav, 'timer');
+  assert.ok(win.document.querySelector('#clock'), 'the timer screen is the one mounted');
+  assert.equal(win.document.querySelector('#viewCube'), null, 'no cube card left behind');
+});
+
+// ⌃⌥⌘D reveals an Advanced section in Settings that can take the placeholder screens out of the
+// sidebar. Two things here are easy to get wrong and invisible when you do: the chord must be
+// matched on e.code (macOS Option rewrites e.key, so this arrives as "∂"), and a nav group whose
+// every entry is hidden must not render as a bare heading over nothing.
+const chord = (over = {}) =>
+  new win.KeyboardEvent('keydown', {
+    code: 'KeyD', key: '∂', ctrlKey: true, altKey: true, metaKey: true, bubbles: true, ...over,
+  });
+const navIds = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
+// The sidebar is one flat list now, so there are no group headings to name.
+const navLabels = () => [...win.document.querySelectorAll('#nav [data-nav] .lbl')].map((e) => e.textContent);
+
+test('the Advanced section is hidden until the chord asks for it', async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/settings';
+  await tick();
+  assert.ok(!win.document.querySelector('[data-nav-toggle]'), 'not shown by default');
+
+  // Option rewrites the character, so this is dispatched with key "∂" on purpose.
+  win.document.dispatchEvent(chord());
+  await tick();
+  assert.equal(state.screen, 'settings');
+  assert.deepEqual(
+    [...win.document.querySelectorAll('[data-nav-toggle]')].map((b) => b.dataset.navToggle),
+    ['trainer', 'drill', 'lessons'],
+  );
+
+  win.document.dispatchEvent(chord());
+  await tick();
+  assert.ok(!win.document.querySelector('[data-nav-toggle]'), 'the same chord puts it away');
+});
+
+// The disclosure must not be sticky. Persisting it meant that once you pressed the chord, the
+// section stayed on screen forever — an undocumented developer surface leaking into normal use.
+// What it CONTROLS is still saved; only the fact that you opened it is per-page.
+test('opening Advanced is not remembered', async () => {
+  win.location.hash = '#/settings';
+  await tick();
+  win.document.dispatchEvent(chord());
+  await tick();
+  assert.ok(win.document.querySelector('[data-nav-toggle]'), 'precondition: it is open');
+
+  const stored = win.localStorage.getItem('cubusSettings') ?? '';
+  assert.ok(!stored.includes('advanced'), `open state must not be persisted, got: ${stored}`);
+
+  // The preference it controls IS saved, which is the distinction being drawn.
+  win.document.querySelector('[data-nav-toggle="drill"]').click();
+  await tick();
+  assert.match(win.localStorage.getItem('cubusSettings') ?? '', /navHidden.*drill/);
+
+  // Put it back through the UI: clearing localStorage alone would leave the in-memory settings
+  // holding a hidden entry, and the next test would see a sidebar it did not ask for.
+  win.document.querySelector('[data-nav-toggle="drill"]').click();
+  await tick();
+  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
+  win.document.dispatchEvent(chord());
+  await tick();
+  win.localStorage.removeItem('cubusSettings');
+});
+
+test('a partial chord does nothing — every modifier is required', async () => {
+  win.location.hash = '#/settings';
+  await tick();
+  for (const missing of [{ metaKey: false }, { altKey: false }, { ctrlKey: false }, { code: 'KeyF' }]) {
+    win.document.dispatchEvent(chord(missing));
+    await tick();
+    assert.ok(!win.document.querySelector('[data-nav-toggle]'), `${JSON.stringify(missing)} must not fire`);
+  }
+});
+
+test('hiding an entry removes it from the sidebar, and the rest is untouched', async () => {
+  win.location.hash = '#/settings';
+  await tick();
+  win.document.dispatchEvent(chord());
+  await tick();
+  assert.ok(navIds().includes('lessons'), 'precondition: Lessons is listed');
+
+  win.document.querySelector('[data-nav-toggle="lessons"]').click();
+  await tick();
+  assert.ok(!navIds().includes('lessons'), 'gone from the sidebar');
+  assert.ok(navIds().includes('settings'), 'and its neighbours are untouched');
+
+  // All three at once.
+  for (const id of ['trainer', 'drill']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
+  await tick();
+  assert.deepEqual(navIds().filter((i) => ['trainer', 'drill', 'lessons'].includes(i)), []);
+
+  // Hiding is cosmetic: the address still works, which is the escape hatch.
+  win.location.hash = '#/lessons';
+  await tick();
+  assert.ok(win.document.querySelector('#stage .screen'), 'a hidden screen is still reachable');
+
+  // Restore through the UI, not by wiping localStorage. `settings` is a live module-level object:
+  // clearing storage leaves it holding the hidden ids, so every later test in this file inherits a
+  // sidebar with three entries missing. That is exactly what it did before this comment existed.
+  win.location.hash = '#/settings';
+  await tick();
+  for (const id of ['lessons', 'trainer', 'drill']) {
+    win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
+    await tick();
+  }
+  assert.deepEqual(
+    ['trainer', 'drill', 'lessons'].filter((i) => !navIds().includes(i)),
+    [],
+    'every entry is back before the next test runs',
+  );
+  win.document.dispatchEvent(chord());
+  await tick();
+  win.localStorage.removeItem('cubusSettings');
+});
+
+// The screen model was restructured: Home is the cube, the old Home content moved into Stats, and
+// Smart cube became a card in Settings. Each of those leaves a way to get it silently wrong — a
+// nav entry pointing at a screen that no longer exists, or pairing controls that render but were
+// never wired because their mount stayed behind on the deleted screen.
+test('Home is the cube screen, not a separate landing page', async () => {
+  win.location.hash = '#/home';
+  await tick();
+  assert.ok(win.document.querySelector('#viewCube'), 'Home renders the cube');
+  assert.ok(win.document.querySelector('.transport'), 'and its transport');
+  assert.ok(!win.document.querySelector('#scanCta'), 'the old landing-page call to action is gone');
+});
+
+test('the sidebar no longer offers 3D viewer or Smart cube, and Stats is renamed', async () => {
+  win.location.hash = '#/home';
+  await tick();
+  const ids = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
+  assert.ok(!ids.includes('viewer'), 'the cube screen is reached as Home');
+  assert.ok(!ids.includes('pair'), 'smart cube lives in Settings');
+  const labels = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.textContent);
+  assert.ok(labels.some((l) => l.includes('Stats')), 'Stats is present');
+  assert.ok(!labels.some((l) => l.includes('Session stats')), 'and no longer called Session stats');
+  // Nothing groups the list any more, so there is no heading left over to point at a screen that
+  // no longer exists.
+  assert.equal(win.document.querySelector('#nav .nav-group'), null, 'the sidebar is one flat list');
+  assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'and carries no section titles');
+});
+
+test('Stats carries the content Home used to, and Settings carries the pairing controls', async () => {
+  win.location.hash = '#/stats';
+  await tick();
+  const text = win.document.querySelector('#stage').textContent;
+  for (const moved of ['SINGLE BEST', 'ALG MASTERY', 'Recent solves', 'PICK UP WHERE YOU LEFT OFF', 'WEEK']) {
+    assert.ok(text.includes(moved), `Stats should carry "${moved}" from the old Home`);
+  }
+
+  // .v and .d are declared as `.stat .v` / `.stat .d`, so the headline numbers are unstyled
+  // without the class. There is no layout engine here to notice that, hence the direct check.
+  const headline = [...win.document.querySelectorAll('#stage .card')].filter((c) => c.querySelector('.v'));
+  assert.equal(headline.length, 3, 'three headline cards');
+  for (const c of headline) assert.ok(c.classList.contains('stat'), '.v needs a .stat ancestor to be styled');
+
+  win.location.hash = '#/settings';
+  await tick();
+  assert.ok(win.document.querySelector('#stage').textContent.includes('SMART CUBE'));
+  const pair = win.document.querySelector('#pairBtn');
+  assert.ok(pair, 'the pair button moved across');
+  assert.equal(typeof pair.onclick, 'function', 'and its handler came with it, not just its markup');
+  assert.ok(win.document.querySelector('#macIn'), 'the MAC field is here while disconnected');
+});
+
+// The permanent "No smart cube" box in the sidebar said the same thing on every screen forever,
+// including the whole time you are not using a cube. It is replaced by an indicator that appears
+// beside the cube only while one is actually connected.
+test('the sidebar no longer carries a permanent connection box', async () => {
+  win.location.hash = '#/home';
+  await tick();
+  assert.equal(win.document.querySelector('#cubeStatus'), null);
+  assert.equal(win.document.querySelector('#cubeStatusLabel'), null);
+  assert.equal(win.document.querySelector('.cube-status'), null);
+});
+
+test('a connected cube shows an indicator ahead of the speed button, and nothing when not', async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/home';
+  await tick();
+  const ind = win.document.querySelector('#cubeLive');
+  assert.ok(ind, 'the indicator is in the markup');
+  assert.equal(ind.hidden, true, 'but hidden with no cube connected');
+
+  // It must sit BEFORE the speed button — the tools row reads status first, then controls.
+  const tools = [...win.document.querySelector('.card-tools').children].map((el) => el.id);
+  assert.deepEqual(tools, ['cubeLive', 'speedBtn']);
+
+  state.connected = true;
+  state.cubeName = 'GAN-test';
+  try {
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/home';
+    await tick();
+    const on = win.document.querySelector('#cubeLive');
+    assert.equal(on.hidden, false, 'shown once a cube is connected');
+    assert.match(on.title, /GAN-test/, 'and it names the cube');
+  } finally {
+    state.connected = false;
+    state.cubeName = '';
+  }
+});
+
+// The sidebar was three labelled sections over nine items. Flattened, every page sits at the top
+// level in one list — so the thing to pin is that nothing was lost in the flattening and no
+// heading survived it.
+test('the sidebar is one flat list of every page, with no section titles', async () => {
+  win.location.hash = '#/home';
+  await tick();
+  assert.deepEqual(navLabels(), [
+    'Home', 'Restore', 'Scramble', 'Timer', 'Stats', 'Alg trainer', 'Drill', 'Lessons', 'Settings',
+  ]);
+  assert.equal(win.document.querySelector('#nav .nav-group'), null, 'no grouping wrapper');
+  assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'no SOLVE / PRACTICE / LEARN');
+  // Every child of #nav is a page button — nothing else lives in there now.
+  const kinds = [...win.document.querySelector('#nav').children].map((el) => el.tagName);
+  assert.deepEqual([...new Set(kinds)], ['BUTTON']);
+});
+
+// The smart-cube card's confusion was that it asked for a Bluetooth address without saying why, in
+// a build that already knows it, and put the step-3 action somewhere other than step 3.
+test('the smart cube card only asks for an address where one is actually needed', async () => {
+  win.location.hash = '#/settings';
+  await tick();
+
+  // happy-dom has no navigator.bluetooth, which is the "this browser cannot" branch.
+  assert.equal(win.navigator.bluetooth, undefined, 'precondition: no Web Bluetooth here');
+  const note = win.document.querySelector('#btNote');
+  assert.match(note.textContent, /cannot use Bluetooth/i, 'it says so instead of offering a dead button');
+  assert.equal(win.document.querySelector('#pairBtn').disabled, true, 'and Pair is not offered');
+  assert.equal(
+    win.document.querySelector('#macRow').hidden, true,
+    'no point asking for an address when pairing cannot happen at all',
+  );
+
+  // The address field explains itself rather than being a bare box labelled "cube MAC (macOS)".
+  const row = win.document.querySelector('#macRow').textContent;
+  assert.match(row, /encrypts/i, 'it says what the address is for');
+  assert.match(row, /GAN app/i, 'and where to find it');
+});
+
+test('the setup steps carry their own action', async () => {
+  win.location.hash = '#/settings';
+  await tick();
+  const steps = [...win.document.querySelectorAll('.card')]
+    .find((c) => c.textContent.includes('SMART CUBE'))
+    .textContent;
+  assert.match(steps, /Turn the cube/);
+  assert.match(steps, /Solve it once/);
+  // "Anchor solved state" was jargon parked away from the step it completes.
+  assert.ok(!steps.includes('Anchor solved state'), 'the jargon label is gone');
 });
