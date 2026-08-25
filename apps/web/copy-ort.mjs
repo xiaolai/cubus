@@ -30,4 +30,19 @@ if (wanted.length === 0) {
 }
 
 for (const f of wanted) copyFileSync(join(src, f), join(dest, f));
-console.log(`copied ${wanted.length} onnxruntime-web wasm asset(s) into web/vendor/`);
+
+// The ESM runtime itself, shipped as its OWN module rather than bundled into the scanner panel.
+//
+// This is not a packaging preference, it is what makes off-main-thread inference possible.
+// onnxruntime resolves both its .wasm and its proxy Worker from `import.meta.url`. Inlined into
+// ai-scan-panel.js by esbuild, that URL becomes the PANEL — so `new Worker(import.meta.url)` boots
+// a custom-element bundle inside a worker, which throws on `document`, and the run falls back to
+// "no available backend found". Loaded as its own file, import.meta.url points at ort.mjs and the
+// worker is the runtime, which is what it expects to be.
+const ORT_ESM = 'ort.bundle.min.mjs';
+if (!existsSync(join(src, ORT_ESM))) {
+  console.error(`onnxruntime-web is missing ${ORT_ESM} in:\n  ${src}`);
+  process.exit(1);
+}
+copyFileSync(join(src, ORT_ESM), join(dest, 'ort.mjs'));
+console.log(`copied ${wanted.length} onnxruntime-web wasm asset(s) + ort.mjs into web/vendor/`);

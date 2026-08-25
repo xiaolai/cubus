@@ -285,7 +285,12 @@ export class AiScanPanel extends HTMLElement {
         // the base. Point it at the model's own directory (both the model and runtime live there).
         const wasmPaths = new URL(this.modelUrl.replace(/[^/]+$/, '') || './', document.baseURI)
           .href;
-        this.run = await createModelRunner(this.modelUrl, { wasmPaths });
+        // The runtime itself lives beside the wasm, as its own module. It must NOT be bundled in
+        // here: onnxruntime spawns its inference worker from its own import.meta.url, so a bundled
+        // copy would make that worker load this panel — which registers a custom element and dies
+        // in a worker, taking inference back onto the main thread with it.
+        const ortUrl = `${wasmPaths}ort.mjs`;
+        this.run = await createModelRunner(this.modelUrl, { wasmPaths, ortUrl });
         if (gen !== this.startGen) return; // stop() already released this.source
       }
       if (fellBack) this.loop('scanning', this.tinted('err', PINNED_GONE), ' ', OPENING);

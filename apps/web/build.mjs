@@ -16,7 +16,7 @@
 //
 // dist/ is generated and gitignored — never edit it, edit lib/ or index.html.
 
-import { readFileSync, rmSync, mkdirSync, cpSync, existsSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -72,6 +72,41 @@ if (absentSolver.length) {
   throw new Error(
     `build: dist/ is missing vendored solver files:\n  ${absentSolver.join('\n  ')}\n` +
       '  Run `pnpm vendor:libs` first — without these the app loads but cannot solve.',
+  );
+}
+
+// Same problem, the scanner's half. ort.mjs is reached by a COMPUTED url (`${wasmPaths}ort.mjs`),
+// the .wasm by onnxruntime from its own import.meta.url, and the model by an attribute the panel
+// reads — so none of them appears in index.html and the scan above is blind to all three. They are
+// gitignored too, so a checkout that skips `pnpm copy-ort` builds a dist/ that looks complete and
+// silently cannot scan.
+//
+// ort.mjs in particular must stay a SEPARATE file: onnxruntime spawns its inference worker from
+// its own import.meta.url, so bundling it into the panel puts inference back on the main thread.
+const SCANNER = ['vendor/ort.mjs', 'vendor/cube-yolo.onnx'];
+// The driver and its transport are reached by dynamic import from app.js, so they are as invisible
+// to the HTML scan as the solver bundles. Confirmed by watching what the running app fetches:
+// gan-driver.js and cube-transport.js are both requested, and neither was asserted here.
+const DRIVER = ['vendor/gan-driver.js', 'lib/cube-transport.js'];
+// The wasm binaries need TWO checks, because either one alone is vacuous.
+//
+// onnxruntime picks its binary at runtime from inside its own worker, so which variant it wants is
+// not knowable from here; naming one would risk asserting a file the app never loads. So: every
+// file copy-ort placed in vendor/ must survive into dist/ — AND dist/ must hold at least one, or a
+// checkout that never ran copy-ort passes trivially. The first check derives its expectation from
+// vendor/, so on its own it cannot see a file that was never copied there in the first place.
+const wasmInVendor = readdirSync(join(here, 'vendor'))
+  .filter((f) => f.startsWith('ort-wasm-simd-threaded.') && f.endsWith('.wasm'))
+  .map((f) => `vendor/${f}`);
+const absentScanner = [...SCANNER, ...DRIVER, ...wasmInVendor].filter((f) => !existsSync(join(dist, f)));
+const wasmInDist = existsSync(join(dist, 'vendor'))
+  ? readdirSync(join(dist, 'vendor')).filter((f) => f.startsWith('ort-wasm-simd-threaded.') && f.endsWith('.wasm'))
+  : [];
+if (wasmInDist.length === 0) absentScanner.push('vendor/ort-wasm-simd-threaded*.wasm (none present)');
+if (absentScanner.length) {
+  throw new Error(
+    `build: dist/ is missing vendored scanner files:\n  ${absentScanner.join('\n  ')}\n` +
+      '  Run `pnpm --filter cubus-web copy-ort` first — without these the app loads but cannot scan.',
   );
 }
 
