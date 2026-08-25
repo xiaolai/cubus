@@ -230,14 +230,26 @@ export class GanCube extends TinyEmitter {
    * tested, but no physical GAN16 has been sent this command from this codebase.
    * See docs/protocol.md.
    */
-  async anchorSolved(opts: { timeoutMs?: number } = {}): Promise<CubeFacelets> {
-    const { timeoutMs = 4000 } = opts;
+  async anchorSolved(opts: { timeoutMs?: number; force?: boolean } = {}): Promise<CubeFacelets> {
+    const { timeoutMs = 4000, force = false } = opts;
 
-    const before = await this.getState({ active: true, timeoutMs });
-    if (before.facelets !== SOLVED_FACELETS) {
-      throw new Error(
-        `refusing to anchor: the cube reports an unsolved state, and anchoring now would adopt it as the new solved reference, desyncing the driver from the cube permanently. Solve the cube first.\n  reported: ${before.facelets}\n  expected: ${SOLVED_FACELETS}`,
-      );
+    // `force` exists because the precondition, alone, is a catch-22.
+    //
+    // A cube whose internal solved-reference has drifted reports an unsolved state WHILE BEING
+    // PHYSICALLY SOLVED — and REQUEST_RESET is the one thing that repairs that. Refusing
+    // unconditionally makes the repair unreachable in exactly the situation it exists for.
+    //
+    // The driver cannot tell the two cases apart: "solved cube, drifted reference" and "scrambled
+    // cube" both look like a non-solved report from here. Only somebody looking at the cube can
+    // say which it is, so the override is theirs to give, never inferred. The post-write re-read
+    // below cannot substitute for it — after a reset the cube reports solved either way.
+    if (!force) {
+      const before = await this.getState({ active: true, timeoutMs });
+      if (before.facelets !== SOLVED_FACELETS) {
+        throw new Error(
+          `refusing to anchor: the cube reports an unsolved state, and anchoring now would adopt it as the new solved reference, desyncing the driver from the cube permanently. Solve the cube first — or, if it IS solved and the cube's own reference has drifted, anchor with { force: true }.\n  reported: ${before.facelets}\n  expected: ${SOLVED_FACELETS}`,
+        );
+      }
     }
 
     await this.sendUnsafe('REQUEST_RESET');
