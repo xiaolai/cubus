@@ -693,6 +693,10 @@ const followSetup = async (state) => {
   state.cube.trusted = true;
   state.cube.source = 'cube';
   state.cube.staleWhy = '';
+  // A scramble walk starts from a SOLVED cube, so following one requires the cube in your hand to
+  // actually be solved. Saying "connected and trusted" without saying what it looks like is not
+  // enough, and deliberately so — that gap is what let a solved cube complete a random solve.
+  state.live = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
   win.location.hash = '#/timer';
   await tick();
   win.location.hash = '#/scramble';
@@ -919,13 +923,16 @@ test('trust is established by evidence, not by pairing', async () => {
     win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 90 }) });
     assert.equal(state.cube.trusted, false, 'pairing alone establishes nothing');
 
-    // A generated cube is known by construction.
+    // A generated cube is known by construction — and is NOT the cube in your hand. Those are
+    // different claims, and calling this one 'camera' was the bug that let a solved physical cube
+    // instantly complete a random solve.
     win.location.hash = '#/home';
     await tick();
     win.document.querySelector('#randCube')?.click();
     await tick();
-    assert.equal(state.cube.trusted, true);
-    assert.equal(state.cube.source, 'camera');
+    assert.equal(state.cube.trusted, true, 'we know exactly what it is');
+    assert.equal(state.cube.source, 'generated');
+    assert.equal(state.cube.isPhysical, false, 'but it is not the cube you are holding');
   } finally {
     win.cubusFeed.useConnection(null);
   }
@@ -1031,5 +1038,65 @@ test('every manual control hands control back, not just Next', async () => {
   } finally {
     state.connected = false; state.cubeName = '';
     state.cube.trusted = false; state.cube.staleWhy = '';
+  }
+});
+
+// Reported from a real session: cube connected and physically SOLVED, press Random on Home, and
+// the guide ran straight to 19 / 19 with the done mark, having done nothing.
+//
+// The last step of every solution is the solved state. The physical cube was solved. So the
+// resync — which searches all of `steps` so a cube that ran ahead can rejoin — matched the END of
+// a walk the cube had never begun. Following was on because a paired, trusted cube defaults to
+// following, and Random had marked itself 'camera' as though the camera had read your cube.
+//
+// The fix is one precondition: a walk can only be followed if it STARTS from where the cube in
+// your hand actually is. That makes a random cube unfollowable and a scramble from a solved cube
+// perfectly followable, with no special cases.
+test('a generated cube is not followed, however solved the real one is', async () => {
+  const { state } = await import('../lib/app.js');
+  const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+  try {
+    win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 88 }) });
+    state.cube.trusted = true;
+    state.cube.staleWhy = '';
+    state.live = SOLVED;                      // the cube in your hand is solved
+
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/home';
+    await tick();
+    win.document.querySelector('#randCube').click();
+    await tick();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 20000 && win.document.querySelectorAll('#solList .chip-m').length === 0) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    const total = win.document.querySelectorAll('#solList .chip-m').length;
+    assert.ok(total > 0, 'a solution was worked out');
+    assert.equal(win.document.querySelector('#stepLbl').textContent, `0 / ${total}`);
+
+    const toggle = win.document.querySelector('[data-mode="cube"]');
+    assert.equal(toggle.disabled, true, 'following a cube you are not holding is refused');
+    assert.match(toggle.title, /not the cube in your hand/);
+
+    // The real cube reporting itself — once a second, in life — must change nothing here.
+    const subject = state.cube.facelets;
+    assert.notEqual(subject, SOLVED, 'precondition: the guide is about a different cube');
+    win.cubusFeed.facelets(SOLVED);
+    await tick();
+    // The snapshot is recorded as what the CUBE looks like, and must not become what the GUIDE is
+    // about. One variable used to answer both, so a second later the random cube you asked for had
+    // silently been replaced by the one on your desk.
+    assert.equal(state.live, SOLVED, 'what the cube says is recorded');
+    assert.equal(state.cube.facelets, subject, 'but the guide is still about the cube you asked for');
+    assert.equal(
+      win.document.querySelector('#stepLbl').textContent, `0 / ${total}`,
+      'a solved physical cube must not complete a solve it never performed',
+    );
+    assert.equal(win.document.querySelector('#doneMark').hidden, true);
+  } finally {
+    win.cubusFeed.useConnection(null);
+    state.cube.trusted = false; state.live = null;
   }
 });
