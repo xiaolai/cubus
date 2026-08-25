@@ -85,7 +85,7 @@ const TITLES = {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspection: true, autosolve: false, cameraId: '', navHidden: [] });
+const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspection: true, autosolve: false, cameraId: '', navHidden: null, navDefaults: 0 });
 
 /** Is the Advanced section revealed? Deliberately NOT part of `settings`, so it is not persisted:
  * a section you reach with an undocumented chord should start closed every time, not stay open
@@ -97,15 +97,37 @@ const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspec
 delete settings.advanced;
 let advancedOpen = false;
 
-/** Sidebar entries the Advanced section can hide. These are the screens still carrying
- * placeholder data, so being able to take them out of the way is the point. Hiding is cosmetic:
- * the route keeps working, so a deep link or a typed #/trainer still gets you there. */
-const HIDEABLE = [['trainer', 'Alg trainer'], ['drill', 'Drill'], ['lessons', 'Lessons']];
+/** Sidebar entries the Advanced section can hide, in nav order. Hiding is cosmetic: the route
+ * keeps working, so a deep link or a typed #/timer still gets you there. */
+const HIDEABLE = [
+  ['timer', 'Timer'],
+  ['stats', 'Stats'],
+  ['trainer', 'Alg trainer'],
+  ['drill', 'Drill'],
+  ['lessons', 'Lessons'],
+];
+
+/** Hidden unless asked for. Timer and Stats are speedcubing instruments, not part of learning to
+ * solve a cube, and Stats currently shows representative numbers rather than yours — a screen of
+ * invented data is worse than no screen. The default sidebar is the beginner's path; everything
+ * else is one chord away. */
+const DEFAULT_HIDDEN = ['timer', 'stats'];
+const NAV_DEFAULTS_VERSION = 1;
 
 // localStorage is untrusted input: anything in here that is not a hideable id is dropped rather
 // than allowed to silently remove some other nav entry.
 const HIDEABLE_IDS = new Set(HIDEABLE.map(([id]) => id));
-settings.navHidden = (Array.isArray(settings.navHidden) ? settings.navHidden : []).filter((id) => HIDEABLE_IDS.has(id));
+settings.navHidden = (Array.isArray(settings.navHidden) ? settings.navHidden : DEFAULT_HIDDEN)
+  .filter((id) => HIDEABLE_IDS.has(id));
+
+// A stored preference outranks a changed default, so shipping a new default alone would do nothing
+// for anyone who has already run the app — their saved `navHidden: []` wins forever. Applied once,
+// marked, and saved, so it neither repeats nor re-hides something deliberately brought back.
+if (settings.navDefaults < NAV_DEFAULTS_VERSION) {
+  settings.navHidden = [...new Set([...settings.navHidden, ...DEFAULT_HIDDEN])];
+  settings.navDefaults = NAV_DEFAULTS_VERSION;
+  save('cubusSettings', settings);
+}
 // Checked per call, not just once at load: a stored id that is not hideable must never be able to
 // hide some OTHER nav entry (a stray "home" in there would take Home out of the sidebar).
 const navHidden = (id) => HIDEABLE_IDS.has(id) && settings.navHidden.includes(id);
