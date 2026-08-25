@@ -305,6 +305,10 @@
       /* Takes the old spacer's job: it has to be the flexible gap anyway, so the gap may as well
          say how far through the solution you are. --track/--bar are the groove/fill token pair. */
       .transport .progress { flex: 1; height: 6px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
+      /* Shown only when the cube has left the plan. A wrong turn and a dropped turn used to look
+         identical — both were silence — so this exists to make the difference visible. */
+      .follow-note { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-faint); font-size: var(--fs-body-s); color: var(--warn); }
+      .follow-note[hidden] { display: none; }
       .transport .progress > span { display: block; height: 100%; width: 0; border-radius: var(--r-pill); background: var(--bar); transition: width .18s ease; }
       /* Transport controls are glyphs, not boxes. Four outlined squares in a row read as a toolbar
          of equal-weight objects and fight the cube for attention; the icons alone say the same

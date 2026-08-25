@@ -152,23 +152,52 @@ async function loadSolver() {
 // callers hold up their end: assembleColors clears a scan through the parity gate before emitting
 // it, and the driver's facelets come from hardware the state invariant checks. A future caller
 // that does neither would hang here, and nothing in this function can tell.
-function setFacelets(f) {
+// Ingesting a state and DERIVING from it are separate costs, and they used to be one call.
+//
+// Storing facelets is free. Working out the setup alg is a full Kociemba search, and it ran on
+// every arriving snapshot — the cube emits those at ~1Hz for as long as it is connected, on the
+// UI thread, for a solution most of them never need. Screens that want the derived values ask for
+// them; the live path just records what the cube says.
+function ingestFacelets(f) {
   const c = state.cube;
-  c.facelets = f; c.solution = ''; c.moves = []; c.stepFacelets = [];
-  if (!solverReady) { c.setupAlg = ''; c.solvable = f !== SOLVED; return; }
+  c.facelets = f;
+  c.solution = ''; c.moves = []; c.stepFacelets = [];
+  c.setupAlg = ''; c.derived = false;
+}
+
+/** Derive setupAlg/solvable from the stored facelets. Idempotent; cheap after the first call.
+ *  Every reader of `solvable` or `setupAlg` must go through here first. */
+function deriveCube() {
+  const c = state.cube;
+  if (c.derived) return c;
+  if (!solverReady) {
+    // Without a solver the best we can say is "not the solved state". Deliberately NOT marked
+    // derived, so the real derivation still happens once the solver arrives.
+    c.setupAlg = '';
+    c.solvable = c.facelets !== SOLVED;
+    return c;
+  }
+  c.derived = true;
   try {
-    const sol = Cube.fromString(f).solve();
+    const sol = Cube.fromString(c.facelets).solve();
     const moves = sol.trim() ? sol.trim().split(/\s+/) : [];
     c.setupAlg = moves.slice().reverse().map(invMove).join(' ');
     c.solvable = moves.length > 0;
   } catch { c.setupAlg = ''; c.solvable = false; }
+  return c;
+}
+
+/** Ingest AND derive — for callers that are about to use the result immediately. */
+function setFacelets(f) {
+  ingestFacelets(f);
+  deriveCube();
 }
 
 // Compute the animated solution with cubing.js (min2phase) and cross-check it against cubejs.
 async function solve() {
   const c = state.cube;
   // If a state arrived before the solver was ready, its setup alg is stale — recompute now.
-  if (solverReady && c.facelets !== SOLVED && !c.setupAlg) setFacelets(c.facelets);
+  if (solverReady && c.facelets !== SOLVED && !c.setupAlg) deriveCube();
   if (c.solution) return c.solution;
   if (!cjSolve) {
     // Vendored, not fetched: see vendor-cubing.mjs. Both entry points come from one bundle, and
@@ -216,7 +245,7 @@ function newCube({ animate = false } = {}) {
   const el = document.createElement('cubus-cube');
   el.setAttribute('palette', PALETTE_ATTR[settings.palette] || 'muted');
   const c = state.cube;
-  if (animate && c.solvable) { el.setAttribute('scramble', c.setupAlg); el.setAttribute('alg', c.solution || ''); }
+  if (animate && deriveCube().solvable) { el.setAttribute('scramble', c.setupAlg); el.setAttribute('alg', c.solution || ''); }
   else el.setAttribute('facelets', c.facelets);
   return el;
 }
@@ -366,6 +395,10 @@ async function doConnect(macFromUi) {
     }
     const cube = new GanCube({ mac, transport });
     cube.onFacelets((f) => { onFacelets(f.facelets); });
+    // The move stream was never subscribed to before. Following ran on ~1Hz snapshots alone, so a
+    // turn sequence completed inside one second produced no intermediate state to match against.
+    cube.onMove((m) => { if (liveMove) liveMove(m); });
+    cube.on('gap', (g) => { if (liveGap) liveGap(g); });
     cube.on('disconnect', () => { conn = null; setConnected(false); });
     cube.on('error', () => {});
     cube.connect(); conn = cube;
@@ -382,7 +415,8 @@ async function doConnect(macFromUi) {
 // New physical state (from the cube or the scanner): recompute + refresh the active screen.
 function onFacelets(f) {
   if (!f || f === state.cube.facelets) return;
-  setFacelets(f);
+  // ingest, not set: a snapshot from the cube must not cost a Kociemba search.
+  ingestFacelets(f);
   if (liveUpdate) liveUpdate(f);
   else if (state.screen === 'home') renderScreen();
 }
@@ -433,6 +467,11 @@ let screenGen = 0;
 // the screen on every quarter turn — which on the cube screen means restarting an animation the
 // user is halfway through following.
 let liveUpdate = null;
+/** The cube screen installs these while following. Moves are the SIGNAL — the cube reports one per
+ * turn, immediately. Facelet snapshots arrive at ~1Hz and are the CORRECTION: they say where the
+ * cube really is when the move stream and the guide have drifted apart. */
+let liveMove = null;
+let liveGap = null;
 
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
 // renaming it is not worth breaking every #/scan link and bookmark already in the wild.
@@ -815,7 +854,7 @@ const cubeScreen = (screenMode) => {
   const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, ghosts: true });
   // A scramble is always available: it is generated here rather than read off the cube, so there is
   // no state that makes this screen have nothing to do.
-  const walking = scrambling || state.cube.solvable;
+  const walking = scrambling || deriveCube().solvable;
   const label = scrambling ? 'Scramble' : 'Solution';
   const walked = scrambling ? 'scramble' : 'solution';
   // Saved key → renderer attribute. Named for what it is now that the sliders it fed are gone.
@@ -846,6 +885,11 @@ const cubeScreen = (screenMode) => {
           <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
           ${state.connected ? `<button class="pill on" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
           <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:64px;text-align:right">0 / 0</span>
+        </div>
+        <div class="follow-note" id="followNote" hidden>
+          <span id="followMsg" style="flex:1"></span>
+          <button class="btn sm accent-outline" id="resolveBtn">Re-solve from here</button>
+          <button class="btn sm outline" id="turnBackBtn">I'll turn it back</button>
         </div>
       </div>` : ''}
     </div>
@@ -1057,16 +1101,75 @@ const cubeScreen = (screenMode) => {
         };
       }
 
+      // ---- Follow cube -------------------------------------------------------------------
+      //
+      // Where the PHYSICAL cube is, in solution indices. Deliberately not `at`: `at` is where the
+      // ANIMATION has got to, and it only advances when a turn finishes drawing (1.9s at Normal,
+      // 3.8s at Slow). Driving the match off `at` meant a second real turn inside that window
+      // compared against the wrong index and was dropped — and once the cube was two moves ahead,
+      // the state it was waiting for had already gone past, so nothing could ever match again.
+      let cubePos = 0;
+      let offTrack = false;
+      const note = $('#followNote', root), noteMsg = $('#followMsg', root);
+
+      const showNote = (msg) => {
+        offTrack = true;
+        if (note) { note.hidden = false; noteMsg.textContent = msg; }
+      };
+      const clearNote = () => {
+        offTrack = false;
+        if (note) note.hidden = true;
+      };
+      /** Move the drawing toward where the cube actually is. One queued step per accepted move —
+       *  the renderer's queue is FIFO and never drops, so this cannot fall behind. */
+      const drawTo = (idx) => {
+        // Following is about the guide's POSITION; the drawing is a follower of it. If the renderer
+        // never upgraded — a vendored bundle that failed to load, which this repo has shipped more
+        // than once — the cube should still track your turns rather than throwing on every one.
+        if (typeof cube.step !== 'function' || typeof cube.seek !== 'function') return;
+        if (idx === at) return;
+        if (idx > at && idx - at <= 2) { for (let i = at; i < idx; i++) cube.step(); }
+        else cube.seek(idx); // a jump: animating a dozen moves to catch up helps nobody
+      };
+
+      liveMove = (m) => {
+        if (mode !== 'cube' || offTrack) return;
+        if (m.notation === moves[cubePos]) {
+          cubePos += 1;
+          drawTo(cubePos);
+          clearNote();
+          return;
+        }
+        showNote(`That was ${m.notation} — the next move is ${moves[cubePos] ?? '—'}.`);
+      };
+
+      liveGap = (g) => {
+        if (mode !== 'cube') return;
+        // The cube numbers its moves, and the driver says so when the count skips. Silence here
+        // would look exactly like a wrong turn; it is neither, and the snapshot will resync.
+        showNote(`Missed ${g.missing} turn${g.missing === 1 ? '' : 's'} — checking the cube…`);
+      };
+
       liveUpdate = (f) => {
         // The net is NOT repainted here. While a solution is being walked, that card shows the
         // state the solution was computed from — it says INITIAL STATE — and following live turns
         // would leave the label describing something the user is no longer looking at.
         //
-        // In Follow-cube mode a turn on the real cube IS the Next button: when the cube arrives at
-        // the state the next move produces, the guide takes exactly that one step. Anything else is
-        // ignored, so a wrong turn simply leaves the guide where it was.
-        if (mode === 'cube' && steps[at + 1] === f) cube.step();
+        // Snapshots are the CORRECTION, not the signal. Searching all of `steps` rather than
+        // testing only the next one is what lets a cube that ran ahead, or was turned back, rejoin
+        // the guide instead of stalling forever.
+        if (mode !== 'cube') return;
+        const idx = steps.indexOf(f);
+        if (idx < 0) {
+          showNote('This cube is not on the plan any more.');
+          return;
+        }
+        clearNote();
+        if (idx !== cubePos) { cubePos = idx; drawTo(idx); }
       };
+
+      $('#resolveBtn', root).onclick = () => go(state.screen); // re-mount solves from the cube as it is now
+      $('#turnBackBtn', root).onclick = () => clearNote();     // the next snapshot resyncs on its own
       sync(0);
     },
   };
@@ -1371,7 +1474,7 @@ function renderNav() {
 }
 function renderScreen() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
-  liveUpdate = null;
+  liveUpdate = null; liveMove = null; liveGap = null;
   setTitle(TITLES[state.screen] ?? 'Cubus');
   const build = SCREENS[state.screen] || SCREENS.home;
   const spec = build();
@@ -1415,6 +1518,14 @@ function applyRoute() { state.screen = router.current(); renderNav(); renderScre
 function go(id) { if (!router.go(id)) applyRoute(); }
 window.addEventListener('hashchange', () => { resolveAlias(); applyRoute(); });
 window.cubusGo = go;
+/** Test seam for the cube stream. In production the driver is the only caller of these three
+ * (see doConnect); following cannot otherwise be exercised without a physical GAN cube in the
+ * room, which is precisely why its worst bug survived so long. Same shape as cubusGo above. */
+window.cubusFeed = {
+  move: (m) => liveMove?.(m),
+  facelets: (f) => onFacelets(f),
+  gap: (g) => liveGap?.(g),
+};
 
 async function boot() {
   const platform = detectPlatform();
