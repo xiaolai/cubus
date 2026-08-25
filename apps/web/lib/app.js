@@ -145,9 +145,16 @@ const state = {
     // turned since it was last told where it was — disconnect it, turn it, reconnect, and it
     // reports a state that is confidently wrong. Conflating the two is the bug this models away.
     trusted: false,
-    source: 'none',     // 'none' | 'camera' | 'cube' — what last established it
+    source: 'none',     // 'none' | 'camera' | 'cube' | 'generated' — what last established it
     staleWhy: '',       // why trust lapsed, for a UI that must explain rather than just refuse
+    // Is the arrangement on screen the cube in your HAND? Knowing an arrangement and holding it
+    // are different claims, and one variable was answering both. A generated cube is perfectly
+    // known and is not yours, so a guide built from one must not be driven by your turns.
+    isPhysical: false,
   },
+  /** The connected cube's last reported arrangement, or null. Kept apart from `cube.facelets`,
+   *  which is whatever the guide is currently about — they are the same thing only sometimes. */
+  live: null,
 };
 
 // ---- solver pipeline (cubejs oracle + cubing.js solve), lazy-loaded --------------------------
@@ -502,10 +509,26 @@ async function doConnect(macFromUi) {
 }
 
 // New physical state (from the cube or the scanner): recompute + refresh the active screen.
+/** Make `facelets` the arrangement the app is about.
+ *  `physical` says whether it is the cube in the user's hand — a scan or a confirmed cube report
+ *  is; a generated scramble is not, however well we know it. */
+function adoptCube(facelets, { physical, source }) {
+  ingestFacelets(facelets);
+  state.cube.isPhysical = physical;
+  markTrusted(source);
+}
+
+/** A snapshot from the connected cube. Always records what the cube says; only changes the
+ *  SUBJECT when the subject is that cube — otherwise pressing Random would have its arrangement
+ *  quietly replaced by the real one a second later. */
 function onFacelets(f) {
-  if (!f || f === state.cube.facelets) return;
-  // ingest, not set: a snapshot from the cube must not cost a Kociemba search.
-  ingestFacelets(f);
+  if (!f) return;
+  state.live = f;
+  if (state.cube.isPhysical) {
+    if (f === state.cube.facelets) return;
+    // ingest, not set: a snapshot from the cube must not cost a Kociemba search.
+    ingestFacelets(f);
+  }
   if (liveUpdate) liveUpdate(f);
   else if (state.screen === 'home') renderScreen();
 }
@@ -830,8 +853,8 @@ SCREENS.scan = () => {
         faces.classList.add('settling');
         clearTimeout(settleTimer);
         settleTimer = setTimeout(() => { repaintCanonical(fl); faces.classList.remove('settling'); }, 190);
-        onFacelets(e.detail.facelets);
-        markTrusted('camera'); // the camera SAW this cube; nothing was inferred from a stream
+        // The camera SAW the cube in the user's hand; nothing was inferred from a stream.
+        adoptCube(e.detail.facelets, { physical: true, source: 'camera' });
         // Stay put. Jumping to another screen took the six tiles away at the moment they finally
         // mean something, and with them the chance to check the read or fix a sticker. The aside
         // shows the cube that was found, and "Solve this cube" is right beside it. Anyone who
@@ -966,8 +989,8 @@ SCREENS.scan = () => {
           $('#cubeYes', root).onclick = () => {
             settled = true;
             bar.hidden = true;
-            onFacelets(reported);
-            markTrusted('cube'); // a person compared it with the cube in their hand
+            // A person compared it with the cube in their hand.
+            adoptCube(reported, { physical: true, source: 'cube' });
             sayTitle.textContent = 'Read from your cube';
             say.textContent = 'No camera needed. Solve this cube, or scan it if you change your mind.';
           };
@@ -1167,8 +1190,10 @@ const cubeScreen = (screenMode) => {
         // Re-entering is what rolls a new one: the moves, the chips and the step count are all
         // built at mount, so repainting in place would leave a new cube wearing the old list.
         if (scrambling) { go('scramble'); return; }
-        onFacelets(randomScramble());
-        markTrusted('camera'); // generated here, so its arrangement is known by construction
+        // Known by construction, and NOT the cube in your hand. Marking this 'camera' was the bug
+        // behind a solved physical cube instantly completing a random solve: the guide accepted
+        // the real cube's snapshots as progress through an arrangement it had never been in.
+        adoptCube(randomScramble(), { physical: false, source: 'generated' });
         go('home');
       };
 
@@ -1294,19 +1319,32 @@ const cubeScreen = (screenMode) => {
       // by default, so the control is a single toggle that starts on.
       const followBtn = root.querySelector('[data-mode="cube"]');
       let mode = 'slow';
+      const refuseFollow = (why) => {
+        followBtn.disabled = true;
+        followBtn.classList.remove('on');
+        followBtn.title = why;
+      };
       if (followBtn) {
         // Following compares the real cube against the state each move produces, so it needs one
         // state per step. It says no rather than pretending when the solve did not supply them.
         if (steps.length !== total + 1) {
-          followBtn.disabled = true;
-          followBtn.classList.remove('on');
-          followBtn.title = 'Needs a solve worked out on this screen';
+          refuseFollow('Needs a solve worked out on this screen');
         } else if (!state.cube.trusted) {
           // Not merely unhelpful: the move stream is in the CUBE's frame, so following an
           // unverified cube advances the guide on turns that may not be the ones being made.
-          followBtn.disabled = true;
-          followBtn.classList.remove('on');
-          followBtn.title = `Read the cube first — ${state.cube.staleWhy || 'its position is unverified'}`;
+          refuseFollow(`Read the cube first — ${state.cube.staleWhy || 'its position is unverified'}`);
+        } else if (steps[0] !== state.live) {
+          // THE precondition, and the one that was missing: this walk has to START from where the
+          // cube in your hand actually is. Otherwise your turns are being matched against a
+          // different cube's journey.
+          //
+          // It is what makes a random cube unfollowable while a scramble from a solved cube is
+          // perfectly followable — same rule, no special cases. And it is why a solved cube used
+          // to complete a random solve instantly: the last step of every solution is solved, so
+          // the resync matched the end of a walk the cube had never begun.
+          refuseFollow(state.live
+            ? 'This is not the cube in your hand — read your cube to follow along'
+            : 'Waiting to hear from your cube…');
         } else {
           mode = 'cube';
         }
