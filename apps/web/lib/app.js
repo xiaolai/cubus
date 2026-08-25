@@ -133,7 +133,7 @@ if (settings.navDefaults < NAV_DEFAULTS_VERSION) {
 const navHidden = (id) => HIDEABLE_IDS.has(id) && settings.navHidden.includes(id);
 const state = {
   screen: 'home',
-  connected: false, cubeName: '', battery: '',
+  connected: false, cubeName: '', battery: null,  // battery: 0-100, or null when unknown
   // Whether the cube's solved reference has been anchored this session (pair screen step 4).
   // Not persisted: it describes the live connection, and a new one starts unanchored.
   anchored: false,
@@ -381,8 +381,26 @@ function wireWindowButtons(root) {
 let conn = null, transport = null, connMac = '';
 try { connMac = localStorage.getItem('cubeMac') || ''; } catch {}
 
-function setConnected(on, name = '', battery = '') {
-  state.connected = on; state.cubeName = name; state.battery = battery;
+/** Read the cube's battery and publish it. The cube answers on request only — it does not push
+ *  level changes — so this runs on connect and whenever a screen wants a fresh figure. */
+async function refreshBattery() {
+  if (!conn) return;
+  try {
+    const ev = await conn.requestBattery();
+    const level = Number(ev?.level);
+    if (Number.isFinite(level)) {
+      state.battery = Math.max(0, Math.min(100, Math.round(level)));
+      if (state.screen === 'settings') renderScreen();
+    }
+  } catch {
+    // A cube that will not answer its battery is still a usable cube. Leave the level unknown
+    // rather than guessing, and let the UI say "unknown" rather than draw a fictional meter.
+    state.battery = null;
+  }
+}
+
+function setConnected(on, name = '', battery = null) {
+  state.connected = on; state.cubeName = name; state.battery = on ? battery : null;
   // The anchor belongs to a connection, not to the app. A reconnect (or a different
   // cube) starts unanchored, so step 4 must not keep claiming it is done.
   if (!on) state.anchored = false;
@@ -392,7 +410,9 @@ function setConnected(on, name = '', battery = '') {
   const live = $('#cubeLive');
   if (live) {
     live.hidden = !on;
-    live.title = on ? `${name || 'Smart cube'} connected${battery ? ` · ${battery} battery` : ''}` : '';
+    live.title = on
+      ? `${name || 'Smart cube'} connected${Number.isFinite(state.battery) ? ` · ${state.battery}% battery` : ''}`
+      : '';
   }
   // Settings, not 'pair' — the smart-cube card lives there now, and it renders its own connected
   // state, the anchor button and the setup ticks. A stale id here left all three frozen.
@@ -425,8 +445,12 @@ async function doConnect(macFromUi) {
     cube.on('error', () => {});
     cube.connect(); conn = cube;
     connMac = mac; try { localStorage.setItem('cubeMac', mac); } catch {}
-    setConnected(true, name, '78%');
+    setConnected(true, name);
     cube.getState({ active: true }).then((f) => onFacelets(f.facelets)).catch(() => {});
+    // Ask the cube, rather than inventing a number. This used to report a hardcoded 78% for every
+    // cube forever, which is worse than showing nothing: a flat battery is what disconnects a cube
+    // mid-solve, and a mid-solve disconnect is what silently desyncs its tracking from reality.
+    void refreshBattery();
   } catch (err) {
     try { if (transport) await transport.disconnect(); } catch {}
     transport = null; conn = null; setConnected(false);
@@ -1331,6 +1355,25 @@ SCREENS.settings = () => {
           <div style="display:flex;gap:6px">${themes.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-theme="${t}">${t}</button>`).join('')}</div></div></div>
       ${(() => {
         const on = state.connected;
+        // The cube answers its battery on request, so an unknown level is a real state, not a zero.
+        // It is drawn rather than written as a percentage because the number that matters is "is
+        // this about to die mid-solve" — and a dying cube is what desyncs tracking from reality,
+        // which is the failure this whole screen exists to prevent.
+        const battery = () => {
+          const lv = state.battery;
+          if (!Number.isFinite(lv)) {
+            return `<button class="btn sm outline" id="battRefresh" title="Ask the cube again">battery ?</button>`;
+          }
+          const low = lv <= 20;
+          const tone = low ? 'var(--err)' : lv <= 40 ? 'var(--warn)' : 'var(--ok)';
+          return `<div id="battMeter" title="${lv}% battery" style="display:flex;align-items:center;gap:8px;flex:none">
+            <div style="position:relative;width:34px;height:16px;border:1.5px solid var(--ink-5);border-radius:3px">
+              <i style="position:absolute;inset:2px;width:calc(${lv}% - 4px);min-width:1px;background:${tone};border-radius:1px"></i>
+            </div>
+            <span style="width:8px;height:7px;margin-left:-6px;background:var(--ink-5);border-radius:0 2px 2px 0"></span>
+            <span class="num" style="font-size:var(--fs-body-s);color:${low ? 'var(--err)' : 'var(--ink-3)'};font-weight:${low ? 700 : 400}">${lv}%</span>
+          </div>`;
+        };
         // Step 3 is not decoration: anchorSolved() is what tells the cube which position counts as
         // solved. Naming it "Anchor solved state" and parking the button away from the step it
         // belongs to was the confusing part — the button now lives IN its own step.
@@ -1346,8 +1389,13 @@ SCREENS.settings = () => {
           <div style="flex:1">
             <div style="font-weight:600">${on ? escHtml(state.cubeName) + ' · live' : 'No cube paired'}</div>
             <div class="sub" id="btNote" style="color:var(--ink-4)">${on ? 'Every turn streams into cubus.' : 'Optional — cubus solves from the camera alone. A cube adds move-by-move following.'}</div>
+            ${on ? '' : `<div class="sub" style="color:var(--ink-5);margin-top:4px">${isTauri ? 'Pairing scans for a nearby cube — turn it first so its radio is awake.' : 'Pairing opens your browser\u2019s device chooser — turn the cube first so it appears in the list.'}</div>`}
           </div>
+          ${on ? battery() : ''}
         </div>
+        ${on && Number.isFinite(state.battery) && state.battery <= 20 ? `<div style="display:flex;gap:8px;padding:0 0 12px;color:var(--err);font-size:var(--fs-body-s)">
+          <span>Battery low. A cube that dies mid-solve stops counting turns, and what it reports afterwards will not match the cube in your hand until you read it again.</span>
+        </div>` : ''}
         ${on ? '' : `<div id="macRow" hidden style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">Cube Bluetooth address</div>
             <div class="sub" style="color:var(--ink-4)">The cube encrypts everything with this as the key, and browsers on macOS will not reveal it. Copy it from the GAN app, under your cube's details.</div></div>
@@ -1357,12 +1405,16 @@ SCREENS.settings = () => {
           <button class="btn ${on ? 'outline' : 'primary'} sm" id="pairBtn">${on ? 'Disconnect' : 'Pair a cube'}</button>
           <span class="sub" id="pairMsg" style="flex:1"></span>
         </div>
-        ${steps.map(([t, sub], i) => `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line-faint)">
+        ${steps.every((_, i) => done(i)) ? '' : steps.map(([t, sub], i) => `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line-faint)">
           <div class="num" style="width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid ${done(i) ? 'var(--ok)' : 'var(--line)'};display:grid;place-items:center;font-size:var(--fs-meta);color:${done(i) ? 'var(--ok)' : 'var(--ink-5)'}">${done(i) ? '✓' : i + 1}</div>
           <div style="flex:1"><div style="font-weight:600">${t}</div><div class="sub" style="color:var(--ink-4)">${sub}</div></div>
           ${i === 2 && on ? `<button class="btn accent-outline sm" id="anchorBtn" style="flex:none">${state.anchored ? 'Re-mark' : 'Mark it solved'}</button>
           <button class="btn sm" id="anchorForceBtn" hidden style="flex:none;border:1px solid var(--warn);color:var(--warn)">It is solved — anchor anyway</button>` : ''}
         </div>`).join('')}
+        ${on && steps.every((_, i) => done(i)) ? `<div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line-faint);color:var(--ok);font-size:var(--fs-body-s)">
+          ${icon('check', 15)}<span style="flex:1">Set up and tracking.</span>
+          <button class="btn sm outline" id="anchorBtn">Re-mark solved</button>
+        </div>` : ''}
       </div>`; })()}
       <div class="card"><div class="eyebrow">TIMER & CAMERA</div>
         ${toggles.map(([k, t, s]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
@@ -1436,6 +1488,10 @@ SCREENS.settings = () => {
       // otherwise rather than adopting a scrambled position as the origin. The button is
       // deliberately not disabled when the cube is unsolved: the driver's refusal explains WHY,
       // which teaches the step. A dead button would not.
+      // The cube answers its battery on request only, so an unknown level needs a way to ask again
+      // rather than sitting as a permanent question mark.
+      $('#battRefresh', root)?.addEventListener('click', () => void refreshBattery());
+
       const anchorBtn = $('#anchorBtn', root), forceBtn = $('#anchorForceBtn', root);
       // The precondition can dead-end an honest user, so the refusal has to offer a way through.
       //
@@ -1446,7 +1502,7 @@ SCREENS.settings = () => {
       // offered, never taken automatically, and it says what it will do.
       const anchor = async (force) => {
         if (!conn) { say('not connected', 'var(--err)'); return; }
-        anchorBtn.disabled = true; forceBtn.disabled = true;
+        anchorBtn.disabled = true; if (forceBtn) forceBtn.disabled = true;
         say(force ? 'anchoring anyway…' : 'anchoring…', 'var(--ink-4)');
         try {
           await conn.anchorSolved(force ? { force: true } : {});
@@ -1458,13 +1514,13 @@ SCREENS.settings = () => {
           const msg = String(e.message || e).split('\n')[0];
           if (!force && /refusing to anchor/i.test(msg)) {
             say('The cube reports it is not solved. If it IS solved in front of you, its own reference has drifted — anchoring will reset it to this position.', 'var(--warn)');
-            forceBtn.hidden = false;
+            if (forceBtn) forceBtn.hidden = false;
           } else {
             say(msg, 'var(--err)');
           }
-        } finally { anchorBtn.disabled = false; forceBtn.disabled = false; }
+        } finally { anchorBtn.disabled = false; if (forceBtn) forceBtn.disabled = false; }
       };
-      if (anchorBtn) anchorBtn.onclick = () => { forceBtn.hidden = true; void anchor(false); };
+      if (anchorBtn) anchorBtn.onclick = () => { if (forceBtn) forceBtn.hidden = true; void anchor(false); };
       if (forceBtn) forceBtn.onclick = () => { void anchor(true); };
 
       for (const b of root.querySelectorAll('[data-nav-toggle]')) b.onclick = () => {
@@ -1652,7 +1708,13 @@ window.cubusFeed = {
    *  touches the camera, and there is no way to exercise that without either a physical cube or
    *  this. Setting `state.connected` alone is not enough, and deliberately so — a flag saying
    *  "connected" with nothing behind it must fall back to the camera, which is its own test. */
-  useConnection: (fake) => { conn = fake; setConnected(Boolean(fake), fake ? 'Test cube' : ''); },
+  useConnection: (fake) => {
+    conn = fake;
+    setConnected(Boolean(fake), fake ? 'Test cube' : '');
+    // doConnect reads the battery on connect; a stand-in that skipped it would leave every test
+    // looking at the "unknown" state and quietly never exercise the meter at all.
+    if (fake) void refreshBattery();
+  },
 };
 
 async function boot() {
