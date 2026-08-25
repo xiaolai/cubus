@@ -687,6 +687,12 @@ const feed = () => win.cubusFeed;
 const followSetup = async (state) => {
   state.connected = true;
   state.cubeName = 'GAN-test';
+  // Following requires a TRUSTED cube, not merely a connected one: the move stream is in the
+  // cube's own frame, so following an unverified cube advances the guide on turns that may not be
+  // the ones being made. A real user reaches this by scanning or by confirming the cube's report.
+  state.cube.trusted = true;
+  state.cube.source = 'cube';
+  state.cube.staleWhy = '';
   win.location.hash = '#/timer';
   await tick();
   win.location.hash = '#/scramble';
@@ -895,5 +901,77 @@ test('the setup checklist collapses once the cube is set up', async () => {
   } finally {
     win.cubusFeed.useConnection(null);
     state.anchored = false;
+  }
+});
+
+// ---- Trust -------------------------------------------------------------------------------
+//
+// "Connected" and "we know what this cube looks like" are different claims, and conflating them is
+// the bug this models away. A cube reports how far it has been turned since it was last told where
+// it was; disconnect it, turn it, reconnect, and it reports a state that is confidently wrong.
+test('trust is established by evidence, not by pairing', async () => {
+  const { state } = await import('../lib/app.js');
+  // Start from no knowledge explicitly. Earlier tests establish trust legitimately, and a test
+  // whose premise depends on running first is a test that will lie the day someone reorders them.
+  state.cube.trusted = false;
+  state.cube.source = 'none';
+  try {
+    win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 90 }) });
+    assert.equal(state.cube.trusted, false, 'pairing alone establishes nothing');
+
+    // A generated cube is known by construction.
+    win.location.hash = '#/home';
+    await tick();
+    win.document.querySelector('#randCube')?.click();
+    await tick();
+    assert.equal(state.cube.trusted, true);
+    assert.equal(state.cube.source, 'camera');
+  } finally {
+    win.cubusFeed.useConnection(null);
+  }
+});
+
+test('a missed turn breaks trust and stops following', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    assert.ok(moves.length > 0);
+    assert.ok(state.cube.trusted, 'precondition: trusted');
+    assert.ok(win.document.querySelector('[data-mode="cube"]').classList.contains('on'));
+
+    win.cubusFeed.gap({ missing: 3, from: 4, to: 8 });
+    assert.equal(state.cube.trusted, false, 'turns we never saw means we no longer know the cube');
+    assert.match(state.cube.staleWhy, /3 turns went unrecorded/);
+    assert.equal(
+      win.document.querySelector('[data-mode="cube"]').classList.contains('on'), false,
+      'and following stops rather than tracking a cube it cannot vouch for',
+    );
+  } finally {
+    state.connected = false; state.cubeName = '';
+    state.cube.trusted = false; state.cube.staleWhy = '';
+  }
+});
+
+test('following will not start on a connected-but-unverified cube', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    state.cube.trusted = false;
+    state.cube.staleWhy = 'it disconnected';
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/scramble';
+    await tick();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 20000 && win.document.querySelectorAll('#solList .chip-m').length === 0) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const toggle = win.document.querySelector('[data-mode="cube"]');
+    assert.ok(toggle, 'the toggle is still offered');
+    assert.equal(toggle.disabled, true, 'but it cannot be switched on');
+    assert.match(toggle.title, /Read the cube first/);
+  } finally {
+    state.connected = false; state.cubeName = '';
+    state.cube.trusted = false; state.cube.staleWhy = '';
   }
 });

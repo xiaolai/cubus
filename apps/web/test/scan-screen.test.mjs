@@ -573,6 +573,12 @@ test('confirming the cube adopts its state without ever opening the camera', asy
 
 test('declining falls back to the camera and clears what the cube claimed', async () => {
   const SCRAMBLED = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  const { state } = await import('../lib/app.js');
+  // The question is only asked when trust is in doubt — a cube already verified and still saying
+  // the same thing is adopted without one, which is the point of modelling trust at all. So this
+  // path has to start from doubt, the way a disconnect or a missed turn would leave it.
+  state.cube.trusted = false;
+  state.cube.staleWhy = 'it disconnected';
   win.location.hash = '#/home';
   await tick();
   win.cubusFeed.useConnection({ getState: async () => ({ facelets: SCRAMBLED }) });
