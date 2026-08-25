@@ -663,3 +663,90 @@ test('the setup steps carry their own action', async () => {
   // "Anchor solved state" was jargon parked away from the step it completes.
   assert.ok(!steps.includes('Anchor solved state'), 'the jargon label is gone');
 });
+
+// ---- Follow cube -------------------------------------------------------------------------
+//
+// Exercised on the SCRAMBLE screen, because that is the one that mounts completely here: it needs
+// only cubejs to build its moves, while the solve path needs cubing.js and bails early. The state
+// machine under test is the same one either way.
+//
+// What these pin is the bug that made the feature feel broken: it listened to ~1Hz facelet
+// snapshots alone, so turns made inside a second produced no state to match, and `at` (the
+// ANIMATION position, up to 3.8s behind) was used as the cursor — so a second turn compared
+// against the wrong index and, once the cube ran two ahead, nothing could ever match again.
+
+const feed = () => win.cubusFeed;
+const followSetup = async (state) => {
+  state.connected = true;
+  state.cubeName = 'GAN-test';
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/scramble';
+  await tick();
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && win.document.querySelectorAll('#solList .chip-m').length === 0) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return [...win.document.querySelectorAll('#solList .chip-m')].map((b) => b.textContent);
+};
+
+test('a turn advances the guide immediately, without waiting for the animation', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    assert.ok(moves.length > 2, 'precondition: a scramble was generated');
+    assert.ok(win.document.querySelector('[data-mode="cube"]')?.classList.contains('on'));
+
+    // Two turns back to back — faster than any animation could finish. Under the old wiring the
+    // second was dropped, because `at` had not moved yet.
+    feed().move({ notation: moves[0], serial: 1 });
+    feed().move({ notation: moves[1], serial: 2 });
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'both turns were accepted');
+  } finally {
+    state.connected = false; state.cubeName = '';
+  }
+});
+
+test('a turn that is not the next move says so instead of going quiet', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    const wrong = moves[0].startsWith('U') ? 'R' : 'U';
+    feed().move({ notation: wrong, serial: 1 });
+    const note = win.document.querySelector('#followNote');
+    assert.equal(note.hidden, false, 'the guide must not just ignore it');
+    assert.match(win.document.querySelector('#followMsg').textContent, new RegExp(wrong));
+    assert.match(win.document.querySelector('#followMsg').textContent, /next move is/);
+    assert.ok(win.document.querySelector('#resolveBtn'), 'and offers a way out');
+  } finally {
+    state.connected = false; state.cubeName = '';
+  }
+});
+
+test('a missed-move gap is reported, not mistaken for a wrong turn', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    feed().gap({ missing: 2, from: 4, to: 7 });
+    assert.equal(win.document.querySelector('#followNote').hidden, false);
+    assert.match(win.document.querySelector('#followMsg').textContent, /Missed 2 turns/);
+  } finally {
+    state.connected = false; state.cubeName = '';
+  }
+});
+
+test('a snapshot from off the plan is named, and clears once the cube rejoins', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    const bogus = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB'.replace('R', 'F');
+    feed().facelets(bogus);
+    assert.equal(win.document.querySelector('#followNote').hidden, false, 'off-plan is surfaced');
+
+    // Turning back onto a state the plan knows must recover, rather than stalling forever.
+    feed().facelets('UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB');
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'it rejoins on its own');
+  } finally {
+    state.connected = false; state.cubeName = '';
+  }
+});
