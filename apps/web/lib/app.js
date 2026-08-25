@@ -4,6 +4,9 @@
 // The 3D cube is <cubus-cube> (Renderer B) — it draws only; state and solving stay here.
 
 import { makeTauriTransport, makeWebBluetoothTransport } from './cube-transport.js';
+import { MAX_LABEL, cubeLabel, forgetCube, listCubes, normaliseMac, parseRegistry, rememberCube, renameCube } from './cube-registry.js';
+import { applyOffset, deriveOffset, isIdentity } from './cube-trust.js';
+import { summarize, times } from './solve-stats.js';
 import { makeRouter } from './router.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -16,7 +19,12 @@ const escHtml = (v) =>
   String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 const load = (k, fb) => { try { return { ...fb, ...JSON.parse(localStorage.getItem(k) || '{}') }; } catch { return { ...fb }; } };
-const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+/** Persist, and say whether it worked. Storage can be full, or disabled outright in a private
+ *  window — and the UI used to report "Saved" either way, so a nickname could vanish on reload
+ *  with nothing having warned anyone. */
+const save = (k, v) => {
+  try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; }
+};
 
 // ---- inline icons (lucide paths; offline, no CDN) --------------------------------------------
 const P = {
@@ -50,6 +58,7 @@ const P = {
   minus: '<path d="M5 12h14"/>',
   square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
   webcam: '<circle cx="12" cy="10" r="8"/><circle class="lens" cx="12" cy="10" r="3"/><path d="M7 22h10"/><path d="M12 22v-4"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   'paint-roller': '<rect width="16" height="6" x="2" y="2" rx="2"/><path d="M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect width="4" height="6" x="8" y="16" rx="1"/>',
 };
 const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${P[name] || '<circle cx="12" cy="12" r="2"/>'}</svg>`;
@@ -134,6 +143,9 @@ const navHidden = (id) => HIDEABLE_IDS.has(id) && settings.navHidden.includes(id
 const state = {
   screen: 'home',
   connected: false, cubeName: '', battery: null,  // battery: 0-100, or null when unknown
+  // Which cube is on the other end, by its own address. Identity is READ, never asked: the cube
+  // states it, so the app has an answer it can check rather than a claim it has to trust.
+  cubeMac: '',
   // Whether the cube's solved reference has been anchored this session (pair screen step 4).
   // Not persisted: it describes the live connection, and a new one starts unanchored.
   anchored: false,
@@ -151,10 +163,25 @@ const state = {
     // are different claims, and one variable was answering both. A generated cube is perfectly
     // known and is not yours, so a guide built from one must not be driven by your turns.
     isPhysical: false,
+    // The constant correction between what the cube reports and what it physically is, or null.
+    // Derived from ONE camera scan (see lib/cube-trust.js); never persisted, and cleared on
+    // disconnect — an offset is a relationship between a specific chain and reality at a moment,
+    // and yesterday's correction applied to today's readings is a wrong answer wearing the
+    // costume of a right one.
+    offset: null,
+    // When the correction was derived, so Settings can say so rather than silently altering
+    // every reading. An offset from a BAD scan makes everything subtly wrong, and with nothing on
+    // screen to explain it the app would be haunted rather than merely buggy.
+    offsetAt: 0,
   },
-  /** The connected cube's last reported arrangement, or null. Kept apart from `cube.facelets`,
-   *  which is whatever the guide is currently about — they are the same thing only sometimes. */
+  /** The connected cube's TRUE arrangement — its last report with any correction already applied.
+   *  Kept apart from `cube.facelets`, which is whatever the guide is currently about; they are the
+   *  same thing only sometimes. */
   live: null,
+  /** The same report, uncorrected — exactly what the cube said. Only the repair uses this, and it
+   *  must: an offset derived against corrected truth is the identity, which would discard the
+   *  correction that made it look correct in the first place. */
+  reported: null,
 };
 
 // ---- solver pipeline (cubejs oracle + cubing.js solve), lazy-loaded --------------------------
@@ -395,21 +422,171 @@ function wireWindowButtons(root) {
   on('[data-win="close"]', () => win.close());
 }
 
-let conn = null, transport = null, connMac = '';
-try { connMac = localStorage.getItem('cubeMac') || ''; } catch {}
+let conn = null, transport = null;
+
+// ---- known cubes -----------------------------------------------------------------------------
+//
+// This replaces a single `cubeMac` slot that was overwritten on every connect: pairing a second
+// cube silently lost the first, and a browser on macOS will not hand the address back, so the
+// only copy was gone. A cube states its own address, so keeping one record per cube is
+// bookkeeping rather than guesswork.
+//
+// Only durable facts live here. Trust, the tracking offset, the battery and the anchor flag are
+// properties of a CONNECTION and are deliberately excluded — see lib/cube-registry.js.
+let cubes = parseRegistry(load('cubusCubes', {}));
+(() => {
+  // One-time migration off the old single slot. Skipped without it, an upgrade loses the address.
+  let legacy = '';
+  try { legacy = normaliseMac(localStorage.getItem('cubeMac')); } catch {}
+  if (legacy) {
+    // Carried across FIRST, and the old key removed only once the new one is safely written.
+    // Deleting it on the strength of an unchecked save meant a full or disabled storage lost the
+    // only durable copy of an address a browser on macOS will not give back.
+    let carried = Boolean(cubes[legacy]);
+    if (!carried) {
+      cubes = rememberCube(cubes, { mac: legacy, at: Date.now() });
+      // Both halves confirmed: the address is actually IN the registry, and the registry actually
+      // reached storage. Trusting the write alone was not enough — a full registry could evict the
+      // very cube being carried across, and the legacy key was then deleted anyway.
+      carried = Boolean(cubes[legacy]) && save('cubusCubes', cubes);
+    }
+    // Removed once carried across, or it is not a migration — it is a resurrection. Forgetting a
+    // migrated cube would otherwise last exactly until the next reload.
+    if (carried) { try { localStorage.removeItem('cubeMac'); } catch {} }
+  }
+})();
+/** The address a bare "Pair" should try: whichever cube was used most recently. */
+const lastCubeMac = () => listCubes(cubes)[0]?.mac || '';
+
+/** Repair tracking from one camera reading, WITHOUT solving the cube.
+ *
+ *  This is the whole point of the trust design. The old repair was "solve it, then re-anchor",
+ *  which for a beginner is not a recovery path at all — someone who could solve the cube would
+ *  not need the app, and that is exactly where a new player gives up.
+ *
+ *  @returns {{ok: boolean, text: string}|null} what to tell the user, or null when the scan
+ *  changed nothing about tracking (no cube, or it already agreed).
+ */
+function repairTracking(scanned) {
+  if (!state.connected || !conn) return null;
+  // The RAW report, not state.live. state.live has already had the current offset applied, so
+  // deriving against it yields the identity — and after a gap, which deliberately keeps the
+  // offset, that identity would overwrite a correction the cube still needs.
+  const reported = state.reported;
+  if (!reported) return null;
+
+  // §0 of the design: on an UNBROKEN chain the scan and the cube must agree. If they do not, one
+  // of them is wrong — a misread, or a camera pointed at a different cube — and deriving a
+  // correction from a contradiction would bake the mistake in permanently. Which one is wrong is
+  // not knowable; that there is a problem is, and saying so is the useful half.
+  //
+  // Compared against state.live, NOT the raw report. These are two different questions and they
+  // need two different values: "does the camera agree with where the cube IS" is about corrected
+  // truth, while deriving the correction below is about what the cube literally SAID. Comparing
+  // the scan with the raw report meant that once a correction was active, a perfectly good scan
+  // looked like a contradiction — so repairing a cube once made every later scan of it fail.
+  if (state.cube.trusted && scanned !== state.live) {
+    return {
+      ok: false,
+      text: 'This is not what your cube is reporting, and the cube was tracking. One of the two is wrong, so nothing was changed — check that you scanned the cube that is connected.',
+    };
+  }
+
+  const offset = deriveOffset(scanned, reported, Cube);
+  if (!offset) return null;
+  state.cube.offset = isIdentity(offset) ? null : offset;
+  state.cube.offsetAt = state.cube.offset ? Date.now() : 0;
+  // Recomputed on the spot. `live` is the last report WITH the correction applied, so installing a
+  // new correction leaves it describing the old one until the next snapshot arrives a second
+  // later — and everything reading it in between sees a position that is no longer claimed.
+  const corrected = applyOffset(state.cube.offset, reported, Cube);
+  if (corrected !== null) state.live = corrected;
+  return state.cube.offset
+    ? { ok: true, text: 'Tracking repaired — your cube is back in step for as long as it stays connected, and you never had to solve it.' }
+    : null;
+}
+
+/** The cube is gone — dropped, or deliberately let go. ONE body, used by the driver's event, the
+ *  Disconnect button, the failure path in connectOnce, and the test seam. Three of those four used
+ *  to call setConnected(false) directly, which left trust and the tracking offset alive across a
+ *  disconnect the user had asked for. Idempotent, so calling it twice is harmless. */
+function onDisconnect() {
+  conn = null;
+  // Told before the trust model repaints, so a screen mid-task can stand down rather than
+  // discovering later that nothing will ever complete it.
+  if (onCubeLost) { try { onCubeLost(); } catch {} }
+  // Order matters: mark stale BEFORE setConnected, so the indicator repaints once, already
+  // knowing the truth, rather than flashing "connected and fine" on its way out.
+  markStale('it disconnected, and may have been turned since');
+  // Across a disconnect the cube may sleep, reset its own counters, or be turned. The offset
+  // corrected a specific chain to reality at a moment; that chain is gone.
+  clearOffset();
+  setConnected(false);
+}
+
+/** Throw the correction away. Called on disconnect, and by the reset in Settings.
+ *  NOT called on `gap`: a serial skip means moves were missed, not that the reference moved, so
+ *  the offset is still the correct relationship — what was lost is the moves in between. */
+function clearOffset() {
+  state.cube.offset = null;
+  state.cube.offsetAt = 0;
+}
+
+/** A missed move serial. Trust lapses HERE rather than in the screen's handler: routing it
+ *  through the screen alone meant a gap arriving while you were in Settings was dropped entirely,
+ *  and the next screen you opened claimed a cube it could not vouch for. The screen still gets
+ *  told, so it can stop following and say so. */
+function onGap(g) {
+  markStale(`${g.missing} turn${g.missing === 1 ? '' : 's'} went unrecorded`);
+  if (liveGap) liveGap(g);
+}
+
+/** Record a live connection. The registry write and the connected flag are ONE step on purpose:
+ *  when they were two, the test seam and the real connect path each had their own copy, and a
+ *  single-slot regression in `doConnect` passed every test. Shared code cannot diverge. */
+function adoptConnection(mac, name) {
+  cubes = rememberCube(cubes, { mac, name, at: Date.now() });
+  save('cubusCubes', cubes);
+  // A new connection starts knowing nothing about this cube. Trust and the last report belong to
+  // the chain that just ended: inheriting them let a freshly paired cube be treated as verified on
+  // the strength of a camera scan of some *other* cube, and let a repair derive its correction
+  // from the previous cube's report.
+  state.live = null;
+  state.reported = null;
+  clearOffset();
+  markStale('it has just connected, and has not been checked yet');
+  setConnected(true, name, mac);
+}
+
+/** What to call the connected cube. The user's own word wins; the cube's own name is the
+ *  fallback. One helper so a nickname cannot appear on one screen and not another. */
+const liveCubeLabel = () =>
+  cubeLabel({ ...cubes[state.cubeMac], mac: state.cubeMac, name: state.cubeName }) || 'Smart cube';
 
 /** Read the cube's battery and publish it. The cube answers on request only — it does not push
  *  level changes — so this runs on connect and whenever a screen wants a fresh figure. */
 async function refreshBattery() {
   if (!conn) return;
+  // Scoped to the connection that asked. A slow reply from a cube you have since disconnected
+  // used to land as the current cube's battery level.
+  const asked = conn;
   try {
     const ev = await conn.requestBattery();
+    if (conn !== asked) return;
     const level = Number(ev?.level);
     if (Number.isFinite(level)) {
       state.battery = Math.max(0, Math.min(100, Math.round(level)));
-      if (state.screen === 'settings') renderScreen();
+      // A reply can land while someone is typing a nickname or an address into this very card, and
+      // rebuilding it discards what they typed. Patching only the title would be worse — the bar
+      // and the figure beside it would go stale — so the redraw is deferred instead of faked.
+      const editing = document.activeElement;
+      const midEdit = Boolean(editing && (editing.id === 'macIn' || editing.dataset?.renameCube));
+      if (state.screen === 'settings' && !midEdit) renderScreen();
     }
   } catch {
+    // Scoped like the success path. A rejection from a cube you have since swapped out was
+    // clearing the CURRENT cube's level, so a healthy battery read as unknown.
+    if (conn !== asked) return;
     // A cube that will not answer its battery is still a usable cube. Leave the level unknown
     // rather than guessing, and let the UI say "unknown" rather than draw a fictional meter.
     state.battery = null;
@@ -443,13 +620,22 @@ function paintTrust(el) {
   if (!on) return;
   const ok = state.cube.trusted;
   el.classList.toggle('stale', !ok);
+  const who = liveCubeLabel();
   el.title = ok
-    ? `${state.cubeName || 'Smart cube'} connected${Number.isFinite(state.battery) ? ` · ${state.battery}% battery` : ''} · tracking`
-    : `${state.cubeName || 'Smart cube'} connected, but ${state.cube.staleWhy || 'its position is unverified'} — read the cube again`;
+    ? `${who} connected${Number.isFinite(state.battery) ? ` · ${state.battery}% battery` : ''} · tracking`
+    : `${who} connected, but ${state.cube.staleWhy || 'its position is unverified'} — read the cube again`;
 }
 
-function setConnected(on, name = '', battery = null) {
-  state.connected = on; state.cubeName = name; state.battery = on ? battery : null;
+function setConnected(on, name = '', mac = '') {
+  // What the smart-cube card actually draws. Compared so a call that changes nothing does not
+  // re-render: doConnect's failure path calls setConnected(false) while already disconnected, and
+  // the resulting teardown discarded the DOM the caller's catch was about to write its error into.
+  // Pressing Pair with an empty address therefore produced no message at all.
+  const before = `${state.connected}|${state.cubeName}|${state.cubeMac}`;
+  state.connected = on; state.cubeName = name; state.cubeMac = on ? normaliseMac(mac) : '';
+  // Always unknown at this point, either because there is no cube or because we have not asked
+  // one yet. refreshBattery() fills it in; inventing a figure here is what this replaced.
+  state.battery = null;
   // The anchor belongs to a connection, not to the app. A reconnect (or a different
   // cube) starts unanchored, so step 4 must not keep claiming it is done.
   if (!on) state.anchored = false;
@@ -460,15 +646,29 @@ function setConnected(on, name = '', battery = null) {
   if (live) paintTrust(live);
   // Settings, not 'pair' — the smart-cube card lives there now, and it renders its own connected
   // state, the anchor button and the setup ticks. A stale id here left all three frozen.
-  if (state.screen === 'settings') renderScreen();
+  if (state.screen === 'settings' && before !== `${state.connected}|${state.cubeName}|${state.cubeMac}`) {
+    renderScreen();
+  }
 }
 
 // gan-driver bundle lives at ../vendor relative to this module (apps/web/lib/app.js).
+let connecting = null;
 async function doConnect(macFromUi) {
+  // Single-flight. Pair and the per-cube Use buttons are ordinary clickable things, and two
+  // overlapping attempts raced through the shared `transport`/`conn` module state — the loser
+  // tearing down the winner's transport half-way through its own handshake.
+  if (connecting) return connecting;
+  connecting = (async () => {
+    try { return await connectOnce(macFromUi); } finally { connecting = null; }
+  })();
+  return connecting;
+}
+
+async function connectOnce(macFromUi) {
   if (transport) { try { await transport.disconnect(); } catch {} transport = null; conn = null; }
   try {
     const { GanCube } = await import('../vendor/gan-driver.js');
-    let mac = (macFromUi || connMac || '').trim(), name = 'GAN cube';
+    let mac = (macFromUi || lastCubeMac() || '').trim(), name = 'GAN cube';
     if (isTauri) {
       transport = makeTauriTransport(); await transport.start();
       const info = await window.__TAURI__.core.invoke('connect_cube');
@@ -476,7 +676,10 @@ async function doConnect(macFromUi) {
       if (!mac) throw new Error('cube MAC unavailable — enter it and reconnect');
     } else {
       if (!navigator.bluetooth) throw new Error('Web Bluetooth unavailable in this browser');
-      if (!mac) throw new Error('enter your cube’s MAC first (macOS hides it)');
+      // Terse on purpose. The field directly above this button already explains why a browser
+      // cannot supply the address; repeating it here was the second of three places saying the
+      // same thing, which the plan calls out by name.
+      if (!mac) throw new Error('enter your cube’s address first');
       transport = makeWebBluetoothTransport(); await transport.start();
     }
     const cube = new GanCube({ mac, transport });
@@ -484,18 +687,12 @@ async function doConnect(macFromUi) {
     // The move stream was never subscribed to before. Following ran on ~1Hz snapshots alone, so a
     // turn sequence completed inside one second produced no intermediate state to match against.
     cube.onMove((m) => { if (liveMove) liveMove(m); });
-    cube.on('gap', (g) => { if (liveGap) liveGap(g); });
-    cube.on('disconnect', () => {
-      conn = null;
-      // Order matters: mark stale BEFORE setConnected, so the indicator repaints once, already
-      // knowing the truth, rather than flashing "connected and fine" on its way out.
-      markStale('it disconnected, and may have been turned since');
-      setConnected(false);
-    });
+    cube.on('gap', onGap);
+    cube.on('disconnect', onDisconnect);
     cube.on('error', () => {});
     cube.connect(); conn = cube;
-    connMac = mac; try { localStorage.setItem('cubeMac', mac); } catch {}
-    setConnected(true, name);
+    // Remembered per cube, so pairing a second one no longer erases the first.
+    adoptConnection(mac, name);
     cube.getState({ active: true }).then((f) => onFacelets(f.facelets)).catch(() => {});
     // Ask the cube, rather than inventing a number. This used to report a hardcoded 78% for every
     // cube forever, which is worse than showing nothing: a flat battery is what disconnects a cube
@@ -503,7 +700,7 @@ async function doConnect(macFromUi) {
     void refreshBattery();
   } catch (err) {
     try { if (transport) await transport.disconnect(); } catch {}
-    transport = null; conn = null; setConnected(false);
+    transport = null; onDisconnect();
     throw err;
   }
 }
@@ -521,8 +718,27 @@ function adoptCube(facelets, { physical, source }) {
 /** A snapshot from the connected cube. Always records what the cube says; only changes the
  *  SUBJECT when the subject is that cube — otherwise pressing Random would have its arrangement
  *  quietly replaced by the real one a second later. */
-function onFacelets(f) {
-  if (!f) return;
+function onFacelets(reported) {
+  if (!reported) return;
+  // What the cube literally said, before any correction. Kept because the repair derives the
+  // offset from the RAW report — deriving it from an already-corrected one produces the identity
+  // and silently throws away a correction that is still needed.
+  state.reported = reported;
+  // The ONE place a correction is applied to the stream. Doing it here means no screen, no solver
+  // call and no steps[] comparison has to know that an offset exists.
+  const f = applyOffset(state.cube.offset, reported, Cube);
+  if (f === null) {
+    // A report that could not be established as truth is not a fact about the cube. Showing the
+    // raw value instead would be the failure this whole model exists to prevent, wearing the
+    // costume of a correction.
+    //
+    // `live` is cleared rather than left behind: keeping the last good one beside a newer raw
+    // report that contradicts it is how the two drift apart, and nothing downstream can tell a
+    // current position from a stale one.
+    state.live = null;
+    markStale('its last report could not be checked');
+    return;
+  }
   state.live = f;
   if (state.cube.isPhysical) {
     if (f === state.cube.facelets) return;
@@ -534,16 +750,61 @@ function onFacelets(f) {
 }
 
 // ---- session store (recent solves) -----------------------------------------------------------
-const SAMPLE_SOLVES = [
-  ['19.02', "R U' F2 D B L' U2 R' F D'", '5.9'], ['22.41', "B2 U R' D2 F L U' R2 D F'", '5.1'],
-  ['24.86', "L' D2 R U F2 B' L2 U' R D", '4.8'], ['21.10', "F R2 U' L D' B2 R U2 F' L'", '5.4'],
-  ['17.94', "D' L U2 R' F B2 U L2 D R", '6.2'],
-];
-function recentSolves() { const s = load('cubusSolves', { list: [] }); return s.list.length ? s.list : SAMPLE_SOLVES.map(([time, scramble, tps], i) => ({ n: SAMPLE_SOLVES.length - i, time, scramble, tps })); }
-function pushSolve(time) {
-  const s = load('cubusSolves', { list: [] });
-  s.list = [{ n: (s.list[0]?.n || 0) + 1, time, scramble: currentScramble || '—', tps: '' }, ...s.list].slice(0, 50);
-  save('cubusSolves', s);
+// There used to be five fabricated solves here, handed to anyone whose session was empty — so a
+// person who had never solved a cube was shown their "recent solves", complete with turn rates.
+// An empty session now reads as empty. Placeholder data that looks real is worse than nothing,
+// and this is the screen where that costs the most.
+/** Solves from storage, normalised. This is the boundary: `cubusSolves` is written by anything on
+ *  the origin and edited by anyone with devtools, so `{list: null}` or a list of strings must
+ *  become an empty session rather than reaching a `.slice` or an innerHTML template. Fields are
+ *  whitelisted for the same reason the cube registry whitelists its own. */
+function recentSolves() {
+  const raw = load('cubusSolves', { list: [] }).list;
+  if (!Array.isArray(raw)) return [];
+  // Mapped, never filtered. Dropping a corrupt row closes the gap it left, so the "last five
+  // solves" becomes five solves that were not the last five — and an ao5 computed over them looks
+  // perfectly reasonable. An unusable row stays in place as a record with no usable time, which
+  // is what makes averageOf() refuse rather than quietly reach further back.
+  const ok = (s) => s && typeof s === 'object' && !Array.isArray(s);
+  return raw.map((s) => ({
+    n: ok(s) && Number.isSafeInteger(s.n) && s.n > 0 ? s.n : 0,
+    time: ok(s) && typeof s.time === 'string' ? s.time : '',
+    scramble: ok(s) && typeof s.scramble === 'string' ? s.scramble : '',
+    moves: ok(s) && Number.isSafeInteger(s.moves) && s.moves > 0 ? s.moves : 0,
+    at: ok(s) && Number.isSafeInteger(s.at) && s.at > 0 ? s.at : 0,
+  }));
+}
+
+/** Turns per second for one solve, or '' when nothing measured it. Derived rather than stored: it
+ *  used to be persisted alongside the `moves` and `time` it comes from, so a hand-edited or
+ *  half-written record could show a turn rate that disagreed with its own numbers. */
+function tpsOf(solve) {
+  // The same strict reading solve-stats.js uses, not Number(). Coercion would show a turn rate for
+  // a stored time of "0x10" that every figure computed alongside it refuses to count.
+  if (typeof solve?.time !== 'string' || !/^\d+(\.\d+)?$/.test(solve.time)) return '';
+  const secs = Number(solve.time);
+  if (!Number.isSafeInteger(solve.moves) || solve.moves <= 0 || !Number.isFinite(secs) || secs <= 0) return '';
+  const rate = solve.moves / secs;
+  // A finite input does not guarantee a finite result, and a rate of Infinity rendered as a
+  // confident "0.0 tps".
+  return Number.isFinite(rate) && rate > 0 ? rate.toFixed(1) : '';
+}
+/** Record a finished solve. `moves` is the real turn count from the cube's move stream, or 0 when
+ *  the solve was hand-timed — turns per second is then left EMPTY rather than estimated, because a
+ *  plausible invented figure on a statistics screen is worse than an honest blank. */
+function pushSolve(time, moves = 0) {
+  const list = recentSolves();
+  save('cubusSolves', {
+    list: [
+      // Highest n, not the first row's. Corrupt rows keep their place with a placeholder n of 0,
+      // so reading position zero could restart numbering at 1 half-way through a session.
+      { n: list.reduce((hi, s) => Math.max(hi, s.n || 0), 0) + 1, time, scramble: currentScramble || '—', moves, at: Date.now() },
+      ...list,
+      // 100, not 50. Stats offers an ao100, and a 50-record history made that statistic
+      // unreachable by construction — a number on screen that could never stop being an em dash.
+      // The retained span also has to outlast the seven-day chart drawn beside it.
+    ].slice(0, 200),
+  });
 }
 
 let currentScramble = '';
@@ -584,6 +845,10 @@ let liveUpdate = null;
  * cube really is when the move stream and the guide have drifted apart. */
 let liveMove = null;
 let liveGap = null;
+/** A screen's reaction to losing the cube, beyond the trust model's own. Only the Timer sets one:
+ *  a run in progress has to stop claiming the cube is timing it. Cleared on navigation like the
+ *  rest. */
+let onCubeLost = null;
 
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
 // renaming it is not worth breaking every #/scan link and bookmark already in the wild.
@@ -718,6 +983,8 @@ SCREENS.scan = () => {
       };
       const panel = $('ai-scan-panel', root);
       const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root);
+      // What a finished scan bought, beyond the reading itself. See the scan-progress handler.
+      let afterScan = null;
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
 
@@ -812,10 +1079,17 @@ SCREENS.scan = () => {
         const p = e.detail;
         // Anything other than a finished scan means the orientation is open again — a correction
         // that breaks validity must not leave canonically-repainted tiles claiming otherwise.
-        if (p.phase !== 'done') settled = false;
-        say.textContent = p.message || HOW;
+        if (p.phase !== 'done') { settled = false; afterScan = null; }
+        // The scanner cannot know what its reading BOUGHT — that it put a desynced cube back in
+        // step is our news, not its. Its own `done` message lands around the same moment as
+        // `scan-complete`, and whichever arrived second used to win; the more important one now
+        // wins deterministically.
+        if (afterScan) { sayTitle.textContent = afterScan.title; say.textContent = afterScan.text; }
+        else {
+          say.textContent = p.message || HOW;
+          sayTitle.textContent = (p.message && SAY_TITLE[p.phase]) || 'How it works';
+        }
         say.className = 'sub scan-say' + (p.phase === 'error' ? ' err' : p.phase === 'checking' || p.phase === 'done' ? ' ok' : '');
-        sayTitle.textContent = (p.message && SAY_TITLE[p.phase]) || 'How it works';
         for (const tile of tiles) {
           const f = tile.dataset.face;
           // The centre carries the rescan affordance, revealed on hover over a captured side.
@@ -847,6 +1121,10 @@ SCREENS.scan = () => {
       // A rejected scan restarts itself and explains why through scan-progress, so there is
       // nothing to do here; only a validated cube leaves this screen.
       panel.addEventListener('scan-complete', (e) => {
+        // The panel is torn down on navigation, but an event already in flight still lands. Without
+        // this, a scan finishing just after you left could adopt a cube, derive a correction, and
+        // navigate you from a screen that no longer exists.
+        if (!root.isConnected) return;
         settled = true;
         const fl = e.detail.facelets;
         const faces = $('.scan-faces', root);
@@ -854,7 +1132,26 @@ SCREENS.scan = () => {
         clearTimeout(settleTimer);
         settleTimer = setTimeout(() => { repaintCanonical(fl); faces.classList.remove('settling'); }, 190);
         // The camera SAW the cube in the user's hand; nothing was inferred from a stream.
-        adoptCube(e.detail.facelets, { physical: true, source: 'camera' });
+        //
+        // Order matters: the repair reads what the cube CLAIMED, so it has to run before the scan
+        // is adopted as the truth. With a connected cube this one reading does two jobs — it says
+        // where the cube is, and it puts the cube's own tracking back in step for the rest of this
+        // connection, with no solving involved. (Not permanently: the correction is deliberately
+        // discarded on disconnect, because the cube may sleep or be turned while nobody is counting.)
+        const repaired = repairTracking(fl);
+        // A contradiction is not a reading to adopt. repairTracking says one of the two is wrong
+        // and it cannot tell which — so adopting the scan and marking it trusted made the message
+        // beside it ("nothing was changed") simply untrue.
+        if (repaired?.ok === false) {
+          markStale('a scan disagreed with what it reports, and neither could be confirmed');
+        } else {
+          adoptCube(fl, { physical: true, source: 'camera' });
+        }
+        if (repaired) {
+          afterScan = { title: repaired.ok ? 'Tracking repaired' : 'These do not match', text: repaired.text };
+          sayTitle.textContent = afterScan.title;
+          say.textContent = afterScan.text;
+        }
         // Stay put. Jumping to another screen took the six tiles away at the moment they finally
         // mean something, and with them the chance to check the read or fix a sticker. The aside
         // shows the cube that was found, and "Solve this cube" is right beside it. Anyone who
@@ -945,14 +1242,27 @@ SCREENS.scan = () => {
           if (!conn) { fallBackToCamera('The cube went away — using the camera instead.'); return; }
           sayTitle.textContent = 'Reading your cube';
           say.textContent = 'Asking the cube what it looks like…';
-          let reported;
+          const asked = conn;
+          let raw;
           try {
-            reported = (await conn.getState({ active: true })).facelets;
+            raw = (await conn.getState({ active: true })).facelets;
           } catch {
             fallBackToCamera('The cube did not answer — using the camera instead.');
             return;
           }
-          if (!root.isConnected) return; // navigated away while the cube was answering
+          if (!root.isConnected || conn !== asked) return; // navigated away, or a different cube now
+          // Corrected, exactly as the ~1 Hz stream is. This path used to display, compare and adopt
+          // the raw report, so a repaired cube showed its uncorrected position on the one screen
+          // whose whole job is to tell you what your cube looks like.
+          const reported = applyOffset(state.cube.offset, raw, Cube);
+          if (reported === null) {
+            // Not merely a message. A report that could not be established as truth is a break in
+            // the chain, and the trust model has to hear about it or the indicator keeps claiming
+            // this cube is tracked.
+            markStale('its last report could not be read');
+            fallBackToCamera('What your cube reported could not be read — using the camera instead.');
+            return;
+          }
 
           repaintCanonical(reported);
           showState(reported);
@@ -967,8 +1277,15 @@ SCREENS.scan = () => {
             return;
           }
           sayTitle.textContent = 'Check your cube';
-          say.textContent =
-            'This is what your cube says it looks like. It tracks turns rather than seeing itself, so if it was moved while disconnected this will be wrong. Compare a side or two with the cube in your hand.';
+          // A stale cube is not merely unconfirmed — we KNOW something happened that we could not
+          // see. So the scan is not a fallback here, it is the repair, and the screen says what it
+          // buys. "Go and scan" with no reason attached reads as busywork, and this is precisely
+          // the moment a beginner decides the app is not worth it.
+          say.textContent = state.cube.trusted
+            ? 'This is what your cube says it looks like. It tracks turns rather than seeing itself, so if it was moved while disconnected this will be wrong. Compare a side or two with the cube in your hand.'
+            : `Your cube lost count — ${state.cube.staleWhy || 'its position is unverified'} — so this may not be your cube at all. If it is wrong, one camera scan puts its tracking back in step, and you will not have to solve it first. A cube that is close to solved is the hardest for the camera to read, so it may ask to see a side again.`;
+          const noBtn = $('#cubeNo', root);
+          if (noBtn) noBtn.textContent = state.cube.trusted ? 'No — scan it instead' : 'No — scan it and repair tracking';
           if (bar) {
             // The question has to be one that can FAIL, or it trains people to click yes.
             //
@@ -1072,14 +1389,19 @@ const cubeScreen = (screenMode) => {
     html: `<div class="cols">
     <div class="col">
       <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;position:relative">
-        ${walking ? `<div class="card-tools">
+        ${walking || state.connected ? `<div class="card-tools">
           <span class="ind" id="cubeLive" hidden>${icon('bluetooth', 17)}</span>
-          <button id="speedBtn" title="Animation speed">${icon('gauge', 20)}</button>
+          ${state.connected && !scrambling ? `<button id="readCubeBtn" title="${state.cube.trusted ? 'Show the cube in your hand' : 'Your cube has lost count — see how to fix it'}">${icon('download', 19)}</button>` : ''}
+          ${walking ? `<button id="speedBtn" title="Animation speed">${icon('gauge', 20)}</button>` : ''}
         </div>` : ''}
         <div style="position:relative;flex:1;min-height:0;width:100%">
           <div class="cube-slot" id="viewCube" style="height:100%"></div>
           ${walking ? `<div class="done-mark" id="doneMark" hidden>${icon('check', 34)}</div>` : ''}
         </div>
+        ${state.connected && !scrambling ? `<div class="follow-note" id="readNote" hidden style="width:100%">
+          <span id="readMsg"></span>
+          <div class="acts"><button class="btn sm accent-outline" id="readScanBtn" hidden>Scan to repair it</button></div>
+        </div>` : ''}
       </div>
       ${walking ? `<div class="card">
         <div class="transport">
@@ -1130,6 +1452,69 @@ const cubeScreen = (screenMode) => {
       // cannot disagree about what the same glyph means.
       const liveInd = $('#cubeLive', root);
       if (liveInd) paintTrust(liveInd);
+
+      // ---- read from the cube ----------------------------------------------------------------
+      //
+      // What this is FOR: putting the guide back on the cube in your hand. A guide can be about a
+      // generated scramble, a cube you scanned ten minutes ago, or the one you are holding, and
+      // until this button existed there was no way to say "never mind all that — this one".
+      //
+      // Trusted chain: instant and in place, because the cube already knows. Broken chain: it
+      // does NOT quietly adopt a position nobody can vouch for. It offers the scan that repairs
+      // tracking and says what the scan buys, because "go and scan" with no reason attached reads
+      // as busywork — and this is the exact moment a beginner gives up.
+      const readBtn = $('#readCubeBtn', root);
+      if (readBtn) {
+        const tell = (text, tone, offerScan) => {
+          const note = $('#readNote'), msg = $('#readMsg'), scan = $('#readScanBtn');
+          if (!note || !msg) return;
+          msg.textContent = text;
+          note.style.color = tone;
+          note.hidden = false;
+          if (scan) {
+            scan.hidden = !offerScan;
+            scan.onclick = () => go('scan');
+          }
+        };
+        readBtn.onclick = async () => {
+          if (!conn) { tell('That cube is not connected any more.', 'var(--warn)', false); return; }
+          if (!state.cube.trusted) {
+            tell(
+              `Your cube has lost count — ${state.cube.staleWhy || 'its position is unverified'}. `
+              + 'It would report a position confidently, and it would be wrong. One camera scan puts '
+              + 'it back in step, and you will not have to solve it first.',
+              'var(--warn)', true,
+            );
+            return;
+          }
+          readBtn.disabled = true;
+          const asked = conn;
+          const askedGen = screenGen;
+          try {
+            const raw = (await conn.getState({ active: true })).facelets;
+            // A cube can take its time. By the time it answers the user may have disconnected it,
+            // paired a different one, or opened another screen — and this used to re-trust the
+            // dead connection and re-render whatever they were looking at instead.
+            if (conn !== asked || screenGen !== askedGen || !root.isConnected) return;
+            // Corrected here as well as in onFacelets: this is a direct request, not a stream
+            // snapshot, and it must not be the one path where a repaired cube reads raw.
+            const truth = applyOffset(state.cube.offset, raw, Cube);
+            if (truth === null) {
+              markStale('its last report could not be read');
+              tell('What your cube reported could not be read. A camera scan reads it either way.', 'var(--warn)', true);
+              return;
+            }
+            adoptCube(truth, { physical: true, source: 'cube' });
+            renderScreen();  // the guide is about a different arrangement now
+            tell('Read from your cube — the guide is about the one in your hand.', 'var(--ok)', false);
+          } catch {
+            // Guarded like the success path. A rejection from a cube you have since disconnected,
+            // or from a screen you have since left, used to write its error wherever you now are.
+            if (conn !== asked || screenGen !== askedGen || !root.isConnected) return;
+            tell('The cube did not answer. A camera scan reads it either way.', 'var(--warn)', true);
+          } finally { readBtn.disabled = false; }
+        };
+      }
 
       const speedBtn = $('#speedBtn', root);
       const speedMenu = document.createElement('div');
@@ -1401,9 +1786,16 @@ const cubeScreen = (screenMode) => {
         showNote(`That was ${m.notation} — the next move is ${moves[cubePos] ?? '—'}.`);
       };
 
+      // Trust has already lapsed by the time this runs — onGap() owns that, so it happens with or
+      // without a screen mounted to hear it. What is left here is this screen's own reaction.
       liveGap = (g) => {
-        // Stale regardless of mode: the moves were missed whether or not we were following.
-        markStale(`${g.missing} turn${g.missing === 1 ? '' : 's'} went unrecorded`);
+        // Disabled, not merely un-highlighted. Following matches your turns against an arrangement
+        // we have just said we cannot vouch for, so leaving the toggle clickable offered the user
+        // a way straight back into the state the gap exists to get them out of.
+        if (followBtn) {
+          followBtn.disabled = true;
+          followBtn.title = 'Your cube missed a turn — read it again before following';
+        }
         if (mode !== 'cube') return;
         mode = 'slow'; // stop following a cube we can no longer vouch for
         followBtn?.classList.remove('on');
@@ -1455,13 +1847,113 @@ SCREENS.timer = () => {
       const clock = $('#clock', root); let running = false, t0 = 0, raf = 0;
       const fmt = (ms) => (ms / 1000).toFixed(2);
       const tick = () => { if (!running) return; clock.textContent = fmt(performance.now() - t0); raf = requestAnimationFrame(tick); };
-      const renderLast = () => { const l = recentSolves().slice(0, 5); $('#lastFive', root).innerHTML = l.map((s) => `<div class="card" style="padding:9px 16px;text-align:center"><div class="num" style="font-size:var(--fs-title);font-weight:600">${s.time}</div><div class="eyebrow" style="letter-spacing:.04em">${s.tps ? s.tps + ' tps' : ''}</div></div>`).join(''); };
-      const newScr = () => { if (!solverReady) { $('#scr', root).textContent = 'solver loading…'; return; } randomScramble(); $('#scr', root).textContent = currentScramble || '—'; };
-      const toggle = () => {
-        if (running) { running = false; cancelAnimationFrame(raf); const t = fmt(performance.now() - t0); clock.textContent = t; clock.style.color = 'var(--ink)'; $('#timerHint', root).textContent = 'Click or hold space to start'; pushSolve(t); renderLast(); }
-        else { running = true; t0 = performance.now(); clock.style.color = 'var(--accent)'; $('#timerHint', root).textContent = 'Running — click or press space to stop'; tick(); }
+      // escHtml on both: these come from localStorage, which is untrusted input, and they were
+      // going into innerHTML raw — a stored-XSS hole reachable by anything that can write to the
+      // origin's storage.
+      const renderLast = () => {
+        const l = recentSolves().filter((s) => s.time).slice(0, 5);
+        $('#lastFive', root).innerHTML = l.map((s) => {
+          const rate = tpsOf(s);
+          return `<div class="card" style="padding:9px 16px;text-align:center"><div class="num" style="font-size:var(--fs-title);font-weight:600">${escHtml(s.time)}</div><div class="eyebrow" style="letter-spacing:.04em">${rate ? `${escHtml(rate)} tps` : ''}</div></div>`;
+        }).join('');
+      };
+      // ---- timing from the cube ---------------------------------------------------------
+      //
+      // With a trusted cube there is no spacebar and no reaction time in the number: the cube
+      // says when the first turn happened and when it reached solved, and both are facts rather
+      // than estimates of when a thumb moved.
+      //
+      // The hard part is telling "applying the scramble" apart from "starting the solve" — both
+      // are just turns. The only moment we can KNOW the setup is finished is when the cube
+      // reaches the exact arrangement the scramble was meant to produce, so that is what arms it.
+      // No heuristic, no timing window; if the user scrambles some other way it simply does not
+      // arm, and says what it is waiting for. The manual control keeps working throughout, so
+      // nothing became unavailable by owning a cube.
+      const byCube = state.connected && state.cube.trusted;
+      let target = '';       // the arrangement that means "setup finished"
+      let armed = false;
+      let moves = 0;         // real turns in this solve, from the stream
+      const hint = $('#timerHint', root);
+      const MANUAL = 'Click or hold space to start';
+      const say = (text) => { if (hint) hint.textContent = text; };
+
+      const newScr = () => {
+        if (!solverReady) {
+          $('#scr', root).textContent = 'solver loading…';
+          // Retry when it lands. Without this, opening Timer before the solver finished left
+          // "solver loading…" on screen permanently — the only way out was pressing New scramble
+          // again, which nothing on the screen suggested.
+          void loadSolver().then((ok) => { if (ok && state.screen === 'timer' && root.isConnected) newScr(); });
+          return;
+        }
+        target = randomScramble();
+        $('#scr', root).textContent = currentScramble || '—';
+        armed = false;
+        if (byCube) say(state.live === target ? 'Ready — turn to start' : 'Apply the scramble to your cube');
+      };
+      // Which kind of run this is. A hand-started run is hand-timed even with a cube attached:
+      // counting its turns and stopping it on a solved snapshot filed it as cube-measured, so a
+      // rate the cube never timed appeared beside one it did.
+      let byCubeRun = false;
+      const stop = () => {
+        running = false;
+        cancelAnimationFrame(raf);
+        const t = fmt(performance.now() - t0);
+        clock.textContent = t;
+        clock.style.color = 'var(--ink)';
+        say(byCube ? 'New scramble to go again' : MANUAL);
+        pushSolve(t, byCubeRun ? moves : 0);
+        renderLast();
+        armed = false;
+        byCubeRun = false;
+      };
+      const start = (fromCube = false) => {
+        running = true;
+        byCubeRun = fromCube;
+        t0 = performance.now();
+        moves = 0;
+        clock.style.color = 'var(--accent)';
+        say(fromCube ? 'Running — stops when your cube is solved' : 'Running — click or press space to stop');
+        tick();
+      };
+      const toggle = () => { if (running) stop(); else start(false); };
+      /** The run is no longer one the cube can vouch for. The time already elapsed is real, so it
+       *  is kept — but the turn count is not, and the cube can no longer say when it ends. */
+      const handBack = (why) => {
+        if (!running && !armed) return;
+        armed = false;
+        byCubeRun = false;
+        if (running) say(`${why} — click or press space to stop`);
+        else say(why);
       };
       clock.onclick = toggle; $('#newScr', root).onclick = newScr;
+
+      if (byCube) {
+        say('Apply the scramble to your cube');
+        // A turn while armed is the start of the solve. A turn while running is one more move in
+        // it — counted, because a real turn count is the difference between honest tps and an
+        // invented one.
+        liveMove = () => {
+          if (running) { if (byCubeRun) moves++; return; }
+          if (armed) { armed = false; start(true); moves = 1; }
+        };
+        liveUpdate = (f) => {
+          if (running) {
+            // The cube reached solved. That is the end of the solve, and the cube knowing it is
+            // the whole reason this does not need a spacebar. Only for a run the cube started —
+            // otherwise a solved snapshot could stop a hand-timed run mid-flight.
+            if (byCubeRun && f === SOLVED) stop();
+            return;
+          }
+          // Setup finished: the cube is now exactly where the scramble said to put it.
+          if (target && f === target) { armed = true; say('Ready — turn to start'); }
+        };
+        // A run the cube cannot vouch for must not be reported as one it timed. Without these, a
+        // missed serial went on counting an undercounted turn total, and a disconnect left the
+        // clock running with nothing left that could ever stop it.
+        liveGap = () => handBack('Your cube missed a turn, so its count is no longer reliable');
+        onCubeLost = () => handBack('Your cube disconnected');
+      }
       // e.repeat: holding the key down fires keydown continuously, which start/stopped the clock
       // dozens of times a second and wrote a run of nonsense times into the solve history.
       const onKey = (e) => {
@@ -1470,7 +1962,14 @@ SCREENS.timer = () => {
         toggle();
       };
       document.addEventListener('keydown', onKey);
-      cleanup = () => { cancelAnimationFrame(raf); document.removeEventListener('keydown', onKey); };
+      cleanup = () => {
+        // `running` first: tick() re-schedules itself, so cancelling the pending frame while the
+        // flag is still true leaves an in-flight callback free to queue another one — a clock that
+        // animates forever on a screen that no longer exists.
+        running = false;
+        cancelAnimationFrame(raf);
+        document.removeEventListener('keydown', onKey);
+      };
       renderLast(); newScr();
     },
   };
@@ -1514,11 +2013,61 @@ SCREENS.settings = () => {
           ['Solve it once', 'Teaches the cube which position counts as solved'],
         ];
         const done = (i) => on && (i < 2 || state.anchored);
+        const known = listCubes(cubes);
+
+        // ---- known cubes ------------------------------------------------------------------
+        //
+        // A list, not a slot. The slot it replaces was overwritten on every connect, so a second
+        // cube erased the first — and on macOS the browser will not give the address back, which
+        // made that unrecoverable rather than merely annoying.
+        //
+        // The rows mean different things on the two platforms, and say so rather than pretending
+        // otherwise: the desktop app scans and finds whichever cube is awake, so the address is
+        // not a chooser there and no "Use" button is offered. A browser cannot scan and must be
+        // handed the address, so there it is exactly a chooser.
+        // Shown because a correction derived from a BAD scan makes every later reading subtly wrong,
+        // and with nothing on screen to explain it the app would be haunted rather than merely
+        // buggy. One line in Settings is the difference between a debuggable system and that.
+        const hhmm = (ts) => {
+          if (!ts) return '';
+          const d = new Date(ts);
+          return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        };
+        const seenAgo = (t) => {
+          if (!t) return 'not used yet';
+          const d = Date.now() - t;
+          for (const [ms, unit] of [[86400000, 'd'], [3600000, 'h'], [60000, 'min']]) {
+            if (d >= ms) return `${Math.floor(d / ms)}${unit} ago`;
+          }
+          return 'just now';
+        };
+        const knownCubesRows = () => {
+          if (!known.length) return '';
+          return `<div style="padding:4px 0 0;border-top:1px solid var(--line-faint)">
+            <div class="eyebrow" style="padding-top:12px">${known.length === 1 ? 'YOUR CUBE' : 'YOUR CUBES'}</div>
+            ${known.map((c) => {
+              const live = on && state.cubeMac === c.mac;
+              return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line-faint)">
+                <span class="ico" style="color:${live ? 'var(--ok)' : 'var(--ink-5)'};flex:none">${icon('bluetooth', 16)}</span>
+                <div style="flex:1;min-width:0">
+                  <input class="field" data-rename-cube="${escHtml(c.mac)}" value="${escHtml(c.nickname)}"
+                    placeholder="${escHtml(c.name || 'Give it a name')}" maxlength="${MAX_LABEL}"
+                    style="width:100%;font-weight:600" title="A name of your own. Only a label — nothing depends on it.">
+                  <div class="sub num" style="color:var(--ink-5);font-size:var(--fs-meta);margin-top:3px">${escHtml(c.mac)} · ${live ? 'connected now' : seenAgo(c.lastSeen)}</div>
+                </div>
+                ${!on && !isTauri ? `<button class="btn sm outline" data-use-cube="${escHtml(c.mac)}" style="flex:none">Use</button>` : ''}
+                <button class="btn sm" data-forget-cube="${escHtml(c.mac)}" style="flex:none;border:1px solid var(--line);color:var(--ink-4)">Forget</button>
+              </div>`;
+            }).join('')}
+            ${isTauri ? `<div class="sub" style="color:var(--ink-5);padding:8px 0 0">cubus finds whichever cube is awake nearby, so this list is a history rather than a chooser.</div>` : ''}
+          </div>`;
+        };
+
         return `<div class="card"><div class="eyebrow">SMART CUBE</div>
         <div style="display:flex;align-items:center;gap:12px;padding:12px 0">
           <span class="ico" style="color:${on ? 'var(--ok)' : 'var(--ink-5)'}">${icon('bluetooth', 18)}</span>
           <div style="flex:1">
-            <div style="font-weight:600">${on ? escHtml(state.cubeName) + ' · live' : 'No cube paired'}</div>
+            <div style="font-weight:600">${on ? escHtml(liveCubeLabel()) + ' · live' : 'No cube paired'}</div>
             <div class="sub" id="btNote" style="color:var(--ink-4)">${on ? 'Every turn streams into cubus.' : 'Optional — cubus solves from the camera alone. A cube adds move-by-move following.'}</div>
             ${on ? '' : `<div class="sub" style="color:var(--ink-5);margin-top:4px">${isTauri ? 'Pairing scans for a nearby cube — turn it first so its radio is awake.' : 'Pairing opens your browser\u2019s device chooser — turn the cube first so it appears in the list.'}</div>`}
           </div>
@@ -1527,8 +2076,17 @@ SCREENS.settings = () => {
         ${on && Number.isFinite(state.battery) && state.battery <= 20 ? `<div style="display:flex;gap:8px;padding:0 0 12px;color:var(--err);font-size:var(--fs-body-s)">
           <span>Battery low. A cube that dies mid-solve stops counting turns, and what it reports afterwards will not match the cube in your hand until you read it again.</span>
         </div>` : ''}
+        ${on && state.cube.offset ? `<div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line-faint)">
+          <span class="ico" style="color:var(--ok);flex:none">${icon('check', 16)}</span>
+          <div style="flex:1">
+            <div style="font-weight:600">Tracking corrected</div>
+            <div class="sub" style="color:var(--ink-4)">A camera scan at ${escHtml(hhmm(state.cube.offsetAt))} put this cube back in step after it lost count, and every reading since is corrected by it. If that scan was wrong, so is everything built on it.</div>
+          </div>
+          <button class="btn sm outline" id="offsetReset" style="flex:none">Reset</button>
+        </div>` : ''}
+        ${knownCubesRows()}
         ${on ? '' : `<div id="macRow" hidden style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-faint)">
-          <div style="flex:1"><div style="font-weight:600">Cube Bluetooth address</div>
+          <div style="flex:1"><div style="font-weight:600">${known.length ? 'Add another cube' : 'Cube Bluetooth address'}</div>
             <div class="sub" style="color:var(--ink-4)">The cube encrypts everything with this as the key, and browsers on macOS will not reveal it. Copy it from the GAN app, under your cube's details.</div></div>
           <input class="field" id="macIn" placeholder="AB:CD:EF:12:34:56" style="width:180px;flex:none">
         </div>`}
@@ -1574,9 +2132,15 @@ SCREENS.settings = () => {
       // Smart-cube setup moved here from its own screen. The mock "nearby cubes" list and the
       // hardcoded battery/latency/firmware readout did not come with it: both were invented data
       // presented as live hardware telemetry, which an audit of this branch flagged.
-      const mi = $('#macIn', root); if (mi) mi.value = connMac; // a property, never interpolated
+      // The address field is no longer prefilled. It used to carry the single remembered address
+      // forward, which was the whole of "remember my cube"; the list above does that job now, per
+      // cube, and this field means "add another one" — seeding it with a cube already listed
+      // invites pairing a duplicate of the row you are looking at.
 
-      const say = (text, colour) => { const m = $('#pairMsg', root); if (m) { m.style.color = colour; m.textContent = text; } };
+      // Resolved against the document, not the captured root. Anything that re-renders Settings
+      // between an action starting and finishing would otherwise leave the result written into a
+      // detached node — visible to no one, and indistinguishable from the action doing nothing.
+      const say = (text, colour) => { const m = $('#pairMsg'); if (m) { m.style.color = colour; m.textContent = text; } };
       const pairBtn = $('#pairBtn', root);
 
       // What CAN be detected, and what cannot.
@@ -1611,10 +2175,63 @@ SCREENS.settings = () => {
       }
 
       if (pairBtn) pairBtn.onclick = async () => {
-        if (state.connected) { try { await transport?.disconnect(); } catch {} conn = null; transport = null; setConnected(false); return; }
+        if (state.connected) {
+          // The web transport removes its own disconnect listener before disconnecting, so the
+          // driver's event never fires here. Without this call, deliberately disconnecting left
+          // the cube marked trusted with its correction still applied to nothing.
+          try { await transport?.disconnect(); } catch {}
+          transport = null;
+          onDisconnect();
+          return;
+        }
         say(isTauri ? 'scanning…' : 'pick your cube in the browser prompt', 'var(--ink-4)');
         try { await doConnect($('#macIn', root)?.value); } catch (e) { say(String(e.message || e), 'var(--err)'); }
       };
+
+      // Resetting the correction does NOT restore trust — it removes the only thing that was
+      // making the cube's readings true. Saying so is the point: a silent reset would leave a
+      // confident indicator over raw reports that are known to be wrong.
+      $('#offsetReset', root)?.addEventListener('click', () => {
+        clearOffset();
+        markStale('its correction was reset, so its position is unverified again');
+        renderScreen();
+      });
+
+      // ---- known-cube rows ------------------------------------------------------------------
+      // A nickname is the user's word for a cube. It is stored because it is useful and it is
+      // never branched on, which is what makes accepting an unverifiable label honest.
+      for (const el of root.querySelectorAll('[data-rename-cube]')) {
+        el.onchange = () => {
+          cubes = renameCube(cubes, el.dataset.renameCube, el.value);
+          const rec = cubes[normaliseMac(el.dataset.renameCube)];
+          const named = cubeLabel({ ...rec, mac: el.dataset.renameCube });
+          if (save('cubusCubes', cubes)) say(`Saved — this cube is "${named}".`, 'var(--ok)');
+          else say('Could not save that name — this browser is refusing to store anything.', 'var(--err)');
+        };
+      }
+      for (const el of root.querySelectorAll('[data-use-cube]')) {
+        el.onclick = async () => {
+          say('connecting…', 'var(--ink-4)');
+          try { await doConnect(el.dataset.useCube); } catch (e) { say(String(e.message || e), 'var(--err)'); }
+        };
+      }
+      // Two-step, because a browser on macOS cannot read the address back off the cube: forgetting
+      // is the one action here that destroys something the app cannot re-derive.
+      for (const el of root.querySelectorAll('[data-forget-cube]')) {
+        el.onclick = () => {
+          if (el.dataset.armed !== 'yes') {
+            el.dataset.armed = 'yes';
+            el.textContent = 'Really forget?';
+            el.style.color = 'var(--err)';
+            el.style.borderColor = 'var(--err)';
+            return;
+          }
+          cubes = forgetCube(cubes, el.dataset.forgetCube);
+          const stored = save('cubusCubes', cubes);
+          renderScreen();
+          if (!stored) say('Forgotten for now, but this browser will not store the change.', 'var(--err)');
+        };
+      }
       // anchorSolved() sends REQUEST_RESET only if the cube already reports solved — it throws
       // otherwise rather than adopting a scrambled position as the origin. The button is
       // deliberately not disabled when the cube is unsolved: the driver's refusal explains WHY,
@@ -1635,13 +2252,28 @@ SCREENS.settings = () => {
         if (!conn) { say('not connected', 'var(--err)'); return; }
         anchorBtn.disabled = true; if (forceBtn) forceBtn.disabled = true;
         say(force ? 'anchoring anyway…' : 'anchoring…', 'var(--ink-4)');
+        // Declared OUTSIDE the try, because the catch reads it. Inside, every rejected anchor
+        // threw a ReferenceError instead of showing its refusal — and the refusal is the whole
+        // point of that path: it is what teaches the user why the cube is saying no.
+        const asked = conn;
         try {
+          // Trust goes first, and the correction with it. anchorSolved() moves the cube's own
+          // solved reference, so from this moment the old correction describes a relationship that
+          // no longer exists — and any report arriving during the await would otherwise be taken
+          // raw while the indicator still claimed the cube was tracked. If the anchor then fails,
+          // the cube is left honestly untrusted rather than confidently wrong.
+          markStale('its reference is being reset');
+          clearOffset();
           await conn.anchorSolved(force ? { force: true } : {});
+          // Scoped to the connection that asked: a slow anchor completing after you disconnected
+          // would otherwise mark a cube that is no longer there as set up and trusted.
+          if (conn !== asked) return;
           state.anchored = true;
           markTrusted('cube'); // the cube and reality were just made to agree
           say('Anchored — the cube agrees it is solved.', 'var(--ok)');
           renderScreen();
         } catch (e) {
+          if (conn !== asked) return;
           state.anchored = false;
           const msg = String(e.message || e).split('\n')[0];
           if (!force && /refusing to anchor/i.test(msg)) {
@@ -1669,7 +2301,8 @@ SCREENS.settings = () => {
   };
 };
 
-// Data-driven screens (design layout with representative data; interactions where cheap).
+// Data-driven screens. Stats is now computed entirely from recorded solves — the representative
+// numbers it once carried are gone. Trainer, Drill and Lessons still show design-layout content.
 // Stats — the session dashboard. This absorbed the old Home screen when Home became the cube:
 // the headline numbers, the recent-solve list and the week chart were never a landing page, they
 // were this screen's content sitting one nav entry too far to the left.
@@ -1678,41 +2311,87 @@ SCREENS.settings = () => {
 // affordance, and a stats page is not a front door — Restore has its own nav entry.
 SCREENS.stats = () => {
   const solves = recentSolves();
-  const stages = [['Cross', '2.41', '18%', '1.88', 'var(--ok)'], ['F2L', '9.86', '46%', '8.12', 'var(--accent)'], ['OLL', '4.02', '19%', '3.11', 'var(--warn)'], ['PLL', '3.60', '17%', '2.74', 'var(--err)']];
-  const rows = solves.slice(0, 8).map((so) => `<div class="row" style="grid-template-columns:34px 1fr 70px 74px;gap:12px">
-      <div class="num" style="color:var(--ink-5)">${so.n}</div>
+  const s = summarize(solves, Date.now());
+  // One rule for the whole screen: a statistic that cannot be computed is an em dash, never a
+  // number. Every figure below used to be a literal — a 14.82 single, a 21.44 ao5, a twenty-bar
+  // session chart from a hardcoded array — shown identically to someone who had never solved
+  // anything. A statistics screen is the one place a person comes specifically to learn what is
+  // true, so it is the worst possible place to invent.
+  const secs = (v, digits = 2) => (v === null || v === undefined ? '—' : Number(v).toFixed(digits));
+  const rate = (v) => (v === null || v === undefined ? '—' : Number(v).toFixed(1));
+
+  // Nothing USABLE, not nothing stored. Corrupt rows are now kept in place so the averages stay
+  // honest, so a history of three unreadable records has a length of three and a count of zero —
+  // and it is the count that decides whether there is anything to report.
+  if (!s.count) {
+    return { html: `<div style="height:100%;display:flex;align-items:center;justify-content:center">
+      <div class="card" style="max-width:460px;text-align:center;padding:34px">
+        <div class="eyebrow">NO SOLVES YET</div>
+        <div style="font-size:var(--fs-title);font-weight:600;margin-top:10px">Nothing to report</div>
+        <div class="sub" style="color:var(--ink-4);margin-top:8px;line-height:1.55">
+          Times, averages and turn rates appear here once you have solved something. With a smart
+          cube connected the Timer starts and stops on its own, and the turn count is the cube's
+          own rather than an estimate.
+        </div>
+        <button class="btn accent-outline block" data-go="timer" style="margin-top:18px">Open the timer</button>
+      </div></div>`, mount() {} };
+  }
+
+  // Corrupt rows keep their PLACE in the list above (so the averages stay honest) but are not
+  // drawn — a blank row is not information, it is just a gap wearing a border.
+  const rows = solves.filter((so) => so.time).slice(0, 12).map((so) => `<div class="row" style="grid-template-columns:34px 1fr 70px 74px;gap:12px">
+      <div class="num" style="color:var(--ink-5)">${escHtml(so.n || '')}</div>
       <div class="num" style="color:var(--ink-3);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${escHtml(so.scramble)}</div>
-      <div class="sub" style="color:var(--ink-4);font-size:var(--fs-body-s)">${so.tps ? escHtml(so.tps) + ' tps' : ''}</div>
+      <div class="sub" style="color:var(--ink-4);font-size:var(--fs-body-s)">${tpsOf(so) ? `${escHtml(tpsOf(so))} tps` : ''}</div>
       <div class="num" style="font-size:var(--fs-title-s);font-weight:600;text-align:right">${escHtml(so.time)}</div></div>`).join('');
+
+  // The session chart is the real times, tallest = slowest, so the shape means something. Scaled
+  // to the session's own worst time rather than to a fixed ceiling.
+  //
+  // Built from the SAME validated view the figures above use, and its "best" marker comes from the
+  // bars actually drawn. Deriving the two separately let the chart accept zero and negative times
+  // that summarize() rejects, and let the caption say "your best is marked" while marking nothing,
+  // because the overall best was older than the twenty solves on screen.
+  const chart = times(solves.slice(0, 20)).reverse();
+  const worst = chart.length ? Math.max(...chart) : 1;
+  const bestT = chart.length ? Math.min(...chart) : null;
+
+  const cubeTimed = s.moves;
+  const week = s.week;
+  const busiest = Math.max(1, ...week.map((d) => d.count));
+
   return { html: `<div class="cols">
     <div class="col">
       <div class="grid3">
-        <div class="card stat"><div class="eyebrow">SINGLE BEST</div><div class="v">14.82</div><div class="d" style="color:var(--ok)">−1.3s this week</div></div>
-        <div class="card stat"><div class="eyebrow">AO5</div><div class="v">21.44</div><div class="d">37 solves today</div></div>
-        <div class="card stat"><div class="eyebrow">ALG MASTERY</div><div class="v">42<span style="font-size:var(--fs-title);color:var(--ink-5)">/78</span></div><div class="d">OLL + PLL</div></div>
+        <div class="card stat"><div class="eyebrow">SINGLE BEST</div><div class="v">${secs(s.best)}</div><div class="d">${s.count} solve${s.count === 1 ? '' : 's'} recorded</div></div>
+        <div class="card stat"><div class="eyebrow">AO5</div><div class="v">${secs(s.ao5)}</div><div class="d">${s.ao5 === null ? (s.count < 5 ? `needs ${5 - s.count} more` : 'a recent solve is unreadable') : 'last five'}</div></div>
+        <div class="card stat"><div class="eyebrow">TURNS / SEC</div><div class="v">${rate(cubeTimed?.bestRate)}</div><div class="d">${cubeTimed ? `best of ${cubeTimed.solves} cube-timed` : 'connect a cube to measure'}</div></div>
       </div>
-      <div class="card"><div class="eyebrow">SESSION · ${solves.length} SOLVES</div>
-        <div style="display:flex;align-items:flex-end;gap:4px;height:130px;margin-top:16px">${[72, 64, 80, 58, 66, 52, 74, 49, 61, 45, 70, 55, 42, 58, 50, 64, 44, 52, 38, 47].map((h, i) => `<div style="flex:1;background:${i % 5 === 4 ? 'var(--accent)' : 'var(--ink-6)'};height:${h}%;border-radius:2px 2px 0 0"></div>`).join('')}</div></div>
+      <div class="card"><div class="eyebrow">LAST ${chart.length} SOLVE${chart.length === 1 ? '' : 'S'}</div>
+        <div style="display:flex;align-items:flex-end;gap:4px;height:130px;margin-top:16px">${chart.map((v) => `<div title="${secs(v)}s" style="flex:1;background:${v === bestT ? 'var(--accent)' : 'var(--ink-6)'};height:${Math.max(4, Math.round((v / worst) * 100))}%;border-radius:2px 2px 0 0"></div>`).join('')}</div>
+        <div class="sub" style="color:var(--ink-5);margin-top:10px;font-size:var(--fs-meta)">Taller is slower.${bestT === null ? '' : ' The fastest of these is marked.'}</div></div>
       <div class="card tight" style="flex:1;min-height:0;display:flex;flex-direction:column">
-        <div class="card-h"><b>Recent solves</b><span class="num sub">${solves.length}</span></div>
+        <div class="card-h"><b>Recent solves</b><span class="num sub">${s.count}</span></div>
         <div class="list" style="overflow-y:auto">${rows}</div></div>
     </div>
     <div class="aside" style="overflow-y:auto">
-      <div class="card tight" style="flex:none"><div class="card-h"><b>By stage</b><span class="num sub">avg</span></div>
-        ${stages.map(([stage, avg, pct, best, color]) => `<div class="row" style="grid-template-columns:1fr auto"><div><div style="font-weight:600">${stage}</div><div class="bar" style="max-width:150px;margin-top:6px"><i style="width:${pct};background:${color}"></i></div></div><div style="text-align:right"><div class="num" style="font-size:var(--fs-title-s);font-weight:600">${avg}</div><div class="sub" style="color:var(--ink-4)">best ${best}</div></div></div>`).join('')}</div>
-      <div class="card"><div class="eyebrow">PERSONAL BESTS</div>${[['single', '14.82'], ['ao5', '19.44'], ['ao12', '21.10'], ['ao100', '23.68']].map(([k, v]) => `<div class="row" style="grid-template-columns:1fr auto;border-color:var(--line-faint)"><div style="color:var(--ink-3)">${k}</div><div class="num" style="font-size:var(--fs-title);font-weight:600">${v}</div></div>`).join('')}</div>
-      <div class="card"><div class="eyebrow">PICK UP WHERE YOU LEFT OFF</div>
-        <div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:8px">OLL — dot cases</div>
-        <div class="sub" style="color:var(--ink-4);margin-top:2px">3 of 12 drilled</div>
-        <div class="bar" style="margin-top:12px"><i style="width:25%"></i></div>
-        <button class="btn accent-outline block" data-go="drill" style="margin-top:14px">Resume drill</button></div>
+      <div class="card"><div class="eyebrow">AVERAGES</div>
+        ${[['single', secs(s.best)], ['ao5', secs(s.ao5)], ['ao12', secs(s.ao12)], ['ao100', secs(s.ao100)]].map(([k, v]) => `<div class="row" style="grid-template-columns:1fr auto;border-color:var(--line-faint)"><div style="color:var(--ink-3)">${k}</div><div class="num" style="font-size:var(--fs-title);font-weight:600">${v}</div></div>`).join('')}
+        <div class="sub" style="color:var(--ink-5);margin-top:10px;font-size:var(--fs-meta)">An average of n needs n solves. Until then it is a dash, not a guess.</div></div>
+      <div class="card"><div class="eyebrow">FROM YOUR CUBE</div>
+        ${cubeTimed ? `
+          <div class="row" style="grid-template-columns:1fr auto;border-color:var(--line-faint)"><div style="color:var(--ink-3)">fewest turns</div><div class="num" style="font-size:var(--fs-title);font-weight:600">${cubeTimed.fewestMoves}</div></div>
+          <div class="row" style="grid-template-columns:1fr auto;border-color:var(--line-faint)"><div style="color:var(--ink-3)">average turns</div><div class="num" style="font-size:var(--fs-title);font-weight:600">${cubeTimed.meanMoves.toFixed(0)}</div></div>
+          <div class="row" style="grid-template-columns:1fr auto;border-color:var(--line-faint)"><div style="color:var(--ink-3)">average tps</div><div class="num" style="font-size:var(--fs-title);font-weight:600">${rate(cubeTimed.meanRate)}</div></div>
+          <div class="sub" style="color:var(--ink-5);margin-top:10px;font-size:var(--fs-meta)">Counted from ${cubeTimed.solves} solve${cubeTimed.solves === 1 ? '' : 's'} the cube timed itself. Hand-timed solves are left out rather than estimated.</div>`
+        : `<div class="sub" style="color:var(--ink-4);margin-top:8px;line-height:1.5">A turn rate is a fact about a move stream, so there is nothing honest to show without one. Pair a smart cube and the Timer will count your turns as you make them.</div>
+           <button class="btn accent-outline block" data-go="settings" style="margin-top:14px">Pair a cube</button>`}</div>
       <div class="card"><div class="eyebrow">WEEK</div>
         <div style="display:flex;align-items:flex-end;gap:8px;height:110px;margin-top:14px">
-        ${[['M', 54], ['T', 72], ['W', 40], ['T', 86], ['F', 63], ['S', 96], ['S', 48]].map(([d, h], i) => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end">
-          <div style="width:100%;border-radius:3px 3px 0 0;height:${h}%;background:${i === 5 ? 'var(--accent)' : 'var(--ink-6)'}"></div>
-          <div style="font-size:var(--fs-meta);color:var(--ink-5)">${d}</div></div>`).join('')}</div>
-        <div class="sub" style="color:var(--ink-4);margin-top:14px">Average dropped 2.6s since Monday. Cross is now your fastest stage.</div></div>
-      <div class="card dark"><div class="eyebrow" style="color:var(--on-ink-dim)">WHERE THE TIME GOES</div><div style="margin-top:8px;line-height:1.5;color:var(--on-ink-2)">F2L takes 46% of your average. Two slot cases account for most of it.</div><button class="btn block" data-go="trainer" style="border:1px solid var(--invert-fg);color:var(--invert-fg);margin-top:14px">Open trainer</button></div>
+        ${week.map((d, i) => `<div title="${d.count} solve${d.count === 1 ? '' : 's'}${d.best === null ? '' : ` · best ${secs(d.best)}`}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end">
+          <div style="width:100%;border-radius:3px 3px 0 0;height:${d.count ? Math.max(6, Math.round((d.count / busiest) * 100)) : 2}%;background:${i === week.length - 1 && d.count ? 'var(--accent)' : 'var(--ink-6)'}"></div>
+          <div style="font-size:var(--fs-meta);color:var(--ink-5)">${d.label}</div></div>`).join('')}</div>
+        <div class="sub" style="color:var(--ink-5);margin-top:14px;font-size:var(--fs-meta)">Solves per day. Only solves recorded with a date appear here.</div></div>
     </div></div>`, mount() {} };
 };
 
@@ -1785,7 +2464,7 @@ function renderNav() {
 }
 function renderScreen() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
-  liveUpdate = null; liveMove = null; liveGap = null;
+  liveUpdate = null; liveMove = null; liveGap = null; onCubeLost = null;
   setTitle(TITLES[state.screen] ?? 'Cubus');
   const build = SCREENS[state.screen] || SCREENS.home;
   const spec = build();
@@ -1835,14 +2514,19 @@ window.cubusGo = go;
 window.cubusFeed = {
   move: (m) => liveMove?.(m),
   facelets: (f) => onFacelets(f),
-  gap: (g) => liveGap?.(g),
+  gap: (g) => onGap(g),  // the driver's door, not the screen's — see onGap
+  disconnect: () => onDisconnect(),
   /** Stand in for a paired driver. Restore asks the connection for the cube's state before it
    *  touches the camera, and there is no way to exercise that without either a physical cube or
    *  this. Setting `state.connected` alone is not enough, and deliberately so — a flag saying
    *  "connected" with nothing behind it must fall back to the camera, which is its own test. */
-  useConnection: (fake) => {
+  useConnection: (fake, mac = 'AA:BB:CC:DD:EE:FF') => {
     conn = fake;
-    setConnected(Boolean(fake), fake ? 'Test cube' : '');
+    // Deliberately the SAME call doConnect makes, not a lookalike. The address is part of a
+    // connection rather than decoration: identity is what the registry keys on, so a stand-in
+    // without one would let every identity bug through.
+    if (fake) adoptConnection(mac, 'Test cube');
+    else onDisconnect();
     // doConnect reads the battery on connect; a stand-in that skipped it would leave every test
     // looking at the "unknown" state and quietly never exercise the meter at all.
     if (fake) void refreshBattery();
