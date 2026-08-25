@@ -58,8 +58,10 @@ const activeNav = () =>
   win.document.querySelector('.nav-item.active')?.getAttribute('data-nav') ?? null;
 
 test('boot honours a deep link instead of falling back to home', () => {
-  assert.equal(activeNav(), 'timer', 'nav should mark the deep-linked screen');
+  // Timer is hidden from the sidebar by default, so there is no nav item to mark — the title bar
+  // is what says where you are. That a hidden screen still ROUTES is the property being checked.
   assert.equal(screenTitle(), 'Timer');
+  assert.ok(win.document.querySelector('#stage .screen.active'), 'the deep-linked screen mounted');
 });
 
 test('the stage actually rendered that screen', () => {
@@ -102,10 +104,12 @@ test('every screen renders without throwing', async () => {
   const onError = (e) => errors.push(`${e.message ?? e}`);
   win.addEventListener('error', onError);
 
+  const listed = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
   for (const id of SCREENS) {
     win.location.hash = `#/${id}`;
     await tick();
-    assert.equal(activeNav(), id, `${id} should be the active screen`);
+    // A hidden screen has nothing in the sidebar to highlight; it must still route and render.
+    if (listed().includes(id)) assert.equal(activeNav(), id, `${id} should be the active screen`);
     const stage = win.document.querySelector('#stage .screen.active');
     assert.ok(stage, `${id} rendered no screen element`);
     assert.ok(stage.innerHTML.trim().length > 0, `${id} rendered an empty stage`);
@@ -406,11 +410,11 @@ test('solve mode still names its own end of the walk', async () => {
 test('a screen navigated away from mid-mount does not clobber the next one', async () => {
   win.location.hash = '#/home';
   await tick();
-  win.location.hash = '#/timer'; // leave immediately, while the cube mount is still awaiting
+  win.location.hash = '#/scan'; // leave immediately, while the cube mount is still awaiting
   await tick();
   await new Promise((r) => setTimeout(r, 400));
-  assert.equal(win.document.querySelector('.nav-item.active')?.dataset.nav, 'timer');
-  assert.ok(win.document.querySelector('#clock'), 'the timer screen is the one mounted');
+  assert.equal(win.document.querySelector('.nav-item.active')?.dataset.nav, 'scan');
+  assert.ok(win.document.querySelector('ai-scan-panel'), 'the scan screen is the one mounted');
   assert.equal(win.document.querySelector('#viewCube'), null, 'no cube card left behind');
 });
 
@@ -438,7 +442,7 @@ test('the Advanced section is hidden until the chord asks for it', async () => {
   assert.equal(state.screen, 'settings');
   assert.deepEqual(
     [...win.document.querySelectorAll('[data-nav-toggle]')].map((b) => b.dataset.navToggle),
-    ['trainer', 'drill', 'lessons'],
+    ['timer', 'stats', 'trainer', 'drill', 'lessons'],
   );
 
   win.document.dispatchEvent(chord());
@@ -543,9 +547,11 @@ test('the sidebar no longer offers 3D viewer or Smart cube, and Stats is renamed
   const ids = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
   assert.ok(!ids.includes('viewer'), 'the cube screen is reached as Home');
   assert.ok(!ids.includes('pair'), 'smart cube lives in Settings');
+  // Stats is hidden by default now (it shows representative numbers, not yours), so what matters
+  // is that when it IS shown it carries the shorter name.
+  assert.ok(!ids.includes('stats'), 'Stats is hidden by default');
   const labels = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.textContent);
-  assert.ok(labels.some((l) => l.includes('Stats')), 'Stats is present');
-  assert.ok(!labels.some((l) => l.includes('Session stats')), 'and no longer called Session stats');
+  assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
   // Nothing groups the list any more, so there is no heading left over to point at a screen that
   // no longer exists.
   assert.equal(win.document.querySelector('#nav .nav-group'), null, 'the sidebar is one flat list');
@@ -620,8 +626,10 @@ test('a connected cube shows an indicator ahead of the speed button, and nothing
 test('the sidebar is one flat list of every page, with no section titles', async () => {
   win.location.hash = '#/home';
   await tick();
+  // The default sidebar is the beginner's path. Timer and Stats are speedcubing instruments and
+  // start hidden; Alg trainer, Drill and Lessons remain listed.
   assert.deepEqual(navLabels(), [
-    'Home', 'Restore', 'Scramble', 'Timer', 'Stats', 'Alg trainer', 'Drill', 'Lessons', 'Settings',
+    'Home', 'Restore', 'Scramble', 'Alg trainer', 'Drill', 'Lessons', 'Settings',
   ]);
   assert.equal(win.document.querySelector('#nav .nav-group'), null, 'no grouping wrapper');
   assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'no SOLVE / PRACTICE / LEARN');
@@ -778,4 +786,35 @@ test('the off-track note sits in the solution card, not in the transport', async
   } finally {
     state.connected = false; state.cubeName = '';
   }
+});
+
+// Timer and Stats are speedcubing instruments, not part of learning to solve a cube — and Stats
+// still shows representative numbers rather than yours, which is worse than showing nothing. They
+// start hidden and are one chord away. Hiding stays cosmetic: the routes keep working.
+test('Timer and Stats start hidden, but remain reachable and re-showable', async () => {
+  win.location.hash = '#/home';
+  await tick();
+  const ids = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
+  assert.ok(!ids().includes('timer'), 'Timer is not in the default sidebar');
+  assert.ok(!ids().includes('stats'), 'Stats is not in the default sidebar');
+
+  // Reachable by address, like every other hidden entry.
+  win.location.hash = '#/timer';
+  await tick();
+  assert.ok(win.document.querySelector('#clock'), 'the Timer screen still routes and renders');
+
+  // And re-showable from Advanced, which is the whole point of hiding rather than removing.
+  win.location.hash = '#/settings';
+  await tick();
+  win.document.dispatchEvent(chord());
+  await tick();
+  win.document.querySelector('[data-nav-toggle="timer"]').click();
+  await tick();
+  assert.ok(ids().includes('timer'), 'toggling brings it back');
+  win.document.querySelector('[data-nav-toggle="timer"]').click();
+  await tick();
+  assert.ok(!ids().includes('timer'), 'and puts it away again');
+  win.document.dispatchEvent(chord());
+  await tick();
+  win.localStorage.removeItem('cubusSettings');
 });
