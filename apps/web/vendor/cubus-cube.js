@@ -20460,24 +20460,26 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   constructor() {
     super();
-    this._attrs = {
-      palette: "muted",
-      ghosts: "none",
-      "ghost-elevation": "4",
-      "camera-distance": "12",
-      "camera-latitude": "35",
-      "camera-longitude": "45",
-      "facelet-scale": "0.9",
-      "tempo-scale": "1",
-      "back-view": "none"
-    };
+    this._attrs = { ..._CubusCube.DEFAULTS };
   }
+  /** Attribute defaults. Also what a REMOVED attribute falls back to — see _set(). */
+  static DEFAULTS = {
+    palette: "muted",
+    ghosts: "none",
+    "ghost-elevation": "4",
+    "camera-distance": "12",
+    "camera-latitude": "35",
+    "camera-longitude": "45",
+    "facelet-scale": "0.9",
+    "tempo-scale": "1",
+    "back-view": "none"
+  };
   attributeChangedCallback(name, _old, val) {
     this._set(name, val);
   }
   _set(name, val) {
     name = _CubusCube.ALIAS[String(name).toLowerCase()] || name;
-    this._attrs[name] = val;
+    this._attrs[name] = val == null ? _CubusCube.DEFAULTS[name] : val;
     if (!this._ghostMeshes) return;
     if (name === "palette") this._paint();
     else if (name === "ghosts") {
@@ -20839,7 +20841,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
       }
     }
     this._dirty = true;
-    this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: 0, total: this._sol.length } }));
+    if (!this._quiet) {
+      this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: 0, total: this._sol.length } }));
+    }
   }
   play() {
     this._playing = true;
@@ -20867,8 +20871,14 @@ var CubusCube = class _CubusCube extends HTMLElement {
   // stepBack() and no longer calls this; it stays as renderer API for jumping to a position
   // (a scrubber, a deep link into a solve) where animating every move in between is wrong.
   seek(k) {
-    const target = Math.max(0, Math.min(Math.round(k), this._sol.length));
-    this.reset();
+    const n = Number(k);
+    const target = Number.isFinite(n) ? Math.max(0, Math.min(Math.round(n), this._sol.length)) : 0;
+    this._quiet = true;
+    try {
+      this.reset();
+    } finally {
+      this._quiet = false;
+    }
     for (let i = 0; i < target; i++) {
       const m = this._sol[i];
       const t = this._grab(m);
