@@ -279,6 +279,10 @@
       .card-tools > .ind { width: 28px; height: 28px; display: grid; place-items: center; color: var(--ok); }
       .card-tools > .ind[hidden] { display: none; }
       .card-tools > .ind .ic { animation: cubusPulse var(--pulse) infinite; }
+      /* Connected but no longer verified. Amber rather than green, and still, rather than pulsing —
+         a pulse reads as "live and fine", which is the one thing this state is not. */
+      .card-tools > .ind.stale { color: var(--warn); }
+      .card-tools > .ind.stale .ic { animation: none; }
       .scan-cam.on #scanCamBtn { color: var(--ok); }
       /* Asking whether the cube's own report matches the cube in your hands. Sits directly under the
          2D net, because the net is what you compare against — it shows all six sides at once,

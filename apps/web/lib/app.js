@@ -137,7 +137,17 @@ const state = {
   // Whether the cube's solved reference has been anchored this session (pair screen step 4).
   // Not persisted: it describes the live connection, and a new one starts unanchored.
   anchored: false,
-  cube: { facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [] },
+  cube: {
+    facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [],
+    // ---- trust ------------------------------------------------------------------------
+    // Do we currently KNOW what this cube looks like? Deliberately not derived from
+    // `state.connected`: a paired cube is not a trusted one. A cube reports how far it has been
+    // turned since it was last told where it was — disconnect it, turn it, reconnect, and it
+    // reports a state that is confidently wrong. Conflating the two is the bug this models away.
+    trusted: false,
+    source: 'none',     // 'none' | 'camera' | 'cube' — what last established it
+    staleWhy: '',       // why trust lapsed, for a UI that must explain rather than just refuse
+  },
 };
 
 // ---- solver pipeline (cubejs oracle + cubing.js solve), lazy-loaded --------------------------
@@ -399,6 +409,38 @@ async function refreshBattery() {
   }
 }
 
+/** We now know what the cube looks like, and by what means. */
+function markTrusted(source) {
+  state.cube.trusted = true;
+  state.cube.source = source;
+  state.cube.staleWhy = '';
+}
+
+/** Something happened that we cannot see through, so what we hold may no longer be true.
+ *  The state is NOT discarded — a loudly-flagged stale cube is more useful than an empty screen,
+ *  and throwing it away mid-solve loses the user's place to avoid a problem they can be told
+ *  about instead. */
+function markStale(why) {
+  if (!state.cube.trusted && state.cube.staleWhy === why) return;
+  state.cube.trusted = false;
+  state.cube.staleWhy = why;
+  const live = $('#cubeLive');
+  if (live) paintTrust(live);
+}
+
+/** One indicator, three states — absent, stale, trusted — because "connected" was never the
+ *  question a user needs answered. */
+function paintTrust(el) {
+  const on = state.connected;
+  el.hidden = !on;
+  if (!on) return;
+  const ok = state.cube.trusted;
+  el.classList.toggle('stale', !ok);
+  el.title = ok
+    ? `${state.cubeName || 'Smart cube'} connected${Number.isFinite(state.battery) ? ` · ${state.battery}% battery` : ''} · tracking`
+    : `${state.cubeName || 'Smart cube'} connected, but ${state.cube.staleWhy || 'its position is unverified'} — read the cube again`;
+}
+
 function setConnected(on, name = '', battery = null) {
   state.connected = on; state.cubeName = name; state.battery = on ? battery : null;
   // The anchor belongs to a connection, not to the app. A reconnect (or a different
@@ -408,12 +450,7 @@ function setConnected(on, name = '', battery = null) {
   // and rebuilding it on connect would restart the animation and lose the step you were on.
   // The element only exists while that screen is mounted, hence the optional chaining.
   const live = $('#cubeLive');
-  if (live) {
-    live.hidden = !on;
-    live.title = on
-      ? `${name || 'Smart cube'} connected${Number.isFinite(state.battery) ? ` · ${state.battery}% battery` : ''}`
-      : '';
-  }
+  if (live) paintTrust(live);
   // Settings, not 'pair' — the smart-cube card lives there now, and it renders its own connected
   // state, the anchor button and the setup ticks. A stale id here left all three frozen.
   if (state.screen === 'settings') renderScreen();
@@ -441,7 +478,13 @@ async function doConnect(macFromUi) {
     // turn sequence completed inside one second produced no intermediate state to match against.
     cube.onMove((m) => { if (liveMove) liveMove(m); });
     cube.on('gap', (g) => { if (liveGap) liveGap(g); });
-    cube.on('disconnect', () => { conn = null; setConnected(false); });
+    cube.on('disconnect', () => {
+      conn = null;
+      // Order matters: mark stale BEFORE setConnected, so the indicator repaints once, already
+      // knowing the truth, rather than flashing "connected and fine" on its way out.
+      markStale('it disconnected, and may have been turned since');
+      setConnected(false);
+    });
     cube.on('error', () => {});
     cube.connect(); conn = cube;
     connMac = mac; try { localStorage.setItem('cubeMac', mac); } catch {}
@@ -788,6 +831,7 @@ SCREENS.scan = () => {
         clearTimeout(settleTimer);
         settleTimer = setTimeout(() => { repaintCanonical(fl); faces.classList.remove('settling'); }, 190);
         onFacelets(e.detail.facelets);
+        markTrusted('camera'); // the camera SAW this cube; nothing was inferred from a stream
         // Stay put. Jumping to another screen took the six tiles away at the moment they finally
         // mean something, and with them the chance to check the read or fix a sticker. The aside
         // shows the cube that was found, and "Solve this cube" is right beside it. Anyone who
@@ -891,6 +935,14 @@ SCREENS.scan = () => {
           showState(reported);
           for (const tile of tiles) tile.classList.add('done');
 
+          if (state.cube.trusted && reported === state.cube.facelets) {
+            // Nothing has happened that we could not see since this was last established, and the
+            // cube still says the same thing. Asking again would train the user to click through.
+            settled = true;
+            sayTitle.textContent = 'Read from your cube';
+            say.textContent = 'Already tracking, so no camera and no checking needed. Solve this cube.';
+            return;
+          }
           sayTitle.textContent = 'Check your cube';
           say.textContent =
             'This is what your cube says it looks like. It tracks turns rather than seeing itself, so if it was moved while disconnected this will be wrong. Compare a side or two with the cube in your hand.';
@@ -915,6 +967,7 @@ SCREENS.scan = () => {
             settled = true;
             bar.hidden = true;
             onFacelets(reported);
+            markTrusted('cube'); // a person compared it with the cube in their hand
             sayTitle.textContent = 'Read from your cube';
             say.textContent = 'No camera needed. Solve this cube, or scan it if you change your mind.';
           };
@@ -997,7 +1050,7 @@ const cubeScreen = (screenMode) => {
     <div class="col">
       <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;position:relative">
         ${walking ? `<div class="card-tools">
-          <span class="ind" id="cubeLive" ${state.connected ? '' : 'hidden'} title="${state.connected ? escHtml(state.cubeName) + ' connected' : ''}">${icon('bluetooth', 17)}</span>
+          <span class="ind" id="cubeLive" hidden>${icon('bluetooth', 17)}</span>
           <button id="speedBtn" title="Animation speed">${icon('gauge', 20)}</button>
         </div>` : ''}
         <div style="position:relative;flex:1;min-height:0;width:100%">
@@ -1050,6 +1103,11 @@ const cubeScreen = (screenMode) => {
       // and forget, whereas the row is the solution you are walking. Same idiom as the scan
       // screen's camera menu. Wired before the solve so a screen that fails to solve still honours
       // the setting. The renderer reads tempo-scale per move, so a change lands on the next turn.
+      // Painted from the model rather than rendered from it, so a fresh mount and a live transition
+      // cannot disagree about what the same glyph means.
+      const liveInd = $('#cubeLive', root);
+      if (liveInd) paintTrust(liveInd);
+
       const speedBtn = $('#speedBtn', root);
       const speedMenu = document.createElement('div');
       let speedId = DEFAULT_SPEED;
@@ -1110,6 +1168,7 @@ const cubeScreen = (screenMode) => {
         // built at mount, so repainting in place would leave a new cube wearing the old list.
         if (scrambling) { go('scramble'); return; }
         onFacelets(randomScramble());
+        markTrusted('camera'); // generated here, so its arrangement is known by construction
         go('home');
       };
 
@@ -1218,11 +1277,18 @@ const cubeScreen = (screenMode) => {
       if (followBtn) {
         // Following compares the real cube against the state each move produces, so it needs one
         // state per step. It says no rather than pretending when the solve did not supply them.
-        if (steps.length === total + 1) mode = 'cube';
-        else {
+        if (steps.length !== total + 1) {
           followBtn.disabled = true;
           followBtn.classList.remove('on');
           followBtn.title = 'Needs a solve worked out on this screen';
+        } else if (!state.cube.trusted) {
+          // Not merely unhelpful: the move stream is in the CUBE's frame, so following an
+          // unverified cube advances the guide on turns that may not be the ones being made.
+          followBtn.disabled = true;
+          followBtn.classList.remove('on');
+          followBtn.title = `Read the cube first — ${state.cube.staleWhy || 'its position is unverified'}`;
+        } else {
+          mode = 'cube';
         }
         followBtn.onclick = () => {
           if (followBtn.disabled) return;
@@ -1275,7 +1341,11 @@ const cubeScreen = (screenMode) => {
       };
 
       liveGap = (g) => {
+        // Stale regardless of mode: the moves were missed whether or not we were following.
+        markStale(`${g.missing} turn${g.missing === 1 ? '' : 's'} went unrecorded`);
         if (mode !== 'cube') return;
+        mode = 'slow'; // stop following a cube we can no longer vouch for
+        followBtn?.classList.remove('on');
         // The cube numbers its moves, and the driver says so when the count skips. Silence here
         // would look exactly like a wrong turn; it is neither, and the snapshot will resync.
         showNote(`Missed ${g.missing} turn${g.missing === 1 ? '' : 's'} — checking the cube…`);
@@ -1507,6 +1577,7 @@ SCREENS.settings = () => {
         try {
           await conn.anchorSolved(force ? { force: true } : {});
           state.anchored = true;
+          markTrusted('cube'); // the cube and reality were just made to agree
           say('Anchored — the cube agrees it is solved.', 'var(--ok)');
           renderScreen();
         } catch (e) {
