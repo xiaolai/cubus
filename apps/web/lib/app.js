@@ -525,6 +525,9 @@ SCREENS.scan = () => {
   // reset background-image and friends alongside it. (It is also the only form a DOM can report
   // back reliably — happy-dom drops `style.background = '#hex'` silently, which quietly blinded
   // every test that tried to assert what a sticker had been painted.)
+  // Face letters are positions; a person checking their cube sees colours. Same scheme the
+  // scanner's own GUIDE uses, and the same one every palette here is built on.
+  const COLOUR_OF = { U: 'white', R: 'red', F: 'green', D: 'yellow', L: 'orange', B: 'blue' };
   const cell = (bg) => `<i class="cell" style="background-color:${bg}"></i>`;
   // A pending tile is nine dim wells with the face's own colour in the centre, so the board reads
   // "the yellow side is still missing" without a legend.
@@ -535,6 +538,12 @@ SCREENS.scan = () => {
   // The panel is registered by a module script; if that has not landed yet the element is still
   // inert, so say so rather than claiming a camera is opening.
   const registered = Boolean(customElements.get('ai-scan-panel'));
+  // A connected cube already knows its arrangement, so asking the camera for it is eight seconds
+  // spent re-deriving something we can have instantly. But the cube only knows how far it has been
+  // turned since it was last told where it was — disconnect it, turn it, reconnect, and it reports
+  // a confidently wrong state. Nothing in software can tell that apart from a correct one. The
+  // person holding the cube can, in a glance, so we show what it claims and ask.
+  const cubeFirst = state.connected;
   // Shown when the scanner is not saying anything more specific. The scan's own messages replace
   // it, so the aside is one voice rather than a caption competing with a status line.
   const HOW = 'The camera opens with this screen and the YOLO scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still. Each tile is edged in the colours of its neighbours: hold a side that way up and the scan needs nothing more from you. Got a sticker wrong? Click it and pick the right colour.';
@@ -544,9 +553,16 @@ SCREENS.scan = () => {
     html: `<div class="cols">
     <div class="col">
       <div class="card scanboard">
-        <ai-scan-panel headless autostart></ai-scan-panel>
+        <ai-scan-panel headless ${cubeFirst ? '' : 'autostart'}></ai-scan-panel>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
+        ${cubeFirst ? `<div class="cube-confirm" id="cubeConfirm" hidden>
+          <span id="cubeConfirmMsg"></span>
+          <div class="acts">
+            <button class="btn sm primary" id="cubeYes">Yes, that's my cube</button>
+            <button class="btn sm outline" id="cubeNo">No — scan it instead</button>
+          </div>
+        </div>` : ''}
         <div class="scan-cam card-tools">
           <button id="scanResetBtn" title="Throw the whole scan away and start again">${icon('refresh', 19)}</button>
           <button id="scanPaintBtn" title="Paint the cube by hand instead of scanning it">${icon('paint-roller', 19)}</button>
@@ -822,6 +838,73 @@ SCREENS.scan = () => {
 
       // Removing the element releases the camera through disconnectedCallback, but a live camera
       // is not something to leave to a lifecycle callback firing — stop it explicitly first.
+      // ---- Read from the cube, then ask ---------------------------------------------------
+      //
+      // The camera has NOT been started when we get here (the panel's autostart is conditional on
+      // there being no cube). If the answer is no, it starts then — so a cube that turns out to be
+      // wrong costs one extra tap, and a cube that is right costs no camera at all.
+      if (cubeFirst) {
+        const bar = $('#cubeConfirm', root), barMsg = $('#cubeConfirmMsg', root);
+        const fallBackToCamera = (why) => {
+          if (bar) bar.hidden = true;
+          if (why) { sayTitle.textContent = 'Camera trouble'; say.textContent = why; }
+          void panel.start?.();
+        };
+        (async () => {
+          if (!conn) { fallBackToCamera('The cube went away — using the camera instead.'); return; }
+          sayTitle.textContent = 'Reading your cube';
+          say.textContent = 'Asking the cube what it looks like…';
+          let reported;
+          try {
+            reported = (await conn.getState({ active: true })).facelets;
+          } catch {
+            fallBackToCamera('The cube did not answer — using the camera instead.');
+            return;
+          }
+          if (!root.isConnected) return; // navigated away while the cube was answering
+
+          repaintCanonical(reported);
+          showState(reported);
+          for (const tile of tiles) tile.classList.add('done');
+
+          sayTitle.textContent = 'Check your cube';
+          say.textContent =
+            'This is what your cube says it looks like. It tracks turns rather than seeing itself, so if it was moved while disconnected this will be wrong. Compare a side or two with the cube in your hand.';
+          if (bar) {
+            // The question has to be one that can FAIL, or it trains people to click yes.
+            //
+            // My first attempt named the Up centre. Centres never move, so that sentence reads the
+            // same for every cube in every state and could not detect anything — a check that
+            // always passes is worse than no check, because it manufactures confidence.
+            //
+            // So: name a corner, which does move, and pick one whose colour differs from its own
+            // centre where possible — that is the sticker a drifted reference is most likely to
+            // disagree about, and it is findable at a glance.
+            const CORNERS = [0, 2, 6, 8];
+            const idx = CORNERS.find((i) => reported[i] !== reported[4]) ?? 0;
+            const WHERE = { 0: 'top-left', 2: 'top-right', 6: 'bottom-left', 8: 'bottom-right' };
+            barMsg.textContent =
+              `Look at the Up side of your cube: is its ${WHERE[idx]} corner ${COLOUR_OF[reported[idx]] ?? 'as shown'}?`;
+            bar.hidden = false;
+          }
+          $('#cubeYes', root).onclick = () => {
+            settled = true;
+            bar.hidden = true;
+            onFacelets(reported);
+            sayTitle.textContent = 'Read from your cube';
+            say.textContent = 'No camera needed. Solve this cube, or scan it if you change your mind.';
+          };
+          $('#cubeNo', root).onclick = () => {
+            for (const tile of tiles) tile.classList.remove('done');
+            for (const tile of tiles) [...tile.querySelectorAll('.tile > i')].forEach((c) => { c.style.backgroundColor = ''; });
+            showState(SOLVED);
+            sayTitle.textContent = 'How it works';
+            say.textContent = HOW;
+            fallBackToCamera(null);
+          };
+        })();
+      }
+
       cleanup = () => {
         clearTimeout(settleTimer);
         navigator.mediaDevices?.removeEventListener?.('devicechange', onDevices);
@@ -1565,6 +1648,11 @@ window.cubusFeed = {
   move: (m) => liveMove?.(m),
   facelets: (f) => onFacelets(f),
   gap: (g) => liveGap?.(g),
+  /** Stand in for a paired driver. Restore asks the connection for the cube's state before it
+   *  touches the camera, and there is no way to exercise that without either a physical cube or
+   *  this. Setting `state.connected` alone is not enough, and deliberately so — a flag saying
+   *  "connected" with nothing behind it must fall back to the camera, which is its own test. */
+  useConnection: (fake) => { conn = fake; setConnected(Boolean(fake), fake ? 'Test cube' : ''); },
 };
 
 async function boot() {
