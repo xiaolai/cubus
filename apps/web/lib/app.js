@@ -886,17 +886,19 @@ const cubeScreen = (screenMode) => {
           ${state.connected ? `<button class="pill on" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
           <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:64px;text-align:right">0 / 0</span>
         </div>
-        <div class="follow-note" id="followNote" hidden>
-          <span id="followMsg" style="flex:1"></span>
-          <button class="btn sm accent-outline" id="resolveBtn">Re-solve from here</button>
-          <button class="btn sm outline" id="turnBackBtn">I'll turn it back</button>
-        </div>
       </div>` : ''}
     </div>
     <div class="aside" style="overflow-y:auto">
       ${walking ? `<div class="card tight" style="flex:1;min-height:140px;display:flex;flex-direction:column">
         <div class="card-h"><b>${label}</b><span class="num sub" id="moveCount">—</span></div>
-        <div class="list" id="solList" style="padding:6px 0"></div></div>` : ''}
+        <div class="list" id="solList" style="padding:6px 0"></div>
+        <div class="follow-note" id="followNote" hidden>
+          <span id="followMsg"></span>
+          <div class="acts">
+            <button class="btn sm accent-outline" id="resolveBtn">Re-solve</button>
+            <button class="btn sm outline" id="turnBackBtn">I'll turn it back</button>
+          </div>
+        </div></div>` : ''}
       <div class="card">
         <div class="eyebrow-row"><div class="eyebrow">${scrambling ? 'TARGET STATE' : 'INITIAL STATE'}</div>
           <button id="randCube" title="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}">${icon('dice', 18)}</button></div>
