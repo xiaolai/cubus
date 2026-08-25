@@ -1240,15 +1240,33 @@ const cubeScreen = (screenMode) => {
         $('#playBtn', root).innerHTML = icon(on ? 'pause' : 'play', 18);
         if (on) cube.play(); else cube.pause();
       };
-      $('#playBtn', root).onclick = () => setPlaying(!playing);
-      $('#nextBtn', root).onclick = () => { setPlaying(false); cube.step(); };
+      // Touching the transport hands control back to you.
+      //
+      // Following and the buttons were two drivers for one guide, and while both were live the
+      // step counter tracked the ANIMATION rather than the cube: press Next twice by hand, make
+      // one real turn, and it read 2 / 22 with one turn made. The number whose whole job is to say
+      // where your cube is was saying where the drawing had got to. One rule removes the ambiguity
+      // without removing anything — the toggle is right there to resume.
+      //
+      // Declared as a hoisted function because the handlers just below call it while `mode` and
+      // `followBtn` are declared further down; closures make that safe, but a const here would
+      // read like the TDZ hazard it is not.
+      function takeOver() {
+        if (mode !== 'cube') return;
+        mode = 'slow';
+        followBtn?.classList.remove('on');
+        if (followBtn) followBtn.title = 'You took over — click to let the cube drive again';
+      }
+
+      $('#playBtn', root).onclick = () => { takeOver(); setPlaying(!playing); };
+      $('#nextBtn', root).onclick = () => { takeOver(); setPlaying(false); cube.step(); };
       // Back and repeat are both animated, at the one walking speed, and differ only in where they
       // leave you. Back undoes the last move and stops there. Repeat answers "show me that again":
       // it undoes the move and then makes it again, so you end up where you started having watched
       // it twice. Neither jumps: a cut to a new state teaches nothing about the turn that got there.
       // The renderer's queue is FIFO and pulls the next move only when the current one finishes,
       // so pushing both halves of a repeat here plays them in order.
-      $('#prevBtn', root).onclick = () => { setPlaying(false); cube.stepBack(); };
+      $('#prevBtn', root).onclick = () => { takeOver(); setPlaying(false); cube.stepBack(); };
       // A move in the list is a place in the solution, so clicking one goes there. seek() is instant
       // on purpose: jumping twelve moves is not something to sit through, which is exactly the case
       // step()/stepBack() do not cover. The clicked move becomes the CURRENT one — the one you are
@@ -1256,10 +1274,12 @@ const cubeScreen = (screenMode) => {
       solList.onclick = (ev) => {
         const chip = ev.target.closest('.chip-m');
         if (!chip) return;
+        takeOver(); // jumping to a move is taking over just as much as pressing Next is
         setPlaying(false);
         cube.seek(Number(chip.dataset.i));
       };
       $('#repeatBtn', root).onclick = () => {
+        takeOver();
         // Not merely belt-and-braces with the disabled attribute: stepBack() self-guards at step 0
         // but step() does not, so without this a repeat at the start would go FORWARD one move.
         if (at === 0) return;
@@ -1294,6 +1314,9 @@ const cubeScreen = (screenMode) => {
           if (followBtn.disabled) return;
           mode = mode === 'cube' ? 'slow' : 'cube';
           followBtn.classList.toggle('on', mode === 'cube');
+          followBtn.title = mode === 'cube'
+            ? 'Turn your smart cube and the guide keeps up'
+            : 'You took over — click to let the cube drive again';
           if (mode === 'cube') setPlaying(false);
         };
       }

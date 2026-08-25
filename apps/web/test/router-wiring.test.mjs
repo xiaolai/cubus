@@ -975,3 +975,61 @@ test('following will not start on a connected-but-unverified cube', async () => 
     state.cube.trusted = false; state.cube.staleWhy = '';
   }
 });
+
+// Following and the manual transport were two drivers for one guide. While both were live the step
+// counter tracked the ANIMATION rather than the cube — press Next twice by hand, make one real
+// turn, and it read 2 / 22 with one turn made. The number whose whole job is to say where your
+// cube is was saying where the drawing had got to. One rule: touching the transport takes over.
+test('using the transport hands control back, so only one thing drives the guide', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    const toggle = win.document.querySelector('[data-mode="cube"]');
+    assert.ok(toggle.classList.contains('on'), 'following is on by default with a trusted cube');
+
+    win.document.querySelector('#nextBtn').click();
+    assert.equal(toggle.classList.contains('on'), false, 'Next hands control over');
+    assert.match(toggle.title, /click to let the cube drive again/, 'and says how to give it back');
+
+    // And it is one click to resume, which is why taking over costs nothing.
+    toggle.click();
+    assert.ok(toggle.classList.contains('on'));
+    assert.match(toggle.title, /keeps up/);
+  } finally {
+    state.connected = false; state.cubeName = '';
+    state.cube.trusted = false; state.cube.staleWhy = '';
+  }
+});
+
+test('every manual control hands control back, not just Next', async () => {
+  const { state } = await import('../lib/app.js');
+  const toggle = () => win.document.querySelector('[data-mode="cube"]');
+  for (const id of ['#playBtn', '#prevBtn', '#repeatBtn']) {
+    try {
+      await followSetup(state);
+      assert.ok(toggle().classList.contains('on'), `precondition for ${id}`);
+      // Back and Repeat are disabled at step 0, and there is no way to advance past it here: the
+      // renderer never upgrades under happy-dom, so cube.step() is a no-op and the step index
+      // stays put. The disabled gating has its own test; this one is about the handler, so enable
+      // the button and exercise it directly rather than asserting a click that cannot land.
+      const btn = win.document.querySelector(id);
+      btn.disabled = false;
+      btn.click();
+      assert.equal(toggle().classList.contains('on'), false, `${id} must take over too`);
+    } finally {
+      state.connected = false; state.cubeName = '';
+      state.cube.trusted = false; state.cube.staleWhy = '';
+    }
+  }
+
+  // Jumping to a move is taking over just as much as pressing Next is.
+  await followSetup(state);
+  try {
+    assert.ok(toggle().classList.contains('on'));
+    win.document.querySelector('#solList .chip-m').click();
+    assert.equal(toggle().classList.contains('on'), false, 'clicking a move takes over');
+  } finally {
+    state.connected = false; state.cubeName = '';
+    state.cube.trusted = false; state.cube.staleWhy = '';
+  }
+});
