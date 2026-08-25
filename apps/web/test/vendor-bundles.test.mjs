@@ -14,7 +14,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 // Every (source, bundle) pair the repo builds. Adding one here is what makes it guarded.
 const BUNDLES = [
@@ -23,6 +23,28 @@ const BUNDLES = [
     build: 'pnpm build:cube',
     bundle: '../vendor/cubus-cube.js',
     sources: ['../lib/cubus-cube.js'],
+  },
+  {
+    // The one that proved this list has to be COMPLETE, not representative. `anchorSolved` and the
+    // whole REQUEST_RESET path shipped in source and tests but never reached this bundle, so
+    // "Mark it solved" called a method the app did not have. It failed in a user's hands, months
+    // after the source landed, with every gate green the entire time.
+    name: 'gan-driver',
+    build: 'pnpm --filter gan-driver build:driver',
+    bundle: '../vendor/gan-driver.js',
+    sources: [
+      '../../../packages/gan-driver/src/driver.ts',
+      '../../../packages/gan-driver/src/gen4/commands.ts',
+      '../../../packages/gan-driver/src/mac.ts',
+    ],
+  },
+  {
+    name: 'cubejs',
+    build: 'pnpm --filter cubus-web build:cubejs',
+    bundle: '../vendor/cubejs.js',
+    sources: ['../lib/cubejs-entry.js'],
+    // Gitignored and regenerated, so a fresh checkout has not built it yet.
+    optional: true,
   },
   {
     name: 'ai-scan-panel',
@@ -58,8 +80,27 @@ function declaredNames(src) {
   return [...names];
 }
 
+// Every emitter of a vendored bundle in the repo must appear above. Derived from the build
+// scripts rather than remembered: a pair added to package.json and not added here is invisible,
+// which is exactly how gan-driver went unguarded while two of its siblings were covered.
+test('every source -> bundle pair in the repo is guarded here', () => {
+  const scripts = ['../package.json', '../../../packages/gan-driver/package.json',
+    '../../../packages/cube-scanner/package.json']
+    .flatMap((f) => Object.values(JSON.parse(read(f)).scripts ?? {}));
+  const emitted = scripts
+    .flatMap((cmd) => [...String(cmd).matchAll(/--outfile=\S*?vendor\/([\w.-]+\.js)/g)])
+    .map((m) => m[1]);
+  const guarded = BUNDLES.map((b) => b.bundle.split('/').pop());
+  const unguarded = [...new Set(emitted)].filter((f) => !guarded.includes(f)).sort();
+  assert.deepEqual(unguarded, [], 'a build script emits a bundle nothing in BUNDLES checks');
+});
+
 for (const b of BUNDLES) {
-  test(`${b.name}: every declaration in its sources survived into the bundle`, () => {
+  test(`${b.name}: every declaration in its sources survived into the bundle`, (t) => {
+    if (b.optional && !existsSync(new URL(b.bundle, import.meta.url))) {
+      t.skip(`${b.bundle} not built yet — run \`${b.build}\``);
+      return;
+    }
     const bundle = read(b.bundle);
     const missing = [];
     for (const srcPath of b.sources) {

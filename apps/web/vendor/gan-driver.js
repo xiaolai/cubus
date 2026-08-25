@@ -631,6 +631,36 @@ function buildCommand(cmd) {
     case "REQUEST_BATTERY":
       msg.set([221, 4, 0, 239, 0, 0]);
       break;
+    default:
+      throw new Error(`unknown safe command: ${String(cmd)}`);
+  }
+  return msg;
+}
+function buildUnsafeCommand(cmd) {
+  const msg = new Uint8Array(20);
+  switch (cmd) {
+    case "REQUEST_RESET":
+      msg.set([
+        210,
+        13,
+        5,
+        57,
+        119,
+        0,
+        0,
+        1,
+        35,
+        69,
+        103,
+        137,
+        171,
+        0,
+        0,
+        0
+      ]);
+      break;
+    default:
+      throw new Error(`unknown unsafe command: ${String(cmd)}`);
   }
   return msg;
 }
@@ -782,6 +812,7 @@ function toKociembaFacelets(cp, co, ep, eo) {
   }
   return f.join("");
 }
+var SOLVED_FACELETS = SOLVED;
 
 // src/gen4/message-view.ts
 var MessageView = class {
@@ -1117,6 +1148,68 @@ var GanCube = class extends TinyEmitter {
   }
   requestHardware(timeoutMs = 4e3) {
     return this.request("hardware", "REQUEST_HARDWARE", timeoutMs);
+  }
+  // ---- Anchor step (the one command that rewrites cube state) ---------------
+  /**
+   * Anchor the cube's internal solved reference — the pairing flow's
+   * "solve once to calibrate" step. Sends REQUEST_RESET, but ONLY when the cube
+   * already reports a solved state.
+   *
+   * That precondition is what makes this safe, and it is not a formality.
+   * REQUEST_RESET tells the cube to treat its CURRENT position as solved:
+   *
+   *  - Sent while the cube reports something other than solved, it would adopt a
+   *    scrambled position as the new origin. Driver state and hardware then
+   *    diverge permanently and silently — the failure the state invariant
+   *    (apply decoded moves -> matches hardware facelets) exists to catch.
+   *  - Sent while the cube already reports solved, it sets the reference to the
+   *    value already in effect. The operation is state-neutral, so there is no
+   *    divergence to create.
+   *
+   * So the guard does not reduce the risk, it removes the mechanism.
+   *
+   * The residual case the guard cannot see: a cube that REPORTS solved while
+   * physically scrambled. Facelets come from the cube's own state, so BLE cannot
+   * distinguish that, and this method cannot either. Such a cube has already
+   * drifted before this is called; the camera scan is the ground-truth anchor
+   * for it. This neither causes that case nor worsens it.
+   *
+   * Throws rather than returning a status: a silently skipped anchor step would
+   * leave the caller believing the cube was calibrated.
+   *
+   * NOT CONFIRMED ON HARDWARE. The packet matches upstream and the guard is
+   * tested, but no physical GAN16 has been sent this command from this codebase.
+   * See docs/protocol.md.
+   */
+  async anchorSolved(opts = {}) {
+    const { timeoutMs = 4e3 } = opts;
+    const before = await this.getState({ active: true, timeoutMs });
+    if (before.facelets !== SOLVED_FACELETS) {
+      throw new Error(
+        `refusing to anchor: the cube reports an unsolved state, and anchoring now would adopt it as the new solved reference, desyncing the driver from the cube permanently. Solve the cube first.
+  reported: ${before.facelets}
+  expected: ${SOLVED_FACELETS}`
+      );
+    }
+    await this.sendUnsafe("REQUEST_RESET");
+    const after = await this.getState({ active: true, timeoutMs });
+    if (after.facelets !== SOLVED_FACELETS) {
+      throw new Error(
+        `anchor failed: the cube did not report a solved state afterwards. Treat the driver's tracked state as untrusted and re-scan.
+  reported: ${after.facelets}`
+      );
+    }
+    return after;
+  }
+  /**
+   * Deliberately separate from send(): its parameter type is UnsafeCommand, so
+   * no SafeCommand call site can reach this and no new caller can appear without
+   * naming the unsafe type. Private, and used only by anchorSolved() above,
+   * which owns the precondition.
+   */
+  async sendUnsafe(cmd) {
+    const enc = this.cipher.encrypt(buildUnsafeCommand(cmd));
+    await this.transport.write(CMD_CHAR, bytesToHex(enc));
   }
   /**
    * Wait for the next `event`, optionally after sending a query command.
