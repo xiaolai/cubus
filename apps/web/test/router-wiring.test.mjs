@@ -818,3 +818,82 @@ test('Timer and Stats start hidden, but remain reachable and re-showable', async
   await tick();
   win.localStorage.removeItem('cubusSettings');
 });
+
+// ---- Battery -----------------------------------------------------------------------------
+//
+// This used to report a hardcoded 78% for every cube forever. That is worse than showing nothing:
+// a flat battery is what disconnects a cube mid-solve, and a mid-solve disconnect is what silently
+// desyncs its tracking from the cube in your hand. The number has to be the cube's own.
+const settingsWithCube = async (state, level, anchored = true) => {
+  win.cubusFeed.useConnection({ requestBattery: async () => (level === null ? {} : { level }) });
+  state.anchored = anchored;
+  win.location.hash = '#/home';
+  await tick();
+  win.location.hash = '#/settings';
+  await tick();
+  await new Promise((r) => setTimeout(r, 60));
+};
+
+test('the battery meter shows the cube its own level, and warns when it is low', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await settingsWithCube(state, 84);
+    assert.ok(win.document.querySelector('#battMeter'), 'a meter is drawn');
+    assert.match(win.document.querySelector('#battMeter').textContent, /84%/);
+    assert.ok(!win.document.querySelector('#stage').textContent.includes('Battery low'));
+
+    await settingsWithCube(state, 12);
+    assert.match(win.document.querySelector('#battMeter').textContent, /12%/);
+    // The warning has to say what it COSTS, not just that it is low.
+    const txt = win.document.querySelector('#stage').textContent;
+    assert.match(txt, /Battery low/);
+    assert.match(txt, /stops counting turns/, 'it explains the consequence');
+  } finally {
+    win.cubusFeed.useConnection(null);
+  }
+});
+
+// TWO ways a battery read can fail, and they take different code paths: the cube answers without a
+// level, or the request throws outright. Testing only the first left the catch free to invent a
+// number — a mutation putting `state.battery = 50` there passed until this covered both.
+test('a cube that will not answer its battery says unknown rather than guessing', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    // (a) answers, but with no level in it
+    await settingsWithCube(state, null);
+    assert.equal(win.document.querySelector('#battMeter'), null, 'no fictional meter is drawn');
+    assert.ok(win.document.querySelector('#battRefresh'), 'and there is a way to ask again');
+    assert.equal(state.battery, null);
+
+    // (b) the request itself fails
+    win.cubusFeed.useConnection({ requestBattery: async () => { throw new Error('timeout'); } });
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/settings';
+    await tick();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(state.battery, null, 'a failed read must not become a number');
+    assert.equal(win.document.querySelector('#battMeter'), null);
+  } finally {
+    win.cubusFeed.useConnection(null);
+  }
+});
+
+// The setup steps are instructions, not a permanent status board. Once every step is done they are
+// three ticks occupying a third of the card and telling the user nothing they cannot already see.
+test('the setup checklist collapses once the cube is set up', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await settingsWithCube(state, 84, false);
+    assert.match(win.document.querySelector('#stage').textContent, /Turn the cube/, 'steps show while incomplete');
+
+    await settingsWithCube(state, 84, true);
+    const txt = win.document.querySelector('#stage').textContent;
+    assert.ok(!txt.includes('Turn the cube'), 'and go once they are all done');
+    assert.match(txt, /Set up and tracking/);
+    assert.ok(win.document.querySelector('#anchorBtn'), 're-marking stays reachable');
+  } finally {
+    win.cubusFeed.useConnection(null);
+    state.anchored = false;
+  }
+});
