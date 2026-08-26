@@ -4,7 +4,7 @@ A webcam scanner that reads a physical Rubik's Cube's 6 faces and outputs its
 true Kociemba facelet string (`URFDLB`, 54 chars) plus a per-sticker confidence
 signal — so the app can show/verify the real cube **without** solving it first.
 
-Built like `gan-driver`: a pure, tested core with a thin browser shell. The scanner is the
+A pure, tested core with a thin browser shell. The scanner is the
 trained **YOLOv11** sticker detector; the classical OpenCV scanner and the live tracker were
 removed (see git history if you need them).
 
