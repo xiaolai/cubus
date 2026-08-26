@@ -1,5 +1,0 @@
-# Rust workspace for the native side of cubus (the Tauri app's BLE bridge, and — later —
-# the app backend + a precise solver). apps/desktop/src-tauri joins as a member in Phase 3.
-[workspace]
-resolver = "2"
-members = ["crates/*", "apps/desktop/src-tauri"]

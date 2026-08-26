@@ -23,20 +23,16 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: gan-driver — check
-        run: pnpm --filter gan-driver run check
-
       - name: cube-scanner — check
         run: pnpm --filter cube-scanner run check
 
       # The vendored bundles are COMMITTED build artifacts, and the app imports them rather than
-      # the sources. They have drifted four times now, most recently shipping an anchorSolved()
-      # two safety fixes behind the source every test was reading. The unit guards compare names
-      # and message strings, which catches most drift and cannot catch a pure control-flow revert.
-      # Rebuilding and diffing catches all of it, and costs a few seconds.
+      # the sources. They have drifted four times, most recently shipping a driver two safety fixes
+      # behind the source every test was reading. The unit guards compare names and message
+      # strings, which catches most drift and cannot catch a pure control-flow revert. Rebuilding
+      # and diffing catches all of it, and costs a few seconds.
       - name: vendored bundles are built from the current sources
         run: |
-          pnpm build:driver
           pnpm build:panel
           pnpm --filter cubus-web build:cube
           pnpm --filter cubus-web build:cubejs
@@ -46,41 +42,5 @@ jobs:
           git diff --exit-code -- apps/web/vendor/ \
             || { echo "::error::a vendored bundle is behind its source — rebuild and commit it"; exit 1; }
 
-      - name: cubus-web — test (static server + transport seam)
+      - name: cubus-web — test
         run: pnpm --filter cubus-web test
-
-  rust:
-    name: Rust (fmt · clippy · check)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # Tauri (webkit2gtk/appindicator/rsvg) + btleplug's Linux backend (bluez/dbus)
-      # must be present for the workspace to compile on Linux.
-      - name: Install Linux system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev libdbus-1-dev pkg-config
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: fmt
-        run: cargo fmt --all -- --check
-
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: check
-        run: cargo check --workspace
-
-      # `check` compiles the tests but never runs them. gan-ble's fixture tests pin the MAC
-      # recovery the AES key is derived from — a wrong layout is a wrong key, and the symptom is a
-      # cube that connects and streams noise. Tests that never execute in CI are decoration.
-      - name: test
-        run: cargo test --workspace
