@@ -46,6 +46,9 @@ before(async () => {
     // that cancels a frame silently aborted part-way through. It surfaced only once a test drove
     // the timer far enough to depend on what came after the cancel.
     'requestAnimationFrame', 'cancelAnimationFrame',
+    // The Timer measures with performance.now() and schedules with requestAnimationFrame. Taking
+    // the frames from happy-dom and the clock from Node means the two are not the same timeline.
+    'performance',
   ]) {
     Object.defineProperty(globalThis, k, { value: win[k], writable: true, configurable: true });
   }
@@ -726,6 +729,47 @@ test('the setup steps carry their own action', async () => {
 // against the wrong index and, once the cube ran two ahead, nothing could ever match again.
 
 const feed = () => win.cubusFeed;
+/** Put the cube model back the way a fresh boot leaves it.
+ *
+ *  The helpers below mutate connection, trust, source, stale reason, live and reported state, and
+ *  the finalizers used to restore two of those. Everything else leaked into whatever test ran next
+ *  — so a test could inherit a trusted cube it never established and pass on that alone. */
+const resetCubeModel = (state) => {
+  win.cubusFeed.useConnection(null);
+  state.connected = false;
+  state.cubeName = '';
+  state.cube.trusted = false;
+  state.cube.source = 'none';
+  state.cube.staleWhy = '';
+  state.cube.isPhysical = false;
+  state.cube.offset = null;
+  state.cube.offsetAt = 0;
+  state.live = null;
+  state.reported = null;
+  state.anchored = false;
+};
+
+/** Empty the remembered-cube registry the way a user would, through the UI.
+ *
+ *  `localStorage.removeItem('cubusCubes')` is NOT enough: the registry is also held in a module
+ *  variable that only the app's own code writes. Tests that cleared storage alone were leaving
+ *  cubes registered from earlier tests, so an identity test could pass with its own setup deleted. */
+const forgetAllCubes = async () => {
+  win.location.hash = '#/home';
+  await tick();
+  win.location.hash = '#/settings';
+  await tick();
+  for (let guard = 0; guard < 40; guard++) {
+    const forget = win.document.querySelector('[data-forget-cube]');
+    if (!forget) break;
+    forget.click();
+    forget.click();
+    await tick();
+  }
+  assert.equal(win.document.querySelector('[data-forget-cube]'), null, 'no cube is remembered');
+  win.localStorage.removeItem('cubusCubes');
+};
+
 const followSetup = async (state) => {
   state.connected = true;
   state.cubeName = 'GAN-test';
@@ -759,11 +803,30 @@ test('a turn advances the guide immediately, without waiting for the animation',
 
     // Two turns back to back — faster than any animation could finish. Under the old wiring the
     // second was dropped, because `at` had not moved yet.
+    // Two turns back to back — faster than any animation could finish. Under the old wiring the
+    // second was dropped, because the cursor had not moved yet.
     feed().move({ notation: moves[0], serial: 1 });
     feed().move({ notation: moves[1], serial: 2 });
-    assert.equal(win.document.querySelector('#followNote').hidden, true, 'both turns were accepted');
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'neither was refused');
+
+    // And the cursor really moved. The step counter cannot show it here — it is painted by the
+    // renderer, which is not registered in this environment — so the proof is what the guide now
+    // expects NEXT. A deliberately wrong third turn makes it say so.
+    //
+    // Without this, both move() calls could be no-ops and the test still passed: an
+    // already-hidden note staying hidden is not evidence of anything, and that is precisely the
+    // regression this test is named for.
+    const wrong = moves[2].startsWith('U') ? 'R' : 'U';
+    feed().move({ notation: wrong, serial: 3 });
+    const note = win.document.querySelector('#followNote');
+    assert.equal(note.hidden, false, 'a wrong turn is surfaced');
+    assert.match(
+      win.document.querySelector('#followMsg').textContent,
+      new RegExp(`the next move is ${moves[2].replace(/'/g, "'")}`.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`)),
+      `the guide is waiting on move 3 (${moves[2]}), so the first two were taken`,
+    );
   } finally {
-    state.connected = false; state.cubeName = '';
+    resetCubeModel(state);
   }
 });
 
@@ -779,7 +842,7 @@ test('a turn that is not the next move says so instead of going quiet', async ()
     assert.match(win.document.querySelector('#followMsg').textContent, /next move is/);
     assert.ok(win.document.querySelector('#resolveBtn'), 'and offers a way out');
   } finally {
-    state.connected = false; state.cubeName = '';
+    resetCubeModel(state);
   }
 });
 
@@ -791,7 +854,7 @@ test('a missed-move gap is reported, not mistaken for a wrong turn', async () =>
     assert.equal(win.document.querySelector('#followNote').hidden, false);
     assert.match(win.document.querySelector('#followMsg').textContent, /Missed 2 turns/);
   } finally {
-    state.connected = false; state.cubeName = '';
+    resetCubeModel(state);
   }
 });
 
@@ -814,7 +877,7 @@ test('a snapshot from off the plan is named, and clears once the cube rejoins', 
     feed().facelets('UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB');
     assert.equal(win.document.querySelector('#followNote').hidden, true, 'it rejoins on its own');
   } finally {
-    state.connected = false; state.cubeName = '';
+    resetCubeModel(state);
   }
 });
 
@@ -843,7 +906,7 @@ test('the off-track note sits in the solution card, not in the transport', async
     const listCls = win.document.querySelector('#solList').className;
     assert.match(listCls, /\blist\b/, '#solList must keep the .list class that makes it flex:1 and scroll');
   } finally {
-    state.connected = false; state.cubeName = '';
+    resetCubeModel(state);
   }
 });
 
@@ -946,14 +1009,35 @@ test('the setup checklist collapses once the cube is set up', async () => {
     await settingsWithCube(state, 84, false);
     assert.match(win.document.querySelector('#stage').textContent, /Turn the cube/, 'steps show while incomplete');
 
+    // "Set up" means anchored AND currently trusted. Anchoring alone is a thing that happened
+    // once; trust is a thing that is true now.
+    state.cube.trusted = true;
     await settingsWithCube(state, 84, true);
+    state.cube.trusted = true;
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/settings';
+    await tick();
     const txt = win.document.querySelector('#stage').textContent;
     assert.ok(!txt.includes('Turn the cube'), 'and go once they are all done');
     assert.match(txt, /Set up and tracking/);
     assert.ok(win.document.querySelector('#anchorBtn'), 're-marking stays reachable');
+
+    // And they come BACK when trust lapses, WITHOUT navigating away and back. A green "set up and
+    // tracking" tick over a cube that has since missed a turn is the most misleading thing this
+    // screen could say — and re-rendering as part of the test was hiding the fact that nothing in
+    // the app repainted it. Losing trust used to update the indicator and nothing else, so this
+    // card sat there making a claim that had just stopped being true.
+    win.cubusFeed.gap({ missing: 1, from: 4, to: 6 });
+    await tick();
+    const after = win.document.querySelector('#stage').textContent;
+    assert.match(after, /Turn the cube/, 'the checklist returns when trust lapses');
+    assert.ok(!after.includes('Set up and tracking'), 'and stops claiming otherwise');
   } finally {
     win.cubusFeed.useConnection(null);
     state.anchored = false;
+    state.cube.trusted = false;
+    state.cube.staleWhy = '';
   }
 });
 
@@ -1003,7 +1087,7 @@ test('a missed turn breaks trust and stops following', async () => {
       'and following stops rather than tracking a cube it cannot vouch for',
     );
   } finally {
-    state.connected = false; state.cubeName = '';
+    resetCubeModel(state);
     state.cube.trusted = false; state.cube.staleWhy = '';
   }
 });
@@ -1027,7 +1111,7 @@ test('following will not start on a connected-but-unverified cube', async () => 
     assert.equal(toggle.disabled, true, 'but it cannot be switched on');
     assert.match(toggle.title, /Read the cube first/);
   } finally {
-    state.connected = false; state.cubeName = '';
+    resetCubeModel(state);
     state.cube.trusted = false; state.cube.staleWhy = '';
   }
 });
@@ -1052,7 +1136,7 @@ test('using the transport hands control back, so only one thing drives the guide
     assert.ok(toggle.classList.contains('on'));
     assert.match(toggle.title, /keeps up/);
   } finally {
-    state.connected = false; state.cubeName = '';
+    resetCubeModel(state);
     state.cube.trusted = false; state.cube.staleWhy = '';
   }
 });
@@ -1073,7 +1157,7 @@ test('every manual control hands control back, not just Next', async () => {
       btn.click();
       assert.equal(toggle().classList.contains('on'), false, `${id} must take over too`);
     } finally {
-      state.connected = false; state.cubeName = '';
+      resetCubeModel(state);
       state.cube.trusted = false; state.cube.staleWhy = '';
     }
   }
@@ -1085,7 +1169,7 @@ test('every manual control hands control back, not just Next', async () => {
     win.document.querySelector('#solList .chip-m').click();
     assert.equal(toggle().classList.contains('on'), false, 'clicking a move takes over');
   } finally {
-    state.connected = false; state.cubeName = '';
+    resetCubeModel(state);
     state.cube.trusted = false; state.cube.staleWhy = '';
   }
 });
@@ -1171,7 +1255,7 @@ test('a missed turn breaks trust even with no solution on screen to notice it', 
     assert.equal(state.cube.trusted, false, 'trust lapses wherever the user happens to be');
     assert.match(state.cube.staleWhy, /3 turns went unrecorded/, 'and it records what happened');
   } finally {
-    state.connected = false; state.cubeName = '';
+    resetCubeModel(state);
     state.cube.trusted = false; state.cube.staleWhy = '';
   }
 });
@@ -1542,6 +1626,21 @@ test('reading a trusted cube adopts it in place, with no navigation and no camer
 
     const btn = win.document.querySelector('#readCubeBtn');
     assert.ok(btn, 'the control is there whenever a cube is paired');
+    assert.match(btn.getAttribute('aria-label'), /Show the cube in your hand/);
+
+    // The name has to change WITH the trust it describes. Losing trust used to repaint only the
+    // indicator, so this button went on offering to show you your cube while clicking it had
+    // already become "here is how to repair it".
+    win.cubusFeed.gap({ missing: 1, from: 4, to: 6 });
+    await tick();
+    assert.match(
+      win.document.querySelector('#readCubeBtn').getAttribute('aria-label'), /lost count/,
+      'the read control renames itself when trust lapses',
+    );
+    state.cube.trusted = true;
+    state.cube.staleWhy = '';
+    await tick();
+
     btn.click();
     await new Promise((r) => setTimeout(r, 30));
 
@@ -1634,9 +1733,22 @@ test('a cube that will not answer the read says so instead of freezing', async (
 // the user a scan for nothing. A perfect module nothing calls is this branch's recurring bug.
 const cubeTrust = async () => (await import(new URL('../lib/cube-trust.js', import.meta.url).href));
 
-// Any non-identity correction will do for the lifecycle tests — they are about when it is kept
-// and when it is thrown away, not about what it computes. cube-trust.test.mjs owns the maths.
-const SOME_OFFSET = 'RRRRRRRRRUUUUUUUUUFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+// A REAL correction, derived the way the app derives one, for the tests about when a correction is
+// kept and when it is thrown away. (cube-trust.test.mjs owns the maths; these own the lifecycle.)
+//
+// It used to be a hand-written string with the U and R faces swapped — which is not a cube at all,
+// because its centres have moved, and `applyOffset` rejects it. Five lifecycle tests were therefore
+// asserting on truthy junk rather than on a correction, and would have gone on passing if the app
+// stopped producing valid ones. Nothing caught it because the value was only ever checked for
+// truthiness, and it was written before the validation that now rejects it existed.
+let SOME_OFFSET;
+before(async () => {
+  const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+  const { deriveOffset } = await import(new URL('../lib/cube-trust.js', import.meta.url).href);
+  const at = (alg) => { const c = new Cube(); c.move(alg); return c.asString(); };
+  SOME_OFFSET = deriveOffset(at("R U F2"), at("R U"), Cube);
+  assert.ok(SOME_OFFSET, 'the lifecycle fixture must be a correction the app would accept');
+});
 
 /** Finish a camera scan the way the scanner element does — the real listener, not a seam. */
 const scanComplete = (facelets) =>
@@ -1857,6 +1969,11 @@ test('a correction survives a gap and a second scan, instead of erasing itself',
 
     assert.ok(state.cube.offset, 'the correction is still there');
     assert.equal(state.cube.offset, first, 'and it is the same one, not the identity');
+    // The second scan has to have DONE something, or this test passes with its listener deleted:
+    // trust and truth already held before it, so every assertion above was true beforehand too.
+    // Re-establishing trust is the observable it alone can produce.
+    assert.equal(state.cube.trusted, true, 'the second scan re-established trust');
+    assert.equal(state.cube.source, 'camera', 'and it is the scan that did it');
     assert.equal(
       applyOffset(state.cube.offset, at("R U D'"), Cube), at("R U F2 D'"),
       'so later reports are still corrected',
@@ -1926,22 +2043,37 @@ test('a new connection inherits nothing from the last one', async () => {
 test('a hostile solve history cannot inject markup into Timer or Stats', async () => {
   // cubusSolves is written by anything on the origin and editable by hand. Both screens
   // interpolated persisted fields straight into innerHTML.
-  const payload = '<img src=x onerror="globalThis.__pwned = true">';
+  const payload = '<img src=x onerror="alert(1)">';
+  // The record has to REACH the sink. An earlier version put the payload in `time` for both
+  // screens — which made the row unusable, so Stats rendered "Nothing to report" with no rows at
+  // all and its escaping was never exercised. Deleting escHtml from Stats left this test green.
+  //
+  // So: a well-formed solve whose SCRAMBLE carries the payload (Stats draws that column), and a
+  // separate one whose TIME carries it (the Timer draws that).
   win.localStorage.setItem('cubusSolves', JSON.stringify({
-    list: [{ n: payload, time: payload, scramble: payload, tps: payload, moves: payload, at: Date.now() }],
+    list: [{ n: 1, time: '19.02', scramble: payload, moves: 40, at: Date.now() }],
   }));
   try {
-    for (const screen of ['#/timer', '#/stats']) {
+    for (const [screen, sink] of [['#/stats', 'scramble'], ['#/timer', 'time']]) {
+      if (sink === 'time') {
+        win.localStorage.setItem('cubusSolves', JSON.stringify({
+          list: [{ n: 1, time: payload, scramble: 'R U', moves: 40, at: Date.now() }],
+        }));
+      }
       win.location.hash = '#/home';
       await tick();
       win.location.hash = screen;
       await tick();
       await new Promise((r) => setTimeout(r, 30));
-      assert.equal(
-        win.document.querySelector('#stage img'), null,
-        `${screen} rendered stored markup as an element`,
+
+      const stage = win.document.querySelector('#stage');
+      assert.equal(stage.querySelector('img'), null, `${screen} rendered stored markup as an element`);
+      // And the premise: the payload actually reached the screen, as TEXT. Without this the test
+      // passes whenever the record fails to render for some unrelated reason.
+      assert.ok(
+        stage.textContent.includes('<img'),
+        `${screen} never reached the ${sink} sink, so it proves nothing about escaping`,
       );
-      assert.equal(globalThis.__pwned, undefined);
     }
   } finally {
     win.localStorage.removeItem('cubusSolves');
@@ -2010,6 +2142,30 @@ test('scanning a cube that has already been repaired is not a contradiction', as
   }
 });
 
+test('five clean solves produce an actual ao5', async () => {
+  // The control the refusal tests need. Without it, an implementation that renders AO5 as a dash
+  // whatever happens passes both the three-solve test and the corrupt-window test below — so the
+  // whole "an average of n needs n solves" story would be proven by a screen that never computes
+  // an average at all.
+  const now = Date.now();
+  win.localStorage.setItem('cubusSolves', JSON.stringify({
+    // WCA ao5 over these: drop 10 and 100, mean of 20/30/40 = 30.00.
+    list: [10, 20, 30, 40, 100].map((s, i) => ({ n: 5 - i, time: `${s}.00`, scramble: 'R U', moves: 40, at: now })),
+  }));
+  try {
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/stats';
+    await tick();
+    const ao5 = [...win.document.querySelectorAll('#stage .card.stat')]
+      .find((c) => c.textContent.includes('AO5'));
+    assert.ok(ao5, 'the AO5 card is on screen');
+    assert.equal(ao5.querySelector('.v').textContent, '30.00', 'and it is the WCA average, not a dash');
+  } finally {
+    win.localStorage.removeItem('cubusSolves');
+  }
+});
+
 test('a corrupt solve keeps its place, so an average refuses instead of reaching back', async () => {
   // Dropping the corrupt row closes the gap it left, so the "last five" becomes five solves that
   // were not the last five — and the ao5 computed over them looks perfectly reasonable.
@@ -2069,6 +2225,49 @@ test('a refused anchor shows its refusal instead of throwing', async () => {
   }
 });
 
+test('anchoring cannot be started twice, and its result survives the repaint', async () => {
+  const { state } = await import('../lib/app.js');
+  let calls = 0;
+  let release;
+  const held = new Promise((r) => { release = r; });
+  try {
+    win.cubusFeed.useConnection({
+      requestBattery: async () => ({ level: 50 }),
+      anchorSolved: async () => { calls += 1; await held; return { facelets: SOLVED_FACELETS }; },
+    }, CUBE_A);
+    state.cube.trusted = true;
+    state.cube.offset = SOME_OFFSET;
+    state.cube.offsetAt = Date.now();
+    await openSettings();
+
+    // Anchoring drops trust first, which REPAINTS this card — handing back a fresh, enabled
+    // button while the first call is still awaiting. Disabling the old one protected nothing.
+    win.document.querySelector('#anchorBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await tick();
+    win.document.querySelector('#anchorBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await tick();
+    assert.equal(calls, 1, 'two clicks must not become two REQUEST_RESETs');
+
+    // The correction has to be gone from the SCREEN, not merely from the model: it was cleared
+    // after the repaint, so the card kept announcing a correction that no longer existed.
+    assert.equal(state.cube.offset, null);
+    assert.ok(
+      !win.document.querySelector('#stage').textContent.includes('Tracking corrected'),
+      'the card stops claiming a correction the moment there is not one',
+    );
+
+    release();
+    await new Promise((r) => setTimeout(r, 30));
+    // And the confirmation survives. markTrusted() repaints, so a message written before it was
+    // erased by the render that followed and the user saw nothing at all.
+    assert.match(win.document.querySelector('#pairMsg').textContent, /Anchored/);
+  } finally {
+    release?.();
+    resetCubeModel(state);
+    win.localStorage.removeItem('cubusCubes');
+  }
+});
+
 test('a turn rate is never fabricated from a time that is not a number', async () => {
   // TWO ways this goes wrong, and they take different guards. A decimal long enough to parse as
   // Infinity is caught on the way in; a vanishingly small one is not — it is finite and positive,
@@ -2101,6 +2300,64 @@ test('a turn rate is never fabricated from a time that is not a number', async (
   }
 });
 
+test('the controls this branch added say what they are, not just how they look', async () => {
+  const { state } = await import('../lib/app.js');
+  await forgetAllCubes();
+  try {
+    win.cubusFeed.useConnection(fakeCube(), CUBE_A);
+    win.cubusFeed.useConnection(null);
+    win.cubusFeed.useConnection(fakeCube(), CUBE_B);
+    state.cube.offset = SOME_OFFSET;
+    state.cube.offsetAt = Date.now();
+    await openSettings();
+
+    // Every row's controls were named identically, so with more than one cube they were
+    // indistinguishable to anyone not reading the layout.
+    const named = (sel) => [...win.document.querySelectorAll(sel)].map((e) => e.getAttribute('aria-label'));
+    for (const sel of ['[data-rename-cube]', '[data-forget-cube]']) {
+      const labels = named(sel);
+      assert.equal(labels.length, 2, `two ${sel} controls`);
+      assert.ok(labels.every(Boolean), `${sel} controls are named`);
+      assert.notEqual(labels[0], labels[1], `${sel} controls are told apart`);
+      assert.ok(labels.some((l) => l.includes(CUBE_A)) || labels.some((l) => l.includes('Test cube')));
+    }
+
+    // "Reset" said neither what it resets nor what it costs.
+    const reset = win.document.querySelector('#offsetReset');
+    assert.match(reset.getAttribute('aria-label'), /tracking correction/);
+    assert.match(reset.getAttribute('aria-label'), /reading again/, 'and what it will cost');
+  } finally {
+    resetCubeModel(state);
+    win.localStorage.removeItem('cubusCubes');
+  }
+});
+
+test('the trust indicator says its state in words, not only in colour', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    state.connected = true;
+    state.cubeName = 'GAN-test';
+    state.cube.trusted = true;
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/home';
+    await tick();
+
+    const ind = win.document.querySelector('#cubeLive');
+    // Trusted and stale differed by a colour and a pulse, with the explanation only in `title` —
+    // which is to say they did not differ at all for a screen reader.
+    assert.equal(ind.getAttribute('role'), 'status');
+    assert.match(ind.getAttribute('aria-label'), /GAN-test: tracking/);
+
+    win.cubusFeed.gap({ missing: 2, from: 4, to: 7 });
+    await tick();
+    assert.match(ind.getAttribute('aria-label'), /position unverified/, 'the state change is in the text');
+    assert.match(ind.getAttribute('aria-label'), /went unrecorded/, 'including why');
+  } finally {
+    resetCubeModel(state);
+  }
+});
+
 // ---- Cube identity ---------------------------------------------------------------------------
 //
 // The app used to keep exactly ONE cube address and overwrite it on every connect, so pairing a
@@ -2123,7 +2380,10 @@ const openSettings = async () => {
 };
 
 test('pairing a second cube leaves the first one listed and stored', async () => {
-  win.localStorage.removeItem('cubusCubes');
+  // The premise, established rather than assumed. Clearing localStorage does NOT empty the
+  // registry the app holds in memory, and by this point earlier tests have registered both of
+  // these cubes — so this test could pass with its own setup deleted.
+  await forgetAllCubes();
   try {
     win.cubusFeed.useConnection(fakeCube(), CUBE_A);
     win.cubusFeed.useConnection(null);
@@ -2139,7 +2399,7 @@ test('pairing a second cube leaves the first one listed and stored', async () =>
 });
 
 test('a nickname is stored, shown, and used wherever the cube is named', async () => {
-  win.localStorage.removeItem('cubusCubes');
+  await forgetAllCubes();
   try {
     win.cubusFeed.useConnection(fakeCube(), CUBE_A);
     await openSettings();
@@ -2164,7 +2424,7 @@ test('a nickname is stored, shown, and used wherever the cube is named', async (
 });
 
 test('forgetting a cube takes two clicks, and removes only that cube', async () => {
-  win.localStorage.removeItem('cubusCubes');
+  await forgetAllCubes();
   try {
     win.cubusFeed.useConnection(fakeCube(), CUBE_A);
     win.cubusFeed.useConnection(null);
@@ -2190,20 +2450,22 @@ test('forgetting a cube takes two clicks, and removes only that cube', async () 
   }
 });
 
-test('a remembered address is what a bare Pair reaches for', async () => {
-  win.localStorage.removeItem('cubusCubes');
+test('a remembered cube is reachable from its own row', async () => {
+  await forgetAllCubes();
   try {
     win.cubusFeed.useConnection(fakeCube(), CUBE_B);
     win.cubusFeed.useConnection(null);
     await openSettings();
 
-    // The address field is an ADD field once cubes are known. Prefilling it with a cube already
-    // listed above invited pairing a duplicate of the row you were looking at.
+    // Renamed from "a bare Pair reaches for the remembered address", which is not what this
+    // checks: it never clicks Pair and never observes a connection target. What it does check is
+    // real and worth keeping — that the address field is an ADD field once cubes are known, and
+    // that a remembered cube is reached from its own row rather than by retyping it.
     const macIn = win.document.querySelector('#macIn');
     assert.equal(macIn?.value, '', 'the add-another field starts empty');
     assert.ok(
       win.document.querySelector(`[data-use-cube="${CUBE_B}"]`),
-      'and the remembered cube is reachable from its own row instead',
+      'and the remembered cube has its own Use button',
     );
   } finally {
     win.localStorage.removeItem('cubusCubes');
