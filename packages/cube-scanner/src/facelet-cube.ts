@@ -3,7 +3,7 @@
 // trusting it. `assemble` layers cubejs on top as an independent cross-check.
 //
 // Facelet order is Kociemba URFDLB (54 chars). The corner/edge index tables are
-// the standard Kociemba face-cube maps (the same tables gan-driver uses to
+// the standard Kociemba face-cube maps (the same tables cubejs uses to
 // encode the hardware state).
 
 import { FACES, type Face } from './types.js';
