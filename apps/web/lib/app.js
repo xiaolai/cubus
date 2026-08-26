@@ -593,11 +593,41 @@ async function refreshBattery() {
   }
 }
 
+/** Everything on screen that is derived from trust, repainted together.
+ *
+ *  It used to be one node — the indicator — so a gap arriving while Settings was open left a green
+ *  "Set up and tracking" tick sitting over a cube nobody could vouch for, and the read button went
+ *  on offering to "show the cube in your hand" when clicking it now opens recovery guidance.
+ *  Trust is the one claim this whole model exists to make honestly; every place that repeats it
+ *  has to change at the same moment. */
+function trustChanged() {
+  const live = $('#cubeLive');
+  if (live) paintTrust(live);
+
+  const read = $('#readCubeBtn');
+  if (read) {
+    const label = state.cube.trusted
+      ? 'Show the cube in your hand'
+      : 'Your cube has lost count — see how to fix it';
+    read.setAttribute('aria-label', label);
+    read.title = label;
+  }
+
+  // Settings derives its setup checklist from trust, and nothing else there would repaint it.
+  // Skipped while an input in that card has focus, for the same reason the battery redraw is:
+  // rebuilding the card discards whatever is being typed into it.
+  const editing = document.activeElement;
+  const midEdit = Boolean(editing && (editing.id === 'macIn' || editing.dataset?.renameCube));
+  if (state.screen === 'settings' && !midEdit) renderScreen();
+}
+
 /** We now know what the cube looks like, and by what means. */
 function markTrusted(source) {
+  if (state.cube.trusted && state.cube.source === source) return;
   state.cube.trusted = true;
   state.cube.source = source;
   state.cube.staleWhy = '';
+  trustChanged();
 }
 
 /** Something happened that we cannot see through, so what we hold may no longer be true.
@@ -608,8 +638,7 @@ function markStale(why) {
   if (!state.cube.trusted && state.cube.staleWhy === why) return;
   state.cube.trusted = false;
   state.cube.staleWhy = why;
-  const live = $('#cubeLive');
-  if (live) paintTrust(live);
+  trustChanged();
 }
 
 /** One indicator, three states — absent, stale, trusted — because "connected" was never the
@@ -620,7 +649,15 @@ function paintTrust(el) {
   if (!on) return;
   const ok = state.cube.trusted;
   el.classList.toggle('stale', !ok);
+  // The two states differed by colour and a pulse, with the explanation only in `title` — which
+  // is to say they did not differ at all for a screen reader, and barely for anyone who cannot
+  // separate green from amber. role=status announces the change; aria-label carries the words.
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
   const who = liveCubeLabel();
+  el.setAttribute('aria-label', ok
+    ? `${who}: tracking`
+    : `${who}: position unverified — ${state.cube.staleWhy || 'read the cube again'}`);
   el.title = ok
     ? `${who} connected${Number.isFinite(state.battery) ? ` · ${state.battery}% battery` : ''} · tracking`
     : `${who} connected, but ${state.cube.staleWhy || 'its position is unverified'} — read the cube again`;
@@ -845,6 +882,9 @@ let liveUpdate = null;
  * cube really is when the move stream and the guide have drifted apart. */
 let liveMove = null;
 let liveGap = null;
+/** An anchor in flight. Module-level on purpose: dropping trust re-renders Settings, so a flag
+ *  declared inside the mount would be reset by the very repaint the guard exists to survive. */
+let anchoring = false;
 /** A screen's reaction to losing the cube, beyond the trust model's own. Only the Timer sets one:
  *  a run in progress has to stop claiming the cube is timing it. Cleared on navigation like the
  *  rest. */
@@ -1391,7 +1431,7 @@ const cubeScreen = (screenMode) => {
       <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;position:relative">
         ${walking || state.connected ? `<div class="card-tools">
           <span class="ind" id="cubeLive" hidden>${icon('bluetooth', 17)}</span>
-          ${state.connected && !scrambling ? `<button id="readCubeBtn" title="${state.cube.trusted ? 'Show the cube in your hand' : 'Your cube has lost count — see how to fix it'}">${icon('download', 19)}</button>` : ''}
+          ${state.connected && !scrambling ? `<button id="readCubeBtn" aria-label="${state.cube.trusted ? 'Show the cube in your hand' : 'Your cube has lost count — see how to fix it'}" title="${state.cube.trusted ? 'Show the cube in your hand' : 'Your cube has lost count — see how to fix it'}">${icon('download', 19)}</button>` : ''}
           ${walking ? `<button id="speedBtn" title="Animation speed">${icon('gauge', 20)}</button>` : ''}
         </div>` : ''}
         <div style="position:relative;flex:1;min-height:0;width:100%">
@@ -2012,7 +2052,11 @@ SCREENS.settings = () => {
           ['Pair it', 'Moves and state then stream in live'],
           ['Solve it once', 'Teaches the cube which position counts as solved'],
         ];
-        const done = (i) => on && (i < 2 || state.anchored);
+        // Step 3 is not done just because the anchor button was once pressed. Trust is the thing
+        // the whole model turns on, and a cube that has since disconnected, missed a turn or had
+        // its correction reset is not "set up and tracking" — showing a green tick over one is the
+        // single most misleading thing this screen could say.
+        const done = (i) => on && (i < 2 || (state.anchored && state.cube.trusted));
         const known = listCubes(cubes);
 
         // ---- known cubes ------------------------------------------------------------------
@@ -2041,6 +2085,17 @@ SCREENS.settings = () => {
           }
           return 'just now';
         };
+        // Two cubes of the same model advertise the SAME device name, so "Forget GAN16" twice over
+        // is no more use than "Forget" twice over — and telling two cubes apart is the entire
+        // reason this list exists. The last two octets are what a person would use, and they are
+        // shorter to hear than a full address.
+        // The tail is always appended, nickname or not. Dropping it for named cubes assumed
+        // nicknames are unique — and nothing enforces that, so two cubes a user called "green"
+        // were exactly as indistinguishable as two unnamed ones.
+        // The FULL address, not a tail. Two octets are not unique, and neither are nicknames —
+        // nothing stops a user calling two cubes "green". An aria-label is read once, on focus,
+        // so the length costs nothing; the visible row text stays short.
+        const rowName = (c) => `${c.nickname || c.name || 'cube'} at ${c.mac}`;
         const knownCubesRows = () => {
           if (!known.length) return '';
           return `<div style="padding:4px 0 0;border-top:1px solid var(--line-faint)">
@@ -2052,11 +2107,12 @@ SCREENS.settings = () => {
                 <div style="flex:1;min-width:0">
                   <input class="field" data-rename-cube="${escHtml(c.mac)}" value="${escHtml(c.nickname)}"
                     placeholder="${escHtml(c.name || 'Give it a name')}" maxlength="${MAX_LABEL}"
+                    aria-label="Name for the cube at ${escHtml(c.mac)}"
                     style="width:100%;font-weight:600" title="A name of your own. Only a label — nothing depends on it.">
                   <div class="sub num" style="color:var(--ink-5);font-size:var(--fs-meta);margin-top:3px">${escHtml(c.mac)} · ${live ? 'connected now' : seenAgo(c.lastSeen)}</div>
                 </div>
-                ${!on && !isTauri ? `<button class="btn sm outline" data-use-cube="${escHtml(c.mac)}" style="flex:none">Use</button>` : ''}
-                <button class="btn sm" data-forget-cube="${escHtml(c.mac)}" style="flex:none;border:1px solid var(--line);color:var(--ink-4)">Forget</button>
+                ${!on && !isTauri ? `<button class="btn sm outline" data-use-cube="${escHtml(c.mac)}" aria-label="Connect to ${escHtml(rowName(c))}" style="flex:none">Use</button>` : ''}
+                <button class="btn sm" data-forget-cube="${escHtml(c.mac)}" aria-label="Forget ${escHtml(rowName(c))}" style="flex:none;border:1px solid var(--line);color:var(--ink-4)">Forget</button>
               </div>`;
             }).join('')}
             ${isTauri ? `<div class="sub" style="color:var(--ink-5);padding:8px 0 0">cubus finds whichever cube is awake nearby, so this list is a history rather than a chooser.</div>` : ''}
@@ -2082,7 +2138,7 @@ SCREENS.settings = () => {
             <div style="font-weight:600">Tracking corrected</div>
             <div class="sub" style="color:var(--ink-4)">A camera scan at ${escHtml(hhmm(state.cube.offsetAt))} put this cube back in step after it lost count, and every reading since is corrected by it. If that scan was wrong, so is everything built on it.</div>
           </div>
-          <button class="btn sm outline" id="offsetReset" style="flex:none">Reset</button>
+          <button class="btn sm outline" id="offsetReset" aria-label="Discard the tracking correction — your cube will need reading again" style="flex:none">Reset</button>
         </div>` : ''}
         ${knownCubesRows()}
         ${on ? '' : `<div id="macRow" hidden style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-faint)">
@@ -2102,7 +2158,7 @@ SCREENS.settings = () => {
         </div>`).join('')}
         ${on && steps.every((_, i) => done(i)) ? `<div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line-faint);color:var(--ok);font-size:var(--fs-body-s)">
           ${icon('check', 15)}<span style="flex:1">Set up and tracking.</span>
-          <button class="btn sm outline" id="anchorBtn">Re-mark solved</button>
+          <button class="btn sm outline" id="anchorBtn" aria-label="Re-mark this cube as solved">Re-mark solved</button>
         </div>` : ''}
       </div>`; })()}
       <div class="card"><div class="eyebrow">TIMER & CAMERA</div>
@@ -2166,10 +2222,13 @@ SCREENS.settings = () => {
         } else {
           if (macRow) macRow.hidden = false;
           void navigator.bluetooth.getAvailability?.().then((ok) => {
-            if (ok === false && btNote) {
-              btNote.textContent = 'No Bluetooth radio available on this machine — turn it on, then reload.';
-              pairBtn.disabled = true;
-            }
+            if (ok !== false) return;
+            // Resolved now, not captured at mount. A trust change repaints this card, so nodes
+            // taken beforehand are detached by the time this promise settles — and writing to them
+            // is writing to a screen nobody is looking at.
+            const note = $('#btNote'), pair = $('#pairBtn');
+            if (note) note.textContent = 'No Bluetooth radio available on this machine — turn it on, then reload.';
+            if (pair) pair.disabled = true;
           }).catch(() => {}); // an engine without getAvailability tells us nothing; leave the button alone
         }
       }
@@ -2222,6 +2281,7 @@ SCREENS.settings = () => {
           if (el.dataset.armed !== 'yes') {
             el.dataset.armed = 'yes';
             el.textContent = 'Really forget?';
+            el.setAttribute('aria-label', `Confirm forgetting ${el.dataset.forgetCube}`);
             el.style.color = 'var(--err)';
             el.style.borderColor = 'var(--err)';
             return;
@@ -2248,9 +2308,24 @@ SCREENS.settings = () => {
       // outright locks the repair away in the exact case it exists for. Nothing here can tell that
       // apart from a genuinely scrambled cube; the person holding it can. So the override is
       // offered, never taken automatically, and it says what it will do.
+      // Resolved from the live document each time, never from a node captured at mount.
+      // Anchoring drops trust before it starts, and losing trust repaints this card — so any
+      // reference taken beforehand is detached by the time the result arrives, and writing to it
+      // is writing to a copy of the screen nobody is looking at.
+      const liveAnchorBtn = () => $('#anchorBtn');
+      const liveForceBtn = () => $('#anchorForceBtn');
       const anchor = async (force) => {
         if (!conn) { say('not connected', 'var(--err)'); return; }
-        anchorBtn.disabled = true; if (forceBtn) forceBtn.disabled = true;
+        // Single-flight. Disabling the button is not enough any more: dropping trust re-renders
+        // this card, which hands back a fresh, enabled one while the first call is still awaiting.
+        // Two concurrent anchors means two REQUEST_RESETs.
+        if (anchoring) { say('already anchoring…', 'var(--ink-4)'); return; }
+        anchoring = true;
+        const disable = (on) => {
+          const a = liveAnchorBtn(); if (a) a.disabled = on;
+          const f = liveForceBtn(); if (f) f.disabled = on;
+        };
+        disable(true);
         say(force ? 'anchoring anyway…' : 'anchoring…', 'var(--ink-4)');
         // Declared OUTSIDE the try, because the catch reads it. Inside, every rejected anchor
         // threw a ReferenceError instead of showing its refusal — and the refusal is the whole
@@ -2262,29 +2337,34 @@ SCREENS.settings = () => {
           // no longer exists — and any report arriving during the await would otherwise be taken
           // raw while the indicator still claimed the cube was tracked. If the anchor then fails,
           // the cube is left honestly untrusted rather than confidently wrong.
-          markStale('its reference is being reset');
+          // Cleared BEFORE the repaint, or the card announcing a correction outlives the
+          // correction: markStale() re-renders Settings, and at that moment the offset was still
+          // set. The user was left reading "tracking corrected" about one already gone.
           clearOffset();
+          markStale('its reference is being reset');
           await conn.anchorSolved(force ? { force: true } : {});
           // Scoped to the connection that asked: a slow anchor completing after you disconnected
           // would otherwise mark a cube that is no longer there as set up and trusted.
           if (conn !== asked) return;
           state.anchored = true;
-          markTrusted('cube'); // the cube and reality were just made to agree
+          markTrusted('cube'); // the cube and reality were just made to agree — and this repaints
+          // After the repaint, not before. markTrusted() re-renders, so a message written first
+          // was erased by the render that followed it and the user saw no confirmation at all.
           say('Anchored — the cube agrees it is solved.', 'var(--ok)');
-          renderScreen();
         } catch (e) {
           if (conn !== asked) return;
           state.anchored = false;
           const msg = String(e.message || e).split('\n')[0];
           if (!force && /refusing to anchor/i.test(msg)) {
             say('The cube reports it is not solved. If it IS solved in front of you, its own reference has drifted — anchoring will reset it to this position.', 'var(--warn)');
-            if (forceBtn) forceBtn.hidden = false;
+            const f = liveForceBtn();
+            if (f) f.hidden = false;
           } else {
             say(msg, 'var(--err)');
           }
-        } finally { anchorBtn.disabled = false; if (forceBtn) forceBtn.disabled = false; }
+        } finally { anchoring = false; disable(false); }
       };
-      if (anchorBtn) anchorBtn.onclick = () => { if (forceBtn) forceBtn.hidden = true; void anchor(false); };
+      if (anchorBtn) anchorBtn.onclick = () => { const f = liveForceBtn(); if (f) f.hidden = true; void anchor(false); };
       if (forceBtn) forceBtn.onclick = () => { void anchor(true); };
 
       for (const b of root.querySelectorAll('[data-nav-toggle]')) b.onclick = () => {
