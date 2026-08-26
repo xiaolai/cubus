@@ -16,3 +16,7 @@ tauri-build = { version = "2.6.3", features = [] }
 tauri = { version = "2.11.3", features = ["macos-private-api"] }
 tauri-plugin-log = "2"
 log = "0.4"
+# The native capture-and-inference plugin (macOS/iOS today). It compiles to an inert, command-
+# less plugin on other targets, where the app runs WebDetector — so this dependency is safe on
+# every platform and the shell stays one codebase.
+cube-vision = { path = "../../../crates/cube-vision" }

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-current-camera"
+description = "Enables the current_camera command without any pre-configured scope."
+commands.allow = ["current_camera"]
+
+[[permission]]
+identifier = "deny-current-camera"
+description = "Denies the current_camera command without any pre-configured scope."
+commands.deny = ["current_camera"]
