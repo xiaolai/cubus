@@ -1,0 +1,157 @@
+{
+  "metric": "variance of 4-neighbour Laplacian of luma on a 4px-subsampled grid (mac-camera-lab.swift `stats`)",
+  "frames_long_side_px": 720,
+  "readable_threshold_median_floor": 228.9,
+  "meaning": "half the golden frames still returned their exact nine classes at or above this sharpness; a well-framed cube reads far below it, a small/distant one needs more",
+  "floor_distribution": {
+    "min": 51.4,
+    "p50": 228.9,
+    "p90": 1697.2,
+    "max": 5244.0
+  },
+  "caveat": "the floor depends on how much of the frame the cube fills \u2014 this pins the model's sensitivity, not a camera's; compare a live camera against it with the lab",
+  "unblurred_min": 734.1,
+  "unblurred_median": 1359.9,
+  "frames": [
+    {
+      "frame": "photo-00.png",
+      "sharpness": 6393.6,
+      "last_readable": {
+        "radius": 0.5,
+        "sharpness": 5244.0
+      }
+    },
+    {
+      "frame": "photo-01.png",
+      "sharpness": 1941.0,
+      "last_readable": {
+        "radius": 1.0,
+        "sharpness": 1028.6
+      }
+    },
+    {
+      "frame": "photo-02.png",
+      "sharpness": 1319.5,
+      "last_readable": {
+        "radius": 3.0,
+        "sharpness": 84.6
+      }
+    },
+    {
+      "frame": "photo-03.png",
+      "sharpness": 1944.6,
+      "last_readable": {
+        "radius": 3.0,
+        "sharpness": 100.6
+      }
+    },
+    {
+      "frame": "photo-04.png",
+      "sharpness": 1452.5,
+      "last_readable": {
+        "radius": 3.0,
+        "sharpness": 91.7
+      }
+    },
+    {
+      "frame": "render-00.png",
+      "sharpness": 1352.9,
+      "last_readable": {
+        "radius": 2.5,
+        "sharpness": 220.8
+      }
+    },
+    {
+      "frame": "render-01.png",
+      "sharpness": 1128.0,
+      "last_readable": {
+        "radius": 1.5,
+        "sharpness": 425.1
+      }
+    },
+    {
+      "frame": "render-02.png",
+      "sharpness": 1159.1,
+      "last_readable": {
+        "radius": 4.0,
+        "sharpness": 51.4
+      }
+    },
+    {
+      "frame": "render-03.png",
+      "sharpness": 933.3,
+      "last_readable": {
+        "radius": 4.0,
+        "sharpness": 60.4
+      }
+    },
+    {
+      "frame": "render-04.png",
+      "sharpness": 2018.6,
+      "last_readable": {
+        "radius": 3.0,
+        "sharpness": 112.4
+      }
+    },
+    {
+      "frame": "render-05.png",
+      "sharpness": 734.1,
+      "last_readable": {
+        "radius": 1.5,
+        "sharpness": 326.3
+      }
+    },
+    {
+      "frame": "render-06.png",
+      "sharpness": 2766.5,
+      "last_readable": {
+        "radius": 1.0,
+        "sharpness": 1367.0
+      }
+    },
+    {
+      "frame": "render-07.png",
+      "sharpness": 2078.4,
+      "last_readable": {
+        "radius": 0.5,
+        "sharpness": 1697.2
+      }
+    },
+    {
+      "frame": "render-08.png",
+      "sharpness": 1359.9,
+      "last_readable": {
+        "radius": 1.5,
+        "sharpness": 515.3
+      }
+    },
+    {
+      "frame": "render-09.png",
+      "sharpness": 1243.9,
+      "last_readable": {
+        "radius": 0.5,
+        "sharpness": 1082.7
+      }
+    },
+    {
+      "frame": "render-10.png",
+      "sharpness": 860.3,
+      "last_readable": {
+        "radius": 2.5,
+        "sharpness": 143.2
+      }
+    },
+    {
+      "frame": "render-11.png",
+      "sharpness": 2319.0,
+      "last_readable": {
+        "radius": 2.5,
+        "sharpness": 228.9
+      }
+    }
+  ],
+  "live_measurement": {
+    "done": false,
+    "how": "swiftc -O -o /tmp/mac-camera-lab packages/cube-scanner/scripts/mac-camera-lab.swift && /tmp/mac-camera-lab; pick the Desk View camera and a 720p-class format, hold a cube where a child would, read the sharpness figure off the status line \u2014 readable when it stays comfortably above the median floor"
+  }
+}
