@@ -18,7 +18,7 @@
     <meta name="theme-color" content="#241F18" media="(prefers-color-scheme: dark)" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <!-- Fonts degrade to the system-ui / serif fallbacks in tokens.css when offline (Tauri). -->
+    <!-- Fonts degrade to the system-ui / serif fallbacks in tokens.css when offline. -->
     <link
       href="https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;700;800&family=Zilla+Slab:wght@400;500;600;700&display=swap"
       rel="stylesheet"
@@ -45,7 +45,7 @@
       /* The window IS the OS window — no fake desk/frame (paper-one WindowShell). The titlebar is
          always an OVERLAY, so the leading card runs FULL HEIGHT under it on every platform. macOS
          shows it always (the OS paints real traffic lights over it); Windows/Linux show it in a
-         browser preview (?platform=…) and use the native title bar in the Tauri app. --titlebar-h is
+         browser preview (?platform=…). --titlebar-h is
          the overlay clearance the pane/main leave for it. */
       :root { --titlebar-h: 0px; }
       html[data-platform="macos"] { --titlebar-h: var(--titlebar-macos); }
@@ -61,7 +61,7 @@
       .app { height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
       .win { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
       /* Chrome (paper-one TitleBar), always an overlay so the leading card is full height. macOS
-         shows it on any host; Windows/Linux show it only as a browser preview (the Tauri build uses
+         shows it on any host; Windows/Linux show it only as a browser preview (a native host would use
          the native title bar). The bar itself is transparent — controls float over the content, the
          card runs to the top edge beneath them. */
       .titlebar {
@@ -100,7 +100,7 @@
       /* The leading card runs FULL HEIGHT on every platform (margin: --inset, top to bottom) and
          slides under the overlay titlebar: padding-top clears the bar measured from the card's own
          top — already --inset down, so it subtracts the inset — with a 16px floor when there is no
-         overlay (Windows/Linux Tauri, native title bar). Per paper-one's LeadingCard. */
+         overlay (Windows/Linux, native title bar). Per paper-one's LeadingCard. */
       .pane {
         flex: 0 1 var(--pane-w); min-width: var(--pane-min); background: var(--panel);
         border-radius: var(--r-card); box-shadow: var(--shadow-card);
@@ -149,8 +149,8 @@
       /* One rule for the whole document, ahead of every component. Any class that sets `display`
          beats the user-agent [hidden] rule, so each component that needed hiding had grown its own
          [hidden] override — six of them — and the two buttons this branch added were left out.
-         `#readScanBtn` and `#anchorForceBtn` were therefore visible the whole time, offering a
-         repair scan and a destructive anchor override before either had been earned.
+         Two buttons were therefore visible the whole time, each offering an action before it
+         had been earned.
          A seventh per-component rule would have fixed today's instance and left the next one to be
          found the same way, so the six are gone and this stands in their place. */
       [hidden] { display: none !important; }
@@ -285,19 +285,13 @@
       .card-tools > button:hover { background: var(--panel-sunk); color: var(--ink-2); }
       .card-tools > button.open { background: var(--panel-sunk); color: var(--ink); }
       /* Connection indicator, not a control: same box as the tools beside it so the row stays even,
-         but no hover and no pointer. It exists only while a cube is connected. */
-      .card-tools > .ind { width: 28px; height: 28px; display: grid; place-items: center; color: var(--ok); }
-      .card-tools > .ind .ic { animation: cubusPulse var(--pulse) infinite; }
+         but no hover and no pointer. */
       /* Connected but no longer verified. Amber rather than green, and still, rather than pulsing —
          a pulse reads as "live and fine", which is the one thing this state is not. */
-      .card-tools > .ind.stale { color: var(--warn); }
-      .card-tools > .ind.stale .ic { animation: none; }
       .scan-cam.on #scanCamBtn { color: var(--ok); }
       /* Asking whether the cube's own report matches the cube in your hands. Sits directly under the
          2D net, because the net is what you compare against — it shows all six sides at once,
          where the 3D twin shows three and the other half is a guess. */
-      .cube-confirm { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: var(--s-9); text-align: center; max-width: 460px; }
-      .cube-confirm .acts { display: flex; gap: 8px; }
       /* Painting is a mode, so it reads as held down rather than as a nudge, and the camera dims
          beside it — the two cannot both be true. */
       .scan-cam.paint #scanPaintBtn { background: var(--accent); color: #fff; }
@@ -315,7 +309,7 @@
       .menu > hr { height: 1px; border: 0; margin: 5px 6px; background: var(--line); }
 
       /* Transport on the cube screen, all on one line: four buttons (back, repeat, next, play), the
-         progress bar, a Follow-cube toggle when a smart cube is connected, and the step count.
+         progress bar, and the step count.
          Speed is not here — it lives in the cube card's corner, because it is a preference you set
          once rather than part of walking the solution. */
       .transport { display: flex; align-items: center; gap: 8px; }
@@ -329,8 +323,6 @@
          flash on every stray turn. Here it takes its space from #solList, which is `flex:1` and
          scrolls, so appearing costs the move list a few pixels of scroll and moves nothing else.
          The aside is its own column, so the cube never reflows at all. */
-      .follow-note { display: flex; flex-direction: column; align-items: stretch; gap: 8px; flex: none; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: var(--fs-body-s); color: var(--warn); }
-      .follow-note .acts { display: flex; gap: 8px; }
       .transport .progress > span { display: block; height: 100%; width: 0; border-radius: var(--r-pill); background: var(--bar); transition: width .18s ease; }
       /* Transport controls are glyphs, not boxes. Four outlined squares in a row read as a toolbar
          of equal-weight objects and fight the cube for attention; the icons alone say the same
@@ -373,15 +365,12 @@
   <body>
     <div class="app">
       <div class="win">
-        <!-- Every non-interactive zone carries data-tauri-drag-region: Tauri drags only when the
-             actual mousedown target has the attribute, and these zones cover the whole bar. -->
-        <div class="titlebar" id="titlebar" data-tauri-drag-region>
-          <div class="tb-zone" id="tbLead" data-tauri-drag-region></div>
-          <!-- The screen's name lives here, not in a bar of its own. On Windows and Linux the Tauri
-               build hides this row and uses the native title bar, so app.js also sets the window
-               title — the name follows whichever bar the platform actually draws. -->
-          <div class="chip" data-tauri-drag-region><b id="title">Cubus</b><span>3×3 · CFOP</span></div>
-          <div class="tb-zone" id="tbTrail" data-tauri-drag-region></div>
+        <div class="titlebar" id="titlebar">
+          <div class="tb-zone" id="tbLead"></div>
+          <!-- The screen's name lives here, not in a bar of its own. On Windows and Linux this
+               row is hidden and the browser's own title carries it instead. -->
+          <div class="chip"><b id="title">Cubus</b><span>3×3 · CFOP</span></div>
+          <div class="tb-zone" id="tbTrail"></div>
         </div>
 
         <div class="body">

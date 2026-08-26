@@ -1,6 +1,6 @@
 // Hash router for the app shell.
 //
-// Hash-based, not the History API: the app is loaded by the Tauri webview and by a plain static
+// Hash-based, not the History API: the app is served as plain static files, so there is no
 // server, and neither rewrites an unknown path back to index.html. A deep link like /timer would
 // 404; #/timer needs no server cooperation and works identically in both hosts.
 //
