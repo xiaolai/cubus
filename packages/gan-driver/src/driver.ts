@@ -201,8 +201,8 @@ export class GanCube extends TinyEmitter {
 
   /**
    * Anchor the cube's internal solved reference — the pairing flow's
-   * "solve once to calibrate" step. Sends REQUEST_RESET, but ONLY when the cube
-   * already reports a solved state.
+   * "solve once to calibrate" step. Sends REQUEST_RESET only when the cube already reports a
+   * solved state, UNLESS the caller passes `{ force: true }` to vouch for it (see below).
    *
    * That precondition is what makes this safe, and it is not a formality.
    * REQUEST_RESET tells the cube to treat its CURRENT position as solved:
@@ -226,12 +226,31 @@ export class GanCube extends TinyEmitter {
    * Throws rather than returning a status: a silently skipped anchor step would
    * leave the caller believing the cube was calibrated.
    *
+   * Two modes, and the difference matters:
+   *
+   *   default          — the cube must report solved, or this refuses and writes no reset. The
+   *                      precondition removes the failure mechanism rather than reducing its odds.
+   *   { force: true }  — the caller asserts the cube is solved in front of them. This waives the
+   *                      COMPARISON and nothing else: the pre-read, the write and the verifying
+   *                      re-read all still happen. Used wrongly it adopts a scrambled position as
+   *                      the origin, permanently and silently, and no check here can catch that —
+   *                      after a reset the cube reports solved either way. It exists because the
+   *                      precondition alone is a catch-22 (see below).
+   *
    * NOT CONFIRMED ON HARDWARE. The packet matches upstream and the guard is
    * tested, but no physical GAN16 has been sent this command from this codebase.
    * See docs/protocol.md.
    */
   async anchorSolved(opts: { timeoutMs?: number; force?: boolean } = {}): Promise<CubeFacelets> {
-    const { timeoutMs = 4000, force = false } = opts;
+    const { timeoutMs = 4000 } = opts;
+    // Rejected outright, not coerced. This flag is the only thing standing between a caller and a
+    // command that can permanently desync the driver from the cube, and the package ships to plain
+    // JavaScript — where `{ force: 'false' }` is a thing somebody will eventually write, and
+    // truthiness reads it as permission.
+    if (opts.force !== undefined && typeof opts.force !== 'boolean') {
+      throw new TypeError(`anchorSolved: force must be a boolean, got ${typeof opts.force}`);
+    }
+    const force = opts.force ?? false;
 
     // `force` exists because the precondition, alone, is a catch-22.
     //
@@ -243,21 +262,28 @@ export class GanCube extends TinyEmitter {
     // cube" both look like a non-solved report from here. Only somebody looking at the cube can
     // say which it is, so the override is theirs to give, never inferred. The post-write re-read
     // below cannot substitute for it — after a reset the cube reports solved either way.
-    if (!force) {
-      const before = await this.getState({ active: true, timeoutMs });
-      if (before.facelets !== SOLVED_FACELETS) {
-        throw new Error(
-          `refusing to anchor: the cube reports an unsolved state, and anchoring now would adopt it as the new solved reference, desyncing the driver from the cube permanently. Solve the cube first — or, if it IS solved and the cube's own reference has drifted, anchor with { force: true }.\n  reported: ${before.facelets}\n  expected: ${SOLVED_FACELETS}`,
-        );
-      }
+    // The read happens EITHER WAY. `force` waives the comparison below, and nothing else.
+    //
+    // It used to skip this whole block, which quietly took the readiness barrier with it: this is
+    // the only call that waits for the transport to be live, so a forced anchor could write
+    // REQUEST_RESET before any subscription existed to hear the reply — the most destructive
+    // command in the protocol, sent into a channel nobody was listening to.
+    const before = await this.getState({ active: true, timeoutMs });
+    if (!force && before.facelets !== SOLVED_FACELETS) {
+      throw new Error(
+        `refusing to anchor: the cube reports an unsolved state, and anchoring now would adopt it as the new solved reference, desyncing the driver from the cube permanently. Solve the cube first — or, if it IS solved and the cube's own reference has drifted, anchor with { force: true }.\n  reported: ${before.facelets}\n  expected: ${SOLVED_FACELETS}`,
+      );
     }
 
     await this.sendUnsafe('REQUEST_RESET');
 
-    // Re-establish the invariant rather than assuming the write landed. This
-    // cannot prove the command took effect — a cube that ignored it also reports
-    // solved — but it does catch a cube left in any OTHER state, which is the
-    // only outcome that would be dangerous.
+    // Re-establish the invariant rather than assuming the write landed. This catches a cube left
+    // in any state other than solved, which is what an ignored or failed reset looks like.
+    //
+    // What it CANNOT catch, in either mode: a reset that worked on the wrong position. A cube that
+    // accepted the command reports solved afterwards whether or not it was solved before — that is
+    // the nature of the command. Under `force` the caller has taken that risk knowingly; by
+    // default the precondition above is what prevents it.
     const after = await this.getState({ active: true, timeoutMs });
     if (after.facelets !== SOLVED_FACELETS) {
       throw new Error(
@@ -268,10 +294,15 @@ export class GanCube extends TinyEmitter {
   }
 
   /**
-   * Deliberately separate from send(): its parameter type is UnsafeCommand, so
-   * no SafeCommand call site can reach this and no new caller can appear without
-   * naming the unsafe type. Private, and used only by anchorSolved() above,
-   * which owns the precondition.
+   * Deliberately separate from send(): its parameter type is UnsafeCommand, so no SafeCommand
+   * call site can reach this, and no new caller can appear without naming the unsafe type.
+   * Used only by anchorSolved() above, which owns the precondition.
+   *
+   * Two limits worth stating plainly rather than leaving to be discovered. `private` is a
+   * TypeScript modifier and is erased at runtime, so this is a compile-time boundary, not a
+   * runtime one — plain JavaScript can still reach it. And the precondition anchorSolved() owns
+   * is waivable by its `force` option. Both are real gaps in the "nothing else can send this"
+   * claim, and closing them means a runtime-private method and a narrower public surface.
    */
   private async sendUnsafe(cmd: UnsafeCommand): Promise<void> {
     const enc = this.cipher.encrypt(buildUnsafeCommand(cmd));
