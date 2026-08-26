@@ -133,7 +133,10 @@
       .screen { display: none; height: 100%; }
       .screen.active { display: block; }
       .cols { display: flex; gap: 22px; height: 100%; }
-      .col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+      /* `overflow-y: auto` is not optional here: .stage clips, and no column scrolled. Settings can
+         now list up to 32 remembered cubes, so past a certain number the controls below them were
+         simply unreachable — clipped off the bottom with no way to scroll to them. */
+      .col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
       .aside { flex: 0 1 var(--aside-w); min-width: var(--aside-min); display: flex; flex-direction: column; gap: 16px; }
 
       /* ---- primitives ----------------------------------------------------- */
@@ -143,6 +146,14 @@
       .stat .v { font-family: var(--font-num); font-size: var(--fs-display); font-weight: 600; letter-spacing: -.02em; }
       .stat .d { font-size: var(--fs-body-s); color: var(--ink-4); }
       .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+      /* One rule for the whole document, ahead of every component. Any class that sets `display`
+         beats the user-agent [hidden] rule, so each component that needed hiding had grown its own
+         [hidden] override — six of them — and the two buttons this branch added were left out.
+         `#readScanBtn` and `#anchorForceBtn` were therefore visible the whole time, offering a
+         repair scan and a destructive anchor override before either had been earned.
+         A seventh per-component rule would have fixed today's instance and left the next one to be
+         found the same way, so the six are gone and this stands in their place. */
+      [hidden] { display: none !important; }
       .btn { height: 40px; padding: 0 18px; border-radius: var(--r-4); display: inline-flex; align-items: center; gap: 8px; justify-content: center; font-size: var(--fs-body-l); font-weight: 600; }
       .btn.primary { background: var(--invert-bg); color: var(--invert-fg); }
       .btn.accent { background: var(--accent); color: #fff; }
@@ -253,7 +264,6 @@
       /* Colour picker for a misread sticker. Fixed to the viewport so it never has to reason about
          an offset parent, and clamped in JS so a sticker at the edge of the net keeps it on screen. */
       .swatches { position: fixed; z-index: 60; display: flex; gap: 6px; padding: 8px; border-radius: var(--r-4); background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow-raise, 0 6px 20px rgba(0,0,0,.18)); }
-      .swatches[hidden] { display: none; }
       .swatches > button { width: 30px; height: 30px; border-radius: var(--r-3); box-shadow: inset 0 0 0 1px rgba(0,0,0,.22); }
       .swatches > button:hover { transform: scale(1.08); }
       .swatches > button.now { box-shadow: inset 0 0 0 1px rgba(0,0,0,.22), 0 0 0 2px var(--ink); }
@@ -277,7 +287,6 @@
       /* Connection indicator, not a control: same box as the tools beside it so the row stays even,
          but no hover and no pointer. It exists only while a cube is connected. */
       .card-tools > .ind { width: 28px; height: 28px; display: grid; place-items: center; color: var(--ok); }
-      .card-tools > .ind[hidden] { display: none; }
       .card-tools > .ind .ic { animation: cubusPulse var(--pulse) infinite; }
       /* Connected but no longer verified. Amber rather than green, and still, rather than pulsing —
          a pulse reads as "live and fine", which is the one thing this state is not. */
@@ -288,7 +297,6 @@
          2D net, because the net is what you compare against — it shows all six sides at once,
          where the 3D twin shows three and the other half is a guess. */
       .cube-confirm { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: var(--s-9); text-align: center; max-width: 460px; }
-      .cube-confirm[hidden] { display: none; }
       .cube-confirm .acts { display: flex; gap: 8px; }
       /* Painting is a mode, so it reads as held down rather than as a nudge, and the camera dims
          beside it — the two cannot both be true. */
@@ -299,7 +307,6 @@
          dropdown that has to sit beside it defeats the point. Same popover treatment as the sticker
          colour picker below. */
       .menu { position: fixed; z-index: 60; min-width: 190px; padding: 5px; border-radius: var(--r-4); background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow-raise, 0 6px 20px rgba(0,0,0,.18)); }
-      .menu[hidden] { display: none; }
       .menu > button { display: block; width: 100%; padding: 7px 10px; border-radius: var(--r-3); text-align: left; font-size: var(--fs-body-s); color: var(--ink-2); white-space: nowrap; }
       .menu > button:hover { background: var(--panel-sunk); color: var(--ink); }
       .menu > button.now { font-weight: 700; color: var(--ink); }
@@ -324,7 +331,6 @@
          The aside is its own column, so the cube never reflows at all. */
       .follow-note { display: flex; flex-direction: column; align-items: stretch; gap: 8px; flex: none; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: var(--fs-body-s); color: var(--warn); }
       .follow-note .acts { display: flex; gap: 8px; }
-      .follow-note[hidden] { display: none; }
       .transport .progress > span { display: block; height: 100%; width: 0; border-radius: var(--r-pill); background: var(--bar); transition: width .18s ease; }
       /* Transport controls are glyphs, not boxes. Four outlined squares in a row read as a toolbar
          of equal-weight objects and fight the cube for attention; the icons alone say the same
@@ -341,7 +347,6 @@
       /* Shown only when the last move lands. The move label it replaced repeated what the
          highlighted chip and the animation were both already saying. */
       .done-mark { position: absolute; right: 14px; bottom: 10px; width: 46px; height: 46px; border-radius: var(--r-pill); display: grid; place-items: center; color: #fff; background: var(--ok); }
-      .done-mark[hidden] { display: none; }
 
       /* 2D net */
       .net { display: grid; grid-template-columns: repeat(12,1fr); grid-template-rows: repeat(9,1fr); gap: 3px; aspect-ratio: 12/9; max-width: 320px; margin: 0 auto; }

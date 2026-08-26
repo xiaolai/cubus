@@ -83,3 +83,32 @@ test('the design kit and the app ship the same token file', () => {
   // Letting the copies drift is how a fix to one silently fails to reach the app.
   assert.equal(css, read('../../../dev-docs/design/tokens.css'), 'apps/web/tokens.css has drifted');
 });
+
+// A `hidden` attribute is the app's only mechanism for "this control is not available yet", and
+// the whole DOM suite runs with stylesheet loading and computed styles switched off — so nothing
+// there can see whether hidden actually hides. It did not: any class setting `display` beats the
+// user-agent [hidden] rule, and `.btn` does. Every component that needed hiding had grown a private
+// [hidden] override, six of them, and the two buttons added most recently were left out. A repair
+// scan and a destructive "anchor anyway" override were both on screen before they were earned.
+//
+// These are static checks against the stylesheet text, which is all this suite can do — but they
+// pin the CLASS of defect rather than the two instances of it.
+test('hidden means hidden, for everything, once', () => {
+  // Anchored to the start of a line, so it matches the BARE [hidden] selector and not a
+  // component-scoped `.thing[hidden]` that would only cover one case again.
+  const global = /^\s*\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important/m;
+  assert.match(html, global, 'one global [hidden] rule, ahead of any class that sets display');
+
+  // And nothing may quietly re-enable a hidden element by setting display on it.
+  const offenders = [...html.matchAll(/([^{}]*\[hidden\][^{}]*)\{([^}]*)\}/g)]
+    .filter(([, , body]) => /display\s*:/.test(body) && !/display\s*:\s*none/.test(body))
+    .map(([, selector]) => selector.trim());
+  assert.deepEqual(offenders, [], 'these selectors give a hidden element a display');
+});
+
+// The rule above is only worth having if the app actually uses `hidden` to hide things. If a future
+// change switched to a `.is-hidden` class, the guard would still pass while protecting nothing.
+test('the app hides controls with the attribute that rule is about', () => {
+  const hiddenAttrs = [...appJs.matchAll(/\bhidden\b(?=[\s>=])/g)].length;
+  assert.ok(hiddenAttrs > 5, `expected the app to render hidden controls, found ${hiddenAttrs}`);
+});
