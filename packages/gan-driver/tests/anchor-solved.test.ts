@@ -176,3 +176,45 @@ describe('anchorSolved({ force }) — the drifted-reference escape hatch', () =>
     await expect(cube.anchorSolved()).rejects.toThrow(/force/i);
   });
 });
+
+// Two things `force` must NOT do. Both shipped with the flag and were found by audit afterwards.
+describe('anchorSolved({ force }) — waives one check, and only that check', () => {
+  it('requires an actual boolean, not merely something truthy', async () => {
+    // This package ships to plain JavaScript, where `{ force: 'false' }` is a thing somebody will
+    // eventually write — and reading it as truthy granted permission to send the one command in
+    // the protocol that can desync the driver from the cube permanently.
+    for (const bad of ['false', 'true', 1, {}, [], 'yes']) {
+      const { cube, writes } = simulateCube(SCRAMBLED);
+      await expect(cube.anchorSolved({ force: bad as unknown as boolean })).rejects.toThrow(
+        /force must be a boolean/i,
+      );
+      await tick();
+      expect(writes).not.toContain(expectedResetHex);
+    }
+  });
+
+  it('an explicit false is still the guarded path', async () => {
+    const { cube, writes } = simulateCube(SCRAMBLED);
+    await expect(cube.anchorSolved({ force: false })).rejects.toThrow(/refusing to anchor/i);
+    await tick();
+    expect(writes).not.toContain(expectedResetHex);
+  });
+
+  // getState() is the only call that waits for the transport to be live. `force` used to skip the
+  // whole pre-read, which took that barrier with it — so a forced anchor could write REQUEST_RESET
+  // into a channel with no subscription yet listening. The flag waives the COMPARISON; the read
+  // itself is not optional.
+  it('still reads the cube first, because that read is the readiness barrier', async () => {
+    const { cube, writes, state } = simulateCube(SCRAMBLED);
+    const p = cube.anchorSolved({ force: true });
+    state.facelets = SOLVED_FACELETS;
+    await p;
+
+    const reset = writes.indexOf(expectedResetHex);
+    expect(reset).toBeGreaterThan(0);
+    expect(writes.filter((w) => w === expectedResetHex)).toHaveLength(1);
+    // Bracketed: a query before it, and the verifying re-read after.
+    expect(writes.slice(0, reset).length).toBeGreaterThanOrEqual(1);
+    expect(writes.slice(reset + 1).length).toBeGreaterThanOrEqual(1);
+  });
+});
