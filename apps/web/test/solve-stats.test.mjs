@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { averageOf, best, byDay, moveStats, summarize, times } from '../lib/solve-stats.js';
+import { averageOf, best, byDay, summarize, times } from '../lib/solve-stats.js';
 
 const solve = (time, extra = {}) => ({ time: String(time), ...extra });
 
@@ -19,7 +19,6 @@ test('an empty session produces nothing, not zeroes', () => {
     assert.equal(s.count, 0);
     assert.equal(s.best, null);
     assert.equal(s.ao5, null);
-    assert.equal(s.moves, null);
     assert.equal(s.week.length, 7, 'the week still has seven days, all empty');
     assert.ok(s.week.every((d) => d.count === 0 && d.best === null));
   }
@@ -80,11 +79,6 @@ test('coercible types never become statistics', () => {
     assert.deepEqual(times([{ time: bad }]), []);
   }
   assert.equal(best([solve('12.5')]), 12.5, 'while the documented form still works');
-
-  // Move counts are integers a cube reported. `true` is not one turn, and 3.5 is not three.
-  for (const bad of [true, '40', 3.5, [40], null, Infinity]) {
-    assert.equal(moveStats([{ time: '10.00', moves: bad }]), null, `moves: ${JSON.stringify(bad)}`);
-  }
 });
 
 test('byDay refuses arguments it cannot honour instead of hanging', () => {
@@ -126,24 +120,6 @@ test('an average uses the most recent n, not the best n', () => {
   assert.equal(averageOf([...recent, ...older], 5), 70, 'the old fast solves do not flatter it');
 });
 
-test('turn rate is measured or absent — never estimated', () => {
-  // A hand-timed solve has no move count. Filling one in from an average would put a number on
-  // this screen that no cube ever reported.
-  assert.equal(moveStats([solve(20), solve(30)]), null, 'no cube, no turn rate');
-
-  const mixed = [solve(20, { moves: 40 }), solve(30), solve(10, { moves: 30 })];
-  const m = moveStats(mixed);
-  assert.equal(m.solves, 2, 'only the solves a cube measured');
-  assert.equal(m.fewestMoves, 30);
-  assert.equal(m.meanMoves, 35);
-  assert.equal(m.bestRate, 3, '30 moves in 10s');
-  assert.equal(m.meanRate, 2.5, 'mean of 2.0 and 3.0');
-
-  // A move count without a usable time is not a rate either.
-  assert.equal(moveStats([solve('nonsense', { moves: 40 })]), null);
-  assert.equal(moveStats([solve(20, { moves: 0 })]), null);
-});
-
 test('the week counts only dated solves, and puts each on its own day', () => {
   const now = new Date(2026, 0, 8, 12, 0).getTime();  // a Thursday
   const DAY = 86400000;
@@ -178,5 +154,4 @@ test('summarize agrees with the parts it is made of', () => {
   assert.equal(s.ao5, averageOf(list, 5));
   assert.equal(s.ao12, averageOf(list, 12));
   assert.equal(s.ao100, null, 'twelve solves is not an ao100');
-  assert.deepEqual(s.moves, moveStats(list));
 });
