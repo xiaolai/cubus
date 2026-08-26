@@ -38,11 +38,12 @@ export function buildCommand(cmd: SafeCommand): Uint8Array {
 //
 // It is kept OUT of `SafeCommand` on purpose: `GanCube.send()` accepts only
 // `SafeCommand`, so no ordinary send path can transmit it. It IS transmitted, by
-// exactly one caller — `GanCube.anchorSolved()`, which owns the precondition
-// that the cube reports a solved state first and throws otherwise. That wiring is
-// the deliberate decision this comment used to say still lay ahead; it landed with
-// the anchor step. tests/unsafe-commands.test.ts pins both halves: built in one
-// place, sent only from anchorSolved, unreachable from send(), not re-exported.
+// exactly one caller — `GanCube.anchorSolved()`, which by default requires the cube to report a
+// solved state first and throws otherwise. That precondition is waivable with `{ force: true }`,
+// which exists because refusing unconditionally puts the repair out of reach in the one case it
+// is for; it waives the comparison and nothing else. tests/unsafe-commands.test.ts pins the
+// wiring: built in one place, sent only from anchorSolved, unreachable from send(), not
+// re-exported.
 //
 // Its effect on physical GAN16 hardware remains unconfirmed — see docs/protocol.md.
 
@@ -50,8 +51,9 @@ export type UnsafeCommand = 'REQUEST_RESET';
 
 /**
  * Build the REQUEST_RESET packet. `SafeCommand` excludes it, so `send()` cannot
- * carry it; the one transmitter is `GanCube.anchorSolved()`, behind its
- * solved-state precondition.
+ * carry it; the one transmitter is `GanCube.anchorSolved()`, which by default requires the cube
+ * to report a solved state — and which accepts `{ force: true }` to waive that one comparison
+ * when a person can see the cube is solved but its own reference has drifted.
  *
  * The byte sequence is verified against upstream only. Its effect on a physical
  * GAN16 has NOT been confirmed; no fixture test can establish that.

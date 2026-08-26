@@ -136,3 +136,85 @@ describe('anchorSolved — fails loud if the cube ends up elsewhere', () => {
     await expect(sim.cube.anchorSolved()).rejects.toThrow(/anchor failed/i);
   });
 });
+
+// The precondition alone is a catch-22: a cube whose internal reference has drifted reports an
+// unsolved state while being physically solved, and REQUEST_RESET is what repairs exactly that.
+// Refusing unconditionally puts the repair out of reach in the one case it is for. The driver
+// cannot distinguish "solved cube, drifted reference" from "scrambled cube" — both look identical
+// from here — so the override belongs to whoever can see the cube, and is never inferred.
+describe('anchorSolved({ force }) — the drifted-reference escape hatch', () => {
+  it('anchors a cube that reports unsolved when a human vouches for it', async () => {
+    const { cube, writes, state } = simulateCube(SCRAMBLED);
+    // A real reset makes the cube report solved from then on; the simulator has to do the same or
+    // the post-write re-read would fail for the wrong reason.
+    const p = cube.anchorSolved({ force: true });
+    state.facelets = SOLVED_FACELETS;
+    await expect(p).resolves.toMatchObject({ facelets: SOLVED_FACELETS });
+    expect(writes).toContain(expectedResetHex);
+  });
+
+  it('still refuses without force, and transmits nothing', async () => {
+    const { cube, writes } = simulateCube(SCRAMBLED);
+    await expect(cube.anchorSolved()).rejects.toThrow(/refusing to anchor/i);
+    await tick();
+    expect(writes).not.toContain(expectedResetHex);
+  });
+
+  // force skips the BEFORE check only. The after-read still runs, so a cube that ignored the
+  // command entirely is still caught -- it cannot catch a wrongly-forced anchor, because a reset
+  // makes the cube report solved either way. That distinction is the human's, and only theirs.
+  it('still re-reads afterwards: a cube that stayed unsolved is caught', async () => {
+    const { cube, state } = simulateCube(SCRAMBLED);
+    state.facelets = SCRAMBLED; // the reset did not take
+    await expect(cube.anchorSolved({ force: true })).rejects.toThrow(
+      /did not report a solved state/i,
+    );
+  });
+
+  it('the refusal explains the escape hatch rather than dead-ending', async () => {
+    const { cube } = simulateCube(SCRAMBLED);
+    await expect(cube.anchorSolved()).rejects.toThrow(/force/i);
+  });
+});
+
+// Two things `force` must NOT do. Both shipped with the flag and were found by audit afterwards.
+describe('anchorSolved({ force }) — waives one check, and only that check', () => {
+  it('requires an actual boolean, not merely something truthy', async () => {
+    // This package ships to plain JavaScript, where `{ force: 'false' }` is a thing somebody will
+    // eventually write — and reading it as truthy granted permission to send the one command in
+    // the protocol that can desync the driver from the cube permanently.
+    for (const bad of ['false', 'true', 1, {}, [], 'yes']) {
+      const { cube, writes } = simulateCube(SCRAMBLED);
+      await expect(cube.anchorSolved({ force: bad as unknown as boolean })).rejects.toThrow(
+        /force must be a boolean/i,
+      );
+      await tick();
+      expect(writes).not.toContain(expectedResetHex);
+    }
+  });
+
+  it('an explicit false is still the guarded path', async () => {
+    const { cube, writes } = simulateCube(SCRAMBLED);
+    await expect(cube.anchorSolved({ force: false })).rejects.toThrow(/refusing to anchor/i);
+    await tick();
+    expect(writes).not.toContain(expectedResetHex);
+  });
+
+  // getState() is the only call that waits for the transport to be live. `force` used to skip the
+  // whole pre-read, which took that barrier with it — so a forced anchor could write REQUEST_RESET
+  // into a channel with no subscription yet listening. The flag waives the COMPARISON; the read
+  // itself is not optional.
+  it('still reads the cube first, because that read is the readiness barrier', async () => {
+    const { cube, writes, state } = simulateCube(SCRAMBLED);
+    const p = cube.anchorSolved({ force: true });
+    state.facelets = SOLVED_FACELETS;
+    await p;
+
+    const reset = writes.indexOf(expectedResetHex);
+    expect(reset).toBeGreaterThan(0);
+    expect(writes.filter((w) => w === expectedResetHex)).toHaveLength(1);
+    // Bracketed: a query before it, and the verifying re-read after.
+    expect(writes.slice(0, reset).length).toBeGreaterThanOrEqual(1);
+    expect(writes.slice(reset + 1).length).toBeGreaterThanOrEqual(1);
+  });
+});
