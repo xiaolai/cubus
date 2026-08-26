@@ -1,0 +1,6 @@
+# Rust workspace for the native side of cubus. One member: the desktop app's Tauri backend, which
+# is a thin shell around apps/web. The BLE bridge that used to live in crates/ went with the
+# smart-cube support (see the v0 branch).
+[workspace]
+resolver = "2"
+members = ["apps/desktop/src-tauri"]
