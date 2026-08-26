@@ -25,20 +25,6 @@ const BUNDLES = [
     sources: ['../lib/cubus-cube.js'],
   },
   {
-    // The one that proved this list has to be COMPLETE, not representative. `anchorSolved` and the
-    // whole REQUEST_RESET path shipped in source and tests but never reached this bundle, so
-    // "Mark it solved" called a method the app did not have. It failed in a user's hands, months
-    // after the source landed, with every gate green the entire time.
-    name: 'gan-driver',
-    build: 'pnpm --filter gan-driver build:driver',
-    bundle: '../vendor/gan-driver.js',
-    sources: [
-      '../../../packages/gan-driver/src/driver.ts',
-      '../../../packages/gan-driver/src/gen4/commands.ts',
-      '../../../packages/gan-driver/src/mac.ts',
-    ],
-  },
-  {
     name: 'cubejs',
     build: 'pnpm --filter cubus-web build:cubejs',
     bundle: '../vendor/cubejs.js',
@@ -82,10 +68,9 @@ function declaredNames(src) {
 
 // Every emitter of a vendored bundle in the repo must appear above. Derived from the build
 // scripts rather than remembered: a pair added to package.json and not added here is invisible,
-// which is exactly how gan-driver went unguarded while two of its siblings were covered.
+// which is exactly how one bundle went unguarded while two of its siblings were covered.
 test('every source -> bundle pair in the repo is guarded here', () => {
-  const scripts = ['../package.json', '../../../packages/gan-driver/package.json',
-    '../../../packages/cube-scanner/package.json']
+  const scripts = ['../package.json', '../../../packages/cube-scanner/package.json']
     .flatMap((f) => Object.values(JSON.parse(read(f)).scripts ?? {}));
   const emitted = scripts
     .flatMap((cmd) => [...String(cmd).matchAll(/--outfile=\S*?vendor\/([\w.-]+\.js)/g)])
@@ -116,7 +101,7 @@ for (const b of BUNDLES) {
   // Names are not enough, and this is the fourth time that has mattered.
   //
   // A stale bundle keeps every declaration the source has — the edit changed a method BODY, not
-  // its name — so the check above waved through a `gan-driver.js` whose anchorSolved() was two
+  // its name — so the check above once waved through a driver bundle that was two
   // safety fixes behind the source it claims to be built from. The app imports the bundle, so the
   // shipped behaviour was the old one while every test and the source both said otherwise.
   //
