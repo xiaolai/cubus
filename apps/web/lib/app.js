@@ -139,12 +139,6 @@ const state = {
   screen: 'home',
   cube: {
     facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [],
-    // Is the arrangement on screen the cube in your HAND? Knowing an arrangement and holding it
-    // are different claims, and one variable used to answer both — so a generated scramble could
-    // quietly become a guide to the cube on your desk.
-    isPhysical: false,
-    source: 'none',  // 'none' | 'camera' | 'generated' — what last established it
-    readAt: 0,       // when, so the screen can say how old this reading is
   },
 };
 
@@ -391,17 +385,9 @@ function setTitle(name) {
   }
 }
 
-/** Make `facelets` the arrangement the app is about.
- *
- *  `physical` says whether it is the cube in the user's hand. A camera scan is; a generated
- *  scramble is not, however exactly we know it — and a guide built from one must never be treated
- *  as a guide to the cube on your desk. That distinction survived the removal of the smart-cube
- *  path because it was never about the cube being smart. */
-function adoptCube(facelets, { physical, source }) {
+/** Make `facelets` the arrangement the app is about — a camera scan, or a generated scramble. */
+function adoptCube(facelets) {
   ingestFacelets(facelets);
-  state.cube.isPhysical = physical;
-  state.cube.source = source;
-  state.cube.readAt = Date.now();
 }
 
 // ---- session store (recent solves) -----------------------------------------------------------
@@ -743,7 +729,7 @@ SCREENS.scan = () => {
         clearTimeout(settleTimer);
         settleTimer = setTimeout(() => { repaintCanonical(fl); faces.classList.remove('settling'); }, 190);
         // The camera SAW the cube in the user's hand; nothing was inferred from anywhere else.
-        adoptCube(fl, { physical: true, source: 'camera' });
+        adoptCube(fl);
         // Stay put. Jumping to another screen took the six tiles away at the moment they finally
         // mean something, and with them the chance to check the read or fix a sticker. The aside
         // shows the cube that was found, and "Solve this cube" is right beside it. Anyone who
@@ -992,7 +978,7 @@ const cubeScreen = (screenMode) => {
         // Known by construction, and NOT the cube in your hand. Marking this 'camera' was the bug
         // behind a solved physical cube instantly completing a random solve: the guide accepted
         // the real cube's snapshots as progress through an arrangement it had never been in.
-        adoptCube(randomScramble(), { physical: false, source: 'generated' });
+        adoptCube(randomScramble());
         go('home');
       };
 
@@ -1216,15 +1202,6 @@ SCREENS.settings = () => {
       for (const b of root.querySelectorAll('[data-theme]')) b.onclick = () => { settings.theme = b.dataset.theme; save('cubusSettings', settings); applyTheme(); renderScreen(); };
       for (const b of root.querySelectorAll('[data-pal]')) b.onclick = () => { settings.palette = b.dataset.pal; save('cubusSettings', settings); applyNetColors(); renderScreen(); };
       for (const b of root.querySelectorAll('[data-toggle]')) b.onclick = () => { const k = b.dataset.toggle; settings[k] = !settings[k]; save('cubusSettings', settings); b.classList.toggle('on', settings[k]); };
-      // Smart-cube setup moved here from its own screen. The mock "nearby cubes" list and the
-      // hardcoded battery/latency/firmware readout did not come with it: both were invented data
-      // presented as live hardware telemetry, which an audit of this branch flagged.
-      // The address field is no longer prefilled. It used to carry the single remembered address
-      // forward, which was the whole of "remember my cube"; the list above does that job now, per
-      // cube, and this field means "add another one" — seeding it with a cube already listed
-      // invites pairing a duplicate of the row you are looking at.
-
-
       for (const b of root.querySelectorAll('[data-nav-toggle]')) b.onclick = () => {
         const id = b.dataset.navToggle;
         settings.navHidden = navHidden(id) ? settings.navHidden.filter((x) => x !== id) : [...settings.navHidden, id];
@@ -1419,7 +1396,7 @@ const router = makeRouter({
 // before the router gets a chance to canonicalise them to home.
 // `viewer` joins them: the cube screen is Home now. `pair` too — smart-cube setup moved into
 // Settings, so #/pair lands where the controls actually are.
-const ALIAS = { guide: 'home', playback: 'home', viewer: 'home', pair: 'settings' };
+const ALIAS = { guide: 'home', playback: 'home', viewer: 'home' };
 function resolveAlias() {
   const raw = String(window.location.hash || '').replace(/^#\/?/, '').trim();
   const target = ALIAS[raw];
