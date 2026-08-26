@@ -25,20 +25,6 @@ const BUNDLES = [
     sources: ['../lib/cubus-cube.js'],
   },
   {
-    // The one that proved this list has to be COMPLETE, not representative. `anchorSolved` and the
-    // whole REQUEST_RESET path shipped in source and tests but never reached this bundle, so
-    // "Mark it solved" called a method the app did not have. It failed in a user's hands, months
-    // after the source landed, with every gate green the entire time.
-    name: 'gan-driver',
-    build: 'pnpm --filter gan-driver build:driver',
-    bundle: '../vendor/gan-driver.js',
-    sources: [
-      '../../../packages/gan-driver/src/driver.ts',
-      '../../../packages/gan-driver/src/gen4/commands.ts',
-      '../../../packages/gan-driver/src/mac.ts',
-    ],
-  },
-  {
     name: 'cubejs',
     build: 'pnpm --filter cubus-web build:cubejs',
     bundle: '../vendor/cubejs.js',
@@ -84,8 +70,7 @@ function declaredNames(src) {
 // scripts rather than remembered: a pair added to package.json and not added here is invisible,
 // which is exactly how gan-driver went unguarded while two of its siblings were covered.
 test('every source -> bundle pair in the repo is guarded here', () => {
-  const scripts = ['../package.json', '../../../packages/gan-driver/package.json',
-    '../../../packages/cube-scanner/package.json']
+  const scripts = ['../package.json', '../../../packages/cube-scanner/package.json']
     .flatMap((f) => Object.values(JSON.parse(read(f)).scripts ?? {}));
   const emitted = scripts
     .flatMap((cmd) => [...String(cmd).matchAll(/--outfile=\S*?vendor\/([\w.-]+\.js)/g)])

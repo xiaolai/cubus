@@ -149,8 +149,8 @@
       /* One rule for the whole document, ahead of every component. Any class that sets `display`
          beats the user-agent [hidden] rule, so each component that needed hiding had grown its own
          [hidden] override — six of them — and the two buttons this branch added were left out.
-         `#readScanBtn` and `#anchorForceBtn` were therefore visible the whole time, offering a
-         repair scan and a destructive anchor override before either had been earned.
+         Two buttons were therefore visible the whole time, each offering an action before it
+         had been earned.
          A seventh per-component rule would have fixed today's instance and left the next one to be
          found the same way, so the six are gone and this stands in their place. */
       [hidden] { display: none !important; }
@@ -285,19 +285,13 @@
       .card-tools > button:hover { background: var(--panel-sunk); color: var(--ink-2); }
       .card-tools > button.open { background: var(--panel-sunk); color: var(--ink); }
       /* Connection indicator, not a control: same box as the tools beside it so the row stays even,
-         but no hover and no pointer. It exists only while a cube is connected. */
-      .card-tools > .ind { width: 28px; height: 28px; display: grid; place-items: center; color: var(--ok); }
-      .card-tools > .ind .ic { animation: cubusPulse var(--pulse) infinite; }
+         but no hover and no pointer. */
       /* Connected but no longer verified. Amber rather than green, and still, rather than pulsing —
          a pulse reads as "live and fine", which is the one thing this state is not. */
-      .card-tools > .ind.stale { color: var(--warn); }
-      .card-tools > .ind.stale .ic { animation: none; }
       .scan-cam.on #scanCamBtn { color: var(--ok); }
       /* Asking whether the cube's own report matches the cube in your hands. Sits directly under the
          2D net, because the net is what you compare against — it shows all six sides at once,
          where the 3D twin shows three and the other half is a guess. */
-      .cube-confirm { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: var(--s-9); text-align: center; max-width: 460px; }
-      .cube-confirm .acts { display: flex; gap: 8px; }
       /* Painting is a mode, so it reads as held down rather than as a nudge, and the camera dims
          beside it — the two cannot both be true. */
       .scan-cam.paint #scanPaintBtn { background: var(--accent); color: #fff; }
@@ -315,7 +309,7 @@
       .menu > hr { height: 1px; border: 0; margin: 5px 6px; background: var(--line); }
 
       /* Transport on the cube screen, all on one line: four buttons (back, repeat, next, play), the
-         progress bar, a Follow-cube toggle when a smart cube is connected, and the step count.
+         progress bar, and the step count.
          Speed is not here — it lives in the cube card's corner, because it is a preference you set
          once rather than part of walking the solution. */
       .transport { display: flex; align-items: center; gap: 8px; }
@@ -329,8 +323,6 @@
          flash on every stray turn. Here it takes its space from #solList, which is `flex:1` and
          scrolls, so appearing costs the move list a few pixels of scroll and moves nothing else.
          The aside is its own column, so the cube never reflows at all. */
-      .follow-note { display: flex; flex-direction: column; align-items: stretch; gap: 8px; flex: none; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: var(--fs-body-s); color: var(--warn); }
-      .follow-note .acts { display: flex; gap: 8px; }
       .transport .progress > span { display: block; height: 100%; width: 0; border-radius: var(--r-pill); background: var(--bar); transition: width .18s ease; }
       /* Transport controls are glyphs, not boxes. Four outlined squares in a row read as a toolbar
          of equal-weight objects and fight the cube for attention; the icons alone say the same

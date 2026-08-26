@@ -56,7 +56,7 @@ test('cubing solves through its worker, and the solution verifies', async () => 
 
 // A regression guard on the thing that caused all this: no remote imports in the shipped sources.
 test('no source file imports from a CDN', () => {
-  for (const f of ['lib/app.js', 'lib/cubejs-entry.js', 'lib/router.js', 'lib/cube-transport.js']) {
+  for (const f of ['lib/app.js', 'lib/cubejs-entry.js', 'lib/router.js']) {
     const src = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
     const remote = [...src.matchAll(/import\s*\(\s*['"`](https?:\/\/[^'"`]+)/g)].map((m) => m[1]);
     assert.deepEqual(remote, [], `${f} must not import from the network`);

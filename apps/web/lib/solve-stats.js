@@ -71,35 +71,6 @@ export function averageOf(solves, n) {
 }
 
 /**
- * Turn counts and rates, over only the solves a cube actually measured.
- *
- * Hand-timed solves are excluded rather than estimated. A turn rate is a fact about a move stream;
- * without one there is no honest number to show, and this is the statistic the whole smart-cube
- * path exists to make real.
- */
-export function moveStats(solves) {
-  // A turn count is an integer the cube reported. Coercion would accept `true` as a one-turn solve
-  // and 3.5 as three and a half turns, both of which then become "measured" statistics.
-  const measured = (Array.isArray(solves) ? solves : []).filter(
-    (s) => Number.isSafeInteger(s?.moves) && s.moves > 0 && secondsOf(s) !== null,
-  );
-  if (!measured.length) return null;
-  const counts = measured.map((s) => s.moves);
-  const rates = measured.map((s) => s.moves / secondsOf(s));
-  const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
-  const out = {
-    solves: measured.length,
-    fewestMoves: smallest(counts),
-    meanMoves: mean(counts),
-    bestRate: largest(rates),
-    meanRate: mean(rates),
-  };
-  // Finite inputs do not guarantee finite outputs: a large enough list overflows the sum, and a
-  // sufficiently small time yields an infinite rate. A statistic that is not a number is not one.
-  return Object.values(out).every(Number.isFinite) ? out : null;
-}
-
-/**
  * Solve counts for the last `days` days, oldest first, as `{ label, count, best }`.
  *
  * A solve with no timestamp is counted nowhere rather than counted today: solves recorded before
@@ -156,7 +127,6 @@ export function summarize(solves, now) {
     ao5: averageOf(list, 5),
     ao12: averageOf(list, 12),
     ao100: averageOf(list, 100),
-    moves: moveStats(list),
     week: byDay(list, now),
   };
 }

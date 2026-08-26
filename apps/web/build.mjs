@@ -84,10 +84,6 @@ if (absentSolver.length) {
 // ort.mjs in particular must stay a SEPARATE file: onnxruntime spawns its inference worker from
 // its own import.meta.url, so bundling it into the panel puts inference back on the main thread.
 const SCANNER = ['vendor/ort.mjs', 'vendor/cube-yolo.onnx'];
-// The driver and its transport are reached by dynamic import from app.js, so they are as invisible
-// to the HTML scan as the solver bundles. Confirmed by watching what the running app fetches:
-// gan-driver.js and cube-transport.js are both requested, and neither was asserted here.
-const DRIVER = ['vendor/gan-driver.js', 'lib/cube-transport.js'];
 // The wasm binaries need TWO checks, because either one alone is vacuous.
 //
 // onnxruntime picks its binary at runtime from inside its own worker, so which variant it wants is
@@ -98,7 +94,7 @@ const DRIVER = ['vendor/gan-driver.js', 'lib/cube-transport.js'];
 const wasmInVendor = readdirSync(join(here, 'vendor'))
   .filter((f) => f.startsWith('ort-wasm-simd-threaded.') && f.endsWith('.wasm'))
   .map((f) => `vendor/${f}`);
-const absentScanner = [...SCANNER, ...DRIVER, ...wasmInVendor].filter((f) => !existsSync(join(dist, f)));
+const absentScanner = [...SCANNER, ...wasmInVendor].filter((f) => !existsSync(join(dist, f)));
 const wasmInDist = existsSync(join(dist, 'vendor'))
   ? readdirSync(join(dist, 'vendor')).filter((f) => f.startsWith('ort-wasm-simd-threaded.') && f.endsWith('.wasm'))
   : [];
