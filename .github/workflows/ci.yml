@@ -69,8 +69,45 @@ jobs:
       - name: fmt
         run: cargo fmt --all -- --check
 
+      # On Linux, cube-vision compiles to its inert stub (no Swift), which is exactly what a Windows/
+      # Linux build ships — the app runs WebDetector there. The macOS golden job below is what
+      # exercises the real native plugin.
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: check
         run: cargo check --workspace
+
+  # The golden-frame parity gate (dev-docs/native-capture-and-inference-plan.md, Phase 4). Every
+  # runtime must read the 20 committed fixtures exactly as ml/golden/expected.json pins it, or a
+  # model/runtime has drifted from the one checkpoint. Split by platform: the runtimes that run on
+  # Linux here, CoreML + the native plugin path on macOS below.
+  golden-linux:
+    name: Golden frames (onnx · int8 · tflite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the golden-harness runtimes
+        run: pip install -r ml/requirements-golden.txt
+      - name: onnx · onnx-int8 · tflite must match their pins
+        run: python ml/golden_frames.py --legs onnx onnx-int8 tflite
+
+  golden-macos:
+    name: Golden frames (coreml · native plugin)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the golden-harness runtimes
+        run: pip install -r ml/requirements-golden.txt
+      # The native leg drives the plugin's OWN letterbox + CoreML through cube-vision-probe, so build
+      # it — this is what proves the shipped native code, not a Python stand-in, still reads identically.
+      - name: Build the cube-vision probe
+        run: swift build -c release --package-path crates/cube-vision/swift
+      - name: coreml · native must match their pins (exact fp32 class parity)
+        run: python ml/golden_frames.py --legs coreml native
