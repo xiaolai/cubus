@@ -18,7 +18,7 @@
     <meta name="theme-color" content="#241F18" media="(prefers-color-scheme: dark)" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <!-- Fonts degrade to the system-ui / serif fallbacks in tokens.css when offline. -->
+    <!-- Fonts degrade to the system-ui / serif fallbacks in tokens.css when offline (Tauri). -->
     <link
       href="https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;700;800&family=Zilla+Slab:wght@400;500;600;700&display=swap"
       rel="stylesheet"
@@ -45,7 +45,7 @@
       /* The window IS the OS window — no fake desk/frame (paper-one WindowShell). The titlebar is
          always an OVERLAY, so the leading card runs FULL HEIGHT under it on every platform. macOS
          shows it always (the OS paints real traffic lights over it); Windows/Linux show it in a
-         browser preview (?platform=…). --titlebar-h is
+         browser preview (?platform=…) and use the native title bar in the Tauri app. --titlebar-h is
          the overlay clearance the pane/main leave for it. */
       :root { --titlebar-h: 0px; }
       html[data-platform="macos"] { --titlebar-h: var(--titlebar-macos); }
@@ -61,7 +61,7 @@
       .app { height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
       .win { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
       /* Chrome (paper-one TitleBar), always an overlay so the leading card is full height. macOS
-         shows it on any host; Windows/Linux show it only as a browser preview (a native host would use
+         shows it on any host; Windows/Linux show it only as a browser preview (the Tauri build uses
          the native title bar). The bar itself is transparent — controls float over the content, the
          card runs to the top edge beneath them. */
       .titlebar {
@@ -100,7 +100,7 @@
       /* The leading card runs FULL HEIGHT on every platform (margin: --inset, top to bottom) and
          slides under the overlay titlebar: padding-top clears the bar measured from the card's own
          top — already --inset down, so it subtracts the inset — with a 16px floor when there is no
-         overlay (Windows/Linux, native title bar). Per paper-one's LeadingCard. */
+         overlay (Windows/Linux Tauri, native title bar). Per paper-one's LeadingCard. */
       .pane {
         flex: 0 1 var(--pane-w); min-width: var(--pane-min); background: var(--panel);
         border-radius: var(--r-card); box-shadow: var(--shadow-card);
@@ -365,12 +365,15 @@
   <body>
     <div class="app">
       <div class="win">
-        <div class="titlebar" id="titlebar">
-          <div class="tb-zone" id="tbLead"></div>
-          <!-- The screen's name lives here, not in a bar of its own. On Windows and Linux this
-               row is hidden and the browser's own title carries it instead. -->
-          <div class="chip"><b id="title">Cubus</b><span>3×3 · CFOP</span></div>
-          <div class="tb-zone" id="tbTrail"></div>
+        <!-- Every non-interactive zone carries data-tauri-drag-region: Tauri drags only when the
+             actual mousedown target has the attribute, and these zones cover the whole bar. -->
+        <div class="titlebar" id="titlebar" data-tauri-drag-region>
+          <div class="tb-zone" id="tbLead" data-tauri-drag-region></div>
+          <!-- The screen's name lives here, not in a bar of its own. On Windows and Linux the Tauri
+               build hides this row and uses the native title bar, so app.js also sets the window
+               title — the name follows whichever bar the platform actually draws. -->
+          <div class="chip" data-tauri-drag-region><b id="title">Cubus</b><span>3×3 · CFOP</span></div>
+          <div class="tb-zone" id="tbTrail" data-tauri-drag-region></div>
         </div>
 
         <div class="body">

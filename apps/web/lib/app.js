@@ -312,6 +312,11 @@ function applyTheme() {
   if (settings.theme === 'auto') document.documentElement.removeAttribute('data-theme');
 }
 
+// ---- host ------------------------------------------------------------------------------------
+// The app runs as a plain web page and inside the Tauri window, and the two draw their chrome
+// differently. This is not a smart-cube leftover: it is what tells a real window from a preview.
+const isTauri = typeof window.__TAURI__ !== 'undefined';
+
 // Which window chrome to draw (paper-one platform.ts): a UA sniff is enough — the platform can't
 // change under a running window. `?platform=macos|windows|linux` pins it for design review
 // (persisted); `?platform=auto` clears. Only macOS draws a custom overlay titlebar.
@@ -329,8 +334,23 @@ function detectPlatform() {
 }
 
 // Build the titlebar zones per platform (paper-one TitleBar): macOS puts the traffic lights (real
-// preview-only) leading; Windows/Linux put app controls leading and caption buttons trailing.
-// The caption buttons are decorative: there is no native window for them to drive.
+// in Tauri, preview-only in a browser) leading; Windows/Linux put app controls leading and caption
+// buttons trailing. The caption buttons drive the Tauri window; in a browser they only preview.
+// Wire the drawn caption buttons to the Tauri window (no-ops in a browser preview).
+//
+// Load-bearing, not decoration: the window is created with an overlay title bar and a hidden
+// native title, so on Windows and Linux these buttons are the only minimise, maximise and close
+// the user has.
+function wireWindowButtons(root) {
+  if (!isTauri) return;
+  const win = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (!win) return;
+  const on = (sel, fn) => root.querySelector(sel)?.addEventListener('click', () => { void Promise.resolve(fn()).catch(() => {}); });
+  on('[data-win="min"]', () => win.minimize());
+  on('[data-win="max"]', () => win.toggleMaximize());
+  on('[data-win="close"]', () => win.close());
+}
+
 function buildChrome(platform) {
   const lead = document.getElementById('tbLead');
   const trail = document.getElementById('tbTrail');
@@ -340,7 +360,7 @@ function buildChrome(platform) {
   if (platform === 'macos') {
     const preview = new URLSearchParams(window.location.search).get('chrome') === 'preview';
     lead.className = 'tb-zone tb-lights';
-    lead.innerHTML = preview ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('') : '';
+    lead.innerHTML = (!isTauri && preview) ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('') : '';
     trail.className = 'tb-zone tb-macos-trail';
     trail.innerHTML = '';
     return;
@@ -355,7 +375,7 @@ function buildChrome(platform) {
 
 /**
  * Show the screen's name in the title bar — all of them. The custom overlay chip is the one macOS
- * and the browser draw, but Windows and Linux hide that row in favour of the
+ * and the browser draw, but the Tauri build on Windows and Linux hides that row in favour of the
  * native title bar, so the name would simply vanish there. Setting the window title covers that,
  * and puts the screen in the taskbar and window switcher besides; document.title does the same for
  * a browser tab.
@@ -364,6 +384,11 @@ function setTitle(name) {
   const el = $('#title');
   if (el) el.textContent = name;
   document.title = `${name} · Cubus`;
+  if (isTauri) {
+    // try/catch only covers the synchronous reach into the API — a rejected setTitle() would
+    // escape it as an unhandled rejection, so the promise gets its own catch.
+    try { window.__TAURI__?.window?.getCurrentWindow?.()?.setTitle?.(`${name} · Cubus`)?.catch?.(() => {}); } catch {}
+  }
 }
 
 /** Make `facelets` the arrangement the app is about.
@@ -1412,10 +1437,7 @@ window.cubusGo = go;
 
 async function boot() {
   const platform = detectPlatform();
-  // Still set, and now always 'web'. The stylesheet keys the drawn titlebar off
-  // [data-platform][data-host="web"], so dropping this attribute along with the native host would
-  // taken the Windows and Linux title bars with it.
-  document.documentElement.dataset.host = 'web';
+  document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
   buildChrome(platform);
   installAdvancedShortcut();

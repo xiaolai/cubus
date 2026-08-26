@@ -1,6 +1,6 @@
 // Unit tests for the hash router (apps/web/lib/router.js).
 //
-// Hash-based rather than History API: the app is served as plain static files, off a
+// Hash-based rather than History API: the app runs inside the Tauri webview and off a static
 // server, and neither rewrites unknown paths back to index.html. A hash needs no server help.
 //
 // The factory takes location and history by argument, so these run with plain objects — no jsdom,
