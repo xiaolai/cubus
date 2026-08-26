@@ -35,8 +35,13 @@ it walks you through solving it.
   that cannot be validated is a refusal, not a guess. A plausible figure is worse than a blank.
 - **Fail loud**: an unreadable scan, a state that cannot be solved, a storage write that did not
   land — each surfaces where it happens, never silently.
-- **Quality gate** (`pnpm check` — runs each TS package's strict `tsc`, Biome + a
-  type-aware ESLint pass, and vitest). Keep it green; CI enforces it on push.
+- **Quality gate** is `pnpm check`, and it is two different things:
+  `packages/cube-scanner` runs strict `tsc` + Biome + a type-aware ESLint pass + vitest;
+  `apps/web` runs `node --test` over `apps/web/test/` (it has no build step to typecheck, and
+  provisions its vendored libs first). Keep both green. CI enforces them on push, plus
+  `cargo fmt`/`clippy`/`check` for the desktop shell, and a step that rebuilds every vendored
+  bundle and fails on any diff — those bundles are committed and have drifted from their sources
+  four times.
 
 ## Shared Memory
 
