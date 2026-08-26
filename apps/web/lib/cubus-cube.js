@@ -152,6 +152,16 @@ class CubusCube extends HTMLElement {
     const stickerGeo = new RoundedBoxGeometry(0.78, 0.78, 0.06, 3, 0.07);
     // Ghosts are flat planes, not boxes — they read as projections rather than solid tiles.
     const ghostGeo = new THREE.PlaneGeometry(0.78, 0.78);
+    // A hairline around each ghost, for the reason the scan grid has one: a white ghost at 45%
+    // opacity over a pale background has no edge, so it reads as a gap rather than as a sticker.
+    // The solid stickers need no such line — they sit inset on the near-black body, which draws
+    // their boundary for them. Geometry and material are shared across all 54, and the outline is
+    // a CHILD of its ghost, so it inherits that ghost's transform, scale and visibility and needs
+    // no bookkeeping of its own in _cullGhosts or the flip path.
+    const ghostEdgeGeo = new THREE.EdgesGeometry(ghostGeo);
+    const ghostEdgeMat = new THREE.LineBasicMaterial({
+      color: 0x000000, transparent: true, opacity: 0.55, depthWrite: false,
+    });
 
     this.cubies = [];
     this.stickers = [];
@@ -182,6 +192,9 @@ class CubusCube extends HTMLElement {
           if (n[0]) g.rotation.y = Math.PI / 2;
           g.userData = { face: f.key, home: [x, y, z], n };
           g.renderOrder = 1;
+          const gEdge = new THREE.LineSegments(ghostEdgeGeo, ghostEdgeMat);
+          gEdge.renderOrder = 2; // above its own ghost, so the line is never eaten by the fill
+          g.add(gEdge);
           c.add(g);
           this._ghostMeshes.push(g);
         }

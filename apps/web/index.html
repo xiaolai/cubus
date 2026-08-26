@@ -228,7 +228,20 @@
          height and stretched that whole row (33/48/33 instead of 38/38/38). A sticker grid must be
          square whatever a cell happens to contain. */
       .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 6px; border-radius: var(--r-5); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; grid-template-columns: repeat(3,1fr); grid-template-rows: repeat(3,1fr); gap: 3px; }
-      .scan-face .tile > i { border-radius: 3px; background: var(--facelet-off); opacity: .3; }
+      /* A dark hairline and a soft top-down bevel on every sticker. White is the one facelet
+         colour that shares a value with the warm-paper tile behind it, so without an edge it has
+         no boundary at all and reads as a hole rather than as a sticker. The 2D net
+         (.net .sticker) has carried the same hairline since it shipped; this brings the scan grid
+         into line with it.
+         The bevel is a background-image, NOT an inset box-shadow: the hover ring, the editing ring
+         and the centre's own hover ring all set box-shadow, and any of them would wipe an inset
+         out. Painting a cell sets style.backgroundColor inline, which overrides only the colour —
+         so the gradient survives, and reads against every one of the six. */
+      .scan-face .tile > i {
+        border-radius: 3px; background-color: var(--facelet-off); opacity: .3;
+        border: 1px solid rgba(0,0,0,.32);
+        background-image: linear-gradient(180deg, rgba(255,255,255,.26), rgba(0,0,0,.10));
+      }
       .scan-face .lbl { font-size: var(--fs-caption); font-weight: 700; letter-spacing: .03em; color: var(--ink-5); }
       /* Every sticker but the centre is correctable, on every side. */
       .scan-face .tile > i:not(:nth-child(5)) { cursor: pointer; }
