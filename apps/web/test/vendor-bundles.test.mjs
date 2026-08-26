@@ -112,6 +112,57 @@ for (const b of BUNDLES) {
     }
     assert.deepEqual(missing.sort(), [], `source is ahead of the bundle — run \`${b.build}\``);
   });
+
+  // Names are not enough, and this is the fourth time that has mattered.
+  //
+  // A stale bundle keeps every declaration the source has — the edit changed a method BODY, not
+  // its name — so the check above waved through a `gan-driver.js` whose anchorSolved() was two
+  // safety fixes behind the source it claims to be built from. The app imports the bundle, so the
+  // shipped behaviour was the old one while every test and the source both said otherwise.
+  //
+  // String literals move when code moves. esbuild copies them through verbatim, so a message the
+  // source has and the bundle does not means the bundle predates it. Only plain-ASCII literals
+  // with no interpolation or escapes are compared, because those are the ones that survive
+  // bundling unchanged.
+  test(`${b.name}: the bundle carries the messages its sources contain`, (t) => {
+    if (b.optional && !existsSync(new URL(b.bundle, import.meta.url))) {
+      t.skip(`${b.bundle} not built yet — run \`${b.build}\``);
+      return;
+    }
+    const bundle = read(b.bundle);
+    const missing = [];
+    for (const srcPath of b.sources) {
+      // Comments first: they are full of quoted prose that is not a literal and never reaches a
+      // bundle. Then quoted strings that contain no quote of their own, so the match cannot run
+      // from the end of one literal into the start of the next.
+      const src = read(srcPath)
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+      const literals = [
+        ...[...src.matchAll(/'([^'\\\n]{20,})'/g)].map((m) => m[1]),
+        ...[...src.matchAll(/"([^"\\\n]{20,})"/g)].map((m) => m[1]),
+        // Template literals too, split on their interpolations. The STATIC chunks are copied
+        // through verbatim, and skipping backticks entirely missed most of the driver's messages —
+        // including the two whose absence proved the bundle was stale.
+        ...[...src.matchAll(/`([^`\\]*)`/g)]
+          .flatMap((m) => m[1].split(/\$\{[^}]*\}/))
+          .map((chunk) => chunk.trim())
+          .filter((chunk) => chunk.length >= 20),
+      ];
+      for (const lit of literals) {
+        // A message, not an identifier or a type union: it has to read like a sentence.
+        if (!/ [a-z]/.test(lit) || lit.includes('${') || lit.includes('|')) continue;
+        // Plain ASCII only. esbuild emits non-ASCII as escapes (an em dash becomes \u2014), so a
+        // literal containing one is never found verbatim and every such message reads as stale.
+        if (!/^[ -~]+$/.test(lit)) continue;
+        // And nothing that looks like code: the match can still run through a template literal,
+        // which is not a string the bundler copies through as written.
+        if (/[(){}]|=>|\?\?/.test(lit)) continue;
+        if (!bundle.includes(lit)) missing.push(`${srcPath.split('/').pop()}: ${lit.slice(0, 60)}…`);
+      }
+    }
+    assert.deepEqual(missing.sort(), [], `the bundle is behind its source — run \`${b.build}\``);
+  });
 }
 
 test('the renderer animation floor in the bundle is the one the source sets', () => {
