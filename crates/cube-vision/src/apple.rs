@@ -6,12 +6,14 @@
 //! measured JSON at 2–3 ms/frame against ≤1 ms for raw bytes).
 
 use std::os::raw::c_char;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Response;
+use tauri::path::BaseDirectory;
 use tauri::plugin::TauriPlugin;
-use tauri::{Manager, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 // The C ABI exported by libCubeVision.a (see swift/Sources/CubeVision/FFI.swift). Every call is
 // process-global on the Swift side (one model, one camera) — a plugin is a singleton and CoreML load
@@ -111,17 +113,56 @@ fn current_camera() -> Result<Option<CameraInfo>, String> {
         .map_err(|e| format!("bad current camera: {e}"))
 }
 
+/// The bundled model, relative to the app's Resource dir (see tauri.conf.json bundle.resources).
+const MODEL_RESOURCE: &str = "models/cube-yolo.mlpackage";
+
+/// The committed source model, path baked in at compile time. Used only as the dev fallback.
+fn source_model_path() -> PathBuf {
+    PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../ml/models/cube-yolo.mlpackage"
+    ))
+}
+
+/// Find the CoreML model. The webview no longer passes a path (it cannot reliably resolve one — the
+/// JS `path` API may be absent or unpermitted, and that silently dropped the whole app to the wasm
+/// runtime): resolution is the plugin's job.
+///
+/// Two tiers, in order: the bundled Resource dir (a shipped app), then the committed source tree
+/// (`tauri dev`, which does NOT stage `bundle.resources`, so the resource dir is empty there). The
+/// resource dir is tried FIRST so a shipped app never uses the source path — which is the build
+/// machine's and would not exist on a user's disk.
+fn resolve_model_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    if let Ok(p) = app.path().resolve(MODEL_RESOURCE, BaseDirectory::Resource) {
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    let dev = source_model_path();
+    if dev.exists() {
+        return Ok(dev);
+    }
+    Err(format!(
+        "cube-yolo.mlpackage not found — not in the app Resource dir, and not at {} (run ml/export.py)",
+        dev.display()
+    ))
+}
+
 #[tauri::command]
-fn load_model(
+fn load_model<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, CubeVision>,
-    path: String,
     compute_units: i32,
 ) -> Result<i32, String> {
-    let c = std::ffi::CString::new(path).map_err(|e| e.to_string())?;
+    let path = resolve_model_path(&app)?;
+    let c = std::ffi::CString::new(path.to_string_lossy().as_ref()).map_err(|e| e.to_string())?;
     // SAFETY: `c` outlives the call; the Swift side copies the path.
     let len = unsafe { cube_vision_load(c.as_ptr(), compute_units) };
     if len <= 0 {
-        return Err(format!("model load failed ({len}) — see stderr"));
+        return Err(format!(
+            "model load failed ({len}) for {} — see stderr",
+            path.display()
+        ));
     }
     state.out_len.store(len, Ordering::SeqCst);
     Ok(len)
@@ -237,17 +278,28 @@ mod tests {
     // of the real CoreML model. The Swift letterbox + model parity against fp32 is proven separately
     // and exhaustively by ml/golden_frames.py's `native` leg (the same CubeVision code via the CLI);
     // this covers the ~30 lines of FFI in this file, which that leg does not exercise.
+    // The dev fallback the app relies on in `tauri dev` (where bundle.resources are not staged): the
+    // committed source model must exist at the compile-time path, or native inference silently
+    // becomes impossible in development and the app quietly runs the slow wasm model instead.
+    #[test]
+    fn dev_model_path_resolves_to_the_committed_source_model() {
+        let p = source_model_path();
+        assert!(
+            p.is_dir(),
+            "source .mlpackage missing at {} — run ml/export.py",
+            p.display()
+        );
+    }
+
     #[test]
     fn infer_rgba_returns_a_correctly_shaped_tensor() {
-        let model = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../ml/models/cube-yolo.mlpackage"
-        );
+        let model = source_model_path();
         assert!(
-            std::path::Path::new(model).exists(),
-            "committed model missing at {model} — run ml/export.py"
+            model.is_dir(),
+            "committed model missing at {} — run ml/export.py",
+            model.display()
         );
-        let c = std::ffi::CString::new(model).unwrap();
+        let c = std::ffi::CString::new(model.to_string_lossy().as_ref()).unwrap();
         // SAFETY: valid C path; returns the output element count or <=0 on failure.
         let len = unsafe { cube_vision_load(c.as_ptr(), 0) };
         assert!(len > 0, "cube_vision_load failed: {len}");

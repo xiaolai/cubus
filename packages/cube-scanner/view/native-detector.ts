@@ -16,9 +16,6 @@ import type { Detector, ModelOutput } from '../src/detector.js';
 /** The sliver of the Tauri API this needs — typed here so the scanner package takes no Tauri dep. */
 export type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 
-/** Resolve the on-disk path of the native model bundled with the app (the `.mlpackage` / `.tflite`). */
-export type ResolveModelPath = () => Promise<string>;
-
 /** CoreML compute units, matching the plugin's mapping (0 = all, 1 = cpu, 2 = cpu+gpu, 3 = cpu+ANE). */
 export enum ComputeUnits {
   All = 0,
@@ -34,15 +31,16 @@ export class NativeDetector implements Detector {
   private loaded = false;
 
   /**
-   * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`).
-   * @param resolveModel  resolves the bundled native model's filesystem path — injected so the
-   *                      resource layout stays the app's concern and this stays testable.
+   * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`). This is the ONLY thing
+   *                      required to select the native path — the model is resolved by the plugin
+   *                      itself (Rust `resolve_model_path`), not here, because the JS `path` API is
+   *                      not always exposed or permitted and depending on it silently dropped the
+   *                      whole app to the wasm runtime.
    * @param computeUnits  CoreML compute units; `All` lets CoreML schedule across ANE/GPU/CPU, which
    *                      the compute-unit bench found fastest and fully ANE-resident for this model.
    */
   constructor(
     private readonly invoke: Invoke,
-    private readonly resolveModel: ResolveModelPath,
     private readonly computeUnits: ComputeUnits = ComputeUnits.All,
   ) {}
 
@@ -62,8 +60,8 @@ export class NativeDetector implements Detector {
 
   async load(): Promise<void> {
     if (this.loaded) return;
-    const path = await this.resolveModel();
-    await this.invoke(`${P}load_model`, { path, computeUnits: this.computeUnits });
+    // The plugin finds and compiles the bundled model itself; the panel only waits and reports.
+    await this.invoke(`${P}load_model`, { computeUnits: this.computeUnits });
     this.loaded = true;
   }
 
