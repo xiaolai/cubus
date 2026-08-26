@@ -212,12 +212,26 @@ test('the cube screen is the cube, one transport row, and nothing else', async (
 // already out in the wild, and an unknown id falls back to HOME — which is silently right for
 // three of them and silently WRONG for #/pair, whose controls are in Settings.
 test('links to the absorbed screens land on the screen that absorbed them', async () => {
-  for (const [legacy, landing] of [['guide', 'home'], ['playback', 'home'], ['viewer', 'home'], ['pair', 'settings']]) {
+  for (const [legacy, landing] of [['guide', 'home'], ['playback', 'home'], ['viewer', 'home']]) {
     win.location.hash = `#/${legacy}`;
     await tick();
     assert.equal(activeNav(), landing, `#/${legacy} must land on ${landing}`);
     assert.equal(win.location.hash, `#/${landing}`, 'and the URL is rewritten to the canonical one');
   }
+});
+
+// `#/pair` was the smart-cube pairing screen, and it used to redirect to Settings because the
+// pairing card moved there. Settings no longer says anything about a cube, so an old bookmark
+// landing there would find nothing it came for — better to treat it as the unknown route it now
+// is and fall through to Home.
+test('the pairing route is not aliased anywhere, it simply no longer exists', async () => {
+  win.location.hash = '#/pair';
+  await tick();
+  // It is an unknown route now, and unknown routes render Home. (The URL is left alone — the
+  // router only rewrites hashes it recognises as aliases. That is pre-existing behaviour and the
+  // same for any typo.)
+  assert.equal(activeNav(), 'home', 'an unknown route falls back to Home');
+  assert.ok(win.document.querySelector('#viewCube'), 'and Home actually mounted');
 });
 
 // Setting an identical hash fires no hashchange, so this path is driven by go()'s direct render.
