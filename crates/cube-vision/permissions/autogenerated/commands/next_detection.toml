@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-next-detection"
+description = "Enables the next_detection command without any pre-configured scope."
+commands.allow = ["next_detection"]
+
+[[permission]]
+identifier = "deny-next-detection"
+description = "Denies the next_detection command without any pre-configured scope."
+commands.deny = ["next_detection"]

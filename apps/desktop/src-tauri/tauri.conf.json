@@ -49,8 +49,12 @@
     "android": {
       "debugApplicationIdSuffix": ".debug"
     },
+    "resources": {
+      "../../../ml/models/cube-yolo.mlpackage": "models/cube-yolo.mlpackage"
+    },
     "macOS": {
       "infoPlist": "Info.plist",
+      "entitlements": "Entitlements.plist",
       "files": {
         "Resources/Assets.car": "icons/Assets.car"
       }

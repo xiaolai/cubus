@@ -1,6 +1,7 @@
-# Rust workspace for the native side of cubus. One member: the desktop app's Tauri backend, which
-# is a thin shell around apps/web. The BLE bridge that used to live in crates/ went with the
-# smart-cube support (see the v0 branch).
+# Rust workspace for the native side of cubus. Two members: the desktop app's Tauri backend (a thin
+# shell around apps/web) and cube-vision, the sanctioned native capture-and-inference plugin behind
+# the Detector seam (AGENTS.md, 2026-08-26). The BLE bridge that used to live in crates/ went with
+# the smart-cube support (see the v0 branch).
 [workspace]
 resolver = "2"
-members = ["apps/desktop/src-tauri"]
+members = ["apps/desktop/src-tauri", "crates/cube-vision"]
