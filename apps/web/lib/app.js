@@ -1,7 +1,6 @@
 // Cubus app controller. Renders the designed multi-screen shell and wires it to the real
-// engine: cubejs (independent oracle + random + validity), cubing.js (min2phase solve), the
-// gan-driver transport seam (Web Bluetooth / Tauri native BLE), and the YOLO camera scanner.
-// The 3D cube is <cubus-cube> (Renderer B) — it draws only; state and solving stay here.
+// engine: cubejs (independent oracle + random + validity), cubing.js (min2phase solve), and the
+// YOLO camera scanner. The 3D cube is <cubus-cube> — it draws only; state and solving stay here.
 
 import { summarize, times } from './solve-stats.js';
 import { makeRouter } from './router.js';
@@ -313,9 +312,6 @@ function applyTheme() {
   if (settings.theme === 'auto') document.documentElement.removeAttribute('data-theme');
 }
 
-// ---- transport seam (Web Bluetooth / Tauri) --------------------------------------------------
-const isTauri = typeof window.__TAURI__ !== 'undefined';
-
 // Which window chrome to draw (paper-one platform.ts): a UA sniff is enough — the platform can't
 // change under a running window. `?platform=macos|windows|linux` pins it for design review
 // (persisted); `?platform=auto` clears. Only macOS draws a custom overlay titlebar.
@@ -333,8 +329,8 @@ function detectPlatform() {
 }
 
 // Build the titlebar zones per platform (paper-one TitleBar): macOS puts the traffic lights (real
-// in Tauri, preview-only in a browser) leading; Windows/Linux put app controls leading and caption
-// buttons trailing. The caption buttons drive the Tauri window; in a browser they only preview.
+// preview-only) leading; Windows/Linux put app controls leading and caption buttons trailing.
+// The caption buttons are decorative: there is no native window for them to drive.
 function buildChrome(platform) {
   const lead = document.getElementById('tbLead');
   const trail = document.getElementById('tbTrail');
@@ -344,7 +340,7 @@ function buildChrome(platform) {
   if (platform === 'macos') {
     const preview = new URLSearchParams(window.location.search).get('chrome') === 'preview';
     lead.className = 'tb-zone tb-lights';
-    lead.innerHTML = (!isTauri && preview) ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('') : '';
+    lead.innerHTML = preview ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('') : '';
     trail.className = 'tb-zone tb-macos-trail';
     trail.innerHTML = '';
     return;
@@ -355,12 +351,11 @@ function buildChrome(platform) {
   const round = platform === 'linux';
   trail.className = `tb-zone tb-caption ${platform}`;
   trail.innerHTML = cap('minus', 'min', round) + cap('square', 'max', round) + cap('x', 'close', round);
-  wireWindowButtons(trail);
 }
 
 /**
  * Show the screen's name in the title bar — all of them. The custom overlay chip is the one macOS
- * and the browser draw, but the Tauri build on Windows and Linux hides that row in favour of the
+ * and the browser draw, but Windows and Linux hide that row in favour of the
  * native title bar, so the name would simply vanish there. Setting the window title covers that,
  * and puts the screen in the taskbar and window switcher besides; document.title does the same for
  * a browser tab.
@@ -369,22 +364,6 @@ function setTitle(name) {
   const el = $('#title');
   if (el) el.textContent = name;
   document.title = `${name} · Cubus`;
-  if (isTauri) {
-    // try/catch only covers the synchronous reach into the API — a rejected setTitle() would
-    // escape it as an unhandled rejection, so the promise gets its own catch.
-    try { window.__TAURI__?.window?.getCurrentWindow?.()?.setTitle?.(`${name} · Cubus`)?.catch?.(() => {}); } catch {}
-  }
-}
-
-// Wire the drawn caption buttons to the Tauri window (no-ops in a browser preview).
-function wireWindowButtons(root) {
-  if (!isTauri) return;
-  const win = window.__TAURI__?.window?.getCurrentWindow?.();
-  if (!win) return;
-  const on = (sel, fn) => root.querySelector(sel)?.addEventListener('click', () => { void Promise.resolve(fn()).catch(() => {}); });
-  on('[data-win="min"]', () => win.minimize());
-  on('[data-win="max"]', () => win.toggleMaximize());
-  on('[data-win="close"]', () => win.close());
 }
 
 /** Make `facelets` the arrangement the app is about.
@@ -469,7 +448,7 @@ let cleanup = null;
  * outlive the screen that started it; comparing this on the far side of an await is how such a
  * mount learns it is obsolete and stops before writing to shared state like `liveUpdate`. */
 let screenGen = 0;
-// Set by a screen that can take a new cube state in place. Without it, a live smart cube rebuilds
+// Set by a screen that can take a new cube state in place. Without it, a new reading rebuilds
 // the screen on every quarter turn — which on the cube screen means restarting an animation the
 // user is halfway through following.
 let liveUpdate = null;
@@ -839,7 +818,7 @@ SCREENS.scan = () => {
 // had no callers, so its branch in the walk was unreachable; it is gone rather than kept warm for
 // a History screen that does not exist yet. Re-add it when there is something to add it for.
 //
-// A live smart cube updates this screen IN PLACE (see liveUpdate): a full re-render on every
+// A new reading updates this screen IN PLACE (see liveUpdate): a full re-render on every
 // quarter turn would restart an animation the user is halfway through following.
 
 /** The three walking speeds, as renderer tempo-scale values. The renderer divides a 190ms base by
@@ -1203,7 +1182,7 @@ SCREENS.settings = () => {
           <div style="flex:1"><div style="font-weight:600">${lbl}</div><div class="sub" style="color:var(--ink-4)">${navHidden(id) ? 'Hidden from the sidebar' : 'Shown in the sidebar'}</div></div>
           <button class="toggle ${navHidden(id) ? '' : 'on'}" data-nav-toggle="${id}"><i></i></button></div>`).join('')}
         <div class="sub" style="color:var(--ink-5);margin-top:12px">⌃⌥⌘D hides this section again.</div></div>` : ''}
-      <div class="card"><div class="eyebrow">ABOUT</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.55">cubus 0.4.2 · ${isTauri ? 'Tauri build' : 'Web'}<br>Solver and vision run locally. Nothing leaves the device.</div>
+      <div class="card"><div class="eyebrow">ABOUT</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.55">cubus 0.4.2<br>Solver and vision run locally. Nothing leaves the device.</div>
         <div class="link" style="margin-top:12px">cubus.im</div></div>
     </div></div>`,
     mount(root) {
@@ -1433,7 +1412,10 @@ window.cubusGo = go;
 
 async function boot() {
   const platform = detectPlatform();
-  document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
+  // Still set, and now always 'web'. The stylesheet keys the drawn titlebar off
+  // [data-platform][data-host="web"], so dropping this attribute along with the native host would
+  // taken the Windows and Linux title bars with it.
+  document.documentElement.dataset.host = 'web';
   document.documentElement.dataset.platform = platform;
   buildChrome(platform);
   installAdvancedShortcut();

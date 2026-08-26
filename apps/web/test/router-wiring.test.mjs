@@ -127,7 +127,7 @@ test('every screen renders without throwing', async () => {
   assert.deepEqual(errors, [], 'no screen should raise while rendering');
 });
 
-// The screen name now lives only in the title bar. On Windows and Linux the Tauri build hides the
+// The screen name now lives only in the title bar. On Windows and Linux the app hides the
 // custom bar and uses the native one, so the chip alone would leave those platforms with no screen
 // name at all — the document/window title is what covers that, and it is easy to drop silently.
 test('the screen name also reaches the window title, not just the drawn chip', async () => {
@@ -188,7 +188,7 @@ test('the cube screen is the cube, one transport row, and nothing else', async (
   for (const gone of ['#coach', '#scrub', '#validity', '#copyState', '#viewCard']) {
     assert.equal(win.document.querySelector(gone), null, `${gone} should be gone`);
   }
-  // With no smart cube there is nothing to pace against, so there is no pacing control at all.
+  // Nothing paces the walk but you, so there is no pacing control — only a speed preference.
   // "Slowest" was a switch with one position: it named the only behaviour the screen has.
   const modes = [...win.document.querySelectorAll('[data-mode]')].map((b) => b.dataset.mode);
   assert.deepEqual(modes, [], 'no pacing control offline');
@@ -233,8 +233,6 @@ test('navigating onto the current screen still re-renders', async () => {
   assert.notEqual(first, second, 'the screen element should have been rebuilt, not left in place');
 });
 
-// Connecting a smart cube is what makes pacing a choice, so the toggle appears with the cube and
-// starts on. The state module is exported for exactly this kind of check.
 
 // Speed went from a fixed constant to a three-way choice in the cube card's corner. The wiring sits
 // ahead of the solve on purpose, so it is live even here, where there is no solver to reach.
@@ -530,7 +528,7 @@ test('the sidebar no longer offers 3D viewer or Smart cube, and Stats is renamed
   await tick();
   const ids = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
   assert.ok(!ids.includes('viewer'), 'the cube screen is reached as Home');
-  assert.ok(!ids.includes('pair'), 'smart cube lives in Settings');
+  assert.ok(!ids.includes('pair'), 'there is no pairing screen');
   // Stats is hidden by default now (it shows representative numbers, not yours), so what matters
   // is that when it IS shown it carries the shorter name.
   assert.ok(!ids.includes('stats'), 'Stats is hidden by default');
@@ -543,7 +541,7 @@ test('the sidebar no longer offers 3D viewer or Smart cube, and Stats is renamed
 });
 
 
-// The permanent "No smart cube" box in the sidebar said the same thing on every screen forever,
+// The permanent status box in the sidebar said the same thing on every screen forever,
 // including the whole time you are not using a cube. It is replaced by an indicator that appears
 // beside the cube only while one is actually connected.
 test('the sidebar no longer carries a permanent connection box', async () => {
