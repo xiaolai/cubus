@@ -1,6 +1,6 @@
 // Minimal ambient types for the untyped `cubejs` package — only the surface we
 // use as the independent validation/round-trip oracle (and move application for
-// calibration). Mirrors the shim in gan-driver so both packages agree on cubejs.
+// calibration). A local shim so this package can type cubejs without a dependency on one.
 declare module 'cubejs' {
   class Cube {
     constructor();

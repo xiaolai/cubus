@@ -68,7 +68,7 @@ function declaredNames(src) {
 
 // Every emitter of a vendored bundle in the repo must appear above. Derived from the build
 // scripts rather than remembered: a pair added to package.json and not added here is invisible,
-// which is exactly how gan-driver went unguarded while two of its siblings were covered.
+// which is exactly how one bundle went unguarded while two of its siblings were covered.
 test('every source -> bundle pair in the repo is guarded here', () => {
   const scripts = ['../package.json', '../../../packages/cube-scanner/package.json']
     .flatMap((f) => Object.values(JSON.parse(read(f)).scripts ?? {}));
@@ -101,7 +101,7 @@ for (const b of BUNDLES) {
   // Names are not enough, and this is the fourth time that has mattered.
   //
   // A stale bundle keeps every declaration the source has — the edit changed a method BODY, not
-  // its name — so the check above waved through a `gan-driver.js` whose anchorSolved() was two
+  // its name — so the check above once waved through a driver bundle that was two
   // safety fixes behind the source it claims to be built from. The app imports the bundle, so the
   // shipped behaviour was the old one while every test and the source both said otherwise.
   //
