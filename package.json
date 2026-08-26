@@ -6,8 +6,10 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "pnpm --filter cubus-web dev",
+    "dev:desktop": "pnpm --filter cubus-desktop dev",
     "build:panel": "pnpm --filter cube-scanner build:panel",
     "build:cube": "pnpm --filter cubus-web build:cube",
+    "build:desktop": "pnpm --filter cubus-desktop build",
     "check": "pnpm -r run check"
   },
   "pnpm": {
