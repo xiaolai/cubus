@@ -1,6 +1,6 @@
 // Minimal zero-dependency static server for the Cubus SPA (local dev only), with live-reload.
 //
-// Why this exists: Web Bluetooth and getUserMedia require a "secure context".
+// Why this exists: getUserMedia requires a "secure context".
 // http://localhost counts as secure, so this server is enough for local dev with
 // NO TLS certificates. Production must be served over HTTPS on a real origin.
 //
@@ -129,6 +129,5 @@ server.on('error', (err) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Cubus SPA → http://localhost:${PORT}`);
-  console.log('  smart cube: Chrome / Edge desktop, or Chrome on Android.  camera scan: any browser.');
   console.log('  live-reload: watching web/ (edit HTML, or run `npm run build:panel`, to auto-refresh).');
 });
