@@ -9,14 +9,16 @@ it walks you through solving it.
 
 - **Language**: always reply to the user, and write all code comments and
   documentation, in English — regardless of the language the user writes in.
-- **Layout** (pnpm monorepo): the AI scanner at `packages/cube-scanner/`, the web SPA at
-  `apps/web/`. That is the whole of it — one input, one target.
-- **No smart-cube support, deliberately.** A verified GAN16 BLE driver, a Rust bridge and a Tauri
-  desktop target were built, shipped and then removed. They worked; the problem was that a cube
-  adds an axis — present or absent, trusted or not — and every screen has to answer it. For this
-  audience that axis is where the app gets lost, and it cannot be modelled away because it should
-  not exist. The full vertical is preserved on the **`v0`** branch, including the tracking-offset
-  maths, which is the part worth recovering if this is ever revisited.
+- **Layout** (pnpm + Cargo monorepo): the AI scanner at `packages/cube-scanner/`, the web SPA at
+  `apps/web/`, and the Tauri desktop app at `apps/desktop/` — which is `apps/web` in a native
+  window and nothing more. Its Rust side is a shell: no commands, because a command would mean the
+  web build and the desktop build had stopped being the same app.
+- **No smart-cube support, deliberately.** A verified GAN16 BLE driver and a Rust bridge were
+  built, shipped and then removed. They worked; the problem was that a cube adds an axis — present
+  or absent, trusted or not — and every screen has to answer it. For this audience that axis is
+  where the app gets lost, and it cannot be modelled away because it should not exist. Both are
+  preserved on the **`v0`** branch, including the tracking-offset maths, which is the part worth
+  recovering if this is ever revisited.
 - **Design system**: the approved UI kit lives in `dev-docs/design/` — read
   `dev-docs/design/README.md` before any `apps/web` UI work. Adopted into the app:
   `apps/web/tokens.css` (warm-paper tokens, light/dark) and `<cubus-cube>` (a purpose-built
