@@ -38,18 +38,14 @@ import { FACES, type Face, type ScanResult } from '../src/types.js';
 import { type Invoke, NativeDetector } from './native-detector.js';
 import { WebDetector } from './web-detector.js';
 
-/**
- * The native model resource the desktop/iOS build loads (bundled beside the app). Apple only for now
- * — Phase 3's Android build resolves the `.tflite` here instead, branching on platform. The browser
- * build never reaches this: it loads the ONNX at `modelUrl` through WebDetector.
- */
-const NATIVE_MODEL_RESOURCE = 'models/cube-yolo.mlpackage';
+/** Which runtime is actually doing inference — surfaced so "am I on the fast path?" is answerable. */
+export type ScanRuntime = 'native' | 'web';
 
-/** The window globals the desktop shell injects (`withGlobalTauri`). Absent in the browser build. */
+/** The window globals the desktop shell injects (`withGlobalTauri`). Absent in the browser build.
+ *  Only `core.invoke` is needed — the native model is resolved by the plugin, not via the JS path API. */
 interface TauriGlobal {
   __TAURI__?: {
     core?: { invoke?: Invoke };
-    path?: { resolveResource?: (p: string) => Promise<string> };
   };
 }
 
@@ -69,7 +65,12 @@ const HINT: Record<FitReason, string> = {
   PARTIAL_FACE: 'show the whole face, centred',
   BAD_GEOMETRY: 'hold it flatter and steadier',
 };
-const TICK_MS = 200; // ~5 fps; the model run dominates the budget
+// The capture cadence, per runtime. On the web the ~400 ms wasm run dominates, so 200 ms (~5 fps) is
+// as fast as it goes; native inference is ~1.5 ms on the ANE, so a 200 ms tick would waste all that
+// headroom and leave the scan feeling no faster — 60 ms (~16 fps) lets the native speed actually show
+// while staying comfortably inside the camera's frame rate and the ANE's budget.
+const TICK_MS_WEB = 200;
+const TICK_MS_NATIVE = 60;
 const STABLE = 3; // identical reads in a row before we auto-capture a face
 const OPENING = 'Show any side to the camera — held flat and centred.';
 const PAINTING = 'Painting by hand — tap any sticker and pick its colour.';
@@ -117,6 +118,12 @@ export interface ScanProgress {
    * reading it cannot settle alone. Null at every other moment.
    */
   confirm: ConfirmRequest | null;
+  /**
+   * Which runtime is doing inference — 'native' (the desktop CoreML plugin, ~1.5 ms) or 'web' (the
+   * onnxruntime-web wasm model, ~400 ms), or null before one is chosen. A host can show it so the
+   * fast path is visible rather than guessed at.
+   */
+  runtime: ScanRuntime | null;
 }
 
 const TEMPLATE = `
@@ -181,6 +188,8 @@ export class AiScanPanel extends HTMLElement {
   private detector: Detector | null = null;
   /** Caches the one-time async detector choice (native vs web); see ensureDetector. */
   private detectorPromise: Promise<Detector> | null = null;
+  /** Which runtime the chosen detector uses; drives the tick cadence and rides on every report. */
+  private runtime: ScanRuntime | null = null;
   /** True once the model has loaded, so a re-`start()` doesn't re-report 'loading' or reload it. */
   private modelLoaded = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -360,13 +369,16 @@ export class AiScanPanel extends HTMLElement {
    * as a getter so the detector survives a reconnect that rebuilds the shadow DOM.
    */
   private async selectDetector(): Promise<Detector> {
-    const tauri = (globalThis as TauriGlobal).__TAURI__;
-    const invoke = tauri?.core?.invoke;
-    const resolveResource = tauri?.path?.resolveResource;
-    if (invoke && resolveResource) {
+    const invoke = (globalThis as TauriGlobal).__TAURI__?.core?.invoke;
+    // The ONLY requirement for the native path is that the plugin answers its probe. It resolves its
+    // own model, so no JS path API is involved — depending on one is what used to drop the desktop
+    // app silently onto the wasm runtime.
+    if (invoke) {
       try {
         if (await invoke('plugin:cube-vision|probe')) {
-          this.detector = new NativeDetector(invoke, () => resolveResource(NATIVE_MODEL_RESOURCE));
+          this.detector = new NativeDetector(invoke);
+          this.runtime = 'native';
+          this.announceRuntime();
           return this.detector;
         }
       } catch {
@@ -377,7 +389,19 @@ export class AiScanPanel extends HTMLElement {
       () => this.el<HTMLVideoElement>('video'),
       () => this.modelUrl,
     );
+    this.runtime = 'web';
+    this.announceRuntime();
     return this.detector;
+  }
+
+  /** Say which runtime won, once, on the console — so "is it on the fast native path?" has an
+   *  answer without a debugger. The same fact rides on every 'scan-progress' event as `runtime`. */
+  private announceRuntime(): void {
+    const where =
+      this.runtime === 'native'
+        ? 'native (CoreML on the ANE, ~1.5 ms/frame)'
+        : 'web (wasm model, ~400 ms/frame)';
+    console.info(`[cubus] scanner runtime: ${where}`);
   }
 
   private reset(): void {
@@ -411,7 +435,10 @@ export class AiScanPanel extends HTMLElement {
       return;
     }
     this.report(phase, ...(opening.length > 0 ? opening : [OPENING]));
-    this.timer = setInterval(() => void this.onTick(), TICK_MS);
+    // Tick as fast as the chosen runtime can keep up: native inference frees the cadence the wasm run
+    // used to cap. The busy guard in onTick still prevents overlap if a frame ever runs long.
+    const tick = this.runtime === 'native' ? TICK_MS_NATIVE : TICK_MS_WEB;
+    this.timer = setInterval(() => void this.onTick(), tick);
   }
 
   private stopLoop(): void {
@@ -790,6 +817,7 @@ export class AiScanPanel extends HTMLElement {
           live: this.live,
           device: this.device,
           confirm: this.awaiting,
+          runtime: this.runtime,
         },
       }),
     );

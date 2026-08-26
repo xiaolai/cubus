@@ -2478,15 +2478,16 @@ function fitFromOutput(output, opts = {}) {
 var P = "plugin:cube-vision|";
 var NativeDetector = class {
   /**
-   * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`).
-   * @param resolveModel  resolves the bundled native model's filesystem path — injected so the
-   *                      resource layout stays the app's concern and this stays testable.
+   * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`). This is the ONLY thing
+   *                      required to select the native path — the model is resolved by the plugin
+   *                      itself (Rust `resolve_model_path`), not here, because the JS `path` API is
+   *                      not always exposed or permitted and depending on it silently dropped the
+   *                      whole app to the wasm runtime.
    * @param computeUnits  CoreML compute units; `All` lets CoreML schedule across ANE/GPU/CPU, which
    *                      the compute-unit bench found fastest and fully ANE-resident for this model.
    */
-  constructor(invoke, resolveModel, computeUnits = 0 /* All */) {
+  constructor(invoke, computeUnits = 0 /* All */) {
     this.invoke = invoke;
-    this.resolveModel = resolveModel;
     this.computeUnits = computeUnits;
   }
   dev = null;
@@ -2501,8 +2502,7 @@ var NativeDetector = class {
   }
   async load() {
     if (this.loaded) return;
-    const path = await this.resolveModel();
-    await this.invoke(`${P}load_model`, { path, computeUnits: this.computeUnits });
+    await this.invoke(`${P}load_model`, { computeUnits: this.computeUnits });
     this.loaded = true;
   }
   async next() {
@@ -2712,7 +2712,6 @@ var WebDetector = class {
 };
 
 // view/ai-scan-panel.ts
-var NATIVE_MODEL_RESOURCE = "models/cube-yolo.mlpackage";
 var GUIDE = {
   U: { color: "WHITE", name: "Up", swatch: "#f6f7f8" },
   R: { color: "RED", name: "Right", swatch: "#d0202a" },
@@ -2727,7 +2726,8 @@ var HINT = {
   PARTIAL_FACE: "show the whole face, centred",
   BAD_GEOMETRY: "hold it flatter and steadier"
 };
-var TICK_MS = 200;
+var TICK_MS_WEB = 200;
+var TICK_MS_NATIVE = 60;
 var STABLE = 3;
 var OPENING = "Show any side to the camera \u2014 held flat and centred.";
 var PAINTING = "Painting by hand \u2014 tap any sticker and pick its colour.";
@@ -2790,6 +2790,8 @@ var AiScanPanel = class extends HTMLElement {
   detector = null;
   /** Caches the one-time async detector choice (native vs web); see ensureDetector. */
   detectorPromise = null;
+  /** Which runtime the chosen detector uses; drives the tick cadence and rides on every report. */
+  runtime = null;
   /** True once the model has loaded, so a re-`start()` doesn't re-report 'loading' or reload it. */
   modelLoaded = false;
   timer = null;
@@ -2937,13 +2939,13 @@ var AiScanPanel = class extends HTMLElement {
    * as a getter so the detector survives a reconnect that rebuilds the shadow DOM.
    */
   async selectDetector() {
-    const tauri = globalThis.__TAURI__;
-    const invoke = tauri?.core?.invoke;
-    const resolveResource = tauri?.path?.resolveResource;
-    if (invoke && resolveResource) {
+    const invoke = globalThis.__TAURI__?.core?.invoke;
+    if (invoke) {
       try {
         if (await invoke("plugin:cube-vision|probe")) {
-          this.detector = new NativeDetector(invoke, () => resolveResource(NATIVE_MODEL_RESOURCE));
+          this.detector = new NativeDetector(invoke);
+          this.runtime = "native";
+          this.announceRuntime();
           return this.detector;
         }
       } catch {
@@ -2953,7 +2955,15 @@ var AiScanPanel = class extends HTMLElement {
       () => this.el("video"),
       () => this.modelUrl
     );
+    this.runtime = "web";
+    this.announceRuntime();
     return this.detector;
+  }
+  /** Say which runtime won, once, on the console — so "is it on the fast native path?" has an
+   *  answer without a debugger. The same fact rides on every 'scan-progress' event as `runtime`. */
+  announceRuntime() {
+    const where = this.runtime === "native" ? "native (CoreML on the ANE, ~1.5 ms/frame)" : "web (wasm model, ~400 ms/frame)";
+    console.info(`[cubus] scanner runtime: ${where}`);
   }
   reset() {
     this.lastColors = "";
@@ -2982,7 +2992,8 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     this.report(phase, ...opening.length > 0 ? opening : [OPENING]);
-    this.timer = setInterval(() => void this.onTick(), TICK_MS);
+    const tick = this.runtime === "native" ? TICK_MS_NATIVE : TICK_MS_WEB;
+    this.timer = setInterval(() => void this.onTick(), tick);
   }
   stopLoop() {
     if (this.timer !== null) {
@@ -3315,7 +3326,8 @@ var AiScanPanel = class extends HTMLElement {
           captured: this.capturedFaces(),
           live: this.live,
           device: this.device,
-          confirm: this.awaiting
+          confirm: this.awaiting,
+          runtime: this.runtime
         }
       })
     );
