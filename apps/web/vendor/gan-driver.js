@@ -1152,8 +1152,8 @@ var GanCube = class extends TinyEmitter {
   // ---- Anchor step (the one command that rewrites cube state) ---------------
   /**
    * Anchor the cube's internal solved reference — the pairing flow's
-   * "solve once to calibrate" step. Sends REQUEST_RESET, but ONLY when the cube
-   * already reports a solved state.
+   * "solve once to calibrate" step. Sends REQUEST_RESET only when the cube already reports a
+   * solved state, UNLESS the caller passes `{ force: true }` to vouch for it (see below).
    *
    * That precondition is what makes this safe, and it is not a formality.
    * REQUEST_RESET tells the cube to treat its CURRENT position as solved:
@@ -1177,16 +1177,31 @@ var GanCube = class extends TinyEmitter {
    * Throws rather than returning a status: a silently skipped anchor step would
    * leave the caller believing the cube was calibrated.
    *
+   * Two modes, and the difference matters:
+   *
+   *   default          — the cube must report solved, or this refuses and writes no reset. The
+   *                      precondition removes the failure mechanism rather than reducing its odds.
+   *   { force: true }  — the caller asserts the cube is solved in front of them. This waives the
+   *                      COMPARISON and nothing else: the pre-read, the write and the verifying
+   *                      re-read all still happen. Used wrongly it adopts a scrambled position as
+   *                      the origin, permanently and silently, and no check here can catch that —
+   *                      after a reset the cube reports solved either way. It exists because the
+   *                      precondition alone is a catch-22 (see below).
+   *
    * NOT CONFIRMED ON HARDWARE. The packet matches upstream and the guard is
    * tested, but no physical GAN16 has been sent this command from this codebase.
    * See docs/protocol.md.
    */
   async anchorSolved(opts = {}) {
     const { timeoutMs = 4e3 } = opts;
+    if (opts.force !== void 0 && typeof opts.force !== "boolean") {
+      throw new TypeError(`anchorSolved: force must be a boolean, got ${typeof opts.force}`);
+    }
+    const force = opts.force ?? false;
     const before = await this.getState({ active: true, timeoutMs });
-    if (before.facelets !== SOLVED_FACELETS) {
+    if (!force && before.facelets !== SOLVED_FACELETS) {
       throw new Error(
-        `refusing to anchor: the cube reports an unsolved state, and anchoring now would adopt it as the new solved reference, desyncing the driver from the cube permanently. Solve the cube first.
+        `refusing to anchor: the cube reports an unsolved state, and anchoring now would adopt it as the new solved reference, desyncing the driver from the cube permanently. Solve the cube first \u2014 or, if it IS solved and the cube's own reference has drifted, anchor with { force: true }.
   reported: ${before.facelets}
   expected: ${SOLVED_FACELETS}`
       );
@@ -1202,10 +1217,15 @@ var GanCube = class extends TinyEmitter {
     return after;
   }
   /**
-   * Deliberately separate from send(): its parameter type is UnsafeCommand, so
-   * no SafeCommand call site can reach this and no new caller can appear without
-   * naming the unsafe type. Private, and used only by anchorSolved() above,
-   * which owns the precondition.
+   * Deliberately separate from send(): its parameter type is UnsafeCommand, so no SafeCommand
+   * call site can reach this, and no new caller can appear without naming the unsafe type.
+   * Used only by anchorSolved() above, which owns the precondition.
+   *
+   * Two limits worth stating plainly rather than leaving to be discovered. `private` is a
+   * TypeScript modifier and is erased at runtime, so this is a compile-time boundary, not a
+   * runtime one — plain JavaScript can still reach it. And the precondition anchorSolved() owns
+   * is waivable by its `force` option. Both are real gaps in the "nothing else can send this"
+   * claim, and closing them means a runtime-private method and a narrower public surface.
    */
   async sendUnsafe(cmd) {
     const enc = this.cipher.encrypt(buildUnsafeCommand(cmd));

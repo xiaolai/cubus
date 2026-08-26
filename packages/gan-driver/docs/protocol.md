@@ -144,11 +144,19 @@ danger is not the packet, it is the state it is sent in:
 | not solved | Adopts a scrambled position as the new origin. Driver and hardware diverge **permanently and silently** — exactly what the state invariant exists to catch. |
 | solved | Sets the reference to the value already in effect. **State-neutral**, so nothing can diverge. |
 
-`GanCube.anchorSolved()` is the only way to transmit it, and it refuses unless
-the cube already reports `SOLVED_FACELETS`. That does not reduce the risk, it
-removes the mechanism: the command is only ever sent in the one state where it
-cannot cause divergence. It then re-reads the state and throws if the cube is
-anywhere other than solved.
+`GanCube.anchorSolved()` is the only way to transmit it, and by default it refuses unless the
+cube already reports `SOLVED_FACELETS`. That does not reduce the risk, it removes the mechanism:
+the command is sent in the one state where it cannot cause divergence. It then re-reads the state
+and throws if the cube is anywhere other than solved.
+
+**`{ force: true }` waives that comparison, and only that comparison.** It exists because the
+precondition alone is a catch-22: a cube whose internal reference has drifted reports an unsolved
+state *while being physically solved*, and REQUEST_RESET is the one thing that repairs it — so
+refusing unconditionally puts the repair out of reach in exactly the case it is for. The driver
+cannot tell "solved cube, drifted reference" from "scrambled cube"; only a person looking at the
+cube can, so the override is theirs to give and is never inferred. The pre-read, the write and the
+verifying re-read all still happen. A wrongly forced anchor causes precisely the divergence
+described above, and nothing in the protocol can detect it afterwards.
 
 The residual case the guard cannot see is a cube that **reports** solved while
 physically scrambled. Facelets come from the cube's own state, so BLE cannot
