@@ -62,3 +62,67 @@ test('no source file imports from a CDN', () => {
     assert.deepEqual(remote, [], `${f} must not import from the network`);
   }
 });
+
+// The test above scans four JavaScript files and stops. The page itself was never looked at — so
+// the one remote resource this app actually loads sat in index.html, passing a gate named to
+// forbid exactly that.
+//
+// The fonts are a decision already taken and written down (dev-docs/design/README.md, "known
+// accepted gap"), so this does not fail them. It makes them the ONLY thing that can be remote:
+// anything else new is a test failure, and the exception is visible instead of unexamined.
+const ACCEPTED_REMOTE = [
+  'https://fonts.googleapis.com',
+  'https://fonts.gstatic.com',
+];
+
+test('the page loads nothing from the network except the one accepted exception', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const urls = [
+    ...[...html.matchAll(/(?:href|src)\s*=\s*["']([^"']+)["']/g)].map((m) => m[1]),
+    ...[...html.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/g)].map((m) => m[1]),
+  ];
+  const remote = urls.filter((u) => /^(https?:)?\/\//.test(u));
+  // Compared by ORIGIN, not by prefix. `startsWith` accepts
+  // `https://fonts.googleapis.com.evil.example/`, which is a different host that merely begins
+  // with an allowed one — the classic way an allowlist stops being one.
+  const originOf = (u) => { try { return new URL(u, 'https://x.invalid').origin; } catch { return u; } };
+  const unexpected = remote.filter((u) => !ACCEPTED_REMOTE.includes(originOf(u)));
+  assert.deepEqual(unexpected, [], 'index.html loads something remote that is not the accepted exception');
+
+  // And the exception is still exactly what it was recorded as. If the fonts ever get vendored,
+  // this fails and the allowlist comes out with them — rather than quietly outliving its reason.
+  //
+  // It looks for the STYLESHEET, not merely the hostname: the two preconnect hints point at the
+  // same origin, so hostname alone kept this assertion satisfied by a pair of links that fetch
+  // nothing once the stylesheet is local.
+  const remoteStylesheet = [...html.matchAll(/<link\b[^>]*>/g)]
+    .map((m) => m[0])
+    .filter((tag) => /rel\s*=\s*["']stylesheet["']/.test(tag))
+    .some((tag) => /href\s*=\s*["'](https?:)?\/\//.test(tag));
+  assert.ok(
+    remoteStylesheet,
+    'the accepted gap is gone — vendored? then remove ACCEPTED_REMOTE, the preconnects, and this assertion',
+  );
+});
+
+// The check above can only reject what index.html actually contains, and index.html contains only
+// allowed URLs — so reverting the origin comparison to `startsWith` would leave it green. These
+// exercise the comparison directly, on the hostile inputs a prefix check waves through.
+test('the remote allowlist compares origins, not prefixes', () => {
+  const originOf = (u) => { try { return new URL(u, 'https://x.invalid').origin; } catch { return u; } };
+  const allowed = (u) => ACCEPTED_REMOTE.includes(originOf(u));
+
+  assert.ok(allowed('https://fonts.googleapis.com/css2?family=Zilla+Slab'), 'the real one still passes');
+  assert.ok(allowed('https://fonts.gstatic.com/s/x.woff2'));
+
+  for (const hostile of [
+    'https://fonts.googleapis.com.evil.example/x.css',   // a different host that merely starts the same
+    'https://fonts.googleapis.com.evil.example',
+    'http://fonts.googleapis.com/x.css',                 // wrong scheme
+    'https://fonts.googleapis.com:8443/x.css',           // wrong port
+    'https://evil.example/?u=https://fonts.googleapis.com',
+    '//fonts.googleapis.com.evil.example/x.css',
+  ]) {
+    assert.equal(allowed(hostile), false, `allowlist accepted ${hostile}`);
+  }
+});
