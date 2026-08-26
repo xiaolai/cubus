@@ -5,7 +5,7 @@
 // 404; #/timer needs no server cooperation and works identically in both hosts.
 //
 // location and history are taken by argument rather than read off window, so the routing rules are
-// unit-testable with plain objects — the same seam cube-transport.js uses for its hosts.
+// unit-testable with plain objects.
 
 const DEFAULT = 'home';
 
