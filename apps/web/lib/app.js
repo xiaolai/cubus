@@ -8,9 +8,10 @@ import { makeRouter } from './router.js';
 const $ = (sel, root = document) => root.querySelector(sel);
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const PALETTE_ATTR = { muted: 'muted', classic: 'classic', colorsafe: 'colorsafe' };
-/** Escape text destined for an innerHTML template. A Bluetooth device name is chosen by whatever
- * is advertising, so it is untrusted input that must never be parsed as markup. Screens that can
- * use textContent do; this is for the ones building an HTML string. */
+/** Escape text destined for an innerHTML template. Scramble strings, solve times and anything
+ * else out of localStorage are untrusted input — storage is writable by anything on the origin —
+ * and must never be parsed as markup. Screens that can use textContent do; this is for the ones
+ * building an HTML string. */
 const escHtml = (v) =>
   String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -244,10 +245,10 @@ async function solve() {
   if (verified === false) throw new Error('solver cross-check failed — re-scan');
   // Per-step facelets so the 2D net + move list can co-move with the 3D animation.
   const sf = [];
-  // Silence here disables Follow-cube with no explanation: the mode needs one state per step and
-  // simply reports "needs a solve worked out on this screen" when the array is short.
+  // A short array is not fatal — the move chips fall back to jumping without the intermediate
+  // states — but it is never expected, so it says so rather than degrading quietly.
   try { const b = Cube.fromString(c.facelets); sf.push(b.asString()); for (const m of moves) { b.move(m); sf.push(b.asString()); } } catch (err) {
-    console.warn('per-step facelets unavailable; Follow cube will stay off', err);
+    console.warn('per-step facelets unavailable; the move list will jump rather than step', err);
   }
   c.solution = solution; c.moves = moves; c.stepFacelets = sf;
   return solution;
@@ -459,16 +460,9 @@ let cleanup = null;
  * outlive the screen that started it; comparing this on the far side of an await is how such a
  * mount learns it is obsolete and stops before writing to shared state like `liveUpdate`. */
 let screenGen = 0;
-// Set by a screen that can take a new cube state in place. Without it, a new reading rebuilds
-// the screen on every quarter turn — which on the cube screen means restarting an animation the
-// user is halfway through following.
+// Set by a screen that can take a new cube state in place, so a fresh scan repaints rather than
+// re-mounting — which on the cube screen would restart an animation the user is halfway through.
 let liveUpdate = null;
-/** The cube screen installs these while following. Moves are the SIGNAL — the cube reports one per
- * turn, immediately. Facelet snapshots arrive at ~1Hz and are the CORRECTION: they say where the
- * cube really is when the move stream and the guide have drifted apart. */
-/** An anchor in flight. Module-level on purpose: dropping trust re-renders Settings, so a flag
- *  declared inside the mount would be reset by the very repaint the guard exists to survive. */
-
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
 // renaming it is not worth breaking every #/scan link and bookmark already in the wild.
 // The camera opens the moment this screen mounts — <ai-scan-panel headless autostart>
