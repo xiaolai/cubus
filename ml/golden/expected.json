@@ -1,0 +1,225 @@
+{
+  "reference": "onnx (fp32)",
+  "pinned_on": {
+    "host": "macOS-26.6.2-arm64-arm-64bit",
+    "python": "3.11.16"
+  },
+  "faithful_legs": [
+    "onnx",
+    "coreml",
+    "native"
+  ],
+  "bounded_legs": {
+    "onnx-int8": "web / Windows / Linux runtime; int8 dynamic quantisation",
+    "tflite": "Android runtime; static int8"
+  },
+  "divergence_from_fp32": {
+    "onnx": 0,
+    "onnx-int8": 5,
+    "coreml": 0,
+    "tflite": 0,
+    "native": 0
+  },
+  "frames": {
+    "abstain-00.png": {
+      "preprocess_sha256": "615815335891537dce9920b96a41c4ba8de0af277a1fc3ad0d70d31160ecbc81",
+      "legs": {
+        "onnx": "BAD_GEOMETRY",
+        "onnx-int8": "OK 000100100",
+        "coreml": "BAD_GEOMETRY",
+        "tflite": "BAD_GEOMETRY",
+        "native": "BAD_GEOMETRY"
+      }
+    },
+    "abstain-01.png": {
+      "preprocess_sha256": "f721960c619837e5d4995aee0835b688384cd1dbd0a815d2ef277829cc1e19c8",
+      "legs": {
+        "onnx": "PARTIAL_FACE",
+        "onnx-int8": "PARTIAL_FACE",
+        "coreml": "PARTIAL_FACE",
+        "tflite": "PARTIAL_FACE",
+        "native": "PARTIAL_FACE"
+      }
+    },
+    "abstain-02.png": {
+      "preprocess_sha256": "1566064bfc75d395766be638c62684aa524dea74471b7f968b14ed0a0d8a246a",
+      "legs": {
+        "onnx": "BAD_GEOMETRY",
+        "onnx-int8": "OK 000000442",
+        "coreml": "BAD_GEOMETRY",
+        "tflite": "BAD_GEOMETRY",
+        "native": "BAD_GEOMETRY"
+      }
+    },
+    "photo-00.png": {
+      "preprocess_sha256": "2a87bf06c120f566660a8a741cef5613d3594b9b362d62675267130e021c8791",
+      "legs": {
+        "onnx": "OK 325511251",
+        "onnx-int8": "OK 221511251",
+        "coreml": "OK 325511251",
+        "tflite": "OK 325511251",
+        "native": "OK 325511251"
+      }
+    },
+    "photo-01.png": {
+      "preprocess_sha256": "a10e91a3f0c72c65d32a7785cd2ccbafade209e9f18077d4a888ff05aa224313",
+      "legs": {
+        "onnx": "OK 024005235",
+        "onnx-int8": "OK 024005235",
+        "coreml": "OK 024005235",
+        "tflite": "OK 024005235",
+        "native": "OK 024005235"
+      }
+    },
+    "photo-02.png": {
+      "preprocess_sha256": "21f5b708ff9b724cd987afd431ccf7ed470eaa8691977126b2471bc4171956d6",
+      "legs": {
+        "onnx": "OK 024005023",
+        "onnx-int8": "OK 024005023",
+        "coreml": "OK 024005023",
+        "tflite": "OK 024005023",
+        "native": "OK 024005023"
+      }
+    },
+    "photo-03.png": {
+      "preprocess_sha256": "b0faeb69f43eb9a0ca1dba0f719eaeb79be8f562484d6e7e401ef6a2359f0e1c",
+      "legs": {
+        "onnx": "OK 024005023",
+        "onnx-int8": "OK 024005023",
+        "coreml": "OK 024005023",
+        "tflite": "OK 024005023",
+        "native": "OK 024005023"
+      }
+    },
+    "photo-04.png": {
+      "preprocess_sha256": "8d791ea14fc51c0b61a16a4fcd6c3880ba4192f88e695ed30ba0ee1a92261fc0",
+      "legs": {
+        "onnx": "OK 050340023",
+        "onnx-int8": "OK 050340023",
+        "coreml": "OK 050340023",
+        "tflite": "OK 050340023",
+        "native": "OK 050340023"
+      }
+    },
+    "render-00.png": {
+      "preprocess_sha256": "54bb82f7e2da514563177c44fcb2b085b26bcb21b4869e295762f5bda96d8c36",
+      "legs": {
+        "onnx": "OK 142204534",
+        "onnx-int8": "OK 142204534",
+        "coreml": "OK 142204534",
+        "tflite": "OK 142204534",
+        "native": "OK 142204534"
+      }
+    },
+    "render-01.png": {
+      "preprocess_sha256": "0934a38f79e9e99005269d96a37f54d1e08bad0b027b99040c982edd223dfe49",
+      "legs": {
+        "onnx": "OK 534232405",
+        "onnx-int8": "OK 534232405",
+        "coreml": "OK 534232405",
+        "tflite": "OK 534232405",
+        "native": "OK 534232405"
+      }
+    },
+    "render-02.png": {
+      "preprocess_sha256": "eedee9c8e45707eb68a9ef0fe0f5d34dde088f2938ceae303d489c43ae964bf2",
+      "legs": {
+        "onnx": "OK 355554023",
+        "onnx-int8": "OK 355554024",
+        "coreml": "OK 355554023",
+        "tflite": "OK 355554023",
+        "native": "OK 355554023"
+      }
+    },
+    "render-03.png": {
+      "preprocess_sha256": "f591e96832a8f320fcb924f5b864d4e95165f873c895e9c87dd735fae96783e5",
+      "legs": {
+        "onnx": "OK 145502250",
+        "onnx-int8": "OK 145502250",
+        "coreml": "OK 145502250",
+        "tflite": "OK 145502250",
+        "native": "OK 145502250"
+      }
+    },
+    "render-04.png": {
+      "preprocess_sha256": "17f22cbb3c7b87ac69774491ced36f401579d695d2f8b4edbd86d36c1653e6d1",
+      "legs": {
+        "onnx": "OK 512430234",
+        "onnx-int8": "OK 512430234",
+        "coreml": "OK 512430234",
+        "tflite": "OK 512430234",
+        "native": "OK 512430234"
+      }
+    },
+    "render-05.png": {
+      "preprocess_sha256": "1bd2c4f89af4b163514e5c2840dc814e062f8f69b9102ec422eb17f625f0dce0",
+      "legs": {
+        "onnx": "OK 043232154",
+        "onnx-int8": "OK 043232154",
+        "coreml": "OK 043232154",
+        "tflite": "OK 043232154",
+        "native": "OK 043232154"
+      }
+    },
+    "render-06.png": {
+      "preprocess_sha256": "399908885d8f9aee0c6055c525098d8e5997eb1602302a6067c762ee911fecc8",
+      "legs": {
+        "onnx": "OK 432142034",
+        "onnx-int8": "OK 432142034",
+        "coreml": "OK 432142034",
+        "tflite": "OK 432142034",
+        "native": "OK 432142034"
+      }
+    },
+    "render-07.png": {
+      "preprocess_sha256": "d9c6cbbdb763ab85bdefed38acbd617c32383f80954f67e1dfaf048b93630e20",
+      "legs": {
+        "onnx": "OK 402241310",
+        "onnx-int8": "BAD_GEOMETRY",
+        "coreml": "OK 402241310",
+        "tflite": "OK 402241310",
+        "native": "OK 402241310"
+      }
+    },
+    "render-08.png": {
+      "preprocess_sha256": "becbe00c693536a0a887dc1a2b8324f0955d9e37b7da4d5111f8fe573d02cd41",
+      "legs": {
+        "onnx": "OK 504523234",
+        "onnx-int8": "OK 504523234",
+        "coreml": "OK 504523234",
+        "tflite": "OK 504523234",
+        "native": "OK 504523234"
+      }
+    },
+    "render-09.png": {
+      "preprocess_sha256": "aed521c2efe1e698efdfdd48e61eba5f98036bf14a32b0015fd2b7ffadd9c3f2",
+      "legs": {
+        "onnx": "OK 204133542",
+        "onnx-int8": "OK 204133542",
+        "coreml": "OK 204133542",
+        "tflite": "OK 204133542",
+        "native": "OK 204133542"
+      }
+    },
+    "render-10.png": {
+      "preprocess_sha256": "c740ab7df6df277606acb5dc0499fc310178d1b41373154099244700c0b9a9bf",
+      "legs": {
+        "onnx": "OK 112105451",
+        "onnx-int8": "OK 112105451",
+        "coreml": "OK 112105451",
+        "tflite": "OK 112105451",
+        "native": "OK 112105451"
+      }
+    },
+    "render-11.png": {
+      "preprocess_sha256": "0c552321cba1ce5fbc17e23e57ef9120b9791652dcb633828028f5398de27da1",
+      "legs": {
+        "onnx": "OK 242114410",
+        "onnx-int8": "OK 242114410",
+        "coreml": "OK 242114410",
+        "tflite": "OK 242114410",
+        "native": "OK 242114410"
+      }
+    }
+  }
+}

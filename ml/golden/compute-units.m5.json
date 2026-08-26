@@ -1,0 +1,150 @@
+{
+  "host": {
+    "chip": "Apple M5",
+    "macos": "26.6.2",
+    "python": "3.11.16"
+  },
+  "frames": 20,
+  "coremltools": "9.0",
+  "coreml": {
+    "all": {
+      "median_ms": 1.48,
+      "p95_ms": 1.66,
+      "min_ms": 1.37,
+      "n": 60,
+      "load_ms": 834.0,
+      "reads": [
+        "BAD_GEOMETRY",
+        "PARTIAL_FACE",
+        "BAD_GEOMETRY",
+        "OK 325511251",
+        "OK 024005235",
+        "OK 024005023",
+        "OK 024005023",
+        "OK 050340023",
+        "OK 142204534",
+        "OK 534232405",
+        "OK 355554023",
+        "OK 145502250",
+        "OK 512430234",
+        "OK 043232154",
+        "OK 432142034",
+        "OK 402241310",
+        "OK 504523234",
+        "OK 204133542",
+        "OK 112105451",
+        "OK 242114410"
+      ]
+    },
+    "cpu_and_ne": {
+      "median_ms": 1.93,
+      "p95_ms": 2.2,
+      "min_ms": 1.76,
+      "n": 60,
+      "load_ms": 1000.8,
+      "reads": [
+        "BAD_GEOMETRY",
+        "PARTIAL_FACE",
+        "BAD_GEOMETRY",
+        "OK 325511251",
+        "OK 024005235",
+        "OK 024005023",
+        "OK 024005023",
+        "OK 050340023",
+        "OK 142204534",
+        "OK 534232405",
+        "OK 355554023",
+        "OK 145502250",
+        "OK 512430234",
+        "OK 043232154",
+        "OK 432142034",
+        "OK 402241310",
+        "OK 504523234",
+        "OK 204133542",
+        "OK 112105451",
+        "OK 242114410"
+      ]
+    },
+    "cpu_and_gpu": {
+      "median_ms": 10.32,
+      "p95_ms": 58.7,
+      "min_ms": 4.79,
+      "n": 60,
+      "load_ms": 331.9,
+      "reads": [
+        "BAD_GEOMETRY",
+        "PARTIAL_FACE",
+        "BAD_GEOMETRY",
+        "OK 325511251",
+        "OK 024005235",
+        "OK 024005023",
+        "OK 024005023",
+        "OK 050340023",
+        "OK 142204534",
+        "OK 534232405",
+        "OK 355554023",
+        "OK 145502250",
+        "OK 512430234",
+        "OK 043232154",
+        "OK 432142034",
+        "OK 402241310",
+        "OK 504523234",
+        "OK 204133542",
+        "OK 112105451",
+        "OK 242114410"
+      ]
+    },
+    "cpu_only": {
+      "median_ms": 55.27,
+      "p95_ms": 223.91,
+      "min_ms": 25.18,
+      "n": 60,
+      "load_ms": 1103.1,
+      "reads": [
+        "BAD_GEOMETRY",
+        "PARTIAL_FACE",
+        "BAD_GEOMETRY",
+        "OK 325511251",
+        "OK 024005235",
+        "OK 024005023",
+        "OK 024005023",
+        "OK 050340023",
+        "OK 142204534",
+        "OK 534232405",
+        "OK 355554023",
+        "OK 145502250",
+        "OK 512430234",
+        "OK 043232154",
+        "OK 432142034",
+        "OK 402241310",
+        "OK 504523234",
+        "OK 204133542",
+        "OK 112105451",
+        "OK 242114410"
+      ]
+    }
+  },
+  "compute_plan": {
+    "available": true,
+    "ops": 241,
+    "preferred": {
+      "MLNeuralEngine": 241
+    },
+    "supported": {
+      "MLCPU,MLGPU,MLNeuralEngine": 241
+    },
+    "not_eligible_for_ane": []
+  },
+  "tflite_proxy_this_mac": {
+    "median_ms": 142.89,
+    "p95_ms": 248.21,
+    "min_ms": 52.82,
+    "n": 60
+  },
+  "android": {
+    "measured": false,
+    "reason": "needs a physical low-end Android reference device; the tflite line above is this Mac's CPU"
+  },
+  "reads_agree_across_units": true,
+  "winner": "all"
+}
