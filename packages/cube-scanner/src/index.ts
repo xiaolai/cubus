@@ -19,7 +19,11 @@ export {
   SOLVED_FACELETS,
 } from './facelet-cube.js';
 
-export { type CameraOptions, type FrameSource, openCamera } from './camera.js';
+export { type CameraDevice, type CameraOptions, type FrameSource, openCamera } from './camera.js';
+
+// The capture-and-inference seam: one interface both the browser (WebDetector, wasm) and the native
+// desktop/mobile builds (NativeDetector, a Tauri plugin) satisfy. The panel consumes only this.
+export type { Detector, ModelOutput } from './detector.js';
 
 // AI-scan path: the ONNX detector locates the 9 stickers per face; assembleColors maps the 6
 // faces' colour classes to a validated cube state — solving each face's rotation by search — and
@@ -40,5 +44,6 @@ export {
   type RunModel,
   IMG_SIZE,
   detectFace,
+  fitFromOutput,
   preprocess,
 } from './onnx-detect.js';

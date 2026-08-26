@@ -1,0 +1,30 @@
+[package]
+name = "cube-vision"
+version = "0.1.0"
+description = "Native camera capture + CoreML inference for cubus, as a Tauri plugin. The one sanctioned command-bearing native capability (AGENTS.md, 2026-08-26): it sits behind the Detector seam the browser build also implements, so both builds stay the same app."
+edition = "2021"
+rust-version = "1.77.2"
+publish = false
+# Required by tauri-plugin so the app's build can discover this plugin's permission schema.
+links = "cube-vision"
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+tauri = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+
+# Generates the command permission ACL the app's capability references. Runs on every host, so the
+# desktop build resolves `cube-vision:default` on Linux CI too (where the commands are inert).
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+# swift-rs builds and links the Swift package (crates/cube-vision/swift), which holds the CoreML
+# runner, the byte-exact letterbox and the AVFoundation capture. It is a HOST-macOS build tool
+# (needs xcrun/swift), so it is pulled in only when building on a Mac; build.rs additionally gates the
+# actual link on the TARGET being Apple, so a Mac host cross-compiling to a non-Apple target skips it.
+[target.'cfg(target_os = "macos")'.build-dependencies]
+swift-rs = { version = "1.0.7", features = ["build"] }

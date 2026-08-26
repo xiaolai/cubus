@@ -3,6 +3,7 @@
 // INJECTED by the panel (which owns onnxruntime-web). That way cube-scanner never imports
 // a heavy wasm runtime, and the whole path is exercised in tests with a fake `run`.
 
+import type { ModelOutput } from './detector.js';
 import { type FitResult, decodeDetections, fitFace, nms } from './onnx-postprocess.js';
 import type { Frame } from './types.js';
 
@@ -56,10 +57,7 @@ export function preprocess(frame: Frame, imgsz: number = IMG_SIZE): Preprocessed
 }
 
 /** The injected model call: input CHW tensor → flat output tensor + its anchor count. */
-export type RunModel = (
-  input: Float32Array,
-  imgsz: number,
-) => Promise<{ data: Float32Array; anchors: number }>;
+export type RunModel = (input: Float32Array, imgsz: number) => Promise<ModelOutput>;
 
 export interface DetectOptions {
   numClasses?: number;
@@ -69,7 +67,23 @@ export interface DetectOptions {
 }
 
 /**
- * One face detection: preprocess → run model → decode → NMS → fit the front 3x3 grid.
+ * Decode a raw model output into a face fit: decode → NMS → fit the front 3x3 grid. This is the
+ * post-processing tail shared by every runtime — the browser's wasm `run()` and the native plugin
+ * both hand back the same `{ data, anchors }`, and it is turned into a FaceFit (or an abstention:
+ * NO_FACE / PARTIAL_FACE / BAD_GEOMETRY) by this one implementation, which the invariant tests cover.
+ */
+export function fitFromOutput(output: ModelOutput, opts: DetectOptions = {}): FitResult {
+  const { numClasses = 6, confThreshold = 0.25, iouThreshold = 0.45, minConf = 0.25 } = opts;
+  const dets = nms(
+    decodeDetections(output.data, numClasses, output.anchors, confThreshold),
+    iouThreshold,
+  );
+  return fitFace(dets, minConf);
+}
+
+/**
+ * One face detection over an injected `run`: preprocess → run model → `fitFromOutput`. Kept as the
+ * composed convenience the tests exercise; the panel drives the two halves through a `Detector`.
  * Returns a FaceFit or an abstention (NO_FACE / PARTIAL_FACE / BAD_GEOMETRY).
  */
 export async function detectFace(
@@ -77,9 +91,6 @@ export async function detectFace(
   run: RunModel,
   opts: DetectOptions = {},
 ): Promise<FitResult> {
-  const { numClasses = 6, confThreshold = 0.25, iouThreshold = 0.45, minConf = 0.25 } = opts;
   const pre = preprocess(frame);
-  const { data, anchors } = await run(pre.data, pre.imgsz);
-  const dets = nms(decodeDetections(data, numClasses, anchors, confThreshold), iouThreshold);
-  return fitFace(dets, minConf);
+  return fitFromOutput(await run(pre.data, pre.imgsz), opts);
 }

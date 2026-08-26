@@ -45,6 +45,12 @@ const BUNDLES = [
       '../../../packages/cube-scanner/src/ai-assemble.ts',
       '../../../packages/cube-scanner/src/facelet-cube.ts',
       '../../../packages/cube-scanner/view/onnx-runtime.ts',
+      // The Detector seam and both implementations: the panel drives capture + inference through
+      // these now, so an edit to any must be rebuilt into the bundle the app loads. native-detector
+      // is dormant in the browser (it needs __TAURI__) but is bundled, so it is guarded too.
+      '../../../packages/cube-scanner/src/detector.ts',
+      '../../../packages/cube-scanner/view/web-detector.ts',
+      '../../../packages/cube-scanner/view/native-detector.ts',
     ],
     // Exported from the package entry and used by its tests, but never by the panel — so esbuild
     // drops them and their absence is correct, not stale. Listed rather than silently ignored: if
@@ -185,4 +191,31 @@ test('onnxruntime is loaded as its own module, not bundled into the panel', () =
   assert.match(src, /import\(\s*\/\*[^*]*\*\/\s*url\s*\)|import\(\s*url\s*\)/, 'must import a URL variable');
   assert.doesNotMatch(src, /^\s*import\s+\*\s+as\s+ort\s+from\s+'onnxruntime-web'/m, 'no static runtime import');
   assert.match(src, /env\.wasm\.proxy\s*=\s*true/, 'and inference must be proxied to a worker');
+});
+
+// onnxruntime-web ships eight `ort-wasm-simd-threaded.*` files — plain / jsep / asyncify / jspi,
+// each a .wasm and a .mjs, ~90 MB in all — but the loader we ship (`ort.bundle.min.mjs`) references
+// exactly ONE pair by name and can fetch no other, because a bundle cannot request a filename it
+// does not contain. copy-ort therefore copies only that pair; it used to glob all eight, which put
+// ~50 MB of unreachable wasm in every dist/. This pins two things that must move together: the
+// loader still references a single variant, and copy-ort derives-not-globs so it follows a version
+// bump instead of silently shipping the wrong file or all of them again.
+test('copy-ort ships only the wasm variant the loader can actually request', () => {
+  const copyOrt = readFileSync(new URL('../copy-ort.mjs', import.meta.url), 'utf8');
+  // Derive-not-glob: the wanted set comes from the loader's own text, and the all-variants glob is
+  // gone. A future editor who reintroduces `startsWith('ort-wasm-simd-threaded.')` reinflates dist.
+  assert.match(copyOrt, /matchAll\(\/ort-wasm\[[^)]*\)/, 'must derive the variant from the loader text');
+  assert.doesNotMatch(copyOrt, /startsWith\('ort-wasm-simd-threaded\.'\)[^\n]*\n[^\n]*copyFileSync/,
+    'must not copy every ort-wasm-simd-threaded.* variant');
+
+  // With the dependency installed (locally, and in CI after `pnpm install`), compute the same set
+  // copy-ort computes and pin it: exactly one variant, the jsep pair. If onnxruntime-web is not
+  // installed, skip rather than fail — mirrors the optional-bundle guard above.
+  const loaderPath = new URL(
+    '../../../packages/cube-scanner/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs', import.meta.url);
+  if (!existsSync(loaderPath)) return;
+  const referenced = [...new Set(
+    [...readFileSync(loaderPath, 'utf8').matchAll(/ort-wasm[a-z0-9.\-]*\.(?:wasm|mjs)/g)].map((m) => m[0]))].sort();
+  assert.deepEqual(referenced, ['ort-wasm-simd-threaded.jsep.mjs', 'ort-wasm-simd-threaded.jsep.wasm'],
+    'the shipped loader references exactly the jsep variant pair, and nothing else');
 });

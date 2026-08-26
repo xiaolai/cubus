@@ -481,9 +481,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
+name = "cube-vision"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "swift-rs",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "cubus-desktop"
 version = "0.1.0"
 dependencies = [
+ "cube-vision",
  "log",
  "tauri",
  "tauri-build",

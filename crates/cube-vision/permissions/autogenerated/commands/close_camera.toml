@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-close-camera"
+description = "Enables the close_camera command without any pre-configured scope."
+commands.allow = ["close_camera"]
+
+[[permission]]
+identifier = "deny-close-camera"
+description = "Denies the close_camera command without any pre-configured scope."
+commands.deny = ["close_camera"]

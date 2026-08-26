@@ -1,0 +1,18 @@
+"$schema" = "schemas/schema.json"
+
+# The desktop app is local, offline and trusts its own webview, so the default set grants the whole
+# capture-and-inference surface. There is no remote content and no third-party frame in this window;
+# the seam these commands sit behind is what keeps the desktop and web builds the same app, not an
+# ACL boundary between them.
+[default]
+description = "Allows cube-vision to list cameras, load the model, capture frames and run inference."
+permissions = [
+    "allow-probe",
+    "allow-list-cameras",
+    "allow-current-camera",
+    "allow-load-model",
+    "allow-open-camera",
+    "allow-close-camera",
+    "allow-next-detection",
+    "allow-infer-frame",
+]

@@ -2346,84 +2346,6 @@ function assembleColors(faces, threshold = 0.15, confirmed = {}) {
   return { facelets, valid: true, confidence: min, lowConfidence };
 }
 
-// src/camera.ts
-async function listCameras() {
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  return devices.filter((d) => d.kind === "videoinput").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
-}
-function raceAbort(promise, signal) {
-  if (!signal) return promise;
-  return new Promise((resolve, reject2) => {
-    if (signal.aborted) {
-      reject2(abortError());
-      return;
-    }
-    const onAbort = () => reject2(abortError());
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (err) => {
-        signal.removeEventListener("abort", onAbort);
-        reject2(err);
-      }
-    );
-  });
-}
-var abortError = () => new DOMException("camera open aborted", "AbortError");
-async function openCamera(video, opts = {}, signal) {
-  if (signal?.aborted) throw abortError();
-  const videoConstraints = {};
-  if (opts.deviceId) videoConstraints.deviceId = { exact: opts.deviceId };
-  else if (opts.facingMode) videoConstraints.facingMode = opts.facingMode;
-  if (opts.width) videoConstraints.width = { ideal: opts.width };
-  if (opts.height) videoConstraints.height = { ideal: opts.height };
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: videoConstraints,
-    audio: false
-  });
-  const release = () => {
-    for (const track of stream.getTracks()) track.stop();
-    if (video.srcObject === stream) video.srcObject = null;
-  };
-  const throwIfAborted = () => {
-    if (signal?.aborted) throw abortError();
-  };
-  try {
-    throwIfAborted();
-    video.srcObject = stream;
-    await raceAbort(video.play(), signal);
-    throwIfAborted();
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) throw new Error("2D canvas context unavailable");
-    const track = stream.getVideoTracks()[0];
-    const device = {
-      deviceId: track?.getSettings().deviceId ?? "",
-      label: track?.label || "Camera"
-    };
-    return {
-      device,
-      grab() {
-        const w = video.videoWidth;
-        const h = video.videoHeight;
-        if (w === 0 || h === 0) throw new Error("camera not ready: video has no dimensions yet");
-        canvas.width = w;
-        canvas.height = h;
-        ctx.drawImage(video, 0, 0, w, h);
-        const img = ctx.getImageData(0, 0, w, h);
-        return { data: img.data, width: img.width, height: img.height };
-      },
-      stop: release
-    };
-  } catch (err) {
-    release();
-    throw err;
-  }
-}
-
 // src/onnx-postprocess.ts
 function decodeDetections(data, numClasses, numAnchors, confThreshold = 0.25) {
   const rows = 4 + numClasses;
@@ -2543,12 +2465,151 @@ function preprocess(frame, imgsz = IMG_SIZE) {
   }
   return { data: out, imgsz };
 }
-async function detectFace(frame, run, opts = {}) {
+function fitFromOutput(output, opts = {}) {
   const { numClasses = 6, confThreshold = 0.25, iouThreshold = 0.45, minConf = 0.25 } = opts;
-  const pre = preprocess(frame);
-  const { data, anchors } = await run(pre.data, pre.imgsz);
-  const dets = nms(decodeDetections(data, numClasses, anchors, confThreshold), iouThreshold);
+  const dets = nms(
+    decodeDetections(output.data, numClasses, output.anchors, confThreshold),
+    iouThreshold
+  );
   return fitFace(dets, minConf);
+}
+
+// view/native-detector.ts
+var P = "plugin:cube-vision|";
+var NativeDetector = class {
+  /**
+   * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`).
+   * @param resolveModel  resolves the bundled native model's filesystem path — injected so the
+   *                      resource layout stays the app's concern and this stays testable.
+   * @param computeUnits  CoreML compute units; `All` lets CoreML schedule across ANE/GPU/CPU, which
+   *                      the compute-unit bench found fastest and fully ANE-resident for this model.
+   */
+  constructor(invoke, resolveModel, computeUnits = 0 /* All */) {
+    this.invoke = invoke;
+    this.resolveModel = resolveModel;
+    this.computeUnits = computeUnits;
+  }
+  dev = null;
+  loaded = false;
+  get device() {
+    return this.dev;
+  }
+  async use(opts = {}) {
+    await this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+    const info = await this.invoke(`${P}current_camera`);
+    this.dev = info ?? { deviceId: opts.deviceId ?? "", label: "Camera" };
+  }
+  async load() {
+    if (this.loaded) return;
+    const path = await this.resolveModel();
+    await this.invoke(`${P}load_model`, { path, computeUnits: this.computeUnits });
+    this.loaded = true;
+  }
+  async next() {
+    const buf = await this.invoke(`${P}next_detection`);
+    return decodeTensorResponse(buf);
+  }
+  async cameras() {
+    return await this.invoke(`${P}list_cameras`);
+  }
+  stop() {
+    this.dev = null;
+    void this.invoke(`${P}close_camera`).catch(() => {
+    });
+  }
+};
+function decodeTensorResponse(buf) {
+  if (buf.byteLength < 8) return null;
+  const header = new Int32Array(buf, 0, 2);
+  const rows = header[0];
+  const anchors = header[1];
+  if (anchors <= 0 || rows <= 0) return null;
+  const count = rows * anchors;
+  if (buf.byteLength < 8 + count * 4) {
+    throw new Error(
+      `cube-vision tensor is ${buf.byteLength} bytes, need ${8 + count * 4} for ${rows}\xD7${anchors}`
+    );
+  }
+  const data = new Float32Array(buf, 8, count);
+  return { data, anchors };
+}
+
+// src/camera.ts
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((d) => d.kind === "videoinput").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
+}
+function raceAbort(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject2) => {
+    if (signal.aborted) {
+      reject2(abortError());
+      return;
+    }
+    const onAbort = () => reject2(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject2(err);
+      }
+    );
+  });
+}
+var abortError = () => new DOMException("camera open aborted", "AbortError");
+async function openCamera(video, opts = {}, signal) {
+  if (signal?.aborted) throw abortError();
+  const videoConstraints = {};
+  if (opts.deviceId) videoConstraints.deviceId = { exact: opts.deviceId };
+  else if (opts.facingMode) videoConstraints.facingMode = opts.facingMode;
+  if (opts.width) videoConstraints.width = { ideal: opts.width };
+  if (opts.height) videoConstraints.height = { ideal: opts.height };
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: videoConstraints,
+    audio: false
+  });
+  const release = () => {
+    for (const track of stream.getTracks()) track.stop();
+    if (video.srcObject === stream) video.srcObject = null;
+  };
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw abortError();
+  };
+  try {
+    throwIfAborted();
+    video.srcObject = stream;
+    await raceAbort(video.play(), signal);
+    throwIfAborted();
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) throw new Error("2D canvas context unavailable");
+    const track = stream.getVideoTracks()[0];
+    const device = {
+      deviceId: track?.getSettings().deviceId ?? "",
+      label: track?.label || "Camera"
+    };
+    return {
+      device,
+      grab() {
+        const w = video.videoWidth;
+        const h = video.videoHeight;
+        if (w === 0 || h === 0) throw new Error("camera not ready: video has no dimensions yet");
+        canvas.width = w;
+        canvas.height = h;
+        ctx.drawImage(video, 0, 0, w, h);
+        const img = ctx.getImageData(0, 0, w, h);
+        return { data: img.data, width: img.width, height: img.height };
+      },
+      stop: release
+    };
+  } catch (err) {
+    release();
+    throw err;
+  }
 }
 
 // view/onnx-runtime.ts
@@ -2589,7 +2650,69 @@ async function createModelRunner(modelUrl, opts = {}) {
   };
 }
 
+// view/web-detector.ts
+var WebDetector = class {
+  /**
+   * @param video   returns the element the stream plays into — a getter, not the element itself, so
+   *                the detector survives the owner re-rendering its DOM (a custom element rebuilds
+   *                its shadow root on every reconnect) and always drives the CURRENT `<video>`. A
+   *                display:none video stops delivering frames in some browsers, so the owner keeps
+   *                it laid out.
+   * @param modelUrl read at `load()` time, so a host may set it after construction.
+   */
+  constructor(video, modelUrl) {
+    this.video = video;
+    this.modelUrl = modelUrl;
+  }
+  source = null;
+  run = null;
+  opening = null;
+  get device() {
+    return this.source?.device ?? null;
+  }
+  async use(opts = {}) {
+    this.stop();
+    const opening = new AbortController();
+    this.opening = opening;
+    try {
+      const source = await openCamera(this.video(), opts, opening.signal);
+      this.source = source;
+    } finally {
+      if (this.opening === opening) this.opening = null;
+    }
+  }
+  async load() {
+    if (this.run) return;
+    const modelUrl = this.modelUrl();
+    const wasmPaths = new URL(modelUrl.replace(/[^/]+$/, "") || "./", document.baseURI).href;
+    const ortUrl = `${wasmPaths}ort.mjs`;
+    this.run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+  }
+  async next() {
+    if (!this.source) throw new Error("no camera open \u2014 call use() first");
+    if (!this.run) throw new Error("model not loaded \u2014 call load() first");
+    let frame;
+    try {
+      frame = this.source.grab();
+    } catch {
+      return null;
+    }
+    const pre = preprocess(frame);
+    return this.run(pre.data, pre.imgsz);
+  }
+  cameras() {
+    return listCameras();
+  }
+  stop() {
+    this.opening?.abort();
+    this.opening = null;
+    this.source?.stop();
+    this.source = null;
+  }
+};
+
 // view/ai-scan-panel.ts
+var NATIVE_MODEL_RESOURCE = "models/cube-yolo.mlpackage";
 var GUIDE = {
   U: { color: "WHITE", name: "Up", swatch: "#f6f7f8" },
   R: { color: "RED", name: "Right", swatch: "#d0202a" },
@@ -2658,8 +2781,17 @@ var AiScanPanel = class extends HTMLElement {
   root;
   /** Model URL; the app can override before the element renders. */
   modelUrl = "./vendor/cube-yolo.onnx";
-  run = null;
-  source = null;
+  /**
+   * The capture-and-inference seam. One instance for the element's life: it survives a reconnect
+   * (which rebuilds the shadow DOM) so the model is not re-downloaded, and it drives whichever
+   * `<video>` is current because it holds a getter, not the element. Web today; Phase 2 chooses a
+   * NativeDetector here when the desktop shell's plugin answers.
+   */
+  detector = null;
+  /** Caches the one-time async detector choice (native vs web); see ensureDetector. */
+  detectorPromise = null;
+  /** True once the model has loaded, so a re-`start()` doesn't re-report 'loading' or reload it. */
+  modelLoaded = false;
   timer = null;
   startGen = 0;
   busy = false;
@@ -2697,7 +2829,8 @@ var AiScanPanel = class extends HTMLElement {
   disconnectedCallback() {
     this.stop();
   }
-  /** Release the camera + stop the loop. Safe repeatedly and before first render. */
+  /** Release the camera + stop the loop. Safe repeatedly and before first render. The detector
+   *  itself is kept, so the loaded model survives a stop()/start() (only the camera is released). */
   stop() {
     this.startGen++;
     this.scanEpoch++;
@@ -2705,8 +2838,7 @@ var AiScanPanel = class extends HTMLElement {
       clearInterval(this.timer);
       this.timer = null;
     }
-    this.source?.stop();
-    this.source = null;
+    this.detector?.stop();
     this.device = null;
     const start = this.maybe("start");
     if (start) {
@@ -2731,47 +2863,48 @@ var AiScanPanel = class extends HTMLElement {
     if (startBtn) startBtn.disabled = true;
     const gen = ++this.startGen;
     this.report("starting", "Opening the camera\u2026");
-    this.source?.stop();
-    this.source = null;
+    this.detector?.stop();
+    this.device = null;
+    const detector = await this.ensureDetector();
+    if (gen !== this.startGen) {
+      detector.stop();
+      return;
+    }
     const slowOpen = setTimeout(() => {
-      if (gen === this.startGen && this.source === null) {
+      if (gen === this.startGen && this.device === null) {
         this.report("error", this.tinted("err", SLOW_OPEN));
       }
     }, SLOW_OPEN_MS);
-    let source = null;
     let fellBack = false;
     try {
       const facing = this.getAttribute("facing");
       const facingMode = facing === "user" || facing === "environment" ? facing : void 0;
       const pinned = this.getAttribute("device-id") || void 0;
-      const video = this.el("video");
       try {
-        source = await openCamera(video, { deviceId: pinned, facingMode });
+        await detector.use({ deviceId: pinned, facingMode });
       } catch (err) {
         if (pinned === void 0 || gen !== this.startGen) throw err;
         fellBack = true;
-        source = await openCamera(video, { facingMode });
+        await detector.use({ facingMode });
       }
       if (gen !== this.startGen) {
-        source.stop();
+        detector.stop();
         return;
       }
-      this.source = source;
-      this.device = source.device;
+      this.device = detector.device;
       if (startBtn) startBtn.hidden = true;
       this.reset();
-      if (!this.run) {
+      if (!this.modelLoaded) {
         this.report("loading", "Camera ready \u2014 loading the model\u2026");
-        const wasmPaths = new URL(this.modelUrl.replace(/[^/]+$/, "") || "./", document.baseURI).href;
-        const ortUrl = `${wasmPaths}ort.mjs`;
-        this.run = await createModelRunner(this.modelUrl, { wasmPaths, ortUrl });
+        await detector.load();
+        this.modelLoaded = true;
         if (gen !== this.startGen) return;
       }
       if (fellBack) this.loop("scanning", this.tinted("err", PINNED_GONE), " ", OPENING);
       else this.loop("scanning");
     } catch (err) {
       if (gen !== this.startGen) {
-        source?.stop();
+        detector.stop();
         return;
       }
       if (startBtn) {
@@ -2785,6 +2918,42 @@ var AiScanPanel = class extends HTMLElement {
     } finally {
       clearTimeout(slowOpen);
     }
+  }
+  /**
+   * The detector, chosen once and kept for the element's life (so the model survives a stop()/
+   * start(), and so the probe runs only once). Cached as a promise because the choice is async — it
+   * asks the plugin whether it is there.
+   */
+  ensureDetector() {
+    this.detectorPromise ??= this.selectDetector();
+    return this.detectorPromise;
+  }
+  /**
+   * Pick the detector for this environment. Native when the desktop shell's `cube-vision` plugin
+   * answers its probe — `__TAURI__` present AND the probe resolves truthy; the browser's WebDetector
+   * otherwise, which is also what Windows and Linux get (their Tauri build ships no native backend,
+   * so the probe fails and they fall back exactly as the accepted platform table says). Nothing else
+   * in the panel changes with the choice — that is the whole point of the seam. The video is passed
+   * as a getter so the detector survives a reconnect that rebuilds the shadow DOM.
+   */
+  async selectDetector() {
+    const tauri = globalThis.__TAURI__;
+    const invoke = tauri?.core?.invoke;
+    const resolveResource = tauri?.path?.resolveResource;
+    if (invoke && resolveResource) {
+      try {
+        if (await invoke("plugin:cube-vision|probe")) {
+          this.detector = new NativeDetector(invoke, () => resolveResource(NATIVE_MODEL_RESOURCE));
+          return this.detector;
+        }
+      } catch {
+      }
+    }
+    this.detector = new WebDetector(
+      () => this.el("video"),
+      () => this.modelUrl
+    );
+    return this.detector;
   }
   reset() {
     this.lastColors = "";
@@ -2808,7 +2977,7 @@ var AiScanPanel = class extends HTMLElement {
     this.lastColors = "";
     const restart = this.maybe("restart");
     if (restart) restart.hidden = false;
-    if (this.source === null) {
+    if (this.device === null) {
       this.report("error", this.tinted("err", "The camera is off \u2014 turn it on to scan again."));
       return;
     }
@@ -2822,13 +2991,14 @@ var AiScanPanel = class extends HTMLElement {
     }
   }
   async onTick() {
-    if (this.busy || !this.source || !this.run) return;
+    if (this.busy || this.device === null || !this.detector || !this.modelLoaded) return;
     this.busy = true;
     const epoch = this.scanEpoch;
     try {
-      const frame = this.source.grab();
-      const fit = await detectFace(frame, this.run);
+      const output = await this.detector.next();
       if (this.scanEpoch !== epoch || this.timer === null) return;
+      if (output === null) return;
+      const fit = fitFromOutput(output);
       if (!fit.ok) {
         this.stableCount = 0;
         this.lastColors = "";
@@ -2996,7 +3166,7 @@ var AiScanPanel = class extends HTMLElement {
     this.awaiting = null;
     this.mismatches = 0;
     this.buildDots();
-    if (this.source === null) {
+    if (this.device === null) {
       this.report(
         "error",
         this.tinted("err", "The camera is not running \u2014 turn it on to scan that side again.")
@@ -3010,7 +3180,7 @@ var AiScanPanel = class extends HTMLElement {
    * so a host gets named entries by calling this after the first successful start().
    */
   async cameras() {
-    return listCameras();
+    return (await this.ensureDetector()).cameras();
   }
   /** Clear all captured faces and keep scanning; the camera stays open. Public for host UIs. */
   restart() {
