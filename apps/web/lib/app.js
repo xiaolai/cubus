@@ -881,7 +881,7 @@ SCREENS.scan = () => {
       <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
         <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
         <div class="sub scan-hint" id="scanHint" hidden></div></div>
-      <button class="btn primary pill block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
+      <button class="btn primary block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
     </div></div>`,
     mount(root) {
       // Kept, so a finished scan can update the aside in place. Re-rendering the screen would tear
