@@ -1305,6 +1305,7 @@ const cubeScreen = (screenMode) => {
           <button class="tbtn" id="repeatBtn" title="Show that move again">${icon('refresh', 18)}</button>
           <button class="tbtn" id="nextBtn" title="Next move">${icon('chevron-right', 20)}</button>
           <button class="tbtn primary" id="playBtn" title="Play from here to the end">${icon('play', 18)}</button>
+          ${state.connected ? `<button class="pill on" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
           <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
           <span class="done-mark" id="doneMark" hidden title="Done">${icon('check', 14)}</span>
           <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:64px;text-align:right">0 / 0</span>
@@ -1327,6 +1328,13 @@ const cubeScreen = (screenMode) => {
       ${walking ? `<div class="card tight" style="flex:1;min-height:140px;display:flex;flex-direction:column">
         <div class="card-h bare"><b>${label}</b><span class="sub" id="moveCount">—</span></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
+        <div class="follow-note" id="followNote" hidden>
+          <span id="followMsg"></span>
+          <div class="acts">
+            <button class="btn sm accent-outline" id="resolveBtn">Re-solve</button>
+            <button class="btn sm outline" id="turnBackBtn">I'll turn it back</button>
+          </div>
+        </div>
 </div>` : ''}
     </div></div>`,
     async mount(root) {
@@ -1488,15 +1496,27 @@ const cubeScreen = (screenMode) => {
         if (on) cube.play(); else cube.pause();
       };
 
-      $('#playBtn', root).onclick = () => { setPlaying(!playing); };
-      $('#nextBtn', root).onclick = () => { setPlaying(false); cube.step(); };
+      // Touching the transport hands control back to you. Following and the buttons were two
+      // drivers for one guide, and while both were live the step counter tracked the ANIMATION
+      // rather than the cube. One rule removes the ambiguity — the toggle is right there to
+      // resume. Hoisted, because the handlers below call it while `mode` and `followBtn` are
+      // declared further down.
+      function takeOver() {
+        if (mode !== 'cube') return;
+        mode = 'slow';
+        followBtn?.classList.remove('on');
+        if (followBtn) followBtn.title = 'You took over — click to let the cube drive again';
+      }
+
+      $('#playBtn', root).onclick = () => { takeOver(); setPlaying(!playing); };
+      $('#nextBtn', root).onclick = () => { takeOver(); setPlaying(false); cube.step(); };
       // Back and repeat are both animated, at the one walking speed, and differ only in where they
       // leave you. Back undoes the last move and stops there. Repeat answers "show me that again":
       // it undoes the move and then makes it again, so you end up where you started having watched
       // it twice. Neither jumps: a cut to a new state teaches nothing about the turn that got there.
       // The renderer's queue is FIFO and pulls the next move only when the current one finishes,
       // so pushing both halves of a repeat here plays them in order.
-      $('#prevBtn', root).onclick = () => { setPlaying(false); cube.stepBack(); };
+      $('#prevBtn', root).onclick = () => { takeOver(); setPlaying(false); cube.stepBack(); };
       // A move in the list is a place in the solution, so clicking one goes there. seek() is instant
       // on purpose: jumping twelve moves is not something to sit through, which is exactly the case
       // step()/stepBack() do not cover. It seeks to just AFTER the clicked move: the cube shows that
@@ -1504,11 +1524,12 @@ const cubeScreen = (screenMode) => {
       solList.onclick = (ev) => {
         const chip = ev.target.closest('.chip-m');
         if (!chip) return;
-        // jumping to a move is taking over just as much as pressing Next is
+        takeOver(); // jumping to a move is taking over just as much as pressing Next is
         setPlaying(false);
         cube.seek(Number(chip.dataset.i) + 1);
       };
       $('#repeatBtn', root).onclick = () => {
+        takeOver();
         // Not merely belt-and-braces with the disabled attribute: stepBack() self-guards at step 0
         // but step() does not, so without this a repeat at the start would go FORWARD one move.
         if (at === 0) return;
@@ -1517,6 +1538,133 @@ const cubeScreen = (screenMode) => {
         cube.step();
       };
 
+      // ---- Follow cube (recovered from v0, extended with move-driven Previous) ---------------
+      //
+      // One pacing control, and only when there is a cube to pace against: with nothing connected,
+      // walking by hand is the only behaviour there is, so a button naming it would be a switch
+      // with one position. Connected, following is what you want by default — a single toggle
+      // that starts on, provided the preconditions hold.
+      const followBtn = root.querySelector('[data-mode="cube"]');
+      let mode = 'slow';
+      const refuseFollow = (why) => {
+        followBtn.disabled = true;
+        followBtn.classList.remove('on');
+        followBtn.title = why;
+      };
+      if (followBtn) {
+        // Following compares the real cube against the state each move produces, so it needs one
+        // state per step, a TRUSTED cube (the move stream is in the CUBE's frame — following an
+        // unverified one advances the guide on turns that may not be the ones being made), and a
+        // walk that STARTS from where the cube in your hand actually is. The last rule is what
+        // makes a random cube unfollowable while a scramble from a solved cube is perfectly
+        // followable — and why a solved cube used to complete a random solve instantly.
+        if (steps.length !== total + 1) {
+          refuseFollow('Needs a solve worked out on this screen');
+        } else if (!state.cube.trusted) {
+          refuseFollow(`Read the cube first — ${state.cube.staleWhy || 'its position is unverified'}`);
+        } else if (steps[0] !== state.live) {
+          refuseFollow(state.live
+            ? 'This is not the cube in your hand — read your cube to follow along'
+            : 'Waiting to hear from your cube…');
+        } else {
+          mode = 'cube';
+        }
+        followBtn.onclick = () => {
+          if (followBtn.disabled) return;
+          mode = mode === 'cube' ? 'slow' : 'cube';
+          followBtn.classList.toggle('on', mode === 'cube');
+          followBtn.title = mode === 'cube'
+            ? 'Turn your smart cube and the guide keeps up'
+            : 'You took over — click to let the cube drive again';
+          if (mode === 'cube') setPlaying(false);
+        };
+      }
+
+      // Where the PHYSICAL cube is, in solution indices. Deliberately not `at`: `at` is where the
+      // ANIMATION has got to (up to 3.8s behind at Slow), and driving the match off it dropped
+      // any second real turn made inside that window — after which nothing could ever match again.
+      let cubePos = 0;
+      let offTrack = false;
+      const note = $('#followNote', root), noteMsg = $('#followMsg', root);
+      const showNote = (msg) => {
+        offTrack = true;
+        if (note) { note.hidden = false; noteMsg.textContent = msg; }
+      };
+      const clearNote = () => {
+        offTrack = false;
+        if (note) note.hidden = true;
+      };
+      /** Move the drawing toward where the cube actually is. One queued step per accepted move —
+       *  the renderer's queue is FIFO and never drops, so this cannot fall behind. */
+      const drawTo = (idx) => {
+        // The drawing is a FOLLOWER of the guide's position. If the renderer never upgraded — a
+        // vendored bundle that failed to load, which this repo has shipped more than once — the
+        // guide should still track your turns rather than throwing on every one.
+        if (typeof cube.step !== 'function' || typeof cube.seek !== 'function') return;
+        if (idx === at) return;
+        if (idx > at && idx - at <= 2) { for (let i = at; i < idx; i++) cube.step(); }
+        else cube.seek(idx); // a jump: animating a dozen moves to catch up helps nobody
+      };
+
+      liveMove = (m) => {
+        if (mode !== 'cube' || offTrack) return;
+        // The next move in the walk: your turn IS pressing Next.
+        if (m.notation === moves[cubePos]) {
+          cubePos += 1;
+          drawTo(cubePos);
+          clearNote();
+          return;
+        }
+        // The inverse of the move just made: your turn IS pressing Previous — immediately, not a
+        // second later when a snapshot happens to notice. (v0 only resynced backward off the ~1Hz
+        // snapshots, which made undoing a move feel like the guide had stopped listening.)
+        if (cubePos > 0 && m.notation === invMove(moves[cubePos - 1])) {
+          cubePos -= 1;
+          drawTo(cubePos);
+          clearNote();
+          return;
+        }
+        showNote(`That was ${m.notation} — the next move is ${moves[cubePos] ?? '—'}.`);
+      };
+
+      // Trust has already lapsed by the time this runs — onGap() owns that, with or without a
+      // screen mounted to hear it. What is left here is this screen's own reaction.
+      liveGap = (g) => {
+        // Disabled, not merely un-highlighted: following matches your turns against an
+        // arrangement we have just said we cannot vouch for.
+        if (followBtn) {
+          followBtn.disabled = true;
+          followBtn.title = 'Your cube missed a turn — read it again before following';
+        }
+        if (mode !== 'cube') return;
+        mode = 'slow';
+        followBtn?.classList.remove('on');
+        // The cube numbers its moves, and the driver says so when the count skips. Silence here
+        // would look exactly like a wrong turn; it is neither, and the snapshot will resync.
+        showNote(`Missed ${g.missing} turn${g.missing === 1 ? '' : 's'} — checking the cube…`);
+      };
+
+      liveUpdate = (f) => {
+        if (mode === 'cube') {
+          // Snapshots are the CORRECTION, not the signal. Searching all of `steps` rather than
+          // testing only the next one is what lets a cube that ran ahead, or was turned back,
+          // rejoin the guide instead of stalling forever. The net is NOT repainted while walking:
+          // it says INITIAL STATE, and following live turns would leave that label describing
+          // something the user is no longer looking at.
+          const idx = steps.indexOf(f);
+          if (idx < 0) {
+            showNote('This cube is not on the plan any more.');
+            return;
+          }
+          clearNote();
+          if (idx !== cubePos) { cubePos = idx; drawTo(idx); }
+          return;
+        }
+        paintNet(f);
+      };
+
+      $('#resolveBtn', root).onclick = () => go(state.screen); // re-mount solves from the cube as it is now
+      $('#turnBackBtn', root).onclick = () => clearNote();     // the next snapshot resyncs on its own
 
       sync(0);
     },
@@ -2097,6 +2245,9 @@ function renderNav() {
 function renderScreen() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
   liveUpdate = null;
+  liveMove = null;
+  liveGap = null;
+  onCubeLost = null;
   setTitle(t(TITLES[state.screen] ?? 'Cubus'));
   const build = SCREENS[state.screen] || SCREENS.home;
   const spec = build();
@@ -2140,6 +2291,27 @@ function applyRoute() { state.screen = router.current(); renderNav(); renderScre
 function go(id) { if (!router.go(id)) applyRoute(); }
 window.addEventListener('hashchange', () => { resolveAlias(); applyRoute(); });
 window.cubusGo = go;
+/** Test seam for the cube stream. In production the driver is the only caller of these (see
+ * doConnect); following cannot otherwise be exercised without a physical GAN cube in the room,
+ * which is precisely why its worst bug survived so long. Same shape as cubusGo above. */
+window.cubusFeed = {
+  move: (m) => liveMove?.(m),
+  facelets: (f) => onFacelets(f),
+  gap: (g) => onGap(g), // the driver's door, not the screen's — see onGap
+  disconnect: () => onDisconnect(),
+  /** Stand in for a paired driver. Setting `state.connected` alone is deliberately not enough —
+   *  a flag saying "connected" with nothing behind it must fall back to the camera, which is its
+   *  own test. This is the SAME call doConnect makes, not a lookalike: the address is part of a
+   *  connection, and identity is what the registry keys on. */
+  useConnection: (fake, mac = 'AA:BB:CC:DD:EE:FF') => {
+    conn = fake;
+    if (fake) adoptConnection(mac, 'Test cube');
+    else onDisconnect();
+    // doConnect reads the battery on connect; a stand-in that skipped it would leave every test
+    // looking at the "unknown" state and quietly never exercise the meter at all.
+    if (fake) void refreshBattery();
+  },
+};
 
 async function boot() {
   const platform = detectPlatform();

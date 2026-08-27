@@ -372,6 +372,11 @@
          scrolls, so appearing costs the move list a few pixels of scroll and moves nothing else.
          The aside is its own column, so the cube never reflows at all. */
       .transport .progress > span { display: block; height: 100%; width: 0; border-radius: var(--r-pill); background: var(--bar); transition: width .18s ease; }
+      /* The off-track note lives at the FOOT OF THE SOLUTION CARD, and that placement is the fix,
+         not a preference: in the transport row it resized the cube card above on every stray turn,
+         flashing the whole page. Here it takes its space from #solList, which flexes and scrolls. */
+      .follow-note { display: flex; flex-direction: column; align-items: stretch; gap: 8px; flex: none; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: var(--fs-body-s); color: var(--warn); }
+      .follow-note .acts { display: flex; gap: 8px; }
       /* Transport controls are glyphs, not boxes. Four outlined squares in a row read as a toolbar
          of equal-weight objects and fight the cube for attention; the icons alone say the same
          thing. Play carries its emphasis in ink weight rather than a filled box.

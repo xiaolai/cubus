@@ -1013,3 +1013,177 @@ test('a turn rate is never fabricated from a time that is not a number', async (
 
 
 
+
+// ---- Follow cube (recovered from v0, extended with move-driven Previous) --------------------
+//
+// Exercised on the SCRAAMBLE-free scramble screen, because it mounts completely here: it needs
+// only cubejs to build its moves, while the solve path needs cubing.js and bails early. What
+// these pin is the bug that made v0's feature feel broken — listening to ~1Hz snapshots alone
+// and cursoring off `at` (the ANIMATION position) dropped any second turn made inside a second.
+
+const feed = () => win.cubusFeed;
+
+/** Put the cube model back the way a fresh boot leaves it. The helpers below mutate connection,
+ *  trust, live and reported state — anything not reset here leaks into whatever test runs next. */
+const resetCubeModel = (state) => {
+  win.cubusFeed.useConnection(null);
+  state.connected = false;
+  state.cubeName = '';
+  state.cube.trusted = false;
+  state.cube.source = 'none';
+  state.cube.staleWhy = '';
+  state.cube.isPhysical = false;
+  state.cube.offset = null;
+  state.cube.offsetAt = 0;
+  state.live = null;
+  state.reported = null;
+  state.anchored = false;
+};
+
+const followSetup = async (state) => {
+  state.connected = true;
+  state.cubeName = 'GAN-test';
+  // Following requires a TRUSTED cube whose walk STARTS where the cube in your hand is: a
+  // scramble walks from solved, so the live report must say solved.
+  state.cube.trusted = true;
+  state.cube.source = 'cube';
+  state.cube.staleWhy = '';
+  state.live = SOLVED_FACELETS;
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/scramble';
+  await tick();
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && win.document.querySelectorAll('#solList .chip-m').length === 0) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return [...win.document.querySelectorAll('#solList .chip-m')].map((b) => b.textContent);
+};
+
+test('the pacing toggle appears only with a smart cube, and defaults to following', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/scramble';
+    await tick();
+    assert.equal(win.document.querySelector('[data-mode="cube"]'), null,
+      'no cube, no toggle — a switch with one position');
+    const moves = await followSetup(state);
+    assert.ok(moves.length > 2, 'precondition: a scramble was generated');
+    const btn = win.document.querySelector('[data-mode="cube"]');
+    assert.ok(btn, 'connected: the toggle exists');
+    assert.ok(btn.classList.contains('on'), 'and following is the default');
+    assert.ok(!btn.disabled);
+  } finally { resetCubeModel(state); }
+});
+
+test('a turn advances the guide immediately, without waiting for the animation', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    assert.ok(moves.length > 2, 'precondition: a scramble was generated');
+    // Two turns back to back — faster than any animation could finish. Under the old wiring the
+    // second was dropped, because the cursor had not moved yet.
+    feed().move({ notation: moves[0], serial: 1 });
+    feed().move({ notation: moves[1], serial: 2 });
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'neither was refused');
+    // And the cursor really moved: a deliberately wrong third turn names move 3 as the expected
+    // one. Without this, both move() calls could be no-ops and the test still passed.
+    const wrong = moves[2].startsWith('U') ? 'R' : 'U';
+    feed().move({ notation: wrong, serial: 3 });
+    const note = win.document.querySelector('#followNote');
+    assert.equal(note.hidden, false, 'a wrong turn is surfaced');
+    assert.ok(win.document.querySelector('#followMsg').textContent.includes(`the next move is ${moves[2]}`),
+      `the guide is waiting on move 3 (${moves[2]}), so the first two were taken`);
+  } finally { resetCubeModel(state); }
+});
+
+// The extension this branch exists for: the cube drives BOTH transport directions. Undoing the
+// move you just made is pressing Previous — immediately, not a second later when a snapshot
+// happens to notice (which is all v0 had, and it felt like the guide stopped listening).
+test('undoing the last move steps the guide back, like pressing Previous', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    assert.ok(moves.length > 1);
+    const inv = (m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : `${m}'`);
+    feed().move({ notation: moves[0], serial: 1 });
+    assert.equal(win.document.querySelector('#followNote').hidden, true);
+    feed().move({ notation: inv(moves[0]), serial: 2 });
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'the undo was accepted');
+    // The cursor is back at 0: a wrong move now names move 1 as the expected one again.
+    const wrong = moves[0].startsWith('U') ? 'R' : 'U';
+    feed().move({ notation: wrong, serial: 3 });
+    assert.ok(win.document.querySelector('#followMsg').textContent.includes(`the next move is ${moves[0]}`),
+      'after the undo, the guide expects the first move again');
+  } finally { resetCubeModel(state); }
+});
+
+test('a wrong turn says so instead of going quiet, and offers a way out', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    const wrong = moves[0].startsWith('U') ? 'R' : 'U';
+    feed().move({ notation: wrong, serial: 1 });
+    const note = win.document.querySelector('#followNote');
+    assert.equal(note.hidden, false);
+    assert.ok(win.document.querySelector('#followMsg').textContent.includes(wrong));
+    assert.ok(win.document.querySelector('#resolveBtn'), 'and offers a way out');
+  } finally { resetCubeModel(state); }
+});
+
+test('a missed-move gap is reported, not mistaken for a wrong turn, and disables following', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    feed().gap({ missing: 2, from: 4, to: 7 });
+    assert.equal(win.document.querySelector('#followNote').hidden, false);
+    assert.match(win.document.querySelector('#followMsg').textContent, /Missed 2 turns/);
+    const btn = win.document.querySelector('[data-mode="cube"]');
+    assert.ok(btn.disabled, 'following a cube we cannot vouch for is not on offer');
+  } finally { resetCubeModel(state); }
+});
+
+test('a snapshot from off the plan is named, and clears once the cube rejoins', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    assert.ok(moves.length > 0);
+    const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+    const offPlan = (() => { const c = new Cube(); c.move("R U F' D2 L"); return c.asString(); })();
+    feed().facelets(offPlan);
+    assert.equal(win.document.querySelector('#followNote').hidden, false, 'off-plan is surfaced');
+    feed().facelets(SOLVED_FACELETS);
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'it rejoins on its own');
+  } finally { resetCubeModel(state); }
+});
+
+test('touching the transport takes over from the cube; the toggle resumes', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    const btn = win.document.querySelector('[data-mode="cube"]');
+    assert.ok(btn.classList.contains('on'), 'precondition: following');
+    win.document.querySelector('#nextBtn').click();
+    assert.ok(!btn.classList.contains('on'), 'pressing Next hands control back to you');
+    btn.click();
+    assert.ok(btn.classList.contains('on'), 'and the toggle resumes following');
+  } finally { resetCubeModel(state); }
+});
+
+test('the titlebar indicator appears with a connection and leaves with it', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const ind = win.document.querySelector('#cubeLive');
+    assert.ok(ind, 'the indicator exists in the titlebar');
+    assert.equal(ind.hidden, true, 'and is absent with no cube');
+    win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 80 }) });
+    assert.equal(ind.hidden, false, 'a connection reveals it');
+    assert.ok(ind.classList.contains('stale'), 'a fresh connection is connected, not trusted');
+    state.cube.trusted = true;
+    win.cubusFeed.facelets(SOLVED_FACELETS);
+    win.cubusFeed.useConnection(null);
+    assert.equal(ind.hidden, true, 'a disconnect takes it away');
+  } finally { resetCubeModel(state); }
+});
