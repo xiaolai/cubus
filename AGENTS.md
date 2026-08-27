@@ -41,7 +41,11 @@ it walks you through solving it.
     side is registered in `.mcp.json` (`tauri-mcp`, pinned npm version); the guest JS is vendored
     to `apps/web/vendor/tauri-mcp-guest.js` and loaded only under Tauri, inert without the Rust
     side. To use: `CUBUS_MCP=1 pnpm dev:desktop`, then the `tauri-mcp` MCP tools in a fresh
-    agent session.
+    agent session. **Never call `manage_window clear_browsing_data` (or any storage clear) on the
+    dev app**: its localStorage IS the user's data — settings, the hidden-nav choice, the cube
+    registry, recent solves, the `cubeView` tuning — and on 2026-08-27 one such call, made to bust
+    a cached bundle, wiped all of it with no backup. If a rebuilt bundle does not show after a
+    reload, restart the dev app; the cache dies with the process, the data does not.
 - **No smart-cube support, deliberately.** A verified GAN16 BLE driver and a Rust bridge were
   built, shipped and then removed. They worked; the problem was that a cube adds an axis — present
   or absent, trusted or not — and every screen has to answer it. For this audience that axis is
