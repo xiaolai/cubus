@@ -12,6 +12,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "core:window:allow-set-title",
-    "cube-vision:default"
+    "cube-vision:default",
+    "opener:default"
   ]
 }
