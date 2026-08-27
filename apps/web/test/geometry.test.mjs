@@ -356,6 +356,84 @@ for (const fixture of FIXTURES) {
   });
 }
 
+// ---- every other routable screen ---------------------------------------------------------------
+//
+// Timer, Stats, Trainer, Drill, Lessons, Settings: no region contract of their own beyond the
+// grid every screen shares, but the same floor — nothing wider than the stage, nothing clipped
+// sideways, every control a finger can hit. Stats is seeded with a session: an empty one is a
+// single card and would test nothing.
+
+const SCREENS = ['timer', 'stats', 'trainer', 'drill', 'lessons', 'settings'];
+const SESSION = JSON.stringify({
+  list: Array.from({ length: 14 }, (_, i) => ({ n: 14 - i, time: (12 + ((i * 7) % 9) + i / 10).toFixed(2), scramble: "R U R' U' F2 D L2 B R2 U", at: 1_700_000_000_000 + i * 3_600_000 })),
+});
+
+const measureScreen = (page) =>
+  page.evaluate(`(() => {
+    const rect = ${rect.toString()};
+    const stage = document.getElementById('stage');
+    const screen = document.querySelector('.screen.active');
+    const root = screen.firstElementChild;
+    const cs = getComputedStyle(stage);
+    const px = (v) => Number.parseFloat(v);
+    const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const s = rect(stage);
+    const col = document.querySelector('.cols > .col'), aside = document.querySelector('.cols > .aside');
+    return {
+      stage: s, root: rect(root), content: s.width - px(cs.paddingLeft) - px(cs.paddingRight),
+      // The two regions of a .cols screen, to assert they never draw over each other.
+      col: col && rect(col), aside: aside && rect(aside),
+      overflow: { screen: screen.scrollWidth - screen.clientWidth, doc: document.documentElement.scrollWidth - innerWidth },
+      // Anything drawn beyond the stage sideways — including inside a scrolling column, where it
+      // would be clipped rather than seen.
+      beyond: [...screen.querySelectorAll('*')].filter(visible).map((el) => ({ what: el.id || el.className || el.tagName, ...rect(el) })).filter((r) => r.left < s.left - 1 || r.right > s.right + 1).slice(0, 4),
+      controls: [...screen.querySelectorAll('button:not(.toggle), .chip-m, .pill, input')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
+      // The toggle keeps its drawn 40×22 and grows a 44px hit area as a ::before, which no rect
+      // reports — so probe it: a point 9px above and below the box must still hit the toggle.
+      toggles: [...screen.querySelectorAll('.toggle')].filter(visible).map((t) => {
+        t.scrollIntoView({ block: 'center' }); // elementFromPoint sees the viewport only
+        const r = t.getBoundingClientRect();
+        const cx = (r.left + r.right) / 2;
+        const hits = (y) => { const el = document.elementFromPoint(cx, y); return el === t || t.contains(el); };
+        return { above: hits(r.top - 9), below: hits(r.bottom + 9) };
+      }),
+    };
+  })()`);
+
+for (const screen of SCREENS) {
+  for (const fixture of FIXTURES) {
+    test(`${screen} screen: ${label(fixture)}`, async () => {
+      const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+      await context.addInitScript((session) => localStorage.setItem('cubusSolves', session), SESSION);
+      const page = await context.newPage();
+      const errors = [];
+      page.on('pageerror', (e) => errors.push(e));
+      try {
+        await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${screen}`);
+        await page.waitForSelector('.screen.active', { timeout: 10_000 });
+        const m = await measureScreen(page);
+        assert.deepEqual(errors.map(String), [], 'the page threw');
+        assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
+        assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
+        assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
+        assert.ok(m.root.width >= m.content * 0.9, `the screen's root is ${m.root.width}px wide in a ${m.content}px stage — it shrank to its content`);
+        if (m.col && m.aside) {
+          // Beside or below, never over: a collapsed grid row once drew the sheet across the column.
+          assert.ok(!overlaps(m.col, m.aside), `the sheet ${JSON.stringify(m.aside)} draws over the column ${JSON.stringify(m.col)}`);
+          assert.ok(m.col.height > 40 && m.aside.height > 40, `a region collapsed: column ${m.col.height}px, sheet ${m.aside.height}px`);
+        }
+        if (fixture.touch) {
+          const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
+          assert.deepEqual(small, [], 'touch: controls under 44px');
+          for (const t of m.toggles) assert.ok(t.above && t.below, `touch: a toggle's hit area does not reach 44px (${JSON.stringify(t)})`);
+        }
+      } finally {
+        await context.close();
+      }
+    });
+  }
+}
+
 test('a popover opened on the stage stays inside it', async () => {
   const { page, context } = await open(FIXTURES[0]);
   try {

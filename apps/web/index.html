@@ -239,6 +239,15 @@
            whole there, so the solution card takes its natural height instead of flexing. */
         .aside > .state-card { order: 1; }
         .aside > .solution-card { flex: none; min-height: 0; }
+        /* List screens (Settings, Stats, Lessons): there is no primary to lock — the first
+           column is a list — so the rows take their content's height and the whole box scrolls
+           as one, instead of two scroll regions stacked on a phone. Landscape is unchanged: two
+           columns, each scrolling. */
+        .cols.flow { grid-template-rows: auto auto; overflow-y: auto; }
+        /* min-height: auto is load-bearing. An `auto` row in an overconstrained box sizes to its
+           item's MINIMUM contribution, and with the min-height: 0 the locked layout needs that
+           minimum is zero — the rows collapsed and the sheet drew over the column. */
+        .cols.flow > .col, .cols.flow > .aside { overflow: visible; min-height: auto; }
       }
       /* Beside the cube the solution card fills the sheet and its list scrolls inside it (the
          portrait rule above turns both off). A class, not an inline style: an inline `flex:1`
@@ -260,7 +269,18 @@
       .card.tight { padding: 0; overflow: hidden; }
       .stat .v { font-family: var(--font-num); font-size: var(--fs-display); font-weight: 600; letter-spacing: -.02em; }
       .stat .d { font-size: var(--fs-body-s); color: var(--ink-4); }
-      .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+      /* Intrinsic wrapping, not a breakpoint: as many 150px stat cards as fit, three on the
+         desktop reference, two on a phone. A `.v` at --fs-display needs ~130px. */
+      .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+      /* Trainer cases: as many 140px cards as the width holds — five at the reference, two on a
+         phone. */
+      .case-grid { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; align-content: start; }
+      /* A row of controls that wraps rather than overflows — the theme pills beside their
+         description, the trainer's filters beside their caption, the timer's last five. */
+      .wrap-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+      /* The timer's clock: 150px at the reference, and never wider than the stage — "12.34" in
+         the mono stack is ~3.6 characters of width, so 24cqw keeps it inside a phone. */
+      .timer-clock { font-size: clamp(48px, 24cqw, var(--fs-timer)); font-weight: 600; line-height: .95; letter-spacing: -.03em; cursor: pointer; }
       /* One rule for the whole document, ahead of every component. Any class that sets `display`
          beats the user-agent [hidden] rule, so each component that needed hiding had grown its own
          [hidden] override — six of them — and the two buttons this branch added were left out.
@@ -592,7 +612,7 @@
          4×44 + 22 + 56 + 6×4 + 32 = 310 ≤ 315. The toggle keeps its drawn size — its knob
          geometry is fixed numbers — and grows a 44px hit area around it instead. */
       @media (pointer: coarse) {
-        .btn, .tbtn, .tb-ctl, .card-tools > button, .pill, .menu > button, .nav-item, .swatches > button { min-height: 44px; }
+        .btn, .tbtn, .tb-ctl, .card-tools > button, .pill, .menu > button, .nav-item, .swatches > button, .field { min-height: 44px; }
         .tbtn, .tb-ctl, .card-tools > button, .swatches > button { min-width: 44px; }
         .eyebrow-row > button { width: 44px; height: 44px; margin: -14px -12px -14px 0; }
         .toggle::before { content: ''; position: absolute; inset: -11px -2px; }
