@@ -1,6 +1,6 @@
 [package]
 name = "cubus-desktop"
-version = "0.1.0"
+version = "0.4.2"
 description = "Cubus desktop app"
 edition = "2021"
 rust-version = "1.77.2"
@@ -9,14 +9,42 @@ rust-version = "1.77.2"
 name = "cubus_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Dev tooling, never shipped: the MCP control socket that lets an AI agent drive the app
+# (screenshots, selector clicks, JS eval). `pnpm dev` builds with this on; `tauri build` does
+# not, so release binaries do not even COMPILE the crate — and at runtime it additionally
+# requires CUBUS_MCP=1 (see lib.rs), because a dev app that always listens on a
+# control-everything socket is a hole, not a tool.
+mcp = ["dep:tauri-plugin-mcp"]
+
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 tauri = { version = "2.11.3", features = ["macos-private-api"] }
 tauri-plugin-log = "2"
+# External links (the About card's website/author). A webview gives `target="_blank"` nothing, so
+# anchors hand the URL to this plugin when its API is present; in the browser build the same
+# anchors just work. A capability seam both builds satisfy — the pattern AGENTS.md sanctions.
+tauri-plugin-opener = "2"
+# Dev-only (feature `mcp` above). Pinned to a rev because it is a git dependency with no
+# crates.io release yet; bump deliberately, not by surprise.
+tauri-plugin-mcp = { git = "https://github.com/P3GLEG/tauri-plugin-mcp", rev = "c7d271a06469bdf4744bfdeadca7458a1f3d02e5", optional = true }
 log = "0.4"
 # The native capture-and-inference plugin (macOS/iOS today). It compiles to an inert, command-
 # less plugin on other targets, where the app runs WebDetector — so this dependency is safe on
 # every platform and the shell stays one codebase.
 cube-vision = { path = "../../../crates/cube-vision" }
+
+# Already in the tree via tao/wry (same version), pulled in directly to place the macOS traffic
+# lights deterministically — see place_traffic_lights in lib.rs for why the framework's own
+# application of trafficLightPosition cannot be relied on.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", features = [
+  "std",
+  "NSResponder",
+  "NSView",
+  "NSControl",
+  "NSButton",
+  "NSWindow",
+] }

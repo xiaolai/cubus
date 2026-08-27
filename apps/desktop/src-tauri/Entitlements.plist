@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the hardened runtime, which codesign requires for
+  notarization. Referenced from tauri.conf.json's `bundle.macOS.entitlements`.
+
+  com.apple.security.device.camera is the half of the camera permission that
+  Info.plist cannot supply. Under the hardened runtime the plist's
+  NSCameraUsageDescription only provides the sentence shown in the prompt; this
+  entitlement is what allows the process to open a capture device at all.
+  Without it the signed app shows the prompt, the user says yes, and
+  getUserMedia still fails — a failure that does not reproduce in an unsigned
+  local build, which is what makes it worth stating here.
+
+  Deliberately absent:
+  - com.apple.security.app-sandbox — this is a Developer ID build, not an App
+    Store build, and sandboxing it would break nothing today but claims a
+    boundary nothing enforces.
+  - com.apple.security.device.audio-input — the scanner asks for
+    `{ video: …, audio: false }`. See Info.plist for the same reasoning.
+  - com.apple.security.cs.allow-jit and allow-unsigned-executable-memory — the
+    WebView's JavaScript and WASM run in Apple's own WebKit.WebContent process,
+    which carries its own entitlements. This app does not JIT.
+  - com.apple.security.get-task-allow — makes the build debuggable and is
+    rejected by the notary service. Its absence is asserted in
+    scripts/sign-macos.sh.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.camera</key>
+	<true/>
+</dict>
+</plist>
