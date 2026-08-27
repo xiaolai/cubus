@@ -1415,10 +1415,12 @@ const cubeScreen = (screenMode) => {
     ['camLat', 'camera-latitude'], ['camLon', 'camera-longitude'],
     ['facScale', 'facelet-scale'],
   ];
+  // Three regions of the layout contract's grid (index.html, ".cols"): the cube card is
+  // `primary`, the transport card `aux`, and the aside the `sheet`. Landscape sets the sheet
+  // beside the cube, portrait below it; the DOM is the same either way.
   return {
-    html: `<div class="cols">
-    <div class="col">
-      <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;position:relative">
+    html: `<div class="cols${walking ? ' walking' : ''}">
+      <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
         ${walking ? `<div class="card-tools">
           <button id="speedBtn" title="Animation speed">${icon('gauge', 20)}</button>
         </div>` : ''}
@@ -1426,7 +1428,7 @@ const cubeScreen = (screenMode) => {
           <div class="cube-slot" id="viewCube" style="height:100%"></div>
         </div>
       </div>
-      ${walking ? `<div class="card">
+      ${walking ? `<div class="card aux">
         <div class="transport">
           <button class="tbtn" id="prevBtn" title="Back a move">${icon('chevron-left', 20)}</button>
           <button class="tbtn" id="repeatBtn" title="Show that move again">${icon('refresh', 18)}</button>
@@ -1435,12 +1437,11 @@ const cubeScreen = (screenMode) => {
           ${state.connected ? `<button class="pill on" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
           <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
           <span class="done-mark" id="doneMark" hidden title="Done">${icon('check', 14)}</span>
-          <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:64px;text-align:right">0 / 0</span>
+          <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:56px;text-align:right">0 / 0</span>
         </div>
       </div>` : ''}
-    </div>
-    <div class="aside" style="overflow-y:auto">
-      <div class="card" style="padding-bottom:0">
+    <div class="aside">
+      <div class="card state-card" style="padding-bottom:0">
         <div class="eyebrow-row"><b class="state-h">${scrambling ? 'Target State' : 'Initial State'}</b>
           ${scrambling || settings.devRandCube
             // On Scramble the die IS the screen's re-roll and always shows. On the solve side it
@@ -1452,7 +1453,7 @@ const cubeScreen = (screenMode) => {
              with this card's own bottom padding zeroed) — the two breathing spaces the eye
              compares, made equal. -->
         <div class="net" id="viewNet" style="margin-top:30px"></div></div>
-      ${walking ? `<div class="card tight" style="flex:1;min-height:140px;display:flex;flex-direction:column">
+      ${walking ? `<div class="card tight solution-card">
         <div class="card-h bare"><b>${label}</b><span class="sub" id="moveCount">—</span></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="follow-note" id="followNote" hidden>
