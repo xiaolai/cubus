@@ -410,7 +410,11 @@
       /* A grid of fixed 44px tracks, as many as fit, justified edge-to-edge — so the first column
          sits flush with the heading and the last column flush with the count above, and a column
          can never be clipped: auto-fill computes what fits instead of letting wrap guess. */
-      .move-chips { display: grid; grid-template-columns: repeat(auto-fill, 44px); justify-content: space-between; row-gap: 6px; }
+      /* gap is the MINIMUM breathing room — auto-fill counts columns against 44px + 6px, so the
+         chips can never pack edge-to-edge; space-between then distributes whatever is left on top,
+         keeping the first column flush left and the last flush right. row-gap alone was the bug:
+         with no column-gap, auto-fill fit an extra column and left ~2px between chips. */
+      .move-chips { display: grid; grid-template-columns: repeat(auto-fill, 44px); justify-content: space-between; gap: 6px; }
       /* One shape for every move: a SQUARE at the 44px minimum tap target (fingers follow these
          mid-solve, often on a touchscreen), text centred both ways at body size — the box grew
          for the finger, not the type. Equal boxes are what let a solution read as a row of steps
