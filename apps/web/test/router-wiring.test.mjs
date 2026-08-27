@@ -505,16 +505,19 @@ test('opening Advanced is not remembered', async () => {
   const stored = win.localStorage.getItem('cubusSettings') ?? '';
   assert.ok(!stored.includes('advanced'), `open state must not be persisted, got: ${stored}`);
 
-  // The preference it controls IS saved, which is the distinction being drawn.
+  // The preference it controls IS saved, which is the distinction being drawn. Drill starts
+  // hidden, so the first click SHOWS it — and the stored hidden list must say so.
   win.document.querySelector('[data-nav-toggle="drill"]').click();
   await tick();
-  assert.match(win.localStorage.getItem('cubusSettings') ?? '', /navHidden.*drill/);
+  const hidden = JSON.parse(win.localStorage.getItem('cubusSettings') ?? '{}').navHidden ?? [];
+  assert.ok(!hidden.includes('drill'), `showing Drill persists, got: ${JSON.stringify(hidden)}`);
+  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
 
   // Put it back through the UI: clearing localStorage alone would leave the in-memory settings
-  // holding a hidden entry, and the next test would see a toolbar it did not ask for.
+  // holding a shown entry, and the next test would see a toolbar it did not ask for.
   win.document.querySelector('[data-nav-toggle="drill"]').click();
   await tick();
-  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
+  assert.ok(![...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
   win.document.dispatchEvent(chord());
   await tick();
   win.localStorage.removeItem('cubusSettings');
@@ -610,41 +613,42 @@ test('the Advanced toggle brings the dev die back, and turning it off takes it a
   win.localStorage.removeItem('cubusSettings');
 });
 
-test('hiding an entry removes it from the toolbar, and the rest is untouched', async () => {
+test('showing an entry adds it to the toolbar, hiding removes it, and the rest is untouched', async () => {
   win.location.hash = '#/settings';
   await tick();
   win.document.dispatchEvent(chord());
   await tick();
-  assert.ok(navIds().includes('lessons'), 'precondition: Lessons is listed');
+  assert.ok(!navIds().includes('lessons'), 'precondition: Lessons starts hidden');
 
+  // Show all three, in the order the toolbar lists them.
+  for (const id of ['trainer', 'drill', 'lessons']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
+  await tick();
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'lessons'], 'shown in toolbar order');
+
+  // Hide one: its neighbours are untouched.
   win.document.querySelector('[data-nav-toggle="lessons"]').click();
   await tick();
   assert.ok(!navIds().includes('lessons'), 'gone from the toolbar');
   assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill'], 'and its neighbours are untouched');
-
-  // All three at once.
-  for (const id of ['trainer', 'drill']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
-  await tick();
-  assert.deepEqual(navIds().filter((i) => ['trainer', 'drill', 'lessons'].includes(i)), []);
 
   // Hiding is cosmetic: the address still works, which is the escape hatch.
   win.location.hash = '#/lessons';
   await tick();
   assert.ok(win.document.querySelector('#stage .screen'), 'a hidden screen is still reachable');
 
-  // Restore through the UI, not by wiping localStorage. `settings` is a live module-level object:
-  // clearing storage leaves it holding the hidden ids, so every later test in this file inherits a
-  // toolbar with three entries missing. That is exactly what it did before this comment existed.
+  // Restore the DEFAULT through the UI, not by wiping localStorage. `settings` is a live
+  // module-level object: clearing storage leaves it holding the shown ids, so every later test in
+  // this file would inherit a toolbar with two extra entries.
   win.location.hash = '#/settings';
   await tick();
-  for (const id of ['lessons', 'trainer', 'drill']) {
+  for (const id of ['trainer', 'drill']) {
     win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
     await tick();
   }
   assert.deepEqual(
-    ['trainer', 'drill', 'lessons'].filter((i) => !navIds().includes(i)),
+    navIds().filter((i) => ['trainer', 'drill', 'lessons'].includes(i)),
     [],
-    'every entry is back before the next test runs',
+    'the default toolbar is back before the next test runs',
   );
   win.document.dispatchEvent(chord());
   await tick();
@@ -672,6 +676,11 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
   // Stats is hidden by default now (it shows representative numbers, not yours), so what matters
   // is that when it IS shown it carries the shorter name.
   assert.ok(!ids.includes('stats'), 'Stats is hidden by default');
+  // The placeholder screens are hidden by default IN CODE, not by a stored preference: a wiped
+  // localStorage once put all three back in the toolbar. Timer rides on the same rule.
+  for (const id of ['trainer', 'drill', 'lessons', 'timer']) {
+    assert.ok(!ids.includes(id), `${id} is hidden by default, whatever storage says`);
+  }
   const labels = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.textContent);
   assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
   // Nothing groups the list any more, so there is no heading left over to point at a screen that
@@ -697,14 +706,41 @@ test('the shell no longer carries a permanent connection box', async () => {
 // tabs in the title bar now, with Settings as the bar's trailing button — so the things to pin are
 // that nothing was lost in the flattening, that no heading survived it, and that Settings is
 // reachable from the bar without being a tab.
+// Dragging the 3D cube around is off by default: every cube in the app is set up at a chosen
+// angle that the ghost faces depend on, and a stray drag swung it away with no way back. The
+// preference is a Settings toggle, saved, and reaches every cube through the `orbit` attribute.
+test('drag-to-rotate is off by default, and the toggle reaches the cube as an attribute', async () => {
+  win.location.hash = '#/home';
+  await tick();
+  assert.equal(win.document.querySelector('cubus-cube').getAttribute('orbit'), 'locked', 'locked by default');
+  win.location.hash = '#/settings';
+  await tick();
+  const toggle = () => win.document.querySelector('[data-toggle="dragRotate"]');
+  assert.ok(toggle(), 'the option lives in Settings');
+  assert.ok(!toggle().classList.contains('on'), 'and starts off');
+  toggle().click();
+  await tick();
+  assert.match(win.localStorage.getItem('cubusSettings') ?? '', /dragRotate.:true/, 'the choice is saved');
+  win.location.hash = '#/home';
+  await tick();
+  assert.equal(win.document.querySelector('cubus-cube').getAttribute('orbit'), 'free', 'and the next cube is free to orbit');
+  // Back to the default through the UI, so later tests see locked cubes.
+  win.location.hash = '#/settings';
+  await tick();
+  toggle().click();
+  await tick();
+  win.location.hash = '#/home';
+  await tick();
+  assert.equal(win.document.querySelector('cubus-cube').getAttribute('orbit'), 'locked');
+});
+
 test('the toolbar is one flat row of tabs, with Settings as its own button', async () => {
   win.location.hash = '#/home';
   await tick();
-  // The default row is the beginner's path. Timer and Stats are speedcubing instruments and
-  // start hidden; Alg trainer, Drill and Lessons remain listed.
-  assert.deepEqual(navLabels(), [
-    'Home', 'Restore', 'Scramble', 'Alg trainer', 'Drill', 'Lessons',
-  ]);
+  // The default row is the beginner's path and nothing else: Timer and Stats are speedcubing
+  // instruments, Alg trainer, Drill and Lessons are placeholder screens — all five start hidden,
+  // in code, and are one chord away.
+  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble']);
   assert.equal(win.document.querySelector('#nav .nav-group'), null, 'no grouping wrapper');
   assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'no SOLVE / PRACTICE / LEARN');
   // Every child of #nav is a page button — nothing else lives in there now.
@@ -1398,4 +1434,81 @@ test('on a walking screen, live snapshots never repaint the reference net', asyn
       .map((e) => e.className.split(' ')[1]).join('');
     assert.equal(netAfter, netBefore, 'the reference state holds still whatever the cube does');
   } finally { resetCubeModel(state); }
+});
+
+// ---- Scramble → Solve hand-off ---------------------------------------------------------------
+//
+// The loop a beginner wants: scramble by following the guide, then solve THAT. It is offered at
+// completion, on a press, never automatically — reaching 22/22 by clicking says nothing about
+// the cube in anyone's hand. Without a trusted cube the target becomes a GENERATED subject (as
+// the dev die does); with one, nothing is adopted, because the cube's own state is the subject.
+
+const mountScramble = async () => {
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/scramble';
+  await tick();
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && win.document.querySelectorAll('#solList .chip-m').length === 0) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const moves = [...win.document.querySelectorAll('#solList .chip-m')].map((b) => b.textContent);
+  const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+  const c = new Cube();
+  for (const m of moves) c.move(m);
+  return { moves, target: c.asString() };
+};
+const stepTo = (i, total) => win.document.querySelector('cubus-cube')
+  .dispatchEvent(new win.CustomEvent('cubus-step', { detail: { index: i, total } }));
+
+test('finishing a scramble offers to solve it — on a press, and as a generated subject without a cube', async () => {
+  const { state } = await import('../lib/app.js');
+  const prev = { facelets: state.cube.facelets, physical: state.cube.isPhysical, source: state.cube.source, trusted: state.cube.trusted };
+  try {
+    const { moves, target } = await mountScramble();
+    const btn = () => win.document.querySelector('#solveItBtn');
+    assert.ok(btn(), 'the hand-off exists on Scramble');
+    assert.equal(btn().hidden, true, 'and is hidden until the walk is complete');
+    stepTo(moves.length - 1, moves.length);
+    assert.equal(btn().hidden, true, 'one move short is not complete');
+    stepTo(moves.length, moves.length);
+    assert.equal(btn().hidden, false, 'complete: the way onward appears');
+    assert.equal(win.location.hash, '#/scramble', 'and nothing navigates on its own');
+    assert.equal(btn().textContent, 'Solve this scramble', 'without a cube it is an assumption, and says so');
+    btn().click();
+    await tick();
+    assert.equal(win.location.hash, '#/home', 'the press goes to the solve walk');
+    assert.equal(state.cube.facelets, target, 'with the scramble target as the subject');
+    assert.equal(state.cube.isPhysical, false, 'not claimed to be the cube in anyone\'s hand');
+    assert.equal(state.cube.source, 'generated');
+  } finally {
+    state.cube.facelets = prev.facelets; state.cube.isPhysical = prev.physical;
+    state.cube.source = prev.source; state.cube.trusted = prev.trusted;
+  }
+});
+
+test('with a trusted cube at the target, the hand-off solves the cube itself and adopts nothing', async () => {
+  const { state } = await import('../lib/app.js');
+  const prev = { facelets: state.cube.facelets, physical: state.cube.isPhysical, source: state.cube.source };
+  try {
+    const { moves, target } = await mountScramble();
+    state.connected = true;
+    state.cube.trusted = true;
+    state.cube.source = 'cube';
+    state.cube.isPhysical = true;
+    feed().facelets(target); // the cube reports the scrambled state: ingested as the subject
+    assert.equal(state.cube.facelets, target, 'precondition: the cube is the subject');
+    stepTo(moves.length, moves.length);
+    const btn = win.document.querySelector('#solveItBtn');
+    assert.equal(btn.textContent, 'Your cube is scrambled — solve it', 'confirmed by the cube, and worded as such');
+    btn.click();
+    await tick();
+    assert.equal(win.location.hash, '#/home');
+    assert.equal(state.cube.isPhysical, true, 'the physical subject is untouched');
+    assert.equal(state.cube.source, 'cube', 'no generated adoption over a real cube');
+    assert.equal(state.cube.facelets, target);
+  } finally {
+    resetCubeModel(state);
+    state.cube.facelets = prev.facelets; state.cube.isPhysical = prev.physical; state.cube.source = prev.source;
+  }
 });

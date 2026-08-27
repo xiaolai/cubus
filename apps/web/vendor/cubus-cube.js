@@ -20676,7 +20676,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "tempo-scale",
     "temposcale",
     "back-view",
-    "backview"
+    "backview",
+    "orbit"
   ];
   static ALIAS = {
     ghostelevation: "ghost-elevation",
@@ -20740,7 +20741,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "camera-longitude": "45",
     "facelet-scale": "0.9",
     "tempo-scale": "1",
-    "back-view": "none"
+    "back-view": "none",
+    orbit: "free"
+    // 'locked' = dragging does not turn the view; the host decides
   };
   attributeChangedCallback(name, _old, val) {
     this._set(name, val);
@@ -20766,6 +20769,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     } else if (name === "facelet-scale") this._applyScale();
     else if (name === "camera-distance" || name === "camera-latitude" || name === "camera-longitude") this._applyCamera();
     else if (name === "back-view") this._dirty = true;
+    else if (name === "orbit") this._applyOrbit();
     else if (name === "facelets" || name === "scramble") this.reset();
     else if (name === "alg") {
       this._sol = this._parse(this._attrs.alg || "");
@@ -20785,13 +20789,6 @@ var CubusCube = class _CubusCube extends HTMLElement {
     renderer.toneMapping = NoToneMapping;
     renderer.domElement.style.cssText = "width:100%;height:100%;display:block";
     this.appendChild(renderer.domElement);
-    scene.add(new HemisphereLight(16775920, 4866096, 1));
-    const key = new DirectionalLight(16777215, 0.95);
-    key.position.set(5, 8, 6);
-    scene.add(key);
-    const fill = new DirectionalLight(14673663, 0.45);
-    fill.position.set(-6, 2, -4);
-    scene.add(fill);
     const controls = this.controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
@@ -20800,6 +20797,18 @@ var CubusCube = class _CubusCube extends HTMLElement {
     controls.maxDistance = 22;
     controls.rotateSpeed = 0.75;
     this._applyCamera();
+    this._applyOrbit();
+    const hemi = new HemisphereLight(16775920, 4866096, 1);
+    const key = new DirectionalLight(16777215, 0.95);
+    const fill = new DirectionalLight(14673663, 0.45);
+    scene.add(hemi, key, fill);
+    const inv = camera.quaternion.clone().invert();
+    this._lights = [
+      [hemi, new Vector3(0, 1, 0).applyQuaternion(inv)],
+      [key, new Vector3(5, 8, 6).applyQuaternion(inv)],
+      [fill, new Vector3(-6, 2, -4).applyQuaternion(inv)]
+    ];
+    this._placeLights();
     const root = this.root = new Group();
     scene.add(root);
     const bodyGeo = new RoundedBoxGeometry(0.94, 0.94, 0.94, 4, 0.1);
@@ -20901,6 +20910,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
         this._dirty = true;
       }
       const moving = this.controls.update();
+      if (moving) this._placeLights();
       if (moving || this._dirty) {
         this._draw();
         this._dirty = false;
@@ -20932,6 +20942,13 @@ var CubusCube = class _CubusCube extends HTMLElement {
     n.set(...g.userData.n).applyQuaternion(g.parent.getWorldQuaternion(this._q ||= new Quaternion()));
     return n.dot(eye) < -0.15;
   }
+  /** Drag-to-orbit is a preference, not a given. For a learner reading a guide, a drag that swings
+   *  the cube away from the angle the ghost faces are set up for is a mistake waiting to happen,
+   *  so the host can lock it. Only the angle: zoom and damping are untouched. */
+  _applyOrbit() {
+    if (!this.controls) return;
+    this.controls.enableRotate = this._attrs.orbit !== "locked";
+  }
   _applyCamera() {
     if (!this.camera) return;
     let d = this._num("camera-distance", 12) * 0.85;
@@ -20945,7 +20962,13 @@ var CubusCube = class _CubusCube extends HTMLElement {
     );
     this.camera.lookAt(0, 0, 0);
     this.controls?.update();
+    this._placeLights();
     this._dirty = true;
+  }
+  /** Turn the light rig with the given camera (the main one by default). */
+  _placeLights(cam = this.camera) {
+    if (!this._lights || !cam) return;
+    for (const [light, dir] of this._lights) light.position.copy(dir).applyQuaternion(cam.quaternion);
   }
   // Sticker size within its tile. 1 = edge to edge, 0.9 = the player's default.
   _applyScale() {
@@ -21021,10 +21044,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
       }
     }
     try {
+      this._placeLights(cam);
       r.setViewport(x, y, w, h);
       r.setScissor(x, y, w, h);
       r.render(this.scene, cam);
     } finally {
+      this._placeLights();
       for (const g of hidden) g.visible = false;
       for (const g of flipped) g.visible = true;
     }
