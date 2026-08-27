@@ -48,6 +48,15 @@ it walks you through solving it.
   cubejs + cubing.js). Fonts are system stacks only (decided 2026-08-27): numerals/times/algs use
   the system mono stack, UI text `system-ui` — no web fonts, no embedded fonts, and index.html
   loads nothing remote (a test enforces it).
+- **Layout contract** (decided 2026-08-27): two compositions keyed only on orientation — a 4:3
+  landscape reference and a 3:4 portrait reference — each with a locked primary region (the cube,
+  or the live scan face) and a sheet that absorbs the long-axis surplus, so a phone's extra height
+  is sheet, never paper. Every platform runs the same two; the desktop window is fixed-size,
+  non-resizable, sized from the monitor's work area, and can be either shape (a persisted toggle).
+  The browser tab is a test harness, not a supported viewport. No viewport width/height media
+  queries anywhere in `apps/web` — a test enforces it; `@container`, `orientation`, `prefers-*`
+  and `pointer` are the allowed queries. Contract, fit rule, fixture table, desktop formulas,
+  and the build order: `dev-docs/stage-contract.md`.
 - **Verification is the contract**: a claim in a comment or a doc must be backed by a test that
   fails when the claim stops being true. The habit that mattered most on the driver — assert what
   must NOT happen, not only what should — applies just as well to a scan and a solve.
