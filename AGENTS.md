@@ -26,6 +26,13 @@ it walks you through solving it.
     delegated click handler in `app.js` hands the URL to `__TAURI__.opener.openUrl` when that API
     is injected; in the browser the same anchors work natively. Same test as above: both builds
     satisfy the seam, neither gains a screen.
+  - **Third seam, accepted 2026-08-27 with the layout contract**: the desktop window's
+    orientation. `set_orientation` / `get_orientation` (commands in `lib.rs`) re-size and
+    re-centre the fixed window to the other reference and remember the choice in a file the
+    window is built from at the next launch — a file, because the window exists before the
+    webview does. The Settings row that calls them is drawn only where the Tauri API is injected
+    on a desktop platform; the browser build has no window to shape and a phone rotates in the
+    hand. Same test as above: no screen exists on one build only.
   - **Dev tooling, accepted 2026-08-27, never shipped**: `tauri-plugin-mcp` (git dep, pinned rev)
     — the control socket that lets an AI agent drive the app for verification: screenshots,
     selector clicks, DOM queries, JS eval. Triple-gated because it is control-everything: the

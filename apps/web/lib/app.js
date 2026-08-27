@@ -425,7 +425,6 @@ function wireWindowButtons(root) {
     void Promise.resolve(fn()).catch((e) => console.error('window control failed', e));
   });
   on('[data-win="min"]', () => win.minimize());
-  on('[data-win="max"]', () => win.toggleMaximize());
   on('[data-win="close"]', () => win.close());
 }
 
@@ -460,8 +459,11 @@ function buildChrome(platform) {
     // Caption buttons only where there is an undecorated window to drive: Windows and Linux.
     const captions = (platform === 'windows' || platform === 'linux') && (isTauri || preview);
     lead.innerHTML = brand;
+    // Minimise and close only: the window is a fixed size (dev-docs/stage-contract.md), so
+    // there is no maximise — and toggleMaximize would have maximised it regardless of the
+    // resize flag.
     trail.innerHTML = cubeLive + gear + (captions
-      ? `<span class="tb-zone tb-caption ${platform}">${cap('minus', 'min', round) + cap('square', 'max', round) + cap('x', 'close', round)}</span>`
+      ? `<span class="tb-zone tb-caption ${platform}">${cap('minus', 'min', round) + cap('x', 'close', round)}</span>`
       : '');
     if (captions) wireWindowButtons(trail);
   }
@@ -2055,12 +2057,20 @@ SCREENS.settings = () => {
   // the 15s countdown it named. A setting that claims behaviour it does not have is exactly the
   // invented data this app refuses elsewhere; it returns when the Timer actually earns it.
   const toggles = [['autosolve', 'Auto-solve after scan', 'Jump straight to the guide']];
+  // The window's orientation is the desktop's to choose (dev-docs/stage-contract.md, decision
+  // 4): a fixed window that can be either shape. The row exists only where there is a window to
+  // shape — the Tauri API on a desktop platform. A phone or tablet rotates in the hand, and the
+  // browser harness has no window. The Rust side (set_orientation) re-sizes, re-centres and
+  // remembers; this is the fourth capability seam AGENTS.md lists.
+  const desktopWindow = isTauri && ['macos', 'windows', 'linux'].includes(document.documentElement.dataset.platform);
   // `flow`: a list screen — in portrait the box scrolls as one (index.html, .cols.flow).
   return { html: `<div class="cols flow">
     <div class="col">
       <div class="card"><div class="eyebrow">APPEARANCE</div>
         <div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Theme</div><div class="sub" style="color:var(--ink-4)">White, cream or night — auto follows the system</div></div>
-          <div class="wrap-row" style="gap:6px">${THEMES.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-set-theme="${t}">${t}</button>`).join('')}</div></div></div>
+          <div class="wrap-row" style="gap:6px">${THEMES.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-set-theme="${t}">${t}</button>`).join('')}</div></div>
+        ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
+          <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}">${o}</button>`).join('')}</div></div>` : ''}</div>
       ${(() => {
         // ---- smart cube (recovered from v0) --------------------------------------------------
         const on = state.connected;
@@ -2211,6 +2221,22 @@ SCREENS.settings = () => {
       const swatch = () => { const p = NET_COLORS[settings.palette]; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:4px;background:${p[k]}"></div>`).join(''); };
       swatch();
       for (const b of root.querySelectorAll('[data-set-theme]')) b.onclick = () => { settings.theme = b.dataset.setTheme; save('cubusSettings', settings); applyTheme(); renderScreen(); };
+      // The window's orientation lives on the Rust side (a file the window is built from before
+      // this webview exists), so the pills ask it which is current, and tell it which to become.
+      // A failure surfaces on the pills themselves rather than in a console nobody reads.
+      const orientationPills = $('#orientationPills', root);
+      if (orientationPills) {
+        const invoke = window.__TAURI__?.core?.invoke;
+        const mark = (current) => { for (const b of orientationPills.querySelectorAll('[data-set-orientation]')) b.classList.toggle('on', b.dataset.setOrientation === current); };
+        const fail = (e) => { orientationPills.title = String(e); orientationPills.style.color = 'var(--err)'; console.error('window orientation', e); };
+        if (typeof invoke !== 'function') fail('the Tauri API is not exposed');
+        else {
+          invoke('get_orientation').then(mark, fail);
+          for (const b of orientationPills.querySelectorAll('[data-set-orientation]')) {
+            b.onclick = () => invoke('set_orientation', { orientation: b.dataset.setOrientation }).then(mark, fail);
+          }
+        }
+      }
       for (const b of root.querySelectorAll('[data-pal]')) b.onclick = () => { settings.palette = b.dataset.pal; save('cubusSettings', settings); applyNetColors(); renderScreen(); };
       for (const b of root.querySelectorAll('[data-toggle]')) b.onclick = () => { const k = b.dataset.toggle; settings[k] = !settings[k]; save('cubusSettings', settings); b.classList.toggle('on', settings[k]); };
 
