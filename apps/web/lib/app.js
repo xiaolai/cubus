@@ -9,7 +9,7 @@ import { makeRouter } from './router.js';
 // keeps "connected" from standing in for "known".
 import { makeTauriTransport, makeWebBluetoothTransport } from './cube-transport.js';
 import { MAX_LABEL, cubeLabel, forgetCube, listCubes, normaliseMac, parseRegistry, rememberCube, renameCube } from './cube-registry.js';
-import { applyOffset } from './cube-trust.js';
+import { applyOffset, deriveOffset, isIdentity } from './cube-trust.js';
 // Translation is wired at the render choke points (nav labels, window titles, the scan aside,
 // Settings) and is an identity function until a catalog registers — see dev-docs/i18n.md for the
 // convention and for the surfaces still to be converted.
@@ -504,6 +504,47 @@ let liveGap = null;
 let anchoring = false;
 /** A screen's reaction to losing the cube, beyond the trust model's own. Cleared on navigation. */
 let onCubeLost = null;
+
+/** Repair tracking from one camera reading, WITHOUT solving the cube.
+ *
+ *  This is the whole point of the trust design: the old repair was "solve it, then re-anchor",
+ *  which for a beginner is not a recovery path at all — someone who could solve the cube would
+ *  not need the app, and that is exactly where a new player gives up.
+ *
+ *  @returns {{ok: boolean, text: string}|null} what to tell the user, or null when the scan
+ *  changed nothing about tracking (no cube, or it already agreed).
+ */
+function repairTracking(scanned) {
+  if (!state.connected || !conn) return null;
+  // The RAW report, not state.live: live has already had the current offset applied, so deriving
+  // against it yields the identity — overwriting a correction the cube still needs.
+  const reported = state.reported;
+  if (!reported) return null;
+  // On an UNBROKEN chain the scan and the cube must agree. If they do not, one of them is wrong —
+  // a misread, or a camera pointed at a different cube — and deriving a correction from a
+  // contradiction would bake the mistake in permanently. Which one is wrong is not knowable;
+  // that there is a problem is. (Compared against state.live, NOT the raw report: once a
+  // correction is active, comparing with the raw report made every later good scan look like a
+  // contradiction — repairing a cube once made every later scan of it fail.)
+  if (state.cube.trusted && scanned !== state.live) {
+    return {
+      ok: false,
+      text: 'This is not what your cube is reporting, and the cube was tracking. One of the two is wrong, so nothing was changed — check that you scanned the cube that is connected.',
+    };
+  }
+  const offset = deriveOffset(scanned, reported, Cube);
+  if (!offset) return null;
+  state.cube.offset = isIdentity(offset) ? null : offset;
+  state.cube.offsetAt = state.cube.offset ? Date.now() : 0;
+  // Recomputed on the spot: live is the last report WITH the correction applied, and leaving it
+  // describing the old correction until the next ~1s snapshot lands means everything reading it
+  // in between sees a position that is no longer claimed.
+  const corrected = applyOffset(state.cube.offset, reported, Cube);
+  if (corrected !== null) state.live = corrected;
+  return state.cube.offset
+    ? { ok: true, text: 'Tracking repaired — your cube is back in step for as long as it stays connected, and you never had to solve it.' }
+    : null;
+}
 
 /** The cube is gone — dropped, or deliberately let go. ONE body, used by the driver's event, the
  *  Disconnect button and the failure path in connectOnce. Idempotent. */
@@ -1149,7 +1190,27 @@ SCREENS.scan = () => {
         // place (their content is already canonical, so nothing visibly changes).
         settleTiles(fl, e.detail.rotations);
         // The camera SAW the cube in the user's hand; nothing was inferred from anywhere else.
-        adoptCube(fl, { physical: true, source: 'camera' });
+        //
+        // Order matters: the repair reads what the cube CLAIMED, so it runs before the scan is
+        // adopted as truth. With a connected smart cube this one reading does two jobs — it says
+        // where the cube is, and it puts the cube's own tracking back in step for the rest of
+        // this connection, with no solving involved. (Not permanently: the correction is
+        // discarded on disconnect, because the cube may sleep or be turned while nobody counts.)
+        const repaired = repairTracking(fl);
+        if (repaired?.ok === false) {
+          // A contradiction is not a reading to adopt: one of the two is wrong and nothing can
+          // tell which. Adopting it while saying "nothing was changed" would be untrue — and so
+          // would an enabled Solve button over a cube the screen refused to believe.
+          markStale('a scan disagreed with what the cube reports, and neither could be confirmed');
+          solveBtn.disabled = true;
+        } else {
+          adoptCube(fl, { physical: true, source: 'camera' });
+        }
+        if (repaired) {
+          sayTitle.textContent = repaired.ok ? 'Tracking repaired' : 'These do not match';
+          say.textContent = repaired.text;
+          say.className = 'sub scan-say' + (repaired.ok ? ' ok' : ' err');
+        }
         // Stay put. Jumping to another screen took the six tiles away at the moment they finally
         // mean something, and with them the chance to check the read or fix a sticker. The aside
         // shows the cube that was found, and "Solve this cube" is right beside it. Anyone who
@@ -1425,8 +1486,12 @@ const cubeScreen = (screenMode) => {
       };
 
       liveUpdate = (f) => {
+        // Walking screens install their own handler further down (the follow machinery); until it
+        // lands — and on the failure path where it never does — snapshots must not repaint the
+        // net either: its label names a fixed reference state.
+        if (walking) return;
         paintNet(f);
-        if (!walking) cube.setAttribute('facelets', f);
+        cube.setAttribute('facelets', f);
       };
 
       if (!walking) return;
@@ -1648,22 +1713,21 @@ const cubeScreen = (screenMode) => {
       };
 
       liveUpdate = (f) => {
-        if (mode === 'cube') {
-          // Snapshots are the CORRECTION, not the signal. Searching all of `steps` rather than
-          // testing only the next one is what lets a cube that ran ahead, or was turned back,
-          // rejoin the guide instead of stalling forever. The net is NOT repainted while walking:
-          // it says INITIAL STATE, and following live turns would leave that label describing
-          // something the user is no longer looking at.
-          const idx = steps.indexOf(f);
-          if (idx < 0) {
-            showNote('This cube is not on the plan any more.');
-            return;
-          }
-          clearNote();
-          if (idx !== cubePos) { cubePos = idx; drawTo(idx); }
+        // The 2D net NEVER live-follows on a walking screen, following or not: its card says
+        // INITIAL STATE (or TARGET STATE), and a label naming a fixed reference must not sit over
+        // a moving picture. What the cube does live is the 3D cube's and the transport's story —
+        // the net is the anchor you compare them against.
+        if (mode !== 'cube') return;
+        // Snapshots are the CORRECTION, not the signal. Searching all of `steps` rather than
+        // testing only the next one is what lets a cube that ran ahead, or was turned back,
+        // rejoin the guide instead of stalling forever.
+        const idx = steps.indexOf(f);
+        if (idx < 0) {
+          showNote('This cube is not on the plan any more.');
           return;
         }
-        paintNet(f);
+        clearNote();
+        if (idx !== cubePos) { cubePos = idx; drawTo(idx); }
       };
 
       $('#resolveBtn', root).onclick = () => go(state.screen); // re-mount solves from the cube as it is now
