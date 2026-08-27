@@ -2061,7 +2061,7 @@ SCREENS.settings = () => {
   // 4): a fixed window that can be either shape. The row exists only where there is a window to
   // shape — the Tauri API on a desktop platform. A phone or tablet rotates in the hand, and the
   // browser harness has no window. The Rust side (set_orientation) re-sizes, re-centres and
-  // remembers; this is the fourth capability seam AGENTS.md lists.
+  // remembers; this is the third capability seam AGENTS.md lists.
   const desktopWindow = isTauri && ['macos', 'windows', 'linux'].includes(document.documentElement.dataset.platform);
   // `flow`: a list screen — in portrait the box scrolls as one (index.html, .cols.flow).
   return { html: `<div class="cols flow">
