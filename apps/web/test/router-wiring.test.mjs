@@ -180,7 +180,8 @@ test('the cube screen applies every saved view setting, not just the ones it sho
 test('the cube screen is the cube, one transport row, and nothing else', async () => {
   win.location.hash = '#/home';
   await tick();
-  const cubeCard = win.document.querySelector('#stage .cols > .col > .card');
+  // The cube card is the composition's `primary` region, a direct child of the grid.
+  const cubeCard = win.document.querySelector('#stage .cols > .card.primary');
   // One tool over the cube, in the corner: the speed menu. Nothing else draws on top of it.
   assert.deepEqual(
     [...cubeCard.querySelectorAll('button')].map((b) => b.id),

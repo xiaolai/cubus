@@ -133,6 +133,116 @@ for (const fixture of FIXTURES) {
   });
 }
 
+// ---- the cube screen's composition --------------------------------------------------------------
+//
+// Scramble rather than Home: a fresh app's cube is solved, so Home walks an empty solution; the
+// scramble screen rolls one and fills the sheet with chips, which is the state the regions have
+// to hold. One DOM, two compositions: beside the cube in landscape, under it in portrait.
+
+const rect = (el) => {
+  const b = el.getBoundingClientRect();
+  return { top: b.top, right: b.right, bottom: b.bottom, left: b.left, width: b.width, height: b.height };
+};
+
+// Evaluated from source text: `rect` must exist inside the page, so its definition is inlined.
+const measureCube = (page) =>
+  page.evaluate(`(() => {
+    const rect = ${rect.toString()};
+    const px = (v) => Number.parseFloat(v);
+    const $ = (s) => document.querySelector(s);
+    const screen = $('.screen.active');
+    const cs = getComputedStyle(screen);
+    const share = px(cs.getPropertyValue('--primary-share'));
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;visibility:hidden;width:var(--ref-w);height:var(--ref-h)';
+    screen.appendChild(probe);
+    const ref = rect(probe);
+    probe.remove();
+    const stage = $('#stage');
+    const scs = getComputedStyle(stage);
+    const content = {
+      w: stage.clientWidth - px(scs.paddingLeft) - px(scs.paddingRight),
+      h: stage.clientHeight - px(scs.paddingTop) - px(scs.paddingBottom),
+    };
+    const cols = $('.cols');
+    const canvas = $('#viewCube canvas');
+    const chips = [...document.querySelectorAll('.chip-m')].map(rect);
+    return {
+      share, ref: { w: ref.width, h: ref.height }, content,
+      colsGap: px(cs.getPropertyValue('--cols-gap')), rowsGap: px(cs.getPropertyValue('--rows-gap')),
+      walking: cols.classList.contains('walking'),
+      cols: rect(cols), primary: rect($('.cols > .primary')), aux: rect($('.cols > .aux')), sheet: rect($('.cols > .aside')),
+      solution: rect($('.solution-card')), state: rect($('.state-card')),
+      transport: { first: rect($('#prevBtn')), last: rect($('#stepLbl')), scroll: $('.transport').scrollWidth, client: $('.transport').clientWidth },
+      slot: rect($('#viewCube')), canvas: canvas && rect(canvas),
+      chips, overflow: { cols: cols.scrollWidth - cols.clientWidth, doc: document.documentElement.scrollWidth - innerWidth },
+    };
+  })()`);
+
+for (const fixture of FIXTURES) {
+  test(`cube screen composition: ${fixture.name}`, async () => {
+    const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height } });
+    const page = await context.newPage();
+    try {
+      await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/scramble`);
+      await page.waitForSelector('.screen.active', { timeout: 10_000 });
+      await page.click('#randCube');
+      await page.waitForSelector('.chip-m', { timeout: 15_000 });
+      const m = await measureCube(page);
+      const portrait = m.content.h > m.content.w;
+      assert.ok(m.walking, 'the scramble screen walks a scramble');
+      assert.ok(m.chips.length > 0, 'no chips on the sheet');
+
+      // The composition box: the reference box on the short axis, the whole stage on the long one.
+      if (portrait) {
+        near(m.cols.width, m.ref.w, 'portrait: cols width is the reference width');
+        near(m.cols.height, m.content.h, 'portrait: cols height is the stage content height');
+      } else {
+        near(m.cols.height, m.ref.h, 'landscape: cols height is the reference height');
+        near(m.cols.width, m.content.w, 'landscape: cols width is the stage content width');
+      }
+
+      // primary: --primary-share of the reference box's long side, less half a gap.
+      if (portrait) near(m.primary.height, m.ref.h * m.share - m.rowsGap / 2, 'portrait: primary height');
+      else near(m.primary.width, m.ref.w * m.share - m.colsGap / 2, 'landscape: primary width');
+
+      // aux directly under primary; sheet beside (landscape) or below (portrait), to the box's edge.
+      assert.ok(m.aux.top >= m.primary.bottom - 1, 'aux is under the primary');
+      near(m.aux.left, m.primary.left, 'aux shares the primary\'s left edge');
+      if (portrait) {
+        assert.ok(m.sheet.top >= m.aux.bottom - 1, 'portrait: sheet is under the aux');
+        near(m.sheet.width, m.cols.width, 'portrait: sheet spans the box');
+        assert.ok(m.solution.top < m.state.top, 'portrait: the solution comes before the net');
+        assert.ok(m.solution.height > 140 + 1 || m.chips.length <= 6, 'portrait: the solution card grew to its chips instead of scrolling inside');
+      } else {
+        assert.ok(m.sheet.left >= m.primary.right + m.colsGap - 1, 'landscape: sheet is beside the primary');
+        near(m.sheet.right, m.cols.right, 'landscape: sheet reaches the box\'s right edge');
+        near(m.sheet.bottom, m.cols.bottom, 'landscape: sheet reaches the box\'s bottom edge');
+        assert.ok(m.state.top < m.solution.top, 'landscape: the net comes before the solution');
+      }
+
+      // One transport line at and above the contract's portrait floor (375 wide); a narrower
+      // column may wrap the bar. Never a row wider than its card.
+      assert.ok(m.transport.scroll <= m.transport.client + 1, 'the transport overflows its card');
+      // Centres, not tops: a 38px button and a 20px label share a centre line, not a top edge.
+      const mid = (r) => r.top + r.height / 2;
+      if (fixture.width >= 375) near(mid(m.transport.first), mid(m.transport.last), 'transport wrapped', 2);
+
+      // Every chip on the sheet, horizontally; nothing wider than the stage.
+      for (const c of m.chips) assert.ok(c.left >= m.sheet.left - 1 && c.right <= m.sheet.right + 1, `a chip leaves the sheet: ${JSON.stringify(c)}`);
+      assert.ok(m.overflow.cols <= 1, `the composition overflows its box by ${m.overflow.cols}px`);
+      assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
+
+      // The renderer sized its canvas to the slot the composition gave it.
+      assert.ok(m.canvas, 'no canvas in the cube slot — the renderer did not mount');
+      near(m.canvas.width, m.slot.width, 'canvas width is the slot width', 2);
+      near(m.canvas.height, m.slot.height, 'canvas height is the slot height', 2);
+    } finally {
+      await context.close();
+    }
+  });
+}
+
 test('a popover opened on the stage stays inside it', async () => {
   const { page, context } = await open(FIXTURES[0]);
   try {

@@ -146,8 +146,11 @@
          below asks the stage, never the window. position:relative because the popovers are its
          absolutely positioned children (see the popover rule). The padding is a variable so a
          form factor can change it without another rule learning the stage's shape. */
+      /* The padding follows the app's width continuously (cqw here is the .app container's — an
+         element's own container does not serve its own properties): 24/30 from a 13" Air's
+         window up, 12/14 on a phone, no threshold in between. */
       .stage {
-        --stage-pad: 24px 30px;
+        --stage-pad: clamp(12px, 3cqw, 24px) clamp(12px, 3.6cqw, 30px);
         flex: 1; min-height: 0; overflow: hidden; padding: var(--stage-pad);
         position: relative; container-type: size; container-name: stage;
       }
@@ -160,13 +163,62 @@
         .screen { --ref-w: min(100cqw, 100cqh * 3 / 4); --ref-h: min(100cqh, 100cqw * 4 / 3); }
       }
       .screen { display: none; height: 100%; }
-      .screen.active { display: block; }
-      .cols { display: flex; gap: 22px; height: 100%; }
+      /* A grid of one cell, so the composition box centres on the stage when the fit rule leaves
+         paper — an iPad portrait stage is a little wider than 3:4 of its height. */
+      .screen.active { display: grid; place-items: center; }
+
+      /* ---- the composition: primary · aux · sheet ------------------------------------------- */
+      /* The two compositions of the layout contract (dev-docs/stage-contract.md), one DOM. A
+         screen is a grid of three regions: `primary` — the cube, or the scan net — locked to the
+         reference box; `aux` — the transport row, present while a solution is being walked; and
+         `sheet` — everything else, which takes whatever the long axis has beyond the reference
+         box. Landscape puts the sheet beside the primary and the aux under it; portrait stacks
+         all three. Which one is the stage's orientation, asked of the stage; nothing measures a
+         width. --primary-share is the primary's cut of the reference box's long side — the same
+         cut in both orientations, so the cube is the same fraction of the short axis everywhere;
+         the sheet's share is the rest, plus the surplus. */
+      .screen { --cols-gap: 22px; --rows-gap: 18px; --primary-share: 0.58; }
+      .cols {
+        display: grid; min-width: 0; min-height: 0;
+        column-gap: var(--cols-gap); row-gap: var(--rows-gap);
+        /* Landscape: the reference box is as tall as the stage; the sheet is the right-hand
+           column and any surplus width is its (the 1fr). */
+        width: 100%; height: var(--ref-h);
+        --primary-w: calc(var(--ref-w) * var(--primary-share) - var(--cols-gap) / 2);
+        grid-template-columns: var(--primary-w) minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr);
+        grid-template-areas: "primary sheet";
+      }
+      .cols.walking { grid-template-rows: minmax(0, 1fr) auto; grid-template-areas: "primary sheet" "aux sheet"; }
+      @container stage (orientation: portrait) {
+        .cols {
+          /* Portrait: the reference box is as wide as the stage; the sheet is the bottom row and
+             any surplus height is its. */
+          width: var(--ref-w); height: 100%;
+          --primary-h: calc(var(--ref-h) * var(--primary-share) - var(--rows-gap) / 2);
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: var(--primary-h) minmax(0, 1fr);
+          grid-template-areas: "primary" "sheet";
+        }
+        .cols.walking { grid-template-rows: var(--primary-h) auto minmax(0, 1fr); grid-template-areas: "primary" "aux" "sheet"; }
+        /* On a sheet BELOW the cube the solution comes before the net: the chips are the task, the
+           net is the reference, and a net first would put the task under the fold on a phone. The
+           one place the two compositions order the same DOM differently. The sheet scrolls as a
+           whole there, so the solution card takes its natural height instead of flexing. */
+        .aside > .state-card { order: 1; }
+        .aside > .solution-card { flex: none; min-height: 0; }
+      }
+      /* Beside the cube the solution card fills the sheet and its list scrolls inside it (the
+         portrait rule above turns both off). A class, not an inline style: an inline `flex:1`
+         outranks every stylesheet rule, and the portrait sheet could not un-flex it. */
+      .solution-card { flex: 1; min-height: 140px; display: flex; flex-direction: column; }
+      .primary { grid-area: primary; min-width: 0; min-height: 0; }
+      .aux { grid-area: aux; min-width: 0; }
       /* `overflow-y: auto` is not optional here: .stage clips, and no column scrolled. Settings can
          now list up to 32 remembered cubes, so past a certain number the controls below them were
          simply unreachable — clipped off the bottom with no way to scroll to them. */
-      .col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
-      .aside { flex: 0 1 var(--aside-w); min-width: var(--aside-min); display: flex; flex-direction: column; gap: 16px; }
+      .col { grid-area: primary; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
+      .aside { grid-area: sheet; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
 
       /* ---- primitives ----------------------------------------------------- */
       /* Flat on purpose: no fill, no outline. The leading pane is the only raised surface; a card
@@ -404,10 +456,15 @@
          progress bar, and the step count.
          Speed is not here — it lives in the cube card's corner, because it is a preference you set
          once rather than part of walking the solution. */
-      .transport { display: flex; align-items: center; gap: 8px; }
+      /* One line down to the contract's portrait floor, by arithmetic: four 38px buttons, the
+         22px done mark, the 56px count and six 6px gaps are 266px, and the bar's 48px basis makes
+         314 — an iPhone SE's transport is 315 wide. Below the floor (a 320px iPad Split View
+         column has 260) the row wraps and the bar, the one flexible thing in it, drops to a
+         second line rather than the row running off the card. */
+      .transport { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
       /* Takes the old spacer's job: it has to be the flexible gap anyway, so the gap may as well
          say how far through the solution you are. --track/--bar are the groove/fill token pair. */
-      .transport .progress { flex: 1; height: 6px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
+      .transport .progress { flex: 1 1 48px; height: 6px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
       .transport .progress > span { display: block; height: 100%; width: 0; border-radius: var(--r-pill); background: var(--bar); transition: width .18s ease; }
       /* The off-track note lives at the FOOT OF THE SOLUTION CARD, and that placement is the fix,
          not a preference: in the transport row it resized the cube card above on every stray turn,
