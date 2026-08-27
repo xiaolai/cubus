@@ -26,12 +26,27 @@
 // named side again, held a known way up. `confirmed` feeds that capture back in and FILTERS the
 // already-verified candidates — it never adds one.
 //
-// That is not enough on its own, and the tempting argument that it is, is wrong: filtering keeps
-// the answer inside the set of legal cubes, but a confirmation held 90 deg off can eliminate the
-// TRUE reading and leave an impostor that is equally legal. Measured with every confirmation
-// mis-held, that produced a confidently wrong cube in ~15% of ambiguous scans. Nothing in a single
-// face image can distinguish a correctly held capture from one turned a quarter turn, because both
-// are rotations of the same face.
+// A confirmation is a ROTATION measurement, not a colour measurement — the colours were already
+// accepted from the first capture; the second look exists only to say which way up the side was.
+// So it is matched by BEST rotation (minimum sticker disagreement), not sticker-for-sticker.
+// Exact matching was the original sin here: the detector's held-out colour accuracy is ~90%, so
+// the re-shown side routinely reads one sticker differently, exact match then fails at EVERY
+// rotation, and a correctly-held look got blamed as "held the wrong way up". Measured against the
+// panel's old drop-and-retry policy, a 2% per-sticker misread on the second look threw away 11%
+// of once-turned scans; at 10% it threw away two thirds. Min-distance matching with one flipped
+// sticker finds the unique true rotation in 93.5% of trials, ties (harmlessly — tied rotations
+// are near-symmetries that mostly read the same) in the rest, and picked a WRONG rotation in 0 of
+// 400. When no rotation comes within CONFIRM_TOLERANCE the two reads disagree about COLOURS, not
+// about the hold — that is `reread`: the caller adopts the fresh, deliberately-held capture as the
+// side's reading and re-assembles, rather than blaming the user for a read the camera changed.
+//
+// Tolerant or not, filtering alone is not enough, and the tempting argument that it is, is wrong:
+// filtering keeps the answer inside the set of legal cubes, but a confirmation held 90 deg off can
+// eliminate the TRUE reading and leave an impostor that is equally legal. Measured with every
+// confirmation mis-held, that produced a confidently wrong cube in ~15% of ambiguous scans.
+// Nothing in a single face image can distinguish a correctly held capture from one turned a
+// quarter turn, because both are rotations of the same face — a mis-held look matches its wrong
+// rotation at distance 0, so tolerance changes nothing about that case.
 //
 // So a confirmation is never trusted alone. Once confirmations narrow the set to one reading, we
 // ask for one FURTHER side and require the surviving reading to predict it — a face whose
@@ -59,6 +74,17 @@ export interface ConfirmRequest {
   up: Face;
 }
 
+/**
+ * A sticker a colour misread most plausibly landed on: flipping it to `to` makes the scan a legal
+ * cube. `index` is into the capture AS SHOWN — what a host's tile displays — so a suspect maps
+ * straight onto the sticker a user can tap.
+ */
+export interface StickerSuspect {
+  face: Face;
+  index: number;
+  to: number;
+}
+
 /** ScanResult plus AI-path extras: a human reason, and how to make progress when it failed. */
 export type AiScanResult = ScanResult & {
   reason?: string;
@@ -67,6 +93,19 @@ export type AiScanResult = ScanResult & {
   confirm?: ConfirmRequest;
   /** The confirmations contradict each other: one was mis-held, so they all have to be redone. */
   mismatch?: boolean;
+  /**
+   * This face's confirmation disagrees with its first capture about COLOURS (no rotation comes
+   * within tolerance), so it cannot serve as a rotation measurement. The caller should adopt the
+   * confirmation — the fresher, deliberately-held look — as the face's reading and re-assemble.
+   */
+  reread?: Face;
+  /** Single-sticker repairs that would make an unsolvable scan legal; empty when none is that simple. */
+  suspects?: StickerSuspect[];
+  /**
+   * On success: the rotation applied to each as-shown capture (URFDLB order, quarter turns CW) to
+   * reach the canonical layout — what a host needs to animate each tile turning the right way up.
+   */
+  rotations?: number[];
 };
 
 /** 90° clockwise position map for a 3x3 face in reading order; the centre (index 4) is fixed. */
@@ -87,12 +126,21 @@ const TOP_NEIGHBOUR: Readonly<Record<Face, Face>> = {
   B: 'U',
 };
 
-/** Rotate a 9-element face array 90° CW, `k` times (k is taken mod 4). */
-function rotateFace<T>(a: T[], k: number): T[] {
+/** Rotate a 9-element face array 90° CW, `k` times (k is taken mod 4). Exported for the panel,
+ *  which uses it to settle accepted captures into canonical rotation. */
+export function rotateFace<T>(a: T[], k: number): T[] {
   let out = a;
   for (let t = 0; t < ((k % 4) + 4) % 4; t++) out = ROT90.map((i) => out[i]!);
   return out;
 }
+
+/**
+ * How many stickers a confirmation may read differently from the first capture and still count as
+ * a rotation measurement. 0 was the original behaviour and is the bug this constant exists to
+ * name: it turned every second-look misread into "held the wrong way up". Past this many, the two
+ * reads disagree about colours outright and the caller is told to adopt the fresh one (`reread`).
+ */
+const CONFIRM_TOLERANCE = 2;
 
 function cubejsRoundTrips(facelets: string): boolean {
   try {
@@ -113,14 +161,24 @@ function reject(reason: string, extra: Partial<AiScanResult> = {}): AiScanResult
   };
 }
 
-/** The rotations of `face` under which the original capture reads exactly as `confirmed` does. */
+/**
+ * The rotations of `face` under which the original capture best matches `confirmed` — the ones at
+ * MINIMUM sticker disagreement, provided that minimum is within CONFIRM_TOLERANCE. Best-rotation
+ * rather than exact, because a confirmation only carries rotation information (see the header):
+ * one sticker read differently on the second look must not turn into "held the wrong way up".
+ * A tie returns every tied rotation — a filter can only be safely widened, never narrowed.
+ * Empty means the two reads disagree about colours (or are of different faces entirely), so the
+ * confirmation cannot measure the rotation at all.
+ */
 function matchingRotations(original: ColorFace, confirmed: ColorFace): Set<number> {
-  const want = confirmed.colors.join(',');
-  const out = new Set<number>();
-  for (let k = 0; k < 4; k++) {
-    if (rotateFace(original.colors, k).join(',') === want) out.add(k);
-  }
-  return out;
+  // Centres never move under rotation, so differing centres mean a different face, not a hold.
+  if (original.colors[4] !== confirmed.colors[4]) return new Set();
+  const dist = [0, 1, 2, 3].map((k) =>
+    rotateFace(original.colors, k).reduce((s, c, i) => s + (c === confirmed.colors[i] ? 0 : 1), 0),
+  );
+  const min = Math.min(...dist);
+  if (min > CONFIRM_TOLERANCE) return new Set();
+  return new Set([0, 1, 2, 3].filter((k) => dist[k] === min));
 }
 
 /**
@@ -170,6 +228,84 @@ function pickVerification(
     }
   });
   return best === undefined || bestScore < 1 ? undefined : { face: best, up: TOP_NEIGHBOUR[best] };
+}
+
+/**
+ * Every distinct solvable reading of six as-shown faces: facelet string → EVERY rotation combo
+ * that produces it — not just the first. A symmetric face (a solved side is the extreme case) is
+ * read the same at several rotations, so one string legitimately has many combos, and a later
+ * confirmation has to be able to match any of them. Each distinct string is validated once;
+ * `null` marks one already rejected.
+ */
+function solvableReadings(
+  faces: Record<Face, ColorFace>,
+  centreOwner: Map<number, Face>,
+): [string, number[][]][] {
+  // Build the 54-char facelet string for one per-face rotation combo, or null if any sticker's
+  // colour isn't one of the 6 centre colours (can't be placed on a real cube).
+  const buildFacelets = (rots: number[]): string | null => {
+    const letters: string[] = [];
+    for (let fi = 0; fi < 6; fi++) {
+      const rc = rotateFace(faces[FACES[fi]!]!.colors, rots[fi]!);
+      for (let i = 0; i < 9; i++) {
+        const owner = centreOwner.get(rc[i]!);
+        if (owner === undefined) return null;
+        letters.push(owner);
+      }
+    }
+    return letters.join('');
+  };
+
+  const seen = new Map<string, number[][] | null>();
+  const rots = [0, 0, 0, 0, 0, 0];
+  for (let n = 0; n < 4096; n++) {
+    for (let i = 0; i < 6; i++) rots[i] = (n >> (2 * i)) & 3;
+    const fl = buildFacelets(rots);
+    if (fl === null) continue;
+    let combos = seen.get(fl);
+    if (combos === undefined) {
+      combos = isStructurallyValid(fl) && cubejsRoundTrips(fl) ? [] : null;
+      seen.set(fl, combos);
+    }
+    if (combos !== null) combos.push([...rots]);
+  }
+  return [...seen].filter((e): e is [string, number[][]] => e[1] !== null);
+}
+
+/**
+ * Where a single misread sticker could be. A real cube has nine stickers of each colour, so one
+ * misread shows up as one colour counted 10 and another 8 — and the wrong sticker must be among
+ * the ten. Try flipping each of them to the under-counted colour and keep the flips under which
+ * some rotation combo becomes a legal cube. Centres are never suspects (a centre names its face),
+ * and anything messier than a single 10/8 imbalance gets no suspects rather than a guess.
+ */
+function findSuspects(faces: Record<Face, ColorFace>): StickerSuspect[] {
+  const counts = new Map<number, number>();
+  for (const f of FACES) {
+    for (const c of faces[f]!.colors) counts.set(c, (counts.get(c) ?? 0) + 1);
+  }
+  const over = [...counts].filter(([, n]) => n === 10).map(([c]) => c);
+  const under = [...counts].filter(([, n]) => n === 8).map(([c]) => c);
+  if (over.length !== 1 || under.length !== 1 || counts.size !== 6) return [];
+  const [wrong] = over;
+  const [right] = under;
+  const centreOwner = new Map<number, Face>();
+  for (const f of FACES) centreOwner.set(faces[f]!.colors[4]!, f);
+  const out: StickerSuspect[] = [];
+  for (const face of FACES) {
+    const src = faces[face]!;
+    for (let i = 0; i < 9; i++) {
+      if (i === 4 || src.colors[i] !== wrong) continue;
+      const patched = {
+        ...faces,
+        [face]: { ...src, colors: src.colors.map((c, j) => (j === i ? right! : c)) },
+      };
+      if (solvableReadings(patched, centreOwner).length > 0) {
+        out.push({ face, index: i, to: right! });
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -246,53 +382,38 @@ export function assembleColors(
   }
   if (centreOwner.size !== 6) return reject('the 6 centres are not 6 distinct colours');
 
-  // Build the 54-char facelet string for one per-face rotation combo, or null if any sticker's
-  // colour isn't one of the 6 centre colours (can't be placed on a real cube).
-  const buildFacelets = (rots: number[]): string | null => {
-    const letters: string[] = [];
-    for (let fi = 0; fi < 6; fi++) {
-      const rc = rotateFace(faces[FACES[fi]!]!.colors, rots[fi]!);
-      for (let i = 0; i < 9; i++) {
-        const owner = centreOwner.get(rc[i]!);
-        if (owner === undefined) return null;
-        letters.push(owner);
-      }
-    }
-    return letters.join('');
-  };
-
-  // Search all 4^6 rotation combos, keeping EVERY combo that produces each distinct solvable
-  // string — not just the first. A symmetric face (a solved side is the extreme case) is read the
-  // same at several rotations, so one string legitimately has many combos, and a later
-  // confirmation has to be able to match any of them. Each distinct string is validated once;
-  // `null` marks one already rejected.
-  const seen = new Map<string, number[][] | null>();
-  const rots = [0, 0, 0, 0, 0, 0];
-  for (let n = 0; n < 4096; n++) {
-    for (let i = 0; i < 6; i++) rots[i] = (n >> (2 * i)) & 3;
-    const fl = buildFacelets(rots);
-    if (fl === null) continue;
-    let combos = seen.get(fl);
-    if (combos === undefined) {
-      combos = isStructurallyValid(fl) && cubejsRoundTrips(fl) ? [] : null;
-      seen.set(fl, combos);
-    }
-    if (combos !== null) combos.push([...rots]);
-  }
-  const all = [...seen].filter((e): e is [string, number[][]] => e[1] !== null);
+  const all = solvableReadings(faces, centreOwner);
 
   if (all.length === 0) {
-    return reject('no orientation of the faces is solvable — a colour was misread; re-scan');
+    // Before refusing, do the diagnosis a refusal makes possible: if the colour counts are off by
+    // exactly one sticker, the misread has a short list of places it can be, and pointing at them
+    // turns "re-scan everything" into "tap the one wrong sticker".
+    const suspects = findSuspects(faces);
+    return reject(
+      'no orientation of the faces is solvable — a colour was misread',
+      suspects.length > 0 ? { suspects } : {},
+    );
   }
 
   // Narrow by any confirmed capture: keep a reading only if at least one of ITS combos rotates the
-  // original capture into exactly what the confirmation saw. This is a filter over strings the
-  // solvability gate already passed, so no confirmation — however badly held — can introduce a
-  // cube that was not already verified.
+  // original capture into what the confirmation saw, at best-rotation match (see matchingRotations).
+  // This is a filter over strings the solvability gate already passed, so no confirmation —
+  // however badly held or read — can introduce a cube that was not already verified.
   const confirmedFaces = FACES.filter((f) => confirmed[f]);
   const allowed = new Map<Face, Set<number>>();
   for (const face of confirmedFaces) {
-    allowed.set(face, matchingRotations(faces[face]!, confirmed[face]!));
+    const rots = matchingRotations(faces[face]!, confirmed[face]!);
+    // No rotation comes close: the two looks disagree about COLOURS, so this capture measures
+    // nothing about the hold. Hand it back as `reread` — the caller adopts the fresh look (taken
+    // under instruction, held a known way up) as the side's reading and re-assembles, instead of
+    // telling a user who did everything right that they held it wrong.
+    if (rots.size === 0) {
+      return reject('that side read differently this time — checking again with the fresh read', {
+        reread: face,
+        confirm: { face, up: TOP_NEIGHBOUR[face] },
+      });
+    }
+    allowed.set(face, rots);
   }
   const candidates = all
     .map(([fl, combos]): [string, number[][]] => [
@@ -318,9 +439,18 @@ export function assembleColors(
 
   if (candidates.length > 1) {
     const confirm = pickConfirm(candidates, confirmed);
+    if (confirm) {
+      return reject(
+        `${candidates.length} readings fit — this cube is close to solved, so one more look decides it`,
+        { ambiguous: true, confirm },
+      );
+    }
+    // No unconfirmed side can tell the surviving readings apart (their rotation sets agree on
+    // every face we could still ask about) — the same dead end as the too-symmetric case below,
+    // so say the same thing rather than promising a deciding look that cannot be asked for.
     return reject(
-      `${candidates.length} readings fit — this cube is close to solved, so one more look decides it`,
-      { ambiguous: true, ...(confirm ? { confirm } : {}) },
+      'this cube is too symmetric to read for certain — turn any one face, then scan again',
+      { ambiguous: true },
     );
   }
 
@@ -359,7 +489,8 @@ export function assembleColors(
   }
 
   // Rotate the confidences the same way for the report, using a combo that satisfies every
-  // confirmation.
+  // confirmation. The combo itself rides along as `rotations`, so a host can turn each tile the
+  // way the search turned the capture, and the caller can settle its captures into canonical.
   const chosen = combos[0]!;
   const conf: number[] = [];
   for (let fi = 0; fi < 6; fi++) {
@@ -371,5 +502,5 @@ export function assembleColors(
     if (c < min) min = c;
     if (c < threshold) lowConfidence.push(i);
   });
-  return { facelets, valid: true, confidence: min, lowConfidence };
+  return { facelets, valid: true, confidence: min, lowConfidence, rotations: [...chosen] };
 }

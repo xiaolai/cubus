@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type ColorFace, assembleColors } from '../src/ai-assemble.js';
+import { type ColorFace, assembleColors, assemblePainted } from '../src/ai-assemble.js';
 import { SOLVED_FACELETS } from '../src/facelet-cube.js';
 import { FACES, type Face } from '../src/types.js';
 import { scrambleFacelets } from './helpers.js';
@@ -193,5 +193,157 @@ describe('assembleColors — cubes that six face photographs cannot pin down', (
       if (r.valid) expect(r.facelets).toBe(truth);
       else expect(r.reason).toBeDefined();
     }
+  });
+});
+
+describe('assembleColors — confirmations are rotation measurements, and refusals carry diagnosis', () => {
+  const oneTurn = scrambleFacelets('U');
+  const deep = scrambleFacelets("R U F2 D' L B R2 F D U2 L2 B'");
+
+  it('a confirmation with one misread sticker still recovers the true cube', () => {
+    // Exact matching failed here at EVERY rotation, so a correctly-held look read as a mis-hold —
+    // measured against the old drop-and-retry policy, a 2% per-sticker misread on the second look
+    // wiped 11% of once-turned scans, and 66% at the model's held-out 10%.
+    const shown = shownAs(oneTurn, [0, 0, 0, 0, 0, 0]);
+    const first = assembleColors(shown);
+    expect(first.confirm).toBeDefined();
+    const cap = canonical(oneTurn, first.confirm!.face);
+    cap.colors[0] = (cap.colors[0]! + 1) % 6; // the second look flips one sticker
+    const second = assembleColors(shown, 0.15, { [first.confirm!.face]: cap });
+    // Never a mismatch ("held the wrong way up") for a colour flip; the scan continues instead.
+    expect(second.mismatch).toBeUndefined();
+    if (!second.valid) {
+      expect(second.confirm).toBeDefined();
+    } else {
+      expect(second.facelets).toBe(oneTurn);
+    }
+  });
+
+  it('a confirmation that reads as a different face entirely comes back as `reread`', () => {
+    const shown = shownAs(oneTurn, [0, 0, 0, 0, 0, 0]);
+    const first = assembleColors(shown);
+    const face = first.confirm!.face;
+    const cap = canonical(oneTurn, face);
+    for (const i of [0, 1, 2, 3]) cap.colors[i] = (cap.colors[i]! + 1) % 6; // 4 disagreements
+    const r = assembleColors(shown, 0.15, { [face]: cap });
+    expect(r.valid).toBe(false);
+    expect(r.reread).toBe(face);
+    expect(r.confirm?.face).toBe(face);
+    expect(r.mismatch).toBeUndefined(); // colours disagreeing is not a hold accusation
+  });
+
+  it('a single misread sticker is pointed at, in as-shown coordinates', () => {
+    // The F side is shown a quarter turn off AND with one sticker misread. The suspect must name
+    // the sticker as displayed (index into the rotated capture), because that is what a user taps.
+    const rots = [0, 0, 1, 0, 0, 0];
+    const shown = shownAs(deep, rots);
+    const trueColor = shown.F!.colors[2]!;
+    shown.F!.colors[2] = (trueColor + 1) % 6;
+    const r = assembleColors(shown);
+    expect(r.valid).toBe(false);
+    expect(r.suspects).toContainEqual({ face: 'F', index: 2, to: trueColor });
+    // Applying the suggested fix makes the scan assemble to the true cube.
+    shown.F!.colors[2] = trueColor;
+    expect(assembleColors(shown).facelets).toBe(deep);
+  });
+
+  it('anything messier than a single 10/8 imbalance gets no suspects rather than a guess', () => {
+    const shown = shownAs(deep, [0, 0, 0, 0, 0, 0]);
+    shown.F!.colors[0] = (shown.F!.colors[0]! + 1) % 6;
+    shown.R!.colors[1] = (shown.R!.colors[1]! + 2) % 6;
+    shown.L!.colors[3] = (shown.L!.colors[3]! + 3) % 6;
+    const r = assembleColors(shown);
+    if (!r.valid) expect(r.suspects ?? []).toEqual([]);
+  });
+
+  it('success returns the rotation applied to each as-shown face', () => {
+    const rots = [1, 2, 3, 0, 1, 2];
+    const shown = shownAs(deep, rots);
+    const r = assembleColors(shown);
+    expect(r.valid).toBe(true);
+    expect(r.rotations).toBeDefined();
+    // Applying the returned rotations to the as-shown captures reproduces the accepted facelets.
+    const rebuilt = FACES.map((face, fi) =>
+      rot(shown[face]!.colors, r.rotations![fi]!)
+        .map((c) => FACES[c])
+        .join(''),
+    ).join('');
+    expect(rebuilt).toBe(r.facelets);
+  });
+});
+
+describe('assembleColors — dead ends refuse rather than guess', () => {
+  it('when no remaining side can check the survivor, it says the cube is too symmetric', () => {
+    // Found by seeded search: after honestly confirming R and L, exactly this cube at exactly
+    // these shown rotations leaves readings nothing further can tell apart.
+    const truth = scrambleFacelets("L R' F' B");
+    const shown = shownAs(truth, [0, 2, 1, 2, 2, 0]);
+    let confirmed: Partial<Record<Face, ColorFace>> = {};
+    let r = assembleColors(shown, 0.15, confirmed);
+    for (let round = 0; round < 4 && r.confirm; round++) {
+      confirmed = { ...confirmed, [r.confirm.face]: canonical(truth, r.confirm.face) };
+      r = assembleColors(shown, 0.15, confirmed);
+    }
+    expect(r.valid).toBe(false);
+    expect(r.confirm).toBeUndefined();
+    expect(r.ambiguous).toBe(true);
+    expect(r.reason).toMatch(/too symmetric/);
+  });
+
+  it('throws loudly on a malformed face rather than assembling nonsense', () => {
+    const f = faces(SOLVED_FACELETS);
+    f.U = { colors: [0, 0, 0], confidence: [1, 1, 1] };
+    expect(() => assembleColors(f)).toThrow(/expected 9 colours/);
+  });
+});
+
+describe('assemblePainted', () => {
+  it('accepts a hand-painted legal cube exactly as painted — no rotation search', () => {
+    const truth = scrambleFacelets("F R U' L2 D B");
+    const r = assemblePainted(faces(truth));
+    expect(r.valid).toBe(true);
+    expect(r.facelets).toBe(truth);
+  });
+
+  it('rejects two faces painted with the same centre colour', () => {
+    const f = faces(SOLVED_FACELETS);
+    f.R.colors[4] = f.U.colors[4]!;
+    const r = assemblePainted(f);
+    expect(r.valid).toBe(false);
+    expect(r.reason).toMatch(/centre/);
+  });
+
+  it('rejects a sticker painted a colour no centre has', () => {
+    // Only reachable if a caller feeds classes outside 0..5 — the panel never does, but the
+    // validator must not place an unplaceable sticker silently.
+    const f = faces(SOLVED_FACELETS);
+    f.U.colors[0] = 17;
+    const r = assemblePainted(f);
+    expect(r.valid).toBe(false);
+    expect(r.reason).toMatch(/centre colours/);
+  });
+
+  it('rejects an unsolvable painting with "keep painting", not a misread accusation', () => {
+    const f = faces(SOLVED_FACELETS);
+    f.U.colors[0] = LETTER_CLASS.R;
+    f.R.colors[0] = LETTER_CLASS.U; // counts stay 9/9 but the state is illegal
+    const r = assemblePainted(f);
+    expect(r.valid).toBe(false);
+    expect(r.reason).toMatch(/keep painting/);
+  });
+
+  it('flags low-confidence stickers below the threshold', () => {
+    const f = faces(SOLVED_FACELETS);
+    f.D.confidence[3] = 0.05;
+    const r = assemblePainted(f, 0.15);
+    expect(r.valid).toBe(true);
+    expect(r.lowConfidence).toContain(27 + 3); // D is the 4th face: global index 27..35
+    expect(r.confidence).toBeCloseTo(0.05);
+  });
+
+  it('throws loudly on a malformed face', () => {
+    const f = faces(SOLVED_FACELETS);
+    f.B = { colors: [], confidence: [] };
+    expect(() => assemblePainted(f)).toThrow(/expected 9 colours/);
   });
 });
