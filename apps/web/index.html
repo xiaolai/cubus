@@ -102,6 +102,13 @@
       .tb-ctl { width: 32px; height: 32px; border-radius: var(--r-pill); display: grid; place-items: center; color: var(--ink-3); transition: background var(--fade), color var(--fade); }
       .tb-ctl:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink); }
       .tb-ctl.active { background: var(--invert-bg); color: var(--invert-fg); }
+      /* The smart-cube presence, beside Settings: green and breathing while its position is
+         tracked, amber and still when unverified — connected-but-unverified must not wear the
+         colour of certainty. Hidden entirely with no cube; paintTrust() owns all three states. */
+      .tb-ctl.tb-live { color: var(--ok); }
+      .tb-ctl.tb-live .ic { animation: cubusPulse var(--pulse) infinite; }
+      .tb-ctl.tb-live.stale { color: var(--warn); }
+      .tb-ctl.tb-live.stale .ic { animation: none; }
       /* Windows/Linux caption buttons, drawn by the app because the window has no decorations. */
       .tb-caption { margin-left: 8px; }
       .tb-caption.windows { gap: 0; }
@@ -188,6 +195,9 @@
       .list { flex: 1; min-height: 0; overflow-y: auto; }
       .row { display: grid; align-items: center; padding: 9px 18px; border-bottom: 1px solid var(--line-faint); font-size: var(--fs-body); }
       .link { color: var(--accent); font-size: var(--fs-body-s); }
+      /* Text input for the smart-cube card (MAC address, nicknames). Mono, because addresses are
+         the kind of string a person compares character by character. */
+      .field { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-3); padding: 7px 10px; font-family: var(--font-num); font-size: var(--fs-body-s); }
       /* The About card: the app's own mark heading a short table of facts. Row icons are the same
          inline set as everywhere else; the key column is fixed so the values align. */
       .about-brand { display: flex; align-items: center; gap: 8px; margin: 10px 0 6px; font-family: var(--font-num); font-size: var(--fs-title-s); }
