@@ -85,7 +85,7 @@ test('each face tile is edged in its neighbours colours, so the way to hold it i
   // cell is painted its own face colour. So this asserts the RELATIONSHIP rather than a set of
   // hex values, and keeps working if the palette changes.
   const colourOf = Object.fromEntries(all('.scan-face').map((t) =>
-    [t.dataset.face, t.querySelectorAll('.tile > i')[4].style.backgroundColor]));
+    [t.dataset.face, t.querySelectorAll('.tgrid > i')[4].style.backgroundColor]));
   const bordersOf = (f) => $(`.scan-face[data-face="${f}"] .tile`)
     .getAttribute('style').replace('border-color:', '').trim().split(/\s+/);
   // The canonical URFDLB layout — derived from EDGE_FACELET in the scanner package and pinned by
@@ -195,6 +195,80 @@ test('the pointer clears once the scan moves on', () => {
   assert.deepEqual(all('.scan-face.asked'), []);
 });
 
+// The aside speaks with two voices in two places: a pinned notice — what the scanner needs and
+// why, standing until the situation changes — and the transient camera hint on its own line
+// below. One line for both is the old design, and it is how a refusal's explanation got
+// overwritten by "show any side to the camera" within a single tick and read as a crash.
+test('a pinned notice owns the card, with the camera hint on its own line below', () => {
+  progress({ phase: 'scanning', message: 'Show any side to the camera — point a side at the camera…',
+    captured: FACES.map(face), live: null, confirm: null,
+    notice: { title: 'One sticker looks wrong', tone: 'err', body: 'Fixing a marked sticker makes this a solvable cube.' } });
+  assert.equal($('#scanHowTitle').textContent, 'One sticker looks wrong');
+  assert.equal($('#scanHow').textContent, 'Fixing a marked sticker makes this a solvable cube.');
+  assert.ok($('#scanHow').classList.contains('err'), 'the notice keeps its tone');
+  assert.equal($('#scanHint').hidden, false, 'the tick hint drops to its own line, not over the notice');
+  assert.match($('#scanHint').textContent, /point a side/);
+});
+
+test('a hint that restates the notice is suppressed rather than doubled', () => {
+  progress({ phase: 'confirm', message: 'Show the GREEN side again, with WHITE facing up.',
+    captured: FACES.map(face), live: null, confirm: { face: 'F', up: 'U' },
+    notice: { title: 'One more look', tone: 'info',
+      body: 'One held look decides it. Show the GREEN side again, with WHITE facing up.' } });
+  assert.equal($('#scanHowTitle').textContent, 'One more look');
+  assert.equal($('#scanHint').hidden, true);
+  // and with the notice gone, the card goes back to one voice
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, notice: null });
+  assert.equal($('#scanHint').hidden, true);
+  assert.equal($('#scanHow').textContent, 'x');
+});
+
+// A finished scan must answer "what do I do now?" — and only this screen can, because the next
+// action is this screen's own button. "Scan complete — solvable cube captured" states the past;
+// the card's job at that moment is to point at "Solve this cube".
+test('a complete scan tells the user to press "Solve this cube"', () => {
+  // The button is a promise about this screen's scan, so before one succeeds it is not pressable.
+  assert.equal($('#scanSolveBtn').disabled, true, 'disabled until a scan stands complete');
+  progress({ phase: 'done', message: 'Scan complete — solvable cube captured.',
+    captured: FACES.map(face), live: null, device: null, confirm: null, notice: null, complete: true });
+  assert.equal($('#scanSolveBtn').disabled, false, 'a complete scan makes it pressable');
+  assert.equal($('#scanHowTitle').textContent, 'Scanned');
+  assert.match($('#scanHow').textContent, /Solve this cube/);
+  assert.ok($('#scanHow').classList.contains('ok'));
+  assert.equal($('#scanHint').hidden, true, 'camera off — nothing to hint about');
+  // The camera reopened over the finished scan: its own line matters again, under the guidance.
+  progress({ phase: 'scanning', message: 'Scan finished — start the scan over to read a different cube.',
+    captured: FACES.map(face), live: null, confirm: null, notice: null, complete: true,
+    device: { deviceId: 'builtin', label: 'MacBook Air Camera' } });
+  assert.match($('#scanHow').textContent, /Solve this cube/, 'the guidance stands');
+  assert.equal($('#scanHint').hidden, false);
+  assert.match($('#scanHint').textContent, /start the scan over/);
+  // A correction that re-opens the verdict takes the button away again until it re-settles.
+  progress({ phase: 'checking', message: 'Corrected — checking…',
+    captured: FACES.map(face), live: null, device: null, confirm: null, notice: null, complete: false });
+  assert.equal($('#scanSolveBtn').disabled, true, 'not pressable while the verdict is open');
+});
+
+// A colour misread points at the sticker it most plausibly landed on — a pulsing mark on the
+// tile, and the suggested colour ringed when the picker opens there. The sentence alone would
+// send a child hunting through 54 stickers.
+test('suspect stickers are marked on the tile, and the picker rings the suggested colour', () => {
+  progress({ phase: 'scanning', message: 'x', captured: FACES.map(face), live: null, confirm: null,
+    suspects: [{ face: 'R', index: 2, to: 5 }],
+    notice: { title: 'One sticker looks wrong', tone: 'err', body: 'b' } });
+  const cells = all('.scan-face[data-face="R"] .tgrid > i');
+  assert.ok(cells[2].classList.contains('suspect'), 'the suspect sticker is marked');
+  assert.equal(all('.scan-face .cell.suspect').length, 1, 'and only it');
+  panel().setSticker = () => {};
+  cells[2].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  const sug = all('.swatches button.suggest');
+  assert.equal(sug.length, 1, 'the picker rings exactly the suggested colour');
+  assert.equal(sug[0].dataset.face, 'B', 'colour class 5 is Back/blue');
+  // A plain progress — the situation changed — clears the marks.
+  progress({ phase: 'scanning', message: 'x', captured: FACES.map(face), live: null, confirm: null });
+  assert.equal(all('.scan-face .cell.suspect').length, 0);
+});
+
 // The detector's held-out colour accuracy is ~90%, so a scan can fail on one sticker a person can
 // see at a glance. Clicking it must offer the six colours and push the correction back.
 test('a sticker on a captured side opens a colour picker and reports the correction', () => {
@@ -202,7 +276,7 @@ test('a sticker on a captured side opens a colour picker and reports the correct
     captured: [face('R')], live: null, confirm: null });
   const calls = [];
   panel().setSticker = (...args) => calls.push(args);
-  const cells = all('.scan-face[data-face="R"] .tile > i');
+  const cells = all('.scan-face[data-face="R"] .tgrid > i');
   cells[0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   const pick = $('.swatches');
   assert.ok(pick && !pick.hidden, 'clicking a captured sticker must offer the colours');
@@ -217,7 +291,7 @@ test('the centre re-reads its side instead of offering colours', () => {
   const colours = [], rescans = [];
   panel().setSticker = (...args) => colours.push(args);
   panel().rescanFace = (...args) => rescans.push(args);
-  all('.scan-face[data-face="R"] .tile > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="R"] .tgrid > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, true, 'no colour picker for the centre');
   assert.deepEqual(colours, [], 'and never a colour change, which would rename the face');
   assert.deepEqual(rescans, [['R']], 'it throws that side away so the camera reads it again');
@@ -227,7 +301,7 @@ test('the centre of a side with nothing read yet has nothing to re-read', () => 
   const rescans = [];
   panel().rescanFace = (...args) => rescans.push(args);
   assert.ok(!$('.scan-face[data-face="B"]').classList.contains('done'));
-  all('.scan-face[data-face="B"] .tile > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="B"] .tgrid > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.deepEqual(rescans, []);
 });
 
@@ -237,33 +311,25 @@ test('a side with nothing read yet offers nothing to correct', () => {
   const calls = [];
   panel().setSticker = (...args) => calls.push(args);
   assert.ok(!$('.scan-face[data-face="B"]').classList.contains('done'), 'B has not been captured');
-  all('.scan-face[data-face="B"] .tile > i')[7].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="B"] .tgrid > i')[7].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, true, 'no colours offered on an unread side');
   assert.deepEqual(calls, []);
 });
 
-test('the restart button throws the whole scan away', () => {
-  let restarts = 0, starts = 0;
-  panel().restart = () => { restarts++; };
-  panel().start = () => { starts++; };
-  // Say a camera is running, so this is a restart rather than a re-open. Stated here rather than
-  // inherited from whichever test ran last.
-  progress({ phase: 'scanning', message: 'x', captured: [], live: null,
-    device: { deviceId: 'builtin', label: 'MacBook Air Camera' }, confirm: null });
-  $('#scanResetBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-  assert.equal(restarts, 1);
-  assert.equal(starts, 0);
-});
-
-test('with the camera dark, the restart button is the way back on', () => {
-  let restarts = 0, starts = 0;
-  panel().restart = () => { restarts++; };
-  panel().start = () => { starts++; };
-  progress({ phase: 'error', message: 'Cannot start: Permission denied',
-    captured: [], live: null, device: null, confirm: null });
-  $('#scanResetBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-  assert.equal(starts, 1, 'restarting a scan that has no camera would do nothing');
-  assert.equal(restarts, 0);
+// One call whatever the camera state: the panel's restart() reopens a dark camera itself, so the
+// screen no longer has to guess which of two methods to call — and a wrong guess used to mean
+// either a dead button (restart with no camera) or a silent wipe (start when a scan existed).
+test('the restart button hands the whole decision to panel.restart()', () => {
+  for (const device of [{ deviceId: 'builtin', label: 'MacBook Air Camera' }, null]) {
+    let restarts = 0, starts = 0;
+    panel().restart = () => { restarts++; };
+    panel().start = () => { starts++; };
+    progress({ phase: device ? 'scanning' : 'error', message: 'x', captured: [], live: null,
+      device, confirm: null });
+    $('#scanResetBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    assert.equal(restarts, 1, `restart() with device=${JSON.stringify(device)}`);
+    assert.equal(starts, 0, 'start() would keep the captures, which is not what this button says');
+  }
 });
 
 // Clicking a sticker used to place a real text caret in it — invisible in Chrome, blinking in the
@@ -292,7 +358,7 @@ test('the paint toggle releases the camera and opens all 48 outer stickers', () 
   assert.ok(!unread.classList.contains('done'), 'B has not been read');
 
   // camera mode: an unread side offers nothing
-  all('.scan-face[data-face="B"] .tile > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="B"] .tgrid > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, true);
 
   $('#scanPaintBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
@@ -300,7 +366,7 @@ test('the paint toggle releases the camera and opens all 48 outer stickers', () 
   assert.ok($('.scan-cam').classList.contains('paint'), 'and the button reads as held down');
 
   // paint mode: the same sticker is now paintable
-  all('.scan-face[data-face="B"] .tile > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="B"] .tgrid > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, false, 'an unread side is paintable while painting');
   $('.swatches').querySelectorAll('button')[2].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.deepEqual(sets, [['B', 3, 2]]);
@@ -310,7 +376,7 @@ test('the centre does nothing while painting — there is no camera to re-read w
   const rescans = [];
   panel().rescanFace = (...args) => rescans.push(args);
   progress({ phase: 'painting', message: 'x', captured: [face('R')], live: null, device: null, confirm: null });
-  all('.scan-face[data-face="R"] .tile > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="R"] .tgrid > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.deepEqual(rescans, []);
 });
 
@@ -321,7 +387,7 @@ test('toggling paint off hands the cube back to the camera', () => {
   assert.deepEqual(paints, [false]);
   assert.ok(!$('.scan-cam').classList.contains('paint'));
   // and back to camera rules: an unread side stops offering colours
-  all('.scan-face[data-face="B"] .tile > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="B"] .tgrid > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, true);
 });
 
@@ -338,9 +404,11 @@ test('the detected-state twin fills in side by side, unread stickers marked unkn
 });
 
 // Which way up each side was held stops mattering once the cube reads as solvable: the validated
-// string IS the canonical layout, so the tiles are repainted from it and a tile's edge colours
-// finally agree with the stickers inside it.
-test('a solvable scan settles the tiles into the canonical layout', async () => {
+// string IS the canonical layout, and the scanner reports each face's rotation, so a face that
+// was captured the wrong way up is animated TURNING to its true orientation before the repaint.
+// The turn is a CSS transform driven by timers, so the repaint must land — and the transform must
+// clear — with no transition events, which this DOM never fires.
+test('a solvable scan turns each mis-held tile and settles into the canonical layout', async () => {
   const FL = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
   const NET = ['U', 'R', 'F', 'D', 'L', 'B'];
   // Shown deliberately wrong-way-up, so a repaint that does nothing would leave a mismatch.
@@ -348,20 +416,48 @@ test('a solvable scan settles the tiles into the canonical layout', async () => 
     captured: NET.map((f) => ({ face: f, colors: Array(9).fill(NET.indexOf(f)) })),
     live: null, device: null, confirm: null });
   panel().dispatchEvent(new win.CustomEvent('scan-complete', {
-    detail: { facelets: FL, valid: true, confidence: 1, lowConfidence: [] },
+    detail: { facelets: FL, valid: true, confidence: 1, lowConfidence: [],
+      rotations: [1, 2, 3, 0, 0, 0] },
   }));
-  assert.ok($('.scan-faces').classList.contains('settling'), 'it fades before it swaps');
-  await new Promise((r) => setTimeout(r, 260));
+  // The mis-held tiles are turning; a 180° turn runs 800 ms, so at 400 ms it is still in flight.
+  const grid = (f) => $(`.scan-face[data-face="${f}"] .tgrid`);
+  assert.match(grid('U').style.transform, /rotate\(90deg\)/, 'a quarter-off tile turns 90°');
+  assert.match(grid('R').style.transform, /rotate\(180deg\)/);
+  assert.match(grid('F').style.transform, /rotate\(-90deg\)/, '270° CW reads better as 90° back');
+  assert.equal(grid('D').style.transform, '', 'a tile held right does not move');
+  await new Promise((r) => setTimeout(r, 900));
   const palette = Object.fromEntries(NET.map((f) => [f,
-    all(`.scan-face[data-face="${f}"] .tile > i`)[4].style.backgroundColor]));
+    all(`.scan-face[data-face="${f}"] .tgrid > i`)[4].style.backgroundColor]));
   let mismatches = 0;
   NET.forEach((f, fi) => {
-    all(`.scan-face[data-face="${f}"] .tile > i`).forEach((c, i) => {
+    all(`.scan-face[data-face="${f}"] .tgrid > i`).forEach((c, i) => {
       if (c.style.backgroundColor !== palette[FL[fi * 9 + i]]) mismatches++;
     });
   });
   assert.equal(mismatches, 0, 'all 54 stickers repainted from the validated layout');
-  assert.ok(!$('.scan-faces').classList.contains('settling'), 'and the fade is over');
+  for (const f of NET) assert.equal(grid(f).style.transform, '', `${f}: the turn transform clears`);
+});
+
+// Without rotations (a painted cube, or an older panel bundle) the settle is an instant repaint —
+// the animation is an explanation, never a dependency.
+test('a scan-complete without rotations still settles the tiles, instantly', () => {
+  const FL = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  const NET = ['U', 'R', 'F', 'D', 'L', 'B'];
+  progress({ phase: 'scanning', message: 'x',
+    captured: NET.map((f) => ({ face: f, colors: Array(9).fill(NET.indexOf(f)) })),
+    live: null, device: null, confirm: null });
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: FL, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  const palette = Object.fromEntries(NET.map((f) => [f,
+    all(`.scan-face[data-face="${f}"] .tgrid > i`)[4].style.backgroundColor]));
+  let mismatches = 0;
+  NET.forEach((f, fi) => {
+    all(`.scan-face[data-face="${f}"] .tgrid > i`).forEach((c, i) => {
+      if (c.style.backgroundColor !== palette[FL[fi * 9 + i]]) mismatches++;
+    });
+  });
+  assert.equal(mismatches, 0);
 });
 
 // A finished scan used to jump straight to another screen, which took the six tiles away exactly
@@ -482,7 +578,7 @@ test('a corrected sticker is what reaches the cube screen, not the original read
   // A swatch click ends in panel.setSticker(); the panel answers with a fresh scan-complete.
   const calls = [];
   panel().setSticker = (...args) => calls.push(args);
-  const cell = $('.scan-face[data-face="U"] .tile > i:nth-child(1)');
+  const cell = $('.scan-face[data-face="U"] .tgrid > i:nth-child(1)');
   cell.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   const swatch = $('.swatches button[data-face="R"]');
   assert.ok(swatch, 'the six-colour picker opened on a read side');

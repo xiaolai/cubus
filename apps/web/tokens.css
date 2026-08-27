@@ -11,7 +11,7 @@
   /* ---- surface & ink -------------------------------------------------- */
   --desk:          #E1D9C8;  /* outside the window; mockup only */
   --bg:            #F6F2E9;  /* window background */
-  --panel:         #FFFDF7;  /* cards, leading pane */
+  --panel:         #FFFDF7;  /* leading pane, popovers, chips */
   --panel-sunk:    #EFE9DC;  /* titlebar, inset wells */
   --line:          #E2DACA;  /* hairline on panel */
   --line-strong:   #D3C9B4;  /* hairline on desk */
@@ -22,7 +22,7 @@
   --ink-2:         #4A4237;  /* secondary on sunk surfaces */
   --ink-3:         #6B6154;  /* body dim */
   --ink-4:         #8B8072;  /* captions */
-  --ink-5:         #7A7266;  /* eyebrow labels — 4.5:1 on --panel */
+  --ink-5:         #756D61;  /* eyebrow labels — ≥4.5:1 on --bg and --panel (pinned by tokens.test.mjs) */
   --ink-6:         #C4BAA9;  /* disabled, chevrons */
   --on-ink:        #F6F2E9;  /* text on --ink */
   --on-ink-dim:    #BDB3A2;  /* secondary text on --ink */
@@ -64,8 +64,11 @@
   --on-lens-inverse: #241F18;
 
   /* ---- type ----------------------------------------------------------- */
-  --font-ui:    'Alegreya Sans', system-ui, sans-serif;
-  --font-num:   'Zilla Slab', serif;      /* times, algs, all numerals */
+  /* System stacks only, decided 2026-08-27: no web fonts, no embedded fonts. The app is offline
+     software; the page now loads nothing remote at all (a test enforces it). Numerals, times and
+     algs are monospaced — tabular by nature, which is what a timer and a move chip want. */
+  --font-ui:    system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-num:   ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace; /* times, algs, all numerals */
   --font-ios:   -apple-system, 'SF Pro', system-ui, sans-serif;
   --font-md:    Roboto, system-ui, sans-serif;
 
@@ -119,8 +122,10 @@
    * WINDOW_RADIUS on macOS is MEASURED off a Tauri window and is not
    * settable from tauri.conf.json. The card radius is derived from it:
    * --r-card = --r-win-macos − --inset. Traffic lights are 12pt at
-   * trafficLightPosition { x: 18, y: 28 } (button_top = y − 9), which puts
-   * their centre on the title's optical line. macOSPrivateApi must be true
+   * trafficLightPosition { x: 19, y: 28 }, measured against macOS itself:
+   * Finder's tall-toolbar lights centre at (25.75, 25.75)pt on macOS 26, and
+   * x:19/y:28 lands ours on exactly that point (centre = x + 6.75, y − 2.25).
+   * Not the mock's 18 and not a derived number — the system is the spec. macOSPrivateApi must be true
    * or trafficLightPosition is ignored silently.
    * -------------------------------------------------------------------- */
   --inset:            8px;   /* concentric inset, all platforms */
@@ -166,7 +171,53 @@
   --cube-ghost-opacity:   0.45;
 }
 
-/* ---- dark theme ------------------------------------------------------------
+/* ---- white theme -----------------------------------------------------------
+ * Cream with the warmth taken out: plain white surfaces and neutral greys.
+ * Every grey here is the luminance match of its cream counterpart, so every
+ * contrast ratio carries over unchanged; only the four surfaces pinned to
+ * #FFFFFF (--bg, --panel, --on-ink, --invert-fg) are brighter than cream's.
+ * Accent, status and lens colours are not redeclared — they do not change.
+ * Theme selectors are rooted on purpose: a bare [data-theme="…"] also matched
+ * the Settings pill carrying that attribute, which drew itself in its own
+ * theme's ink. tokens.test.mjs pins the neutrality, the luminance match and
+ * the rooting.
+ * ------------------------------------------------------------------------- */
+:root[data-theme="cream"] { color-scheme: light; }
+:root[data-theme="white"] {
+  color-scheme: light;
+  --desk:          #DADADA;
+  --bg:            #FFFFFF;
+  --panel:         #FFFFFF;
+  --panel-sunk:    #E9E9E9;
+  --line:          #DBDBDB;
+  --line-strong:   #CACACA;
+  --line-faint:    #EEEEEE;
+  --row-sel:       #F2F2F2;
+
+  --ink:           #202020;
+  --ink-2:         #434343;
+  --ink-3:         #626262;
+  --ink-4:         #828282;
+  --ink-5:         #6E6E6E;
+  --ink-6:         #BBBBBB;
+  --on-ink:        #FFFFFF;
+  --on-ink-dim:    #B4B4B4;
+  --on-ink-2:      #E1E1E1;
+
+  --invert-bg:     #202020;
+  --invert-fg:     #FFFFFF;
+  --track:         #D5D5D5;
+  --bar:           #B0B0B0;
+
+  --facelet-off:   #343434;
+
+  --shadow-card:  0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.07);
+  --shadow-raise: 0 6px 16px rgba(0,0,0,.28);
+  --shadow-win:   0 26px 70px rgba(0,0,0,.30), 0 0 0 .5px rgba(0,0,0,.22);
+  --shadow-sheet: 0 -20px 50px rgba(0,0,0,.40);
+}
+
+/* ---- night theme -----------------------------------------------------------
  * Warm, not slate: the paper direction inverted rather than swapped for a
  * generic blue-black. Two roles that light mode conflates must stay split —
  * --ink is text, --invert-bg/--invert-fg are the inverted-surface pair, and in
@@ -176,7 +227,8 @@
  * ------------------------------------------------------------------------- */
 @media (prefers-color-scheme: dark) { :root { color-scheme: dark; } }
 
-[data-theme="dark"] {
+:root[data-theme="night"] {
+  color-scheme: dark;
   --desk:          #14120E;
   --bg:            #1B1814;
   --panel:         #232019;
@@ -225,10 +277,10 @@
  * close-button red, and the camera viewfinder (a real dark sensor image). */
 
 /* Same values applied automatically when the OS asks for dark and the app has
- * not been pinned to light. Kept as a separate rule because a media query
- * cannot be part of a selector list. */
+ * not been pinned to cream or white. Kept as a separate rule because a media
+ * query cannot be part of a selector list. */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root:not([data-theme="cream"]):not([data-theme="white"]) {
     --desk:#14120E; --bg:#1B1814; --panel:#232019; --panel-sunk:#1E1B16;
     --line:#332E26; --line-strong:#3E382E; --line-faint:#2A251F; --row-sel:#2A251F;
     --ink:#EDE7DA; --ink-2:#D2C9B8; --ink-3:#B5AC9C; --ink-4:#978E80; --ink-5:#9A9184; --ink-6:#5C5449;
