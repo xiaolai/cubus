@@ -115,7 +115,7 @@ const TITLES = {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '' });
+const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false });
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
@@ -154,10 +154,13 @@ const HIDEABLE = [
 
 /** Hidden unless asked for. Timer and Stats are speedcubing instruments, not part of learning to
  * solve a cube, and Stats currently shows representative numbers rather than yours — a screen of
- * invented data is worse than no screen. The default tab row is the beginner's path; everything
- * else is one chord away. */
-const DEFAULT_HIDDEN = ['timer', 'stats'];
-const NAV_DEFAULTS_VERSION = 1;
+ * invented data is worse than no screen. Alg trainer, Drill and Lessons are the same class:
+ * representative screens with placeholder content. The default tab row is the beginner's path;
+ * everything else is one chord away. In CODE, not only in a stored preference: the hidden set
+ * was once a preference alone, and one wiped localStorage brought five placeholder screens back
+ * into the toolbar. Version 2 hides the three once for anyone who already ran the app. */
+const DEFAULT_HIDDEN = ['timer', 'stats', 'trainer', 'drill', 'lessons'];
+const NAV_DEFAULTS_VERSION = 2;
 
 // localStorage is untrusted input: anything in here that is not a hideable id is dropped rather
 // than allowed to silently remove some other nav entry.
@@ -342,6 +345,9 @@ function stageSplit(n) {
 function newCube({ animate = false } = {}) {
   const el = document.createElement('cubus-cube');
   el.setAttribute('palette', PALETTE_ATTR[settings.palette] || 'muted');
+  // Off by default: every cube in the app is set up at a chosen angle (the ghost faces depend on
+  // it), and a stray drag on a touch screen or a trackpad swung it away with no way back.
+  el.setAttribute('orbit', settings.dragRotate ? 'free' : 'locked');
   const c = state.cube;
   if (animate && deriveCube().solvable) { el.setAttribute('scramble', c.setupAlg); el.setAttribute('alg', c.solution || ''); }
   else el.setAttribute('facelets', c.facelets);
@@ -1443,8 +1449,12 @@ const DEFAULT_SPEED = 'normal';
 const cubeScreen = (screenMode) => {
   const scrambling = screenMode === 'scramble';
   // No controls on this screen any more, so these are read but never written here. Left on
-  // `cubeView` rather than hard-coded so they stay tunable without a rebuild.
-  const v = load('cubeView', { hintElev: 4, camDist: 12, camLat: 35, camLon: 45, facScale: 0.9, ghosts: true });
+  // `cubeView` so they stay tunable without a rebuild — but the DEFAULTS are the tuned look, not
+  // a starting point: the Restore screen's cube (ghosts floating at elevation 9, camera pulled
+  // back to 18, stickers full-bleed at 1 — see the scan screen's mount) is the reference the
+  // walking screens must match, and a wiped localStorage once reverted them to a look nobody had
+  // chosen. A tuning that lives only in storage is a tuning waiting to be lost.
+  const v = load('cubeView', { hintElev: 9, camDist: 18, camLat: 35, camLon: 45, facScale: 1, ghosts: true });
   // A scramble is always available: it is generated here rather than read off the cube, so there is
   // no state that makes this screen have nothing to do.
   const walking = scrambling || deriveCube().solvable;
@@ -1479,6 +1489,7 @@ const cubeScreen = (screenMode) => {
           <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
           <span class="done-mark" id="doneMark" hidden title="Done">${icon('check', 14)}</span>
           <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:56px;text-align:right">0 / 0</span>
+          ${scrambling ? `<button class="btn sm primary" id="solveItBtn" hidden>Solve this scramble</button>` : ''}
         </div>
       </div>` : ''}
     <div class="aside">
@@ -1619,14 +1630,15 @@ const cubeScreen = (screenMode) => {
       const solList = $('#solList', root);
       const setStatus = (msg) => { $('#moveCount', root).textContent = msg; };
       setStatus('working…');
-      let setup, alg, moves, steps = [];
+      let setup, alg, moves, steps = [], target = null;
       try {
         if (scrambling) {
           if (!solverReady && !(await loadSolver())) throw new Error('solver unavailable');
           // randomScramble() returns the state it lands on and leaves the alg that gets there from
           // solved in `currentScramble`. That alg is what we walk, so `setup` stays empty and the
-          // cube starts solved.
-          const target = randomScramble();
+          // cube starts solved. `target` outlives this block: it is what "Solve this scramble"
+          // hands to Home at the end of the walk.
+          target = randomScramble();
           if (!target || !currentScramble) throw new Error('no scramble');
           setup = ''; alg = currentScramble; moves = alg.trim().split(/\s+/);
           // Per-step states for Follow cube, built the same way the solve path builds its own.
@@ -1657,6 +1669,28 @@ const cubeScreen = (screenMode) => {
         ${scrambling ? '' : `<div style="display:flex;justify-content:space-between"><span class="eyebrow">${name}</span><span class="num sub">${b - a}</span></div>`}
         <div class="move-chips" style="margin-top:${scrambling ? '0' : '8px'}">${moves.slice(a, b).map((m, k) => `<button class="chip-m" data-i="${a + k}" title="Jump to this move">${m}</button>`).join('')}</div></div>`).join('');
       const chips = [...solList.querySelectorAll('.chip-m')];
+
+      // ---- Scramble → Solve hand-off ---------------------------------------------------------
+      // The loop a beginner actually wants: scramble it by following the guide, then solve THAT.
+      // Offered at completion and only on a press — never automatic. Reaching 22/22 by clicking
+      // says nothing about the cube in someone's hand, so without a trusted cube the target is
+      // adopted as a GENERATED subject (exactly what the dev die does) and Home says so. With a
+      // trusted physical cube the subject already IS the cube (its snapshots are ingested), so
+      // nothing is adopted: Home solves whatever the cube really is, and the label only claims
+      // "scrambled" when the cube's own state says so.
+      const solveIt = $('#solveItBtn', root);
+      const cubeTruth = () => state.connected && state.cube.trusted && state.cube.isPhysical;
+      const solveItLabel = () => {
+        if (!cubeTruth()) return 'Solve this scramble';
+        return state.cube.facelets === target ? 'Your cube is scrambled — solve it' : 'Solve your cube';
+      };
+      if (solveIt) {
+        solveIt.onclick = () => {
+          if (!cubeTruth()) adoptCube(target, { physical: false, source: 'generated' });
+          go('home');
+        };
+      }
+
       let at = 0;
       function sync(i) {
         at = i;
@@ -1674,6 +1708,11 @@ const cubeScreen = (screenMode) => {
         // A tick beside the count once the last move lands. It used to be a 46px badge over the
         // cube, saying "done" where the count beside it already read 22 / 22.
         $('#doneMark', root).hidden = i < total;
+        // And, on Scramble, the way onward — labelled for what is actually known at that moment.
+        if (solveIt) {
+          solveIt.hidden = i < total;
+          if (i >= total) solveIt.textContent = solveItLabel();
+        }
       }
       cube.addEventListener('cubus-step', (e) => sync(e.detail.index));
 
@@ -2069,6 +2108,9 @@ SCREENS.settings = () => {
       <div class="card"><div class="eyebrow">APPEARANCE</div>
         <div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Theme</div><div class="sub" style="color:var(--ink-4)">White, cream or night — auto follows the system</div></div>
           <div class="wrap-row" style="gap:6px">${THEMES.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-set-theme="${t}">${t}</button>`).join('')}</div></div>
+        <div style="display:flex;align-items:center;gap:16px;padding:13px 0 0;border-top:1px solid var(--line-faint)">
+          <div style="flex:1"><div style="font-weight:600">Rotate the cube by dragging</div><div class="sub" style="color:var(--ink-4)">Off, the 3D cube keeps the angle its ghost faces are set up for</div></div>
+          <button class="toggle ${settings.dragRotate ? 'on' : ''}" data-toggle="dragRotate"><i></i></button></div>
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}">${o}</button>`).join('')}</div></div>` : ''}</div>
       ${(() => {
