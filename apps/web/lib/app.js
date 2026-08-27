@@ -969,8 +969,10 @@ SCREENS.scan = () => {
   const HOW = 'The camera opens with this screen and the YOLO scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still. Each tile is edged in the colours of its neighbours: hold a side that way up and the scan needs nothing more from you. Got a sticker wrong? Click it and pick the right colour.';
   // What to call the aside while the scanner is speaking, so "How it works" never heads an error.
   const SAY_TITLE = { error: 'Camera trouble', confirm: 'One more look', checking: 'Checking', done: 'Scanned' };
+  // --primary-share 0.66, not the default 0.58: the net wants the room, and the sheet is a cube
+  // twin and a paragraph. Portrait shows one face large (see .scan-faces in index.html).
   return {
-    html: `<div class="cols">
+    html: `<div class="cols" style="--primary-share:0.66">
     <div class="col">
       <div class="card scanboard">
         <ai-scan-panel headless autostart></ai-scan-panel>
@@ -1075,6 +1077,20 @@ SCREENS.scan = () => {
       const solveBtn = $('#scanSolveBtn', root);
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
+      // Portrait shows one face large and the other five as a strip (index.html, .scan-faces in
+      // the portrait container query): six 3×3 tiles cannot give a finger 44px stickers in a
+      // phone's width. Which face is large is a policy, because the scanner is orderless and
+      // reports no "face being seen": the side it asks to see again, else the side it just read,
+      // else the one you tap — F to begin with. In landscape the class is inert.
+      const faces = $('.scan-faces', root);
+      const setFocus = (f) => { for (const tile of tiles) tile.classList.toggle('focus', tile.dataset.face === f); };
+      // Guarded: the test harness lays nothing out and has no getComputedStyle global.
+      const focusLayout = () => {
+        const cs = globalThis.getComputedStyle?.(faces);
+        return cs ? cs.getPropertyValue('--focus').trim() === '1' : false;
+      };
+      setFocus('F');
+      let capturedCount = 0;
 
       // Which camera. This machine class routinely has several — a built-in, a virtual camera, a
       // Continuity Camera (an iPhone) — and with no video preview the user cannot tell which one
@@ -1232,6 +1248,10 @@ SCREENS.scan = () => {
           if (got && p.phase !== 'done') paint(cells, got.colors);
           else if (!got) cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? pal[f] : 'var(--facelet-off)'; });
         }
+        // The large tile in portrait: the side asked for again outranks the side just read.
+        if (p.confirm?.face) setFocus(p.confirm.face);
+        else if (p.captured.length > capturedCount) setFocus(p.captured[p.captured.length - 1].face);
+        capturedCount = p.captured.length;
         // The twin follows the scan side by side rather than waiting for all six.
         if (!settled) stateCube.setAttribute('facelets', partialFacelets(p.captured));
         camOn = Boolean(p.device);
@@ -1317,7 +1337,16 @@ SCREENS.scan = () => {
       $('.scan-faces', root).onclick = (ev) => {
         const cellEl = ev.target.closest('.cell');
         const tile = ev.target.closest('.scan-face');
-        if (!cellEl || !tile) return;
+        if (!tile) return;
+        // In the portrait layout a tap anywhere on a strip tile brings that side forward;
+        // correcting a sticker is for the large tile, where a sticker is big enough to hit.
+        if (focusLayout() && !tile.classList.contains('focus')) {
+          closePops();
+          setFocus(tile.dataset.face);
+          ev.stopPropagation();
+          return;
+        }
+        if (!cellEl) return;
         const index = [...cellEl.parentElement.children].indexOf(cellEl);
         // The centre cannot be colour-corrected — it names the face — so it does the other useful
         // thing: throws that side's reading away so the camera reads it again.
@@ -2533,7 +2562,9 @@ function fitTabs() {
   nav.classList.remove('compact');
   if (getComputedStyle(nav).position !== 'absolute') return; // the portrait bar
   // Centred on the bar, the row needs symmetric room: the wider of the two zones on both sides.
-  const zone = Math.max($('#tbLead').offsetWidth, $('#tbTrail').offsetWidth) + 12; // + the bar's padding
+  // scrollWidth, not offsetWidth: the zone's CONTENT is what the tabs must clear, whatever box
+  // the engine gave the zone.
+  const zone = Math.max($('#tbLead').scrollWidth, $('#tbTrail').scrollWidth) + 12; // + the bar's padding
   const room = bar.clientWidth - 2 * zone - 8;
   if (nav.scrollWidth > room) nav.classList.add('compact');
 }

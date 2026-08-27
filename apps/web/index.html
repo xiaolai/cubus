@@ -85,7 +85,10 @@
         height: var(--titlebar-h); display: flex; justify-content: space-between; align-items: center;
         padding: 0 12px;
       }
-      .tb-zone { display: flex; align-items: center; gap: 4px; min-width: 0; }
+      /* flex: none — the zones never shrink; the tab row is what adapts (compact). With
+         `0 1 auto` WebKit sized the lead zone under its content while the bar had 600px free,
+         and the wordmark ran out of its box under the tabs. */
+      .tb-zone { display: flex; align-items: center; gap: 4px; flex: none; }
       .tb-trail { justify-content: flex-end; }
       /* The traffic-light gap. The OS paints the real lights at trafficLightPosition; in a browser
          preview (?chrome=preview) three dots stand in. */
@@ -93,7 +96,11 @@
          The truth is measured, not designed: Finder's tall-toolbar lights centre at 25.75pt on
          this macOS, so tauri.conf.json says x:19 (centre = x + 6.75) and the preview dots match:
          12 + 7.75 + 6 = 25.75. */
-      .tb-lights { display: flex; align-items: center; flex: 0 0 var(--sys-zone-macos); gap: var(--light-gap); padding-left: 7.75px; }
+      /* width AND flex: none, not a flex-basis alone. WebKit sizes the zone's intrinsic width
+         from this span's content (its padding, 7.75px) rather than its 82px basis, then lays it
+         out at 82 — which pushed the wordmark out of the zone and under the tabs. An explicit
+         width is counted. */
+      .tb-lights { display: flex; align-items: center; flex: none; width: var(--sys-zone-macos); gap: var(--light-gap); padding-left: 7.75px; }
       .tl { width: var(--light-size); height: var(--light-size); border-radius: var(--r-pill); box-shadow: inset 0 0 0 .5px rgba(0,0,0,.18); }
       /* The mark is icons/icon.svg — the transparent variant, so it reads on the paper in both
          themes without a tile behind it. */
@@ -339,7 +346,39 @@
       /* Row gap far tighter than the column gap on purpose: the label under each tile already adds
          vertical space, and without compensating the three rows read as three rows instead of a
          cross. */
-      .scan-faces { width: 80%; display: grid; grid-template-columns: repeat(4, 1fr); column-gap: 10px; row-gap: 2px; }
+      /* Full width of the primary region, capped: at the 840×630 reference the region is 501px
+         wide and the tiles 109px, and the cap keeps a 1280-wide window from drawing 160px tiles
+         for the sake of it. A touch iPad in landscape lands between (34px stickers on an 11",
+         57 on a 13") — the one control this sheet leaves under the 44px floor, and the geometry
+         test names the number it holds instead. */
+      .scan-faces { width: 100%; max-width: 560px; display: grid; grid-template-columns: repeat(4, 1fr); column-gap: 10px; row-gap: 2px; }
+      /* Portrait: six 3×3 tiles cannot give a finger 44px stickers in a phone's width, so ONE
+         face is large — the one app.js marks .focus: the side the scanner asks to see again, else
+         the side it just read, else the one you tap — and the other five are a strip below it,
+         status at a glance and a tap target each (the tile, not its stickers, at that size). The
+         large tile is sized off the reference box so it, its label and the strip fit the primary
+         region: --ref-h × --primary-share is the region, and 140px is the strip, the label and
+         the gaps. The --focus flag is how app.js knows a tap on a strip tile means "show me this
+         one" rather than "correct this sticker". In landscape the .focus class is inert. */
+      @container stage (orientation: portrait) {
+        .scan-faces { --focus: 1; max-width: none; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: auto auto; column-gap: 8px; row-gap: 8px; }
+        /* Three class-level parts, to outrank the cross placement (.scan-face[data-face="U"] …)
+           declared below this block. */
+        .scan-faces .scan-face[data-face] { grid-area: auto; }
+        .scan-faces .scan-face.focus { grid-column: 1 / -1; grid-row: 1; align-items: flex-start; }
+        /* The large tile sits at the LEFT of its row, its label centred under it: the card's tools
+           (reset / paint / camera) park in the top-right corner, and a centred tile ran under
+           them. The same expression sizes tile and label so the label knows the tile's width. */
+        .scan-face.focus { --focus-w: min(100%, 320px, calc(var(--ref-h) * var(--primary-share) - 140px)); }
+        .scan-face.focus .tile { width: var(--focus-w); }
+        .scan-face.focus .lbl { width: var(--focus-w); text-align: center; }
+        .scan-face:not(.focus) { cursor: pointer; }
+        .scan-face:not(.focus) .lbl { font-size: var(--fs-micro); }
+        .scan-face:not(.focus) .tile { border-width: 2px; padding: 3px; }
+        .scan-face:not(.focus) .tgrid { gap: 1px; }
+        .scan-face:not(.focus) .tgrid > i { border-radius: 1px; }
+        .scan-face:not(.focus) .tgrid > i:nth-child(5) > .ic { display: none; }
+      }
       .scan-face[data-face="U"] { grid-area: 1 / 2; }
       .scan-face[data-face="L"] { grid-area: 2 / 1; }
       .scan-face[data-face="F"] { grid-area: 2 / 2; }
