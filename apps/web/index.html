@@ -124,7 +124,6 @@
       .body { flex: 1; display: flex; min-height: 0; }
       /* main column */
       .main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding-top: var(--titlebar-h); }
-      .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--invert-bg); color: var(--invert-fg); display: grid; place-items: center; font-size: var(--fs-body-s); font-weight: 700; }
 
       .stage { flex: 1; min-height: 0; overflow: hidden; padding: 24px 30px; }
       .screen { display: none; height: 100%; }
@@ -158,7 +157,6 @@
          screen read as two kinds of thing, and there is only one kind. */
       .btn { height: 40px; padding: 0 18px; border-radius: var(--r-pill); display: inline-flex; align-items: center; gap: 8px; justify-content: center; font-size: var(--fs-body-l); font-weight: 600; }
       .btn.primary { background: var(--invert-bg); color: var(--invert-fg); }
-      .btn.accent { background: var(--accent); color: #fff; }
       .btn.outline { border: 1px solid var(--line-strong); color: var(--ink-2); }
       .btn.accent-outline { border: 1px solid var(--accent); color: var(--accent); }
       .btn.sm { height: 32px; padding: 0 12px; font-size: var(--fs-body-s); }
@@ -274,8 +272,13 @@
       }
       .scan-face .lbl { font-size: var(--fs-caption); font-weight: 700; letter-spacing: .03em; color: var(--ink-5); }
       /* Every sticker but the centre is correctable, on every side. */
-      .scan-face .tgrid > i:not(:nth-child(5)) { cursor: pointer; }
-      .scan-face .tgrid > i:not(:nth-child(5)):hover { box-shadow: 0 0 0 2px var(--ink); opacity: 1; }
+      /* Outer stickers are clickable only when a click will be HEARD: on a read side (correcting
+         a reading) or in paint mode (supplying one). A pointer on a pending side promised an
+         edit the handler rejects. */
+      :is(.scan-face.done, .painting .scan-face) .tgrid > i:not(:nth-child(5)) { cursor: pointer; }
+      /* .editing is excluded: this hover ring outweighs the editing halo in the cascade, and a
+         clicked sticker must keep wearing the accent halo while the pointer is still on it. */
+      :is(.scan-face.done, .painting .scan-face) .tgrid > i:not(:nth-child(5), .editing):hover { box-shadow: 0 0 0 2px var(--ink); opacity: 1; }
       /* The centre names the face, so it cannot be recoloured; it re-reads the side instead.
          It must show its TRUE colour: it is the one sticker whose colour is certain, and the eight
          around it are read against it. An earlier version laid a 30% black scrim over it to keep
@@ -304,11 +307,19 @@
          Pulses in the error colour so it reads as "look here", distinct from the accent halo an
          asked side wears. Full opacity even on an un-hovered cell: a suspect is being pointed at. */
       .scan-face .tgrid > i.suspect { opacity: 1; box-shadow: 0 0 0 2px var(--err); animation: cubusSuspect 1.1s ease-in-out infinite; }
+      /* A suspect being EDITED wears the editing halo, still: without this the later suspect rule
+         won the cascade and the active-edit indicator vanished on the one sticker most likely to
+         be edited. */
+      .scan-face .tgrid > i.suspect.editing { animation: none; box-shadow: 0 0 0 2px var(--accent); }
       @keyframes cubusSuspect { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--err) 40%, transparent); } }
 
-      /* Colour picker for a misread sticker. Fixed to the viewport so it never has to reason about
-         an offset parent, and clamped in JS so a sticker at the edge of the net keeps it on screen. */
-      .swatches { position: fixed; z-index: 60; display: flex; gap: 6px; padding: 8px; border-radius: var(--r-4); background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow-raise, 0 6px 20px rgba(0,0,0,.18)); }
+      /* ONE popover idiom. .swatches (the sticker colour picker) and .menu (camera, speed) are
+         the same fixed-to-viewport surface; JS clamps them horizontally, and the max-height +
+         scroll here is the vertical containment the JS does not do — a menu opened near the
+         bottom edge scrolls instead of running off screen. */
+      :is(.swatches, .menu) { position: fixed; z-index: 60; border-radius: var(--r-4); background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow-raise, 0 6px 20px rgba(0,0,0,.18)); max-height: calc(100dvh - 16px); overflow-y: auto; }
+      /* Colour picker for a misread sticker — layout only; the surface comes from the rule above. */
+      .swatches { display: flex; gap: 6px; padding: 8px; }
       .swatches > button { width: 30px; height: 30px; border-radius: var(--r-3); box-shadow: inset 0 0 0 1px rgba(0,0,0,.22); }
       .swatches > button:hover { transform: scale(1.08); }
       .swatches > button.now { box-shadow: inset 0 0 0 1px rgba(0,0,0,.22), 0 0 0 2px var(--ink); }
@@ -332,10 +343,6 @@
       .card-tools > button { width: 34px; height: 34px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-5); }
       .card-tools > button:hover { background: var(--panel-sunk); color: var(--ink-2); }
       .card-tools > button.open { background: var(--panel-sunk); color: var(--ink); }
-      /* Connection indicator, not a control: same box as the tools beside it so the row stays even,
-         but no hover and no pointer. */
-      /* Connected but no longer verified. Amber rather than green, and still, rather than pulsing —
-         a pulse reads as "live and fine", which is the one thing this state is not. */
       .scan-cam.on #scanCamBtn { color: var(--ok); }
       /* Asking whether the cube's own report matches the cube in your hands. Sits directly under the
          2D net, because the net is what you compare against — it shows all six sides at once,
@@ -348,12 +355,11 @@
       /* A menu, not a native <select>: the webcam button is the only control in that corner, and a
          dropdown that has to sit beside it defeats the point. Same popover treatment as the sticker
          colour picker below. */
-      .menu { position: fixed; z-index: 60; min-width: 190px; padding: 5px; border-radius: var(--r-4); background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow-raise, 0 6px 20px rgba(0,0,0,.18)); }
+      .menu { min-width: 190px; padding: 5px; } /* surface comes from the shared popover rule */
       .menu > button { display: block; width: 100%; padding: 7px 10px; border-radius: var(--r-3); text-align: left; font-size: var(--fs-body-s); color: var(--ink-2); white-space: nowrap; }
       .menu > button:hover { background: var(--panel-sunk); color: var(--ink); }
       .menu > button.now { font-weight: 700; color: var(--ink); }
       .menu > button.now::before { content: '✓ '; color: var(--ok); }
-      .menu > button.act { color: var(--accent); font-weight: 600; }
       .menu > hr { height: 1px; border: 0; margin: 5px 6px; background: var(--line); }
 
       /* Transport on the cube screen, all on one line: four buttons (back, repeat, next, play), the
@@ -364,19 +370,16 @@
       /* Takes the old spacer's job: it has to be the flexible gap anyway, so the gap may as well
          say how far through the solution you are. --track/--bar are the groove/fill token pair. */
       .transport .progress { flex: 1; height: 6px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
-      /* Shown only when the cube has left the plan. A wrong turn and a dropped turn used to look
-         identical — both were silence — so this exists to make the difference visible.
-         It lives at the FOOT of the solution card, not in the transport row. Toggling it there
-         changed that card's height, which resized the cube card above it and made the whole page
-         flash on every stray turn. Here it takes its space from #solList, which is `flex:1` and
-         scrolls, so appearing costs the move list a few pixels of scroll and moves nothing else.
-         The aside is its own column, so the cube never reflows at all. */
       .transport .progress > span { display: block; height: 100%; width: 0; border-radius: var(--r-pill); background: var(--bar); transition: width .18s ease; }
       /* The off-track note lives at the FOOT OF THE SOLUTION CARD, and that placement is the fix,
          not a preference: in the transport row it resized the cube card above on every stray turn,
          flashing the whole page. Here it takes its space from #solList, which flexes and scrolls. */
       .follow-note { display: flex; flex-direction: column; align-items: stretch; gap: 8px; flex: none; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: var(--fs-body-s); color: var(--warn); }
       .follow-note .acts { display: flex; gap: 8px; }
+      /* The pause line: information, not a warning — and no rescue buttons, because pausing is a
+         choice, not a fault. */
+      .follow-note.info { color: var(--ink-4); }
+      .follow-note.info .acts { display: none; }
       /* Transport controls are glyphs, not boxes. Four outlined squares in a row read as a toolbar
          of equal-weight objects and fight the cube for attention; the icons alone say the same
          thing. Play carries its emphasis in ink weight rather than a filled box.
