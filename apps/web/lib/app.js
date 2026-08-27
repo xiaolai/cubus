@@ -865,31 +865,41 @@ export { state };
 // Screens
 // ===============================================================================================
 const SCREENS = {};
-/** Drop a fixed-position `.menu` under a corner button, clamped inside the viewport. */
-/** Vertical placement for a fixed popover. The stylesheet's 100dvh cap bounds SIZE but cannot
- *  know POSITION, so the room that remains is computed here: below the anchor when that fits or
- *  is the roomier side, flipped above it otherwise — and always capped to the room actually
- *  there, so the popover scrolls rather than running off either edge. */
+/** The stage's box, in viewport coordinates. Popovers are the stage's absolutely positioned
+ *  children (index.html, the popover rule), so this is both the box they are clamped to and the
+ *  origin their `top`/`left` are measured from. Not the viewport: under the layout contract
+ *  (dev-docs/stage-contract.md) the viewport also holds the OS insets and the app's bars, and a
+ *  test keeps this file from reading it. */
+const stageRect = () => $('#stage').getBoundingClientRect();
+
+/** Vertical placement for a popover. The stylesheet's cap bounds SIZE but cannot know POSITION,
+ *  so the room that remains is computed here: below the anchor when that fits or is the roomier
+ *  side, above it otherwise — and always capped to the room actually there, so the popover
+ *  scrolls rather than running off either edge of the stage. */
 const placePopoverV = (el, anchorRect) => {
   const gap = 6, margin = 8;
-  const below = window.innerHeight - anchorRect.bottom - gap - margin;
-  const above = anchorRect.top - gap - margin;
+  const s = stageRect();
+  el.style.maxHeight = ''; // measure the natural height, not the cap left by the last placement
+  const below = s.bottom - anchorRect.bottom - gap - margin;
+  const above = anchorRect.top - s.top - gap - margin;
   if (below >= Math.min(el.offsetHeight, 120) || below >= above) {
-    el.style.top = `${anchorRect.bottom + gap}px`;
-    el.style.bottom = '';
+    el.style.top = `${anchorRect.bottom - s.top + gap}px`;
     el.style.maxHeight = `${Math.max(40, below)}px`;
   } else {
-    // Anchored by its BOTTOM edge, so the popover grows upward from above the trigger.
-    el.style.top = '';
-    el.style.bottom = `${window.innerHeight - anchorRect.top + gap}px`;
-    el.style.maxHeight = `${Math.max(40, above)}px`;
+    // Above the anchor: sized to the room there is, then placed so its bottom edge sits `gap`
+    // over the anchor. (Anchoring by `bottom` would need a height this file no longer reads.)
+    const h = Math.max(40, Math.min(el.offsetHeight, above));
+    el.style.maxHeight = `${h}px`;
+    el.style.top = `${anchorRect.top - s.top - gap - h}px`;
   }
 };
 
+/** Drop a `.menu` under a corner button, right-aligned to it and clamped inside the stage. */
 const placeMenuUnder = (btn, menu) => {
   const r = btn.getBoundingClientRect();
+  const s = stageRect();
   const w = menu.offsetWidth;
-  menu.style.left = `${Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8)}px`;
+  menu.style.left = `${Math.min(Math.max(8, r.right - s.left - w), s.width - w - 8)}px`;
   placePopoverV(menu, r);
 };
 
@@ -1323,12 +1333,13 @@ SCREENS.scan = () => {
         }
         swatches.hidden = false;
         // Anchored below the TILE, not below the sticker: a picker covering the very sticker you
-        // are correcting hides the thing you need to look at. Fixed to the viewport so there is no
-        // offset-parent arithmetic, and clamped so an edge tile keeps it on screen.
+        // are correcting hides the thing you need to look at. Centred on the sticker in stage
+        // coordinates, and clamped so an edge tile keeps it on the stage.
         const cellRect = cellEl.getBoundingClientRect();
         const tileRect = tile.getBoundingClientRect();
+        const s = stageRect();
         const w = swatches.offsetWidth;
-        swatches.style.left = `${Math.min(Math.max(8, cellRect.left + cellRect.width / 2 - w / 2), window.innerWidth - w - 8)}px`;
+        swatches.style.left = `${Math.min(Math.max(8, cellRect.left - s.left + cellRect.width / 2 - w / 2), s.width - w - 8)}px`;
         placePopoverV(swatches, tileRect); // below the tile, or above it when that is the room there is
         ev.stopPropagation();
       };
@@ -2567,7 +2578,36 @@ window.cubusFeed = {
   },
 };
 
+/** The layout contract is built on container-query units (index.html: .stage, .screen). A webview
+ *  without them would not fail — it would draw every screen at the wrong size and say nothing.
+ *  Under Tauri that is a floor violation (macOS 13 / iOS 16 are declared) and the app stops here,
+ *  on the paper, in words. The browser is a harness, not a target: it gets the console. An engine
+ *  with no CSS object at all is the test harness, which lays nothing out and is not asked. */
+function assertStageSupport() {
+  if (typeof CSS === 'undefined' || typeof CSS.supports !== 'function') return;
+  if (CSS.supports('width', '1cqw') && CSS.supports('container-type', 'size')) return;
+  const msg = 'Cubus cannot lay itself out here: this webview has no container-query units (needs macOS 13 / iOS 16 or newer).';
+  if (!isTauri) { console.error(msg); return; }
+  $('#stage').textContent = msg;
+  throw new Error(msg);
+}
+
+/** Fixture insets for the harness: `?insets=59,0,34,0` (top, right, bottom, left; px) stands in
+ *  for the OS safe-area insets, so a desktop window resized to a phone's size is a phone. Sets
+ *  the same --inset-* properties .app reads from env(safe-area-inset-*); a real device never
+ *  carries the parameter, and without it nothing happens. */
+function applyInsetOverride() {
+  const raw = new URLSearchParams(window.location.search).get('insets');
+  if (raw === null) return;
+  const px = raw.split(',').map((v) => Number.parseFloat(v));
+  if (px.length !== 4 || px.some((v) => !Number.isFinite(v) || v < 0)) throw new Error(`?insets= wants four non-negative numbers, got "${raw}"`);
+  const app = $('.app');
+  ['t', 'r', 'b', 'l'].forEach((side, i) => app.style.setProperty(`--inset-${side}`, `${px[i]}px`));
+}
+
 async function boot() {
+  assertStageSupport();
+  applyInsetOverride();
   const platform = detectPlatform();
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
