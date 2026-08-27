@@ -113,7 +113,10 @@ const TITLES = {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspection: true, autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '' });
+const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '' });
+// The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
+// rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
+delete settings.inspection;
 
 /** The themes, as stored. Auto is a policy rather than a theme: cream while the system is light,
  * night while it is dark (tokens.css). */
@@ -1682,7 +1685,6 @@ SCREENS.timer = () => {
       <div class="num" id="clock" style="font-size:var(--fs-timer);font-weight:600;line-height:.95;letter-spacing:-.03em;cursor:pointer">0.00</div>
       <div class="sub" id="timerHint" style="color:var(--ink-4)">Click or hold space to start</div>
       <div style="display:flex;gap:10px"><button class="btn outline sm" id="newScr">New scramble</button>
-        <span class="pill">${settings.inspection ? 'Inspection 15s' : 'Inspection off'}</span>
         <span class="pill">WCA scrambles</span></div>
       <div style="display:flex;gap:12px;margin-top:6px" id="lastFive"></div></div>`,
     mount(root) {
@@ -1757,7 +1759,10 @@ SCREENS.timer = () => {
 
 SCREENS.settings = () => {
   const pals = ['muted', 'classic', 'colorsafe'];
-  const toggles = [['inspection', 'WCA inspection', '15s hold before the timer starts'], ['autosolve', 'Auto-solve after scan', 'Jump straight to the guide']];
+  // No WCA-inspection toggle: it flipped a label and nothing else — the timer never implemented
+  // the 15s countdown it named. A setting that claims behaviour it does not have is exactly the
+  // invented data this app refuses elsewhere; it returns when the Timer actually earns it.
+  const toggles = [['autosolve', 'Auto-solve after scan', 'Jump straight to the guide']];
   return { html: `<div class="cols">
     <div class="col">
       <div class="card"><div class="eyebrow">APPEARANCE</div>
@@ -1884,7 +1889,7 @@ SCREENS.settings = () => {
           <button class="btn sm outline" id="anchorBtn" aria-label="Re-mark this cube as solved">Re-mark solved</button>
         </div>` : ''}
       </div>`; })()}
-      <div class="card"><div class="eyebrow">TIMER & CAMERA</div>
+      <div class="card"><div class="eyebrow">CAMERA</div>
         ${toggles.map(([k, lbl, sub]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">${t(lbl)}</div><div class="sub" style="color:var(--ink-4)">${t(sub)}</div></div>
           <button class="toggle ${settings[k] ? 'on' : ''}" data-toggle="${k}"><i></i></button></div>`).join('')}</div>
