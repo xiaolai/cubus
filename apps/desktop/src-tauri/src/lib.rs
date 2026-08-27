@@ -5,21 +5,154 @@
 // needs Rust for. It exists so the tutor can be an application a child opens rather than a tab
 // somebody has to find again, and so it works with no network at all.
 //
-// It used to own native Bluetooth, bridging a GAN cube's notifications into the webview. That went
-// with the rest of the smart-cube support; see the `v0` branch if it is ever wanted back.
-//
-// The one native capability it now carries is `cube-vision` — native camera capture and CoreML
-// inference — and that is the single deliberate exception AGENTS.md sanctioned on 2026-08-26. Its
-// commands are not a second app: each sits behind the `Detector` seam the browser build implements
-// too (`WebDetector`), so the desktop and web builds stay the same app in behaviour while the
-// desktop one gets the ANE and cameras the webview cannot reach. On non-Apple targets the plugin is
-// inert and the app runs `WebDetector`, exactly as the accepted platform table says.
+// Native capabilities, each behind a seam the browser build also satisfies (AGENTS.md):
+//   - `cube-vision` (2026-08-26) — native camera capture and CoreML inference behind the
+//     `Detector` seam; the browser runs `WebDetector`. Inert on non-Apple targets.
+//   - native BLE (removed 2026-08-26, recovered from v0 on 2026-08-27) — the GAN smart-cube
+//     bridge below: FFF6 notifications are forwarded as `cube-packet` events (hex), FFF5
+//     commands come back via `write_fff5`, and the browser-safe gan-driver decodes in the
+//     webview. The browser build reaches the same cube over Web Bluetooth — same seam shape.
 
 // `mobile_entry_point` is the symbol the generated iOS/Android wrappers call. It is a no-op on
 // desktop (the `cfg_attr(mobile, …)` expands to nothing), so it costs the desktop build nothing while
 // making the same `run()` the entry point when Phase 3 wires up the iOS and Android shells. The
 // `cube-vision` plugin is Apple-only today, so on iOS it runs the same CoreML core as macOS; the
 // Android backend (LiteRT/CameraX) is the remaining device-gated work.
+// ---- smart-cube BLE bridge (recovered verbatim from v0 — proven against a real GAN16) --------
+
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::{Stream, StreamExt};
+use gan_ble::btleplug::api::{
+    Central, CentralEvent, Peripheral as _, ValueNotification, WriteType,
+};
+use gan_ble::btleplug::platform::Peripheral;
+use gan_ble::{default_adapter, find_gan_cube, FFF5_WRITE, FFF6_NOTIFY};
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex;
+
+/// The FFF6 notification stream btleplug hands back (owned, 'static).
+type NotifyStream = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
+
+/// The currently-connected cube (if any).
+#[derive(Default)]
+struct CubeState(Arc<Mutex<Option<Peripheral>>>);
+
+#[derive(serde::Serialize)]
+struct CubeInfo {
+    name: String,
+    mac: Option<String>,
+}
+
+/// Discover services, find FFF6, subscribe, and open the notification stream. Split out so
+/// `connect_cube` can tear the peripheral down if any step here fails.
+async fn init_notifications(peripheral: &Peripheral) -> Result<NotifyStream, String> {
+    peripheral
+        .discover_services()
+        .await
+        .map_err(|e| e.to_string())?;
+    let notify = peripheral
+        .characteristics()
+        .into_iter()
+        .find(|c| c.uuid == FFF6_NOTIFY)
+        .ok_or_else(|| "FFF6 notify characteristic not found".to_string())?;
+    peripheral
+        .subscribe(&notify)
+        .await
+        .map_err(|e| e.to_string())?;
+    peripheral.notifications().await.map_err(|e| e.to_string())
+}
+
+/// Scan → connect → subscribe FFF6. Each notification is emitted to the webview as a
+/// `cube-packet` event carrying the raw 20-byte packet as hex; gan-driver decodes it there.
+#[tauri::command]
+async fn connect_cube(app: AppHandle, state: State<'_, CubeState>) -> Result<CubeInfo, String> {
+    let central = default_adapter().await.map_err(|e| e.to_string())?;
+    // Subscribe to adapter events BEFORE connecting so a fast disconnect can't slip past us.
+    let events = central.events().await.map_err(|e| e.to_string())?;
+    let cube = find_gan_cube(&central, Duration::from_secs(20))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no GAN cube found — is it awake and advertising?".to_string())?;
+
+    let peripheral = cube.peripheral;
+    peripheral.connect().await.map_err(|e| e.to_string())?;
+
+    // The peripheral is now connected; if any initialization step fails, disconnect it before
+    // returning so we never leak an open BLE link behind an error the frontend can't clean up
+    // (its disconnect_cube would run against an empty CubeState).
+    let stream = match init_notifications(&peripheral).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = peripheral.disconnect().await;
+            return Err(e);
+        }
+    };
+
+    // Forward FFF6 notifications as `cube-packet`, and detect a real disconnect from the adapter's
+    // DeviceDisconnected event — NOT from stream exhaustion. On CoreBluetooth the notifications
+    // stream can stay open after the cube drops, so relying on it would leave the UI "Connected"
+    // forever and leak this task; the event fires on a genuine disconnect and ends the task.
+    let app_for_task = app.clone();
+    let pid = peripheral.id();
+    tauri::async_runtime::spawn(async move {
+        let _central = central; // keep the adapter alive so its event stream stays fed
+        let mut stream = stream;
+        let mut events = events;
+        loop {
+            tokio::select! {
+                packet = stream.next() => match packet {
+                    Some(v) => {
+                        let _ = app_for_task.emit("cube-packet", hex::encode(&v.value));
+                    }
+                    None => break,
+                },
+                event = events.next() => match event {
+                    Some(CentralEvent::DeviceDisconnected(id)) if id == pid => break,
+                    Some(_) => {}
+                    None => break,
+                },
+            }
+        }
+        let _ = app_for_task.emit("cube-disconnect", ());
+    });
+
+    let info = CubeInfo {
+        name: cube.name,
+        mac: cube.mac,
+    };
+    *state.0.lock().await = Some(peripheral);
+    Ok(info)
+}
+
+/// Write an FFF5 command (encrypted, built by gan-driver) — passed as hex from the webview.
+#[tauri::command]
+async fn write_fff5(state: State<'_, CubeState>, hex_data: String) -> Result<(), String> {
+    let bytes = hex::decode(&hex_data).map_err(|e| e.to_string())?;
+    let guard = state.0.lock().await;
+    let peripheral = guard.as_ref().ok_or_else(|| "not connected".to_string())?;
+    let write = peripheral
+        .characteristics()
+        .into_iter()
+        .find(|c| c.uuid == FFF5_WRITE)
+        .ok_or_else(|| "FFF5 write characteristic not found".to_string())?;
+    peripheral
+        .write(&write, &bytes, WriteType::WithoutResponse)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn disconnect_cube(state: State<'_, CubeState>) -> Result<(), String> {
+    if let Some(peripheral) = state.0.lock().await.take() {
+        let _ = peripheral.disconnect().await;
+    }
+    Ok(())
+}
+
 // Traffic lights, macOS. `trafficLightPosition` in tauri.conf.json (x:19/y:28 — measured to land
 // the lights exactly where Finder's tall toolbar puts its own: 25.75pt centre) is applied by tao
 // only from its content view's drawRect — which a webview-covered window rarely receives, so most
@@ -130,7 +263,13 @@ pub fn run() {
         // External links only: the About card's anchors call opener.openUrl when this API is
         // injected (withGlobalTauri), because a webview does nothing with target="_blank". The
         // browser build satisfies the same seam with plain anchors.
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .manage(CubeState::default())
+        .invoke_handler(tauri::generate_handler![
+            connect_cube,
+            write_fff5,
+            disconnect_cube
+        ]);
 
     // Dev-only MCP bridge (AGENTS.md exception, accepted 2026-08-27): a control socket that lets
     // an AI agent drive the app — screenshots, selector clicks, DOM queries, arbitrary JS in the
