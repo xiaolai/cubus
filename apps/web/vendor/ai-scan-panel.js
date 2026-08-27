@@ -2165,6 +2165,7 @@ function rotateFace(a, k) {
   for (let t = 0; t < (k % 4 + 4) % 4; t++) out = ROT90.map((i) => out[i]);
   return out;
 }
+var CONFIRM_TOLERANCE = 2;
 function cubejsRoundTrips(facelets) {
   try {
     return import_cubejs.default.fromString(facelets).asString() === facelets;
@@ -2183,12 +2184,13 @@ function reject(reason, extra = {}) {
   };
 }
 function matchingRotations(original, confirmed) {
-  const want = confirmed.colors.join(",");
-  const out = /* @__PURE__ */ new Set();
-  for (let k = 0; k < 4; k++) {
-    if (rotateFace(original.colors, k).join(",") === want) out.add(k);
-  }
-  return out;
+  if (original.colors[4] !== confirmed.colors[4]) return /* @__PURE__ */ new Set();
+  const dist = [0, 1, 2, 3].map(
+    (k) => rotateFace(original.colors, k).reduce((s, c, i) => s + (c === confirmed.colors[i] ? 0 : 1), 0)
+  );
+  const min = Math.min(...dist);
+  if (min > CONFIRM_TOLERANCE) return /* @__PURE__ */ new Set();
+  return new Set([0, 1, 2, 3].filter((k) => dist[k] === min));
 }
 function pickConfirm(candidates, confirmed) {
   const useful = FACES.filter((face2, fi) => {
@@ -2214,6 +2216,62 @@ function pickVerification(survivorCombos, weak, confirmed) {
     }
   });
   return best === void 0 || bestScore < 1 ? void 0 : { face: best, up: TOP_NEIGHBOUR[best] };
+}
+function solvableReadings(faces, centreOwner) {
+  const buildFacelets = (rots2) => {
+    const letters = [];
+    for (let fi = 0; fi < 6; fi++) {
+      const rc = rotateFace(faces[FACES[fi]].colors, rots2[fi]);
+      for (let i = 0; i < 9; i++) {
+        const owner = centreOwner.get(rc[i]);
+        if (owner === void 0) return null;
+        letters.push(owner);
+      }
+    }
+    return letters.join("");
+  };
+  const seen = /* @__PURE__ */ new Map();
+  const rots = [0, 0, 0, 0, 0, 0];
+  for (let n = 0; n < 4096; n++) {
+    for (let i = 0; i < 6; i++) rots[i] = n >> 2 * i & 3;
+    const fl = buildFacelets(rots);
+    if (fl === null) continue;
+    let combos = seen.get(fl);
+    if (combos === void 0) {
+      combos = isStructurallyValid(fl) && cubejsRoundTrips(fl) ? [] : null;
+      seen.set(fl, combos);
+    }
+    if (combos !== null) combos.push([...rots]);
+  }
+  return [...seen].filter((e) => e[1] !== null);
+}
+function findSuspects(faces) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const f of FACES) {
+    for (const c of faces[f].colors) counts.set(c, (counts.get(c) ?? 0) + 1);
+  }
+  const over = [...counts].filter(([, n]) => n === 10).map(([c]) => c);
+  const under = [...counts].filter(([, n]) => n === 8).map(([c]) => c);
+  if (over.length !== 1 || under.length !== 1 || counts.size !== 6) return [];
+  const [wrong] = over;
+  const [right] = under;
+  const centreOwner = /* @__PURE__ */ new Map();
+  for (const f of FACES) centreOwner.set(faces[f].colors[4], f);
+  const out = [];
+  for (const face of FACES) {
+    const src = faces[face];
+    for (let i = 0; i < 9; i++) {
+      if (i === 4 || src.colors[i] !== wrong) continue;
+      const patched = {
+        ...faces,
+        [face]: { ...src, colors: src.colors.map((c, j) => j === i ? right : c) }
+      };
+      if (solvableReadings(patched, centreOwner).length > 0) {
+        out.push({ face, index: i, to: right });
+      }
+    }
+  }
+  return out;
 }
 function assemblePainted(faces, threshold = 0.15) {
   const centreOwner = /* @__PURE__ */ new Map();
@@ -2260,39 +2318,25 @@ function assembleColors(faces, threshold = 0.15, confirmed = {}) {
     centreOwner.set(centre, face);
   }
   if (centreOwner.size !== 6) return reject("the 6 centres are not 6 distinct colours");
-  const buildFacelets = (rots2) => {
-    const letters = [];
-    for (let fi = 0; fi < 6; fi++) {
-      const rc = rotateFace(faces[FACES[fi]].colors, rots2[fi]);
-      for (let i = 0; i < 9; i++) {
-        const owner = centreOwner.get(rc[i]);
-        if (owner === void 0) return null;
-        letters.push(owner);
-      }
-    }
-    return letters.join("");
-  };
-  const seen = /* @__PURE__ */ new Map();
-  const rots = [0, 0, 0, 0, 0, 0];
-  for (let n = 0; n < 4096; n++) {
-    for (let i = 0; i < 6; i++) rots[i] = n >> 2 * i & 3;
-    const fl = buildFacelets(rots);
-    if (fl === null) continue;
-    let combos2 = seen.get(fl);
-    if (combos2 === void 0) {
-      combos2 = isStructurallyValid(fl) && cubejsRoundTrips(fl) ? [] : null;
-      seen.set(fl, combos2);
-    }
-    if (combos2 !== null) combos2.push([...rots]);
-  }
-  const all = [...seen].filter((e) => e[1] !== null);
+  const all = solvableReadings(faces, centreOwner);
   if (all.length === 0) {
-    return reject("no orientation of the faces is solvable \u2014 a colour was misread; re-scan");
+    const suspects = findSuspects(faces);
+    return reject(
+      "no orientation of the faces is solvable \u2014 a colour was misread",
+      suspects.length > 0 ? { suspects } : {}
+    );
   }
   const confirmedFaces = FACES.filter((f) => confirmed[f]);
   const allowed = /* @__PURE__ */ new Map();
   for (const face of confirmedFaces) {
-    allowed.set(face, matchingRotations(faces[face], confirmed[face]));
+    const rots = matchingRotations(faces[face], confirmed[face]);
+    if (rots.size === 0) {
+      return reject("that side read differently this time \u2014 checking again with the fresh read", {
+        reread: face,
+        confirm: { face, up: TOP_NEIGHBOUR[face] }
+      });
+    }
+    allowed.set(face, rots);
   }
   const candidates = all.map(([fl, combos2]) => [
     fl,
@@ -2309,9 +2353,15 @@ function assembleColors(faces, threshold = 0.15, confirmed = {}) {
   }
   if (candidates.length > 1) {
     const confirm = pickConfirm(candidates, confirmed);
+    if (confirm) {
+      return reject(
+        `${candidates.length} readings fit \u2014 this cube is close to solved, so one more look decides it`,
+        { ambiguous: true, confirm }
+      );
+    }
     return reject(
-      `${candidates.length} readings fit \u2014 this cube is close to solved, so one more look decides it`,
-      { ambiguous: true, ...confirm ? { confirm } : {} }
+      "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
+      { ambiguous: true }
     );
   }
   const [facelets, combos] = candidates[0];
@@ -2343,7 +2393,7 @@ function assembleColors(faces, threshold = 0.15, confirmed = {}) {
     if (c < min) min = c;
     if (c < threshold) lowConfidence.push(i);
   });
-  return { facelets, valid: true, confidence: min, lowConfidence };
+  return { facelets, valid: true, confidence: min, lowConfidence, rotations: [...chosen] };
 }
 
 // src/onnx-postprocess.ts
@@ -2721,14 +2771,16 @@ var GUIDE = {
   B: { color: "BLUE", name: "Back", swatch: "#0057c8" }
 };
 var CLASS_SWATCH = FACES.map((f) => GUIDE[f].swatch);
-var HINT = {
-  NO_FACE: "point a side at the camera",
-  PARTIAL_FACE: "show the whole face, centred",
-  BAD_GEOMETRY: "hold it flatter and steadier"
+var FRAME_HINT = {
+  NO_FACE: "",
+  PARTIAL_FACE: " Get the whole side in the frame.",
+  BAD_GEOMETRY: " Hold it flatter and steadier."
 };
 var TICK_MS_WEB = 200;
 var TICK_MS_NATIVE = 60;
 var STABLE = 3;
+var STABLE_MS = 500;
+var CHECK_BEAT_MS = 350;
 var OPENING = "Show any side to the camera \u2014 held flat and centred.";
 var PAINTING = "Painting by hand \u2014 tap any sticker and pick its colour.";
 var SLOW_OPEN_MS = 8e3;
@@ -2802,6 +2854,8 @@ var AiScanPanel = class extends HTMLElement {
   faces = {};
   lastColors = "";
   stableCount = 0;
+  /** When the current identical-read streak began; captures need STABLE reads AND STABLE_MS. */
+  stableSince = 0;
   live = null;
   device = null;
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
@@ -2809,10 +2863,24 @@ var AiScanPanel = class extends HTMLElement {
   awaiting = null;
   /** Hand-painting mode: the camera is off and every non-centre sticker is settable. */
   painting = false;
-  /** Contradictory confirmations in a row; two means the instruction is not landing. */
+  /** Contradictory confirmations this scan; past one, the notice starts offering restart too. */
   mismatches = 0;
   scanEpoch = 0;
   // bumped by loop()/stop(); rejects stale in-flight inferences
+  /**
+   * The scan reached a valid cube and delivered it. A finished scan is a state, not a moment:
+   * the camera can be reopened over it (picking a camera from the host's menu does exactly that),
+   * and without this flag the loop would hungrily nag "show a side" over a complete cube — and a
+   * side idly held in view would REPLACE part of an accepted scan. While finished, ticks guide
+   * instead of capture; any re-check (a correction, a rescan, a restart) clears it.
+   */
+  finished = false;
+  /** The pinned explanation riding on every report; null when nothing needs saying. */
+  notice = null;
+  /** Where a colour misread most plausibly is; rides on every report so a host can mark them. */
+  suspects = [];
+  /** The pending deferred assembly (see CHECK_BEAT_MS); epoch-guarded and cleared on stop(). */
+  checkTimer = null;
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
@@ -2840,6 +2908,10 @@ var AiScanPanel = class extends HTMLElement {
       clearInterval(this.timer);
       this.timer = null;
     }
+    if (this.checkTimer !== null) {
+      clearTimeout(this.checkTimer);
+      this.checkTimer = null;
+    }
     this.detector?.stop();
     this.device = null;
     const start = this.maybe("start");
@@ -2859,7 +2931,11 @@ var AiScanPanel = class extends HTMLElement {
   maybe(id) {
     return this.root.getElementById(id);
   }
-  /** Open the camera and begin scanning. Public so a host can autostart it, or retry an error. */
+  /**
+   * Open the camera and begin scanning. Public so a host can autostart it, or retry an error.
+   * Deliberately does NOT clear captured sides: switching cameras mid-scan, or reopening after
+   * painting, must not cost the user the sides they already showed. `restart()` is the wipe.
+   */
   async start() {
     const startBtn = this.maybe("start");
     if (startBtn) startBtn.disabled = true;
@@ -2895,15 +2971,16 @@ var AiScanPanel = class extends HTMLElement {
       }
       this.device = detector.device;
       if (startBtn) startBtn.hidden = true;
-      this.reset();
       if (!this.modelLoaded) {
         this.report("loading", "Camera ready \u2014 loading the model\u2026");
         await detector.load();
         this.modelLoaded = true;
         if (gen !== this.startGen) return;
       }
-      if (fellBack) this.loop("scanning", this.tinted("err", PINNED_GONE), " ", OPENING);
-      else this.loop("scanning");
+      const phase = this.awaiting ? "confirm" : "scanning";
+      const opening = this.awaiting ? this.confirmWords(this.awaiting) : [OPENING];
+      if (fellBack) this.loop(phase, this.tinted("err", PINNED_GONE), " ", ...opening);
+      else this.loop(phase, ...opening);
     } catch (err) {
       if (gen !== this.startGen) {
         detector.stop();
@@ -2929,6 +3006,16 @@ var AiScanPanel = class extends HTMLElement {
   ensureDetector() {
     this.detectorPromise ??= this.selectDetector();
     return this.detectorPromise;
+  }
+  /**
+   * Adopt a ready Detector and skip the async probe. A test seam: driving the full capture loop
+   * in a DOM test needs a fake detector in place before start(), and the probe would race it.
+   * Production hosts never call this — the panel chooses its own detector.
+   */
+  useDetector(detector, runtime) {
+    this.detector = detector;
+    this.detectorPromise = Promise.resolve(detector);
+    this.runtime = runtime;
   }
   /**
    * Pick the detector for this environment. Native when the desktop shell's `cube-vision` plugin
@@ -2968,10 +3055,14 @@ var AiScanPanel = class extends HTMLElement {
   reset() {
     this.lastColors = "";
     this.stableCount = 0;
+    this.stableSince = 0;
     this.live = null;
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
+    this.finished = false;
+    this.notice = null;
+    this.suspects = [];
     for (const f of FACES) delete this.faces[f];
     this.buildDots();
   }
@@ -2988,7 +3079,7 @@ var AiScanPanel = class extends HTMLElement {
     const restart = this.maybe("restart");
     if (restart) restart.hidden = false;
     if (this.device === null) {
-      this.report("error", this.tinted("err", "The camera is off \u2014 turn it on to scan again."));
+      void this.start();
       return;
     }
     this.report(phase, ...opening.length > 0 ? opening : [OPENING]);
@@ -3014,14 +3105,22 @@ var AiScanPanel = class extends HTMLElement {
         this.stableCount = 0;
         this.lastColors = "";
         this.showPreview(null);
-        this.report("scanning", `Show any side to the camera \u2014 ${HINT[fit.reason]}\u2026`);
+        this.report(
+          this.awaiting ? "confirm" : "scanning",
+          this.idleLine() + FRAME_HINT[fit.reason]
+        );
         return;
       }
       const key = fit.face.colors.join(",");
-      this.stableCount = key === this.lastColors ? this.stableCount + 1 : 1;
+      if (key === this.lastColors) {
+        this.stableCount += 1;
+      } else {
+        this.stableCount = 1;
+        this.stableSince = Date.now();
+      }
       this.lastColors = key;
       this.showPreview(fit.face.colors);
-      if (this.stableCount < STABLE) {
+      if (this.stableCount < STABLE || Date.now() - this.stableSince < STABLE_MS) {
         this.report(this.awaiting ? "confirm" : "scanning", "Reading a side \u2014 hold still\u2026");
         return;
       }
@@ -3034,22 +3133,46 @@ var AiScanPanel = class extends HTMLElement {
         }
         this.confirmed[face] = fit.face;
         this.awaiting = null;
-        this.stopLoop();
-        this.showPreview(null);
         this.flash();
-        this.assemble();
+        this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
         return;
       }
       if (face === void 0) {
         this.report("scanning", this.tinted("err", "Couldn't read the centre \u2014 hold it steadier."));
         return;
       }
+      if (this.finished) {
+        this.report(
+          "scanning",
+          "This cube is already scanned \u2014 tap a sticker to fix one, or start the scan over for a different cube."
+        );
+        return;
+      }
       if (this.faces[face]) {
+        if (this.capturedFaces().length >= FACES.length) {
+          if (key === this.faces[face].colors.join(",")) {
+            this.report(
+              "scanning",
+              "The ",
+              this.bold(GUIDE[face].name),
+              " side reads the same as before \u2014 tap a sticker to fix it, or show another side."
+            );
+            return;
+          }
+          this.faces[face] = fit.face;
+          this.confirmed = {};
+          this.mismatches = 0;
+          this.buildDots();
+          this.flash();
+          this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[face].name} side \u2014 checking\u2026`));
+          return;
+        }
+        const named = this.missingSides();
         this.report(
           "scanning",
           "Already have the ",
           this.bold(GUIDE[face].name),
-          " side \u2014 show a different one."
+          named ? ` side \u2014 still need ${named}.` : " side \u2014 show a different one."
         );
         return;
       }
@@ -3068,18 +3191,36 @@ var AiScanPanel = class extends HTMLElement {
     this.flash();
     const done = this.capturedFaces().length;
     if (done >= FACES.length) {
-      this.stopLoop();
-      this.showPreview(null);
-      this.report("checking", this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
-      this.assemble();
+      this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
       return;
     }
+    const named = this.missingSides();
     this.report(
       "scanning",
       "Got the ",
       this.bold(GUIDE[face].name),
-      ` side \u2014 ${done}/6. Show another side\u2026`
+      ` side \u2014 ${done}/6. ${named ? `Still to show: ${named}.` : "Show another side\u2026"}`
     );
+  }
+  /**
+   * Stop the loop, report 'checking', and run the assembly one beat later (CHECK_BEAT_MS), so the
+   * capture or correction that triggered the check paints before any verdict replaces it. Clears
+   * the pinned notice: whatever it explained is being re-decided right now. Epoch-guarded, so a
+   * restart or navigation during the beat cancels the stale check.
+   */
+  scheduleCheck(...opening) {
+    this.stopLoop();
+    this.showPreview(null);
+    this.finished = false;
+    this.notice = null;
+    this.suspects = [];
+    this.report("checking", ...opening);
+    const epoch = this.scanEpoch;
+    if (this.checkTimer !== null) clearTimeout(this.checkTimer);
+    this.checkTimer = setTimeout(() => {
+      this.checkTimer = null;
+      if (epoch === this.scanEpoch) this.assemble();
+    }, CHECK_BEAT_MS);
   }
   /** The sides captured so far, in URFDLB order — the shape hosts draw progress from. */
   capturedFaces() {
@@ -3123,6 +3264,8 @@ var AiScanPanel = class extends HTMLElement {
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
+    this.notice = null;
+    this.suspects = [];
     const done = this.capturedFaces().length;
     if (this.painting) {
       if (done === FACES.length) {
@@ -3131,6 +3274,11 @@ var AiScanPanel = class extends HTMLElement {
           this.finish(result);
           return;
         }
+        this.notice = {
+          title: "Not solvable yet",
+          tone: "info",
+          body: `${result.reason ?? "Not a legal cube yet"} \u2014 tap stickers until every colour appears nine times.`
+        };
       }
       this.report(
         "painting",
@@ -3142,10 +3290,7 @@ var AiScanPanel = class extends HTMLElement {
       this.report("scanning", `Corrected the ${GUIDE[face].name} side. Show another side\u2026`);
       return;
     }
-    this.stopLoop();
-    this.showPreview(null);
-    this.report("checking", this.tinted("ok", "Corrected \u2014 checking\u2026"));
-    this.assemble();
+    this.scheduleCheck(this.tinted("ok", "Corrected \u2014 checking\u2026"));
   }
   /**
    * Turn hand-painting on or off. The two are exclusive by nature, not by policy: painting means
@@ -3155,6 +3300,8 @@ var AiScanPanel = class extends HTMLElement {
   setPainting(on) {
     if (on === this.painting) return;
     this.painting = on;
+    this.notice = null;
+    this.suspects = [];
     if (on) {
       this.stop();
       this.report("painting", PAINTING);
@@ -3176,14 +3323,10 @@ var AiScanPanel = class extends HTMLElement {
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
+    this.finished = false;
+    this.notice = null;
+    this.suspects = [];
     this.buildDots();
-    if (this.device === null) {
-      this.report(
-        "error",
-        this.tinted("err", "The camera is not running \u2014 turn it on to scan that side again.")
-      );
-      return;
-    }
     this.loop("scanning", `Show the ${GUIDE[face].color} side again \u2014 it will be read fresh.`);
   }
   /**
@@ -3193,7 +3336,11 @@ var AiScanPanel = class extends HTMLElement {
   async cameras() {
     return (await this.ensureDetector()).cameras();
   }
-  /** Clear all captured faces and keep scanning; the camera stays open. Public for host UIs. */
+  /**
+   * Throw the whole scan away and scan afresh — the ONLY thing that clears captured sides.
+   * Public for host UIs; with the camera dark it is also the way back on, so a host needs just
+   * this one call behind its restart control.
+   */
   restart() {
     this.reset();
     if (this.painting) {
@@ -3220,44 +3367,94 @@ var AiScanPanel = class extends HTMLElement {
       " facing up."
     ];
   }
+  /** The same instruction as a plain sentence, for the pinned notice. */
+  confirmSentence(req) {
+    return `Show the ${GUIDE[req.face].color} side again, with ${GUIDE[req.up].color} facing up.`;
+  }
+  /**
+   * The waiting-for-input line, matched to where the scan actually is. One generic "show any
+   * side" for every state was how a finished scan kept being nagged for sides, and how the ask
+   * for one SPECIFIC side got contradicted the moment the cube left the frame.
+   */
+  idleLine() {
+    if (this.awaiting) {
+      return `Looking for the ${GUIDE[this.awaiting.face].color} side \u2014 hold it with ${GUIDE[this.awaiting.up].color} up.`;
+    }
+    if (this.finished) return "Scan finished \u2014 start the scan over to read a different cube.";
+    if (this.capturedFaces().length >= FACES.length) {
+      return "Show a side to the camera to re-read it.";
+    }
+    return "Show any side to the camera.";
+  }
+  /** "YELLOW and BLUE" — the sides still to show, named once there are few enough to name. */
+  missingSides() {
+    const missing = FACES.filter((f) => !this.faces[f]);
+    if (missing.length === 0 || missing.length > 2) return null;
+    return missing.map((f) => GUIDE[f].color).join(" and ");
+  }
   /** Read the six faces (plus any confirmations) into a cube, and act on what comes back. */
   assemble() {
     let result;
-    try {
-      result = assembleColors(this.faces, void 0, this.confirmed);
-    } catch (err) {
-      const why = String(err?.message ?? err);
-      this.reset();
-      this.loop(
-        "scanning",
-        this.tinted("err", `Couldn't assemble the scan (${why}) \u2014 starting over.`)
-      );
-      return;
+    for (let round = 0; ; round++) {
+      try {
+        result = assembleColors(this.faces, void 0, this.confirmed);
+      } catch (err) {
+        const why = String(err?.message ?? err);
+        this.notice = {
+          title: "Something went wrong",
+          tone: "err",
+          body: `Couldn't check the scan (${why}). Show a side again to retry, or start the scan over.`
+        };
+        this.loop("scanning", this.tinted("err", "Couldn\u2019t check the scan \u2014 see the note."));
+        return;
+      }
+      const face = result.reread;
+      const fresh = face === void 0 ? void 0 : this.confirmed[face];
+      if (face === void 0 || fresh === void 0 || round >= FACES.length) {
+        this.finish(result);
+        return;
+      }
+      this.faces[face] = fresh;
     }
-    this.finish(result);
   }
   finish(result) {
     this.stopLoop();
     this.showPreview(null);
+    this.suspects = result.suspects ?? [];
     if (result.valid && result.lowConfidence.length === 0) {
+      const rots = result.rotations;
+      if (rots) {
+        FACES.forEach((f, fi) => {
+          const read = this.faces[f];
+          const k = rots[fi] ?? 0;
+          if (read && k !== 0) {
+            this.faces[f] = {
+              colors: rotateFace(read.colors, k),
+              confidence: rotateFace(read.confidence, k)
+            };
+          }
+        });
+      }
+      this.confirmed = {};
+      this.awaiting = null;
+      this.mismatches = 0;
+      this.finished = true;
+      this.notice = null;
       this.stop();
       this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
       this.dispatchEvent(new CustomEvent("scan-complete", { detail: result }));
       return;
     }
-    if (result.confirm) {
+    if (result.confirm && result.reread === void 0) {
       if (result.mismatch) {
         this.confirmed = {};
-        if (++this.mismatches >= 2) {
-          this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
-          this.reset();
-          this.loop(
-            "scanning",
-            this.tinted("err", "Those looks didn't line up \u2014 let's show all six sides again.")
-          );
-          return;
-        }
+        this.mismatches++;
         this.awaiting = result.confirm;
+        this.notice = {
+          title: "Those looks disagree",
+          tone: "err",
+          body: `One of them was held a different way up. ${this.confirmSentence(result.confirm)}${this.mismatches >= 2 ? " Each tile's edge colours show which way up to hold that side \u2014 or start the scan over." : ""}`
+        };
         this.loop(
           "confirm",
           this.tinted("err", "Those two looks disagree. "),
@@ -3266,13 +3463,47 @@ var AiScanPanel = class extends HTMLElement {
         return;
       }
       this.awaiting = result.confirm;
+      this.notice = {
+        title: "One more look",
+        tone: "info",
+        body: (result.ambiguous ? "This cube is so close to solved that six photos genuinely cannot pin it down \u2014 one more look, held as asked, decides it. " : "A single look could have been held wrong, so a second one settles it for sure. ") + this.confirmSentence(result.confirm)
+      };
       this.loop("confirm", ...this.confirmWords(result.confirm));
       return;
     }
-    const why = result.valid ? "Some stickers were unclear" : result.reason ?? "That isn't a solvable cube yet";
     this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
-    this.reset();
-    this.loop("scanning", this.tinted("err", `${why} \u2014 starting over, show each side again.`));
+    this.confirmed = {};
+    this.awaiting = null;
+    const hold = " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
+    if (this.suspects.length > 0) {
+      this.notice = {
+        title: this.suspects.length === 1 ? "One sticker looks wrong" : "A sticker looks wrong",
+        tone: "err",
+        body: `Fixing a marked sticker makes this a solvable cube \u2014 tap it and pick the right colour, or show that side again to re-read it.${hold}`
+      };
+    } else if (result.valid) {
+      this.notice = {
+        title: "Some stickers were unclear",
+        tone: "err",
+        body: "The cube reads as solvable, but some stickers were too faint to trust. Show those sides again, or tap stickers to confirm them."
+      };
+    } else if (result.ambiguous) {
+      this.notice = {
+        title: "Too symmetric to tell",
+        tone: "err",
+        body: "This cube reads the same several ways, and no extra look can split them. Turn any one face a quarter turn, then start the scan over to read the changed cube."
+      };
+    } else {
+      this.notice = {
+        title: "That doesn't read as a solvable cube",
+        tone: "err",
+        body: `A sticker was misread somewhere. Tap any sticker to correct it, show a side again to re-read it, or start the scan over for a fresh read.${hold}`
+      };
+    }
+    this.loop(
+      "scanning",
+      this.tinted("err", "That isn't a solvable cube yet \u2014 fix a sticker, or show a side again.")
+    );
   }
   buildDots() {
     const dots = this.maybe("dots");
@@ -3327,7 +3558,10 @@ var AiScanPanel = class extends HTMLElement {
           live: this.live,
           device: this.device,
           confirm: this.awaiting,
-          runtime: this.runtime
+          runtime: this.runtime,
+          notice: this.notice,
+          suspects: [...this.suspects],
+          complete: this.finished
         }
       })
     );
