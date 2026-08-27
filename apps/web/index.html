@@ -153,14 +153,14 @@
          A seventh per-component rule would have fixed today's instance and left the next one to be
          found the same way, so the six are gone and this stands in their place. */
       [hidden] { display: none !important; }
-      .btn { height: 40px; padding: 0 18px; border-radius: var(--r-4); display: inline-flex; align-items: center; gap: 8px; justify-content: center; font-size: var(--fs-body-l); font-weight: 600; }
+      /* Every action button is a pill — one shape across the app, the same one the tabs wear.
+         Decided 2026-08-27, superseding the mock's --r-4 rectangles: two button shapes on one
+         screen read as two kinds of thing, and there is only one kind. */
+      .btn { height: 40px; padding: 0 18px; border-radius: var(--r-pill); display: inline-flex; align-items: center; gap: 8px; justify-content: center; font-size: var(--fs-body-l); font-weight: 600; }
       .btn.primary { background: var(--invert-bg); color: var(--invert-fg); }
       .btn.accent { background: var(--accent); color: #fff; }
       .btn.outline { border: 1px solid var(--line-strong); color: var(--ink-2); }
       .btn.accent-outline { border: 1px solid var(--accent); color: var(--accent); }
-      /* The tabs' own shape and ink, as a button: pill radius, inverted-surface pair — the pair
-         exists precisely so this reads right in both themes, where an accent outline did not. */
-      .btn.pill { border-radius: var(--r-pill); }
       .btn.sm { height: 32px; padding: 0 12px; font-size: var(--fs-body-s); }
       .btn.block { width: 100%; }
       .pill { border: 1px solid var(--line); border-radius: var(--r-pill); padding: 6px 15px; font-size: var(--fs-body); font-weight: 600; color: var(--ink-3); }
