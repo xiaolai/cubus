@@ -118,6 +118,8 @@ const measure = (page) =>
       ref: { w: p.width, h: p.height },
       nav: { position: getComputedStyle(nav).position, compact: nav.classList.contains('compact'), ...rect(nav) },
       lead: rect($('#tbLead')), trail: rect($('#tbTrail')), bar: rect($('#titlebar')),
+      // The zones' CONTENT: the tabs must clear these, whatever box the engine gave the zones.
+      brand: rect($('#tbLead .brand')), gear: rect($('#tbTrail [aria-label="Settings"]')),
       tabs: [...nav.querySelectorAll('.nav-item')].map(rect),
       // The toggle is excluded: its 44px hit area is a ::before, which no rect reports.
       controls: [...document.querySelectorAll('button, .chip-m, .pill')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
@@ -151,6 +153,10 @@ for (const fixture of FIXTURES) {
         assert.ok(m.nav.top >= m.bar.top - 0.5 && m.nav.bottom <= m.bar.bottom + 0.5, `landscape: tabs ${JSON.stringify(m.nav)} outside the bar ${JSON.stringify(m.bar)}`);
         assert.ok(m.nav.left >= m.lead.right - 0.5, `landscape: tabs collide with the lead zone (${m.nav.left} < ${m.lead.right})`);
         assert.ok(m.nav.right <= m.trail.left + 0.5, `landscape: tabs collide with the trail zone (${m.nav.right} > ${m.trail.left})`);
+        // The zones' content, not just their boxes: the wordmark once overflowed its zone under the tabs.
+        assert.ok(m.brand.right <= m.lead.right + 0.5, `landscape: the wordmark overflows its zone (${m.brand.right} > ${m.lead.right})`);
+        assert.ok(m.nav.left >= m.brand.right - 0.5, `landscape: tabs collide with the wordmark (${m.nav.left} < ${m.brand.right})`);
+        assert.ok(m.nav.right <= m.gear.left + 0.5, `landscape: tabs collide with Settings (${m.nav.right} > ${m.gear.left})`);
         near((m.nav.left + m.nav.right) / 2, (m.bar.left + m.bar.right) / 2, 'landscape: tabs on the bar\'s centre line', 1.5);
       }
       for (const tab of m.tabs) assert.ok(tab.width > 0 && tab.height > 0, 'a tab has no size');
@@ -279,6 +285,71 @@ for (const fixture of FIXTURES) {
       assert.ok(m.canvas, 'no canvas in the cube slot — the renderer did not mount');
       near(m.canvas.width, m.slot.width, 'canvas width is the slot width', 2);
       near(m.canvas.height, m.slot.height, 'canvas height is the slot height', 2);
+    } finally {
+      await context.close();
+    }
+  });
+}
+
+// ---- the scan screen's composition --------------------------------------------------------------
+//
+// Landscape: the six-face net in the primary region, the twin and the notice beside it.
+// Portrait: one face large and the other five as a strip — a finger needs 44px stickers and a
+// phone's width cannot give six tiles that. The camera is absent in headless WebKit; the screen
+// shows its notice and lays out all the same.
+
+const measureScan = (page) =>
+  page.evaluate(`(() => {
+    const rect = ${rect.toString()};
+    const $ = (s) => document.querySelector(s);
+    const faces = $('.scan-faces');
+    const board = $('.scanboard');
+    return {
+      focusFlag: getComputedStyle(faces).getPropertyValue('--focus').trim(),
+      tiles: [...document.querySelectorAll('.scan-face')].map((t) => ({
+        face: t.dataset.face, focus: t.classList.contains('focus'),
+        tile: rect(t.querySelector('.tile')), sticker: rect(t.querySelector('.tgrid > i')),
+      })),
+      primary: rect($('.cols > .col')), sheet: rect($('.cols > .aside')), tools: rect($('.scan-cam')),
+      overflow: { board: board.scrollHeight - board.clientHeight, doc: document.documentElement.scrollWidth - innerWidth },
+    };
+  })()`);
+
+const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
+const inside = (r, box, tol = 1) => r.left >= box.left - tol && r.right <= box.right + tol && r.top >= box.top - tol && r.bottom <= box.bottom + tol;
+
+for (const fixture of FIXTURES) {
+  test(`scan screen composition: ${label(fixture)}`, async () => {
+    const { page, context } = await open(fixture, 'scan');
+    try {
+      await page.waitForSelector('.scan-face', { timeout: 10_000 });
+      const m = await measureScan(page);
+      const portrait = m.sheet.top >= m.primary.bottom - 1; // the sheet below the primary, not beside it
+      assert.equal(m.tiles.length, 6);
+      for (const t of m.tiles) assert.ok(inside(t.tile, m.primary), `${t.face} tile ${JSON.stringify(t.tile)} leaves the primary region ${JSON.stringify(m.primary)}`);
+      assert.ok(m.overflow.board <= 1, `the scan board overflows by ${m.overflow.board}px`);
+      assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
+
+      const focused = m.tiles.filter((t) => t.focus);
+      if (portrait) {
+        assert.equal(m.focusFlag, '1', 'portrait: the focus layout is on');
+        assert.deepEqual(focused.map((t) => t.face), ['F'], 'portrait: exactly one large tile, F to begin with');
+        if (fixture.width >= 375) {
+          // At and above the floor: a finger can hit a sticker on the large tile, and a strip tile.
+          assert.ok(focused[0].sticker.width >= 44, `portrait: large-tile sticker ${focused[0].sticker.width}px < 44`);
+          for (const t of m.tiles.filter((t) => !t.focus)) assert.ok(t.tile.width >= 44 && t.tile.height >= 44, `strip tile ${t.face} ${t.tile.width}×${t.tile.height} < 44`);
+        }
+        for (const t of m.tiles.filter((t) => !t.focus)) assert.ok(t.tile.top >= focused[0].tile.bottom - 1, `strip tile ${t.face} is not below the large tile`);
+        // The card's tools park top-right; the large tile must not run under them.
+        assert.ok(!overlaps(m.tools, focused[0].tile), `the tools ${JSON.stringify(m.tools)} overlap the large tile ${JSON.stringify(focused[0].tile)}`);
+      } else {
+        assert.notEqual(m.focusFlag, '1', 'landscape: the cross layout, no focus');
+        // The cross: a mouse hits a 24px sticker; the 840 reference gives 28. A touch iPad in
+        // landscape holds 34 on an 11" — the deviation the stylesheet names — and 57 on a 13".
+        const floor = fixture.touch ? 34 : 24;
+        for (const t of m.tiles) assert.ok(t.sticker.width >= floor, `${t.face} sticker ${t.sticker.width}px < ${floor}`);
+      }
     } finally {
       await context.close();
     }
