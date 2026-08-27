@@ -1187,3 +1187,25 @@ test('the titlebar indicator appears with a connection and leaves with it', asyn
     assert.equal(ind.hidden, true, 'a disconnect takes it away');
   } finally { resetCubeModel(state); }
 });
+
+// The 2D net is the ANCHOR, not a follower: its card says Initial/Target State, and a label
+// naming a fixed reference must never sit over a moving picture. What the cube does live is the
+// 3D cube's and the transport's story. Before this, snapshots repainted the net whenever follow
+// mode was off — which, for a freshly paired (untrusted) cube, was always.
+test('on a walking screen, live snapshots never repaint the reference net', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    const netBefore = [...win.document.querySelectorAll('#viewNet .sticker')]
+      .map((e) => e.className.split(' ')[1]).join('');
+    assert.equal(netBefore.length, 54, 'precondition: the target net is painted');
+    // Take over (follow off) — the exact state that used to leak snapshots into the net.
+    win.document.querySelector('#nextBtn').click();
+    const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+    const elsewhere = (() => { const c = new Cube(); c.move("R U R'"); return c.asString(); })();
+    feed().facelets(elsewhere);
+    const netAfter = [...win.document.querySelectorAll('#viewNet .sticker')]
+      .map((e) => e.className.split(' ')[1]).join('');
+    assert.equal(netAfter, netBefore, 'the reference state holds still whatever the cube does');
+  } finally { resetCubeModel(state); }
+});
