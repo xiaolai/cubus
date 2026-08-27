@@ -1,9 +1,9 @@
 {
   "name": "cubus-web",
-  "version": "0.1.0",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
-  "description": "Cubus SPA \u2014 camera (YOLO) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",
+  "description": "Cubus SPA — camera (YOLO) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",
   "scripts": {
     "copy-ort": "node copy-ort.mjs",
     "build:cube": "esbuild lib/cubus-cube.js --bundle --format=esm --target=es2022 --outfile=vendor/cubus-cube.js",
@@ -13,12 +13,14 @@
     "check": "pnpm vendor:libs && node --test",
     "build:dist": "node build.mjs",
     "build:cubejs": "esbuild lib/cubejs-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/cubejs.js",
+    "build:mcp-guest": "esbuild lib/tauri-mcp-guest-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/tauri-mcp-guest.js",
     "vendor:cubing": "node vendor-cubing.mjs",
     "vendor:libs": "pnpm build:cubejs && pnpm vendor:cubing"
   },
   "devDependencies": {
     "esbuild": "^0.21.5",
     "happy-dom": "^20.11.6",
+    "tauri-plugin-mcp": "0.3.1",
     "three": "^0.169.0"
   },
   "dependencies": {

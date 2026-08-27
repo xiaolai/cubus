@@ -29,6 +29,9 @@ importers:
       happy-dom:
         specifier: ^20.11.6
         version: 20.11.6
+      tauri-plugin-mcp:
+        specifier: 0.3.1
+        version: 0.3.1
       three:
         specifier: ^0.169.0
         version: 0.169.0
@@ -57,6 +60,9 @@ importers:
       eslint:
         specifier: ^9.15.0
         version: 9.39.5
+      happy-dom:
+        specifier: ^20.11.6
+        version: 20.11.6
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -550,6 +556,9 @@ packages:
     resolution: {integrity: sha512-/gDJaRs4gl0NPIwqCz+6PkpmhhjRAD2j6P4rSNHBzUkO3naEx2mIU0pRle1vUNRQ7mE/+8OOeXLTv/J56FKiQg==}
     cpu: [x64]
     os: [win32]
+
+  '@tauri-apps/api@2.11.1':
+    resolution: {integrity: sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA==}
 
   '@tauri-apps/cli-darwin-arm64@2.11.4':
     resolution: {integrity: sha512-1ryOF3ZhpZ/nemHV5zVwBQBz9jDGKmKPvWPADOhc83ig0P4bMc2iER4NbC6r9sjeIZ6RVQ4g3RZIYvezhcl4TQ==}
@@ -1421,6 +1430,9 @@ packages:
     resolution: {integrity: sha512-yEFYrVhod+hdNyx7g5Bnkkb0G6si8HJurOoOEgC8B/O0uXLHlaey/65KRv6cuWBNhBgHKAROVpc7QyYqE5gFng==}
     engines: {node: '>=20'}
 
+  tauri-plugin-mcp@0.3.1:
+    resolution: {integrity: sha512-mfzKiDQHR7ZK8coQevazmIOKHP2/jfPk/utZKJFubFSq6W/q7GL7H4cRU0va140OIKEhWEsWrniHfOtVJd0Xtw==}
+
   test-exclude@7.0.2:
     resolution: {integrity: sha512-u9E6A+ZDYdp7a4WnarkXPZOx8Ilz46+kby6p1yZ8zsGTz9gYa6FIS7lj2oezzNKmtdyyJNNmmXDppga5GB7kSw==}
     engines: {node: '>=18'}
@@ -1907,6 +1919,8 @@ snapshots:
 
   '@rollup/rollup-win32-x64-msvc@4.62.5':
     optional: true
+
+  '@tauri-apps/api@2.11.1': {}
 
   '@tauri-apps/cli-darwin-arm64@2.11.4':
     optional: true
@@ -2699,6 +2713,10 @@ snapshots:
       has-flag: 4.0.0
 
   tagged-tag@1.0.0: {}
+
+  tauri-plugin-mcp@0.3.1:
+    dependencies:
+      '@tauri-apps/api': 2.11.1
 
   test-exclude@7.0.2:
     dependencies:

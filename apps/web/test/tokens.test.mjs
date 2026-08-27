@@ -34,27 +34,36 @@ const blockAfter = (source, opener, closer) => {
   return declsIn(source.slice(from, to));
 };
 
+// Cream is :root — the default, and what Auto shows on a light system.
 const light = blockAfter(css, ':root {', '\n}');
-// The two dark blocks are hand-duplicated: one for the explicit [data-theme] pin, one for the OS
+const white = blockAfter(css, ':root[data-theme="white"] {', '\n}');
+// The two night blocks are hand-duplicated: one for the explicit [data-theme] pin, one for the OS
 // preference. A media query cannot join a selector list, so the duplication is unavoidable.
-const darkPinned = blockAfter(css, '[data-theme="dark"] {', '\n}');
-const darkAuto = blockAfter(css, ':root:not([data-theme="light"]) {', '\n  }');
+const darkPinned = blockAfter(css, ':root[data-theme="night"] {', '\n}');
+const darkAuto = blockAfter(css, ':root:not([data-theme="cream"]):not([data-theme="white"]) {', '\n  }');
 
-test('every dark-theme property is also declared in light', () => {
-  for (const block of [darkPinned, darkAuto]) {
+test('every theme block only overrides :root — none introduces a property of its own', () => {
+  for (const block of [white, darkPinned, darkAuto]) {
     const introduced = [...block.keys()].filter((k) => !light.has(k)).sort();
     assert.deepEqual(
       introduced,
       [],
-      `declared in a dark block but not in :root — these render as \`unset\` in light mode, silently`,
+      `declared in a theme block but not in :root — these render as \`unset\` in cream, silently`,
     );
   }
 });
 
-test('the two dark blocks stay in lockstep', () => {
+test('the two night blocks stay in lockstep', () => {
   assert.deepEqual([...darkPinned.keys()].sort(), [...darkAuto.keys()].sort(), 'key sets diverged');
   const drifted = [...darkPinned.keys()].filter((k) => darkPinned.get(k) !== darkAuto.get(k)).sort();
-  assert.deepEqual(drifted, [], 'same property, different value in the two dark blocks');
+  assert.deepEqual(drifted, [], 'same property, different value in the two night blocks');
+});
+
+// Unscoped, `[data-theme="dark"]` matched the Settings pill that carried the same attribute, and
+// the dark pill drew itself in dark-theme ink on a light page. Every theme selector is rooted.
+test('theme blocks are scoped to the root element, not to anything carrying the attribute', () => {
+  const bare = [...css.matchAll(/^\s*\[data-theme=[^\n]*/gm)].map((m) => m[0].trim());
+  assert.deepEqual(bare, [], 'a theme selector that matches any element with the attribute');
 });
 
 test('every var() without a fallback names a property something declares', () => {
@@ -111,4 +120,61 @@ test('hidden means hidden, for everything, once', () => {
 test('the app hides controls with the attribute that rule is about', () => {
   const hiddenAttrs = [...appJs.matchAll(/\bhidden\b(?=[\s>=])/g)].length;
   assert.ok(hiddenAttrs > 5, `expected the app to render hidden controls, found ${hiddenAttrs}`);
+});
+
+// Eyebrow labels are the smallest text in the app — 11px bold caps in --ink-5 — and since cards
+// went flat they sit on --bg, not on --panel. The kit's value was tuned against --panel and read
+// 4.25:1 on --bg: under WCAG AA, and a defect no eye reports. tokens.css states the ratio the
+// token clears; this is what makes that a claim rather than a hope. --panel stays in the set
+// because the nav pane's meta counts are --ink-5 on --panel.
+const channel = (v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+const luminance = (hex) => {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  assert.ok(m, `expected a #rrggbb colour, got "${hex}"`);
+  const [r, g, b] = [0, 2, 4].map((i) => channel(parseInt(m[1].slice(i, i + 2), 16) / 255));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const contrast = (a, b) => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+};
+
+// A helper that always said "fine" would pass the test below while guarding nothing. Black on
+// white is 21:1 by definition, and the kit's original eyebrow ink on the light window is the
+// exact failure this file exists to catch — the helper must be able to see it.
+test('the contrast helper can see the defect it guards against', () => {
+  assert.ok(contrast('#000000', '#ffffff') > 20.9);
+  assert.ok(contrast('#7A7266', '#F6F2E9') < 4.5);
+});
+
+test('--ink-5 clears WCAG AA on every surface it sits on, in every theme', () => {
+  for (const [theme, block] of [['cream', light], ['white', white], ['night', darkPinned]]) {
+    for (const surface of ['--bg', '--panel']) {
+      const ratio = contrast(block.get('--ink-5'), block.get(surface));
+      assert.ok(ratio >= 4.5, `${theme}: --ink-5 on ${surface} is ${ratio.toFixed(2)}:1, AA needs 4.5:1`);
+    }
+  }
+});
+
+// White is Cream with the warmth taken out, and that is a checkable claim rather than a mood:
+// every colour it overrides is a grey (R = G = B), and each has the same relative luminance as
+// its Cream counterpart — which is what carries every contrast ratio across unchanged — except
+// the four surfaces deliberately pinned to #FFFFFF. The warm-tinted shadows must be redeclared
+// too: on a white page the tint is all a warm shadow shows.
+test('white is cream with the warmth removed: neutral, luminance-matched, shadows included', () => {
+  const pinned = new Set(['--bg', '--panel', '--on-ink', '--invert-fg']);
+  let matched = 0;
+  for (const [k, v] of white) {
+    if (!/^#[0-9a-f]{6}$/i.test(v)) continue;
+    const [r, g, b] = [1, 3, 5].map((i) => v.slice(i, i + 2).toLowerCase());
+    assert.ok(r === g && g === b, `${k}: ${v} is not a neutral grey`);
+    if (pinned.has(k)) { assert.equal(v.toUpperCase(), '#FFFFFF', `${k} is pinned to white`); continue; }
+    const drift = Math.abs(luminance(v) - luminance(light.get(k)));
+    assert.ok(drift < 0.005, `${k}: luminance ${luminance(v).toFixed(4)} vs cream ${luminance(light.get(k)).toFixed(4)}`);
+    matched += 1;
+  }
+  assert.ok(matched >= 15, `expected the ink, line and surface set to be matched, got ${matched}`);
+  for (const k of ['--shadow-card', '--shadow-raise', '--shadow-win', '--shadow-sheet']) {
+    assert.ok(white.has(k) && !/36,31,24/.test(white.get(k)), `${k} must be redeclared without the warm tint`);
+  }
 });
