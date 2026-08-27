@@ -4,8 +4,18 @@
 
 import { summarize, times } from './solve-stats.js';
 import { makeRouter } from './router.js';
+// Translation is wired at the render choke points (nav labels, window titles, the scan aside,
+// Settings) and is an identity function until a catalog registers — see dev-docs/i18n.md for the
+// convention and for the surfaces still to be converted.
+import { t, initLocale } from './i18n.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
+/** The app's version — written HERE and nowhere else by hand. The About card renders it, and a
+ * test pins the manifests (apps/web/package.json, tauri.conf.json, the desktop Cargo.toml) equal
+ * to it, so the five version fields this repo carries can no longer drift apart silently — the
+ * About card spent months claiming 0.4.2 over manifests that all said 0.1.0. Exported for that
+ * test, not as API. */
+export const VERSION = '0.4.2';
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const PALETTE_ATTR = { muted: 'muted', classic: 'classic', colorsafe: 'colorsafe' };
 /** Escape text destined for an innerHTML template. Scramble strings, solve times and anything
@@ -49,13 +59,16 @@ const P = {
   gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
   refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
   dice: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.2"/><circle cx="16" cy="16" r="1.2"/><circle cx="8" cy="16" r="1.2"/><circle cx="16" cy="8" r="1.2"/><circle cx="12" cy="12" r="1.2"/>',
-  'panel-left': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
-  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   minus: '<path d="M5 12h14"/>',
   square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
   webcam: '<circle cx="12" cy="10" r="8"/><circle class="lens" cx="12" cy="10" r="3"/><path d="M7 22h10"/><path d="M12 22v-4"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   'paint-roller': '<rect width="16" height="6" x="2" y="2" rx="2"/><path d="M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect width="4" height="6" x="8" y="16" rx="1"/>',
+  // The About card's three row markers, drawn by hand in the same 24×24 stroke grammar as the
+  // rest of this map — no icon library behind them, same as everything above.
+  tag: '<path d="M12.6 2.6 21 11a2 2 0 0 1 0 2.8l-7.2 7.2a2 2 0 0 1-2.8 0L2.6 12.6A2 2 0 0 1 2 11.2V4a2 2 0 0 1 2-2h7.2a2 2 0 0 1 1.4.6Z"/><circle cx="7.5" cy="7.5" r="1.3"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.3 4 5.6 4 9s-1.5 6.7-4 9c-2.5-2.3-4-5.6-4-9s1.5-6.7 4-9Z"/>',
+  user: '<circle cx="12" cy="7.5" r="3.5"/><path d="M5 20.5c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/>',
 };
 const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${P[name] || '<circle cx="12" cy="12" r="2"/>'}</svg>`;
 
@@ -63,16 +76,19 @@ const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="wi
 // One flat list. The SOLVE / PRACTICE / LEARN headings were a taxonomy for nine items, which is
 // fewer than the number of rows a person can scan at a glance — the labels cost three lines of
 // chrome and a level of hierarchy to sort a list short enough not to need sorting.
+// The tabs, in order. Settings is not among them: it is the toolbar's trailing button, drawn by
+// buildChrome, because it is not a stop on the way to a solved cube. The counts that used to sit
+// beside Alg trainer, Drill and Lessons (78, 12, 9) were fixed numbers describing nothing; a tab
+// carries no badge until there is something real to count.
 const NAV = [
-  ['home', 'Home', '', 'box'],
-  ['scan', 'Restore', '', 'grid'],
-  ['scramble', 'Scramble', '', 'grid-filled'],
-  ['timer', 'Timer', '', 'timer'],
-  ['stats', 'Stats', '', 'chart'],
-  ['trainer', 'Alg trainer', '78', 'cap'],
-  ['drill', 'Drill', '12', 'repeat'],
-  ['lessons', 'Lessons', '9', 'book'],
-  ['settings', 'Settings', '', 'settings'],
+  ['home', 'Home', 'box'],
+  ['scan', 'Restore', 'grid'],
+  ['scramble', 'Scramble', 'grid-filled'],
+  ['timer', 'Timer', 'timer'],
+  ['stats', 'Stats', 'chart'],
+  ['trainer', 'Alg trainer', 'cap'],
+  ['drill', 'Drill', 'repeat'],
+  ['lessons', 'Lessons', 'book'],
 ];
 // Each screen's name. It is shown in the title bar rather than in a bar of its own, so there is no
 // second line of chrome restating what the nav already highlights. The subtitles that used to sit
@@ -90,7 +106,19 @@ const TITLES = {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspection: true, autosolve: false, cameraId: '', navHidden: null, navDefaults: 0 });
+const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspection: true, autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '' });
+
+/** The themes, as stored. Auto is a policy rather than a theme: cream while the system is light,
+ * night while it is dark (tokens.css). */
+const THEMES = ['auto', 'white', 'cream', 'night'];
+// The names changed when White arrived: the kit's "light" is Cream and its "dark" is Night. A
+// stored value from before is mapped rather than dropped, so nobody's window changes colour on
+// update; anything else in that field is not a theme and falls back to auto.
+{
+  const mapped = { light: 'cream', dark: 'night' }[settings.theme]
+    ?? (THEMES.includes(settings.theme) ? settings.theme : 'auto');
+  if (mapped !== settings.theme) { settings.theme = mapped; save('cubusSettings', settings); }
+}
 
 /** Is the Advanced section revealed? Deliberately NOT part of `settings`, so it is not persisted:
  * a section you reach with an undocumented chord should start closed every time, not stay open
@@ -102,7 +130,7 @@ const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', inspec
 delete settings.advanced;
 let advancedOpen = false;
 
-/** Sidebar entries the Advanced section can hide, in nav order. Hiding is cosmetic: the route
+/** Tabs the Advanced section can hide, in tab order. Hiding is cosmetic: the route
  * keeps working, so a deep link or a typed #/timer still gets you there. */
 const HIDEABLE = [
   ['timer', 'Timer'],
@@ -114,7 +142,7 @@ const HIDEABLE = [
 
 /** Hidden unless asked for. Timer and Stats are speedcubing instruments, not part of learning to
  * solve a cube, and Stats currently shows representative numbers rather than yours — a screen of
- * invented data is worse than no screen. The default sidebar is the beginner's path; everything
+ * invented data is worse than no screen. The default tab row is the beginner's path; everything
  * else is one chord away. */
 const DEFAULT_HIDDEN = ['timer', 'stats'];
 const NAV_DEFAULTS_VERSION = 1;
@@ -134,7 +162,7 @@ if (settings.navDefaults < NAV_DEFAULTS_VERSION) {
   save('cubusSettings', settings);
 }
 // Checked per call, not just once at load: a stored id that is not hideable must never be able to
-// hide some OTHER nav entry (a stray "home" in there would take Home out of the sidebar).
+// hide some OTHER nav entry (a stray "home" in there would take Home out of the toolbar).
 const navHidden = (id) => HIDEABLE_IDS.has(id) && settings.navHidden.includes(id);
 const state = {
   screen: 'home',
@@ -303,8 +331,8 @@ function applyNetColors() {
 
 // ---- theme -----------------------------------------------------------------------------------
 function applyTheme() {
-  document.documentElement.setAttribute('data-theme', settings.theme === 'auto' ? '' : settings.theme);
   if (settings.theme === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', settings.theme);
 }
 
 // ---- host ------------------------------------------------------------------------------------
@@ -314,7 +342,7 @@ const isTauri = typeof window.__TAURI__ !== 'undefined';
 
 // Which window chrome to draw (paper-one platform.ts): a UA sniff is enough — the platform can't
 // change under a running window. `?platform=macos|windows|linux` pins it for design review
-// (persisted); `?platform=auto` clears. Only macOS draws a custom overlay titlebar.
+// (persisted); `?platform=auto` clears.
 function detectPlatform() {
   try {
     const q = new URLSearchParams(window.location.search).get('platform');
@@ -328,61 +356,80 @@ function detectPlatform() {
   return 'linux';
 }
 
-// Build the titlebar zones per platform (paper-one TitleBar): macOS puts the traffic lights (real
-// in Tauri, preview-only in a browser) leading; Windows/Linux put app controls leading and caption
-// buttons trailing. The caption buttons drive the Tauri window; in a browser they only preview.
 // Wire the drawn caption buttons to the Tauri window (no-ops in a browser preview).
 //
-// Load-bearing, not decoration: the window is created with an overlay title bar and a hidden
-// native title, so on Windows and Linux these buttons are the only minimise, maximise and close
-// the user has.
+// Load-bearing, not decoration: on Windows and Linux the window is created without decorations
+// (tauri.windows.conf.json / tauri.linux.conf.json), so these are the only minimise, maximise and
+// close the user has. A rejection here means a capability is missing from
+// src-tauri/capabilities/default.json — say so, rather than leave a button that silently does
+// nothing. This used to be defined and never called, which nothing noticed while the bar was
+// hidden on those platforms.
 function wireWindowButtons(root) {
   if (!isTauri) return;
   const win = window.__TAURI__?.window?.getCurrentWindow?.();
-  if (!win) return;
-  const on = (sel, fn) => root.querySelector(sel)?.addEventListener('click', () => { void Promise.resolve(fn()).catch(() => {}); });
+  if (!win) { console.error('window controls: the Tauri window API is not exposed'); return; }
+  const on = (sel, fn) => root.querySelector(sel)?.addEventListener('click', () => {
+    void Promise.resolve(fn()).catch((e) => console.error('window control failed', e));
+  });
   on('[data-win="min"]', () => win.minimize());
   on('[data-win="max"]', () => win.toggleMaximize());
   on('[data-win="close"]', () => win.close());
 }
 
+// Build the title bar's two outer zones per platform (paper-one TitleBar, with the navigation now
+// in the bar). The tabs between them are renderNav's. macOS leads with the traffic-light gap — the
+// OS paints the real lights there; `?chrome=preview` draws three dots in a browser — then the
+// wordmark, and trails with Settings. Windows/Linux lead with the wordmark and trail with Settings
+// and the caption buttons. Caption buttons are drawn only where they can act: in the Tauri window,
+// or in an explicit preview. A browser tab on Windows used to get a close button that closed
+// nothing.
 function buildChrome(platform) {
   const lead = document.getElementById('tbLead');
   const trail = document.getElementById('tbTrail');
   if (!lead || !trail) return;
-  const ctl = (name, on = false) => `<button class="tb-ctl${on ? ' on' : ''}" tabindex="-1" aria-hidden="true">${icon(name, 18)}</button>`;
+  const preview = !isTauri && new URLSearchParams(window.location.search).get('chrome') === 'preview';
+  // alt="" on purpose: the wordmark beside it already names the app, so the mark is decorative and
+  // a screen reader should not say "cubus" twice.
+  const brand = '<div class="brand"><img class="mark" src="./icons/icon.svg" alt="" width="20" height="20" /><b>cubus</b></div>';
+  const gear = `<button class="tb-ctl" data-nav="settings" title="Settings" aria-label="Settings">${icon('settings', 18)}</button>`;
   const cap = (name, win, round = false) => `<button class="tb-cap ${win}${round ? ' round' : ''}" data-win="${win}" title="${win}">${icon(name, round ? 14 : 16)}</button>`;
   if (platform === 'macos') {
-    const preview = new URLSearchParams(window.location.search).get('chrome') === 'preview';
-    lead.className = 'tb-zone tb-lights';
-    lead.innerHTML = (!isTauri && preview) ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('') : '';
-    trail.className = 'tb-zone tb-macos-trail';
-    trail.innerHTML = '';
-    return;
+    const lights = preview ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('') : '';
+    lead.innerHTML = `<span class="tb-lights">${lights}</span>${brand}`;
+    trail.innerHTML = gear;
+  } else {
+    const round = platform === 'linux';
+    lead.innerHTML = brand;
+    trail.innerHTML = gear + ((isTauri || preview)
+      ? `<span class="tb-zone tb-caption ${platform}">${cap('minus', 'min', round) + cap('square', 'max', round) + cap('x', 'close', round)}</span>`
+      : '');
+    wireWindowButtons(trail);
   }
-  // Windows / Linux: a real 44px row — app controls lead, caption buttons trail.
-  lead.className = 'tb-zone tb-apps';
-  lead.innerHTML = ctl('panel-left', true) + ctl('search');
-  const round = platform === 'linux';
-  trail.className = `tb-zone tb-caption ${platform}`;
-  trail.innerHTML = cap('minus', 'min', round) + cap('square', 'max', round) + cap('x', 'close', round);
+  trail.querySelector('[data-nav="settings"]').onclick = () => go('settings');
 }
 
 /**
- * Show the screen's name in the title bar — all of them. The custom overlay chip is the one macOS
- * and the browser draw, but the Tauri build on Windows and Linux hides that row in favour of the
- * native title bar, so the name would simply vanish there. Setting the window title covers that,
- * and puts the screen in the taskbar and window switcher besides; document.title does the same for
- * a browser tab.
+ * Name the screen where the platform shows names: the document title (a browser tab) and the
+ * window title (the taskbar and the window switcher). The bar itself no longer draws it — the
+ * filled tab is the name.
  */
 function setTitle(name) {
-  const el = $('#title');
-  if (el) el.textContent = name;
   document.title = `${name} · Cubus`;
-  if (isTauri) {
+  // The NATIVE window title is only retitled off macOS. On undecorated Windows/Linux windows it
+  // surfaces in the taskbar and Alt-Tab, so it is worth keeping current there; on macOS the
+  // overlay titlebar hides it entirely (hiddenTitle) AND `setTitle:` makes AppKit rebuild the
+  // titlebar — which snapped the traffic lights back to Apple's default position on every in-app
+  // navigation. A label nobody can see is not worth moving window furniture: macOS keeps the
+  // conf's static "Cubus", and the Rust shell places the lights deterministically (lib.rs).
+  if (isTauri && document.documentElement.dataset.platform !== 'macos') {
     // try/catch only covers the synchronous reach into the API — a rejected setTitle() would
-    // escape it as an unhandled rejection, so the promise gets its own catch.
-    try { window.__TAURI__?.window?.getCurrentWindow?.()?.setTitle?.(`${name} · Cubus`)?.catch?.(() => {}); } catch {}
+    // escape it as an unhandled rejection, so the promise gets its own catch. It logs rather
+    // than swallows: this call was rejected for as long as the capability file lacked
+    // core:window:allow-set-title, and nothing said so — the title simply never changed.
+    try {
+      window.__TAURI__?.window?.getCurrentWindow?.()?.setTitle?.(`${name} · Cubus`)
+        ?.catch?.((e) => console.error('window title not set', e));
+    } catch (e) { console.error('window title not set', e); }
   }
 }
 
@@ -517,7 +564,7 @@ SCREENS.scan = () => {
       <div class="card scanboard">
         <ai-scan-panel headless autostart></ai-scan-panel>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
-          <div class="tile" style="border-color:${edgeColors(f)}">${pending(f)}</div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
+          <div class="tile" style="border-color:${edgeColors(f)}"><div class="tgrid">${pending(f)}</div></div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
         <div class="scan-cam card-tools">
           <button id="scanResetBtn" title="Throw the whole scan away and start again">${icon('refresh', 19)}</button>
           <button id="scanPaintBtn" title="Paint the cube by hand instead of scanning it">${icon('paint-roller', 19)}</button>
@@ -529,8 +576,9 @@ SCREENS.scan = () => {
       <div class="card"><div class="eyebrow">DETECTED STATE</div>
         <div class="cube-slot" id="scanCube" style="height:230px;margin-top:6px"></div></div>
       <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
-        <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div></div>
-      <button class="btn accent-outline block" data-go="home" style="margin-top:auto">Solve this cube</button>
+        <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
+        <div class="sub scan-hint" id="scanHint" hidden></div></div>
+      <button class="btn primary pill block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
     </div></div>`,
     mount(root) {
       // Kept, so a finished scan can update the aside in place. Re-rendering the screen would tear
@@ -567,22 +615,53 @@ SCREENS.scan = () => {
         }).join('');
       };
       // Which way up each side was held stops mattering the moment the cube reads as solvable: the
-      // validated string IS the canonical layout. The tiles are repainted from it, so the edge
-      // colours on a tile finally agree with the stickers inside it. Faded down and back, with the
-      // swap at the low point, so it reads as the scan settling rather than as stickers twitching.
+      // validated string IS the canonical layout, and the scanner reports each face's rotation.
+      // A face captured the wrong way up TURNS to its true orientation — slowly enough to read as
+      // "we turned this the right way up for you" — and the repaint lands in the same frame the
+      // transform resets, so rotated-shown content and canonical content are pixel-identical at
+      // the swap. Timer-driven, not transitionend-driven: the animation is cosmetic and must not
+      // be load-bearing in an environment that never fires transition events (tests, reduced CSS).
       let settled = false;
-      let settleTimer = 0;
-      const repaintCanonical = (fl) => {
+      let turnTimers = [];
+      const paintTile = (tile, fl) => {
+        const fi = NET_FACES.indexOf(tile.dataset.face);
+        const letters = fl.slice(fi * 9, fi * 9 + 9);
+        [...tile.querySelectorAll('i')].forEach((c, i) => {
+          c.style.backgroundColor = pal[letters[i]] ?? 'var(--facelet-off)';
+        });
+      };
+      const clearTurns = () => {
+        for (const t of turnTimers) clearTimeout(t);
+        turnTimers = [];
+        for (const tile of tiles) {
+          const g = tile.querySelector('.tgrid');
+          g.style.transition = '';
+          g.style.transform = '';
+        }
+      };
+      const settleTiles = (fl, rotations) => {
+        clearTurns();
         for (const tile of tiles) {
           const fi = NET_FACES.indexOf(tile.dataset.face);
-          const letters = fl.slice(fi * 9, fi * 9 + 9);
-          [...tile.querySelectorAll('i')].forEach((c, i) => {
-            c.style.backgroundColor = pal[letters[i]] ?? 'var(--facelet-off)';
-          });
+          const k = rotations?.[fi] ?? 0;
+          if (!k) { paintTile(tile, fl); continue; }
+          const g = tile.querySelector('.tgrid');
+          const deg = k === 3 ? -90 : k * 90; // a 270° CW turn reads better as 90° back
+          const ms = k === 2 ? 800 : 500; // unhurried on purpose — this is the explanation
+          g.style.transition = `transform ${ms}ms ease`;
+          g.style.transform = `rotate(${deg}deg)`;
+          turnTimers.push(setTimeout(() => {
+            g.style.transition = 'none';
+            g.style.transform = '';
+            paintTile(tile, fl);
+          }, ms + 30));
         }
       };
       const panel = $('ai-scan-panel', root);
-      const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root);
+      const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root), hint = $('#scanHint', root);
+      // "Solve this cube" is a promise about THIS screen's scan, so it is only pressable once a
+      // scan stands complete — and a correction that re-opens the verdict takes it away again.
+      const solveBtn = $('#scanSolveBtn', root);
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
 
@@ -595,6 +674,9 @@ SCREENS.scan = () => {
       const resetBtn = $('#scanResetBtn', root), paintBtn = $('#scanPaintBtn', root);
       // Painting and the camera are exclusive: one authors the cube, the other reads it.
       let painting = false;
+      // The scanner's current misread suspects, kept so the colour picker can ring the suggested
+      // colour when it opens on one of them.
+      let suspects = [];
       const setPainting = (on) => {
         painting = on;
         camRow.classList.toggle('paint', on);
@@ -655,13 +737,11 @@ SCREENS.scan = () => {
       const onDevices = () => { void fillCams(); };
       navigator.mediaDevices?.addEventListener?.('devicechange', onDevices);
       let shownDevice = null;
-      // Throw the whole scan away. With the camera dark this is also the way back on, since a
-      // refused permission leaves nothing else to press.
+      // Throw the whole scan away — the panel's restart() also turns the camera back on when it
+      // is dark, so this one call is the whole contract.
       resetBtn.onclick = () => {
         closePops();
-        // While painting there is no camera to reopen — restart() clears the canvas and stays.
-        if (painting || camOn) panel.restart?.();
-        else void panel.start?.();
+        panel.restart?.();
       };
       camBtn.onclick = (ev) => {
         const open = menu.hidden;
@@ -676,11 +756,46 @@ SCREENS.scan = () => {
       panel.addEventListener('scan-progress', (e) => {
         const p = e.detail;
         // Anything other than a finished scan means the orientation is open again — a correction
-        // that breaks validity must not leave canonically-repainted tiles claiming otherwise.
-        if (p.phase !== 'done') settled = false;
-        say.textContent = p.message || HOW;
-        sayTitle.textContent = (p.message && SAY_TITLE[p.phase]) || 'How it works';
-        say.className = 'sub scan-say' + (p.phase === 'error' ? ' err' : p.phase === 'checking' || p.phase === 'done' ? ' ok' : '');
+        // that breaks validity must not leave canonically-repainted tiles claiming otherwise, nor
+        // a half-finished settle turn hanging over tiles about to be repainted as shown.
+        if (p.phase !== 'done') { settled = false; clearTurns(); }
+        solveBtn.disabled = !p.complete;
+        // Two voices, two places: a pinned notice (what the scanner needs and why — it stands
+        // until the situation changes) and the transient camera hint. The hint used to overwrite
+        // the explanation within one tick, which made every refusal look like a silent crash.
+        // The scanner's prose passes through t(): its sentences are exact English strings, so a
+        // catalog can translate them here without the scanner package knowing languages exist.
+        // Sentences with colour words baked in pass through untranslated until their call sites
+        // move to placeholder form — the seam dev-docs/i18n.md tracks.
+        const n = p.notice;
+        if (n) {
+          sayTitle.textContent = t(n.title);
+          say.textContent = t(n.body);
+          say.className = 'sub scan-say' + (n.tone === 'err' ? ' err' : n.tone === 'ok' ? ' ok' : '');
+          // The hint is noise when it just restates the notice (the confirm ask opens the loop
+          // with the same sentence the notice carries).
+          const dup = !p.message || n.body.includes(p.message);
+          hint.textContent = dup ? '' : t(p.message);
+          hint.hidden = dup;
+        } else if (p.complete) {
+          // A finished scan answers "what do I do now?", and only this file can: the next action
+          // is THIS screen's button. The scanner says the scan is complete; the words naming
+          // "Solve this cube" belong to the screen the button lives on.
+          sayTitle.textContent = t('Scanned');
+          say.textContent = t('That’s the whole cube, checked and solvable — press "Solve this cube" when you’re ready. Spotted a wrong sticker? Click it and pick the right colour. Different cube? Start over with the ↻ button.');
+          say.className = 'sub scan-say ok';
+          // With the camera reopened over a finished scan, the camera's own line still matters
+          // ("this cube is already scanned…"); with it off there is nothing to hint about.
+          hint.textContent = p.device && p.message ? t(p.message) : '';
+          hint.hidden = !hint.textContent;
+        } else {
+          say.textContent = t(p.message || HOW);
+          sayTitle.textContent = (p.message && t(SAY_TITLE[p.phase] ?? '')) || t('How it works');
+          say.className = 'sub scan-say' + (p.phase === 'error' ? ' err' : p.phase === 'checking' || p.phase === 'done' ? ' ok' : '');
+          hint.textContent = '';
+          hint.hidden = true;
+        }
+        suspects = p.suspects ?? [];
         for (const tile of tiles) {
           const f = tile.dataset.face;
           // The centre carries the rescan affordance, revealed on hover over a captured side.
@@ -694,8 +809,14 @@ SCREENS.scan = () => {
           // side to show again, held a stated way up. Point at it — the sentence alone makes a
           // child hunt through six tiles for the colour it named.
           tile.classList.toggle('asked', p.confirm?.face === f);
-          if (got) paint(cells, got.colors);
-          else cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? pal[f] : 'var(--facelet-off)'; });
+          // Same pointing for a suspected misread: the sticker whose fix would make the cube
+          // legal pulses, so "one sticker looks wrong" never sends anyone hunting either.
+          const sus = suspects.filter((s) => s.face === f);
+          cells.forEach((c, i) => c.classList.toggle('suspect', sus.some((s) => s.index === i)));
+          // On 'done' the captures are already canonical and the settle turn owns the repaint —
+          // painting them here would snap the tiles canonical before the turn starts.
+          if (got && p.phase !== 'done') paint(cells, got.colors);
+          else if (!got) cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? pal[f] : 'var(--facelet-off)'; });
         }
         // The twin follows the scan side by side rather than waiting for all six.
         if (!settled) stateCube.setAttribute('facelets', partialFacelets(p.captured));
@@ -717,11 +838,13 @@ SCREENS.scan = () => {
         // navigate you from a screen that no longer exists.
         if (!root.isConnected) return;
         settled = true;
+        // The 'done' progress report normally lands first and enables this; belt-and-braces here
+        // so a delivered cube can always be walked, whatever order the two events arrive in.
+        solveBtn.disabled = false;
         const fl = e.detail.facelets;
-        const faces = $('.scan-faces', root);
-        faces.classList.add('settling');
-        clearTimeout(settleTimer);
-        settleTimer = setTimeout(() => { repaintCanonical(fl); faces.classList.remove('settling'); }, 190);
+        // Faces captured the wrong way up turn to their true orientation; the rest repaint in
+        // place (their content is already canonical, so nothing visibly changes).
+        settleTiles(fl, e.detail.rotations);
         // The camera SAW the cube in the user's hand; nothing was inferred from anywhere else.
         adoptCube(fl);
         // Stay put. Jumping to another screen took the six tiles away at the moment they finally
@@ -774,9 +897,14 @@ SCREENS.scan = () => {
         closePops();
         editing = { face: tile.dataset.face, index };
         cellEl.classList.add('editing');
-        // Mark the colour already there, so the picker shows what it is changing FROM.
+        // Mark the colour already there, so the picker shows what it is changing FROM — and, when
+        // this sticker is a misread suspect, ring the colour the scanner reckons it should be.
         const current = cellEl.style.backgroundColor;
-        for (const b of swatches.children) b.classList.toggle('now', b.style.backgroundColor === current);
+        const sug = suspects.find((s) => s.face === editing.face && s.index === index);
+        for (const b of swatches.children) {
+          b.classList.toggle('now', b.style.backgroundColor === current);
+          b.classList.toggle('suggest', sug !== undefined && NET_FACES.indexOf(b.dataset.face) === sug.to);
+        }
         swatches.hidden = false;
         // Anchored below the TILE, not below the sticker: a picker covering the very sticker you
         // are correcting hides the thing you need to look at. Fixed to the viewport so there is no
@@ -798,7 +926,7 @@ SCREENS.scan = () => {
 
 
       cleanup = () => {
-        clearTimeout(settleTimer);
+        clearTurns();
         navigator.mediaDevices?.removeEventListener?.('devicechange', onDevices);
         document.removeEventListener('click', onAway);
         document.removeEventListener('keydown', onEsc);
@@ -867,9 +995,8 @@ const cubeScreen = (screenMode) => {
         ${walking ? `<div class="card-tools">
           <button id="speedBtn" title="Animation speed">${icon('gauge', 20)}</button>
         </div>` : ''}
-        <div style="position:relative;flex:1;min-height:0;width:100%">
+        <div style="flex:1;min-height:0;width:100%">
           <div class="cube-slot" id="viewCube" style="height:100%"></div>
-          ${walking ? `<div class="done-mark" id="doneMark" hidden>${icon('check', 34)}</div>` : ''}
         </div>
       </div>
       ${walking ? `<div class="card">
@@ -879,19 +1006,28 @@ const cubeScreen = (screenMode) => {
           <button class="tbtn" id="nextBtn" title="Next move">${icon('chevron-right', 20)}</button>
           <button class="tbtn primary" id="playBtn" title="Play from here to the end">${icon('play', 18)}</button>
           <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
+          <span class="done-mark" id="doneMark" hidden title="Done">${icon('check', 14)}</span>
           <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:64px;text-align:right">0 / 0</span>
         </div>
       </div>` : ''}
     </div>
     <div class="aside" style="overflow-y:auto">
+      <div class="card" style="padding-bottom:0">
+        <div class="eyebrow-row"><b class="state-h">${scrambling ? 'Target State' : 'Initial State'}</b>
+          ${scrambling || settings.devRandCube
+            // On Scramble the die IS the screen's re-roll and always shows. On the solve side it
+            // loads a random cube that is NOT the one in anyone's hand — a developer shortcut,
+            // hidden unless the Advanced toggle asks for it.
+            ? `<button id="randCube" title="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}">${icon('dice', 18)}</button>`
+            : ''}</div>
+        <!-- 30px above AND 30px below the net (bottom = aside gap 16 + Solution header pad 14,
+             with this card's own bottom padding zeroed) — the two breathing spaces the eye
+             compares, made equal. -->
+        <div class="net" id="viewNet" style="margin-top:30px"></div></div>
       ${walking ? `<div class="card tight" style="flex:1;min-height:140px;display:flex;flex-direction:column">
-        <div class="card-h"><b>${label}</b><span class="num sub" id="moveCount">—</span></div>
+        <div class="card-h bare"><b>${label}</b><span class="sub" id="moveCount">—</span></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
 </div>` : ''}
-      <div class="card">
-        <div class="eyebrow-row"><div class="eyebrow">${scrambling ? 'TARGET STATE' : 'INITIAL STATE'}</div>
-          <button id="randCube" title="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}">${icon('dice', 18)}</button></div>
-        <div class="net" id="viewNet" style="margin-top:12px"></div></div>
     </div></div>`,
     async mount(root) {
       // Captured before the first await. A solve can take seconds, and navigating away meanwhile
@@ -964,7 +1100,8 @@ const cubeScreen = (screenMode) => {
       // Re-entering the screen is what makes a new cube take effect: the solution, the move list
       // and the step count are all built at mount, so repainting in place would leave a fresh cube
       // wearing the old cube's solution. This is the wiring the button was missing.
-      $('#randCube', root).onclick = () => {
+      // Absent on the solve side unless the Advanced dev toggle shows it.
+      if ($('#randCube', root)) $('#randCube', root).onclick = () => {
         if (!solverReady) return;
         // Re-entering is what rolls a new one: the moves, the chips and the step count are all
         // built at mount, so repainting in place would leave a new cube wearing the old list.
@@ -1013,18 +1150,24 @@ const cubeScreen = (screenMode) => {
       if (stale()) return; // navigated away while solving — leave the new screen alone
       const total = moves.length;
       cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
-      setStatus(total + ' moves');
+      setStatus(String(total)); // just the number — the heading beside it already says what it counts
       // A scramble has no stages — CROSS/F2L/OLL/PLL are phases of solving, and pinning them on a
-      // scramble would invent structure that is not there.
+      // scramble would invent structure that is not there. It gets no group heading either: the
+      // card header directly above already says "Scramble" and the move count, and repeating both
+      // an inch lower said nothing twice. The solve side keeps its headings — stage names are
+      // information the card header does not carry.
       const stages = scrambling ? [['SCRAMBLE', 0, total]] : stageSplit(total);
-      solList.innerHTML = stages.map(([name, a, b]) => `<div style="padding:10px 16px 14px">
-        <div style="display:flex;justify-content:space-between"><span class="eyebrow">${name}</span><span class="num sub">${b - a}</span></div>
-        <div class="move-chips" style="margin-top:8px">${moves.slice(a, b).map((m, k) => `<button class="chip-m" data-i="${a + k}" title="Jump to this move">${m}</button>`).join('')}</div></div>`).join('');
+      solList.innerHTML = stages.map(([name, a, b]) => `<div style="padding:10px 18px 14px">
+        ${scrambling ? '' : `<div style="display:flex;justify-content:space-between"><span class="eyebrow">${name}</span><span class="num sub">${b - a}</span></div>`}
+        <div class="move-chips" style="margin-top:${scrambling ? '0' : '8px'}">${moves.slice(a, b).map((m, k) => `<button class="chip-m" data-i="${a + k}" title="Jump to this move">${m}</button>`).join('')}</div></div>`).join('');
       const chips = [...solList.querySelectorAll('.chip-m')];
       let at = 0;
       function sync(i) {
         at = i;
-        chips.forEach((ch, k) => { ch.classList.toggle('played', k < i); ch.classList.toggle('cur', k === i); });
+        // The filled chip is the move just shown — the one you are on. At 0 / 22 nothing has been
+        // shown, so nothing is filled. It used to mark the NEXT move, and a black first chip before
+        // anything had happened read as a step already taken.
+        chips.forEach((ch, k) => { ch.classList.toggle('played', k < i); ch.classList.toggle('cur', k === i - 1); });
         $('#stepLbl', root).textContent = `${i} / ${total}`;
         $('#progBar', root).style.width = total ? `${(i / total) * 100}%` : '0%';
         // A button that cannot do anything says so, rather than swallowing the press.
@@ -1032,8 +1175,8 @@ const cubeScreen = (screenMode) => {
         $('#repeatBtn', root).disabled = i === 0;
         $('#nextBtn', root).disabled = i >= total;
         $('#playBtn', root).disabled = i >= total;
-        // The only thing left to say over the cube: it is done. A move label repeated what the
-        // highlighted chip and the animation were both already showing.
+        // A tick beside the count once the last move lands. It used to be a 46px badge over the
+        // cube, saying "done" where the count beside it already read 22 / 22.
         $('#doneMark', root).hidden = i < total;
       }
       cube.addEventListener('cubus-step', (e) => sync(e.detail.index));
@@ -1056,14 +1199,14 @@ const cubeScreen = (screenMode) => {
       $('#prevBtn', root).onclick = () => { setPlaying(false); cube.stepBack(); };
       // A move in the list is a place in the solution, so clicking one goes there. seek() is instant
       // on purpose: jumping twelve moves is not something to sit through, which is exactly the case
-      // step()/stepBack() do not cover. The clicked move becomes the CURRENT one — the one you are
-      // about to make — rather than the one just made, so the highlight lands where you clicked.
+      // step()/stepBack() do not cover. It seeks to just AFTER the clicked move: the cube shows that
+      // move made and the clicked chip is the filled one, so the highlight lands where you clicked.
       solList.onclick = (ev) => {
         const chip = ev.target.closest('.chip-m');
         if (!chip) return;
         // jumping to a move is taking over just as much as pressing Next is
         setPlaying(false);
-        cube.seek(Number(chip.dataset.i));
+        cube.seek(Number(chip.dataset.i) + 1);
       };
       $('#repeatBtn', root).onclick = () => {
         // Not merely belt-and-braces with the disabled attribute: stepBack() self-guards at step 0
@@ -1165,16 +1308,16 @@ SCREENS.timer = () => {
 };
 
 SCREENS.settings = () => {
-  const themes = ['auto', 'light', 'dark'], pals = ['muted', 'classic', 'colorsafe'];
+  const pals = ['muted', 'classic', 'colorsafe'];
   const toggles = [['inspection', 'WCA inspection', '15s hold before the timer starts'], ['autosolve', 'Auto-solve after scan', 'Jump straight to the guide']];
   return { html: `<div class="cols">
     <div class="col">
       <div class="card"><div class="eyebrow">APPEARANCE</div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Theme</div><div class="sub" style="color:var(--ink-4)">Warm paper, light or dark</div></div>
-          <div style="display:flex;gap:6px">${themes.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-theme="${t}">${t}</button>`).join('')}</div></div></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Theme</div><div class="sub" style="color:var(--ink-4)">White, cream or night — auto follows the system</div></div>
+          <div style="display:flex;gap:6px">${THEMES.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-set-theme="${t}">${t}</button>`).join('')}</div></div></div>
       <div class="card"><div class="eyebrow">TIMER & CAMERA</div>
-        ${toggles.map(([k, t, s]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
-          <div style="flex:1"><div style="font-weight:600">${t}</div><div class="sub" style="color:var(--ink-4)">${s}</div></div>
+        ${toggles.map(([k, lbl, sub]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
+          <div style="flex:1"><div style="font-weight:600">${t(lbl)}</div><div class="sub" style="color:var(--ink-4)">${t(sub)}</div></div>
           <button class="toggle ${settings[k] ? 'on' : ''}" data-toggle="${k}"><i></i></button></div>`).join('')}</div>
     </div>
     <div class="aside">
@@ -1182,18 +1325,25 @@ SCREENS.settings = () => {
         <div style="display:flex;gap:6px;margin-top:12px" id="palSwatch"></div>
         <div style="display:flex;gap:6px;margin-top:12px">${pals.map((p) => `<button class="pill ${settings.palette === p ? 'on' : ''}" data-pal="${p}" style="flex:1;justify-content:center">${p}</button>`).join('')}</div></div>
       ${advancedOpen ? `<div class="card"><div class="eyebrow">ADVANCED</div>
-        <div class="sub" style="color:var(--ink-4);margin-top:6px;line-height:1.5">Sidebar entries. Hiding one only takes it out of the list — its address still works.</div>
+        <div class="sub" style="color:var(--ink-4);margin-top:6px;line-height:1.5">Toolbar tabs. Hiding one only takes it out of the row — its address still works.</div>
         ${HIDEABLE.map(([id, lbl]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
-          <div style="flex:1"><div style="font-weight:600">${lbl}</div><div class="sub" style="color:var(--ink-4)">${navHidden(id) ? 'Hidden from the sidebar' : 'Shown in the sidebar'}</div></div>
+          <div style="flex:1"><div style="font-weight:600">${lbl}</div><div class="sub" style="color:var(--ink-4)">${navHidden(id) ? 'Hidden from the toolbar' : 'Shown in the toolbar'}</div></div>
           <button class="toggle ${navHidden(id) ? '' : 'on'}" data-nav-toggle="${id}"><i></i></button></div>`).join('')}
+        <div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
+          <div style="flex:1"><div style="font-weight:600">Random-cube die</div><div class="sub" style="color:var(--ink-4)">Shows the die on the solve screen that loads a random scrambled cube — a developer shortcut, since that cube is not the one in anyone's hand. Scramble keeps its own die regardless.</div></div>
+          <button class="toggle ${settings.devRandCube ? 'on' : ''}" data-toggle="devRandCube"><i></i></button></div>
         <div class="sub" style="color:var(--ink-5);margin-top:12px">⌃⌥⌘D hides this section again.</div></div>` : ''}
-      <div class="card"><div class="eyebrow">ABOUT</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.55">cubus 0.4.2<br>Solver and vision run locally. Nothing leaves the device.</div>
-        <div class="link" style="margin-top:12px">cubus.im</div></div>
+      <div class="card"><div class="eyebrow">ABOUT</div>
+        <div class="about-brand"><img src="./icons/icon.svg" alt="" width="22" height="22" /><b>Cubus</b></div>
+        <div class="about-row">${icon('tag', 15)}<span class="k">${t('Version')}</span><span class="num">${VERSION}</span></div>
+        <div class="about-row">${icon('globe', 15)}<span class="k">${t('Website')}</span><a class="link" href="https://cubus.im" target="_blank" rel="noopener">cubus.im</a></div>
+        <div class="about-row">${icon('user', 15)}<span class="k">${t('Author')}</span><a class="link" href="https://lixiaolai.com" target="_blank" rel="noopener">@xiaolai</a></div>
+        <div class="sub" style="color:var(--ink-3);margin-top:10px;line-height:1.55">${t('Solver and vision run locally. Nothing leaves the device.')}</div></div>
     </div></div>`,
     mount(root) {
       const swatch = () => { const p = NET_COLORS[settings.palette]; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:4px;background:${p[k]}"></div>`).join(''); };
       swatch();
-      for (const b of root.querySelectorAll('[data-theme]')) b.onclick = () => { settings.theme = b.dataset.theme; save('cubusSettings', settings); applyTheme(); renderScreen(); };
+      for (const b of root.querySelectorAll('[data-set-theme]')) b.onclick = () => { settings.theme = b.dataset.setTheme; save('cubusSettings', settings); applyTheme(); renderScreen(); };
       for (const b of root.querySelectorAll('[data-pal]')) b.onclick = () => { settings.palette = b.dataset.pal; save('cubusSettings', settings); applyNetColors(); renderScreen(); };
       for (const b of root.querySelectorAll('[data-toggle]')) b.onclick = () => { const k = b.dataset.toggle; settings[k] = !settings[k]; save('cubusSettings', settings); b.classList.toggle('on', settings[k]); };
       for (const b of root.querySelectorAll('[data-nav-toggle]')) b.onclick = () => {
@@ -1201,7 +1351,7 @@ SCREENS.settings = () => {
         settings.navHidden = navHidden(id) ? settings.navHidden.filter((x) => x !== id) : [...settings.navHidden, id];
         save('cubusSettings', settings);
         renderNav();
-        // Hiding the screen you are standing on would leave the sidebar with nothing marked
+        // Hiding the screen you are standing on would leave the toolbar with nothing marked
         // active. You are on Settings when you press this, so that only bites via a deep link.
         if (navHidden(state.screen)) { go('home'); return; }
         renderScreen(); // repaints this card's own labels, so it cannot describe the old state
@@ -1330,7 +1480,7 @@ SCREENS.lessons = () => {
   return { html: `<div class="cols"><div class="col" style="overflow-y:auto">
     ${ch.map(([kick, title, prog, ls]) => `<div class="card tight"><div class="card-h"><div><div class="eyebrow">${kick}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${title}</div></div><div class="num sub" style="color:var(--ink-4)">${prog}</div></div>
       ${ls.map(([t, len, tag, fg]) => `<div class="row" style="grid-template-columns:8px 1fr auto auto;gap:14px"><div style="width:8px;height:8px;border-radius:50%;background:${fg}"></div><div style="color:${tag === 'Locked' ? 'var(--ink-5)' : 'var(--ink)'};font-weight:${tag === 'Next' ? 700 : 500}">${t}</div><div class="sub" style="color:var(--ink-5)">${len}</div><div style="font-weight:600;color:${fg}">${tag}</div></div>`).join('')}</div>`).join('')}</div>
-    <div class="aside"><div class="card dark"><div class="eyebrow" style="color:var(--on-ink-dim)">UP NEXT</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:8px">Keyhole F2L</div><div style="color:var(--on-ink-2);margin-top:6px;line-height:1.5">A bridge between the beginner method and full F2L. 6 minutes, then a 10-case drill.</div><button class="btn block" data-go="drill" style="border:1px solid var(--invert-fg);color:var(--invert-fg);margin-top:14px">Start lesson</button></div>
+    <div class="aside"><div class="card"><div class="eyebrow">UP NEXT</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:8px">Keyhole F2L</div><div style="color:var(--ink-3);margin-top:6px;line-height:1.5">A bridge between the beginner method and full F2L. 6 minutes, then a 10-case drill.</div><button class="btn outline block" data-go="drill" style="margin-top:14px">Start lesson</button></div>
       <div class="card"><div class="eyebrow">COACH VIEW</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">Share a read-only link so a parent or coach can follow lesson progress and session times.</div><button class="btn accent-outline block" style="margin-top:12px">Create share link</button></div></div></div>`, mount() {} };
 };
 
@@ -1342,6 +1492,22 @@ SCREENS.lessons = () => {
 // `e.code`, not `e.key`: on macOS Option rewrites the character, so this chord arrives as `∂` and
 // a key-based check would never match. `code` is the physical key and is layout-independent.
 // Every modifier is required, so this cannot collide with a plain typing shortcut.
+// External links (the About card). In a browser the anchors just work; the desktop webview gives
+// `target="_blank"` nothing, so when the opener plugin's API is injected (withGlobalTauri) the
+// click is handed to the system browser instead. One delegated listener, checked at click time,
+// so the same markup serves both builds — the seam pattern AGENTS.md sanctions.
+function installExternalLinks() {
+  document.addEventListener('click', (ev) => {
+    const a = ev.target.closest?.('a[href^="http"]');
+    const open = window.__TAURI__?.opener?.openUrl;
+    if (!a || !open) return;
+    ev.preventDefault();
+    // Failure surfaces rather than vanishing: a rejected open used to be exactly the kind of
+    // silent no-op this app keeps having to dig out.
+    Promise.resolve(open(a.href)).catch((e) => console.error('external link not opened', e));
+  });
+}
+
 function installAdvancedShortcut() {
   document.addEventListener('keydown', (e) => {
     if (e.code !== 'KeyD' || !e.ctrlKey || !e.altKey || !e.metaKey) return;
@@ -1356,13 +1522,15 @@ function installAdvancedShortcut() {
 
 function renderNav() {
   const items = NAV.filter(([id]) => !navHidden(id));
-  $('#nav').innerHTML = items.map(([id, lbl, meta, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"><span class="ico">${icon(ic)}</span><span class="lbl">${lbl}</span><span class="meta">${meta}</span></button>`).join('');
+  $('#nav').innerHTML = items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span><span class="lbl">${t(lbl)}</span></button>`).join('');
   for (const b of $('#nav').querySelectorAll('[data-nav]')) b.onclick = () => go(b.dataset.nav);
+  // Settings sits outside the row (buildChrome draws it), so it is marked here, not by the template.
+  $('#tbTrail [data-nav="settings"]')?.classList.toggle('active', state.screen === 'settings');
 }
 function renderScreen() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
   liveUpdate = null;
-  setTitle(TITLES[state.screen] ?? 'Cubus');
+  setTitle(t(TITLES[state.screen] ?? 'Cubus'));
   const build = SCREENS[state.screen] || SCREENS.home;
   const spec = build();
   screenGen += 1; // async mounts compare against this to detect that they are obsolete
@@ -1412,6 +1580,20 @@ async function boot() {
   document.documentElement.dataset.platform = platform;
   buildChrome(platform);
   installAdvancedShortcut();
+  installExternalLinks();
+  // '' = follow the browser/OS language. No-op until a catalog is registered; the picker arrives
+  // with the first second language, because a menu listing only English is furniture.
+  initLocale(settings.language);
+  // Dev-only MCP guest: in-page listeners that let an AI agent drive the app (selector clicks,
+  // DOM queries, JS eval) through tauri-plugin-mcp. Loaded only under Tauri; inert without the
+  // Rust side, which only exists behind the desktop crate's `mcp` feature + CUBUS_MCP=1 and is
+  // never compiled into a release. debug-logged rather than silent, so a missing bundle in dev
+  // is findable while a release dist that ships without it stays quiet by design.
+  if (isTauri) {
+    import('../vendor/tauri-mcp-guest.js')
+      .then((m) => m.setupPluginListeners?.())
+      .catch((e) => console.debug('tauri-mcp guest not loaded', e));
+  }
   // Resolve the deep link before the first paint, and canonicalise the URL so a bogus hash does
   // not sit in the address bar contradicting the screen on show.
   applyTheme(); applyNetColors(); resolveAlias(); router.normalize(); applyRoute();

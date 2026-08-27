@@ -60,13 +60,16 @@ before(async () => {
   await tick();
 });
 
-// The screen's name lives in the title bar chip now; there is no separate title bar of its own.
-const screenTitle = () => win.document.querySelector('.titlebar .chip #title').textContent;
+// The bar no longer draws the screen's name — the filled tab is the name — so "where am I" is read
+// from the document title, which is what a browser tab and (via setTitle) the OS window show.
+const screenTitle = () => win.document.title.replace(/ · Cubus$/, '');
+// Settings is the trailing toolbar button rather than a tab, so the active marker is matched on
+// the data attribute both kinds carry, not on the tab class.
 const activeNav = () =>
-  win.document.querySelector('.nav-item.active')?.getAttribute('data-nav') ?? null;
+  win.document.querySelector('[data-nav].active')?.getAttribute('data-nav') ?? null;
 
 test('boot honours a deep link instead of falling back to home', () => {
-  // Timer is hidden from the sidebar by default, so there is no nav item to mark — the title bar
+  // Timer is hidden from the toolbar by default, so there is no tab to mark — the window title
   // is what says where you are. That a hidden screen still ROUTES is the property being checked.
   assert.equal(screenTitle(), 'Timer');
   assert.ok(win.document.querySelector('#stage .screen.active'), 'the deep-linked screen mounted');
@@ -116,7 +119,7 @@ test('every screen renders without throwing', async () => {
   for (const id of SCREENS) {
     win.location.hash = `#/${id}`;
     await tick();
-    // A hidden screen has nothing in the sidebar to highlight; it must still route and render.
+    // A hidden screen has nothing in the toolbar to highlight; it must still route and render.
     if (listed().includes(id)) assert.equal(activeNav(), id, `${id} should be the active screen`);
     const stage = win.document.querySelector('#stage .screen.active');
     assert.ok(stage, `${id} rendered no screen element`);
@@ -127,14 +130,13 @@ test('every screen renders without throwing', async () => {
   assert.deepEqual(errors, [], 'no screen should raise while rendering');
 });
 
-// The screen name now lives only in the title bar. On Windows and Linux the Tauri build hides the
-// custom bar and uses the native one, so the chip alone would leave those platforms with no screen
-// name at all — the document/window title is what covers that, and it is easy to drop silently.
-test('the screen name also reaches the window title, not just the drawn chip', async () => {
+// The bar draws no screen name — the filled tab is the name — so the document/window title is the
+// only place the name is written, and it is easy to drop silently: nothing on screen would change.
+test('the screen name reaches the window title, and nothing else draws it', async () => {
   win.location.hash = '#/settings';
   await tick();
-  assert.equal(screenTitle(), 'Settings');
   assert.equal(win.document.title, 'Settings · Cubus');
+  assert.equal(win.document.querySelector('#title'), null, 'the title chip is gone; the tab is the name');
   win.location.hash = '#/scan';
   await tick();
   assert.equal(win.document.title, 'Restore · Cubus', 'and it follows the screen');
@@ -313,17 +315,21 @@ test('the state card is the net plus a dice, and says which state it is', async 
   win.location.hash = '#/home';
   await tick();
 
-  const card = [...win.document.querySelectorAll('#stage .aside > .card')].at(-1);
-  assert.equal(card.querySelector('.eyebrow').textContent, 'INITIAL STATE');
+  // The state card leads the aside — the arrangement you are looking at, above the moves that
+  // change it — and the move list follows.
+  const cards = [...win.document.querySelectorAll('#stage .aside > .card')];
+  const card = cards[0];
+  assert.equal(card.querySelector('.state-h').textContent, 'Initial State');
+  assert.ok(cards[1]?.querySelector('#solList'), 'the move list comes second');
   assert.equal(win.document.querySelector('#viewState'), null, 'the facelet string is gone');
   assert.ok(card.querySelector('#viewNet'), 'the net stays');
 
-  // The dice sits on the eyebrow's own line, which is what puts it level with the label.
-  const dice = card.querySelector('#randCube');
-  assert.ok(dice, 'random cube is still reachable');
-  assert.equal(dice.parentElement.className, 'eyebrow-row');
-  assert.equal(dice.parentElement.firstElementChild.className, 'eyebrow', 'label first, tool second');
-  assert.equal(dice.textContent.trim(), '', 'an icon button, not a labelled one');
+  // The dice is a developer shortcut on this side of the screen — it loads a random cube that is
+  // NOT the one in anyone's hand — so by default it is not rendered at all. The Advanced toggle
+  // brings it back (tested with the other Advanced toggles below); Scramble keeps its own die.
+  assert.equal(card.querySelector('#randCube'), null, 'no dev die on the solve side by default');
+  assert.equal(card.querySelector('.eyebrow-row .state-h').textContent, 'Initial State',
+    'the eyebrow row stays, so the layout does not shift when the die is toggled on');
 });
 
 // Scramble stopped being a placeholder and became the cube screen walked from the other end.
@@ -358,8 +364,49 @@ test('scramble is the same screen, not a mirrored transport', async () => {
   assert.ok(win.document.querySelector('#speedBtn'), 'and the same speed menu');
   assert.equal(win.document.querySelector('.card-h b').textContent, 'Scramble');
   // The net means the opposite thing here, so it must not claim to be the initial state.
-  assert.equal(win.document.querySelector('.aside .eyebrow-row .eyebrow').textContent, 'TARGET STATE');
+  assert.equal(win.document.querySelector('.aside .eyebrow-row .state-h').textContent, 'Target State');
   assert.match(win.document.querySelector('#randCube').title, /scramble/i);
+});
+
+// The filled chip is the move just shown, so before anything has been shown nothing is filled. It
+// used to mark the next move, and a black first chip at 0 / 22 read as a step already taken.
+test('no move is marked before one is shown, and the mark follows the move just made', async () => {
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/scramble';
+  await tick();
+  const ready = await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0);
+  assert.ok(ready, 'no scramble was ever generated');
+  const chips = () => [...win.document.querySelectorAll('#solList .chip-m')];
+  const total = chips().length;
+  const marked = () => chips().flatMap((c, k) => (c.classList.contains('cur') ? [k] : []));
+  const count = () => win.document.querySelector('#stepLbl').textContent;
+
+  assert.deepEqual(marked(), [], 'nothing is filled at 0 / n');
+  assert.equal(count(), `0 / ${total}`);
+
+  // The renderer reports how many moves it has applied; the screen fills the last of them.
+  const cube = win.document.querySelector('#viewCube > cubus-cube');
+  const applied = (index) => cube.dispatchEvent(new win.CustomEvent('cubus-step', { detail: { index, total } }));
+  applied(1);
+  assert.deepEqual(marked(), [0], 'after one move, the first chip is the one filled');
+  assert.ok(chips()[0].classList.contains('played'), 'and it counts as played');
+  applied(3);
+  assert.deepEqual(marked(), [2]);
+  assert.equal(count(), `3 / ${total}`);
+  applied(total);
+  assert.deepEqual(marked(), [total - 1], 'at the end the last move stays filled');
+
+  // Clicking a chip lands the highlight on that chip: it seeks to just after the clicked move.
+  // The vendored renderer is not loaded here, so a stand-in seek() reports what it was asked for,
+  // the way the real one does through cubus-step.
+  const asked = [];
+  cube.pause = () => {}; // taking over stops playback first, which the real renderer honours
+  cube.seek = (n) => { asked.push(n); applied(n); };
+  chips()[4].click();
+  assert.deepEqual(asked, [5], 'chip 4 (the fifth move) seeks to five moves applied');
+  assert.deepEqual(marked(), [4], 'and chip 4 is the one filled');
+  assert.equal(count(), `5 / ${total}`);
 });
 
 test('scramble starts solved and lands exactly where the net says', async () => {
@@ -375,10 +422,12 @@ test('scramble starts solved and lands exactly where the net says', async () => 
 
   assert.equal(cube.getAttribute('scramble'), '', 'the cube must START solved, not from a scan');
   assert.equal(cube.getAttribute('alg').trim(), moves.join(' '), 'the chips are the moves it plays');
-  // CROSS/F2L/OLL/PLL are phases of a solve; pinning them here would invent structure.
+  // No group headings at all: CROSS/F2L/OLL/PLL are phases of a solve and would invent structure,
+  // and the one heading this list used to carry — "SCRAMBLE" with a count — repeated the card
+  // header an inch above it, word for word.
   assert.deepEqual(
     [...win.document.querySelectorAll('#solList .eyebrow')].map((e) => e.textContent),
-    ['SCRAMBLE'],
+    [],
   );
 
   // The whole correctness claim of this screen: the net shows a target, and the moves on display
@@ -396,7 +445,7 @@ test('scramble starts solved and lands exactly where the net says', async () => 
 test('solve mode still names its own end of the walk', async () => {
   win.location.hash = '#/home';
   await tick();
-  assert.equal(win.document.querySelector('.aside .eyebrow-row .eyebrow').textContent, 'INITIAL STATE');
+  assert.equal(win.document.querySelector('.aside .eyebrow-row .state-h').textContent, 'Initial State');
   assert.equal(win.document.querySelector('.card-h b').textContent, 'Solution');
 });
 
@@ -415,7 +464,7 @@ test('a screen navigated away from mid-mount does not clobber the next one', asy
 });
 
 // ⌃⌥⌘D reveals an Advanced section in Settings that can take the placeholder screens out of the
-// sidebar. Two things here are easy to get wrong and invisible when you do: the chord must be
+// toolbar. Two things here are easy to get wrong and invisible when you do: the chord must be
 // matched on e.code (macOS Option rewrites e.key, so this arrives as "∂"), and a nav group whose
 // every entry is hidden must not render as a bare heading over nothing.
 const chord = (over = {}) =>
@@ -423,7 +472,7 @@ const chord = (over = {}) =>
     code: 'KeyD', key: '∂', ctrlKey: true, altKey: true, metaKey: true, bubbles: true, ...over,
   });
 const navIds = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
-// The sidebar is one flat list now, so there are no group headings to name.
+// The toolbar is one flat row of tabs, so there are no group headings to name.
 const navLabels = () => [...win.document.querySelectorAll('#nav [data-nav] .lbl')].map((e) => e.textContent);
 
 test('the Advanced section is hidden until the chord asks for it', async () => {
@@ -465,7 +514,7 @@ test('opening Advanced is not remembered', async () => {
   assert.match(win.localStorage.getItem('cubusSettings') ?? '', /navHidden.*drill/);
 
   // Put it back through the UI: clearing localStorage alone would leave the in-memory settings
-  // holding a hidden entry, and the next test would see a sidebar it did not ask for.
+  // holding a hidden entry, and the next test would see a toolbar it did not ask for.
   win.document.querySelector('[data-nav-toggle="drill"]').click();
   await tick();
   assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
@@ -484,7 +533,87 @@ test('a partial chord does nothing — every modifier is required', async () => 
   }
 });
 
-test('hiding an entry removes it from the sidebar, and the rest is untouched', async () => {
+// The About card: the app's mark, then a short table — version, website, author — each row led
+// by an inline icon from the app's own set (there is no icon library to need; the paths in `P`
+// are drawn by hand). The links are real anchors: the old card printed "cubus.im" as dead text.
+test('the About card states version, website and author, with real links', async () => {
+  win.location.hash = '#/settings';
+  await tick();
+  const { VERSION } = await import('../lib/app.js');
+  const card = [...win.document.querySelectorAll('#stage .card')]
+    .find((c) => c.querySelector('.eyebrow')?.textContent === 'ABOUT');
+  assert.ok(card, 'the About card exists');
+  assert.ok(card.querySelector('.about-brand img[src="./icons/icon.svg"]'), 'led by the app mark');
+  assert.equal(card.querySelector('.about-brand b').textContent, 'Cubus');
+  const rows = [...card.querySelectorAll('.about-row')];
+  assert.deepEqual(rows.map((r) => r.querySelector('.k').textContent), ['Version', 'Website', 'Author']);
+  assert.ok(rows.every((r) => r.querySelector('svg.ic')), 'each row is led by an icon');
+  assert.equal(rows[0].querySelector('.num').textContent, VERSION, 'the version shown IS the constant');
+  const site = rows[1].querySelector('a.link');
+  assert.equal(site.getAttribute('href'), 'https://cubus.im');
+  const author = rows[2].querySelector('a.link');
+  assert.equal(author.getAttribute('href'), 'https://lixiaolai.com');
+  assert.equal(author.textContent, '@xiaolai');
+  for (const a of [site, author]) {
+    assert.equal(a.getAttribute('target'), '_blank', 'external links must not navigate the app away');
+    assert.equal(a.getAttribute('rel'), 'noopener');
+  }
+});
+
+// The version is written by hand in exactly one place — app.js — and every manifest must agree
+// with it. Before this test, the About card told users 0.4.2 while apps/web/package.json, the
+// Tauri config and the desktop Cargo.toml all said 0.1.0: five version fields, four wrong, and
+// nothing red. Drift now fails the suite and names the file that lagged.
+test('every manifest carries the same version the app displays', async () => {
+  const { VERSION } = await import('../lib/app.js');
+  const at = (p) => new URL(p, import.meta.url);
+  assert.equal(JSON.parse(readFileSync(at('../package.json'), 'utf8')).version, VERSION,
+    'apps/web/package.json');
+  assert.equal(
+    JSON.parse(readFileSync(at('../../desktop/src-tauri/tauri.conf.json'), 'utf8')).version,
+    VERSION, 'tauri.conf.json — the version the installed desktop app reports');
+  const cargo = readFileSync(at('../../desktop/src-tauri/Cargo.toml'), 'utf8');
+  assert.match(cargo, new RegExp(`^version = "${VERSION.replace(/\./g, '\\.')}"$`, 'm'),
+    'the desktop crate version');
+});
+
+// The random-cube die on the solve screen is a developer shortcut (the cube it loads is not the
+// one in anyone's hand), so it hides behind the same Advanced section — and, unlike the
+// disclosure itself, the preference is saved.
+test('the Advanced toggle brings the dev die back, and turning it off takes it away', async () => {
+  win.location.hash = '#/settings';
+  await tick();
+  win.document.dispatchEvent(chord());
+  await tick();
+  const toggle = () => win.document.querySelector('[data-toggle="devRandCube"]');
+  assert.ok(toggle(), 'the die has a toggle in Advanced');
+
+  toggle().click();
+  await tick();
+  assert.match(win.localStorage.getItem('cubusSettings') ?? '', /devRandCube.:true/,
+    'the preference persists — it is the disclosure that must not');
+  win.location.hash = '#/home';
+  await tick();
+  const dice = win.document.querySelector('#randCube');
+  assert.ok(dice, 'the die is back on the solve screen');
+  assert.equal(dice.parentElement.className, 'eyebrow-row', 'on the eyebrow row, level with the label');
+  assert.match(dice.title, /random scrambled cube/i);
+
+  // Off again through the same UI, so later tests see the default screen. Advanced is still
+  // open — the disclosure lasts the page, not the visit — so no second chord to get back in.
+  win.location.hash = '#/settings';
+  await tick();
+  toggle().click();
+  await tick();
+  win.document.dispatchEvent(chord());
+  await tick();
+  win.location.hash = '#/home';
+  await tick();
+  assert.equal(win.document.querySelector('#randCube'), null, 'and gone again');
+  win.localStorage.removeItem('cubusSettings');
+});
+
+test('hiding an entry removes it from the toolbar, and the rest is untouched', async () => {
   win.location.hash = '#/settings';
   await tick();
   win.document.dispatchEvent(chord());
@@ -493,8 +622,8 @@ test('hiding an entry removes it from the sidebar, and the rest is untouched', a
 
   win.document.querySelector('[data-nav-toggle="lessons"]').click();
   await tick();
-  assert.ok(!navIds().includes('lessons'), 'gone from the sidebar');
-  assert.ok(navIds().includes('settings'), 'and its neighbours are untouched');
+  assert.ok(!navIds().includes('lessons'), 'gone from the toolbar');
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill'], 'and its neighbours are untouched');
 
   // All three at once.
   for (const id of ['trainer', 'drill']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
@@ -508,7 +637,7 @@ test('hiding an entry removes it from the sidebar, and the rest is untouched', a
 
   // Restore through the UI, not by wiping localStorage. `settings` is a live module-level object:
   // clearing storage leaves it holding the hidden ids, so every later test in this file inherits a
-  // sidebar with three entries missing. That is exactly what it did before this comment existed.
+  // toolbar with three entries missing. That is exactly what it did before this comment existed.
   win.location.hash = '#/settings';
   await tick();
   for (const id of ['lessons', 'trainer', 'drill']) {
@@ -537,7 +666,7 @@ test('Home is the cube screen, not a separate landing page', async () => {
   assert.ok(!win.document.querySelector('#scanCta'), 'the old landing-page call to action is gone');
 });
 
-test('the sidebar no longer offers 3D viewer or Smart cube, and Stats is renamed', async () => {
+test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed', async () => {
   win.location.hash = '#/home';
   await tick();
   const ids = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
@@ -550,15 +679,15 @@ test('the sidebar no longer offers 3D viewer or Smart cube, and Stats is renamed
   assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
   // Nothing groups the list any more, so there is no heading left over to point at a screen that
   // no longer exists.
-  assert.equal(win.document.querySelector('#nav .nav-group'), null, 'the sidebar is one flat list');
+  assert.equal(win.document.querySelector('#nav .nav-group'), null, 'the tab row is flat');
   assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'and carries no section titles');
 });
 
 
-// The permanent status box in the sidebar said the same thing on every screen forever,
+// The permanent status box in the old leading pane said the same thing on every screen forever,
 // including the whole time you are not using a cube. It is replaced by an indicator that appears
 // beside the cube only while one is actually connected.
-test('the sidebar no longer carries a permanent connection box', async () => {
+test('the shell no longer carries a permanent connection box', async () => {
   win.location.hash = '#/home';
   await tick();
   assert.equal(win.document.querySelector('#cubeStatus'), null);
@@ -567,22 +696,31 @@ test('the sidebar no longer carries a permanent connection box', async () => {
 });
 
 
-// The sidebar was three labelled sections over nine items. Flattened, every page sits at the top
-// level in one list — so the thing to pin is that nothing was lost in the flattening and no
-// heading survived it.
-test('the sidebar is one flat list of every page, with no section titles', async () => {
+// The nav was three labelled sections over nine items in a leading pane. It is one flat row of
+// tabs in the title bar now, with Settings as the bar's trailing button — so the things to pin are
+// that nothing was lost in the flattening, that no heading survived it, and that Settings is
+// reachable from the bar without being a tab.
+test('the toolbar is one flat row of tabs, with Settings as its own button', async () => {
   win.location.hash = '#/home';
   await tick();
-  // The default sidebar is the beginner's path. Timer and Stats are speedcubing instruments and
+  // The default row is the beginner's path. Timer and Stats are speedcubing instruments and
   // start hidden; Alg trainer, Drill and Lessons remain listed.
   assert.deepEqual(navLabels(), [
-    'Home', 'Restore', 'Scramble', 'Alg trainer', 'Drill', 'Lessons', 'Settings',
+    'Home', 'Restore', 'Scramble', 'Alg trainer', 'Drill', 'Lessons',
   ]);
   assert.equal(win.document.querySelector('#nav .nav-group'), null, 'no grouping wrapper');
   assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'no SOLVE / PRACTICE / LEARN');
   // Every child of #nav is a page button — nothing else lives in there now.
   const kinds = [...win.document.querySelector('#nav').children].map((el) => el.tagName);
   assert.deepEqual([...new Set(kinds)], ['BUTTON']);
+  // Settings: in the trailing zone, not in the row, and it navigates.
+  const gear = win.document.querySelector('#tbTrail [data-nav="settings"]');
+  assert.ok(gear, 'Settings is the trailing toolbar button');
+  assert.equal(win.document.querySelector('#nav [data-nav="settings"]'), null, 'and not a tab');
+  gear.click();
+  await tick();
+  assert.equal(win.location.hash, '#/settings');
+  assert.ok(gear.classList.contains('active'), 'and it is marked while Settings is showing');
 });
 
 
@@ -602,8 +740,8 @@ test('Timer and Stats start hidden, but remain reachable and re-showable', async
   win.location.hash = '#/home';
   await tick();
   const ids = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
-  assert.ok(!ids().includes('timer'), 'Timer is not in the default sidebar');
-  assert.ok(!ids().includes('stats'), 'Stats is not in the default sidebar');
+  assert.ok(!ids().includes('timer'), 'Timer is not in the default toolbar');
+  assert.ok(!ids().includes('stats'), 'Stats is not in the default toolbar');
 
   // Reachable by address, like every other hidden entry.
   win.location.hash = '#/timer';

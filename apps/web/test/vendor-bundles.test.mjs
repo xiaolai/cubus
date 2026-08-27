@@ -57,6 +57,15 @@ const BUNDLES = [
     // the panel ever starts using one, delete it here and the guard covers it again.
     treeShaken: ['SOLVED_FACELETS', 'encodeFacelets'],
   },
+  {
+    // The dev-only Tauri MCP guest (selector clicks, DOM queries, JS eval for the agent bridge).
+    // Bundled from the pinned npm package; inert unless the desktop crate's `mcp` feature and
+    // CUBUS_MCP=1 activate the Rust side, which release builds never contain.
+    name: 'tauri-mcp-guest',
+    build: 'pnpm --filter cubus-web build:mcp-guest',
+    bundle: '../vendor/tauri-mcp-guest.js',
+    sources: ['../lib/tauri-mcp-guest-entry.js'],
+  },
 ];
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
