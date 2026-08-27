@@ -36,12 +36,15 @@ const load = (k, fb) => { try { return { ...fb, ...JSON.parse(localStorage.getIt
  *  window — and the UI used to report "Saved" either way, so a nickname could vanish on reload
  *  with nothing having warned anyone. */
 const save = (k, v) => {
-  try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; }
+  // The false return is checked by the callers that can say something useful; the warn is for
+  // every caller that cannot — a preference that silently fails to stick looks exactly like a
+  // preference that stuck until the next launch proves otherwise.
+  try { localStorage.setItem(k, JSON.stringify(v)); return true; }
+  catch (e) { console.warn(`could not persist ${k}`, e); return false; }
 };
 
 // ---- inline icons (lucide paths; offline, no CDN) --------------------------------------------
 const P = {
-  house: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
   // A cube face as a nine-grid, drawn twice: empty for Restore (a solved side), part-filled for
   // Scramble. The pair reads by contrast — order against disorder — which is the whole distinction
   // between the two screens. `fill` is a presentation attribute so it beats the `fill: none`
@@ -68,7 +71,6 @@ const P = {
   minus: '<path d="M5 12h14"/>',
   square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
   webcam: '<circle cx="12" cy="10" r="8"/><circle class="lens" cx="12" cy="10" r="3"/><path d="M7 22h10"/><path d="M12 22v-4"/>',
-  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   'paint-roller': '<rect width="16" height="6" x="2" y="2" rx="2"/><path d="M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect width="4" height="6" x="8" y="16" rx="1"/>',
   // The About card's three row markers, drawn by hand in the same 24×24 stroke grammar as the
   // rest of this map — no icon library behind them, same as everything above.
@@ -502,8 +504,10 @@ let liveGap = null;
 /** An anchor in flight. Module-level on purpose: dropping trust re-renders Settings, so a flag
  *  declared inside the mount would be reset by the very repaint the guard exists to survive. */
 let anchoring = false;
-/** A screen's reaction to losing the cube, beyond the trust model's own. Cleared on navigation. */
-let onCubeLost = null;
+/** A screen's reaction to trust LAPSING — gap, disconnect, a report that failed validation, a
+ *  contradicted scan. One hook covers them all because they all pass through markStale, which is
+ *  the whole point of routing trust through one function. Cleared on navigation. */
+let onTrustLost = null;
 
 /** Repair tracking from one camera reading, WITHOUT solving the cube.
  *
@@ -550,7 +554,6 @@ function repairTracking(scanned) {
  *  Disconnect button and the failure path in connectOnce. Idempotent. */
 function onDisconnect() {
   conn = null;
-  if (onCubeLost) { try { onCubeLost(); } catch {} }
   // Order matters: mark stale BEFORE setConnected, so the indicator repaints once, already
   // knowing the truth, rather than flashing "connected and fine" on its way out.
   markStale('it disconnected, and may have been turned since');
@@ -594,6 +597,24 @@ function adoptConnection(mac, name) {
 const liveCubeLabel = () =>
   cubeLabel({ ...cubes[state.cubeMac], mac: state.cubeMac, name: state.cubeName }) || 'Smart cube';
 
+/** Is someone mid-typing in a cube-settings input? Async repaints of Settings defer rather than
+ *  discard what is being typed. ONE predicate on purpose — it had two copies, and two copies of
+ *  a focus check is how one repaint path eats input while the other politely waits. */
+const editingCubeSettings = () => {
+  const el = document.activeElement;
+  return Boolean(el && (el.id === 'macIn' || el.dataset?.renameCube));
+};
+/** A Settings repaint that arrived mid-typing. DEFERRED is not DROPPED: without the flush on
+ *  focusout (wired in the Settings mount), a battery or trust change landing while a nickname
+ *  was being typed stayed stale on screen indefinitely. */
+let settingsRepaintPending = false;
+const repaintSettings = () => {
+  if (state.screen !== 'settings') return;
+  if (editingCubeSettings()) { settingsRepaintPending = true; return; }
+  settingsRepaintPending = false;
+  renderScreen();
+};
+
 /** Read the cube's battery and publish it. The cube answers on request only. */
 async function refreshBattery() {
   if (!conn) return;
@@ -608,9 +629,7 @@ async function refreshBattery() {
       state.battery = Math.max(0, Math.min(100, Math.round(level)));
       // A reply can land while someone is typing a nickname or an address into this very card,
       // and rebuilding the card discards what they typed — so the redraw is deferred, not faked.
-      const editing = document.activeElement;
-      const midEdit = Boolean(editing && (editing.id === 'macIn' || editing.dataset?.renameCube));
-      if (state.screen === 'settings' && !midEdit) renderScreen();
+      repaintSettings();
     }
   } catch {
     if (conn !== asked) return;
@@ -633,11 +652,9 @@ function trustChanged() {
     read.setAttribute('aria-label', label);
     read.title = label;
   }
-  // Settings derives its setup checklist from trust; skipped while an input there has focus, for
-  // the same reason the battery redraw is.
-  const editing = document.activeElement;
-  const midEdit = Boolean(editing && (editing.id === 'macIn' || editing.dataset?.renameCube));
-  if (state.screen === 'settings' && !midEdit) renderScreen();
+  // Settings derives its setup checklist from trust; deferred while an input there has focus,
+  // for the same reason the battery redraw is.
+  repaintSettings();
 }
 
 /** We now know what the cube looks like, and by what means. */
@@ -653,8 +670,12 @@ function markTrusted(source) {
  *  stale cube is more useful than an empty screen. */
 function markStale(why) {
   if (!state.cube.trusted && state.cube.staleWhy === why) return;
+  const lapsed = state.cube.trusted;
   state.cube.trusted = false;
   state.cube.staleWhy = why;
+  // Only an actual lapse notifies — a stale cube going stale for a new reason is a wording
+  // change, not an event a screen needs to stand down for.
+  if (lapsed && onTrustLost) { try { onTrustLost(); } catch {} }
   trustChanged();
 }
 
@@ -725,16 +746,21 @@ async function connectOnce(macFromUi) {
       transport = makeWebBluetoothTransport(); await transport.start();
     }
     const cube = new GanCube({ mac, transport });
-    cube.onFacelets((f) => { onFacelets(f.facelets); });
+    // Every callback is scoped to ITS cube: a slow packet or a late disconnect event from a
+    // connection that has since been replaced must not mutate the new cube's state, report a
+    // gap against it, or tear it down.
+    cube.onFacelets((f) => { if (conn === cube) onFacelets(f.facelets, f.serial); });
     // Subscribe the move stream too: following runs on moves (immediate), snapshots (~1Hz) only
     // correct drift — a turn sequence completed inside one second has no intermediate snapshots.
-    cube.onMove((m) => { if (liveMove) liveMove(m); });
-    cube.on('gap', onGap);
-    cube.on('disconnect', onDisconnect);
-    cube.on('error', () => {});
+    cube.onMove((m) => { if (conn === cube && liveMove) liveMove(m); });
+    cube.on('gap', (g) => { if (conn === cube) onGap(g); });
+    cube.on('disconnect', () => { if (conn === cube) onDisconnect(); });
+    // Not swallowed: a decrypt or transport error is a fact about the stream worth a trace,
+    // even when the driver recovers on the next packet.
+    cube.on('error', (e) => { if (conn === cube) console.warn('cube driver error', e); });
     cube.connect(); conn = cube;
     adoptConnection(mac, name);
-    cube.getState({ active: true }).then((f) => onFacelets(f.facelets)).catch(() => {});
+    cube.getState({ active: true }).then((f) => { if (conn === cube) onFacelets(f.facelets, f.serial); }).catch(() => {});
     // Ask the cube rather than inventing a number — a flat battery is what disconnects a cube
     // mid-solve, and a mid-solve disconnect is what silently desyncs its tracking from reality.
     void refreshBattery();
@@ -757,7 +783,7 @@ function adoptCube(facelets, { physical, source } = { physical: false, source: '
 /** A snapshot from the connected cube. Always records what the cube says; only changes the
  *  SUBJECT when the subject is that cube — otherwise pressing Random would have its arrangement
  *  quietly replaced by the real one a second later. */
-function onFacelets(reported) {
+function onFacelets(reported, serial) {
   if (!reported) return;
   // What the cube literally said, before any correction. A repair derives the offset from the
   // RAW report — deriving it from a corrected one produces the identity.
@@ -773,13 +799,15 @@ function onFacelets(reported) {
     return;
   }
   state.live = f;
-  if (state.cube.isPhysical) {
-    if (f === state.cube.facelets) return;
-    // ingest, not set: a snapshot from the cube must not cost a Kociemba search.
-    ingestFacelets(f);
-  }
-  if (liveUpdate) liveUpdate(f);
-  else if (state.screen === 'home') renderScreen();
+  // An UNCHANGED report still reaches the screen. After a lost move packet, the snapshot that
+  // proves the cube is back where the app already thought it was IS the correction — an early
+  // return here swallowed it, and the follow model on a walking screen stayed wrong forever.
+  // Only the ingest and the home repaint are deduplicated.
+  const changed = !(state.cube.isPhysical && f === state.cube.facelets);
+  // ingest, not set: a snapshot from the cube must not cost a Kociemba search.
+  if (state.cube.isPhysical && changed) ingestFacelets(f);
+  if (liveUpdate) liveUpdate(f, serial);
+  else if (changed && state.screen === 'home') renderScreen();
 }
 
 // ---- session store (recent solves) -----------------------------------------------------------
@@ -838,11 +866,31 @@ export { state };
 // ===============================================================================================
 const SCREENS = {};
 /** Drop a fixed-position `.menu` under a corner button, clamped inside the viewport. */
+/** Vertical placement for a fixed popover. The stylesheet's 100dvh cap bounds SIZE but cannot
+ *  know POSITION, so the room that remains is computed here: below the anchor when that fits or
+ *  is the roomier side, flipped above it otherwise — and always capped to the room actually
+ *  there, so the popover scrolls rather than running off either edge. */
+const placePopoverV = (el, anchorRect) => {
+  const gap = 6, margin = 8;
+  const below = window.innerHeight - anchorRect.bottom - gap - margin;
+  const above = anchorRect.top - gap - margin;
+  if (below >= Math.min(el.offsetHeight, 120) || below >= above) {
+    el.style.top = `${anchorRect.bottom + gap}px`;
+    el.style.bottom = '';
+    el.style.maxHeight = `${Math.max(40, below)}px`;
+  } else {
+    // Anchored by its BOTTOM edge, so the popover grows upward from above the trigger.
+    el.style.top = '';
+    el.style.bottom = `${window.innerHeight - anchorRect.top + gap}px`;
+    el.style.maxHeight = `${Math.max(40, above)}px`;
+  }
+};
+
 const placeMenuUnder = (btn, menu) => {
   const r = btn.getBoundingClientRect();
   const w = menu.offsetWidth;
   menu.style.left = `${Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8)}px`;
-  menu.style.top = `${r.bottom + 6}px`;
+  placePopoverV(menu, r);
 };
 
 let cleanup = null;
@@ -886,7 +934,6 @@ SCREENS.scan = () => {
   // every test that tried to assert what a sticker had been painted.)
   // Face letters are positions; a person checking their cube sees colours. Same scheme the
   // scanner's own GUIDE uses, and the same one every palette here is built on.
-  const COLOUR_OF = { U: 'white', R: 'red', F: 'green', D: 'yellow', L: 'orange', B: 'blue' };
   const cell = (bg) => `<i class="cell" style="background-color:${bg}"></i>`;
   // A pending tile is nine dim wells with the face's own colour in the centre, so the board reads
   // "the yellow side is still missing" without a legend.
@@ -1024,6 +1071,9 @@ SCREENS.scan = () => {
       const setPainting = (on) => {
         painting = on;
         camRow.classList.toggle('paint', on);
+        // The tiles read this: outer stickers only wear a pointer when a click will be heard —
+        // on a read side, or while painting. The class is what lets the stylesheet know.
+        root.classList.toggle('painting', on);
         paintBtn.title = on ? 'Stop painting and use the camera' : 'Paint the cube by hand instead of scanning it';
         panel.setPainting?.(on);
       };
@@ -1197,7 +1247,8 @@ SCREENS.scan = () => {
         // this connection, with no solving involved. (Not permanently: the correction is
         // discarded on disconnect, because the cube may sleep or be turned while nobody counts.)
         const repaired = repairTracking(fl);
-        if (repaired?.ok === false) {
+        const adopted = repaired?.ok !== false;
+        if (!adopted) {
           // A contradiction is not a reading to adopt: one of the two is wrong and nothing can
           // tell which. Adopting it while saying "nothing was changed" would be untrue — and so
           // would an enabled Solve button over a cube the screen refused to believe.
@@ -1215,9 +1266,10 @@ SCREENS.scan = () => {
         // mean something, and with them the chance to check the read or fix a sticker. The aside
         // shows the cube that was found, and "Solve this cube" is right beside it. Anyone who
         // wants the jump has the "Auto-solve after scan" setting, which this now actually honours
-        // — it read "jump straight to the guide" while the code jumped to the viewer regardless.
+        // — and honours only for a scan that was BELIEVED: auto-solving a refused reading would
+        // walk the previous cube behind a disabled Solve button.
         showState(e.detail.facelets);
-        if (settings.autosolve) go('home');
+        if (settings.autosolve && adopted) go('home');
       });
       // The detector is good, not perfect, so let a person overrule it: on a side the camera has
       // READ, click any sticker and pick the right colour. Delegated rather than 54 listeners. The
@@ -1277,7 +1329,7 @@ SCREENS.scan = () => {
         const tileRect = tile.getBoundingClientRect();
         const w = swatches.offsetWidth;
         swatches.style.left = `${Math.min(Math.max(8, cellRect.left + cellRect.width / 2 - w / 2), window.innerWidth - w - 8)}px`;
-        swatches.style.top = `${tileRect.bottom + 6}px`;
+        placePopoverV(swatches, tileRect); // below the tile, or above it when that is the room there is
         ev.stopPropagation();
       };
       const onAway = (ev) => {
@@ -1414,6 +1466,14 @@ const cubeScreen = (screenMode) => {
       cube.setAttribute('ghosts', v.ghosts ? 'floating' : 'none');
       for (const [k, attr] of VIEW_ATTRS) cube.setAttribute(attr, String(v[k]));
 
+      // Who drives the guide: 'slow' = the transport buttons, 'cube' = the physical cube.
+      // Declared before the speed menu because tempo DEPENDS on the driver: the walk speeds are
+      // for the app demonstrating a move, but while following, the drawing is a mirror of moves
+      // the user already made — a mirror slower than the hand must fall behind, so follow runs at
+      // the renderer's 190ms base whatever speed is chosen for demonstrations.
+      let mode = 'slow';
+      let applyTempo = () => {};
+
       // Speed sits in the card's corner, not in the transport row: it is a preference you set once
       // and forget, whereas the row is the solution you are walking. Same idiom as the scan
       // screen's camera menu. Wired before the solve so a screen that fails to solve still honours
@@ -1433,7 +1493,9 @@ const cubeScreen = (screenMode) => {
 
         const applySpeed = () => {
           const chosen = SPEEDS.find((o) => o.id === speedId);
-          cube.setAttribute('tempo-scale', String(chosen.tempo));
+          // The ONE place tempo is written. While the cube drives, the choice is stored but not
+          // applied — it takes effect the moment the user takes over.
+          cube.setAttribute('tempo-scale', String(mode === 'cube' ? 1 : chosen.tempo));
           speedBtn.title = `Animation speed — ${chosen.label}`;
           speedMenu.textContent = '';
           for (const o of SPEEDS) {
@@ -1446,6 +1508,7 @@ const cubeScreen = (screenMode) => {
           }
         };
         applySpeed();
+        applyTempo = applySpeed;
 
         speedBtn.onclick = (ev) => {
           const wasClosed = speedMenu.hidden;
@@ -1490,6 +1553,10 @@ const cubeScreen = (screenMode) => {
         // lands — and on the failure path where it never does — snapshots must not repaint the
         // net either: its label names a fixed reference state.
         if (walking) return;
+        // The picture is the SUBJECT. Live reports repaint it only when the subject IS the
+        // physical cube — with a generated or unreadable subject on screen, painting the
+        // connected cube over it would show one cube while every label describes another.
+        if (!state.cube.isPhysical) return;
         paintNet(f);
         cube.setAttribute('facelets', f);
       };
@@ -1561,19 +1628,21 @@ const cubeScreen = (screenMode) => {
       const setPlaying = (on) => {
         playing = on;
         $('#playBtn', root).innerHTML = icon(on ? 'pause' : 'play', 18);
+        // Guarded like drawTo below: if the renderer bundle failed to upgrade the element, the
+        // transport still works as position bookkeeping even though nothing animates.
+        if (typeof cube.play !== 'function' || typeof cube.pause !== 'function') return;
         if (on) cube.play(); else cube.pause();
       };
 
       // Touching the transport hands control back to you. Following and the buttons were two
       // drivers for one guide, and while both were live the step counter tracked the ANIMATION
       // rather than the cube. One rule removes the ambiguity — the toggle is right there to
-      // resume. Hoisted, because the handlers below call it while `mode` and `followBtn` are
-      // declared further down.
+      // resume. Hoisted, because the handlers below call it while `followBtn` and the note
+      // helpers are declared further down.
       function takeOver() {
         if (mode !== 'cube') return;
-        mode = 'slow';
-        followBtn?.classList.remove('on');
-        if (followBtn) followBtn.title = 'You took over — click to let the cube drive again';
+        setFollow(false);
+        pauseNote();
       }
 
       $('#playBtn', root).onclick = () => { takeOver(); setPlaying(!playing); };
@@ -1606,15 +1675,146 @@ const cubeScreen = (screenMode) => {
         cube.step();
       };
 
-      // ---- Follow cube (recovered from v0, extended with move-driven Previous) ---------------
+      // ---- Follow cube -----------------------------------------------------------------------
+      //
+      // The physical cube drives the guide through ONE local model matched by STATE, never by
+      // move token: the driver emits quarter turns only, while the plan is full of half turns —
+      // tokens can never pair those up, states always can. Position, drawing and the note are
+      // three views of that model. Full design, and the adversarial review that shaped it, in
+      // dev-docs/follow-mode-redesign.md.
       //
       // One pacing control, and only when there is a cube to pace against: with nothing connected,
       // walking by hand is the only behaviour there is, so a button naming it would be a switch
       // with one position. Connected, following is what you want by default — a single toggle
       // that starts on, provided the preconditions hold.
       const followBtn = root.querySelector('[data-mode="cube"]');
-      let mode = 'slow';
+      const note = $('#followNote', root), noteMsg = $('#followMsg', root);
+      const showNote = (msg) => {
+        if (note) { note.hidden = false; note.classList.remove('info'); noteMsg.textContent = msg; }
+      };
+      // Neutral, not a warning, and without the rescue buttons: pausing is a choice, not a fault.
+      const pauseNote = () => {
+        if (note) { note.hidden = false; note.classList.add('info'); noteMsg.textContent = 'Paused following — you are driving. Click Follow and your cube leads again.'; }
+      };
+      const clearNote = () => {
+        if (note) { note.hidden = true; note.classList.remove('info'); }
+      };
+
+      // Where the PHYSICAL cube is, in solution indices. The model beneath it tracks in EVERY
+      // mode — only drawing and notes are gated on `mode` — so resuming follow needs no special
+      // case: the position is simply already right.
+      let cubePos = 0;
+      let liveModel = null; // cubejs cube in truth frame; seeded below, resynced by every snapshot
+      let drawn = 0;        // index the renderer's QUEUE will end at; meaningful only while following
+      let lastSerial = null;
+
+      // For each half-turn step i, the two states one quarter turn in: the cube passes through
+      // one of them mid-R2 in either direction (undoing is steps[i]·R2·R = steps[i]·R'). Owner-
+      // indexed, because a midpoint only counts BESIDE its own half turn — landing on a distant
+      // one is a wrong move, not silent progress.
+      const midpoints = new Map();
+      // Built only from a COMPLETE step array: with steps short (the case refuseFollow answers
+      // below), steps[i] is undefined for the tail and fromString(undefined) throws — which
+      // turned "follow is refused" into "the whole screen fails to mount".
+      if (steps.length === total + 1) {
+        for (let i = 0; i < moves.length; i++) {
+          if (!moves[i].endsWith('2')) continue;
+          for (const q of [moves[i][0], `${moves[i][0]}'`]) {
+            const c = Cube.fromString(steps[i]); c.move(q);
+            const s = c.asString();
+            if (!midpoints.has(s)) midpoints.set(s, []);
+            midpoints.get(s).push(i);
+          }
+        }
+      }
+
+      /** Where is this state on the plan? Locality first: the near window resolves a repeated
+       *  state toward where the cube actually is, and is also the cheap path. */
+      const locate = (f) => {
+        for (let d = 0; d <= 2; d++) {
+          for (const idx of d === 0 ? [cubePos] : [cubePos - d, cubePos + d]) {
+            if (idx >= 0 && idx < steps.length && steps[idx] === f) return { kind: 'step', idx };
+          }
+        }
+        if (midpoints.get(f)?.some((i) => i === cubePos || i === cubePos - 1)) return { kind: 'mid' };
+        const idx = steps.indexOf(f);
+        return idx >= 0 ? { kind: 'step', idx } : { kind: 'off' };
+      };
+
+      /** Move the drawing toward where the cube is. Deltas are against `drawn` — the end of the
+       *  renderer's QUEUE — never against the animation's progress: reading the completion index
+       *  dropped any turn made inside the 0.19–3.8s animation window, permanently.
+       *
+       *  The renderer guard is not belt-and-braces: if the vendored bundle failed to upgrade the
+       *  element — which this repo has shipped more than once — the guide still tracks turns
+       *  rather than throwing on every one. */
+      const drawTo = (idx) => {
+        if (typeof cube.step !== 'function' || typeof cube.seek !== 'function') return;
+        if (idx === drawn) return;
+        if (idx > drawn && idx - drawn <= 2) { for (let i = drawn; i < idx; i++) cube.step(); }
+        else if (idx === drawn - 1) cube.stepBack(); // an undo is a turn worth watching too
+        else cube.seek(idx); // a jump: animating a dozen moves to catch up helps nobody
+        drawn = idx;
+      };
+
+      /** ONE reaction to every accepted reading, move or snapshot. */
+      const act = (loc, offMsg) => {
+        if (loc.kind === 'step') {
+          cubePos = loc.idx;
+          if (mode === 'cube') { clearNote(); drawTo(cubePos); }
+        } else if (loc.kind === 'mid') {
+          if (mode === 'cube') clearNote(); // half a half-turn: legal, silent, position held
+        } else if (mode === 'cube') {
+          showNote(offMsg);
+        }
+      };
+
+      /** The FIFO tripwire. Moves and snapshots ride one ordered channel and share one counter;
+       *  a regression means that assumption broke, which deserves a loud word — placed AFTER
+       *  act() by every caller, so the warning is not painted over by the event it arrived on. */
+      const tripwire = (serial) => {
+        if (!Number.isInteger(serial)) return;
+        // Repeats are normal — a resting cube re-sends snapshots under one counter, and a
+        // FACELETS packet shares its move's serial. Only a REGRESSION is a breach, and a breach
+        // is a trust matter, not just a note: the stream this model is built on is unreliable,
+        // so trust lapses (which stands follow down through the hook) and the screen says why.
+        if (lastSerial !== null && (serial - lastSerial + 256) % 256 > 127) {
+          console.warn('cube events arrived out of order', { lastSerial, serial });
+          showNote('The cube’s reports arrived out of order — read it again before following.');
+          markStale('its reports arrived out of order');
+        }
+        lastSerial = serial;
+      };
+
+      /** ONE owner for the driver switch: tempo, button paint and the atomic hand-over all live
+       *  here, so no exit path can leak follow's tempo into a demonstration or leave the queue
+       *  running under the wrong driver. BOTH directions seek: taking over collapses follow's
+       *  queue debt and its in-flight animation; resuming re-bases `drawn` on wherever the cube
+       *  is now — which is what makes `drawn` trustworthy within a follow session. */
+      function setFollow(on) {
+        const want = on ? 'cube' : 'slow';
+        if (mode === want) return;
+        mode = want;
+        if (typeof cube.seek === 'function') cube.seek(cubePos);
+        drawn = cubePos;
+        applyTempo();
+        followBtn?.classList.toggle('on', on);
+        if (followBtn) {
+          followBtn.title = on
+            ? 'Turn your smart cube and the guide keeps up'
+            : 'You took over — click to let the cube drive again';
+        }
+        if (on) {
+          setPlaying(false);
+          // Say at once whether the cube is still on the plan, rather than waiting up to a
+          // second for its next report to say it.
+          if (liveModel) act(locate(liveModel.asString()), 'This cube is not on the plan any more.');
+          else clearNote();
+        }
+      }
+
       const refuseFollow = (why) => {
+        if (!followBtn) return;
         followBtn.disabled = true;
         followBtn.classList.remove('on');
         followBtn.title = why;
@@ -1635,103 +1835,78 @@ const cubeScreen = (screenMode) => {
             ? 'This is not the cube in your hand — read your cube to follow along'
             : 'Waiting to hear from your cube…');
         } else {
-          mode = 'cube';
+          liveModel = Cube.fromString(state.live);
+          setFollow(true);
         }
         followBtn.onclick = () => {
           if (followBtn.disabled) return;
-          mode = mode === 'cube' ? 'slow' : 'cube';
-          followBtn.classList.toggle('on', mode === 'cube');
-          followBtn.title = mode === 'cube'
-            ? 'Turn your smart cube and the guide keeps up'
-            : 'You took over — click to let the cube drive again';
-          if (mode === 'cube') setPlaying(false);
+          setFollow(mode !== 'cube');
         };
       }
 
-      // Where the PHYSICAL cube is, in solution indices. Deliberately not `at`: `at` is where the
-      // ANIMATION has got to (up to 3.8s behind at Slow), and driving the match off it dropped
-      // any second real turn made inside that window — after which nothing could ever match again.
-      let cubePos = 0;
-      let offTrack = false;
-      const note = $('#followNote', root), noteMsg = $('#followMsg', root);
-      const showNote = (msg) => {
-        offTrack = true;
-        if (note) { note.hidden = false; noteMsg.textContent = msg; }
-      };
-      const clearNote = () => {
-        offTrack = false;
-        if (note) note.hidden = true;
-      };
-      /** Move the drawing toward where the cube actually is. One queued step per accepted move —
-       *  the renderer's queue is FIFO and never drops, so this cannot fall behind. */
-      const drawTo = (idx) => {
-        // The drawing is a FOLLOWER of the guide's position. If the renderer never upgraded — a
-        // vendored bundle that failed to load, which this repo has shipped more than once — the
-        // guide should still track your turns rather than throwing on every one.
-        if (typeof cube.step !== 'function' || typeof cube.seek !== 'function') return;
-        if (idx === at) return;
-        if (idx > at && idx - at <= 2) { for (let i = at; i < idx; i++) cube.step(); }
-        else cube.seek(idx); // a jump: animating a dozen moves to catch up helps nobody
+      liveMove = (m) => {
+        if (!liveModel) return; // nothing to track against until a first reading seeds the model
+        liveModel.move(m.notation);
+        act(locate(liveModel.asString()), `That was ${m.notation} — the next move is ${moves[cubePos] ?? '—'}.`);
+        tripwire(m.serial);
       };
 
-      liveMove = (m) => {
-        if (mode !== 'cube' || offTrack) return;
-        // The next move in the walk: your turn IS pressing Next.
-        if (m.notation === moves[cubePos]) {
-          cubePos += 1;
-          drawTo(cubePos);
-          clearNote();
-          return;
-        }
-        // The inverse of the move just made: your turn IS pressing Previous — immediately, not a
-        // second later when a snapshot happens to notice. (v0 only resynced backward off the ~1Hz
-        // snapshots, which made undoing a move feel like the guide had stopped listening.)
-        if (cubePos > 0 && m.notation === invMove(moves[cubePos - 1])) {
-          cubePos -= 1;
-          drawTo(cubePos);
-          clearNote();
-          return;
-        }
-        showNote(`That was ${m.notation} — the next move is ${moves[cubePos] ?? '—'}.`);
+      // Snapshots are authoritative: they share the moves' FIFO channel, so every one delivered
+      // is current, and the model resyncs from it unconditionally — that IS the drift correction,
+      // including after a lost move packet. The 2D net is never repainted here: its card says
+      // INITIAL STATE (or TARGET STATE), and a label naming a fixed reference must not sit over a
+      // moving picture — what the cube does live is the 3D cube's and the transport's story.
+      liveUpdate = (f, serial) => {
+        liveModel = Cube.fromString(f);
+        act(locate(f), 'This cube is not on the plan any more.');
+        tripwire(serial);
       };
 
       // Trust has already lapsed by the time this runs — onGap() owns that, with or without a
-      // screen mounted to hear it. What is left here is this screen's own reaction.
+      // screen mounted to hear it — and the trust hook below has stood follow down. What is left
+      // is this screen's own account of what happened.
       liveGap = (g) => {
+        // The shutdown itself is NOT repeated here: onGap marks trust stale first, and the trust
+        // hook below owns standing follow down. What this adds is the gap-specific account.
         // Disabled, not merely un-highlighted: following matches your turns against an
         // arrangement we have just said we cannot vouch for.
-        if (followBtn) {
-          followBtn.disabled = true;
-          followBtn.title = 'Your cube missed a turn — read it again before following';
-        }
-        if (mode !== 'cube') return;
-        mode = 'slow';
-        followBtn?.classList.remove('on');
+        refuseFollow('Your cube missed a turn — read it again before following');
         // The cube numbers its moves, and the driver says so when the count skips. Silence here
         // would look exactly like a wrong turn; it is neither, and the snapshot will resync.
         showNote(`Missed ${g.missing} turn${g.missing === 1 ? '' : 's'} — checking the cube…`);
       };
 
-      liveUpdate = (f) => {
-        // The 2D net NEVER live-follows on a walking screen, following or not: its card says
-        // INITIAL STATE (or TARGET STATE), and a label naming a fixed reference must not sit over
-        // a moving picture. What the cube does live is the 3D cube's and the transport's story —
-        // the net is the anchor you compare them against.
-        if (mode !== 'cube') return;
-        // Snapshots are the CORRECTION, not the signal. Searching all of `steps` rather than
-        // testing only the next one is what lets a cube that ran ahead, or was turned back,
-        // rejoin the guide instead of stalling forever.
-        const idx = steps.indexOf(f);
-        if (idx < 0) {
-          showNote('This cube is not on the plan any more.');
-          return;
-        }
-        clearNote();
-        if (idx !== cubePos) { cubePos = idx; drawTo(idx); }
+      // Any loss of trust while walking — a gap, a disconnect, a report that failed validation —
+      // stands follow down the moment it happens, not at the next mount.
+      onTrustLost = () => {
+        setFollow(false);
+        refuseFollow(`Read the cube first — ${state.cube.staleWhy || 'its position is unverified'}`);
       };
 
-      $('#resolveBtn', root).onclick = () => go(state.screen); // re-mount solves from the cube as it is now
-      $('#turnBackBtn', root).onclick = () => clearNote();     // the next snapshot resyncs on its own
+      $('#resolveBtn', root).onclick = () => {
+        // Re-solve starts from the cube as it IS. The model can be ahead of the last adopted
+        // snapshot by whatever was turned in the past second — remounting from the stale global
+        // would build a walk for a cube that no longer exists.
+        if (liveModel && state.cube.trusted) {
+          const f = liveModel.asString();
+          if (f !== state.cube.facelets) adoptCube(f, { physical: true, source: 'cube' });
+          // `live` too, or the next mount's "starts where the cube is" precondition compares the
+          // fresh walk against a snapshot from before those turns and refuses to follow — for
+          // the whole visit, since the precondition runs once. The model IS the corrected
+          // report stream carried forward, so this stays true to what `live` means; `reported`
+          // (the raw stream) is deliberately untouched.
+          state.live = f;
+        }
+        // Scramble ignores the subject — it always walks from solved — so "Re-solve this cube"
+        // must go where the cube in hand is actually solved from: the solve walk on Home.
+        go(scrambling ? 'home' : state.screen);
+      };
+      $('#turnBackBtn', root).onclick = () => {
+        // Acknowledging is not the same as the cube being back: hiding the warning here would
+        // silently accept an off-plan cube if no further report arrived. The note stays, saying
+        // what is being waited for — only act() clears it, on an actually on-plan reading.
+        if (note && !note.hidden) noteMsg.textContent = 'Watching for it — turn it back and the guide picks up.';
+      };
 
       sync(0);
     },
@@ -1992,6 +2167,20 @@ SCREENS.settings = () => {
       const say = (text, colour) => { const m = $('#pairMsg'); if (m) { m.style.color = colour; m.textContent = text; } };
       const pairBtn = $('#pairBtn', root);
 
+      // A repaint deferred because a nickname or address was mid-typing flushes when the typing
+      // stops — deferred is not dropped. The timeout lets focus land on its next element first,
+      // so tabbing between the two inputs does not flush (and discard) between them.
+      root.addEventListener('focusout', () => {
+        setTimeout(() => { if (settingsRepaintPending) repaintSettings(); }, 0);
+      });
+
+      // ONE connect flow for the Pair button and every remembered-cube Use button: same pending
+      // message idiom, same error surfacing. Two copies of it had already started to drift.
+      const connectFromSettings = async (mac, pending) => {
+        say(pending, 'var(--ink-4)');
+        try { await doConnect(mac); } catch (e) { say(String(e.message || e), 'var(--err)'); }
+      };
+
       // What CAN be detected, and what cannot. A browser has no scan-without-permission by
       // design, so there is no honest "1 cube found" line to draw; getAvailability() does say
       // whether pressing Pair can work at all, which beats a button that fails unexplained. The
@@ -2027,8 +2216,7 @@ SCREENS.settings = () => {
           onDisconnect();
           return;
         }
-        say(isTauri ? 'scanning…' : 'pick your cube in the browser prompt', 'var(--ink-4)');
-        try { await doConnect($('#macIn', root)?.value); } catch (e) { say(String(e.message || e), 'var(--err)'); }
+        await connectFromSettings($('#macIn', root)?.value, isTauri ? 'scanning…' : 'pick your cube in the browser prompt');
       };
 
       // Resetting the correction does NOT restore trust — it removes the only thing that was
@@ -2051,10 +2239,7 @@ SCREENS.settings = () => {
         };
       }
       for (const el of root.querySelectorAll('[data-use-cube]')) {
-        el.onclick = async () => {
-          say('connecting…', 'var(--ink-4)');
-          try { await doConnect(el.dataset.useCube); } catch (e) { say(String(e.message || e), 'var(--err)'); }
-        };
+        el.onclick = () => connectFromSettings(el.dataset.useCube, 'connecting…');
       }
       // Two-step, because a browser on macOS cannot read the address back off the cube:
       // forgetting is the one action here that destroys something the app cannot re-derive.
@@ -2316,7 +2501,7 @@ function renderScreen() {
   liveUpdate = null;
   liveMove = null;
   liveGap = null;
-  onCubeLost = null;
+  onTrustLost = null;
   setTitle(t(TITLES[state.screen] ?? 'Cubus'));
   const build = SCREENS[state.screen] || SCREENS.home;
   const spec = build();
@@ -2345,7 +2530,7 @@ const router = makeRouter({
 // before the router gets a chance to canonicalise them to home.
 // `viewer` joins them: the cube screen is Home now. `pair` too — smart-cube setup moved into
 // Settings, so #/pair lands where the controls actually are.
-const ALIAS = { guide: 'home', playback: 'home', viewer: 'home' };
+const ALIAS = { guide: 'home', playback: 'home', viewer: 'home', pair: 'settings' };
 function resolveAlias() {
   const raw = String(window.location.hash || '').replace(/^#\/?/, '').trim();
   const target = ALIAS[raw];
@@ -2365,7 +2550,7 @@ window.cubusGo = go;
  * which is precisely why its worst bug survived so long. Same shape as cubusGo above. */
 window.cubusFeed = {
   move: (m) => liveMove?.(m),
-  facelets: (f) => onFacelets(f),
+  facelets: (f, serial) => onFacelets(f, serial),
   gap: (g) => onGap(g), // the driver's door, not the screen's — see onGap
   disconnect: () => onDisconnect(),
   /** Stand in for a paired driver. Setting `state.connected` alone is deliberately not enough —
