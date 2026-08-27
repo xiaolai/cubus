@@ -1970,13 +1970,15 @@ SCREENS.home = () => cubeScreen('solve');
 SCREENS.scramble = () => cubeScreen('scramble');
 
 SCREENS.timer = () => {
-  return { html: `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px">
+  // width:100% — the screen centres its child, and a column without a width would shrink to
+  // its content. The clock's size and the wrapping rows are classes (index.html).
+  return { html: `<div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px">
       <div class="num" id="scr" style="font-size:var(--fs-body-l);color:var(--ink-4);text-align:center;max-width:640px">press New scramble</div>
-      <div class="num" id="clock" style="font-size:var(--fs-timer);font-weight:600;line-height:.95;letter-spacing:-.03em;cursor:pointer">0.00</div>
+      <div class="num timer-clock" id="clock">0.00</div>
       <div class="sub" id="timerHint" style="color:var(--ink-4)">Click or hold space to start</div>
-      <div style="display:flex;gap:10px"><button class="btn outline sm" id="newScr">New scramble</button>
+      <div class="wrap-row" style="justify-content:center;gap:10px"><button class="btn outline sm" id="newScr">New scramble</button>
         <span class="pill">WCA scrambles</span></div>
-      <div style="display:flex;gap:12px;margin-top:6px" id="lastFive"></div></div>`,
+      <div class="wrap-row" style="justify-content:center;gap:12px;margin-top:6px" id="lastFive"></div></div>`,
     mount(root) {
       const clock = $('#clock', root); let running = false, t0 = 0, raf = 0;
       const fmt = (ms) => (ms / 1000).toFixed(2);
@@ -2053,11 +2055,12 @@ SCREENS.settings = () => {
   // the 15s countdown it named. A setting that claims behaviour it does not have is exactly the
   // invented data this app refuses elsewhere; it returns when the Timer actually earns it.
   const toggles = [['autosolve', 'Auto-solve after scan', 'Jump straight to the guide']];
-  return { html: `<div class="cols">
+  // `flow`: a list screen — in portrait the box scrolls as one (index.html, .cols.flow).
+  return { html: `<div class="cols flow">
     <div class="col">
       <div class="card"><div class="eyebrow">APPEARANCE</div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Theme</div><div class="sub" style="color:var(--ink-4)">White, cream or night — auto follows the system</div></div>
-          <div style="display:flex;gap:6px">${THEMES.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-set-theme="${t}">${t}</button>`).join('')}</div></div></div>
+        <div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Theme</div><div class="sub" style="color:var(--ink-4)">White, cream or night — auto follows the system</div></div>
+          <div class="wrap-row" style="gap:6px">${THEMES.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-set-theme="${t}">${t}</button>`).join('')}</div></div></div>
       ${(() => {
         // ---- smart cube (recovered from v0) --------------------------------------------------
         const on = state.connected;
@@ -2403,7 +2406,7 @@ SCREENS.stats = () => {
   // honest, so a history of three unreadable records has a length of three and a count of zero —
   // and it is the count that decides whether there is anything to report.
   if (!s.count) {
-    return { html: `<div style="height:100%;display:flex;align-items:center;justify-content:center">
+    return { html: `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">
       <div class="card" style="max-width:460px;text-align:center;padding:34px">
         <div class="eyebrow">NO SOLVES YET</div>
         <div style="font-size:var(--fs-title);font-weight:600;margin-top:10px">Nothing to report</div>
@@ -2435,7 +2438,7 @@ SCREENS.stats = () => {
   const week = s.week;
   const busiest = Math.max(1, ...week.map((d) => d.count));
 
-  return { html: `<div class="cols">
+  return { html: `<div class="cols flow">
     <div class="col">
       <div class="grid3">
         <div class="card stat"><div class="eyebrow">SINGLE BEST</div><div class="v">${secs(s.best)}</div><div class="d">${s.count} solve${s.count === 1 ? '' : 's'} recorded</div></div>
@@ -2449,7 +2452,7 @@ SCREENS.stats = () => {
         <div class="card-h"><b>Recent solves</b><span class="num sub">${s.count}</span></div>
         <div class="list" style="overflow-y:auto">${rows}</div></div>
     </div>
-    <div class="aside" style="overflow-y:auto">
+    <div class="aside">
       <div class="card"><div class="eyebrow">AVERAGES</div>
         ${[['single', secs(s.best)], ['ao5', secs(s.ao5)], ['ao12', secs(s.ao12)], ['ao100', secs(s.ao100)]].map(([k, v]) => `<div class="row" style="grid-template-columns:1fr auto;border-color:var(--line-faint)"><div style="color:var(--ink-3)">${k}</div><div class="num" style="font-size:var(--fs-title);font-weight:600">${v}</div></div>`).join('')}
         <div class="sub" style="color:var(--ink-5);margin-top:10px;font-size:var(--fs-meta)">An average of n needs n solves. Until then it is a dash, not a guess.</div></div>
@@ -2466,9 +2469,11 @@ SCREENS.trainer = () => {
   const P2 = NET_COLORS[settings.palette];
   const oll = [['OLL 21', "R U2 R' U' R U R' U' R U' R'", 'var(--ok)', '82%'], ['OLL 22', "R U2 R2 U' R2 U' R2 U2 R", 'var(--accent)', '64%'], ['OLL 24', "r U R' U' r' F R F'", 'var(--err)', '22%'], ['OLL 27', "R U R' U R U2 R'", 'var(--ok)', '94%'], ['PLL T', "R U R' U' R' F R2 U' R' U' R U R' F'", 'var(--accent)', '71%'], ['PLL Y', "F R U' R' U' R U R' F' R U R' U' R' F R F'", 'var(--err)', '29%']];
   const grid = (seed) => Array.from({ length: 9 }, (_, i) => ((i * 7 + seed * 3) % 4 === 0 ? P2.D : 'var(--facelet-off)'));
-  return { html: `<div style="height:100%;display:flex;flex-direction:column;gap:16px">
-    <div style="display:flex;gap:8px;align-items:center">${['OLL', 'PLL', 'F2L', 'Weak first'].map((f, i) => `<button class="pill ${i === 0 ? 'on' : ''}">${f}</button>`).join('')}<span class="sub" style="margin-left:auto;color:var(--ink-4)">Sorted by weakest recall</span></div>
-    <div style="flex:1;min-height:0;overflow-y:auto;display:grid;grid-template-columns:repeat(5,1fr);gap:14px;align-content:start">
+  // width:100% — the screen centres its child (see the timer). The case grid wraps as many
+  // 140px cards as fit rather than dividing the width into five.
+  return { html: `<div style="width:100%;height:100%;display:flex;flex-direction:column;gap:16px">
+    <div class="wrap-row">${['OLL', 'PLL', 'F2L', 'Weak first'].map((f, i) => `<button class="pill ${i === 0 ? 'on' : ''}">${f}</button>`).join('')}<span class="sub" style="margin-left:auto;color:var(--ink-4)">Sorted by weakest recall</span></div>
+    <div class="case-grid">
     ${oll.map(([name, alg, color, pct], i) => `<button class="card" data-go="drill" style="text-align:center;cursor:pointer">
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;width:76px;margin:0 auto">${grid(i).map((g) => `<div style="aspect-ratio:1;border-radius:2px;background:${g}"></div>`).join('')}</div>
       <div style="font-weight:700;margin-top:10px">${name}</div><div class="num sub" style="color:var(--ink-4);min-height:28px;font-size:var(--fs-caption)">${alg}</div>
@@ -2478,7 +2483,9 @@ SCREENS.trainer = () => {
 SCREENS.drill = () => {
   const P2 = NET_COLORS[settings.palette];
   const grid = Array.from({ length: 9 }, (_, i) => ((i * 7 + 9) % 4 === 0 ? P2.D : 'var(--facelet-off)'));
-  return { html: `<div class="cols"><div class="col"><div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px">
+  // `flow`: the flashcard is taller than a phone's locked primary region, and its controls
+  // (Reveal, Again / Good / Easy) must never sit below a fold — so the box scrolls as one.
+  return { html: `<div class="cols flow"><div class="col"><div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px">
       <div class="eyebrow">OLL 24 · DOT CASES · 3 OF 12</div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:180px">${grid.map((g) => `<div style="aspect-ratio:1;border-radius:4px;background:${g}"></div>`).join('')}</div>
       <div class="num" id="drillAlg" style="font-size:var(--fs-display-s);font-weight:600;color:var(--ink-6)">· · · · · · · ·</div>
@@ -2497,7 +2504,7 @@ SCREENS.drill = () => {
 
 SCREENS.lessons = () => {
   const ch = [['CHAPTER 1 · 4 LESSONS', 'Beginner layer method', '4/4', [['White cross', '5 min', 'Done', 'var(--ok)'], ['First layer corners', '7 min', 'Done', 'var(--ok)'], ['Middle layer', '9 min', 'Done', 'var(--ok)'], ['Last layer', '12 min', 'Done', 'var(--ok)']]], ['CHAPTER 2 · 3 LESSONS', 'Getting under a minute', '1/3', [['Efficient cross', '6 min', 'Done', 'var(--ok)'], ['Keyhole F2L', '6 min', 'Next', 'var(--accent)'], ['Look-ahead drills', '8 min', 'Locked', 'var(--ink-5)']]]];
-  return { html: `<div class="cols"><div class="col" style="overflow-y:auto">
+  return { html: `<div class="cols flow"><div class="col">
     ${ch.map(([kick, title, prog, ls]) => `<div class="card tight"><div class="card-h"><div><div class="eyebrow">${kick}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${title}</div></div><div class="num sub" style="color:var(--ink-4)">${prog}</div></div>
       ${ls.map(([t, len, tag, fg]) => `<div class="row" style="grid-template-columns:8px 1fr auto auto;gap:14px"><div style="width:8px;height:8px;border-radius:50%;background:${fg}"></div><div style="color:${tag === 'Locked' ? 'var(--ink-5)' : 'var(--ink)'};font-weight:${tag === 'Next' ? 700 : 500}">${t}</div><div class="sub" style="color:var(--ink-5)">${len}</div><div style="font-weight:600;color:${fg}">${tag}</div></div>`).join('')}</div>`).join('')}</div>
     <div class="aside"><div class="card"><div class="eyebrow">UP NEXT</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:8px">Keyhole F2L</div><div style="color:var(--ink-3);margin-top:6px;line-height:1.5">A bridge between the beginner method and full F2L. 6 minutes, then a 10-case drill.</div><button class="btn outline block" data-go="drill" style="margin-top:14px">Start lesson</button></div>
