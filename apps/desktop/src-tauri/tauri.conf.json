@@ -53,6 +53,7 @@
       "../../../ml/models/cubedet.mlpackage": "models/cubedet.mlpackage"
     },
     "macOS": {
+      "minimumSystemVersion": "13.0",
       "infoPlist": "Info.plist",
       "entitlements": "Entitlements.plist",
       "files": {
