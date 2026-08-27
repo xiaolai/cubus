@@ -90,6 +90,11 @@ jobs:
       - name: check
         run: cargo check --workspace
 
+      # The desktop window's arithmetic (src/stage.rs) is held to the contract document's table,
+      # the same rows the web oracle is held to.
+      - name: desktop — stage arithmetic
+        run: cargo test -p cubus-desktop --lib
+
   # The golden-frame parity gate (dev-docs/native-capture-and-inference-plan.md, Phase 4). Every
   # runtime must read the 20 committed fixtures exactly as ml/golden/expected.json pins it, or a
   # model/runtime has drifted from the one checkpoint. Split by platform: the runtimes that run on

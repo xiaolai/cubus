@@ -21,11 +21,11 @@
           "x": 19,
           "y": 28
         },
+        "create": false,
         "width": 1280,
         "height": 832,
-        "minWidth": 1120,
-        "minHeight": 640,
-        "resizable": true,
+        "resizable": false,
+        "maximizable": false,
         "fullscreen": false
       }
     ],
