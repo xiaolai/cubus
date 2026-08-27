@@ -20,6 +20,7 @@
   "devDependencies": {
     "esbuild": "^0.21.5",
     "happy-dom": "^20.11.6",
+    "playwright": "1.62.1",
     "tauri-plugin-mcp": "0.3.1",
     "three": "^0.169.0"
   },
