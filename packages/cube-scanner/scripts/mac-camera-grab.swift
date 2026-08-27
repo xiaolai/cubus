@@ -43,10 +43,23 @@ let devices = AVCaptureDevice.DiscoverySession(
     deviceTypes: types, mediaType: .video, position: .unspecified
 ).devices
 
-guard let device = devices.first(where: { $0.localizedName.lowercased().contains(needle) }) else {
-    let names = devices.map(\.localizedName).joined(separator: ", ")
+// Match the uniqueID as well as the name. Two Studio Displays share one localizedName, so a
+// name-only match can never reach the second of them — it silently returns the first and looks
+// like it worked. The id is the only handle that is guaranteed to be unique.
+let matches = devices.filter {
+    $0.localizedName.lowercased().contains(needle) || $0.uniqueID.lowercased().contains(needle)
+}
+guard let device = matches.first else {
+    let names = devices.map { "\($0.localizedName) [\($0.uniqueID)]" }.joined(separator: ", ")
     FileHandle.standardError.write("no device matching \"\(needle)\". have: \(names)\n".data(using: .utf8)!)
     exit(2)
+}
+if matches.count > 1 {
+    // Ambiguity is reported, never resolved by silently taking the first.
+    let ids = matches.map(\.uniqueID).joined(separator: ", ")
+    let msg = "note: \(matches.count) devices match \"\(needle)\" — using \(device.uniqueID). "
+        + "Pass an id to choose: \(ids)\n"
+    FileHandle.standardError.write(msg.data(using: .utf8)!)
 }
 
 final class Sink: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
