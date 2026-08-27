@@ -4,21 +4,15 @@ export default defineConfig({
   test: {
     coverage: {
       provider: 'v8',
-      // Only the pure, hardware-free CV core is meaningfully unit-testable.
-      // camera.ts (getUserMedia), the live CubeScanner glue, the view web
-      // component, and the barrel need a browser + webcam, so they are excluded
-      // from the gate rather than dragging the threshold to a meaningless number.
+      // Only the pure, hardware-free core is meaningfully unit-testable. camera.ts (getUserMedia)
+      // and the detector implementations need a browser + webcam, so they are excluded from the
+      // gate rather than dragging the threshold to a meaningless number. This list once named the
+      // removed OpenCV pipeline's files, so `coverage` measured nothing while still passing.
       include: [
-        'src/color.ts',
         'src/facelet-cube.ts',
-        'src/grid.ts',
-        'src/classify.ts',
-        'src/assemble.ts',
-        'src/scanner.ts',
-        'src/calibrate.ts',
-        'src/homography.ts',
-        'src/stability.ts',
-        'src/auto-scanner.ts',
+        'src/ai-assemble.ts',
+        'src/onnx-postprocess.ts',
+        'src/onnx-detect.ts',
       ],
       reporter: ['text', 'html'],
       thresholds: {
