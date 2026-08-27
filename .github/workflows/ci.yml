@@ -26,6 +26,9 @@ jobs:
       - name: cube-scanner — check
         run: pnpm --filter cube-scanner run check
 
+      - name: gan-driver — check
+        run: pnpm --filter gan-driver run check
+
       # The vendored bundles are COMMITTED build artifacts, and the app imports them rather than
       # the sources. They have drifted four times, most recently shipping a driver two safety fixes
       # behind the source every test was reading. The unit guards compare names and message
@@ -34,6 +37,8 @@ jobs:
       - name: vendored bundles are built from the current sources
         run: |
           pnpm build:panel
+          pnpm build:driver
+          pnpm --filter cubus-web build:mcp-guest
           pnpm --filter cubus-web build:cube
           pnpm --filter cubus-web build:cubejs
           # cubing.js and search-worker-entry.js are gitignored rather than committed, so they
@@ -51,14 +56,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Tauri's Linux backend (webkit2gtk / appindicator / rsvg). The bluez and dbus packages the
-      # BLE bridge needed are gone with it.
+      # Tauri's Linux backend (webkit2gtk / appindicator / rsvg), plus dbus for btleplug — the
+      # BLE bridge is back (2026-08-27, recovered from v0 for the smart-cube return).
       - name: Install Linux system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev pkg-config
+            librsvg2-dev libdbus-1-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
         with:

@@ -4,4 +4,4 @@
 # the smart-cube support (see the v0 branch).
 [workspace]
 resolver = "2"
-members = ["apps/desktop/src-tauri", "crates/cube-vision"]
+members = ["apps/desktop/src-tauri", "crates/cube-vision", "crates/gan-ble"]
