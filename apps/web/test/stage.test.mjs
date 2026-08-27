@@ -87,7 +87,8 @@ test('the constants are frozen: a screen cannot retune the window by assignment'
 // ---- the document's fixture table -------------------------------------------------------------
 
 // Per device: the OS insets the table was computed with. The document states them in prose above
-// the table; the bars are 44 on top in both orientations and 49 at the bottom in portrait only.
+// the table; every device here is a touch device, so the top bar is the 52px one (44px controls
+// need it), and the bottom tab bar is 49 in portrait only.
 const FIXTURES = [
   { row: 'iPad 13" landscape', insets: { top: 24, bottom: 26 } },
   { row: 'iPad 11" landscape', insets: { top: 24, bottom: 26 } },
@@ -107,7 +108,7 @@ for (const { row, insets } of FIXTURES) {
     assert.equal(rows.length, 1, `expected exactly one table row starting with "| ${row}"`);
     const [client, safeCell, compositionCell, tailCell] = rows[0];
     const [width, height] = size(client);
-    const bars = width >= height ? { top: 44 } : { top: 44, bottom: 49 };
+    const bars = width >= height ? { top: 52 } : { top: 52, bottom: 49 };
     const r = fitStage({ width, height, insets, bars });
 
     assert.deepEqual([r.safe.w, r.safe.h], size(safeCell), `safe content area for ${client}`);
