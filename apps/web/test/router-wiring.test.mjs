@@ -708,8 +708,11 @@ test('the toolbar is one flat row of tabs, with Settings as its own button', asy
   ]);
   assert.equal(win.document.querySelector('#nav .nav-group'), null, 'no grouping wrapper');
   assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'no SOLVE / PRACTICE / LEARN');
-  // Every child of #nav is a page button — nothing else lives in there now.
-  const kinds = [...win.document.querySelector('#nav').children].map((el) => el.tagName);
+  // #nav holds one capsule (the segmented control's pill; the nav itself is the box the
+  // stylesheet floats over the bar or lays at the foot of the window), and every child of the
+  // capsule is a page button — nothing else lives in there.
+  assert.deepEqual([...win.document.querySelector('#nav').children].map((el) => el.className), ['capsule']);
+  const kinds = [...win.document.querySelector('#nav .capsule').children].map((el) => el.tagName);
   assert.deepEqual([...new Set(kinds)], ['BUTTON']);
   // Settings: in the trailing zone, not in the row, and it navigates.
   const gear = win.document.querySelector('#tbTrail [data-nav="settings"]');

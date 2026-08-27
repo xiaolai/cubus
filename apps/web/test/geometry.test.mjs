@@ -6,13 +6,16 @@
 // to each fixture with the fixture's OS insets standing in through `?insets=`, and measures:
 //
 //   - .app pads itself by exactly the insets — the page runs under the notch, the app does not;
-//   - .stage is the safe area less the title bar, edge to edge;
+//   - .stage is the safe area less the app's bars, edge to edge;
 //   - --ref-w/--ref-h resolve to the reference box the oracle (lib/stage.js) computes for the
 //     stage's content box — 4:3 on a landscape stage, 3:4 on a portrait one;
+//   - the chrome: tabs over the title bar's centre in landscape, clear of its outer zones; a
+//     bottom bar in portrait that the stage stops above;
+//   - on a coarse pointer (a finger), a 52px bar and every control at 44px or more;
+//   - the cube screen's three regions, in both compositions;
 //   - a popover opened on the stage is clamped inside it.
 //
 // It fails loudly without the browser: `pnpm exec playwright install webkit` (CI does this).
-// Screens' own regions are step 3 of the contract's order and are asserted there, not here.
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -52,73 +55,120 @@ after(async () => {
 // [top, right, bottom, left] insets are the OS's: status bar / Dynamic Island / home indicator.
 // The desktop windows are what the contract's formulas give for a 13" Air (stage 840×630 and
 // 574×765) plus the 52px title bar the Mac draws in WebKit — detectPlatform() reads the engine,
-// and headless WebKit reports as macOS. The other engines' bar is read back, not assumed.
+// and headless WebKit reports as macOS. `touch` runs the fixture with a coarse pointer, which is
+// what a real iPad or phone is; the same size without it is a desktop window of that shape.
 const FIXTURES = [
   { name: 'desktop landscape window', width: 840, height: 682, insets: [0, 0, 0, 0] },
   { name: 'desktop portrait window', width: 574, height: 817, insets: [0, 0, 0, 0] },
-  { name: 'iPhone 16', width: 393, height: 852, insets: [59, 0, 34, 0] },
-  { name: 'iPhone SE', width: 375, height: 667, insets: [20, 0, 0, 0] },
-  { name: 'iPad 11" landscape', width: 1180, height: 820, insets: [24, 0, 26, 0] },
-  { name: 'iPad 11" portrait', width: 820, height: 1180, insets: [24, 0, 26, 0] },
-  { name: 'iPad Split View column', width: 320, height: 1100, insets: [24, 0, 26, 0] },
+  { name: 'iPhone 16', width: 393, height: 852, insets: [59, 0, 34, 0], touch: true },
+  { name: 'iPhone SE', width: 375, height: 667, insets: [20, 0, 0, 0], touch: true },
+  { name: 'iPad 11" landscape', width: 1180, height: 820, insets: [24, 0, 26, 0], touch: true },
+  { name: 'iPad 11" portrait', width: 820, height: 1180, insets: [24, 0, 26, 0], touch: true },
+  { name: 'iPad 11" landscape, mouse', width: 1180, height: 820, insets: [24, 0, 26, 0] },
+  { name: 'iPad Split View column', width: 320, height: 1100, insets: [24, 0, 26, 0], touch: true },
 ];
 
 const near = (a, b, what, tol = 1) => assert.ok(Math.abs(a - b) <= tol, `${what}: ${a} vs ${b} (±${tol})`);
+const label = (f) => `${f.name} (${f.width}×${f.height}, insets ${f.insets.join('/')}${f.touch ? ', touch' : ''})`;
 
-async function open({ width, height, insets }) {
-  const context = await browser.newContext({ viewport: { width, height } });
+async function open(fixture, route = 'home') {
+  const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e));
-  await page.goto(`${BASE}/?insets=${insets.join(',')}#/home`);
+  await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${route}`);
   await page.waitForSelector('.screen.active', { timeout: 10_000 });
   return { page, context, errors };
 }
 
-/** Everything the assertions need, read in one round trip. The probe is a throwaway element sized
- *  by the reference-box properties: custom properties only resolve when something uses them. */
+/** A DOMRect as plain numbers. Inlined into page.evaluate source below, so keep it self-contained. */
+const rect = (el) => {
+  const b = el.getBoundingClientRect();
+  return { top: b.top, right: b.right, bottom: b.bottom, left: b.left, width: b.width, height: b.height };
+};
+
+/** Everything the foundation assertions need, read in one round trip. The probe is a throwaway
+ *  element sized by the reference-box properties: custom properties only resolve when used. */
 const measure = (page) =>
-  page.evaluate(() => {
+  page.evaluate(`(() => {
+    const rect = ${rect.toString()};
     const px = (v) => Number.parseFloat(v);
-    const app = document.querySelector('.app');
-    const stage = document.getElementById('stage');
-    const screen = document.querySelector('.screen.active');
+    const $ = (s) => document.querySelector(s);
+    const app = $('.app');
+    const stage = $('#stage');
+    const screen = $('.screen.active');
     const probe = document.createElement('div');
     probe.style.cssText = 'position:absolute;visibility:hidden;width:var(--ref-w);height:var(--ref-h)';
     screen.appendChild(probe);
-    const p = probe.getBoundingClientRect();
+    const p = rect(probe);
     probe.remove();
-    const s = stage.getBoundingClientRect();
     const cs = getComputedStyle(stage);
     const a = getComputedStyle(app);
+    const nav = $('#nav');
+    const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
     return {
       viewport: { w: innerWidth, h: innerHeight },
       supports: CSS.supports('width', '1cqw') && CSS.supports('container-type', 'size'),
+      coarse: matchMedia('(pointer: coarse)').matches,
+      platform: document.documentElement.dataset.platform,
       appPad: [a.paddingTop, a.paddingRight, a.paddingBottom, a.paddingLeft].map(px),
       titlebar: px(getComputedStyle(document.documentElement).getPropertyValue('--titlebar-h')),
-      stage: { top: s.top, right: s.right, bottom: s.bottom, left: s.left, width: s.width, height: s.height },
+      stage: rect(stage),
       stagePad: [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(px),
       ref: { w: p.width, h: p.height },
+      nav: { position: getComputedStyle(nav).position, compact: nav.classList.contains('compact'), ...rect(nav) },
+      lead: rect($('#tbLead')), trail: rect($('#tbTrail')), bar: rect($('#titlebar')),
+      tabs: [...nav.querySelectorAll('.nav-item')].map(rect),
+      // The toggle is excluded: its 44px hit area is a ::before, which no rect reports.
+      controls: [...document.querySelectorAll('button, .chip-m, .pill')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
     };
-  });
+  })()`);
 
 for (const fixture of FIXTURES) {
-  test(`geometry: ${fixture.name} (${fixture.width}×${fixture.height}, insets ${fixture.insets.join('/')})`, async () => {
+  test(`geometry: ${label(fixture)}`, async () => {
     const { page, context, errors } = await open(fixture);
     try {
       const m = await measure(page);
       assert.ok(m.supports, 'this WebKit has no container-query units — the floor the contract declares');
       assert.deepEqual(errors.map(String), [], 'the page threw');
       assert.deepEqual(m.viewport, { w: fixture.width, h: fixture.height });
+      assert.equal(m.coarse, fixture.touch === true, 'the pointer the engine reports is not the one the fixture asked for');
 
       const [t, r, b, l] = fixture.insets;
       assert.deepEqual(m.appPad, [t, r, b, l], '.app padding is not the insets');
+      const portrait = fixture.height - t - b > fixture.width - l - r;
 
-      // The stage: the safe area, less the title bar, edge to edge.
+      // The chrome. Landscape: the tabs float over the bar's centre, clear of both outer zones
+      // (compact if that is what it took). Portrait: a bottom bar, in flow, above the inset.
+      if (portrait) {
+        assert.equal(m.nav.position, 'static', 'portrait: the tab row is in flow');
+        near(m.nav.bottom, fixture.height - b, 'portrait: tab bar sits on the bottom inset');
+        near(m.nav.left, l, 'portrait: tab bar spans from the left inset');
+        near(m.nav.right, fixture.width - r, 'portrait: tab bar spans to the right inset');
+        assert.ok(!m.nav.compact, 'portrait: labels always fit under the icons');
+      } else {
+        assert.equal(m.nav.position, 'absolute', 'landscape: the tab row floats over the bar');
+        assert.ok(m.nav.top >= m.bar.top - 0.5 && m.nav.bottom <= m.bar.bottom + 0.5, `landscape: tabs ${JSON.stringify(m.nav)} outside the bar ${JSON.stringify(m.bar)}`);
+        assert.ok(m.nav.left >= m.lead.right - 0.5, `landscape: tabs collide with the lead zone (${m.nav.left} < ${m.lead.right})`);
+        assert.ok(m.nav.right <= m.trail.left + 0.5, `landscape: tabs collide with the trail zone (${m.nav.right} > ${m.trail.left})`);
+        near((m.nav.left + m.nav.right) / 2, (m.bar.left + m.bar.right) / 2, 'landscape: tabs on the bar\'s centre line', 1.5);
+      }
+      for (const tab of m.tabs) assert.ok(tab.width > 0 && tab.height > 0, 'a tab has no size');
+
+      // A finger: the 52px bar, a phone/tablet platform (no traffic lights), 44px controls.
+      if (fixture.touch) {
+        assert.equal(m.titlebar, 52, 'touch: the bar is 52');
+        assert.ok(['ios', 'android'].includes(m.platform), `touch: platform ${m.platform} draws desktop chrome`);
+        const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
+        assert.deepEqual(small, [], 'touch: controls under 44px');
+      }
+
+      // The stage: the safe area, less the bar (and the tab bar in portrait), edge to edge.
+      const tabbar = m.nav.position === 'static' ? m.nav.height : 0;
       near(m.stage.left, l, 'stage left');
       near(m.stage.right, fixture.width - r, 'stage right');
       near(m.stage.top, t + m.titlebar, 'stage top');
-      near(m.stage.bottom, fixture.height - b, 'stage bottom');
+      near(m.stage.bottom, fixture.height - b - tabbar, 'stage bottom');
 
       // The reference box, fit to the stage's CONTENT box: container units measure that.
       const [pt, pr, pb, pl] = m.stagePad;
@@ -138,11 +188,6 @@ for (const fixture of FIXTURES) {
 // Scramble rather than Home: a fresh app's cube is solved, so Home walks an empty solution; the
 // scramble screen rolls one and fills the sheet with chips, which is the state the regions have
 // to hold. One DOM, two compositions: beside the cube in landscape, under it in portrait.
-
-const rect = (el) => {
-  const b = el.getBoundingClientRect();
-  return { top: b.top, right: b.right, bottom: b.bottom, left: b.left, width: b.width, height: b.height };
-};
 
 // Evaluated from source text: `rect` must exist inside the page, so its definition is inlined.
 const measureCube = (page) =>
@@ -180,12 +225,9 @@ const measureCube = (page) =>
   })()`);
 
 for (const fixture of FIXTURES) {
-  test(`cube screen composition: ${fixture.name}`, async () => {
-    const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height } });
-    const page = await context.newPage();
+  test(`cube screen composition: ${label(fixture)}`, async () => {
+    const { page, context } = await open(fixture, 'scramble');
     try {
-      await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/scramble`);
-      await page.waitForSelector('.screen.active', { timeout: 10_000 });
       await page.click('#randCube');
       await page.waitForSelector('.chip-m', { timeout: 15_000 });
       const m = await measureCube(page);
@@ -221,8 +263,8 @@ for (const fixture of FIXTURES) {
         assert.ok(m.state.top < m.solution.top, 'landscape: the net comes before the solution');
       }
 
-      // One transport line at and above the contract's portrait floor (375 wide); a narrower
-      // column may wrap the bar. Never a row wider than its card.
+      // One transport line at and above the contract's portrait floor (375 wide), mouse or finger;
+      // a narrower column may wrap the bar. Never a row wider than its card.
       assert.ok(m.transport.scroll <= m.transport.client + 1, 'the transport overflows its card');
       // Centres, not tops: a 38px button and a 20px label share a centre line, not a top edge.
       const mid = (r) => r.top + r.height / 2;
@@ -247,11 +289,11 @@ test('a popover opened on the stage stays inside it', async () => {
   const { page, context } = await open(FIXTURES[0]);
   try {
     await page.click('#speedBtn');
-    const boxes = await page.evaluate(() => {
-      const r = (el) => { const b = el.getBoundingClientRect(); return { top: b.top, right: b.right, bottom: b.bottom, left: b.left }; };
+    const boxes = await page.evaluate(`(() => {
+      const rect = ${rect.toString()};
       const menu = document.querySelector('.menu:not([hidden])');
-      return { menu: menu && r(menu), stage: r(document.getElementById('stage')), position: menu && getComputedStyle(menu).position };
-    });
+      return { menu: menu && rect(menu), stage: rect(document.getElementById('stage')), position: menu && getComputedStyle(menu).position };
+    })()`);
     assert.ok(boxes.menu, 'the speed menu did not open');
     assert.equal(boxes.position, 'absolute');
     assert.ok(boxes.menu.left >= boxes.stage.left && boxes.menu.right <= boxes.stage.right, `menu ${JSON.stringify(boxes.menu)} leaves the stage horizontally ${JSON.stringify(boxes.stage)}`);

@@ -391,12 +391,20 @@ const isTauri = typeof window.__TAURI__ !== 'undefined';
 function detectPlatform() {
   try {
     const q = new URLSearchParams(window.location.search).get('platform');
-    if (q === 'macos' || q === 'windows' || q === 'linux') { localStorage.setItem('cubus.platform', q); return q; }
+    if (['macos', 'windows', 'linux', 'ios', 'android'].includes(q)) { localStorage.setItem('cubus.platform', q); return q; }
     if (q === 'auto') localStorage.removeItem('cubus.platform');
     const s = localStorage.getItem('cubus.platform'); if (s) return s;
   } catch {}
   const ua = navigator.userAgent;
-  if (/Mac|iPhone|iPad|iPod/.test(ua)) return 'macos';
+  // iPadOS calls itself a Mac; a finger gives it away — the touch points (5 on a real iPad), or a
+  // coarse pointer (what a touch-emulating WebKit reports, with no touch points at all). No Mac
+  // has either. A phone or tablet gets plain bars: no traffic-light gap, no caption buttons —
+  // there is no window to drive.
+  // globalThis, guarded: the test harness has no matchMedia, and no finger either.
+  const finger = navigator.maxTouchPoints > 0 || globalThis.matchMedia?.('(any-pointer: coarse)').matches === true;
+  if (/iPhone|iPad|iPod/.test(ua) || (/Mac/.test(ua) && finger)) return 'ios';
+  if (/Android/.test(ua)) return 'android';
+  if (/Mac/.test(ua)) return 'macos';
   if (/Win/.test(ua)) return 'windows';
   return 'linux';
 }
@@ -449,11 +457,13 @@ function buildChrome(platform) {
     trail.innerHTML = cubeLive + gear;
   } else {
     const round = platform === 'linux';
+    // Caption buttons only where there is an undecorated window to drive: Windows and Linux.
+    const captions = (platform === 'windows' || platform === 'linux') && (isTauri || preview);
     lead.innerHTML = brand;
-    trail.innerHTML = cubeLive + gear + ((isTauri || preview)
+    trail.innerHTML = cubeLive + gear + (captions
       ? `<span class="tb-zone tb-caption ${platform}">${cap('minus', 'min', round) + cap('square', 'max', round) + cap('x', 'close', round)}</span>`
       : '');
-    wireWindowButtons(trail);
+    if (captions) wireWindowButtons(trail);
   }
   // All of them: the gear AND the cube-live indicator both land on Settings.
   for (const b of trail.querySelectorAll('[data-nav="settings"]')) b.onclick = () => go('settings');
@@ -2503,10 +2513,29 @@ function installAdvancedShortcut() {
 
 function renderNav() {
   const items = NAV.filter(([id]) => !navHidden(id));
-  $('#nav').innerHTML = items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span><span class="lbl">${t(lbl)}</span></button>`).join('');
+  // The capsule is the segmented control's pill; the nav around it is the positioned box the
+  // stylesheet floats over the title bar (landscape) or lays at the foot of the window (portrait).
+  $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span><span class="lbl">${t(lbl)}</span></button>`).join('')}</div>`;
   for (const b of $('#nav').querySelectorAll('[data-nav]')) b.onclick = () => go(b.dataset.nav);
   // Settings sits outside the row (buildChrome draws it), so it is marked here, not by the template.
   $('#tbTrail [data-nav="settings"]')?.classList.toggle('active', state.screen === 'settings');
+  fitTabs();
+}
+
+/** Labels when the labelled row fits between the bar's outer zones, icons only when it does not.
+ *  Measured, not thresholded: whether six labelled tabs fit a title bar depends on the tabs, the
+ *  language and the platform's lead zone, none of which a width can know. Landscape only — the
+ *  portrait tab bar (the stylesheet lays the row in flow there) has room for a word under every
+ *  icon. Re-run by renderNav and whenever the bar resizes. */
+function fitTabs() {
+  const nav = $('#nav'), bar = $('#titlebar');
+  if (!nav || !bar || bar.clientWidth === 0) return; // not laid out (the test harness has no layout)
+  nav.classList.remove('compact');
+  if (getComputedStyle(nav).position !== 'absolute') return; // the portrait bar
+  // Centred on the bar, the row needs symmetric room: the wider of the two zones on both sides.
+  const zone = Math.max($('#tbLead').offsetWidth, $('#tbTrail').offsetWidth) + 12; // + the bar's padding
+  const room = bar.clientWidth - 2 * zone - 8;
+  if (nav.scrollWidth > room) nav.classList.add('compact');
 }
 function renderScreen() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
@@ -2613,6 +2642,8 @@ async function boot() {
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
   buildChrome(platform);
+  // The tab row refits when the bar's width changes — a window resize, an orientation change.
+  if (typeof ResizeObserver === 'function') new ResizeObserver(fitTabs).observe($('#titlebar'));
   installAdvancedShortcut();
   installExternalLinks();
   // '' = follow the browser/OS language. No-op until a catalog is registered; the picker arrives
