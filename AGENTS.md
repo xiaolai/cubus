@@ -13,6 +13,28 @@ it walks you through solving it.
   `apps/web/`, and the Tauri desktop app at `apps/desktop/` — which is `apps/web` in a native
   window and nothing more. Its Rust side is a shell: no commands, because a command would mean the
   web build and the desktop build had stopped being the same app.
+  - **The one deliberate exception, accepted 2026-08-26**: native camera capture and native model
+    inference (CoreML/Vision on Apple, LiteRT/TFLite on Android; the browser keeps `getUserMedia` +
+    onnxruntime-web). These are Tauri plugins, so they ARE commands — but each sits behind a seam
+    the browser build also implements (a `RawFrame` source; an injected model run), so the two
+    builds stay the same app in behaviour while one gets native acceleration and cameras the webview
+    cannot reach. That is the line: a capability seam both builds satisfy is allowed; a screen that
+    only exists on one build is not. The plan, the artefacts per platform, and the checks that must
+    pass before the native work starts are in `dev-docs/native-capture-and-inference.md`.
+  - **Second seam, accepted 2026-08-27**: `tauri-plugin-opener`, for external links only (the
+    About card's website/author anchors). A webview does nothing with `target="_blank"`, so a
+    delegated click handler in `app.js` hands the URL to `__TAURI__.opener.openUrl` when that API
+    is injected; in the browser the same anchors work natively. Same test as above: both builds
+    satisfy the seam, neither gains a screen.
+  - **Dev tooling, accepted 2026-08-27, never shipped**: `tauri-plugin-mcp` (git dep, pinned rev)
+    — the control socket that lets an AI agent drive the app for verification: screenshots,
+    selector clicks, DOM queries, JS eval. Triple-gated because it is control-everything: the
+    `mcp` cargo feature (`pnpm dev` passes it, `tauri build` does not, so release binaries never
+    compile the crate), `debug_assertions`, and a `CUBUS_MCP=1` runtime opt-in. The MCP server
+    side is registered in `.mcp.json` (`tauri-mcp`, pinned npm version); the guest JS is vendored
+    to `apps/web/vendor/tauri-mcp-guest.js` and loaded only under Tauri, inert without the Rust
+    side. To use: `CUBUS_MCP=1 pnpm dev:desktop`, then the `tauri-mcp` MCP tools in a fresh
+    agent session.
 - **No smart-cube support, deliberately.** A verified GAN16 BLE driver and a Rust bridge were
   built, shipped and then removed. They worked; the problem was that a cube adds an axis — present
   or absent, trusted or not — and every screen has to answer it. For this audience that axis is
@@ -23,7 +45,9 @@ it walks you through solving it.
   `dev-docs/design/README.md` before any `apps/web` UI work. Adopted into the app:
   `apps/web/tokens.css` (warm-paper tokens, light/dark) and `<cubus-cube>` (a purpose-built
   three.js renderer that replaced twisty-player; draws only — state/solving stay with
-  cubejs + cubing.js). Numerals/times/algs use Zilla Slab; UI text Alegreya Sans.
+  cubejs + cubing.js). Fonts are system stacks only (decided 2026-08-27): numerals/times/algs use
+  the system mono stack, UI text `system-ui` — no web fonts, no embedded fonts, and index.html
+  loads nothing remote (a test enforces it).
 - **Verification is the contract**: a claim in a comment or a doc must be backed by a test that
   fails when the claim stops being true. The habit that mattered most on the driver — assert what
   must NOT happen, not only what should — applies just as well to a scan and a solve.
