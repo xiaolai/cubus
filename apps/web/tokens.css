@@ -49,6 +49,10 @@
   --ok:            #4E8C6A;
   --warn:          #C87A3C;
   --err:           #B8503F;
+  /* Ink ON an accent or status fill (the paint-mode button, the done mark). Pure white in every
+   * theme — the fills themselves lift in night — and distinct from the invert pair, which is for
+   * inverted SURFACES, not saturated fills. */
+  --on-accent:     #FFFFFF;
 
   /* ---- camera / AR surfaces ------------------------------------------ */
   --lens:          #17150F;
@@ -117,6 +121,20 @@
   --fade:       .15s;
   --turn-ms:    190ms;  /* one quarter turn at tempo 1 */
   --pulse:      2.4s;
+  --pulse-alert: 1.1s;  /* the urgent sibling of --pulse: a suspect sticker asking for a look */
+
+  /* ---- stickers (drawn cube UI, not controls) --------------------------
+   * A drawn sticker — the 2D net's, the scan grid's — is puzzle UI, not a
+   * control: it keeps its own corner (smaller than --r-2 on purpose; the
+   * control radii read clunky at sticker size) and one shared edge hairline.
+   * The hairline exists because white is the one facelet colour that shares a
+   * value with the warm paper behind it: without an edge it reads as a hole.
+   * Theme-invariant like the sticker colours themselves (cubus-cube PALETTES),
+   * which do not flip with the theme either. The swatch picker's chips wear
+   * the same edge but the CONTROL radius (--r-3): they are buttons offering a
+   * sticker colour, not stickers. */
+  --sticker-edge: rgba(0,0,0,.28);
+  --r-sticker:    3px;
 
   /* ---- window chrome, per platform ------------------------------------
    * WINDOW_RADIUS on macOS is MEASURED off a Tauri window and is not
