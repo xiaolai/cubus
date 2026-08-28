@@ -94,6 +94,11 @@ test('go() moves the URL as well as the screen', async () => {
   await tick();
   assert.equal(win.location.hash, '#/settings', 'URL must follow the screen');
   assert.equal(activeNav(), 'settings');
+  // The gear itself — the one control a user can see. The smart-cube indicator beside it shares
+  // data-nav="settings" and comes first, and for as long as the marker was matched on data-nav
+  // it landed on that hidden button, so the bar never showed where you were on Settings.
+  assert.ok(win.document.querySelector('#tbTrail [aria-label="Settings"]').classList.contains('active'), 'the visible gear is marked current');
+  assert.ok(!win.document.querySelector('#cubeLive').classList.contains('active'), 'the hidden indicator is not');
 });
 
 test('an unknown hash falls back to home rather than rendering nothing', async () => {
@@ -174,12 +179,29 @@ test('the cube screen applies every saved view setting, not just the ones it sho
   );
 });
 
+/** Give Home something to walk. A solved cube is a cube to look at, not a walk (tested further
+ *  down), so a test that wants the transport, the move list or the speed menu first makes the
+ *  subject a scrambled one — a generated cube, the way the dev die and the Scramble hand-off do
+ *  it without a camera. Waits for the solver first: it is what decides whether a cube is
+ *  solvable at all, and without it Home has nothing to say either way. */
+const scrambledHome = async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/scramble';
+  await tick();
+  assert.ok(await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0), 'no solver');
+  const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+  const c = new Cube();
+  c.move("R U R' U' F2 D L2 B' R2 U2");
+  Object.assign(state.cube, { facelets: c.asString(), derived: false, setupAlg: '', solution: '', moves: [], stepFacelets: [], isPhysical: false, source: 'generated' });
+  win.location.hash = '#/home';
+  await tick();
+};
+
 // The cube card carries the cube and one corner tool, and the transport is one row: four buttons,
 // the progress bar, the pacing toggle if a cube is connected, and the step count. Everything else
 // that used to sit there said something the chips, the animation or the nav were already saying.
 test('the cube screen is the cube, one transport row, and nothing else', async () => {
-  win.location.hash = '#/home';
-  await tick();
+  await scrambledHome();
   // The cube card is the composition's `primary` region, a direct child of the grid.
   const cubeCard = win.document.querySelector('#stage .cols > .card.primary');
   // One tool over the cube, in the corner: the speed menu. Nothing else draws on top of it.
@@ -251,10 +273,7 @@ test('navigating onto the current screen still re-renders', async () => {
 // Speed went from a fixed constant to a three-way choice in the cube card's corner. The wiring sits
 // ahead of the solve on purpose, so it is live even here, where there is no solver to reach.
 test('the speed menu offers three speeds, defaults to normal, and drives the renderer', async () => {
-  win.location.hash = '#/timer';
-  await tick();
-  win.location.hash = '#/home';
-  await tick();
+  await scrambledHome();
 
   const opts = [...win.document.querySelectorAll('.menu [data-speed]')];
   assert.deepEqual(opts.map((b) => b.dataset.speed), ['slow', 'normal', 'fast']);
@@ -294,10 +313,7 @@ test('the speed menu offers three speeds, defaults to normal, and drives the ren
 test('a junk saved speed falls back to the default instead of being trusted', async () => {
   win.localStorage.setItem('walkSpeed', JSON.stringify({ id: 'ludicrous' }));
   try {
-    win.location.hash = '#/timer';
-    await tick();
-    win.location.hash = '#/home';
-    await tick();
+    await scrambledHome();
     const cube = win.document.querySelector('#viewCube > cubus-cube');
     assert.equal(cube.getAttribute('tempo-scale'), '0.1', 'unknown id must not become a tempo');
   } finally {
@@ -308,10 +324,7 @@ test('a junk saved speed falls back to the default instead of being trusted', as
 // The state card names what it shows and carries one tool. The raw 54-character facelet string it
 // used to print said nothing the net beside it was not already showing in colour.
 test('the state card is the net plus a dice, and says which state it is', async () => {
-  win.location.hash = '#/timer';
-  await tick();
-  win.location.hash = '#/home';
-  await tick();
+  await scrambledHome();
 
   // The state card leads the aside — the arrangement you are looking at, above the moves that
   // change it — and the move list follows.
@@ -441,10 +454,35 @@ test('scramble starts solved and lands exactly where the net says', async () => 
 });
 
 test('solve mode still names its own end of the walk', async () => {
-  win.location.hash = '#/home';
-  await tick();
+  await scrambledHome();
   assert.equal(win.document.querySelector('.aside .eyebrow-row .state-h').textContent, 'Initial State');
   assert.equal(win.document.querySelector('.card-h b').textContent, 'Solution');
+});
+
+// A solved cube has nothing to walk. cubejs's search answers the identity with a fourteen-move
+// no-op rather than an empty string, and "the solver returned moves" used to be the whole test of
+// whether there was a solution — so every fresh launch, before anyone had scanned anything, drew
+// a transport under the solved cube reading 0 / 0 with its done tick already lit.
+test('a solved cube on Home is a cube to look at, not a walk of zero moves', async () => {
+  const { state } = await import('../lib/app.js');
+  const prev = { ...state.cube };
+  try {
+    // Wait for the solver: the bug only exists once there is one to ask.
+    win.location.hash = '#/scramble';
+    await tick();
+    assert.ok(await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0), 'no solver');
+    Object.assign(state.cube, { facelets: SOLVED_FACELETS, derived: false, setupAlg: '', solution: '', moves: [], stepFacelets: [] });
+    win.location.hash = '#/home';
+    await tick();
+    assert.equal(state.cube.solvable, false, 'a solved cube is not "solvable"');
+    assert.equal(state.cube.setupAlg, '', 'and needs no setup to reach itself');
+    assert.ok(!win.document.querySelector('.cols').classList.contains('walking'), 'Home does not walk it');
+    assert.equal(win.document.querySelector('.transport'), null, 'no transport');
+    assert.equal(win.document.querySelector('#solList'), null, 'no solution list');
+    assert.equal(win.document.querySelector('#speedBtn'), null, 'no speed for an animation that does not exist');
+    const net = [...win.document.querySelectorAll('#viewNet .sticker')].map((e) => e.className.split(' ')[1]).join('');
+    assert.equal(net, SOLVED_FACELETS, 'the net shows the solved cube');
+  } finally { Object.assign(state.cube, prev); }
 });
 
 // An async mount outliving its screen is invisible until it writes: cubeScreen awaits a solver
@@ -661,8 +699,7 @@ test('showing an entry adds it to the toolbar, hiding removes it, and the rest i
 // nav entry pointing at a screen that no longer exists, or pairing controls that render but were
 // never wired because their mount stayed behind on the deleted screen.
 test('Home is the cube screen, not a separate landing page', async () => {
-  win.location.hash = '#/home';
-  await tick();
+  await scrambledHome();
   assert.ok(win.document.querySelector('#viewCube'), 'Home renders the cube');
   assert.ok(win.document.querySelector('.transport'), 'and its transport');
   assert.ok(!win.document.querySelector('#scanCta'), 'the old landing-page call to action is gone');
@@ -750,8 +787,10 @@ test('the toolbar is one flat row of tabs, with Settings as its own button', asy
   assert.deepEqual([...win.document.querySelector('#nav').children].map((el) => el.className), ['capsule']);
   const kinds = [...win.document.querySelector('#nav .capsule').children].map((el) => el.tagName);
   assert.deepEqual([...new Set(kinds)], ['BUTTON']);
-  // Settings: in the trailing zone, not in the row, and it navigates.
-  const gear = win.document.querySelector('#tbTrail [data-nav="settings"]');
+  // Settings: in the trailing zone, not in the row, and it navigates. By its label — the hidden
+  // smart-cube indicator beside it also carries data-nav="settings", and a data-nav match
+  // handed this test the indicator under the name "gear".
+  const gear = win.document.querySelector('#tbTrail [aria-label="Settings"]');
   assert.ok(gear, 'Settings is the trailing toolbar button');
   assert.equal(win.document.querySelector('#nav [data-nav="settings"]'), null, 'and not a tab');
   gear.click();

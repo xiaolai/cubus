@@ -280,7 +280,13 @@ function deriveCube() {
   }
   c.derived = true;
   try {
-    const sol = Cube.fromString(c.facelets).solve();
+    const cube = Cube.fromString(c.facelets);
+    // A solved cube has no walk. Asked for one anyway, cubejs's two-phase search answers the
+    // identity with a 14-move no-op ("R L U2 R L F2 R2 U2 R2 F2 R2 U2 F2 L2"), so "the solver
+    // returned moves" is not evidence of anything to follow — every fresh launch put a transport
+    // under the solved cube reading 0 / 0, its done tick already lit.
+    if (cube.isSolved()) { c.setupAlg = ''; c.solvable = false; return c; }
+    const sol = cube.solve();
     const moves = sol.trim() ? sol.trim().split(/\s+/) : [];
     c.setupAlg = moves.slice().reverse().map(invMove).join(' ');
     c.solvable = moves.length > 0;
@@ -328,17 +334,6 @@ async function solve() {
   }
   c.solution = solution; c.moves = moves; c.stepFacelets = sf;
   return solution;
-}
-
-// Rough CFOP stage split of a min2phase solution for display chunking (proportional, not exact
-// CFOP — min2phase is two-phase, so this is a readable approximation labelled as such).
-function stageSplit(n) {
-  if (!n) return [];
-  const cut = [Math.round(n * 0.16), Math.round(n * 0.62), Math.round(n * 0.82), n];
-  const names = ['CROSS', 'F2L', 'OLL', 'PLL'];
-  const out = []; let a = 0;
-  for (let i = 0; i < 4; i++) { const b = cut[i]; if (b > a) out.push([names[i], a, b]); a = b; }
-  return out;
 }
 
 // ---- cube element helpers --------------------------------------------------------------------
@@ -978,9 +973,11 @@ SCREENS.scan = () => {
   // What to call the aside while the scanner is speaking, so "How it works" never heads an error.
   const SAY_TITLE = { error: 'Camera trouble', confirm: 'One more look', checking: 'Checking', done: 'Scanned' };
   // --primary-share 0.66, not the default 0.58: the net wants the room, and the sheet is a cube
-  // twin and a paragraph. Portrait shows one face large (see .scan-faces in index.html).
+  // twin and a paragraph. `twin-low`: in portrait the twin sits beside the sheet, not beside the
+  // cross — the cross is the same cross in both windows and wants the width (index.html). Only a
+  // finger's portrait shows one face large over a strip (.scan-faces under pointer: coarse).
   return {
-    html: `<div class="cols" style="--primary-share:0.66">
+    html: `<div class="cols twin-low" style="--primary-share:0.66">
     <div class="col">
       <div class="card scanboard">
         <ai-scan-panel headless autostart></ai-scan-panel>
@@ -994,12 +991,14 @@ SCREENS.scan = () => {
       </div>
     </div>
     <div class="aside">
-      <div class="card"><div class="eyebrow">DETECTED STATE</div>
-        <div class="cube-slot" id="scanCube" style="height:230px;margin-top:6px"></div></div>
-      <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
-        <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
-        <div class="sub scan-hint" id="scanHint" hidden></div></div>
-      <button class="btn primary block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
+      <div class="card twin"><div class="eyebrow">DETECTED STATE</div>
+        <div class="cube-slot" id="scanCube"></div></div>
+      <div class="sheet scan-sheet">
+        <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
+          <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
+          <div class="sub scan-hint" id="scanHint" hidden></div></div>
+        <button class="btn primary block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
+      </div>
     </div></div>`,
     mount(root) {
       // Kept, so a finished scan can update the aside in place. Re-rendering the screen would tear
@@ -1085,11 +1084,12 @@ SCREENS.scan = () => {
       const solveBtn = $('#scanSolveBtn', root);
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
-      // Portrait shows one face large and the other five as a strip (index.html, .scan-faces in
-      // the portrait container query): six 3×3 tiles cannot give a finger 44px stickers in a
-      // phone's width. Which face is large is a policy, because the scanner is orderless and
+      // A finger's portrait shows one face large and the other five as a strip (index.html,
+      // .scan-faces under pointer: coarse): six 3×3 tiles cannot give a finger 44px stickers in
+      // a phone's width. Which face is large is a policy, because the scanner is orderless and
       // reports no "face being seen": the side it asks to see again, else the side it just read,
-      // else the one you tap — F to begin with. In landscape the class is inert.
+      // else the one you tap — F to begin with. With a mouse, in either window, the class is
+      // inert and the six tiles are the cross.
       const faces = $('.scan-faces', root);
       const setFocus = (f) => { for (const tile of tiles) tile.classList.toggle('focus', tile.dataset.face === f); };
       // Guarded: the test harness lays nothing out and has no getComputedStyle global.
@@ -1466,9 +1466,11 @@ const cubeScreen = (screenMode) => {
     ['camLat', 'camera-latitude'], ['camLon', 'camera-longitude'],
     ['facScale', 'facelet-scale'],
   ];
-  // Three regions of the layout contract's grid (index.html, ".cols"): the cube card is
-  // `primary`, the transport card `aux`, and the aside the `sheet`. Landscape sets the sheet
-  // beside the cube, portrait below it; the DOM is the same either way.
+  // Four regions of the layout contract's grid (index.html, ".cols"): the cube card is
+  // `primary`, the transport card `aux`, the state card the `twin` and the solution card the
+  // `sheet` — the last two are the aside's children, which the stylesheet hands to the grid
+  // (display: contents) or keeps as a scrolling column, by composition. The DOM is the same
+  // either way.
   return {
     html: `<div class="cols${walking ? ' walking' : ''}">
       <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
@@ -1493,7 +1495,7 @@ const cubeScreen = (screenMode) => {
         </div>
       </div>` : ''}
     <div class="aside">
-      <div class="card state-card" style="padding-bottom:0">
+      <div class="card state-card twin" style="padding-bottom:0">
         <div class="eyebrow-row"><b class="state-h">${scrambling ? 'Target State' : 'Initial State'}</b>
           ${scrambling || settings.devRandCube
             // On Scramble the die IS the screen's re-roll and always shows. On the solve side it
@@ -1501,11 +1503,12 @@ const cubeScreen = (screenMode) => {
             // hidden unless the Advanced toggle asks for it.
             ? `<button id="randCube" title="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}">${icon('dice', 18)}</button>`
             : ''}</div>
-        <!-- 30px above AND 30px below the net (bottom = aside gap 16 + Solution header pad 14,
-             with this card's own bottom padding zeroed) — the two breathing spaces the eye
-             compares, made equal. -->
-        <div class="net" id="viewNet" style="margin-top:30px"></div></div>
-      ${walking ? `<div class="card tight solution-card">
+        <!-- 30px above AND ~30px below the net in landscape (bottom = grid row gap 18 + the
+             Solution header's 14px pad, with this card's own bottom padding zeroed) — the two
+             breathing spaces the eye compares, made equal. The margin is the stylesheet's
+             (.state-card .net): beside the cube in portrait the net centres instead. -->
+        <div class="net" id="viewNet"></div></div>
+      ${walking ? `<div class="card tight solution-card sheet">
         <div class="card-h bare"><b>${label}</b><span class="sub" id="moveCount">—</span></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="follow-note" id="followNote" hidden>
@@ -1659,15 +1662,13 @@ const cubeScreen = (screenMode) => {
       const total = moves.length;
       cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
       setStatus(String(total)); // just the number — the heading beside it already says what it counts
-      // A scramble has no stages — CROSS/F2L/OLL/PLL are phases of solving, and pinning them on a
-      // scramble would invent structure that is not there. It gets no group heading either: the
-      // card header directly above already says "Scramble" and the move count, and repeating both
-      // an inch lower said nothing twice. The solve side keeps its headings — stage names are
-      // information the card header does not carry.
-      const stages = scrambling ? [['SCRAMBLE', 0, total]] : stageSplit(total);
-      solList.innerHTML = stages.map(([name, a, b]) => `<div style="padding:10px 18px 14px">
-        ${scrambling ? '' : `<div style="display:flex;justify-content:space-between"><span class="eyebrow">${name}</span><span class="num sub">${b - a}</span></div>`}
-        <div class="move-chips" style="margin-top:${scrambling ? '0' : '8px'}">${moves.slice(a, b).map((m, k) => `<button class="chip-m" data-i="${a + k}" title="Jump to this move">${m}</button>`).join('')}</div></div>`).join('');
+      // One grid, no group headings, on both sides of the walk. The solve side used to cut its
+      // list at fixed 16 / 62 / 82% and head the pieces CROSS / F2L / OLL / PLL — proportional
+      // slices of a two-phase solution wearing the names of stages it does not have. That is
+      // invented structure on the screen a beginner trusts most, and a heading per group is what
+      // put the tail of a 20-move solve past the sheet's foot in portrait. The card header already
+      // says what the chips are and how many.
+      solList.innerHTML = `<div style="padding:6px 18px 12px"><div class="move-chips">${moves.map((m, k) => `<button class="chip-m" data-i="${k}" title="Jump to this move">${m}</button>`).join('')}</div></div>`;
       const chips = [...solList.querySelectorAll('.chip-m')];
 
       // ---- Scramble → Solve hand-off ---------------------------------------------------------
@@ -2622,7 +2623,10 @@ function renderNav() {
   $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span><span class="lbl">${t(lbl)}</span></button>`).join('')}</div>`;
   for (const b of $('#nav').querySelectorAll('[data-nav]')) b.onclick = () => go(b.dataset.nav);
   // Settings sits outside the row (buildChrome draws it), so it is marked here, not by the template.
-  $('#tbTrail [data-nav="settings"]')?.classList.toggle('active', state.screen === 'settings');
+  // The GEAR, found by its label: the smart-cube indicator beside it also carries
+  // data-nav="settings" and comes first in the bar, so a data-nav match marked the hidden
+  // indicator and the visible gear never once said "you are here".
+  $('#tbTrail [aria-label="Settings"]')?.classList.toggle('active', state.screen === 'settings');
   fitTabs();
 }
 

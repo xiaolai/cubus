@@ -222,11 +222,15 @@ const measureCube = (page) =>
       share, ref: { w: ref.width, h: ref.height }, content,
       colsGap: px(cs.getPropertyValue('--cols-gap')), rowsGap: px(cs.getPropertyValue('--rows-gap')),
       walking: cols.classList.contains('walking'),
-      cols: rect(cols), primary: rect($('.cols > .primary')), aux: rect($('.cols > .aux')), sheet: rect($('.cols > .aside')),
-      solution: rect($('.solution-card')), state: rect($('.state-card')),
+      cols: rect(cols), primary: rect($('.cols > .primary')), aux: rect($('.cols > .aux')),
+      // The aside is a box only on a finger's portrait, where it scrolls; everywhere else it is
+      // display: contents and its two children are the grid's own twin and sheet.
+      aside: rect($('.cols > .aside')), asideBox: getComputedStyle($('.cols > .aside')).display !== 'contents',
+      sheet: rect($('.cols .sheet')), solution: rect($('.solution-card')), state: rect($('.state-card')), net: rect($('#viewNet')),
+      list: { scroll: $('#solList').scrollHeight, client: $('#solList').clientHeight },
       transport: { first: rect($('#prevBtn')), last: rect($('#stepLbl')), scroll: $('.transport').scrollWidth, client: $('.transport').clientWidth },
       slot: rect($('#viewCube')), canvas: canvas && rect(canvas),
-      chips, overflow: { cols: cols.scrollWidth - cols.clientWidth, doc: document.documentElement.scrollWidth - innerWidth },
+      chips, overflow: { cols: cols.scrollWidth - cols.clientWidth, colsV: cols.scrollHeight - cols.clientHeight, doc: document.documentElement.scrollWidth - innerWidth },
     };
   })()`);
 
@@ -254,19 +258,45 @@ for (const fixture of FIXTURES) {
       if (portrait) near(m.primary.height, m.ref.h * m.share - m.rowsGap / 2, 'portrait: primary height');
       else near(m.primary.width, m.ref.w * m.share - m.colsGap / 2, 'landscape: primary width');
 
-      // aux directly under primary; sheet beside (landscape) or below (portrait), to the box's edge.
+      // aux directly under primary; twin and sheet where each composition puts them.
       assert.ok(m.aux.top >= m.primary.bottom - 1, 'aux is under the primary');
       near(m.aux.left, m.primary.left, 'aux shares the primary\'s left edge');
-      if (portrait) {
-        assert.ok(m.sheet.top >= m.aux.bottom - 1, 'portrait: sheet is under the aux');
-        near(m.sheet.width, m.cols.width, 'portrait: sheet spans the box');
+      if (portrait && fixture.touch) {
+        // A finger's portrait: the aside is a scrolling column under the aux, the moves first
+        // and the net after them at its natural height.
+        assert.ok(m.asideBox, 'touch portrait: the aside is a box');
+        assert.ok(m.aside.top >= m.aux.bottom - 1, 'portrait: sheet is under the aux');
+        near(m.aside.width, m.cols.width, 'portrait: sheet spans the box');
         assert.ok(m.solution.top < m.state.top, 'portrait: the solution comes before the net');
         assert.ok(m.solution.height > 140 + 1 || m.chips.length <= 6, 'portrait: the solution card grew to its chips instead of scrolling inside');
+      } else if (portrait) {
+        // A mouse's portrait: the twin beside the cube, level with it and no taller; the sheet
+        // under both, the full width of the box.
+        assert.ok(!m.asideBox, 'portrait: the aside hands its children to the grid');
+        assert.ok(m.state.left >= m.primary.right + m.colsGap - 1, 'portrait: the twin is beside the cube');
+        near(m.state.top, m.primary.top, 'portrait: the twin is level with the cube');
+        assert.ok(m.state.bottom <= m.primary.bottom + 1, 'portrait: the twin is no taller than the cube');
+        assert.ok(m.sheet.top >= m.aux.bottom - 1, 'portrait: the sheet is under the aux');
+        near(m.sheet.width, m.cols.width, 'portrait: the sheet spans the box');
       } else {
-        assert.ok(m.sheet.left >= m.primary.right + m.colsGap - 1, 'landscape: sheet is beside the primary');
+        // Landscape: the twin tops the column beside the primary, the sheet fills the rest of it.
+        assert.ok(!m.asideBox, 'landscape: the aside hands its children to the grid');
+        assert.ok(m.state.left >= m.primary.right + m.colsGap - 1, 'landscape: the twin is beside the primary');
+        near(m.state.top, m.cols.top, 'landscape: the twin tops the column');
+        assert.ok(m.sheet.top >= m.state.bottom - 1, 'landscape: the sheet is under the twin');
         near(m.sheet.right, m.cols.right, 'landscape: sheet reaches the box\'s right edge');
         near(m.sheet.bottom, m.cols.bottom, 'landscape: sheet reaches the box\'s bottom edge');
-        assert.ok(m.state.top < m.solution.top, 'landscape: the net comes before the solution');
+      }
+      // The net is whole, inside its card, and as wide as the card lets it be (320px, or the
+      // card's content width) — a flex item with auto margins once shrank it to 49px.
+      assert.ok(inside(m.net, m.state), `the net ${JSON.stringify(m.net)} leaves its card ${JSON.stringify(m.state)}`);
+      near(m.net.width, Math.min(320, m.state.width - 36), 'the net fills its card', 2);
+      // With a mouse the whole screen is on screen: every move, the net, the transport — no
+      // scroll anywhere, at the reference minimums and above. (A phone's sheet may scroll: its
+      // twin sits under the moves, and its extra height is the sheet's.)
+      if (!fixture.touch) {
+        assert.ok(m.list.scroll <= m.list.client + 1, `the move list scrolls by ${m.list.scroll - m.list.client}px — every move must be on screen`);
+        assert.ok(m.overflow.colsV <= 1, `the composition overflows its box vertically by ${m.overflow.colsV}px`);
       }
 
       // One transport line at and above the contract's portrait floor (375 wide), mouse or finger;
@@ -310,7 +340,9 @@ const measureScan = (page) =>
         face: t.dataset.face, focus: t.classList.contains('focus'),
         tile: rect(t.querySelector('.tile')), sticker: rect(t.querySelector('.tgrid > i')),
       })),
-      primary: rect($('.cols > .col')), sheet: rect($('.cols > .aside')), tools: rect($('.scan-cam')),
+      primary: rect($('.cols > .col')), sheet: rect($('.cols .sheet')), twin: rect($('.cols .twin')), tools: rect($('.scan-cam')),
+      cols: rect($('.cols')), stage: { w: $('#stage').clientWidth, h: $('#stage').clientHeight },
+      solve: rect($('#scanSolveBtn')),
       overflow: { board: board.scrollHeight - board.clientHeight, doc: document.documentElement.scrollWidth - innerWidth },
     };
   })()`);
@@ -325,15 +357,29 @@ for (const fixture of FIXTURES) {
     try {
       await page.waitForSelector('.scan-face', { timeout: 10_000 });
       const m = await measureScan(page);
-      const portrait = m.sheet.top >= m.primary.bottom - 1; // the sheet below the primary, not beside it
+      const portrait = m.stage.h > m.stage.w;
       assert.equal(m.tiles.length, 6);
+      // With a mouse the whole screen is on screen: the tiles, the twin, the notice and the
+      // button, at the reference minimums and above. (A phone's sheet may scroll.)
+      if (!fixture.touch) {
+        assert.ok(m.solve.bottom <= m.cols.bottom + 1, `"Solve this cube" ends ${m.solve.bottom - m.cols.bottom}px past the box — the sheet must not scroll`);
+        assert.ok(inside(m.twin, m.cols), `the twin ${JSON.stringify(m.twin)} leaves the box ${JSON.stringify(m.cols)}`);
+      }
       for (const t of m.tiles) assert.ok(inside(t.tile, m.primary), `${t.face} tile ${JSON.stringify(t.tile)} leaves the primary region ${JSON.stringify(m.primary)}`);
       assert.ok(m.overflow.board <= 1, `the scan board overflows by ${m.overflow.board}px`);
       assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
+      // The screen's one action keeps its size whatever the sheet holds. A sheet that overflows
+      // scrolls; it must not squash the button at its foot — which is exactly what a flex column
+      // does to a flex item before it scrolls, and it took "Solve this cube" to 0px in every
+      // portrait fixture. Its full height, not "visible": a scrolled sheet may hold it below the
+      // fold, and that is fine; a 0px button is not a button.
+      assert.ok(m.solve.height >= (fixture.touch ? 44 : 40) - 0.5, `"Solve this cube" is ${m.solve.height}px tall`);
+      assert.ok(m.solve.width >= m.sheet.width - 1, `"Solve this cube" is ${m.solve.width}px wide in a ${m.sheet.width}px sheet`);
 
       const focused = m.tiles.filter((t) => t.focus);
-      if (portrait) {
-        assert.equal(m.focusFlag, '1', 'portrait: the focus layout is on');
+      if (portrait && fixture.touch) {
+        // A finger's portrait, and only that: one face large over a strip of five.
+        assert.equal(m.focusFlag, '1', 'touch portrait: the focus layout is on');
         assert.deepEqual(focused.map((t) => t.face), ['F'], 'portrait: exactly one large tile, F to begin with');
         if (fixture.width >= 375) {
           // At and above the floor: a finger can hit a sticker on the large tile, and a strip tile.
@@ -344,9 +390,11 @@ for (const fixture of FIXTURES) {
         // The card's tools park top-right; the large tile must not run under them.
         assert.ok(!overlaps(m.tools, focused[0].tile), `the tools ${JSON.stringify(m.tools)} overlap the large tile ${JSON.stringify(focused[0].tile)}`);
       } else {
-        assert.notEqual(m.focusFlag, '1', 'landscape: the cross layout, no focus');
-        // The cross: a mouse hits a 24px sticker; the 840 reference gives 28. A touch iPad in
-        // landscape holds 34 on an 11" — the deviation the stylesheet names — and 57 on a 13".
+        // The cross — the same cross in landscape and in a mouse's portrait.
+        assert.notEqual(m.focusFlag, '1', 'the cross layout, no focus');
+        // The cross: a mouse hits a 24px sticker; the 840 reference gives 28 and the 574 portrait
+        // reference 34. A touch iPad in landscape holds 34 on an 11" — the deviation the
+        // stylesheet names — and 57 on a 13".
         const floor = fixture.touch ? 34 : 24;
         for (const t of m.tiles) assert.ok(t.sticker.width >= floor, `${t.face} sticker ${t.sticker.width}px < ${floor}`);
       }
@@ -383,11 +431,22 @@ const measureScreen = (page) =>
       stage: s, root: rect(root), content: s.width - px(cs.paddingLeft) - px(cs.paddingRight),
       // The two regions of a .cols screen, to assert they never draw over each other.
       col: col && rect(col), aside: aside && rect(aside),
+      // A list screen's column (\`.cols.flow\`) takes its content's height — the room under its
+      // last card is the slack a stretched grid row would leave, and it was 170px on Lessons.
+      flow: Boolean(document.querySelector('.cols.flow')),
+      colSlack: col && col.lastElementChild ? rect(col).bottom - rect(col.lastElementChild).bottom : 0,
       overflow: { screen: screen.scrollWidth - screen.clientWidth, doc: document.documentElement.scrollWidth - innerWidth },
       // Anything drawn beyond the stage sideways — including inside a scrolling column, where it
       // would be clipped rather than seen.
       beyond: [...screen.querySelectorAll('*')].filter(visible).map((el) => ({ what: el.id || el.className || el.tagName, ...rect(el) })).filter((r) => r.left < s.left - 1 || r.right > s.right + 1).slice(0, 4),
       controls: [...screen.querySelectorAll('button:not(.toggle), .chip-m, .pill, input')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
+      // A control that is on the page and not hidden, yet has no box: a flex column squashed it.
+      // \`visible\` above filters these OUT, which is how a 0px button passed every fixture as
+      // "not there" — the exact shape of failure that must count, not vanish.
+      collapsed: [...screen.querySelectorAll('button, .chip-m, .pill, input')]
+        .filter((el) => !el.closest('[hidden]') && getComputedStyle(el).display !== 'none')
+        .filter((el) => { const r = el.getBoundingClientRect(); return r.width < 1 || r.height < 1; })
+        .map((el) => el.id || el.className || el.tagName),
       // The toggle keeps its drawn 40×22 and grows a 44px hit area as a ::before, which no rect
       // reports — so probe it: a point 9px above and below the box must still hit the toggle.
       toggles: [...screen.querySelectorAll('.toggle')].filter(visible).map((t) => {
@@ -416,11 +475,15 @@ for (const screen of SCREENS) {
         assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
         assert.ok(m.overflow.screen <= 1, `the screen overflows sideways by ${m.overflow.screen}px`);
         assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
+        assert.deepEqual(m.collapsed, [], 'a control on the page has no box — squashed by its column');
         assert.ok(m.root.width >= m.content * 0.9, `the screen's root is ${m.root.width}px wide in a ${m.content}px stage — it shrank to its content`);
         if (m.col && m.aside) {
           // Beside or below, never over: a collapsed grid row once drew the sheet across the column.
           assert.ok(!overlaps(m.col, m.aside), `the sheet ${JSON.stringify(m.aside)} draws over the column ${JSON.stringify(m.col)}`);
           assert.ok(m.col.height > 40 && m.aside.height > 40, `a region collapsed: column ${m.col.height}px, sheet ${m.aside.height}px`);
+          // Portrait (the sheet below the column) on a list screen: the column ends where its
+          // content ends, so the sheet starts right after it rather than after a blank band.
+          if (m.flow && m.aside.top >= m.col.bottom - 1) assert.ok(m.colSlack <= 1, `the column is ${m.colSlack}px taller than its content`);
         }
         if (fixture.touch) {
           const small = m.controls.filter((c) => c.width < 44 - 0.5 || c.height < 44 - 0.5);
@@ -435,7 +498,9 @@ for (const screen of SCREENS) {
 }
 
 test('a popover opened on the stage stays inside it', async () => {
-  const { page, context } = await open(FIXTURES[0]);
+  // Scramble, not Home: a fresh Home holds a solved cube, which is a cube to look at and has no
+  // speed menu to open. Scramble always walks.
+  const { page, context } = await open(FIXTURES[0], 'scramble');
   try {
     await page.click('#speedBtn');
     const boxes = await page.evaluate(`(() => {
