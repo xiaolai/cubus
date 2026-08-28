@@ -1012,10 +1012,10 @@ SCREENS.scan = () => {
       // Tuned by eye against a half-finished scan, not inherited: this twin has one job — read all
       // six sides at a glance — and the renderer's defaults are set for a cube you orbit, not one
       // you read. Ghosts are thrown further out than the Cube screen's slider even offers (9, past
-      // its 0–8) so the hidden three clear the solid ones; the camera pulls back to 18 to fit them;
-      // stickers go full-bleed at 1 so a nine-grid stays legible at this size.
+      // its 0–8) so the hidden three clear the solid ones; stickers go full-bleed at 1 so a
+      // nine-grid stays legible at this size. The camera's distance is the renderer's to fit —
+      // it frames whatever this puts in view to whatever slot the twin has (lib/cube-frame.js).
       stateCube.setAttribute('ghost-elevation', '9');
-      stateCube.setAttribute('camera-distance', '18');
       stateCube.setAttribute('camera-latitude', '35');
       stateCube.setAttribute('camera-longitude', '45');
       stateCube.setAttribute('facelet-scale', '1');
@@ -1450,11 +1450,15 @@ const cubeScreen = (screenMode) => {
   const scrambling = screenMode === 'scramble';
   // No controls on this screen any more, so these are read but never written here. Left on
   // `cubeView` so they stay tunable without a rebuild — but the DEFAULTS are the tuned look, not
-  // a starting point: the Restore screen's cube (ghosts floating at elevation 9, camera pulled
-  // back to 18, stickers full-bleed at 1 — see the scan screen's mount) is the reference the
-  // walking screens must match, and a wiped localStorage once reverted them to a look nobody had
-  // chosen. A tuning that lives only in storage is a tuning waiting to be lost.
-  const v = load('cubeView', { hintElev: 9, camDist: 18, camLat: 35, camLon: 45, facScale: 1, ghosts: true });
+  // a starting point: the Restore screen's cube (ghosts floating at elevation 9, stickers
+  // full-bleed at 1 — see the scan screen's mount) is the reference the walking screens must
+  // match, and a wiped localStorage once reverted them to a look nobody had chosen. A tuning
+  // that lives only in storage is a tuning waiting to be lost.
+  const v = load('cubeView', { hintElev: 9, camLat: 35, camLon: 45, facScale: 1, ghosts: true });
+  // The camera's distance is no longer a tuning: the renderer fits the picture to its slot
+  // (lib/cube-frame.js) — a distance right for one slot shape clipped the ghost faces on every
+  // other. A stored camDist is dropped rather than left for save() to keep rewriting.
+  if ('camDist' in v) { delete v.camDist; save('cubeView', v); }
   // A scramble is always available: it is generated here rather than read off the cube, so there is
   // no state that makes this screen have nothing to do.
   const walking = scrambling || deriveCube().solvable;
@@ -1462,7 +1466,7 @@ const cubeScreen = (screenMode) => {
   const walked = scrambling ? 'scramble' : 'solution';
   // Saved key → renderer attribute. Named for what it is now that the sliders it fed are gone.
   const VIEW_ATTRS = [
-    ['hintElev', 'ghost-elevation'], ['camDist', 'camera-distance'],
+    ['hintElev', 'ghost-elevation'],
     ['camLat', 'camera-latitude'], ['camLon', 'camera-longitude'],
     ['facScale', 'facelet-scale'],
   ];
