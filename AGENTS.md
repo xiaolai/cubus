@@ -51,12 +51,17 @@ it walks you through solving it.
     so the renderer keeps its FIRST frame — a camera or ghost attribute set after mount is never
     repainted. On 2026-08-28 that made the solved cube on Home look twice its size with no
     ghosts, and cost an hour of chasing a renderer bug that did not exist.
-- **No smart-cube support, deliberately.** A verified GAN16 BLE driver and a Rust bridge were
-  built, shipped and then removed. They worked; the problem was that a cube adds an axis — present
-  or absent, trusted or not — and every screen has to answer it. For this audience that axis is
-  where the app gets lost, and it cannot be modelled away because it should not exist. Both are
-  preserved on the **`v0`** branch, including the tracking-offset maths, which is the part worth
-  recovering if this is ever revisited.
+- **Smart-cube support returned, deliberately** (removed 2026-08-26, merged back 2026-08-28).
+  The removal's reasoning is the bar the return is held to: a cube adds an axis — present or
+  absent, trusted or not — that every screen has to answer, and for this audience that axis was
+  where the app got lost. The return answers it rather than modelling it away: trust is a
+  visible state, never inferred from "connected"; one camera scan repairs tracking with no
+  solving (the offset, `apps/web/lib/cube-trust.js`); and a reconnect asks the one question a
+  beginner can answer — "Is this your cube right now?" — backed by a two-adjacent-side camera
+  check (`apps/web/lib/cube-reconnect.js`). Capability, never a mode: every screen works with no
+  cube, the camera stays first-class, and no screen exists only with hardware. The design and
+  its refute passes: `dev-docs/cube-trust-design.md` and `dev-docs/smart-cube-ux-prd.md`
+  (delivery status per phase). The removal-era code history remains on **`v0`**.
 - **Design system**: the approved UI kit lives in `dev-docs/design/` — read
   `dev-docs/design/README.md` before any `apps/web` UI work. Adopted into the app:
   `apps/web/tokens.css` (warm-paper tokens, light/dark) and `<cubus-cube>` (a purpose-built
