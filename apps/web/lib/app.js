@@ -7,6 +7,8 @@ import { summarize, times } from './solve-stats.js';
 import { TIERS, describe, refine } from './solve-target.js';
 import { createSolveClient, spawnSolveWorker } from './solve-client.js';
 import { randomCube } from './random-state.js';
+import { fromCube } from './cube-pieces.js';
+import { solveByMethod } from './method-solver.js';
 import { makeRouter } from './router.js';
 // The smart-cube strands, recovered from v0 (2026-08-27): the transport seam (Web Bluetooth in a
 // browser, native BLE events under Tauri), one durable record per cube, and the trust model that
@@ -123,7 +125,7 @@ const TITLES = {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty' });
+const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty', teachLevel: 'off' });
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
@@ -200,6 +202,7 @@ const state = {
   anchored: false,
   cube: {
     facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [], solveResult: null,
+    methodSteps: null, moveStep: null,
     // ---- trust ------------------------------------------------------------------------
     // Do we currently KNOW what this cube looks like? Deliberately not derived from
     // `state.connected`: a paired cube is not a trusted one. A cube reports how far it has been
@@ -241,6 +244,53 @@ const state = {
    *  "as we last saw it, Tuesday 21:40". */
   reconnect: null,
 };
+
+/** The rungs of the explaining solver, and how the Settings row reads. */
+const TEACH_LEVELS = ['off', 'beginner', 'intermediate'];
+const TEACH_LABEL = { off: 'off', beginner: 'beginner', intermediate: 'F2L' };
+const TEACH_BLURB = {
+  off: 'The shortest solution the target allows, with no explanation',
+  beginner: 'Every piece placed on its own, and a reason for each step',
+  intermediate: 'The cross planned as one, and each corner paired with its edge',
+};
+
+/**
+ * A step's reason, in words.
+ *
+ * The solver produces `why: { key, ... }` and never a sentence, so that the wording lives in one
+ * place and can be translated. These are deliberately about what the step ACHIEVES, not about
+ * what the moves are: the move list is right there and can be read.
+ *
+ * A step with no entry here would render as nothing, which is why the wiring test checks that
+ * every key the solver can emit has one.
+ */
+const WHY_TEXT = {
+  'cross.lift': () => 'Bring this edge up to the top, without disturbing the cross so far.',
+  'cross.insert': () => 'Line it up over its home, then drop it in.',
+  'cross.whole': ({ moves }) => `Make the cross on the bottom — ${moves} moves, planned as one.`,
+  'firstLayer.lift': () => 'Bring this corner up to the top, where you can work with it.',
+  'firstLayer.insert': () => 'Drop the corner into its slot underneath.',
+  'middleLayer.insert': () => 'Send this edge down into the middle layer.',
+  'f2l.pair': ({ ejected }) => (ejected
+    ? 'Take the pair out of the slot first, then join the corner to its edge and put them in together.'
+    : 'Join the corner to its edge, then put the pair in together.'),
+  'topCross.orient': () => 'Make a cross on the top face.',
+  'topFace.orient': () => 'Make the whole top face one colour.',
+  'topCorners.permute': () => 'Move the top corners to the places they belong.',
+  'topEdges.permute': () => 'Move the top edges home — this finishes the cube.',
+};
+
+/** The sentence for a step, with the case name where the step is a named algorithm. */
+function whyText(step) {
+  if (!step) return '';
+  const write = WHY_TEXT[step.why?.key];
+  const sentence = write ? write(step.why) : '';
+  // A case name is what a learner recognises next time, so it is worth showing — but only for
+  // named algorithms, never for a searched sequence, which has no case to name.
+  return step.kind === 'case' && step.caseName && !step.parts
+    ? `${sentence} (${step.caseName})`
+    : sentence;
+}
 
 // How the four rungs read on the Settings screen. A rung with no label here would render as
 // "undefined", so app-wiring.test.mjs checks every TIERS entry has one.
@@ -296,6 +346,7 @@ function ingestFacelets(f) {
   const c = state.cube;
   c.facelets = f;
   c.solution = ''; c.moves = []; c.stepFacelets = []; c.solveResult = null;
+  c.methodSteps = null; c.moveStep = null;
   c.setupAlg = ''; c.derived = false;
 }
 
@@ -339,35 +390,14 @@ let solveClient = null;
 const solverWorker = () => (solveClient ??= createSolveClient({ spawn: spawnSolveWorker }));
 
 /**
- * Work out the solution, as short as this learner's tier asks for, and cross-check it.
+ * Whatever produced the solution, this is what makes it usable — and what checks it.
  *
- * The tier is a solution LENGTH, not an effort — "twenty moves or fewer" is a thing a person can
- * hold. Under 20 is reached on every cube and costs ~6 ms, so the default rung is invisible; the
- * tighter ones take seconds, which is why the search runs in a worker and reports each
- * improvement as it finds one rather than making anyone wait for the last.
- *
- * `onImprovement` is called with every strictly shorter answer, so a screen can show 21 becoming
- * 20 becoming 19 instead of a spinner. The promise resolves with the final one.
+ * Both solvers end here on purpose. The oracle cross-check and the per-step facelets are not
+ * properties of one search or the other, and having two copies is how one of them would quietly
+ * stop being verified.
  */
-async function solve({ onImprovement } = {}) {
-  const c = state.cube;
-  // If a state arrived before the solver was ready, its setup alg is stale — recompute now.
-  if (solverReady && c.facelets !== SOLVED && !c.setupAlg) deriveCube();
-  if (c.solution) return c.solution;
-
-  const client = solverWorker();
-  let result = null;
-  for await (const step of refine(c.facelets, {
-    solve: (facelets, bounds) => client.solve(facelets, bounds),
-    tier: settings.solveTier,
-  })) {
-    result = step;
-    onImprovement?.(step);
-  }
-  // Never inferred from the move count: a tier the cube cannot reach (18 does not exist for
-  // every position) must read as "the shortest I found", not as the target met.
-  c.solveResult = describe(result);
-  const solution = result.alg;
+function finishSolve(c, alg) {
+  const solution = alg;
   const moves = solution.trim() ? solution.trim().split(/\s+/) : [];
   // Oracle cross-check: only a definite refutation (parses AND does not solve) blocks.
   let verified = null;
@@ -388,6 +418,53 @@ async function solve({ onImprovement } = {}) {
   }
   c.solution = solution; c.moves = moves; c.stepFacelets = sf;
   return solution;
+}
+
+/**
+ * Work out the solution, as short as this learner's tier asks for, and cross-check it.
+ *
+ * The tier is a solution LENGTH, not an effort — "twenty moves or fewer" is a thing a person can
+ * hold. Under 20 is reached on every cube and costs ~6 ms, so the default rung is invisible; the
+ * tighter ones take seconds, which is why the search runs in a worker and reports each
+ * improvement as it finds one rather than making anyone wait for the last.
+ *
+ * `onImprovement` is called with every strictly shorter answer, so a screen can show 21 becoming
+ * 20 becoming 19 instead of a spinner. The promise resolves with the final one.
+ */
+async function solve({ onImprovement } = {}) {
+  const c = state.cube;
+  // If a state arrived before the solver was ready, its setup alg is stale — recompute now.
+  if (solverReady && c.facelets !== SOLVED && !c.setupAlg) deriveCube();
+  if (c.solution) return c.solution;
+
+  // The explaining solver is a different product, not a shorter setting: it answers "why is this
+  // move right" where the other answers "how short can this be". It runs here on the main
+  // thread because it takes ~13 ms and needs no search worth moving off it.
+  if (settings.teachLevel !== 'off') {
+    const lesson = solveByMethod(fromCube(Cube.fromString(c.facelets)), { level: settings.teachLevel });
+    c.methodSteps = lesson.steps;
+    // Which step each move belongs to, so the walk can say why the move you are on is there.
+    c.moveStep = lesson.steps.flatMap((step, i) => step.alg.trim().split(/\s+/).map(() => i));
+    c.solveResult = null; // a lesson has no length target to have met or missed
+    onImprovement?.({ moves: lesson.moveCount, met: true, target: null, stopped: null, alg: lesson.alg });
+    return finishSolve(c, lesson.alg);
+  }
+  c.methodSteps = null;
+  c.moveStep = null;
+
+  const client = solverWorker();
+  let result = null;
+  for await (const step of refine(c.facelets, {
+    solve: (facelets, bounds) => client.solve(facelets, bounds),
+    tier: settings.solveTier,
+  })) {
+    result = step;
+    onImprovement?.(step);
+  }
+  // Never inferred from the move count: a tier the cube cannot reach (18 does not exist for
+  // every position) must read as "the shortest I found", not as the target met.
+  c.solveResult = describe(result);
+  return finishSolve(c, result.alg);
 }
 
 // ---- cube element helpers --------------------------------------------------------------------
@@ -1987,6 +2064,7 @@ const cubeScreen = (screenMode) => {
         ${reconnectAsk()}
         <div class="card-h bare"><b>${label}</b><span class="sub" id="moveCount">—</span></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
+        <div class="sub" id="whyLine" style="padding:0 18px 10px;color:var(--ink-4)" hidden></div>
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg"></span>
           <div class="acts">
@@ -2180,6 +2258,22 @@ const cubeScreen = (screenMode) => {
         };
       }
 
+      // The reason for the step you are ON. One line, updated as you walk — at 0 it reads the
+      // first step, because that is the one about to happen. Silent entirely when the explaining
+      // solver is off, since a two-phase solution has no steps and inventing captions for it is
+      // exactly what this app does not do.
+      const whyLine = $('#whyLine', root);
+      function sayWhy(i) {
+        if (!whyLine) return;
+        const steps = state.cube.methodSteps;
+        const map = state.cube.moveStep;
+        if (!steps || !map || scrambling) { whyLine.hidden = true; return; }
+        const step = steps[map[Math.min(Math.max(i - 1, 0), map.length - 1)]];
+        const text = whyText(step);
+        whyLine.hidden = !text;
+        whyLine.textContent = text ? `Step ${(steps.indexOf(step) + 1)} of ${steps.length} — ${text}` : '';
+      }
+
       let at = 0;
       function sync(i) {
         at = i;
@@ -2187,6 +2281,7 @@ const cubeScreen = (screenMode) => {
         // shown, so nothing is filled. It used to mark the NEXT move, and a black first chip before
         // anything had happened read as a step already taken.
         chips.forEach((ch, k) => { ch.classList.toggle('played', k < i); ch.classList.toggle('cur', k === i - 1); });
+        sayWhy(i);
         $('#stepLbl', root).textContent = `${i} / ${total}`;
         $('#progBar', root).style.width = total ? `${(i / total) * 100}%` : '0%';
         // A button that cannot do anything says so, rather than swallowing the press.
@@ -2614,6 +2709,8 @@ SCREENS.settings = () => {
           <button class="toggle ${settings.dragRotate ? 'on' : ''}" data-toggle="dragRotate" role="switch" aria-checked="${Boolean(settings.dragRotate)}" aria-label="Rotate the cube by dragging"><i></i></button></div>
         <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">How short a solution</div><div class="sub" style="color:var(--ink-4)">${TIER_BLURB[settings.solveTier] ?? TIER_BLURB.twenty}</div></div>
           <div class="wrap-row" style="gap:6px">${TIERS.map((t) => `<button class="pill ${settings.solveTier === t.name ? 'on' : ''}" data-set-tier="${t.name}">${TIER_LABEL[t.name]}</button>`).join('')}</div></div>
+        <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">Explain each step</div><div class="sub" style="color:var(--ink-4)">${TEACH_BLURB[settings.teachLevel] ?? TEACH_BLURB.off}</div></div>
+          <div class="wrap-row" style="gap:6px">${TEACH_LEVELS.map((t) => `<button class="pill ${settings.teachLevel === t ? 'on' : ''}" data-set-teach="${t}">${TEACH_LABEL[t]}</button>`).join('')}</div></div>
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}">${o}</button>`).join('')}</div></div>` : ''}</div>
       ${(() => {
@@ -2806,6 +2903,7 @@ SCREENS.settings = () => {
       // Changing the target does not re-solve anything now — the next solve uses it. Clearing
       // the cached solution is what makes that true; without it the old answer would stand.
       for (const b of root.querySelectorAll('[data-set-tier]')) b.onclick = () => { settings.solveTier = b.dataset.setTier; save('cubusSettings', settings); state.cube.solution = ''; state.cube.solveResult = null; renderScreen(); };
+      for (const b of root.querySelectorAll('[data-set-teach]')) b.onclick = () => { settings.teachLevel = b.dataset.setTeach; save('cubusSettings', settings); state.cube.solution = ''; state.cube.solveResult = null; state.cube.methodSteps = null; state.cube.moveStep = null; renderScreen(); };
       // The window's orientation lives on the Rust side (a file the window is built from before
       // this webview exists), so the pills ask it which is current, and tell it which to become.
       // A failure surfaces on the pills themselves rather than in a console nobody reads.

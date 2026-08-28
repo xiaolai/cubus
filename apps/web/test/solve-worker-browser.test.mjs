@@ -110,3 +110,53 @@ test('a tighter tier is honoured, not silently ignored', async () => {
   assert.ok(out.moves <= 18, `asked for fewer than 19 and got ${out.moves} — the bounds patch is not live`);
   assert.equal(out.solved, true);
 });
+
+test('the reason line follows the walk, in a real engine', async () => {
+  // The half test/teach-line.test.mjs cannot reach: happy-dom does not load <cubus-cube>, so the
+  // transport never advances there and the caption can only be read where it starts. Here the
+  // renderer is real, so the walk really walks.
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await page.addInitScript(() => {
+    // Read once at module evaluation, so it has to be in place before app.js loads.
+    localStorage.setItem('cubusSettings', JSON.stringify({ teachLevel: 'beginner', solveTier: 'twenty' }));
+  });
+  await page.goto(`${BASE}/index.html#/scramble`);
+  await page.waitForSelector('#solList .chip-m', { timeout: 20000 });
+
+  const out = await page.evaluate(async () => {
+    const { state } = await import('/lib/app.js');
+    const Cube = (await import('/vendor/cubejs.js')).default;
+    const cube = new Cube();
+    cube.move("R U R' U' F2 D L2 B' R2 U2");
+    Object.assign(state.cube, {
+      facelets: cube.asString(), derived: false, setupAlg: '', solution: '', moves: [],
+      stepFacelets: [], methodSteps: null, moveStep: null, isPhysical: false, source: 'generated',
+    });
+    location.hash = '#/home';
+    const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 100 && !(state.cube.methodSteps ?? []).length; i++) await settle(50);
+
+    const line = document.querySelector('#whyLine');
+    const chips = [...document.querySelectorAll('#solList .chip-m')];
+    if (!line || chips.length === 0) return { error: 'no line or no chips' };
+    const first = line.textContent;
+    chips[chips.length - 1].click();
+    for (let i = 0; i < 100 && line.textContent === first; i++) await settle(50);
+    return {
+      steps: state.cube.methodSteps.length,
+      first,
+      last: line.textContent,
+      stepLbl: document.querySelector('#stepLbl')?.textContent,
+    };
+  });
+  await page.close();
+
+  assert.deepEqual(errors, [], 'the page logged an uncaught error');
+  assert.equal(out.error, undefined, out.error);
+  assert.ok(out.steps >= 10, `a beginner lesson should be many steps, got ${out.steps}`);
+  assert.match(out.first, /^Step 1 of \d+ — \S/, `unexpected first caption: "${out.first}"`);
+  assert.notEqual(out.last, out.first, `the reason never moved (transport read ${out.stepLbl})`);
+  assert.match(out.last, /^Step \d+ of \d+ — \S/, `unexpected caption after seeking: "${out.last}"`);
+});

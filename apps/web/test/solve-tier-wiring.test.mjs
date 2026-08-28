@@ -59,3 +59,50 @@ test('the solver no longer routes through cubing.js', () => {
     'app.js still calls cubing.js to solve');
   assert.match(app, /createSolveClient/, 'and must use the worker client instead');
 });
+
+test('every reason the solver can emit has a sentence behind it', () => {
+  // A step whose key has no entry renders as an empty line: the learner is shown a move with no
+  // reason, on the screen whose entire purpose is the reason. Collected from the solver's source
+  // rather than from a list, so adding a stage without wording fails here.
+  const solver = readFileSync(new URL('../lib/method-solver.js', import.meta.url), 'utf8');
+  const emitted = [...solver.matchAll(/why: \{ key: '([^']+)'/g)].map((m) => m[1]);
+  assert.ok(emitted.length >= 8, `only found ${emitted.length} reason keys — the scan is not working`);
+
+  const written = app.match(/const WHY_TEXT = \{([\s\S]*?)\n\};/)?.[1] ?? '';
+  const missing = [...new Set(emitted)].filter((key) => !written.includes(`'${key}'`));
+  assert.deepEqual(missing, [], 'these steps would be shown with no reason at all');
+});
+
+test('the explaining solver is a separate choice, not a shorter tier', () => {
+  // Shortest and explicable pull in opposite directions; folding them into one control would
+  // make "shorter" and "clearer" look like points on the same scale.
+  assert.match(app, /teachLevel: 'off'/, 'the setting must default to off');
+  assert.match(app, /data-set-teach/, 'Settings must offer the rungs');
+  assert.match(app, /settings\.teachLevel !== 'off'/, 'solve() must branch on it');
+  assert.match(app, /solveByMethod/, 'and actually call the method solver');
+});
+
+test('the reason line is one line, never a heading per group', () => {
+  // The chip grid's own comment records that a heading per group pushed the tail of a 20-move
+  // solve past the sheet's foot in portrait. A lesson is ~118 moves in ~21 steps, so grouping it
+  // would be far worse. One line that follows the walk is the whole affordance.
+  assert.match(app, /id="whyLine"/, 'the reason line must exist');
+  assert.equal((app.match(/id="whyLine"/g) ?? []).length, 1, 'exactly one reason element');
+  assert.match(app, /sayWhy\(i\)/, 'and it must be updated as the walk moves');
+});
+
+test('a two-phase solution gets no captions invented for it', () => {
+  // It has no steps. Showing a reason for one of its moves would be exactly the fabricated
+  // structure the CFOP headings were removed for.
+  const fn = app.match(/function sayWhy\(i\)[\s\S]*?\n      \}/)?.[0] ?? '';
+  assert.ok(fn, 'sayWhy not found');
+  assert.match(fn, /if \(!steps \|\| !map[\s\S]*?hidden = true/, 'with no lesson, the line must hide');
+});
+
+test('a lesson is thrown away with the solution it explains', () => {
+  const clears = [...app.matchAll(/c\.solution = ''/g)];
+  for (const m of clears) {
+    const line = app.slice(m.index, app.indexOf('\n', app.indexOf('\n', m.index) + 1));
+    assert.match(line, /methodSteps = null/, 'a stale lesson would caption the next cube');
+  }
+});
