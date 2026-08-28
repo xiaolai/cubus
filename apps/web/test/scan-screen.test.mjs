@@ -85,7 +85,7 @@ test('each face tile is edged in its neighbours colours, so the way to hold it i
   // cell is painted its own face colour. So this asserts the RELATIONSHIP rather than a set of
   // hex values, and keeps working if the palette changes.
   const colourOf = Object.fromEntries(all('.scan-face').map((t) =>
-    [t.dataset.face, t.querySelectorAll('.tgrid > i')[4].style.backgroundColor]));
+    [t.dataset.face, t.querySelectorAll('.tgrid > .cell')[4].style.backgroundColor]));
   const bordersOf = (f) => $(`.scan-face[data-face="${f}"] .tile`)
     .getAttribute('style').replace('border-color:', '').trim().split(/\s+/);
   // The canonical URFDLB layout — derived from EDGE_FACELET in the scanner package and pinned by
@@ -256,7 +256,7 @@ test('suspect stickers are marked on the tile, and the picker rings the suggeste
   progress({ phase: 'scanning', message: 'x', captured: FACES.map(face), live: null, confirm: null,
     suspects: [{ face: 'R', index: 2, to: 5 }],
     notice: { title: 'One sticker looks wrong', tone: 'err', body: 'b' } });
-  const cells = all('.scan-face[data-face="R"] .tgrid > i');
+  const cells = all('.scan-face[data-face="R"] .tgrid > .cell');
   assert.ok(cells[2].classList.contains('suspect'), 'the suspect sticker is marked');
   assert.equal(all('.scan-face .cell.suspect').length, 1, 'and only it');
   panel().setSticker = () => {};
@@ -276,7 +276,7 @@ test('a sticker on a captured side opens a colour picker and reports the correct
     captured: [face('R')], live: null, confirm: null });
   const calls = [];
   panel().setSticker = (...args) => calls.push(args);
-  const cells = all('.scan-face[data-face="R"] .tgrid > i');
+  const cells = all('.scan-face[data-face="R"] .tgrid > .cell');
   cells[0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   const pick = $('.swatches');
   assert.ok(pick && !pick.hidden, 'clicking a captured sticker must offer the colours');
@@ -291,7 +291,7 @@ test('the centre re-reads its side instead of offering colours', () => {
   const colours = [], rescans = [];
   panel().setSticker = (...args) => colours.push(args);
   panel().rescanFace = (...args) => rescans.push(args);
-  all('.scan-face[data-face="R"] .tgrid > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="R"] .tgrid > .cell')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, true, 'no colour picker for the centre');
   assert.deepEqual(colours, [], 'and never a colour change, which would rename the face');
   assert.deepEqual(rescans, [['R']], 'it throws that side away so the camera reads it again');
@@ -301,7 +301,7 @@ test('the centre of a side with nothing read yet has nothing to re-read', () => 
   const rescans = [];
   panel().rescanFace = (...args) => rescans.push(args);
   assert.ok(!$('.scan-face[data-face="B"]').classList.contains('done'));
-  all('.scan-face[data-face="B"] .tgrid > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="B"] .tgrid > .cell')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.deepEqual(rescans, []);
 });
 
@@ -311,7 +311,7 @@ test('a side with nothing read yet offers nothing to correct', () => {
   const calls = [];
   panel().setSticker = (...args) => calls.push(args);
   assert.ok(!$('.scan-face[data-face="B"]').classList.contains('done'), 'B has not been captured');
-  all('.scan-face[data-face="B"] .tgrid > i')[7].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="B"] .tgrid > .cell')[7].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, true, 'no colours offered on an unread side');
   assert.deepEqual(calls, []);
 });
@@ -358,7 +358,7 @@ test('the paint toggle releases the camera and opens all 48 outer stickers', () 
   assert.ok(!unread.classList.contains('done'), 'B has not been read');
 
   // camera mode: an unread side offers nothing
-  all('.scan-face[data-face="B"] .tgrid > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="B"] .tgrid > .cell')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, true);
 
   $('#scanPaintBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
@@ -366,7 +366,7 @@ test('the paint toggle releases the camera and opens all 48 outer stickers', () 
   assert.ok($('.scan-cam').classList.contains('paint'), 'and the button reads as held down');
 
   // paint mode: the same sticker is now paintable
-  all('.scan-face[data-face="B"] .tgrid > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="B"] .tgrid > .cell')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, false, 'an unread side is paintable while painting');
   $('.swatches').querySelectorAll('button')[2].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.deepEqual(sets, [['B', 3, 2]]);
@@ -376,7 +376,7 @@ test('the centre does nothing while painting — there is no camera to re-read w
   const rescans = [];
   panel().rescanFace = (...args) => rescans.push(args);
   progress({ phase: 'painting', message: 'x', captured: [face('R')], live: null, device: null, confirm: null });
-  all('.scan-face[data-face="R"] .tgrid > i')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="R"] .tgrid > .cell')[4].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.deepEqual(rescans, []);
 });
 
@@ -387,7 +387,7 @@ test('toggling paint off hands the cube back to the camera', () => {
   assert.deepEqual(paints, [false]);
   assert.ok(!$('.scan-cam').classList.contains('paint'));
   // and back to camera rules: an unread side stops offering colours
-  all('.scan-face[data-face="B"] .tgrid > i')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  all('.scan-face[data-face="B"] .tgrid > .cell')[3].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.swatches').hidden, true);
 });
 
@@ -427,10 +427,10 @@ test('a solvable scan turns each mis-held tile and settles into the canonical la
   assert.equal(grid('D').style.transform, '', 'a tile held right does not move');
   await new Promise((r) => setTimeout(r, 900));
   const palette = Object.fromEntries(NET.map((f) => [f,
-    all(`.scan-face[data-face="${f}"] .tgrid > i`)[4].style.backgroundColor]));
+    all(`.scan-face[data-face="${f}"] .tgrid > .cell`)[4].style.backgroundColor]));
   let mismatches = 0;
   NET.forEach((f, fi) => {
-    all(`.scan-face[data-face="${f}"] .tgrid > i`).forEach((c, i) => {
+    all(`.scan-face[data-face="${f}"] .tgrid > .cell`).forEach((c, i) => {
       if (c.style.backgroundColor !== palette[FL[fi * 9 + i]]) mismatches++;
     });
   });
@@ -450,10 +450,10 @@ test('a scan-complete without rotations still settles the tiles, instantly', () 
     detail: { facelets: FL, valid: true, confidence: 1, lowConfidence: [] },
   }));
   const palette = Object.fromEntries(NET.map((f) => [f,
-    all(`.scan-face[data-face="${f}"] .tgrid > i`)[4].style.backgroundColor]));
+    all(`.scan-face[data-face="${f}"] .tgrid > .cell`)[4].style.backgroundColor]));
   let mismatches = 0;
   NET.forEach((f, fi) => {
-    all(`.scan-face[data-face="${f}"] .tgrid > i`).forEach((c, i) => {
+    all(`.scan-face[data-face="${f}"] .tgrid > .cell`).forEach((c, i) => {
       if (c.style.backgroundColor !== palette[FL[fi * 9 + i]]) mismatches++;
     });
   });
@@ -578,7 +578,7 @@ test('a corrected sticker is what reaches the cube screen, not the original read
   // A swatch click ends in panel.setSticker(); the panel answers with a fresh scan-complete.
   const calls = [];
   panel().setSticker = (...args) => calls.push(args);
-  const cell = $('.scan-face[data-face="U"] .tgrid > i:nth-child(1)');
+  const cell = $('.scan-face[data-face="U"] .tgrid > .cell:nth-child(1)');
   cell.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   const swatch = $('.swatches button[data-face="R"]');
   assert.ok(swatch, 'the six-colour picker opened on a read side');
@@ -687,6 +687,66 @@ test('auto-solve fires only for a believed scan — a refused one stays put', as
 
 // A static check, like the info-colour one: cascade mistakes leave every class-based test green.
 test('the sticker hover ring yields to the editing halo in the cascade', () => {
-  assert.ok(html.includes('i:not(:nth-child(5), .editing):hover'),
+  assert.ok(html.includes('.cell:not(:nth-child(5), .editing):hover'),
     'the hover selector must exclude .editing — the ring outweighs the halo otherwise');
+});
+
+// ---- the keyboard path -------------------------------------------------------------------------
+//
+// The 54 stickers were <i> elements with click handlers — pointer-only, the known debt the design
+// README carried. They are buttons now, on ONE roving tab stop: Tab lands on the board once, the
+// arrows walk the cells, Enter is the click the pointer would have made (a button's keyboard
+// activation IS a click, so the delegated listener cannot tell the two apart), and the colour
+// picker takes focus and hands it back. These pin the debt as PAID.
+
+test('every sticker is a button with a name, and the board is a single tab stop', () => {
+  const cells = all('.scan-face .cell');
+  assert.equal(cells.length, 54);
+  for (const c of cells) assert.equal(c.tagName, 'BUTTON', 'a sticker without a button is a sticker without a keyboard');
+  assert.equal(cells.filter((c) => c.getAttribute('tabindex') === '0').length, 1,
+    'ONE roving tab stop — 54 stops would make the board a chore to tab past');
+  for (const c of cells) assert.ok(c.getAttribute('aria-label'), 'every cell carries a name');
+  for (const t of all('.scan-face')) {
+    assert.equal(t.getAttribute('role'), 'group', 'each side groups its nine stickers');
+    assert.match(t.getAttribute('aria-label') ?? '', / side$/);
+  }
+});
+
+test('the names carry the reading, and aria-disabled says what a press would do', () => {
+  progress({ phase: 'scanning', message: '', captured: [face('R')], live: null, device: null, confirm: null });
+  const rCells = all('.scan-face[data-face="R"] .tgrid > .cell');
+  assert.match(rCells[0].getAttribute('aria-label'), /Right side, sticker 1 — read as the Right side’s colour/);
+  assert.equal(rCells[0].getAttribute('aria-disabled'), 'false', 'a read sticker is correctable');
+  assert.match(rCells[4].getAttribute('aria-label'), /Scan the Right side again/);
+  assert.equal(rCells[4].getAttribute('aria-disabled'), 'false', 'a read centre re-reads its side');
+  const uCells = all('.scan-face[data-face="U"] .tgrid > .cell');
+  assert.match(uCells[0].getAttribute('aria-label'), /Up side, sticker 1 — not read yet/);
+  assert.equal(uCells[0].getAttribute('aria-disabled'), 'true', 'a pending sticker refuses the press, and says so up front');
+});
+
+test('the arrows move the roving point by exactly one cell', () => {
+  const roved = () => all('.scan-face .cell').find((c) => c.getAttribute('tabindex') === '0');
+  const cells = all('.scan-face .cell');
+  const before = roved();
+  before.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  const after = roved();
+  assert.equal(cells.indexOf(after), cells.indexOf(before) + 1, 'ArrowRight walks one sticker');
+  after.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+  assert.equal(roved(), before, 'ArrowLeft walks back');
+  before.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+  assert.equal(cells.indexOf(roved()), cells.length - 1, 'End reaches the board’s last sticker');
+  roved().dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+  assert.equal(cells.indexOf(roved()), 0, 'Home reaches the first');
+});
+
+test('activating a read sticker opens the picker with focus in it, and Escape hands focus back', () => {
+  progress({ phase: 'scanning', message: '', captured: [face('R')], live: null, device: null, confirm: null });
+  const cell = all('.scan-face[data-face="R"] .tgrid > .cell')[1];
+  cell.click(); // the Enter path: keyboard activation of a button IS this click
+  const pick = $('.swatches');
+  assert.equal(pick.hidden, false, 'the picker opened');
+  assert.ok(pick.contains(win.document.activeElement), 'focus moved into the picker — a keyboard user is not left stranded on the cell');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(pick.hidden, true, 'Escape closes it');
+  assert.equal(win.document.activeElement, cell, 'and hands focus back to the sticker that opened it');
 });

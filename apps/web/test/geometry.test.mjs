@@ -371,7 +371,8 @@ const measureScan = (page) =>
       focusFlag: getComputedStyle(faces).getPropertyValue('--focus').trim(),
       tiles: [...document.querySelectorAll('.scan-face')].map((t) => ({
         face: t.dataset.face, focus: t.classList.contains('focus'),
-        tile: rect(t.querySelector('.tile')), sticker: rect(t.querySelector('.tgrid > i')),
+        tile: rect(t.querySelector('.tile')), sticker: rect(t.querySelector('.tgrid > .cell')),
+        cellPointer: getComputedStyle(t.querySelector('.tgrid > .cell')).pointerEvents,
       })),
       primary: rect($('.cols > .col')), sheet: rect($('.cols .sheet')), twin: rect($('.cols .twin')), tools: rect($('.scan-cam')),
       cols: rect($('.cols')), stage: { w: $('#stage').clientWidth, h: $('#stage').clientHeight },
@@ -420,6 +421,10 @@ for (const fixture of FIXTURES) {
           for (const t of m.tiles.filter((t) => !t.focus)) assert.ok(t.tile.width >= 44 && t.tile.height >= 44, `strip tile ${t.face} ${t.tile.width}×${t.tile.height} < 44`);
         }
         for (const t of m.tiles.filter((t) => !t.focus)) assert.ok(t.tile.top >= focused[0].tile.bottom - 1, `strip tile ${t.face} is not below the large tile`);
+        // Since the stickers became buttons, this rule is what keeps the 44px floor honest: a
+        // strip cell is not a tap target — the TILE is — so a finger can only ever hit the tile.
+        assert.equal(focused[0].cellPointer, 'auto', 'the large tile\'s stickers must take the finger');
+        for (const t of m.tiles.filter((t) => !t.focus)) assert.equal(t.cellPointer, 'none', `strip tile ${t.face}'s cells must not be hit-testable — the tile is the target`);
         // The card's tools park top-right; the large tile must not run under them.
         assert.ok(!overlaps(m.tools, focused[0].tile), `the tools ${JSON.stringify(m.tools)} overlap the large tile ${JSON.stringify(focused[0].tile)}`);
       } else {

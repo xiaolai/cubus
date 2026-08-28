@@ -107,7 +107,7 @@ test('transitions and animations take their time from the motion tokens', () => 
 const EASED = [
   '.btn', '.pill', '.nav-item', '.tb-ctl', '.tbtn', '.tb-cap', '.menu > button',
   '.card-tools > button', '.eyebrow-row > button', '.chip-m', '.swatches > button',
-  '.field', '.link', '.toggle', '.tgrid > i',
+  '.field', '.link', '.toggle', '.tgrid > .cell',
 ];
 
 test('every control the sheet eases is really in a transition rule', () => {

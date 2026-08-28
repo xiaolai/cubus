@@ -1177,7 +1177,10 @@ SCREENS.scan = () => {
   // every test that tried to assert what a sticker had been painted.)
   // Face letters are positions; a person checking their cube sees colours. Same scheme the
   // scanner's own GUIDE uses, and the same one every palette here is built on.
-  const cell = (bg) => `<i class="cell" style="background-color:${bg}"></i>`;
+  // A sticker is a BUTTON: correcting it by pointer and by keyboard are one path, because a
+  // button's keyboard activation IS a click — the delegated listener cannot tell them apart.
+  // tabindex −1 on every cell: the board is one tab stop and the arrows rove (see the mount).
+  const cell = (bg) => `<button type="button" class="cell" tabindex="-1" style="background-color:${bg}"></button>`;
   // A pending tile is nine dim wells with the face's own colour in the centre, so the board reads
   // "the yellow side is still missing" without a legend.
   const pending = (f) => Array.from({ length: 9 }, (_, i) => cell(i === 4 ? pal[f] : 'var(--facelet-off)')).join('');
@@ -1201,7 +1204,7 @@ SCREENS.scan = () => {
     <div class="col">
       <div class="card scanboard">
         <ai-scan-panel headless autostart></ai-scan-panel>
-        <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
+        <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" role="group" aria-label="${SCAN_FACE_NAME[f]} side" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}"><div class="tgrid">${pending(f)}</div></div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
         <div class="scan-cam card-tools">
           <button id="scanResetBtn" title="Throw the whole scan away and start again" aria-label="Throw the whole scan away and start again">${icon('refresh', 19)}</button>
@@ -1266,7 +1269,7 @@ SCREENS.scan = () => {
       const paintTile = (tile, fl) => {
         const fi = NET_FACES.indexOf(tile.dataset.face);
         const letters = fl.slice(fi * 9, fi * 9 + 9);
-        [...tile.querySelectorAll('i')].forEach((c, i) => {
+        [...tile.querySelectorAll('.cell')].forEach((c, i) => {
           c.style.backgroundColor = pal[letters[i]] ?? 'var(--facelet-off)';
         });
       };
@@ -1332,6 +1335,62 @@ SCREENS.scan = () => {
       setFocus('F');
       let capturedCount = 0;
 
+      // ---- the board's keyboard path -----------------------------------------------------------
+      // 54 stickers are 54 buttons, but ONE tab stop: the board is a composite widget with a
+      // roving tabindex. Tab lands on it once; the arrows walk the stickers (Left/Right by one,
+      // Up/Down by a row within a side, Home/End to the board's ends); Enter is the click the
+      // pointer would have made, heard by the same delegated listener. Every cell is inspectable
+      // by arrow — its label carries the side, the position and the reading — and aria-disabled
+      // says which ones a press will be refused on, without swallowing the event the way real
+      // `disabled` would (a swallowed click would break tap-to-focus on the strip tiles).
+      const cellButtons = tiles.flatMap((tile) => [...tile.querySelectorAll('.cell')]);
+      let roveAt = cellButtons.indexOf(tiles.find((tile) => tile.dataset.face === 'F').querySelector('.cell'));
+      const setRove = (idx) => {
+        cellButtons[roveAt].setAttribute('tabindex', '-1');
+        roveAt = Math.max(0, Math.min(cellButtons.length - 1, idx));
+        cellButtons[roveAt].setAttribute('tabindex', '0');
+      };
+      setRove(roveAt);
+      faces.addEventListener('keydown', (ev) => {
+        const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 3, ArrowUp: -3 }[ev.key];
+        const jump = ev.key === 'Home' ? 0 : ev.key === 'End' ? cellButtons.length - 1 : null;
+        if (step === undefined && jump === null) return;
+        ev.preventDefault();
+        setRove(jump ?? roveAt + step);
+        cellButtons[roveAt].focus();
+      });
+      // A pointer can land focus anywhere; the roving point follows it rather than fighting it.
+      faces.addEventListener('focusin', (ev) => {
+        const i = cellButtons.indexOf(ev.target);
+        if (i >= 0) setRove(i);
+      });
+
+      /** Names and actionability for all 54 cells, refreshed on every capture and every paint
+       *  toggle: the label is how a screen reader inspects the board the way an eye does, and
+       *  aria-disabled marks the cells whose press the handler will refuse (a pending outer
+       *  sticker; the centre before its side is read, or while painting). */
+      let lastCaptured = [];
+      const refreshCellNames = () => {
+        for (const tile of tiles) {
+          const f = tile.dataset.face;
+          const got = lastCaptured.find((c) => c.face === f);
+          [...tile.querySelectorAll('.cell')].forEach((c, i) => {
+            const centre = i === 4;
+            const actionable = centre ? Boolean(got) && !painting : Boolean(got) || painting;
+            c.setAttribute('aria-disabled', String(!actionable));
+            if (centre) {
+              c.setAttribute('aria-label', got
+                ? `Scan the ${SCAN_FACE_NAME[f]} side again`
+                : `${SCAN_FACE_NAME[f]} side centre — it names the side`);
+            } else {
+              const read = got ? `read as the ${SCAN_FACE_NAME[NET_FACES[got.colors[i]]]} side’s colour` : 'not read yet';
+              c.setAttribute('aria-label', `${SCAN_FACE_NAME[f]} side, sticker ${i + 1} — ${read}`);
+            }
+          });
+        }
+      };
+      // First called below, once `painting` exists — this definition precedes that declaration.
+
       // Which camera. This machine class routinely has several — a built-in, a virtual camera, a
       // Continuity Camera (an iPhone) — and with no video preview the user cannot tell which one
       // answered. The pin is an ATTRIBUTE, not a property: mount() runs before the element's
@@ -1352,8 +1411,11 @@ SCREENS.scan = () => {
         root.classList.toggle('painting', on);
         paintBtn.title = on ? 'Stop painting and use the camera' : 'Paint the cube by hand instead of scanning it';
         paintBtn.setAttribute('aria-label', paintBtn.title);
+        // Painting changes which cells a press is heard on; their aria-disabled must say so.
+        refreshCellNames();
         panel.setPainting?.(on);
       };
+      refreshCellNames();
       paintBtn.onclick = () => { closePops(); setPainting(!painting); };
       const pin = (id) => { if (id) panel.setAttribute('device-id', id); else panel.removeAttribute('device-id'); };
       pin(settings.cameraId);
@@ -1470,11 +1532,11 @@ SCREENS.scan = () => {
         for (const tile of tiles) {
           const f = tile.dataset.face;
           // The centre carries the rescan affordance, revealed on hover over a captured side.
-          const centreCell = tile.querySelectorAll('i')[4];
+          const centreCell = tile.querySelectorAll('.cell')[4];
           if (!centreCell.firstChild) centreCell.innerHTML = icon('refresh', 15);
           centreCell.title = `Scan the ${SCAN_FACE_NAME[f]} side again`;
           const got = p.captured.find((c) => c.face === f);
-          const cells = [...tile.querySelectorAll('i')];
+          const cells = [...tile.querySelectorAll('.cell')];
           tile.classList.toggle('done', Boolean(got));
           // A nearly-solved cube can read as several different cubes; the scanner then names one
           // side to show again, held a stated way up. Point at it — the sentence alone makes a
@@ -1493,6 +1555,8 @@ SCREENS.scan = () => {
         if (p.confirm?.face) setFocus(p.confirm.face);
         else if (p.captured.length > capturedCount) setFocus(p.captured[p.captured.length - 1].face);
         capturedCount = p.captured.length;
+        lastCaptured = p.captured;
+        refreshCellNames();
         // The twin follows the scan side by side rather than waiting for all six.
         if (!settled) stateCube.setAttribute('facelets', partialFacelets(p.captured));
         camOn = Boolean(p.device);
@@ -1556,8 +1620,12 @@ SCREENS.scan = () => {
         solveBtn.disabled = false;
         const fl = e.detail.facelets;
         // Faces captured the wrong way up turn to their true orientation; the rest repaint in
-        // place (their content is already canonical, so nothing visibly changes).
+        // place (their content is already canonical, so nothing visibly changes). The cell
+        // names follow: captures were named as SHOWN, and the settle renames every sticker
+        // from the validated string.
         settleTiles(fl, e.detail.rotations);
+        lastCaptured = NET_FACES.map((f, fi) => ({ face: f, colors: [...fl.slice(fi * 9, fi * 9 + 9)].map((ch) => NET_FACES.indexOf(ch)) }));
+        refreshCellNames();
         // The camera SAW the cube in the user's hand; nothing was inferred from anywhere else.
         //
         // Order matters: the repair reads what the cube CLAIMED, so it runs before the scan is
@@ -1613,7 +1681,15 @@ SCREENS.scan = () => {
       swatches.setAttribute('aria-label', 'Pick this sticker’s colour');
       root.appendChild(swatches);
       let editing = null;
-      const closeSwatches = () => { swatches.hidden = true; editing = null; root.querySelector('.scan-face .cell.editing')?.classList.remove('editing'); };
+      const closeSwatches = () => {
+        // Hand focus back to the cell that opened the picker — but only when focus is INSIDE it
+        // (the keyboard path); a pointer click elsewhere keeps the focus it just placed.
+        const back = editing?.el && swatches.contains(document.activeElement) ? editing.el : null;
+        swatches.hidden = true;
+        editing = null;
+        root.querySelector('.scan-face .cell.editing')?.classList.remove('editing');
+        back?.focus();
+      };
       const closePops = () => { closeSwatches(); menu.hidden = true; };
       for (const f of NET_FACES) {
         const b = document.createElement('button');
@@ -1654,7 +1730,7 @@ SCREENS.scan = () => {
         // there all 48 outer stickers are open whether the camera has seen that side or not.
         if (!painting && !tile.classList.contains('done')) return;
         closePops();
-        editing = { face: tile.dataset.face, index };
+        editing = { face: tile.dataset.face, index, el: cellEl };
         cellEl.classList.add('editing');
         // Mark the colour already there, so the picker shows what it is changing FROM — and, when
         // this sticker is a misread suspect, ring the colour the scanner reckons it should be.
@@ -1674,6 +1750,9 @@ SCREENS.scan = () => {
         const w = swatches.offsetWidth;
         swatches.style.left = `${Math.min(Math.max(8, cellRect.left - s.left + cellRect.width / 2 - w / 2), s.width - w - 8)}px`;
         placePopoverV(swatches, tileRect); // below the tile, or above it when that is the room there is
+        // The keyboard path continues where the pointer's does: focus lands on the colour the
+        // sticker already has (or the first chip), and closeSwatches hands it back to the cell.
+        (swatches.querySelector('.now') ?? swatches.firstElementChild)?.focus();
         ev.stopPropagation();
       };
       const onAway = (ev) => {
