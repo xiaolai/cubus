@@ -26,6 +26,13 @@ it walks you through solving it.
     delegated click handler in `app.js` hands the URL to `__TAURI__.opener.openUrl` when that API
     is injected; in the browser the same anchors work natively. Same test as above: both builds
     satisfy the seam, neither gains a screen.
+  - **Third seam, accepted 2026-08-27 with the layout contract**: the desktop window's
+    orientation. `set_orientation` / `get_orientation` (commands in `lib.rs`) re-size and
+    re-centre the fixed window to the other reference and remember the choice in a file the
+    window is built from at the next launch — a file, because the window exists before the
+    webview does. The Settings row that calls them is drawn only where the Tauri API is injected
+    on a desktop platform; the browser build has no window to shape and a phone rotates in the
+    hand. Same test as above: no screen exists on one build only.
   - **Dev tooling, accepted 2026-08-27, never shipped**: `tauri-plugin-mcp` (git dep, pinned rev)
     — the control socket that lets an AI agent drive the app for verification: screenshots,
     selector clicks, DOM queries, JS eval. Triple-gated because it is control-everything: the
@@ -34,13 +41,27 @@ it walks you through solving it.
     side is registered in `.mcp.json` (`tauri-mcp`, pinned npm version); the guest JS is vendored
     to `apps/web/vendor/tauri-mcp-guest.js` and loaded only under Tauri, inert without the Rust
     side. To use: `CUBUS_MCP=1 pnpm dev:desktop`, then the `tauri-mcp` MCP tools in a fresh
-    agent session.
-- **No smart-cube support, deliberately.** A verified GAN16 BLE driver and a Rust bridge were
-  built, shipped and then removed. They worked; the problem was that a cube adds an axis — present
-  or absent, trusted or not — and every screen has to answer it. For this audience that axis is
-  where the app gets lost, and it cannot be modelled away because it should not exist. Both are
-  preserved on the **`v0`** branch, including the tracking-offset maths, which is the part worth
-  recovering if this is ever revisited.
+    agent session. **Never call `manage_window clear_browsing_data` (or any storage clear) on the
+    dev app**: its localStorage IS the user's data — settings, the hidden-nav choice, the cube
+    registry, recent solves, the `cubeView` tuning — and on 2026-08-27 one such call, made to bust
+    a cached bundle, wiped all of it with no backup. If a rebuilt bundle does not show after a
+    reload, restart the dev app; the cache dies with the process, the data does not.
+    **`manage_window focus` before any screenshot of a `<cubus-cube>`**: an occluded window
+    reports `document.visibilityState === 'hidden'` and WebKit pauses `requestAnimationFrame`,
+    so the renderer keeps its FIRST frame — a camera or ghost attribute set after mount is never
+    repainted. On 2026-08-28 that made the solved cube on Home look twice its size with no
+    ghosts, and cost an hour of chasing a renderer bug that did not exist.
+- **Smart-cube support returned, deliberately** (removed 2026-08-26, merged back 2026-08-28).
+  The removal's reasoning is the bar the return is held to: a cube adds an axis — present or
+  absent, trusted or not — that every screen has to answer, and for this audience that axis was
+  where the app got lost. The return answers it rather than modelling it away: trust is a
+  visible state, never inferred from "connected"; one camera scan repairs tracking with no
+  solving (the offset, `apps/web/lib/cube-trust.js`); and a reconnect asks the one question a
+  beginner can answer — "Is this your cube right now?" — backed by a two-adjacent-side camera
+  check (`apps/web/lib/cube-reconnect.js`). Capability, never a mode: every screen works with no
+  cube, the camera stays first-class, and no screen exists only with hardware. The design and
+  its refute passes: `dev-docs/cube-trust-design.md` and `dev-docs/smart-cube-ux-prd.md`
+  (delivery status per phase). The removal-era code history remains on **`v0`**.
 - **Design system**: the approved UI kit lives in `dev-docs/design/` — read
   `dev-docs/design/README.md` before any `apps/web` UI work. Adopted into the app:
   `apps/web/tokens.css` (warm-paper tokens, light/dark) and `<cubus-cube>` (a purpose-built
@@ -48,6 +69,15 @@ it walks you through solving it.
   cubejs + cubing.js). Fonts are system stacks only (decided 2026-08-27): numerals/times/algs use
   the system mono stack, UI text `system-ui` — no web fonts, no embedded fonts, and index.html
   loads nothing remote (a test enforces it).
+- **Layout contract** (decided 2026-08-27): two compositions keyed only on orientation — a 4:3
+  landscape reference and a 3:4 portrait reference — each with a locked primary region (the cube,
+  or the live scan face) and a sheet that absorbs the long-axis surplus, so a phone's extra height
+  is sheet, never paper. Every platform runs the same two; the desktop window is fixed-size,
+  non-resizable, sized from the monitor's work area, and can be either shape (a persisted toggle).
+  The browser tab is a test harness, not a supported viewport. No viewport width/height media
+  queries anywhere in `apps/web` — a test enforces it; `@container`, `orientation`, `prefers-*`
+  and `pointer` are the allowed queries. Contract, fit rule, fixture table, desktop formulas,
+  and the build order: `dev-docs/stage-contract.md`.
 - **Verification is the contract**: a claim in a comment or a doc must be backed by a test that
   fails when the claim stops being true. The habit that mattered most on the driver — assert what
   must NOT happen, not only what should — applies just as well to a scan and a solve.
@@ -59,6 +89,11 @@ it walks you through solving it.
   that cannot be validated is a refusal, not a guess. A plausible figure is worse than a blank.
 - **Fail loud**: an unreadable scan, a state that cannot be solved, a storage write that did not
   land — each surfaces where it happens, never silently.
+- **The version is one number in six places** — `apps/web/lib/app.js` (`VERSION`, what the About
+  card shows; the web app has no build step to read a manifest at runtime), both `package.json`s
+  under `apps/`, `tauri.conf.json`, the desktop `Cargo.toml` and `Cargo.lock`. `pnpm bump X.Y.Z`
+  moves all six (`scripts/bump-version.mjs`, tested; it refuses rather than half-bumps), and a
+  wiring test fails if any of them drifts from `VERSION`. Never edit one by hand.
 - **Quality gate** is `pnpm check`, and it is two different things:
   `packages/cube-scanner` runs strict `tsc` + Biome + a type-aware ESLint pass + vitest;
   `apps/web` runs `node --test` over `apps/web/test/` (it has no build step to typecheck, and

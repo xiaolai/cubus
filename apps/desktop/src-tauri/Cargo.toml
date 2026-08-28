@@ -1,6 +1,6 @@
 [package]
 name = "cubus-desktop"
-version = "0.4.2"
+version = "0.1.0"
 description = "Cubus desktop app"
 edition = "2021"
 rust-version = "1.77.2"
@@ -35,6 +35,16 @@ log = "0.4"
 # less plugin on other targets, where the app runs WebDetector — so this dependency is safe on
 # every platform and the shell stays one codebase.
 cube-vision = { path = "../../../crates/cube-vision" }
+
+# The smart-cube BLE bridge, recovered from v0 on 2026-08-27 (third capability seam: the browser
+# build reaches the same cube over Web Bluetooth, the desktop over btleplug — gan-driver decodes
+# in the webview either way). FFF6 notifications go up as `cube-packet` events; FFF5 commands come
+# back through `write_fff5`.
+gan-ble = { path = "../../../crates/gan-ble" }
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3"
+hex = "0.4"
 
 # Already in the tree via tao/wry (same version), pulled in directly to place the macOS traffic
 # lights deterministically — see place_traffic_lights in lib.rs for why the framework's own
