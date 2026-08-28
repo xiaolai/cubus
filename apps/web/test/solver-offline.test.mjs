@@ -16,7 +16,7 @@ import { existsSync, readFileSync } from 'node:fs';
 const vendor = (f) => new URL(`../vendor/${f}`, import.meta.url);
 
 test('the vendored bundles exist', () => {
-  for (const f of ['cubejs.js', 'cubing.js', 'search-worker-entry.js']) {
+  for (const f of ['cubejs.js', 'min2phase.js']) {
     assert.ok(existsSync(vendor(f)), `vendor/${f} missing — run \`pnpm vendor:libs\``);
   }
 });
@@ -38,25 +38,40 @@ test('cubejs solves, and applying its solution leaves a solved cube', async () =
   assert.ok(scrambled.isSolved(), 'applying cubejs’s own solution must leave a solved cube');
 });
 
-// The interesting one. cubing runs min2phase in a Web Worker whose URL is resolved from
-// import.meta.url, so this fails unless search-worker-entry.js sits beside cubing.js.
-test('cubing solves through its worker, and the solution verifies', async () => {
-  const { cube3x3x3, experimentalSolve3x3x3IgnoringCenters } = await import(vendor('cubing.js'));
-  const scramble = "R U R' U' F2 L D L' B2";
-  const kpuzzle = await cube3x3x3.kpuzzle();
-  const start = kpuzzle.defaultPattern().applyAlg(scramble);
+// The interesting one. min2phase is patched out of cubing's dist by vendor-min2phase.mjs so its
+// search bounds can be set — that is why the app vendors it directly rather than calling cubing,
+// whose API has no room for a solution length, for progress, or for stopping. cubing itself is a
+// build-time dependency now and ships nothing.
+//
+// Offline is only half of what this checks. The other half is that the bounds patch is LIVE: a
+// vendoring that produced a working solver with no way to bound it would keep solving and
+// silently ignore every target, with nothing red anywhere.
+test('the vendored min2phase solves offline, and honours a length bound', async () => {
+  const min2phase = await import(vendor('min2phase.js'));
+  const { createSolver } = await import(new URL('../lib/min2phase-engine.js', import.meta.url));
+  const Cube = (await import(vendor('cubejs.js'))).default;
+  Cube.initSolver();
 
-  const solution = (await experimentalSolve3x3x3IgnoringCenters(start)).toString();
-  assert.ok(solution.trim().length > 0, 'solver returned an empty alg');
-  assert.ok(
-    start.applyAlg(solution).isIdentical(kpuzzle.defaultPattern()),
-    'applying the solution must return the cube to solved',
-  );
+  const solve = createSolver(min2phase);
+  const scrambled = new Cube();
+  scrambled.move("R U R' U' F2 L D L' B2");
+  const facelets = scrambled.asString();
+
+  const loose = solve(facelets, { probeMax: 2_000_000 });
+  assert.ok(loose && loose.trim().length > 0, 'solver returned nothing at its loosest bound');
+  const check = Cube.fromString(facelets);
+  check.move(loose);
+  assert.ok(check.isSolved(), 'applying the solution must leave a solved cube');
+
+  const bounded = solve(facelets, { solLen: 15, probeMax: 2_000_000 });
+  assert.ok(bounded, 'no solution under 15 moves for a nine-move scramble');
+  assert.ok(bounded.trim().split(/\s+/).length < 15,
+    'asked for fewer than 15 moves and got more — the bounds patch is not live');
 });
 
 // A regression guard on the thing that caused all this: no remote imports in the shipped sources.
 test('no source file imports from a CDN', () => {
-  for (const f of ['lib/app.js', 'lib/cubejs-entry.js', 'lib/router.js']) {
+  for (const f of ['lib/app.js', 'lib/cubejs-entry.js', 'lib/router.js', 'lib/solve-worker.js', 'lib/random-state.js']) {
     const src = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
     const remote = [...src.matchAll(/import\s*\(\s*['"`](https?:\/\/[^'"`]+)/g)].map((m) => m[1]);
     assert.deepEqual(remote, [], `${f} must not import from the network`);
