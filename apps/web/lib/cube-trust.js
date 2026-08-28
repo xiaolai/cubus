@@ -60,6 +60,20 @@ function denseSum(arr, n, hi) {
  *  centres are not these is not in the frame the whole app is written in. */
 const CENTRES = [[4, 'U'], [13, 'R'], [22, 'F'], [31, 'D'], [40, 'L'], [49, 'B']];
 
+/** The STRUCTURAL half of the gate: right alphabet and length, nine of each colour, centres
+ *  pinned — everything checkable without the cube library. Exported for callers that must refuse
+ *  a non-state before the (lazily loaded) library exists — the registry parse at boot — or that
+ *  guard a path where the library is optional, like the confirmation's candidate. toCube() runs
+ *  this first, so the exported check and the full gate can never drift apart. */
+export function looksLikeCubeState(facelets) {
+  if (typeof facelets !== 'string' || !FACELET_RE.test(facelets)) return false;
+  const counts = new Map();
+  for (const ch of facelets) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  for (const n of counts.values()) if (n !== 9) return false;
+  for (const [i, face] of CENTRES) if (facelets[i] !== face) return false;
+  return true;
+}
+
 /**
  * Can this arrangement be reached by turning a real cube?
  *
@@ -82,7 +96,12 @@ function isSolvable(c) {
   if (!isPermutation(c.center, 6)) return false;
   for (let i = 0; i < 6; i++) if (c.center[i] !== i) return false;
   if (typeof c.cornerParity !== 'function' || typeof c.edgeParity !== 'function') return false;
-  return c.cornerParity() === c.edgeParity();
+  // The results validated, not just compared: two equal GARBAGE values (99 === 99, undefined ===
+  // undefined) would otherwise pass the parity gate for a cube that cannot exist.
+  const cp = c.cornerParity();
+  const ep = c.edgeParity();
+  if ((cp !== 0 && cp !== 1) || (ep !== 0 && ep !== 1)) return false;
+  return cp === ep;
 }
 
 /** Is the injected library one we can actually use? Both halves are needed: `fromString` to read
@@ -102,15 +121,9 @@ function usable(Cube) {
  *  wrong answer, which is the entire reason this module exists. */
 function toCube(facelets, Cube) {
   if (!usable(Cube)) return null;
-  if (typeof facelets !== 'string' || !FACELET_RE.test(facelets)) return null;
-
-  const counts = new Map();
-  for (const ch of facelets) counts.set(ch, (counts.get(ch) ?? 0) + 1);
-  for (const n of counts.values()) if (n !== 9) return null;
-
-  // Centres, before parsing. They pin the frame, and a state whose centres have moved is not one
-  // this app's URFDLB notation can describe.
-  for (const [i, face] of CENTRES) if (facelets[i] !== face) return null;
+  // Structure first — including the centres, which pin the frame: a state whose centres have
+  // moved is not one this app's URFDLB notation can describe.
+  if (!looksLikeCubeState(facelets)) return null;
 
   try {
     const cube = Cube.fromString(facelets);
@@ -148,6 +161,15 @@ function invert(c, Cube) {
   return o;
 }
 
+/** Is this string a real, reachable cube arrangement? The full gate deriveOffset and applyOffset
+ *  put their own inputs through — round-trip included — exported for callers that must refuse a
+ *  forged state without wanting an offset: the remembered-arrangement record (cube-registry.js)
+ *  and the reconnect readings (cube-reconnect.js) are both parsed with exactly this check, so a
+ *  string they accept and a string this module accepts can never drift apart. */
+export function isCubeState(facelets, Cube) {
+  return toCube(facelets, Cube) !== null;
+}
+
 /** Is this offset a no-op? A missing offset and the solved one mean the same thing: nothing to
  *  correct. One predicate, so the two can never be treated differently by accident.
  *
@@ -171,12 +193,20 @@ export function deriveOffset(scanned, reported, Cube) {
   const r = toCube(reported, Cube);
   if (!s || !r) return null;
   try {
-    s.multiply(invert(r, Cube));
-    // The correction is itself a cube state, and everything downstream assumes so. Validated with
-    // the SAME function its inputs went through, not a looser regex: an alphabet-and-length check
-    // would accept a wrong colour count, moved centres, or an object whose toString() merely looks
-    // like facelets — and would then return that object from a function documented as string|null.
-    const out = s.asString();
+    return multiplyToState(s, invert(r, Cube), Cube);
+  } catch { return null; }
+}
+
+/** left · right, serialised and re-validated — the shared last step of both trust operations,
+ *  one body so the two cannot drift. The product is itself a cube state, and everything
+ *  downstream assumes so: validated with the SAME function the inputs went through, not a looser
+ *  regex — an alphabet-and-length check would accept a wrong colour count, moved centres, or an
+ *  object whose toString() merely looks like facelets, and would then escape a function
+ *  documented as string|null. Null on anything unusable, including a throw mid-multiply. */
+function multiplyToState(left, right, Cube) {
+  try {
+    left.multiply(right);
+    const out = left.asString();
     return toCube(out, Cube) ? out : null;
   } catch { return null; }
 }
@@ -201,9 +231,5 @@ export function applyOffset(offset, reported, Cube) {
   if (isIdentity(offset)) return reported;
   const off = toCube(offset, Cube);
   if (!off) return null;
-  try {
-    off.multiply(rep);
-    const out = off.asString();
-    return toCube(out, Cube) ? out : null;
-  } catch { return null; }
+  return multiplyToState(off, rep, Cube);
 }

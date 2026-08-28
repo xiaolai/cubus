@@ -15,6 +15,8 @@
 //
 // Pure: no DOM, no localStorage, no globals. The caller does the I/O.
 
+import { isCubeState, looksLikeCubeState } from './cube-trust.js';
+
 /** Long enough for "Mum's green one", short enough that storage cannot be used as a bucket. */
 export const MAX_LABEL = 40;
 
@@ -50,11 +52,70 @@ function cleanStamp(value) {
  *  and every one of them would be parsed, cloned, sorted and rendered on the Settings screen. */
 export const MAX_CUBES = 32;
 
+/** The move serial a FACELETS report carries is 16 bits (gan-driver gen4/decode.ts); the 8-bit
+ *  value the driver compares for gaps is the same counter masked. The remembered serial is the
+ *  16-bit one, compared modulo this. It is information for wording, never proof for trust — the
+ *  GAN16's counter restarts per connection, so it says nothing across a break (measured with the
+ *  driver's CLI; dev-docs/smart-cube-ux-prd.md, "Reconnecting a known cube"). */
+export const SERIAL_MOD = 0x10000;
+
+const LAST_HOW = new Set(['camera', 'cube', 'confirmed']);
+
+/** Is this string an arrangement worth remembering? The structural half is cube-trust's own
+ *  `looksLikeCubeState` — one predicate, shared, so this parse and the offset maths can never
+ *  disagree about what a facelet string is. The full reachability round-trip runs whenever the
+ *  caller injects cubejs; injected, not imported, so this module stays loadable before the
+ *  (lazily loaded) solver bundle: a record kept on the structural check alone is re-parsed with
+ *  the full one as soon as the library exists, and the reconnect readings validate through
+ *  cube-trust again before showing anything. */
+function usableState(s, Cube) {
+  if (!looksLikeCubeState(s)) return false;
+  // Absent means "the library has not loaded yet" and defers to the structural check; anything
+  // ELSE goes through the full gate, which fails closed. `typeof Cube === 'function'` here
+  // silently downgraded a broken injected library to the weaker check — the one caller mistake
+  // this module must not absorb quietly.
+  return Cube === null || Cube === undefined ? true : isCubeState(s, Cube);
+}
+
+/**
+ * The remembered arrangement — the last one the app was SURE of, and what the cube itself said at
+ * that moment. Both, not one: after a camera repair the truth and the cube's raw report differ by
+ * the offset, and the offset dies on disconnect, so the reconnect comparison is raw-to-raw while
+ * the picture shown is the truth.
+ *
+ * Whitelisted like everything else in this file, and stricter: `facelets`, `reported` and `how`
+ * are the load-bearing fields, so a record where any of them is unusable is dropped WHOLE — a
+ * half-remembered arrangement is worse than none. The serial and timestamp are cleaned per field
+ * (an out-of-range serial becomes null, a bad stamp becomes 0), and anything else is dropped
+ * rather than read. Never `trusted`, never `offset`: a memory is a candidate to confirm, not a
+ * claim to rely on, and nothing parsed here may reintroduce a session property by being stored.
+ */
+function cleanLast(value, Cube) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { facelets, reported, serial, at, how } = value;
+  if (!usableState(facelets, Cube) || !usableState(reported, Cube)) return null;
+  if (!LAST_HOW.has(how)) return null;
+  return {
+    facelets,
+    reported,
+    serial: Number.isSafeInteger(serial) && serial >= 0 && serial < SERIAL_MOD ? serial : null,
+    at: cleanStamp(at),
+    how,
+  };
+}
+
+/** Newest first, ties broken on address so a list built from this cannot reorder itself between
+ *  two renders. ONE comparator: it had three copies, and three copies of an ordering rule is how
+ *  two screens end up disagreeing about which cube is "most recent". */
+const byRecency = ([am, a], [bm, b]) => b.lastSeen - a.lastSeen || am.localeCompare(bm);
+
 /** Canonical form of a cube address, or '' if the input is not one. Upper case because that is
  *  how every GAN tool prints it, and a registry keyed case-sensitively would hold the same cube
- *  twice. */
+ *  twice. Strings only — no coercion: `String([mac])` would launder an array into an address,
+ *  and an object with a throwing toString would escape a function documented to return ''. */
 export function normaliseMac(value) {
-  const s = String(value ?? '').trim();
+  if (typeof value !== 'string') return '';
+  const s = value.trim();
   return MAC_RE.test(s) ? s.toUpperCase() : '';
 }
 
@@ -77,9 +138,11 @@ function cleanLabel(value) {
  * reintroduce them by being stored once, and a half-built record is never preferable to none.
  *
  * @param {unknown} raw
- * @returns {Record<string, {name: string, nickname: string, lastSeen: number}>}
+ * @param {Function} [Cube] cubejs constructor; with it, a remembered arrangement must also pass
+ *   the full reachability round-trip (cube-trust.js) — without it, the structural checks alone
+ * @returns {Record<string, {name: string, nickname: string, lastSeen: number, last?: object}>}
  */
-export function parseRegistry(raw) {
+export function parseRegistry(raw, Cube) {
   const out = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const [key, value] of Object.entries(raw)) {
@@ -90,6 +153,8 @@ export function parseRegistry(raw) {
       nickname: cleanLabel(value.nickname),
       lastSeen: cleanStamp(value.lastSeen),
     };
+    const last = cleanLast(value.last, Cube);
+    if (last) rec.last = last;
     // Nothing usable survived. Promoting `{}` into a full record contradicted this function's own
     // promise not to build half a one, and turned a corrupt key into a permanent ghost row.
     if (!rec.name && !rec.nickname && !rec.lastSeen) continue;
@@ -101,9 +166,7 @@ export function parseRegistry(raw) {
     out[mac] = rec;
   }
   // Bounded, most recent first, so a quota-sized registry cannot be rendered as a quota-sized list.
-  const kept = Object.entries(out)
-    .sort(([am, a], [bm, b]) => b.lastSeen - a.lastSeen || am.localeCompare(bm))
-    .slice(0, MAX_CUBES);
+  const kept = Object.entries(out).sort(byRecency).slice(0, MAX_CUBES);
   return Object.fromEntries(kept);
 }
 
@@ -113,18 +176,21 @@ export function parseRegistry(raw) {
  *
  * An existing nickname survives — it is the user's word for this cube, and a reconnect is not a
  * reason to forget it. The device-reported name is replaced when the cube supplies a new one,
- * because the cube is the authority on its own name.
+ * because the cube is the authority on its own name. The remembered arrangement survives too:
+ * the reconnect readings exist to compare the fresh connection against it, so the connect that
+ * triggers them must not be the write that erases it.
  */
-export function rememberCube(reg, { mac, name = '', at = 0 } = {}) {
+export function rememberCube(reg, { mac, name = '', at = 0 } = {}, Cube) {
   const id = normaliseMac(mac);
-  if (!id) return parseRegistry(reg);
-  const next = parseRegistry(reg);
+  if (!id) return parseRegistry(reg, Cube);
+  const next = parseRegistry(reg, Cube);
   const prev = next[id];
   const rec = {
     name: cleanLabel(name) || prev?.name || '',
     nickname: prev?.nickname || '',
     lastSeen: cleanStamp(at) || prev?.lastSeen || 0,
   };
+  if (prev?.last) rec.last = prev.last;
   // Nothing usable to remember, so there is nothing to write. Same rule parseRegistry applies to
   // what it reads, applied here to what we are asked to store.
   if (!rec.name && !rec.nickname && !rec.lastSeen) return next;
@@ -138,9 +204,26 @@ export function rememberCube(reg, { mac, name = '', at = 0 } = {}) {
   // macOS will not give back.
   const others = Object.entries(next)
     .filter(([m]) => m !== id)
-    .sort(([am, a], [bm, b]) => b.lastSeen - a.lastSeen || am.localeCompare(bm))
+    .sort(byRecency)
     .slice(0, MAX_CUBES - 1);
   return Object.fromEntries([[id, rec], ...others]);
+}
+
+/**
+ * Remember what a cube looked like at the last moment the app was sure. Returns a NEW registry,
+ * like every writer here; the cube must already be on record (a connect writes the record before
+ * any report arrives, so an unknown address reaching this is a caller bug, answered by changing
+ * nothing rather than by inventing a half-record). A `last` that does not survive cleanLast is
+ * refused the same way — a memory is only worth keeping whole.
+ */
+export function rememberLast(reg, mac, last, Cube) {
+  const id = normaliseMac(mac);
+  const next = parseRegistry(reg, Cube);
+  if (!id || !next[id]) return next;
+  const clean = cleanLast(last, Cube);
+  if (!clean) return next;
+  next[id] = { ...next[id], last: clean };
+  return next;
 }
 
 /** Give a cube a name of the user's own. A label, never a claim: nothing in the app branches on
@@ -161,12 +244,15 @@ export function forgetCube(reg, mac) {
   return next;
 }
 
-/** Known cubes, most recently seen first, each as `{ mac, name, nickname, lastSeen }`.
- *  Ties break on address so the list cannot reorder itself between two renders. */
+/** Known cubes, most recently seen first, each as `{ mac, name, nickname, lastSeen }` — plus
+ *  `last`, the remembered arrangement, on cubes that have one (deliberately exposed: the
+ *  reconnect readings are its consumer, and a projection that stripped it here would force a
+ *  second lookup by address). Ties break on address so the list cannot reorder itself between
+ *  two renders. */
 export function listCubes(reg) {
   return Object.entries(parseRegistry(reg))
-    .map(([mac, rec]) => ({ mac, ...rec }))
-    .sort((a, b) => b.lastSeen - a.lastSeen || a.mac.localeCompare(b.mac));
+    .sort(byRecency)
+    .map(([mac, rec]) => ({ mac, ...rec }));
 }
 
 /** What to call a cube on screen. The user's word wins; the device's name is the fallback; the
