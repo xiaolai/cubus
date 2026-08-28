@@ -21,7 +21,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
  * to it, so the five version fields this repo carries can no longer drift apart silently — the
  * About card spent months claiming 0.4.2 over manifests that all said 0.1.0. Exported for that
  * test, not as API. */
-export const VERSION = '0.4.2';
+export const VERSION = '0.1.0';
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const PALETTE_ATTR = { muted: 'muted', classic: 'classic', colorsafe: 'colorsafe' };
 /** Escape text destined for an innerHTML template. Scramble strings, solve times and anything
