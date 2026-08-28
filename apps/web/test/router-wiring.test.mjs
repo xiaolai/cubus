@@ -611,9 +611,21 @@ test('every manifest carries the same version the app displays', async () => {
   assert.equal(
     JSON.parse(readFileSync(at('../../desktop/src-tauri/tauri.conf.json'), 'utf8')).version,
     VERSION, 'tauri.conf.json — the version the installed desktop app reports');
+  assert.equal(JSON.parse(readFileSync(at('../../desktop/package.json'), 'utf8')).version, VERSION,
+    'apps/desktop/package.json');
+  const v = VERSION.replace(/\./g, '\\.');
   const cargo = readFileSync(at('../../desktop/src-tauri/Cargo.toml'), 'utf8');
-  assert.match(cargo, new RegExp(`^version = "${VERSION.replace(/\./g, '\\.')}"$`, 'm'),
-    'the desktop crate version');
+  assert.match(cargo, new RegExp(`^version = "${v}"$`, 'm'), 'the desktop crate version');
+  // The lockfile is committed and records the crate's version too: a bump that leaves it behind
+  // is a diff waiting to appear on the next `cargo` run, on somebody else's machine.
+  const lock = readFileSync(at('../../../Cargo.lock'), 'utf8');
+  assert.match(lock, new RegExp(`^name = "cubus-desktop"\\nversion = "${v}"$`, 'm'), 'Cargo.lock');
+  // And the six are the six `pnpm bump` moves — a seventh place would drift silently.
+  const { SITES } = await import('../../../scripts/bump-version.mjs');
+  assert.deepEqual(SITES.map((s) => s.file).sort(), [
+    'Cargo.lock', 'apps/desktop/package.json', 'apps/desktop/src-tauri/Cargo.toml',
+    'apps/desktop/src-tauri/tauri.conf.json', 'apps/web/lib/app.js', 'apps/web/package.json',
+  ]);
 });
 
 // The random-cube die on the solve screen is a developer shortcut (the cube it loads is not the

@@ -5,6 +5,7 @@
   "description": "cubus-im \u2014 a beginner/kids Rubik's Cube tutor. Web SPA + Tauri app on a verified GAN16 smart-cube driver.",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
+    "bump": "node scripts/bump-version.mjs",
     "dev": "pnpm --filter cubus-web dev",
     "dev:desktop": "pnpm --filter cubus-desktop dev",
     "build:panel": "pnpm --filter cube-scanner build:panel",
