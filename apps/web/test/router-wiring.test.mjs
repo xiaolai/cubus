@@ -94,6 +94,11 @@ test('go() moves the URL as well as the screen', async () => {
   await tick();
   assert.equal(win.location.hash, '#/settings', 'URL must follow the screen');
   assert.equal(activeNav(), 'settings');
+  // The gear itself — the one control a user can see. The smart-cube indicator beside it shares
+  // data-nav="settings" and comes first, and for as long as the marker was matched on data-nav
+  // it landed on that hidden button, so the bar never showed where you were on Settings.
+  assert.ok(win.document.querySelector('#tbTrail [aria-label="Settings"]').classList.contains('active'), 'the visible gear is marked current');
+  assert.ok(!win.document.querySelector('#cubeLive').classList.contains('active'), 'the hidden indicator is not');
 });
 
 test('an unknown hash falls back to home rather than rendering nothing', async () => {
@@ -167,20 +172,42 @@ test('the cube screen applies every saved view setting, not just the ones it sho
   await tick();
   const cube = win.document.querySelector('#viewCube > cubus-cube');
   assert.deepEqual(
-    ['ghosts', 'ghost-elevation', 'camera-distance', 'camera-latitude', 'camera-longitude', 'facelet-scale']
+    ['ghosts', 'ghost-elevation', 'camera-latitude', 'camera-longitude', 'facelet-scale']
       .map((a) => `${a}=${cube.getAttribute(a)}`),
-    ['ghosts=floating', 'ghost-elevation=8', 'camera-distance=27',
-     'camera-latitude=-60', 'camera-longitude=170', 'facelet-scale=0.4'],
+    ['ghosts=floating', 'ghost-elevation=8', 'camera-latitude=-60', 'camera-longitude=170', 'facelet-scale=0.4'],
   );
+  // The distance is not a setting any more: the renderer fits the picture to the slot
+  // (lib/cube-frame.js), so a stored camDist is dropped rather than applied — a distance that
+  // was right for one slot shape clipped the ghost faces on every other.
+  assert.equal(cube.getAttribute('camera-distance'), null, 'no camera-distance is set');
+  assert.equal('camDist' in JSON.parse(win.localStorage.getItem('cubeView')), false, 'and the stale key is gone from storage');
 });
+
+/** Give Home something to walk. A solved cube is a cube to look at, not a walk (tested further
+ *  down), so a test that wants the transport, the move list or the speed menu first makes the
+ *  subject a scrambled one — a generated cube, the way the dev die and the Scramble hand-off do
+ *  it without a camera. Waits for the solver first: it is what decides whether a cube is
+ *  solvable at all, and without it Home has nothing to say either way. */
+const scrambledHome = async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/scramble';
+  await tick();
+  assert.ok(await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0), 'no solver');
+  const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+  const c = new Cube();
+  c.move("R U R' U' F2 D L2 B' R2 U2");
+  Object.assign(state.cube, { facelets: c.asString(), derived: false, setupAlg: '', solution: '', moves: [], stepFacelets: [], isPhysical: false, source: 'generated' });
+  win.location.hash = '#/home';
+  await tick();
+};
 
 // The cube card carries the cube and one corner tool, and the transport is one row: four buttons,
 // the progress bar, the pacing toggle if a cube is connected, and the step count. Everything else
 // that used to sit there said something the chips, the animation or the nav were already saying.
 test('the cube screen is the cube, one transport row, and nothing else', async () => {
-  win.location.hash = '#/home';
-  await tick();
-  const cubeCard = win.document.querySelector('#stage .cols > .col > .card');
+  await scrambledHome();
+  // The cube card is the composition's `primary` region, a direct child of the grid.
+  const cubeCard = win.document.querySelector('#stage .cols > .card.primary');
   // One tool over the cube, in the corner: the speed menu. Nothing else draws on top of it.
   assert.deepEqual(
     [...cubeCard.querySelectorAll('button')].map((b) => b.id),
@@ -222,18 +249,15 @@ test('links to the absorbed screens land on the screen that absorbed them', asyn
   }
 });
 
-// `#/pair` was the smart-cube pairing screen, and it used to redirect to Settings because the
-// pairing card moved there. Settings no longer says anything about a cube, so an old bookmark
-// landing there would find nothing it came for — better to treat it as the unknown route it now
-// is and fall through to Home.
-test('the pairing route is not aliased anywhere, it simply no longer exists', async () => {
+// `#/pair` was the smart-cube pairing screen. With the smart cube back (this branch), its
+// controls live in Settings — so an old pairing bookmark lands where the controls actually are,
+// not on Home with nothing it came for.
+test('the old pairing route lands on Settings, where the cube controls live now', async () => {
   win.location.hash = '#/pair';
   await tick();
-  // It is an unknown route now, and unknown routes render Home. (The URL is left alone — the
-  // router only rewrites hashes it recognises as aliases. That is pre-existing behaviour and the
-  // same for any typo.)
-  assert.equal(activeNav(), 'home', 'an unknown route falls back to Home');
-  assert.ok(win.document.querySelector('#viewCube'), 'and Home actually mounted');
+  assert.equal(activeNav(), 'settings', 'a pairing bookmark reaches the smart-cube card');
+  win.location.hash = '#/home';
+  await tick();
 });
 
 // Setting an identical hash fires no hashchange, so this path is driven by go()'s direct render.
@@ -253,10 +277,7 @@ test('navigating onto the current screen still re-renders', async () => {
 // Speed went from a fixed constant to a three-way choice in the cube card's corner. The wiring sits
 // ahead of the solve on purpose, so it is live even here, where there is no solver to reach.
 test('the speed menu offers three speeds, defaults to normal, and drives the renderer', async () => {
-  win.location.hash = '#/timer';
-  await tick();
-  win.location.hash = '#/home';
-  await tick();
+  await scrambledHome();
 
   const opts = [...win.document.querySelectorAll('.menu [data-speed]')];
   assert.deepEqual(opts.map((b) => b.dataset.speed), ['slow', 'normal', 'fast']);
@@ -296,10 +317,7 @@ test('the speed menu offers three speeds, defaults to normal, and drives the ren
 test('a junk saved speed falls back to the default instead of being trusted', async () => {
   win.localStorage.setItem('walkSpeed', JSON.stringify({ id: 'ludicrous' }));
   try {
-    win.location.hash = '#/timer';
-    await tick();
-    win.location.hash = '#/home';
-    await tick();
+    await scrambledHome();
     const cube = win.document.querySelector('#viewCube > cubus-cube');
     assert.equal(cube.getAttribute('tempo-scale'), '0.1', 'unknown id must not become a tempo');
   } finally {
@@ -310,10 +328,7 @@ test('a junk saved speed falls back to the default instead of being trusted', as
 // The state card names what it shows and carries one tool. The raw 54-character facelet string it
 // used to print said nothing the net beside it was not already showing in colour.
 test('the state card is the net plus a dice, and says which state it is', async () => {
-  win.location.hash = '#/timer';
-  await tick();
-  win.location.hash = '#/home';
-  await tick();
+  await scrambledHome();
 
   // The state card leads the aside — the arrangement you are looking at, above the moves that
   // change it — and the move list follows.
@@ -443,10 +458,35 @@ test('scramble starts solved and lands exactly where the net says', async () => 
 });
 
 test('solve mode still names its own end of the walk', async () => {
-  win.location.hash = '#/home';
-  await tick();
+  await scrambledHome();
   assert.equal(win.document.querySelector('.aside .eyebrow-row .state-h').textContent, 'Initial State');
   assert.equal(win.document.querySelector('.card-h b').textContent, 'Solution');
+});
+
+// A solved cube has nothing to walk. cubejs's search answers the identity with a fourteen-move
+// no-op rather than an empty string, and "the solver returned moves" used to be the whole test of
+// whether there was a solution — so every fresh launch, before anyone had scanned anything, drew
+// a transport under the solved cube reading 0 / 0 with its done tick already lit.
+test('a solved cube on Home is a cube to look at, not a walk of zero moves', async () => {
+  const { state } = await import('../lib/app.js');
+  const prev = { ...state.cube };
+  try {
+    // Wait for the solver: the bug only exists once there is one to ask.
+    win.location.hash = '#/scramble';
+    await tick();
+    assert.ok(await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0), 'no solver');
+    Object.assign(state.cube, { facelets: SOLVED_FACELETS, derived: false, setupAlg: '', solution: '', moves: [], stepFacelets: [] });
+    win.location.hash = '#/home';
+    await tick();
+    assert.equal(state.cube.solvable, false, 'a solved cube is not "solvable"');
+    assert.equal(state.cube.setupAlg, '', 'and needs no setup to reach itself');
+    assert.ok(!win.document.querySelector('.cols').classList.contains('walking'), 'Home does not walk it');
+    assert.equal(win.document.querySelector('.transport'), null, 'no transport');
+    assert.equal(win.document.querySelector('#solList'), null, 'no solution list');
+    assert.equal(win.document.querySelector('#speedBtn'), null, 'no speed for an animation that does not exist');
+    const net = [...win.document.querySelectorAll('#viewNet .sticker')].map((e) => e.className.split(' ')[1]).join('');
+    assert.equal(net, SOLVED_FACELETS, 'the net shows the solved cube');
+  } finally { Object.assign(state.cube, prev); }
 });
 
 // An async mount outliving its screen is invisible until it writes: cubeScreen awaits a solver
@@ -508,16 +548,19 @@ test('opening Advanced is not remembered', async () => {
   const stored = win.localStorage.getItem('cubusSettings') ?? '';
   assert.ok(!stored.includes('advanced'), `open state must not be persisted, got: ${stored}`);
 
-  // The preference it controls IS saved, which is the distinction being drawn.
+  // The preference it controls IS saved, which is the distinction being drawn. Drill starts
+  // hidden, so the first click SHOWS it — and the stored hidden list must say so.
   win.document.querySelector('[data-nav-toggle="drill"]').click();
   await tick();
-  assert.match(win.localStorage.getItem('cubusSettings') ?? '', /navHidden.*drill/);
+  const hidden = JSON.parse(win.localStorage.getItem('cubusSettings') ?? '{}').navHidden ?? [];
+  assert.ok(!hidden.includes('drill'), `showing Drill persists, got: ${JSON.stringify(hidden)}`);
+  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
 
   // Put it back through the UI: clearing localStorage alone would leave the in-memory settings
-  // holding a hidden entry, and the next test would see a toolbar it did not ask for.
+  // holding a shown entry, and the next test would see a toolbar it did not ask for.
   win.document.querySelector('[data-nav-toggle="drill"]').click();
   await tick();
-  assert.ok([...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
+  assert.ok(![...win.document.querySelectorAll('#nav [data-nav]')].some((b) => b.dataset.nav === 'drill'));
   win.document.dispatchEvent(chord());
   await tick();
   win.localStorage.removeItem('cubusSettings');
@@ -572,9 +615,21 @@ test('every manifest carries the same version the app displays', async () => {
   assert.equal(
     JSON.parse(readFileSync(at('../../desktop/src-tauri/tauri.conf.json'), 'utf8')).version,
     VERSION, 'tauri.conf.json — the version the installed desktop app reports');
+  assert.equal(JSON.parse(readFileSync(at('../../desktop/package.json'), 'utf8')).version, VERSION,
+    'apps/desktop/package.json');
+  const v = VERSION.replace(/\./g, '\\.');
   const cargo = readFileSync(at('../../desktop/src-tauri/Cargo.toml'), 'utf8');
-  assert.match(cargo, new RegExp(`^version = "${VERSION.replace(/\./g, '\\.')}"$`, 'm'),
-    'the desktop crate version');
+  assert.match(cargo, new RegExp(`^version = "${v}"$`, 'm'), 'the desktop crate version');
+  // The lockfile is committed and records the crate's version too: a bump that leaves it behind
+  // is a diff waiting to appear on the next `cargo` run, on somebody else's machine.
+  const lock = readFileSync(at('../../../Cargo.lock'), 'utf8');
+  assert.match(lock, new RegExp(`^name = "cubus-desktop"\\nversion = "${v}"$`, 'm'), 'Cargo.lock');
+  // And the six are the six `pnpm bump` moves — a seventh place would drift silently.
+  const { SITES } = await import('../../../scripts/bump-version.mjs');
+  assert.deepEqual(SITES.map((s) => s.file).sort(), [
+    'Cargo.lock', 'apps/desktop/package.json', 'apps/desktop/src-tauri/Cargo.toml',
+    'apps/desktop/src-tauri/tauri.conf.json', 'apps/web/lib/app.js', 'apps/web/package.json',
+  ]);
 });
 
 // The random-cube die on the solve screen is a developer shortcut (the cube it loads is not the
@@ -613,41 +668,42 @@ test('the Advanced toggle brings the dev die back, and turning it off takes it a
   win.localStorage.removeItem('cubusSettings');
 });
 
-test('hiding an entry removes it from the toolbar, and the rest is untouched', async () => {
+test('showing an entry adds it to the toolbar, hiding removes it, and the rest is untouched', async () => {
   win.location.hash = '#/settings';
   await tick();
   win.document.dispatchEvent(chord());
   await tick();
-  assert.ok(navIds().includes('lessons'), 'precondition: Lessons is listed');
+  assert.ok(!navIds().includes('lessons'), 'precondition: Lessons starts hidden');
 
+  // Show all three, in the order the toolbar lists them.
+  for (const id of ['trainer', 'drill', 'lessons']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
+  await tick();
+  assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill', 'lessons'], 'shown in toolbar order');
+
+  // Hide one: its neighbours are untouched.
   win.document.querySelector('[data-nav-toggle="lessons"]').click();
   await tick();
   assert.ok(!navIds().includes('lessons'), 'gone from the toolbar');
   assert.deepEqual(navIds(), ['home', 'scan', 'scramble', 'trainer', 'drill'], 'and its neighbours are untouched');
-
-  // All three at once.
-  for (const id of ['trainer', 'drill']) win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
-  await tick();
-  assert.deepEqual(navIds().filter((i) => ['trainer', 'drill', 'lessons'].includes(i)), []);
 
   // Hiding is cosmetic: the address still works, which is the escape hatch.
   win.location.hash = '#/lessons';
   await tick();
   assert.ok(win.document.querySelector('#stage .screen'), 'a hidden screen is still reachable');
 
-  // Restore through the UI, not by wiping localStorage. `settings` is a live module-level object:
-  // clearing storage leaves it holding the hidden ids, so every later test in this file inherits a
-  // toolbar with three entries missing. That is exactly what it did before this comment existed.
+  // Restore the DEFAULT through the UI, not by wiping localStorage. `settings` is a live
+  // module-level object: clearing storage leaves it holding the shown ids, so every later test in
+  // this file would inherit a toolbar with two extra entries.
   win.location.hash = '#/settings';
   await tick();
-  for (const id of ['lessons', 'trainer', 'drill']) {
+  for (const id of ['trainer', 'drill']) {
     win.document.querySelector(`[data-nav-toggle="${id}"]`).click();
     await tick();
   }
   assert.deepEqual(
-    ['trainer', 'drill', 'lessons'].filter((i) => !navIds().includes(i)),
+    navIds().filter((i) => ['trainer', 'drill', 'lessons'].includes(i)),
     [],
-    'every entry is back before the next test runs',
+    'the default toolbar is back before the next test runs',
   );
   win.document.dispatchEvent(chord());
   await tick();
@@ -659,8 +715,7 @@ test('hiding an entry removes it from the toolbar, and the rest is untouched', a
 // nav entry pointing at a screen that no longer exists, or pairing controls that render but were
 // never wired because their mount stayed behind on the deleted screen.
 test('Home is the cube screen, not a separate landing page', async () => {
-  win.location.hash = '#/home';
-  await tick();
+  await scrambledHome();
   assert.ok(win.document.querySelector('#viewCube'), 'Home renders the cube');
   assert.ok(win.document.querySelector('.transport'), 'and its transport');
   assert.ok(!win.document.querySelector('#scanCta'), 'the old landing-page call to action is gone');
@@ -675,6 +730,11 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
   // Stats is hidden by default now (it shows representative numbers, not yours), so what matters
   // is that when it IS shown it carries the shorter name.
   assert.ok(!ids.includes('stats'), 'Stats is hidden by default');
+  // The placeholder screens are hidden by default IN CODE, not by a stored preference: a wiped
+  // localStorage once put all three back in the toolbar. Timer rides on the same rule.
+  for (const id of ['trainer', 'drill', 'lessons', 'timer']) {
+    assert.ok(!ids.includes(id), `${id} is hidden by default, whatever storage says`);
+  }
   const labels = [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.textContent);
   assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
   // Nothing groups the list any more, so there is no heading left over to point at a screen that
@@ -700,21 +760,53 @@ test('the shell no longer carries a permanent connection box', async () => {
 // tabs in the title bar now, with Settings as the bar's trailing button — so the things to pin are
 // that nothing was lost in the flattening, that no heading survived it, and that Settings is
 // reachable from the bar without being a tab.
+// Dragging the 3D cube around is off by default: every cube in the app is set up at a chosen
+// angle that the ghost faces depend on, and a stray drag swung it away with no way back. The
+// preference is a Settings toggle, saved, and reaches every cube through the `orbit` attribute.
+test('drag-to-rotate is off by default, and the toggle reaches the cube as an attribute', async () => {
+  win.location.hash = '#/home';
+  await tick();
+  assert.equal(win.document.querySelector('cubus-cube').getAttribute('orbit'), 'locked', 'locked by default');
+  win.location.hash = '#/settings';
+  await tick();
+  const toggle = () => win.document.querySelector('[data-toggle="dragRotate"]');
+  assert.ok(toggle(), 'the option lives in Settings');
+  assert.ok(!toggle().classList.contains('on'), 'and starts off');
+  toggle().click();
+  await tick();
+  assert.match(win.localStorage.getItem('cubusSettings') ?? '', /dragRotate.:true/, 'the choice is saved');
+  win.location.hash = '#/home';
+  await tick();
+  assert.equal(win.document.querySelector('cubus-cube').getAttribute('orbit'), 'free', 'and the next cube is free to orbit');
+  // Back to the default through the UI, so later tests see locked cubes.
+  win.location.hash = '#/settings';
+  await tick();
+  toggle().click();
+  await tick();
+  win.location.hash = '#/home';
+  await tick();
+  assert.equal(win.document.querySelector('cubus-cube').getAttribute('orbit'), 'locked');
+});
+
 test('the toolbar is one flat row of tabs, with Settings as its own button', async () => {
   win.location.hash = '#/home';
   await tick();
-  // The default row is the beginner's path. Timer and Stats are speedcubing instruments and
-  // start hidden; Alg trainer, Drill and Lessons remain listed.
-  assert.deepEqual(navLabels(), [
-    'Home', 'Restore', 'Scramble', 'Alg trainer', 'Drill', 'Lessons',
-  ]);
+  // The default row is the beginner's path and nothing else: Timer and Stats are speedcubing
+  // instruments, Alg trainer, Drill and Lessons are placeholder screens — all five start hidden,
+  // in code, and are one chord away.
+  assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble']);
   assert.equal(win.document.querySelector('#nav .nav-group'), null, 'no grouping wrapper');
   assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'no SOLVE / PRACTICE / LEARN');
-  // Every child of #nav is a page button — nothing else lives in there now.
-  const kinds = [...win.document.querySelector('#nav').children].map((el) => el.tagName);
+  // #nav holds one capsule (the segmented control's pill; the nav itself is the box the
+  // stylesheet floats over the bar or lays at the foot of the window), and every child of the
+  // capsule is a page button — nothing else lives in there.
+  assert.deepEqual([...win.document.querySelector('#nav').children].map((el) => el.className), ['capsule']);
+  const kinds = [...win.document.querySelector('#nav .capsule').children].map((el) => el.tagName);
   assert.deepEqual([...new Set(kinds)], ['BUTTON']);
-  // Settings: in the trailing zone, not in the row, and it navigates.
-  const gear = win.document.querySelector('#tbTrail [data-nav="settings"]');
+  // Settings: in the trailing zone, not in the row, and it navigates. By its label — the hidden
+  // smart-cube indicator beside it also carries data-nav="settings", and a data-nav match
+  // handed this test the indicator under the name "gear".
+  const gear = win.document.querySelector('#tbTrail [aria-label="Settings"]');
   assert.ok(gear, 'Settings is the trailing toolbar button');
   assert.equal(win.document.querySelector('#nav [data-nav="settings"]'), null, 'and not a tab');
   gear.click();
@@ -1013,3 +1105,471 @@ test('a turn rate is never fabricated from a time that is not a number', async (
 
 
 
+
+// ---- Follow cube (state-matched; see dev-docs/follow-mode-redesign.md) ----------------------
+//
+// Exercised on the scramble screen, because it mounts completely here: it needs only cubejs to
+// build its moves, while the solve path needs cubing.js and bails early.
+//
+// Two rules make these tests honest where the previous battery was not:
+//  * Moves are fed as QUARTER TURNS ONLY — the GAN driver never emits an "R2", and a battery
+//    that feeds one is testing a cube that does not exist.
+//  * The renderer element is a spy whose animations NEVER complete — which is not a harness
+//    weakness but the exact in-flight window where the old drawing logic dropped undos and
+//    overshot the queue. What the guide asks of the renderer is asserted call by call.
+
+const feed = () => win.cubusFeed;
+let serialSeq = 0;
+
+/** A physical turn stream: half turns become their two quarters, serials count like the cube's. */
+const quarters = (m) => (m.endsWith('2') ? [m[0], m[0]] : [m]);
+const invQ = (q) => (q.endsWith("'") ? q[0] : `${q}'`);
+const feedQ = (qs) => { for (const q of qs) feed().move({ notation: q, serial: (serialSeq = (serialSeq + 1) % 256) }); };
+
+/** A face that can be turned WRONGLY here: not any listed move's face, so it can never read as
+ *  the midpoint of an adjacent half turn. */
+const wrongFaceFor = (...near) => ['U', 'R', 'F', 'D', 'L', 'B'].find((f) => !near.some((m) => m && m[0] === f));
+
+/** Replace the inert renderer's transport API with spies. seek() announces its landing
+ *  synchronously exactly like the real one; step()/stepBack() never complete — the race. */
+const spyCube = () => {
+  const el = win.document.querySelector('cubus-cube');
+  const calls = [];
+  el.step = () => { calls.push(['step']); };
+  el.stepBack = () => { calls.push(['stepBack']); };
+  el.seek = (k) => {
+    calls.push(['seek', k]);
+    el.dispatchEvent(new win.CustomEvent('cubus-step', { detail: { index: k, total: 0 } }));
+  };
+  el.play = () => {};
+  el.pause = () => {};
+  return calls;
+};
+const drawnSteps = (calls) => calls.filter((c) => c[0] === 'step').length;
+
+/** Put the cube model back the way a fresh boot leaves it. The helpers below mutate connection,
+ *  trust, live and reported state — anything not reset here leaks into whatever test runs next. */
+const resetCubeModel = (state) => {
+  win.cubusFeed.useConnection(null);
+  state.reconnect = null;
+  state.connected = false;
+  state.cubeName = '';
+  state.cube.trusted = false;
+  state.cube.source = 'none';
+  state.cube.staleWhy = '';
+  state.cube.isPhysical = false;
+  state.cube.offset = null;
+  state.cube.offsetAt = 0;
+  state.cube.offsetFrom = '';
+  state.live = null;
+  state.reported = null;
+  state.anchored = false;
+};
+
+const followSetup = async (state) => {
+  state.connected = true;
+  state.cubeName = 'GAN-test';
+  // Following requires a TRUSTED cube whose walk STARTS where the cube in your hand is: a
+  // scramble walks from solved, so the live report must say solved.
+  state.cube.trusted = true;
+  state.cube.source = 'cube';
+  state.cube.staleWhy = '';
+  state.live = SOLVED_FACELETS;
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/scramble';
+  await tick();
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && win.document.querySelectorAll('#solList .chip-m').length === 0) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return [...win.document.querySelectorAll('#solList .chip-m')].map((b) => b.textContent);
+};
+
+test('the pacing toggle appears only with a smart cube, and defaults to following', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    win.location.hash = '#/timer';
+    await tick();
+    win.location.hash = '#/scramble';
+    await tick();
+    assert.equal(win.document.querySelector('[data-mode="cube"]'), null,
+      'no cube, no toggle — a switch with one position');
+    const moves = await followSetup(state);
+    assert.ok(moves.length > 2, 'precondition: a scramble was generated');
+    const btn = win.document.querySelector('[data-mode="cube"]');
+    assert.ok(btn, 'connected: the toggle exists');
+    assert.ok(btn.classList.contains('on'), 'and following is the default');
+    assert.ok(!btn.disabled);
+    assert.equal(win.document.querySelector('cubus-cube').getAttribute('tempo-scale'), '1',
+      'following mirrors at the 190ms base, not at a demonstration speed');
+  } finally { resetCubeModel(state); }
+});
+
+test('turns advance the guide immediately, one drawn step each — never an extra', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    assert.ok(moves.length > 2, 'precondition: a scramble was generated');
+    const calls = spyCube();
+    // Two turns back to back — faster than any animation could finish. The old drawing logic
+    // measured its delta against the ANIMATION's position and queued three steps for these two.
+    feedQ(quarters(moves[0]));
+    feedQ(quarters(moves[1]));
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'neither was refused');
+    assert.equal(drawnSteps(calls), 2, 'two turns draw exactly two steps');
+    assert.equal(calls.filter((c) => c[0] === 'seek').length, 0, 'and no panic jump');
+    // And the position really moved: a deliberately wrong turn names move 3 as the expected one.
+    feedQ([wrongFaceFor(moves[1], moves[2])]);
+    const note = win.document.querySelector('#followNote');
+    assert.equal(note.hidden, false, 'a wrong turn is surfaced');
+    assert.ok(win.document.querySelector('#followMsg').textContent.includes(`the next move is ${moves[2]}`),
+      `the guide is waiting on move 3 (${moves[2]}), so the first two were taken`);
+  } finally { resetCubeModel(state); }
+});
+
+test('an undo made inside the animation window is drawn back, not dropped', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    assert.ok(moves.length > 1);
+    const calls = spyCube();
+    feedQ(quarters(moves[0]));
+    // The forward animation has NOT completed — nothing ever completes in this harness, which
+    // is precisely the in-flight window where the old code dropped the undo forever.
+    feedQ(quarters(moves[0]).map(invQ).reverse());
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'the undo was accepted');
+    assert.deepEqual(calls[calls.length - 1], ['stepBack'], 'and drawn back immediately');
+    // The position is back at 0: a wrong move now names move 1 as the expected one again.
+    feedQ([wrongFaceFor(moves[0], moves[1])]);
+    assert.ok(win.document.querySelector('#followMsg').textContent.includes(`the next move is ${moves[0]}`),
+      'after the undo, the guide expects the first move again');
+  } finally { resetCubeModel(state); }
+});
+
+test('a half turn advances through a silent midpoint, and undoes through one too', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    const h = moves.findIndex((m) => m.endsWith('2'));
+    if (h === -1) return; // this scramble happens to carry no half turn — nothing to pin
+    const calls = spyCube();
+    for (let i = 0; i < h; i++) feedQ(quarters(moves[i]));
+    const before = drawnSteps(calls);
+    const note = win.document.querySelector('#followNote');
+    const face = moves[h][0];
+    feedQ([face]);
+    assert.equal(note.hidden, true, 'half a half-turn is legal and silent — no wrong-move scolding');
+    assert.equal(drawnSteps(calls), before, 'and nothing is drawn at the midpoint');
+    feedQ([face]);
+    assert.equal(note.hidden, true);
+    assert.equal(drawnSteps(calls), before + 1, 'the completed half turn is one drawn step');
+    // Undoing an R2 arrives as two counter-quarters — the driver has no other way to say it.
+    feedQ([`${face}'`]);
+    assert.equal(note.hidden, true, 'half-way back is silent too');
+    feedQ([`${face}'`]);
+    assert.deepEqual(calls[calls.length - 1], ['stepBack'], 'the undone half turn steps the guide back');
+  } finally { resetCubeModel(state); }
+});
+
+test('a wrong turn says so, and undoing it clears the note by itself — no snapshot needed', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    const wrong = wrongFaceFor(moves[0]);
+    feedQ([wrong]);
+    const note = win.document.querySelector('#followNote');
+    assert.equal(note.hidden, false);
+    assert.ok(!note.classList.contains('info'), 'a wrong turn reads as a warning, not information');
+    assert.ok(win.document.querySelector('#followMsg').textContent.includes(wrong));
+    assert.ok(win.document.querySelector('#resolveBtn'), 'and offers a way out');
+    // The old latch ignored the very undo the note asked for, until a snapshot rescued it.
+    feedQ([invQ(wrong)]);
+    assert.equal(note.hidden, true, 'the undo is heard the moment it happens');
+  } finally { resetCubeModel(state); }
+});
+
+test('a missed-move gap stands follow down, says so, and restores the walk speed', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    const el = win.document.querySelector('cubus-cube');
+    assert.equal(el.getAttribute('tempo-scale'), '1', 'precondition: follow tempo active');
+    feed().gap({ missing: 2, from: 4, to: 7 });
+    assert.equal(win.document.querySelector('#followNote').hidden, false);
+    assert.match(win.document.querySelector('#followMsg').textContent, /Missed 2 turns/);
+    const btn = win.document.querySelector('[data-mode="cube"]');
+    assert.ok(btn.disabled, 'following a cube we cannot vouch for is not on offer');
+    assert.notEqual(el.getAttribute('tempo-scale'), '1', 'and the demonstration speed is back');
+  } finally { resetCubeModel(state); }
+});
+
+test('a disconnect while following stands follow down through the trust hook', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    const el = win.document.querySelector('cubus-cube');
+    feed().disconnect();
+    const btn = win.document.querySelector('[data-mode="cube"]');
+    assert.ok(btn.disabled, 'a vanished cube is not on offer to follow');
+    assert.ok(!btn.classList.contains('on'));
+    assert.notEqual(el.getAttribute('tempo-scale'), '1', 'tempo does not leak past the lapse');
+  } finally { resetCubeModel(state); }
+});
+
+test('a snapshot from off the plan is named, and clears once the cube rejoins', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    assert.ok(moves.length > 0);
+    const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+    const offPlan = (() => { const c = new Cube(); c.move("R U F' D2 L"); return c.asString(); })();
+    feed().facelets(offPlan);
+    assert.equal(win.document.querySelector('#followNote').hidden, false, 'off-plan is surfaced');
+    feed().facelets(SOLVED_FACELETS);
+    assert.equal(win.document.querySelector('#followNote').hidden, true, 'it rejoins on its own');
+  } finally { resetCubeModel(state); }
+});
+
+test('a distant midpoint is a wrong position, not silent progress', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    const h = moves.findIndex((m, i) => i >= 2 && m.endsWith('2'));
+    if (h === -1) return; // no half turn far enough from the start in this scramble
+    const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+    const c = new Cube();
+    for (let i = 0; i < h; i++) c.move(moves[i]);
+    c.move(moves[h][0]); // one quarter into a half turn the cube is nowhere near
+    feed().facelets(c.asString());
+    const note = win.document.querySelector('#followNote');
+    assert.equal(note.hidden, false, 'a midpoint only counts beside its own half turn');
+    assert.match(win.document.querySelector('#followMsg').textContent, /not on the plan/);
+  } finally { resetCubeModel(state); }
+});
+
+test('an unchanged snapshot still corrects the guide after a lost move packet', async () => {
+  const { state } = await import('../lib/app.js');
+  const prevFacelets = state.cube.facelets;
+  try {
+    const moves = await followSetup(state);
+    const calls = spyCube();
+    // The scan/anchor had adopted solved, and the cube reports match it — the exact case the
+    // old onFacelets deduplicated into silence before the screen could hear it.
+    state.cube.isPhysical = true;
+    state.cube.facelets = SOLVED_FACELETS;
+    feedQ(quarters(moves[0]));   // the turn arrives…
+    // …but its UNDO's packets are lost. Only the ~1Hz snapshot knows the cube is back at solved.
+    feed().facelets(SOLVED_FACELETS);
+    assert.deepEqual(calls[calls.length - 1], ['stepBack'], 'the swallowed correction now lands');
+    feedQ([wrongFaceFor(moves[0], moves[1])]);
+    assert.ok(win.document.querySelector('#followMsg').textContent.includes(`the next move is ${moves[0]}`),
+      'and the guide expects move 1 again');
+  } finally {
+    state.cube.facelets = prevFacelets;
+    resetCubeModel(state);
+  }
+});
+
+test('out-of-order cube events trip a loud warning instead of silent tracking', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    const seq = [...quarters(moves[0]), ...quarters(moves[1])];
+    feed().move({ notation: seq[0], serial: 100 });
+    assert.equal(win.document.querySelector('#followNote').hidden, true);
+    feed().move({ notation: seq[1], serial: 90 }); // the shared counter went BACKWARDS
+    assert.equal(win.document.querySelector('#followNote').hidden, false);
+    assert.match(win.document.querySelector('#followMsg').textContent, /out of order/);
+  } finally { resetCubeModel(state); }
+});
+
+test('taking over pauses follow neutrally, keeps tracking, and resume seeks to the cube', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const moves = await followSetup(state);
+    const calls = spyCube();
+    const el = win.document.querySelector('cubus-cube');
+    const btn = win.document.querySelector('[data-mode="cube"]');
+    win.document.querySelector('#nextBtn').click();
+    assert.ok(!btn.classList.contains('on'), 'pressing Next hands control back to you');
+    const note = win.document.querySelector('#followNote');
+    assert.equal(note.hidden, false);
+    assert.ok(note.classList.contains('info'), 'pausing is information, not a warning');
+    assert.notEqual(el.getAttribute('tempo-scale'), '1', 'the demonstration speed is back');
+    assert.deepEqual(calls.find((c) => c[0] === 'seek'), ['seek', 0],
+      'the hand-over collapsed the follow queue at the cube, before the manual step');
+    // The cube keeps being tracked while the user drives — silently.
+    const before = calls.length;
+    feedQ(quarters(moves[0]));
+    assert.equal(calls.length, before, 'physical turns draw nothing while paused');
+    assert.ok(note.classList.contains('info'), 'and raise no wrong-move complaint');
+    // Resume: the cube leads again, from where it actually is — not from the buttons.
+    btn.click();
+    assert.ok(btn.classList.contains('on'), 'the toggle resumes following');
+    assert.equal(el.getAttribute('tempo-scale'), '1');
+    assert.deepEqual(calls.filter((c) => c[0] === 'seek').pop(), ['seek', 1],
+      'resume seeks to the tracked cube position');
+    assert.ok(win.document.querySelector('#stepLbl').textContent.startsWith('1 /'),
+      'and the counter tells the cube’s truth');
+    assert.equal(note.hidden, true, 'the pause line is gone');
+  } finally { resetCubeModel(state); }
+});
+
+test('choosing a walk speed while following is stored, not applied over the mirror tempo', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    const el = win.document.querySelector('cubus-cube');
+    win.document.querySelector('[data-speed="slow"]').click();
+    assert.equal(el.getAttribute('tempo-scale'), '1', 'the mirror tempo holds while the cube drives');
+    win.document.querySelector('[data-speed="normal"]').click(); // put the stored choice back
+    win.document.querySelector('#nextBtn').click();
+    assert.equal(el.getAttribute('tempo-scale'), '0.1', 'taking over applies the chosen walk speed');
+  } finally { resetCubeModel(state); }
+});
+
+test('Re-solve starts from the cube as it is now, not from the last adopted snapshot', async () => {
+  const { state } = await import('../lib/app.js');
+  const prev = state.cube.facelets;
+  try {
+    const moves = await followSetup(state);
+    // One physical turn: the model is ahead of anything the app has adopted — the exact
+    // sub-second window where the old Re-solve rebuilt a walk for a cube that no longer existed.
+    feedQ(quarters(moves[0]));
+    const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+    const walked = (() => { const c = new Cube(); c.move(moves[0]); return c.asString(); })();
+    win.document.querySelector('#resolveBtn').click();
+    assert.equal(state.cube.facelets, walked, 'the walked-ahead model was adopted before the remount');
+    assert.equal(state.live, walked,
+      'live carries it too — or the next mount compares the fresh walk against a stale snapshot and refuses to follow');
+    assert.equal(win.location.hash, '#/home',
+      'on Scramble, Re-solve goes to the solve walk — Scramble itself always starts from solved and would ignore the cube');
+  } finally {
+    state.cube.facelets = prev;
+    resetCubeModel(state);
+  }
+});
+
+// A static check because it is a static mistake: var(--fade) is a DURATION token, and a browser
+// handed a duration as a colour silently discards the declaration — the pause line then inherits
+// the warning colour while every class-based test stays green.
+test('the pause line is styled as information, in an actual colour token', () => {
+  const rule = html.match(/\.follow-note\.info\s*\{[^}]*\}/)?.[0] ?? '';
+  assert.match(rule, /color: var\(--ink-\d\)/, 'the info note must use a real ink colour token');
+});
+
+test('the titlebar indicator appears with a connection and leaves with it', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    const ind = win.document.querySelector('#cubeLive');
+    assert.ok(ind, 'the indicator exists in the titlebar');
+    assert.equal(ind.hidden, true, 'and is absent with no cube');
+    win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 80 }) });
+    assert.equal(ind.hidden, false, 'a connection reveals it');
+    assert.ok(ind.classList.contains('stale'), 'a fresh connection is connected, not trusted');
+    state.cube.trusted = true;
+    win.cubusFeed.facelets(SOLVED_FACELETS);
+    win.cubusFeed.useConnection(null);
+    assert.equal(ind.hidden, true, 'a disconnect takes it away');
+  } finally { resetCubeModel(state); }
+});
+
+// The 2D net is the ANCHOR, not a follower: its card says Initial/Target State, and a label
+// naming a fixed reference must never sit over a moving picture. What the cube does live is the
+// 3D cube's and the transport's story. Before this, snapshots repainted the net whenever follow
+// mode was off — which, for a freshly paired (untrusted) cube, was always.
+test('on a walking screen, live snapshots never repaint the reference net', async () => {
+  const { state } = await import('../lib/app.js');
+  try {
+    await followSetup(state);
+    const netBefore = [...win.document.querySelectorAll('#viewNet .sticker')]
+      .map((e) => e.className.split(' ')[1]).join('');
+    assert.equal(netBefore.length, 54, 'precondition: the target net is painted');
+    // Take over (follow off) — the exact state that used to leak snapshots into the net.
+    win.document.querySelector('#nextBtn').click();
+    const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+    const elsewhere = (() => { const c = new Cube(); c.move("R U R'"); return c.asString(); })();
+    feed().facelets(elsewhere);
+    const netAfter = [...win.document.querySelectorAll('#viewNet .sticker')]
+      .map((e) => e.className.split(' ')[1]).join('');
+    assert.equal(netAfter, netBefore, 'the reference state holds still whatever the cube does');
+  } finally { resetCubeModel(state); }
+});
+
+// ---- Scramble → Solve hand-off ---------------------------------------------------------------
+//
+// The loop a beginner wants: scramble by following the guide, then solve THAT. It is offered at
+// completion, on a press, never automatically — reaching 22/22 by clicking says nothing about
+// the cube in anyone's hand. Without a trusted cube the target becomes a GENERATED subject (as
+// the dev die does); with one, nothing is adopted, because the cube's own state is the subject.
+
+const mountScramble = async () => {
+  win.location.hash = '#/timer';
+  await tick();
+  win.location.hash = '#/scramble';
+  await tick();
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && win.document.querySelectorAll('#solList .chip-m').length === 0) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const moves = [...win.document.querySelectorAll('#solList .chip-m')].map((b) => b.textContent);
+  const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+  const c = new Cube();
+  for (const m of moves) c.move(m);
+  return { moves, target: c.asString() };
+};
+const stepTo = (i, total) => win.document.querySelector('cubus-cube')
+  .dispatchEvent(new win.CustomEvent('cubus-step', { detail: { index: i, total } }));
+
+test('finishing a scramble offers to solve it — on a press, and as a generated subject without a cube', async () => {
+  const { state } = await import('../lib/app.js');
+  const prev = { facelets: state.cube.facelets, physical: state.cube.isPhysical, source: state.cube.source, trusted: state.cube.trusted };
+  try {
+    const { moves, target } = await mountScramble();
+    const btn = () => win.document.querySelector('#solveItBtn');
+    assert.ok(btn(), 'the hand-off exists on Scramble');
+    assert.equal(btn().hidden, true, 'and is hidden until the walk is complete');
+    stepTo(moves.length - 1, moves.length);
+    assert.equal(btn().hidden, true, 'one move short is not complete');
+    stepTo(moves.length, moves.length);
+    assert.equal(btn().hidden, false, 'complete: the way onward appears');
+    assert.equal(win.location.hash, '#/scramble', 'and nothing navigates on its own');
+    assert.equal(btn().textContent, 'Solve this scramble', 'without a cube it is an assumption, and says so');
+    btn().click();
+    await tick();
+    assert.equal(win.location.hash, '#/home', 'the press goes to the solve walk');
+    assert.equal(state.cube.facelets, target, 'with the scramble target as the subject');
+    assert.equal(state.cube.isPhysical, false, 'not claimed to be the cube in anyone\'s hand');
+    assert.equal(state.cube.source, 'generated');
+  } finally {
+    state.cube.facelets = prev.facelets; state.cube.isPhysical = prev.physical;
+    state.cube.source = prev.source; state.cube.trusted = prev.trusted;
+  }
+});
+
+test('with a trusted cube at the target, the hand-off solves the cube itself and adopts nothing', async () => {
+  const { state } = await import('../lib/app.js');
+  const prev = { facelets: state.cube.facelets, physical: state.cube.isPhysical, source: state.cube.source };
+  try {
+    const { moves, target } = await mountScramble();
+    state.connected = true;
+    state.cube.trusted = true;
+    state.cube.source = 'cube';
+    state.cube.isPhysical = true;
+    feed().facelets(target); // the cube reports the scrambled state: ingested as the subject
+    assert.equal(state.cube.facelets, target, 'precondition: the cube is the subject');
+    stepTo(moves.length, moves.length);
+    const btn = win.document.querySelector('#solveItBtn');
+    assert.equal(btn.textContent, 'Your cube is scrambled — solve it', 'confirmed by the cube, and worded as such');
+    btn.click();
+    await tick();
+    assert.equal(win.location.hash, '#/home');
+    assert.equal(state.cube.isPhysical, true, 'the physical subject is untouched');
+    assert.equal(state.cube.source, 'cube', 'no generated adoption over a real cube');
+    assert.equal(state.cube.facelets, target);
+  } finally {
+    resetCubeModel(state);
+    state.cube.facelets = prev.facelets; state.cube.isPhysical = prev.physical; state.cube.source = prev.source;
+  }
+});
