@@ -20628,6 +20628,64 @@ var RoundedBoxGeometry = class extends BoxGeometry {
   }
 };
 
+// lib/cube-frame.js
+var NORMALS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+var CUBE_HALF = 1.51;
+var GHOST_HALF = 0.39;
+var GHOST_BASE = 0.48;
+var GHOST_PER_ELEVATION = 0.42;
+var SHOWS_BELOW = -0.15;
+var dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+var cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+var norm = (a) => {
+  const l = Math.hypot(a[0], a[1], a[2]);
+  return l ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0];
+};
+function eyeDirection(latDeg, lonDeg) {
+  const lat = latDeg * Math.PI / 180;
+  const lon = lonDeg * Math.PI / 180;
+  return [Math.cos(lat) * Math.sin(lon), Math.sin(lat), Math.cos(lat) * Math.cos(lon)];
+}
+function silhouette({ eye, elevation, scale = 0.9 }) {
+  const points = [];
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) points.push([sx * CUBE_HALF, sy * CUBE_HALF, sz * CUBE_HALF]);
+  if (elevation === null || elevation === void 0 || !Number.isFinite(elevation)) return points;
+  const s = Math.max(0.3, Math.min(1, scale)) / 0.9;
+  const lateral = 1 + GHOST_HALF * s;
+  const along = 1 + GHOST_BASE + elevation * GHOST_PER_ELEVATION;
+  for (const n of NORMALS) {
+    if (dot(n, eye) >= SHOWS_BELOW) continue;
+    const axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].filter((a) => !dot(a, n));
+    for (const a of [-1, 1]) for (const b of [-1, 1]) {
+      points.push([
+        n[0] * along + axes[0][0] * a * lateral + axes[1][0] * b * lateral,
+        n[1] * along + axes[0][1] * a * lateral + axes[1][1] * b * lateral,
+        n[2] * along + axes[0][2] * a * lateral + axes[1][2] * b * lateral
+      ]);
+    }
+  }
+  return points;
+}
+function cameraAxes(eye) {
+  const forward = [-eye[0], -eye[1], -eye[2]];
+  let right = cross(forward, [0, 1, 0]);
+  if (Math.hypot(...right) < 1e-6) right = cross(forward, [0, 0, 1]);
+  right = norm(right);
+  const up = norm(cross(right, forward));
+  return { forward, right, up };
+}
+function fitDistance({ points, vfovDeg, aspect: aspect2, eye, margin = 0.06 }) {
+  const tanV = Math.tan(vfovDeg / 2 * Math.PI / 180) * (1 - margin);
+  const tanH = tanV * aspect2;
+  const { right, up } = cameraAxes(eye);
+  let d = 0;
+  for (const p of points) {
+    const t = dot(p, eye);
+    d = Math.max(d, t + Math.abs(dot(p, right)) / tanH, t + Math.abs(dot(p, up)) / tanV);
+  }
+  return d;
+}
+
 // lib/cubus-cube.js
 var PALETTES = {
   muted: { U: "#E8E3D6", D: "#D8B84A", F: "#4E8C6A", B: "#3C6E9E", R: "#B8503F", L: "#C87A3C" },
@@ -20665,8 +20723,6 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "ghosts",
     "ghost-elevation",
     "ghostelevation",
-    "camera-distance",
-    "cameradistance",
     "camera-latitude",
     "cameralatitude",
     "camera-longitude",
@@ -20681,7 +20737,6 @@ var CubusCube = class _CubusCube extends HTMLElement {
   ];
   static ALIAS = {
     ghostelevation: "ghost-elevation",
-    cameradistance: "camera-distance",
     cameralatitude: "camera-latitude",
     cameralongitude: "camera-longitude",
     faceletscale: "facelet-scale",
@@ -20709,9 +20764,6 @@ var CubusCube = class _CubusCube extends HTMLElement {
   set ghostElevation(v) {
     this._set("ghost-elevation", v);
   }
-  set cameraDistance(v) {
-    this._set("camera-distance", v);
-  }
   set cameraLatitude(v) {
     this._set("camera-latitude", v);
   }
@@ -20736,7 +20788,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     palette: "muted",
     ghosts: "none",
     "ghost-elevation": "4",
-    "camera-distance": "12",
+    // No camera distance: it is computed from what the view draws and the slot it draws into
+    // (lib/cube-frame.js), so nothing is clipped at any slot shape.
     "camera-latitude": "35",
     "camera-longitude": "45",
     "facelet-scale": "0.9",
@@ -20766,8 +20819,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
     } else if (name === "ghost-elevation") {
       this._ghostPlace();
       this._applyCamera();
-    } else if (name === "facelet-scale") this._applyScale();
-    else if (name === "camera-distance" || name === "camera-latitude" || name === "camera-longitude") this._applyCamera();
+    } else if (name === "facelet-scale") {
+      this._applyScale();
+      this._applyCamera();
+    } else if (name === "camera-latitude" || name === "camera-longitude") this._applyCamera();
     else if (name === "back-view") this._dirty = true;
     else if (name === "orbit") this._applyOrbit();
     else if (name === "facelets" || name === "scramble") this.reset();
@@ -20793,8 +20848,6 @@ var CubusCube = class _CubusCube extends HTMLElement {
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.enablePan = false;
-    controls.minDistance = 5;
-    controls.maxDistance = 22;
     controls.rotateSpeed = 0.75;
     this._applyCamera();
     this._applyOrbit();
@@ -20951,17 +21004,20 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   _applyCamera() {
     if (!this.camera) return;
-    let d = this._num("camera-distance", 12) * 0.85;
-    if (this._ghostsEnabled()) d += this._num("ghost-elevation", 4) * 0.42;
-    const aspect2 = this.camera.aspect || 1;
-    if (aspect2 < 1) d /= aspect2;
-    const lat = this._num("camera-latitude", 35) * Math.PI / 180;
-    const lon = this._num("camera-longitude", 45) * Math.PI / 180;
-    this.camera.position.set(
-      d * Math.cos(lat) * Math.sin(lon),
-      d * Math.sin(lat),
-      d * Math.cos(lat) * Math.cos(lon)
-    );
+    const lat = this._num("camera-latitude", 35);
+    const lon = this._num("camera-longitude", 45);
+    const eye = eyeDirection(lat, lon);
+    const points = silhouette({
+      eye,
+      elevation: this._ghostsEnabled() ? this._num("ghost-elevation", 4) : null,
+      scale: this._num("facelet-scale", 0.9)
+    });
+    const d = fitDistance({ points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye });
+    if (this.controls) {
+      this.controls.minDistance = d * 0.5;
+      this.controls.maxDistance = d;
+    }
+    this.camera.position.set(d * eye[0], d * eye[1], d * eye[2]);
     this.camera.lookAt(0, 0, 0);
     this.controls?.update();
     this._placeLights();
