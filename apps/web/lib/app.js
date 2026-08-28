@@ -8,8 +8,12 @@ import { makeRouter } from './router.js';
 // browser, native BLE events under Tauri), one durable record per cube, and the trust model that
 // keeps "connected" from standing in for "known".
 import { makeTauriTransport, makeWebBluetoothTransport } from './cube-transport.js';
-import { MAX_LABEL, cubeLabel, forgetCube, listCubes, normaliseMac, parseRegistry, rememberCube, renameCube } from './cube-registry.js';
+import { MAX_LABEL, cubeLabel, forgetCube, listCubes, normaliseMac, parseRegistry, rememberCube, rememberLast, renameCube } from './cube-registry.js';
 import { applyOffset, deriveOffset, isIdentity } from './cube-trust.js';
+// Reconnecting a known cube: the readings that choose the picture and the words on reconnect, and
+// the two-adjacent-side camera check that supports the user's answer. Never the trust — only the
+// user's answer grants that (dev-docs/smart-cube-ux-prd.md, "Reconnecting a known cube").
+import { classifyReconnect, confirmCheck } from './cube-reconnect.js';
 // Translation is wired at the render choke points (nav labels, window titles, the scan aside,
 // Settings) and is an identity function until a catalog registers — see dev-docs/i18n.md for the
 // convention and for the surfaces still to be converted.
@@ -210,6 +214,10 @@ const state = {
     // the costume of a right one.
     offset: null,
     offsetAt: 0, // when the correction was derived, so Settings can say so
+    // What derived it — 'scan' (a camera repair) or 'confirmed' (the reconnect answer) — so the
+    // visible correction names its real basis. "A camera scan put this cube back in step" over
+    // an offset the user's Yes derived is a wrong provenance claim wearing a right-looking one.
+    offsetFrom: '',
   },
   /** The connected cube's TRUE arrangement — its last report with any correction applied. Kept
    *  apart from `cube.facelets`, which is whatever the app is currently about. */
@@ -217,6 +225,17 @@ const state = {
   /** The same report, uncorrected. Only a repair may use this: an offset derived against
    *  corrected truth is the identity, which discards the correction that made it look right. */
   reported: null,
+  /** The open reconnect question, or null. A cube that was paired before has reconnected, a
+   *  remembered arrangement exists, and the app cannot know whether the cube was turned while
+   *  nobody counted — so the reading chose a PICTURE (`candidate`) and words, and the user has
+   *  not yet answered "Is this your cube right now?". While this is open the candidate is FROZEN
+   *  (live reports do not repaint the subject — a picture that changes while it is being
+   *  confirmed is not a picture anyone can confirm), trust stays down, and the walk stays up.
+   *  `raw` is the cube's report at classification — the Yes derives the working offset from
+   *  (candidate, raw), the same derivation a camera repair makes, and the offset is constant
+   *  under any turns made while the question was open. `seenAt` is the memory's timestamp, for
+   *  "as we last saw it, Tuesday 21:40". */
+  reconnect: null,
 };
 
 // ---- solver pipeline (cubejs oracle + cubing.js solve), lazy-loaded --------------------------
@@ -509,6 +528,46 @@ let cubes = parseRegistry(load('cubusCubes', {}));
 /** The address a bare "Pair" should try: whichever cube was used most recently. */
 const lastCubeMac = () => listCubes(cubes)[0]?.mac || '';
 
+/** The connected cube's remembered record at the moment it connected — what the reconnect
+ *  reading compares the first report against. Cleared with the connection. */
+let pendingLast = null;
+/** True until the connection's FIRST report arrives; that report is the reconnect evidence. */
+let awaitingReport = false;
+/** The 16-bit serial that came with the latest report, or null when it carried none. Stored
+ *  beside the memory as information for wording, never proof: the GAN16's counter is
+ *  per-connection and says nothing across a break. */
+let lastSerialSeen = null;
+/** Did the last registry write fail? Announced in Settings: a memory that failed to save must
+ *  not look like one that saved — on the next reconnect the app would ask its question over
+ *  nothing and call a known cube new. */
+let registryWriteBad = false;
+
+/** Is the live CHAIN trusted — trusted knowledge of the cube itself, not of a generated
+ *  subject? 'generated' sets `trusted` too (a scramble is perfectly known), but that is
+ *  knowledge of a scramble, and filing it as what the cube looked like is exactly the
+ *  confidently-wrong record this distinction exists to prevent. One predicate, because its two
+ *  call sites (the trusted-update write and the disconnect timestamp) must never drift. */
+const chainTrusted = () =>
+  state.cube.trusted && (state.cube.source === 'cube' || state.cube.source === 'camera');
+
+/** Write the remembered arrangement: the truth the app is currently sure of, and the cube's own
+ *  raw report at the same moment. Called on every update that arrives on a trusted chain;
+ *  deduplicated on content so the ~1 Hz resend of an unchanged state does not become a storage
+ *  write per second — and `force` refreshes the timestamp anyway at moments worth naming (a
+ *  confirmation, a repair, the disconnect that ends the chain). */
+function rememberLastSeen(how, { force = false } = {}) {
+  if (!state.connected || !state.cubeMac || !state.live || !state.reported) return;
+  const prev = cubes[state.cubeMac]?.last;
+  const serial = lastSerialSeen ?? null;
+  if (!force && prev && prev.facelets === state.live && prev.reported === state.reported
+    && prev.serial === serial && prev.how === how) return;
+  cubes = rememberLast(cubes, state.cubeMac, {
+    facelets: state.live, reported: state.reported, serial, at: Date.now(), how,
+  }, Cube);
+  const ok = save('cubusCubes', cubes);
+  if (ok !== !registryWriteBad) { registryWriteBad = !ok; repaintSettings(); }
+}
+
 /** The cube screen installs these while following. Moves are the SIGNAL — the cube reports one
  * per turn, immediately. Facelet snapshots arrive at ~1Hz and are the CORRECTION: they say where
  * the cube really is when the move stream and the guide have drifted apart. */
@@ -553,6 +612,7 @@ function repairTracking(scanned) {
   if (!offset) return null;
   state.cube.offset = isIdentity(offset) ? null : offset;
   state.cube.offsetAt = state.cube.offset ? Date.now() : 0;
+  state.cube.offsetFrom = state.cube.offset ? 'scan' : '';
   // Recomputed on the spot: live is the last report WITH the correction applied, and leaving it
   // describing the old correction until the next ~1s snapshot lands means everything reading it
   // in between sees a position that is no longer claimed.
@@ -567,6 +627,20 @@ function repairTracking(scanned) {
  *  Disconnect button and the failure path in connectOnce. Idempotent. */
 function onDisconnect() {
   conn = null;
+  // The memory's timestamp is the last moment the app was SURE — which is now, if the chain was
+  // trusted when it broke. The content is already stored; this is the one write that keeps
+  // "as we last saw it, Tuesday 21:40" naming the break rather than the last turn.
+  if (chainTrusted()) {
+    rememberLastSeen(state.cube.source, { force: true });
+  }
+  // A question about a cube that is no longer here has no answer worth taking: the Yes would
+  // grant trust to a chain that just ended. The candidate picture stays as the (stale, flagged)
+  // subject; the question itself closes.
+  const hadQuestion = Boolean(state.reconnect);
+  state.reconnect = null;
+  pendingLast = null;
+  awaitingReport = false;
+  lastSerialSeen = null;
   // Order matters: mark stale BEFORE setConnected, so the indicator repaints once, already
   // knowing the truth, rather than flashing "connected and fine" on its way out.
   markStale('it disconnected, and may have been turned since');
@@ -574,6 +648,8 @@ function onDisconnect() {
   // corrected a specific chain to reality at a moment; that chain is gone.
   clearOffset();
   setConnected(false);
+  // setConnected repaints Settings; the question block on Home is this screen's own furniture.
+  if (hadQuestion && state.screen === 'home') renderScreen();
 }
 
 /** Throw the correction away. NOT called on `gap`: a serial skip means moves were missed, not
@@ -581,6 +657,7 @@ function onDisconnect() {
 function clearOffset() {
   state.cube.offset = null;
   state.cube.offsetAt = 0;
+  state.cube.offsetFrom = '';
 }
 
 /** A missed move serial. Trust lapses HERE rather than in a screen's handler, so a gap arriving
@@ -593,16 +670,118 @@ function onGap(g) {
 /** Record a live connection. The registry write and the connected flag are ONE step on purpose:
  *  as two, the test seam and the real path each had a copy, and a regression passed every test. */
 function adoptConnection(mac, name) {
-  cubes = rememberCube(cubes, { mac, name, at: Date.now() });
-  save('cubusCubes', cubes);
+  cubes = rememberCube(cubes, { mac, name, at: Date.now() }, Cube);
+  // A memory that failed to save must not look like one that saved: on the next reconnect the
+  // app would greet a known cube as a stranger. save() already logs; Settings says it in words.
+  registryWriteBad = !save('cubusCubes', cubes);
   // A new connection starts knowing nothing about this cube. Trust and the last report belong to
   // the chain that just ended: inheriting them let a freshly paired cube be treated as verified
   // on the strength of a camera scan of some *other* cube.
   state.live = null;
   state.reported = null;
+  lastSerialSeen = null;
   clearOffset();
+  // The reconnect reading. Until the first report arrives the evidence is "no report" — with a
+  // remembered arrangement that is already a picture worth showing (dimmed, unconfirmed), and if
+  // the cube never answers, the words are already the true ones. The first report re-reads the
+  // evidence; with nothing remembered there is no question to ask and today's flow stands.
+  pendingLast = cubes[normaliseMac(mac)]?.last ?? null;
+  awaitingReport = true;
+  const opening = classifyReconnect({ report: null, last: pendingLast }, Cube);
+  state.reconnect = opening.candidate
+    ? { reading: opening.reading, candidate: opening.candidate, raw: null, seenAt: pendingLast?.at ?? 0 }
+    : null;
+  if (state.reconnect) {
+    // Home shows the candidate AT ONCE — the remembered arrangement, in an unconfirmed dress.
+    // Ingested, not adopted: adoptCube would mark it trusted, and no reading grants trust.
+    ingestFacelets(state.reconnect.candidate);
+    state.cube.isPhysical = true;
+  }
   markStale('it has just connected, and has not been checked yet');
   setConnected(true, name, mac);
+  if (state.reconnect && state.screen === 'home') renderScreen();
+}
+
+/** The cube answered nothing — getState timed out or rejected. This used to be swallowed with an
+ *  empty catch, and the screen showed a connected cube that had said nothing; now it is said. The
+ *  reading is already 'no-report' when something is remembered (set at adoptConnection); with
+ *  nothing remembered this is the moment the silence becomes a question worth drawing at all. */
+function reportSilence() {
+  if (!state.connected || !awaitingReport) return;
+  if (!state.reconnect) {
+    state.reconnect = { reading: 'no-report', candidate: null, raw: null, seenAt: 0 };
+  }
+  // Settings goes through the deferral, like every other async repaint of it.
+  if (state.screen === 'home') renderScreen();
+  else repaintSettings();
+}
+
+/** The user's answer: yes, the candidate is the cube in their hand, right now. The ONE thing that
+ *  grants trust on a reconnect — no reading does. The working offset is derived from the
+ *  confirmed picture and the cube's report at classification, exactly the derivation a camera
+ *  repair makes with the picture standing in for the scan; it is constant under any turns made
+ *  while the question was open, so the LATEST report is then corrected by it. State only — the
+ *  caller owns navigation and re-rendering, because Home, Settings and the scan screen each need
+ *  a different one. */
+function confirmReconnect() {
+  const rc = state.reconnect;
+  if (!rc || !rc.candidate || !rc.raw) return false;
+  const offset = deriveOffset(rc.candidate, rc.raw, Cube);
+  if (offset === null) {
+    // Should be unreachable — both strings were validated by the reading — but a confirmation
+    // that cannot do its job must refuse loudly ON SCREEN, never grant trust over a failed
+    // derivation and never leave the Yes button looking dead: markStale repaints the indicator
+    // and Settings with the reason.
+    console.error('reconnect confirmation could not derive a correction', rc);
+    // The refusal reaches the question itself, not only the indicator: dropping `raw` takes the
+    // Yes away (it cannot do its job), leaving the camera as the door — and the caller's
+    // re-render is what repaints the block either way.
+    markStale('its confirmation could not be checked');
+    state.reconnect = { ...rc, raw: null };
+    return false;
+  }
+  state.cube.offset = isIdentity(offset) ? null : offset;
+  state.cube.offsetAt = state.cube.offset ? Date.now() : 0;
+  state.cube.offsetFrom = state.cube.offset ? 'confirmed' : '';
+  // The LATEST report, corrected — turns made while the question was open are covered, because
+  // the offset is constant under them. A latest report that fails validation (recorded raw, on
+  // purpose) falls back to the one the reading validated.
+  const corrected = applyOffset(state.cube.offset, state.reported ?? rc.raw, Cube)
+    ?? applyOffset(state.cube.offset, rc.raw, Cube);
+  if (corrected === null) {
+    console.error('reconnect confirmation could not correct the latest report');
+    clearOffset();
+    markStale('its confirmation could not be checked');
+    state.reconnect = { ...rc, raw: null };
+    return false;
+  }
+  state.reconnect = null;
+  state.live = corrected;
+  adoptCube(corrected, { physical: true, source: 'cube' });
+  rememberLastSeen('confirmed', { force: true });
+  return true;
+}
+
+/** Wire a screen's Yes / camera answer pair. One body for Home and Settings, so the answer
+ *  cannot behave differently by screen — and the re-render covers BOTH outcomes: a taken Yes
+ *  shows the normal screen, a refused one repaints the question with the Yes gone. */
+function wireReconnectAnswers(root) {
+  for (const b of root.querySelectorAll('[data-reconnect]')) {
+    b.onclick = () => {
+      if (b.dataset.reconnect === 'yes') { confirmReconnect(); renderScreen(); }
+      else go('scan');
+    };
+  }
+}
+
+/** "Tuesday 21:40" — the dress a memory wears. A remembered arrangement is a memory with a
+ *  timestamp and is shown as one, never as the truth. Empty parts when the stamp is missing. */
+function whenWords(ts) {
+  if (!ts) return { day: '', full: '' };
+  const d = new Date(ts);
+  const day = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][d.getDay()];
+  const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return { day, full: `${day} ${time}` };
 }
 
 /** What to call the connected cube. The user's own word wins; the cube's own name is the
@@ -657,14 +836,9 @@ async function refreshBattery() {
 function trustChanged() {
   const live = $('#cubeLive');
   if (live) paintTrust(live);
-  const read = $('#readCubeBtn');
-  if (read) {
-    const label = state.cube.trusted
-      ? 'Show the cube in your hand'
-      : 'Your cube has lost count — see how to fix it';
-    read.setAttribute('aria-label', label);
-    read.title = label;
-  }
+  // The read-from-cube button this used to relabel is gone: its job — naming whether the screen's
+  // subject is the cube in your hand — is done by the reconnect question's Yes / camera pair,
+  // which renders with the screen rather than being repainted here.
   // Settings derives its setup checklist from trust; deferred while an input there has focus,
   // for the same reason the battery redraw is.
   repaintSettings();
@@ -773,7 +947,14 @@ async function connectOnce(macFromUi) {
     cube.on('error', (e) => { if (conn === cube) console.warn('cube driver error', e); });
     cube.connect(); conn = cube;
     adoptConnection(mac, name);
-    cube.getState({ active: true }).then((f) => { if (conn === cube) onFacelets(f.facelets, f.serial); }).catch(() => {});
+    cube.getState({ active: true }).then((f) => { if (conn === cube) onFacelets(f.facelets, f.serial); }).catch((e) => {
+      // Said, not swallowed: this rejection used to vanish into an empty catch, and the screen
+      // showed a connected cube that had said nothing. The passive stream may still deliver a
+      // first report later; until it does, the reading is 'no report' and the screens say so.
+      if (conn !== cube) return;
+      console.warn('the cube did not answer its state request', e);
+      reportSilence();
+    });
     // Ask the cube rather than inventing a number — a flat battery is what disconnects a cube
     // mid-solve, and a mid-solve disconnect is what silently desyncs its tracking from reality.
     void refreshBattery();
@@ -801,6 +982,40 @@ function onFacelets(reported, serial) {
   // What the cube literally said, before any correction. A repair derives the offset from the
   // RAW report — deriving it from a corrected one produces the identity.
   state.reported = reported;
+  lastSerialSeen = Number.isInteger(serial) ? serial & 0xffff : null;
+  // The connection's FIRST report is the reconnect evidence: raw against the remembered raw,
+  // and the reading chooses the picture and the words — never the trust.
+  if (awaitingReport) {
+    awaitingReport = false;
+    const r = classifyReconnect({ report: reported, last: pendingLast }, Cube);
+    if (r.candidate && (r.reading === 'unchanged' || r.reading === 'turned')) {
+      state.reconnect = { reading: r.reading, candidate: r.candidate, raw: reported, seenAt: pendingLast?.at ?? 0 };
+      // The candidate becomes the subject — shown at once, in the unconfirmed dress. Ingested,
+      // not adopted: no reading grants trust, only the user's answer does. Settings repaints
+      // through the deferral, like every other async repaint of it — the first report lands
+      // about a second after pairing, exactly when a nickname is likely mid-typing.
+      ingestFacelets(r.candidate);
+      state.cube.isPhysical = true;
+      if (state.screen === 'home') renderScreen();
+      else repaintSettings();
+      return;
+    }
+    // Nothing remembered (or nothing derivable): no question to ask — today's flow, below. A
+    // question opened over the memory alone ('no report') closes here: the report is the better
+    // evidence, and it said the memory was not usable after all.
+    const hadQuestion = Boolean(state.reconnect);
+    state.reconnect = null;
+    if (hadQuestion) {
+      if (state.screen === 'home') renderScreen();
+      else repaintSettings();
+    }
+  }
+  // The candidate is FROZEN while the reconnect question is open: an untrusted report updating
+  // the picture being confirmed would make it a picture nobody can confirm. The raw report is
+  // still recorded above — the Yes derives against it and the repair scan reads it — but `live`
+  // stays unclaimed (the cube's true arrangement is precisely what is being asked) and the
+  // subject and the screens hold still until the answer.
+  if (state.reconnect) return;
   // The ONE place a correction is applied to the stream.
   const f = applyOffset(state.cube.offset, reported, Cube);
   if (f === null) {
@@ -819,6 +1034,11 @@ function onFacelets(reported, serial) {
   const changed = !(state.cube.isPhysical && f === state.cube.facelets);
   // ingest, not set: a snapshot from the cube must not cost a Kociemba search.
   if (state.cube.isPhysical && changed) ingestFacelets(f);
+  // Every update that arrives on a trusted chain replaces the remembered arrangement — the
+  // record a reconnect is later compared against.
+  if (chainTrusted()) {
+    rememberLastSeen('cube');
+  }
   if (liveUpdate) liveUpdate(f, serial);
   else if (changed && state.screen === 'home') renderScreen();
 }
@@ -1079,6 +1299,18 @@ SCREENS.scan = () => {
       };
       const panel = $('ai-scan-panel', root);
       const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root), hint = $('#scanHint', root);
+      // The reconnect confirmation runs INSIDE this screen's own flow, not beside it: the panel's
+      // captures are private to it and die with it, so "the repair scan continues from the sides
+      // already captured" is true only if the confirmation IS this screen in a confirm mode. Two
+      // adjacent matching sides take the user's Yes; one mismatch and the same panel instance
+      // simply keeps capturing into the full six-side repair, two sides in.
+      let confirming = Boolean(state.reconnect?.candidate);
+      const confirmEntry = confirming;
+      const CONFIRM_HOW = 'We remember this cube. Show any two sides that meet along an edge — the front, then the top, works well. If both match what we remember, that’s your cube confirmed with no full scan; if either differs, keep going and the camera reads all six.';
+      if (confirming) {
+        sayTitle.textContent = t('Checking your cube');
+        say.textContent = t(CONFIRM_HOW);
+      }
       // "Solve this cube" is a promise about THIS screen's scan, so it is only pressable once a
       // scan stands complete — and a correction that re-opens the verdict takes it away again.
       const solveBtn = $('#scanSolveBtn', root);
@@ -1271,6 +1503,43 @@ SCREENS.scan = () => {
           shownDevice = p.device.deviceId;
           void fillCams();
         }
+        // ---- reconnect confirmation ----------------------------------------------------------
+        // Each captured side is compared with the candidate — by its centre colour (the scanner
+        // names a side by its centre, the one sticker a turn cannot move), up to rotation, and
+        // EXACTLY: the scanner's own two-sticker tolerance is one short of a quarter turn's
+        // three, so here a misread costs a full scan and never a false yes. Last, so its words
+        // stand over the generic caption — but never over the scanner's own pinned notice.
+        if (confirming && state.reconnect?.candidate && !n && p.phase !== 'error') {
+          const sides = p.captured.map((c) => ({ face: c.face, stickers: c.colors.map((ci) => NET_FACES[ci] ?? '?').join('') }));
+          const check = confirmCheck(state.reconnect.candidate, sides, Cube);
+          if (check.verdict === 'confirmed') {
+            confirming = false;
+            // The user's Yes, well founded and taken: same derivation, same trust, same words a
+            // Yes on Home earns — and back to the screen the question was asked on.
+            if (confirmReconnect()) {
+              go('home');
+              return;
+            }
+            // Refused — the derivation could not do its job. The scan is already running, so
+            // the full read is the honest continuation, and this says so.
+            sayTitle.textContent = t('Keep going');
+            say.textContent = t('The match could not be taken as an answer, so the camera will read the whole cube instead — keep showing sides, the ones already read still count.');
+            say.className = 'sub scan-say';
+          } else if (check.verdict === 'mismatch') {
+            confirming = false;
+            sayTitle.textContent = t('Not what we remembered');
+            say.textContent = t('That side is not what we remembered, so the camera will read the whole cube instead. Keep showing sides — the ones already read still count.');
+            say.className = 'sub scan-say';
+          } else if (check.matched.length) {
+            sayTitle.textContent = t('One more side');
+            say.textContent = t('That side matches. Now show one that touches it along an edge — two neighbouring sides are what the check needs.');
+            say.className = 'sub scan-say ok';
+          } else if (!p.captured.length && !p.message) {
+            sayTitle.textContent = t('Checking your cube');
+            say.textContent = t(CONFIRM_HOW);
+            say.className = 'sub scan-say';
+          }
+        }
       });
       // A rejected scan restarts itself and explains why through scan-progress, so there is
       // nothing to do here; only a validated cube leaves this screen.
@@ -1303,7 +1572,15 @@ SCREENS.scan = () => {
           markStale('a scan disagreed with what the cube reports, and neither could be confirmed');
           solveBtn.disabled = true;
         } else {
+          // A completed scan answers the reconnect question outright — six sides ESTABLISH what
+          // two sides could only spot-check — so the question closes before the adoption that
+          // would otherwise mark a cube trusted with its own question still open.
+          state.reconnect = null;
+          confirming = false;
           adoptCube(fl, { physical: true, source: 'camera' });
+          // The moment the chain became trusted is a moment worth remembering: truth from the
+          // scan, the cube's own raw claim beside it.
+          if (state.connected && state.reported) rememberLastSeen('camera', { force: true });
         }
         if (repaired) {
           sayTitle.textContent = repaired.ok ? 'Tracking repaired' : 'These do not match';
@@ -1317,7 +1594,9 @@ SCREENS.scan = () => {
         // — and honours only for a scan that was BELIEVED: auto-solving a refused reading would
         // walk the previous cube behind a disabled Solve button.
         showState(e.detail.facelets);
-        if (settings.autosolve && adopted) go('home');
+        // A scan entered as a reconnect confirmation goes back to the question's screen once the
+        // question is answered — "then back here" — exactly as a two-side confirmation does.
+        if ((settings.autosolve || confirmEntry) && adopted) go('home');
       });
       // The detector is good, not perfect, so let a person overrule it: on a side the camera has
       // READ, click any sticker and pick the right colour. Delegated rather than 54 listeners. The
@@ -1464,6 +1743,44 @@ const cubeScreen = (screenMode) => {
   const walking = scrambling || deriveCube().solvable;
   const label = scrambling ? 'Scramble' : 'Solution';
   const walked = scrambling ? 'scramble' : 'solution';
+  // The open reconnect question, on the solve side only — Scramble's subject is always the
+  // generated walk. The unconfirmed DRESS (the twin's heading) is worn only while the subject IS
+  // the candidate; the question itself stands as long as it is open, because it is about the
+  // cube, not about whatever the screen happens to show.
+  const rc = scrambling ? null : state.reconnect;
+  const rcDress = Boolean(rc?.candidate && state.cube.facelets === rc.candidate);
+  const stateHeading = scrambling ? 'Target State'
+    : !rcDress ? 'Initial State'
+    : rc.reading === 'turned' ? 'Your cube — as it reports it'
+    : `Your cube — as we last saw it${whenWords(rc.seenAt).full ? `, ${whenWords(rc.seenAt).full}` : ''}`;
+  // The question: at the top of the sheet, ABOVE the moves, not instead of them — a disconnect or
+  // a reconnect must not wipe the guide (the floor never rises), so the walk of the candidate
+  // stays walkable while the answer is open, and trust gates what it gates today: Follow.
+  const reconnectAsk = () => {
+    if (!rc) return '';
+    const when = whenWords(rc.seenAt);
+    let ask = '';
+    let sub = '';
+    if (rc.reading === 'no-report') {
+      ask = 'Your cube hasn’t said where it is.';
+      sub = rc.candidate
+        ? `It’s connected but hasn’t reported an arrangement — this is how we last saw it${when.full ? `, ${when.full}` : ''}.`
+        : 'It’s connected but hasn’t reported an arrangement. The camera can read it as it is.';
+    } else if (rc.reading === 'turned') {
+      ask = `Your cube says it has been turned since${when.day ? ` ${when.day}` : ''} — is this it now?`;
+    } else {
+      ask = rc.candidate === SOLVED ? 'Is it solved right now?' : 'Is this your cube right now?';
+      sub = `As we last saw it${when.full ? `, ${when.full}` : ''}.`;
+    }
+    // Yes needs a report to derive the correction from; a silent cube leaves the camera as the
+    // only door. No reading grants trust — these two buttons are how the user does.
+    const yes = rc.raw && rc.candidate
+      ? '<button class="btn sm primary" data-reconnect="yes">Yes, that’s it</button>' : '';
+    return `<div class="follow-note reconnect-ask" id="reconnectAsk" style="border-top:0">
+      <b>${escHtml(ask)}</b>${sub ? `<span class="sub" style="color:var(--ink-4)">${escHtml(sub)}</span>` : ''}
+      <div class="acts">${yes}<button class="btn sm outline" data-reconnect="scan">Show a side to the camera</button></div>
+    </div>`;
+  };
   // Saved key → renderer attribute. Named for what it is now that the sliders it fed are gone.
   const VIEW_ATTRS = [
     ['hintElev', 'ghost-elevation'],
@@ -1491,7 +1808,7 @@ const cubeScreen = (screenMode) => {
           <button class="tbtn" id="repeatBtn" title="Show that move again">${icon('refresh', 18)}</button>
           <button class="tbtn" id="nextBtn" title="Next move">${icon('chevron-right', 20)}</button>
           <button class="tbtn primary" id="playBtn" title="Play from here to the end">${icon('play', 18)}</button>
-          ${state.connected ? `<button class="pill on" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
+          ${state.connected ? `<button class="pill${state.cube.trusted ? ' on' : ''}" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
           <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
           <span class="done-mark" id="doneMark" hidden title="Done">${icon('check', 14)}</span>
           <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:56px;text-align:right">0 / 0</span>
@@ -1500,7 +1817,7 @@ const cubeScreen = (screenMode) => {
       </div>` : ''}
     <div class="aside">
       <div class="card state-card twin" style="padding-bottom:0">
-        <div class="eyebrow-row"><b class="state-h">${scrambling ? 'Target State' : 'Initial State'}</b>
+        <div class="eyebrow-row"><b class="state-h">${escHtml(stateHeading)}</b>
           ${scrambling || settings.devRandCube
             // On Scramble the die IS the screen's re-roll and always shows. On the solve side it
             // loads a random cube that is NOT the one in anyone's hand — a developer shortcut,
@@ -1512,7 +1829,9 @@ const cubeScreen = (screenMode) => {
              breathing spaces the eye compares, made equal. The margin is the stylesheet's
              (.state-card .net): beside the cube in portrait the net centres instead. -->
         <div class="net" id="viewNet"></div></div>
+      ${!walking && rc ? `<div class="card sheet reconnect-card">${reconnectAsk()}</div>` : ''}
       ${walking ? `<div class="card tight solution-card sheet">
+        ${reconnectAsk()}
         <div class="card-h bare"><b>${label}</b><span class="sub" id="moveCount">—</span></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="follow-note" id="followNote" hidden>
@@ -1534,6 +1853,9 @@ const cubeScreen = (screenMode) => {
       applyNetColors();
       const paintNet = buildNet($('#viewNet', root));
       paintNet(scrambling ? SOLVED : state.cube.facelets);
+      // The reconnect answer, wired before any await: the solver can take seconds or fail, and
+      // the question must be answerable either way.
+      wireReconnectAnswers(root);
       cube.setAttribute('ghosts', v.ghosts ? 'floating' : 'none');
       for (const [k, attr] of VIEW_ATTRS) cube.setAttribute(attr, String(v[k]));
 
@@ -2121,6 +2443,12 @@ SCREENS.settings = () => {
       ${(() => {
         // ---- smart cube (recovered from v0) --------------------------------------------------
         const on = state.connected;
+        // The open reconnect question. While it stands, the card is a STATUS ROW — the net of
+        // the remembered arrangement (the same buildNet component Home paints, so the two
+        // screens cannot disagree), the reading's words, the trust badge, and the same two
+        // actions Home offers. The three-step checklist folds into it: "Is it solved right now?"
+        // is this question in the case where the candidate is solved.
+        const rc = on ? state.reconnect : null;
         // The cube answers its battery on request, so an unknown level is a real state, not a
         // zero. Drawn rather than written as a bare percentage because the number that matters is
         // "is this about to die mid-solve" — a dying cube is what desyncs tracking from reality.
@@ -2170,6 +2498,32 @@ SCREENS.settings = () => {
         // The FULL address in labels, not a tail: neither two octets nor nicknames are unique —
         // nothing stops a user calling two cubes "green".
         const rowName = (c) => `${c.nickname || c.name || 'cube'} at ${c.mac}`;
+        // The reading's words, compact: what is remembered, and what the evidence says about it.
+        // Words and a picture only — no reading grants trust; the buttons below are how the user
+        // does, and the answer is about the STATE, never the identity (design §0).
+        const reconnectRow = () => {
+          if (!rc) return '';
+          const when = whenWords(rc.seenAt);
+          const seen = when.full ? `last seen ${when.full} · ` : '';
+          const words = rc.reading === 'no-report' ? `${seen}hasn’t said where it is`
+            : rc.reading === 'turned' ? `${seen}turned since, or lost count`
+            : `${seen}no turns recorded since`;
+          const ask = rc.reading === 'no-report' ? 'Your cube hasn’t said where it is.'
+            : rc.candidate === SOLVED ? 'Is it solved right now?' : 'Is this your cube right now?';
+          return `<div style="padding:10px 0 4px;border-top:1px solid var(--line-faint)">
+            <div class="eyebrow">AS WE REMEMBER IT</div>
+            ${rc.candidate ? `<div class="net" id="settingsNet" style="max-width:240px;margin:12px auto"></div>` : ''}
+            <div class="sub" style="color:var(--ink-4)">${escHtml(words)}</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
+              <span class="pill" id="reconnectBadge" style="color:var(--warn);border-color:var(--warn)">position unverified</span>
+              <b style="flex:1;font-size:var(--fs-body-s)">${escHtml(ask)}</b>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:10px">
+              ${rc.raw && rc.candidate ? '<button class="btn sm primary" data-reconnect="yes">Yes, that’s it</button>' : ''}
+              <button class="btn sm outline" data-reconnect="scan">Show a side to the camera</button>
+            </div>
+          </div>`;
+        };
         const knownCubesRows = () => {
           if (!known.length) return '';
           return `<div style="padding:4px 0 0;border-top:1px solid var(--line-faint)">
@@ -2209,11 +2563,16 @@ SCREENS.settings = () => {
         ${on && Number.isFinite(state.battery) && state.battery <= 20 ? `<div style="display:flex;gap:8px;padding:0 0 12px;color:var(--err);font-size:var(--fs-body-s)">
           <span>Battery low. A cube that dies mid-solve stops counting turns, and what it reports afterwards will not match the cube in your hand until you read it again.</span>
         </div>` : ''}
+        ${registryWriteBad ? `<div id="registryWriteWarn" style="display:flex;gap:8px;padding:0 0 12px;color:var(--err);font-size:var(--fs-body-s)">
+          <span>This browser is refusing to store what cubus learns about this cube — its memory of it will not survive a reload, so the next reconnect will greet it as a stranger.</span>
+        </div>` : ''}
         ${on && state.cube.offset ? `<div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line-faint)">
           <span class="ico" style="color:var(--ok);flex:none">${icon('check', 16)}</span>
           <div style="flex:1">
             <div style="font-weight:600">Tracking corrected</div>
-            <div class="sub" style="color:var(--ink-4)">A camera scan at ${escHtml(hhmm(state.cube.offsetAt))} put this cube back in step after it lost count, and every reading since is corrected by it. If that scan was wrong, so is everything built on it.</div>
+            <div class="sub" style="color:var(--ink-4)">${state.cube.offsetFrom === 'confirmed'
+              ? `You confirmed this cube's arrangement at ${escHtml(hhmm(state.cube.offsetAt))}, and every reading since is corrected by that answer. If the picture you confirmed was wrong, so is everything built on it.`
+              : `A camera scan at ${escHtml(hhmm(state.cube.offsetAt))} put this cube back in step after it lost count, and every reading since is corrected by it. If that scan was wrong, so is everything built on it.`}</div>
           </div>
           <button class="btn sm outline" id="offsetReset" aria-label="Discard the tracking correction — your cube will need reading again" style="flex:none">Reset</button>
         </div>` : ''}
@@ -2227,14 +2586,14 @@ SCREENS.settings = () => {
           <button class="btn ${on ? 'outline' : 'primary'} sm" id="pairBtn">${on ? 'Disconnect' : 'Pair a cube'}</button>
           <span class="sub" id="pairMsg" style="flex:1"></span>
         </div>
-        ${steps.every((_, i) => done(i)) ? '' : steps.map(([st, sub], i) => `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line-faint)">
+        ${rc ? reconnectRow() : steps.every((_, i) => done(i)) ? '' : steps.map(([st, sub], i) => `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line-faint)">
           <div class="num" style="width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid ${done(i) ? 'var(--ok)' : 'var(--line)'};display:grid;place-items:center;font-size:var(--fs-meta);color:${done(i) ? 'var(--ok)' : 'var(--ink-5)'}">${done(i) ? '✓' : i + 1}</div>
           <div style="flex:1"><div style="font-weight:600">${st}</div><div class="sub" style="color:var(--ink-4)">${sub}</div></div>
           ${i === 2 && on ? `<button class="btn sm outline" id="anchorNoBtn" style="flex:none" title="The camera reads it exactly as it is — no need to solve it first">Not solved</button>
           <button class="btn sm primary" id="anchorBtn" style="flex:none">${state.anchored ? 'Re-mark solved' : "It's solved"}</button>
           <button class="btn sm" id="anchorForceBtn" hidden style="flex:none;border:1px solid var(--warn);color:var(--warn)">It is solved — anchor anyway</button>` : ''}
         </div>`).join('')}
-        ${on && steps.every((_, i) => done(i)) ? `<div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line-faint);color:var(--ok);font-size:var(--fs-body-s)">
+        ${on && !rc && steps.every((_, i) => done(i)) ? `<div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line-faint);color:var(--ok);font-size:var(--fs-body-s)">
           ${icon('check', 15)}<span style="flex:1">Set up and tracking.</span>
           <button class="btn sm outline" id="anchorBtn" aria-label="Re-mark this cube as solved">Re-mark solved</button>
         </div>` : ''}
@@ -2353,6 +2712,16 @@ SCREENS.settings = () => {
         markStale('its correction was reset, so its position is unverified again');
         renderScreen();
       });
+
+      // The remembered arrangement's net — the SAME buildNet component Home's twin is, painted
+      // from the same candidate, so the two screens cannot disagree about what is remembered.
+      const settingsNet = $('#settingsNet', root);
+      if (settingsNet && state.reconnect?.candidate) {
+        applyNetColors();
+        buildNet(settingsNet)(state.reconnect.candidate);
+      }
+      // The same two actions Home's question offers; the answer is one answer wherever given.
+      wireReconnectAnswers(root);
 
       // A nickname is the user's word for a cube: stored because it is useful, never branched on,
       // which is what makes accepting an unverifiable label honest.
@@ -2708,6 +3077,10 @@ window.cubusFeed = {
   facelets: (f, serial) => onFacelets(f, serial),
   gap: (g) => onGap(g), // the driver's door, not the screen's — see onGap
   disconnect: () => onDisconnect(),
+  /** The cube answered nothing — what connectOnce's getState rejection reports. Exposed because
+   *  that path needs Web Bluetooth to exercise for real, and the silence handling is exactly the
+   *  behaviour that was once an empty catch. */
+  silence: () => reportSilence(),
   /** Stand in for a paired driver. Setting `state.connected` alone is deliberately not enough —
    *  a flag saying "connected" with nothing behind it must fall back to the camera, which is its
    *  own test. This is the SAME call doConnect makes, not a lookalike: the address is part of a
@@ -2779,6 +3152,13 @@ async function boot() {
   // Load the solver in the background so Random / Solve / Timer are ready. 'scan' is deliberately
   // NOT in that list: nothing on it depends on the solver, and re-rendering it would tear down a
   // camera that just opened and open a second one.
-  if (await loadSolver()) { setFacelets(state.cube.facelets); if (['home', 'viewer', 'timer'].includes(state.screen)) renderScreen(); }
+  if (await loadSolver()) {
+    // The registry was parsed before the cube library existed, so its remembered arrangements
+    // have passed only the structural checks. Re-parse with the full reachability round-trip:
+    // a forged state that merely looks like facelets is dropped whole here, not shown later.
+    cubes = parseRegistry(cubes, Cube);
+    setFacelets(state.cube.facelets);
+    if (['home', 'viewer', 'timer'].includes(state.screen)) renderScreen();
+  }
 }
 boot();
