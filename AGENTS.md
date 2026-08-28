@@ -84,6 +84,11 @@ it walks you through solving it.
   that cannot be validated is a refusal, not a guess. A plausible figure is worse than a blank.
 - **Fail loud**: an unreadable scan, a state that cannot be solved, a storage write that did not
   land — each surfaces where it happens, never silently.
+- **The version is one number in six places** — `apps/web/lib/app.js` (`VERSION`, what the About
+  card shows; the web app has no build step to read a manifest at runtime), both `package.json`s
+  under `apps/`, `tauri.conf.json`, the desktop `Cargo.toml` and `Cargo.lock`. `pnpm bump X.Y.Z`
+  moves all six (`scripts/bump-version.mjs`, tested; it refuses rather than half-bumps), and a
+  wiring test fails if any of them drifts from `VERSION`. Never edit one by hand.
 - **Quality gate** is `pnpm check`, and it is two different things:
   `packages/cube-scanner` runs strict `tsc` + Biome + a type-aware ESLint pass + vitest;
   `apps/web` runs `node --test` over `apps/web/test/` (it has no build step to typecheck, and
