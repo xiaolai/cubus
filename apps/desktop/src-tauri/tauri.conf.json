@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "cubus",
-  "version": "0.4.2",
+  "version": "0.1.0",
   "identifier": "im.cubus.app",
   "build": {
     "frontendDist": "../../web/dist",
