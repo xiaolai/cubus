@@ -1,8 +1,12 @@
 // Cubus app controller. Renders the designed multi-screen shell and wires it to the real
-// engine: cubejs (independent oracle + random + validity), cubing.js (min2phase solve), and the
-// YOLO camera scanner. The 3D cube is <cubus-cube> — it draws only; state and solving stay here.
+// engine: cubejs (independent oracle + facelet parsing + validity), the vendored min2phase in a
+// worker (solving, and the scrambles it inverts), and the YOLO camera scanner. The 3D cube is
+// <cubus-cube> — it draws only; state and solving stay here.
 
 import { summarize, times } from './solve-stats.js';
+import { TIERS, describe, refine } from './solve-target.js';
+import { createSolveClient, spawnSolveWorker } from './solve-client.js';
+import { randomCube } from './random-state.js';
 import { makeRouter } from './router.js';
 // The smart-cube strands, recovered from v0 (2026-08-27): the transport seam (Web Bluetooth in a
 // browser, native BLE events under Tauri), one durable record per cube, and the trust model that
@@ -119,7 +123,7 @@ const TITLES = {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false });
+const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty' });
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
@@ -195,7 +199,7 @@ const state = {
   // Not persisted: it describes the live connection, and a new one starts unanchored.
   anchored: false,
   cube: {
-    facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [],
+    facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [], solveResult: null,
     // ---- trust ------------------------------------------------------------------------
     // Do we currently KNOW what this cube looks like? Deliberately not derived from
     // `state.connected`: a paired cube is not a trusted one. A cube reports how far it has been
@@ -238,8 +242,18 @@ const state = {
   reconnect: null,
 };
 
-// ---- solver pipeline (cubejs oracle + cubing.js solve), lazy-loaded --------------------------
-let Cube = null, solverReady = false, cjSolve = null, cjPuzzle = null;
+// How the four rungs read on the Settings screen. A rung with no label here would render as
+// "undefined", so app-wiring.test.mjs checks every TIERS entry has one.
+const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', shortest: 'shortest' };
+const TIER_BLURB = {
+  twenty: 'Twenty moves or fewer — always possible, and instant',
+  nineteen: 'Nineteen or fewer — a moment longer, and it always gets there',
+  eighteen: 'Eighteen if this cube allows it; some do not, and it will say so',
+  shortest: 'Keeps looking for a shorter one until you move on',
+};
+
+// ---- solver pipeline (cubejs oracle + min2phase in a worker), lazy-loaded ---------------------
+let Cube = null, solverReady = false;
 const invMove = (m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : m + "'");
 
 // Single-flight: boot and an async screen mount both call this, and initSolver() builds the
@@ -281,7 +295,7 @@ async function loadSolver() {
 function ingestFacelets(f) {
   const c = state.cube;
   c.facelets = f;
-  c.solution = ''; c.moves = []; c.stepFacelets = [];
+  c.solution = ''; c.moves = []; c.stepFacelets = []; c.solveResult = null;
   c.setupAlg = ''; c.derived = false;
 }
 
@@ -319,27 +333,48 @@ function setFacelets(f) {
   deriveCube();
 }
 
-// Compute the animated solution with cubing.js (min2phase) and cross-check it against cubejs.
-async function solve() {
+// The solver worker, made once and kept. Building min2phase's pruning tables costs ~260 ms, so
+// a client per solve would pay it every time (dev-docs/solver-move-count.md).
+let solveClient = null;
+const solverWorker = () => (solveClient ??= createSolveClient({ spawn: spawnSolveWorker }));
+
+/**
+ * Work out the solution, as short as this learner's tier asks for, and cross-check it.
+ *
+ * The tier is a solution LENGTH, not an effort — "twenty moves or fewer" is a thing a person can
+ * hold. Under 20 is reached on every cube and costs ~6 ms, so the default rung is invisible; the
+ * tighter ones take seconds, which is why the search runs in a worker and reports each
+ * improvement as it finds one rather than making anyone wait for the last.
+ *
+ * `onImprovement` is called with every strictly shorter answer, so a screen can show 21 becoming
+ * 20 becoming 19 instead of a spinner. The promise resolves with the final one.
+ */
+async function solve({ onImprovement } = {}) {
   const c = state.cube;
   // If a state arrived before the solver was ready, its setup alg is stale — recompute now.
   if (solverReady && c.facelets !== SOLVED && !c.setupAlg) deriveCube();
   if (c.solution) return c.solution;
-  if (!cjSolve) {
-    // Vendored, not fetched: see vendor-cubing.mjs. Both entry points come from one bundle, and
-    // its Web Worker lives beside it as vendor/search-worker-entry.js.
-    ({ experimentalSolve3x3x3IgnoringCenters: cjSolve, cube3x3x3: cjPuzzle } = await import('../vendor/cubing.js'));
+
+  const client = solverWorker();
+  let result = null;
+  for await (const step of refine(c.facelets, {
+    solve: (facelets, bounds) => client.solve(facelets, bounds),
+    tier: settings.solveTier,
+  })) {
+    result = step;
+    onImprovement?.(step);
   }
-  const kpuzzle = await cjPuzzle.kpuzzle();
-  const pattern = kpuzzle.defaultPattern().applyAlg(c.setupAlg);
-  const solution = (await cjSolve(pattern)).toString();
+  // Never inferred from the move count: a tier the cube cannot reach (18 does not exist for
+  // every position) must read as "the shortest I found", not as the target met.
+  c.solveResult = describe(result);
+  const solution = result.alg;
   const moves = solution.trim() ? solution.trim().split(/\s+/) : [];
   // Oracle cross-check: only a definite refutation (parses AND does not solve) blocks.
   let verified = null;
   try { verified = Cube.fromString(c.facelets).move(solution).isSolved(); } catch (err) {
     // Deliberately non-blocking: an oracle that cannot PARSE the alg has refuted nothing, and
-    // failing closed here would take solving down whenever cubing.js emits notation cubejs does
-    // not read. But it must not be silent — a cross-check that quietly stops running looks
+    // failing closed here would take solving down whenever the solver emits notation cubejs
+    // does not read. But it must not be silent — a cross-check that quietly stops running looks
     // exactly like one that keeps passing.
     console.warn('cubejs cross-check could not run; solution accepted unverified', err);
   }
@@ -1084,12 +1119,44 @@ function pushSolve(time) {
 }
 
 let currentScramble = '';
-function randomScramble() {
+/** How short a scramble should be. A WCA scramble is around 19-20 moves; cubejs's unbounded
+ *  answer averaged 21.5, which is a longer thing to type in than it needs to be. Under 20 is
+ *  reached on every cube in a few milliseconds (dev-docs/solver-move-count.md). */
+const SCRAMBLE_BOUND = 21;
+const SCRAMBLE_PROBES = 2_000_000;
+
+/**
+ * A scramble, the way the WCA makes one.
+ *
+ * A random-STATE scramble: the position is drawn uniformly from all 43 quintillion legal ones,
+ * from a cryptographic source, and then solved — the scramble is that solution inverted. Random
+ * TURNS would leave a distribution with structure in it, and cubes systematically easier than
+ * they look.
+ *
+ * The solver is min2phase, which is the engine TNoodle — the official WCA scramble program —
+ * uses for 3x3. Vendored here with its length bound settable, which is what lets a scramble be
+ * asked for at a sensible length rather than however long the search happened to answer.
+ *
+ * Returns the scrambled facelets and leaves the alg that reaches them in `currentScramble`.
+ */
+async function randomScramble() {
   if (!solverReady) return '';
-  const r = Cube.random();
-  const sol = r.solve();
-  currentScramble = sol ? sol.split(/\s+/).reverse().map(invMove).join(' ') : '';
-  return r.asString();
+  const cube = randomCube(Cube);
+  const facelets = cube.asString();
+  const client = solverWorker();
+  // The bound is a preference, not a requirement: a scramble that is one move longer is still a
+  // perfectly good scramble, and refusing to produce one at all would be much worse. Falling
+  // back is why this asks twice rather than once.
+  let alg = await client.solve(facelets, { solLen: SCRAMBLE_BOUND, probeMax: SCRAMBLE_PROBES });
+  alg ??= await client.solve(facelets, { solLen: 23, probeMax: SCRAMBLE_PROBES });
+  if (!alg) {
+    // Not a budget problem — the loose bound always answers. Something is wrong with the solver,
+    // and a scramble screen showing an empty string would look like a solved cube.
+    currentScramble = '';
+    throw new Error('scramble: the solver could not solve a state it generated');
+  }
+  currentScramble = alg.trim() ? alg.trim().split(/\s+/).reverse().map(invMove).join(' ') : '';
+  return facelets;
 }
 
 export { state };
@@ -2016,7 +2083,7 @@ const cubeScreen = (screenMode) => {
       // and the step count are all built at mount, so repainting in place would leave a fresh cube
       // wearing the old cube's solution. This is the wiring the button was missing.
       // Absent on the solve side unless the Advanced dev toggle shows it.
-      if ($('#randCube', root)) $('#randCube', root).onclick = () => {
+      if ($('#randCube', root)) $('#randCube', root).onclick = async () => {
         if (!solverReady) return;
         // Re-entering is what rolls a new one: the moves, the chips and the step count are all
         // built at mount, so repainting in place would leave a new cube wearing the old list.
@@ -2024,7 +2091,7 @@ const cubeScreen = (screenMode) => {
         // Known by construction, and NOT the cube in your hand. Marking this 'camera' was the bug
         // behind a solved physical cube instantly completing a random solve: the guide accepted
         // the real cube's snapshots as progress through an arrangement it had never been in.
-        adoptCube(randomScramble(), { physical: false, source: 'generated' });
+        adoptCube(await randomScramble(), { physical: false, source: 'generated' });
         go('home');
       };
 
@@ -2054,7 +2121,7 @@ const cubeScreen = (screenMode) => {
           // solved in `currentScramble`. That alg is what we walk, so `setup` stays empty and the
           // cube starts solved. `target` outlives this block: it is what "Solve this scramble"
           // hands to Home at the end of the walk.
-          target = randomScramble();
+          target = await randomScramble();
           if (!target || !currentScramble) throw new Error('no scramble');
           setup = ''; alg = currentScramble; moves = alg.trim().split(/\s+/);
           // Per-step states for Follow cube, built the same way the solve path builds its own.
@@ -2064,7 +2131,9 @@ const cubeScreen = (screenMode) => {
           paintNet(target);
         } else {
           if (!solverReady && !(await loadSolver())) throw new Error('solver unavailable');
-          await solve();
+          // Each improvement lands on the heading as it is found, so a tight tier shows 21
+          // becoming 20 becoming 19 rather than nothing at all.
+          await solve({ onImprovement: (step) => { if (!stale()) setStatus(String(step.moves)); } });
           setup = state.cube.setupAlg; alg = state.cube.solution; moves = state.cube.moves;
           // Snapshotted: setFacelets() clears stepFacelets on every live update, and following a
           // physical cube needs the states to compare against to outlive the next turn.
@@ -2074,7 +2143,13 @@ const cubeScreen = (screenMode) => {
       if (stale()) return; // navigated away while solving — leave the new screen alone
       const total = moves.length;
       cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
-      setStatus(String(total)); // just the number — the heading beside it already says what it counts
+      // Just the number, unless the tier asked for something this cube cannot give. Eighteen
+      // moves do not exist for every position, so that case is said plainly rather than left to
+      // look like the target was met.
+      const verdict = state.cube.solveResult;
+      setStatus(verdict && verdict.key === 'solve.targetMissed'
+        ? `${total} — ${verdict.target} was not possible here`
+        : String(total));
       // One grid, no group headings, on both sides of the walk. The solve side used to cut its
       // list at fixed 16 / 62 / 82% and head the pieces CROSS / F2L / OLL / PLL — proportional
       // slices of a two-phase solution wearing the names of stages it does not have. That is
@@ -2447,17 +2522,24 @@ SCREENS.timer = () => {
       const MANUAL = 'Click or hold space to start';
       const say = (text) => { if (hint) hint.textContent = text; };
 
-      const newScr = () => {
+      const newScr = async () => {
         if (!solverReady) {
           $('#scr', root).textContent = 'solver loading…';
           // Retry when it lands. Without this, opening Timer before the solver finished left
           // "solver loading…" on screen permanently — the only way out was pressing New scramble
           // again, which nothing on the screen suggested.
-          void loadSolver().then((ok) => { if (ok && state.screen === 'timer' && root.isConnected) newScr(); });
+          void loadSolver().then((ok) => { if (ok && state.screen === 'timer' && root.isConnected) void newScr(); });
           return;
         }
-        randomScramble();
-        $('#scr', root).textContent = currentScramble || '—';
+        // The solver runs in a worker now, so this is a round trip. Nothing else on the screen
+        // depends on it, and a failure must not leave the old scramble looking like the new one.
+        try {
+          await randomScramble();
+          if (root.isConnected) $('#scr', root).textContent = currentScramble || '—';
+        } catch (err) {
+          console.error('scramble failed', err);
+          if (root.isConnected) $('#scr', root).textContent = 'could not make a scramble';
+        }
       };
       const stop = () => {
         running = false;
@@ -2504,7 +2586,7 @@ SCREENS.timer = () => {
         cancelAnimationFrame(raf);
         document.removeEventListener('keydown', onKey);
       };
-      renderLast(); newScr();
+      renderLast(); void newScr();
     },
   };
 };
@@ -2530,6 +2612,8 @@ SCREENS.settings = () => {
         <div style="display:flex;align-items:center;gap:16px;padding:13px 0 0;border-top:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">Rotate the cube by dragging</div><div class="sub" style="color:var(--ink-4)">Off, the 3D cube keeps the angle its ghost faces are set up for</div></div>
           <button class="toggle ${settings.dragRotate ? 'on' : ''}" data-toggle="dragRotate" role="switch" aria-checked="${Boolean(settings.dragRotate)}" aria-label="Rotate the cube by dragging"><i></i></button></div>
+        <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">How short a solution</div><div class="sub" style="color:var(--ink-4)">${TIER_BLURB[settings.solveTier] ?? TIER_BLURB.twenty}</div></div>
+          <div class="wrap-row" style="gap:6px">${TIERS.map((t) => `<button class="pill ${settings.solveTier === t.name ? 'on' : ''}" data-set-tier="${t.name}">${TIER_LABEL[t.name]}</button>`).join('')}</div></div>
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}">${o}</button>`).join('')}</div></div>` : ''}</div>
       ${(() => {
@@ -2719,6 +2803,9 @@ SCREENS.settings = () => {
       const swatch = () => { const p = NET_COLORS[settings.palette]; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
       swatch();
       for (const b of root.querySelectorAll('[data-set-theme]')) b.onclick = () => { settings.theme = b.dataset.setTheme; save('cubusSettings', settings); applyTheme(); renderScreen(); };
+      // Changing the target does not re-solve anything now — the next solve uses it. Clearing
+      // the cached solution is what makes that true; without it the old answer would stand.
+      for (const b of root.querySelectorAll('[data-set-tier]')) b.onclick = () => { settings.solveTier = b.dataset.setTier; save('cubusSettings', settings); state.cube.solution = ''; state.cube.solveResult = null; renderScreen(); };
       // The window's orientation lives on the Rust side (a file the window is built from before
       // this webview exists), so the pills ask it which is current, and tell it which to become.
       // A failure surfaces on the pills themselves rather than in a console nobody reads.
