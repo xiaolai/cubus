@@ -66,7 +66,7 @@
          :hover selectors: a new hoverable control joins it or the test names it. */
       :is(.btn, .pill, .nav-item, .tb-ctl, .tbtn, .tb-cap, .menu > button, .card-tools > button,
           .eyebrow-row > button, .chip-m, .swatches > button, .field, .link, .toggle,
-          .scan-face .tgrid > i) {
+          .scan-face .tgrid > .cell) {
         transition: background var(--fade), color var(--fade), border-color var(--fade),
           box-shadow var(--fade), opacity var(--fade), transform var(--fade);
       }
@@ -474,8 +474,13 @@
         .scan-face:not(.focus) .lbl { font-size: var(--fs-micro); }
         .scan-face:not(.focus) .tile { border-width: 2px; padding: 3px; }
         .scan-face:not(.focus) .tgrid { gap: 1px; }
-        .scan-face:not(.focus) .tgrid > i { border-radius: var(--r-1); } /* strip cells are a third the size; the sticker corner follows */
-        .scan-face:not(.focus) .tgrid > i:nth-child(5) > .ic { display: none; }
+        .scan-face:not(.focus) .tgrid > .cell { border-radius: var(--r-1); } /* strip cells are a third the size; the sticker corner follows */
+        .scan-face:not(.focus) .tgrid > .cell:nth-child(5) > .ic { display: none; }
+        /* Strip cells are NOT tap targets — the TILE is (its whole face brings the side forward),
+           which is what lets the strip live below the 44px floor. pointer-events makes that true
+           at the hit-testing level: a finger can only ever hit the tile. Keyboard activation is
+           not hit-tested, so Enter on a strip cell still brings its side forward. */
+        .scan-face:not(.focus) .tgrid > .cell { pointer-events: none; }
       }
       }
       .scan-face[data-face="U"] { grid-area: 1 / 2; }
@@ -516,9 +521,13 @@
          and the centre's own hover ring all set box-shadow, and any of them would wipe an inset
          out. Painting a cell sets style.backgroundColor inline, which overrides only the colour —
          so the gradient survives, and reads against every one of the six. */
-      .scan-face .tgrid > i {
+      /* A sticker is a BUTTON since 2026-08-28 — the keyboard path the pointer path always had.
+         padding/appearance strip the UA's button chrome; cursor: default undoes the global
+         button pointer, because a cell only wears one when a press will be heard (the gated
+         rules below). */
+      .scan-face .tgrid > .cell {
         border-radius: var(--r-sticker); background-color: var(--facelet-off); opacity: .3;
-        border: 1px solid var(--sticker-edge);
+        border: 1px solid var(--sticker-edge); padding: 0; appearance: none; cursor: default;
         background-image: linear-gradient(180deg, rgba(255,255,255,.26), rgba(0,0,0,.10));
       }
       .scan-face .lbl { font-size: var(--fs-caption); font-weight: 700; letter-spacing: .03em; color: var(--ink-5); }
@@ -526,10 +535,10 @@
       /* Outer stickers are clickable only when a click will be HEARD: on a read side (correcting
          a reading) or in paint mode (supplying one). A pointer on a pending side promised an
          edit the handler rejects. */
-      :is(.scan-face.done, .painting .scan-face) .tgrid > i:not(:nth-child(5)) { cursor: pointer; }
+      :is(.scan-face.done, .painting .scan-face) .tgrid > .cell:not(:nth-child(5)) { cursor: pointer; }
       /* .editing is excluded: this hover ring outweighs the editing halo in the cascade, and a
          clicked sticker must keep wearing the accent halo while the pointer is still on it. */
-      :is(.scan-face.done, .painting .scan-face) .tgrid > i:not(:nth-child(5), .editing):hover { box-shadow: 0 0 0 2px var(--ink); opacity: 1; }
+      :is(.scan-face.done, .painting .scan-face) .tgrid > .cell:not(:nth-child(5), .editing):hover { box-shadow: 0 0 0 2px var(--ink); opacity: 1; }
       /* The centre names the face, so it cannot be recoloured; it re-reads the side instead.
          It must show its TRUE colour: it is the one sticker whose colour is certain, and the eight
          around it are read against it. An earlier version laid a 30% black scrim over it to keep
@@ -537,18 +546,18 @@
          as a seventh colour the cube does not have.
          The glyph carries its own contrast instead — a dark halo under a white mark reads on all
          six colours, and tints none of them. */
-      .scan-face .tgrid > i:nth-child(5) { display: grid; place-items: center; }
-      .scan-face .tgrid > i:nth-child(5) > .ic {
+      .scan-face .tgrid > .cell:nth-child(5) { display: grid; place-items: center; }
+      .scan-face .tgrid > .cell:nth-child(5) > .ic {
         opacity: 0; color: #fff; transition: opacity var(--fade);
         filter: drop-shadow(0 0 1px rgba(0,0,0,.95)) drop-shadow(0 0 3px rgba(0,0,0,.55));
       }
       /* Shown, not hidden behind a hover: it is how a user learns the centre re-reads its side, and
          it appears exactly when that is possible — once the side has been read. Hover uses the same
          outline ring the other stickers use, rather than darkening the swatch. */
-      .scan-face.done .tgrid > i:nth-child(5) { cursor: pointer; }
-      .scan-face.done .tgrid > i:nth-child(5) > .ic { opacity: .92; }
-      .scan-face.done .tgrid > i:nth-child(5):hover { box-shadow: 0 0 0 2px var(--ink); }
-      .scan-face.done .tgrid > i:nth-child(5):hover > .ic { opacity: 1; }
+      .scan-face.done .tgrid > .cell:nth-child(5) { cursor: pointer; }
+      .scan-face.done .tgrid > .cell:nth-child(5) > .ic { opacity: .92; }
+      .scan-face.done .tgrid > .cell:nth-child(5):hover { box-shadow: 0 0 0 2px var(--ink); }
+      .scan-face.done .tgrid > .cell:nth-child(5):hover > .ic { opacity: 1; }
       /* The scan settling: once the cube reads as solvable its true orientation is known, and any
          face captured the wrong way up TURNS to it — the .tgrid rotates (transition set inline,
          duration matched to the angle, deliberately unhurried), then the repaint lands in the same
@@ -557,11 +566,11 @@
       /* The sticker a colour misread most plausibly landed on — fixing it makes the cube legal.
          Pulses in the error colour so it reads as "look here", distinct from the accent halo an
          asked side wears. Full opacity even on an un-hovered cell: a suspect is being pointed at. */
-      .scan-face .tgrid > i.suspect { opacity: 1; box-shadow: 0 0 0 2px var(--err); animation: cubusSuspect var(--pulse-alert) ease-in-out infinite; }
+      .scan-face .tgrid > .cell.suspect { opacity: 1; box-shadow: 0 0 0 2px var(--err); animation: cubusSuspect var(--pulse-alert) ease-in-out infinite; }
       /* A suspect being EDITED wears the editing halo, still: without this the later suspect rule
          won the cascade and the active-edit indicator vanished on the one sticker most likely to
          be edited. */
-      .scan-face .tgrid > i.suspect.editing { animation: none; box-shadow: 0 0 0 2px var(--accent); }
+      .scan-face .tgrid > .cell.suspect.editing { animation: none; box-shadow: 0 0 0 2px var(--accent); }
       @keyframes cubusSuspect { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--err) 40%, transparent); } }
 
       /* ONE popover idiom. .swatches (the sticker colour picker) and .menu (camera, speed) are
@@ -584,7 +593,7 @@
       /* When the picker opens on a suspect sticker, the colour that would make the cube legal is
          ringed in the same error colour the suspect pulses in — the suggestion, not a selection. */
       .swatches > button.suggest { box-shadow: inset 0 0 0 1px var(--sticker-edge), 0 0 0 2px var(--err); }
-      .scan-face.done .tgrid > i { opacity: 1; }
+      .scan-face.done .tgrid > .cell { opacity: 1; }
       .scan-face.done .lbl { color: var(--ok); }
       /* The side the scanner is waiting to be shown again, to settle a reading it cannot settle
          from the six captures alone. Outranks .done: it has been captured, that is the point. */
