@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import {
   CORNER, CORNERS, EDGE, EDGES, MOVES, MOVE_NAMES, SOLVED,
   applyAlg, applyMove, cornerSlot, cornerSolved, edgeSlot, edgeSolved, fromCube, invert,
+  rotateAlg, rotateState,
 } from '../lib/cube-pieces.js';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
@@ -118,4 +119,40 @@ test('slot lookups are inverses of the permutation, and refuse to guess', () => 
   assert.throws(() => edgeSlot(s, 99), /not on the cube/);
   assert.throws(() => cornerSlot(s, 99), /not on the cube/);
   assert.throws(() => applyMove(s, 'Rw'), /unknown move/);
+});
+
+test('rotating a state and rotating an algorithm are the same rotation', () => {
+  // The two halves of a whole-cube turn, and they must agree or a case named in one frame gets
+  // an algorithm found in another. They did NOT agree for a while: edge orientation is measured
+  // against the F/B axis, so turning the cube changes which edges read as flipped, and a version
+  // of the F2L naming that relabelled slots without rotating the state gave one case up to four
+  // different algorithms depending on the slot it appeared in.
+  const rnd = lcg(31337);
+  for (let trial = 0; trial < 40; trial++) {
+    const alg = randomAlg(rnd, 12);
+    for (let k = 0; k < 4; k++) {
+      assert.deepEqual(
+        rotateState(applyAlg(SOLVED, alg), k),
+        applyAlg(SOLVED, rotateAlg(alg, k)),
+        `rotating the state disagrees with rotating the alg: "${alg}" by y^${k}`,
+      );
+    }
+  }
+});
+
+test('four quarter turns of the cube change nothing', () => {
+  const state = applyAlg(SOLVED, "R U2 F' L D B");
+  assert.deepEqual(rotateState(state, 4), state);
+  assert.deepEqual(rotateState(state, 0), state);
+  assert.deepEqual(rotateState(rotateState(state, 1), 3), state, 'y then y-cubed is the identity');
+});
+
+test('the rotation flips the U and D edges, and not the middle ones', () => {
+  // The fact the naming bug turned on, pinned so it cannot quietly stop being true. `F` flips
+  // edges and `R` does not, so a turn that sends F to R has to move the flips with it.
+  const solvedThenY = rotateState(SOLVED, 1);
+  assert.deepEqual(solvedThenY.eo, SOLVED.eo, 'a solved cube stays solved under a whole-cube turn');
+  const flipped = applyAlg(SOLVED, 'F');
+  const rotated = rotateState(flipped, 1);
+  assert.deepEqual(rotated, applyAlg(SOLVED, 'R'), 'F seen after a y turn is R');
 });
