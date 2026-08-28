@@ -124,6 +124,6 @@ test('the card says which of the two solvers produced this', async () => {
   const label = win.document.querySelector('#solLabel');
   const count = win.document.querySelector('#moveCount');
   assert.equal(label.textContent, 'Lesson', `the header still reads "${label.textContent}"`);
-  assert.match(count.textContent, /^\d+ steps · \d+ moves$/,
+  assert.match(count.textContent, /^\d+ moves · \d+ steps$/,
     `the count reads "${count.textContent}" — a bare number cannot say what it counts`);
 });
