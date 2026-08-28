@@ -469,7 +469,7 @@ function buildChrome(platform) {
   // paintTrust(); hidden is its boot state.
   const cubeLive = `<button class="tb-ctl tb-live" id="cubeLive" hidden data-nav="settings">${icon('bluetooth', 17)}</button>`;
   const gear = `<button class="tb-ctl" data-nav="settings" title="Settings" aria-label="Settings">${icon('settings', 18)}</button>`;
-  const cap = (name, win, round = false) => `<button class="tb-cap ${win}${round ? ' round' : ''}" data-win="${win}" title="${win}">${icon(name, round ? 14 : 16)}</button>`;
+  const cap = (name, win, round = false) => `<button class="tb-cap ${win}${round ? ' round' : ''}" data-win="${win}" title="${win}" aria-label="${win === 'min' ? 'Minimise' : 'Close'}">${icon(name, round ? 14 : 16)}</button>`;
   if (platform === 'macos') {
     const lights = preview ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('') : '';
     lead.innerHTML = `<span class="tb-lights">${lights}</span>${brand}`;
@@ -1204,9 +1204,9 @@ SCREENS.scan = () => {
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}"><div class="tgrid">${pending(f)}</div></div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
         <div class="scan-cam card-tools">
-          <button id="scanResetBtn" title="Throw the whole scan away and start again">${icon('refresh', 19)}</button>
-          <button id="scanPaintBtn" title="Paint the cube by hand instead of scanning it">${icon('paint-roller', 19)}</button>
-          <button id="scanCamBtn" title="Camera">${icon('webcam', 20)}</button>
+          <button id="scanResetBtn" title="Throw the whole scan away and start again" aria-label="Throw the whole scan away and start again">${icon('refresh', 19)}</button>
+          <button id="scanPaintBtn" title="Paint the cube by hand instead of scanning it" aria-label="Paint the cube by hand instead of scanning it">${icon('paint-roller', 19)}</button>
+          <button id="scanCamBtn" title="Camera" aria-label="Camera and scan menu">${icon('webcam', 20)}</button>
         </div>
       </div>
     </div>
@@ -1351,6 +1351,7 @@ SCREENS.scan = () => {
         // on a read side, or while painting. The class is what lets the stylesheet know.
         root.classList.toggle('painting', on);
         paintBtn.title = on ? 'Stop painting and use the camera' : 'Paint the cube by hand instead of scanning it';
+        paintBtn.setAttribute('aria-label', paintBtn.title);
         panel.setPainting?.(on);
       };
       paintBtn.onclick = () => { closePops(); setPainting(!painting); };
@@ -1497,6 +1498,7 @@ SCREENS.scan = () => {
         camOn = Boolean(p.device);
         camRow.classList.toggle('on', camOn);
         camBtn.title = camOn ? `${p.device.label} — camera and scan` : 'Camera off — click to turn it on';
+        camBtn.setAttribute('aria-label', camBtn.title);
         // Labels are only readable once permission is granted, so the list is worth rebuilding the
         // first time a camera actually answers.
         if (p.device && p.device.deviceId !== shownDevice) {
@@ -1605,6 +1607,10 @@ SCREENS.scan = () => {
       const swatches = document.createElement('div');
       swatches.className = 'swatches';
       swatches.hidden = true;
+      // Named like the app's other icon-only controls: a colour alone is not an accessible name,
+      // and `title` is the weakest carrier of one.
+      swatches.setAttribute('role', 'group');
+      swatches.setAttribute('aria-label', 'Pick this sticker’s colour');
       root.appendChild(swatches);
       let editing = null;
       const closeSwatches = () => { swatches.hidden = true; editing = null; root.querySelector('.scan-face .cell.editing')?.classList.remove('editing'); };
@@ -1614,6 +1620,7 @@ SCREENS.scan = () => {
         b.type = 'button';
         b.style.backgroundColor = pal[f];
         b.title = SCAN_FACE_NAME[f];
+        b.setAttribute('aria-label', `Make it the ${SCAN_FACE_NAME[f]} side’s colour`);
         b.dataset.face = f;
         b.onclick = () => {
           if (editing) panel.setSticker?.(editing.face, editing.index, NET_FACES.indexOf(f));
@@ -1796,7 +1803,7 @@ const cubeScreen = (screenMode) => {
     html: `<div class="cols${walking ? ' walking' : ''}">
       <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
         ${walking ? `<div class="card-tools">
-          <button id="speedBtn" title="Animation speed">${icon('gauge', 20)}</button>
+          <button id="speedBtn" title="Animation speed" aria-label="Animation speed">${icon('gauge', 20)}</button>
         </div>` : ''}
         <div style="flex:1;min-height:0;width:100%">
           <div class="cube-slot" id="viewCube" style="height:100%"></div>
@@ -1804,10 +1811,10 @@ const cubeScreen = (screenMode) => {
       </div>
       ${walking ? `<div class="card aux">
         <div class="transport">
-          <button class="tbtn" id="prevBtn" title="Back a move">${icon('chevron-left', 20)}</button>
-          <button class="tbtn" id="repeatBtn" title="Show that move again">${icon('refresh', 18)}</button>
-          <button class="tbtn" id="nextBtn" title="Next move">${icon('chevron-right', 20)}</button>
-          <button class="tbtn primary" id="playBtn" title="Play from here to the end">${icon('play', 18)}</button>
+          <button class="tbtn" id="prevBtn" title="Back a move" aria-label="Back a move">${icon('chevron-left', 20)}</button>
+          <button class="tbtn" id="repeatBtn" title="Show that move again" aria-label="Show that move again">${icon('refresh', 18)}</button>
+          <button class="tbtn" id="nextBtn" title="Next move" aria-label="Next move">${icon('chevron-right', 20)}</button>
+          <button class="tbtn primary" id="playBtn" title="Play from here to the end" aria-label="Play from here to the end">${icon('play', 18)}</button>
           ${state.connected ? `<button class="pill${state.cube.trusted ? ' on' : ''}" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
           <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
           <span class="done-mark" id="doneMark" hidden title="Done">${icon('check', 14)}</span>
@@ -1822,7 +1829,7 @@ const cubeScreen = (screenMode) => {
             // On Scramble the die IS the screen's re-roll and always shows. On the solve side it
             // loads a random cube that is NOT the one in anyone's hand — a developer shortcut,
             // hidden unless the Advanced toggle asks for it.
-            ? `<button id="randCube" title="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}">${icon('dice', 18)}</button>`
+            ? `<button id="randCube" title="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}" aria-label="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}">${icon('dice', 18)}</button>`
             : ''}</div>
         <!-- 30px above AND ~30px below the net in landscape (bottom = grid row gap 18 + the
              Solution header's 14px pad, with this card's own bottom padding zeroed) — the two
@@ -1890,6 +1897,7 @@ const cubeScreen = (screenMode) => {
           // applied — it takes effect the moment the user takes over.
           cube.setAttribute('tempo-scale', String(mode === 'cube' ? 1 : chosen.tempo));
           speedBtn.title = `Animation speed — ${chosen.label}`;
+          speedBtn.setAttribute('aria-label', speedBtn.title);
           speedMenu.textContent = '';
           for (const o of SPEEDS) {
             const b = document.createElement('button');
@@ -2046,7 +2054,12 @@ const cubeScreen = (screenMode) => {
       let playing = false;
       const setPlaying = (on) => {
         playing = on;
-        $('#playBtn', root).innerHTML = icon(on ? 'pause' : 'play', 18);
+        const play = $('#playBtn', root);
+        play.innerHTML = icon(on ? 'pause' : 'play', 18);
+        // The name follows the action: a button drawn as Pause while announcing "Play from here
+        // to the end" claims the wrong deed.
+        play.title = on ? 'Pause' : 'Play from here to the end';
+        play.setAttribute('aria-label', play.title);
         // Guarded like drawTo below: if the renderer bundle failed to upgrade the element, the
         // transport still works as position bookkeeping even though nothing animates.
         if (typeof cube.play !== 'function' || typeof cube.pause !== 'function') return;
@@ -2437,7 +2450,7 @@ SCREENS.settings = () => {
           <div class="wrap-row" style="gap:6px">${THEMES.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-set-theme="${t}">${t}</button>`).join('')}</div></div>
         <div style="display:flex;align-items:center;gap:16px;padding:13px 0 0;border-top:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">Rotate the cube by dragging</div><div class="sub" style="color:var(--ink-4)">Off, the 3D cube keeps the angle its ghost faces are set up for</div></div>
-          <button class="toggle ${settings.dragRotate ? 'on' : ''}" data-toggle="dragRotate"><i></i></button></div>
+          <button class="toggle ${settings.dragRotate ? 'on' : ''}" data-toggle="dragRotate" role="switch" aria-checked="${Boolean(settings.dragRotate)}" aria-label="Rotate the cube by dragging"><i></i></button></div>
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}">${o}</button>`).join('')}</div></div>` : ''}</div>
       ${(() => {
@@ -2601,7 +2614,7 @@ SCREENS.settings = () => {
       <div class="card"><div class="eyebrow">CAMERA</div>
         ${toggles.map(([k, lbl, sub]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">${t(lbl)}</div><div class="sub" style="color:var(--ink-4)">${t(sub)}</div></div>
-          <button class="toggle ${settings[k] ? 'on' : ''}" data-toggle="${k}"><i></i></button></div>`).join('')}</div>
+          <button class="toggle ${settings[k] ? 'on' : ''}" data-toggle="${k}" role="switch" aria-checked="${Boolean(settings[k])}" aria-label="${t(lbl)}"><i></i></button></div>`).join('')}</div>
     </div>
     <div class="aside">
       <div class="card"><div class="eyebrow">CUBE COLOURS</div>
@@ -2611,10 +2624,10 @@ SCREENS.settings = () => {
         <div class="sub" style="color:var(--ink-4);margin-top:6px;line-height:1.5">Toolbar tabs. Hiding one only takes it out of the row — its address still works.</div>
         ${HIDEABLE.map(([id, lbl]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">${lbl}</div><div class="sub" style="color:var(--ink-4)">${navHidden(id) ? 'Hidden from the toolbar' : 'Shown in the toolbar'}</div></div>
-          <button class="toggle ${navHidden(id) ? '' : 'on'}" data-nav-toggle="${id}"><i></i></button></div>`).join('')}
+          <button class="toggle ${navHidden(id) ? '' : 'on'}" data-nav-toggle="${id}" role="switch" aria-checked="${!navHidden(id)}" aria-label="Show ${lbl} in the toolbar"><i></i></button></div>`).join('')}
         <div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">Random-cube die</div><div class="sub" style="color:var(--ink-4)">Shows the die on the solve screen that loads a random scrambled cube — a developer shortcut, since that cube is not the one in anyone's hand. Scramble keeps its own die regardless.</div></div>
-          <button class="toggle ${settings.devRandCube ? 'on' : ''}" data-toggle="devRandCube"><i></i></button></div>
+          <button class="toggle ${settings.devRandCube ? 'on' : ''}" data-toggle="devRandCube" role="switch" aria-checked="${Boolean(settings.devRandCube)}" aria-label="Random-cube die"><i></i></button></div>
         <div class="sub" style="color:var(--ink-5);margin-top:12px">⌃⌥⌘D hides this section again.</div></div>` : ''}
       <div class="card"><div class="eyebrow">ABOUT</div>
         <div class="about-brand"><img src="./icons/icon.svg" alt="" width="22" height="22" /><b>Cubus</b></div>
@@ -2624,7 +2637,7 @@ SCREENS.settings = () => {
         <div class="sub" style="color:var(--ink-3);margin-top:10px;line-height:1.55">${t('Solver and vision run locally. Nothing leaves the device.')}</div></div>
     </div></div>`,
     mount(root) {
-      const swatch = () => { const p = NET_COLORS[settings.palette]; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:4px;background:${p[k]}"></div>`).join(''); };
+      const swatch = () => { const p = NET_COLORS[settings.palette]; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
       swatch();
       for (const b of root.querySelectorAll('[data-set-theme]')) b.onclick = () => { settings.theme = b.dataset.setTheme; save('cubusSettings', settings); applyTheme(); renderScreen(); };
       // The window's orientation lives on the Rust side (a file the window is built from before
@@ -2644,7 +2657,7 @@ SCREENS.settings = () => {
         }
       }
       for (const b of root.querySelectorAll('[data-pal]')) b.onclick = () => { settings.palette = b.dataset.pal; save('cubusSettings', settings); applyNetColors(); renderScreen(); };
-      for (const b of root.querySelectorAll('[data-toggle]')) b.onclick = () => { const k = b.dataset.toggle; settings[k] = !settings[k]; save('cubusSettings', settings); b.classList.toggle('on', settings[k]); };
+      for (const b of root.querySelectorAll('[data-toggle]')) b.onclick = () => { const k = b.dataset.toggle; settings[k] = !settings[k]; save('cubusSettings', settings); b.classList.toggle('on', settings[k]); b.setAttribute('aria-checked', String(Boolean(settings[k]))); };
 
       // ---- smart cube (recovered from v0) --------------------------------------------------
       // Resolved against the document, not the captured root: anything that re-renders Settings
@@ -2917,7 +2930,7 @@ SCREENS.trainer = () => {
     <div class="wrap-row">${['OLL', 'PLL', 'F2L', 'Weak first'].map((f, i) => `<button class="pill ${i === 0 ? 'on' : ''}">${f}</button>`).join('')}<span class="sub" style="margin-left:auto;color:var(--ink-4)">Sorted by weakest recall</span></div>
     <div class="case-grid">
     ${oll.map(([name, alg, color, pct], i) => `<button class="card" data-go="drill" style="text-align:center;cursor:pointer">
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;width:76px;margin:0 auto">${grid(i).map((g) => `<div style="aspect-ratio:1;border-radius:2px;background:${g}"></div>`).join('')}</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;width:76px;margin:0 auto">${grid(i).map((g) => `<div style="aspect-ratio:1;border-radius:var(--r-sticker);background:${g}"></div>`).join('')}</div>
       <div style="font-weight:700;margin-top:10px">${name}</div><div class="num sub" style="color:var(--ink-4);min-height:28px;font-size:var(--fs-caption)">${alg}</div>
       <div class="bar" style="margin-top:6px"><i style="width:${pct};background:${color}"></i></div></button>`).join('')}</div></div>`, mount() {} };
 };
@@ -2929,7 +2942,7 @@ SCREENS.drill = () => {
   // (Reveal, Again / Good / Easy) must never sit below a fold — so the box scrolls as one.
   return { html: `<div class="cols flow"><div class="col"><div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px">
       <div class="eyebrow">OLL 24 · DOT CASES · 3 OF 12</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:180px">${grid.map((g) => `<div style="aspect-ratio:1;border-radius:4px;background:${g}"></div>`).join('')}</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:180px">${grid.map((g) => `<div style="aspect-ratio:1;border-radius:var(--r-sticker);background:${g}"></div>`).join('')}</div>
       <div class="num" id="drillAlg" style="font-size:var(--fs-display-s);font-weight:600;color:var(--ink-6)">· · · · · · · ·</div>
       <button class="btn accent-outline" id="reveal">Reveal algorithm</button>
       <div style="display:flex;gap:10px"><button class="btn outline" style="color:var(--err)" data-next>Again</button><button class="btn outline" data-next>Good</button><button class="btn primary" data-next>Easy</button></div>
