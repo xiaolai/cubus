@@ -66,7 +66,7 @@ it walks you through solving it.
   `dev-docs/design/README.md` before any `apps/web` UI work. Adopted into the app:
   `apps/web/tokens.css` (warm-paper tokens, light/dark) and `<cubus-cube>` (a purpose-built
   three.js renderer that replaced twisty-player; draws only — state/solving stay with
-  cubejs + cubing.js). Fonts are system stacks only (decided 2026-08-27): numerals/times/algs use
+  cubejs + min2phase). Fonts are system stacks only (decided 2026-08-27): numerals/times/algs use
   the system mono stack, UI text `system-ui` — no web fonts, no embedded fonts, and index.html
   loads nothing remote (a test enforces it).
 - **Layout contract** (decided 2026-08-27): two compositions keyed only on orientation — a 4:3
@@ -82,9 +82,34 @@ it walks you through solving it.
   fails when the claim stops being true. The habit that mattered most on the driver — assert what
   must NOT happen, not only what should — applies just as well to a scan and a solve.
 - **`cubejs` is a deliberate independent test oracle**, not a redundant dep. Do not
-  "consolidate" it into cubing.js; a different implementation is what makes the
-  invariant a real cross-check. cubing.js (kpuzzle + search) is the state-brain and
-  solver; `<cubus-cube>` is the renderer (see Design system above).
+  "consolidate" it into the solver; a different implementation is what makes the invariant a real
+  cross-check. It is also the facelet parser and the state-brain.
+- **The solver is min2phase, vendored directly (2026-08-29).** `apps/web/vendor-min2phase.mjs`
+  patches it out of cubing's dist with its search bounds settable, and every patch asserts its
+  match count — a patch that silently stopped applying would leave the app solving happily while
+  ignoring every length target. **cubing.js is a build-time dependency only and ships nothing**:
+  its API has no room for a solution length, for reporting a better answer as it is found, or for
+  stopping, and those three are the feature. It went from `dependencies` to `devDependencies`
+  and its two bundles (~3.2 MB) are gone from `vendor/`. Bring it back only for something it is
+  actually needed for — WCA-event scrambles are the obvious candidate, and note that
+  `randomScrambleForEvent` was never vendored, so nothing lost it. `<cubus-cube>` is the
+  renderer and never touched cubing (see Design system above).
+- **Scrambles are random-STATE, from a cryptographic source** (`apps/web/lib/random-state.js`):
+  the position is drawn uniformly from all 43 quintillion legal ones via `crypto.getRandomValues`
+  and then solved, and the scramble is that solution inverted. Never random turns — those leave a
+  distribution with structure and cubes easier than they look. There is no fallback to
+  `Math.random()`; a platform without a crypto source fails loudly instead of quietly weakening.
+- **Two solvers, two questions — read `dev-docs/solver-research.md` before any solver work.**
+  Shortest and explicable pull in opposite directions and no amount of tuning turns one into
+  the other. min2phase answers *just restore it* / *how good am I* (21.7 moves, one
+  step, no reason for any of them); the method solver in `apps/web/lib/method-solver.js`
+  answers *why is this move right* (118 moves in 21 steps, every step with a reusable reason).
+  The product axis is **steps, not moves**: a learner improves by needing fewer things in their
+  head, so layers are ranked by step count and a rung that saves a step by hiding a reason is
+  not progress. That note is the consolidated record — the measured ladders, the completeness
+  proof over all 62,208 last-layer states, the licence question still open on published
+  algorithm sets, and a **dead-ends table** listing what was already tried and did not work.
+  Check it before re-deriving anything; several of those cost hours.
 - **Never invent data**: a statistic that cannot be computed is a dash, not a number; a reading
   that cannot be validated is a refusal, not a guess. A plausible figure is worse than a blank.
 - **Fail loud**: an unreadable scan, a state that cannot be solved, a storage write that did not
