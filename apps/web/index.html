@@ -599,11 +599,13 @@
          progress bar, and the step count.
          Speed is not here — it lives in the cube card's corner, because it is a preference you set
          once rather than part of walking the solution. */
-      /* One line down to the contract's portrait floor, by arithmetic: four 38px buttons, the
-         22px done mark, the 56px count and six 6px gaps are 266px, and the bar's 48px basis makes
-         314 — an iPhone SE's transport is 315 wide. Below the floor (a 320px iPad Split View
-         column has 260) the row wraps and the bar, the one flexible thing in it, drops to a
-         second line rather than the row running off the card. */
+      /* One line down to the contract's portrait floor, by arithmetic. A finger is the tight
+         case: four 44px buttons, the 22px done mark and the 56px count are 254px, and six 4px
+         gaps plus the bar's 32px basis (the touch floors below set both) make 310 — an iPhone
+         SE's transport is 315 wide. A mouse keeps the 6px gaps and the 48px basis: 338, against
+         403 in the narrowest fine-pointer transport (the desktop landscape aux column). Below
+         the floor (a 320px iPad Split View column has 260) the row wraps and the bar, the one
+         flexible thing in it, drops to a second line rather than the row running off the card. */
       .transport { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
       /* Takes the old spacer's job: it has to be the flexible gap anyway, so the gap may as well
          say how far through the solution you are. --track/--bar are the groove/fill token pair. */
@@ -622,14 +624,22 @@
          of equal-weight objects and fight the cube for attention; the icons alone say the same
          thing. Play carries its emphasis in ink weight rather than a filled box.
          Hover gets a soft ground — the same affordance .card-tools uses — so there is feedback
-         without a border sitting there permanently. */
-      .tbtn { width: 38px; height: 38px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-3); transition: background var(--fade), color var(--fade); }
+         without a border sitting there permanently.
+         44px on EVERY pointer, not only under the coarse floors (decided 2026-08-28): this row
+         is driven mid-solve, usually with a cube in the other hand, and the desktop window is
+         also the preview of the touch layouts. The box is the finger's; the glyph keeps its
+         size — the same look the touch floors already gave a tablet. */
+      .tbtn { width: 44px; height: 44px; border-radius: var(--r-4); display: grid; place-items: center; color: var(--ink-3); transition: background var(--fade), color var(--fade); }
       .tbtn:hover { background: var(--panel-sunk); color: var(--ink); }
       .tbtn.primary { color: var(--ink); }
       .tbtn[disabled] { opacity: .3; }
       .tbtn[disabled]:hover { background: none; color: var(--ink-3); }
       .pill[disabled] { opacity: .4; cursor: default; }
       .pill[disabled]:hover { background: none; }
+      /* Whatever else joins the transport row — the Follow-cube pill, Scramble's "Solve this
+         scramble" — is a control in the same row and gets the same 44px, mouse or finger.
+         min-height, so each keeps its own drawn shape and padding. */
+      .transport button { min-height: 44px; }
       /* Shown only when the last move lands, in the transport row just before the step count — the
          count's own tick. It was a 46px badge over the cube, which said "done" where the count
          already read 22 / 22, and covered the cube to say it. */
