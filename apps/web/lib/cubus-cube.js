@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { eyeDirection, fitDistance, silhouette } from './cube-frame.js';
 
 const PALETTES = {
   muted:    { U:'#E8E3D6', D:'#D8B84A', F:'#4E8C6A', B:'#3C6E9E', R:'#B8503F', L:'#C87A3C' },
@@ -49,7 +50,6 @@ class CubusCube extends HTMLElement {
   static observedAttributes = [
     'facelets', 'scramble', 'alg', 'palette', 'autorotate',
     'ghosts', 'ghost-elevation', 'ghostelevation',
-    'camera-distance', 'cameradistance',
     'camera-latitude', 'cameralatitude',
     'camera-longitude', 'cameralongitude',
     'facelet-scale', 'faceletscale',
@@ -60,7 +60,6 @@ class CubusCube extends HTMLElement {
 
   static ALIAS = {
     ghostelevation: 'ghost-elevation',
-    cameradistance: 'camera-distance',
     cameralatitude: 'camera-latitude',
     cameralongitude: 'camera-longitude',
     faceletscale: 'facelet-scale',
@@ -75,7 +74,6 @@ class CubusCube extends HTMLElement {
   set palette(v) { this._set('palette', v); }
   set ghosts(v) { this._set('ghosts', v); }
   set ghostElevation(v) { this._set('ghost-elevation', v); }
-  set cameraDistance(v) { this._set('camera-distance', v); }
   set cameraLatitude(v) { this._set('camera-latitude', v); }
   set cameraLongitude(v) { this._set('camera-longitude', v); }
   set faceletScale(v) { this._set('facelet-scale', v); }
@@ -91,7 +89,9 @@ class CubusCube extends HTMLElement {
   /** Attribute defaults. Also what a REMOVED attribute falls back to — see _set(). */
   static DEFAULTS = {
     palette: 'muted', ghosts: 'none', 'ghost-elevation': '4',
-    'camera-distance': '12', 'camera-latitude': '35', 'camera-longitude': '45',
+    // No camera distance: it is computed from what the view draws and the slot it draws into
+    // (lib/cube-frame.js), so nothing is clipped at any slot shape.
+    'camera-latitude': '35', 'camera-longitude': '45',
     'facelet-scale': '0.9', 'tempo-scale': '1', 'back-view': 'none',
     orbit: 'free', // 'locked' = dragging does not turn the view; the host decides
   };
@@ -115,8 +115,8 @@ class CubusCube extends HTMLElement {
     if (name === 'palette') this._paint();
     else if (name === 'ghosts') { this._ghostVisible(); this._paint(); this._applyCamera(); }
     else if (name === 'ghost-elevation') { this._ghostPlace(); this._applyCamera(); }
-    else if (name === 'facelet-scale') this._applyScale();
-    else if (name === 'camera-distance' || name === 'camera-latitude' || name === 'camera-longitude') this._applyCamera();
+    else if (name === 'facelet-scale') { this._applyScale(); this._applyCamera(); } // the scale is part of the silhouette
+    else if (name === 'camera-latitude' || name === 'camera-longitude') this._applyCamera();
     else if (name === 'back-view') this._dirty = true;
     else if (name === 'orbit') this._applyOrbit();
     else if (name === 'facelets' || name === 'scramble') this.reset();
@@ -141,8 +141,9 @@ class CubusCube extends HTMLElement {
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.enablePan = false;
-    controls.minDistance = 5;
-    controls.maxDistance = 22;
+    // Distance limits are set by _applyCamera from the fitted distance: a fixed maxDistance of
+    // 22 clamped the camera on every update() and clipped the ghost faces on narrow slots, where
+    // the fit stands further back than that.
     controls.rotateSpeed = 0.75;
     this._applyCamera();
     this._applyOrbit();
@@ -328,23 +329,25 @@ class CubusCube extends HTMLElement {
 
   _applyCamera() {
     if (!this.camera) return;
-    // The player's distance 12 frames a bare cube at our 30° fov ≈ 10 units.
-    let d = this._num('camera-distance', 12) * 0.85;
-    // Ghosts widen the silhouette, so give them the room they occupy.
-    if (this._ghostsEnabled()) d += this._num('ghost-elevation', 4) * 0.42;
-    // Those distances frame the silhouette against the VERTICAL field of view, the one three.js
-    // fixes; a slot narrower than it is tall shows proportionally less width, and the ghost
-    // faces ran off the sides of a 658×792 cube card. Pull back by the aspect so the same
-    // silhouette fits the narrower axis; a slot wider than tall is unchanged.
-    const aspect = this.camera.aspect || 1;
-    if (aspect < 1) d /= aspect;
-    const lat = this._num('camera-latitude', 35) * Math.PI / 180;
-    const lon = this._num('camera-longitude', 45) * Math.PI / 180;
-    this.camera.position.set(
-      d * Math.cos(lat) * Math.sin(lon),
-      d * Math.sin(lat),
-      d * Math.cos(lat) * Math.cos(lon),
-    );
+    // The distance is fitted, not tuned: the silhouette this view draws — the cube, and the
+    // ghost faces on the sides the eye cannot see, at their elevation and scale — projected
+    // against the canvas's field of view AND aspect, so every corner lands inside the frame with
+    // a margin, for any slot shape. A hand-tuned distance ("18 frames the tuned look") was right
+    // for one shape and clipped the ghost faces' corners on every other, and pulling back by the
+    // aspect only moved which shapes clipped. Re-run on every resize and every relevant attribute.
+    const lat = this._num('camera-latitude', 35);
+    const lon = this._num('camera-longitude', 45);
+    const eye = eyeDirection(lat, lon);
+    const points = silhouette({
+      eye,
+      elevation: this._ghostsEnabled() ? this._num('ghost-elevation', 4) : null,
+      scale: this._num('facelet-scale', 0.9),
+    });
+    const d = fitDistance({ points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye });
+    // The controls clamp the distance on every update(), so their limits follow the fit: a user
+    // may zoom in to look closer, never out past the frame — and a resize puts the fit back.
+    if (this.controls) { this.controls.minDistance = d * 0.5; this.controls.maxDistance = d; }
+    this.camera.position.set(d * eye[0], d * eye[1], d * eye[2]);
     this.camera.lookAt(0, 0, 0);
     this.controls?.update();
     this._placeLights();

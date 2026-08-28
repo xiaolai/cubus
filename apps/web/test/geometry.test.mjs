@@ -228,8 +228,27 @@ const measureCube = (page) =>
       aside: rect($('.cols > .aside')), asideBox: getComputedStyle($('.cols > .aside')).display !== 'contents',
       sheet: rect($('.cols .sheet')), solution: rect($('.solution-card')), state: rect($('.state-card')), net: rect($('#viewNet')),
       list: { scroll: $('#solList').scrollHeight, client: $('#solList').clientHeight },
-      transport: { first: rect($('#prevBtn')), last: rect($('#stepLbl')), scroll: $('.transport').scrollWidth, client: $('.transport').clientWidth },
+      transport: { first: rect($('#prevBtn')), last: rect($('#stepLbl')), scroll: $('.transport').scrollWidth, client: $('.transport').clientWidth,
+        buttons: [...document.querySelectorAll('.transport button')].map((b) => ({ id: b.id || b.textContent.trim(), ...rect(b) })) },
       slot: rect($('#viewCube')), canvas: canvas && rect(canvas),
+      // What the renderer actually painted: opaque pixels on the canvas's outermost two rows and
+      // columns (a clipped picture), and in its middle (a blank canvas would pass an edge check
+      // vacuously). preserveDrawingBuffer is on, so the WebGL canvas can be copied and read.
+      painted: (() => {
+        if (!canvas) return null;
+        try {
+          const w = canvas.width, h = canvas.height;
+          const copy = document.createElement('canvas'); copy.width = w; copy.height = h;
+          const ctx = copy.getContext('2d'); ctx.drawImage(canvas, 0, 0);
+          const px = ctx.getImageData(0, 0, w, h).data;
+          const opaque = (x, y) => px[(y * w + x) * 4 + 3] > 8;
+          let edge = 0, middle = 0;
+          for (let x = 0; x < w; x++) for (const y of [0, 1, h - 2, h - 1]) if (opaque(x, y)) edge++;
+          for (let y = 0; y < h; y++) for (const x of [0, 1, w - 2, w - 1]) if (opaque(x, y)) edge++;
+          for (let y = Math.floor(h * 0.4); y < h * 0.6; y++) for (let x = Math.floor(w * 0.4); x < w * 0.6; x++) if (opaque(x, y)) middle++;
+          return { edge, middle, w, h };
+        } catch (e) { return { error: String(e) }; }
+      })(),
       chips, overflow: { cols: cols.scrollWidth - cols.clientWidth, colsV: cols.scrollHeight - cols.clientHeight, doc: document.documentElement.scrollWidth - innerWidth },
     };
   })()`);
@@ -302,7 +321,15 @@ for (const fixture of FIXTURES) {
       // One transport line at and above the contract's portrait floor (375 wide), mouse or finger;
       // a narrower column may wrap the bar. Never a row wider than its card.
       assert.ok(m.transport.scroll <= m.transport.client + 1, 'the transport overflows its card');
-      // Centres, not tops: a 38px button and a 20px label share a centre line, not a top edge.
+      // Transport controls are finger-sized on EVERY pointer (stage-contract.md, decided
+      // 2026-08-28) — the one exception to "current sizes on a mouse". Hidden controls (the
+      // done mark before the last move, Scramble's solve button before the end) report 0×0 and
+      // are exactly the zero-height failure this test refuses to filter out — so assert on the
+      // visible ones and separately that the walking screen has controls at all.
+      const tapable = m.transport.buttons.filter((b) => b.width > 0);
+      assert.ok(tapable.length >= 4, `the transport has ${tapable.length} visible controls — the four walk buttons must be there`);
+      for (const b of tapable) assert.ok(b.width >= 44 - 0.5 && b.height >= 44 - 0.5, `transport control ${b.id} is ${b.width}×${b.height} — under 44px on a ${fixture.touch ? 'finger' : 'mouse'}`);
+      // Centres, not tops: a 44px button and a 20px label share a centre line, not a top edge.
       const mid = (r) => r.top + r.height / 2;
       if (fixture.width >= 375) near(mid(m.transport.first), mid(m.transport.last), 'transport wrapped', 2);
 
@@ -315,6 +342,12 @@ for (const fixture of FIXTURES) {
       assert.ok(m.canvas, 'no canvas in the cube slot — the renderer did not mount');
       near(m.canvas.width, m.slot.width, 'canvas width is the slot width', 2);
       near(m.canvas.height, m.slot.height, 'canvas height is the slot height', 2);
+      // And what it drew stays inside it: the framing (lib/cube-frame.js) fits the cube and its
+      // ghost faces to the slot, so nothing painted reaches the canvas edge — at this slot shape,
+      // as at every other. A blank canvas cannot pass: something must be painted in the middle.
+      assert.ok(m.painted && !m.painted.error, `the canvas could not be read back: ${m.painted?.error}`);
+      assert.ok(m.painted.middle > 0, 'the canvas is blank — the renderer painted nothing');
+      assert.equal(m.painted.edge, 0, `${m.painted.edge} painted pixels on the canvas edge (${m.painted.w}×${m.painted.h}) — the picture is clipped`);
     } finally {
       await context.close();
     }
