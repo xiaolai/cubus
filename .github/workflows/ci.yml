@@ -47,6 +47,13 @@ jobs:
           git diff --exit-code -- apps/web/vendor/ \
             || { echo "::error::a vendored bundle is behind its source — rebuild and commit it"; exit 1; }
 
+      # The geometry test (apps/web/test/geometry.test.mjs) measures the layout contract in a real
+      # WebKit — the engine every shipped build is — because the CSS is the runtime and no text
+      # test can tell whether a container unit resolved. Playwright is an exact-pinned dev dep of
+      # apps/web; this fetches its matching WebKit build. Missing it fails the test, loudly.
+      - name: cubus-web — WebKit for the geometry test
+        run: pnpm --filter cubus-web exec playwright install --with-deps webkit
+
       - name: cubus-web — test
         run: pnpm --filter cubus-web test
 
@@ -82,6 +89,11 @@ jobs:
 
       - name: check
         run: cargo check --workspace
+
+      # The desktop window's arithmetic (src/stage.rs) is held to the contract document's table,
+      # the same rows the web oracle is held to.
+      - name: desktop — stage arithmetic
+        run: cargo test -p cubus-desktop --lib
 
   # The golden-frame parity gate (dev-docs/native-capture-and-inference-plan.md, Phase 4). Every
   # runtime must read the 20 committed fixtures exactly as ml/golden/expected.json pins it, or a

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "cubus",
-  "version": "0.4.2",
+  "version": "0.1.0",
   "identifier": "im.cubus.app",
   "build": {
     "frontendDist": "../../web/dist",
@@ -21,11 +21,11 @@
           "x": 19,
           "y": 28
         },
+        "create": false,
         "width": 1280,
         "height": 832,
-        "minWidth": 1120,
-        "minHeight": 640,
-        "resizable": true,
+        "resizable": false,
+        "maximizable": false,
         "fullscreen": false
       }
     ],
@@ -53,6 +53,7 @@
       "../../../ml/models/cube-yolo.mlpackage": "models/cube-yolo.mlpackage"
     },
     "macOS": {
+      "minimumSystemVersion": "13.0",
       "infoPlist": "Info.plist",
       "entitlements": "Entitlements.plist",
       "files": {
