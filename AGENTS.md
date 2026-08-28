@@ -46,6 +46,11 @@ it walks you through solving it.
     registry, recent solves, the `cubeView` tuning — and on 2026-08-27 one such call, made to bust
     a cached bundle, wiped all of it with no backup. If a rebuilt bundle does not show after a
     reload, restart the dev app; the cache dies with the process, the data does not.
+    **`manage_window focus` before any screenshot of a `<cubus-cube>`**: an occluded window
+    reports `document.visibilityState === 'hidden'` and WebKit pauses `requestAnimationFrame`,
+    so the renderer keeps its FIRST frame — a camera or ghost attribute set after mount is never
+    repainted. On 2026-08-28 that made the solved cube on Home look twice its size with no
+    ghosts, and cost an hour of chasing a renderer bug that did not exist.
 - **No smart-cube support, deliberately.** A verified GAN16 BLE driver and a Rust bridge were
   built, shipped and then removed. They worked; the problem was that a cube adds an axis — present
   or absent, trusted or not — and every screen has to answer it. For this audience that axis is

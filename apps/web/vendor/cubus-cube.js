@@ -20872,7 +20872,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      this._dirty = true;
+      this._applyCamera();
     };
     this._ro = new ResizeObserver(resize);
     this._ro.observe(this);
@@ -20953,6 +20953,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     if (!this.camera) return;
     let d = this._num("camera-distance", 12) * 0.85;
     if (this._ghostsEnabled()) d += this._num("ghost-elevation", 4) * 0.42;
+    const aspect2 = this.camera.aspect || 1;
+    if (aspect2 < 1) d /= aspect2;
     const lat = this._num("camera-latitude", 35) * Math.PI / 180;
     const lon = this._num("camera-longitude", 45) * Math.PI / 180;
     this.camera.position.set(
