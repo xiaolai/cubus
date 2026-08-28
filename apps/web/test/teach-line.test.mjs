@@ -88,3 +88,42 @@ test('with explaining on, the walk shows a reason for the step you are on', asyn
   }
   assert.ok(steps.length >= 10, `a beginner lesson should be many steps, got ${steps.length}`);
 });
+
+test('a solution cached by the OTHER solver is not reused', async () => {
+  // How the reason line disappeared in the real app while every test passed: a solution already
+  // on `state.cube` short-circuits solve(), and if it was produced without a lesson — restored,
+  // or computed while explaining was off — the walk renders with nothing to caption it. The
+  // tests all set the state up by hand and never had a stale one.
+  const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+  const c = new Cube();
+  c.move("R U R' U' F2 D L2 B' R2 U2");
+
+  // Exactly the bad shape: a solution with no lesson beside it, while explaining is on.
+  Object.assign(state.cube, {
+    facelets: c.asString(), derived: false, setupAlg: '',
+    solution: "R U R' U'", moves: ['R', 'U', "R'", "U'"], stepFacelets: [],
+    methodSteps: null, moveStep: null, isPhysical: false, source: 'generated',
+  });
+  win.location.hash = '#/scramble';
+  await tick();
+  win.location.hash = '#/home';
+  await tick();
+
+  assert.ok(await waitFor(() => (state.cube.methodSteps ?? []).length > 0),
+    'the stale solution was reused and no lesson was computed');
+  assert.notEqual(state.cube.solution, "R U R' U'", 'the stale solution must be replaced');
+  const line = win.document.querySelector('#whyLine');
+  assert.ok(await waitFor(() => !line.hidden && line.textContent.trim().length > 0),
+    'the reason line is still empty after the lesson was computed');
+});
+
+test('the card says which of the two solvers produced this', async () => {
+  // "Solution 93" and "Solution 20" read identically, so a 93-move lesson looked like a broken
+  // solver. It is a different object and has to say so.
+  assert.ok(await waitFor(() => (state.cube.methodSteps ?? []).length > 0), 'no lesson');
+  const label = win.document.querySelector('#solLabel');
+  const count = win.document.querySelector('#moveCount');
+  assert.equal(label.textContent, 'Lesson', `the header still reads "${label.textContent}"`);
+  assert.match(count.textContent, /^\d+ steps · \d+ moves$/,
+    `the count reads "${count.textContent}" — a bare number cannot say what it counts`);
+});

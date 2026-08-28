@@ -435,7 +435,13 @@ async function solve({ onImprovement } = {}) {
   const c = state.cube;
   // If a state arrived before the solver was ready, its setup alg is stale — recompute now.
   if (solverReady && c.facelets !== SOLVED && !c.setupAlg) deriveCube();
-  if (c.solution) return c.solution;
+  // A cached solution is only reusable if it came from the solver that is on now. A lesson
+  // kept from before the rung changed would caption the walk with the wrong steps; a solution
+  // carried in WITHOUT one — restored, or computed while explaining was off — leaves the
+  // reason line with nothing to say, which is how the feature disappeared in the real app
+  // while passing in every test that set the state up by hand.
+  const wantsLesson = settings.teachLevel !== 'off';
+  if (c.solution && wantsLesson === Boolean(c.methodSteps)) return c.solution;
 
   // The explaining solver is a different product, not a shorter setting: it answers "why is this
   // move right" where the other answers "how short can this be". It runs here on the main
@@ -2062,7 +2068,7 @@ const cubeScreen = (screenMode) => {
       ${!walking && rc ? `<div class="card sheet reconnect-card">${reconnectAsk()}</div>` : ''}
       ${walking ? `<div class="card tight solution-card sheet">
         ${reconnectAsk()}
-        <div class="card-h bare"><b>${label}</b><span class="sub" id="moveCount">—</span></div>
+        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount">—</span></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="sub" id="whyLine" style="padding:0 18px 10px;color:var(--ink-4)" hidden></div>
         <div class="follow-note" id="followNote" hidden>
@@ -2221,13 +2227,23 @@ const cubeScreen = (screenMode) => {
       if (stale()) return; // navigated away while solving — leave the new screen alone
       const total = moves.length;
       cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
-      // Just the number, unless the tier asked for something this cube cannot give. Eighteen
-      // moves do not exist for every position, so that case is said plainly rather than left to
-      // look like the target was met.
+      // A lesson and a shortest solution are different objects and must not be presented as
+      // one. Both used to read "Solution" with a number beside it, so a 93-move lesson looked
+      // exactly like a solver that had broken — which is what it was taken for.
+      const lesson = state.cube.methodSteps;
+      const solLabel = $('#solLabel', root);
+      if (solLabel) solLabel.textContent = lesson ? 'Lesson' : label;
       const verdict = state.cube.solveResult;
-      setStatus(verdict && verdict.key === 'solve.targetMissed'
-        ? `${total} — ${verdict.target} was not possible here`
-        : String(total));
+      if (lesson) {
+        setStatus(`${lesson.length} steps · ${total} moves`);
+      } else {
+        // Just the number, unless the tier asked for something this cube cannot give. Eighteen
+        // moves do not exist for every position, so that case is said plainly rather than left
+        // to look like the target was met.
+        setStatus(verdict && verdict.key === 'solve.targetMissed'
+          ? `${total} — ${verdict.target} was not possible here`
+          : String(total));
+      }
       // One grid, no group headings, on both sides of the walk. The solve side used to cut its
       // list at fixed 16 / 62 / 82% and head the pieces CROSS / F2L / OLL / PLL — proportional
       // slices of a two-phase solution wearing the names of stages it does not have. That is
