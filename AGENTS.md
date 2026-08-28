@@ -26,6 +26,13 @@ it walks you through solving it.
     delegated click handler in `app.js` hands the URL to `__TAURI__.opener.openUrl` when that API
     is injected; in the browser the same anchors work natively. Same test as above: both builds
     satisfy the seam, neither gains a screen.
+  - **Third seam, accepted 2026-08-27 with the layout contract**: the desktop window's
+    orientation. `set_orientation` / `get_orientation` (commands in `lib.rs`) re-size and
+    re-centre the fixed window to the other reference and remember the choice in a file the
+    window is built from at the next launch — a file, because the window exists before the
+    webview does. The Settings row that calls them is drawn only where the Tauri API is injected
+    on a desktop platform; the browser build has no window to shape and a phone rotates in the
+    hand. Same test as above: no screen exists on one build only.
   - **Dev tooling, accepted 2026-08-27, never shipped**: `tauri-plugin-mcp` (git dep, pinned rev)
     — the control socket that lets an AI agent drive the app for verification: screenshots,
     selector clicks, DOM queries, JS eval. Triple-gated because it is control-everything: the
@@ -39,6 +46,11 @@ it walks you through solving it.
     registry, recent solves, the `cubeView` tuning — and on 2026-08-27 one such call, made to bust
     a cached bundle, wiped all of it with no backup. If a rebuilt bundle does not show after a
     reload, restart the dev app; the cache dies with the process, the data does not.
+    **`manage_window focus` before any screenshot of a `<cubus-cube>`**: an occluded window
+    reports `document.visibilityState === 'hidden'` and WebKit pauses `requestAnimationFrame`,
+    so the renderer keeps its FIRST frame — a camera or ghost attribute set after mount is never
+    repainted. On 2026-08-28 that made the solved cube on Home look twice its size with no
+    ghosts, and cost an hour of chasing a renderer bug that did not exist.
 - **No smart-cube support, deliberately.** A verified GAN16 BLE driver and a Rust bridge were
   built, shipped and then removed. They worked; the problem was that a cube adds an axis — present
   or absent, trusted or not — and every screen has to answer it. For this audience that axis is
@@ -72,6 +84,11 @@ it walks you through solving it.
   that cannot be validated is a refusal, not a guess. A plausible figure is worse than a blank.
 - **Fail loud**: an unreadable scan, a state that cannot be solved, a storage write that did not
   land — each surfaces where it happens, never silently.
+- **The version is one number in six places** — `apps/web/lib/app.js` (`VERSION`, what the About
+  card shows; the web app has no build step to read a manifest at runtime), both `package.json`s
+  under `apps/`, `tauri.conf.json`, the desktop `Cargo.toml` and `Cargo.lock`. `pnpm bump X.Y.Z`
+  moves all six (`scripts/bump-version.mjs`, tested; it refuses rather than half-bumps), and a
+  wiring test fails if any of them drifts from `VERSION`. Never edit one by hand.
 - **Quality gate** is `pnpm check`, and it is two different things:
   `packages/cube-scanner` runs strict `tsc` + Biome + a type-aware ESLint pass + vitest;
   `apps/web` runs `node --test` over `apps/web/test/` (it has no build step to typecheck, and

@@ -21,7 +21,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
  * to it, so the five version fields this repo carries can no longer drift apart silently — the
  * About card spent months claiming 0.4.2 over manifests that all said 0.1.0. Exported for that
  * test, not as API. */
-export const VERSION = '0.4.2';
+export const VERSION = '0.1.0';
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const PALETTE_ATTR = { muted: 'muted', classic: 'classic', colorsafe: 'colorsafe' };
 /** Escape text destined for an innerHTML template. Scramble strings, solve times and anything
@@ -280,7 +280,13 @@ function deriveCube() {
   }
   c.derived = true;
   try {
-    const sol = Cube.fromString(c.facelets).solve();
+    const cube = Cube.fromString(c.facelets);
+    // A solved cube has no walk. Asked for one anyway, cubejs's two-phase search answers the
+    // identity with a 14-move no-op ("R L U2 R L F2 R2 U2 R2 F2 R2 U2 F2 L2"), so "the solver
+    // returned moves" is not evidence of anything to follow — every fresh launch put a transport
+    // under the solved cube reading 0 / 0, its done tick already lit.
+    if (cube.isSolved()) { c.setupAlg = ''; c.solvable = false; return c; }
+    const sol = cube.solve();
     const moves = sol.trim() ? sol.trim().split(/\s+/) : [];
     c.setupAlg = moves.slice().reverse().map(invMove).join(' ');
     c.solvable = moves.length > 0;
@@ -328,17 +334,6 @@ async function solve() {
   }
   c.solution = solution; c.moves = moves; c.stepFacelets = sf;
   return solution;
-}
-
-// Rough CFOP stage split of a min2phase solution for display chunking (proportional, not exact
-// CFOP — min2phase is two-phase, so this is a readable approximation labelled as such).
-function stageSplit(n) {
-  if (!n) return [];
-  const cut = [Math.round(n * 0.16), Math.round(n * 0.62), Math.round(n * 0.82), n];
-  const names = ['CROSS', 'F2L', 'OLL', 'PLL'];
-  const out = []; let a = 0;
-  for (let i = 0; i < 4; i++) { const b = cut[i]; if (b > a) out.push([names[i], a, b]); a = b; }
-  return out;
 }
 
 // ---- cube element helpers --------------------------------------------------------------------
@@ -397,12 +392,20 @@ const isTauri = typeof window.__TAURI__ !== 'undefined';
 function detectPlatform() {
   try {
     const q = new URLSearchParams(window.location.search).get('platform');
-    if (q === 'macos' || q === 'windows' || q === 'linux') { localStorage.setItem('cubus.platform', q); return q; }
+    if (['macos', 'windows', 'linux', 'ios', 'android'].includes(q)) { localStorage.setItem('cubus.platform', q); return q; }
     if (q === 'auto') localStorage.removeItem('cubus.platform');
     const s = localStorage.getItem('cubus.platform'); if (s) return s;
   } catch {}
   const ua = navigator.userAgent;
-  if (/Mac|iPhone|iPad|iPod/.test(ua)) return 'macos';
+  // iPadOS calls itself a Mac; a finger gives it away — the touch points (5 on a real iPad), or a
+  // coarse pointer (what a touch-emulating WebKit reports, with no touch points at all). No Mac
+  // has either. A phone or tablet gets plain bars: no traffic-light gap, no caption buttons —
+  // there is no window to drive.
+  // globalThis, guarded: the test harness has no matchMedia, and no finger either.
+  const finger = navigator.maxTouchPoints > 0 || globalThis.matchMedia?.('(any-pointer: coarse)').matches === true;
+  if (/iPhone|iPad|iPod/.test(ua) || (/Mac/.test(ua) && finger)) return 'ios';
+  if (/Android/.test(ua)) return 'android';
+  if (/Mac/.test(ua)) return 'macos';
   if (/Win/.test(ua)) return 'windows';
   return 'linux';
 }
@@ -423,7 +426,6 @@ function wireWindowButtons(root) {
     void Promise.resolve(fn()).catch((e) => console.error('window control failed', e));
   });
   on('[data-win="min"]', () => win.minimize());
-  on('[data-win="max"]', () => win.toggleMaximize());
   on('[data-win="close"]', () => win.close());
 }
 
@@ -455,11 +457,16 @@ function buildChrome(platform) {
     trail.innerHTML = cubeLive + gear;
   } else {
     const round = platform === 'linux';
+    // Caption buttons only where there is an undecorated window to drive: Windows and Linux.
+    const captions = (platform === 'windows' || platform === 'linux') && (isTauri || preview);
     lead.innerHTML = brand;
-    trail.innerHTML = cubeLive + gear + ((isTauri || preview)
-      ? `<span class="tb-zone tb-caption ${platform}">${cap('minus', 'min', round) + cap('square', 'max', round) + cap('x', 'close', round)}</span>`
+    // Minimise and close only: the window is a fixed size (dev-docs/stage-contract.md), so
+    // there is no maximise — and toggleMaximize would have maximised it regardless of the
+    // resize flag.
+    trail.innerHTML = cubeLive + gear + (captions
+      ? `<span class="tb-zone tb-caption ${platform}">${cap('minus', 'min', round) + cap('x', 'close', round)}</span>`
       : '');
-    wireWindowButtons(trail);
+    if (captions) wireWindowButtons(trail);
   }
   // All of them: the gear AND the cube-live indicator both land on Settings.
   for (const b of trail.querySelectorAll('[data-nav="settings"]')) b.onclick = () => go('settings');
@@ -871,31 +878,41 @@ export { state };
 // Screens
 // ===============================================================================================
 const SCREENS = {};
-/** Drop a fixed-position `.menu` under a corner button, clamped inside the viewport. */
-/** Vertical placement for a fixed popover. The stylesheet's 100dvh cap bounds SIZE but cannot
- *  know POSITION, so the room that remains is computed here: below the anchor when that fits or
- *  is the roomier side, flipped above it otherwise — and always capped to the room actually
- *  there, so the popover scrolls rather than running off either edge. */
+/** The stage's box, in viewport coordinates. Popovers are the stage's absolutely positioned
+ *  children (index.html, the popover rule), so this is both the box they are clamped to and the
+ *  origin their `top`/`left` are measured from. Not the viewport: under the layout contract
+ *  (dev-docs/stage-contract.md) the viewport also holds the OS insets and the app's bars, and a
+ *  test keeps this file from reading it. */
+const stageRect = () => $('#stage').getBoundingClientRect();
+
+/** Vertical placement for a popover. The stylesheet's cap bounds SIZE but cannot know POSITION,
+ *  so the room that remains is computed here: below the anchor when that fits or is the roomier
+ *  side, above it otherwise — and always capped to the room actually there, so the popover
+ *  scrolls rather than running off either edge of the stage. */
 const placePopoverV = (el, anchorRect) => {
   const gap = 6, margin = 8;
-  const below = window.innerHeight - anchorRect.bottom - gap - margin;
-  const above = anchorRect.top - gap - margin;
+  const s = stageRect();
+  el.style.maxHeight = ''; // measure the natural height, not the cap left by the last placement
+  const below = s.bottom - anchorRect.bottom - gap - margin;
+  const above = anchorRect.top - s.top - gap - margin;
   if (below >= Math.min(el.offsetHeight, 120) || below >= above) {
-    el.style.top = `${anchorRect.bottom + gap}px`;
-    el.style.bottom = '';
+    el.style.top = `${anchorRect.bottom - s.top + gap}px`;
     el.style.maxHeight = `${Math.max(40, below)}px`;
   } else {
-    // Anchored by its BOTTOM edge, so the popover grows upward from above the trigger.
-    el.style.top = '';
-    el.style.bottom = `${window.innerHeight - anchorRect.top + gap}px`;
-    el.style.maxHeight = `${Math.max(40, above)}px`;
+    // Above the anchor: sized to the room there is, then placed so its bottom edge sits `gap`
+    // over the anchor. (Anchoring by `bottom` would need a height this file no longer reads.)
+    const h = Math.max(40, Math.min(el.offsetHeight, above));
+    el.style.maxHeight = `${h}px`;
+    el.style.top = `${anchorRect.top - s.top - gap - h}px`;
   }
 };
 
+/** Drop a `.menu` under a corner button, right-aligned to it and clamped inside the stage. */
 const placeMenuUnder = (btn, menu) => {
   const r = btn.getBoundingClientRect();
+  const s = stageRect();
   const w = menu.offsetWidth;
-  menu.style.left = `${Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8)}px`;
+  menu.style.left = `${Math.min(Math.max(8, r.right - s.left - w), s.width - w - 8)}px`;
   placePopoverV(menu, r);
 };
 
@@ -955,8 +972,12 @@ SCREENS.scan = () => {
   const HOW = 'The camera opens with this screen and the YOLO scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still. Each tile is edged in the colours of its neighbours: hold a side that way up and the scan needs nothing more from you. Got a sticker wrong? Click it and pick the right colour.';
   // What to call the aside while the scanner is speaking, so "How it works" never heads an error.
   const SAY_TITLE = { error: 'Camera trouble', confirm: 'One more look', checking: 'Checking', done: 'Scanned' };
+  // --primary-share 0.66, not the default 0.58: the net wants the room, and the sheet is a cube
+  // twin and a paragraph. `twin-low`: in portrait the twin sits beside the sheet, not beside the
+  // cross — the cross is the same cross in both windows and wants the width (index.html). Only a
+  // finger's portrait shows one face large over a strip (.scan-faces under pointer: coarse).
   return {
-    html: `<div class="cols">
+    html: `<div class="cols twin-low" style="--primary-share:0.66">
     <div class="col">
       <div class="card scanboard">
         <ai-scan-panel headless autostart></ai-scan-panel>
@@ -970,12 +991,14 @@ SCREENS.scan = () => {
       </div>
     </div>
     <div class="aside">
-      <div class="card"><div class="eyebrow">DETECTED STATE</div>
-        <div class="cube-slot" id="scanCube" style="height:230px;margin-top:6px"></div></div>
-      <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
-        <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
-        <div class="sub scan-hint" id="scanHint" hidden></div></div>
-      <button class="btn primary block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
+      <div class="card twin"><div class="eyebrow">DETECTED STATE</div>
+        <div class="cube-slot" id="scanCube"></div></div>
+      <div class="sheet scan-sheet">
+        <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
+          <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
+          <div class="sub scan-hint" id="scanHint" hidden></div></div>
+        <button class="btn primary block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
+      </div>
     </div></div>`,
     mount(root) {
       // Kept, so a finished scan can update the aside in place. Re-rendering the screen would tear
@@ -1061,6 +1084,21 @@ SCREENS.scan = () => {
       const solveBtn = $('#scanSolveBtn', root);
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
+      // A finger's portrait shows one face large and the other five as a strip (index.html,
+      // .scan-faces under pointer: coarse): six 3×3 tiles cannot give a finger 44px stickers in
+      // a phone's width. Which face is large is a policy, because the scanner is orderless and
+      // reports no "face being seen": the side it asks to see again, else the side it just read,
+      // else the one you tap — F to begin with. With a mouse, in either window, the class is
+      // inert and the six tiles are the cross.
+      const faces = $('.scan-faces', root);
+      const setFocus = (f) => { for (const tile of tiles) tile.classList.toggle('focus', tile.dataset.face === f); };
+      // Guarded: the test harness lays nothing out and has no getComputedStyle global.
+      const focusLayout = () => {
+        const cs = globalThis.getComputedStyle?.(faces);
+        return cs ? cs.getPropertyValue('--focus').trim() === '1' : false;
+      };
+      setFocus('F');
+      let capturedCount = 0;
 
       // Which camera. This machine class routinely has several — a built-in, a virtual camera, a
       // Continuity Camera (an iPhone) — and with no video preview the user cannot tell which one
@@ -1218,6 +1256,10 @@ SCREENS.scan = () => {
           if (got && p.phase !== 'done') paint(cells, got.colors);
           else if (!got) cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? pal[f] : 'var(--facelet-off)'; });
         }
+        // The large tile in portrait: the side asked for again outranks the side just read.
+        if (p.confirm?.face) setFocus(p.confirm.face);
+        else if (p.captured.length > capturedCount) setFocus(p.captured[p.captured.length - 1].face);
+        capturedCount = p.captured.length;
         // The twin follows the scan side by side rather than waiting for all six.
         if (!settled) stateCube.setAttribute('facelets', partialFacelets(p.captured));
         camOn = Boolean(p.device);
@@ -1303,7 +1345,16 @@ SCREENS.scan = () => {
       $('.scan-faces', root).onclick = (ev) => {
         const cellEl = ev.target.closest('.cell');
         const tile = ev.target.closest('.scan-face');
-        if (!cellEl || !tile) return;
+        if (!tile) return;
+        // In the portrait layout a tap anywhere on a strip tile brings that side forward;
+        // correcting a sticker is for the large tile, where a sticker is big enough to hit.
+        if (focusLayout() && !tile.classList.contains('focus')) {
+          closePops();
+          setFocus(tile.dataset.face);
+          ev.stopPropagation();
+          return;
+        }
+        if (!cellEl) return;
         const index = [...cellEl.parentElement.children].indexOf(cellEl);
         // The centre cannot be colour-corrected — it names the face — so it does the other useful
         // thing: throws that side's reading away so the camera reads it again.
@@ -1329,12 +1380,13 @@ SCREENS.scan = () => {
         }
         swatches.hidden = false;
         // Anchored below the TILE, not below the sticker: a picker covering the very sticker you
-        // are correcting hides the thing you need to look at. Fixed to the viewport so there is no
-        // offset-parent arithmetic, and clamped so an edge tile keeps it on screen.
+        // are correcting hides the thing you need to look at. Centred on the sticker in stage
+        // coordinates, and clamped so an edge tile keeps it on the stage.
         const cellRect = cellEl.getBoundingClientRect();
         const tileRect = tile.getBoundingClientRect();
+        const s = stageRect();
         const w = swatches.offsetWidth;
-        swatches.style.left = `${Math.min(Math.max(8, cellRect.left + cellRect.width / 2 - w / 2), window.innerWidth - w - 8)}px`;
+        swatches.style.left = `${Math.min(Math.max(8, cellRect.left - s.left + cellRect.width / 2 - w / 2), s.width - w - 8)}px`;
         placePopoverV(swatches, tileRect); // below the tile, or above it when that is the room there is
         ev.stopPropagation();
       };
@@ -1414,10 +1466,14 @@ const cubeScreen = (screenMode) => {
     ['camLat', 'camera-latitude'], ['camLon', 'camera-longitude'],
     ['facScale', 'facelet-scale'],
   ];
+  // Four regions of the layout contract's grid (index.html, ".cols"): the cube card is
+  // `primary`, the transport card `aux`, the state card the `twin` and the solution card the
+  // `sheet` — the last two are the aside's children, which the stylesheet hands to the grid
+  // (display: contents) or keeps as a scrolling column, by composition. The DOM is the same
+  // either way.
   return {
-    html: `<div class="cols">
-    <div class="col">
-      <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;position:relative">
+    html: `<div class="cols${walking ? ' walking' : ''}">
+      <div class="card primary" style="display:flex;flex-direction:column;align-items:center;position:relative">
         ${walking ? `<div class="card-tools">
           <button id="speedBtn" title="Animation speed">${icon('gauge', 20)}</button>
         </div>` : ''}
@@ -1425,7 +1481,7 @@ const cubeScreen = (screenMode) => {
           <div class="cube-slot" id="viewCube" style="height:100%"></div>
         </div>
       </div>
-      ${walking ? `<div class="card">
+      ${walking ? `<div class="card aux">
         <div class="transport">
           <button class="tbtn" id="prevBtn" title="Back a move">${icon('chevron-left', 20)}</button>
           <button class="tbtn" id="repeatBtn" title="Show that move again">${icon('refresh', 18)}</button>
@@ -1434,13 +1490,12 @@ const cubeScreen = (screenMode) => {
           ${state.connected ? `<button class="pill on" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
           <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
           <span class="done-mark" id="doneMark" hidden title="Done">${icon('check', 14)}</span>
-          <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:64px;text-align:right">0 / 0</span>
+          <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:56px;text-align:right">0 / 0</span>
           ${scrambling ? `<button class="btn sm primary" id="solveItBtn" hidden>Solve this scramble</button>` : ''}
         </div>
       </div>` : ''}
-    </div>
-    <div class="aside" style="overflow-y:auto">
-      <div class="card" style="padding-bottom:0">
+    <div class="aside">
+      <div class="card state-card twin" style="padding-bottom:0">
         <div class="eyebrow-row"><b class="state-h">${scrambling ? 'Target State' : 'Initial State'}</b>
           ${scrambling || settings.devRandCube
             // On Scramble the die IS the screen's re-roll and always shows. On the solve side it
@@ -1448,11 +1503,12 @@ const cubeScreen = (screenMode) => {
             // hidden unless the Advanced toggle asks for it.
             ? `<button id="randCube" title="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}">${icon('dice', 18)}</button>`
             : ''}</div>
-        <!-- 30px above AND 30px below the net (bottom = aside gap 16 + Solution header pad 14,
-             with this card's own bottom padding zeroed) — the two breathing spaces the eye
-             compares, made equal. -->
-        <div class="net" id="viewNet" style="margin-top:30px"></div></div>
-      ${walking ? `<div class="card tight" style="flex:1;min-height:140px;display:flex;flex-direction:column">
+        <!-- 30px above AND ~30px below the net in landscape (bottom = grid row gap 18 + the
+             Solution header's 14px pad, with this card's own bottom padding zeroed) — the two
+             breathing spaces the eye compares, made equal. The margin is the stylesheet's
+             (.state-card .net): beside the cube in portrait the net centres instead. -->
+        <div class="net" id="viewNet"></div></div>
+      ${walking ? `<div class="card tight solution-card sheet">
         <div class="card-h bare"><b>${label}</b><span class="sub" id="moveCount">—</span></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="follow-note" id="followNote" hidden>
@@ -1606,15 +1662,13 @@ const cubeScreen = (screenMode) => {
       const total = moves.length;
       cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
       setStatus(String(total)); // just the number — the heading beside it already says what it counts
-      // A scramble has no stages — CROSS/F2L/OLL/PLL are phases of solving, and pinning them on a
-      // scramble would invent structure that is not there. It gets no group heading either: the
-      // card header directly above already says "Scramble" and the move count, and repeating both
-      // an inch lower said nothing twice. The solve side keeps its headings — stage names are
-      // information the card header does not carry.
-      const stages = scrambling ? [['SCRAMBLE', 0, total]] : stageSplit(total);
-      solList.innerHTML = stages.map(([name, a, b]) => `<div style="padding:10px 18px 14px">
-        ${scrambling ? '' : `<div style="display:flex;justify-content:space-between"><span class="eyebrow">${name}</span><span class="num sub">${b - a}</span></div>`}
-        <div class="move-chips" style="margin-top:${scrambling ? '0' : '8px'}">${moves.slice(a, b).map((m, k) => `<button class="chip-m" data-i="${a + k}" title="Jump to this move">${m}</button>`).join('')}</div></div>`).join('');
+      // One grid, no group headings, on both sides of the walk. The solve side used to cut its
+      // list at fixed 16 / 62 / 82% and head the pieces CROSS / F2L / OLL / PLL — proportional
+      // slices of a two-phase solution wearing the names of stages it does not have. That is
+      // invented structure on the screen a beginner trusts most, and a heading per group is what
+      // put the tail of a 20-move solve past the sheet's foot in portrait. The card header already
+      // says what the chips are and how many.
+      solList.innerHTML = `<div style="padding:6px 18px 12px"><div class="move-chips">${moves.map((m, k) => `<button class="chip-m" data-i="${k}" title="Jump to this move">${m}</button>`).join('')}</div></div>`;
       const chips = [...solList.querySelectorAll('.chip-m')];
 
       // ---- Scramble → Solve hand-off ---------------------------------------------------------
@@ -1958,13 +2012,15 @@ SCREENS.home = () => cubeScreen('solve');
 SCREENS.scramble = () => cubeScreen('scramble');
 
 SCREENS.timer = () => {
-  return { html: `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px">
+  // width:100% — the screen centres its child, and a column without a width would shrink to
+  // its content. The clock's size and the wrapping rows are classes (index.html).
+  return { html: `<div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px">
       <div class="num" id="scr" style="font-size:var(--fs-body-l);color:var(--ink-4);text-align:center;max-width:640px">press New scramble</div>
-      <div class="num" id="clock" style="font-size:var(--fs-timer);font-weight:600;line-height:.95;letter-spacing:-.03em;cursor:pointer">0.00</div>
+      <div class="num timer-clock" id="clock">0.00</div>
       <div class="sub" id="timerHint" style="color:var(--ink-4)">Click or hold space to start</div>
-      <div style="display:flex;gap:10px"><button class="btn outline sm" id="newScr">New scramble</button>
+      <div class="wrap-row" style="justify-content:center;gap:10px"><button class="btn outline sm" id="newScr">New scramble</button>
         <span class="pill">WCA scrambles</span></div>
-      <div style="display:flex;gap:12px;margin-top:6px" id="lastFive"></div></div>`,
+      <div class="wrap-row" style="justify-content:center;gap:12px;margin-top:6px" id="lastFive"></div></div>`,
     mount(root) {
       const clock = $('#clock', root); let running = false, t0 = 0, raf = 0;
       const fmt = (ms) => (ms / 1000).toFixed(2);
@@ -2041,14 +2097,23 @@ SCREENS.settings = () => {
   // the 15s countdown it named. A setting that claims behaviour it does not have is exactly the
   // invented data this app refuses elsewhere; it returns when the Timer actually earns it.
   const toggles = [['autosolve', 'Auto-solve after scan', 'Jump straight to the guide']];
-  return { html: `<div class="cols">
+  // The window's orientation is the desktop's to choose (dev-docs/stage-contract.md, decision
+  // 4): a fixed window that can be either shape. The row exists only where there is a window to
+  // shape — the Tauri API on a desktop platform. A phone or tablet rotates in the hand, and the
+  // browser harness has no window. The Rust side (set_orientation) re-sizes, re-centres and
+  // remembers; this is the third capability seam AGENTS.md lists.
+  const desktopWindow = isTauri && ['macos', 'windows', 'linux'].includes(document.documentElement.dataset.platform);
+  // `flow`: a list screen — in portrait the box scrolls as one (index.html, .cols.flow).
+  return { html: `<div class="cols flow">
     <div class="col">
       <div class="card"><div class="eyebrow">APPEARANCE</div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Theme</div><div class="sub" style="color:var(--ink-4)">White, cream or night — auto follows the system</div></div>
-          <div style="display:flex;gap:6px">${THEMES.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-set-theme="${t}">${t}</button>`).join('')}</div></div>
+        <div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Theme</div><div class="sub" style="color:var(--ink-4)">White, cream or night — auto follows the system</div></div>
+          <div class="wrap-row" style="gap:6px">${THEMES.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-set-theme="${t}">${t}</button>`).join('')}</div></div>
         <div style="display:flex;align-items:center;gap:16px;padding:13px 0 0;border-top:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">Rotate the cube by dragging</div><div class="sub" style="color:var(--ink-4)">Off, the 3D cube keeps the angle its ghost faces are set up for</div></div>
-          <button class="toggle ${settings.dragRotate ? 'on' : ''}" data-toggle="dragRotate"><i></i></button></div></div>
+          <button class="toggle ${settings.dragRotate ? 'on' : ''}" data-toggle="dragRotate"><i></i></button></div>
+        ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
+          <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}">${o}</button>`).join('')}</div></div>` : ''}</div>
       ${(() => {
         // ---- smart cube (recovered from v0) --------------------------------------------------
         const on = state.connected;
@@ -2199,6 +2264,22 @@ SCREENS.settings = () => {
       const swatch = () => { const p = NET_COLORS[settings.palette]; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:4px;background:${p[k]}"></div>`).join(''); };
       swatch();
       for (const b of root.querySelectorAll('[data-set-theme]')) b.onclick = () => { settings.theme = b.dataset.setTheme; save('cubusSettings', settings); applyTheme(); renderScreen(); };
+      // The window's orientation lives on the Rust side (a file the window is built from before
+      // this webview exists), so the pills ask it which is current, and tell it which to become.
+      // A failure surfaces on the pills themselves rather than in a console nobody reads.
+      const orientationPills = $('#orientationPills', root);
+      if (orientationPills) {
+        const invoke = window.__TAURI__?.core?.invoke;
+        const mark = (current) => { for (const b of orientationPills.querySelectorAll('[data-set-orientation]')) b.classList.toggle('on', b.dataset.setOrientation === current); };
+        const fail = (e) => { orientationPills.title = String(e); orientationPills.style.color = 'var(--err)'; console.error('window orientation', e); };
+        if (typeof invoke !== 'function') fail('the Tauri API is not exposed');
+        else {
+          invoke('get_orientation').then(mark, fail);
+          for (const b of orientationPills.querySelectorAll('[data-set-orientation]')) {
+            b.onclick = () => invoke('set_orientation', { orientation: b.dataset.setOrientation }).then(mark, fail);
+          }
+        }
+      }
       for (const b of root.querySelectorAll('[data-pal]')) b.onclick = () => { settings.palette = b.dataset.pal; save('cubusSettings', settings); applyNetColors(); renderScreen(); };
       for (const b of root.querySelectorAll('[data-toggle]')) b.onclick = () => { const k = b.dataset.toggle; settings[k] = !settings[k]; save('cubusSettings', settings); b.classList.toggle('on', settings[k]); };
 
@@ -2394,7 +2475,7 @@ SCREENS.stats = () => {
   // honest, so a history of three unreadable records has a length of three and a count of zero —
   // and it is the count that decides whether there is anything to report.
   if (!s.count) {
-    return { html: `<div style="height:100%;display:flex;align-items:center;justify-content:center">
+    return { html: `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">
       <div class="card" style="max-width:460px;text-align:center;padding:34px">
         <div class="eyebrow">NO SOLVES YET</div>
         <div style="font-size:var(--fs-title);font-weight:600;margin-top:10px">Nothing to report</div>
@@ -2426,7 +2507,7 @@ SCREENS.stats = () => {
   const week = s.week;
   const busiest = Math.max(1, ...week.map((d) => d.count));
 
-  return { html: `<div class="cols">
+  return { html: `<div class="cols flow">
     <div class="col">
       <div class="grid3">
         <div class="card stat"><div class="eyebrow">SINGLE BEST</div><div class="v">${secs(s.best)}</div><div class="d">${s.count} solve${s.count === 1 ? '' : 's'} recorded</div></div>
@@ -2440,7 +2521,7 @@ SCREENS.stats = () => {
         <div class="card-h"><b>Recent solves</b><span class="num sub">${s.count}</span></div>
         <div class="list" style="overflow-y:auto">${rows}</div></div>
     </div>
-    <div class="aside" style="overflow-y:auto">
+    <div class="aside">
       <div class="card"><div class="eyebrow">AVERAGES</div>
         ${[['single', secs(s.best)], ['ao5', secs(s.ao5)], ['ao12', secs(s.ao12)], ['ao100', secs(s.ao100)]].map(([k, v]) => `<div class="row" style="grid-template-columns:1fr auto;border-color:var(--line-faint)"><div style="color:var(--ink-3)">${k}</div><div class="num" style="font-size:var(--fs-title);font-weight:600">${v}</div></div>`).join('')}
         <div class="sub" style="color:var(--ink-5);margin-top:10px;font-size:var(--fs-meta)">An average of n needs n solves. Until then it is a dash, not a guess.</div></div>
@@ -2457,9 +2538,11 @@ SCREENS.trainer = () => {
   const P2 = NET_COLORS[settings.palette];
   const oll = [['OLL 21', "R U2 R' U' R U R' U' R U' R'", 'var(--ok)', '82%'], ['OLL 22', "R U2 R2 U' R2 U' R2 U2 R", 'var(--accent)', '64%'], ['OLL 24', "r U R' U' r' F R F'", 'var(--err)', '22%'], ['OLL 27', "R U R' U R U2 R'", 'var(--ok)', '94%'], ['PLL T', "R U R' U' R' F R2 U' R' U' R U R' F'", 'var(--accent)', '71%'], ['PLL Y', "F R U' R' U' R U R' F' R U R' U' R' F R F'", 'var(--err)', '29%']];
   const grid = (seed) => Array.from({ length: 9 }, (_, i) => ((i * 7 + seed * 3) % 4 === 0 ? P2.D : 'var(--facelet-off)'));
-  return { html: `<div style="height:100%;display:flex;flex-direction:column;gap:16px">
-    <div style="display:flex;gap:8px;align-items:center">${['OLL', 'PLL', 'F2L', 'Weak first'].map((f, i) => `<button class="pill ${i === 0 ? 'on' : ''}">${f}</button>`).join('')}<span class="sub" style="margin-left:auto;color:var(--ink-4)">Sorted by weakest recall</span></div>
-    <div style="flex:1;min-height:0;overflow-y:auto;display:grid;grid-template-columns:repeat(5,1fr);gap:14px;align-content:start">
+  // width:100% — the screen centres its child (see the timer). The case grid wraps as many
+  // 140px cards as fit rather than dividing the width into five.
+  return { html: `<div style="width:100%;height:100%;display:flex;flex-direction:column;gap:16px">
+    <div class="wrap-row">${['OLL', 'PLL', 'F2L', 'Weak first'].map((f, i) => `<button class="pill ${i === 0 ? 'on' : ''}">${f}</button>`).join('')}<span class="sub" style="margin-left:auto;color:var(--ink-4)">Sorted by weakest recall</span></div>
+    <div class="case-grid">
     ${oll.map(([name, alg, color, pct], i) => `<button class="card" data-go="drill" style="text-align:center;cursor:pointer">
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;width:76px;margin:0 auto">${grid(i).map((g) => `<div style="aspect-ratio:1;border-radius:2px;background:${g}"></div>`).join('')}</div>
       <div style="font-weight:700;margin-top:10px">${name}</div><div class="num sub" style="color:var(--ink-4);min-height:28px;font-size:var(--fs-caption)">${alg}</div>
@@ -2469,7 +2552,9 @@ SCREENS.trainer = () => {
 SCREENS.drill = () => {
   const P2 = NET_COLORS[settings.palette];
   const grid = Array.from({ length: 9 }, (_, i) => ((i * 7 + 9) % 4 === 0 ? P2.D : 'var(--facelet-off)'));
-  return { html: `<div class="cols"><div class="col"><div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px">
+  // `flow`: the flashcard is taller than a phone's locked primary region, and its controls
+  // (Reveal, Again / Good / Easy) must never sit below a fold — so the box scrolls as one.
+  return { html: `<div class="cols flow"><div class="col"><div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px">
       <div class="eyebrow">OLL 24 · DOT CASES · 3 OF 12</div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:180px">${grid.map((g) => `<div style="aspect-ratio:1;border-radius:4px;background:${g}"></div>`).join('')}</div>
       <div class="num" id="drillAlg" style="font-size:var(--fs-display-s);font-weight:600;color:var(--ink-6)">· · · · · · · ·</div>
@@ -2488,7 +2573,7 @@ SCREENS.drill = () => {
 
 SCREENS.lessons = () => {
   const ch = [['CHAPTER 1 · 4 LESSONS', 'Beginner layer method', '4/4', [['White cross', '5 min', 'Done', 'var(--ok)'], ['First layer corners', '7 min', 'Done', 'var(--ok)'], ['Middle layer', '9 min', 'Done', 'var(--ok)'], ['Last layer', '12 min', 'Done', 'var(--ok)']]], ['CHAPTER 2 · 3 LESSONS', 'Getting under a minute', '1/3', [['Efficient cross', '6 min', 'Done', 'var(--ok)'], ['Keyhole F2L', '6 min', 'Next', 'var(--accent)'], ['Look-ahead drills', '8 min', 'Locked', 'var(--ink-5)']]]];
-  return { html: `<div class="cols"><div class="col" style="overflow-y:auto">
+  return { html: `<div class="cols flow"><div class="col">
     ${ch.map(([kick, title, prog, ls]) => `<div class="card tight"><div class="card-h"><div><div class="eyebrow">${kick}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${title}</div></div><div class="num sub" style="color:var(--ink-4)">${prog}</div></div>
       ${ls.map(([t, len, tag, fg]) => `<div class="row" style="grid-template-columns:8px 1fr auto auto;gap:14px"><div style="width:8px;height:8px;border-radius:50%;background:${fg}"></div><div style="color:${tag === 'Locked' ? 'var(--ink-5)' : 'var(--ink)'};font-weight:${tag === 'Next' ? 700 : 500}">${t}</div><div class="sub" style="color:var(--ink-5)">${len}</div><div style="font-weight:600;color:${fg}">${tag}</div></div>`).join('')}</div>`).join('')}</div>
     <div class="aside"><div class="card"><div class="eyebrow">UP NEXT</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:8px">Keyhole F2L</div><div style="color:var(--ink-3);margin-top:6px;line-height:1.5">A bridge between the beginner method and full F2L. 6 minutes, then a 10-case drill.</div><button class="btn outline block" data-go="drill" style="margin-top:14px">Start lesson</button></div>
@@ -2533,10 +2618,34 @@ function installAdvancedShortcut() {
 
 function renderNav() {
   const items = NAV.filter(([id]) => !navHidden(id));
-  $('#nav').innerHTML = items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span><span class="lbl">${t(lbl)}</span></button>`).join('');
+  // The capsule is the segmented control's pill; the nav around it is the positioned box the
+  // stylesheet floats over the title bar (landscape) or lays at the foot of the window (portrait).
+  $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span><span class="lbl">${t(lbl)}</span></button>`).join('')}</div>`;
   for (const b of $('#nav').querySelectorAll('[data-nav]')) b.onclick = () => go(b.dataset.nav);
   // Settings sits outside the row (buildChrome draws it), so it is marked here, not by the template.
-  $('#tbTrail [data-nav="settings"]')?.classList.toggle('active', state.screen === 'settings');
+  // The GEAR, found by its label: the smart-cube indicator beside it also carries
+  // data-nav="settings" and comes first in the bar, so a data-nav match marked the hidden
+  // indicator and the visible gear never once said "you are here".
+  $('#tbTrail [aria-label="Settings"]')?.classList.toggle('active', state.screen === 'settings');
+  fitTabs();
+}
+
+/** Labels when the labelled row fits between the bar's outer zones, icons only when it does not.
+ *  Measured, not thresholded: whether six labelled tabs fit a title bar depends on the tabs, the
+ *  language and the platform's lead zone, none of which a width can know. Landscape only — the
+ *  portrait tab bar (the stylesheet lays the row in flow there) has room for a word under every
+ *  icon. Re-run by renderNav and whenever the bar resizes. */
+function fitTabs() {
+  const nav = $('#nav'), bar = $('#titlebar');
+  if (!nav || !bar || bar.clientWidth === 0) return; // not laid out (the test harness has no layout)
+  nav.classList.remove('compact');
+  if (getComputedStyle(nav).position !== 'absolute') return; // the portrait bar
+  // Centred on the bar, the row needs symmetric room: the wider of the two zones on both sides.
+  // scrollWidth, not offsetWidth: the zone's CONTENT is what the tabs must clear, whatever box
+  // the engine gave the zone.
+  const zone = Math.max($('#tbLead').scrollWidth, $('#tbTrail').scrollWidth) + 12; // + the bar's padding
+  const room = bar.clientWidth - 2 * zone - 8;
+  if (nav.scrollWidth > room) nav.classList.add('compact');
 }
 function renderScreen() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
@@ -2609,11 +2718,42 @@ window.cubusFeed = {
   },
 };
 
+/** The layout contract is built on container-query units (index.html: .stage, .screen). A webview
+ *  without them would not fail — it would draw every screen at the wrong size and say nothing.
+ *  Under Tauri that is a floor violation (macOS 13 / iOS 16 are declared) and the app stops here,
+ *  on the paper, in words. The browser is a harness, not a target: it gets the console. An engine
+ *  with no CSS object at all is the test harness, which lays nothing out and is not asked. */
+function assertStageSupport() {
+  if (typeof CSS === 'undefined' || typeof CSS.supports !== 'function') return;
+  if (CSS.supports('width', '1cqw') && CSS.supports('container-type', 'size')) return;
+  const msg = 'Cubus cannot lay itself out here: this webview has no container-query units (needs macOS 13 / iOS 16 or newer).';
+  if (!isTauri) { console.error(msg); return; }
+  $('#stage').textContent = msg;
+  throw new Error(msg);
+}
+
+/** Fixture insets for the harness: `?insets=59,0,34,0` (top, right, bottom, left; px) stands in
+ *  for the OS safe-area insets, so a desktop window resized to a phone's size is a phone. Sets
+ *  the same --inset-* properties .app reads from env(safe-area-inset-*); a real device never
+ *  carries the parameter, and without it nothing happens. */
+function applyInsetOverride() {
+  const raw = new URLSearchParams(window.location.search).get('insets');
+  if (raw === null) return;
+  const px = raw.split(',').map((v) => Number.parseFloat(v));
+  if (px.length !== 4 || px.some((v) => !Number.isFinite(v) || v < 0)) throw new Error(`?insets= wants four non-negative numbers, got "${raw}"`);
+  const app = $('.app');
+  ['t', 'r', 'b', 'l'].forEach((side, i) => app.style.setProperty(`--inset-${side}`, `${px[i]}px`));
+}
+
 async function boot() {
+  assertStageSupport();
+  applyInsetOverride();
   const platform = detectPlatform();
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
   buildChrome(platform);
+  // The tab row refits when the bar's width changes — a window resize, an orientation change.
+  if (typeof ResizeObserver === 'function') new ResizeObserver(fitTabs).observe($('#titlebar'));
   installAdvancedShortcut();
   installExternalLinks();
   // '' = follow the browser/OS language. No-op until a catalog is registered; the picker arrives

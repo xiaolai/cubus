@@ -30,7 +30,7 @@ use gan_ble::btleplug::api::{
 };
 use gan_ble::btleplug::platform::Peripheral;
 use gan_ble::{default_adapter, find_gan_cube, FFF5_WRITE, FFF6_NOTIFY};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 /// The FFF6 notification stream btleplug hands back (owned, 'static).
@@ -216,20 +216,193 @@ fn configured_traffic_lights<R: tauri::Runtime, M: tauri::Manager<R>>(
         .map(|p| (p.x, p.y))
 }
 
+// ---- the desktop window (dev-docs/stage-contract.md) ------------------------------------------
+//
+// Fixed and non-resizable, sized from the monitor's work area in the persisted orientation, and
+// centred there. The three window configs declare the window with `create: false` — they keep
+// the platform chrome (overlay title bar and traffic lights on macOS, no decorations on Windows
+// and Linux) — and `build_main_window` builds it from that config at its computed size. Built,
+// not resized: tao applies `set_size` asynchronously on macOS and Linux, so a window created
+// small and grown would show its first frame at the wrong size. Nothing here touches the
+// webview's layout — that asks its own container (index.html) and does not care what shape the
+// window is.
+
+mod stage;
+
+/// Where the desktop's orientation is remembered: one word in a file in the app's config dir.
+/// Not localStorage — that is the webview's, and the window has to be built before the webview
+/// exists. Missing or unreadable reads as landscape, the shape the app is designed in first.
+#[cfg(desktop)]
+fn orientation_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("orientation"))
+}
+
+#[cfg(desktop)]
+fn load_orientation<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> stage::Orientation {
+    orientation_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| stage::Orientation::parse(&s))
+        .unwrap_or(stage::Orientation::Landscape)
+}
+
+#[cfg(desktop)]
+fn store_orientation<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    orientation: stage::Orientation,
+) -> Result<(), String> {
+    let path = orientation_path(app).ok_or("no config directory for this app")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, orientation.as_str()).map_err(|e| e.to_string())
+}
+
+/// The monitor the window belongs on: the one under the cursor, else the primary, else the
+/// first the system reports. None only when the system reports no monitor at all.
+#[cfg(desktop)]
+fn pick_monitor<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<tauri::Monitor> {
+    let under_cursor = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten());
+    under_cursor
+        .or_else(|| app.primary_monitor().ok().flatten())
+        .or_else(|| {
+            app.available_monitors()
+                .ok()
+                .and_then(|m| m.into_iter().next())
+        })
+}
+
+/// The window for a monitor in an orientation, and where it goes: centred in the monitor's work
+/// area (the screen less menu bar, Dock and taskbar). Logical px: `work_area()` is physical.
+#[cfg(desktop)]
+fn place(
+    monitor: &tauri::Monitor,
+    orientation: stage::Orientation,
+) -> (tauri::LogicalSize<f64>, tauri::LogicalPosition<f64>) {
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let size: tauri::LogicalSize<f64> = area.size.to_logical(scale);
+    let origin: tauri::LogicalPosition<f64> = area.position.to_logical(scale);
+    let w = stage::window(size.width, size.height, stage::BAR, orientation);
+    let position = tauri::LogicalPosition::new(
+        origin.x + (size.width - w.width) / 2.0,
+        origin.y + (size.height - w.height) / 2.0,
+    );
+    (tauri::LogicalSize::new(w.width, w.height), position)
+}
+
+/// Build the main window from its config, at the size the contract gives it.
+#[cfg(desktop)]
+fn build_main_window(app: &tauri::App) -> tauri::Result<tauri::WebviewWindow> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .cloned()
+        .expect("tauri.conf.json declares the main window (create: false)");
+    let handle = app.handle();
+    let orientation = load_orientation(handle);
+    // Built visible. Built hidden and shown after the traffic lights were placed, the window
+    // stayed off screen: `show()` is dispatched to an event loop that is not running yet during
+    // setup, and the message never landed (Quartz listed the window, onscreen false). The lights
+    // are placed synchronously right after build, before the first frame, as they always were.
+    let mut builder = tauri::WebviewWindowBuilder::from_config(app, &config)?
+        .resizable(false)
+        .maximizable(false);
+    match pick_monitor(handle) {
+        Some(monitor) => {
+            let (size, position) = place(&monitor, orientation);
+            log::info!(
+                "window: {} {}×{} at ({}, {}) on {:?}",
+                orientation.as_str(),
+                size.width,
+                size.height,
+                position.x,
+                position.y,
+                monitor.name()
+            );
+            builder = builder
+                .inner_size(size.width, size.height)
+                .position(position.x, position.y);
+        }
+        // Loud, and still a window: the configured size is the fallback, not a silent one.
+        None => log::error!("no monitor reported — the window keeps its configured size"),
+    }
+    builder.build()
+}
+
+/// The desktop's orientation toggle (contract decision 4): re-size and re-centre the window to
+/// the other reference on the monitor it is on, and remember the choice for the next launch.
+/// A capability seam (AGENTS.md): app.js calls this only when the Tauri API is injected on a
+/// desktop platform; the browser build has no window to shape, and a phone rotates in the hand.
+#[tauri::command]
+fn set_orientation(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    orientation: String,
+) -> Result<String, String> {
+    #[cfg(desktop)]
+    {
+        let o = stage::Orientation::parse(&orientation);
+        let monitor = window
+            .current_monitor()
+            .ok()
+            .flatten()
+            .or_else(|| pick_monitor(&app))
+            .ok_or("no monitor reported")?;
+        let (size, position) = place(&monitor, o);
+        window.set_size(size).map_err(|e| e.to_string())?;
+        // Best effort: Wayland has no window positioning, and a window that is the right size
+        // in the wrong place is still the right window.
+        if let Err(e) = window.set_position(position) {
+            log::warn!("could not centre the window: {e}");
+        }
+        store_orientation(&app, o)?;
+        Ok(o.as_str().to_string())
+    }
+    #[cfg(mobile)]
+    {
+        let _ = (app, window, orientation);
+        Err("a phone or tablet rotates in the hand".to_string())
+    }
+}
+
+/// The persisted orientation, for the toggle to show which is current.
+#[tauri::command]
+fn get_orientation(app: tauri::AppHandle) -> String {
+    #[cfg(desktop)]
+    {
+        load_orientation(&app).as_str().to_string()
+    }
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        String::from("landscape")
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .setup(|app| {
-            #[cfg(target_os = "macos")]
+            #[cfg(desktop)]
             {
-                use tauri::Manager;
-                if let Some(window) = app.get_webview_window("main") {
-                    if let (Some((x, y)), Ok(ptr)) =
-                        (configured_traffic_lights(app, "main"), window.ns_window())
-                    {
-                        place_traffic_lights(ptr, x, y);
-                    }
+                let window = build_main_window(app)?;
+                #[cfg(target_os = "macos")]
+                if let (Some((x, y)), Ok(ptr)) =
+                    (configured_traffic_lights(app, "main"), window.ns_window())
+                {
+                    place_traffic_lights(ptr, x, y);
                 }
+                #[cfg(not(target_os = "macos"))]
+                let _ = window;
             }
             Ok(())
         })
@@ -266,6 +439,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(CubeState::default())
         .invoke_handler(tauri::generate_handler![
+            set_orientation,
+            get_orientation,
             connect_cube,
             write_fff5,
             disconnect_cube
