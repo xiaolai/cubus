@@ -123,7 +123,9 @@ async function cmdMonitor() {
   });
   cube.connect();
   keepAlive();
-  cube.onFacelets((f) => console.log(`STATE  ${f.facelets}`));
+  // The serial too: the reconnect experiment in dev-docs/smart-cube-ux-prd.md compares the
+  // state AND the counter across a disconnect, and a STATE line without it recorded only half.
+  cube.onFacelets((f) => console.log(`STATE  ${f.facelets}  serial=${f.serial}`));
   cube.onMove((m) =>
     console.log(`MOVE   ${m.notation.padEnd(3)}  serial=${m.serial}  t=${m.cubeTimestamp}`),
   );
