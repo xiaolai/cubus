@@ -123,6 +123,56 @@ export function allSolved(state, { edges = [], corners = [] }) {
   return edges.every((e) => edgeSolved(state, e)) && corners.every((c) => cornerSolved(state, c));
 }
 
+/** A whole-cube turn about U, as a face relabelling. `F` becomes `R`, and so on round. */
+const Y_FACES = { U: 'U', D: 'D', F: 'R', R: 'B', B: 'L', L: 'F' };
+
+/** `alg` as seen after turning the whole cube `k` quarter turns about U. */
+export function rotateAlg(alg, k) {
+  let out = String(alg);
+  for (let i = 0; i < ((k % 4) + 4) % 4; i++) out = out.replace(/[UDFRBL]/g, (f) => Y_FACES[f]);
+  return out;
+}
+
+/**
+ * The same whole-cube turn, as a STATE.
+ *
+ * Relabelling an algorithm is the easy half. The hard half is that **edge orientation is not
+ * invariant under this rotation**: in this convention a flip is measured against the F/B axis,
+ * and `F` flips edges where `R` does not — so turning the cube changes which edges read as
+ * flipped. The eight U/D-layer edges flip; the four middle ones do not.
+ *
+ * That is not a detail. Reading a piece's slot in one frame and its flip in another describes a
+ * situation that does not exist, and it is exactly how the F2L stage came to give one case two
+ * different algorithms depending on which slot it turned up in.
+ *
+ * These values were derived, not remembered: they are the only ones for which conjugating every
+ * one of the eighteen moves reproduces `rotateAlg`, and the test re-derives them.
+ */
+const Y_STATE = Object.freeze({
+  cp: [1, 2, 3, 0, 5, 6, 7, 4],
+  co: [0, 0, 0, 0, 0, 0, 0, 0],
+  ep: [1, 2, 3, 0, 5, 6, 7, 4, 9, 10, 11, 8],
+  eo: [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+});
+
+function inverseOf(state) {
+  const cp = new Array(8);
+  const co = new Array(8);
+  for (let i = 0; i < 8; i++) { cp[state.cp[i]] = i; co[state.cp[i]] = (3 - state.co[i]) % 3; }
+  const ep = new Array(12);
+  const eo = new Array(12);
+  for (let i = 0; i < 12; i++) { ep[state.ep[i]] = i; eo[state.ep[i]] = state.eo[i]; }
+  return { cp, co, ep, eo };
+}
+const Y_INVERSE = inverseOf(Y_STATE);
+
+/** `state` as seen after turning the whole cube `k` quarter turns about U. */
+export function rotateState(state, k) {
+  let out = state;
+  for (let i = 0; i < ((k % 4) + 4) % 4; i++) out = compose(compose(Y_INVERSE, out), Y_STATE);
+  return { cp: [...out.cp], co: [...out.co], ep: [...out.ep], eo: [...out.eo] };
+}
+
 /** The alg that undoes `alg`. */
 export function invert(alg) {
   return String(alg).trim().split(/\s+/).filter(Boolean).reverse()

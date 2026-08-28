@@ -28,7 +28,7 @@
 
 import {
   CORNER, CORNERS, EDGE, EDGES, MOVES, MOVE_NAMES, allSolved, applyAlg, applyMove,
-  cornerSlot, cornerSolved, edgeSlot, edgeSolved,
+  cornerSlot, cornerSolved, edgeSlot, edgeSolved, rotateAlg, rotateState,
 } from './cube-pieces.js';
 
 /** U-layer slots. "In the top layer" is the staging area every stage lifts pieces into. */
@@ -40,19 +40,8 @@ const CROSS = [EDGE.DF, EDGE.DR, EDGE.DB, EDGE.DL];
 const F1L = [CORNER.DFR, CORNER.DRB, CORNER.DBL, CORNER.DLF];
 const MIDDLE = [EDGE.FR, EDGE.BR, EDGE.BL, EDGE.FL];
 
-/** A y rotation, as a relabelling of face names. Algorithms below are written once for the
- *  front-right slot and rotated to the other three, exactly as the method is taught: hold the
- *  cube so the slot you are working on is in front of you. */
-const Y = { U: 'U', D: 'D', F: 'R', R: 'B', B: 'L', L: 'F' };
-
-/** `alg` as seen after turning the whole cube `k` quarter turns about U. */
-function rotateAlg(alg, k) {
-  let out = alg;
-  for (let i = 0; i < ((k % 4) + 4) % 4; i++) {
-    out = out.replace(/[UDFRBL]/g, (f) => Y[f]);
-  }
-  return out;
-}
+// The whole-cube turn lives in cube-pieces.js: relabelling an algorithm and rotating a state
+// are two halves of the same thing, and separating them is how the flip convention got missed.
 
 /** The four U turns, as the "line it up" prefix every algorithmic step may need. */
 const AUF = ['', 'U', 'U2', "U'"];
@@ -124,7 +113,7 @@ function descend(state, goal, depth, lastFace) {
  * two-look OLL and two-look PLL actually are. The search is over NAMED algorithms rather than
  * over raw moves, so whatever it finds is still a sequence of things a learner was taught.
  */
-function fromRepertoire(state, candidates, goal, plies = 1, keyOf = stateKey) {
+function fromRepertoire(state, candidates, goal, plies = 1, keyOf = stateKey, rank = (alg) => alg) {
   let frontier = [{ state, alg: '', used: [] }];
   // Different runs of triggers land on the same cube constantly — `R U R'` then `R U' R'` is
   // where it started. Without this the frontier squares every ply and the budget is spent
@@ -133,18 +122,31 @@ function fromRepertoire(state, candidates, goal, plies = 1, keyOf = stateKey) {
   const seen = new Set([keyOf(state, '')]);
   for (let ply = 0; ply < plies; ply++) {
     const next = [];
+    const hits = [];
     for (const node of frontier) {
       for (const candidate of candidates) {
         const after = applyAlg(node.state, candidate.alg);
         const alg = joinAlg(node.alg, candidate.alg);
         if (goal(after, alg)) {
-          return { state: after, alg, used: [...node.used, candidate] };
+          hits.push({ state: after, alg, used: [...node.used, candidate] });
+          continue;
         }
         const key = keyOf(after, alg);
         if (seen.has(key)) continue;
         seen.add(key);
-        next.push({ state: after, alg: joinAlg(node.alg, candidate.alg), used: [...node.used, candidate] });
+        next.push({ state: after, alg, used: [...node.used, candidate] });
       }
+    }
+    // Finish the ply before choosing, and choose by the algorithm rather than by whichever
+    // branch happened to be reached first. Returning the first hit made the answer depend on the
+    // order the frontier was built in — which is not the same order in every working slot, so
+    // one F2L case came out with a different algorithm depending on which slot it turned up in.
+    // `rank` is what lets the caller compare candidates in ONE frame; the default compares them
+    // as written.
+    if (hits.length) {
+      const key = (h) => `${String(algLength(h.alg)).padStart(3, '0')} ${rank(h.alg)}`;
+      hits.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+      return hits[0];
     }
     frontier = next;
   }
@@ -372,36 +374,26 @@ const F2L_TRIGGERS = [
   { name: 'left-half', alg: "F' U2 F" },
 ];
 
-/** Where each slot lands under a y rotation, so a pair's position can be described in the one
- *  frame a learner is holding: the slot in front of them. */
-const CORNER_UNDER_Y = { URF: 'UBR', UFL: 'URF', ULB: 'UFL', UBR: 'ULB',
-                         DFR: 'DRB', DLF: 'DFR', DBL: 'DLF', DRB: 'DBL' };
-const EDGE_UNDER_Y = { UR: 'UB', UF: 'UR', UL: 'UF', UB: 'UL',
-                       FR: 'BR', FL: 'FR', BL: 'FL', BR: 'BL',
-                       DR: 'DB', DF: 'DR', DL: 'DF', DB: 'DL' };
-
-/** A slot seen from the working slot's frame: rotate back by however many turns put the
- *  working slot in front. */
-function relativeSlot(name, turns, names, underY) {
-  let current = name;
-  for (let i = 0; i < ((4 - (turns % 4)) % 4); i++) current = underY[current];
-  return current;
-}
-
 /**
  * The name of the F2L case: where the corner and its edge are, seen from the working slot.
  *
- * This is deliberately NOT the sequence of triggers that solves it. A learner recognises a
- * position and recalls what to do; naming the step after the moves would be naming it after
- * the answer, and would produce a different "case" every time the search took a different
- * route to the same place. There are a few dozen positions; there were 120 trigger sequences.
+ * Deliberately NOT the sequence of triggers that solves it. A learner recognises a position and
+ * recalls what to do; naming the step after the moves would name it after the answer, and would
+ * produce a different "case" every time the search took a different route to the same place.
+ *
+ * The whole STATE is turned until the slot being worked on is at the front right, and the pair is
+ * read there. An earlier version relabelled the slot names instead and read the flip where it
+ * stood — which describes a situation that does not exist, because edge orientation is measured
+ * against the F/B axis and is not invariant under the turn (see `rotateState`). That is exactly
+ * why one case used to come out with a different algorithm depending on which slot it was in.
  */
-/** Where the pair is, right now, in the working slot's frame. */
 function f2lPosition(state, pair, turns) {
-  const cornerAt = cornerSlot(state, pair.corner);
-  const edgeAt = edgeSlot(state, pair.edge);
-  return `${relativeSlot(CORNERS[cornerAt], turns, CORNERS, CORNER_UNDER_Y)}${state.co[cornerAt]}` +
-    `/${relativeSlot(EDGES[edgeAt], turns, EDGES, EDGE_UNDER_Y)}${state.eo[edgeAt]}`;
+  // Turning the cube `4 - turns` brings slot `turns` to the front right, and carries the pair's
+  // own cubies onto the front-right pair: corner DFR, edge FR.
+  const inFrame = rotateState(state, (4 - (turns % 4)) % 4);
+  const cornerAt = cornerSlot(inFrame, CORNER.DFR);
+  const edgeAt = edgeSlot(inFrame, EDGE.FR);
+  return `${CORNERS[cornerAt]}${inFrame.co[cornerAt]}/${EDGES[edgeAt]}${inFrame.eo[edgeAt]}`;
 }
 
 /**
@@ -498,7 +490,10 @@ function f2lStage(state, steps) {
       return `${c}.${s.co[c]}|${e}.${s.eo[e]}|${slotSafe(alg, otherCorners, otherEdges, slot) ? 1 : 0}`;
     };
     // Fast path: the pair is already loose, so a short run of triggers places it.
-    let found = fromRepertoire(aligned, candidates, done, 3, keyOf);
+    // Rank in the front-right frame: the same case must get the same algorithm whichever slot
+    // it appears in, or there is nothing to learn.
+    const inFrontRightFrame = (alg) => rotateAlg(alg, (4 - slot) % 4);
+    let found = fromRepertoire(aligned, candidates, done, 3, keyOf, inFrontRightFrame);
     let ejected = null;
     if (!found) {
       // One or both pieces are buried in a slot. Taking them out first is the thing a learner
@@ -507,9 +502,9 @@ function f2lStage(state, steps) {
       const loose = (s, alg) =>
         U_CORNERS.includes(cornerSlot(s, pair.corner)) && U_EDGES.includes(edgeSlot(s, pair.edge)) &&
         slotSafe(alg, otherCorners, otherEdges, slot);
-      ejected = fromRepertoire(aligned, candidates, loose, 2, keyOf);
+      ejected = fromRepertoire(aligned, candidates, loose, 2, keyOf, inFrontRightFrame);
       // Both halves slot-safe means the whole thing is, so the pair still has one answer.
-      if (ejected) found = fromRepertoire(ejected.state, candidates, done, 3, keyOf);
+      if (ejected) found = fromRepertoire(ejected.state, candidates, done, 3, keyOf, inFrontRightFrame);
     }
 
     if (!found) {
