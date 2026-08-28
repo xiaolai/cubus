@@ -199,55 +199,98 @@
          paper — an iPad portrait stage is a little wider than 3:4 of its height. */
       .screen.active { display: grid; place-items: center; }
 
-      /* ---- the composition: primary · aux · sheet ------------------------------------------- */
+      /* ---- the composition: primary · twin · aux · sheet ------------------------------------ */
       /* The two compositions of the layout contract (dev-docs/stage-contract.md), one DOM. A
-         screen is a grid of three regions: `primary` — the cube, or the scan net — locked to the
-         reference box; `aux` — the transport row, present while a solution is being walked; and
-         `sheet` — everything else, which takes whatever the long axis has beyond the reference
-         box. Landscape puts the sheet beside the primary and the aux under it; portrait stacks
-         all three. Which one is the stage's orientation, asked of the stage; nothing measures a
-         width. --primary-share is the primary's cut of the reference box's long side — the same
-         cut in both orientations, so the cube is the same fraction of the short axis everywhere;
-         the sheet's share is the rest, plus the surplus. */
+         screen is a grid of four regions: `primary` — the cube, or the scan net — locked to the
+         reference box; `twin` — the same cube drawn the other way, the 2D net or the
+         detected-state cube, a reference to glance at; `aux` — the transport row, present while
+         a solution is being walked; and `sheet` — the moves (or the scan's notice and button),
+         which take whatever the long axis has beyond the reference box. Landscape: the twin tops
+         the column beside the primary and the sheet fills the rest of it, the aux under the
+         primary. Portrait: the twin sits BESIDE the cube and the sheet runs under both — so
+         every card is on screen at once, without a scroll, at the reference minimums (the
+         geometry test asserts it): stacked under the cube the sheet had 190px at the portrait
+         minimum, and a solution's chips plus its net need twice that. On a coarse pointer in
+         portrait the twin goes back under the moves and the sheet scrolls as a whole: a phone's
+         width cannot hold a cube and a net side by side, and its extra height is sheet. Which
+         one is the stage's orientation, asked of the stage; nothing measures a width.
+         --primary-share is the primary's cut of the reference box's long side — the same cut in
+         both orientations, so the cube is the same fraction of the short axis everywhere. */
       .screen { --cols-gap: 22px; --rows-gap: 18px; --primary-share: 0.58; }
       .cols {
         display: grid; min-width: 0; min-height: 0;
         column-gap: var(--cols-gap); row-gap: var(--rows-gap);
-        /* Landscape: the reference box is as tall as the stage; the sheet is the right-hand
-           column and any surplus width is its (the 1fr). */
+        /* Landscape: the reference box is as tall as the stage; the right-hand column takes any
+           surplus width (the 1fr): the twin at its content's height, the sheet the rest. */
         width: 100%; height: var(--ref-h);
         --primary-w: calc(var(--ref-w) * var(--primary-share) - var(--cols-gap) / 2);
         grid-template-columns: var(--primary-w) minmax(0, 1fr);
-        grid-template-rows: minmax(0, 1fr);
-        grid-template-areas: "primary sheet";
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-areas: "primary twin" "primary sheet";
       }
-      .cols.walking { grid-template-rows: minmax(0, 1fr) auto; grid-template-areas: "primary sheet" "aux sheet"; }
+      .cols.walking { grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "primary twin" "primary sheet" "aux sheet"; }
+      /* List screens have no twin: two columns, each its own scroll, top edges level (an empty
+         auto row would still cost its gap and drop the sheet 18px below the column). */
+      .cols.flow { grid-template-rows: minmax(0, 1fr); grid-template-areas: "primary sheet"; }
+      /* The twin and the sheet are the aside's two children in the DOM — and on the cube screens
+         the aside is not a box: `display: contents` hands both straight to the grid, where each
+         takes its own area. One DOM for three compositions (landscape, portrait, a finger's
+         portrait — which turns the aside back into the scrolling column it is on list screens).
+         Declared BEFORE the container blocks: the finger's rule below has the same specificity
+         and must win by order, or a stray twin auto-places into an implicit grid column and
+         starves the primary of its width. */
+      .cols:not(.flow) > .aside { display: contents; }
+      .twin { grid-area: twin; min-width: 0; min-height: 0; }
+      .sheet { grid-area: sheet; min-width: 0; min-height: 0; }
       @container stage (orientation: portrait) {
         .cols {
-          /* Portrait: the reference box is as wide as the stage; the sheet is the bottom row and
-             any surplus height is its. */
+          /* Portrait: the reference box is as wide as the stage. The cube and its twin share the
+             top row, 3:2; the sheet is the bottom row and any surplus height is its. */
           width: var(--ref-w); height: 100%;
           --primary-h: calc(var(--ref-h) * var(--primary-share) - var(--rows-gap) / 2);
-          grid-template-columns: minmax(0, 1fr);
+          grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
           grid-template-rows: var(--primary-h) minmax(0, 1fr);
-          grid-template-areas: "primary" "sheet";
+          grid-template-areas: "primary twin" "sheet sheet";
         }
-        .cols.walking { grid-template-rows: var(--primary-h) auto minmax(0, 1fr); grid-template-areas: "primary" "aux" "sheet"; }
-        /* On a sheet BELOW the cube the solution comes before the net: the chips are the task, the
-           net is the reference, and a net first would put the task under the fold on a phone. The
-           one place the two compositions order the same DOM differently. The sheet scrolls as a
-           whole there, so the solution card takes its natural height instead of flexing. */
-        .aside > .state-card { order: 1; }
-        .aside > .solution-card { flex: none; min-height: 0; }
+        .cols.walking { grid-template-rows: var(--primary-h) auto minmax(0, 1fr); grid-template-areas: "primary twin" "aux aux" "sheet sheet"; }
+        /* Beside the cube the twin centres its picture in the room it has; its heading stays at
+           the top, level with the cube card's tools. */
+        .twin { display: flex; flex-direction: column; }
+        /* width: 100% is load-bearing: a flex item with auto margins is not stretched, and the
+           net — a grid whose cells have no size of their own — shrank to 49px without it. */
+        .twin .net { width: 100%; margin: auto; }
+        .twin .cube-slot { margin: auto 0; }
+        /* The scan screen's twin goes beside the SHEET instead: its primary is the cross of six
+           tiles, which wants the width, and the detected-state cube is small. The tiles get the
+           whole box; the bottom row splits 2:3 between the cube and the notice-plus-button. */
+        .cols.twin-low { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-areas: "primary primary" "twin sheet"; }
+        .cols.twin-low .twin .cube-slot { flex: 1; min-height: 0; height: auto; margin: 6px 0 0; }
         /* List screens (Settings, Stats, Lessons): there is no primary to lock — the first
            column is a list — so the rows take their content's height and the whole box scrolls
            as one, instead of two scroll regions stacked on a phone. Landscape is unchanged: two
            columns, each scrolling. */
-        .cols.flow { grid-template-rows: auto auto; overflow-y: auto; }
+        /* align-content: start — a grid's `normal` alignment STRETCHES auto rows across the
+           box, so a short list (Lessons' two chapters) was given a row 170px taller than its
+           cards, and the sheet below it started after a blank band nothing explained. */
+        .cols.flow { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; grid-template-areas: "primary" "sheet"; overflow-y: auto; align-content: start; }
         /* min-height: auto is load-bearing. An `auto` row in an overconstrained box sizes to its
            item's MINIMUM contribution, and with the min-height: 0 the locked layout needs that
            minimum is zero — the rows collapsed and the sheet drew over the column. */
         .cols.flow > .col, .cols.flow > .aside { overflow: visible; min-height: auto; }
+      }
+      /* A finger, portrait: the phone composition. The aside is a box again and scrolls as a
+         whole; the moves come first (the chips are the task, the net is the reference, and a net
+         first would put the task under the fold), the twin last at its natural height. */
+      @media (pointer: coarse) {
+        @container stage (orientation: portrait) {
+          .cols:not(.flow) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "primary" "sheet"; }
+          .cols.walking { grid-template-areas: "primary" "aux" "sheet"; }
+          .cols:not(.flow) > .aside { display: flex; }
+          .aside > .twin { order: 1; display: block; }
+          .aside > .twin .net { width: auto; margin: 30px auto 0; }
+          .aside > .twin .cube-slot, .cols.twin-low .twin .cube-slot { flex: none; height: 230px; margin: 6px 0 0; }
+          .aside > .sheet { flex: none; min-height: 0; }
+        }
       }
       /* Beside the cube the solution card fills the sheet and its list scrolls inside it (the
          portrait rule above turns both off). A class, not an inline style: an inline `flex:1`
@@ -255,11 +298,21 @@
       .solution-card { flex: 1; min-height: 140px; display: flex; flex-direction: column; }
       .primary { grid-area: primary; min-width: 0; min-height: 0; }
       .aux { grid-area: aux; min-width: 0; }
+      .scan-sheet { display: flex; flex-direction: column; gap: 16px; }
+      .state-card .net { margin: 30px auto 0; }
+      #scanCube { height: 230px; margin-top: 6px; }
       /* `overflow-y: auto` is not optional here: .stage clips, and no column scrolled. Settings can
          now list up to 32 remembered cubes, so past a certain number the controls below them were
          simply unreachable — clipped off the bottom with no way to scroll to them. */
       .col { grid-area: primary; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
       .aside { grid-area: sheet; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+      /* Nothing in a sheet squashes. The sheet is a flex column that SCROLLS, and a flex item is
+         shrunk before its container scrolls — so a 40px button at the foot of an overfull sheet
+         was shrunk to 0px: the Restore screen's "Solve this cube" vanished in every portrait
+         fixture, while the notice beside it said to press it. A card is protected by its content's
+         minimum height; a button is not. The geometry test now counts a zero-height control as a
+         failure instead of filtering it out as "not visible". */
+      .aside > * { flex-shrink: 0; }
 
       /* ---- primitives ----------------------------------------------------- */
       /* Flat on purpose: no fill, no outline. The leading pane is the only raised surface; a card
@@ -372,14 +425,19 @@
          57 on a 13") — the one control this sheet leaves under the 44px floor, and the geometry
          test names the number it holds instead. */
       .scan-faces { width: 100%; max-width: 560px; display: grid; grid-template-columns: repeat(4, 1fr); column-gap: 10px; row-gap: 2px; }
-      /* Portrait: six 3×3 tiles cannot give a finger 44px stickers in a phone's width, so ONE
-         face is large — the one app.js marks .focus: the side the scanner asks to see again, else
-         the side it just read, else the one you tap — and the other five are a strip below it,
-         status at a glance and a tap target each (the tile, not its stickers, at that size). The
-         large tile is sized off the reference box so it, its label and the strip fit the primary
-         region: --ref-h × --primary-share is the region, and 140px is the strip, the label and
-         the gaps. The --focus flag is how app.js knows a tap on a strip tile means "show me this
-         one" rather than "correct this sticker". In landscape the .focus class is inert. */
+      /* The cross is the cube's shape, and it is the same cross in both windows: with a mouse
+         the six tiles are laid out as the net in portrait too (decided 2026-08-28 — one large
+         face over a strip of five read as a different screen, and a portrait window is not a
+         phone). The strip exists for ONE reason, a finger: six 3×3 tiles cannot give it 44px
+         stickers in a phone's width. So under a coarse pointer in portrait ONE face is large —
+         the one app.js marks .focus: the side the scanner asks to see again, else the side it
+         just read, else the one you tap — and the other five are a strip below it, status at a
+         glance and a tap target each (the tile, not its stickers, at that size). The large tile
+         is sized off the reference box so it, its label and the strip fit the primary region:
+         --ref-h × --primary-share is the region, and 140px is the strip, the label and the gaps.
+         The --focus flag is how app.js knows a tap on a strip tile means "show me this one"
+         rather than "correct this sticker". Everywhere else the .focus class is inert. */
+      @media (pointer: coarse) {
       @container stage (orientation: portrait) {
         .scan-faces { --focus: 1; max-width: none; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: auto auto; column-gap: 8px; row-gap: 8px; }
         /* Three class-level parts, to outrank the cross placement (.scan-face[data-face="U"] …)
@@ -398,6 +456,7 @@
         .scan-face:not(.focus) .tgrid { gap: 1px; }
         .scan-face:not(.focus) .tgrid > i { border-radius: 1px; }
         .scan-face:not(.focus) .tgrid > i:nth-child(5) > .ic { display: none; }
+      }
       }
       .scan-face[data-face="U"] { grid-area: 1 / 2; }
       .scan-face[data-face="L"] { grid-area: 2 / 1; }
@@ -589,19 +648,22 @@
       .net .sticker.D { background: var(--net-D); }
       .net .sticker.L { background: var(--net-L); }
       .net .sticker.B { background: var(--net-B); }
-      /* A grid of fixed 44px tracks, as many as fit, justified edge-to-edge — so the first column
-         sits flush with the heading and the last column flush with the count above, and a column
-         can never be clipped: auto-fill computes what fits instead of letting wrap guess. */
-      /* gap is the MINIMUM breathing room — auto-fill counts columns against 44px + 6px, so the
+      /* A grid of fixed --chip tracks, as many as fit, justified edge-to-edge — so the first
+         column sits flush with the heading and the last column flush with the count above, and a
+         column can never be clipped: auto-fill computes what fits instead of letting wrap guess. */
+      /* gap is the MINIMUM breathing room — auto-fill counts columns against --chip + 6px, so the
          chips can never pack edge-to-edge; space-between then distributes whatever is left on top,
          keeping the first column flush left and the last flush right. row-gap alone was the bug:
          with no column-gap, auto-fill fit an extra column and left ~2px between chips. */
-      .move-chips { display: grid; grid-template-columns: repeat(auto-fill, 44px); justify-content: space-between; gap: 6px; }
-      /* One shape for every move: a SQUARE at the 44px minimum tap target (fingers follow these
-         mid-solve, often on a touchscreen), text centred both ways at body size — the box grew
-         for the finger, not the type. Equal boxes are what let a solution read as a row of steps
-         rather than a ragged sentence. */
-      .chip-m { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-5); border-radius: 4px; width: 44px; height: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+      .move-chips { display: grid; grid-template-columns: repeat(auto-fill, var(--chip)); justify-content: space-between; gap: 6px; }
+      /* One shape for every move: a SQUARE, text centred both ways at body size. 36px with a
+         mouse — the size that lets a whole solution sit on the sheet at the reference minimums
+         without a scroll (25 moves are three rows on the portrait sheet, five in landscape) — and
+         the 44px tap target for a finger (the touch floors below), where the box grows for the
+         finger, not the type. Equal boxes are what let a solution read as a row of steps rather
+         than a ragged sentence. */
+      .screen { --chip: 36px; }
+      .chip-m { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-5); border-radius: 4px; width: var(--chip); height: var(--chip); padding: 0; display: inline-flex; align-items: center; justify-content: center; }
       .chip-m.played { background: var(--panel-sunk); color: var(--ink); }
 
       /* ---- touch floors ----------------------------------------------------------------- */
@@ -612,6 +674,7 @@
          4×44 + 22 + 56 + 6×4 + 32 = 310 ≤ 315. The toggle keeps its drawn size — its knob
          geometry is fixed numbers — and grows a 44px hit area around it instead. */
       @media (pointer: coarse) {
+        .screen { --chip: 44px; }
         .btn, .tbtn, .tb-ctl, .card-tools > button, .pill, .menu > button, .nav-item, .swatches > button, .field { min-height: 44px; }
         .tbtn, .tb-ctl, .card-tools > button, .swatches > button { min-width: 44px; }
         .eyebrow-row > button { width: 44px; height: 44px; margin: -14px -12px -14px 0; }
