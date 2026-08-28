@@ -601,3 +601,92 @@ test('a corrected sticker is what reaches the cube screen, not the original read
   assert.equal(net, corrected, 'the cube screen shows the CORRECTED cube');
   assert.notEqual(net, first, 'and not the read it replaced');
 });
+
+// A camera scan with a smart cube connected does two jobs: it says where the cube is, and it
+// repairs the cube's own tracking (the offset) without anyone solving anything. And when the
+// scan CONTRADICTS a cube that was tracking, neither is believed — adopting the scan while
+// saying "nothing was changed" would be untrue, and so would an enabled Solve button.
+test('a scan agreeing with the connected cube is adopted, and trust follows', async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/scan';
+  await tick();
+  win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 60 }) });
+  const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  win.cubusFeed.facelets(S); // the cube reports S — and the camera then reads exactly S
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: S, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  assert.equal(state.cube.trusted, true, 'the scan established trust');
+  assert.equal(state.cube.source, 'camera');
+  assert.equal(state.cube.facelets, S, 'and was adopted');
+  assert.equal(state.cube.offset, null, 'agreement needs no correction');
+  win.cubusFeed.useConnection(null);
+  state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
+  state.live = null; state.reported = null;
+});
+
+test('a scan contradicting a tracking cube adopts nothing and disables Solve', async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/scan';
+  await tick();
+  win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 60 }) });
+  const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  win.cubusFeed.facelets(S);
+  state.cube.trusted = true; state.cube.source = 'cube'; // the cube was tracking at S
+  const before = state.cube.facelets;
+  const OTHER = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: OTHER, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  assert.equal(state.cube.facelets, before, 'the contradicted scan is not adopted');
+  assert.equal(state.cube.trusted, false, 'and nobody is trusted until one is confirmed');
+  assert.equal($('#scanSolveBtn').disabled, true, 'Solve stays off a cube the screen refused');
+  assert.match($('#scanHow').textContent, /One of the two is wrong/);
+  win.cubusFeed.useConnection(null);
+  state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
+  state.live = null; state.reported = null;
+});
+
+// Auto-solve is a promise about a scan that was BELIEVED. Firing it on a refused reading walked
+// the PREVIOUS cube behind a disabled Solve button — the navigation quietly overrode the refusal.
+test('auto-solve fires only for a believed scan — a refused one stays put', async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/settings';
+  await tick();
+  win.document.querySelector('[data-toggle="autosolve"]').click();
+  win.location.hash = '#/scan';
+  await tick();
+  try {
+    win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 60 }) });
+    const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+    win.cubusFeed.facelets(S);
+    state.cube.trusted = true; state.cube.source = 'cube'; // the cube was tracking at S
+    const OTHER = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+    panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+      detail: { facelets: OTHER, valid: true, confidence: 1, lowConfidence: [] },
+    }));
+    await tick();
+    assert.equal(win.location.hash, '#/scan', 'a refused scan must not be auto-solved');
+    // The same reading, agreeing with the cube, IS believed — and honours the setting.
+    panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+      detail: { facelets: S, valid: true, confidence: 1, lowConfidence: [] },
+    }));
+    await tick();
+    assert.equal(win.location.hash, '#/home', 'a believed scan honours auto-solve');
+  } finally {
+    win.cubusFeed.useConnection(null);
+    state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
+    state.live = null; state.reported = null;
+    win.location.hash = '#/settings';
+    await tick();
+    win.document.querySelector('[data-toggle="autosolve"]').click(); // back off — later tests assume it
+    win.location.hash = '#/scan';
+    await tick();
+  }
+});
+
+// A static check, like the info-colour one: cascade mistakes leave every class-based test green.
+test('the sticker hover ring yields to the editing halo in the cascade', () => {
+  assert.ok(html.includes('i:not(:nth-child(5), .editing):hover'),
+    'the hover selector must exclude .editing — the ring outweighs the halo otherwise');
+});

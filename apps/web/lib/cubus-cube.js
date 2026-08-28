@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { eyeDirection, fitDistance, silhouette } from './cube-frame.js';
 
 const PALETTES = {
   muted:    { U:'#E8E3D6', D:'#D8B84A', F:'#4E8C6A', B:'#3C6E9E', R:'#B8503F', L:'#C87A3C' },
@@ -49,17 +50,16 @@ class CubusCube extends HTMLElement {
   static observedAttributes = [
     'facelets', 'scramble', 'alg', 'palette', 'autorotate',
     'ghosts', 'ghost-elevation', 'ghostelevation',
-    'camera-distance', 'cameradistance',
     'camera-latitude', 'cameralatitude',
     'camera-longitude', 'cameralongitude',
     'facelet-scale', 'faceletscale',
     'tempo-scale', 'temposcale',
     'back-view', 'backview',
+    'orbit',
   ];
 
   static ALIAS = {
     ghostelevation: 'ghost-elevation',
-    cameradistance: 'camera-distance',
     cameralatitude: 'camera-latitude',
     cameralongitude: 'camera-longitude',
     faceletscale: 'facelet-scale',
@@ -74,7 +74,6 @@ class CubusCube extends HTMLElement {
   set palette(v) { this._set('palette', v); }
   set ghosts(v) { this._set('ghosts', v); }
   set ghostElevation(v) { this._set('ghost-elevation', v); }
-  set cameraDistance(v) { this._set('camera-distance', v); }
   set cameraLatitude(v) { this._set('camera-latitude', v); }
   set cameraLongitude(v) { this._set('camera-longitude', v); }
   set faceletScale(v) { this._set('facelet-scale', v); }
@@ -90,8 +89,11 @@ class CubusCube extends HTMLElement {
   /** Attribute defaults. Also what a REMOVED attribute falls back to — see _set(). */
   static DEFAULTS = {
     palette: 'muted', ghosts: 'none', 'ghost-elevation': '4',
-    'camera-distance': '12', 'camera-latitude': '35', 'camera-longitude': '45',
+    // No camera distance: it is computed from what the view draws and the slot it draws into
+    // (lib/cube-frame.js), so nothing is clipped at any slot shape.
+    'camera-latitude': '35', 'camera-longitude': '45',
     'facelet-scale': '0.9', 'tempo-scale': '1', 'back-view': 'none',
+    orbit: 'free', // 'locked' = dragging does not turn the view; the host decides
   };
 
   attributeChangedCallback(name, _old, val) { this._set(name, val); }
@@ -99,15 +101,24 @@ class CubusCube extends HTMLElement {
     name = CubusCube.ALIAS[String(name).toLowerCase()] || name;
     // removeAttribute() arrives here with val === null. Storing that raw meant `ghosts` read as
     // neither 'none' nor 'false' and so counted as ENABLED — removing the attribute turned ghosts
-    // on rather than off. A removed attribute means "back to the default", not "null".
-    this._attrs[name] = val == null ? CubusCube.DEFAULTS[name] : val;
+    // on rather than off. A removed attribute means "back to the default", not "null" — UNLESS
+    // the other spelling (canonical or alias) is still on the element: both feed one slot, and
+    // removing one must not clobber the survivor.
+    if (val == null) {
+      const spellings = [name, ...Object.keys(CubusCube.ALIAS).filter((a) => CubusCube.ALIAS[a] === name)];
+      const alive = spellings.map((s) => this.getAttribute?.(s)).find((v) => v != null);
+      this._attrs[name] = alive != null ? alive : CubusCube.DEFAULTS[name];
+    } else {
+      this._attrs[name] = val;
+    }
     if (!this._ghostMeshes) return;
     if (name === 'palette') this._paint();
     else if (name === 'ghosts') { this._ghostVisible(); this._paint(); this._applyCamera(); }
     else if (name === 'ghost-elevation') { this._ghostPlace(); this._applyCamera(); }
-    else if (name === 'facelet-scale') this._applyScale();
-    else if (name === 'camera-distance' || name === 'camera-latitude' || name === 'camera-longitude') this._applyCamera();
+    else if (name === 'facelet-scale') { this._applyScale(); this._applyCamera(); } // the scale is part of the silhouette
+    else if (name === 'camera-latitude' || name === 'camera-longitude') this._applyCamera();
     else if (name === 'back-view') this._dirty = true;
+    else if (name === 'orbit') this._applyOrbit();
     else if (name === 'facelets' || name === 'scramble') this.reset();
     else if (name === 'alg') { this._sol = this._parse(this._attrs.alg || ''); this._cursor = 0; this._applied = 0; this._playing = false; }
   }
@@ -118,7 +129,6 @@ class CubusCube extends HTMLElement {
 
     const scene = this.scene = new THREE.Scene();
     const camera = this.camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
-    this._framed = true; // camera comes from distance/latitude/longitude, not from framing
 
     const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -127,22 +137,35 @@ class CubusCube extends HTMLElement {
     renderer.domElement.style.cssText = 'width:100%;height:100%;display:block';
     this.appendChild(renderer.domElement);
 
-    scene.add(new THREE.HemisphereLight(0xfffaf0, 0x4a4030, 1.0));
-    const key = new THREE.DirectionalLight(0xffffff, 0.95);
-    key.position.set(5, 8, 6);
-    scene.add(key);
-    const fill = new THREE.DirectionalLight(0xdfe6ff, 0.45);
-    fill.position.set(-6, 2, -4);
-    scene.add(fill);
-
     const controls = this.controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.enablePan = false;
-    controls.minDistance = 5;
-    controls.maxDistance = 22;
+    // Distance limits are set by _applyCamera from the fitted distance: a fixed maxDistance of
+    // 22 clamped the camera on every update() and clipped the ghost faces on narrow slots, where
+    // the fit stands further back than that.
     controls.rotateSpeed = 0.75;
     this._applyCamera();
+    this._applyOrbit();
+
+    // Lights ride with the camera's ORIENTATION, not the world. Fixed in the world they lit the
+    // cube for one angle, and the moment anyone orbited underneath, the underside was lit by the
+    // hemisphere's ground colour alone — yellow stickers read as black. Each light keeps a
+    // direction expressed relative to the camera, taken from the world positions the look was
+    // tuned under at the default orientation, so at that orientation the render is identical
+    // at any distance (directional lights do not care how far away they sit) and from any
+    // other angle the same rig is simply turned with the eye.
+    const hemi = new THREE.HemisphereLight(0xfffaf0, 0x4a4030, 1.0);
+    const key = new THREE.DirectionalLight(0xffffff, 0.95);
+    const fill = new THREE.DirectionalLight(0xdfe6ff, 0.45);
+    scene.add(hemi, key, fill);
+    const inv = camera.quaternion.clone().invert();
+    this._lights = [
+      [hemi, new THREE.Vector3(0, 1, 0).applyQuaternion(inv)],
+      [key, new THREE.Vector3(5, 8, 6).applyQuaternion(inv)],
+      [fill, new THREE.Vector3(-6, 2, -4).applyQuaternion(inv)],
+    ];
+    this._placeLights();
 
     const root = this.root = new THREE.Group();
     scene.add(root);
@@ -170,7 +193,6 @@ class CubusCube extends HTMLElement {
       if (!x && !y && !z) continue;
       const c = new THREE.Group();
       c.position.set(x, y, z);
-      c.userData.home = [x, y, z];
       c.add(new THREE.Mesh(bodyGeo, bodyMat));
       for (const f of FACES) {
         const n = f.n;
@@ -188,8 +210,7 @@ class CubusCube extends HTMLElement {
           const g = new THREE.Mesh(ghostGeo, new THREE.MeshBasicMaterial({
             transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide,
           }));
-          g.rotation.copy(m.rotation);
-          if (n[0]) g.rotation.y = Math.PI / 2;
+          g.rotation.copy(m.rotation); // carries the X-face quarter turn set on the sticker above
           g.userData = { face: f.key, home: [x, y, z], n };
           g.renderOrder = 1;
           const gEdge = new THREE.LineSegments(ghostEdgeGeo, ghostEdgeMat);
@@ -217,7 +238,7 @@ class CubusCube extends HTMLElement {
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      this._dirty = true;
+      this._applyCamera(); // the distance depends on the aspect (see there); it sets _dirty
     };
     this._ro = new ResizeObserver(resize);
     this._ro.observe(this);
@@ -230,25 +251,41 @@ class CubusCube extends HTMLElement {
 
     const tick = () => {
       this._raf = requestAnimationFrame(tick);
+      // The backlog rule, visible or not: at most two turns may exist as pending ANIMATION;
+      // everything older completes instantly. A deeper queue means the element was scrolled out
+      // (rAF runs, _visible false), the window was occluded (rAF pauses entirely, so this runs
+      // at the first frame back), or a burst outran the tempo — and in every one of those,
+      // replaying a stale film move by move helps nobody. Same policy the app's drawTo applies
+      // from its side. Off screen the drain is total: animating for nobody banks pure backlog.
+      // Only queued work drains — play() pulls from the solution one move at a time, and
+      // draining that would fast-forward a whole walk.
+      while (
+        this._queue.length + (this._anim ? 1 : 0) > 2 ||
+        (!this._visible && (this._anim || this._queue.length))
+      ) {
+        let a = this._anim;
+        if (!a) { const m = this._queue.shift(); a = { temp: this._grab(m), m }; }
+        a.temp.setRotationFromAxisAngle(AXES[a.m.axis], a.m.angle);
+        this._completeMove(a);
+      }
       if (!this._visible) return;
+      // The drain above completes moves without calling _next(), which breaks the pull chain
+      // step() and the completion handler otherwise maintain: queued moves — and a playing
+      // walk — would sit forever with nothing in flight. Re-arm it.
+      if (!this._anim && (this._queue.length || this._playing)) this._next();
       if (this._anim) {
         const a = this._anim;
         const k = Math.min(1, (performance.now() - a.t0) / a.dur);
         a.temp.setRotationFromAxisAngle(AXES[a.m.axis], a.m.angle * EASE(k));
         if (k >= 1) {
-          this._bake(a.temp);
-          this._anim = null;
-          // A move queued by stepBack() carries delta -1: it undoes a solution move, so the step
-          // index must count down. Anything else is a forward move and counts up.
-          this._applied += a.m.delta ?? 1;
-          // Host apps sync a move list / 2D net / scrubber to this.
-          this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: this._applied, total: this._sol.length } }));
+          this._completeMove(a);
           this._next();
         }
         this._dirty = true;
       }
       if (this._attrs.autorotate != null) { root.rotation.y += 0.0035; this._dirty = true; }
       const moving = this.controls.update();
+      if (moving) this._placeLights();
       if (moving || this._dirty) { this._draw(); this._dirty = false; }
     };
     tick();
@@ -268,23 +305,59 @@ class CubusCube extends HTMLElement {
 
   // latitude/longitude in degrees, distance in cubie units — same three knobs the
   // codebase player exposes, and the ones OrbitControls then takes over from.
+  /** Is the ghost layer on at all? ONE predicate — it had four copies, and four copies of an
+   *  accepted-values check is how 'off' comes to mean different things per feature. */
+  _ghostsEnabled() {
+    return this._attrs.ghosts !== 'none' && this._attrs.ghosts !== 'false';
+  }
+
+  /** Should this ghost show for a camera at `eye`? Facing away → hidden face → show its ghost.
+   *  Shared by the main-view cull and the opposite view, which shows the complementary set. */
+  _ghostShows(g, eye) {
+    const n = (this._n ||= new THREE.Vector3());
+    n.set(...g.userData.n).applyQuaternion(g.parent.getWorldQuaternion(this._q ||= new THREE.Quaternion()));
+    return n.dot(eye) < -0.15;
+  }
+
+  /** Drag-to-orbit is a preference, not a given. For a learner reading a guide, a drag that swings
+   *  the cube away from the angle the ghost faces are set up for is a mistake waiting to happen,
+   *  so the host can lock it. Only the angle: zoom and damping are untouched. */
+  _applyOrbit() {
+    if (!this.controls) return;
+    this.controls.enableRotate = this._attrs.orbit !== 'locked';
+  }
+
   _applyCamera() {
     if (!this.camera) return;
-    // The player's distance 12 frames a bare cube at our 30° fov ≈ 10 units.
-    let d = this._num('camera-distance', 12) * 0.85;
-    // Ghosts widen the silhouette, so give them the room they occupy.
-    const on = this._attrs.ghosts !== 'none' && this._attrs.ghosts !== 'false';
-    if (on) d += this._num('ghost-elevation', 4) * 0.42;
-    const lat = this._num('camera-latitude', 35) * Math.PI / 180;
-    const lon = this._num('camera-longitude', 45) * Math.PI / 180;
-    this.camera.position.set(
-      d * Math.cos(lat) * Math.sin(lon),
-      d * Math.sin(lat),
-      d * Math.cos(lat) * Math.cos(lon),
-    );
+    // The distance is fitted, not tuned: the silhouette this view draws — the cube, and the
+    // ghost faces on the sides the eye cannot see, at their elevation and scale — projected
+    // against the canvas's field of view AND aspect, so every corner lands inside the frame with
+    // a margin, for any slot shape. A hand-tuned distance ("18 frames the tuned look") was right
+    // for one shape and clipped the ghost faces' corners on every other, and pulling back by the
+    // aspect only moved which shapes clipped. Re-run on every resize and every relevant attribute.
+    const lat = this._num('camera-latitude', 35);
+    const lon = this._num('camera-longitude', 45);
+    const eye = eyeDirection(lat, lon);
+    const points = silhouette({
+      eye,
+      elevation: this._ghostsEnabled() ? this._num('ghost-elevation', 4) : null,
+      scale: this._num('facelet-scale', 0.9),
+    });
+    const d = fitDistance({ points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye });
+    // The controls clamp the distance on every update(), so their limits follow the fit: a user
+    // may zoom in to look closer, never out past the frame — and a resize puts the fit back.
+    if (this.controls) { this.controls.minDistance = d * 0.5; this.controls.maxDistance = d; }
+    this.camera.position.set(d * eye[0], d * eye[1], d * eye[2]);
     this.camera.lookAt(0, 0, 0);
     this.controls?.update();
+    this._placeLights();
     this._dirty = true;
+  }
+
+  /** Turn the light rig with the given camera (the main one by default). */
+  _placeLights(cam = this.camera) {
+    if (!this._lights || !cam) return;
+    for (const [light, dir] of this._lights) light.position.copy(dir).applyQuaternion(cam.quaternion);
   }
 
   // Sticker size within its tile. 1 = edge to edge, 0.9 = the player's default.
@@ -299,16 +372,9 @@ class CubusCube extends HTMLElement {
   // Ghosts exist to read faces the camera CANNOT see, so a ghost on a face turned
   // toward the viewer is noise — cull per frame by the face normal in world space.
   _cullGhosts() {
-    if (!this._ghostMeshes.length) return;
-    const on = this._attrs.ghosts !== 'none' && this._attrs.ghosts !== 'false';
-    if (!on) return;
+    if (!this._ghostMeshes.length || !this._ghostsEnabled()) return;
     const eye = this.camera.position.clone().normalize();
-    const n = new THREE.Vector3();
-    for (const g of this._ghostMeshes) {
-      n.set(...g.userData.n).applyQuaternion(g.parent.getWorldQuaternion(this._q ||= new THREE.Quaternion()));
-      // Facing away from the eye → hidden face → show its ghost.
-      g.visible = n.dot(eye) < -0.15;
-    }
+    for (const g of this._ghostMeshes) g.visible = this._ghostShows(g, eye);
   }
 
   _draw() {
@@ -316,15 +382,21 @@ class CubusCube extends HTMLElement {
     this._cullGhosts();
     const bv = this._attrs['back-view'] || 'none';
 
-    if (bv === 'side-by-side') {
-      const half = Math.floor(w / 2);
-      this.camera.aspect = half / h;
+    // Below 4px there is no meaningful split — fall through to the single view rather than
+    // build a zero-width projection.
+    if (bv === 'side-by-side' && w >= 4) {
+      // The right pane takes the remainder, so an odd width leaves no stale pixel column.
+      const left = Math.floor(w / 2), right = w - left;
+      this.camera.aspect = left / h;
       this.camera.updateProjectionMatrix();
+      // finally, because scissor state outlives this frame: a render throw would otherwise
+      // leave every later full-frame draw clipped to the last scissor rectangle.
       r.setScissorTest(true);
-      r.setViewport(0, 0, half, h); r.setScissor(0, 0, half, h);
-      r.render(this.scene, this.camera);
-      this._renderOpposite(0 + half, 0, half, h);
-      r.setScissorTest(false);
+      try {
+        r.setViewport(0, 0, left, h); r.setScissor(0, 0, left, h);
+        r.render(this.scene, this.camera);
+        this._renderOpposite(left, 0, right, h);
+      } finally { r.setScissorTest(false); }
       return;
     }
 
@@ -333,12 +405,15 @@ class CubusCube extends HTMLElement {
     r.setViewport(0, 0, w, h);
     r.render(this.scene, this.camera);
 
-    if (bv === 'top-right') {
+    // A degenerate inset (0×N viewport, 0/0 aspect) draws nothing anyone can see and poisons
+    // the projection — below a few pixels the main view alone is the honest picture.
+    if (bv === 'top-right' && Math.floor(w * 0.32) > 0 && Math.floor(h * 0.32) > 0) {
       const iw = Math.floor(w * 0.32), ih = Math.floor(h * 0.32);
       r.setScissorTest(true);
-      r.clearDepth();
-      this._renderOpposite(w - iw - 10, h - ih - 10, iw, ih);
-      r.setScissorTest(false);
+      try {
+        r.clearDepth();
+        this._renderOpposite(w - iw - 10, h - ih - 10, iw, ih);
+      } finally { r.setScissorTest(false); }
     }
   }
 
@@ -355,56 +430,72 @@ class CubusCube extends HTMLElement {
     const flipped = [];
     for (const g of this._ghostMeshes) if (g.visible !== false) { flipped.push(g); g.visible = false; }
     const hidden = [];
-    const on = this._attrs.ghosts !== 'none' && this._attrs.ghosts !== 'false';
-    if (on) {
+    if (this._ghostsEnabled()) {
       const eye = cam.position.clone().normalize();
-      const n = new THREE.Vector3();
       for (const g of this._ghostMeshes) {
-        n.set(...g.userData.n).applyQuaternion(g.parent.getWorldQuaternion(this._q ||= new THREE.Quaternion()));
-        if (n.dot(eye) < -0.15) { g.visible = true; hidden.push(g); }
+        if (this._ghostShows(g, eye)) { g.visible = true; hidden.push(g); }
       }
     }
-    r.setViewport(x, y, w, h);
-    r.setScissor(x, y, w, h);
-    r.render(this.scene, cam);
-    for (const g of hidden) g.visible = false;
-    for (const g of flipped) g.visible = true;
+    try {
+      // The far side is lit from ITS eye, not the main one — otherwise it faces away from every
+      // light and draws black.
+      this._placeLights(cam);
+      r.setViewport(x, y, w, h);
+      r.setScissor(x, y, w, h);
+      r.render(this.scene, cam);
+    } finally {
+      // The main view's visibility and lighting are borrowed state — a throw in render must not
+      // leave the ghosts wearing the back view's culling, or the rig turned its way.
+      this._placeLights();
+      for (const g of hidden) g.visible = false;
+      for (const g of flipped) g.visible = true;
+    }
   }
 
   _parse(alg) {
-    return String(alg).trim().split(/\s+/).filter(Boolean).map((tok) => {
-      const f = FACES.find((x) => x.key === tok[0]);
-      if (!f) return null;
-      const turns = tok.includes('2') ? 2 : 1;
-      const dir = tok.includes("'") ? -1 : 1;
-      return { axis: f.axis, layer: f.sign, angle: -dir * f.sign * turns * Math.PI / 2, turns };
-    }).filter(Boolean);
+    // Anchored grammar, whole-or-nothing: an alg with a malformed token is an invalid alg, and a
+    // walk that silently skips the move it could not read draws WRONG states with full
+    // confidence — worse than drawing nothing and saying why.
+    const out = [];
+    for (const tok of String(alg).trim().split(/\s+/).filter(Boolean)) {
+      const m = /^([URFDLB])(2|')?$/.exec(tok);
+      const f = m && FACES.find((x) => x.key === m[1]);
+      if (!f) {
+        console.warn(`<cubus-cube> refusing alg — invalid move token "${tok}"`);
+        return [];
+      }
+      const turns = m[2] === '2' ? 2 : 1;
+      const dir = m[2] === "'" ? -1 : 1;
+      out.push({ axis: f.axis, layer: f.sign, angle: -dir * f.sign * turns * Math.PI / 2, turns });
+    }
+    return out;
   }
 
-  _paint() {
+  /** The facelets attribute, normalized — or null when absent or invalid. 54 characters of
+   *  URFDLB, or '?' for a sticker the scanner could not read, are the only states this renderer
+   *  can draw; anything else is refused LOUDLY rather than silently painted as a solved cube
+   *  wearing the wrong label. */
+  _facelets() {
+    const fl = (this._attrs.facelets || '').replace(/\s+/g, '');
+    if (!fl) return null;
+    if (/^[URFDLB?]{54}$/.test(fl)) return fl;
+    console.warn('<cubus-cube> ignoring invalid facelets attribute', this._attrs.facelets);
+    return null;
+  }
+
+  _paint(fl = this._facelets()) {
     if (!this.stickers) return;
     const pal = PALETTES[this._attrs.palette] || PALETTES.muted;
-    const fl = (this._attrs.facelets || '').replace(/\s+/g, '');
-    for (const s of this.stickers) {
-      const [x, y, z] = s.userData.home;
-      let letter = s.userData.face;
-      if (fl.length === 54) {
-        const idx = FACELET_INDEX[s.userData.face](x, y, z);
-        const ch = fl[idx];
-        if (ch === '?') { s.material.color.set(UNKNOWN_STICKER); continue; }
-        if (pal[ch]) letter = ch;
+    // Stickers and ghosts carry the same userData and take the same colour — one loop.
+    for (const m of [...this.stickers, ...this._ghostMeshes]) {
+      const [x, y, z] = m.userData.home;
+      let letter = m.userData.face;
+      if (fl) {
+        const ch = fl[FACELET_INDEX[m.userData.face](x, y, z)];
+        if (ch === '?') { m.material.color.set(UNKNOWN_STICKER); continue; }
+        letter = ch;
       }
-      s.material.color.set(pal[letter]);
-    }
-    for (const g of this._ghostMeshes) {
-      const [x, y, z] = g.userData.home;
-      let letter = g.userData.face;
-      if (fl.length === 54) {
-        const ch = fl[FACELET_INDEX[g.userData.face](x, y, z)];
-        if (ch === '?') { g.material.color.set(UNKNOWN_STICKER); continue; }
-        if (pal[ch]) letter = ch;
-      }
-      g.material.color.set(pal[letter]);
+      m.material.color.set(pal[letter]);
     }
     this._ghostPlace();
     this._applyScale();
@@ -426,8 +517,20 @@ class CubusCube extends HTMLElement {
 
   _ghostVisible() {
     if (!this._ghostMeshes) return;
-    const on = this._attrs.ghosts !== 'none' && this._attrs.ghosts !== 'false';
+    const on = this._ghostsEnabled();
     for (const g of this._ghostMeshes) g.visible = on; // _cullGhosts refines this per frame
+    this._dirty = true;
+  }
+
+  /** Completion bookkeeping for one move — shared by the animated path and the instant drain,
+   *  so the two can never diverge on what "a move happened" means. A move queued by stepBack()
+   *  carries delta -1: it undoes a solution move, so the step index counts down; anything else
+   *  counts up. Host apps sync a move list / 2D net / scrubber to the event. */
+  _completeMove(a) {
+    this._bake(a.temp);
+    this._anim = null;
+    this._applied += a.m.delta ?? 1;
+    this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: this._applied, total: this._sol.length } }));
     this._dirty = true;
   }
 
@@ -463,6 +566,9 @@ class CubusCube extends HTMLElement {
   }
 
   reset() {
+    // An interrupted animation's carrier group must leave the scene here: _bake() removes it on
+    // completion, but a reset mid-turn never reaches _bake, and the empty group stayed forever.
+    if (this._anim) this.root.remove(this._anim.temp);
     this._queue = []; this._anim = null; this._cursor = 0; this._playing = false; this._applied = 0;
     let i = 0;
     for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
@@ -472,9 +578,12 @@ class CubusCube extends HTMLElement {
       c.quaternion.identity();
       this.root.add(c);
     }
-    this._paint();
-    // A facelet string already encodes the scramble; only apply moves when it doesn't.
-    if ((this._attrs.facelets || '').replace(/\s+/g, '').length !== 54) {
+    // Resolved ONCE for both jobs — painting and the scramble decision — so an invalid string
+    // warns once, not twice. A VALID facelet string already encodes the scramble; only apply
+    // moves when there isn't one, and an invalid string does not count.
+    const fl = this._facelets();
+    this._paint(fl);
+    if (!fl) {
       for (const m of this._parse(this._attrs.scramble || '')) {
         const t = this._grab(m);
         t.rotateOnAxis(AXES[m.axis], m.angle);
