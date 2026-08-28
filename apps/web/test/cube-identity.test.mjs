@@ -9,8 +9,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import Cube from '../vendor/cubejs.js';
+
 import {
-  MAX_CUBES, MAX_LABEL, cubeLabel, forgetCube, listCubes, normaliseMac, parseRegistry, rememberCube, renameCube,
+  MAX_CUBES, MAX_LABEL, SERIAL_MOD, cubeLabel, forgetCube, listCubes, normaliseMac, parseRegistry, rememberCube, rememberLast, renameCube,
 } from '../lib/cube-registry.js';
 
 const A = 'AA:BB:CC:DD:EE:FF';
@@ -246,4 +248,101 @@ test('a cube always has something to call it', () => {
   assert.equal(cubeLabel({ mac: A, name: 'GAN-A', nickname: '' }), 'GAN-A', 'then the cube’s own name');
   assert.equal(cubeLabel({ mac: A, name: '', nickname: '' }), A, 'then the address, so it is still pickable');
   assert.equal(cubeLabel(null), '');
+});
+
+// ---- the remembered arrangement ---------------------------------------------------------------
+//
+// Phase 6 (dev-docs/smart-cube-ux-prd.md, "Reconnecting a known cube"): per cube, the last
+// arrangement the app was SURE of and what the cube itself said at that moment. Parsed like every
+// other field — whitelisted, cleaned, and never read as trust: the record carries a picture to
+// confirm, and only the user's answer grants anything.
+
+const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+const moved = (alg) => { const c = Cube.fromString(SOLVED); c.move(alg); return c.asString(); };
+const V = moved("R U R' F");
+const R0 = moved('F2 D');
+const LAST = { facelets: V, reported: R0, serial: 7, at: t(3), how: 'cube' };
+/** A deliberately impossible cube: one corner twisted in place — right counts, pinned centres,
+ *  decodes cleanly, twist sum 1 mod 3. Constructed, because a random sticker swap is sometimes
+ *  a legal cube (that lesson is recorded in the PRD's audit notes). */
+const TWISTED = (() => { const s = SOLVED.split(''); [s[8], s[9], s[20]] = [s[9], s[20], s[8]]; return s.join(''); })();
+
+test('the remembered arrangement round-trips through the registry', () => {
+  let reg = rememberCube({}, { mac: A, name: 'GAN-A', at: t(1) }, Cube);
+  reg = rememberLast(reg, A, LAST, Cube);
+  const back = parseRegistry(JSON.parse(JSON.stringify(reg)), Cube);
+  assert.deepEqual(back[A].last, { facelets: V, reported: R0, serial: 7, at: t(3), how: 'cube' });
+});
+
+test('a reconnect must not be the write that erases the memory it exists to compare against', () => {
+  let reg = rememberCube({}, { mac: A, name: 'GAN-A', at: t(1) }, Cube);
+  reg = rememberLast(reg, A, LAST, Cube);
+  reg = rememberCube(reg, { mac: A, name: 'GAN-A', at: t(9) }, Cube);
+  assert.deepEqual(reg[A].last, { facelets: V, reported: R0, serial: 7, at: t(3), how: 'cube' }, 'the connect writes lastSeen and keeps last');
+});
+
+test('a malformed memory is dropped WHOLE — a half-remembered arrangement is worse than none', () => {
+  const bads = [
+    'a string', 42, [], { facelets: V }, { reported: R0 },
+    { ...LAST, how: 'guessed' },
+    { ...LAST, facelets: V.slice(1) },
+    { ...LAST, facelets: V.replaceAll('U', 'X') },
+    { ...LAST, reported: 'garbage' },
+    { ...LAST, facelets: V.slice(0, 4) + 'R' + V.slice(5) }, // centre moved: not this app's frame
+  ];
+  for (const last of bads) {
+    const reg = parseRegistry({ [A]: { name: 'GAN-A', nickname: '', lastSeen: t(1), last } }, Cube);
+    assert.equal('last' in reg[A], false, `dropped whole: ${JSON.stringify(last).slice(0, 50)}`);
+  }
+});
+
+test('a forged state that merely LOOKS like facelets is dropped by the full parse', () => {
+  const rec = { name: 'GAN-A', nickname: '', lastSeen: t(1), last: { ...LAST, facelets: TWISTED } };
+  assert.equal('last' in parseRegistry({ [A]: rec }, Cube)[A], false, 'with the library, the reachability round-trip runs');
+  // Without the library (boot, before the lazy solver bundle loads) the structural checks keep
+  // it — DELIBERATELY: dropping on the weaker check would erase real memories at every boot
+  // re-save. The full parse re-runs the moment the library exists, and the reconnect readings
+  // validate through cube-trust again before showing anything (cube-reconnect tests pin that).
+  assert.equal('last' in parseRegistry({ [A]: rec })[A], true);
+});
+
+test('the serial is cleaned per field: 16-bit or absent, never a lie', () => {
+  assert.equal(SERIAL_MOD, 0x10000, 'the FACELETS serial is 16-bit; the 8-bit gap counter is the same value masked');
+  for (const [serial, want] of [[0, 0], [65535, 65535], [7, 7]]) {
+    const reg = parseRegistry({ [A]: { name: 'x', nickname: '', lastSeen: t(1), last: { ...LAST, serial } } }, Cube);
+    assert.equal(reg[A].last.serial, want);
+  }
+  for (const serial of [65536, -1, 3.5, '7', NaN, Infinity, true]) {
+    const reg = parseRegistry({ [A]: { name: 'x', nickname: '', lastSeen: t(1), last: { ...LAST, serial } } }, Cube);
+    assert.equal(reg[A].last.serial, null, `an unusable serial becomes null, not a number: ${String(serial)}`);
+  }
+});
+
+test('the memory\'s timestamp is cleaned like lastSeen, and everything else is dropped unread', () => {
+  const hostile = { ...LAST, at: 'yesterday', trusted: true, offset: 'BADBAD', battery: 90, anchored: true };
+  const reg = parseRegistry({ [A]: { name: 'x', nickname: '', lastSeen: t(1), last: hostile } }, Cube);
+  assert.equal(reg[A].last.at, 0, 'an unusable stamp is 0, shown as a memory with no time');
+  assert.deepEqual(Object.keys(reg[A].last).sort(), ['at', 'facelets', 'how', 'reported', 'serial'],
+    'trusted and offset describe a CONNECTION — a stored record must not be able to reintroduce them');
+});
+
+test('rememberLast refuses what it cannot keep whole, and never invents a record', () => {
+  const reg = rememberCube({}, { mac: A, name: 'GAN-A', at: t(1) }, Cube);
+  assert.deepEqual(rememberLast(reg, B, LAST, Cube), reg, 'an unknown cube gains no half-record');
+  assert.deepEqual(rememberLast(reg, A, { ...LAST, facelets: 'garbage' }, Cube), reg, 'a broken memory writes nothing');
+  assert.equal('last' in rememberLast(reg, A, LAST, Cube)[A], true, 'and a sound one lands');
+});
+
+test('a broken injected validator fails closed — only an ABSENT one defers to the structural check', () => {
+  const raw = { [A]: { name: 'GAN-A', nickname: '', lastSeen: t(1), last: LAST } };
+  assert.equal('last' in parseRegistry(raw)[A], true, 'no library yet: the structural gate keeps a sound record');
+  assert.equal('last' in parseRegistry(raw, Cube)[A], true, 'the real library keeps it too');
+  assert.equal('last' in parseRegistry(raw, {})[A], false, 'a broken library refuses rather than silently downgrading');
+  assert.equal('last' in parseRegistry(raw, 42)[A], false);
+});
+
+test('an address is a string, never a coercion', () => {
+  assert.equal(normaliseMac([A]), '', 'an array wrapping an address is not an address');
+  assert.equal(normaliseMac({ toString() { throw new Error('boom'); } }), '', 'a throwing toString cannot escape');
+  assert.equal(normaliseMac(112233445566), '', 'a number is not an address');
 });

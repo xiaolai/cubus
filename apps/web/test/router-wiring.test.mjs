@@ -172,11 +172,15 @@ test('the cube screen applies every saved view setting, not just the ones it sho
   await tick();
   const cube = win.document.querySelector('#viewCube > cubus-cube');
   assert.deepEqual(
-    ['ghosts', 'ghost-elevation', 'camera-distance', 'camera-latitude', 'camera-longitude', 'facelet-scale']
+    ['ghosts', 'ghost-elevation', 'camera-latitude', 'camera-longitude', 'facelet-scale']
       .map((a) => `${a}=${cube.getAttribute(a)}`),
-    ['ghosts=floating', 'ghost-elevation=8', 'camera-distance=27',
-     'camera-latitude=-60', 'camera-longitude=170', 'facelet-scale=0.4'],
+    ['ghosts=floating', 'ghost-elevation=8', 'camera-latitude=-60', 'camera-longitude=170', 'facelet-scale=0.4'],
   );
+  // The distance is not a setting any more: the renderer fits the picture to the slot
+  // (lib/cube-frame.js), so a stored camDist is dropped rather than applied — a distance that
+  // was right for one slot shape clipped the ghost faces on every other.
+  assert.equal(cube.getAttribute('camera-distance'), null, 'no camera-distance is set');
+  assert.equal('camDist' in JSON.parse(win.localStorage.getItem('cubeView')), false, 'and the stale key is gone from storage');
 });
 
 /** Give Home something to walk. A solved cube is a cube to look at, not a walk (tested further
@@ -1147,6 +1151,7 @@ const drawnSteps = (calls) => calls.filter((c) => c[0] === 'step').length;
  *  trust, live and reported state — anything not reset here leaks into whatever test runs next. */
 const resetCubeModel = (state) => {
   win.cubusFeed.useConnection(null);
+  state.reconnect = null;
   state.connected = false;
   state.cubeName = '';
   state.cube.trusted = false;
@@ -1155,6 +1160,7 @@ const resetCubeModel = (state) => {
   state.cube.isPhysical = false;
   state.cube.offset = null;
   state.cube.offsetAt = 0;
+  state.cube.offsetFrom = '';
   state.live = null;
   state.reported = null;
   state.anchored = false;
