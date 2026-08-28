@@ -66,7 +66,9 @@ if (missing.length) {
 //
 // search-worker-entry.js is not imported by anything: cubing resolves it from import.meta.url at
 // runtime, so nothing statically references it and only this check keeps it honest.
-const SOLVER = ['vendor/cubejs.js', 'vendor/cubing.js', 'vendor/search-worker-entry.js'];
+// min2phase.js is listed for the same reason as cubejs: without it the app loads, solves, and
+// silently ignores every solution-length target — the one failure nothing else here would catch.
+const SOLVER = ['vendor/cubejs.js', 'vendor/min2phase.js'];
 const absentSolver = SOLVER.filter((f) => !existsSync(join(dist, f)));
 if (absentSolver.length) {
   throw new Error(
