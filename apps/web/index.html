@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- viewport-fit=cover: the page runs under the Dynamic Island and behind the home indicator,
+         and .app pads itself by env(safe-area-inset-*) — the insets are the app's to place, not
+         the browser's to letterbox. Inert on desktop, where the insets are 0. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Cubus</title>
     <!-- Icons. All generated from dev-docs/design/icons/cubus-icon-flat.svg by
          scripts/build-icons.sh — see dev-docs/icons.md. icon.svg is listed first so
@@ -44,8 +47,11 @@
          painted over it); Windows and Linux windows are created without decorations
          (tauri.windows.conf.json / tauri.linux.conf.json), so the caption buttons drawn here are
          the only ones there are. --titlebar-h is the clearance .main leaves for the bar. */
-      :root { --titlebar-h: var(--titlebar-other); }
+      :root { --titlebar-h: var(--titlebar-other); --tabbar-h: 49px; }
       html[data-platform="macos"] { --titlebar-h: var(--titlebar-macos); }
+      /* A finger gets the 52px bar on every platform: the touch floors below make each control
+         44px, and 44px controls do not fit a 44px bar. */
+      @media (pointer: coarse) { :root, html[data-platform] { --titlebar-h: var(--titlebar-macos); } }
       .num { font-family: var(--font-num); } /* the system mono stack — every numeral, time, alg */
       button, input, select { font: inherit; color: inherit; }
       button { cursor: pointer; border: 0; background: none; }
@@ -53,22 +59,36 @@
       .eyebrow { font-size: var(--fs-meta); font-weight: 700; letter-spacing: .13em; color: var(--ink-5); text-transform: uppercase; }
 
       /* ---- window + title bar --------------------------------------------- */
-      .app { height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
+      /* The app box is the OS-safe area: 100dvh less the safe-area insets (Dynamic Island, home
+         indicator; 0 on desktop), and a size container named `app`, so chrome can ask ITS
+         orientation. Nothing in this stylesheet asks the viewport's — under the layout contract
+         (dev-docs/stage-contract.md) the viewport is not the stage, and a viewport query is the
+         wrong signal; a test bans them. The insets are custom properties so the harness can stand
+         in for a phone: app.js sets --inset-* from `?insets=t,r,b,l`. */
+      .app {
+        --inset-t: env(safe-area-inset-top, 0px); --inset-r: env(safe-area-inset-right, 0px);
+        --inset-b: env(safe-area-inset-bottom, 0px); --inset-l: env(safe-area-inset-left, 0px);
+        height: 100dvh; padding: var(--inset-t) var(--inset-r) var(--inset-b) var(--inset-l);
+        container-type: size; container-name: app;
+        display: flex; flex-direction: column; background: var(--bg);
+      }
       .win { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
-      /* The title bar is the app's toolbar (paper-one TitleBar, with the navigation moved into it).
-         Three zones on a 1fr/auto/1fr grid, so the tabs sit on the window's centre line whatever
-         the lead and trail zones weigh: macOS leads with the traffic-light gap and the wordmark
-         and trails with Settings; Windows/Linux lead with the wordmark and trail with Settings and
-         the caption buttons. The bar is transparent — it sits on the paper like everything else.
-         `data-tauri-drag-region="deep"` on the bar makes its whole subtree a drag handle; Tauri's
-         drag script exempts buttons on its own, which is what keeps the tabs clickable without
-         opting each one out. */
+      /* The title bar is the app's toolbar (paper-one TitleBar). Two zones at its ends: macOS
+         leads with the traffic-light gap and the wordmark and trails with Settings; Windows/Linux
+         lead with the wordmark and trail with Settings and the caption buttons; iOS/Android lead
+         with the wordmark and trail with Settings. The tabs are not its children any more (see
+         .tabs below) — in landscape they float over its centre line. The bar is transparent — it
+         sits on the paper like everything else. `data-tauri-drag-region="deep"` on the bar makes
+         its whole subtree a drag handle; Tauri's drag script exempts buttons on its own. */
       .titlebar {
         position: absolute; top: 0; left: 0; right: 0; z-index: 5;
-        height: var(--titlebar-h); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+        height: var(--titlebar-h); display: flex; justify-content: space-between; align-items: center;
         padding: 0 12px;
       }
-      .tb-zone { display: flex; align-items: center; gap: 4px; min-width: 0; }
+      /* flex: none — the zones never shrink; the tab row is what adapts (compact). With
+         `0 1 auto` WebKit sized the lead zone under its content while the bar had 600px free,
+         and the wordmark ran out of its box under the tabs. */
+      .tb-zone { display: flex; align-items: center; gap: 4px; flex: none; }
       .tb-trail { justify-content: flex-end; }
       /* The traffic-light gap. The OS paints the real lights at trafficLightPosition; in a browser
          preview (?chrome=preview) three dots stand in. */
@@ -76,7 +96,11 @@
          The truth is measured, not designed: Finder's tall-toolbar lights centre at 25.75pt on
          this macOS, so tauri.conf.json says x:19 (centre = x + 6.75) and the preview dots match:
          12 + 7.75 + 6 = 25.75. */
-      .tb-lights { display: flex; align-items: center; flex: 0 0 var(--sys-zone-macos); gap: var(--light-gap); padding-left: 7.75px; }
+      /* width AND flex: none, not a flex-basis alone. WebKit sizes the zone's intrinsic width
+         from this span's content (its padding, 7.75px) rather than its 82px basis, then lays it
+         out at 82 — which pushed the wordmark out of the zone and under the tabs. An explicit
+         width is counted. */
+      .tb-lights { display: flex; align-items: center; flex: none; width: var(--sys-zone-macos); gap: var(--light-gap); padding-left: 7.75px; }
       .tl { width: var(--light-size); height: var(--light-size); border-radius: var(--r-pill); box-shadow: inset 0 0 0 .5px rgba(0,0,0,.18); }
       /* The mark is icons/icon.svg — the transparent variant, so it reads on the paper in both
          themes without a tile behind it. */
@@ -85,11 +109,34 @@
       .brand b { font-family: var(--font-num); font-weight: 700; font-size: var(--fs-title-s); letter-spacing: -.01em; }
 
       /* The tabs: a segmented control in the macOS/iOS manner — one capsule, the current screen
-         filled in ink. Four screens by default and never more than eight, which is why they fit
-         here, and why the pane they replaced was a column of mostly empty space. The capsule's
-         ground is mixed from --ink so it reads as a slight well in both themes without a token
-         of its own. */
-      .tabs { display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--ink) 7%, transparent); }
+         filled in ink. Four screens by default and never more than eight. The capsule's ground is
+         mixed from --ink so it reads as a slight well in both themes without a token of its own.
+
+         The row is .win's own child, not the bar's, so it can be two things by orientation with
+         one DOM. Landscape: floated over the bar's centre line, so the tabs sit on the window's
+         centre whatever the lead and trail zones weigh. Portrait: a real row at the foot of the
+         window, in flow, so the stage above shrinks by exactly the bar — the "bottom bar" the
+         contract's fixtures subtract. Asked of the app container, never the window. */
+      .tabs { position: absolute; top: 0; left: 50%; translate: -50% 0; z-index: 6; height: var(--titlebar-h); display: flex; align-items: center; }
+      .tabs .capsule { display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--ink) 7%, transparent); }
+      /* Icons only when the labelled row would not fit between the bar's outer zones — measured
+         by app.js (fitTabs), because whether six labelled tabs fit depends on the tabs, the
+         language and the platform's lead zone, none of which a width can know. */
+      .tabs.compact .nav-item { padding: 0 10px; }
+      .tabs.compact .nav-item .lbl { display: none; }
+      @container app (orientation: portrait) {
+        .tabs { position: static; translate: none; height: var(--tabbar-h); width: 100%; flex: none; border-top: 1px solid var(--line); background: var(--panel); }
+        .tabs .capsule { width: 100%; height: 100%; padding: 0; gap: 0; border-radius: 0; background: none; }
+        /* Icon over a word, every tab the same width — the tab-bar idiom of both phone platforms.
+           Under every icon there is room for the word, so compact never applies here. Selectors
+           carry `.tabs` because the base .nav-item rules come later in this sheet at the same
+           specificity, and the bottom bar must win. */
+        .tabs .nav-item { flex: 1 1 0; min-width: 0; height: 100%; padding: 0; flex-direction: column; justify-content: center; gap: 3px; border-radius: 0; font-size: var(--fs-micro); font-weight: 600; color: var(--ink-4); }
+        .tabs .nav-item .ico { width: auto; }
+        .tabs .nav-item .ico svg { width: 22px; height: 22px; }
+        .tabs .nav-item.active { background: none; color: var(--ink); }
+        .tabs.compact .nav-item .lbl { display: block; }
+      }
       .nav-item {
         display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 13px;
         border-radius: var(--r-pill); color: var(--ink-3); font-size: var(--fs-body-s); font-weight: 600;
@@ -125,15 +172,147 @@
       /* main column */
       .main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding-top: var(--titlebar-h); }
 
-      .stage { flex: 1; min-height: 0; overflow: hidden; padding: 24px 30px; }
+      /* The stage is the safe content area — what is left after the OS insets and the app's own
+         bars — and the size container named `stage` that every screen measures itself against:
+         cqw/cqh inside a screen are 1% of the stage's content box, and the orientation switch
+         below asks the stage, never the window. position:relative because the popovers are its
+         absolutely positioned children (see the popover rule). The padding is a variable so a
+         form factor can change it without another rule learning the stage's shape. */
+      /* The padding follows the app's width continuously (cqw here is the .app container's — an
+         element's own container does not serve its own properties): 24/30 from a 13" Air's
+         window up, 12/14 on a phone, no threshold in between. */
+      .stage {
+        --stage-pad: clamp(12px, 3cqw, 24px) clamp(12px, 3.6cqw, 30px);
+        flex: 1; min-height: 0; overflow: hidden; padding: var(--stage-pad);
+        position: relative; container-type: size; container-name: stage;
+      }
+      /* The reference box of the layout contract: a 4:3 box (landscape) or a 3:4 box (portrait)
+         fit to the stage's short axis. Screens size their primary region from --ref-w/--ref-h and
+         let the sheet take whatever the long axis has beyond it. Declared on .screen, not .stage:
+         a container cannot query itself, only its descendants can ask it. */
+      .screen { --ref-w: min(100cqw, 100cqh * 4 / 3); --ref-h: min(100cqh, 100cqw * 3 / 4); }
+      @container stage (orientation: portrait) {
+        .screen { --ref-w: min(100cqw, 100cqh * 3 / 4); --ref-h: min(100cqh, 100cqw * 4 / 3); }
+      }
       .screen { display: none; height: 100%; }
-      .screen.active { display: block; }
-      .cols { display: flex; gap: 22px; height: 100%; }
+      /* A grid of one cell, so the composition box centres on the stage when the fit rule leaves
+         paper — an iPad portrait stage is a little wider than 3:4 of its height. */
+      .screen.active { display: grid; place-items: center; }
+
+      /* ---- the composition: primary · twin · aux · sheet ------------------------------------ */
+      /* The two compositions of the layout contract (dev-docs/stage-contract.md), one DOM. A
+         screen is a grid of four regions: `primary` — the cube, or the scan net — locked to the
+         reference box; `twin` — the same cube drawn the other way, the 2D net or the
+         detected-state cube, a reference to glance at; `aux` — the transport row, present while
+         a solution is being walked; and `sheet` — the moves (or the scan's notice and button),
+         which take whatever the long axis has beyond the reference box. Landscape: the twin tops
+         the column beside the primary and the sheet fills the rest of it, the aux under the
+         primary. Portrait: the twin sits BESIDE the cube and the sheet runs under both — so
+         every card is on screen at once, without a scroll, at the reference minimums (the
+         geometry test asserts it): stacked under the cube the sheet had 190px at the portrait
+         minimum, and a solution's chips plus its net need twice that. On a coarse pointer in
+         portrait the twin goes back under the moves and the sheet scrolls as a whole: a phone's
+         width cannot hold a cube and a net side by side, and its extra height is sheet. Which
+         one is the stage's orientation, asked of the stage; nothing measures a width.
+         --primary-share is the primary's cut of the reference box's long side — the same cut in
+         both orientations, so the cube is the same fraction of the short axis everywhere. */
+      .screen { --cols-gap: 22px; --rows-gap: 18px; --primary-share: 0.58; }
+      .cols {
+        display: grid; min-width: 0; min-height: 0;
+        column-gap: var(--cols-gap); row-gap: var(--rows-gap);
+        /* Landscape: the reference box is as tall as the stage; the right-hand column takes any
+           surplus width (the 1fr): the twin at its content's height, the sheet the rest. */
+        width: 100%; height: var(--ref-h);
+        --primary-w: calc(var(--ref-w) * var(--primary-share) - var(--cols-gap) / 2);
+        grid-template-columns: var(--primary-w) minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-areas: "primary twin" "primary sheet";
+      }
+      .cols.walking { grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "primary twin" "primary sheet" "aux sheet"; }
+      /* List screens have no twin: two columns, each its own scroll, top edges level (an empty
+         auto row would still cost its gap and drop the sheet 18px below the column). */
+      .cols.flow { grid-template-rows: minmax(0, 1fr); grid-template-areas: "primary sheet"; }
+      /* The twin and the sheet are the aside's two children in the DOM — and on the cube screens
+         the aside is not a box: `display: contents` hands both straight to the grid, where each
+         takes its own area. One DOM for three compositions (landscape, portrait, a finger's
+         portrait — which turns the aside back into the scrolling column it is on list screens).
+         Declared BEFORE the container blocks: the finger's rule below has the same specificity
+         and must win by order, or a stray twin auto-places into an implicit grid column and
+         starves the primary of its width. */
+      .cols:not(.flow) > .aside { display: contents; }
+      .twin { grid-area: twin; min-width: 0; min-height: 0; }
+      .sheet { grid-area: sheet; min-width: 0; min-height: 0; }
+      @container stage (orientation: portrait) {
+        .cols {
+          /* Portrait: the reference box is as wide as the stage. The cube and its twin share the
+             top row, 3:2; the sheet is the bottom row and any surplus height is its. */
+          width: var(--ref-w); height: 100%;
+          --primary-h: calc(var(--ref-h) * var(--primary-share) - var(--rows-gap) / 2);
+          grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+          grid-template-rows: var(--primary-h) minmax(0, 1fr);
+          grid-template-areas: "primary twin" "sheet sheet";
+        }
+        .cols.walking { grid-template-rows: var(--primary-h) auto minmax(0, 1fr); grid-template-areas: "primary twin" "aux aux" "sheet sheet"; }
+        /* Beside the cube the twin centres its picture in the room it has; its heading stays at
+           the top, level with the cube card's tools. */
+        .twin { display: flex; flex-direction: column; }
+        /* width: 100% is load-bearing: a flex item with auto margins is not stretched, and the
+           net — a grid whose cells have no size of their own — shrank to 49px without it. */
+        .twin .net { width: 100%; margin: auto; }
+        .twin .cube-slot { margin: auto 0; }
+        /* The scan screen's twin goes beside the SHEET instead: its primary is the cross of six
+           tiles, which wants the width, and the detected-state cube is small. The tiles get the
+           whole box; the bottom row splits 2:3 between the cube and the notice-plus-button. */
+        .cols.twin-low { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); grid-template-areas: "primary primary" "twin sheet"; }
+        .cols.twin-low .twin .cube-slot { flex: 1; min-height: 0; height: auto; margin: 6px 0 0; }
+        /* List screens (Settings, Stats, Lessons): there is no primary to lock — the first
+           column is a list — so the rows take their content's height and the whole box scrolls
+           as one, instead of two scroll regions stacked on a phone. Landscape is unchanged: two
+           columns, each scrolling. */
+        /* align-content: start — a grid's `normal` alignment STRETCHES auto rows across the
+           box, so a short list (Lessons' two chapters) was given a row 170px taller than its
+           cards, and the sheet below it started after a blank band nothing explained. */
+        .cols.flow { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; grid-template-areas: "primary" "sheet"; overflow-y: auto; align-content: start; }
+        /* min-height: auto is load-bearing. An `auto` row in an overconstrained box sizes to its
+           item's MINIMUM contribution, and with the min-height: 0 the locked layout needs that
+           minimum is zero — the rows collapsed and the sheet drew over the column. */
+        .cols.flow > .col, .cols.flow > .aside { overflow: visible; min-height: auto; }
+      }
+      /* A finger, portrait: the phone composition. The aside is a box again and scrolls as a
+         whole; the moves come first (the chips are the task, the net is the reference, and a net
+         first would put the task under the fold), the twin last at its natural height. */
+      @media (pointer: coarse) {
+        @container stage (orientation: portrait) {
+          .cols:not(.flow) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "primary" "sheet"; }
+          .cols.walking { grid-template-areas: "primary" "aux" "sheet"; }
+          .cols:not(.flow) > .aside { display: flex; }
+          .aside > .twin { order: 1; display: block; }
+          .aside > .twin .net { width: auto; margin: 30px auto 0; }
+          .aside > .twin .cube-slot, .cols.twin-low .twin .cube-slot { flex: none; height: 230px; margin: 6px 0 0; }
+          .aside > .sheet { flex: none; min-height: 0; }
+        }
+      }
+      /* Beside the cube the solution card fills the sheet and its list scrolls inside it (the
+         portrait rule above turns both off). A class, not an inline style: an inline `flex:1`
+         outranks every stylesheet rule, and the portrait sheet could not un-flex it. */
+      .solution-card { flex: 1; min-height: 140px; display: flex; flex-direction: column; }
+      .primary { grid-area: primary; min-width: 0; min-height: 0; }
+      .aux { grid-area: aux; min-width: 0; }
+      .scan-sheet { display: flex; flex-direction: column; gap: 16px; }
+      .state-card .net { margin: 30px auto 0; }
+      #scanCube { height: 230px; margin-top: 6px; }
       /* `overflow-y: auto` is not optional here: .stage clips, and no column scrolled. Settings can
          now list up to 32 remembered cubes, so past a certain number the controls below them were
          simply unreachable — clipped off the bottom with no way to scroll to them. */
-      .col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
-      .aside { flex: 0 1 var(--aside-w); min-width: var(--aside-min); display: flex; flex-direction: column; gap: 16px; }
+      .col { grid-area: primary; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
+      .aside { grid-area: sheet; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+      /* Nothing in a sheet squashes. The sheet is a flex column that SCROLLS, and a flex item is
+         shrunk before its container scrolls — so a 40px button at the foot of an overfull sheet
+         was shrunk to 0px: the Restore screen's "Solve this cube" vanished in every portrait
+         fixture, while the notice beside it said to press it. A card is protected by its content's
+         minimum height; a button is not. The geometry test now counts a zero-height control as a
+         failure instead of filtering it out as "not visible". */
+      .aside > * { flex-shrink: 0; }
 
       /* ---- primitives ----------------------------------------------------- */
       /* Flat on purpose: no fill, no outline. The leading pane is the only raised surface; a card
@@ -143,7 +322,18 @@
       .card.tight { padding: 0; overflow: hidden; }
       .stat .v { font-family: var(--font-num); font-size: var(--fs-display); font-weight: 600; letter-spacing: -.02em; }
       .stat .d { font-size: var(--fs-body-s); color: var(--ink-4); }
-      .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+      /* Intrinsic wrapping, not a breakpoint: as many 150px stat cards as fit, three on the
+         desktop reference, two on a phone. A `.v` at --fs-display needs ~130px. */
+      .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+      /* Trainer cases: as many 140px cards as the width holds — five at the reference, two on a
+         phone. */
+      .case-grid { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; align-content: start; }
+      /* A row of controls that wraps rather than overflows — the theme pills beside their
+         description, the trainer's filters beside their caption, the timer's last five. */
+      .wrap-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+      /* The timer's clock: 150px at the reference, and never wider than the stage — "12.34" in
+         the mono stack is ~3.6 characters of width, so 24cqw keeps it inside a phone. */
+      .timer-clock { font-size: clamp(48px, 24cqw, var(--fs-timer)); font-weight: 600; line-height: .95; letter-spacing: -.03em; cursor: pointer; }
       /* One rule for the whole document, ahead of every component. Any class that sets `display`
          beats the user-agent [hidden] rule, so each component that needed hiding had grown its own
          [hidden] override — six of them — and the two buttons this branch added were left out.
@@ -229,7 +419,45 @@
       /* Row gap far tighter than the column gap on purpose: the label under each tile already adds
          vertical space, and without compensating the three rows read as three rows instead of a
          cross. */
-      .scan-faces { width: 80%; display: grid; grid-template-columns: repeat(4, 1fr); column-gap: 10px; row-gap: 2px; }
+      /* Full width of the primary region, capped: at the 840×630 reference the region is 501px
+         wide and the tiles 109px, and the cap keeps a 1280-wide window from drawing 160px tiles
+         for the sake of it. A touch iPad in landscape lands between (34px stickers on an 11",
+         57 on a 13") — the one control this sheet leaves under the 44px floor, and the geometry
+         test names the number it holds instead. */
+      .scan-faces { width: 100%; max-width: 560px; display: grid; grid-template-columns: repeat(4, 1fr); column-gap: 10px; row-gap: 2px; }
+      /* The cross is the cube's shape, and it is the same cross in both windows: with a mouse
+         the six tiles are laid out as the net in portrait too (decided 2026-08-28 — one large
+         face over a strip of five read as a different screen, and a portrait window is not a
+         phone). The strip exists for ONE reason, a finger: six 3×3 tiles cannot give it 44px
+         stickers in a phone's width. So under a coarse pointer in portrait ONE face is large —
+         the one app.js marks .focus: the side the scanner asks to see again, else the side it
+         just read, else the one you tap — and the other five are a strip below it, status at a
+         glance and a tap target each (the tile, not its stickers, at that size). The large tile
+         is sized off the reference box so it, its label and the strip fit the primary region:
+         --ref-h × --primary-share is the region, and 140px is the strip, the label and the gaps.
+         The --focus flag is how app.js knows a tap on a strip tile means "show me this one"
+         rather than "correct this sticker". Everywhere else the .focus class is inert. */
+      @media (pointer: coarse) {
+      @container stage (orientation: portrait) {
+        .scan-faces { --focus: 1; max-width: none; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: auto auto; column-gap: 8px; row-gap: 8px; }
+        /* Three class-level parts, to outrank the cross placement (.scan-face[data-face="U"] …)
+           declared below this block. */
+        .scan-faces .scan-face[data-face] { grid-area: auto; }
+        .scan-faces .scan-face.focus { grid-column: 1 / -1; grid-row: 1; align-items: flex-start; }
+        /* The large tile sits at the LEFT of its row, its label centred under it: the card's tools
+           (reset / paint / camera) park in the top-right corner, and a centred tile ran under
+           them. The same expression sizes tile and label so the label knows the tile's width. */
+        .scan-face.focus { --focus-w: min(100%, 320px, calc(var(--ref-h) * var(--primary-share) - 140px)); }
+        .scan-face.focus .tile { width: var(--focus-w); }
+        .scan-face.focus .lbl { width: var(--focus-w); text-align: center; }
+        .scan-face:not(.focus) { cursor: pointer; }
+        .scan-face:not(.focus) .lbl { font-size: var(--fs-micro); }
+        .scan-face:not(.focus) .tile { border-width: 2px; padding: 3px; }
+        .scan-face:not(.focus) .tgrid { gap: 1px; }
+        .scan-face:not(.focus) .tgrid > i { border-radius: 1px; }
+        .scan-face:not(.focus) .tgrid > i:nth-child(5) > .ic { display: none; }
+      }
+      }
       .scan-face[data-face="U"] { grid-area: 1 / 2; }
       .scan-face[data-face="L"] { grid-area: 2 / 1; }
       .scan-face[data-face="F"] { grid-area: 2 / 2; }
@@ -314,10 +542,15 @@
       @keyframes cubusSuspect { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--err) 40%, transparent); } }
 
       /* ONE popover idiom. .swatches (the sticker colour picker) and .menu (camera, speed) are
-         the same fixed-to-viewport surface; JS clamps them horizontally, and the max-height +
-         scroll here is the vertical containment the JS does not do — a menu opened near the
-         bottom edge scrolls instead of running off screen. */
-      :is(.swatches, .menu) { position: fixed; z-index: 60; border-radius: var(--r-4); background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow-raise, 0 6px 20px rgba(0,0,0,.18)); max-height: calc(100dvh - 16px); overflow-y: auto; }
+         the same surface: absolutely positioned children of the stage, placed and clamped by
+         app.js in stage coordinates. They used to be fixed to the viewport; under the layout
+         contract a popover belongs on the stage — on a phone the viewport also holds the OS
+         insets and the app's bars — and on the declared WebKit floor (Safari 16) a size container
+         still implies layout containment, which would have made the stage the containing block of
+         a "fixed" descendant anyway, and its overflow:hidden the clip. Absolute says what happens.
+         The max-height + scroll here is the pre-measurement bound; app.js sets the real one from
+         the room there is. */
+      :is(.swatches, .menu) { position: absolute; z-index: 60; border-radius: var(--r-4); background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow-raise, 0 6px 20px rgba(0,0,0,.18)); max-height: calc(100cqh - 16px); overflow-y: auto; }
       /* Colour picker for a misread sticker — layout only; the surface comes from the rule above. */
       .swatches { display: flex; gap: 6px; padding: 8px; }
       .swatches > button { width: 30px; height: 30px; border-radius: var(--r-3); box-shadow: inset 0 0 0 1px rgba(0,0,0,.22); }
@@ -366,10 +599,15 @@
          progress bar, and the step count.
          Speed is not here — it lives in the cube card's corner, because it is a preference you set
          once rather than part of walking the solution. */
-      .transport { display: flex; align-items: center; gap: 8px; }
+      /* One line down to the contract's portrait floor, by arithmetic: four 38px buttons, the
+         22px done mark, the 56px count and six 6px gaps are 266px, and the bar's 48px basis makes
+         314 — an iPhone SE's transport is 315 wide. Below the floor (a 320px iPad Split View
+         column has 260) the row wraps and the bar, the one flexible thing in it, drops to a
+         second line rather than the row running off the card. */
+      .transport { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
       /* Takes the old spacer's job: it has to be the flexible gap anyway, so the gap may as well
          say how far through the solution you are. --track/--bar are the groove/fill token pair. */
-      .transport .progress { flex: 1; height: 6px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
+      .transport .progress { flex: 1 1 48px; height: 6px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
       .transport .progress > span { display: block; height: 100%; width: 0; border-radius: var(--r-pill); background: var(--bar); transition: width .18s ease; }
       /* The off-track note lives at the FOOT OF THE SOLUTION CARD, and that placement is the fix,
          not a preference: in the transport row it resized the cube card above on every stray turn,
@@ -410,20 +648,40 @@
       .net .sticker.D { background: var(--net-D); }
       .net .sticker.L { background: var(--net-L); }
       .net .sticker.B { background: var(--net-B); }
-      /* A grid of fixed 44px tracks, as many as fit, justified edge-to-edge — so the first column
-         sits flush with the heading and the last column flush with the count above, and a column
-         can never be clipped: auto-fill computes what fits instead of letting wrap guess. */
-      /* gap is the MINIMUM breathing room — auto-fill counts columns against 44px + 6px, so the
+      /* A grid of fixed --chip tracks, as many as fit, justified edge-to-edge — so the first
+         column sits flush with the heading and the last column flush with the count above, and a
+         column can never be clipped: auto-fill computes what fits instead of letting wrap guess. */
+      /* gap is the MINIMUM breathing room — auto-fill counts columns against --chip + 6px, so the
          chips can never pack edge-to-edge; space-between then distributes whatever is left on top,
          keeping the first column flush left and the last flush right. row-gap alone was the bug:
          with no column-gap, auto-fill fit an extra column and left ~2px between chips. */
-      .move-chips { display: grid; grid-template-columns: repeat(auto-fill, 44px); justify-content: space-between; gap: 6px; }
-      /* One shape for every move: a SQUARE at the 44px minimum tap target (fingers follow these
-         mid-solve, often on a touchscreen), text centred both ways at body size — the box grew
-         for the finger, not the type. Equal boxes are what let a solution read as a row of steps
-         rather than a ragged sentence. */
-      .chip-m { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-5); border-radius: 4px; width: 44px; height: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+      .move-chips { display: grid; grid-template-columns: repeat(auto-fill, var(--chip)); justify-content: space-between; gap: 6px; }
+      /* One shape for every move: a SQUARE, text centred both ways at body size. 36px with a
+         mouse — the size that lets a whole solution sit on the sheet at the reference minimums
+         without a scroll (25 moves are three rows on the portrait sheet, five in landscape) — and
+         the 44px tap target for a finger (the touch floors below), where the box grows for the
+         finger, not the type. Equal boxes are what let a solution read as a row of steps rather
+         than a ragged sentence. */
+      .screen { --chip: 36px; }
+      .chip-m { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; border: 1px solid var(--line); background: var(--panel); color: var(--ink-5); border-radius: 4px; width: var(--chip); height: var(--chip); padding: 0; display: inline-flex; align-items: center; justify-content: center; }
       .chip-m.played { background: var(--panel-sunk); color: var(--ink); }
+
+      /* ---- touch floors ----------------------------------------------------------------- */
+      /* On a coarse pointer every control is at least 44px — Apple's floor, and the contract's
+         (dev-docs/stage-contract.md). A pointer feature, not a width: a desktop portrait window
+         is a mouse, an iPad in landscape is a finger. The transport keeps one line at the 375px
+         floor by the same arithmetic as its own rule, with the buttons at 44:
+         4×44 + 22 + 56 + 6×4 + 32 = 310 ≤ 315. The toggle keeps its drawn size — its knob
+         geometry is fixed numbers — and grows a 44px hit area around it instead. */
+      @media (pointer: coarse) {
+        .screen { --chip: 44px; }
+        .btn, .tbtn, .tb-ctl, .card-tools > button, .pill, .menu > button, .nav-item, .swatches > button, .field { min-height: 44px; }
+        .tbtn, .tb-ctl, .card-tools > button, .swatches > button { min-width: 44px; }
+        .eyebrow-row > button { width: 44px; height: 44px; margin: -14px -12px -14px 0; }
+        .toggle::before { content: ''; position: absolute; inset: -11px -2px; }
+        .transport { gap: 4px; }
+        .transport .progress { flex-basis: 32px; }
+      }
       .chip-m:hover { border-color: var(--ink-5); color: var(--ink); }
       .chip-m.cur:hover { border-color: var(--invert-bg); color: var(--invert-fg); }
       .chip-m.cur { background: var(--invert-bg); color: var(--invert-fg); border-color: var(--invert-bg); }
@@ -434,14 +692,12 @@
     <div class="app">
       <div class="win">
         <!-- "deep" makes the whole bar a drag handle, wordmark included; Tauri's drag script
-             exempts buttons on its own, which is what keeps the tabs and the window controls
-             clickable. app.js fills the two zones per platform (buildChrome) and the tabs
-             (renderNav). The screen's name is not drawn here — the filled tab is the name — but
-             app.js still sets the window title, which is what the taskbar, the window switcher and
-             a browser tab show. -->
+             exempts buttons on its own, which is what keeps the window controls clickable. app.js
+             fills the two zones per platform (buildChrome). The screen's name is not drawn here —
+             the filled tab is the name — but app.js still sets the window title, which is what
+             the taskbar, the window switcher and a browser tab show. -->
         <div class="titlebar" id="titlebar" data-tauri-drag-region="deep">
           <div class="tb-zone" id="tbLead"></div>
-          <nav class="tabs" id="nav" aria-label="Screens"></nav>
           <div class="tb-zone tb-trail" id="tbTrail"></div>
         </div>
 
@@ -451,6 +707,11 @@
             <div class="stage" id="stage"><!-- screens injected here --></div>
           </div>
         </div>
+
+        <!-- The tabs (renderNav) are the window's own child, not the bar's: in landscape the
+             stylesheet floats them over the bar's centre line, in portrait they are this row at
+             the foot of the window — one DOM, two chromes (see the .tabs rules). -->
+        <nav class="tabs" id="nav" aria-label="Screens"></nav>
       </div>
     </div>
 

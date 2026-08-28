@@ -237,7 +237,7 @@ class CubusCube extends HTMLElement {
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      this._dirty = true;
+      this._applyCamera(); // the distance depends on the aspect (see there); it sets _dirty
     };
     this._ro = new ResizeObserver(resize);
     this._ro.observe(this);
@@ -332,6 +332,12 @@ class CubusCube extends HTMLElement {
     let d = this._num('camera-distance', 12) * 0.85;
     // Ghosts widen the silhouette, so give them the room they occupy.
     if (this._ghostsEnabled()) d += this._num('ghost-elevation', 4) * 0.42;
+    // Those distances frame the silhouette against the VERTICAL field of view, the one three.js
+    // fixes; a slot narrower than it is tall shows proportionally less width, and the ghost
+    // faces ran off the sides of a 658×792 cube card. Pull back by the aspect so the same
+    // silhouette fits the narrower axis; a slot wider than tall is unchanged.
+    const aspect = this.camera.aspect || 1;
+    if (aspect < 1) d /= aspect;
     const lat = this._num('camera-latitude', 35) * Math.PI / 180;
     const lon = this._num('camera-longitude', 45) * Math.PI / 180;
     this.camera.position.set(
