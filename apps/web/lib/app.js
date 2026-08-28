@@ -2235,7 +2235,10 @@ const cubeScreen = (screenMode) => {
       if (solLabel) solLabel.textContent = lesson ? 'Lesson' : label;
       const verdict = state.cube.solveResult;
       if (lesson) {
-        setStatus(`${lesson.length} steps · ${total} moves`);
+        // Moves FIRST, because that is the number the old count was and the only one a
+        // learner can compare. Leading with steps put a "20" exactly where twenty MOVES used to
+        // be printed, which read as the same solution rather than a different, longer one.
+        setStatus(`${total} moves · ${lesson.length} steps`);
       } else {
         // Just the number, unless the tier asked for something this cube cannot give. Eighteen
         // moves do not exist for every position, so that case is said plainly rather than left
