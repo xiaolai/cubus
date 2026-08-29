@@ -104,17 +104,20 @@ it walks you through solving it.
   and then solved, and the scramble is that solution inverted. Never random turns — those leave a
   distribution with structure and cubes easier than they look. There is no fallback to
   `Math.random()`; a platform without a crypto source fails loudly instead of quietly weakening.
-- **Two solvers, two questions — read `dev-docs/solver-research.md` before any solver work.**
-  Shortest and explicable pull in opposite directions and no amount of tuning turns one into
-  the other. The two-phase engine answers *just restore it* / *how good am I* (~21 moves, one
-  step, no reason for any of them); the method solver in `apps/web/lib/method-solver.js`
-  answers *why is this move right* (118 moves in 21 steps, every step with a reusable reason).
-  The product axis is **steps, not moves**: a learner improves by needing fewer things in their
-  head, so layers are ranked by step count and a rung that saves a step by hiding a reason is
-  not progress. That note is the consolidated record — the measured ladders, the completeness
-  proof over all 62,208 last-layer states, the licence question still open on published
-  algorithm sets, and a **dead-ends table** listing what was already tried and did not work.
-  Check it before re-deriving anything; several of those cost hours.
+- **One solver, one question (decided 2026-08-29 — the explaining solver was removed).** The
+  app answers *just restore it*: the two-phase engine, behind a single Settings choice — a
+  solution-length ceiling (≤ 20 / ≤ 19 / ≤ 18 / shortest). The method solver ("why is this
+  move right", 118 moves in 21 steps with a reason each) and its reason line were removed by
+  the owner's call: in practice the explanations did not reduce a learner's burden. The
+  two-solvers argument it reversed, the measured ladders, the completeness proof over all
+  62,208 last-layer states, and the dead-ends table are all preserved in
+  `dev-docs/solver-research.md` — read it before re-deriving anything, and before any attempt
+  to bring explanation back (hold a return to the same bar the smart-cube return met). The
+  code history is in git (removal commit, 2026-08-29).
+  - **The ceiling is a ceiling, not a stopping place**: once the target is met, `refine`
+    keeps asking for shorter at a small bonus budget, so a cube a few turns from solved gets
+    its real few-move answer instead of the target length. The day this was missing, a 7-turn
+    cube was answered with ~20 moves — `lib/solve-target.js` records the mechanism.
 - **Never invent data**: a statistic that cannot be computed is a dash, not a number; a reading
   that cannot be validated is a refusal, not a guess. A plausible figure is worse than a blank.
 - **Fail loud**: an unreadable scan, a state that cannot be solved, a storage write that did not
