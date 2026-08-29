@@ -42,16 +42,39 @@ Run the pure tests locally: `python3 ml/test_pipeline.py`
 ### 1. Render on a Mac (Apple Silicon)
 BlenderProc lives in a venv; on first run it downloads a native macOS-arm64 Blender. The
 generator is validated end-to-end here (all 9 stickers labelled per frame, COCO→YOLO clean).
-One render only saturates ~3 cores, so `render.sh` runs `WORKERS` of them in parallel — on a
-10-core M-series the full 40k render is a few hours, not a day. (Counterintuitively CPU beats
-Metal GPU for this trivial scene — GPU per-frame launch overhead dominates.)
+One render only saturates ~3 cores, so `render.sh` runs `WORKERS` of them in parallel.
+
+**Measured 2026-08-28 on a 10-core M5, `generate_cube3d.py` at 640 px, 40 poses/scene** — the
+"few hours" this section used to claim was measured on the older, much lighter
+`generate_cube_dataset.py` and does not hold for the 3D generator:
+
+| | |
+|---|---|
+| one scene (40 frames), single worker, GPU | 126 s |
+| one scene (40 frames), single worker, CPU | 133 s |
+| fixed startup per scene (1-pose run) | 8.7 s → ~3.0 s/frame |
+| 4 concurrent CPU workers | 311 s for 160 images = 0.51 img/s, only a **1.71× speedup** |
+| **a 32k-image production render** | **~17 h** |
+
+So parallelism helps far less than the core count suggests (memory bandwidth, not cores, is the
+limit), and CPU vs Metal is a wash at ~5% rather than a clear CPU win. Budget most of a day for a
+production render, and start it when the machine is not needed.
+
+**Do not switch renderer versions or sample counts mid-project to go faster.** Cycles output
+differs between Blender versions, and the sample count is baked into image appearance; either
+change makes a new dataset non-comparable with the one it is meant to be measured against, which
+is usually the whole point of rendering it. Ubuntu packages Blender 4.0.2 for arm64 and the
+training host has 20 cores, which makes rendering there tempting — it would have introduced
+exactly that confound.
 ```bash
 python3.11 -m venv ml/venv && ml/venv/bin/pip install blenderproc
 # HDRIs drive both lighting and the visible background — variety here is the whole point.
 ml/venv/bin/python ml/fetch_hdris.py --out ~/datasets/hdris --count 200   # CC0, ~300 MB
 
 # Use ABSOLUTE paths for HDRI_DIR/OUT (a ~ passed as `env VAR=~/x` is not expanded).
-BLENDERPROC=ml/venv/bin/blenderproc PYTHON=ml/venv/bin/python WORKERS=4 \
+# GEN defaults to generate_cube3d.py (what every model since v3 trained on). Pass it anyway —
+# an example that omits it is how hours of the WRONG generator's output got rendered once.
+BLENDERPROC=ml/venv/bin/blenderproc PYTHON=ml/venv/bin/python WORKERS=4 GEN=generate_cube3d.py \
   SCENES=1000 POSES=40 HDRI_DIR="$HOME/datasets/hdris" OUT="$HOME/datasets/cube" bash ml/render.sh
 #    → ~40k images + YOLO labels at ~/datasets/cube/dataset
 #    render.sh fails loud if HDRI_DIR has no .hdr, so a bad path can't yield a background-less set.
