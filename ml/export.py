@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Export every runtime artefact the app ships from ONE checkpoint, in one command.
 
-    ml/venv/bin/python ml/export.py --pt ml/out/cube_v3_best.pt --calib ml/out/synth_v3/part_0/coco/images
+    ml/venv/bin/python ml/export.py --pt ml/out/cube_v5_best.pt --out ml/models
 
 writes into `ml/models/` (see --out):
 
@@ -240,16 +240,20 @@ def main() -> None:
 
     manifest["tools"].update({"ultralytics": ultralytics.__version__, "torch": torch.__version__, "onnx": onnx.__version__, "onnxruntime": onnxruntime.__version__})
 
+    paths: dict[str, Path] = {}
     if "onnx" not in args.skip:
         fp32, int8 = export_onnx(args.pt, work, args.out)
-        manifest["artefacts"][fp32.name] = {"sha256": sha256(fp32), "runtime": "onnxruntime", "precision": "fp32", "opset": 12}
-        manifest["artefacts"][int8.name] = {"sha256": sha256(int8), "runtime": "onnxruntime-web", "precision": "dynamic int8 (QInt8 weights, uint8 activations)"}
+        paths[fp32.name] = fp32
+        paths[int8.name] = int8
+        manifest["artefacts"][fp32.name] = {"runtime": "onnxruntime", "precision": "fp32", "opset": 12}
+        manifest["artefacts"][int8.name] = {"runtime": "onnxruntime-web", "precision": "dynamic int8 (QInt8 weights, uint8 activations)"}
     if "coreml" not in args.skip:
         import coremltools as ct
 
         manifest["tools"]["coremltools"] = ct.__version__
         mlp = export_coreml(args.pt, work, args.out)
-        manifest["artefacts"][mlp.name] = {"sha256": sha256(mlp), "runtime": "CoreML", "precision": "fp16 compute, fp32 tensor in, fp16 out", "min_target": "macOS13 / iOS16"}
+        paths[mlp.name] = mlp
+        manifest["artefacts"][mlp.name] = {"runtime": "CoreML", "precision": "fp16 compute, fp32 tensor in, fp16 out", "min_target": "macOS13 / iOS16"}
     if "tflite" not in args.skip:
         import onnx2tf as _o2t
         import tensorflow as tf
@@ -257,13 +261,21 @@ def main() -> None:
         manifest["tools"]["tensorflow"] = tf.__version__
         manifest["tools"]["onnx2tf"] = getattr(_o2t, "__version__", "unknown")
         tfl, _ = export_tflite(args.pt, work, args.out, args.calib, args.calib_count)
+        paths[tfl.name] = tfl
         manifest["artefacts"][tfl.name] = {
-            "sha256": sha256(tfl),
             "runtime": "LiteRT/TFLite (onnx2tf)",
             "precision": "dynamic-range int8: int8 weights, fp32 activations, fp32 I/O",
             "layout": "NHWC input; box coords in 640-space (the read is scale-invariant, so the consumer need not rescale)",
             "quantisation_note": "full-integer int8 (int8 activations) was rejected — it collapses the detect head's class scores to ~0 (NO_FACE on all golden frames); weight-only int8 reads identical to fp32 (0/20). Verified by ml/golden_frames.py.",
         }
+
+    # Hash every artefact HERE, after all exports are done — never at the moment each is written.
+    # The CoreML and TFLite steps re-run ultralytics, which rewrites cube-yolo.onnx underneath an
+    # already-recorded hash. That is why previous manifests recorded an fp32 sha256 the shipped
+    # file never had, and why the manifest could not be used to identify a model. Hashing last
+    # makes the manifest describe the files that actually exist.
+    for name, path in paths.items():
+        manifest["artefacts"][name]["sha256"] = sha256(path)
 
     (args.out / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if tmp is not None:

@@ -2,6 +2,10 @@
 
 `apps/web/vendor/cube-yolo.onnx` — the model the app's **AI-scan** mode runs in-browser.
 
+> **Shipped since 2026-08-29: v5, fp32.** Sections below written for v3 are kept because their
+> reasoning still holds; where a number changed, the v5 section (§"What the app ships") is
+> authoritative. v5's own numbers, and why it replaced v3, are there.
+
 ## What it does
 A **YOLOv11n** object detector that finds each sticker on a cube face and classifies its
 colour. It replaces the classical HSV scanner, whose accuracy collapsed under uncontrolled
@@ -41,8 +45,14 @@ Shipped **v3** model (with the white-fix):
 | **int8 (shipped)** | **0.972** | 0.788 | 0.923 | 0.917 | **3.0 MB** |
 
 IID is **unchanged** from the prior v2 model (v2 int8 was 0.971) — the v3 white-fix cost nothing
-in-distribution; its whole payoff is in **generalization** (next section). int8 dynamic quantization
-is essentially free here. Orange (the field's documented hard class) remains solved in-distribution.
+in-distribution; its whole payoff is in **generalization** (next section).
+
+> ~~int8 dynamic quantization is essentially free here.~~ **Wrong, corrected 2026-08-29.** It is
+> free in mAP50 (0.973 → 0.972) and not free in the confusion that matters: quantising cost three
+> extra red→orange errors, a 33% increase on this detector's weak pair. Measured per-colour rather
+> than in aggregate. The app now ships fp32 — which is also *faster*. See §"What the app ships".
+
+Orange (the field's documented hard class) remains solved in-distribution.
 
 ## Generalization to an unseen dataset (the honest number)
 
@@ -69,36 +79,61 @@ Known limits: red↔orange still confuse slightly (~96%); non-standard schemes (
 out of palette and misread; true 6-face *scan-success* is unmeasured (needs organized 6-face
 captures — a webcam deployment set). Reproduce with `ml/OOD_EVAL.md`.
 
-## What the app ships: fp32, not int8 (changed 2026-08-29)
+## What the app ships: v5, fp32 (changed 2026-08-29)
 
-`apps/web/vendor/cube-yolo.onnx` is now the **fp32** export. It used to be the int8 one, under the
-same filename. Measured on the 169-photo real held-out split, same checkpoint, int8 vs fp32:
+Two changes landed together. The app had been shipping the **int8** export under the fp32 filename;
+it now ships **fp32**. And the checkpoint moved from **v3** to **v5**.
 
-| | int8 (was shipped) | **fp32 (now shipped)** |
+### Why fp32
+
+Same v3 checkpoint, measured on the 169-photo IID split:
+
+| | int8 | **fp32** |
 |---|---|---|
 | red correct | 96.1% | **96.8%** |
-| **red→orange errors** | **12** | **9** |
-| red↔orange total | 14 | **11** |
-| colour accuracy on matched | 99.0% | **99.2%** |
-| inference, onnxruntime CPU, 640×640 | 56.1 ms | **48.0 ms** |
+| red→orange errors | 12 | **9** |
+| colour accuracy | 99.0% | **99.2%** |
+| inference, onnxruntime CPU 640×640 | 56.1 ms | **48.0 ms** |
 | size | 3.0 MB | 10.6 MB |
 
-Two things this corrects about the note above that int8 quantisation "is essentially free here".
-It is free **in mAP50** (0.973 → 0.972) and it is not free in the confusion that actually matters:
-quantising cost **three extra red→orange errors, a 33% increase on the one pair this detector is
-weak at**. An aggregate metric hid a targeted regression, which is the general hazard of judging a
-colour classifier by a detection score.
+fp32 is **faster**, not slower — dynamic quantisation pays quantise/dequantise at every layer and
+ARM fp32 SIMD beats it. The only real cost is the download, taken deliberately.
 
-And fp32 is **faster**, not slower — dynamic quantisation (QInt8 weights, uint8 activations) pays
-quantise/dequantise at every layer, and ARM fp32 SIMD beats it. So the only real cost is the
-download: 10.6 MB against 3.0 MB, accepted deliberately. Measured with Python onnxruntime on
-macOS/ARM; the browser's wasm SIMD path may differ in magnitude, though the direction held clearly.
+### Why v5
 
-**`ml/models/MANIFEST.json` is stale**: its recorded artefact hashes do not match the files beside
-it, because those were re-exported later with a different toolchain. The weights are the same — a
-re-export of one checkpoint produces different bytes and identical predictions, verified by
-evaluating both and getting identical per-colour counts. Do not use the manifest hashes to identify
-a model; evaluate it instead.
+v5 is v3's recipe with one generator change: sticker hue drawn once per cube instead of once per
+sticker (`ml/cube_colors.py`; the bug and its measurement are in
+`dev-docs/red-orange-fine-tune.md`). All fp32, both benchmarks:
+
+| | IID recall | IID colour | **OOD recall** | OOD colour | OOD white |
+|---|---|---|---|---|---|
+| v3 | 96.9% | 99.18% | 85.2% | 99.28% | 99.4% |
+| v4 | 96.4% | 99.13% | 85.4% | 99.37% | 98.3% |
+| **v5 (shipped)** | 95.9% | 99.17% | **91.0%** | 99.25% | **100.0%** |
+
+**v5 finds 162 more stickers on the same 207 unseen photos — +6.8% — at the same error rate**
+(0.75% vs 0.72%). Since a face is usable only when all nine stickers are found, that roughly
+doubles the usable-face rate out of distribution. v3 and v4 sit at 85.2/85.4%, so run-to-run
+variance here is ~0.2 points and v5's +5.8 is far outside it.
+
+**The gain is in detection, not colour.** Red↔orange is flat across every model tested (9–17 errors,
+no trend), which is not what the change was designed for. A plausible mechanism — consistent
+within-image pigment makes stickers more separable as *objects* regardless of naming them — is a
+hypothesis, not a finding.
+
+**A methodological warning worth more than the numbers.** v5 was first judged on the IID split,
+where it ties v3, and written off as a negative result. This card says in plain text that IID is
+optimistic and that generalisation is where the payoff lives — and it was still measured on IID,
+because the OOD set was wrongly believed lost. **Judge a model on the benchmark this card names as
+honest, not the one that is convenient.**
+
+### The manifest is trustworthy again
+
+`ml/models/MANIFEST.json` used to record an fp32 sha256 the shipped file never had. The cause was a
+bug in `ml/export.py`, not toolchain drift: it hashed each artefact as it was written, and the
+CoreML and TFLite steps re-run ultralytics, which **rewrites `cube-yolo.onnx` underneath the
+already-recorded hash**. Hashing now happens after every export completes. The manifest is
+self-consistent as of v5 and can once again be used to identify an artefact.
 
 ## Deployment
 `cube-scanner` consumes it with no wasm dep in its pure core: `preprocess` (pure letterbox) →
