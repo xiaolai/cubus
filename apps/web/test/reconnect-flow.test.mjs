@@ -119,8 +119,15 @@ test('a reconnect with a memory shows it at once — and the silence is a said t
 
 test('the first report reads the evidence: unchanged — the question over the walk, Follow refused', async () => {
   const state = await appState();
+  // Stamped before the report lands. A question changing is a change of SUBJECT, not of screen,
+  // and it used to be pushed by rebuilding the whole thing — which on a walking screen threw the
+  // walk away to change the paragraph above it. These nodes surviving is what says it did not.
+  $('.solution-card').dataset.stamp = 'sheet';
+  $('#solList').dataset.stamp = 'list';
   feed().facelets(R0, 0); // the raw report equals the remembered raw; the serial is a session count and decides nothing
   await tick();
+  assert.equal($('.solution-card')?.dataset.stamp, 'sheet', 'the sheet was rebuilt to change the question above the moves');
+  assert.equal($('#solList')?.dataset.stamp, 'list', 'the move list was rebuilt to change the question above it');
   assert.equal(state.reconnect?.reading, 'unchanged');
   assert.equal(state.reconnect?.candidate, V);
   assert.equal(state.reconnect?.raw, R0);
