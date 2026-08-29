@@ -3,6 +3,7 @@
 // YOLO camera scanner. The 3D cube is <cubus-cube> — it draws only; state and solving stay here.
 
 import { summarize, times } from './solve-stats.js';
+import { createSolveTimer } from './solve-timer.js';
 import { makeRouter } from './router.js';
 // The smart-cube strands, recovered from v0 (2026-08-27): the transport seam (Web Bluetooth in a
 // browser, native BLE events under Tauri), one durable record per cube, and the trust model that
@@ -157,9 +158,10 @@ const HIDEABLE = [
 ];
 
 /** Hidden unless asked for. Timer and Stats are speedcubing instruments, not part of learning to
- * solve a cube, and Stats currently shows representative numbers rather than yours — a screen of
- * invented data is worse than no screen. Alg trainer, Drill and Lessons are the same class:
- * representative screens with placeholder content. The default tab row is the beginner's path;
+ * solve a cube. (Stats used to be hidden because it showed invented numbers; phase 5 replaced
+ * every one of them with a computed figure or an em dash, so it is hidden now only because a
+ * beginner does not need an ao12 — not because it lies.) Alg trainer, Drill and Lessons are still
+ * the other class: representative screens with placeholder content. The default tab row is the beginner's path;
  * everything else is one chord away. In CODE, not only in a stored preference: the hidden set
  * was once a preference alone, and one wiped localStorage brought five placeholder screens back
  * into the toolbar. Version 2 hides the three once for anyone who already ran the app. */
@@ -1068,13 +1070,15 @@ function recentSolves() {
   }));
 }
 
-function pushSolve(time) {
+function pushSolve(time, extra = {}) {
   const list = recentSolves();
   save('cubusSolves', {
     list: [
       // Highest n, not the first row's. Corrupt rows keep their place with a placeholder n of 0,
       // so reading position zero could restart numbering at 1 half-way through a session.
-      { n: list.reduce((hi, s) => Math.max(hi, s.n || 0), 0) + 1, time, scramble: currentScramble || '—', at: Date.now() },
+      // `moves` and `source` are what a cube-timed solve knows and a hand-timed one cannot:
+      // a turn rate is a fact about a move stream, so it may only ever be computed from these.
+      { n: list.reduce((hi, s) => Math.max(hi, s.n || 0), 0) + 1, time, scramble: currentScramble || '—', at: Date.now(), ...extra },
       ...list,
       // 100, not 50. Stats offers an ao100, and a 50-record history made that statistic
       // unreachable by construction — a number on screen that could never stop being an em dash.
@@ -2435,31 +2439,42 @@ SCREENS.timer = () => {
   // width:100% — the screen centres its child, and a column without a width would shrink to
   // its content. The clock's size and the wrapping rows are classes (index.html).
   return { html: `<div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px">
-      <div class="num" id="scr" style="font-size:var(--fs-body-l);color:var(--ink-4);text-align:center;max-width:640px">press New scramble</div>
+      <div class="num" id="scr" style="font-size:var(--fs-body-l);color:var(--ink-4);text-align:center;max-width:640px">${t('press New scramble')}</div>
       <div class="num timer-clock" id="clock">0.00</div>
-      <div class="sub" id="timerHint" style="color:var(--ink-4)">Click or hold space to start</div>
-      <div class="wrap-row" style="justify-content:center;gap:10px"><button class="btn outline sm" id="newScr">New scramble</button>
-        <span class="pill">WCA scrambles</span></div>
+      <div class="sub" id="timerHint" style="color:var(--ink-4)">${t('Click or hold space to start')}</div>
+      <div class="wrap-row" style="justify-content:center;gap:10px"><button class="btn outline sm" id="newScr">${t('New scramble')}</button>
+        <span class="pill">${t('WCA scrambles')}</span></div>
       <div class="wrap-row" style="justify-content:center;gap:12px;margin-top:6px" id="lastFive"></div></div>`,
     mount(root) {
       const clock = $('#clock', root); let running = false, t0 = 0, raf = 0;
       const fmt = (ms) => (ms / 1000).toFixed(2);
       const tick = () => { if (!running) return; clock.textContent = fmt(performance.now() - t0); raf = requestAnimationFrame(tick); };
       const hint = $('#timerHint', root);
-      const MANUAL = 'Click or hold space to start';
+      const MANUAL = t('Click or hold space to start');
       const say = (text) => { if (hint) hint.textContent = text; };
+
+      // ---- cube-driven timing (PRD phase 4) ------------------------------------------------
+      // The arrangement the current scramble produces. `randomScramble()` has always returned it;
+      // this screen simply threw it away. It is what the auto timer arms on — the one instant the
+      // app can KNOW setup is finished, since applying the scramble is also turns.
+      let scrTarget = null;
+      // True while the clock was started by the cube, so a manual press can take it back.
+      let byCube = false;
+      const auto = createSolveTimer({ target: () => scrTarget, trusted: chainTrusted });
 
       const newScr = () => {
         if (!solverReady) {
-          $('#scr', root).textContent = 'solver loading…';
+          $('#scr', root).textContent = t('solver loading…');
           // Retry when it lands. Without this, opening Timer before the solver finished left
           // "solver loading…" on screen permanently — the only way out was pressing New scramble
           // again, which nothing on the screen suggested.
           void loadSolver().then((ok) => { if (ok && state.screen === 'timer' && root.isConnected) newScr(); });
           return;
         }
-        randomScramble();
+        scrTarget = randomScramble() || null;
+        auto.reset();
         $('#scr', root).textContent = currentScramble || '—';
+        if (scrTarget && chainTrusted()) say(t('Scramble your cube — the clock starts itself'));
       };
       const stop = () => {
         running = false;
@@ -2468,17 +2483,63 @@ SCREENS.timer = () => {
         clock.textContent = t;
         clock.style.color = 'var(--ink)';
         say(MANUAL);
-        pushSolve(t);
+        // A hand-stopped solve is hand-timed even if the cube started it: the moment recorded is
+        // the click, not a move. Recording it as cube-timed would put a click into a turn rate.
+        pushSolve(t, { source: 'manual' });
+        byCube = false;
+        auto.reset();
         renderLast();
       };
       const start = () => {
         running = true;
         t0 = performance.now();
         clock.style.color = 'var(--accent)';
-        say('Running — click or press space to stop');
+        say(t('Running — click or press space to stop'));
         tick();
       };
       const toggle = () => { if (running) stop(); else start(); };
+
+      /** The cube reached the scramble and the solver made the first turn. */
+      const startFromCube = () => {
+        byCube = true;
+        running = true;
+        t0 = performance.now();
+        clock.style.color = 'var(--accent)';
+        // The animated figure runs on the host clock because it only has to LOOK live; the number
+        // that gets recorded is replaced by the cube's own measurement when the solve ends.
+        say(t('Running — solve it, and the cube stops the clock'));
+        tick();
+      };
+
+      /** The cube reached solved. The cube's clock decides the number, not this screen's. */
+      const stopFromCube = () => {
+        running = false;
+        cancelAnimationFrame(raf);
+        clock.style.color = 'var(--ink)';
+        byCube = false;
+        const r = auto.result();
+        if (!r) {
+          // Refusing is the designed outcome, not an error path: a solve that cannot be timed
+          // truthfully is not recorded at all, and the screen says which fact was missing.
+          clock.textContent = '—';
+          // The module's refusals are English sentences, which IS the catalog key — the same
+          // contract the scanner panel's notices use.
+          say(t(auto.refusal || 'that solve could not be timed — press New scramble'));
+          auto.reset();
+          return;
+        }
+        clock.textContent = r.seconds;
+        // `inspectionMs` is host-clocked at both ends and therefore coarser than the solve; it is
+        // stored as-is (or omitted) rather than rounded into looking as precise as `time`.
+        pushSolve(r.seconds, {
+          source: 'cube',
+          moves: r.moves,
+          ...(r.inspectionMs === null ? {} : { inspectionMs: r.inspectionMs }),
+        });
+        auto.reset();
+        say(MANUAL);
+        renderLast();
+      };
       clock.onclick = toggle;
       $('#newScr', root).onclick = newScr;
       // escHtml: solve times come from localStorage, which is untrusted input, and they were
@@ -2498,6 +2559,25 @@ SCREENS.timer = () => {
         toggle();
       };
       document.addEventListener('keydown', onKey);
+
+      // The cube's two streams. Moves start the clock; snapshots arm and stop it. Both are the
+      // same doors every other screen uses, so the test seam (window.cubusFeed) drives this
+      // exactly as the driver does — the reason phase 4's absence went unnoticed is that nothing
+      // could exercise it without a physical cube.
+      liveMove = (m) => {
+        const before = auto.state;
+        if (auto.move(m) === 'running' && before === 'armed' && !running) startFromCube();
+      };
+      liveUpdate = (f, serial) => {
+        const before = auto.state;
+        const now = auto.facelets(f, serial);
+        // "Ready" is a recorded instant, not a mood: the timer captured WHEN the cube reached the
+        // scramble, which is what makes the inspection interval a measurement rather than a guess.
+        if (before !== 'armed' && now === 'armed') say(t('Ready — turn to start'));
+        if (before === 'armed' && now === 'idle' && !running) say(t('Scramble your cube — the clock starts itself'));
+        if (before === 'running' && now === 'stopped' && byCube) stopFromCube();
+      };
+
       cleanup = () => {
         // `running` first: tick() re-schedules itself, so cancelling the pending frame while the
         // flag is still true leaves an in-flight callback free to queue another one — a clock that
@@ -2505,6 +2585,9 @@ SCREENS.timer = () => {
         running = false;
         cancelAnimationFrame(raf);
         document.removeEventListener('keydown', onKey);
+        // Release the cube stream with the screen, or a torn-down closure keeps timing.
+        liveMove = null;
+        liveUpdate = null;
       };
       renderLast(); newScr();
     },
@@ -2980,6 +3063,13 @@ SCREENS.stats = () => {
         <div class="card stat"><div class="eyebrow">SINGLE BEST</div><div class="v">${secs(s.best)}</div><div class="d">${s.count} solve${s.count === 1 ? '' : 's'} recorded</div></div>
         <div class="card stat"><div class="eyebrow">AO5</div><div class="v">${secs(s.ao5)}</div><div class="d">${s.ao5 === null ? (s.count < 5 ? `needs ${5 - s.count} more` : 'a recent solve is unreadable') : 'last five'}</div></div>
         <div class="card stat"><div class="eyebrow">AO12</div><div class="v">${secs(s.ao12)}</div><div class="d">${s.ao12 === null ? `needs ${Math.max(0, 12 - s.count)} more` : 'last twelve'}</div></div>
+      </div>
+      <div class="grid3">
+        <div class="card stat"><div class="eyebrow">${t('TURN RATE')}</div>
+          <div class="v">${s.turnRate === null ? '—' : `${s.turnRate.tps.toFixed(2)}`}</div>
+          <div class="d">${s.turnRate === null
+            ? t('a turn rate is a fact about a move stream — pair a smart cube to earn one')
+            : `${t('turns per second, over')} ${s.cubeTimed} ${s.cubeTimed === 1 ? t('cube-timed solve') : t('cube-timed solves')}`}</div></div>
       </div>
       <div class="card"><div class="eyebrow">LAST ${chart.length} SOLVE${chart.length === 1 ? '' : 'S'}</div>
         <div style="display:flex;align-items:flex-end;gap:4px;height:130px;margin-top:16px">${chart.map((v) => `<div title="${secs(v)}s" style="flex:1;background:${v === bestT ? 'var(--accent)' : 'var(--ink-6)'};height:${Math.max(4, Math.round((v / worst) * 100))}%;border-radius:2px 2px 0 0"></div>`).join('')}</div>
