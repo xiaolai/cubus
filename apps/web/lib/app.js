@@ -1503,7 +1503,9 @@ SCREENS.scan = () => {
         const n = p.notice;
         if (n) {
           sayTitle.textContent = t(n.title);
-          say.textContent = t(n.body);
+          // Translate FIRST, substitute after: a notice carrying a count or a side name keeps its
+          // sentence whole in the catalog instead of arriving pre-assembled and untranslatable.
+          say.textContent = t(n.body, ...(n.params ?? []));
           say.className = 'sub scan-say' + (n.tone === 'err' ? ' err' : n.tone === 'ok' ? ' ok' : '');
           // The hint is noise when it just restates the notice (the confirm ask opens the loop
           // with the same sentence the notice carries).

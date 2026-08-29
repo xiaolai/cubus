@@ -129,8 +129,14 @@ export interface CapturedFace {
 export interface ScanNotice {
   /** Short heading, e.g. "One more look". */
   title: string;
-  /** A finished sentence or two, safe to show verbatim. */
+  /**
+   * A finished sentence or two, safe to show verbatim. May carry %1..%9 placeholders, in which
+   * case `params` fills them — a host translates the sentence FIRST and substitutes after, so a
+   * count or a side name never bakes itself into the string and out of reach of a catalog.
+   */
   body: string;
+  /** Values for the body's %1..%9, in order. Absent when the sentence has no placeholders. */
+  params?: (string | number)[];
   tone: 'info' | 'ok' | 'err';
 }
 
@@ -994,11 +1000,27 @@ export class AiScanPanel extends HTMLElement {
     this.awaiting = null;
     const hold =
       " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
+    const misread = result.misreadCount ?? 0;
     if (this.suspects.length > 0) {
+      // Exactly one sticker is wrong, and which one is PROVABLE: two legal cubes are never closer
+      // than three stickers, so a one-sticker repair is unique. This is the only branch allowed
+      // to accuse a sticker (dev-docs/misread-decoding.md).
       this.notice = {
-        title: this.suspects.length === 1 ? 'One sticker looks wrong' : 'A sticker looks wrong',
+        title: 'One sticker looks wrong',
         tone: 'err',
-        body: `Fixing a marked sticker makes this a solvable cube — tap it and pick the right colour, or show that side again to re-read it.${hold}`,
+        body: `Fixing the marked sticker makes this a solvable cube — tap it and pick the right colour, or show that side again to re-read it.${hold}`,
+      };
+    } else if (misread > 1) {
+      // More than one is wrong, so there is no sticker to point at that can be trusted — the
+      // nearest legal cube need not be the user's. Say the count, which IS proven, and ask for a
+      // fresh look instead of inviting 48 guesses.
+      this.notice = {
+        title: 'More than one sticker looks wrong',
+        tone: 'err',
+        body: result.misreadFace
+          ? `At least %1 stickers were misread, so there is no single sticker to point at. Show the %2 side to the camera again — it will be read fresh.${hold}`
+          : `At least %1 stickers were misread, so there is no single sticker to point at. Show those sides to the camera again — each one is read fresh.${hold}`,
+        params: result.misreadFace ? [misread, GUIDE[result.misreadFace].color] : [misread],
       };
     } else if (result.valid) {
       // valid but with low-confidence stickers: solvable, read too faintly to trust. fitFace's
@@ -1015,10 +1037,14 @@ export class AiScanPanel extends HTMLElement {
         body: 'This cube reads the same several ways, and no extra look can split them. Turn any one face a quarter turn, then start the scan over to read the changed cube.',
       };
     } else {
+      // The decoder could not say how much is wrong (it hit its work budget, or the damage is past
+      // what it will search). Claim nothing about a count, and ask for the one thing that always
+      // helps. The old copy said "a sticker was misread" here — a singular the code had already
+      // ruled out, over an instruction to tap one of forty-eight.
       this.notice = {
         title: "That doesn't read as a solvable cube",
         tone: 'err',
-        body: `A sticker was misread somewhere. Tap any sticker to correct it, show a side again to re-read it, or start the scan over for a fresh read.${hold}`,
+        body: `Too much of the cube was read wrong to say where. Show the sides to the camera again — each one is read fresh — or start the scan over.${hold}`,
       };
     }
     // Keep scanning: with all six sides in, a re-shown side replaces its reading (see onTick).

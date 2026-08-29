@@ -13,7 +13,7 @@ const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 // Facelet indices for each cubie slot. Corner order URF UFL ULB UBR DFR DLF DBL
 // DRB; edge order UR UF UL UB DR DF DL DB FR FL BL BR. Index 0 of every corner
 // is its U/D ("up/down") facelet — the anchor for orientation.
-const CORNER_FACELET: readonly (readonly number[])[] = [
+export const CORNER_FACELET: readonly (readonly number[])[] = [
   [8, 9, 20],
   [6, 18, 38],
   [0, 36, 47],
@@ -23,7 +23,7 @@ const CORNER_FACELET: readonly (readonly number[])[] = [
   [33, 53, 42],
   [35, 17, 51],
 ];
-const EDGE_FACELET: readonly (readonly number[])[] = [
+export const EDGE_FACELET: readonly (readonly number[])[] = [
   [5, 10],
   [7, 19],
   [3, 37],
@@ -39,8 +39,27 @@ const EDGE_FACELET: readonly (readonly number[])[] = [
 ];
 
 // Solved-color letters of each cubie, in the slot's own facelet order.
-const CORNER_COLOR: readonly string[][] = CORNER_FACELET.map((t) => t.map((i) => SOLVED[i]!));
-const EDGE_COLOR: readonly string[][] = EDGE_FACELET.map((t) => t.map((i) => SOLVED[i]!));
+export const CORNER_COLOR: readonly string[][] = CORNER_FACELET.map((t) =>
+  t.map((i) => SOLVED[i]!),
+);
+export const EDGE_COLOR: readonly string[][] = EDGE_FACELET.map((t) => t.map((i) => SOLVED[i]!));
+
+/** 90° clockwise position map for a 3x3 face in reading order; the centre (index 4) is fixed. */
+const ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2] as const;
+
+/**
+ * Rotate a 9-element face array 90° CW, `k` times (k is taken mod 4).
+ *
+ * Lives here with the rest of the face-relative geometry so the two consumers that must agree on
+ * it — the rotation search in `ai-assemble` and the misread decoder — read the same table. Called
+ * on the identity array it yields the position map itself, which is how a canonical position is
+ * translated back to the one a user actually sees: `rotateFace([0..8], k)[canonical] === asShown`.
+ */
+export function rotateFace<T>(a: T[], k: number): T[] {
+  let out = a;
+  for (let t = 0; t < ((k % 4) + 4) % 4; t++) out = ROT90.map((i) => out[i]!);
+  return out;
+}
 
 /** The four sides of a face, in the order CSS `border-color` takes them. */
 export type Side = 'top' | 'right' | 'bottom' | 'left';
