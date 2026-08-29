@@ -87,6 +87,16 @@ it walks you through solving it.
   solver; `<cubus-cube>` is the renderer (see Design system above).
 - **Never invent data**: a statistic that cannot be computed is a dash, not a number; a reading
   that cannot be validated is a refusal, not a guess. A plausible figure is worse than a blank.
+- **A misread scan may say HOW MANY, and may only point when it is one** (decided 2026-08-28).
+  Two legal cube colourings are never closer than three stickers, so a one-sticker misread is the
+  only one whose repair is provably unique — above that, the nearest legal cube need not be the
+  user's, and pointing would sometimes accuse a correctly-read sticker. So `decodeMisread`
+  (`packages/cube-scanner/src/misread-decode.ts`) reports a count that is a proven lower bound and
+  is never an overstatement, and `suspects` is populated only at distance 1. Above it the app says
+  "at least N stickers were misread" and asks for a side again. This is "Never invent data" applied
+  to a place it was previously being broken: the old copy asserted a single misread in exactly the
+  branch the code had already ruled one out. The derivation, the measurements, the refutation pass,
+  and the three measurements still owed: `dev-docs/misread-decoding.md`.
 - **Fail loud**: an unreadable scan, a state that cannot be solved, a storage write that did not
   land — each surfaces where it happens, never silently.
 - **The version is one number in six places** — `apps/web/lib/app.js` (`VERSION`, what the About
