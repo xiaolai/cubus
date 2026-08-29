@@ -66,7 +66,7 @@ it walks you through solving it.
   `dev-docs/design/README.md` before any `apps/web` UI work. Adopted into the app:
   `apps/web/tokens.css` (warm-paper tokens, light/dark) and `<cubus-cube>` (a purpose-built
   three.js renderer that replaced twisty-player; draws only — state/solving stay with
-  cubejs + min2phase). Fonts are system stacks only (decided 2026-08-27): numerals/times/algs use
+  cubejs + the two-phase engine). Fonts are system stacks only (decided 2026-08-27): numerals/times/algs use
   the system mono stack, UI text `system-ui` — no web fonts, no embedded fonts, and index.html
   loads nothing remote (a test enforces it).
 - **Layout contract** (decided 2026-08-27): two compositions keyed only on orientation — a 4:3
@@ -84,16 +84,21 @@ it walks you through solving it.
 - **`cubejs` is a deliberate independent test oracle**, not a redundant dep. Do not
   "consolidate" it into the solver; a different implementation is what makes the invariant a real
   cross-check. It is also the facelet parser and the state-brain.
-- **The solver is min2phase, vendored directly (2026-08-29).** `apps/web/vendor-min2phase.mjs`
-  patches it out of cubing's dist with its search bounds settable, and every patch asserts its
-  match count — a patch that silently stopped applying would leave the app solving happily while
-  ignoring every length target. **cubing.js is a build-time dependency only and ships nothing**:
-  its API has no room for a solution length, for reporting a better answer as it is found, or for
-  stopping, and those three are the feature. It went from `dependencies` to `devDependencies`
-  and its two bundles (~3.2 MB) are gone from `vendor/`. Bring it back only for something it is
-  actually needed for — WCA-event scrambles are the obvious candidate, and note that
-  `randomScrambleForEvent` was never vendored, so nothing lost it. `<cubus-cube>` is the
-  renderer and never touched cubing (see Design system above).
+- **The solver is our own two-phase engine (2026-08-29): `apps/web/lib/two-phase.js`** —
+  Kociemba's algorithm implemented from the published method, no existing solver's source
+  opened (the record: `dev-docs/two-phase-provenance.md`; the plan and its acceptance stamps:
+  `dev-docs/two-phase-plan.md`). It replaced the vendored min2phase, whose licence was
+  contradictory and unresolved — `apps/web/vendor/min2phase.PROVENANCE.md` stays as that
+  record. The bounds are the feature and are why the app owns its solver: `solLen` (an
+  EXCLUSIVE length bound), `probeMax` (a budget in SEARCH NODES — deterministic across
+  machines and proportional to time, ~20 ns each), and null when out of budget, never an error
+  string. `lib/solver-engine.js` enforces that contract at the boundary; the search runs six
+  interleaved views (three axes × normal/inverse); the measured ladder and its retuning
+  history live in `dev-docs/solver-move-count.md` §7. **cubing is gone entirely** — not even a
+  devDependency. Bring it back only for something it is actually needed for — WCA-event
+  scrambles are the obvious candidate, and note that `randomScrambleForEvent` was never
+  vendored, so nothing lost it. `<cubus-cube>` is the renderer and never touched any of this
+  (see Design system above).
 - **Scrambles are random-STATE, from a cryptographic source** (`apps/web/lib/random-state.js`):
   the position is drawn uniformly from all 43 quintillion legal ones via `crypto.getRandomValues`
   and then solved, and the scramble is that solution inverted. Never random turns — those leave a
@@ -101,7 +106,7 @@ it walks you through solving it.
   `Math.random()`; a platform without a crypto source fails loudly instead of quietly weakening.
 - **Two solvers, two questions — read `dev-docs/solver-research.md` before any solver work.**
   Shortest and explicable pull in opposite directions and no amount of tuning turns one into
-  the other. min2phase answers *just restore it* / *how good am I* (21.7 moves, one
+  the other. The two-phase engine answers *just restore it* / *how good am I* (~21 moves, one
   step, no reason for any of them); the method solver in `apps/web/lib/method-solver.js`
   answers *why is this move right* (118 moves in 21 steps, every step with a reusable reason).
   The product axis is **steps, not moves**: a learner improves by needing fewer things in their
