@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  DEFAULT_PROBE_BUDGET, STOPPED, TIERS, describe, refine, solveToTier, tierByName,
+  DEFAULT_PROBE_BUDGET, STOPPED, TIERS, describe, refine, tierByName,
 } from '../lib/solve-target.js';
 
 /** An alg of `n` moves. Content is irrelevant here; only its length is ever read. */
@@ -109,12 +109,28 @@ test('cancelling keeps the best answer so far and says it was cancelled', async 
   assert.equal(last.met, false);
 });
 
-test('cancelling after the target was met still reports it as met', async () => {
+test('a signal aborted before anything ran yields nothing at all', async () => {
+  // Cancelled before the first search: there is no answer to show, so starting work anyway
+  // would be acting on a request the caller already withdrew.
   const controller = new AbortController();
   controller.abort();
   const solve = scripted([20]);
   const steps = await collect(refine('F', { solve, tier: 'twenty', signal: controller.signal }));
+  assert.deepEqual(steps, [], 'no search ran, so nothing was yielded');
+  assert.equal(solve.asked.length, 0, 'and the solver was never called');
+});
+
+test('an abort racing a met answer does not undo the met', async () => {
+  // The abort lands while the first search is in flight; the answer it returns meets the
+  // target. What was achieved is reported as achieved — cancellation stops FURTHER work.
+  const controller = new AbortController();
+  const solve = async (facelets, bounds) => {
+    controller.abort();
+    return scripted([20])(facelets, bounds);
+  };
+  const steps = await collect(refine('F', { solve, tier: 'twenty', signal: controller.signal }));
   assert.equal(steps.at(-1).stopped, STOPPED.MET, 'an already-met target is not undone by an abort');
+  assert.equal(steps.at(-1).met, true);
 });
 
 test('no solution at all is an error, not an empty result', async () => {
@@ -142,12 +158,6 @@ test('the probe budget is passed to every search, and defaults', async () => {
   assert.ok(custom.asked.every((a) => a.probeMax === 5000), 'a budget is in probes, not milliseconds');
 });
 
-test('solveToTier returns only the last result', async () => {
-  const solve = scripted([22, 21, 20]);
-  const result = await solveToTier('F', { solve, tier: 'twenty' });
-  assert.equal(result.moves, 20);
-  assert.equal(result.met, true);
-});
 
 test('refine refuses to run without a solver', async () => {
   await assert.rejects(() => collect(refine('F', {})), TypeError);
@@ -157,11 +167,14 @@ test('what it tells the user never claims a minimum', async () => {
   // Two-phase cannot prove optimality (solver-move-count.md section 4), so no message may say
   // it has. The untargeted rung says "shortest found", which is a different claim.
   assert.deepEqual(describe({ moves: 20, target: 20, met: true, stopped: STOPPED.MET }),
-    { key: 'solve.targetMet', moves: 20, target: 20 });
+    { key: 'solve.targetMet', moves: 20, target: 20, stopped: STOPPED.MET });
   assert.deepEqual(describe({ moves: 19, target: 18, met: false, stopped: STOPPED.EXHAUSTED }),
-    { key: 'solve.targetMissed', moves: 19, target: 18 });
+    { key: 'solve.targetMissed', moves: 19, target: 18, stopped: STOPPED.EXHAUSTED });
+  // `stopped` rides along so a cancelled search and an exhausted one can be told apart.
+  assert.deepEqual(describe({ moves: 19, target: 18, met: false, stopped: STOPPED.CANCELLED }),
+    { key: 'solve.targetMissed', moves: 19, target: 18, stopped: STOPPED.CANCELLED });
   assert.deepEqual(describe({ moves: 17, target: null, met: false, stopped: STOPPED.EXHAUSTED }),
-    { key: 'solve.shortestFound', moves: 17, final: true });
+    { key: 'solve.shortestFound', moves: 17, final: true, stopped: STOPPED.EXHAUSTED });
   assert.equal(describe(null), null);
 
   const keys = [
@@ -172,4 +185,58 @@ test('what it tells the user never claims a minimum', async () => {
   for (const key of keys) {
     assert.doesNotMatch(key, /minimum|optimal/i, `"${key}" claims something two-phase cannot know`);
   }
+});
+
+test('a solved cube is a zero-move answer, not a solver failure', async () => {
+  // The regression: `if (!first)` once treated the empty-string algorithm — the solved cube's
+  // real answer — as "no solution at all" and threw.
+  const solve = scripted(['']);
+  const twenty = await collect(refine('F', { solve, tier: 'twenty' }));
+  assert.deepEqual(twenty, [{ alg: '', moves: 0, target: 20, met: true, stopped: STOPPED.MET }]);
+  const shortest = await collect(refine('F', { solve: scripted(['']), tier: 'shortest' }));
+  assert.equal(shortest.at(-1).stopped, STOPPED.EXHAUSTED, 'nothing improves on zero moves');
+  assert.equal(shortest.at(-1).moves, 0);
+});
+
+test('the first answer is held to the same bound as every later one', async () => {
+  // A broken solver answering the loose ask with 23+ moves used to slip through unchecked.
+  const solve = scripted([25]);
+  await assert.rejects(() => collect(refine('F', { solve })),
+    /returned 25 moves when asked for fewer than 23/);
+});
+
+test('a malformed tier or budget is refused before any search runs', async () => {
+  const solve = scripted([20]);
+  for (const tier of [{}, { target: Number.NaN }, { target: -1 }, { target: 2.5 }]) {
+    await assert.rejects(() => collect(refine('F', { solve, tier })), TypeError, JSON.stringify(tier));
+  }
+  for (const probeBudget of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
+    await assert.rejects(() => collect(refine('F', { solve, probeBudget })), TypeError, String(probeBudget));
+  }
+  assert.equal(solve.asked.length, 0, 'validation happens before the solver is touched');
+});
+
+test('the tier rungs themselves are immutable', () => {
+  assert.throws(() => {
+    TIERS[0].target = 5;
+  }, TypeError, 'a mutated rung would move every search’s goalposts');
+  assert.equal(TIERS[0].target, 20);
+});
+
+test('an abort during a search ends the progression with the answer in hand', async () => {
+  // The abort lands while the second search is in flight and that search returns an
+  // improvement. The improvement is real and kept — but the progression ends as CANCELLED,
+  // never yielding one more in-progress step as if the search were continuing.
+  const controller = new AbortController();
+  const base = scripted([22, 21, 20]);
+  const solve = async (facelets, bounds) => {
+    const answer = await base(facelets, bounds);
+    if (bounds.solLen === 22) controller.abort(); // mid-flight, during the 22 -> 21 attempt
+    return answer;
+  };
+  const steps = await collect(refine('F', { solve, tier: 'shortest', signal: controller.signal }));
+  const last = steps.at(-1);
+  assert.equal(last.stopped, STOPPED.CANCELLED);
+  assert.equal(last.moves, 21, 'the improvement that arrived with the abort is kept');
+  assert.equal(base.asked.length, 2, 'and no further search was started');
 });

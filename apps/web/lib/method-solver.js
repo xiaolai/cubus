@@ -1,6 +1,7 @@
 // A layer-by-layer solver, written for explanation rather than for length.
 //
-// The two-phase solver (the vendored min2phase) answers "what is the shortest way out of here".
+// The two-phase solver (lib/two-phase.js) answers "give me a short way out of here" — a
+// compact, bounded answer, not a provable minimum.
 // This one answers a different question — "why is this move right" — and the two cannot be the
 // same code. A 19-move two-phase solution has no explicable structure: there is no reason move
 // seven is R2 beyond "the pruning table said so", and nothing about it transfers to the next

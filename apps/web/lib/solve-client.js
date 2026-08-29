@@ -7,11 +7,29 @@
 // The worker is created lazily and injected, which is what makes the protocol testable: a fake
 // worker in a test can answer, stay silent, or die, and this file has to behave in all three.
 
-/** How a search is abandoned. min2phase cannot be interrupted mid-call — it is a synchronous
- *  loop in compiled code — so the only way to stop one already running is to end the thread it
- *  is on. That costs the table build (~260 ms) on the next search, which is the right trade for
- *  a deliberate "stop": nothing else would actually stop it. */
+/** How a search is abandoned. The solver cannot be interrupted mid-call — it is a synchronous
+ *  search loop — so the only way to stop one already running is to end the thread it is on.
+ *  That costs the table build (~0.5-2.6 s) on the next search, which is the right trade for a
+ *  deliberate "stop": nothing else would actually stop it. */
 const CANCELLED = 'solve cancelled';
+
+/**
+ * One request, one reply — shared by the real worker and the inline fallback so the two
+ * protocols cannot drift. Tagged with `ok` so an empty error message cannot read as success,
+ * which is exactly what `if (error)` once made of it.
+ */
+export function handleSolveRequest(solve, request) {
+  const { id, facelets, solLen, probeMax } = request ?? {};
+  try {
+    return { id, ok: true, alg: solve(facelets, { solLen, probeMax }) };
+  } catch (err) {
+    return { id, ok: false, error: errorText(err) };
+  }
+}
+
+/** One error-to-string rule for every reply path — the worker's and the inline loader's had
+ *  already drifted apart once. Never empty: `ok` is the tag, but a blank reason helps nobody. */
+const errorText = (err) => String(err?.message ?? err) || 'solver failed';
 
 /**
  * @param {() => Worker} spawn  makes a fresh worker. Injected so tests can supply a fake.
@@ -25,32 +43,56 @@ export function createSolveClient({ spawn } = {}) {
 
   const attach = () => {
     if (worker) return worker;
-    worker = spawn();
-    worker.addEventListener('message', (event) => {
-      const { id, alg, error } = event.data ?? {};
-      const waiting = pending.get(id);
+    // Both listeners close over THIS worker and check it is still current before acting: a
+    // delayed event from a replaced worker once had the power to kill its replacement's
+    // requests. Stale events are dropped instead.
+    const spawned = spawn();
+    worker = spawned;
+    spawned.addEventListener('message', (event) => {
+      if (worker !== spawned) return; // a reply from a worker that was already replaced
+      const data = event.data ?? {};
+      const waiting = pending.get(data.id);
       if (!waiting) return; // a reply to a search that was already abandoned
-      pending.delete(id);
-      if (error) waiting.reject(new Error(error));
-      else waiting.resolve(alg);
+      pending.delete(data.id);
+      // The reply is validated, not trusted: `ok` is the tag (an empty error string must not
+      // read as success), and a success carries an algorithm string or null, nothing else.
+      if (data.ok === true && (typeof data.alg === 'string' || data.alg === null)) {
+        waiting.resolve(data.alg);
+      } else if (data.ok === false && typeof data.error === 'string') {
+        waiting.reject(new Error(data.error));
+      } else {
+        waiting.reject(new Error('solver worker sent a malformed reply'));
+      }
     });
     // A worker that dies takes every search in flight with it. Rejecting them is the only way
     // the caller finds out; leaving them pending would hang the screen with no error anywhere.
-    worker.addEventListener('error', (event) => {
+    spawned.addEventListener('error', (event) => {
+      if (worker !== spawned) return; // a stale corpse must not take down its replacement
+      event.preventDefault?.(); // handled here — it must not double as an uncaught page error
+      spawned.terminate(); // dead to us either way; make it dead to the OS too
       const reason = new Error(`solver worker failed: ${event?.message ?? 'unknown'}`);
       for (const [, waiting] of pending) waiting.reject(reason);
       pending.clear();
       worker = null;
     });
-    return worker;
+    return spawned;
   };
 
   function solve(facelets, { solLen, probeMax } = {}) {
-    const active = attach();
     const id = nextId++;
     return new Promise((resolve, reject) => {
+      // attach() lives INSIDE the executor: a spawn() that throws must reject this promise,
+      // not escape solve() synchronously — the function's contract is asynchronous either way.
+      const active = attach();
       pending.set(id, { resolve, reject });
-      active.postMessage({ id, facelets, solLen, probeMax });
+      try {
+        active.postMessage({ id, facelets, solLen, probeMax });
+      } catch (err) {
+        // A synchronous send failure would otherwise leave this entry pending forever — the
+        // promise would reject, but `idle` would lie and cancel() would re-reject a corpse.
+        pending.delete(id);
+        reject(err);
+      }
     });
   }
 
@@ -62,11 +104,11 @@ export function createSolveClient({ spawn } = {}) {
     worker = null;
   }
 
-  return { solve, cancel, dispose: cancel, get idle() { return pending.size === 0; } };
+  return { solve, cancel, get idle() { return pending.size === 0; } };
 }
 
 /**
- * A worker-shaped object that runs min2phase on the calling thread.
+ * A worker-shaped object that runs the solver on the calling thread.
  *
  * For environments with no `Worker` at all. Solving still works; it just blocks, and at the
  * tightest tier that could be half a minute of frozen page — so it says so once, loudly, rather
@@ -81,31 +123,35 @@ function inlineWorker() {
   );
   const listeners = new Map();
   let solve = null;
+  let closed = false;
   const ready = (async () => {
-    const [{ createSolver }, min2phase] = await Promise.all([
-      import('./min2phase-engine.js'),
-      import('../vendor/min2phase.js'),
+    const [{ createSolver }, twoPhase] = await Promise.all([
+      import('./solver-engine.js'),
+      import('./two-phase.js'),
     ]);
-    solve = createSolver(min2phase);
+    solve = createSolver(twoPhase);
   })();
   return {
     addEventListener: (type, fn) => { listeners.set(type, fn); },
     postMessage(request) {
-      const { id, facelets, solLen, probeMax } = request ?? {};
       void ready.then(
         () => {
-          try {
-            listeners.get('message')?.({ data: { id, alg: solve(facelets, { solLen, probeMax }) } });
-          } catch (err) {
-            listeners.get('message')?.({ data: { id, error: err?.message ?? String(err) } });
-          }
+          // A terminate() that landed while the engine was still loading stops the queued
+          // search from ever starting — a synchronous search cannot be interrupted, so not
+          // starting it is the only cancellation this thread-less worker can honour.
+          if (closed) return;
+          listeners.get('message')?.({ data: handleSolveRequest(solve, request) });
         },
-        (err) => listeners.get('message')?.({ data: { id, error: err?.message ?? String(err) } }),
+        (err) => {
+          if (closed) return;
+          const { id } = request ?? {};
+          listeners.get('message')?.({ data: { id, ok: false, error: errorText(err) } });
+        },
       );
     },
-    // Nothing to terminate — a synchronous search cannot be interrupted, so a cancel here only
-    // stops the NEXT one. The client's own bookkeeping already abandons the answer.
-    terminate() {},
+    terminate() {
+      closed = true;
+    },
   };
 }
 

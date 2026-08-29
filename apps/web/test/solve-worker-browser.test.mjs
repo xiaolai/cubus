@@ -1,7 +1,7 @@
 // The one link nothing else can cover: the real `new Worker(...)`.
 //
-// Everything under it is tested on the main thread — the bounds patch against the vendored
-// module, the tiered progression against a fake, the client protocol against a fake worker. What
+// Everything under it is tested on the main thread — the engine's bounds behind its wrapper,
+// the tiered progression against a fake, the client protocol against a fake worker. What
 // none of that proves is that a browser can actually load `lib/solve-worker.js` as a module
 // worker and get an answer back. A worker that fails to load fails in the quietest way there is:
 // the promise never settles, and a screen waiting on it looks exactly like a search still going.
@@ -67,7 +67,7 @@ test('a real module worker solves a real cube, at the tier it was asked for', as
     for await (const step of refine(facelets, {
       solve: (f, bounds) => client.solve(f, bounds),
       tier: 'twenty',
-      probeBudget: 2_000_000,
+      probeBudget: 200_000_000, // met is asserted below — reachability headroom over the 50M default
     })) steps.push({ moves: step.moves, met: step.met, stopped: step.stopped, alg: step.alg });
 
     const final = steps[steps.length - 1];
@@ -92,23 +92,44 @@ test('a real module worker solves a real cube, at the tier it was asked for', as
 });
 
 test('a tighter tier is honoured, not silently ignored', async () => {
-  // The failure this guards: the bounds patch not applying in the shipped bundle. The solver
-  // still works, so nothing looks wrong — it just answers 20 when asked for 19, every time.
+  // The failure this guards: the length bound not reaching the engine inside the worker. The
+  // solver still works, so nothing looks wrong — it just ignores what it was asked for, every
+  // time. solLen 21 is the tightest bound the engine meets reliably within this budget
+  // (dev-docs/solver-move-count.md, the two-phase ladder).
   const out = await inBrowser(async () => {
     const { createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
     const Cube = (await import('/vendor/cubejs.js')).default;
     Cube.initSolver();
     const client = createSolveClient({ spawn: spawnSolveWorker });
     const facelets = Cube.random().asString();
-    const alg = await client.solve(facelets, { solLen: 19, probeMax: 2_000_000 });
+    const alg = await client.solve(facelets, { solLen: 21, probeMax: 50_000_000 });
     client.cancel();
     const oracle = Cube.fromString(facelets);
     if (alg) oracle.move(alg);
     return { moves: alg === null ? null : alg.trim().split(/\s+/).length, solved: alg === null ? null : oracle.isSolved() };
   });
-  assert.notEqual(out.moves, null, 'no solution under 19 within a generous budget');
-  assert.ok(out.moves <= 18, `asked for fewer than 19 and got ${out.moves} — the bounds patch is not live`);
+  assert.notEqual(out.moves, null, 'no solution under 21 within a generous budget');
+  assert.ok(out.moves <= 20, `asked for fewer than 21 and got ${out.moves} — the length bound is not live`);
   assert.equal(out.solved, true);
+});
+
+test('a malformed request comes back as a rejection, not a hang', async () => {
+  // The worker's catch path had no browser coverage: a regression there leaves the caller's
+  // promise pending forever, which on screen looks exactly like a search still going.
+  const out = await inBrowser(async () => {
+    const { createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
+    const client = createSolveClient({ spawn: spawnSolveWorker });
+    try {
+      await client.solve(12345);
+      return { rejected: false };
+    } catch (err) {
+      return { rejected: true, message: String(err.message) };
+    } finally {
+      client.cancel();
+    }
+  });
+  assert.equal(out.rejected, true, 'a malformed request must reject, not resolve or hang');
+  assert.match(out.message, /54-character/, 'and carry the boundary error, not a generic one');
 });
 
 test('the reason line follows the walk, in a real engine', async () => {
