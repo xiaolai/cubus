@@ -132,52 +132,30 @@ test('a malformed request comes back as a rejection, not a hang', async () => {
   assert.match(out.message, /54-character/, 'and carry the boundary error, not a generic one');
 });
 
-test('the reason line follows the walk, in a real engine', async () => {
-  // The half test/teach-line.test.mjs cannot reach: happy-dom does not load <cubus-cube>, so the
-  // transport never advances there and the caption can only be read where it starts. Here the
-  // renderer is real, so the walk really walks.
+test('the walk seeks in a real engine — a chip press lands the counter on its move', async () => {
+  // The half the happy-dom tests cannot reach: they do not load <cubus-cube>, so the transport
+  // never advances there. Here the renderer is real, so the walk really walks.
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  await page.addInitScript(() => {
-    // Read once at module evaluation, so it has to be in place before app.js loads.
-    localStorage.setItem('cubusSettings', JSON.stringify({ teachLevel: 'beginner', solveTier: 'twenty' }));
-  });
   await page.goto(`${BASE}/index.html#/scramble`);
   await page.waitForSelector('#solList .chip-m', { timeout: 20000 });
 
   const out = await page.evaluate(async () => {
-    const { state } = await import('/lib/app.js');
-    const Cube = (await import('/vendor/cubejs.js')).default;
-    const cube = new Cube();
-    cube.move("R U R' U' F2 D L2 B' R2 U2");
-    Object.assign(state.cube, {
-      facelets: cube.asString(), derived: false, setupAlg: '', solution: '', moves: [],
-      stepFacelets: [], methodSteps: null, moveStep: null, isPhysical: false, source: 'generated',
-    });
-    location.hash = '#/home';
     const settle = (ms) => new Promise((r) => setTimeout(r, ms));
-    for (let i = 0; i < 100 && !(state.cube.methodSteps ?? []).length; i++) await settle(50);
-
-    const line = document.querySelector('#whyLine');
     const chips = [...document.querySelectorAll('#solList .chip-m')];
-    if (!line || chips.length === 0) return { error: 'no line or no chips' };
-    const first = line.textContent;
+    if (chips.length === 0) return { error: 'no chips' };
+    const label = () => document.querySelector('#stepLbl')?.textContent ?? '';
+    const first = label();
     chips[chips.length - 1].click();
-    for (let i = 0; i < 100 && line.textContent === first; i++) await settle(50);
-    return {
-      steps: state.cube.methodSteps.length,
-      first,
-      last: line.textContent,
-      stepLbl: document.querySelector('#stepLbl')?.textContent,
-    };
+    for (let i = 0; i < 100 && label() === first; i++) await settle(50);
+    return { total: chips.length, first, after: label() };
   });
   await page.close();
 
   assert.deepEqual(errors, [], 'the page logged an uncaught error');
   assert.equal(out.error, undefined, out.error);
-  assert.ok(out.steps >= 10, `a beginner lesson should be many steps, got ${out.steps}`);
-  assert.match(out.first, /^Step 1 of \d+ — \S/, `unexpected first caption: "${out.first}"`);
-  assert.notEqual(out.last, out.first, `the reason never moved (transport read ${out.stepLbl})`);
-  assert.match(out.last, /^Step \d+ of \d+ — \S/, `unexpected caption after seeking: "${out.last}"`);
+  assert.equal(out.first, `0 / ${out.total}`, 'a fresh walk starts at zero');
+  assert.equal(out.after, `${out.total} / ${out.total}`,
+    'pressing the last chip must land the transport on the last move');
 });
