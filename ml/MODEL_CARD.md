@@ -69,6 +69,37 @@ Known limits: red↔orange still confuse slightly (~96%); non-standard schemes (
 out of palette and misread; true 6-face *scan-success* is unmeasured (needs organized 6-face
 captures — a webcam deployment set). Reproduce with `ml/OOD_EVAL.md`.
 
+## What the app ships: fp32, not int8 (changed 2026-08-29)
+
+`apps/web/vendor/cube-yolo.onnx` is now the **fp32** export. It used to be the int8 one, under the
+same filename. Measured on the 169-photo real held-out split, same checkpoint, int8 vs fp32:
+
+| | int8 (was shipped) | **fp32 (now shipped)** |
+|---|---|---|
+| red correct | 96.1% | **96.8%** |
+| **red→orange errors** | **12** | **9** |
+| red↔orange total | 14 | **11** |
+| colour accuracy on matched | 99.0% | **99.2%** |
+| inference, onnxruntime CPU, 640×640 | 56.1 ms | **48.0 ms** |
+| size | 3.0 MB | 10.6 MB |
+
+Two things this corrects about the note above that int8 quantisation "is essentially free here".
+It is free **in mAP50** (0.973 → 0.972) and it is not free in the confusion that actually matters:
+quantising cost **three extra red→orange errors, a 33% increase on the one pair this detector is
+weak at**. An aggregate metric hid a targeted regression, which is the general hazard of judging a
+colour classifier by a detection score.
+
+And fp32 is **faster**, not slower — dynamic quantisation (QInt8 weights, uint8 activations) pays
+quantise/dequantise at every layer, and ARM fp32 SIMD beats it. So the only real cost is the
+download: 10.6 MB against 3.0 MB, accepted deliberately. Measured with Python onnxruntime on
+macOS/ARM; the browser's wasm SIMD path may differ in magnitude, though the direction held clearly.
+
+**`ml/models/MANIFEST.json` is stale**: its recorded artefact hashes do not match the files beside
+it, because those were re-exported later with a different toolchain. The weights are the same — a
+re-export of one checkpoint produces different bytes and identical predictions, verified by
+evaluating both and getting identical per-colour counts. Do not use the manifest hashes to identify
+a model; evaluate it instead.
+
 ## Deployment
 `cube-scanner` consumes it with no wasm dep in its pure core: `preprocess` (pure letterbox) →
 panel's injected onnxruntime-web run → `decodeDetections`/`nms`/`fitFace` → `assembleColors`,

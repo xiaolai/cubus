@@ -87,6 +87,16 @@ it walks you through solving it.
   solver; `<cubus-cube>` is the renderer (see Design system above).
 - **Never invent data**: a statistic that cannot be computed is a dash, not a number; a reading
   that cannot be validated is a refusal, not a guess. A plausible figure is worse than a blank.
+- **A misread scan may say HOW MANY, and may only point when it is one** (decided 2026-08-28).
+  Two legal cube colourings are never closer than three stickers, so a one-sticker misread is the
+  only one whose repair is provably unique — above that, the nearest legal cube need not be the
+  user's, and pointing would sometimes accuse a correctly-read sticker. So `decodeMisread`
+  (`packages/cube-scanner/src/misread-decode.ts`) reports a count that is a proven lower bound and
+  is never an overstatement, and `suspects` is populated only at distance 1. Above it the app says
+  "at least N stickers were misread" and asks for a side again. This is "Never invent data" applied
+  to a place it was previously being broken: the old copy asserted a single misread in exactly the
+  branch the code had already ruled one out. The derivation, the measurements, the refutation pass,
+  and the three measurements still owed: `dev-docs/misread-decoding.md`.
 - **Fail loud**: an unreadable scan, a state that cannot be solved, a storage write that did not
   land — each surfaces where it happens, never silently.
 - **The version is one number in six places** — `apps/web/lib/app.js` (`VERSION`, what the About
@@ -94,6 +104,23 @@ it walks you through solving it.
   under `apps/`, `tauri.conf.json`, the desktop `Cargo.toml` and `Cargo.lock`. `pnpm bump X.Y.Z`
   moves all six (`scripts/bump-version.mjs`, tested; it refuses rather than half-bumps), and a
   wiring test fails if any of them drifts from `VERSION`. Never edit one by hand.
+- **Which machine renders, which machine trains** (measured 2026-08-29). **Render on
+  `render-host`** — M2 Ultra, 16 performance cores, and it already has Blender 4.2.1, the 200
+  HDRIs and `~/cubus-ml/venv`; it is where every earlier dataset was rendered. 2.7 img/s, so a
+  32k set takes ~3.5 h. **Never render on the MacBook Air**: 4 performance cores, fanless, 5.2×
+  slower — and it is the machine you are being asked to keep usable. Check `ssh` config for hosts
+  before assuming the local machine is the right one; a whole night was spent tuning worker counts
+  on the laptop while the Studio sat idle.
+  **Train on `train-host-a`** (GB10, on the local LAN): 2.4 MB/s from here, so a 2.6 GB dataset moves
+  in ~20 min, and its containers resolve DNS so images can be built there. **`train-host-b` is the same
+  GB10 but ~109 ms away at 0.1 MB/s** — 7 h for that same dataset — so use it only for work whose
+  data is already on it; it holds every historical dataset and the v3/v4 runs, which makes it the
+  right host for baseline evals and for parallel jobs. Its container DNS is broken, so build
+  images on train-host-a or `docker commit` a finished run.
+  **Never change Blender or ultralytics versions mid-comparison** — either puts a renderer or
+  training-code difference inside an experiment meant to isolate something else. `ml/train.sh`
+  prefers the pinned `cube-train:1`; `ml/Dockerfile.train` pins the stack and asserts the pin took.
+  Timings, traps and the reasoning: `dev-docs/red-orange-fine-tune.md`.
 - **Quality gate** is `pnpm check`, and it is two different things:
   `packages/cube-scanner` runs strict `tsc` + Biome + a type-aware ESLint pass + vitest;
   `apps/web` runs `node --test` over `apps/web/test/` (it has no build step to typecheck, and

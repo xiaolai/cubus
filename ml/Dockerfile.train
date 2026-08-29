@@ -1,0 +1,63 @@
+# The training image, built once so a training run needs no network at all.
+#
+# `train.sh` used to apt-get and pip-install into a fresh NGC container on EVERY run. Both go out
+# through the training host's proxy, which is documented as flaky, and both had their output sent
+# to /dev/null with no timeout — so on 2026-08-28 a run sat on `apt-get update` for 13 minutes
+# looking exactly like a container that was training. `docker ps` said "Up 13 minutes" and the GPU
+# said 0%. On a ~6 h production run that failure mode is expensive and silent.
+#
+# Baking the two dependencies removes the network from the hot path entirely, and makes every
+# later run start in seconds instead of minutes.
+#
+# Build (on a host whose containers have working DNS):
+#   docker build -f Dockerfile.train -t cube-train:1 .
+#
+# `train.sh` picks this image up automatically when it exists, and falls back to the raw NGC image
+# with the install steps if it does not.
+#
+# HOW THE SHIPPED cube-train:1 WAS ACTUALLY MADE, and why that was better. This build does not
+# currently work on train-host-b: its containers cannot resolve DNS at all (not a proxy — `--dns` and
+# even `--network host` fail too), so `apt-get update` exits 100. The image in use was instead
+# produced with no network at all, by committing the container that trained synth_v4:
+#
+#   docker commit cube_v4_train cube-train:1
+#
+# which works because `train.sh` runs detached WITHOUT --rm, so each completed run leaves a
+# container holding exactly the environment it used. That turned out to be the better artifact
+# rather than a lucky workaround: it preserves the EXACT stack that trained synth_v3/synth_v4
+# (ultralytics 8.4.126, cv2 5.0.0). Building this Dockerfile fresh would have installed whatever
+# ultralytics is current, changing the training code between the baseline and the experiment
+# meant to be compared against it — the same class of confound as switching Blender versions
+# mid-render (see ml/README.md).
+#
+# So: prefer committing a known-good run's container when one exists and you are comparing against
+# it. Use this Dockerfile to bootstrap a host that has none, or when you deliberately want a
+# refreshed stack and are re-baselining anyway.
+#
+# Pinned base: the arm64 NGC PyTorch image verified to see the GB10 (Blackwell sm_121). A plain
+# `pip install torch` on this box may lack those kernels, which is why NGC is used at all.
+FROM nvcr.io/nvidia/pytorch:26.01-py3
+
+# libGL/libglib: ultralytics pulls opencv-python, which needs libGL.so.1 that this headless
+# server image lacks — without it `import ultralytics` dies on libGL.so.1: cannot open shared
+# object file. Retries and a timeout so a flaky proxy fails loudly and fast rather than hanging.
+RUN DEBIAN_FRONTEND=noninteractive apt-get \
+      -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+# PINNED, and the pin is load-bearing. These are the exact versions inside the image that trained
+# synth_v3 and synth_v4 (read out of it with `docker run cube-train:1 python -c "import ultralytics,
+# onnxruntime; ..."`). An unpinned install pulls whatever is current, which changes the TRAINING
+# CODE between a baseline and the experiment meant to be compared against it — the same class of
+# confound as switching Blender versions mid-render, and just as invisible in the results.
+# Re-pin deliberately when you are re-baselining, never incidentally.
+RUN pip install --no-input --timeout 120 --retries 5 \
+      "ultralytics==8.4.126" "onnxruntime==1.29.0"
+
+# Fail the BUILD if the pin did not take: a silently-newer ultralytics is the whole thing this
+# file exists to prevent, and it would otherwise only surface as an unexplained metric shift.
+RUN python -c "import ultralytics; assert ultralytics.__version__ == '8.4.126', ultralytics.__version__; print('ultralytics', ultralytics.__version__)" \
+ && python -c "import onnxruntime; assert onnxruntime.__version__ == '1.29.0', onnxruntime.__version__; print('onnxruntime', onnxruntime.__version__)" \
+ && python -c "import cv2; print('cv2', cv2.__version__)"

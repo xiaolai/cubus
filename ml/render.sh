@@ -16,7 +16,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BLENDERPROC="${BLENDERPROC:-blenderproc}"
 PYTHON="${PYTHON:-python3}"        # for the pure merge/split steps (any python3 with stdlib)
-GEN="${GEN:-generate_cube_dataset.py}"  # generate_cube3d.py for the v2 3D/hard-case generator
+# The SHIPPING generator. This default used to be generate_cube_dataset.py — the legacy v1
+# single-face renderer — while every model since v3 was trained on generate_cube3d.py, and the
+# README's own example invocation omits GEN=. On 2026-08-28 that combination silently produced
+# hours of v1 data: single faces, exactly 9 boxes in every image, and none of the 3D generator's
+# colour code. It looked like a working render the whole time. Defaults must name what ships.
+GEN="${GEN:-generate_cube3d.py}"   # legacy single-face set: GEN=generate_cube_dataset.py
 DEVICE="${DEVICE:-gpu}"            # gpu (METAL/CUDA) is fastest here — but there's one GPU, so…
 WORKERS="${WORKERS:-1}"            # …keep WORKERS=1 for gpu. WORKERS>1 only helps with DEVICE=cpu.
 SCENES="${SCENES:-1000}"
@@ -45,6 +50,7 @@ if ((${#_hdris[@]} == 0)); then
 fi
 echo "Found ${#_hdris[@]} HDRIs in $HDRI_DIR"
 
+echo "Generator: $GEN"   # named loudly: picking the wrong one is invisible in the output
 echo "Rendering $SCENES scenes x $POSES poses (~$((SCENES * POSES)) images) across $WORKERS workers -> $OUT"
 mkdir -p "$OUT"
 
@@ -73,6 +79,29 @@ if [[ "$fail" -ne 0 ]]; then echo "ERROR: a render worker failed — not merging
 
 echo "Merging $WORKERS parts -> YOLO labels…"
 "$PYTHON" "$HERE/merge_parts.py" --out "$OUT" --parts "$OUT"/part_*
+
+# Assert the merge actually produced the SHAPE the chosen generator implies. A v1 single-face
+# render labels exactly 9 stickers in every image; the 3D generator sees two or three faces, so
+# its box counts vary and routinely exceed 9. Rendering v1 by mistake is otherwise invisible —
+# the images look fine, the labels are valid, and only the count distribution gives it away.
+if [ "$GEN" = "generate_cube3d.py" ]; then
+  distinct=$("$PYTHON" - "$OUT/labels_all" <<'PYEOF'
+import sys, glob, os
+counts = set()
+for f in glob.glob(os.path.join(sys.argv[1], "*.txt")):
+    with open(f) as fh:
+        counts.add(sum(1 for line in fh if line.strip()))
+print(len(counts), max(counts) if counts else 0)
+PYEOF
+)
+  n_distinct=${distinct% *}; max_boxes=${distinct#* }
+  echo "Label shape: $n_distinct distinct box-counts, max $max_boxes per image"
+  if [ "$n_distinct" -le 1 ] || [ "$max_boxes" -le 9 ]; then
+    echo "ERROR: every image has the same (<=9) box count — that is single-face v1 data, not $GEN." >&2
+    echo "       Refusing to split. Check GEN and re-render." >&2
+    exit 1
+  fi
+fi
 
 echo "Splitting train/val (val=$VAL_FRACTION) into $OUT/dataset…"
 "$PYTHON" "$HERE/split_dataset.py" \
