@@ -185,6 +185,40 @@ fn root_openings() -> Vec<Vec<u8>> {
     (0..18u8).map(|m| vec![m]).collect()
 }
 
+/// Extend canonical prefixes to `target` moves — chains of `move_allowed`, which is Markov-1
+/// (each link constrains only the next move), so extending every prefix by every allowed move
+/// partitions its subtree EXACTLY: nothing dropped, nothing doubled. This is scheduling, not
+/// semantics — the shard partition stays defined over the two-move openings, and a contour
+/// covers the same maneuvers whatever the prefix length. What changes is the tail: ~27 tasks
+/// per shard left the last giant subtrees grinding on three cores of twenty (measured,
+/// 2026-08-30); at four-move roots a shard is ~5,000 tasks and the tail is minutes.
+fn expand_openings(openings: Vec<Vec<u8>>, target: usize) -> Vec<Vec<u8>> {
+    let mut out = openings;
+    while out.first().is_some_and(|o| o.len() < target) {
+        let mut next = Vec::with_capacity(out.len() * 15);
+        for o in &out {
+            let prev = *o.last().expect("openings are non-empty") as i8;
+            for m in 0..18u8 {
+                if move_allowed(prev, m as usize) {
+                    let mut e = o.clone();
+                    e.push(m);
+                    next.push(e);
+                }
+            }
+        }
+        out = next;
+    }
+    out
+}
+
+/// How deep the parallel roots go at a given contour: as deep as four moves, never past the
+/// bound itself (a maneuver of exactly the bound's length must surface as a prefix whose end
+/// state is checked directly). Lengths below the ladder's first bound need no coverage — an
+/// admissible heuristic above them IS the proof they hold no solution.
+fn root_ply(bound: u8) -> usize {
+    (bound as usize).min(4)
+}
+
 /// The 243 canonical two-move openings, in a fixed order every shard agrees on.
 fn two_ply_openings() -> Vec<Vec<u8>> {
     let mut out = Vec::with_capacity(243);
@@ -286,7 +320,10 @@ pub fn certify_no_solution_within(
         if cancel.load(Ordering::Relaxed) {
             return Err(SearchEnd::Cancelled);
         }
-        let (found, cancelled) = run_contour(tables, start, bound, &mine, cancel, &total_nodes);
+        // Expanded per contour for scheduling only: the shard IS its two-move openings, and
+        // root_ply never goes below their length, so the partition identity is untouched.
+        let roots = expand_openings(mine.clone(), root_ply(bound));
+        let (found, cancelled) = run_contour(tables, start, bound, &roots, cancel, &total_nodes);
         if found.is_some() {
             return Ok(Certification::FoundAt(bound));
         }
