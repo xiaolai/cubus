@@ -210,6 +210,26 @@ test('a pinned notice owns the card, with the camera hint on its own line below'
   assert.match($('#scanHint').textContent, /point a side/);
 });
 
+// A notice that has to state a NUMBER or a side name cannot bake it into the sentence: the baked
+// string would never match a catalog key. The panel sends the sentence with %1..%9 intact plus the
+// values, and the host translates first and substitutes after (dev-docs/i18n.md, the seam).
+test('a notice carrying params is filled in after translation, not before', () => {
+  progress({ phase: 'scanning', message: 'Show any side to the camera.',
+    captured: FACES.map(face), live: null, confirm: null,
+    notice: { title: 'More than one sticker looks wrong', tone: 'err',
+      body: 'At least %1 stickers were misread. Show the %2 side to the camera again.',
+      params: [3, 'GREEN'] } });
+  assert.equal($('#scanHow').textContent,
+    'At least 3 stickers were misread. Show the GREEN side to the camera again.');
+});
+
+test('a notice with no params renders its sentence untouched', () => {
+  progress({ phase: 'scanning', message: 'Show any side to the camera.',
+    captured: FACES.map(face), live: null, confirm: null,
+    notice: { title: 'One sticker looks wrong', tone: 'err', body: 'Fixing the marked sticker makes this solvable.' } });
+  assert.equal($('#scanHow').textContent, 'Fixing the marked sticker makes this solvable.');
+});
+
 test('a hint that restates the notice is suppressed rather than doubled', () => {
   progress({ phase: 'confirm', message: 'Show the GREEN side again, with WHITE facing up.',
     captured: FACES.map(face), live: null, confirm: { face: 'F', up: 'U' },

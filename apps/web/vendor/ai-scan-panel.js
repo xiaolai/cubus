@@ -28,7 +28,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var require_cube = __commonJS({
   "../../node_modules/.pnpm/cubejs@1.3.2/node_modules/cubejs/lib/cube.js"(exports, module) {
     (function() {
-      var B, BL, BR, Cube2, D, DB, DBL, DF, DFR, DL, DLF, DR, DRB, F, FL, FR, L, R, U, UB, UBR, UF, UFL, UL, ULB, UR, URF, centerColor, centerFacelet, cornerColor, cornerFacelet, edgeColor, edgeFacelet;
+      var B, BL, BR, Cube3, D, DB, DBL, DF, DFR, DL, DLF, DR, DRB, F, FL, FR, L, R, U, UB, UBR, UF, UFL, UL, ULB, UR, URF, centerColor, centerFacelet, cornerColor, cornerFacelet, edgeColor, edgeFacelet;
       [U, R, F, D, L, B] = [0, 1, 2, 3, 4, 5];
       [URF, UFL, ULB, UBR, DFR, DLF, DBL, DRB] = [0, 1, 2, 3, 4, 5, 6, 7];
       [UR, UF, UL, UB, DR, DF, DL, DB, FR, FL, BL, BR] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
@@ -161,9 +161,9 @@ var require_cube = __commonJS({
       centerColor = ["U", "R", "F", "D", "L", "B"];
       cornerColor = [["U", "R", "F"], ["U", "F", "L"], ["U", "L", "B"], ["U", "B", "R"], ["D", "F", "R"], ["D", "L", "F"], ["D", "B", "L"], ["D", "R", "B"]];
       edgeColor = [["U", "R"], ["U", "F"], ["U", "L"], ["U", "B"], ["D", "R"], ["D", "F"], ["D", "L"], ["D", "B"], ["F", "R"], ["F", "L"], ["B", "L"], ["B", "R"]];
-      Cube2 = function() {
+      Cube3 = function() {
         var faceNames, faceNums, parseAlg;
-        class Cube3 {
+        class Cube4 {
           constructor(other) {
             var x;
             if (other != null) {
@@ -274,7 +274,7 @@ var require_cube = __commonJS({
           }
           static fromString(str) {
             var col1, col2, cube, i, j, k, l, m, o, ori, p, q, r, ref;
-            cube = new Cube3();
+            cube = new Cube4();
             for (i = k = 0; k <= 5; i = ++k) {
               for (j = l = 0; l <= 5; j = ++l) {
                 if (str[9 * i + 4] === centerColor[j]) {
@@ -314,11 +314,11 @@ var require_cube = __commonJS({
             return cube;
           }
           clone() {
-            return new Cube3(this.toJSON());
+            return new Cube4(this.toJSON());
           }
           // A class method returning a new random cube
           static random() {
-            return new Cube3().randomize();
+            return new Cube4().randomize();
           }
           isSolved() {
             var c, cent, clone, e, k, l, m;
@@ -396,7 +396,7 @@ var require_cube = __commonJS({
               face = move / 3 | 0;
               power = move % 3;
               for (x = l = 0, ref1 = power; 0 <= ref1 ? l <= ref1 : l >= ref1; x = 0 <= ref1 ? ++l : --l) {
-                this.multiply(Cube3.moves[face]);
+                this.multiply(Cube4.moves[face]);
               }
             }
             return this;
@@ -484,7 +484,7 @@ var require_cube = __commonJS({
           }
         }
         ;
-        Cube3.prototype.randomize = function() {
+        Cube4.prototype.randomize = function() {
           var arePermutationsValid, generateValidRandomOrientation, generateValidRandomPermutation, getNumSwaps, isOrientationValid, randint, randomizeOrientation, result, shuffle;
           randint = function(min, max) {
             return min + Math.floor(Math.random() * (max - min + 1));
@@ -573,7 +573,7 @@ var require_cube = __commonJS({
           };
           return result;
         }();
-        Cube3.moves = [
+        Cube4.moves = [
           {
             // U
             center: [0, 1, 2, 3, 4, 5],
@@ -1141,21 +1141,21 @@ var require_cube = __commonJS({
             return [arg];
           }
         };
-        Cube3.moves.push(new Cube3().move("R M' L'").toJSON());
-        Cube3.moves.push(new Cube3().move("U E' D'").toJSON());
-        Cube3.moves.push(new Cube3().move("F S B'").toJSON());
-        Cube3.moves.push(new Cube3().move("U E'").toJSON());
-        Cube3.moves.push(new Cube3().move("R M'").toJSON());
-        Cube3.moves.push(new Cube3().move("F S").toJSON());
-        Cube3.moves.push(new Cube3().move("D E").toJSON());
-        Cube3.moves.push(new Cube3().move("L M").toJSON());
-        Cube3.moves.push(new Cube3().move("B S'").toJSON());
-        return Cube3;
+        Cube4.moves.push(new Cube4().move("R M' L'").toJSON());
+        Cube4.moves.push(new Cube4().move("U E' D'").toJSON());
+        Cube4.moves.push(new Cube4().move("F S B'").toJSON());
+        Cube4.moves.push(new Cube4().move("U E'").toJSON());
+        Cube4.moves.push(new Cube4().move("R M'").toJSON());
+        Cube4.moves.push(new Cube4().move("F S").toJSON());
+        Cube4.moves.push(new Cube4().move("D E").toJSON());
+        Cube4.moves.push(new Cube4().move("L M").toJSON());
+        Cube4.moves.push(new Cube4().move("B S'").toJSON());
+        return Cube4;
       }.call(this);
       if (typeof module !== "undefined" && module !== null) {
-        module.exports = Cube2;
+        module.exports = Cube3;
       } else {
-        this.Cube = Cube2;
+        this.Cube = Cube3;
       }
     }).call(exports);
   }
@@ -1165,8 +1165,8 @@ var require_cube = __commonJS({
 var require_solve = __commonJS({
   "../../node_modules/.pnpm/cubejs@1.3.2/node_modules/cubejs/lib/solve.js"(exports) {
     (function() {
-      var B, BL, BR, Cnk, Cube2, D, DB, DBL, DF, DFR, DL, DLF, DR, DRB, F, FL, FR, Include, L, N_FLIP, N_FRtoBR, N_PARITY, N_SLICE1, N_SLICE2, N_TWIST, N_UBtoDF, N_URFtoDLF, N_URtoDF, N_URtoUL, R, U, UB, UBR, UF, UFL, UL, ULB, UR, URF, allMoves1, allMoves2, computeMoveTable, computePruningTable, faceNames, faceNums, factorial, key, max, mergeURtoDF, moveTableParams, nextMoves1, nextMoves2, permutationIndex, pruning, pruningTableParams, rotateLeft, rotateRight, value, indexOf = [].indexOf;
-      Cube2 = this.Cube || require_cube();
+      var B, BL, BR, Cnk, Cube3, D, DB, DBL, DF, DFR, DL, DLF, DR, DRB, F, FL, FR, Include, L, N_FLIP, N_FRtoBR, N_PARITY, N_SLICE1, N_SLICE2, N_TWIST, N_UBtoDF, N_URFtoDLF, N_URtoDF, N_URtoUL, R, U, UB, UBR, UF, UFL, UL, ULB, UR, URF, allMoves1, allMoves2, computeMoveTable, computePruningTable, faceNames, faceNums, factorial, key, max, mergeURtoDF, moveTableParams, nextMoves1, nextMoves2, permutationIndex, pruning, pruningTableParams, rotateLeft, rotateRight, value, indexOf = [].indexOf;
+      Cube3 = this.Cube || require_cube();
       [U, R, F, D, L, B] = [0, 1, 2, 3, 4, 5];
       [URF, UFL, ULB, UBR, DFR, DLF, DBL, DRB] = [0, 1, 2, 3, 4, 5, 6, 7];
       [UR, UF, UL, UB, DR, DF, DL, DB, FR, FL, BL, BR] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
@@ -1401,18 +1401,18 @@ var require_solve = __commonJS({
       };
       for (key in Include) {
         value = Include[key];
-        Cube2.prototype[key] = value;
+        Cube3.prototype[key] = value;
       }
       computeMoveTable = function(context, coord, size) {
         var apply, cube, i, inner, j, k, m, move, o, p, ref, results;
         apply = context === "corners" ? "cornerMultiply" : "edgeMultiply";
-        cube = new Cube2();
+        cube = new Cube3();
         results = [];
         for (i = m = 0, ref = size - 1; 0 <= ref ? m <= ref : m >= ref; i = 0 <= ref ? ++m : --m) {
           cube[coord](i);
           inner = [];
           for (j = o = 0; o <= 5; j = ++o) {
-            move = Cube2.moves[j];
+            move = Cube3.moves[j];
             for (k = p = 0; p <= 2; k = ++p) {
               cube[apply](move);
               inner.push(cube[coord]());
@@ -1425,8 +1425,8 @@ var require_solve = __commonJS({
       };
       mergeURtoDF = function() {
         var a, b;
-        a = new Cube2();
-        b = new Cube2();
+        a = new Cube3();
+        b = new Cube3();
         return function(URtoUL, UBtoDF) {
           var i, m;
           a.URtoUL(URtoUL);
@@ -1453,7 +1453,7 @@ var require_solve = __commonJS({
       N_URtoDF = 20160;
       N_URtoUL = 1320;
       N_UBtoDF = 1320;
-      Cube2.moveTables = {
+      Cube3.moveTables = {
         parity: [[1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1], [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]],
         twist: null,
         flip: null,
@@ -1475,7 +1475,7 @@ var require_solve = __commonJS({
         UBtoDF: ["edges", N_UBtoDF],
         mergeURtoDF: []
       };
-      Cube2.computeMoveTables = function(...tables) {
+      Cube3.computeMoveTables = function(...tables) {
         var len, m, name, scope, size, tableName;
         if (tables.length === 0) {
           tables = function() {
@@ -1602,7 +1602,7 @@ var require_solve = __commonJS({
         }
         return table;
       };
-      Cube2.pruningTables = {
+      Cube3.pruningTables = {
         sliceTwist: null,
         sliceFlip: null,
         sliceURFtoDLFParity: null,
@@ -1625,8 +1625,8 @@ var require_solve = __commonJS({
               slice,
               twist
             ] = current;
-            newSlice = Cube2.moveTables.FRtoBR[slice * 24][move] / 24 | 0;
-            newTwist = Cube2.moveTables.twist[twist][move];
+            newSlice = Cube3.moveTables.FRtoBR[slice * 24][move] / 24 | 0;
+            newTwist = Cube3.moveTables.twist[twist][move];
             return newTwist * N_SLICE1 + newSlice;
           }
         ],
@@ -1645,8 +1645,8 @@ var require_solve = __commonJS({
               slice,
               flip
             ] = current;
-            newSlice = Cube2.moveTables.FRtoBR[slice * 24][move] / 24 | 0;
-            newFlip = Cube2.moveTables.flip[flip][move];
+            newSlice = Cube3.moveTables.FRtoBR[slice * 24][move] / 24 | 0;
+            newFlip = Cube3.moveTables.flip[flip][move];
             return newFlip * N_SLICE1 + newSlice;
           }
         ],
@@ -1667,9 +1667,9 @@ var require_solve = __commonJS({
               slice,
               URFtoDLF
             ] = current;
-            newParity = Cube2.moveTables.parity[parity2][move];
-            newSlice = Cube2.moveTables.FRtoBR[slice][move];
-            newURFtoDLF = Cube2.moveTables.URFtoDLF[URFtoDLF][move];
+            newParity = Cube3.moveTables.parity[parity2][move];
+            newSlice = Cube3.moveTables.FRtoBR[slice][move];
+            newURFtoDLF = Cube3.moveTables.URFtoDLF[URFtoDLF][move];
             return (newURFtoDLF * N_SLICE2 + newSlice) * 2 + newParity;
           }
         ],
@@ -1690,14 +1690,14 @@ var require_solve = __commonJS({
               slice,
               URtoDF
             ] = current;
-            newParity = Cube2.moveTables.parity[parity2][move];
-            newSlice = Cube2.moveTables.FRtoBR[slice][move];
-            newURtoDF = Cube2.moveTables.URtoDF[URtoDF][move];
+            newParity = Cube3.moveTables.parity[parity2][move];
+            newSlice = Cube3.moveTables.FRtoBR[slice][move];
+            newURtoDF = Cube3.moveTables.URtoDF[URtoDF][move];
             return (newURtoDF * N_SLICE2 + newSlice) * 2 + newParity;
           }
         ]
       };
-      Cube2.computePruningTables = function(...tables) {
+      Cube3.computePruningTables = function(...tables) {
         var len, m, name, params, tableName;
         if (tables.length === 0) {
           tables = function() {
@@ -1719,11 +1719,11 @@ var require_solve = __commonJS({
         }
         return this;
       };
-      Cube2.initSolver = function() {
-        Cube2.computeMoveTables();
-        return Cube2.computePruningTables();
+      Cube3.initSolver = function() {
+        Cube3.computeMoveTables();
+        return Cube3.computePruningTables();
       };
-      Cube2.prototype.solveUpright = function(maxDepth = 22) {
+      Cube3.prototype.solveUpright = function(maxDepth = 22) {
         var State, freeStates, moveNames, phase1, phase1search, phase2, phase2search, solution, state, x;
         moveNames = function() {
           var face, faceName, m, o, power, powerName, result;
@@ -1766,10 +1766,10 @@ var require_solve = __commonJS({
           }
           //# Helpers
           move(table, index, move) {
-            return Cube2.moveTables[table][index][move];
+            return Cube3.moveTables[table][index][move];
           }
           pruning(table, index) {
-            return pruning(Cube2.pruningTables[table], index);
+            return pruning(Cube3.pruningTables[table], index);
           }
           //# Phase 1
           // Return the next valid phase 1 moves for this state
@@ -1957,12 +1957,12 @@ var require_solve = __commonJS({
         4: "L",
         5: "B"
       };
-      Cube2.prototype.solve = function(maxDepth = 22) {
+      Cube3.prototype.solve = function(maxDepth = 22) {
         var clone, len, m, move, ref, rotation, solution, upright, uprightSolution;
         clone = this.clone();
         upright = clone.upright();
         clone.move(upright);
-        rotation = new Cube2().move(upright).center;
+        rotation = new Cube3().move(upright).center;
         uprightSolution = clone.solveUpright(maxDepth);
         solution = [];
         ref = uprightSolution.split(" ");
@@ -1975,8 +1975,8 @@ var require_solve = __commonJS({
         }
         return solution.join(" ");
       };
-      Cube2.scramble = function() {
-        return Cube2.inverse(Cube2.random().solve());
+      Cube3.scramble = function() {
+        return Cube3.inverse(Cube3.random().solve());
       };
     }).call(exports);
   }
@@ -1991,7 +1991,7 @@ var require_cubejs = __commonJS({
 });
 
 // src/ai-assemble.ts
-var import_cubejs = __toESM(require_cubejs(), 1);
+var import_cubejs2 = __toESM(require_cubejs(), 1);
 
 // src/types.ts
 var FACES = ["U", "R", "F", "D", "L", "B"];
@@ -2022,8 +2022,16 @@ var EDGE_FACELET = [
   [50, 39],
   [48, 14]
 ];
-var CORNER_COLOR = CORNER_FACELET.map((t) => t.map((i) => SOLVED[i]));
+var CORNER_COLOR = CORNER_FACELET.map(
+  (t) => t.map((i) => SOLVED[i])
+);
 var EDGE_COLOR = EDGE_FACELET.map((t) => t.map((i) => SOLVED[i]));
+var ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2];
+function rotateFace(a, k) {
+  let out = a;
+  for (let t = 0; t < (k % 4 + 4) % 4; t++) out = ROT90.map((i) => out[i]);
+  return out;
+}
 var SIDE_OF_POSITION = {
   1: "top",
   5: "right",
@@ -2150,8 +2158,201 @@ function isStructurallyValid(f) {
   return state !== null && isSolvable(state);
 }
 
+// src/misread-decode.ts
+var import_cubejs = __toESM(require_cubejs(), 1);
+var CORNER_ORI = 3;
+var EDGE_ORI = 2;
+var DEFAULT_MAX_DISTANCE = 4;
+var DEFAULT_NODE_BUDGET = 2e7;
+var SHOWN_INDEX = [0, 1, 2, 3].map(
+  (k) => rotateFace([0, 1, 2, 3, 4, 5, 6, 7, 8], k)
+);
+function letterIndex(letter) {
+  const i = FACES.indexOf(letter);
+  if (i < 0) throw new Error(`not a face letter: ${letter}`);
+  return i;
+}
+function canonicalColors(faceCentre) {
+  return {
+    corner: CORNER_COLOR.map((t) => t.map((l) => faceCentre[letterIndex(l)])),
+    edge: EDGE_COLOR.map((t) => t.map((l) => faceCentre[letterIndex(l)]))
+  };
+}
+function buildTensors(colors54, canon) {
+  const corner = [];
+  for (let i = 0; i < 8; i++) {
+    const observed = CORNER_FACELET[i].map((x) => colors54[x]);
+    const perCubie = [];
+    for (let j = 0; j < 8; j++) {
+      const row = [];
+      for (let r = 0; r < CORNER_ORI; r++) {
+        let d = 0;
+        for (let t = 0; t < 3; t++) if (observed[t] !== canon.corner[j][(t + r) % 3]) d++;
+        row.push(d);
+      }
+      perCubie.push(row);
+    }
+    corner.push(perCubie);
+  }
+  const edge = [];
+  for (let i = 0; i < 12; i++) {
+    const observed = EDGE_FACELET[i].map((x) => colors54[x]);
+    const perCubie = [];
+    for (let j = 0; j < 12; j++) {
+      const row = [];
+      for (let r = 0; r < EDGE_ORI; r++) {
+        let d = 0;
+        for (let t = 0; t < 2; t++) if (observed[t] !== canon.edge[j][(t + r) % 2]) d++;
+        row.push(d);
+      }
+      perCubie.push(row);
+    }
+    edge.push(perCubie);
+  }
+  return { corner, edge, cornerColors: canon.corner, edgeColors: canon.edge };
+}
+function lowerBound(t) {
+  let lb = 0;
+  for (const slot of t.corner) {
+    let best = 3;
+    for (const ori of slot) for (const d of ori) if (d < best) best = d;
+    lb += best;
+  }
+  for (const slot of t.edge) {
+    let best = 2;
+    for (const ori of slot) for (const d of ori) if (d < best) best = d;
+    lb += best;
+  }
+  return lb;
+}
+function assignments(tensor, n, budget, counter) {
+  const rowMin = [];
+  for (const slot of tensor) {
+    let best = Number.POSITIVE_INFINITY;
+    for (const ori2 of slot) for (const d of ori2) if (d < best) best = d;
+    rowMin.push(best);
+  }
+  const suffix = new Array(n + 1).fill(0);
+  for (let i = n - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + rowMin[i];
+  const out = [];
+  const used = new Array(n).fill(false);
+  const cubie = new Array(n);
+  const ori = new Array(n);
+  let exhausted = false;
+  const walk = (i, acc) => {
+    if (exhausted) return;
+    if (++counter.nodes > counter.limit) {
+      exhausted = true;
+      return;
+    }
+    if (acc + suffix[i] > budget) return;
+    if (i === n) {
+      out.push({ cubie: [...cubie], ori: [...ori], total: acc });
+      return;
+    }
+    for (let j = 0; j < n; j++) {
+      if (used[j]) continue;
+      const orientations = tensor[i][j];
+      for (let r = 0; r < orientations.length; r++) {
+        const next = acc + orientations[r];
+        if (next + suffix[i + 1] > budget) continue;
+        used[j] = true;
+        cubie[i] = j;
+        ori[i] = r;
+        walk(i + 1, next);
+        used[j] = false;
+        if (exhausted) return;
+      }
+    }
+  };
+  walk(0, 0);
+  return exhausted ? null : out;
+}
+function realise(t, corners, edges, base) {
+  const out = [...base];
+  for (let i = 0; i < 8; i++) {
+    const colours = t.cornerColors[corners.cubie[i]];
+    for (let p = 0; p < 3; p++) out[CORNER_FACELET[i][p]] = colours[(p + corners.ori[i]) % 3];
+  }
+  for (let i = 0; i < 12; i++) {
+    const colours = t.edgeColors[edges.cubie[i]];
+    for (let p = 0; p < 2; p++) out[EDGE_FACELET[i][p]] = colours[(p + edges.ori[i]) % 2];
+  }
+  return out;
+}
+function isLegal(colors54, centreOwner) {
+  let s = "";
+  for (const c of colors54) {
+    const owner = centreOwner.get(c);
+    if (owner === void 0) return false;
+    s += owner;
+  }
+  if (!isStructurallyValid(s)) return false;
+  try {
+    return import_cubejs.default.fromString(s).asString() === s;
+  } catch {
+    return false;
+  }
+}
+function flatten(faces, rotations) {
+  const out = [];
+  for (let fi = 0; fi < 6; fi++) {
+    for (const c of rotateFace(faces[FACES[fi]].colors, rotations[fi])) out.push(c);
+  }
+  return out;
+}
+function decodeMisread(faces, centreOwner, options = {}) {
+  const maxDistance = options.maxDistance ?? DEFAULT_MAX_DISTANCE;
+  const counter = { nodes: 0, limit: options.nodeBudget ?? DEFAULT_NODE_BUDGET };
+  const faceCentre = FACES.map((f) => faces[f].colors[4]);
+  const canon = canonicalColors(faceCentre);
+  const candidates = [];
+  for (let combo = 0; combo < 4096; combo++) {
+    const rotations = [0, 1, 2, 3, 4, 5].map((i) => combo >> 2 * i & 3);
+    const bound = lowerBound(buildTensors(flatten(faces, rotations), canon));
+    if (bound <= maxDistance) candidates.push({ rotations, bound });
+  }
+  for (let budget = 0; budget <= maxDistance; budget++) {
+    const found = [];
+    for (const { rotations, bound } of candidates) {
+      if (bound > budget) continue;
+      const observed = flatten(faces, rotations);
+      const tensors = buildTensors(observed, canon);
+      const corners = assignments(tensors.corner, 8, budget, counter);
+      if (corners === null) return { kind: "unknown" };
+      const edges = assignments(tensors.edge, 12, budget, counter);
+      if (edges === null) return { kind: "unknown" };
+      for (const c of corners) {
+        for (const e of edges) {
+          if (c.total + e.total !== budget) continue;
+          const repaired = realise(tensors, c, e, observed);
+          if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
+        }
+      }
+    }
+    if (found.length === 0) continue;
+    const stickers = /* @__PURE__ */ new Map();
+    const shapes = /* @__PURE__ */ new Set();
+    for (const { rotations, observed, repaired } of found) {
+      shapes.add(repaired.join(","));
+      for (let p = 0; p < 54; p++) {
+        if (repaired[p] === observed[p]) continue;
+        const fi = Math.floor(p / 9);
+        const index = SHOWN_INDEX[rotations[fi]][p % 9];
+        stickers.set(`${fi}:${index}`, { face: FACES[fi], index, to: repaired[p] });
+      }
+    }
+    return {
+      kind: "repair",
+      distance: budget,
+      stickers: [...stickers.values()],
+      unique: shapes.size === 1
+    };
+  }
+  return { kind: "beyond", distance: maxDistance };
+}
+
 // src/ai-assemble.ts
-var ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2];
 var TOP_NEIGHBOUR = {
   U: "B",
   R: "U",
@@ -2160,15 +2361,10 @@ var TOP_NEIGHBOUR = {
   L: "U",
   B: "U"
 };
-function rotateFace(a, k) {
-  let out = a;
-  for (let t = 0; t < (k % 4 + 4) % 4; t++) out = ROT90.map((i) => out[i]);
-  return out;
-}
 var CONFIRM_TOLERANCE = 2;
 function cubejsRoundTrips(facelets) {
   try {
-    return import_cubejs.default.fromString(facelets).asString() === facelets;
+    return import_cubejs2.default.fromString(facelets).asString() === facelets;
   } catch {
     return false;
   }
@@ -2245,33 +2441,17 @@ function solvableReadings(faces, centreOwner) {
   }
   return [...seen].filter((e) => e[1] !== null);
 }
-function findSuspects(faces) {
-  const counts = /* @__PURE__ */ new Map();
-  for (const f of FACES) {
-    for (const c of faces[f].colors) counts.set(c, (counts.get(c) ?? 0) + 1);
-  }
-  const over = [...counts].filter(([, n]) => n === 10).map(([c]) => c);
-  const under = [...counts].filter(([, n]) => n === 8).map(([c]) => c);
-  if (over.length !== 1 || under.length !== 1 || counts.size !== 6) return [];
-  const [wrong] = over;
-  const [right] = under;
-  const centreOwner = /* @__PURE__ */ new Map();
-  for (const f of FACES) centreOwner.set(faces[f].colors[4], f);
-  const out = [];
-  for (const face of FACES) {
-    const src = faces[face];
-    for (let i = 0; i < 9; i++) {
-      if (i === 4 || src.colors[i] !== wrong) continue;
-      const patched = {
-        ...faces,
-        [face]: { ...src, colors: src.colors.map((c, j) => j === i ? right : c) }
-      };
-      if (solvableReadings(patched, centreOwner).length > 0) {
-        out.push({ face, index: i, to: right });
-      }
-    }
-  }
-  return out;
+function diagnose(faces, centreOwner) {
+  const decoded = decodeMisread(faces, centreOwner);
+  if (decoded.kind === "unknown") return {};
+  if (decoded.kind === "beyond") return { misreadCount: decoded.distance + 1 };
+  const suspects = decoded.distance === 1 ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to })) : [];
+  const blamed = new Set(decoded.stickers.map((s) => s.face));
+  return {
+    misreadCount: decoded.distance,
+    ...suspects.length > 0 ? { suspects } : {},
+    ...blamed.size === 1 ? { misreadFace: [...blamed][0] } : {}
+  };
 }
 function assemblePainted(faces, threshold = 0.15) {
   const centreOwner = /* @__PURE__ */ new Map();
@@ -2320,10 +2500,9 @@ function assembleColors(faces, threshold = 0.15, confirmed = {}) {
   if (centreOwner.size !== 6) return reject("the 6 centres are not 6 distinct colours");
   const all = solvableReadings(faces, centreOwner);
   if (all.length === 0) {
-    const suspects = findSuspects(faces);
     return reject(
       "no orientation of the faces is solvable \u2014 a colour was misread",
-      suspects.length > 0 ? { suspects } : {}
+      diagnose(faces, centreOwner)
     );
   }
   const confirmedFaces = FACES.filter((f) => confirmed[f]);
@@ -3475,11 +3654,19 @@ var AiScanPanel = class extends HTMLElement {
     this.confirmed = {};
     this.awaiting = null;
     const hold = " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
+    const misread = result.misreadCount ?? 0;
     if (this.suspects.length > 0) {
       this.notice = {
-        title: this.suspects.length === 1 ? "One sticker looks wrong" : "A sticker looks wrong",
+        title: "One sticker looks wrong",
         tone: "err",
-        body: `Fixing a marked sticker makes this a solvable cube \u2014 tap it and pick the right colour, or show that side again to re-read it.${hold}`
+        body: `Fixing the marked sticker makes this a solvable cube \u2014 tap it and pick the right colour, or show that side again to re-read it.${hold}`
+      };
+    } else if (misread > 1) {
+      this.notice = {
+        title: "More than one sticker looks wrong",
+        tone: "err",
+        body: result.misreadFace ? `At least %1 stickers were misread, so there is no single sticker to point at. Show the %2 side to the camera again \u2014 it will be read fresh.${hold}` : `At least %1 stickers were misread, so there is no single sticker to point at. Show those sides to the camera again \u2014 each one is read fresh.${hold}`,
+        params: result.misreadFace ? [misread, GUIDE[result.misreadFace].color] : [misread]
       };
     } else if (result.valid) {
       this.notice = {
@@ -3497,7 +3684,7 @@ var AiScanPanel = class extends HTMLElement {
       this.notice = {
         title: "That doesn't read as a solvable cube",
         tone: "err",
-        body: `A sticker was misread somewhere. Tap any sticker to correct it, show a side again to re-read it, or start the scan over for a fresh read.${hold}`
+        body: `Too much of the cube was read wrong to say where. Show the sides to the camera again \u2014 each one is read fresh \u2014 or start the scan over.${hold}`
       };
     }
     this.loop(
