@@ -7,6 +7,13 @@ import { summarize, times } from './solve-stats.js';
 import { TIERS, describe, refine } from './solve-target.js';
 import { createSolveClient, spawnSolveWorker } from './solve-client.js';
 import { LOOSEST_BOUND } from './solver-engine.js';
+import {
+  cancel as optimalCancel,
+  capability as optimalCapability,
+  prepare as optimalPrepare,
+  prove as optimalProve,
+  status as optimalStatus,
+} from './optimal.js';
 import { randomCube } from './random-state.js';
 import { makeRouter } from './router.js';
 // The smart-cube strands, recovered from v0 (2026-08-27): the transport seam (Web Bluetooth in a
@@ -2016,7 +2023,7 @@ const cubeScreen = (screenMode) => {
       ${!walking && rc ? `<div class="card sheet reconnect-card">${reconnectAsk()}</div>` : ''}
       ${walking ? `<div class="card tight solution-card sheet">
         ${reconnectAsk()}
-        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount">—</span></div>
+        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount">—</span><button class="pill" id="proveBtn" hidden style="margin-left:auto">prove the minimum</button></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg"></span>
@@ -2185,6 +2192,75 @@ const cubeScreen = (screenMode) => {
       setStatus(verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'
         ? `${total} — ${verdict.target} was not possible here`
         : String(total));
+
+      // The optimal seam's affordance (AGENTS.md, fourth seam): drawn only where the native
+      // prover is injected — the orientation-row precedent — and the words "proved" /
+      // "minimum" can reach this screen only from optimal.js's oracle-checked proof. In the
+      // browser build the button never appears and the wording above stands as the honest
+      // answer: the shortest found, no claim of minimality.
+      const proveBtn = $('#proveBtn', root);
+      if (proveBtn && optimalCapability() && !scrambling) {
+        proveBtn.hidden = false;
+        proveBtn.onclick = async () => {
+          proveBtn.disabled = true;
+          // Snapshotted at CLICK, not at mount: a Follow-cube re-solve replaces the shown
+          // solution without remounting, and the proof must be about the pair on screen NOW —
+          // a mount-time capture would prove the old state against the new number.
+          const startFacelets = state.cube.facelets;
+          const shown = state.cube.moves.length;
+          // First ever press generates the tables (minutes) — the progress event keeps the
+          // button honest about why nothing seems to be happening. The listener is released
+          // in finally, so neither navigation nor a failure leaks it against the old DOM.
+          let unlisten = null;
+          try {
+            proveBtn.textContent = 'preparing…';
+            try {
+              unlisten = await window.__TAURI__?.event?.listen?.('optimal-progress', (ev) => {
+                const p = ev?.payload;
+                if (!stale() && p?.total) proveBtn.textContent = `${p.stage} ${Math.round((p.done / p.total) * 100)}%`;
+              });
+            } catch (err) {
+              // Preparation still works without the heartbeat — but a silent subscribe
+              // failure would make minutes of generation look like a hang, so say it once.
+              console.warn('optimal: no progress events; preparation will look quiet', err);
+            }
+            if (stale()) return; // the listen await is an await like any other
+            // prepare() answers "preparing" when another call started the generation — the
+            // readiness contract is polling status to "ready", not trusting the first resolve.
+            await optimalPrepare();
+            if (stale()) return; // left during generation — the finally still frees the listener
+            for (;;) {
+              const readiness = await optimalStatus();
+              if (stale()) return; // navigated away during generation — start no proof at all
+              if (readiness === 'ready') break;
+              if (readiness !== 'preparing') {
+                // 'cold' here means the generation this call was waiting on DIED in another
+                // call — polling a corpse forever was the bug this loop once had.
+                throw new Error(`optimal: preparation ended ${readiness}, not ready`);
+              }
+              await new Promise((r) => setTimeout(r, 500));
+            }
+            proveBtn.textContent = 'proving…';
+            const proof = await optimalProve(startFacelets, { Cube, upperBound: shown });
+            if (stale()) return;
+            // The sentence this seam exists for — and the honest split when the shown
+            // solution is longer than the proved minimum. A failed table save rides along:
+            // the proof stands, the next launch regenerates, and nobody wonders why.
+            const saved = proof.tablesPersisted ? '' : ' · tables not saved';
+            setStatus((proof.moves === shown
+              ? `${shown} — proved the minimum`
+              : `${shown} shown — the minimum is ${proof.moves}, proved`) + saved);
+            proveBtn.hidden = true;
+          } catch (err) {
+            if (stale()) return;
+            proveBtn.textContent = 'could not prove';
+            proveBtn.disabled = false;
+            console.error('optimal proof failed', err);
+          } finally {
+            unlisten?.();
+          }
+        };
+      }
       // One grid, no group headings, on both sides of the walk. The solve side used to cut its
       // list at fixed 16 / 62 / 82% and head the pieces CROSS / F2L / OLL / PLL — proportional
       // slices of a two-phase solution wearing the names of stages it does not have. That is
@@ -3236,6 +3312,11 @@ function fitTabs() {
 }
 function renderScreen() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
+  // A multi-hour native proof must not outlive the screen that asked for it. Cancelling on
+  // every switch is a cheap no-op when nothing runs, and the one reliable teardown when it
+  // does. Caught, not fire-and-forgotten: a rejection here is a torn IPC channel, worth a
+  // line in the console and never an unhandled-rejection banner.
+  if (optimalCapability()) optimalCancel().catch((err) => console.warn('optimal cancel failed', err));
   liveUpdate = null;
   liveMove = null;
   liveGap = null;
