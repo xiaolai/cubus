@@ -104,6 +104,15 @@ it walks you through solving it.
   under `apps/`, `tauri.conf.json`, the desktop `Cargo.toml` and `Cargo.lock`. `pnpm bump X.Y.Z`
   moves all six (`scripts/bump-version.mjs`, tested; it refuses rather than half-bumps), and a
   wiring test fails if any of them drifts from `VERSION`. Never edit one by hand.
+- **A model change is not verified until `ml/golden_frames.py` has run.** It is the parity gate —
+  every fixture through the app's exact letterbox, one runtime, the app's exact post-processing —
+  and CI enforces it, but `pnpm check` does NOT, so it is the gate you can ship past locally. On
+  2026-08-29 a model was swapped, declared verified on two hand-picked benchmarks, committed and
+  pushed; the gate then failed **8 of 20 fixtures**, including one where the new model stopped
+  abstaining on input it should refuse. **The benchmarks you choose yourself are the ones least
+  likely to surprise you.** Run `ml/venv/bin/python ml/golden_frames.py` before vendoring a model,
+  and never reach for `--write-expected` to make a failure go away — re-pinning is for a change you
+  have already explained, not a way to turn CI green.
 - **Which machine renders, which machine trains** (measured 2026-08-29). **Render on
   `render-host`** — M2 Ultra, 16 performance cores, and it already has Blender 4.2.1, the 200
   HDRIs and `~/cubus-ml/venv`; it is where every earlier dataset was rendered. 2.7 img/s, so a
