@@ -54,7 +54,7 @@ test('the solution is cleared alongside its verdict everywhere', () => {
 
 test('the solver no longer routes through cubing.js', () => {
   // cubing's API cannot express a length bound, progressive results or cancellation, so solving
-  // moved to the vendored min2phase. Leaving the old call in would mean two solvers disagreeing.
+  // moved to the two-phase engine. Leaving the old call in would mean two solvers disagreeing.
   assert.doesNotMatch(app, /experimentalSolve3x3x3IgnoringCenters/,
     'app.js still calls cubing.js to solve');
   assert.match(app, /createSolveClient/, 'and must use the worker client instead');

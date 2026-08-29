@@ -1,5 +1,5 @@
 // <cubus-cube> — the cubus 3x3x3 renderer. Draws only: state and solving stay with
-// cubejs / the vendored min2phase search. Two ways in, both valid by construction:
+// cubejs / the two-phase search. Two ways in, both valid by construction:
 //   facelets="…54 chars, URFDLB order…"   paint from a scanner/solver state
 //   scramble="R U' F2 …"                  apply moves to a solved cube
 // alg="R U R' U' …" is the animatable solution; play() / step() / reset() drive it.

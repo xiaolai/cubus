@@ -1,18 +1,18 @@
 // How short a solution to ask for, and how to keep asking for shorter.
 //
 // The learner-facing knob is a LENGTH, not an effort. "Twenty moves or fewer" is a thing a
-// person can hold; "two hundred thousand phase-two probes" is not. min2phase has exactly that
-// knob — `solLen`, which refuses any solution not shorter than it — and it stops the moment the
-// target is met, which makes asking for a length about two orders of magnitude cheaper than
-// reaching the same length by searching harder. Measured in dev-docs/solver-move-count.md.
+// person can hold; "fifty million search nodes" is not. The engine has exactly that knob —
+// `solLen`, which refuses any solution not shorter than it — and it stops the moment the
+// target is met, which makes asking for a length far cheaper than reaching the same length by
+// searching harder. Measured in dev-docs/solver-move-count.md.
 //
 // Two facts from that note shape everything here:
 //
-//   * **A first answer is nearly free.** Loosely bounded, min2phase returns in ~3 ms. So there
+//   * **A first answer is nearly free.** Loosely bounded, the engine returns in ~25 ms. So there
 //     is never a reason to show a person nothing. Every search starts by putting an answer on
 //     screen and then improving it, which also dissolves the tail — at the <= 20 tier the
-//     median is 6 ms but the worst of 200 was 1.1 s, and nobody should watch a spinner for that
-//     when a 21-move answer was available immediately.
+//     median descent is ~30 ms but the worst of 40 was 0.65 s, and nobody should watch a
+//     spinner for that when a 21-move answer was available immediately.
 //   * **The tiers are not all the same kind of promise.** God's number is 20, so a <= 20
 //     solution always exists. <= 18 does not: roughly 3.5% of positions are optimally 19 or 20,
 //     and for those 18 moves is impossible rather than expensive. A tier that cannot always be
@@ -20,22 +20,33 @@
 //     part of every result and never inferred from the move count alone.
 //
 // Pure: no DOM, no storage, no globals, no worker. The search itself is injected, so this is
-// testable against a fake and the same code drives the real min2phase.
+// testable against a fake and the same code drives the real engine. The two protocol imports
+// below are constants and a counter, not behavior — the injected-solve seam stays.
 
-/** The rungs, in the order a learner climbs them. `target: null` means "no target — keep going". */
+import { LOOSEST_BOUND, movesIn, validateAnswer } from './solver-engine.js';
+
+/** The rungs, in the order a learner climbs them. `target: null` means "no target — keep
+ *  going". Each rung is frozen too: a mutated target would silently move every search's
+ *  goalposts. */
 export const TIERS = Object.freeze([
-  { name: 'twenty', target: 20 },
-  { name: 'nineteen', target: 19 },
-  { name: 'eighteen', target: 18 },
-  { name: 'shortest', target: null },
+  Object.freeze({ name: 'twenty', target: 20 }),
+  Object.freeze({ name: 'nineteen', target: 19 }),
+  Object.freeze({ name: 'eighteen', target: 18 }),
+  Object.freeze({ name: 'shortest', target: null }),
 ]);
 
-/** The loose bound the first attempt uses. min2phase's own default; ~3 ms, always succeeds. */
-const FIRST_BOUND = 23;
+/** The loose bound the first attempt uses: the engine's own ceiling, imported so the two
+ *  halves of the protocol cannot drift. Accepts anything up to 22 moves; ~25 ms, always
+ *  succeeds. */
+const FIRST_BOUND = LOOSEST_BOUND;
 
-/** Probes per attempt. A budget in probes rather than milliseconds, so a slow phone and a fast
- *  laptop do the same amount of work and only the waiting differs. */
-export const DEFAULT_PROBE_BUDGET = 2_000_000;
+/** Search nodes per attempt. A budget in the engine's own deterministic unit rather than in
+ *  milliseconds, so a slow phone and a fast laptop do the same amount of work and only the
+ *  waiting differs. ~20 ns each on a laptop, so ~1 s per attempt at worst — and only a FAILING
+ *  attempt at a tight tier ever spends it all; every met target stops early. Chosen by the
+ *  ladder in dev-docs/solver-move-count.md §7: at n=40 a 4x budget moved no tier's success
+ *  rate and only stretched the worst wait, so the smaller budget with the better tail ships. */
+export const DEFAULT_PROBE_BUDGET = 50_000_000;
 
 export function tierByName(name) {
   const tier = TIERS.find((t) => t.name === name);
@@ -51,20 +62,19 @@ export const STOPPED = Object.freeze({
   CANCELLED: 'cancelled',  // the person stopped it
 });
 
-const movesIn = (alg) => (alg.trim() ? alg.trim().split(/\s+/).length : 0);
-
 /**
  * Progressively shorten a solution, yielding every improvement.
  *
  * `solve(facelets, { solLen, probeMax })` must return an algorithm shorter than `solLen`, or
- * null when it cannot find one within `probeMax`. That is min2phase's contract; the adapter
- * around it turns its `Error N` strings into null.
+ * null when it cannot find one within `probeMax`. That is the engine's contract, enforced at
+ * the boundary by lib/solver-engine.js.
  *
  * Yields `{ alg, moves, target, met, stopped }` — `stopped` is null while still improving.
  * The first yield happens after one loose search, so there is always something to show.
  *
- * @throws if the very first, loosest search fails. That is not a budget problem: it means the
- *         state is unsolvable or the solver is broken, and either way there is nothing to show.
+ * @throws if the very first, loosest search fails — the state is unsolvable, the solver is
+ *         broken, or the budget was too small even for the loose search. Either way there is
+ *         nothing to show, which is what makes it an error and not a result.
  */
 export async function* refine(facelets, {
   solve,
@@ -72,41 +82,75 @@ export async function* refine(facelets, {
   probeBudget = DEFAULT_PROBE_BUDGET,
   signal = null,
 } = {}) {
-  const { target } = typeof tier === 'string' ? tierByName(tier) : tier;
+  const { target } = typeof tier === 'string' ? tierByName(tier) : (tier ?? {});
+  if (target !== null && (!Number.isInteger(target) || target < 1)) {
+    // A malformed tier object would otherwise become target undefined and search for nothing
+    // meaningful, quietly.
+    throw new TypeError(`refine: tier target ${target} is neither null nor a positive integer`);
+  }
   if (typeof solve !== 'function') throw new TypeError('refine needs a solve function');
+  if (!Number.isSafeInteger(probeBudget) || probeBudget < 1) {
+    // NaN or Infinity would pass straight through to the engine's termination check.
+    throw new TypeError(`refine: probeBudget ${probeBudget} is not a positive integer`);
+  }
+  // Cancelled before anything was searched: there is nothing to show, so nothing is yielded.
+  if (signal?.aborted) return;
 
   const first = await solve(facelets, { solLen: FIRST_BOUND, probeMax: probeBudget });
-  if (!first) {
-    throw new Error('solver found no solution at all — the state is unsolvable or the solver is broken');
+  if (first === null) {
+    throw new Error(
+      'solver found no solution at all — the state is unsolvable, the solver is broken, or ' +
+        'the budget was too small even for the loose first search',
+    );
   }
 
-  let alg = first.trim();
+  let alg = validateAnswer(first, FIRST_BOUND);
   let moves = movesIn(alg);
-  const met = () => target !== null && moves <= target;
+  /** One yield's worth of truth, derived in exactly one place. */
+  const snapshot = (stopped) => ({
+    alg,
+    moves,
+    target,
+    met: target !== null && moves <= target,
+    stopped,
+  });
 
-  // The target may already be satisfied by the free answer, which at the <= 20 tier is most of
-  // the time. Nothing further is searched in that case.
-  if (met()) {
-    yield { alg, moves, target, met: true, stopped: STOPPED.MET };
+  // A zero-move answer is a solved cube: any numeric target is met, and "shortest" cannot
+  // improve on nothing. Either way the search is over before it starts.
+  if (moves === 0) {
+    yield snapshot(target === null ? STOPPED.EXHAUSTED : STOPPED.MET);
     return;
   }
-  yield { alg, moves, target, met: false, stopped: null };
+
+  // The target may already be satisfied by the free answer, which at the <= 20 tier is most of
+  // the time — and a met target is reported met even if an abort raced it: what was achieved
+  // is not undone by cancelling further work. Otherwise an abort that landed DURING the search
+  // ends things here, with the answer in hand — never after yielding one more in-progress step.
+  if (target !== null && moves <= target) {
+    yield snapshot(STOPPED.MET);
+    return;
+  }
+  if (signal?.aborted) {
+    yield snapshot(STOPPED.CANCELLED);
+    return;
+  }
+  yield snapshot(null);
 
   while (true) {
     if (signal?.aborted) {
-      yield { alg, moves, target, met: met(), stopped: STOPPED.CANCELLED };
+      yield snapshot(STOPPED.CANCELLED);
       return;
     }
     // Ask for strictly shorter than what we have. One move at a time: each answer is a real
     // improvement worth showing, and skipping ahead would throw away the cheap rungs.
     const shorter = await solve(facelets, { solLen: moves, probeMax: probeBudget });
-    if (!shorter) {
+    if (shorter === null) {
       // Out of budget, or out of two-phase solutions. Either way the answer we have stands,
       // and if it does not meet the target we say so rather than presenting it as if it did.
-      yield { alg, moves, target, met: met(), stopped: STOPPED.EXHAUSTED };
+      yield snapshot(STOPPED.EXHAUSTED);
       return;
     }
-    const nextAlg = shorter.trim();
+    const nextAlg = validateAnswer(shorter, moves);
     const nextMoves = movesIn(nextAlg);
     if (nextMoves >= moves) {
       // The solver broke its own contract. Refusing here rather than yielding it keeps the one
@@ -115,23 +159,21 @@ export async function* refine(facelets, {
     }
     alg = nextAlg;
     moves = nextMoves;
-    if (met()) {
-      yield { alg, moves, target, met: true, stopped: STOPPED.MET };
+    if (target !== null && moves <= target) {
+      yield snapshot(STOPPED.MET);
       return;
     }
-    yield { alg, moves, target, met: false, stopped: null };
+    // An improvement that arrived alongside an abort is kept — it is real — but it ends the
+    // progression as CANCELLED rather than pretending the search is still going.
+    if (signal?.aborted) {
+      yield snapshot(STOPPED.CANCELLED);
+      return;
+    }
+    yield snapshot(null);
   }
 }
 
-/**
- * The last result of `refine` — for callers that only want the answer, not the improvements.
- * Still runs the whole progression, so it is the slow path by design.
- */
-export async function solveToTier(facelets, options) {
-  let last = null;
-  for await (const step of refine(facelets, options)) last = step;
-  return last;
-}
+
 
 /**
  * What to tell someone about a finished search.
@@ -143,7 +185,9 @@ export async function solveToTier(facelets, options) {
 export function describe(result) {
   if (!result) return null;
   const { moves, target, met, stopped } = result;
-  if (target === null) return { key: 'solve.shortestFound', moves, final: stopped !== null };
-  if (met) return { key: 'solve.targetMet', moves, target };
-  return { key: 'solve.targetMissed', moves, target };
+  // `stopped` rides along so a caller can tell a cancelled search from an exhausted one —
+  // "you stopped it" and "I ran out" are different things to say, even over the same alg.
+  if (target === null) return { key: 'solve.shortestFound', moves, final: stopped !== null, stopped };
+  if (met) return { key: 'solve.targetMet', moves, target, stopped };
+  return { key: 'solve.targetMissed', moves, target, stopped };
 }

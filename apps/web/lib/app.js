@@ -1,11 +1,12 @@
 // Cubus app controller. Renders the designed multi-screen shell and wires it to the real
-// engine: cubejs (independent oracle + facelet parsing + validity), the vendored min2phase in a
+// engine: cubejs (independent oracle + facelet parsing + validity), the two-phase solver in a
 // worker (solving, and the scrambles it inverts), and the YOLO camera scanner. The 3D cube is
 // <cubus-cube> — it draws only; state and solving stay here.
 
 import { summarize, times } from './solve-stats.js';
 import { TIERS, describe, refine } from './solve-target.js';
 import { createSolveClient, spawnSolveWorker } from './solve-client.js';
+import { LOOSEST_BOUND } from './solver-engine.js';
 import { randomCube } from './random-state.js';
 import { fromCube } from './cube-pieces.js';
 import { solveByMethod } from './method-solver.js';
@@ -302,7 +303,7 @@ const TIER_BLURB = {
   shortest: 'Keeps looking for a shorter one until you move on',
 };
 
-// ---- solver pipeline (cubejs oracle + min2phase in a worker), lazy-loaded ---------------------
+// ---- solver pipeline (cubejs oracle + the two-phase engine in a worker), lazy-loaded ----------
 let Cube = null, solverReady = false;
 const invMove = (m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : m + "'");
 
@@ -352,6 +353,9 @@ function ingestFacelets(f) {
 
 /** Derive setupAlg/solvable from the stored facelets. Idempotent; cheap after the first call.
  *  Every reader of `solvable` or `setupAlg` must go through here first. */
+/** An algorithm string as its move list — the one tokenizer both solve paths share. */
+const movesOf = (alg) => (alg.trim() ? alg.trim().split(/\s+/) : []);
+
 function deriveCube() {
   const c = state.cube;
   if (c.derived) return c;
@@ -371,7 +375,7 @@ function deriveCube() {
     // under the solved cube reading 0 / 0, its done tick already lit.
     if (cube.isSolved()) { c.setupAlg = ''; c.solvable = false; return c; }
     const sol = cube.solve();
-    const moves = sol.trim() ? sol.trim().split(/\s+/) : [];
+    const moves = movesOf(sol);
     c.setupAlg = moves.slice().reverse().map(invMove).join(' ');
     c.solvable = moves.length > 0;
   } catch { c.setupAlg = ''; c.solvable = false; }
@@ -384,8 +388,8 @@ function setFacelets(f) {
   deriveCube();
 }
 
-// The solver worker, made once and kept. Building min2phase's pruning tables costs ~260 ms, so
-// a client per solve would pay it every time (dev-docs/solver-move-count.md).
+// The solver worker, made once and kept. Building the engine's pruning tables costs ~0.5-2.6 s
+// (dev-docs/solver-move-count.md §7), so a client per solve would pay it every time.
 let solveClient = null;
 const solverWorker = () => (solveClient ??= createSolveClient({ spawn: spawnSolveWorker }));
 
@@ -398,7 +402,7 @@ const solverWorker = () => (solveClient ??= createSolveClient({ spawn: spawnSolv
  */
 function finishSolve(c, alg) {
   const solution = alg;
-  const moves = solution.trim() ? solution.trim().split(/\s+/) : [];
+  const moves = movesOf(solution);
   // Oracle cross-check: only a definite refutation (parses AND does not solve) blocks.
   let verified = null;
   try { verified = Cube.fromString(c.facelets).move(solution).isSolved(); } catch (err) {
@@ -450,7 +454,7 @@ async function solve({ onImprovement } = {}) {
     const lesson = solveByMethod(fromCube(Cube.fromString(c.facelets)), { level: settings.teachLevel });
     c.methodSteps = lesson.steps;
     // Which step each move belongs to, so the walk can say why the move you are on is there.
-    c.moveStep = lesson.steps.flatMap((step, i) => step.alg.trim().split(/\s+/).map(() => i));
+    c.moveStep = lesson.steps.flatMap((step, i) => movesOf(step.alg).map(() => i));
     c.solveResult = null; // a lesson has no length target to have met or missed
     onImprovement?.({ moves: lesson.moveCount, met: true, target: null, stopped: null, alg: lesson.alg });
     return finishSolve(c, lesson.alg);
@@ -1206,7 +1210,7 @@ let currentScramble = '';
  *  answer averaged 21.5, which is a longer thing to type in than it needs to be. Under 20 is
  *  reached on every cube in a few milliseconds (dev-docs/solver-move-count.md). */
 const SCRAMBLE_BOUND = 21;
-const SCRAMBLE_PROBES = 2_000_000;
+const SCRAMBLE_PROBES = 50_000_000;
 
 /**
  * A scramble, the way the WCA makes one.
@@ -1216,30 +1220,46 @@ const SCRAMBLE_PROBES = 2_000_000;
  * TURNS would leave a distribution with structure in it, and cubes systematically easier than
  * they look.
  *
- * The solver is min2phase, which is the engine TNoodle — the official WCA scramble program —
- * uses for 3x3. Vendored here with its length bound settable, which is what lets a scramble be
- * asked for at a sensible length rather than however long the search happened to answer.
+ * The solver is our own two-phase engine (lib/two-phase.js), whose length bound is what lets
+ * a scramble be asked for at a sensible length rather than however long the search happened
+ * to answer.
  *
- * Returns the scrambled facelets and leaves the alg that reaches them in `currentScramble`.
+ * Returns `{ facelets, alg }` — the scrambled state and the scramble that reaches it — and
+ * mirrors `alg` into `currentScramble` for the cross-screen readers (the solve record). Only
+ * the LATEST call writes the mirror: two overlapping requests once let the slower, staler one
+ * overwrite the scramble the screen was already showing. Callers that need the pair use the
+ * return value, which is always self-consistent.
  */
+let scrambleSeq = 0;
 async function randomScramble() {
-  if (!solverReady) return '';
+  if (!solverReady) return { facelets: '', alg: '' };
+  const seq = ++scrambleSeq;
   const cube = randomCube(Cube);
   const facelets = cube.asString();
   const client = solverWorker();
   // The bound is a preference, not a requirement: a scramble that is one move longer is still a
   // perfectly good scramble, and refusing to produce one at all would be much worse. Falling
   // back is why this asks twice rather than once.
-  let alg = await client.solve(facelets, { solLen: SCRAMBLE_BOUND, probeMax: SCRAMBLE_PROBES });
-  alg ??= await client.solve(facelets, { solLen: 23, probeMax: SCRAMBLE_PROBES });
-  if (!alg) {
+  let solution = await client.solve(facelets, { solLen: SCRAMBLE_BOUND, probeMax: SCRAMBLE_PROBES });
+  solution ??= await client.solve(facelets, { solLen: LOOSEST_BOUND, probeMax: SCRAMBLE_PROBES });
+  if (solution === null) {
     // Not a budget problem — the loose bound always answers. Something is wrong with the solver,
     // and a scramble screen showing an empty string would look like a solved cube.
-    currentScramble = '';
+    if (seq === scrambleSeq) currentScramble = '';
     throw new Error('scramble: the solver could not solve a state it generated');
   }
-  currentScramble = alg.trim() ? alg.trim().split(/\s+/).reverse().map(invMove).join(' ') : '';
-  return facelets;
+  const alg = movesOf(solution).reverse().map(invMove).join(' ');
+  // The oracle check the solve path gets in finishSolve, for the scramble path: the alg must
+  // actually reach the state it is paired with, or the walk would march to a different cube
+  // than the one every label describes. Cheap (~µs), and a wrong pair fails loudly here.
+  const oracle = new Cube();
+  if (alg) oracle.move(alg);
+  if (oracle.asString() !== facelets) {
+    if (seq === scrambleSeq) currentScramble = '';
+    throw new Error('scramble: the alg does not reach the state it was made from');
+  }
+  if (seq === scrambleSeq) currentScramble = alg;
+  return { facelets, alg };
 }
 
 export { state };
@@ -2175,7 +2195,7 @@ const cubeScreen = (screenMode) => {
         // Known by construction, and NOT the cube in your hand. Marking this 'camera' was the bug
         // behind a solved physical cube instantly completing a random solve: the guide accepted
         // the real cube's snapshots as progress through an arrangement it had never been in.
-        adoptCube(await randomScramble(), { physical: false, source: 'generated' });
+        adoptCube((await randomScramble()).facelets, { physical: false, source: 'generated' });
         go('home');
       };
 
@@ -2201,13 +2221,14 @@ const cubeScreen = (screenMode) => {
       try {
         if (scrambling) {
           if (!solverReady && !(await loadSolver())) throw new Error('solver unavailable');
-          // randomScramble() returns the state it lands on and leaves the alg that gets there from
-          // solved in `currentScramble`. That alg is what we walk, so `setup` stays empty and the
-          // cube starts solved. `target` outlives this block: it is what "Solve this scramble"
-          // hands to Home at the end of the walk.
-          target = await randomScramble();
-          if (!target || !currentScramble) throw new Error('no scramble');
-          setup = ''; alg = currentScramble; moves = alg.trim().split(/\s+/);
+          // randomScramble() returns the state it lands on and the alg that gets there from
+          // solved, as one self-consistent pair. That alg is what we walk, so `setup` stays
+          // empty and the cube starts solved. `target` outlives this block: it is what "Solve
+          // this scramble" hands to Home at the end of the walk.
+          const scramble = await randomScramble();
+          target = scramble.facelets;
+          if (!target || !scramble.alg) throw new Error('no scramble');
+          setup = ''; alg = scramble.alg; moves = movesOf(alg);
           // Per-step states for Follow cube, built the same way the solve path builds its own.
           const b = Cube.fromString(SOLVED);
           steps = [b.asString()];
@@ -2242,8 +2263,9 @@ const cubeScreen = (screenMode) => {
       } else {
         // Just the number, unless the tier asked for something this cube cannot give. Eighteen
         // moves do not exist for every position, so that case is said plainly rather than left
-        // to look like the target was met.
-        setStatus(verdict && verdict.key === 'solve.targetMissed'
+        // to look like the target was met — but only when the search actually EXHAUSTED.
+        // A stopped search proved nothing impossible and must not claim it did.
+        setStatus(verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'
           ? `${total} — ${verdict.target} was not possible here`
           : String(total));
       }
@@ -2648,8 +2670,8 @@ SCREENS.timer = () => {
         // The solver runs in a worker now, so this is a round trip. Nothing else on the screen
         // depends on it, and a failure must not leave the old scramble looking like the new one.
         try {
-          await randomScramble();
-          if (root.isConnected) $('#scr', root).textContent = currentScramble || '—';
+          const { alg } = await randomScramble();
+          if (root.isConnected) $('#scr', root).textContent = alg || '—';
         } catch (err) {
           console.error('scramble failed', err);
           if (root.isConnected) $('#scr', root).textContent = 'could not make a scramble';

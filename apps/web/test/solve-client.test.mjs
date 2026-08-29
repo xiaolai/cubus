@@ -8,8 +8,8 @@ import { test } from 'node:test';
 
 import { CANCELLED_MESSAGE, createSolveClient } from '../lib/solve-client.js';
 
-/** A worker that answers however the test tells it to. */
-function fakeWorker({ reply = (msg) => ({ id: msg.id, alg: 'R U' }), autoReply = true } = {}) {
+/** A worker that answers however the test tells it to, in the tagged reply protocol. */
+function fakeWorker({ reply = (msg) => ({ id: msg.id, ok: true, alg: 'R U' }), autoReply = true } = {}) {
   const listeners = new Map();
   const w = {
     sent: [],
@@ -50,13 +50,13 @@ test('the worker is made once and reused across searches', async () => {
 });
 
 test('null comes back as null — "nothing that short" is an answer, not a failure', async () => {
-  const w = fakeWorker({ reply: (msg) => ({ id: msg.id, alg: null }) });
+  const w = fakeWorker({ reply: (msg) => ({ id: msg.id, ok: true, alg: null }) });
   const client = createSolveClient({ spawn: () => w });
   assert.equal(await client.solve('F'.repeat(54)), null);
 });
 
 test('an error from the worker rejects rather than resolving with junk', async () => {
-  const w = fakeWorker({ reply: (msg) => ({ id: msg.id, error: 'bounds patch did not apply' }) });
+  const w = fakeWorker({ reply: (msg) => ({ id: msg.id, ok: false, error: 'bounds patch did not apply' }) });
   const client = createSolveClient({ spawn: () => w });
   await assert.rejects(() => client.solve('F'.repeat(54)), /bounds patch did not apply/);
 });
@@ -75,7 +75,7 @@ test('a worker that dies rejects everything in flight instead of hanging', async
 });
 
 test('cancelling ends the thread, because a running search cannot be interrupted', async () => {
-  // min2phase is a synchronous loop in compiled code. Ignoring its result would leave a core
+  // the engine is a synchronous search loop. Ignoring its result would leave a core
   // burning for up to half a minute at the tightest tier, so cancel really does terminate.
   const w = fakeWorker({ autoReply: false });
   const client = createSolveClient({ spawn: () => w });
@@ -152,4 +152,63 @@ test('the fallback honours a length bound too', async () => {
     if (realWorker === undefined) delete globalThis.Worker;
     else Object.defineProperty(globalThis, 'Worker', { value: realWorker, configurable: true });
   }
+});
+
+test('a stale event from a replaced worker cannot touch its replacement', async () => {
+  // The regression: both listeners closed over the mutable `worker`, so a delayed error from a
+  // dead worker rejected the NEW worker's requests and nulled it out.
+  const first = fakeWorker({ autoReply: false });
+  const second = fakeWorker();
+  const workers = [first, second];
+  const client = createSolveClient({ spawn: () => workers.shift() });
+
+  const doomed = client.solve('F'.repeat(54));
+  first.fail('gpu process died');
+  await assert.rejects(() => doomed, /solver worker failed/);
+  assert.equal(first.terminated, 1, 'the failed worker is really terminated, not leaked');
+
+  const answered = client.solve('F'.repeat(54));
+  first.fail('a late death rattle from the corpse');
+  first.emit({ id: 2, ok: false, error: 'stale reply' });
+  assert.equal(await answered, 'R U', 'the replacement answered; the corpse changed nothing');
+});
+
+test('a synchronous send failure rejects and leaves no pending entry behind', async () => {
+  const w = fakeWorker();
+  w.postMessage = () => {
+    throw new Error('DataCloneError, say');
+  };
+  const client = createSolveClient({ spawn: () => w });
+  await assert.rejects(() => client.solve('F'.repeat(54)), /DataCloneError/);
+  assert.equal(client.idle, true, 'the failed request must not haunt the bookkeeping');
+});
+
+test('a malformed reply rejects the search instead of resolving junk', async () => {
+  // ok is the tag: absent ok, or a success carrying a non-string non-null alg, is a protocol
+  // violation — resolving it would hand the screen junk with nothing red anywhere.
+  for (const bad of [{ alg: 'R U' }, { ok: true, alg: 42 }, { ok: true, alg: undefined }]) {
+    const w = fakeWorker({ reply: (msg) => ({ id: msg.id, ...bad }) });
+    const client = createSolveClient({ spawn: () => w });
+    await assert.rejects(() => client.solve('F'.repeat(54)), /malformed reply/, JSON.stringify(bad));
+  }
+});
+
+test('an empty error message still rejects — ok is the tag, not truthiness', async () => {
+  const w = fakeWorker({ reply: (msg) => ({ id: msg.id, ok: false, error: '' }) });
+  const client = createSolveClient({ spawn: () => w });
+  await assert.rejects(() => client.solve('F'.repeat(54)));
+});
+
+test('a spawn that throws rejects the promise instead of escaping solve()', async () => {
+  const client = createSolveClient({ spawn: () => { throw new Error('Worker refused to start'); } });
+  await assert.rejects(() => client.solve('F'.repeat(54)), /Worker refused to start/);
+  assert.equal(client.idle, true);
+});
+
+test('a failure reply whose error is not a string is a malformed reply', async () => {
+  // new Error(Symbol()) throws — after the pending entry was deleted, which would have left
+  // the caller's promise unsettled forever. Non-string reasons are malformed, full stop.
+  const w = fakeWorker({ reply: (msg) => ({ id: msg.id, ok: false, error: Symbol('boom') }) });
+  const client = createSolveClient({ spawn: () => w });
+  await assert.rejects(() => client.solve('F'.repeat(54)), /malformed reply/);
 });
