@@ -78,6 +78,78 @@ it walks you through solving it.
   queries anywhere in `apps/web` — a test enforces it; `@container`, `orientation`, `prefers-*`
   and `pointer` are the allowed queries. Contract, fit rule, fixture table, desktop formulas,
   and the build order: `dev-docs/stage-contract.md`.
+- **A screen changing its SUBJECT is not a navigation** (measured 2026-08-29). Pressing Random on
+  Home re-enters the screen — `stage.innerHTML` is replaced and every element rebuilt — and that
+  was reported as the page jittering. Measured in WebKit, nothing moves: the boxes are identical
+  before and after, and the best-matching pixel shift between consecutive frames is (0,0)
+  everywhere. It was four other things, and each needed its own fix.
+  **Two Kociemba searches for one cube**: `randomScramble()` searched a random state for its
+  scramble alg, then `deriveCube()` searched the same state for the same answer. Fixed by
+  carrying the alg with the cube and CHECKING it rather than trusting it (`reaches` /
+  `takeDerivation`: applying it to a solved cube must reproduce the facelets — microseconds
+  against the search it replaces).
+  **A THIRD search, in cubing.js's worker**: the solution was searched for again, when inverting
+  the setup alg already IS one (`invertAlg` is an involution, so one search yields both). The
+  oracle rule is unchanged, only which side plays which part — cubing.js now VERIFIES a generated
+  cube's solution by applying it to a kpuzzle, no search, ~4 ms. Never let this become cubejs
+  checking cubejs: `state.cube.crossChecked` exists precisely because "solution is set" no longer
+  implies "someone else agreed".
+  **A presented frame with an empty solution**: the screen was replaced first and solved second,
+  so one composited frame showed the new cube beside an empty chip grid under a count reading
+  "working…". The die solves before it swaps now.
+  **A first drawing framed for the wrong view**: ghosts and camera were set after `appendChild`,
+  and `connectedCallback` draws immediately, so the first drawing was fitted to a cube with no
+  ghost faces — visibly larger. It never reached the screen only because the element's own
+  animation frame happened to run later in the same frame as the mount, which is the engine's
+  ordering to change and nothing tested it. Attributes go on before connecting now.
+  Result: the synchronous click went from 55–271 ms to **0–1 ms**, the longest main-thread block
+  from 59–272 ms to 14–33 ms, and Kociemba searches on the UI thread to **zero**.
+  Pinned by `apps/web/test/screen-swap.test.mjs`, whose assertions are all about a frame that
+  must NOT exist or a search that must NOT run; five of its eight fail against the old code.
+- **`<cubus-cube>` is parked and re-used, not rebuilt** (2026-08-29). It used to dispose on the
+  way out of the DOM and return early on the way back in, so it could never be re-inserted and
+  every screen render built a new WebGL context — 21–24 ms for the same picture. Now
+  `disconnectedCallback` only stops the loop, `dispose()` is explicit, and `recycle()` puts every
+  observed attribute back to its default; `app.js` parks exactly one between renders, so a whole
+  session runs on **one** GL context. Three things this rests on, all load-bearing: a re-used
+  element keeps its LISTENERS, so anything a mount adds to it carries `screenAbort`'s signal or it
+  arrives at the next screen still driving the last one's DOM; a detached, unparked cube releases
+  itself on the next tick, because a quiet GL-context leak is worse than a rebuild; and
+  `isRenderer()` gates the whole thing, because until `vendor/cubus-cube.js` has upgraded the tag
+  it is a plain unknown element — assuming otherwise took out 21 tests at once, all one mechanism.
+- **Rolling a scramble is the worker's job, and the worker warms before it is needed**
+  (2026-08-29). cubejs's two-phase search blocks whichever thread runs it for 2–196 ms — the
+  spread is the search's, not the machine's — so it moved to `lib/scramble-worker.js`, which
+  rolls one cube ahead of the press. Two things about it are deliberate and easy to undo by
+  accident. Its own copy of the Kociemba tables costs **~34 MB and 3–6 s to build**, so it is
+  started by `warmRoller()` from the screens that can actually roll (the cube screen with a die,
+  Timer) and never by a session that opens neither. And it is asked for a cube only once it has
+  reported ready — a cold worker is slower than this thread, so until then `schedulePreroll()`
+  rolls here, which is why a press in the first few seconds after launch can still cost a search.
+  What comes back is untrusted input, checked with `reaches()` before it can become the cube on
+  screen; a missing or broken Worker falls back to rolling here — slower, never wrong, and a test
+  denies the worker to prove it.
+- **A screen takes a new subject in place; only a new COMPOSITION is a new screen** (2026-08-29).
+  `renderScreen()` was the app's only way to say "something about the cube changed", so a dozen
+  callers destroyed and rebuilt the whole screen to change one fact about it — the die, both
+  reconnect answers, the silence report, the snapshot fallback. The app had already drawn this
+  line once, for `liveUpdate` ("a fresh scan repaints rather than re-mounting — which on the cube
+  screen would restart an animation the user is halfway through"), and then left every
+  subject change on the wrong side of it. `refreshScreen()` is the missing half: a screen may
+  offer `update()`, and one that cannot take the change in place returns false and is rebuilt
+  exactly as before. `cubeScreen`'s mount defines everything once and `loadWalk()` replaces the
+  walk underneath it; `walking` flipping is still a rebuild, because with no walk there is nowhere
+  to put one. Longest main-thread block per press: **9–13 ms**, inside a single 60 Hz frame.
+  Three traps, each of which was a real bug before it was a comment. **Commit after the freshness
+  check, never before**: two loads can overlap (a reconnect answered while the die is still
+  solving), and assigning the shared `moves`/`steps`/`target` inside the search left the DOM
+  showing one cube while every closure that reads them held the other. **`beginWalk()` runs before
+  the search, not after**: the moment the subject changes the old chips describe a cube that is no
+  longer there, and where the answer is already known nothing yields in between, so no frame is
+  ever painted in that state. **The heading and the open question are not part of the walk** — they
+  are written synchronously, or a reconnect on a screen with no solver keeps asking a question the
+  user has answered. Per-walk state is `let` at mount scope on purpose: a `const` there puts the
+  app straight back to needing a new screen for a new cube.
 - **Verification is the contract**: a claim in a comment or a doc must be backed by a test that
   fails when the claim stops being true. The habit that mattered most on the driver — assert what
   must NOT happen, not only what should — applies just as well to a scan and a solve.
