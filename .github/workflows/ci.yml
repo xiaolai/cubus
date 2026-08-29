@@ -92,6 +92,13 @@ jobs:
       - name: desktop — stage arithmetic
         run: cargo test -p cubus-desktop --lib
 
+      # The optimal solver's §7 verification bar (histograms, Bellman over all 173M entries,
+      # superflip triple, metric contract, ball shells, geodesic fixtures to L=9, cancellation,
+      # artifact corruption). Release profile because table generation is BFS over 88M entries —
+      # debug would turn ~90 s into many minutes.
+      - name: optimal solver plan checks (release)
+        run: cargo test -p optimal-solver --release
+
   # The golden-frame parity gate (dev-docs/native-capture-and-inference-plan.md, Phase 4). Every
   # runtime must read the 20 committed fixtures exactly as ml/golden/expected.json pins it, or a
   # model/runtime has drifted from the one checkpoint. Split by platform: the runtimes that run on
