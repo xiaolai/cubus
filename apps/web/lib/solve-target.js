@@ -2,9 +2,9 @@
 //
 // The learner-facing knob is a LENGTH, not an effort. "Twenty moves or fewer" is a thing a
 // person can hold; "fifty million search nodes" is not. The engine has exactly that knob —
-// `solLen`, which refuses any solution not shorter than it — and it stops the moment the
-// target is met, which makes asking for a length far cheaper than reaching the same length by
-// searching harder. Measured in dev-docs/solver-move-count.md.
+// `solLen`, which refuses any solution not shorter than it — and the full budget stops being
+// spent the moment the target is met, which makes asking for a length far cheaper than
+// reaching the same length by searching harder. Measured in dev-docs/solver-move-count.md.
 //
 // Two facts from that note shape everything here:
 //
@@ -18,6 +18,12 @@
 //     and for those 18 moves is impossible rather than expensive. A tier that cannot always be
 //     met must say so rather than quietly hand back something longer, which is why `met` is
 //     part of every result and never inferred from the move count alone.
+//   * **The target is a ceiling, not a stopping place.** A cube a few turns from solved has a
+//     few-move solution, and handing it twenty moves because twenty was the promise is
+//     indefensible — the day this was noticed, a 7-turn cube was answered with 20. So once the
+//     target is met the search keeps asking for shorter, at a much smaller budget: an easy cube
+//     descends to its real answer almost instantly, and a hard cube pays one ~40 ms failed ask
+//     and stops. The full budget is only ever spent ABOVE the target.
 //
 // Pure: no DOM, no storage, no globals, no worker. The search itself is injected, so this is
 // testable against a fake and the same code drives the real engine. The two protocol imports
@@ -47,6 +53,11 @@ const FIRST_BOUND = LOOSEST_BOUND;
  *  ladder in dev-docs/solver-move-count.md §7: at n=40 a 4x budget moved no tier's success
  *  rate and only stretched the worst wait, so the smaller budget with the better tail ships. */
 export const DEFAULT_PROBE_BUDGET = 50_000_000;
+
+/** The free-improvement budget: once the target is met, further asks spend only this. Small
+ *  enough that a hard cube's one failed ask costs ~40 ms; large enough that an easy cube — for
+ *  which every rung down to its real answer is cheap by definition — descends all the way. */
+export const BONUS_BUDGET = 2_000_000;
 
 export function tierByName(name) {
   const tier = TIERS.find((t) => t.name === name);
@@ -80,6 +91,7 @@ export async function* refine(facelets, {
   solve,
   tier = 'twenty',
   probeBudget = DEFAULT_PROBE_BUDGET,
+  bonusBudget = BONUS_BUDGET,
   signal = null,
 } = {}) {
   const { target } = typeof tier === 'string' ? tierByName(tier) : (tier ?? {});
@@ -92,6 +104,9 @@ export async function* refine(facelets, {
   if (!Number.isSafeInteger(probeBudget) || probeBudget < 1) {
     // NaN or Infinity would pass straight through to the engine's termination check.
     throw new TypeError(`refine: probeBudget ${probeBudget} is not a positive integer`);
+  }
+  if (!Number.isSafeInteger(bonusBudget) || bonusBudget < 1) {
+    throw new TypeError(`refine: bonusBudget ${bonusBudget} is not a positive integer`);
   }
   // Cancelled before anything was searched: there is nothing to show, so nothing is yielded.
   if (signal?.aborted) return;
@@ -122,32 +137,34 @@ export async function* refine(facelets, {
     return;
   }
 
-  // The target may already be satisfied by the free answer, which at the <= 20 tier is most of
-  // the time — and a met target is reported met even if an abort raced it: what was achieved
-  // is not undone by cancelling further work. Otherwise an abort that landed DURING the search
-  // ends things here, with the answer in hand — never after yielding one more in-progress step.
-  if (target !== null && moves <= target) {
-    yield snapshot(STOPPED.MET);
-    return;
-  }
+  // Whether the target is already satisfied — which at the <= 20 tier the free answer usually
+  // is. A met target does not end the search any more: it only drops the budget to the bonus
+  // rate, so an easy cube keeps descending to its real answer while a hard cube stops after
+  // one cheap failed ask.
+  const met = () => target !== null && moves <= target;
+  // Why a terminal stop reads the way it does: a met target is reported MET whatever ended the
+  // descent — the promise was kept, and an abort or an exhausted bonus ask only ended the free
+  // extras. CANCELLED and EXHAUSTED are for searches stopped short of the promise.
+  const endReason = (whileSearching) => (met() ? STOPPED.MET : whileSearching);
+
   if (signal?.aborted) {
-    yield snapshot(STOPPED.CANCELLED);
+    yield snapshot(endReason(STOPPED.CANCELLED));
     return;
   }
   yield snapshot(null);
 
   while (true) {
     if (signal?.aborted) {
-      yield snapshot(STOPPED.CANCELLED);
+      yield snapshot(endReason(STOPPED.CANCELLED));
       return;
     }
     // Ask for strictly shorter than what we have. One move at a time: each answer is a real
     // improvement worth showing, and skipping ahead would throw away the cheap rungs.
-    const shorter = await solve(facelets, { solLen: moves, probeMax: probeBudget });
+    const shorter = await solve(facelets, { solLen: moves, probeMax: met() ? bonusBudget : probeBudget });
     if (shorter === null) {
       // Out of budget, or out of two-phase solutions. Either way the answer we have stands,
       // and if it does not meet the target we say so rather than presenting it as if it did.
-      yield snapshot(STOPPED.EXHAUSTED);
+      yield snapshot(endReason(STOPPED.EXHAUSTED));
       return;
     }
     const nextAlg = validateAnswer(shorter, moves);
@@ -159,14 +176,10 @@ export async function* refine(facelets, {
     }
     alg = nextAlg;
     moves = nextMoves;
-    if (target !== null && moves <= target) {
-      yield snapshot(STOPPED.MET);
-      return;
-    }
     // An improvement that arrived alongside an abort is kept — it is real — but it ends the
-    // progression as CANCELLED rather than pretending the search is still going.
+    // progression rather than pretending the search is still going.
     if (signal?.aborted) {
-      yield snapshot(STOPPED.CANCELLED);
+      yield snapshot(endReason(STOPPED.CANCELLED));
       return;
     }
     yield snapshot(null);
