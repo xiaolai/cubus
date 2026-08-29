@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { averageOf, best, byDay, summarize, times } from '../lib/solve-stats.js';
+import { averageOf, best, byDay, summarize, times, turnRate, cubeTimedCount } from '../lib/solve-stats.js';
 
 const solve = (time, extra = {}) => ({ time: String(time), ...extra });
 
@@ -154,4 +154,48 @@ test('summarize agrees with the parts it is made of', () => {
   assert.equal(s.ao5, averageOf(list, 5));
   assert.equal(s.ao12, averageOf(list, 12));
   assert.equal(s.ao100, null, 'twelve solves is not an ao100');
+});
+
+// ── turn rate: the statistic phase 5 exists for, and the one it may not invent ─────────────────
+
+test('turn rate comes only from cube-timed solves, never from hand-timed ones', () => {
+  const solves = [
+    { time: '10.00', source: 'cube', moves: 50 },
+    { time: '20.00', source: 'manual' },          // a click on a clock, not a move stream
+    { time: '30.00' },                             // older record with no source at all
+  ];
+  const r = turnRate(solves);
+  assert.equal(r.solves, 1, 'only the cube-timed one counts');
+  assert.equal(r.moves, 50);
+  assert.equal(r.tps, 5, '50 moves / 10 s');
+});
+
+test('turn rate is null — not zero, not estimated — with no cube-timed solves', () => {
+  assert.equal(turnRate([{ time: '12.00', source: 'manual' }]), null);
+  assert.equal(turnRate([]), null);
+  assert.equal(turnRate(null), null);
+});
+
+test('a cube-timed record missing its move count is not counted', () => {
+  // Half a fact is not a fact: without moves there is no rate, and guessing one would be the
+  // invented statistic this whole module exists to have removed.
+  assert.equal(turnRate([{ time: '10.00', source: 'cube' }]), null);
+  assert.equal(turnRate([{ time: '10.00', source: 'cube', moves: 0 }]), null);
+  assert.equal(turnRate([{ time: '10.00', source: 'cube', moves: 'lots' }]), null);
+});
+
+test('turn rate pools the session rather than averaging per-solve rates', () => {
+  // Total moves over total seconds. Averaging each solve's own rate would weight a 5-second
+  // solve equally with a 60-second one.
+  const r = turnRate([
+    { time: '10.00', source: 'cube', moves: 40 },
+    { time: '30.00', source: 'cube', moves: 80 },
+  ]);
+  assert.equal(r.tps, 120 / 40);
+  assert.equal(r.solves, 2);
+});
+
+test('cubeTimedCount says how many, so the card can explain an absent rate', () => {
+  assert.equal(cubeTimedCount([{ time: '1.00', source: 'cube', moves: 5 }, { time: '2.00', source: 'manual' }]), 1);
+  assert.equal(cubeTimedCount([]), 0);
 });
