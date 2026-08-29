@@ -12,7 +12,6 @@ import blenderproc as bproc  # MUST be the ABSOLUTE first line — before any do
 #   blenderproc run generate_cube3d.py -- --output_dir out --hdri_dir hdris --num_poses 8 --res 640 --seed 1
 
 import argparse  # noqa: E402
-import colorsys  # noqa: E402
 import glob  # noqa: E402
 import os  # noqa: E402
 import random  # noqa: E402
@@ -21,16 +20,8 @@ import sys  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cube_colors import cube_palette, shade_sticker  # noqa: E402
 from cube_geometry import FACE_NAMES, stickers  # noqa: E402
-
-BASE_COLORS = [
-    (0.90, 0.90, 0.90),  # 0 white
-    (0.72, 0.06, 0.09),  # 1 red
-    (0.00, 0.55, 0.22),  # 2 green
-    (0.98, 0.80, 0.02),  # 3 yellow
-    (0.95, 0.35, 0.02),  # 4 orange
-    (0.00, 0.24, 0.70),  # 5 blue
-]
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,36 +34,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", choices=["cpu", "gpu"], default="gpu")
     return p.parse_args(argv)
-
-
-def jitter_color(rgb, rng: random.Random, wide: bool) -> list[float]:
-    """Perturb a base colour. `wide` spans brands / fading / white-balance: bigger brightness,
-    hue drift (the red<->orange continuum) and desaturation.
-
-    Crucially, a white-balance cast is added *additively* so it can tint near-neutral colours.
-    White's base saturation is 0, so a purely multiplicative jitter (`s *= k`) leaves it a perfect
-    grey forever — but a real white sticker goes cream under tungsten and bluish under LED. Without
-    this, the model learns "white = neutral grey" and misses tinted real whites (measured: white
-    recall 0.62 on held-out data). The cast is scaled by neutrality (1 - s) so saturated stickers
-    like red are untouched, only whites/pale faces pick up the tint."""
-    r, g, b = rgb
-    h, s, v = colorsys.rgb_to_hsv(r, g, b)
-    if wide:
-        h = (h + rng.uniform(-0.04, 0.04)) % 1.0  # hue drift → red<->orange, blue<->green
-        s = min(max(s * rng.uniform(0.55, 1.1), 0.0), 1.0)  # fading desaturates
-        v = min(max(v * rng.uniform(0.5, 1.3), 0.0), 1.0)  # wider: dingy shadow → blown-out
-    else:
-        v = min(max(v * rng.uniform(0.8, 1.12), 0.0), 1.0)
-        s = min(max(s * rng.uniform(0.85, 1.05), 0.0), 1.0)
-    # White-balance cast: ONLY near-neutral colours (white) adopt a warm (cream) or cool (bluish)
-    # tint. Saturated stickers (red, blue, …) keep their own hue — the cast must not recolour them.
-    if s < 0.15:
-        cast = rng.uniform(0.0, 0.18 if wide else 0.09)
-        if cast > 0.01:
-            h = rng.uniform(0.06, 0.13) if rng.random() < 0.5 else rng.uniform(0.55, 0.66)  # warm|cool
-            s = min(max(s + cast, 0.0), 1.0)
-    r, g, b = colorsys.hsv_to_rgb(h, s, v)
-    return [r, g, b, 1.0]
 
 
 def color_scheme(rng: random.Random) -> callable:
@@ -114,6 +75,9 @@ def build_cube(rng: random.Random, origin=(0.0, 0.0, 0.0)) -> None:
 
     scheme = color_scheme(rng)
     face_ids = {f: scheme(f) for f in FACE_NAMES}
+    # ONE draw of the six pigments for this cube. Per-sticker hue draws were the red<->orange
+    # label-noise bug — see cube_colors.py for the measurement and the physical model.
+    palette = cube_palette(rng, wide)
     for st in stickers():
         color_id = face_ids[st.face][st.row * 3 + st.col]
         tile = bproc.object.create_primitive("PLANE")  # unit plane, corners (±1, ±1, 0)
@@ -128,7 +92,7 @@ def build_cube(rng: random.Random, origin=(0.0, 0.0, 0.0)) -> None:
         m[:3, 3] = np.array(st.center, dtype=float) + o
         tile.set_local2world_mat(m)
         mat = bproc.material.create(f"stk_{st.face}_{st.row}_{st.col}")
-        mat.set_principled_shader_value("Base Color", jitter_color(BASE_COLORS[color_id], rng, wide))
+        mat.set_principled_shader_value("Base Color", shade_sticker(palette[color_id], rng, wide))
         mat.set_principled_shader_value("Roughness", gloss)
         mat.set_principled_shader_value("Specular IOR Level", rng.uniform(0.3, 1.0))
         tile.replace_materials(mat)
