@@ -124,7 +124,15 @@ class CubusCube extends HTMLElement {
   }
 
   connectedCallback() {
-    if (this.scene) return;
+    // Re-inserted, not new: keep the WebGL context and everything hanging off it, and just start
+    // drawing again. Building all of this costs a context, ~150 meshes and a shader compile —
+    // 21-24ms measured — and the app throws its whole screen away on every render, including
+    // renders that are not navigations at all (pressing Random re-enters the screen it is on).
+    // An element that cannot be moved in the DOM is an element that can never be re-used, and
+    // this one could not: the old pair disposed on the way out and returned early on the way
+    // back in, so a second insertion left a live element with a dead renderer and no loop.
+    clearTimeout(this._release);
+    if (this.scene) { this._start(); return; }
     this.style.cssText = 'display:block;width:100%;height:100%;' + (this.style.cssText || '');
 
     const scene = this.scene = new THREE.Scene();
@@ -233,24 +241,19 @@ class CubusCube extends HTMLElement {
     this._ghostVisible();
     this.reset();
 
-    const resize = () => {
+    this._resize = () => {
       const w = this.clientWidth || 1, h = this.clientHeight || 1;
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       this._applyCamera(); // the distance depends on the aspect (see there); it sets _dirty
     };
-    this._ro = new ResizeObserver(resize);
-    this._ro.observe(this);
-    resize();
-
+    this._ro = new ResizeObserver(this._resize);
     // Several of these live on one page — only draw when on screen and moving.
-    this._visible = true;
     this._io = new IntersectionObserver((es) => { this._visible = es.some((e) => e.isIntersecting); }, { threshold: 0 });
-    this._io.observe(this);
 
-    const tick = () => {
-      this._raf = requestAnimationFrame(tick);
+    this._tick = () => {
+      this._raf = requestAnimationFrame(this._tick);
       // The backlog rule, visible or not: at most two turns may exist as pending ANIMATION;
       // everything older completes instantly. A deeper queue means the element was scrolled out
       // (rAF runs, _visible false), the window was occluded (rAF pauses entirely, so this runs
@@ -288,14 +291,67 @@ class CubusCube extends HTMLElement {
       if (moving) this._placeLights();
       if (moving || this._dirty) { this._draw(); this._dirty = false; }
     };
-    tick();
+    this._start();
   }
 
-  disconnectedCallback() {
+  /** Begin drawing into whatever slot this is in now. Idempotent. */
+  _start() {
+    if (this._running || !this.scene) return;
+    this._running = true;
+    this._ro.observe(this);
+    this._io.observe(this);
+    // Assume on screen until the observer says otherwise; it reports asynchronously, and a first
+    // frame skipped for "not visible yet" is a slot that stays empty until something else moves.
+    this._visible = true;
+    this._resize(); // a re-used element is very likely in a differently shaped slot
+    this._dirty = true;
+    this._tick();
+  }
+
+  /** Stop drawing, keeping everything needed to start again. */
+  _stop() {
+    this._running = false;
     cancelAnimationFrame(this._raf);
     this._ro?.disconnect();
     this._io?.disconnect();
+  }
+
+  disconnectedCallback() {
+    this._stop();
+    // Moving an element is a disconnect and a connect in the SAME task, and the app deliberately
+    // parks one between screen renders (app.js, parkCube) — neither may release the context.
+    // But a page gets only so many WebGL contexts, so a cube nobody re-attached and nobody
+    // parked must not sit on one forever: still detached and unparked when the task ends, and it
+    // lets go of itself. Loud default, not a quiet leak.
+    clearTimeout(this._release);
+    this._release = setTimeout(() => { if (!this.isConnected && !this.parked) this.dispose(); }, 0);
+  }
+
+  /** Release the GPU. The element is spent afterwards — connecting it again builds a new one. */
+  dispose() {
+    this._stop();
+    clearTimeout(this._release);
     this.renderer?.dispose();
+    this.renderer?.domElement?.remove();
+    this.scene = this.renderer = this.camera = this.controls = null;
+    this._ghostMeshes = null;
+  }
+
+  /**
+   * Hand this element back for a different screen to use: every observed attribute to its
+   * default, the puzzle solved, the camera back on its fitted mark.
+   *
+   * Removing an attribute is not a shortcut here — it is the reset. `_set()` treats a removal as
+   * "back to the default" and runs the same repaint/refit each one would run if it had been
+   * written, so this cannot drift from what the attributes mean. What removal does NOT cover is
+   * state no attribute owns: an autorotation already accumulated, and a camera the user orbited
+   * away from while no camera attribute was set.
+   */
+  recycle() {
+    for (const name of CubusCube.observedAttributes) this.removeAttribute(name);
+    this.root?.rotation.set(0, 0, 0);
+    this.reset();
+    this._applyCamera();
   }
 
   _num(name, fallback) {
