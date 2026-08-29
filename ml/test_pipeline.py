@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import math
 
+import colorsys
+import random
+
 from coco_to_yolo import DEFAULT_MAP, coco_to_yolo_lines
+from cube_colors import (
+    MIN_RED_ORANGE_SEPARATION,
+    ORANGE,
+    RED,
+    cube_palette,
+    hue_of,
+    shade_sticker,
+)
 from cube_geometry import FACE_NAMES, HALF, RAISE, stickers
 
 
@@ -34,6 +45,61 @@ def test_cube_geometry() -> None:
     print("PASS cube_geometry: 54 stickers, 9/face, all on-surface & within bounds")
 
 
+def test_one_cube_has_one_pigment_per_colour() -> None:
+    """Every sticker of a colour on one cube shares that colour's hue exactly.
+
+    The v3 generator drew hue per STICKER, so a cube's nine reds spanned 13.6 deg of hue on
+    average and 28.2% of cubes contained a red rendered hue-orangier than one of their own
+    oranges — two stickers of the same apparent colour carrying opposite labels. This asserts the
+    thing that made that impossible: per-sticker variation is shading, never hue identity.
+    """
+    rng = random.Random(11)
+    checked = 0
+    for _ in range(200):
+        wide = rng.random() < 0.6
+        palette = cube_palette(rng, wide)
+        for colour, pigment in enumerate(palette):
+            hues = set()
+            for _ in range(9):
+                rgb = tuple(shade_sticker(pigment, rng, wide)[:3])
+                # Hue is UNDEFINED for an achromatic sticker: an untinted white is grey, and
+                # rgb_to_hsv reports 0 for it, which is not a hue that disagrees with anything.
+                # Only stickers carrying actual colour can be asked to agree about it.
+                if colorsys.rgb_to_hsv(*rgb)[1] < 0.02:
+                    continue
+                hues.add(round(hue_of(rgb), 6))
+            if len(hues) <= 1:
+                continue
+            raise AssertionError(f"colour {colour} rendered {len(hues)} different hues on one cube")
+        checked += 1
+    assert checked == 200
+    print("PASS cube_colors: one pigment per colour per cube — shading varies, hue does not")
+
+
+def test_orange_is_never_redder_than_red() -> None:
+    """No real cube's orange is hue-redder than its red, so no rendered one may be either.
+
+    Hoisting the draw alone would not give this: an independent per-cube draw still inverts the
+    pair about 1.4% of the time, and a systematically inverted cube is worse than per-sticker
+    noise, because every sticker in the image then agrees on the wrong thing.
+    """
+    rng = random.Random(29)
+    worst = 1.0
+    for _ in range(2000):
+        wide = rng.random() < 0.6
+        palette = cube_palette(rng, wide)
+        # Compare the extremes actually rendered, not just the pigments.
+        reds = [hue_of(tuple(shade_sticker(palette[RED], rng, wide)[:3])) for _ in range(9)]
+        oranges = [hue_of(tuple(shade_sticker(palette[ORANGE], rng, wide)[:3])) for _ in range(9)]
+        margin = min(oranges) - max(reds)
+        worst = min(worst, margin)
+        assert margin > 0.0, f"a red rendered hue-orangier than an orange (margin {margin})"
+    assert worst >= MIN_RED_ORANGE_SEPARATION - 1e-9, (
+        f"separation floor not honoured: worst margin {worst * 360:.2f} deg"
+    )
+    print(f"PASS cube_colors: orange never redder than red (worst margin {worst * 360:.1f} deg)")
+
+
 def test_coco_to_yolo() -> None:
     # COCO ids are 1-indexed (white=1..blue=6, body=7); DEFAULT_MAP shifts 1..6 → classes 0..5.
     # A 100x200 image: one white (cat 1 → class 0), one red (cat 2 → class 1), one tiny (dropped).
@@ -58,5 +124,7 @@ def test_coco_to_yolo() -> None:
 
 if __name__ == "__main__":
     test_cube_geometry()
+    test_one_cube_has_one_pigment_per_colour()
+    test_orange_is_never_redder_than_red()
     test_coco_to_yolo()
     print("ALL PASS")

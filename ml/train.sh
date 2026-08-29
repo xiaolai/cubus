@@ -3,6 +3,13 @@
 # PyTorch container on the training host (GB10 Blackwell). NGC is used because a plain `pip install
 # torch` on this arm64 box may lack Blackwell (sm_121) kernels; the NGC image ships them.
 #
+# THE TRAINING HOST IS train-host-b, NOT train-host-a. Both are GB10 boxes and the names invite the mistake,
+# so it is written here rather than left to memory: train-host-b has the NGC image cached, every cube
+# dataset, and an idle GPU. train-host-a has none of the three and runs seven resident AI services
+# holding ~20 GB of its GPU, so a job started there contends with live work and re-pulls 20 GB.
+# train-host-b is also NOT on the home LAN (~109 ms), which is why DETACH=1 below is not optional for a
+# multi-hour run.
+#
 # The exact NGC tag is filled in from Alan's container-verification result (the image proven
 # to see the GB10). Override with NGC_IMAGE=... if needed.
 #
@@ -12,6 +19,19 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NGC_IMAGE="${NGC_IMAGE:-nvcr.io/nvidia/pytorch:26.01-py3}"  # arm64; Alan verified: cached on the training host,
                                                             # cuda.is_available()=True, GB10 sm_121, onnx preinstalled
+# Prefer the prebuilt image (ml/Dockerfile.train) when it exists: it has libGL and ultralytics
+# already, so a run touches the network zero times. The raw NGC image still works — it just has to
+# apt/pip first, over a proxy documented as flaky, which is how a run once sat on `apt-get update`
+# for 13 minutes while `docker ps` said "Up" and the GPU sat at 0%.
+TRAIN_IMAGE="${TRAIN_IMAGE:-cube-train:1}"
+if docker image inspect "$TRAIN_IMAGE" >/dev/null 2>&1; then
+  IMAGE="$TRAIN_IMAGE"; PREBUILT=1
+  echo "Using prebuilt image $TRAIN_IMAGE (no network needed)."
+else
+  IMAGE="$NGC_IMAGE"; PREBUILT=0
+  echo "WARNING: $TRAIN_IMAGE not found — falling back to $NGC_IMAGE and installing deps at run time."
+  echo "         Build it once with: docker build -f $HERE/Dockerfile.train -t $TRAIN_IMAGE $HERE"
+fi
 DATASET="${DATASET:?set DATASET to the split dataset dir (contains images/ labels/)}"
 EPOCHS="${EPOCHS:-80}"
 IMGSZ="${IMGSZ:-640}"
@@ -40,15 +60,35 @@ docker run $DFLAG --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   -v "$HERE":/ml -v "$DATASET":/work/dataset \
-  -w /work/dataset "$NGC_IMAGE" bash -lc "
+  -e PREBUILT="$PREBUILT" \
+  -w /work/dataset "$IMAGE" bash -lc "
     set -e
-    rm -rf /work/dataset/runs   # drop any prior (root-owned) run so name=cube isn't auto-incremented
+    # NEVER delete a previous run. /work/dataset is a BIND MOUNT of a real host directory, so this
+    # path deletes the host's weights, and Linux has no Trash to recover them from — each run is
+    # ~6 h of GB10 time. The original intent was only to stop ultralytics auto-incrementing to
+    # cube2/ when a prior root-owned cube/ exists, and moving it aside achieves that without loss.
+    if [ -e /work/dataset/runs/cube ]; then
+      mv /work/dataset/runs/cube /work/dataset/runs/cube.superseded.\$(date +%Y%m%d-%H%M%S)
+    fi
     # Seed pretrained weights into CWD so ultralytics finds them locally — the training host's US-proxy
     # egress fails GitHub TLS downloads intermittently (curl 35), so we train fully offline.
     cp -n /ml/*.pt /work/dataset/ 2>/dev/null || true
-    export DEBIAN_FRONTEND=noninteractive   # apt with stdin from /dev/null must not prompt
-    apt-get update >/dev/null && apt-get install -y libgl1 libglib2.0-0 >/dev/null
-    pip install --no-input ultralytics onnxruntime >/dev/null   # onnx already in the NGC image
+    # Only when running on the raw NGC image. Bounded and NOT silenced: the previous version sent
+    # both to /dev/null with no timeout, so a proxy hang was indistinguishable from training.
+    if [ \"\$PREBUILT\" != \"1\" ]; then
+      export DEBIAN_FRONTEND=noninteractive   # apt with stdin from /dev/null must not prompt
+      if ! ldconfig -p | grep -q libGL.so.1; then
+        echo '--- installing libGL (needed by opencv, which ultralytics pulls) ---'
+        apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update
+        apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+      fi
+      if ! python -c 'import ultralytics' 2>/dev/null; then
+        echo '--- installing ultralytics ---'
+        pip install --no-input --timeout 120 --retries 5 ultralytics onnxruntime
+      fi
+    fi
+    # Fail here, loudly, rather than 6 h later at the export step.
+    python -c 'import ultralytics, cv2' || { echo 'ERROR: training deps unusable'; exit 1; }
     # project MUST live under the mounted /work/dataset, else runs/ (and best.onnx) are written
     # inside the ephemeral container and lost when it exits. plots=False avoids an Arial.ttf fetch.
     yolo detect train model=$MODEL data=/work/dataset/data.yaml \
