@@ -1573,3 +1573,100 @@ test('with a trusted cube at the target, the hand-off solves the cube itself and
     state.cube.facelets = prev.facelets; state.cube.isPhysical = prev.physical; state.cube.source = prev.source;
   }
 });
+
+
+// ── PRD phase 4: the Timer times itself from the cube ──────────────────────────────────────────
+//
+// These exist because phase 4 was built, marked DONE, and then silently lost in the smart-cube
+// removal and restore of 2026-08-26/28 — alone among the seven phases, because it was the only one
+// living entirely inside a screen body with no module and NO TEST. Nothing failed when it vanished.
+// The module's own behaviour is covered in solve-timer.test.mjs; what these cover is the wiring:
+// that the Timer screen actually subscribes to the cube's two streams and acts on them.
+
+test('phase 4: the Timer arms on the scramble, starts on a turn, and stops on solved', async () => {
+  const { state } = await import('../lib/app.js');
+  const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url).href)).default;
+  resetCubeModel(state);
+  try {
+    state.connected = true;
+    state.cubeName = 'GAN-test';
+    state.cube.trusted = true;
+    state.cube.source = 'cube';
+    state.cube.staleWhy = '';
+
+    win.cubusGo('timer');
+    await tick();
+    const clock = win.document.querySelector('#clock');
+    const hint = win.document.querySelector('#timerHint');
+    const scrEl = win.document.querySelector('#scr');
+    assert.ok(clock && hint && scrEl, 'timer screen mounted');
+
+    // The screen generates its scramble once the solver lands. Without one there is nothing to
+    // arm on, so this waits rather than skipping — a skipped precondition is how the whole
+    // feature went missing unnoticed.
+    const t0 = Date.now();
+    while (Date.now() - t0 < 30000 && !/^[URFDLB]/.test(scrEl.textContent || '')) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const scramble = scrEl.textContent || '';
+    assert.match(scramble, /^[URFDLB]/, 'precondition: a scramble was generated');
+
+    // The arrangement that scramble produces, computed independently of the app.
+    const c = Cube.fromString(SOLVED_FACELETS);
+    for (const m of scramble.trim().split(/\s+/)) c.move(m);
+    const target = c.asString();
+
+    // A solved cube is the most tempting wrong thing to arm on, and is explicitly rejected.
+    win.cubusFeed.facelets(SOLVED_FACELETS, 1);
+    await tick();
+    assert.notEqual(hint.textContent, 'Ready — turn to start', 'a solved cube is not the scramble');
+
+    // The target arms it. THIS is the positive assertion: it can only pass if the screen is
+    // subscribed to the cube's snapshot stream.
+    win.cubusFeed.facelets(target, 2);
+    await tick();
+    assert.equal(hint.textContent, 'Ready — turn to start', 'the scramble target arms the clock');
+
+    // The first turn starts it — only possible if the move stream is subscribed too.
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await tick();
+    assert.match(hint.textContent, /cube stops the clock/, 'the first turn starts it');
+
+    // Solved stops it, and the recorded time is the CUBE's span (4200 - 1000), not the host's.
+    const solvesBefore = JSON.parse(win.localStorage.getItem('cubusSolves') || '{"list":[]}').list.length;
+    win.cubusFeed.move({ notation: "R'", serial: 4, cubeTimestamp: 4200, timestamp: Date.now() });
+    win.cubusFeed.facelets(SOLVED_FACELETS, 4);
+    await tick();
+    assert.equal(clock.textContent, '3.20', 'the cube clock decides the number');
+    const saved = JSON.parse(win.localStorage.getItem('cubusSolves') || '{"list":[]}').list;
+    assert.equal(saved.length, solvesBefore + 1, 'the solve was recorded');
+    assert.equal(saved[0].source, 'cube', 'and recorded as cube-timed');
+    assert.equal(saved[0].moves, 2, 'with its move count, which a turn rate needs');
+  } finally { resetCubeModel(state); }
+});
+
+test('phase 4: the Timer releases the cube stream when the screen goes away', async () => {
+  // A torn-down closure that keeps timing is the bug the cleanup exists to prevent — and the same
+  // class of leak that phase 4 fixed for the animation frame.
+  win.cubusGo('timer');
+  await tick();
+  win.cubusGo('home');
+  await tick();
+  // Feeding after teardown must not throw: the screen's handlers are detached, not dangling.
+  assert.doesNotThrow(() => {
+    win.cubusFeed.move({ notation: 'R', serial: 1, cubeTimestamp: 1000, timestamp: Date.now() });
+    win.cubusFeed.facelets(SOLVED_FACELETS, 1);
+  });
+});
+
+
+test('phase 4: every timer-screen sentence goes through t()', async () => {
+  // dev-docs/i18n.md: new user-facing strings go through t() from the day they are written. This
+  // screen was the last one wired, and a raw `say('...')` is invisible until a catalog exists —
+  // by which time the sentence is old and nobody remembers it was skipped.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('SCREENS.timer = () => {'), src.indexOf('SCREENS.settings = () => {'));
+  const raw = [...body.matchAll(/say\((['"])(?!.*\$\{)([A-Z][^'"]{4,})\1\)/g)].map((m) => m[2]);
+  assert.deepEqual(raw, [], `these timer sentences bypass t(): ${raw.join(' | ')}`);
+});

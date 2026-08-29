@@ -117,6 +117,37 @@ export function byDay(solves, now, days = 7) {
   });
 }
 
+/** A solve the CUBE timed, carrying the move count only a move stream can know. Hand-timed solves
+ *  are excluded rather than estimated: a turn rate is a fact about a move stream, and a click on a
+ *  clock is not one. A stopwatch time divided by a guessed move count is exactly the invented
+ *  statistic this module exists to have removed. */
+function cubeTimed(solve) {
+  return (
+    solve?.source === 'cube' &&
+    typeof solve.moves === 'number' &&
+    Number.isFinite(solve.moves) &&
+    solve.moves > 0 &&
+    secondsOf(solve) !== null
+  );
+}
+
+/** Turns per second, over the cube-timed solves only, or null with the reason it is absent.
+ *  @returns {{ tps: number, solves: number, moves: number }|null} */
+export function turnRate(solves) {
+  const list = (Array.isArray(solves) ? solves : []).filter(cubeTimed);
+  if (list.length === 0) return null;
+  const moves = list.reduce((n, s) => n + s.moves, 0);
+  const seconds = list.reduce((n, s) => n + secondsOf(s), 0);
+  if (!(seconds > 0)) return null;
+  return { tps: moves / seconds, solves: list.length, moves };
+}
+
+/** How many of the session's solves a cube timed. Drives the card's explanation of an absent
+ *  turn rate — "pair a cube" is a different sentence from "solve one more". */
+export function cubeTimedCount(solves) {
+  return (Array.isArray(solves) ? solves : []).filter(cubeTimed).length;
+}
+
 /** Everything the Stats screen needs. (Several passes over the list, not one — it is at most a
  *  few hundred records and clarity is worth more here than a fused loop.) */
 export function summarize(solves, now) {
@@ -128,5 +159,7 @@ export function summarize(solves, now) {
     ao12: averageOf(list, 12),
     ao100: averageOf(list, 100),
     week: byDay(list, now),
+    turnRate: turnRate(list),
+    cubeTimed: cubeTimedCount(list),
   };
 }
