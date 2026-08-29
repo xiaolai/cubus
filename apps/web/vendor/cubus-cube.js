@@ -20834,7 +20834,11 @@ var CubusCube = class _CubusCube extends HTMLElement {
     }
   }
   connectedCallback() {
-    if (this.scene) return;
+    clearTimeout(this._release);
+    if (this.scene) {
+      this._start();
+      return;
+    }
     this.style.cssText = "display:block;width:100%;height:100%;" + (this.style.cssText || "");
     const scene = this.scene = new Scene();
     const camera = this.camera = new PerspectiveCamera(30, 1, 0.1, 100);
@@ -20920,23 +20924,19 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._sol = this._parse(this._attrs.alg || "");
     this._ghostVisible();
     this.reset();
-    const resize = () => {
+    this._resize = () => {
       const w = this.clientWidth || 1, h = this.clientHeight || 1;
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       this._applyCamera();
     };
-    this._ro = new ResizeObserver(resize);
-    this._ro.observe(this);
-    resize();
-    this._visible = true;
+    this._ro = new ResizeObserver(this._resize);
     this._io = new IntersectionObserver((es) => {
       this._visible = es.some((e) => e.isIntersecting);
     }, { threshold: 0 });
-    this._io.observe(this);
-    const tick = () => {
-      this._raf = requestAnimationFrame(tick);
+    this._tick = () => {
+      this._raf = requestAnimationFrame(this._tick);
       while (this._queue.length + (this._anim ? 1 : 0) > 2 || !this._visible && (this._anim || this._queue.length)) {
         let a = this._anim;
         if (!a) {
@@ -20969,13 +20969,57 @@ var CubusCube = class _CubusCube extends HTMLElement {
         this._dirty = false;
       }
     };
-    tick();
+    this._start();
   }
-  disconnectedCallback() {
+  /** Begin drawing into whatever slot this is in now. Idempotent. */
+  _start() {
+    if (this._running || !this.scene) return;
+    this._running = true;
+    this._ro.observe(this);
+    this._io.observe(this);
+    this._visible = true;
+    this._resize();
+    this._dirty = true;
+    this._tick();
+  }
+  /** Stop drawing, keeping everything needed to start again. */
+  _stop() {
+    this._running = false;
     cancelAnimationFrame(this._raf);
     this._ro?.disconnect();
     this._io?.disconnect();
+  }
+  disconnectedCallback() {
+    this._stop();
+    clearTimeout(this._release);
+    this._release = setTimeout(() => {
+      if (!this.isConnected && !this.parked) this.dispose();
+    }, 0);
+  }
+  /** Release the GPU. The element is spent afterwards — connecting it again builds a new one. */
+  dispose() {
+    this._stop();
+    clearTimeout(this._release);
     this.renderer?.dispose();
+    this.renderer?.domElement?.remove();
+    this.scene = this.renderer = this.camera = this.controls = null;
+    this._ghostMeshes = null;
+  }
+  /**
+   * Hand this element back for a different screen to use: every observed attribute to its
+   * default, the puzzle solved, the camera back on its fitted mark.
+   *
+   * Removing an attribute is not a shortcut here — it is the reset. `_set()` treats a removal as
+   * "back to the default" and runs the same repaint/refit each one would run if it had been
+   * written, so this cannot drift from what the attributes mean. What removal does NOT cover is
+   * state no attribute owns: an autorotation already accumulated, and a camera the user orbited
+   * away from while no camera attribute was set.
+   */
+  recycle() {
+    for (const name of _CubusCube.observedAttributes) this.removeAttribute(name);
+    this.root?.rotation.set(0, 0, 0);
+    this.reset();
+    this._applyCamera();
   }
   _num(name, fallback) {
     const v = Number(this._attrs[name]);
