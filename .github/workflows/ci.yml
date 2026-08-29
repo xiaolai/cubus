@@ -41,9 +41,6 @@ jobs:
           pnpm --filter cubus-web build:mcp-guest
           pnpm --filter cubus-web build:cube
           pnpm --filter cubus-web build:cubejs
-          # min2phase.js is gitignored rather than committed, so it cannot go stale — but
-          # nothing built it here either, and a test asserts it exists.
-          pnpm --filter cubus-web vendor:min2phase
           git diff --exit-code -- apps/web/vendor/ \
             || { echo "::error::a vendored bundle is behind its source — rebuild and commit it"; exit 1; }
 

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Cubus SPA — camera (YOLO) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",
+  "description": "Cubus SPA \u2014 camera (YOLO) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",
   "scripts": {
     "copy-ort": "node copy-ort.mjs",
     "build:cube": "esbuild lib/cubus-cube.js --bundle --format=esm --target=es2022 --outfile=vendor/cubus-cube.js",
@@ -14,11 +14,9 @@
     "build:dist": "node build.mjs",
     "build:cubejs": "esbuild lib/cubejs-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/cubejs.js",
     "build:mcp-guest": "esbuild lib/tauri-mcp-guest-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/tauri-mcp-guest.js",
-    "vendor:min2phase": "node vendor-min2phase.mjs",
-    "vendor:libs": "pnpm build:cubejs && pnpm vendor:min2phase"
+    "vendor:libs": "pnpm build:cubejs"
   },
   "devDependencies": {
-    "cubing": "^0.63.3",
     "esbuild": "^0.21.5",
     "happy-dom": "^20.11.6",
     "playwright": "1.62.1",
