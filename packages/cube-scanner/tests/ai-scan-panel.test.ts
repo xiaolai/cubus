@@ -227,6 +227,32 @@ describe('ai-scan-panel — a refusal keeps the captures', () => {
     panel.restart();
     expect(last().captured).toHaveLength(0);
   });
+
+  // Two legal cubes are never closer than three stickers, so past ONE misread the nearest legal
+  // cube need not be the user's — pointing would sometimes accuse a sticker that was read right.
+  // The count is still provable, so the count is what gets said. dev-docs/misread-decoding.md.
+  it('with more than one sticker wrong it states the count and accuses nothing', async () => {
+    const shown = facesOf(TRUTH);
+    const badF = [...shown.F];
+    badF[0] = (badF[0]! + 1) % 6;
+    const badR = [...shown.R];
+    badR[2] = (badR[2]! + 2) % 6;
+    for (const face of FACES) {
+      await show(face === 'F' ? badF : face === 'R' ? badR : shown[face]);
+    }
+    await vi.advanceTimersByTimeAsync(CHECK);
+
+    const p = last();
+    expect(completions).toEqual([]);
+    expect(p.captured).toHaveLength(6); // still never wiped
+    expect(p.suspects).toEqual([]); // nothing is accused…
+    expect(p.notice?.title).toBe('More than one sticker looks wrong');
+    expect(p.notice?.body).toContain('%1'); // …and the count arrives as a param, not baked in
+    expect(p.notice?.params?.[0]).toBeGreaterThanOrEqual(2);
+    // Never the old singular, which asserted exactly what the decoder had just ruled out.
+    expect(p.notice?.body).not.toMatch(/A sticker was misread somewhere/);
+    expect(p.notice?.body).not.toMatch(/Tap any sticker/);
+  });
 });
 
 describe('ai-scan-panel — confirmations', () => {
