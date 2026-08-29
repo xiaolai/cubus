@@ -12,6 +12,9 @@
 //     bridge below: FFF6 notifications are forwarded as `cube-packet` events (hex), FFF5
 //     commands come back via `write_fff5`, and the browser-safe gan-driver decodes in the
 //     webview. The browser build reaches the same cube over Web Bluetooth — same seam shape.
+//   - the optimal solver (2026-08-29, src/optimal.rs) — prove a solution minimal. Native
+//     because generating its 86 MB of pattern databases is; the browser answers the same
+//     capability with the two-phase tiers' "shortest found" and the proven library.
 
 // `mobile_entry_point` is the symbol the generated iOS/Android wrappers call. It is a no-op on
 // desktop (the `cfg_attr(mobile, …)` expands to nothing), so it costs the desktop build nothing while
@@ -32,6 +35,8 @@ use gan_ble::btleplug::platform::Peripheral;
 use gan_ble::{default_adapter, find_gan_cube, FFF5_WRITE, FFF6_NOTIFY};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
+
+mod optimal;
 
 /// The FFF6 notification stream btleplug hands back (owned, 'static).
 type NotifyStream = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
@@ -438,12 +443,17 @@ pub fn run() {
         // browser build satisfies the same seam with plain anchors.
         .plugin(tauri_plugin_opener::init())
         .manage(CubeState::default())
+        .manage(optimal::OptimalState::default())
         .invoke_handler(tauri::generate_handler![
             set_orientation,
             get_orientation,
             connect_cube,
             write_fff5,
-            disconnect_cube
+            disconnect_cube,
+            optimal::optimal_prepare,
+            optimal::optimal_status,
+            optimal::optimal_prove,
+            optimal::optimal_cancel
         ]);
 
     // Dev-only MCP bridge (AGENTS.md exception, accepted 2026-08-27): a control socket that lets
