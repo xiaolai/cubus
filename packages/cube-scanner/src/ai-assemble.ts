@@ -56,8 +56,11 @@
 // Colour-class indices match ml/data.yaml: 0 white 1 red 2 green 3 yellow 4 orange 5 blue.
 
 import Cube from 'cubejs';
-import { isStructurallyValid } from './facelet-cube.js';
+import { isStructurallyValid, rotateFace } from './facelet-cube.js';
+import { type MisreadDecode, decodeMisread } from './misread-decode.js';
 import { FACES, type Face, type ScanResult } from './types.js';
+
+export { rotateFace };
 
 /** One face as seen by the detector: 9 colour classes + 9 detection confidences, reading order. */
 export interface ColorFace {
@@ -99,17 +102,27 @@ export type AiScanResult = ScanResult & {
    * confirmation — the fresher, deliberately-held look — as the face's reading and re-assemble.
    */
   reread?: Face;
-  /** Single-sticker repairs that would make an unsolvable scan legal; empty when none is that simple. */
+  /**
+   * The sticker to point at. Populated ONLY when exactly one sticker is wrong, because that is the
+   * only case where the answer is provable: two legal cubes are never closer than three stickers,
+   * so a one-sticker repair is unique and correct. Above one, accusing a specific sticker would
+   * sometimes accuse a correctly-read one, so this stays empty and `misreadCount` speaks instead.
+   * See dev-docs/misread-decoding.md.
+   */
   suspects?: StickerSuspect[];
+  /**
+   * How many stickers are wrong, as a proven LOWER BOUND — never an overstatement, so "at least N
+   * stickers were misread" is always honest. At 1 it is exact, and only then may `suspects` point.
+   */
+  misreadCount?: number;
+  /** The one side every minimal repair blames, when they agree on one — a hint for what to re-show. */
+  misreadFace?: Face;
   /**
    * On success: the rotation applied to each as-shown capture (URFDLB order, quarter turns CW) to
    * reach the canonical layout — what a host needs to animate each tile turning the right way up.
    */
   rotations?: number[];
 };
-
-/** 90° clockwise position map for a 3x3 face in reading order; the centre (index 4) is fixed. */
-const ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2] as const;
 
 /**
  * The face that sits directly ABOVE each face in the URFDLB facelet layout — i.e. the side that
@@ -125,14 +138,6 @@ const TOP_NEIGHBOUR: Readonly<Record<Face, Face>> = {
   L: 'U',
   B: 'U',
 };
-
-/** Rotate a 9-element face array 90° CW, `k` times (k is taken mod 4). Exported for the panel,
- *  which uses it to settle accepted captures into canonical rotation. */
-export function rotateFace<T>(a: T[], k: number): T[] {
-  let out = a;
-  for (let t = 0; t < ((k % 4) + 4) % 4; t++) out = ROT90.map((i) => out[i]!);
-  return out;
-}
 
 /**
  * How many stickers a confirmation may read differently from the first capture and still count as
@@ -273,39 +278,40 @@ function solvableReadings(
 }
 
 /**
- * Where a single misread sticker could be. A real cube has nine stickers of each colour, so one
- * misread shows up as one colour counted 10 and another 8 — and the wrong sticker must be among
- * the ten. Try flipping each of them to the under-counted colour and keep the flips under which
- * some rotation combo becomes a legal cube. Centres are never suspects (a centre names its face),
- * and anything messier than a single 10/8 imbalance gets no suspects rather than a guess.
+ * Turn a failed scan into what can honestly be said about it.
+ *
+ * This replaced a colour-COUNTING diagnosis, which could only ever speak when exactly one sticker
+ * was wrong — and was blind in two ways that mattered for this detector, whose weak pair is
+ * red/orange: a balanced swap (one red read as orange AND one orange read as red) leaves every
+ * colour count at nine, and partial cancellation makes the counts UNDERSTATE the damage, sending
+ * the search after a single-sticker repair that does not exist.
+ *
+ * The decoder answers both, and reports a count that is a proven lower bound. What it does NOT
+ * license is pointing: above one misread the nearest legal cube is not necessarily the user's
+ * cube, so only `distance === 1` becomes a suspect. dev-docs/misread-decoding.md has the whole
+ * argument and the measurements.
  */
-function findSuspects(faces: Record<Face, ColorFace>): StickerSuspect[] {
-  const counts = new Map<number, number>();
-  for (const f of FACES) {
-    for (const c of faces[f]!.colors) counts.set(c, (counts.get(c) ?? 0) + 1);
-  }
-  const over = [...counts].filter(([, n]) => n === 10).map(([c]) => c);
-  const under = [...counts].filter(([, n]) => n === 8).map(([c]) => c);
-  if (over.length !== 1 || under.length !== 1 || counts.size !== 6) return [];
-  const [wrong] = over;
-  const [right] = under;
-  const centreOwner = new Map<number, Face>();
-  for (const f of FACES) centreOwner.set(faces[f]!.colors[4]!, f);
-  const out: StickerSuspect[] = [];
-  for (const face of FACES) {
-    const src = faces[face]!;
-    for (let i = 0; i < 9; i++) {
-      if (i === 4 || src.colors[i] !== wrong) continue;
-      const patched = {
-        ...faces,
-        [face]: { ...src, colors: src.colors.map((c, j) => (j === i ? right! : c)) },
-      };
-      if (solvableReadings(patched, centreOwner).length > 0) {
-        out.push({ face, index: i, to: right! });
-      }
-    }
-  }
-  return out;
+function diagnose(
+  faces: Record<Face, ColorFace>,
+  centreOwner: Map<number, Face>,
+): Partial<AiScanResult> {
+  const decoded: MisreadDecode = decodeMisread(faces, centreOwner);
+  if (decoded.kind === 'unknown') return {};
+  // No repair within the cap means strictly more than the cap are wrong, which is still a floor.
+  if (decoded.kind === 'beyond') return { misreadCount: decoded.distance + 1 };
+  // One wrong sticker is the only case a repair is unique, hence the only case worth accusing.
+  const suspects: StickerSuspect[] =
+    decoded.distance === 1
+      ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to }))
+      : [];
+  // A side to re-show, but only when every minimal repair blames that one side. Otherwise the
+  // honest instruction is "show the sides again", not a guess dressed as a lead.
+  const blamed = new Set(decoded.stickers.map((s) => s.face));
+  return {
+    misreadCount: decoded.distance,
+    ...(suspects.length > 0 ? { suspects } : {}),
+    ...(blamed.size === 1 ? { misreadFace: [...blamed][0]! } : {}),
+  };
 }
 
 /**
@@ -326,6 +332,11 @@ export function assemblePainted(faces: Record<Face, ColorFace>, threshold = 0.15
       throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
     }
     const centre = f.colors[4]!;
+    // Unreachable from either host path, and kept as a guard on the public API rather than a
+    // case with a UI: the camera files every capture under FACES[centre] (so a second face with
+    // the same centre overwrites the first rather than joining it), and a painted side is seeded
+    // with its own colour while setSticker refuses index 4. A caller feeding faces directly can
+    // still hit it, which is why it stays a loud refusal instead of an assumption.
     if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
     centreOwner.set(centre, face);
   }
@@ -377,6 +388,11 @@ export function assembleColors(
       throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
     }
     const centre = f.colors[4]!;
+    // Unreachable from either host path, and kept as a guard on the public API rather than a
+    // case with a UI: the camera files every capture under FACES[centre] (so a second face with
+    // the same centre overwrites the first rather than joining it), and a painted side is seeded
+    // with its own colour while setSticker refuses index 4. A caller feeding faces directly can
+    // still hit it, which is why it stays a loud refusal instead of an assumption.
     if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
     centreOwner.set(centre, face);
   }
@@ -385,13 +401,11 @@ export function assembleColors(
   const all = solvableReadings(faces, centreOwner);
 
   if (all.length === 0) {
-    // Before refusing, do the diagnosis a refusal makes possible: if the colour counts are off by
-    // exactly one sticker, the misread has a short list of places it can be, and pointing at them
-    // turns "re-scan everything" into "tap the one wrong sticker".
-    const suspects = findSuspects(faces);
+    // Before refusing, do the diagnosis a refusal makes possible: how many stickers are wrong is
+    // always answerable, and when it is exactly one, WHICH one is answerable too.
     return reject(
       'no orientation of the faces is solvable — a colour was misread',
-      suspects.length > 0 ? { suspects } : {},
+      diagnose(faces, centreOwner),
     );
   }
 
