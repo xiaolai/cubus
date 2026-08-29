@@ -152,3 +152,19 @@ test('a solved cube needs no moves and does not confuse the bound check', () => 
   const alg = solve(new Cube().asString(), { solLen: LOOSEST_BOUND, probeMax: 100_000 });
   assert.equal(alg, '', 'a solved cube has an empty solution, not a null one');
 });
+
+test('an easy cube gets its real answer, not the tier ceiling', async () => {
+  // The complaint that forced the free descent: a cube seven turns from solved was answered
+  // with a target-length solution because the search stopped at the target. The engine is
+  // deterministic on a fixed state, so this is exact: seven turns in, at most seven out.
+  const easy = new Cube();
+  easy.move('R U F D L B R');
+  const asyncSolve = async (facelets, options) => solve(facelets, { ...options });
+  let last = null;
+  for await (const step of refine(easy.asString(), { solve: asyncSolve, tier: 'twenty' })) last = step;
+  assert.ok(last.moves <= 7, `seven turns from solved, answered with ${last.moves} moves`);
+  assert.equal(last.met, true);
+  const oracle = Cube.fromString(easy.asString());
+  oracle.move(last.alg);
+  assert.ok(oracle.isSolved());
+});

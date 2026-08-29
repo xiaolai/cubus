@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  DEFAULT_PROBE_BUDGET, STOPPED, TIERS, describe, refine, tierByName,
+  BONUS_BUDGET, DEFAULT_PROBE_BUDGET, STOPPED, TIERS, describe, refine, tierByName,
 } from '../lib/solve-target.js';
 
 /** An alg of `n` moves. Content is irrelevant here; only its length is ever read. */
@@ -40,14 +40,33 @@ test('the rungs are the four we decided on, in order', () => {
   assert.throws(() => tierByName('twenty-one'), /unknown tier/);
 });
 
-test('a free first answer that already meets the target ends there', async () => {
-  // The common case at the <= 20 tier: the loose search returns 20 or fewer and nothing else
-  // is searched at all.
+test('a met target stops the spending, not the improving', async () => {
+  // The common case at the <= 20 tier: the loose search returns 20 or fewer. The target is met
+  // — and the search still asks for shorter, at the bonus budget, because a cube that happens
+  // to be easy deserves its real answer, not the ceiling. Here nothing shorter exists, so one
+  // cheap ask fails and the target is reported met.
   const solve = scripted([20]);
   const steps = await collect(refine('F', { solve, tier: 'twenty' }));
-  assert.equal(steps.length, 1);
-  assert.deepEqual(steps[0], { alg: algOf(20), moves: 20, target: 20, met: true, stopped: STOPPED.MET });
-  assert.equal(solve.asked.length, 1, 'no further search once the target is met');
+  assert.deepEqual(steps, [
+    { alg: algOf(20), moves: 20, target: 20, met: true, stopped: null },
+    { alg: algOf(20), moves: 20, target: 20, met: true, stopped: STOPPED.MET },
+  ]);
+  assert.deepEqual(solve.asked.map((a) => a.probeMax), [DEFAULT_PROBE_BUDGET, BONUS_BUDGET],
+    'below the target only the bonus budget is ever spent');
+});
+
+test('an easy cube descends past the target to its real answer', async () => {
+  // The complaint that forced this: a cube seven turns from solved was answered with twenty
+  // moves, because twenty was the promise and the search stopped there. Now the met target
+  // only drops the budget — the descent continues while cheap improvements keep coming.
+  const solve = scripted([14, 9, 7]);
+  const steps = await collect(refine('F', { solve, tier: 'twenty' }));
+  assert.deepEqual(steps.map((st) => st.moves), [14, 9, 7, 7]);
+  assert.deepEqual(steps.map((st) => st.met), [true, true, true, true]);
+  assert.equal(steps.at(-1).stopped, STOPPED.MET);
+  assert.deepEqual(solve.asked.map((a) => a.probeMax),
+    [DEFAULT_PROBE_BUDGET, BONUS_BUDGET, BONUS_BUDGET, BONUS_BUDGET],
+    'everything below the target is free-descent work at the bonus budget');
 });
 
 test('there is always an answer before any waiting', async () => {
@@ -64,11 +83,12 @@ test('there is always an answer before any waiting', async () => {
 test('every improvement is strictly shorter than the last', async () => {
   const solve = scripted([22, 21, 20, 19]);
   const steps = await collect(refine('F', { solve, tier: 'nineteen' }));
-  assert.deepEqual(steps.map((s) => s.moves), [22, 21, 20, 19]);
-  for (let i = 1; i < steps.length; i++) {
+  assert.deepEqual(steps.map((s) => s.moves), [22, 21, 20, 19, 19],
+    'the final step repeats the answer to carry the stop reason');
+  for (let i = 1; i < steps.length - 1; i++) {
     assert.ok(steps[i].moves < steps[i - 1].moves, `step ${i} did not improve`);
   }
-  assert.deepEqual(solve.asked.map((a) => a.solLen), [23, 22, 21, 20],
+  assert.deepEqual(solve.asked.map((a) => a.solLen), [23, 22, 21, 20, 19],
     'each search asks for strictly shorter than what is already in hand');
   assert.equal(steps.at(-1).stopped, STOPPED.MET);
 });
@@ -148,14 +168,16 @@ test('a solver that breaks its own contract is refused, not passed through', asy
     /returned 21 moves when asked for fewer than 21/);
 });
 
-test('the probe budget is passed to every search, and defaults', async () => {
+test('the probe budget is passed to every search above the target, and defaults', async () => {
   const solve = scripted([22, 21, 20]);
   await collect(refine('F', { solve, tier: 'twenty' }));
-  assert.ok(solve.asked.every((a) => a.probeMax === DEFAULT_PROBE_BUDGET));
+  assert.deepEqual(solve.asked.map((a) => a.probeMax),
+    [DEFAULT_PROBE_BUDGET, DEFAULT_PROBE_BUDGET, DEFAULT_PROBE_BUDGET, BONUS_BUDGET]);
 
   const custom = scripted([22, 21, 20]);
-  await collect(refine('F', { solve: custom, tier: 'twenty', probeBudget: 5000 }));
-  assert.ok(custom.asked.every((a) => a.probeMax === 5000), 'a budget is in probes, not milliseconds');
+  await collect(refine('F', { solve: custom, tier: 'twenty', probeBudget: 5000, bonusBudget: 7 }));
+  assert.deepEqual(custom.asked.map((a) => a.probeMax), [5000, 5000, 5000, 7],
+    'a budget is in the engine unit, not milliseconds, and the bonus rate is its own knob');
 });
 
 
