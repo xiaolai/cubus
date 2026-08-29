@@ -33,6 +33,18 @@ it walks you through solving it.
     webview does. The Settings row that calls them is drawn only where the Tauri API is injected
     on a desktop platform; the browser build has no window to shape and a phone rotates in the
     hand. Same test as above: no screen exists on one build only.
+  - **Fourth seam, accepted 2026-08-29 with the owner's execution of
+    `dev-docs/optimal-solver-plan.md`**: the optimal solver. Proving a solution minimal needs
+    ~86 MB of pattern databases whose generation is native work (minutes of BFS, ~500 MB peak),
+    which a webview cannot do — that, not size, was always the barrier. The capability is "how
+    short can this be, and can you prove it": the desktop answers with a native proof
+    (`crates/optimal-solver` behind prepare/prove/cancel commands), the browser answers with the
+    two-phase tiers' honest "the shortest I found" and the precomputed proven library that ships
+    everywhere. Same test as every seam: no screen exists on one build only — the prove
+    affordance follows the orientation-row precedent (drawn only where the API is injected),
+    and the word "optimal" can appear ONLY as the result of a native proof, never from the
+    two-phase engine. Provenance discipline as for the two-phase engine:
+    `dev-docs/optimal-solver-provenance.md`, written before the Rust.
   - **Dev tooling, accepted 2026-08-27, never shipped**: `tauri-plugin-mcp` (git dep, pinned rev)
     — the control socket that lets an AI agent drive the app for verification: screenshots,
     selector clicks, DOM queries, JS eval. Triple-gated because it is control-everything: the
