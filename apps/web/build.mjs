@@ -59,21 +59,25 @@ if (missing.length) {
   throw new Error(`build: dist/ is missing referenced assets:\n  ${missing.join('\n  ')}`);
 }
 
-// The solver bundles are reached by dynamic import from app.js, so they appear nowhere in
-// index.html and the scan above cannot see them. They are also gitignored and regenerated, so a
+// The solving path is reached by dynamic import from app.js, so none of it appears in
+// index.html and the scan above cannot see it. cubejs is also gitignored and regenerated, so a
 // fresh checkout that skips `pnpm vendor:libs` would produce a dist/ that looks complete and
-// silently cannot solve a cube — app.js try/catches the import. Assert them explicitly.
-//
-// search-worker-entry.js is not imported by anything: cubing resolves it from import.meta.url at
-// runtime, so nothing statically references it and only this check keeps it honest.
-// min2phase.js is listed for the same reason as cubejs: without it the app loads, solves, and
-// silently ignores every solution-length target — the one failure nothing else here would catch.
-const SOLVER = ['vendor/cubejs.js', 'vendor/min2phase.js'];
+// silently cannot solve a cube — app.js try/catches the import. Assert the whole chain
+// explicitly: the lib/ files ride the DIRS copy, but a dist/ missing any of them ships an app
+// that loads and cannot solve, which is the one failure nothing else here would catch.
+const SOLVER = [
+  'vendor/cubejs.js',
+  'lib/two-phase.js',
+  'lib/solver-engine.js',
+  'lib/solve-worker.js',
+  'lib/solve-client.js',
+  'lib/cube-pieces.js',
+];
 const absentSolver = SOLVER.filter((f) => !existsSync(join(dist, f)));
 if (absentSolver.length) {
   throw new Error(
     `build: dist/ is missing vendored solver files:\n  ${absentSolver.join('\n  ')}\n` +
-      '  Run `pnpm vendor:libs` first — without these the app loads but cannot solve.',
+      '  Run `pnpm vendor:libs` first — without it the app loads but cannot solve.',
   );
 }
 
