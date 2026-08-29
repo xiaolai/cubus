@@ -1,9 +1,9 @@
 {
   "checkpoint": {
-    "path": "ml/out/cube_v5_best.pt",
-    "sha256": "7506661d587055b85dd19e945309d715df36a87be17cf482c1ee45220ee34d80"
+    "path": "ml/out/cube_v3_best.pt",
+    "sha256": "22c654125163ed8185fb7b6f026d17bae256c025172c50cba5342d8eba0c531b"
   },
-  "exported": "2026-08-29T06:58:21+00:00",
+  "exported": "2026-08-26T12:30:28+00:00",
   "host": "macOS-26.6.2-arm64-arm-64bit",
   "python": "3.11.16",
   "tools": {
@@ -17,28 +17,28 @@
   },
   "artefacts": {
     "cube-yolo.onnx": {
+      "sha256": "a8ca53a6a14f47a178010b1173c11c1e33d8f15b7409dff1b5c2a4267af25c98",
       "runtime": "onnxruntime",
       "precision": "fp32",
-      "opset": 12,
-      "sha256": "2534f4ce4748964d56afc11975bdc7a0dee4e22a42d38ee9bac80c73cd28cc3e"
+      "opset": 12
     },
     "cube-yolo.int8.onnx": {
+      "sha256": "4d1cef8480e3793f48808d7c5f6f9a03a88f1f42a958633e1e9d4818c3badaf9",
       "runtime": "onnxruntime-web",
-      "precision": "dynamic int8 (QInt8 weights, uint8 activations)",
-      "sha256": "6f66c7d93b63d5ba288b17cf2ec114a8aeae545c0ff364268d1edf95e89c2d94"
+      "precision": "dynamic int8 (QInt8 weights, uint8 activations)"
     },
     "cube-yolo.mlpackage": {
+      "sha256": "f7e76d1bc93674b8d8893be55d94394908383225d8bf09dd527007db98d92737",
       "runtime": "CoreML",
       "precision": "fp16 compute, fp32 tensor in, fp16 out",
-      "min_target": "macOS13 / iOS16",
-      "sha256": "6b0dd6b77cf0f05bc353ed0db984480abf2789dd2f22ef9a21ef9c980c2d49f9"
+      "min_target": "macOS13 / iOS16"
     },
     "cube-yolo.tflite": {
+      "sha256": "d1a2d2cb15249737e3b97783fa67d16a96881040cfe244e95009415441f9c1a3",
       "runtime": "LiteRT/TFLite (onnx2tf)",
       "precision": "dynamic-range int8: int8 weights, fp32 activations, fp32 I/O",
       "layout": "NHWC input; box coords in 640-space (the read is scale-invariant, so the consumer need not rescale)",
-      "quantisation_note": "full-integer int8 (int8 activations) was rejected \u2014 it collapses the detect head's class scores to ~0 (NO_FACE on all golden frames); weight-only int8 reads identical to fp32 (0/20). Verified by ml/golden_frames.py.",
-      "sha256": "1966517fe104ce5dcf6ad68ff729e8395f2ef44cb08c90e11ff9d22a7aeaf640"
+      "quantisation_note": "full-integer int8 (int8 activations) was rejected \u2014 it collapses the detect head's class scores to ~0 (NO_FACE on all golden frames); weight-only int8 reads identical to fp32 (0/20). Verified by ml/golden_frames.py."
     }
   },
   "nms_embedded": false,
