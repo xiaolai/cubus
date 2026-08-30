@@ -267,11 +267,22 @@ it walks you through solving it.
   and the three measurements still owed: `dev-docs/misread-decoding.md`.
 - **Fail loud**: an unreadable scan, a state that cannot be solved, a storage write that did not
   land — each surfaces where it happens, never silently.
-- **The version is one number in six places** — `apps/web/lib/app.js` (`VERSION`, what the About
-  card shows; the web app has no build step to read a manifest at runtime), both `package.json`s
-  under `apps/`, `tauri.conf.json`, the desktop `Cargo.toml` and `Cargo.lock`. `pnpm bump X.Y.Z`
-  moves all six (`scripts/bump-version.mjs`, tested; it refuses rather than half-bumps), and a
-  wiring test fails if any of them drifts from `VERSION`. Never edit one by hand.
+- **The version is one number in EIGHT sites across seven files** — `apps/web/lib/app.js`
+  (`VERSION`, what the About card shows; the web app has no build step to read a manifest at
+  runtime), both `package.json`s under `apps/`, `tauri.conf.json`, the desktop `Cargo.toml`,
+  `Cargo.lock`, and **`gen/apple/project.yml`, which carries two** —
+  `CFBundleShortVersionString` and `CFBundleVersion`. `pnpm bump X.Y.Z` moves them all
+  (`scripts/bump-version.mjs`, tested; it refuses rather than half-bumps), and a wiring test
+  fails if any drifts from `VERSION`. Never edit one by hand.
+  **The iOS pair was missed for as long as iOS existed** (found 2026-08-31, during the first
+  cross-platform release): the bump moved six places while the iPhone bundle stayed at 0.1.3, so
+  a TestFlight build would have reported a version the app itself denied. `project.yml` is the
+  SOURCE — xcodegen builds `Info.plist` from it — so the plist is an output that is nonetheless
+  committed and ships until someone regenerates it; the wiring test asserts both.
+  Adding it also exposed a defect in the bump tool itself: every site computed its replacement
+  from the ORIGINAL file text, so two sites in one file meant the second write clobbered the
+  first — and it reported BOTH as bumped, which is the worst way a version tool can fail. Each
+  file is now read once and every site applied to the same evolving text.
 - **A model change is not verified until `ml/golden_frames.py` has run.** It is the parity gate —
   every fixture through the app's exact letterbox, one runtime, the app's exact post-processing —
   and CI enforces it, but `pnpm check` does NOT, so it is the gate you can ship past locally. On

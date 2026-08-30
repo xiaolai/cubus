@@ -630,10 +630,26 @@ test('every manifest carries the same version the app displays', async () => {
   // is a diff waiting to appear on the next `cargo` run, on somebody else's machine.
   const lock = readFileSync(at('../../../Cargo.lock'), 'utf8');
   assert.match(lock, new RegExp(`^name = "cubus-desktop"\\nversion = "${v}"$`, 'm'), 'Cargo.lock');
-  // And the six are the six `pnpm bump` moves — a seventh place would drift silently.
+  // The iOS bundle's two, in the SOURCE xcodegen builds Info.plist from. Added 2026-08-31 after
+  // the first cross-platform bump moved six places and left these at 0.1.3 — an iPhone build
+  // would have gone to TestFlight reading a version the app itself denied.
+  const ios = readFileSync(at('../../desktop/src-tauri/gen/apple/project.yml'), 'utf8');
+  assert.match(ios, new RegExp(`^        CFBundleShortVersionString: ${v}$`, 'm'),
+    'gen/apple/project.yml CFBundleShortVersionString');
+  assert.match(ios, new RegExp(`^        CFBundleVersion: "${v}"$`, 'm'),
+    'gen/apple/project.yml CFBundleVersion');
+  // The generated plist is committed and ships until someone regenerates it, so it has to agree
+  // with its own source rather than being trusted to.
+  const plist = readFileSync(at('../../desktop/src-tauri/gen/apple/cubus-desktop_iOS/Info.plist'), 'utf8');
+  assert.match(plist, new RegExp(`<string>${v}</string>`), 'the generated Info.plist');
+
+  // And these are exactly the places `pnpm bump` moves — one more would drift silently.
   const { SITES } = await import('../../../scripts/bump-version.mjs');
   assert.deepEqual(SITES.map((s) => s.file).sort(), [
-    'Cargo.lock', 'apps/desktop/package.json', 'apps/desktop/src-tauri/Cargo.toml',
+    'Cargo.lock', 'apps/desktop/package.json',
+    'apps/desktop/src-tauri/Cargo.toml',
+    'apps/desktop/src-tauri/gen/apple/project.yml',
+    'apps/desktop/src-tauri/gen/apple/project.yml',
     'apps/desktop/src-tauri/tauri.conf.json', 'apps/web/lib/app.js', 'apps/web/package.json',
   ]);
 });

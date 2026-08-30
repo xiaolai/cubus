@@ -26,10 +26,15 @@ export const SITES = [
   { file: 'apps/desktop/src-tauri/tauri.conf.json', re: /^(  "version": ")([^"]+)(",)$/m },
   { file: 'apps/desktop/src-tauri/Cargo.toml', re: /^(version = ")([^"]+)(")$/m },
   { file: 'Cargo.lock', re: /^(name = "cubus-desktop"\nversion = ")([^"]+)(")$/m },
+  // The iOS bundle's two, added 2026-08-31 — they were missed by the first cross-platform bump
+  // and the iPhone build would have gone to TestFlight reading 0.1.3 while the app said 0.2.0.
+  // xcodegen builds Info.plist FROM this file, so this is the source and the plist is an output.
+  { file: 'apps/desktop/src-tauri/gen/apple/project.yml', re: /^(        CFBundleShortVersionString: )([^\s]+)()$/m },
+  { file: 'apps/desktop/src-tauri/gen/apple/project.yml', re: /^(        CFBundleVersion: ")([^"]+)(")$/m },
 ];
 
 /**
- * Rewrite every site under `root` to `version`. Reads and checks all six before writing any, so
+ * Rewrite every site under `root` to `version`. Reads and checks all of them before writing any, so
  * a refusal leaves the tree untouched.
  *
  * @param {string} root  the repo root
@@ -41,17 +46,29 @@ export function bump(root, version) {
   if (!SEMVER.test(version)) {
     throw new Error(`not a version: "${version}" — want MAJOR.MINOR.PATCH, optionally -prerelease`);
   }
+  // Each file is read ONCE and every site in it is applied to the same evolving text. Mapping
+  // over SITES independently looks equivalent and is not: two sites in one file both computed
+  // their replacement from the ORIGINAL text, so writing them in order silently clobbered the
+  // first with the second. That is exactly what happened the day gen/apple/project.yml gained a
+  // second version line — it reported both as bumped and moved one.
+  const texts = new Map();
+  const readOnce = (p) => {
+    if (!texts.has(p)) texts.set(p, readFileSync(p, 'utf8'));
+    return texts.get(p);
+  };
   const plans = SITES.map(({ file, re }) => {
     const p = path.join(root, file);
-    const text = readFileSync(p, 'utf8');
+    const text = readOnce(p);
     const matches = [...text.matchAll(new RegExp(re.source, `${re.flags}g`))];
     if (matches.length !== 1) {
       throw new Error(`${file}: expected exactly one version line, found ${matches.length} — nothing written`);
     }
-    return { file, p, from: matches[0][2], next: text.replace(re, `$1${version}$3`) };
+    texts.set(p, text.replace(re, `$1${version}$3`));
+    return { file, p, from: matches[0][2] };
   });
   const changed = plans.filter((plan) => plan.from !== version);
-  for (const plan of changed) writeFileSync(plan.p, plan.next);
+  // Written per PATH, not per site: a file with two sites must be written once, with both.
+  for (const p of new Set(changed.map((plan) => plan.p))) writeFileSync(p, texts.get(p));
   return { to: version, sites: plans.map(({ file, from }) => ({ file, from })), changed: changed.map((plan) => plan.file) };
 }
 
