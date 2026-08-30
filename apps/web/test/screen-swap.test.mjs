@@ -38,20 +38,37 @@ import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
+import { freePort } from './free-port.mjs';
 
-const PORT = 5201; // geometry.test.mjs owns 5197, serve.test.mjs 5199; node --test runs files in parallel
-const BASE = `http://127.0.0.1:${PORT}`;
+// Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
+// from an interrupted run, which fails at startup and reads like a regression. See free-port.mjs.
+let PORT;
+let BASE;
 const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
 let proc;
 let browser;
 
 before(async () => {
+  PORT = await freePort();
+  BASE = `http://127.0.0.1:${PORT}`;
   proc = spawn(process.execPath, [SERVE], { env: { ...process.env, PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'pipe'] });
   await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('serve.mjs did not start within 5s')), 5000);
+    // Say WHY it did not start. serve.mjs refuses a busy port with a precise message naming the
+    // port and how to free it, but that goes to its own stderr, so a bare timeout here reads as a
+    // regression in whatever changed last. An interrupted run leaves the server orphaned and every
+    // later run then fails this way — it cost two wrong diagnoses on 2026-08-30 before anyone read
+    // the child's output. Fail loud: hand the child's own words back.
+    let said = '';
+    const note = (d) => { said += d.toString(); };
+    const timeout = setTimeout(
+      () => reject(new Error(`serve.mjs did not start within 5s on port ${PORT}. It said: ${said.trim() || '(nothing)'}`)),
+      5000,
+    );
     proc.stdout.on('data', (d) => {
+      note(d);
       if (d.toString().includes(`:${PORT}`)) { clearTimeout(timeout); resolve(); }
     });
+    proc.stderr.on('data', note);
     proc.on('error', reject);
   });
   try {
