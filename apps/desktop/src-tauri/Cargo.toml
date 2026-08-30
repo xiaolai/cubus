@@ -36,6 +36,11 @@ log = "0.4"
 # every platform and the shell stays one codebase.
 cube-vision = { path = "../../../crates/cube-vision" }
 
+# The optimal solver (fourth accepted seam, AGENTS.md 2026-08-29): prove a solution minimal.
+# Native because generating its 86 MB of pattern databases is native work; the browser build
+# answers the same capability with "the shortest I found" and the precomputed proven library.
+optimal-solver = { path = "../../../crates/optimal-solver" }
+
 # The smart-cube BLE bridge, recovered from v0 on 2026-08-27 (third capability seam: the browser
 # build reaches the same cube over Web Bluetooth, the desktop over btleplug — gan-driver decodes
 # in the webview either way). FFF6 notifications go up as `cube-packet` events; FFF5 commands come

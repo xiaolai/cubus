@@ -6,7 +6,8 @@
 // on `performance.now()` at arrival therefore measures the radio as much as the solver, and the
 // error lands unevenly across a solve. The GAN driver hands every move TWO times:
 //
-//     timestamp       host receive time (ms since epoch)  — carries BLE jitter
+//     timestamp       host receive time (performance.now() in this app's transports,
+//                     see cube-transport.js) — carries BLE jitter
 //     cubeTimestamp   the cube's own hardware clock (ms)  — monotonic while connected
 //
 // The cube stamps the move when it registers it, before any radio is involved, so `cubeTimestamp`
@@ -109,9 +110,13 @@ function serialOf(v) {
  * @param {object} opts
  * @param {() => string|null} opts.target  the scramble's arrangement, or null when there is none
  * @param {() => boolean} opts.trusted     whether the cube's reports may be believed at all
- * @param {() => number} [opts.now]        host clock, injectable so staleness is testable
+ * @param {() => number} [opts.now]        host clock, injectable so staleness is testable.
+ *   Defaults to performance.now() because that is the clock the transports stamp move
+ *   arrivals with (cube-transport.js) — ready.at and move.timestamp MUST share a clock, or
+ *   the inspection span compares an epoch number against a monotonic one and is silently
+ *   never reported. That was the shipped bug this default replaces.
  */
-export function createSolveTimer({ target, trusted, now = () => Date.now() }) {
+export function createSolveTimer({ target, trusted, now = () => performance.now() }) {
   let state = 'idle';
   /** The recorded ready instant: { at, serial } on the host clock, since no move has stamped yet. */
   let ready = null;
@@ -160,7 +165,10 @@ export function createSolveTimer({ target, trusted, now = () => Date.now() }) {
     if (state === 'running' && f === SOLVED) {
       const s = serialOf(serial);
       const ls = last ? serialOf(last.serial) : null;
-      if (s !== null && ls !== null && s > ls) {
+      // Modular, matching the driver's 8-bit rolling serials: a plain `>` misses every gap
+      // that crosses the wrap. 1..127 ahead reads as "snapshot ahead of the moves we hold".
+      const ahead = s !== null && ls !== null ? (s - ls) & 0xff : 0;
+      if (ahead >= 1 && ahead < 128) {
         // The snapshot is ahead of the last move we hold: moves were dropped, so `last` is not
         // the move that finished the solve and the span would be short.
         refusal = 'moves were dropped, so this solve could not be timed';
@@ -172,9 +180,23 @@ export function createSolveTimer({ target, trusted, now = () => Date.now() }) {
 
   /** A move from the cube. Starts the clock on the first one after arming. */
   const move = (m) => {
-    if (state === 'stopped' || !trusted()) return state;
+    if (state === 'stopped') return state;
+    if (!trusted()) {
+      // Same rule as the snapshot path: an untrusted cube's stream is not evidence, and a
+      // timer left armed or running across an untrusted interval would resume as if nothing
+      // happened. Trust must re-arm from scratch.
+      if (state !== 'idle') reset();
+      return state;
+    }
     const stamp = stampOf(m);
     if (state === 'armed') {
+      if (ready && now() - ready.at > READY_LAPSE_MS) {
+        // The lapse rule, enforced on the path that actually starts clocks: snapshots arrive
+        // at ~1 Hz only while things change, so a cube left at the scramble for lunch would
+        // otherwise start a "solve" whose inspection was the lunch.
+        reset();
+        return state;
+      }
       if (!ready) {
         // Cannot happen through `facelets`, which sets both together; a guard so a future caller
         // cannot start a clock whose precondition was never established.
@@ -191,6 +213,14 @@ export function createSolveTimer({ target, trusted, now = () => Date.now() }) {
         moves = 1;
         return state;
       }
+      const s0 = serialOf(m.serial);
+      if (s0 !== null && ready.serial !== null && ((s0 - ready.serial) & 0xff) !== 1) {
+        // The first move after arming must be the NEXT serial after the arming snapshot —
+        // the driver's serials are 8-bit rolling, hence the modular step. A gap here means
+        // moves were lost before the clock even started, and `first` would be a later move
+        // wearing the first one's role: the span would undercount and look true.
+        refusal = 'moves were dropped, so this solve could not be timed';
+      }
       state = 'running';
       first = last = { stamp, host: m.timestamp, serial: m.serial };
       moves = 1;
@@ -198,6 +228,13 @@ export function createSolveTimer({ target, trusted, now = () => Date.now() }) {
     }
     if (state === 'running') {
       moves += 1;
+      const sN = serialOf(m.serial);
+      const prev = last ? serialOf(last.serial) : null;
+      if (sN !== null && prev !== null && ((sN - prev) & 0xff) !== 1) {
+        // A mid-solve gap does not distort the span (the stamps are real), but it makes the
+        // move COUNT a lie, and a count that undercounts feeds a turn rate that flatters.
+        refusal = 'moves were dropped, so this solve could not be timed';
+      }
       if (stamp !== null && first) last = { stamp, host: m.timestamp, serial: m.serial };
     }
     return state;
@@ -210,10 +247,17 @@ export function createSolveTimer({ target, trusted, now = () => Date.now() }) {
   const result = () => {
     if (state !== 'stopped' || refusal || !first || !last || !ready) return null;
     const ms = last.stamp - first.stamp;
-    if (!(ms > 0) || ms > MAX_SOLVE_MS) return null; // clock reset, or put down mid-solve
+    if (!(ms > 0) || ms > MAX_SOLVE_MS) {
+      // The caller's words come from `refusal` — a bare null here would defeat that contract.
+      refusal = 'the cube\'s clock reset mid-solve, so this solve could not be timed';
+      return null;
+    }
     if (typeof first.host === 'number' && typeof last.host === 'number') {
       const hostMs = last.host - first.host;
-      if (Number.isFinite(hostMs) && Math.abs(hostMs - ms) > HOST_DISAGREEMENT_MS) return null;
+      if (Number.isFinite(hostMs) && Math.abs(hostMs - ms) > HOST_DISAGREEMENT_MS) {
+        refusal = "the cube's clock and this device's disagree, so this solve could not be timed";
+        return null;
+      }
     }
     // How long the solver looked before touching it. Host-clocked on both ends, so it is a
     // coarser number than `ms` and is reported as such — null rather than a fabricated 0.
