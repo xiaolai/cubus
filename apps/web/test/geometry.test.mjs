@@ -37,7 +37,7 @@ let browser;
 before(async () => {
   PORT = await freePort();
   BASE = `http://127.0.0.1:${PORT}`;
-  proc = spawn(process.execPath, [SERVE], { env: { ...process.env, PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'pipe'] });
+  proc = spawn(process.execPath, [SERVE], { env: { ...process.env, PORT: String(PORT), CUBUS_LIVE_RELOAD: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
   await new Promise((resolve, reject) => {
     // Say WHY it did not start. serve.mjs refuses a busy port with a precise message naming the
     // port and how to free it, but that goes to its own stderr, so a bare timeout here reads as a
