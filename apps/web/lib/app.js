@@ -1575,7 +1575,7 @@ SCREENS.scan = () => {
   // --primary-share 0.66, not the default 0.58: the net wants the room, and the sheet is a cube
   // twin and a paragraph. `twin-low`: in portrait the twin sits beside the sheet, not beside the
   // cross — the cross is the same cross in both windows and wants the width (index.html). Only a
-  // finger's portrait shows one face large over a strip (.scan-faces under pointer: coarse).
+  // net in both compositions and on every platform (.scan-faces).
   return {
     html: `<div class="cols twin-low" style="--primary-share:0.66">
     <div class="col">
@@ -1696,21 +1696,14 @@ SCREENS.scan = () => {
       const solveBtn = $('#scanSolveBtn', root);
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
-      // A finger's portrait shows one face large and the other five as a strip (index.html,
-      // .scan-faces under pointer: coarse): six 3×3 tiles cannot give a finger 44px stickers in
-      // a phone's width. Which face is large is a policy, because the scanner is orderless and
-      // reports no "face being seen": the side it asks to see again, else the side it just read,
-      // else the one you tap — F to begin with. With a mouse, in either window, the class is
-      // inert and the six tiles are the cross.
+      // The six sides are the cube's net, everywhere (decided 2026-08-30). There used to be a
+      // second arrangement for a finger in portrait — one face large over a strip of five — and
+      // with it a `.focus` class, a `--focus` flag read back out of the stylesheet, and a tap
+      // that meant "show me this side" on a strip tile and "correct this sticker" anywhere
+      // else. All of it is gone with the layout it served: no rule styles `.focus` any more, so
+      // keeping the machinery would have been a switch with one position. What the removal
+      // costs is written down where the decision is (dev-docs/stage-contract.md).
       const faces = $('.scan-faces', root);
-      const setFocus = (f) => { for (const tile of tiles) tile.classList.toggle('focus', tile.dataset.face === f); };
-      // Guarded: the test harness lays nothing out and has no getComputedStyle global.
-      const focusLayout = () => {
-        const cs = globalThis.getComputedStyle?.(faces);
-        return cs ? cs.getPropertyValue('--focus').trim() === '1' : false;
-      };
-      setFocus('F');
-      let capturedCount = 0;
 
       // ---- the board's keyboard path -----------------------------------------------------------
       // 54 stickers are 54 buttons, but ONE tab stop: the board is a composite widget with a
@@ -1719,7 +1712,7 @@ SCREENS.scan = () => {
       // pointer would have made, heard by the same delegated listener. Every cell is inspectable
       // by arrow — its label carries the side, the position and the reading — and aria-disabled
       // says which ones a press will be refused on, without swallowing the event the way real
-      // `disabled` would (a swallowed click would break tap-to-focus on the strip tiles).
+      // `disabled` would.
       const cellButtons = tiles.flatMap((tile) => [...tile.querySelectorAll('.cell')]);
       let roveAt = cellButtons.indexOf(tiles.find((tile) => tile.dataset.face === 'F').querySelector('.cell'));
       const setRove = (idx) => {
@@ -1930,10 +1923,6 @@ SCREENS.scan = () => {
           if (got && p.phase !== 'done') paint(cells, got.colors);
           else if (!got) cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? pal[f] : 'var(--facelet-off)'; });
         }
-        // The large tile in portrait: the side asked for again outranks the side just read.
-        if (p.confirm?.face) setFocus(p.confirm.face);
-        else if (p.captured.length > capturedCount) setFocus(p.captured[p.captured.length - 1].face);
-        capturedCount = p.captured.length;
         lastCaptured = p.captured;
         refreshCellNames();
         // The twin follows the scan side by side rather than waiting for all six.
@@ -2087,14 +2076,6 @@ SCREENS.scan = () => {
         const cellEl = ev.target.closest('.cell');
         const tile = ev.target.closest('.scan-face');
         if (!tile) return;
-        // In the portrait layout a tap anywhere on a strip tile brings that side forward;
-        // correcting a sticker is for the large tile, where a sticker is big enough to hit.
-        if (focusLayout() && !tile.classList.contains('focus')) {
-          closePops();
-          setFocus(tile.dataset.face);
-          ev.stopPropagation();
-          return;
-        }
         if (!cellEl) return;
         const index = [...cellEl.parentElement.children].indexOf(cellEl);
         // The centre cannot be colour-corrected — it names the face — so it does the other useful
