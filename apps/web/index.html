@@ -28,6 +28,24 @@
          system); this file only arranges them. Cube sticker colours live in cubus-cube.js. */
       * { box-sizing: border-box; }
       html, body { height: 100%; }
+
+      /* Scrollbars: thin, quiet, and themed — the STANDARD properties only.
+       *
+       * `::-webkit-scrollbar` is what every recipe reaches for, and in this engine it is the
+       * thing that CAUSES the heavy permanent gutter it is meant to fix. Measured in the WebKit
+       * the app ships (Version/26.5), space taken by a 200px scroller:
+       *
+       *     unstyled                              0px   (overlay)
+       *     scrollbar-width + scrollbar-color     0px   (overlay, still)
+       *     ::-webkit-scrollbar { width: 10px }  10px   (classic, forever)
+       *
+       * So the pseudo-element trades an overlay bar that appears while scrolling for a slab that
+       * never goes away. The standard properties style it without taking it out of overlay, and
+       * both are supported here (CSS.supports: true for width, color and gutter).
+       *
+       * Inherited, so `:root` reaches every scroller including the popovers. The thumb is a
+       * token, so it follows the theme rather than staying grey on Night. */
+      :root { scrollbar-width: thin; scrollbar-color: var(--ink-6) transparent; }
       /* Chrome is not a document. Clicking a sticker, a nav item or a button placed a real text
          caret (getSelection().type === 'Caret') inside it; Chrome does not paint one, but the
          WKWebView the desktop app runs in does, so clicking a cube face blinked an insertion point
