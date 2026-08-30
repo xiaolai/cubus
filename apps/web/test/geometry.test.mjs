@@ -133,12 +133,14 @@ const measure = (page) =>
       stage: rect(stage),
       stagePad: [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(px),
       ref: { w: p.width, h: p.height },
-      nav: { position: getComputedStyle(nav).position, compact: nav.classList.contains('compact'), padBottom: px(getComputedStyle(nav).paddingBottom), ...rect(nav) },
+      nav: { position: getComputedStyle(nav).position, padBottom: px(getComputedStyle(nav).paddingBottom), ...rect(nav) },
       winPadBottom: px(getComputedStyle($('.win')).paddingBottom),
       lead: rect($('#tbLead')), trail: rect($('#tbTrail')), bar: rect($('#titlebar')),
       // The zones' CONTENT: the tabs must clear these, whatever box the engine gave the zones.
       brand: rect($('#tbLead .brand')), gear: rect($('#tbTrail [aria-label="Settings"]')),
-      tabs: [...nav.querySelectorAll('.nav-item')].map(rect),
+      tabs: [...nav.querySelectorAll('.nav-item')].map((el) => ({
+        ...rect(el), text: el.textContent.trim(), name: el.getAttribute('aria-label') || '',
+      })),
       // The toggle is excluded: its 44px hit area is a ::before, which no rect reports.
       controls: [...document.querySelectorAll('button, .chip-m, .pill')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
     };
@@ -173,7 +175,7 @@ for (const fixture of FIXTURES) {
       );
 
       // The chrome. Landscape: the tabs float over the bar's centre, clear of both outer zones
-      // (compact if that is what it took). Portrait: a bottom bar, in flow, above the inset.
+      // Portrait: a bottom bar, in flow, whose background reaches the screen edge.
       if (portrait) {
         assert.equal(m.nav.position, 'static', 'portrait: the tab row is in flow');
         // The bar bleeds its background through the inset and insets only its content — what a
@@ -182,7 +184,6 @@ for (const fixture of FIXTURES) {
         near(m.nav.bottom - m.nav.padBottom, fixture.height - b, 'portrait: the tabs themselves sit above the bottom inset');
         near(m.nav.left, l, 'portrait: tab bar spans from the left inset');
         near(m.nav.right, fixture.width - r, 'portrait: tab bar spans to the right inset');
-        assert.ok(!m.nav.compact, 'portrait: labels always fit under the icons');
       } else {
         assert.equal(m.nav.position, 'absolute', 'landscape: the tab row floats over the bar');
         assert.ok(m.nav.top >= m.bar.top - 0.5 && m.nav.bottom <= m.bar.bottom + 0.5, `landscape: tabs ${JSON.stringify(m.nav)} outside the bar ${JSON.stringify(m.bar)}`);
@@ -195,6 +196,12 @@ for (const fixture of FIXTURES) {
         near((m.nav.left + m.nav.right) / 2, (m.bar.left + m.bar.right) / 2, 'landscape: tabs on the bar\'s centre line', 1.5);
       }
       for (const tab of m.tabs) assert.ok(tab.width > 0 && tab.height > 0, 'a tab has no size');
+      // Icons only, but never anonymous: the label moved to the accessible name rather than being
+      // deleted, and a tab with neither is a button a screen reader cannot announce.
+      for (const tab of m.tabs) {
+        assert.equal(tab.text, '', `a tab draws text ("${tab.text}") — the row is icons only`);
+        assert.ok(tab.name.length > 0, 'a tab has no accessible name');
+      }
 
       // A finger: the 52px bar, a phone/tablet platform (no traffic lights), 44px controls.
       if (fixture.touch) {

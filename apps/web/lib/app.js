@@ -3626,33 +3626,19 @@ function renderNav() {
   const items = NAV.filter(([id]) => !navHidden(id));
   // The capsule is the segmented control's pill; the nav around it is the positioned box the
   // stylesheet floats over the title bar (landscape) or lays at the foot of the window (portrait).
-  $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span><span class="lbl">${t(lbl)}</span></button>`).join('')}</div>`;
+  // Icons only (decided 2026-08-30). The word does not disappear — it becomes the button's
+  // accessible name and its desktop tooltip, so a screen reader still announces "Scramble" and
+  // i18n still has something to translate. Dropping the visible text and leaving nothing in its
+  // place would have made the whole row anonymous to assistive tech.
+  $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}" title="${t(lbl)}" aria-label="${t(lbl)}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span></button>`).join('')}</div>`;
   for (const b of $('#nav').querySelectorAll('[data-nav]')) b.onclick = () => go(b.dataset.nav);
   // Settings sits outside the row (buildChrome draws it), so it is marked here, not by the template.
   // The GEAR, found by its label: the smart-cube indicator beside it also carries
   // data-nav="settings" and comes first in the bar, so a data-nav match marked the hidden
   // indicator and the visible gear never once said "you are here".
   $('#tbTrail [aria-label="Settings"]')?.classList.toggle('active', state.screen === 'settings');
-  fitTabs();
 }
 
-/** Labels when the labelled row fits between the bar's outer zones, icons only when it does not.
- *  Measured, not thresholded: whether six labelled tabs fit a title bar depends on the tabs, the
- *  language and the platform's lead zone, none of which a width can know. Landscape only — the
- *  portrait tab bar (the stylesheet lays the row in flow there) has room for a word under every
- *  icon. Re-run by renderNav and whenever the bar resizes. */
-function fitTabs() {
-  const nav = $('#nav'), bar = $('#titlebar');
-  if (!nav || !bar || bar.clientWidth === 0) return; // not laid out (the test harness has no layout)
-  nav.classList.remove('compact');
-  if (getComputedStyle(nav).position !== 'absolute') return; // the portrait bar
-  // Centred on the bar, the row needs symmetric room: the wider of the two zones on both sides.
-  // scrollWidth, not offsetWidth: the zone's CONTENT is what the tabs must clear, whatever box
-  // the engine gave the zone.
-  const zone = Math.max($('#tbLead').scrollWidth, $('#tbTrail').scrollWidth) + 12; // + the bar's padding
-  const room = bar.clientWidth - 2 * zone - 8;
-  if (nav.scrollWidth > room) nav.classList.add('compact');
-}
 /** The spec currently on the stage — what refreshScreen() asks to take a new subject. */
 let liveScreen = null;
 let refreshing = false;
@@ -3797,8 +3783,6 @@ async function boot() {
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
   buildChrome(platform);
-  // The tab row refits when the bar's width changes — a window resize, an orientation change.
-  if (typeof ResizeObserver === 'function') new ResizeObserver(fitTabs).observe($('#titlebar'));
   installAdvancedShortcut();
   installExternalLinks();
   // '' = follow the browser/OS language. No-op until a catalog is registered; the picker arrives
