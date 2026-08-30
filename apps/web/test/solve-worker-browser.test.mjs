@@ -218,3 +218,123 @@ test('a state in the proven library is answered from data — no search, no proo
   assert.match(out.status, /proved the minimum/, 'a proved state says so');
   assert.equal(out.proveOffered, false, 'nothing left to prove, so nothing is offered');
 });
+
+/** The app, booted with a FAKE native prover injected before any script runs.
+ *  `optimal_prove` hangs until the test releases it, which is what a deep cube does for hours. */
+async function withFakeProver(run) {
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await page.addInitScript(() => {
+    window.__calls = [];
+    window.__listeners = {};
+    window.__emit = (name, payload) => (window.__listeners[name] ?? []).forEach((cb) => cb({ payload }));
+    window.__TAURI__ = {
+      core: {
+        invoke: (cmd) => {
+          window.__calls.push(cmd);
+          if (cmd === 'optimal_status') return Promise.resolve('ready');
+          if (cmd === 'optimal_prepare') return Promise.resolve('ready');
+          if (cmd === 'optimal_prove') {
+            return new Promise((_res, rej) => { window.__failProve = (why) => rej(new Error(why)); });
+          }
+          if (cmd === 'optimal_cancel') { window.__failProve?.('cancelled'); return Promise.resolve(true); }
+          return Promise.resolve(null);
+        },
+      },
+      event: {
+        listen: (name, cb) => {
+          (window.__listeners[name] ??= []).push(cb);
+          return Promise.resolve(() => {});
+        },
+      },
+      // Enough of the rest that the shell wires up without complaining.
+      window: { getCurrentWindow: () => ({ setTitle() {}, minimize() {}, close() {} }) },
+      opener: { openUrl: () => {} },
+    };
+  });
+  await page.goto(`${BASE}/index.html`);
+  try {
+    return await run(page);
+  } finally {
+    await page.close();
+    assert.deepEqual(errors, [], 'the page logged an uncaught error');
+  }
+}
+
+/** Put a scrambled (NOT library) cube on the cube screen and wait for its walk. */
+const walkAScrambledCube = async (page) => {
+  await page.waitForFunction(() => Boolean(window.cubusGo), null, { timeout: 20_000 });
+  await page.evaluate(async () => {
+    const app = await import('/lib/app.js');
+    const Cube = (await import('/vendor/cubejs.js')).default;
+    const scrambled = new Cube();
+    scrambled.move("R U2 F L' D B2 R' U F2 L D'"); // eleven moves, and not in the proven library
+    const c = app.state.cube;
+    c.facelets = scrambled.asString();
+    c.solution = ''; c.crossChecked = false; c.solveResult = null; c.setupAlg = ''; c.derived = false;
+    window.cubusGo('home');
+  });
+  await page.waitForSelector('#proveBtn:not([hidden])', { timeout: 30_000 });
+};
+
+test('a proof that answers quickly never shows a waiting state', async () => {
+  // The waiting state is EARNED, not announced. Proof cost tracks depth: a shallow cube proves
+  // in milliseconds, so a person who presses prove on one must see nothing at all happen except
+  // the answer. A fast refusal exercises the same timer as a fast success.
+  await withFakeProver(async (page) => {
+    await walkAScrambledCube(page);
+    const seen = await page.evaluate(async () => {
+      const btn = document.querySelector('#proveBtn');
+      const texts = [];
+      new MutationObserver(() => texts.push(btn.textContent)).observe(btn, { childList: true, characterData: true, subtree: true });
+      // Answer immediately, before the reveal timer can fire.
+      const patch = setInterval(() => window.__failProve?.('no tables here'), 5);
+      btn.click();
+      await new Promise((r) => setTimeout(r, 900));
+      clearInterval(patch);
+      return { texts, cancelHidden: document.querySelector('#proveCancel').hidden, text: btn.textContent };
+    });
+    assert.ok(
+      !seen.texts.some((t) => /proving…|at least/.test(t)),
+      `a fast proof flashed a waiting state: ${JSON.stringify(seen.texts)}`,
+    );
+    assert.equal(seen.cancelHidden, true, 'and offered no stop, because there was nothing to stop');
+  });
+});
+
+test('a proof that runs long says what it has ruled out, and can be stopped', async () => {
+  await withFakeProver(async (page) => {
+    await walkAScrambledCube(page);
+    const out = await page.evaluate(async () => {
+      const btn = document.querySelector('#proveBtn');
+      const cancel = document.querySelector('#proveCancel');
+      btn.click();
+      await new Promise((r) => setTimeout(r, 700)); // past PROOF_WAIT_VISIBLE_MS
+      const waiting = { text: btn.textContent, cancelHidden: cancel.hidden };
+
+      // The native side reports an exhausted contour: no solution of 16 moves exists, so the
+      // answer is at least 17. That is a fact, not a spinner.
+      window.__emit('optimal-proof-progress', { ruled_out: 16, nodes: 1234 });
+      await new Promise((r) => setTimeout(r, 50));
+      const bounded = btn.textContent;
+
+      cancel.click();
+      await new Promise((r) => setTimeout(r, 300));
+      return {
+        waiting,
+        bounded,
+        after: btn.textContent,
+        afterCancelHidden: cancel.hidden,
+        calls: window.__calls.slice(),
+      };
+    });
+
+    assert.match(out.waiting.text, /proving… \d+:\d\d/, 'a long proof shows it is running, and for how long');
+    assert.equal(out.waiting.cancelHidden, false, 'and offers a stop');
+    assert.match(out.bounded, /at least 17 · \d+:\d\d/, 'a ruled-out contour becomes a lower bound on screen');
+    assert.ok(out.calls.includes('optimal_cancel'), 'the stop actually reaches the native side');
+    assert.equal(out.after, 'prove the minimum', 'stopping is a choice, so the affordance comes back');
+    assert.equal(out.afterCancelHidden, true, 'and the stop goes away with the wait');
+  });
+});
