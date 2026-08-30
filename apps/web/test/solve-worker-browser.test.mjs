@@ -114,6 +114,56 @@ test('a tighter tier is honoured, not silently ignored', async () => {
   assert.equal(out.solved, true);
 });
 
+test('the real pool, over real workers, answers what one worker answers', async () => {
+  // The pool's own missing link. Everything below it is covered against fakes — slicing, budget
+  // sharing, the sort key, sibling cancellation — and none of that touches the two things only a
+  // browser has: several real module workers alive at once, and a SharedArrayBuffer that really
+  // crosses postMessage. The stop word in particular can be wrong in a way no fake can show: if
+  // the offset is dropped in transit, both sides hold a valid view of the same memory and poll
+  // different words, so the stop silently never fires.
+  const out = await inBrowser(async () => {
+    const { createParallelSolveClient, createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
+    const { VIEW_COUNT } = await import('/lib/solver-engine.js');
+    const Cube = (await import('/vendor/cubejs.js')).default;
+    Cube.initSolver();
+
+    // Cross-origin isolation is what makes the pool a pool rather than a fallback. If this is
+    // false the headers regressed, and the test must say so rather than quietly measure a lone worker.
+    const isolated = typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated === true;
+    if (!isolated) return { isolated };
+
+    const facelets = Cube.random().asString();
+    const bounds = { solLen: 21, probeMax: 50_000_000 };
+    const pool = createParallelSolveClient({
+      spawn: spawnSolveWorker, workers: 3, viewCount: VIEW_COUNT,
+      makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
+    });
+    const lone = createSolveClient({ spawn: spawnSolveWorker });
+    try {
+      // Both solves run at once, which is also the overlap the per-request word exists for.
+      const [pooled, single] = await Promise.all([
+        pool.solve(facelets, bounds),
+        lone.solve(facelets, bounds),
+      ]);
+      const oracle = Cube.fromString(facelets);
+      if (pooled) oracle.move(pooled);
+      return { isolated, workers: pool.workers, pooled, single, solved: pooled ? oracle.isSolved() : null, facelets };
+    } finally {
+      pool.cancel();
+      lone.cancel();
+    }
+  });
+
+  assert.equal(out.isolated, true,
+    'the page is not cross-origin isolated — the pool has no shared word and Phase 1 regressed');
+  assert.equal(out.workers, 3, 'three real workers, not a silently collapsed one');
+  assert.notEqual(out.pooled, null, `the pool found nothing for ${out.facelets}`);
+  assert.equal(out.solved, true, `the pool's answer does not solve ${out.facelets}`);
+  // The determinism claim, over the real boundary: at the shipped budget the pooled answer IS
+  // the single-worker answer. Where that stops holding is pinned in parallel-divergence.test.mjs.
+  assert.equal(out.pooled, out.single, `pool and lone worker diverged on ${out.facelets}`);
+});
+
 test('a malformed request comes back as a rejection, not a hang', async () => {
   // The worker's catch path had no browser coverage: a regression there leaves the caller's
   // promise pending forever, which on screen looks exactly like a search still going.

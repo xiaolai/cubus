@@ -7,7 +7,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync } from 'node:fs';
 
-import { LOOSEST_BOUND, createSolver } from '../lib/solver-engine.js';
+import {
+  LOOSEST_BOUND, VIEW_COUNT, createSolver,
+} from '../lib/solver-engine.js';
 import { refine } from '../lib/solve-target.js';
 import * as engine from '../lib/two-phase.js';
 
@@ -186,4 +188,48 @@ test('an easy cube gets its real answer, not the tier ceiling', async () => {
   const oracle = Cube.fromString(easy.asString());
   oracle.move(last.alg);
   assert.ok(oracle.isSolved());
+});
+
+test('the view count the callers read is the one the engine actually has', async () => {
+  // solver-engine declares VIEW_COUNT so app.js and solve-client.js can size and slice a worker
+  // pool without importing the engine into the main bundle. That makes it a second copy, and a
+  // second copy is only safe while it cannot drift — this is what stops it. A mismatch would
+  // leave views unsearched (too low) or produce filters the engine rejects (too high).
+  const engine = await import('../lib/two-phase.js');
+  assert.equal(VIEW_COUNT, engine.VIEW_COUNT);
+});
+
+test('a view filter is checked BEFORE the bounds are committed', async () => {
+  // setBounds mutates persistent engine state, and this wrapper's rule is validate-first,
+  // commit-together. A filter validated after it would leave the bounds moved behind a throw.
+  let boundsSet = 0;
+  const solve = createSolver({
+    initialize() {},
+    setBounds() { boundsSet += 1; },
+    solvePattern: () => '',
+    VIEW_COUNT: 6,
+  });
+  const facelets = new Cube().asString();
+  for (const bad of [[], [6], [-1], [1.5], [0, 0], 'nope', 3]) {
+    assert.throws(() => solve(facelets, { views: bad }), RangeError, JSON.stringify(bad));
+  }
+  assert.equal(boundsSet, 0, 'a rejected filter must not have moved the bounds');
+  assert.doesNotThrow(() => solve(facelets, { views: [0, 5] }));
+  assert.equal(boundsSet, 1);
+});
+
+test('the slice reaches the engine, exactly as given', async () => {
+  // Dropping this argument would leave every other test green while every pooled worker
+  // searched all six views with a fraction of the budget — slower than one worker, and silent.
+  const seen = [];
+  const solve = createSolver({
+    initialize() {},
+    setBounds() {},
+    solvePattern: (_f, views) => { seen.push(views); return ''; },
+    VIEW_COUNT: 6,
+  });
+  const facelets = new Cube().asString();
+  solve(facelets, { views: [1, 4] });
+  solve(facelets);
+  assert.deepEqual(seen, [[1, 4], null], 'the second call must pass null, not undefined');
 });
