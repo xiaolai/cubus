@@ -160,10 +160,13 @@ pub struct OptimalProgress {
 /// and none solves the cube, so the answer is at least one move longer. That is a lower bound
 /// being established in public, which is the one number a waiting person can actually use — and
 /// deliberately not a percentage, because a proof has no denominator to be a fraction of.
+///
+/// The search also reports a cumulative node count, and this payload deliberately does NOT carry
+/// it: nothing renders it, and a field shipped over the bridge for no reader is weight plus an
+/// invitation to start trusting a number no test covers.
 #[derive(serde::Serialize, Clone)]
 pub struct OptimalProofProgress {
     ruled_out: u8,
-    nodes: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -332,11 +335,10 @@ pub async fn optimal_prove(
         // must not fail a proof that is running perfectly well, so a failed emit is logged once
         // and the search carries on.
         let mut warned = false;
-        let mut on_progress = |ruled_out: u8, nodes: u64| {
-            if let Err(e) = emitter.emit(
-                "optimal-proof-progress",
-                OptimalProofProgress { ruled_out, nodes },
-            ) {
+        let mut on_progress = |ruled_out: u8, _nodes: u64| {
+            if let Err(e) =
+                emitter.emit("optimal-proof-progress", OptimalProofProgress { ruled_out })
+            {
                 if !warned {
                     warned = true;
                     log::warn!("optimal: proof progress is not reaching the webview: {e}");
