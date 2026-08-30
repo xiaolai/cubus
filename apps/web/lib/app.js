@@ -15,6 +15,7 @@ import {
   prove as optimalProve,
   status as optimalStatus,
 } from './optimal.js';
+import { isDesktopHost } from './host.js';
 import { randomCube } from './random-state.js';
 import { makeRouter } from './router.js';
 // The smart-cube strands, recovered from v0 (2026-08-27): the transport seam (Web Bluetooth in a
@@ -2868,9 +2869,10 @@ const cubeScreen = (screenMode) => {
           : String(total));
 
         // The optimal seam's affordance (AGENTS.md, fourth seam): drawn only where the native
-        // prover is injected — the orientation-row precedent — and the words "proved" /
-        // "minimum" can reach this screen only from optimal.js's oracle-checked proof. In the
-        // browser build the button never appears and the wording above stands as the honest
+        // prover is injected AND a desktop is behind it — the whole orientation-row precedent,
+        // since the mobile shells inject the same commands — and the words "proved" / "minimum"
+        // can reach this screen only from optimal.js's oracle-checked proof. In the browser and
+        // mobile builds the button never appears and the wording above stands as the honest
         // answer: the shortest found, no claim of minimality. Re-wired per WALK: a retarget
         // replaced the subject, so the button must come back for the new one.
         const proveBtn = $('#proveBtn', root);
@@ -3208,7 +3210,7 @@ SCREENS.settings = () => {
   // shape — the Tauri API on a desktop platform. A phone or tablet rotates in the hand, and the
   // browser harness has no window. The Rust side (set_orientation) re-sizes, re-centres and
   // remembers; this is the third capability seam AGENTS.md lists.
-  const desktopWindow = isTauri && ['macos', 'windows', 'linux'].includes(document.documentElement.dataset.platform);
+  const desktopWindow = isTauri && isDesktopHost();
   // `flow`: a list screen — in portrait the box scrolls as one (index.html, .cols.flow).
   return { html: `<div class="cols flow">
     <div class="col">

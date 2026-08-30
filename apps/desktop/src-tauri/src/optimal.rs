@@ -4,7 +4,13 @@
 //! databases generated natively once, then IDA* proofs on demand; the browser build answers
 //! the same capability with the two-phase tiers' honest "the shortest I found" and the
 //! precomputed proven library. The affordance in app.js is drawn only where these commands
-//! are injected, and the word "optimal" can reach a screen only from a proof returned here.
+//! are injected AND a desktop is behind them, and the word "optimal" can reach a screen only
+//! from a proof returned here.
+//!
+//! Desktop-only is enforced twice, because the two locks fail differently. The iOS and Android
+//! shells (2026-08-30) build this same crate and inject this same command surface, so the
+//! webview's `isDesktopHost()` is what keeps the button off a phone — and `optimal_prepare`
+//! below refuses there regardless, since a lock that depends on the UI agreeing is one lock.
 //!
 //! Three commands, one long-running preparation:
 //!   - `optimal_prepare` — load the validated tables from disk or generate them (minutes,
@@ -177,6 +183,14 @@ pub async fn optimal_prepare(
     app: AppHandle,
     state: tauri::State<'_, OptimalState>,
 ) -> Result<String, String> {
+    // Not this machine's work. Generating the tables is a rayon fan-out over every core,
+    // ~500 MB peak and 86 MB written; the mobile shells inject this command anyway, so the
+    // refusal lives here as well as in the webview that never draws the button. Loud, not
+    // silent: a caller that reached this learns why instead of waiting on a preparation that
+    // is never coming.
+    if cfg!(mobile) {
+        return Err("proving a minimum is desktop-only — a phone has neither the cores nor the room for the tables".into());
+    }
     if state.tables.get().is_some() {
         return Ok("ready".into());
     }

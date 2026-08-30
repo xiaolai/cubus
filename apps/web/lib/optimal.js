@@ -1,14 +1,22 @@
 // The optimal-solver seam, webview side (AGENTS.md, fourth accepted exception, 2026-08-29).
 //
-// The capability is "prove this solution minimal". Where the Tauri commands are injected, this
-// module drives them; anywhere else `capability()` is false, the affordance is never drawn,
-// and the app keeps saying "the shortest I found" — which is the browser's honest answer to
-// the same question. The word "optimal" (or "proved") may reach a screen ONLY through
+// The capability is "prove this solution minimal". Where the Tauri commands are injected ON A
+// DESKTOP, this module drives them; anywhere else `capability()` is false, the affordance is
+// never drawn, and the app keeps saying "the shortest I found" — which is the browser's honest
+// answer to the same question. The word "optimal" (or "proved") may reach a screen ONLY through
 // `prove()` here, and never survives the oracle check failing.
+//
+// "On a desktop" is not decoration. The iOS and Android shells inject exactly the same command
+// surface, and the first press of the affordance generates 86 MB of pattern databases with a
+// rayon fan-out over every core — minutes of work and ~500 MB peak. That is a desktop's job.
+// A phone gets the browser's answer, which is the same answer it would get with no native side
+// at all, so nothing on any screen depends on which build is running.
 //
 // The oracle is non-negotiable: every native answer is applied to the cube through cubejs (an
 // independent implementation) before anyone sees it. A native solver bug must become a loud
 // error at this boundary, not a wrong number wearing the word "proved".
+
+import { isDesktopHost } from './host.js';
 
 /** The face-turn grammar the proofs are stated in. cubejs would happily apply rotations,
  *  slices and wide moves too — and a native answer using them would "solve" while proving
@@ -33,8 +41,9 @@ const surface = () => {
 };
 
 /** Is the proof capability present at all? Drawn-nowhere follows from false, like the
- *  orientation row. */
-export const capability = () => surface() !== null;
+ *  orientation row — and on the same two conditions, for the same reason: a command surface,
+ *  and a desktop behind it. */
+export const capability = () => surface() !== null && isDesktopHost();
 
 /**
  * Ensure the tables exist (generate on first ever run — minutes, reported via the

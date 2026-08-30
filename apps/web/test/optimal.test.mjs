@@ -34,12 +34,40 @@ const noNative = () => {
   delete globalThis.window;
 };
 
+/** Publish a platform the way boot() does. capability() reads it, so a test that forgets this
+ *  is testing a host with no evidence of a desktop — which is deliberately not one. */
+const onPlatform = (platform) => {
+  globalThis.document = { documentElement: { dataset: { platform } } };
+};
+const noPlatform = () => {
+  delete globalThis.document;
+};
+
 test('without the native surface the capability is simply absent', async () => {
   noNative();
   assert.equal(capability(), false);
   assert.equal(await status(), 'absent');
   assert.equal(await cancel(), false);
   await assert.rejects(() => prove('U'.repeat(54), { Cube }), /no native solver/);
+});
+
+test('the commands are not enough — the capability needs a desktop behind them', () => {
+  // iOS and Android inject the identical command surface (the mobile shells, 2026-08-30), so
+  // "invoke exists" stopped being evidence of a machine that can spend minutes and 86 MB
+  // building pattern databases. Were this to regress, a phone would draw the prove button and
+  // the first press would start that generation on it.
+  fakeNative({});
+  for (const platform of ['macos', 'windows', 'linux']) {
+    onPlatform(platform);
+    assert.equal(capability(), true, `${platform} has both the commands and a desktop`);
+  }
+  for (const platform of ['ios', 'android']) {
+    onPlatform(platform);
+    assert.equal(capability(), false, `${platform} injects the commands but is not a desktop`);
+  }
+  noPlatform();
+  assert.equal(capability(), false, 'no published platform is no evidence of a desktop');
+  noNative();
 });
 
 test('a real proof round-trips: oracle-checked, length-checked, bound-checked', async () => {
