@@ -13,7 +13,7 @@
 // when a change is broadcast. So editing index.html — or running `npm run build:panel`,
 // which writes web/vendor/ai-scan-panel.js — refreshes the open tab on its own.
 
-import { watch } from 'node:fs';
+import { createReadStream, watch } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, extname, join, normalize, sep } from 'node:path';
@@ -179,9 +179,29 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    const body = await readFile(target);
-    res.writeHead(200, headers);
-    res.end(body);
+    // Streamed, with an explicit Content-Length, and neither half is cosmetic.
+    //
+    // This used to `readFile` the whole file and `res.end(buffer)`. With no Content-Length, Node
+    // sends HTTP/1.1 chunked — and a chunked body that stops early looks COMPLETE to the client,
+    // which is how a truncated 26.8 MB wasm reached WebKit and failed as
+    // "WebAssembly.Module doesn't parse at byte 24666430". The file on disk was byte-identical
+    // to its source the whole time; the delivery was short. It surfaced as
+    // threads-do-not-change-output failing, i.e. as a MODEL regression — the most expensive
+    // possible disguise for a dev-server bug.
+    //
+    // Content-Length makes a short read an error the client raises instead of a corrupt asset it
+    // parses. Streaming removes the cause: the suite runs at --test-concurrency=6 and several
+    // files each spawn their own server, so buffering ~27 MB per request multiplied by
+    // concurrent requests, and a socket write under that memory pressure is where the bytes went.
+    // `s` is the stat of the REQUESTED path; a directory request was rewritten to its
+    // index.html above, so only re-use it when it is the file being sent.
+    const info = s?.isFile() ? s : await stat(target);
+    res.writeHead(200, { ...headers, 'Content-Length': info.size });
+    const file = createReadStream(target);
+    // A read that dies mid-flight must break the connection, never end it tidily: a clean end
+    // after a partial body is exactly the silent truncation this whole change is about.
+    file.on('error', () => res.destroy());
+    file.pipe(res);
   } catch {
     res.writeHead(404).end('not found');
   }

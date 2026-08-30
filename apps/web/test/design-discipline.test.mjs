@@ -145,3 +145,27 @@ test('drawn stickers wear the shared edge and corner', () => {
   assert.ok(edges >= 5, `--sticker-edge is used ${edges}× — the net, the scan grid and the three swatch rings all wear it; fewer means one drifted back to a literal`);
   assert.ok(corners >= 2, `--r-sticker is used ${corners}× — the net and the scan grid corners come from it`);
 });
+
+test('scrollbars are styled with the standard properties, never ::-webkit-scrollbar', () => {
+  // The trap, measured in the WebKit this app ships (Version/26.5) on a 200px scroller:
+  //
+  //     unstyled                              0px   (overlay — costs no layout width)
+  //     scrollbar-width + scrollbar-color     0px   (overlay, still)
+  //     ::-webkit-scrollbar { width: 10px }  10px   (classic, permanently)
+  //
+  // So the pseudo-element every recipe recommends is the thing that CREATES a permanent gutter,
+  // which is the complaint it gets reached for to solve. Anyone "fixing" the scrollbar again
+  // will reach for it, and the regression is invisible in a headless DOM test — it is layout
+  // width on someone's desktop. Hence a sweep.
+  //
+  // Comments stripped before the sweep: the measurement above is worth keeping in the
+  // stylesheet next to the rule, and a sweep that cannot tell a comment from a selector would
+  // forbid recording the very reason the rule exists. (It caught this file's own comment first.)
+  const css = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(css, /::-webkit-scrollbar/,
+    'a ::-webkit-scrollbar rule takes the bar out of overlay and reserves its width forever');
+  assert.match(css, /scrollbar-width:\s*thin/, 'the standard thinning must still be there');
+  assert.match(css, /scrollbar-color:\s*var\(--[\w-]+\)\s+transparent/,
+    'the thumb must be a token (so it follows the theme) over a transparent track');
+});
