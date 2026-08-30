@@ -33,6 +33,18 @@ it walks you through solving it.
     webview does. The Settings row that calls them is drawn only where the Tauri API is injected
     on a desktop platform; the browser build has no window to shape and a phone rotates in the
     hand. Same test as above: no screen exists on one build only.
+  - **Fourth seam, accepted 2026-08-29 with the owner's execution of
+    `dev-docs/optimal-solver-plan.md`**: the optimal solver. Proving a solution minimal needs
+    ~86 MB of pattern databases whose generation is native work (minutes of BFS, ~500 MB peak),
+    which a webview cannot do — that, not size, was always the barrier. The capability is "how
+    short can this be, and can you prove it": the desktop answers with a native proof
+    (`crates/optimal-solver` behind prepare/prove/cancel commands), the browser answers with the
+    two-phase tiers' honest "the shortest I found" and the precomputed proven library that ships
+    everywhere. Same test as every seam: no screen exists on one build only — the prove
+    affordance follows the orientation-row precedent (drawn only where the API is injected),
+    and the word "optimal" can appear ONLY as the result of a native proof, never from the
+    two-phase engine. Provenance discipline as for the two-phase engine:
+    `dev-docs/optimal-solver-provenance.md`, written before the Rust.
   - **Dev tooling, accepted 2026-08-27, never shipped**: `tauri-plugin-mcp` (git dep, pinned rev)
     — the control socket that lets an AI agent drive the app for verification: screenshots,
     selector clicks, DOM queries, JS eval. Triple-gated because it is control-everything: the
@@ -66,7 +78,7 @@ it walks you through solving it.
   `dev-docs/design/README.md` before any `apps/web` UI work. Adopted into the app:
   `apps/web/tokens.css` (warm-paper tokens, light/dark) and `<cubus-cube>` (a purpose-built
   three.js renderer that replaced twisty-player; draws only — state/solving stay with
-  cubejs + cubing.js). Fonts are system stacks only (decided 2026-08-27): numerals/times/algs use
+  cubejs + the two-phase engine). Fonts are system stacks only (decided 2026-08-27): numerals/times/algs use
   the system mono stack, UI text `system-ui` — no web fonts, no embedded fonts, and index.html
   loads nothing remote (a test enforces it).
 - **Layout contract** (decided 2026-08-27): two compositions keyed only on orientation — a 4:3
@@ -154,9 +166,42 @@ it walks you through solving it.
   fails when the claim stops being true. The habit that mattered most on the driver — assert what
   must NOT happen, not only what should — applies just as well to a scan and a solve.
 - **`cubejs` is a deliberate independent test oracle**, not a redundant dep. Do not
-  "consolidate" it into cubing.js; a different implementation is what makes the
-  invariant a real cross-check. cubing.js (kpuzzle + search) is the state-brain and
-  solver; `<cubus-cube>` is the renderer (see Design system above).
+  "consolidate" it into the solver; a different implementation is what makes the invariant a real
+  cross-check. It is also the facelet parser and the state-brain.
+- **The solver is our own two-phase engine (2026-08-29): `apps/web/lib/two-phase.js`** —
+  Kociemba's algorithm implemented from the published method, no existing solver's source
+  opened (the record: `dev-docs/two-phase-provenance.md`; the plan and its acceptance stamps:
+  `dev-docs/two-phase-plan.md`). It replaced the vendored min2phase, whose licence was
+  contradictory and unresolved — `apps/web/vendor/min2phase.PROVENANCE.md` stays as that
+  record. The bounds are the feature and are why the app owns its solver: `solLen` (an
+  EXCLUSIVE length bound), `probeMax` (a budget in SEARCH NODES — deterministic across
+  machines and proportional to time, ~20 ns each), and null when out of budget, never an error
+  string. `lib/solver-engine.js` enforces that contract at the boundary; the search runs six
+  interleaved views (three axes × normal/inverse); the measured ladder and its retuning
+  history live in `dev-docs/solver-move-count.md` §7. **cubing is gone entirely** — not even a
+  devDependency. Bring it back only for something it is actually needed for — WCA-event
+  scrambles are the obvious candidate, and note that `randomScrambleForEvent` was never
+  vendored, so nothing lost it. `<cubus-cube>` is the renderer and never touched any of this
+  (see Design system above).
+- **Scrambles are random-STATE, from a cryptographic source** (`apps/web/lib/random-state.js`):
+  the position is drawn uniformly from all 43 quintillion legal ones via `crypto.getRandomValues`
+  and then solved, and the scramble is that solution inverted. Never random turns — those leave a
+  distribution with structure and cubes easier than they look. There is no fallback to
+  `Math.random()`; a platform without a crypto source fails loudly instead of quietly weakening.
+- **One solver, one question (decided 2026-08-29 — the explaining solver was removed).** The
+  app answers *just restore it*: the two-phase engine, behind a single Settings choice — a
+  solution-length ceiling (≤ 20 / ≤ 19 / ≤ 18 / shortest). The method solver ("why is this
+  move right", 118 moves in 21 steps with a reason each) and its reason line were removed by
+  the owner's call: in practice the explanations did not reduce a learner's burden. The
+  two-solvers argument it reversed, the measured ladders, the completeness proof over all
+  62,208 last-layer states, and the dead-ends table are all preserved in
+  `dev-docs/solver-research.md` — read it before re-deriving anything, and before any attempt
+  to bring explanation back (hold a return to the same bar the smart-cube return met). The
+  code history is in git (removal commit, 2026-08-29).
+  - **The ceiling is a ceiling, not a stopping place**: once the target is met, `refine`
+    keeps asking for shorter at a small bonus budget, so a cube a few turns from solved gets
+    its real few-move answer instead of the target length. The day this was missing, a 7-turn
+    cube was answered with ~20 moves — `lib/solve-target.js` records the mechanism.
 - **Never invent data**: a statistic that cannot be computed is a dash, not a number; a reading
   that cannot be validated is a refusal, not a guess. A plausible figure is worse than a blank.
 - **A misread scan may say HOW MANY, and may only point when it is one** (decided 2026-08-28).

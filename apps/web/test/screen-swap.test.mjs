@@ -345,23 +345,23 @@ test('the cube is given its view before it is connected, so its first drawing is
   }
 });
 
-test('a refuted solution still blocks, now that cubing.js is the one refuting it', async () => {
-  // The negative control for the search that was removed. A generated cube's solution is no
-  // longer searched for — it is the inverse of a setup alg cubejs found — so the independent
-  // check moved to the other implementation: cubing.js applies it and compares. If that check
-  // has quietly stopped being able to fail, the app would show any alg at all with confidence.
-  // So make it fail, and watch the screen refuse.
+test('a refuted solution still blocks — the oracle can still say no', async () => {
+  // The negative control for the search that was removed. A generated cube's solution is not
+  // searched for — it is the inverse of a setup alg the solver found — so the independent
+  // check is the cubejs oracle applying it in finishSolve. If that check has quietly stopped
+  // being able to fail, the app would show any alg at all with confidence. So make it fail —
+  // every isSolved() now answers no, so every applied solution reads as a refutation — and
+  // watch the screen refuse.
   const { page, context, errors } = await openHome();
   try {
     await press(page);
     const patched = await page.evaluate(`(async () => {
-      const kp = await (await import('/vendor/cubing.js')).cube3x3x3.kpuzzle();
-      const proto = Object.getPrototypeOf(kp.defaultPattern());
-      if (typeof proto.isIdentical !== 'function') return false;
-      proto.isIdentical = () => false; // every comparison now disagrees
+      const Cube = (await import('/vendor/cubejs.js')).default;
+      if (typeof Cube.prototype.isSolved !== 'function') return false;
+      Cube.prototype.isSolved = () => false; // every oracle application now disagrees
       return true;
     })()`);
-    assert.ok(patched, 'cubing.js patterns no longer compare with isIdentical — the cross-check needs rewriting');
+    assert.ok(patched, 'cubejs no longer exposes isSolved — the cross-check needs rewriting');
 
     await page.click('#randCube');
     await page.waitForTimeout(2500);
