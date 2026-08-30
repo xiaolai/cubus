@@ -142,6 +142,85 @@ export const STOPPED = Object.freeze({
 });
 
 /**
+ * One solution of GOD'S NUMBER moves or fewer, whatever it costs.
+ *
+ * The app's central promise, in one place because it now has two callers: the tiered solve
+ * descends FROM this, and a scramble IS this, inverted. Two copies of an escalation loop would
+ * be two places for the promise to quietly stop being kept.
+ *
+ * @param {string} facelets
+ * @param {object} opts
+ * @param {(f: string, bounds: object) => Promise<string|null>} opts.solve  the engine, injected
+ * @param {number} [opts.probeBudget]  the first attempt's budget; doubled on every refusal
+ * @param {AbortSignal|null} [opts.signal]
+ * @returns {Promise<string|undefined>} the validated algorithm, or undefined if aborted
+ * @throws if every sanctioned escalation is spent. The message names the unsolvable case first
+ *         because this module never establishes legality — see the comment inside.
+ */
+export async function solveWithinGodsNumber(
+  facelets,
+  { solve, probeBudget = DEFAULT_PROBE_BUDGET, signal = null } = {},
+) {
+  if (typeof solve !== 'function') throw new TypeError('solveWithinGodsNumber needs a solve function');
+  if (!Number.isSafeInteger(probeBudget) || probeBudget < 1) {
+    throw new TypeError(`solveWithinGodsNumber: probeBudget ${probeBudget} is not a positive integer`);
+  }
+  if (signal?.aborted) return undefined;
+  // The first answer IS the floor, so this is where the floor is kept — and the only place it
+  // can be missed now. For a LEGAL cube a refusal here cannot mean "no such solution exists":
+  // God's number says one of 20 or fewer always does, and the engine is complete (solvePattern
+  // deepens phase-1 to solLen - 1, and canonical pruning is proved to delete no optimal path).
+  // So the ask repeats with twice as much.
+  //
+  // "For a legal cube" is the whole caveat, and this module cannot discharge it: `solve` answers
+  // null both for "out of budget" and for "not a solvable state", with no way to ask which, and
+  // nothing here parses the facelets. So escalation is what happens to BOTH — harmlessly, since
+  // the engine rejects an unparseable state before searching and each retry returns at once —
+  // and the error at the cap names the unsolvable case rather than asserting a guarantee that
+  // holds only for the other one.
+  //
+  // Everything after this is a descent from a number already at or below 20, which is why the
+  // loop below needs no floor of its own: it can only shorten.
+  let budget = probeBudget;
+  let escalations = 0;
+  let first = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget });
+  while (first === null) {
+    // An abort here is a person leaving before the first answer — nothing to show, so nothing
+    // is yielded, exactly as an abort before any search at all.
+    if (signal?.aborted) return undefined;
+    if (escalations >= MAX_PROMISE_ESCALATIONS) {
+      // Says what happened, not what it means. The engine IS complete, so on the shipped budget
+      // this can only be a bug — but a caller may pass any budget it likes, and `probeBudget: 1`
+      // exhausting after 256 nodes accuses the engine of something the caller did.
+      // Ordered so the claim never outruns what is known. God's number guarantees a <= 20
+      // solution for every LEGAL cube, and this module never establishes legality — the engine
+      // answers null both for "out of budget" and for "not a solvable state", and cannot be
+      // asked which. So the unsolvable case is named first, and the guarantee is stated as the
+      // conditional it actually is. (Escalating eight times on an unsolvable state costs
+      // nothing measurable: the engine rejects the facelets before searching, so each attempt
+      // returns immediately rather than spending its budget.)
+      throw new Error(
+        `solver found no solution of ${GODS_NUMBER} moves or fewer within ${escalations} ` +
+          `escalations, up to ${budget} nodes. Either this is not a solvable cube — for one ` +
+          'that is, a solution this short always exists — or the budget was far too small, or ' +
+          'the engine is broken',
+      );
+    }
+    if (!Number.isSafeInteger(budget * 2)) {
+      throw new Error(
+        `solver found no solution of ${GODS_NUMBER} moves or fewer, and the budget cannot be ` +
+          `doubled past ${budget} without leaving the safe-integer range`,
+      );
+    }
+    escalations += 1;
+    budget *= 2;
+    first = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget });
+  }
+
+  return validateAnswer(first, FIRST_BOUND);
+}
+
+/**
  * Progressively shorten a solution, yielding every improvement.
  *
  * `solve(facelets, { solLen, probeMax })` must return an algorithm shorter than `solLen`, or
@@ -181,58 +260,11 @@ export async function* refine(facelets, {
   // Cancelled before anything was searched: there is nothing to show, so nothing is yielded.
   if (signal?.aborted) return;
 
-  // The first answer IS the floor, so this is where the floor is kept — and the only place it
-  // can be missed now. For a LEGAL cube a refusal here cannot mean "no such solution exists":
-  // God's number says one of 20 or fewer always does, and the engine is complete (solvePattern
-  // deepens phase-1 to solLen - 1, and canonical pruning is proved to delete no optimal path).
-  // So the ask repeats with twice as much.
-  //
-  // "For a legal cube" is the whole caveat, and this module cannot discharge it: `solve` answers
-  // null both for "out of budget" and for "not a solvable state", with no way to ask which, and
-  // nothing here parses the facelets. So escalation is what happens to BOTH — harmlessly, since
-  // the engine rejects an unparseable state before searching and each retry returns at once —
-  // and the error at the cap names the unsolvable case rather than asserting a guarantee that
-  // holds only for the other one.
-  //
-  // Everything after this is a descent from a number already at or below 20, which is why the
-  // loop below needs no floor of its own: it can only shorten.
-  let budget = probeBudget;
-  let escalations = 0;
-  let first = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget });
-  while (first === null) {
-    // An abort here is a person leaving before the first answer — nothing to show, so nothing
-    // is yielded, exactly as an abort before any search at all.
-    if (signal?.aborted) return;
-    if (escalations >= MAX_PROMISE_ESCALATIONS) {
-      // Says what happened, not what it means. The engine IS complete, so on the shipped budget
-      // this can only be a bug — but a caller may pass any budget it likes, and `probeBudget: 1`
-      // exhausting after 256 nodes accuses the engine of something the caller did.
-      // Ordered so the claim never outruns what is known. God's number guarantees a <= 20
-      // solution for every LEGAL cube, and this module never establishes legality — the engine
-      // answers null both for "out of budget" and for "not a solvable state", and cannot be
-      // asked which. So the unsolvable case is named first, and the guarantee is stated as the
-      // conditional it actually is. (Escalating eight times on an unsolvable state costs
-      // nothing measurable: the engine rejects the facelets before searching, so each attempt
-      // returns immediately rather than spending its budget.)
-      throw new Error(
-        `solver found no solution of ${GODS_NUMBER} moves or fewer within ${escalations} ` +
-          `escalations, up to ${budget} nodes. Either this is not a solvable cube — for one ` +
-          'that is, a solution this short always exists — or the budget was far too small, or ' +
-          'the engine is broken',
-      );
-    }
-    if (!Number.isSafeInteger(budget * 2)) {
-      throw new Error(
-        `solver found no solution of ${GODS_NUMBER} moves or fewer, and the budget cannot be ` +
-          `doubled past ${budget} without leaving the safe-integer range`,
-      );
-    }
-    escalations += 1;
-    budget *= 2;
-    first = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget });
-  }
+  const first = await solveWithinGodsNumber(facelets, { solve, probeBudget, signal });
+  // undefined is an abort before the first answer: nothing to show, so nothing is yielded.
+  if (first === undefined) return;
 
-  let alg = validateAnswer(first, FIRST_BOUND);
+  let alg = first;
   let moves = movesIn(alg);
   /** One yield's worth of truth, derived in exactly one place. */
   const snapshot = (stopped) => ({
