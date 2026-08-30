@@ -39,10 +39,25 @@ test('changing the target throws away the answer computed under the old one', ()
 });
 
 test('a missed target is said out loud rather than shown as a plain count', () => {
-  // 18 moves do not exist for every position. Printing just the number would present a 19-move
-  // answer as if it had met the target.
+  // Printing just the number would present a 19-move answer as if it had met the target.
   assert.match(app, /targetMissed/, 'app.js must handle the missed-target verdict');
-  assert.match(app, /was not possible here/, 'and say so on the screen');
+  assert.match(app, /couldn't get to \$\{verdict\.target\}/, 'and say so on the screen');
+});
+
+test('a shortfall is never dressed up as an impossibility', () => {
+  // The sentence this replaces was "N was not possible here". Two-phase cannot prove a minimum,
+  // so it cannot prove one absent either (solver-move-count.md section 4) — and at the <= 20
+  // tier God's number makes the claim flatly false. Measured on 30 random states: the <= 18
+  // tier fell short 19 times while only ~3.5% of positions are genuinely optimal-19-or-20.
+  //
+  // Comments are stripped first, on purpose: the history of the wording is worth keeping in the
+  // source, and a test that could not tell a comment from a string would forbid recording it.
+  const withoutComments = app
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/[^\n]*$/gm, '')
+    .replace(/([^:'"`])\/\/[^\n]*/g, '$1');
+  assert.doesNotMatch(withoutComments, /not possible|impossible|does not exist/i,
+    'no screen may state that a move count is impossible — the search cannot know that');
 });
 
 test('the solution is cleared alongside its verdict everywhere', () => {

@@ -19,7 +19,9 @@
 //!     `optimal_status` to "ready" before proving; that polling contract is what makes
 //!     concurrent prepare calls safe rather than merely tolerated.
 //!   - `optimal_prove`  — prove one facelet state's distance. One proof at a time; a proof
-//!     can run minutes to hours on deep states, which is why it is cancellable.
+//!     can run minutes to hours on deep states, which is why it is cancellable — and why each
+//!     exhausted contour goes up as an `optimal-proof-progress` event, so a person waiting can
+//!     see the lower bound rising instead of a button that looks wedged.
 //!   - `optimal_cancel` — flip the cancel flag; the search acknowledges within milliseconds
 //!     and returns a cancelled error, never a best-effort answer dressed as a proof.
 //!
@@ -150,6 +152,21 @@ pub struct OptimalProgress {
     stage: String,
     done: u64,
     total: u64,
+}
+
+/// One completed contour of a running proof.
+///
+/// `ruled_out` is the largest length now EXHAUSTED: every maneuver that short has been searched
+/// and none solves the cube, so the answer is at least one move longer. That is a lower bound
+/// being established in public, which is the one number a waiting person can actually use — and
+/// deliberately not a percentage, because a proof has no denominator to be a fraction of.
+///
+/// The search also reports a cumulative node count, and this payload deliberately does NOT carry
+/// it: nothing renders it, and a field shipped over the bridge for no reader is weight plus an
+/// invitation to start trusting a number no test covers.
+#[derive(serde::Serialize, Clone)]
+pub struct OptimalProofProgress {
+    ruled_out: u8,
 }
 
 #[derive(serde::Serialize)]
@@ -291,6 +308,7 @@ pub fn optimal_status(state: tauri::State<'_, OptimalState>) -> String {
 
 #[tauri::command]
 pub async fn optimal_prove(
+    app: AppHandle,
     facelets: String,
     state: tauri::State<'_, OptimalState>,
 ) -> Result<OptimalProof, String> {
@@ -305,12 +323,29 @@ pub async fn optimal_prove(
         return Err("a proof is already running".into());
     };
     let started = std::time::Instant::now();
+    let emitter = app.clone();
     // The lease rides in the worker: settled there under the slot mutex, released by drop if
     // the search panics — a dropped command future cannot wedge the slot.
     tauri::async_runtime::spawn_blocking(move || {
         let cancel = lease.cancel_flag();
         let coords = Coords::from_cubie(&cube);
-        let out = match search::prove(&tables, &coords, GODS_NUMBER, &cancel, &mut |_, _| {}) {
+        // Report each exhausted contour. At most twenty of these exist for any cube (the cap is
+        // God's number), so there is no firehose to throttle — unlike table generation, whose
+        // heartbeat is rate-limited precisely because it has one. A webview that has gone away
+        // must not fail a proof that is running perfectly well, so a failed emit is logged once
+        // and the search carries on.
+        let mut warned = false;
+        let mut on_progress = |ruled_out: u8, _nodes: u64| {
+            if let Err(e) =
+                emitter.emit("optimal-proof-progress", OptimalProofProgress { ruled_out })
+            {
+                if !warned {
+                    warned = true;
+                    log::warn!("optimal: proof progress is not reaching the webview: {e}");
+                }
+            }
+        };
+        let out = match search::prove(&tables, &coords, GODS_NUMBER, &cancel, &mut on_progress) {
             Ok(proof) => Ok(OptimalProof {
                 length: proof.length,
                 solution: search::solution_string(&proof.solution),

@@ -15,6 +15,7 @@ import {
   prove as optimalProve,
   status as optimalStatus,
 } from './optimal.js';
+import { NO_CHALLENGES, loadIndex, provenAnswer } from './optimal-challenges.js';
 import { isDesktopHost } from './host.js';
 import { randomCube } from './random-state.js';
 import { makeRouter } from './router.js';
@@ -141,7 +142,11 @@ const TITLES = {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty' });
+const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty', proveMinimum: false });
+// localStorage is untrusted input, and `load` merges it raw. The string "false" is truthy, so
+// a hand-edited or half-migrated value could opt someone in to an operation that runs for
+// hours — the one setting where "off unless explicitly true" is the whole point.
+settings.proveMinimum = settings.proveMinimum === true;
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
@@ -269,16 +274,57 @@ const state = {
 
 // How the four rungs read on the Settings screen. A rung with no label here would render as
 // "undefined", so app-wiring.test.mjs checks every TIERS entry has one.
+/** How long a proof may run before it has to account for itself.
+ *
+ *  Proof cost tracks DEPTH, not the incumbent: a cube a few turns from solved proves in
+ *  milliseconds, a random one at depth 17 takes about a minute, and depth 18 — which is 67% of
+ *  random states — has been measured at over an hour (optimal-solver-plan.md). So there is no
+ *  threshold worth guessing in advance, and no percentage worth inventing: the proof simply
+ *  earns its waiting state by taking one. Under this, a press looks instant, which for a
+ *  shallow cube it is; over it, the button starts saying what it has ruled out and how long it
+ *  has been at it, and a stop appears beside it. */
+const PROOF_WAIT_VISIBLE_MS = 250;
+
+/** Every place the app NAMES the prove feature, as opposed to making a claim with it.
+ *
+ *  The distinction is the whole point, and it is what keeps the wording invariant meaningful as
+ *  the feature grows: `provenMinimumLabel` and the native prover's gated block assert something
+ *  about a particular cube, and may only ever run after a proof. These strings assert nothing —
+ *  they are a button that offers to start one and a toggle that decides whether the button is
+ *  drawn. Kept together so there is one region to sanction rather than a new one per string, and
+ *  named rather than reworded to slip under the check: a toggle should be named after the button
+ *  it turns on, not after what a regex will tolerate.
+ *
+ *  `button` is also the button's RESTING label in three states — the markup, the per-walk
+ *  rewiring, and the return from a stopped proof — which had drifted apart as three literals. */
+const PROVE_COPY = {
+  button: 'prove the minimum',
+  settingLabel: 'Offer to prove the minimum',
+  settingBlurb: 'A button on the solution that proves no shorter solution exists. The first run builds 86 MB of tables, and a proof can take minutes to hours',
+};
+
+/** The one sentence the SHIPPED library may put on a screen, and the second of exactly two
+ *  places in this file where the word "proved" is allowed to originate (the other is the
+ *  native prover's gated block). It is a named function rather than a slice of a ternary so
+ *  the wording invariant in optimal.test.mjs can sanction it precisely instead of loosening
+ *  to a pattern that would let a third source through unnoticed. Its guard is checked there
+ *  too: the only call must sit behind `provenHere`. */
+const provenMinimumLabel = (moves) => `${moves} — proved the minimum`;
+
+
 const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', shortest: 'shortest' };
 const TIER_BLURB = {
   twenty: 'Twenty moves or fewer — always possible, and quick. An easy cube still gets its short answer',
-  nineteen: 'Nineteen or fewer — a moment longer, and it always gets there',
-  eighteen: 'Eighteen if this cube allows it; some do not, and it will say so',
+  nineteen: 'Nineteen or fewer — a moment longer, and it almost always gets there',
+  eighteen: 'Eighteen when it can be found; often it cannot, and it says so rather than pretend',
   shortest: 'Keeps looking for a shorter one until you move on',
 };
 
 // ---- solver pipeline (cubejs oracle + the two-phase engine in a worker), lazy-loaded ----------
 let Cube = null, solverReady = false;
+/** States whose minimum is already PROVED, by facelets. Empty until the solver loads, and empty
+ *  forever if the library did not validate — both of which a lookup answers with a miss. */
+let challenges = NO_CHALLENGES;
 const invMove = (m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : m + "'");
 /** An alg undone: the same turns, backwards, each reversed. The ONE place that rule is written.
  *  It is an involution on every move form (R->R'->R, R2->R2, R'->R->R'), which is what lets the
@@ -297,6 +343,24 @@ async function loadSolver() {
       Cube = (await import('../vendor/cubejs.js')).default;
       Cube.initSolver();
       solverReady = true;
+      // The proven library rides ALONGSIDE, never in front. It needs the same oracle and it is
+      // what lets a known state answer with no search at all — but it is an optimisation, and
+      // awaiting it here made it a dependency: a fetch that never settles would have left
+      // solverReady false forever and every solve waiting on it, which is the exact opposite
+      // of the "costs performance, never correctness" this comment used to claim. Un-awaited,
+      // a slow library only means the first few solves search as they always did.
+      //
+      // Its failure is loud but never fatal, and a library that will not validate must yield
+      // NO claim rather than a plausible one — which is what dropping the whole index achieves.
+      // loadIndex, not a promise chain assembled here: both failure kinds — a library that will
+      // not load and one that will not validate — leave through its single door, so there is no
+      // arrangement of .then/.catch for this call site to get subtly wrong.
+      void loadIndex({
+        Cube,
+        onError: (err) => console.error(
+          'optimal-challenges: the proven library did not load; every state will be searched', err,
+        ),
+      }).then((index) => { challenges = index; });
       return true;
     } catch {
       solverLoading = null;
@@ -351,6 +415,11 @@ function deriveCube() {
     // returned moves" is not evidence of anything to follow — every fresh launch put a transport
     // under the solved cube reading 0 / 0, its done tick already lit.
     if (cube.isSolved()) { c.setupAlg = ''; c.solvable = false; return c; }
+    // A proved state carries the alg that reaches it, checked against the oracle at load — so
+    // the setup is a fact we ship, not a search this thread runs. This is the second of the two
+    // Kociemba searches a library state would otherwise pay for; solve() skips the other.
+    const known = provenAnswer(challenges, c.facelets);
+    if (known) { c.setupAlg = known.setupAlg; c.solvable = known.moves > 0; return c; }
     const sol = cube.solve();
     const moves = movesOf(sol);
     c.setupAlg = moves.slice().reverse().map(invMove).join(' ');
@@ -427,6 +496,18 @@ async function solve({ onImprovement } = {}) {
     // is unchanged: finishSolve applies it through cubejs — move application, ~µs, no search —
     // and a definite refutation blocks exactly as it does on the searched path.
     return finishSolve(c, c.solution);
+  }
+
+  // Already proved, offline, by crates/optimal-solver — so there is nothing to search for and
+  // nothing to prove. This is the whole point of shipping the library as data: the minimum for
+  // these states is a fact we carry, not a computation the device repeats. finishSolve still
+  // applies it through the cubejs oracle, so a library entry gets exactly the same refutation
+  // every searched answer gets; what it skips is the search, not the check.
+  const proven = provenAnswer(challenges, c.facelets);
+  if (proven) {
+    c.solveResult = { key: 'solve.provenMinimum', moves: proven.moves };
+    onImprovement?.({ alg: proven.alg, moves: proven.moves, target: null, met: true, stopped: 'met' });
+    return finishSolve(c, proven.alg);
   }
 
   const client = solverWorker();
@@ -1524,12 +1605,21 @@ SCREENS.scan = () => {
   // --primary-share 0.66, not the default 0.58: the net wants the room, and the sheet is a cube
   // twin and a paragraph. `twin-low`: in portrait the twin sits beside the sheet, not beside the
   // cross — the cross is the same cross in both windows and wants the width (index.html). Only a
-  // finger's portrait shows one face large over a strip (.scan-faces under pointer: coarse).
+  // net in both compositions and on every platform (.scan-faces).
+  //
+  // `facing="environment"` off the desktop, and it is not a preference — it is which way the
+  // camera points. A handheld has two, and only one of them can see a cube you are holding;
+  // getUserMedia with no constraint hands over the platform's default, which on a phone is the
+  // front one, so the scanner opened pointed at your face. Desktops are deliberately left
+  // asking for nothing: there a facing mode names a different physical machine rather than a
+  // different lens (packages/cube-scanner/src/camera.ts says so at the constraint itself).
+  // A pinned camera still wins over this — deviceId is checked first — so choosing one from the
+  // menu is never overridden by the hint.
   return {
     html: `<div class="cols twin-low" style="--primary-share:0.66">
     <div class="col">
       <div class="card scanboard">
-        <ai-scan-panel headless autostart></ai-scan-panel>
+        <ai-scan-panel headless autostart${isDesktopHost() ? '' : ' facing="environment"'}></ai-scan-panel>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" role="group" aria-label="${SCAN_FACE_NAME[f]} side" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}"><div class="tgrid">${pending(f)}</div></div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
         <div class="scan-cam card-tools">
@@ -1645,21 +1735,14 @@ SCREENS.scan = () => {
       const solveBtn = $('#scanSolveBtn', root);
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
-      // A finger's portrait shows one face large and the other five as a strip (index.html,
-      // .scan-faces under pointer: coarse): six 3×3 tiles cannot give a finger 44px stickers in
-      // a phone's width. Which face is large is a policy, because the scanner is orderless and
-      // reports no "face being seen": the side it asks to see again, else the side it just read,
-      // else the one you tap — F to begin with. With a mouse, in either window, the class is
-      // inert and the six tiles are the cross.
+      // The six sides are the cube's net, everywhere (decided 2026-08-30). There used to be a
+      // second arrangement for a finger in portrait — one face large over a strip of five — and
+      // with it a `.focus` class, a `--focus` flag read back out of the stylesheet, and a tap
+      // that meant "show me this side" on a strip tile and "correct this sticker" anywhere
+      // else. All of it is gone with the layout it served: no rule styles `.focus` any more, so
+      // keeping the machinery would have been a switch with one position. What the removal
+      // costs is written down where the decision is (dev-docs/stage-contract.md).
       const faces = $('.scan-faces', root);
-      const setFocus = (f) => { for (const tile of tiles) tile.classList.toggle('focus', tile.dataset.face === f); };
-      // Guarded: the test harness lays nothing out and has no getComputedStyle global.
-      const focusLayout = () => {
-        const cs = globalThis.getComputedStyle?.(faces);
-        return cs ? cs.getPropertyValue('--focus').trim() === '1' : false;
-      };
-      setFocus('F');
-      let capturedCount = 0;
 
       // ---- the board's keyboard path -----------------------------------------------------------
       // 54 stickers are 54 buttons, but ONE tab stop: the board is a composite widget with a
@@ -1668,7 +1751,7 @@ SCREENS.scan = () => {
       // pointer would have made, heard by the same delegated listener. Every cell is inspectable
       // by arrow — its label carries the side, the position and the reading — and aria-disabled
       // says which ones a press will be refused on, without swallowing the event the way real
-      // `disabled` would (a swallowed click would break tap-to-focus on the strip tiles).
+      // `disabled` would.
       const cellButtons = tiles.flatMap((tile) => [...tile.querySelectorAll('.cell')]);
       let roveAt = cellButtons.indexOf(tiles.find((tile) => tile.dataset.face === 'F').querySelector('.cell'));
       const setRove = (idx) => {
@@ -1879,10 +1962,6 @@ SCREENS.scan = () => {
           if (got && p.phase !== 'done') paint(cells, got.colors);
           else if (!got) cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? pal[f] : 'var(--facelet-off)'; });
         }
-        // The large tile in portrait: the side asked for again outranks the side just read.
-        if (p.confirm?.face) setFocus(p.confirm.face);
-        else if (p.captured.length > capturedCount) setFocus(p.captured[p.captured.length - 1].face);
-        capturedCount = p.captured.length;
         lastCaptured = p.captured;
         refreshCellNames();
         // The twin follows the scan side by side rather than waiting for all six.
@@ -2036,14 +2115,6 @@ SCREENS.scan = () => {
         const cellEl = ev.target.closest('.cell');
         const tile = ev.target.closest('.scan-face');
         if (!tile) return;
-        // In the portrait layout a tap anywhere on a strip tile brings that side forward;
-        // correcting a sticker is for the large tile, where a sticker is big enough to hit.
-        if (focusLayout() && !tile.classList.contains('focus')) {
-          closePops();
-          setFocus(tile.dataset.face);
-          ev.stopPropagation();
-          return;
-        }
         if (!cellEl) return;
         const index = [...cellEl.parentElement.children].indexOf(cellEl);
         // The centre cannot be colour-corrected — it names the face — so it does the other useful
@@ -2257,7 +2328,11 @@ const cubeScreen = (screenMode) => {
       ${!walking && rcNow() ? `<div class="card sheet reconnect-card">${reconnectAsk()}</div>` : ''}
       ${walking ? `<div class="card tight solution-card sheet">
         ${reconnectAsk()}
-        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount">—</span><button class="pill" id="proveBtn" hidden style="margin-left:auto">prove the minimum</button></div>
+        <!-- The count carries the auto margin, not the button: with it on the button, the header's
+             space-between left the number stranded midway between the heading and the pill. The
+             count is the heading's ANSWER and belongs at the right edge whether or not anything
+             follows it; the buttons then sit beside it, each with a margin of its own. -->
+        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" style="margin-left:auto">—</span><button class="pill" id="proveBtn" hidden style="margin-left:12px">${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg"></span>
@@ -2856,17 +2931,25 @@ const cubeScreen = (screenMode) => {
         total = moves.length;
         if (scrambling) paintNet(target);
         cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
-        // Just the number, unless the tier asked for something this cube cannot give. Eighteen
-        // moves do not exist for every position, so that case is said plainly rather than left
-        // to look like the target was met — but only when the search actually EXHAUSTED.
-        // A stopped search proved nothing impossible and must not claim it did.
+        // Just the number, unless the search fell short of the tier — and then a sentence about
+        // the SEARCH, never about the cube. This used to read "18 was not possible here", which
+        // two-phase has no way to know: it cannot prove a minimum, so it cannot prove one absent
+        // (solver-move-count.md section 4). Measured on 30 random states, the <= 18 tier fell
+        // short 19 times while only ~3.5% of positions are genuinely optimal-19-or-20 — so that
+        // sentence was false roughly eighteen times out of nineteen. At <= 20 it was false
+        // always, God's number being 20; solve-target now keeps that promise by escalating, so
+        // this branch cannot be reached from a promised tier at all.
         // A scramble walk never ran the solver, so any verdict on state.cube is a LEFTOVER
         // from an earlier solve — shown here it would caption a fresh scramble with an old
-        // cube's "18 was not possible".
+        // cube's shortfall.
         const verdict = scrambling ? null : state.cube.solveResult;
-        setStatus(verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'
-          ? `${total} — ${verdict.target} was not possible here`
-          : String(total));
+        const provenHere = verdict?.key === 'solve.provenMinimum';
+        setStatus(
+          provenHere ? provenMinimumLabel(total)
+            : verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'
+              ? `${total} — couldn't get to ${verdict.target}`
+              : String(total),
+        );
 
         // The optimal seam's affordance (AGENTS.md, fourth seam): drawn only where the native
         // prover is injected AND a desktop is behind it — the whole orientation-row precedent,
@@ -2875,11 +2958,20 @@ const cubeScreen = (screenMode) => {
         // mobile builds the button never appears and the wording above stands as the honest
         // answer: the shortest found, no claim of minimality. Re-wired per WALK: a retarget
         // replaced the subject, so the button must come back for the new one.
+        // `!provenHere`: the library already carries this state's proof, so there is nothing
+        // left to ask the native prover for — offering minutes of search to re-derive a fact
+        // we shipped would be the opposite of why the file exists.
+        // `settings.proveMinimum`: off by default. Proving is minutes to hours on a typical cube
+        // (optimal-solver-plan.md), so the affordance is not something to put in front of a
+        // beginner who did not ask for it — it is opt-in from Settings, where the row explains
+        // the cost. Everything else about the gate is unchanged: the commands must be injected,
+        // a desktop must be behind them, and a state the library already proved has nothing left
+        // to ask for.
         const proveBtn = $('#proveBtn', root);
-        if (proveBtn && optimalCapability() && !scrambling) {
+        if (proveBtn && optimalCapability() && !scrambling && !provenHere && settings.proveMinimum) {
           proveBtn.hidden = false;
           proveBtn.disabled = false;
-          proveBtn.textContent = 'prove the minimum';
+          proveBtn.textContent = PROVE_COPY.button;
           // The pair being proved is the WALK's, captured at wiring: steps[0] IS the start
           // state this walk displays and total IS its length. Reading state.cube at click
           // time would race live ingestion (a snapshot can swap the subject or zero the move
@@ -2887,43 +2979,108 @@ const cubeScreen = (screenMode) => {
           // re-wires this handler with the new pair.
           const startFacelets = steps[0] ?? state.cube.facelets;
           const shown = total;
+          const cancelBtn = $('#proveCancel', root);
           proveBtn.onclick = async () => {
-            proveBtn.disabled = true;
-            // First ever press generates the tables (minutes) — the progress event keeps the
-            // button honest about why nothing seems to be happening. The listener is released
-            // in finally, so neither navigation nor a failure leaks it against the old DOM.
+            // Two waits with different shapes, and they must not be dressed the same. Table
+            // GENERATION is known-slow and has a denominator, so it announces itself and shows
+            // a percentage. The PROOF has neither: it is milliseconds on a shallow cube and
+            // hours on a deep one, and no fraction of it is knowable — so it stays silent until
+            // it has actually taken time, and then reports the only honest number it has.
             let unlisten = null;
+            let unlistenProof = null;
+            let ticking = null;
+            let reveal = null;
+            let ruledOut = null;
+            const startedAt = Date.now();
+
+            const clock = () => {
+              const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+              return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+            };
+            // "at least N" is a fact, not a spinner: every contour the native side reports has
+            // been exhausted, so the answer really is longer than it. Before the first one
+            // lands there is nothing true to say beyond the clock.
+            const paintWait = () => {
+              if (!fresh()) { clearInterval(ticking); ticking = null; return; }
+              proveBtn.textContent = ruledOut === null
+                ? `proving… ${clock()}`
+                : `at least ${ruledOut + 1} · ${clock()}`;
+            };
+            const showWaiting = () => {
+              if (!fresh()) return;
+              proveBtn.title = 'A deep cube can take hours to prove. Stop whenever you like — nothing is lost.';
+              if (cancelBtn) { cancelBtn.hidden = false; cancelBtn.disabled = false; cancelBtn.textContent = 'stop'; }
+              paintWait();
+              ticking ??= setInterval(paintWait, 1000);
+            };
+            const endWaiting = () => {
+              clearTimeout(reveal); clearInterval(ticking); ticking = null;
+              proveBtn.title = '';
+              if (cancelBtn) { cancelBtn.hidden = true; cancelBtn.onclick = null; }
+            };
+
+            proveBtn.disabled = true;
             try {
-              proveBtn.textContent = 'preparing…';
+              // Ask before announcing. Preparation is minutes, so a run that needs it says so at
+              // once; a run that does not must never flash the word at a person for whom it is
+              // already done.
+              let readiness = await optimalStatus();
+              if (!fresh()) return;
+              if (readiness !== 'ready') {
+                proveBtn.textContent = 'preparing…';
+                try {
+                  unlisten = await window.__TAURI__?.event?.listen?.('optimal-progress', (ev) => {
+                    const p = ev?.payload;
+                    if (fresh() && p?.total) proveBtn.textContent = `${p.stage} ${Math.round((p.done / p.total) * 100)}%`;
+                  });
+                } catch (err) {
+                  // Preparation still works without the heartbeat — but a silent subscribe
+                  // failure would make minutes of generation look like a hang, so say it once.
+                  console.warn('optimal: no progress events; preparation will look quiet', err);
+                }
+                if (!fresh()) return; // the listen await is an await like any other
+                // prepare() answers "preparing" when another call started the generation — the
+                // readiness contract is polling status to "ready", not trusting the first resolve.
+                await optimalPrepare();
+                if (!fresh()) return; // left during generation — the finally still frees the listener
+                for (;;) {
+                  readiness = await optimalStatus();
+                  if (!fresh()) return; // walked away during generation — start no proof at all
+                  if (readiness === 'ready') break;
+                  if (readiness !== 'preparing') {
+                    // 'cold' here means the generation this call was waiting on DIED in another
+                    // call — polling a corpse forever was the bug this loop once had.
+                    throw new Error(`optimal: preparation ended ${readiness}, not ready`);
+                  }
+                  await new Promise((r) => setTimeout(r, 500));
+                }
+              }
+
               try {
-                unlisten = await window.__TAURI__?.event?.listen?.('optimal-progress', (ev) => {
-                  const p = ev?.payload;
-                  if (fresh() && p?.total) proveBtn.textContent = `${p.stage} ${Math.round((p.done / p.total) * 100)}%`;
+                unlistenProof = await window.__TAURI__?.event?.listen?.('optimal-proof-progress', (ev) => {
+                  const depth = ev?.payload?.ruled_out;
+                  if (!fresh() || !Number.isInteger(depth)) return;
+                  ruledOut = depth;
+                  if (ticking) paintWait(); // only once the wait is on screen; before that, nothing to repaint
                 });
               } catch (err) {
-                // Preparation still works without the heartbeat — but a silent subscribe
-                // failure would make minutes of generation look like a hang, so say it once.
-                console.warn('optimal: no progress events; preparation will look quiet', err);
+                console.warn('optimal: no proof progress; a long proof will show only its clock', err);
               }
-              if (!fresh()) return; // the listen await is an await like any other
-              // prepare() answers "preparing" when another call started the generation — the
-              // readiness contract is polling status to "ready", not trusting the first resolve.
-              await optimalPrepare();
-              if (!fresh()) return; // left during generation — the finally still frees the listener
-              for (;;) {
-                const readiness = await optimalStatus();
-                if (!fresh()) return; // walked away during generation — start no proof at all
-                if (readiness === 'ready') break;
-                if (readiness !== 'preparing') {
-                  // 'cold' here means the generation this call was waiting on DIED in another
-                  // call — polling a corpse forever was the bug this loop once had.
-                  throw new Error(`optimal: preparation ended ${readiness}, not ready`);
-                }
-                await new Promise((r) => setTimeout(r, 500));
-              }
-              proveBtn.textContent = 'proving…';
-              const proof = await optimalProve(startFacelets, { Cube, upperBound: shown });
               if (!fresh()) return;
+
+              // The stop is wired BEFORE the proof starts, so there is no window in which a
+              // proof is running and cannot be called off.
+              if (cancelBtn) {
+                cancelBtn.onclick = () => {
+                  cancelBtn.disabled = true;
+                  cancelBtn.textContent = 'stopping…';
+                  void optimalCancel().catch((err) => console.warn('optimal cancel failed', err));
+                };
+              }
+              reveal = setTimeout(showWaiting, PROOF_WAIT_VISIBLE_MS);
+              const proof = await optimalProve(startFacelets, { Cube, upperBound: shown });
+              if (!fresh()) return; // the finally below is the ONE cleanup path
+
               // The sentence this seam exists for — and the honest split when the shown
               // solution is longer than the proved minimum. A failed table save rides along:
               // the proof stands, the next launch regenerates, and nobody wonders why.
@@ -2934,11 +3091,17 @@ const cubeScreen = (screenMode) => {
               proveBtn.hidden = true;
             } catch (err) {
               if (!fresh()) return;
-              proveBtn.textContent = 'could not prove';
+              // Stopping is a choice, not a failure: the affordance comes back saying what it
+              // said before, so a person who changes their mind can simply press it again.
+              const stopped = /cancelled/i.test(String(err?.message ?? err));
+              proveBtn.textContent = stopped ? PROVE_COPY.button : 'could not prove';
               proveBtn.disabled = false;
-              console.error('optimal proof failed', err);
+              if (stopped) console.info('optimal: the proof was stopped');
+              else console.error('optimal proof failed', err);
             } finally {
+              endWaiting();
               unlisten?.();
+              unlistenProof?.();
             }
           };
         }
@@ -3222,6 +3385,9 @@ SCREENS.settings = () => {
           <button class="toggle ${settings.dragRotate ? 'on' : ''}" data-toggle="dragRotate" role="switch" aria-checked="${Boolean(settings.dragRotate)}" aria-label="Rotate the cube by dragging"><i></i></button></div>
         <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">How short a solution</div><div class="sub" style="color:var(--ink-4)">${TIER_BLURB[settings.solveTier] ?? TIER_BLURB.twenty}</div></div>
           <div class="wrap-row" style="gap:6px">${TIERS.map((t) => `<button class="pill ${settings.solveTier === t.name ? 'on' : ''}" data-set-tier="${t.name}">${TIER_LABEL[t.name]}</button>`).join('')}</div></div>
+        ${optimalCapability() ? `<div style="display:flex;align-items:center;gap:16px;padding:13px 0 0;border-top:1px solid var(--line-faint)">
+          <div style="flex:1"><div style="font-weight:600">${PROVE_COPY.settingLabel}</div><div class="sub" style="color:var(--ink-4)">${PROVE_COPY.settingBlurb}</div></div>
+          <button class="toggle ${settings.proveMinimum ? 'on' : ''}" data-toggle="proveMinimum" role="switch" aria-checked="${Boolean(settings.proveMinimum)}" aria-label="${PROVE_COPY.settingLabel}"><i></i></button></div>` : ''}
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}">${o}</button>`).join('')}</div></div>` : ''}</div>
       ${(() => {
@@ -3787,11 +3953,18 @@ function renderNav() {
   const items = NAV.filter(([id]) => !navHidden(id));
   // The capsule is the segmented control's pill; the nav around it is the positioned box the
   // stylesheet floats over the title bar (landscape) or lays at the foot of the window (portrait).
-  // Icons only (decided 2026-08-30). The word does not disappear — it becomes the button's
-  // accessible name and its desktop tooltip, so a screen reader still announces "Scramble" and
-  // i18n still has something to translate. Dropping the visible text and leaving nothing in its
-  // place would have made the whole row anonymous to assistive tech.
-  $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}" title="${t(lbl)}" aria-label="${t(lbl)}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span></button>`).join('')}</div>`;
+  // The label is DRAWN in one composition and undrawn in the other, from one DOM — the same
+  // rule the row's position follows. Portrait is a bottom tab bar with a word under every icon
+  // (the 49px height is the one iOS sizes for exactly that); landscape floats the row between
+  // the title bar's outer zones, where there was never room for words — that is what fitTabs()
+  // used to measure before the labels went away entirely on 2026-08-30.
+  //
+  // `aria-label` stays on the button in BOTH, and is what makes hiding the span safe: an
+  // accessible name given explicitly wins over the element's contents, so the landscape row is
+  // announced identically to the portrait one. Hiding a span that was the ONLY source of the
+  // name is what would leave a row of anonymous buttons — which is why the name was moved onto
+  // the button first, and stays there now that the word is back.
+  $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}" title="${t(lbl)}" aria-label="${t(lbl)}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span><span class="lbl">${t(lbl)}</span></button>`).join('')}</div>`;
   for (const b of $('#nav').querySelectorAll('[data-nav]')) b.onclick = () => go(b.dataset.nav);
   // Settings sits outside the row (buildChrome draws it), so it is marked here, not by the template.
   // The GEAR, found by its label: the smart-cube indicator beside it also carries

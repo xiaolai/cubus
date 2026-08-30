@@ -146,10 +146,115 @@ rsvg-convert -w 180 -h 180 "$web/icon-tile.svg" -o "$work/apple.png"
 magick "$work/apple.png" -background "#F6F2E9" -alpha remove -alpha off \
   -strip PNG24:"$web/apple-touch-icon.png"
 
-# --- 7. design-kit rasters ---------------------------------------------------
+# --- 7. iOS: the app-icon asset catalogue ------------------------------------
+# Driven from the catalogue's OWN Contents.json rather than a list repeated
+# here: Xcode decides which rungs exist, the filenames carry duplicates that
+# differ only by idiom (AppIcon-40x40@2x is the iPhone's, @2x-1 the iPad's),
+# and a list that drifts from the catalogue produces a build warning nobody
+# reads and a missing icon nobody sees until the App Store rejects it.
+#
+# icon-tile.svg, not icon-square.svg: iOS applies its own squircle mask, so the
+# artwork must be full-bleed. A masked master would round the corners twice.
+#
+# And FLATTENED — PNG24 on the paper colour, no alpha. An iOS app icon with an
+# alpha channel is rejected outright by App Store validation, and before that it
+# composites on black, which puts a dark ring inside the mask. This is the same
+# treatment (and the same reason) as apple-touch-icon.png above.
+apple_icons="$repo_root/apps/desktop/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset"
+if [ -d "$apple_icons" ]; then
+  echo "==> iOS AppIcon.appiconset (from icon-tile.svg, flattened, no alpha)"
+  # The manifest is parsed in its OWN checked command, into a file, and the file is then
+  # read. `done < <(python3 …)` would have hidden the parser's exit status — bash does not
+  # propagate it out of a process substitution — so a malformed Contents.json would write
+  # zero icons and the script would still succeed. That is exactly the shape of failure
+  # this repo has been bitten by before: a step that silently does nothing looks identical
+  # to a step that worked.
+  python3 - "$apple_icons/Contents.json" > "$work/ios-rungs" <<'EOF'
+import json, sys
+for image in json.load(open(sys.argv[1]))["images"]:
+    name = image.get("filename")
+    if not name:
+        continue
+    side = float(image["size"].split("x")[0]) * float(image["scale"].rstrip("x"))
+    print(f"{name}:{round(side)}")
+EOF
+  [ -s "$work/ios-rungs" ] || {
+    echo "build-icons: Contents.json declared no icon rungs — refusing to write an empty set" >&2
+    exit 1
+  }
+  while IFS=: read -r name px; do
+    rsvg-convert -w "$px" -h "$px" "$web/icon-tile.svg" -o "$work/ios.png"
+    magick "$work/ios.png" -background "#F6F2E9" -alpha remove -alpha off \
+      -strip PNG24:"$apple_icons/$name"
+  done < "$work/ios-rungs"
+else
+  echo "==> iOS AppIcon skipped (no gen/apple — run 'tauri ios init' first)"
+fi
+
+# --- 8. Android: launcher bitmaps + the adaptive icon ------------------------
+# Two different things, and they want two different masters.
+#
+# ic_launcher / ic_launcher_round are the LEGACY bitmaps, used as-is on API < 26
+# and as the Play listing's fallback. Full-bleed tile, same master as iOS: the
+# launcher does not mask them, so they carry their own shape.
+#
+# ic_launcher_foreground is the ADAPTIVE layer, and it is the flat mark on
+# transparency, inset to the safe zone. Android draws a 108dp layer and may mask
+# anything outside the middle 72dp — a full-bleed foreground gets its corners
+# eaten. 66/108 is the keyline; the background is the paper colour as a solid, so
+# the mark floats on the app's own paper whatever shape the launcher cuts.
+android_res="$repo_root/apps/desktop/src-tauri/gen/android/app/src/main/res"
+if [ -d "$android_res" ]; then
+  echo "==> Android launcher bitmaps (from icon-tile.svg, full-bleed)"
+  for entry in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+    density="${entry%%:*}"; px="${entry##*:}"
+    render "$web/icon-tile.svg" "$px" "$android_res/mipmap-$density/ic_launcher.png"
+    cp "$android_res/mipmap-$density/ic_launcher.png" "$android_res/mipmap-$density/ic_launcher_round.png"
+  done
+
+  echo "==> Android adaptive foreground (flat mark, 66% safe zone)"
+  for entry in mdpi:108 hdpi:162 xhdpi:216 xxhdpi:324 xxxhdpi:432; do
+    density="${entry%%:*}"; px="${entry##*:}"
+    # 66 of 108, not 72: 72dp is the area the mask is GUARANTEED not to clip, but Android's
+    # own guidance keeps the logo inside a 66dp keyline because OEM masks vary in shape. The
+    # verifier checks the same number, so generator and gate cannot disagree.
+    inner=$(python3 -c "print(round($px * 66 / 108))")
+    rsvg-convert -w "$inner" -h "$inner" "$icons/Cubus.icon/Assets/mark.svg" -o "$work/fg.png"
+    magick "$work/fg.png" -background none -gravity center -extent "${px}x${px}" \
+      -strip PNG32:"$android_res/mipmap-$density/ic_launcher_foreground.png"
+  done
+
+  # The adaptive icon itself. Tauri's template ships the legacy bitmaps and a
+  # pair of placeholder vector drawables but no mipmap-anydpi-v26 entry, so
+  # every Android 8+ launcher fell back to the legacy bitmap. These two files
+  # are what make the foreground/background layers above reachable at all.
+  echo "==> Android adaptive-icon wiring"
+  mkdir -p "$android_res/mipmap-anydpi-v26"
+  for name in ic_launcher ic_launcher_round; do
+    cat > "$android_res/mipmap-anydpi-v26/$name.xml" <<'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background"/>
+    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground"/>
+</adaptive-icon>
+EOF
+  done
+  cat > "$android_res/drawable/ic_launcher_background.xml" <<'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#F6F2E9"/>
+</shape>
+EOF
+  rm -f "$android_res/drawable-v24/ic_launcher_foreground.xml"
+else
+  echo "==> Android icons skipped (no gen/android — run 'tauri android init' first)"
+fi
+
+# --- 9. design-kit rasters ---------------------------------------------------
 # The design kit's own preview rasters, refreshed from the same source so the
-# kit cannot drift from what ships. These are design assets, not build inputs:
-# no Tauri mobile target exists, so nothing consumes ios/ or android/.
+# kit cannot drift from what ships. macos/ is a preview; ios/ and android/ are
+# the same artwork the mobile projects now receive directly (sections 7 and 8).
 echo "==> design-kit preview rasters"
 for entry in icon_16x16.png:16 icon_32x32.png:32 icon_64x64.png:64 \
   icon_128x128.png:128 icon_256x256.png:256 icon_512x512.png:512 \
