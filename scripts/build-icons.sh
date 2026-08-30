@@ -163,11 +163,13 @@ magick "$work/apple.png" -background "#F6F2E9" -alpha remove -alpha off \
 apple_icons="$repo_root/apps/desktop/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset"
 if [ -d "$apple_icons" ]; then
   echo "==> iOS AppIcon.appiconset (from icon-tile.svg, flattened, no alpha)"
-  while IFS=: read -r name px; do
-    rsvg-convert -w "$px" -h "$px" "$web/icon-tile.svg" -o "$work/ios.png"
-    magick "$work/ios.png" -background "#F6F2E9" -alpha remove -alpha off \
-      -strip PNG24:"$apple_icons/$name"
-  done < <(python3 - "$apple_icons/Contents.json" <<'EOF'
+  # The manifest is parsed in its OWN checked command, into a file, and the file is then
+  # read. `done < <(python3 …)` would have hidden the parser's exit status — bash does not
+  # propagate it out of a process substitution — so a malformed Contents.json would write
+  # zero icons and the script would still succeed. That is exactly the shape of failure
+  # this repo has been bitten by before: a step that silently does nothing looks identical
+  # to a step that worked.
+  python3 - "$apple_icons/Contents.json" > "$work/ios-rungs" <<'EOF'
 import json, sys
 for image in json.load(open(sys.argv[1]))["images"]:
     name = image.get("filename")
@@ -176,7 +178,15 @@ for image in json.load(open(sys.argv[1]))["images"]:
     side = float(image["size"].split("x")[0]) * float(image["scale"].rstrip("x"))
     print(f"{name}:{round(side)}")
 EOF
-  )
+  [ -s "$work/ios-rungs" ] || {
+    echo "build-icons: Contents.json declared no icon rungs — refusing to write an empty set" >&2
+    exit 1
+  }
+  while IFS=: read -r name px; do
+    rsvg-convert -w "$px" -h "$px" "$web/icon-tile.svg" -o "$work/ios.png"
+    magick "$work/ios.png" -background "#F6F2E9" -alpha remove -alpha off \
+      -strip PNG24:"$apple_icons/$name"
+  done < "$work/ios-rungs"
 else
   echo "==> iOS AppIcon skipped (no gen/apple — run 'tauri ios init' first)"
 fi
@@ -191,7 +201,7 @@ fi
 # ic_launcher_foreground is the ADAPTIVE layer, and it is the flat mark on
 # transparency, inset to the safe zone. Android draws a 108dp layer and may mask
 # anything outside the middle 72dp — a full-bleed foreground gets its corners
-# eaten. 66% is that ratio; the background is the paper colour as a solid, so
+# eaten. 66/108 is the keyline; the background is the paper colour as a solid, so
 # the mark floats on the app's own paper whatever shape the launcher cuts.
 android_res="$repo_root/apps/desktop/src-tauri/gen/android/app/src/main/res"
 if [ -d "$android_res" ]; then
@@ -205,7 +215,10 @@ if [ -d "$android_res" ]; then
   echo "==> Android adaptive foreground (flat mark, 66% safe zone)"
   for entry in mdpi:108 hdpi:162 xhdpi:216 xxhdpi:324 xxxhdpi:432; do
     density="${entry%%:*}"; px="${entry##*:}"
-    inner=$(python3 -c "print(round($px * 0.66))")
+    # 66 of 108, not 72: 72dp is the area the mask is GUARANTEED not to clip, but Android's
+    # own guidance keeps the logo inside a 66dp keyline because OEM masks vary in shape. The
+    # verifier checks the same number, so generator and gate cannot disagree.
+    inner=$(python3 -c "print(round($px * 66 / 108))")
     rsvg-convert -w "$inner" -h "$inner" "$icons/Cubus.icon/Assets/mark.svg" -o "$work/fg.png"
     magick "$work/fg.png" -background none -gravity center -extent "${px}x${px}" \
       -strip PNG32:"$android_res/mipmap-$density/ic_launcher_foreground.png"

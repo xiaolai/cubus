@@ -79,7 +79,18 @@ export async function loadChallenges({ Cube, fetch: get = globalThis.fetch } = {
  * that no path can reach a lookup over entries nobody checked.
  */
 export function indexChallenges(entries) {
-  return new Map(entries.map((entry) => [entry.facelets, entry]));
+  const index = new Map();
+  for (const entry of entries) {
+    // A duplicate key is not a near-miss to resolve, it is a library that contradicts
+    // itself: two entries for one state can each be internally consistent and still
+    // disagree on the minimum. `new Map(pairs)` would have picked the last one silently,
+    // and the app would then state a minimality claim chosen by array order.
+    if (index.has(entry.facelets)) {
+      throw new Error(`optimal-challenges: two entries claim the same state (${entry.facelets})`);
+    }
+    index.set(entry.facelets, entry);
+  }
+  return index;
 }
 
 /** The empty index: what the app holds when the library did not load. Every lookup against it
@@ -109,4 +120,23 @@ export function provenAnswer(index, facelets) {
   // the OTHER Kociemba search a known state would otherwise pay for — the one deriveCube runs
   // on the UI thread purely to animate the cube into position.
   return { moves: entry.optimalLength, alg: entry.optimalSolution, setupAlg: entry.scramble };
+}
+
+/**
+ * Load, validate and index in one call — or report why not and hand back an empty index.
+ *
+ * This exists so the app has no way to get the failure path wrong. Doing it inline meant a
+ * promise chain where `.then(f, r)` silently does NOT route a throw from `f` to `r`, so the
+ * refusal that matters most — a library naming one state twice, thrown by indexChallenges
+ * INSIDE the fulfillment handler — became an unhandled rejection rather than the logged
+ * fallback. Both failure kinds now leave through the same door: a library that will not load
+ * and a library that will not validate are equally "no index, and here is why".
+ */
+export async function loadIndex({ Cube, fetch, onError } = {}) {
+  try {
+    return indexChallenges(await loadChallenges({ Cube, fetch }));
+  } catch (err) {
+    onError?.(err);
+    return NO_CHALLENGES;
+  }
 }

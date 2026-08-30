@@ -15,7 +15,7 @@ import {
   prove as optimalProve,
   status as optimalStatus,
 } from './optimal.js';
-import { NO_CHALLENGES, indexChallenges, loadChallenges, provenAnswer } from './optimal-challenges.js';
+import { NO_CHALLENGES, loadIndex, provenAnswer } from './optimal-challenges.js';
 import { isDesktopHost } from './host.js';
 import { randomCube } from './random-state.js';
 import { makeRouter } from './router.js';
@@ -143,6 +143,10 @@ const TITLES = {
 
 // ---- app state -------------------------------------------------------------------------------
 const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty', proveMinimum: false });
+// localStorage is untrusted input, and `load` merges it raw. The string "false" is truthy, so
+// a hand-edited or half-migrated value could opt someone in to an operation that runs for
+// hours — the one setting where "off unless explicitly true" is the whole point.
+settings.proveMinimum = settings.proveMinimum === true;
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
@@ -281,16 +285,22 @@ const state = {
  *  has been at it, and a stop appears beside it. */
 const PROOF_WAIT_VISIBLE_MS = 250;
 
-/** The Settings row that turns the prove affordance on, worded once and named for the same
- *  reason provenMinimumLabel is: it is the third and last place in this file allowed to use the
- *  verdict's words. It is a different KIND of saying, which is why it is sanctioned rather than
- *  reworded to slip under the check — the other two assert something about a particular cube,
- *  this one names a feature, on a screen that is not reporting a solve, behind the same
- *  capability gate as the affordance it controls. Naming the toggle after the button it turns on
- *  is worth more than dodging a regex. */
-const PROVE_SETTING = {
-  label: 'Offer to prove the minimum',
-  blurb: 'A button on the solution that proves no shorter solution exists. The first run builds 86 MB of tables, and a proof can take minutes to hours',
+/** Every place the app NAMES the prove feature, as opposed to making a claim with it.
+ *
+ *  The distinction is the whole point, and it is what keeps the wording invariant meaningful as
+ *  the feature grows: `provenMinimumLabel` and the native prover's gated block assert something
+ *  about a particular cube, and may only ever run after a proof. These strings assert nothing —
+ *  they are a button that offers to start one and a toggle that decides whether the button is
+ *  drawn. Kept together so there is one region to sanction rather than a new one per string, and
+ *  named rather than reworded to slip under the check: a toggle should be named after the button
+ *  it turns on, not after what a regex will tolerate.
+ *
+ *  `button` is also the button's RESTING label in three states — the markup, the per-walk
+ *  rewiring, and the return from a stopped proof — which had drifted apart as three literals. */
+const PROVE_COPY = {
+  button: 'prove the minimum',
+  settingLabel: 'Offer to prove the minimum',
+  settingBlurb: 'A button on the solution that proves no shorter solution exists. The first run builds 86 MB of tables, and a proof can take minutes to hours',
 };
 
 /** The one sentence the SHIPPED library may put on a screen, and the second of exactly two
@@ -300,6 +310,7 @@ const PROVE_SETTING = {
  *  to a pattern that would let a third source through unnoticed. Its guard is checked there
  *  too: the only call must sit behind `provenHere`. */
 const provenMinimumLabel = (moves) => `${moves} — proved the minimum`;
+
 
 const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', shortest: 'shortest' };
 const TIER_BLURB = {
@@ -331,18 +342,25 @@ async function loadSolver() {
     try {
       Cube = (await import('../vendor/cubejs.js')).default;
       Cube.initSolver();
-      // The proven library rides along: it needs the same oracle, and it is what lets a known
-      // state answer with no search and no native proof at all. Its failure is loud but never
-      // fatal — an empty index simply misses on every lookup, and the app searches as it always
-      // did. A library that will not validate must yield NO claim rather than a plausible one,
-      // which is exactly what dropping the whole index achieves.
-      try {
-        challenges = indexChallenges(await loadChallenges({ Cube }));
-      } catch (err) {
-        challenges = NO_CHALLENGES;
-        console.error('optimal-challenges: the proven library did not load; every state will be searched', err);
-      }
       solverReady = true;
+      // The proven library rides ALONGSIDE, never in front. It needs the same oracle and it is
+      // what lets a known state answer with no search at all — but it is an optimisation, and
+      // awaiting it here made it a dependency: a fetch that never settles would have left
+      // solverReady false forever and every solve waiting on it, which is the exact opposite
+      // of the "costs performance, never correctness" this comment used to claim. Un-awaited,
+      // a slow library only means the first few solves search as they always did.
+      //
+      // Its failure is loud but never fatal, and a library that will not validate must yield
+      // NO claim rather than a plausible one — which is what dropping the whole index achieves.
+      // loadIndex, not a promise chain assembled here: both failure kinds — a library that will
+      // not load and one that will not validate — leave through its single door, so there is no
+      // arrangement of .then/.catch for this call site to get subtly wrong.
+      void loadIndex({
+        Cube,
+        onError: (err) => console.error(
+          'optimal-challenges: the proven library did not load; every state will be searched', err,
+        ),
+      }).then((index) => { challenges = index; });
       return true;
     } catch {
       solverLoading = null;
@@ -2314,7 +2332,7 @@ const cubeScreen = (screenMode) => {
              space-between left the number stranded midway between the heading and the pill. The
              count is the heading's ANSWER and belongs at the right edge whether or not anything
              follows it; the buttons then sit beside it, each with a margin of its own. -->
-        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" style="margin-left:auto">—</span><button class="pill" id="proveBtn" hidden style="margin-left:12px">prove the minimum</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
+        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" style="margin-left:auto">—</span><button class="pill" id="proveBtn" hidden style="margin-left:12px">${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg"></span>
@@ -2953,7 +2971,7 @@ const cubeScreen = (screenMode) => {
         if (proveBtn && optimalCapability() && !scrambling && !provenHere && settings.proveMinimum) {
           proveBtn.hidden = false;
           proveBtn.disabled = false;
-          proveBtn.textContent = 'prove the minimum';
+          proveBtn.textContent = PROVE_COPY.button;
           // The pair being proved is the WALK's, captured at wiring: steps[0] IS the start
           // state this walk displays and total IS its length. Reading state.cube at click
           // time would race live ingestion (a snapshot can swap the subject or zero the move
@@ -3061,8 +3079,8 @@ const cubeScreen = (screenMode) => {
               }
               reveal = setTimeout(showWaiting, PROOF_WAIT_VISIBLE_MS);
               const proof = await optimalProve(startFacelets, { Cube, upperBound: shown });
-              endWaiting();
-              if (!fresh()) return;
+              if (!fresh()) return; // the finally below is the ONE cleanup path
+
               // The sentence this seam exists for — and the honest split when the shown
               // solution is longer than the proved minimum. A failed table save rides along:
               // the proof stands, the next launch regenerates, and nobody wonders why.
@@ -3072,12 +3090,11 @@ const cubeScreen = (screenMode) => {
                 : `${shown} shown — the minimum is ${proof.moves}, proved`) + saved);
               proveBtn.hidden = true;
             } catch (err) {
-              endWaiting();
               if (!fresh()) return;
               // Stopping is a choice, not a failure: the affordance comes back saying what it
               // said before, so a person who changes their mind can simply press it again.
               const stopped = /cancelled/i.test(String(err?.message ?? err));
-              proveBtn.textContent = stopped ? 'prove the minimum' : 'could not prove';
+              proveBtn.textContent = stopped ? PROVE_COPY.button : 'could not prove';
               proveBtn.disabled = false;
               if (stopped) console.info('optimal: the proof was stopped');
               else console.error('optimal proof failed', err);
@@ -3369,8 +3386,8 @@ SCREENS.settings = () => {
         <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">How short a solution</div><div class="sub" style="color:var(--ink-4)">${TIER_BLURB[settings.solveTier] ?? TIER_BLURB.twenty}</div></div>
           <div class="wrap-row" style="gap:6px">${TIERS.map((t) => `<button class="pill ${settings.solveTier === t.name ? 'on' : ''}" data-set-tier="${t.name}">${TIER_LABEL[t.name]}</button>`).join('')}</div></div>
         ${optimalCapability() ? `<div style="display:flex;align-items:center;gap:16px;padding:13px 0 0;border-top:1px solid var(--line-faint)">
-          <div style="flex:1"><div style="font-weight:600">${PROVE_SETTING.label}</div><div class="sub" style="color:var(--ink-4)">${PROVE_SETTING.blurb}</div></div>
-          <button class="toggle ${settings.proveMinimum ? 'on' : ''}" data-toggle="proveMinimum" role="switch" aria-checked="${Boolean(settings.proveMinimum)}" aria-label="${PROVE_SETTING.label}"><i></i></button></div>` : ''}
+          <div style="flex:1"><div style="font-weight:600">${PROVE_COPY.settingLabel}</div><div class="sub" style="color:var(--ink-4)">${PROVE_COPY.settingBlurb}</div></div>
+          <button class="toggle ${settings.proveMinimum ? 'on' : ''}" data-toggle="proveMinimum" role="switch" aria-checked="${Boolean(settings.proveMinimum)}" aria-label="${PROVE_COPY.settingLabel}"><i></i></button></div>` : ''}
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}">${o}</button>`).join('')}</div></div>` : ''}</div>
       ${(() => {

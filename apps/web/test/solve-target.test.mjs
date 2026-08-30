@@ -242,6 +242,32 @@ test('an abort during escalation still ends the run', async () => {
   assert.ok(calls <= 2, 'it stopped asking once the abort landed');
 });
 
+test('an abort on the LAST allowed escalation is a person leaving, not a broken engine', async () => {
+  // The cap throws, and the throw used to come first: a run cancelled on its final attempt was
+  // reported as "the engine is broken" — an accusation, about a cube nobody was waiting for.
+  const controller = new AbortController();
+  let calls = 0;
+  const solve = async () => {
+    calls += 1;
+    if (calls === 1) return algOf(22);
+    if (calls === MAX_PROMISE_ESCALATIONS + 1) controller.abort();
+    return null;
+  };
+  const steps = await collect(refine('F', { solve, tier: 'twenty', signal: controller.signal }));
+  assert.equal(steps.at(-1).stopped, STOPPED.CANCELLED, 'a cancelled run must not read as a broken engine');
+});
+
+test('a budget that cannot double stops honestly rather than being rejected downstream', async () => {
+  // Doubling past the safe-integer range would hand the engine boundary a malformed budget and
+  // fail as "probeMax is not a positive integer" — a confusing answer for a caller whose only
+  // sin was asking for a very large budget.
+  const solve = scripted([22, null]);
+  const huge = Number.MAX_SAFE_INTEGER - 1;
+  const steps = await collect(refine('F', { solve, tier: 'twenty', probeBudget: huge }));
+  assert.equal(steps.at(-1).stopped, STOPPED.EXHAUSTED);
+  assert.equal(steps.at(-1).met, false, 'and it says plainly that the target was not reached');
+});
+
 test('refine refuses to run without a solver', async () => {
   await assert.rejects(() => collect(refine('F', {})), TypeError);
 });

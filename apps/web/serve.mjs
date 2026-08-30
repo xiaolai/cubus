@@ -185,5 +185,10 @@ server.on('error', (err) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Cubus SPA → http://localhost:${PORT}`);
-  console.log('  live-reload: watching web/ (edit HTML, or run `npm run build:panel`, to auto-refresh).');
+  // Say what is actually true. This line printed unconditionally, so a server started with
+  // live-reload off announced that it was watching — contradicting the line it had already
+  // printed and leaving anyone reading the log with two answers.
+  console.log(LIVE_RELOAD
+    ? '  live-reload: watching web/ (edit HTML, or run `npm run build:panel`, to auto-refresh).'
+    : '  live-reload: off — nothing is watched and no reload client is served.');
 });
