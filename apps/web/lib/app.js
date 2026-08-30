@@ -475,6 +475,41 @@ const solverWorker = () => (solveClient ??= (() => {
   });
 })());
 
+/** A cube with nothing wrong with it — the one search that costs only the tables. */
+const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+let solverWarmed = false;
+/**
+ * Build the pool's pruning tables before a user is waiting on them.
+ *
+ * Every worker builds its own — 0.5-2.6 s (dev-docs/solver-move-count.md §7) — and lazily, so
+ * without this the FIRST solve of a session is the thing that pays for all of them. They build
+ * concurrently, so the cost is roughly one build rather than six; it is still a build standing
+ * between a press and an answer, on screens that had seconds of warning.
+ *
+ * The warm request is a SOLVED cube: every view answers it at depth 0, so the table build is
+ * the whole of what it costs. Measured on this engine: 652 ms cold, 0 ms warm, 1 ms for six
+ * slices warm. The budget is 1,000 nodes per slice rather than a token amount because
+ * `shareBudget` drops a zero share — a budget under the worker count would warm only some of
+ * them, which is the quiet half-fix this exists to avoid.
+ *
+ * Fire-and-forget by design, and never awaited: nothing the user asked for is waiting on it,
+ * and the real solve behind it surfaces its own failures. Same shape as `warmRoller`, and
+ * called from the same kind of place — a screen that knows a solve is coming, never a session
+ * that opens neither.
+ */
+function warmSolver() {
+  if (solverWarmed) return;
+  solverWarmed = true;
+  try {
+    void solverWorker()
+      .solve(SOLVED_FACELETS, { solLen: LOOSEST_BOUND, probeMax: 1000 * VIEW_COUNT })
+      .catch(() => {});
+  } catch {
+    // A client that cannot even be constructed is the real solve's problem to report, loudly,
+    // where a user is actually waiting. Warming must never be the thing that breaks a screen.
+  }
+}
+
 /**
  * Whatever produced the solution, this is what makes it usable — and what checks it.
  *
@@ -1748,6 +1783,9 @@ SCREENS.scan = () => {
         }
       };
       const panel = $('ai-scan-panel', root);
+      // The largest of the warm windows: a scan is seconds of camera and then a solve, so the
+      // tables can be built entirely inside time the user is already spending.
+      warmSolver();
       const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root), hint = $('#scanHint', root);
       // The reconnect confirmation runs INSIDE this screen's own flow, not beside it: the panel's
       // captures are private to it and die with it, so "the repair scan continues from the sides
@@ -2386,6 +2424,7 @@ const cubeScreen = (screenMode) => {
       // This screen can roll a scramble — start the roller's tables warming now, so the press
       // that asks for one is not the thing that waits for them.
       if (scrambling || settings.devRandCube) warmRoller();
+      warmSolver(); // this screen solves on entry and on every press; see warmSolver
       const cube = newCube({ animate: walking });
       // The view goes on BEFORE the element is connected, the way the scan screen's twin does it.
       // connectedCallback draws immediately, so attributes set after appendChild leave that first
@@ -3256,6 +3295,7 @@ SCREENS.timer = () => {
       const auto = createSolveTimer({ target: () => scrTarget, trusted: chainTrusted });
 
       warmRoller(); // New scramble is one press away on this screen; see cubeScreen's mount
+      warmSolver(); // and every scramble it rolls is solved
       const newScr = () => {
         // The scramble on screen is the one the RUNNING solve is recorded against — replacing
         // it mid-solve would file the time under a scramble the solver never saw, and disarm

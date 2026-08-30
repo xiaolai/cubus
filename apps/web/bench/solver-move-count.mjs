@@ -28,10 +28,12 @@
 // (BENCH_BUDGET_MS, default 120000) and reports the cap rather than running unbounded. A
 // benchmark nobody can afford to finish is a benchmark nobody runs.
 
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 import { DEFAULT_PROBE_BUDGET, TIERS, refine } from '../lib/solve-target.js';
-import { LOOSEST_BOUND, createSolver, movesIn } from '../lib/solver-engine.js';
+import { LOOSEST_BOUND, VIEW_COUNT, createSolver, movesIn } from '../lib/solver-engine.js';
+import { shareBudget, sliceViews } from '../lib/solve-client.js';
 
 const require = createRequire(import.meta.url);
 const Cube = require('cubejs');
@@ -246,6 +248,46 @@ function parseTargets() {
   return ladder;
 }
 
+/**
+ * The shipped pool, modelled — the same split, run one slice at a time.
+ *
+ * The views and the budget come from the app's own `sliceViews`/`shareBudget` rather than a
+ * re-derivation here: the point of this mode is to measure what ships, and a bench that
+ * re-implements the thing it measures agrees with itself for free.
+ *
+ * The ANSWER is exact. The pool picks by (depth, view) and that pick does not depend on which
+ * worker finishes first, so the reached-counts and move-counts this mode reports are the real
+ * ones — which is what the ladder is for.
+ *
+ * The TIME is a model, and an UPPER BOUND. In the app the slices run at once, so the wall clock
+ * is the slowest of them; here they run in sequence and the slowest is what gets recorded. The
+ * model also ignores the shared stop, which can only ever cut a slice short. So the real pool is
+ * at least this fast and usually faster — stated rather than presented as a measurement.
+ */
+function pooledSolver(engine, solve, workers) {
+  const slices = sliceViews(workers, VIEW_COUNT);
+  let slowestMs = 0;
+  const run = (facelets, { solLen, probeMax }) => {
+    const shares = shareBudget(probeMax, slices.length);
+    let best = null;
+    let slowest = 0;
+    for (const [i, share] of shares.entries()) {
+      const t0 = nowMs();
+      const alg = solve(facelets, { solLen, probeMax: share, views: slices[i] });
+      slowest = Math.max(slowest, nowMs() - t0);
+      if (alg === null) continue;
+      const cand = { alg, depth: engine.searchStats.depth, view: engine.searchStats.view };
+      if (best === null || cand.depth < best.depth || (cand.depth === best.depth && cand.view < best.view)) {
+        best = cand;
+      }
+    }
+    slowestMs = slowest;
+    return best === null ? null : best.alg;
+  };
+  run.lastMs = () => slowestMs;
+  return run;
+}
+
 async function targets() {
   const TARGET_LADDER = parseTargets();
   const { engine, solve } = await loadEngine();
@@ -260,10 +302,41 @@ async function targets() {
     engine.setBounds({ maxPhase2 });
     console.log(`  maxPhase2 ${maxPhase2} (BENCH_MAXPHASE2)`);
   }
+  // BENCH_WORKERS>1 runs the ladder through the shipped parallel split instead of one shared
+  // budget. The two are NOT the same question: a slice gets probeMax/N, so a tier the sequential
+  // search reached by spending everything on one view can go unreached. That is exactly why the
+  // ladder had to be re-measured after the pool shipped.
+  const workers = intEnv('BENCH_WORKERS', 1);
+  if (workers < 1 || workers > VIEW_COUNT) {
+    throw new Error(`BENCH_WORKERS ${workers} must be 1..${VIEW_COUNT}`);
+  }
+  const pool = workers > 1 ? pooledSolver(engine, solve, workers) : null;
+  const ask1 = pool ?? solve;
+
+  // BENCH_STATES points at a file of facelet strings, one per line. Without it the draw is
+  // fresh every run, which is right for a single table and WRONG for a comparison: two draws
+  // differ by a few states at the hard tiers, which is the same size as the effect being
+  // measured. Sequential-vs-pooled must see the same cubes or it measures the dice.
+  const statesFile = process.env.BENCH_STATES;
   const states = [];
-  for (let i = 0; i < N_STATES; i++) states.push(Cube.random().asString());
+  if (statesFile) {
+    for (const line of readFileSync(statesFile, 'utf8').split('\n')) {
+      const f = line.trim();
+      if (!f) continue;
+      if (!/^[URFDLB]{54}$/.test(f)) throw new Error(`BENCH_STATES: not a facelet string: ${f.slice(0, 20)}`);
+      Cube.fromString(f); // refuses an illegal colouring here rather than mid-ladder
+      states.push(f);
+    }
+    if (states.length === 0) throw new Error(`BENCH_STATES ${statesFile} held no states`);
+  } else {
+    for (let i = 0; i < N_STATES; i++) states.push(Cube.random().asString());
+  }
   console.log('\n[targets] two-phase ladder');
   console.log(`  table init ${initNote} | n=${states.length} | budget ${NODE_BUDGET.toLocaleString()} nodes/attempt`);
+  if (pool) {
+    console.log(`  ${workers} workers, ${sliceViews(workers, VIEW_COUNT).map((v) => v.join('+')).join(' | ')}` +
+      ` — times are the SLOWEST SLICE (an upper bound on the pool's wall clock; the stop is not modelled)`);
+  }
   console.log('  target |  reached | cumulative ms, ALL states: median    p90   worst | mean moves (reached)');
 
   // Per cube: the running best move count, and the time spent getting there — kept for every
@@ -280,8 +353,10 @@ async function targets() {
         // different protocol than the app runs.
         const ask = cube.moves === Infinity ? LOOSEST_BOUND : cube.moves;
         const t0 = nowMs();
-        const answer = solve(facelets, { solLen: ask, probeMax: NODE_BUDGET });
-        cube.ms += nowMs() - t0;
+        const answer = ask1(facelets, { solLen: ask, probeMax: NODE_BUDGET });
+        // In pooled mode the slices ran in sequence here but run at once in the app, so the
+        // elapsed wall clock of this loop is not the app's. The slowest slice is.
+        cube.ms += pool ? pool.lastMs() : nowMs() - t0;
         if (answer === null) {
           // Out of budget, not out of solutions. The previous answer stands and this cube
           // stops descending — which is exactly what the app would do.
