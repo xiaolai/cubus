@@ -71,25 +71,27 @@ test('an easy cube descends past the target to its real answer', async () => {
 });
 
 test('there is always an answer before any waiting', async () => {
-  // The first yield must come from the loose search, not the targeted one — at the <= 20 tier
-  // the worst of 200 cubes took 1.1 s, and nobody should be shown nothing during it.
-  const solve = scripted([22, 21, 20]);
+  // Something must be on screen before any waiting — but never a count above God's number, so
+  // the first search asks for the FLOOR rather than the engine's ceiling. That is what makes
+  // steps[0] already met at the <= 20 tier: the first thing shown is also an answer that
+  // cannot be longer than 20.
+  const solve = scripted([20, 19, 18]);
   const steps = await collect(refine('F', { solve, tier: 'twenty' }));
-  assert.equal(steps[0].moves, 22, 'the first thing shown is the cheapest answer');
-  assert.equal(steps[0].met, false);
+  assert.equal(steps[0].moves, 20, 'the first thing shown is an answer, and it is under the floor');
+  assert.equal(steps[0].met, true, 'at <= 20 the first answer already meets the target');
   assert.equal(steps[0].stopped, null, 'and it is marked as still improving');
-  assert.equal(solve.asked[0].solLen, 23, 'which means the first search is the loose one');
+  assert.equal(solve.asked[0].solLen, GODS_NUMBER + 1, 'the first search asks for the floor');
 });
 
 test('every improvement is strictly shorter than the last', async () => {
-  const solve = scripted([22, 21, 20, 19]);
+  const solve = scripted([20, 19, 18, 17]);
   const steps = await collect(refine('F', { solve, tier: 'nineteen' }));
-  assert.deepEqual(steps.map((s) => s.moves), [22, 21, 20, 19, 19],
+  assert.deepEqual(steps.map((s) => s.moves), [20, 19, 18, 17, 17],
     'the final step repeats the answer to carry the stop reason');
   for (let i = 1; i < steps.length - 1; i++) {
     assert.ok(steps[i].moves < steps[i - 1].moves, `step ${i} did not improve`);
   }
-  assert.deepEqual(solve.asked.map((a) => a.solLen), [23, 22, 21, 20, 19],
+  assert.deepEqual(solve.asked.map((a) => a.solLen), [21, 20, 19, 18, 17],
     'each search asks for strictly shorter than what is already in hand');
   assert.equal(steps.at(-1).stopped, STOPPED.MET);
 });
@@ -97,7 +99,7 @@ test('every improvement is strictly shorter than the last', async () => {
 test('a target that cannot be met is reported as missed, not dressed up', async () => {
   // The <= 18 tier on a cube whose optimal is 19: no budget reaches it, because 18 does not
   // exist for that cube. The answer still stands; the claim does not.
-  const solve = scripted([21, 20, 19, null]);
+  const solve = scripted([20, 19, null]);
   const steps = await collect(refine('F', { solve, tier: 'eighteen' }));
   const last = steps.at(-1);
   assert.equal(last.moves, 19, 'the best answer found is kept');
@@ -107,9 +109,9 @@ test('a target that cannot be met is reported as missed, not dressed up', async 
 });
 
 test('the untargeted rung keeps going until nothing shorter is found', async () => {
-  const solve = scripted([21, 20, 19, 18, 17, null]);
+  const solve = scripted([20, 19, 18, 17, 16, null]);
   const steps = await collect(refine('F', { solve, tier: 'shortest' }));
-  assert.deepEqual(steps.map((s) => s.moves), [21, 20, 19, 18, 17, 17]);
+  assert.deepEqual(steps.map((s) => s.moves), [20, 19, 18, 17, 16, 16]);
   const last = steps.at(-1);
   assert.equal(last.target, null);
   assert.equal(last.met, false, 'there is no target, so nothing was met');
@@ -118,14 +120,14 @@ test('the untargeted rung keeps going until nothing shorter is found', async () 
 
 test('cancelling keeps the best answer so far and says it was cancelled', async () => {
   const controller = new AbortController();
-  const solve = scripted([22, 21, 20, 19, 18]);
+  const solve = scripted([20, 19, 18, 17, 16]);
   const steps = [];
   for await (const step of refine('F', { solve, tier: 'shortest', signal: controller.signal })) {
     steps.push(step);
-    if (step.moves === 21) controller.abort();
+    if (step.moves === 19) controller.abort();
   }
   const last = steps.at(-1);
-  assert.equal(last.moves, 21, 'the answer on screen when it was stopped is the answer kept');
+  assert.equal(last.moves, 19, 'the answer on screen when it was stopped is the answer kept');
   assert.equal(last.stopped, STOPPED.CANCELLED);
   assert.equal(last.met, false);
 });
@@ -155,117 +157,137 @@ test('an abort racing a met answer does not undo the met', async () => {
 });
 
 test('no solution at all is an error, not an empty result', async () => {
-  // Distinct from "out of budget": the loosest possible search failing means the state is
-  // unsolvable or the solver is broken, and returning null would let a screen render nothing.
-  const solve = scripted([null]);
-  await assert.rejects(() => collect(refine('F', { solve })), /no solution at all/);
+  // Not "out of budget": the first ask escalates through every sanctioned budget, so a solver
+  // that refuses all of them means the state is unsolvable or the engine is broken. Returning
+  // null would let a screen render nothing at all.
+  const solve = scripted(Array(MAX_PROMISE_ESCALATIONS + 2).fill(null));
+  await assert.rejects(() => collect(refine('F', { solve })),
+    /found no solution of 20 moves or fewer/);
 });
 
 test('a solver that breaks its own contract is refused, not passed through', async () => {
-  // Asked for fewer than 21, answered with 21. Yielding it would break the one guarantee this
+  // Asked for fewer than 20, answered with 20. Yielding it would break the one guarantee this
   // module makes, and the move list would go backwards in front of the learner.
-  const solve = scripted([21, 21]);
+  const solve = scripted([20, 20]);
   await assert.rejects(() => collect(refine('F', { solve, tier: 'shortest' })),
-    /returned 21 moves when asked for fewer than 21/);
+    /returned 20 moves when asked for fewer than 20/);
 });
 
 test('the probe budget is passed to every search above the target, and defaults', async () => {
-  const solve = scripted([22, 21, 20]);
+  // At <= 20 the FIRST answer already meets the target, so the free-descent rate starts right
+  // after it — which is the point of asking for the floor first rather than the ceiling.
+  const solve = scripted([20, 19, 18]);
   await collect(refine('F', { solve, tier: 'twenty' }));
   assert.deepEqual(solve.asked.map((a) => a.probeMax),
+    [DEFAULT_PROBE_BUDGET, BONUS_BUDGET, BONUS_BUDGET, BONUS_BUDGET]);
+
+  // A tier below the floor keeps spending the full budget until its own target is met.
+  const tight = scripted([20, 19, 18]);
+  await collect(refine('F', { solve: tight, tier: 'eighteen' }));
+  assert.deepEqual(tight.asked.map((a) => a.probeMax),
     [DEFAULT_PROBE_BUDGET, DEFAULT_PROBE_BUDGET, DEFAULT_PROBE_BUDGET, BONUS_BUDGET]);
 
-  const custom = scripted([22, 21, 20]);
-  await collect(refine('F', { solve: custom, tier: 'twenty', probeBudget: 5000, bonusBudget: 7 }));
+  const custom = scripted([20, 19, 18]);
+  await collect(refine('F', { solve: custom, tier: 'eighteen', probeBudget: 5000, bonusBudget: 7 }));
   assert.deepEqual(custom.asked.map((a) => a.probeMax), [5000, 5000, 5000, 7],
     'a budget is in the engine unit, not milliseconds, and the bonus rate is its own knob');
 });
 
 
-test('a target at or above God\'s number is a promise, so a null answer buys more budget', async () => {
-  // The defect this closes: at the <= 20 tier the search could run out of nodes above 20 and
-  // report the target missed, which the screen then rendered as "20 was not possible here" —
-  // flatly false, God's number being 20. The engine is complete (solvePattern deepens phase-1
-  // to solLen - 1), so a null there means the budget was too small and nothing else. Here the
-  // fake refuses twice and then answers, and the run must reach 20 rather than stop at 21.
-  const solve = scripted([22, 21, null, null, 20]);
+test('the first answer is the floor, and a refusal there buys more budget', async () => {
+  // The floor is kept at the FIRST search now, because that is the only place it can be missed:
+  // the first ask is for <= 20, and every later ask only shortens. A null there cannot mean "no
+  // such solution exists" — God's number says one always does — so it can only mean the budget
+  // was too small, and the ask repeats with twice as much.
+  const solve = scripted([null, null, 20, 19]);
   const steps = await collect(refine('F', { solve, tier: 'twenty' }));
-  assert.deepEqual(steps.map((st) => st.moves), [22, 21, 20, 20]);
-  assert.equal(steps.at(-1).met, true, 'the promise is kept, not merely aimed at');
-  assert.equal(steps.at(-1).stopped, STOPPED.MET);
-  assert.deepEqual(solve.asked.map((a) => a.probeMax), [
-    DEFAULT_PROBE_BUDGET,     // the loose first answer, so there is something on screen
-    DEFAULT_PROBE_BUDGET,     // 22 -> 21, still above the target
-    DEFAULT_PROBE_BUDGET,     // 21 -> refused
-    DEFAULT_PROBE_BUDGET * 2, // ... so ask again with more
-    DEFAULT_PROBE_BUDGET * 4, // ... and again
-    BONUS_BUDGET,             // 20 reached; the free descent resumes at the bonus rate
-  ], 'each refusal doubles the budget; below the target the bonus rate resumes');
+  assert.equal(steps[0].moves, 20, 'the first answer shown is at or below the floor');
+  assert.deepEqual(solve.asked.slice(0, 3).map((a) => a.probeMax),
+    [DEFAULT_PROBE_BUDGET, DEFAULT_PROBE_BUDGET * 2, DEFAULT_PROBE_BUDGET * 4],
+    'each refusal doubles the budget');
+  assert.deepEqual(solve.asked.slice(0, 3).map((a) => a.solLen),
+    [GODS_NUMBER + 1, GODS_NUMBER + 1, GODS_NUMBER + 1],
+    'and every one asks for the floor, never a looser bound');
 });
 
-test('a promised target that cannot be reached at all fails loudly, never quietly', async () => {
-  // There is deliberately no "give up and call it impossible" branch: that is the false claim
-  // the escalation exists to make unreachable. An engine that refuses every budget is broken,
-  // and a broken engine must say so rather than hand the screen a sentence it cannot support.
-  const solve = scripted([22, ...Array(MAX_PROMISE_ESCALATIONS + 1).fill(null)]);
+test('the floor is under EVERY tier, because it is a fact about the cube', async () => {
+  // The bug this closes: the guarantee once keyed on `target >= 20`, true of exactly one rung.
+  // Measured on the real engine at a reduced budget, <= 19, <= 18 and "shortest" each finished
+  // at 21 — and "shortest" is the worst, because someone who asked for the shortest solution
+  // there is was handed one LONGER than the <= 20 rung would have given them.
+  for (const tier of ['twenty', 'nineteen', 'eighteen', 'shortest']) {
+    const solve = scripted([null, 20]);
+    const steps = await collect(refine('F', { solve, tier }));
+    assert.ok(steps[0].moves <= GODS_NUMBER, `${tier}: the first answer is above the floor`);
+    assert.equal(solve.asked[0].solLen, GODS_NUMBER + 1, `${tier}: asked for something else`);
+    assert.equal(solve.asked[1].probeMax, DEFAULT_PROBE_BUDGET * 2, `${tier}: did not escalate`);
+  }
+});
+
+test('a floor that cannot be reached at all fails loudly, never quietly', async () => {
+  // There is deliberately no "give up and show something longer" branch: that is the outcome
+  // the floor exists to make unreachable. The message names both causes rather than accusing
+  // the engine, because a caller may pass any budget it likes.
+  const solve = scripted(Array(MAX_PROMISE_ESCALATIONS + 2).fill(null));
+  // The message names the unsolvable case FIRST: the engine returns null both for "out of
+  // budget" and for "not a solvable state", and this module never establishes legality — so
+  // leading with "a solution always exists" would state a guarantee that only holds for a
+  // legal cube, about a state that may not be one.
   await assert.rejects(() => collect(refine('F', { solve, tier: 'twenty' })),
-    /the engine is broken/);
-  assert.equal(solve.asked.length, MAX_PROMISE_ESCALATIONS + 2,
+    /Either this is not a solvable cube/);
+  assert.equal(solve.asked.length, MAX_PROMISE_ESCALATIONS + 1,
     'it escalates exactly the sanctioned number of times before refusing');
 });
 
-test('a target BELOW God\'s number still ends honestly when the search falls short', async () => {
-  // <= 18 is a different kind of promise: for ~3.5% of positions it genuinely does not exist,
-  // and for the rest the search may simply not find it. Either way the run ends rather than
-  // escalating forever — and `met: false` says only that this search did not get there.
-  assert.ok(GODS_NUMBER === 20, 'the boundary these two tests sit either side of');
-  const solve = scripted([22, 20, 19, null]);
+test('below the floor, exhaustion is an honest end for every tier', async () => {
+  // Why the floor is a floor and not a promise to reach the target: 18 genuinely does not exist
+  // for roughly 3.5% of positions, so a search that stops at 19 must be free to stop and say so.
+  const solve = scripted([20, 19, null]);
   const steps = await collect(refine('F', { solve, tier: 'eighteen' }));
   assert.equal(steps.at(-1).moves, 19);
-  assert.equal(steps.at(-1).met, false);
+  assert.equal(steps.at(-1).met, false, 'it says plainly that 18 was not reached');
   assert.equal(steps.at(-1).stopped, STOPPED.EXHAUSTED);
-  assert.equal(solve.asked.length, 4, 'no escalation below the promise');
+  assert.equal(solve.asked.length, 3, 'and it did NOT escalate below the floor');
 });
 
-test('an abort during escalation still ends the run', async () => {
-  // The escalation loop must not become a way to ignore a person leaving the screen.
+test('an abort while escalating for the floor yields nothing at all', async () => {
+  // Nothing has been shown yet, so there is no answer to keep — the same rule as an abort
+  // before any search ran. Inventing a first frame from a withdrawn run would be worse.
   const controller = new AbortController();
   let calls = 0;
-  const solve = async (_f, options) => {
-    calls++;
-    if (calls === 1) return algOf(22);
-    controller.abort();
-    return null; // a refusal that would otherwise escalate
-  };
+  const solve = async () => { calls += 1; controller.abort(); return null; };
   const steps = await collect(refine('F', { solve, tier: 'twenty', signal: controller.signal }));
-  assert.equal(steps.at(-1).stopped, STOPPED.CANCELLED);
-  assert.ok(calls <= 2, 'it stopped asking once the abort landed');
+  assert.deepEqual(steps, [], 'an abort before the first answer shows nothing');
+  assert.equal(calls, 1, 'and it stopped asking immediately');
 });
 
-test('an abort on the LAST allowed escalation is a person leaving, not a broken engine', async () => {
-  // The cap throws, and the throw used to come first: a run cancelled on its final attempt was
-  // reported as "the engine is broken" — an accusation, about a cube nobody was waiting for.
+test('an abort on the LAST permitted attempt is a person leaving, not a broken engine', async () => {
+  // The ordering the cap depends on. The abort check sits BEFORE the cap throw, so a run
+  // cancelled on its final permitted attempt reports as cancelled — reversing those two lines
+  // would accuse the engine of being broken over a cube nobody is waiting for any more.
+  // This test was lost when the escalation moved from the descent loop to the first search;
+  // it is restored here because the ordering is what makes the cap safe.
   const controller = new AbortController();
   let calls = 0;
   const solve = async () => {
     calls += 1;
-    if (calls === 1) return algOf(22);
-    if (calls === MAX_PROMISE_ESCALATIONS + 1) controller.abort();
+    if (calls === MAX_PROMISE_ESCALATIONS + 1) controller.abort(); // the last one allowed
     return null;
   };
   const steps = await collect(refine('F', { solve, tier: 'twenty', signal: controller.signal }));
-  assert.equal(steps.at(-1).stopped, STOPPED.CANCELLED, 'a cancelled run must not read as a broken engine');
+  assert.deepEqual(steps, [], 'nothing was ever shown, so nothing is yielded');
+  assert.equal(calls, MAX_PROMISE_ESCALATIONS + 1, 'and no further attempt was started');
 });
 
-test('a budget that cannot double stops honestly rather than being rejected downstream', async () => {
+test('a budget that cannot double fails loudly rather than downstream', async () => {
   // Doubling past the safe-integer range would hand the engine boundary a malformed budget and
   // fail as "probeMax is not a positive integer" — a confusing answer for a caller whose only
   // sin was asking for a very large budget.
-  const solve = scripted([22, null]);
-  const huge = Number.MAX_SAFE_INTEGER - 1;
-  const steps = await collect(refine('F', { solve, tier: 'twenty', probeBudget: huge }));
-  assert.equal(steps.at(-1).stopped, STOPPED.EXHAUSTED);
-  assert.equal(steps.at(-1).met, false, 'and it says plainly that the target was not reached');
+  const solve = scripted([null, null]);
+  await assert.rejects(
+    () => collect(refine('F', { solve, tier: 'twenty', probeBudget: Number.MAX_SAFE_INTEGER - 1 })),
+    /cannot be doubled past/,
+  );
 });
 
 test('refine refuses to run without a solver', async () => {
@@ -308,10 +330,11 @@ test('a solved cube is a zero-move answer, not a solver failure', async () => {
 });
 
 test('the first answer is held to the same bound as every later one', async () => {
-  // A broken solver answering the loose ask with 23+ moves used to slip through unchecked.
+  // A broken solver answering the first ask with more than the floor allows used to slip
+  // through unchecked. The bound it is held to is the floor, like every later ask.
   const solve = scripted([25]);
   await assert.rejects(() => collect(refine('F', { solve })),
-    /returned 25 moves when asked for fewer than 23/);
+    /returned 25 moves when asked for fewer than 21/);
 });
 
 test('a malformed tier or budget is refused before any search runs', async () => {
@@ -337,15 +360,15 @@ test('an abort during a search ends the progression with the answer in hand', as
   // improvement. The improvement is real and kept — but the progression ends as CANCELLED,
   // never yielding one more in-progress step as if the search were continuing.
   const controller = new AbortController();
-  const base = scripted([22, 21, 20]);
+  const base = scripted([20, 19, 18]);
   const solve = async (facelets, bounds) => {
     const answer = await base(facelets, bounds);
-    if (bounds.solLen === 22) controller.abort(); // mid-flight, during the 22 -> 21 attempt
+    if (bounds.solLen === 20) controller.abort(); // mid-flight, during the 20 -> 19 attempt
     return answer;
   };
   const steps = await collect(refine('F', { solve, tier: 'shortest', signal: controller.signal }));
   const last = steps.at(-1);
   assert.equal(last.stopped, STOPPED.CANCELLED);
-  assert.equal(last.moves, 21, 'the improvement that arrived with the abort is kept');
+  assert.equal(last.moves, 19, 'the improvement that arrived with the abort is kept');
   assert.equal(base.asked.length, 2, 'and no further search was started');
 });
