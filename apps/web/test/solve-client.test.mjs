@@ -347,16 +347,20 @@ test('the stop word survives the crossing with its offset, not just its buffer',
 test('one worker failing cancels its siblings instead of leaving them running', async () => {
   // Promise.all rejected on the first failure and left the others searching, pending, and able
   // to publish into the next solve's word. Every sibling is waited for and ended now.
+  //
+  // The three pool workers never answer on their own, so the only thing that moves this solve
+  // is the failure; the fourth is the fallback and does answer.
   const made = [];
-  // Nobody answers on their own, so the only thing that settles this solve is the failure.
-  const spawn = () => { const w = fakeWorker({ autoReply: false }); made.push(w); return w; };
+  const spawn = () => { const w = fakeWorker({ autoReply: made.length >= 3 }); made.push(w); return w; };
   const client = createParallelSolveClient({ spawn, workers: 3, viewCount: 6 });
   const inFlight = client.solve('F'.repeat(54), { solLen: 21, probeMax: 300 });
   await Promise.resolve();
   made[0].fail('boom');
-  await assert.rejects(() => inFlight, /boom/);
+  const real = console.warn;
+  console.warn = () => {};
+  try { assert.equal(await inFlight, 'R U'); } finally { console.warn = real; }
   assert.equal(client.idle, true, 'no sibling is left pending');
-  assert.ok(made.slice(1).every((w) => w.terminated > 0), 'the siblings were ended, not abandoned');
+  assert.ok(made.slice(1, 3).every((w) => w.terminated > 0), 'the siblings were ended, not abandoned');
 });
 
 test('an omitted budget is the engine default, divided — not one node each', async () => {
@@ -371,4 +375,89 @@ test('without a shared word it still answers — it just never stops early', asy
   const client = createParallelSolveClient({ spawn: () => fakeWorker(), workers: 2, viewCount: 6 });
   assert.equal(await client.solve('F'.repeat(54), { solLen: 21, probeMax: 100 }), 'R U');
   assert.equal(client.workers, 2);
+});
+
+// --- the pool that could not be staffed -------------------------------------------------------
+//
+// A thread that will not start says nothing about the cube. Rejecting the solve would tell a
+// user one thread short of a pool that their cube cannot be solved, which is false — one worker
+// searching all six views is not a degraded answer, it is the answer this app shipped before the
+// pool existed.
+
+/** Capture console.warn for the duration of one call. The fallback must be LOUD. */
+async function withWarnings(fn) {
+  const said = [];
+  const real = console.warn;
+  console.warn = (m) => said.push(String(m));
+  try { return { value: await fn(), said }; } finally { console.warn = real; }
+}
+
+test('a pool that cannot be staffed falls back to one worker instead of refusing', async () => {
+  let spawns = 0;
+  const made = [];
+  const spawn = () => {
+    spawns += 1;
+    if (spawns === 1) throw new Error('Worker refused to start');
+    const w = fakeWorker(); made.push(w); return w;
+  };
+  const client = createParallelSolveClient({ spawn, workers: 3, viewCount: 6 });
+  const { value, said } = await withWarnings(() => client.solve('F'.repeat(54), { solLen: 21, probeMax: 300 }));
+
+  assert.equal(value, 'R U', 'the solve must still be answered');
+  assert.equal(client.workers, 1, 'it reports the one worker it has, not the three it wanted');
+  assert.match(said[0] ?? '', /falling back to a single worker/,
+    'a silent downgrade would hide a machine that can never staff the pool');
+  const fallback = made.at(-1).sent[0];
+  assert.equal(fallback.probeMax, 300, 'the whole budget — there are no siblings to leave nodes for');
+  assert.equal(fallback.views, null, 'and it searches every view, which is what makes it correct');
+});
+
+test('once it has fallen back it stays fallen back, rather than re-learning it every solve', async () => {
+  let spawns = 0;
+  const spawn = () => {
+    spawns += 1;
+    if (spawns === 1) throw new Error('Worker refused to start');
+    return fakeWorker();
+  };
+  const client = createParallelSolveClient({ spawn, workers: 3, viewCount: 6 });
+  await withWarnings(() => client.solve('F'.repeat(54), { solLen: 21, probeMax: 300 }));
+  const after = spawns;
+  await client.solve('F'.repeat(54), { solLen: 21, probeMax: 300 });
+  assert.equal(spawns, after, 'a second solve must not re-attempt the pool — that is a spawn and a table build per solve');
+});
+
+test('an engine refusal is NOT retried on fewer threads — it would fail the same way', async () => {
+  // The other half of the fallback, and the reason it is tagged rather than catch-all: a
+  // malformed cube fails identically on one worker, so a retry buys nothing and charges the
+  // user twice the wait for the same "no".
+  let spawns = 0;
+  const spawn = () => {
+    spawns += 1;
+    return fakeWorker({ reply: (m) => ({ id: m.id, ok: false, error: 'facelets must be a 54-character string' }) });
+  };
+  const client = createParallelSolveClient({ spawn, workers: 3, viewCount: 6 });
+  const { said } = await withWarnings(async () => {
+    await assert.rejects(() => client.solve('nope', { solLen: 21, probeMax: 300 }), /54-character/);
+  });
+  assert.equal(spawns, 3, 'a fourth worker means the engine refusal was mistaken for a broken thread');
+  assert.equal(client.workers, 3, 'and the pool is still a pool');
+  assert.deepEqual(said, [], 'nothing was downgraded, so nothing should have been announced');
+});
+
+test('a worker that DIES mid-solve falls back rather than losing the answer', async () => {
+  // Not the same path as a spawn that throws: these workers started fine and one died with a
+  // search in flight, which is the shape an out-of-memory phone actually produces.
+  const made = [];
+  const spawn = () => { const w = fakeWorker({ autoReply: made.length >= 3 }); made.push(w); return w; };
+  const client = createParallelSolveClient({ spawn, workers: 3, viewCount: 6 });
+  const { value, said } = await withWarnings(async () => {
+    const inFlight = client.solve('F'.repeat(54), { solLen: 21, probeMax: 300 });
+    await Promise.resolve();
+    made[0].fail('out of memory');
+    return inFlight;
+  });
+  assert.equal(value, 'R U', 'the answer must survive one thread dying');
+  assert.match(said[0] ?? '', /solver worker failed: out of memory/, 'and say what actually died');
+  assert.equal(client.workers, 1);
+  assert.equal(client.idle, true, 'no sibling and no fallback is left pending');
 });

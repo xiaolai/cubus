@@ -71,6 +71,19 @@ export function stopWord(descriptor) {
 }
 
 /**
+ * A failure of the WORKER, not of the search.
+ *
+ * The distinction is what makes a retry safe. A thread that could not be created, or that died,
+ * says nothing about the cube — the same question asked on fewer threads can still be answered.
+ * An engine-level refusal (a malformed cube, a bound out of range) would fail identically the
+ * second time and cost the user twice the wait for it, so the pool must never retry one.
+ */
+const workerFailure = (message, cause) =>
+  Object.assign(new Error(message), { workerFailure: true, cause });
+
+export const isWorkerFailure = (err) => err?.workerFailure === true;
+
+/**
  * @param {() => Worker} spawn  makes a fresh worker. Injected so tests can supply a fake.
  */
 export function createSolveClient({ spawn } = {}) {
@@ -82,11 +95,18 @@ export function createSolveClient({ spawn } = {}) {
 
   const attach = () => {
     if (worker) return worker;
+    // A spawn that throws is a WORKER failure, tagged so the pool can retry on fewer threads
+    // rather than telling the user their cube cannot be solved. The cause is kept verbatim.
+    let spawned;
+    try {
+      spawned = spawn();
+    } catch (cause) {
+      throw workerFailure(`solver worker could not be created: ${cause?.message ?? cause}`, cause);
+    }
+    worker = spawned;
     // Both listeners close over THIS worker and check it is still current before acting: a
     // delayed event from a replaced worker once had the power to kill its replacement's
     // requests. Stale events are dropped instead.
-    const spawned = spawn();
-    worker = spawned;
     spawned.addEventListener('message', (event) => {
       if (worker !== spawned) return; // a reply from a worker that was already replaced
       const data = event.data ?? {};
@@ -112,7 +132,7 @@ export function createSolveClient({ spawn } = {}) {
       if (worker !== spawned) return; // a stale corpse must not take down its replacement
       event.preventDefault?.(); // handled here — it must not double as an uncaught page error
       spawned.terminate(); // dead to us either way; make it dead to the OS too
-      const reason = new Error(`solver worker failed: ${event?.message ?? 'unknown'}`);
+      const reason = workerFailure(`solver worker failed: ${event?.message ?? 'unknown'}`);
       for (const [, waiting] of pending) waiting.reject(reason);
       pending.clear();
       worker = null;
@@ -237,8 +257,38 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
   const slices = sliceViews(workers ?? 1, viewCount);
   const clients = slices.map(() => createSolveClient({ spawn }));
   const NO_BEST = 0x7fffffff;
+  // Built only if the pool ever fails to be staffed, and kept after that: a machine that could
+  // not give us six threads once will not give us six the next time either, and re-learning
+  // that on every solve would cost a spawn attempt and a table build each time.
+  let lone = null;
 
   async function solve(facelets, { solLen, probeMax = DEFAULT_NODE_BUDGET } = {}) {
+    if (lone) return lone.solve(facelets, { solLen, probeMax });
+    try {
+      return await pooled(facelets, { solLen, probeMax });
+    } catch (err) {
+      // A pool that cannot be staffed still answers. A thread that failed to spawn, or died,
+      // says nothing about this cube — and one worker searching all six views under the whole
+      // budget is not a degraded answer, it is the answer this app shipped before the pool
+      // existed. Rejecting instead would tell a user one thread short that their cube cannot be
+      // solved, which is false.
+      //
+      // Only for a WORKER failure. An engine-level refusal — a malformed cube, a bound out of
+      // range — would fail identically on the retry and charge the user twice the wait for the
+      // same "no", so it propagates untouched.
+      if (!isWorkerFailure(err)) throw err;
+      console.warn(
+        `solve-client: the ${clients.length}-worker pool could not run (${err.message}) — ` +
+        'falling back to a single worker for the rest of this session. Searches will be slower ' +
+        'in the tail; answers are unaffected.',
+      );
+      for (const c of clients) c.cancel();
+      lone = createSolveClient({ spawn });
+      return lone.solve(facelets, { solLen, probeMax });
+    }
+  }
+
+  async function pooled(facelets, { solLen, probeMax }) {
     const shares = shareBudget(probeMax, clients.length);
     const used = clients.slice(0, shares.length);
     // A fresh word per solve. `makeShared` is injected so a page without SharedArrayBuffer — or
@@ -287,9 +337,17 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
 
   function cancel() {
     for (const c of clients) c.cancel();
+    lone?.cancel();
   }
 
-  return { solve, cancel, get idle() { return clients.every((c) => c.idle); }, workers: clients.length };
+  return {
+    solve,
+    cancel,
+    // The fallback counts for both: a solve running on it is not idle, and a pool that has
+    // fallen back reports the one worker it actually has rather than the six it wanted.
+    get idle() { return clients.every((c) => c.idle) && (lone?.idle ?? true); },
+    get workers() { return lone ? 1 : clients.length; },
+  };
 }
 
 /**
