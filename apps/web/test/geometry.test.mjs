@@ -151,9 +151,20 @@ const measure = (page) =>
       lead: rect($('#tbLead')), trail: rect($('#tbTrail')), bar: rect($('#titlebar')),
       // The zones' CONTENT: the tabs must clear these, whatever box the engine gave the zones.
       brand: rect($('#tbLead .brand')), gear: rect($('#tbTrail [aria-label="Settings"]')),
-      tabs: [...nav.querySelectorAll('.nav-item')].map((el) => ({
-        ...rect(el), text: el.textContent.trim(), name: el.getAttribute('aria-label') || '',
-      })),
+      // The label's BOX, not its text. (No backticks in this comment: it lives inside the
+      // template literal this whole probe is written in, and one would end the string.)
+      // textContent reports a display:none label just as happily as a drawn one, so a test
+      // written on it would pass whichever composition was on screen — which is the entire
+      // thing under test here.
+      tabs: [...nav.querySelectorAll('.nav-item')].map((el) => {
+        const lbl = el.querySelector('.lbl');
+        return {
+          ...rect(el),
+          text: el.textContent.trim(),
+          name: el.getAttribute('aria-label') || '',
+          label: lbl ? { ...rect(lbl), text: lbl.textContent.trim() } : null,
+        };
+      }),
       // The toggle is excluded: its 44px hit area is a ::before, which no rect reports.
       controls: [...document.querySelectorAll('button, .chip-m, .pill')].filter(visible).map((el) => ({ what: el.id || el.className, ...rect(el) })),
     };
@@ -209,11 +220,30 @@ for (const fixture of FIXTURES) {
         near((m.nav.left + m.nav.right) / 2, (m.bar.left + m.bar.right) / 2, 'landscape: tabs on the bar\'s centre line', 1.5);
       }
       for (const tab of m.tabs) assert.ok(tab.width > 0 && tab.height > 0, 'a tab has no size');
-      // Icons only, but never anonymous: the label moved to the accessible name rather than being
-      // deleted, and a tab with neither is a button a screen reader cannot announce.
+      // The word is drawn where there is room for it and not where there is none — and either
+      // way the row is announced, because the accessible name is on the button rather than in
+      // the span. A tab with no name is a button a screen reader cannot announce at all.
       for (const tab of m.tabs) {
-        assert.equal(tab.text, '', `a tab draws text ("${tab.text}") — the row is icons only`);
         assert.ok(tab.name.length > 0, 'a tab has no accessible name');
+        assert.ok(tab.label, 'a tab has no label span at all — nothing to draw in either composition');
+        assert.equal(tab.label.text, tab.name, 'the drawn word and the announced word must be the same word');
+        if (portrait) {
+          assert.ok(
+            tab.label.width > 0 && tab.label.height > 0,
+            `portrait: the bottom bar must draw "${tab.name}" under its icon`,
+          );
+          // Inside the tab, not spilling out of it: the ellipsis rule is what keeps a long word
+          // from widening the row it shares with seven others.
+          assert.ok(
+            tab.label.left >= tab.left - 0.5 && tab.label.right <= tab.right + 0.5,
+            `portrait: the label of "${tab.name}" overflows its tab`,
+          );
+        } else {
+          assert.equal(
+            tab.label.width, 0,
+            `landscape: the floating row has no room for words, but "${tab.name}" is drawn`,
+          );
+        }
       }
 
       // A finger: the 52px bar, a phone/tablet platform (no traffic lights), 44px controls.
