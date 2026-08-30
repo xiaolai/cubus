@@ -74,11 +74,21 @@ export const GODS_NUMBER = 20;
  *  solves in four PRESENTED a number that cannot be a minimum.
  *
  *  Asking for the floor up front costs first-paint latency, and that is the whole trade
- *  (owner's call, 2026-08-30). How much it costs is NOT recorded here, deliberately: every
- *  attempt to measure it in this session ran on a machine at load 40-66 from an unrelated
- *  build, and the runs disagreed by 10x — one even reported the floor's worst case as better,
- *  which a paired run then contradicted. The only direction that held across every run is that
- *  p90 gets worse. Re-measure on a quiet machine before quoting a number, and put it here.
+ *  (owner's call, 2026-08-30). Measured properly once the machine was quiet — 80 random states,
+ *  both bounds run against EACH state and interleaved so drift hits them alike:
+ *
+ *      bound        median   p90    p95    worst   over 100ms
+ *      <= 22 (old)   2.9ms   10ms   13ms    19ms   0 / 80
+ *      <= 20 (now)   6.2ms   41ms  183ms   630ms   4 / 80
+ *
+ *  So the typical first number still arrives in single-digit milliseconds, but one solve in
+ *  twenty now waits over a tenth of a second for it and the worst seen was 0.6 s. That is the
+ *  price of never presenting a count that cannot be a minimum. Reverting is one line.
+ *
+ *  (An earlier draft of this comment said the cost was unknown, because every measurement had
+ *  run on a box at load 40-66 from an unrelated build and the runs disagreed by 10x — one even
+ *  reported the floor's worst case as BETTER, which a paired run contradicted. Worth keeping as
+ *  a note: a latency number taken on a loaded machine is not a slow number, it is no number.)
  *
  *  What is NOT a timing claim, and holds regardless: across 160 solves (40 states x 4 tiers),
  *  no frame — first or final — showed a count above 20.
