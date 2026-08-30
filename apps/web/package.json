@@ -1,6 +1,6 @@
 {
   "name": "cubus-web",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Cubus SPA \u2014 camera (YOLO) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",

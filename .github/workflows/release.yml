@@ -1,0 +1,317 @@
+# Cross-platform release: macOS, Windows, Linux, Android, iOS.
+#
+# Fires on a `v*` tag, and never on a push to main — a release is a decision, not a side effect of
+# merging. `workflow_dispatch` is there so the whole matrix can be exercised without minting a tag,
+# which is the only honest way to find out whether a release build works before you need it to.
+#
+# It publishes a DRAFT release. Nothing reaches anybody until a human presses publish, and the
+# draft is where the artifacts can be checked against what the runbook says should be there.
+#
+# What this workflow cannot do, and does not pretend to:
+#   * iOS and Android release artifacts need signing material that only the owner has. Each mobile
+#     job is skipped unless its secrets are present, and when it runs it ASSERTS the artifact is
+#     signed rather than trusting a build that warns and carries on.
+#   * dev-docs/mobile-shell-plan.md M3/M4 (device verification, the golden-frames native leg on a
+#     real phone) are manual gates that no runner can perform. They are release-blocking for the
+#     stores, not for producing a build, and dev-docs/release-runbook.md is where they are tracked.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build every platform but publish nothing'
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # The gate runs FIRST and everything else needs it. Shipping a build of a red tree is the one
+  # failure a release pipeline exists to prevent, and `pnpm check` is this repo's definition of
+  # green (AGENTS.md). It is not re-implemented here — it is called.
+  gate:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libdbus-1-dev pkg-config
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: WebKit for the browser suites
+        run: pnpm --filter cubus-web exec playwright install --with-deps webkit
+
+      - name: pnpm check
+        run: pnpm check
+
+      # The tag must be the version the app will SHOW. A release named v0.2.0 whose About card
+      # says 0.1.9 is a support problem that outlives the release, and it is one grep to prevent.
+      - name: the tag matches the version in the app
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          app=$(sed -n "s/^export const VERSION = '\(.*\)';$/\1/p" apps/web/lib/app.js)
+          echo "tag=$tag  app=$app"
+          if [ "$tag" != "$app" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION $app — run 'pnpm bump $tag'"
+            exit 1
+          fi
+
+  desktop:
+    name: Desktop (${{ matrix.name }})
+    needs: gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (universal)
+            runs-on: macos-latest
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - name: Windows
+            runs-on: windows-latest
+            args: ''
+            rust-targets: ''
+          - name: Linux
+            runs-on: ubuntu-22.04
+            args: ''
+            rust-targets: ''
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # 22.04, not latest: the AppImage/deb produced on a newer glibc will not start on an older
+      # distro, and the runner's glibc is the floor every Linux user inherits.
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libdbus-1-dev patchelf pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm --filter cubus-desktop exec tauri build ${{ matrix.args }}
+
+      # Never `if-no-files-found: warn`. A release that silently ships nothing for a platform is
+      # the exact defect AGENTS.md records from verify-icons.py: a gate nothing runs is not a gate.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            target/**/bundle/**/*.dmg
+            target/**/bundle/**/*.app.tar.gz
+            target/**/bundle/**/*.msi
+            target/**/bundle/**/*-setup.exe
+            target/**/bundle/**/*.deb
+            target/**/bundle/**/*.AppImage
+            target/**/bundle/**/*.rpm
+
+  android:
+    name: Android (AAB + APK)
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # 21, not the runner default. Gradle 8.14.3 + AGP 8.11.0 run on 17-21, and a newer JDK dies
+      # with "Unsupported class file major version NN", which names neither Java nor the fix.
+      # scripts/tauri-android.mjs enforces the same range locally; this is the CI half of it.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: NDK
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Absent secrets are a SKIP that says so, never a quiet unsigned build. An unsigned AAB
+      # cannot be uploaded to Play, so producing one and calling the job green is worse than not
+      # running it: it is twenty minutes spent to reach a false conclusion.
+      - name: Keystore
+        id: keystore
+        # Every secret arrives as an environment variable and none is spliced into the script
+        # text. A password containing a backtick or $(...) would otherwise be executed by the
+        # shell that is meant to be storing it — the same class of defect AGENTS.md records from
+        # a commit message that ran `export` and published an environment.
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set — building UNSIGNED, upload skipped"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          dir=apps/desktop/src-tauri/gen/android
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$dir/upload.jks"
+          # A QUOTED heredoc delimiter: no expansion inside, so the values are written verbatim.
+          {
+            printf 'storeFile=upload.jks\n'
+            printf 'storePassword=%s\n' "$STORE_PASSWORD"
+            printf 'keyAlias=%s\n'      "$KEY_ALIAS"
+            printf 'keyPassword=%s\n'   "$KEY_PASSWORD"
+          } > "$dir/keystore.properties"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: pnpm --filter cubus-desktop exec tauri android build --aab --apk
+
+      # The build only WARNS when it is unsigned. This is the assertion, because a warning inside
+      # a twenty-minute log is not a gate. `apksigner verify` fails loudly on an unsigned APK.
+      - name: the artifact is actually signed
+        if: steps.keystore.outputs.signed == 'true'
+        run: |
+          apk=$(find apps/desktop/src-tauri/gen/android -name '*-release*.apk' | head -1)
+          test -n "$apk" || { echo "::error::no release APK was produced"; exit 1; }
+          "$ANDROID_HOME"/build-tools/*/apksigner verify --verbose "$apk"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.keystore.outputs.signed == 'true'
+        with:
+          name: android
+          if-no-files-found: error
+          path: |
+            apps/desktop/src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
+            apps/desktop/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+
+  ios:
+    name: iOS (IPA)
+    needs: gate
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Same rule as Android: no signing material, no pretend release. An unsigned .ipa installs
+      # nowhere, so a green job that produced one would be a green job that produced nothing.
+      - name: Signing
+        id: signing
+        env:
+          CERT_B64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          PROFILE_B64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          if [ -z "$CERT_B64" ]; then
+            echo "::warning::APPLE_CERTIFICATE_BASE64 is not set — iOS release build skipped"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          keychain=$RUNNER_TEMP/build.keychain
+          security create-keychain -p "" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "" "$keychain"
+          printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security list-keychain -d user -s "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$keychain" >/dev/null
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          printf '%s' "$PROFILE_B64" | base64 -d \
+            > ~/Library/MobileDevice/Provisioning\ Profiles/cubus.mobileprovision
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm --filter cubus-desktop exec tauri ios build --export-method app-store-connect
+
+      - uses: actions/upload-artifact@v4
+        if: steps.signing.outputs.signed == 'true'
+        with:
+          name: ios
+          if-no-files-found: error
+          path: apps/desktop/src-tauri/gen/apple/build/**/*.ipa
+
+  draft:
+    name: Draft release
+    needs: [desktop, android, ios]
+    # Runs when the desktop leg succeeded even if a mobile leg was skipped for want of secrets:
+    # holding a desktop release hostage to an Apple certificate helps nobody. What it must NOT do
+    # is publish — a human presses that, having looked at what is actually in the draft.
+    if: always() && needs.desktop.result == 'success' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: what came back
+        run: find dist -type f | sort
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/**/*
