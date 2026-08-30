@@ -2857,9 +2857,13 @@ var loadOrt = (url) => {
   }
   return pending;
 };
+function defaultThreadCount(isolated = typeof globalThis.crossOriginIsolated === "boolean" ? globalThis.crossOriginIsolated : false, cores = globalThis.navigator?.hardwareConcurrency ?? 1) {
+  if (!isolated) return 1;
+  return Math.max(1, Math.min(cores - 2, 6));
+}
 async function createModelRunner(modelUrl, opts = {}) {
   const ort = await loadOrt(opts.ortUrl ?? "./ort.mjs");
-  ort.env.wasm.numThreads = 1;
+  ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
   ort.env.wasm.proxy = true;
   ort.env.wasm.wasmPaths = opts.wasmPaths ?? "./";
   const session = await ort.InferenceSession.create(modelUrl, {
@@ -3769,5 +3773,9 @@ if (!customElements.get("ai-scan-panel")) {
   customElements.define("ai-scan-panel", AiScanPanel);
 }
 export {
-  AiScanPanel
+  AiScanPanel,
+  decodeDetections,
+  fitFace,
+  nms,
+  preprocess
 };

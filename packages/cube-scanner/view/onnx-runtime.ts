@@ -55,6 +55,43 @@ export interface ModelRunnerOptions {
    * `import.meta.url`, so a bundled copy makes the worker load the CALLER instead of the runtime.
    */
   ortUrl?: string;
+  /**
+   * wasm threads to ask for. Defaults to {@link defaultThreadCount}. Only honoured when the page
+   * is cross-origin isolated — without SharedArrayBuffer the runtime has no threads to give,
+   * whatever it is asked for, so the default clamps itself to 1 there.
+   */
+  numThreads?: number;
+}
+
+/**
+ * How many wasm threads to ask onnxruntime for.
+ *
+ * 1 unless the page is cross-origin isolated, because threads need SharedArrayBuffer and
+ * `crossOriginIsolated` is the browser's own answer about whether it has one. Guessing from the
+ * headers we *meant* to send would be wrong in exactly the case that matters — an embedder that
+ * strips them, a file:// page, an engine without SAB.
+ *
+ * When it is isolated: measured on this model (640x640, median of 10-12 runs, one page, nothing
+ * else running) —
+ *
+ *     threads      1       2      4      6      8
+ *     WebKit    2.8fps   5.6    7.5    8.1   11.3    (8 cores)
+ *     Chromium  5.0      5.5    7.6    9.5    7.2    (10 cores)
+ *
+ * WebKit keeps gaining up to the core count; Chromium peaks at 6 and REGRESSES at 8. So 6 is the
+ * ceiling rather than the core count: it is Chromium's best, 72% of WebKit's best, and — the
+ * part the benchmark could not see — it leaves cores for the two things running alongside it in
+ * the real app, the camera pipeline and the 3D renderer. `cores - 2` for the same reason, and it
+ * is what gives a phone thermal headroom rather than pinning every core to inference.
+ */
+export function defaultThreadCount(
+  isolated: boolean = typeof globalThis.crossOriginIsolated === 'boolean'
+    ? globalThis.crossOriginIsolated
+    : false,
+  cores: number = globalThis.navigator?.hardwareConcurrency ?? 1,
+): number {
+  if (!isolated) return 1;
+  return Math.max(1, Math.min(cores - 2, 6));
 }
 
 /**
@@ -67,7 +104,6 @@ export async function createModelRunner(
   modelUrl: string,
   opts: ModelRunnerOptions = {},
 ): Promise<RunModel> {
-  // Run single-threaded so no SharedArrayBuffer / cross-origin-isolation headers are needed.
   // wasmPaths resolves INCONSISTENTLY across onnxruntime-web — the .wasm against the document but
   // the dynamically-imported .mjs glue against this bundle — so callers should pass an ABSOLUTE
   // directory URL (see the option's JSDoc). The default './' below is a bare fallback and is
@@ -75,12 +111,18 @@ export async function createModelRunner(
   // fetch-capable origin: under a plain file:// page pass an https CDN, since file:// can't fetch
   // a local .wasm.
   const ort = await loadOrt(opts.ortUrl ?? './ort.mjs');
-  ort.env.wasm.numThreads = 1;
+  // This was a hard 1, with the note "so no SharedArrayBuffer / cross-origin-isolation headers
+  // are needed" — true when written, and it meant every non-Apple build ran a THREADED runtime
+  // on one core: measured at 297 ms per inference in WebKit and 234 ms in Chromium, 3-4 fps.
+  // apps/web/serve.mjs and tauri.conf.json now send COOP/COEP, so the page can be isolated and
+  // the threads asked for here are real. It still falls back to 1 wherever it is not.
+  ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
   // Off the main thread. A single run of this model is ~400ms of straight-line wasm and the scan
   // loop fires one every 200ms, so on the page's own thread the UI is blocked essentially all the
   // time the camera is open — a click on the sidebar is not handled until the run finishes.
   // proxy:true moves session creation and every run() into a worker onnxruntime spawns itself.
-  // It needs no cross-origin isolation: that is threads, and numThreads stays 1.
+  // proxy and threads are independent: proxy moves the work off the page's thread, threads
+  // decide how many cores do it. Both are wanted, and proxy still works with numThreads 1.
   ort.env.wasm.proxy = true;
   ort.env.wasm.wasmPaths = opts.wasmPaths ?? './';
 

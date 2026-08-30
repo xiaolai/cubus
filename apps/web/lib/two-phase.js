@@ -363,6 +363,12 @@ function phase1DFS(t, f, s, depthLeft, prevMove, path, onSolution) {
     exhausted = true;
     return true;
   }
+  // The same abort channel, reached from outside. `exhausted` already stops both phases
+  // wherever it is set, so a stop needs no new plumbing — only somewhere to be asked.
+  if ((nodesLeft & STOP_POLL_MASK) === 0 && stopRequested()) {
+    exhausted = true;
+    return true;
+  }
   searchStats.p1Nodes++; // counted only inside the budget, so spent === budget on exhaustion
   if (depthLeft === 0) {
     if (t === 0 && f === 0 && s === 0 && (path.length === 0 || !IS_PHASE2[path[path.length - 1]])) {
@@ -677,19 +683,51 @@ const BOUNDS = { solLen: 23, probeMax: 100_000_000 };
  *  READ-ONLY, like moveTables() and pruningTables(): these are live internals, exposed because
  *  copies would cost megabytes on a hot path, and the test suite pins the budget to these
  *  numbers so "probeMax bounds the work" is a checked claim, not a comment. */
-export const searchStats = { probes: 0, p1Nodes: 0, p2Nodes: 0, view: -1 };
+export const searchStats = { probes: 0, p1Nodes: 0, p2Nodes: 0, view: -1, depth: -1 };
 
 function resetStats() {
   searchStats.probes = 0;
   searchStats.p1Nodes = 0;
   searchStats.p2Nodes = 0;
   searchStats.view = -1;
+  searchStats.depth = -1;
 }
 
 /** The running budget, decremented once per search node of either phase, and the flag that
  *  aborts every level of both searches the moment it runs out. Module-level so the DFS
  *  functions see them without threading parameters through every recursive call. */
 let nodesLeft = 0;
+
+/** Asked, periodically, whether this search has been made pointless by another one.
+ *
+ *  Injected — this module has no idea that workers exist, and should not. The parallel client
+ *  supplies a function that reads one word of a SharedArrayBuffer; everything else supplies
+ *  nothing and pays a predicate that returns false.
+ *
+ *  It is polled rather than pushed because the search is SYNCHRONOUS: a worker in the middle of
+ *  phase 1 never returns to its event loop, so a postMessage asking it to stop is not read until
+ *  the search it was meant to stop has finished. One shared word is the only channel that
+ *  reaches inside a running search. */
+let stopRequested = () => false;
+
+/** How often to ask. Every 65536 nodes: a node is ~20 ns, so the question costs well under a
+ *  thousandth of the work between asks, and the latency it adds to a stop is ~1 ms. Checking
+ *  every node would be correct and measurably slower; checking every million would make a stop
+ *  arrive too late to matter. */
+const STOP_POLL_MASK = 0xffff;
+
+/**
+ * Install the predicate the search polls, or clear it with null.
+ *
+ * Module-level like the bounds, and for the same reason: the search is one synchronous walk with
+ * no per-call context to thread a callback through. A caller that sets it owns clearing it.
+ */
+export function setStopSignal(fn) {
+  if (fn !== null && typeof fn !== 'function') {
+    throw new TypeError('two-phase: the stop signal must be a function or null');
+  }
+  stopRequested = fn ?? (() => false);
+}
 let exhausted = false;
 
 /** How deep a phase-2 tail is worth searching. A failing probe costs the whole IDA* ladder up
