@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import struct
 import subprocess
 import sys
@@ -43,6 +44,19 @@ PALETTE = {
 CREAM = (0xF6, 0xF2, 0xE9)
 
 results: list[tuple[str, str, str, bool, bool]] = []
+
+
+def have(tool: str) -> bool:
+    """Is this tool on the box?
+
+    Half the checks below shell out to something Apple-only — sips, assetutil,
+    ictool — and rsvg-convert is a brew/apt install rather than a given. Without
+    this the script simply raised on a Linux runner, which is the reason it has
+    never been gated anywhere and the reason the mobile app icons stayed Tauri's
+    placeholder for as long as they did. A check that cannot run reports as
+    informational; it never passes silently.
+    """
+    return shutil.which(tool) is not None
 
 
 def check(name: str, expected: str, got: str, ok: bool, *, gated: bool = True) -> None:
@@ -90,6 +104,10 @@ def contrast_ratio(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
 
 
 def verify_gutter() -> None:
+    if not have("rsvg-convert"):
+        check("verify_gutter", "needs rsvg-convert", "skipped", True, gated=False)
+        return
+
     src = ICONS / "icon.svg"
     out = REPO / ".verify-gutter.png"
     subprocess.run(
@@ -183,6 +201,7 @@ def parse_icns(path: Path) -> dict[str, int]:
 
 
 def verify_icns() -> None:
+
     members = parse_icns(ICONS / "icon.icns")
     missing = sorted(set(ICNS_EXPECTED) - set(members))
     check(
@@ -193,6 +212,11 @@ def verify_icns() -> None:
         not missing,
     )
 
+    if not have("sips"):
+        # The ladder above is parsed straight out of the container and needs no tool, so it
+        # has already been gated. Only the render below is Apple-only.
+        check("icns renders at every rung", "needs sips", "skipped", True, gated=False)
+        return
     # Render through ImageIO (`sips`), the path macOS itself uses, and confirm
     # the pixels are the artwork rather than an empty or black plate.
     for size in (16, 32, 128, 512):
@@ -255,42 +279,50 @@ def verify_ico() -> None:
     # to get subtly wrong in a way that still produces a plausible file, so
     # decode every member back and compare it against a fresh render of the
     # same source at the same size.
-    for ico, src, sizes in (
-        (ICONS / "icon.ico", ICONS / "icon-square.svg",
-         (16, 24, 32, 48, 64, 128, 256)),
-        (WEB / "favicon.ico", WEB / "icon.svg", (16, 32, 48)),
-    ):
-        im = Image.open(ico)
-        worst = 0
-        for size in sizes:
-            member = im.ico.getimage((size, size)).convert("RGBA")
-            tmp = REPO / f".verify-ico-{size}.png"
-            subprocess.run(
-                ["rsvg-convert", "-w", str(size), "-h", str(size), str(src),
-                 "-o", str(tmp)],
-                check=True,
-            )
-            try:
-                ref = Image.open(tmp).convert("RGBA")
-                if member.size != (size, size):
-                    worst = 255
-                    break
-                worst = max(
-                    worst,
-                    max(
-                        abs(a - b)
-                        for pa, pb in zip(member.getdata(), ref.getdata())
-                        for a, b in zip(pa, pb)
-                    ),
-                )
-            finally:
-                tmp.unlink(missing_ok=True)
-        check(
-            f"{ico.name} members decode back to the source pixels",
-            "max channel diff 0",
-            str(worst),
-            worst == 0,
-        )
+    # `if`, not `return`: only the pixel round-trip needs a renderer, and returning here
+    # skipped the PNG-compression check further down — which needs nothing but the file's own
+    # bytes. This is the guard that was missing entirely (the function had none, so a box
+    # without librsvg raised before a single gated check was reported); putting it back too
+    # broadly would have traded a crash for a silent gap. A skip is informational, never a pass.
+    if not have("rsvg-convert"):
+        check("ico members decode back", "needs rsvg-convert", "skipped", True, gated=False)
+    else:
+      for ico, src, sizes in (
+          (ICONS / "icon.ico", ICONS / "icon-square.svg",
+           (16, 24, 32, 48, 64, 128, 256)),
+          (WEB / "favicon.ico", WEB / "icon.svg", (16, 32, 48)),
+      ):
+          im = Image.open(ico)
+          worst = 0
+          for size in sizes:
+              member = im.ico.getimage((size, size)).convert("RGBA")
+              tmp = REPO / f".verify-ico-{size}.png"
+              subprocess.run(
+                  ["rsvg-convert", "-w", str(size), "-h", str(size), str(src),
+                   "-o", str(tmp)],
+                  check=True,
+              )
+              try:
+                  ref = Image.open(tmp).convert("RGBA")
+                  if member.size != (size, size):
+                      worst = 255
+                      break
+                  worst = max(
+                      worst,
+                      max(
+                          abs(a - b)
+                          for pa, pb in zip(member.getdata(), ref.getdata())
+                          for a, b in zip(pa, pb)
+                      ),
+                  )
+              finally:
+                  tmp.unlink(missing_ok=True)
+          check(
+              f"{ico.name} members decode back to the source pixels",
+              "max channel diff 0",
+              str(worst),
+              worst == 0,
+          )
 
     # The 256 member must not be a raw BMP: 32-bit uncompressed is 270KB on its
     # own, which is how this file was once 372KB.
@@ -344,6 +376,7 @@ ICTOOL = Path(
 
 
 def verify_glass() -> None:
+
     car = ICONS / "Assets.car"
     check(
         "Assets.car exists and is non-empty",
@@ -352,6 +385,12 @@ def verify_glass() -> None:
         car.exists() and car.stat().st_size > 0,
     )
     if car.exists():
+        if not have("assetutil"):
+            # Whether the catalogue EXISTS and is non-empty is checked above and gates
+            # everywhere — that is the check that catches a missing committed artefact.
+            # Reading its renditions is Apple-only.
+            check("Assets.car renditions", "needs assetutil", "skipped", True, gated=False)
+            return
         info = subprocess.run(
             ["assetutil", "--info", str(car)], capture_output=True, text=True
         ).stdout
@@ -410,6 +449,7 @@ def verify_glass() -> None:
 
 
 def verify_web() -> None:
+
     # apple-touch-icon must be fully opaque. iOS composites a transparent one
     # against black, which puts a black ring around the tile.
     im = Image.open(WEB / "apple-touch-icon.png")
@@ -475,6 +515,10 @@ def verify_palette() -> None:
     SHIPPING master for the exact literal is a direct test that nothing has
     re-introduced an overlay.
     """
+    if not have("rsvg-convert"):
+        check("verify_palette", "needs rsvg-convert", "skipped", True, gated=False)
+        return
+
     for label, src in (
         ("flat source", DESIGN / "cubus-icon-flat.svg"),
         ("macOS master", ICONS / "icon.svg"),
@@ -533,6 +577,10 @@ def verify_palette() -> None:
 
 
 def verify_small_sizes() -> None:
+    if not have("rsvg-convert"):
+        check("verify_small_sizes", "needs rsvg-convert", "skipped", True, gated=False)
+        return
+
     for size in (16, 32, 64):
         out = REPO / f".verify-small-{size}.png"
         subprocess.run(
@@ -575,6 +623,123 @@ def verify_small_sizes() -> None:
             out.unlink(missing_ok=True)
 
 
+APPLE_ICONSET = (
+    REPO / "apps/desktop/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset"
+)
+ANDROID_RES = REPO / "apps/desktop/src-tauri/gen/android/app/src/main/res"
+
+
+def verify_ios() -> None:
+    """Every rung the catalogue declares, at its declared size, with NO alpha.
+
+    Driven from Contents.json rather than a list here, for the same reason the
+    build script is: Xcode owns which rungs exist. The alpha check is the one
+    that matters most — an iOS app icon with an alpha channel is rejected by App
+    Store validation, and before that it composites on black, so the failure is
+    a dark ring inside the mask rather than anything that looks like a mistake.
+    """
+    if not APPLE_ICONSET.is_dir():
+        check("ios: appiconset", "present", "no gen/apple", True, gated=False)
+        return
+    manifest = json.loads((APPLE_ICONSET / "Contents.json").read_text())
+    missing, wrong_size, with_alpha = [], [], []
+    for image in manifest["images"]:
+        name = image.get("filename")
+        if not name:
+            continue
+        want = round(float(image["size"].split("x")[0]) * float(image["scale"].rstrip("x")))
+        path = APPLE_ICONSET / name
+        if not path.exists():
+            missing.append(name)
+            continue
+        with Image.open(path) as im:
+            if im.width != want or im.height != want:
+                wrong_size.append(f"{name} {im.width}x{im.height}!={want}")
+            if im.mode in ("RGBA", "LA") or "transparency" in im.info:
+                with_alpha.append(name)
+    total = sum(1 for i in manifest["images"] if i.get("filename"))
+    check("ios: every rung present", f"{total} files", f"{total - len(missing)} present", not missing)
+    check("ios: each at its declared size", "all exact", ", ".join(wrong_size) or "all exact", not wrong_size)
+    check("ios: no alpha channel", "none", ", ".join(with_alpha) or "none", not with_alpha)
+    # Not the Tauri placeholder: that mark is cyan+amber on white, ours is on paper.
+    hero = APPLE_ICONSET / "AppIcon-512@2x.png"
+    if hero.exists():
+        with Image.open(hero) as im:
+            corner = im.convert("RGB").getpixel((4, 4))
+        check("ios: full-bleed on paper", "#F6F2E9 corner", "#%02X%02X%02X" % corner, corner == (246, 242, 233))
+
+
+def verify_android() -> None:
+    """The legacy bitmaps, the adaptive layers, and the wiring that reaches them.
+
+    The wiring is the part that was missing: Tauri's template ships the legacy
+    bitmaps and a pair of placeholder vector drawables but no mipmap-anydpi-v26
+    entry, so every Android 8+ launcher fell back to the legacy bitmap and the
+    layers were unreachable. A foreground that exists and is never drawn looks
+    exactly like one that is.
+    """
+    if not ANDROID_RES.is_dir():
+        check("android: res", "present", "no gen/android", True, gated=False)
+        return
+    legacy = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+    fore = {"mdpi": 108, "hdpi": 162, "xhdpi": 216, "xxhdpi": 324, "xxxhdpi": 432}
+    bad = []
+    for density, px in legacy.items():
+        for name in ("ic_launcher.png", "ic_launcher_round.png"):
+            path = ANDROID_RES / f"mipmap-{density}" / name
+            if not path.exists():
+                bad.append(f"{density}/{name} missing")
+                continue
+            with Image.open(path) as im:
+                # BOTH dimensions: a width-only check passes a stretched or truncated file,
+                # which is the shape a half-written raster actually takes.
+                if im.size != (px, px):
+                    bad.append(f"{density}/{name} {im.width}x{im.height}!={px}")
+                if not im.getbbox():
+                    bad.append(f"{density}/{name} is entirely blank")
+    check("android: legacy bitmaps", "5 densities x2, exact and not blank", ", ".join(bad) or "all exact", not bad)
+
+    bad = []
+    for density, px in fore.items():
+        path = ANDROID_RES / f"mipmap-{density}" / "ic_launcher_foreground.png"
+        if not path.exists():
+            bad.append(f"{density} missing")
+            continue
+        with Image.open(path) as im:
+            if im.size != (px, px):
+                bad.append(f"{density} {im.width}x{im.height}!={px}")
+        box = alpha_bbox(path)
+        if box is None:
+            # `if box:` silently passed a fully transparent layer, because an empty alpha
+            # bounding box is None — a foreground that draws NOTHING would have sailed
+            # through the geometry check by having no geometry to fault.
+            bad.append(f"{density} has no opaque pixels at all")
+        else:
+            # 66 of 108, matching the generator: 72dp is what the mask is guaranteed not to
+            # clip, but the logo keyline is 66dp because OEM mask shapes vary. Measured,
+            # because "it looked fine on my launcher" does not survive a different launcher.
+            margin = (px - px * 66 / 108) / 2
+            if box[0] < margin - 1 or box[1] < margin - 1 or box[2] > px - margin + 1 or box[3] > px - margin + 1:
+                bad.append(f"{density} mark {box} escapes the 66/108 keyline")
+    check("android: adaptive foreground", "5 densities, inside safe zone", ", ".join(bad) or "all inside", not bad)
+
+    anydpi = ANDROID_RES / "mipmap-anydpi-v26"
+    have = sorted(p.name for p in anydpi.glob("*.xml")) if anydpi.is_dir() else []
+    check(
+        "android: adaptive icon reachable",
+        "ic_launcher.xml, ic_launcher_round.xml",
+        ", ".join(have) or "none — layers unreachable",
+        have == ["ic_launcher.xml", "ic_launcher_round.xml"],
+    )
+    manifest = (ANDROID_RES.parent / "AndroidManifest.xml").read_text()
+    check(
+        "android: roundIcon declared",
+        "android:roundIcon",
+        "declared" if "android:roundIcon" in manifest else "absent",
+        "android:roundIcon" in manifest,
+    )
+
+
 def main() -> int:
     verify_gutter()
     verify_icns()
@@ -584,6 +749,8 @@ def main() -> int:
     verify_web()
     verify_palette()
     verify_small_sizes()
+    verify_ios()
+    verify_android()
 
     width = max(len(r[0]) for r in results)
     failures = 0

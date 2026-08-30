@@ -748,3 +748,56 @@ fn sharded_certification_partitions_the_search_exactly() {
         );
     }
 }
+
+/// The progress seam, which existed and reported nothing.
+///
+/// `prove` has taken a progress callback for as long as it has existed, and the only caller that
+/// matters — the desktop command — passed `&mut |_, _| {}`. So the one number a waiting person
+/// can use never left this crate. What the callback carries is a lower bound being established:
+/// contours are reported after they FAIL, so each call means "no solution this short exists",
+/// and the answer is at least one move longer.
+#[test]
+fn a_proof_reports_each_length_it_rules_out_as_it_goes() {
+    let t = tables();
+    // Chosen so the heuristic UNDERSTATES the answer: 9 against a true 11, so contours 9 and 10
+    // must both be exhausted before 11 succeeds. A fixture the heuristic gets exactly right
+    // (a six-move state is one) reports nothing at all and would prove nothing here — which the
+    // assertion below makes explicit rather than leaving to a silently empty vector.
+    let state = apply_alg(&SOLVED, "R U2 F L' D B2 R' U F2 L D'").expect("a legal alg");
+    let coords = Coords::from_cubie(&state);
+    let cancel = AtomicBool::new(false);
+
+    let mut ruled_out: Vec<u8> = Vec::new();
+    let mut nodes_seen: Vec<u64> = Vec::new();
+    let proof = prove(t, &coords, 20, &cancel, &mut |bound, nodes| {
+        ruled_out.push(bound);
+        nodes_seen.push(nodes);
+    })
+    .expect("a legal state proves within God's number");
+
+    let start_bound = t.heuristic(&coords).max(1);
+    assert!(
+        start_bound < proof.length,
+        "this fixture is solved at its own heuristic ({start_bound} = {}), so no contour fails \
+         and the test would pass while reporting nothing",
+        proof.length
+    );
+    // Exact, not merely non-empty: every length between the heuristic and the answer is
+    // exhausted, reported once, in order. Anything missing would be a lower bound the UI never
+    // heard about; anything extra would be a length claimed exhausted that was not.
+    let expected: Vec<u8> = (start_bound..proof.length).collect();
+    assert_eq!(
+        ruled_out, expected,
+        "every failed contour is reported once, in order, between the heuristic and the answer"
+    );
+    // The claim each event licenses: the answer is at least one more than the last ruled-out
+    // length. If that were ever false the UI would be showing a lower bound that is not one.
+    assert!(
+        ruled_out.iter().all(|&b| proof.length > b),
+        "every ruled-out length must be a real lower bound on the answer"
+    );
+    assert!(
+        nodes_seen.windows(2).all(|w| w[1] >= w[0]) && nodes_seen[0] > 0,
+        "the node count is cumulative and non-zero: {nodes_seen:?}"
+    );
+}

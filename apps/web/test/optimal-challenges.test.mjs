@@ -45,3 +45,104 @@ test('the validator refuses to run without the oracle — structural-only is not
   assert.throws(() => validateChallenges([{}], {}), /requires the cubejs oracle/);
   assert.throws(() => validateChallenges([{}]), /requires the cubejs oracle/);
 });
+
+// ---- the lookup the app actually uses ---------------------------------------------------------
+//
+// The library existed, was validated, and was wired to nothing: before this, `grep -rl
+// optimal-challenges apps/web` returned only the module and this file. What follows covers the
+// path that makes it worth shipping — a known state answered from data, with no search and no
+// native proof — and the one property that path must never lose: a minimality claim can only
+// come from entries that passed the validator.
+
+test('a known state answers from the library, and an unknown one does not', async () => {
+  const { indexChallenges, provenAnswer } = await import('../lib/optimal-challenges.js');
+  const entry = { facelets: 'U'.repeat(54), scramble: '', optimalLength: 3, optimalSolution: "R U R'" };
+  const index = indexChallenges([entry]);
+
+  assert.deepEqual(provenAnswer(index, entry.facelets),
+    { moves: 3, alg: "R U R'", setupAlg: '' }, 'the setup alg rides along, so neither search runs');
+  assert.equal(provenAnswer(index, 'D'.repeat(54)), null, 'an unlisted state is a miss, not a guess');
+});
+
+test('an empty library misses on everything rather than failing', async () => {
+  // A library that did not load costs performance, never correctness: every lookup misses and
+  // the app searches exactly as it always did. So the miss path must be total and quiet.
+  const { NO_CHALLENGES, provenAnswer } = await import('../lib/optimal-challenges.js');
+  assert.equal(provenAnswer(NO_CHALLENGES, 'U'.repeat(54)), null);
+  assert.equal(provenAnswer(null, 'U'.repeat(54)), null, 'no index at all is also just a miss');
+  assert.equal(provenAnswer(undefined, 'U'.repeat(54)), null);
+  // Object.freeze(new Map()) would NOT have given this: freezing a Map leaves set() working,
+  // so an "empty, frozen" index could quietly gain an entry nobody validated.
+  assert.throws(() => NO_CHALLENGES.set('x', 1), TypeError, 'nothing can populate it by accident');
+  assert.throws(() => { NO_CHALLENGES.get = () => ({ optimalLength: 1 }); }, TypeError,
+    'and nothing can replace its lookup with one that answers');
+});
+
+test('the whole load path runs, and a library that will not validate yields no index at all', async () => {
+  // loadChallenges is the function the app calls and the one nothing exercised, because node's
+  // fetch cannot read a file: URL. With the fetch injected it is drivable end to end — and the
+  // case that matters is the failure: a bad library must throw, so app.js drops the whole index
+  // rather than serving a claim from entries nobody checked.
+  const Cube = (await import(vendored)).default;
+  const { loadChallenges } = await import('../lib/optimal-challenges.js');
+  const { readFileSync } = await import('node:fs');
+  const real = JSON.parse(readFileSync(data, 'utf8'));
+
+  const serve = (body, ok = true) => async () => ({ ok, status: ok ? 200 : 404, json: async () => body });
+
+  const loaded = await loadChallenges({ Cube, fetch: serve(real) });
+  assert.equal(loaded.length, real.length, 'the shipped library loads through the real path');
+
+  // One digit changed. Structurally perfect, and a lie.
+  const tampered = JSON.parse(JSON.stringify(real));
+  tampered[0].optimalLength += 1;
+  await assert.rejects(() => loadChallenges({ Cube, fetch: serve(tampered) }), /its algs disagree/);
+
+  // And a state whose "minimal" solution does not solve it at all.
+  const wrong = JSON.parse(JSON.stringify(real));
+  wrong[0].optimalSolution = wrong[0].optimalSolution.replace(/^(\S+)/, "$1'");
+  await assert.rejects(() => loadChallenges({ Cube, fetch: serve(wrong) }), /optimal-challenges/);
+
+  await assert.rejects(() => loadChallenges({ Cube, fetch: serve(real, false) }), /did not load \(404\)/);
+});
+
+test('a library that contradicts itself is refused, not silently deduplicated', async () => {
+  // `new Map(pairs)` resolves a duplicate key by last-write-wins, so two entries for one state
+  // — each internally consistent, disagreeing on the minimum — would have produced a claim
+  // chosen by array order. There is no right answer to pick between them; there is only
+  // refusing the library.
+  const { indexChallenges } = await import('../lib/optimal-challenges.js');
+  const state = 'U'.repeat(54);
+  const a = { facelets: state, scramble: '', optimalLength: 3, optimalSolution: "R U R'" };
+  const b = { facelets: state, scramble: '', optimalLength: 4, optimalSolution: "R U R' U" };
+  assert.throws(() => indexChallenges([a, b]), /two entries claim the same state/);
+  assert.doesNotThrow(() => indexChallenges([a]), 'a library without duplicates still indexes');
+});
+
+test('every way the library can fail leaves through the same door', async () => {
+  // The bug this closes was in the CALL SITE, not the validator: `.then(f, r)` does not route
+  // a throw from `f` to `r`, so a duplicate-key refusal — thrown by indexChallenges inside the
+  // fulfillment handler — became an unhandled rejection while the app searched on, silently.
+  // loadIndex exists so no call site has to get that idiom right.
+  const Cube = (await import(vendored)).default;
+  const { loadIndex, NO_CHALLENGES } = await import('../lib/optimal-challenges.js');
+  const { readFileSync } = await import('node:fs');
+  const real = JSON.parse(readFileSync(data, 'utf8'));
+  const serve = (body, ok = true) => async () => ({ ok, status: ok ? 200 : 404, json: async () => body });
+
+  const good = await loadIndex({ Cube, fetch: serve(real) });
+  assert.equal(good.size, real.length, 'a good library still indexes');
+
+  // Failure one: it does not load.
+  let seen = null;
+  const gone = await loadIndex({ Cube, fetch: serve(real, false), onError: (e) => { seen = e; } });
+  assert.equal(gone, NO_CHALLENGES, 'a library that will not load yields no index');
+  assert.match(String(seen), /did not load \(404\)/, 'and says why');
+
+  // Failure two: it loads and contradicts itself. This is the one that used to escape.
+  seen = null;
+  const dupes = [real[0], { ...real[0] }];
+  const bad = await loadIndex({ Cube, fetch: serve(dupes), onError: (e) => { seen = e; } });
+  assert.equal(bad, NO_CHALLENGES, 'a self-contradicting library yields no index either');
+  assert.match(String(seen), /two entries claim the same state/, 'and reaches the caller rather than the void');
+});

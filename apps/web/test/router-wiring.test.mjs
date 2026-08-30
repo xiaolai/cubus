@@ -513,7 +513,10 @@ const chord = (over = {}) =>
   });
 const navIds = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
 // The toolbar is one flat row of tabs, so there are no group headings to name.
-// The tab row is icons only (2026-08-30), so a tab's name is its aria-label rather than drawn
+// A tab's name is read from its aria-label, not from the drawn span: the word is drawn in the
+// portrait bar and undrawn in the landscape row, and what a tab is CALLED must not depend on
+// which composition happens to be on screen. It is also the stronger assertion — it checks
+// what is announced, and a row that had silently lost its names would still look right.
 // text. Reading the accessible name is also the stronger check: it is what a screen reader
 // announces, and an icon-only row that lost its names would still look right.
 const navLabels = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((e) => e.getAttribute('aria-label'));

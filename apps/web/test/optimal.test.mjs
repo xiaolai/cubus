@@ -149,20 +149,67 @@ const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s
  *  actually reach a screen rather than at identifiers or module paths. */
 const stringLiterals = (src) => [...src.matchAll(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|\`(?:[^\`\\]|\\.)*\`/g)].map((m) => m[0]);
 
-test('the app can only say "proved" inside the capability-gated block', () => {
+test('the app can say "proved" from exactly three places, and nowhere else', () => {
+  // Three sanctioned regions, in two categories — and the categories are what keep this test
+  // meaningful as the feature grows, rather than accumulating one exception per string.
+  //
+  // A CLAIM about a particular cube. Exactly two ways to hold one, and both are gated on
+  // actually holding it:
+  //   1. the native prover's capability-gated block — a proof computed here, oracle-checked
+  //      in optimal.js before the word can be spoken;
+  //   2. provenMinimumLabel — the SHIPPED library, whose entries were proved offline by
+  //      crates/optimal-solver and re-checked against the cubejs oracle at load.
+  // NAMING the feature, which asserts nothing:
+  //   3. PROVE_COPY — the button that offers to start a proof, and the toggle that decides
+  //      whether that button is drawn. Named rather than reworded to slip under this check:
+  //      "Offer to prove a solution is the shortest possible" would have been the same
+  //      sentence chosen for the regex rather than for the reader.
+  // A fourth region, or an unguarded use of the Settings copy, still fails here.
   const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
   const gated = app.match(/if \(proveBtn && optimalCapability\(\)[\s\S]*?\n      \}/)?.[0] ?? '';
   assert.ok(gated, 'the gated prove block must exist');
+  const label = app.match(/const provenMinimumLabel = [^\n]*\n/)?.[0] ?? '';
+  assert.ok(label, 'the library\'s one sanctioned sentence must exist, and be named');
+  const setting = app.match(/const PROVE_COPY = \{[\s\S]*?\n\};/)?.[0] ?? '';
+  assert.ok(setting, 'the feature\'s own wording must exist, and be named');
+
   const claims = (text) =>
     stringLiterals(stripComments(text)).filter((lit) => /proved|the minimum/i.test(lit)).length;
-  assert.ok(claims(gated) >= 1, 'the gated block is where the proof wording lives');
-  // Outside the gate, no string or template literal may carry the wording, in any casing —
+  assert.ok(claims(gated) >= 1, 'the gated block is where the native proof wording lives');
+  assert.equal(claims(label), 1, 'the library\'s claim is one sentence, in one place');
+  assert.ok(claims(setting) >= 1, 'PROVE_COPY is where the feature names itself');
+  // Everywhere else, no string or template literal may carry the wording, in any casing —
   // "Proved" in a template is exactly as much a claim as "proved" in a string.
   assert.equal(
-    claims(app.replace(gated, '')),
+    claims(app.replace(gated, '').replace(label, '').replace(setting, '')),
     0,
-    'proof wording outside the native gate could reach the browser build',
+    'proof wording outside the three sanctioned sources could reach a build that cannot back it',
   );
+
+  // The Settings row is drawn only where the affordance can exist. A toggle for a button that
+  // can never appear is a promise the build cannot keep, and it would be the same failure the
+  // gate on the button itself exists to prevent.
+  const settingsRow = stripComments(app).match(/\$\{optimalCapability\(\) \? `[\s\S]*?` : ''\}/)?.[0] ?? '';
+  assert.ok(settingsRow, 'the Settings row must sit behind optimalCapability()');
+  const uses = [...stripComments(app).matchAll(/PROVE_COPY\.setting/g)].length;
+  assert.ok(uses > 0, 'the Settings wording must actually be used');
+  assert.equal(
+    [...settingsRow.matchAll(/PROVE_COPY\.setting/g)].length, uses,
+    'every use of the Settings wording must be inside the capability-gated row',
+  );
+  // The button label is deliberately NOT gated the same way: it is the markup's own resting
+  // text, and the point of naming it was that its three states could no longer drift apart.
+  assert.ok(
+    [...stripComments(app).matchAll(/PROVE_COPY\.button/g)].length >= 3,
+    'the button label must be the one used by the markup, the rewiring and the stopped state',
+  );
+
+  // And the second source stays behind its guard. A call to it from anywhere else would put a
+  // minimality claim on a state nobody proved — the exact failure the naming exists to expose.
+  const calls = [...stripComments(app).matchAll(/provenMinimumLabel\(/g)];
+  assert.equal(calls.length, 1, 'the library sentence is used exactly once');
+  const line = stripComments(app).slice(0, calls[0].index).split('\n').pop();
+  assert.match(line, /provenHere \?/, 'the library sentence must sit behind the proven-state guard');
 });
 
 test('every prove call carries the two-phase answer as its upper bound', () => {

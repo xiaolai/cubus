@@ -14,10 +14,18 @@
 //     median descent is ~30 ms but the worst of 40 was 0.65 s, and nobody should watch a
 //     spinner for that when a 21-move answer was available immediately.
 //   * **The tiers are not all the same kind of promise.** God's number is 20, so a <= 20
-//     solution always exists. <= 18 does not: roughly 3.5% of positions are optimally 19 or 20,
-//     and for those 18 moves is impossible rather than expensive. A tier that cannot always be
-//     met must say so rather than quietly hand back something longer, which is why `met` is
-//     part of every result and never inferred from the move count alone.
+//     solution always exists — and this module now KEEPS that promise rather than aiming at it:
+//     a target at or above 20 that runs out of budget asks again with more, because the engine
+//     is complete and only the budget can fail (see GODS_NUMBER below). <= 18 is a different
+//     kind of thing: roughly 3.5% of positions are optimally 19 or 20, and for those 18 moves
+//     is impossible rather than expensive. A tier that cannot always be met must say so rather
+//     than quietly hand back something longer, which is why `met` is part of every result and
+//     never inferred from the move count alone.
+//   * **A missed target is never an impossibility.** Two-phase cannot prove a minimum, so it
+//     cannot prove one absent either (section 4 of solver-move-count.md). `met: false` says
+//     this search did not get there — nothing about what exists. The distinction is the whole
+//     reason `stopped` is reported beside `met` instead of being folded into it, and it is the
+//     one thing the wording at the display boundary must not blur.
 //   * **The target is a ceiling, not a stopping place.** A cube a few turns from solved has a
 //     few-move solution, and handing it twenty moves because twenty was the promise is
 //     indefensible — the day this was noticed, a 7-turn cube was answered with 20. So once the
@@ -58,6 +66,23 @@ export const DEFAULT_PROBE_BUDGET = 50_000_000;
  *  enough that a hard cube's one failed ask costs ~40 ms; large enough that an easy cube — for
  *  which every rung down to its real answer is cheap by definition — descends all the way. */
 export const BONUS_BUDGET = 2_000_000;
+
+/** God's number in the half-turn metric: every one of the 43,252,003,274,489,856,000 legal
+ *  positions has a solution of 20 moves or fewer (Rokicki, Kociemba, Davidson and Dethridge,
+ *  2010). A target at or above it is therefore a PROMISE this app can always keep, and the
+ *  engine can always keep it: solvePattern deepens phase-1 to solLen - 1, so at d1 = L the
+ *  phase-2 tail is empty and a length-L solution is itself inside the enumeration — with
+ *  canonical pruning already proved to delete no optimal path (optimal-solver-plan.md section
+ *  7). What that leaves is a budget question, never an existence one. */
+export const GODS_NUMBER = 20;
+
+/** How many times a promised target may double its budget before the engine is declared broken.
+ *  Eight doublings is 256x the shipped budget, against a measured worst of 447 ms and 0 misses
+ *  in 30 random states at the <= 20 tier — reaching even the second is already extraordinary.
+ *  The cap exists so a broken engine fails LOUDLY instead of looping forever; there is
+ *  deliberately no "give up and report it impossible" branch behind it, because that is the
+ *  false claim this whole mechanism exists to make unreachable. */
+export const MAX_PROMISE_ESCALATIONS = 8;
 
 export function tierByName(name) {
   const tier = TIERS.find((t) => t.name === name);
@@ -153,6 +178,13 @@ export async function* refine(facelets, {
   }
   yield snapshot(null);
 
+  // A target at or above God's number is owed, not merely aimed at. Below it, exhaustion is an
+  // honest end; at or above it, exhaustion only ever means the budget was too small, so the ask
+  // repeats with twice as much rather than ending on a promise the app broke.
+  const promised = target !== null && target >= GODS_NUMBER;
+  let budget = probeBudget;
+  let escalations = 0;
+
   while (true) {
     if (signal?.aborted) {
       yield snapshot(endReason(STOPPED.CANCELLED));
@@ -160,8 +192,39 @@ export async function* refine(facelets, {
     }
     // Ask for strictly shorter than what we have. One move at a time: each answer is a real
     // improvement worth showing, and skipping ahead would throw away the cheap rungs.
-    const shorter = await solve(facelets, { solLen: moves, probeMax: met() ? bonusBudget : probeBudget });
+    const shorter = await solve(facelets, { solLen: moves, probeMax: met() ? bonusBudget : budget });
     if (shorter === null) {
+      if (promised && !met()) {
+        // An abort that lands on this attempt is a person leaving, not a failure. Checked HERE
+        // as well as at the top of the loop, because the cap below throws and would otherwise
+        // report the last cancelled attempt as a broken engine.
+        if (signal?.aborted) {
+          yield snapshot(endReason(STOPPED.CANCELLED));
+          return;
+        }
+        // Not "impossible" — not yet. Escalate and ask again.
+        if (escalations >= MAX_PROMISE_ESCALATIONS) {
+          // Says what happened, not what it means. The engine IS complete, so on the shipped
+          // budget this can only be a bug — but a caller may pass any budget it likes, and
+          // `probeBudget: 1` exhausting after 256 nodes accuses the engine of something the
+          // caller did. State the work actually spent and let the reader draw the conclusion.
+          throw new Error(
+            `solver did not reach ${target} moves within ${escalations} escalations, up to ` +
+              `${budget} nodes per attempt. A solution of ${GODS_NUMBER} or fewer always exists, ` +
+              'so either the budget was far too small or the engine is broken',
+          );
+        }
+        // A budget that cannot be doubled without leaving the safe-integer range would be
+        // rejected by the engine boundary as malformed — a confusing failure for a caller who
+        // only asked for a very large budget. Stop escalating and report honestly instead.
+        if (!Number.isSafeInteger(budget * 2)) {
+          yield snapshot(endReason(STOPPED.EXHAUSTED));
+          return;
+        }
+        escalations++;
+        budget *= 2;
+        continue;
+      }
       // Out of budget, or out of two-phase solutions. Either way the answer we have stands,
       // and if it does not meet the target we say so rather than presenting it as if it did.
       yield snapshot(endReason(STOPPED.EXHAUSTED));
