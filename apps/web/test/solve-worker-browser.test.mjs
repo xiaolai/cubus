@@ -12,6 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
@@ -23,7 +24,7 @@ let proc;
 let browser;
 
 before(async () => {
-  proc = spawn(process.execPath, [SERVE], { env: { ...process.env, PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'pipe'] });
+  proc = spawn(process.execPath, [SERVE], { env: { ...process.env, PORT: String(PORT), CUBUS_LIVE_RELOAD: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('serve.mjs did not start within 5s')), 5000);
     proc.stdout.on('data', (d) => { if (d.toString().includes(`:${PORT}`)) { clearTimeout(timeout); resolve(); } });
@@ -158,4 +159,280 @@ test('the walk seeks in a real engine — a chip press lands the counter on its 
   assert.equal(out.first, `0 / ${out.total}`, 'a fresh walk starts at zero');
   assert.equal(out.after, `${out.total} / ${out.total}`,
     'pressing the last chip must land the transport on the last move');
+});
+
+test('a state in the proven library is answered from data — no search, no proof offered', async () => {
+  // The point of shipping the library. `Cube.prototype.solve` is the only Kociemba search this
+  // thread can run (the engine's own lives in the worker, behind its own module instance), so
+  // counting calls to it is counting exactly the work a user would have waited for. A proved
+  // state must cost zero of them: deriveCube takes its setup alg from the entry and solve()
+  // takes the solution, both already checked against the oracle at load.
+  const entry = JSON.parse(
+    readFileSync(new URL('../lib/data/optimal-challenges.json', import.meta.url), 'utf8'),
+  )[0];
+
+  const out = await inBrowser(async (known) => {
+    const app = await import('/lib/app.js');
+    const Cube = (await import('/vendor/cubejs.js')).default;
+    // Wait for the library to be indexed — it loads with the solver, and a lookup before that
+    // would legitimately miss and search, which is not what this test is about.
+    const ready = async () => {
+      for (let i = 0; i < 100; i++) {
+        if (app.state.cube && document.querySelector('#stage')) return true;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return false;
+    };
+    await ready();
+    await new Promise((r) => setTimeout(r, 1500));
+
+    let searches = 0;
+    const real = Cube.prototype.solve;
+    Cube.prototype.solve = function (...a) { searches += 1; return real.apply(this, a); };
+    try {
+      const c = app.state.cube;
+      c.facelets = known.facelets;
+      c.solution = ''; c.crossChecked = false; c.solveResult = null;
+      c.setupAlg = ''; c.derived = false;
+      window.cubusGo('home');
+      for (let i = 0; i < 120; i++) {
+        if (document.querySelectorAll('.chip-m').length > 0) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const prove = document.querySelector('#proveBtn');
+      return {
+        searches,
+        chips: document.querySelectorAll('.chip-m').length,
+        status: document.querySelector('#moveCount')?.textContent ?? '',
+        solution: c.solution,
+        proveOffered: Boolean(prove) && prove.hidden === false,
+      };
+    } finally {
+      Cube.prototype.solve = real;
+    }
+  }, entry);
+
+  assert.equal(out.searches, 0, `a proved state cost ${out.searches} Kociemba search(es) — the library exists so it costs none`);
+  assert.equal(out.solution, entry.optimalSolution, 'the shown solution is the proved-minimal one, move for move');
+  assert.equal(out.chips, entry.optimalLength, 'and the walk is exactly that many moves');
+  assert.match(out.status, /proved the minimum/, 'a proved state says so');
+  assert.equal(out.proveOffered, false, 'nothing left to prove, so nothing is offered');
+});
+
+/** The app, booted with a FAKE native prover injected before any script runs.
+ *  `optimal_prove` hangs until the test releases it, which is what a deep cube does for hours. */
+async function withFakeProver(run, { prove = true } = {}) {
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await page.addInitScript((prove) => {
+    // The affordance is opt-in from Settings and off by default, so a test about the affordance
+    // has to ask for it — which is itself the claim the pair of tests below pins.
+    if (prove) localStorage.setItem('cubusSettings', JSON.stringify({ proveMinimum: true }));
+    window.__calls = [];
+    window.__listeners = {};
+    window.__emit = (name, payload) => (window.__listeners[name] ?? []).forEach((cb) => cb({ payload }));
+    window.__TAURI__ = {
+      core: {
+        invoke: (cmd) => {
+          window.__calls.push(cmd);
+          if (cmd === 'optimal_status') return Promise.resolve('ready');
+          if (cmd === 'optimal_prepare') return Promise.resolve('ready');
+          if (cmd === 'optimal_prove') {
+            return new Promise((_res, rej) => { window.__failProve = (why) => rej(new Error(why)); });
+          }
+          if (cmd === 'optimal_cancel') { window.__failProve?.('cancelled'); return Promise.resolve(true); }
+          return Promise.resolve(null);
+        },
+      },
+      event: {
+        listen: (name, cb) => {
+          (window.__listeners[name] ??= []).push(cb);
+          return Promise.resolve(() => {});
+        },
+      },
+      // Enough of the rest that the shell wires up without complaining.
+      window: { getCurrentWindow: () => ({ setTitle() {}, minimize() {}, close() {} }) },
+      opener: { openUrl: () => {} },
+    };
+  }, prove);
+  await page.goto(`${BASE}/index.html`);
+  try {
+    return await run(page);
+  } finally {
+    await page.close();
+    assert.deepEqual(errors, [], 'the page logged an uncaught error');
+  }
+}
+
+/** Put a scrambled (NOT library) cube on the cube screen and wait for its walk. */
+const walkAScrambledCube = async (page) => {
+  await page.waitForFunction(() => Boolean(window.cubusGo), null, { timeout: 20_000 });
+  await page.evaluate(async () => {
+    const app = await import('/lib/app.js');
+    const Cube = (await import('/vendor/cubejs.js')).default;
+    const scrambled = new Cube();
+    scrambled.move("R U2 F L' D B2 R' U F2 L D'"); // eleven moves, and not in the proven library
+    const c = app.state.cube;
+    c.facelets = scrambled.asString();
+    c.solution = ''; c.crossChecked = false; c.solveResult = null; c.setupAlg = ''; c.derived = false;
+    window.cubusGo('home');
+  });
+  await page.waitForSelector('#proveBtn:not([hidden])', { timeout: 30_000 });
+};
+
+test('a proof that answers quickly never shows a waiting state', async () => {
+  // The waiting state is EARNED, not announced. Proof cost tracks depth: a shallow cube proves
+  // in milliseconds, so a person who presses prove on one must see nothing at all happen except
+  // the answer. A fast refusal exercises the same timer as a fast success.
+  await withFakeProver(async (page) => {
+    await walkAScrambledCube(page);
+    const seen = await page.evaluate(async () => {
+      const btn = document.querySelector('#proveBtn');
+      const texts = [];
+      new MutationObserver(() => texts.push(btn.textContent)).observe(btn, { childList: true, characterData: true, subtree: true });
+      // Answer immediately, before the reveal timer can fire.
+      const patch = setInterval(() => window.__failProve?.('no tables here'), 5);
+      btn.click();
+      await new Promise((r) => setTimeout(r, 900));
+      clearInterval(patch);
+      return { texts, cancelHidden: document.querySelector('#proveCancel').hidden, text: btn.textContent };
+    });
+    assert.ok(
+      !seen.texts.some((t) => /proving…|at least/.test(t)),
+      `a fast proof flashed a waiting state: ${JSON.stringify(seen.texts)}`,
+    );
+    assert.equal(seen.cancelHidden, true, 'and offered no stop, because there was nothing to stop');
+  });
+});
+
+test('a proof that runs long says what it has ruled out, and can be stopped', async () => {
+  await withFakeProver(async (page) => {
+    await walkAScrambledCube(page);
+    const out = await page.evaluate(async () => {
+      const btn = document.querySelector('#proveBtn');
+      const cancel = document.querySelector('#proveCancel');
+      btn.click();
+      await new Promise((r) => setTimeout(r, 700)); // past PROOF_WAIT_VISIBLE_MS
+      const waiting = { text: btn.textContent, cancelHidden: cancel.hidden };
+
+      // The native side reports an exhausted contour: no solution of 16 moves exists, so the
+      // answer is at least 17. That is a fact, not a spinner.
+      window.__emit('optimal-proof-progress', { ruled_out: 16, nodes: 1234 });
+      await new Promise((r) => setTimeout(r, 50));
+      const bounded = btn.textContent;
+
+      cancel.click();
+      await new Promise((r) => setTimeout(r, 300));
+      return {
+        waiting,
+        bounded,
+        after: btn.textContent,
+        afterCancelHidden: cancel.hidden,
+        calls: window.__calls.slice(),
+      };
+    });
+
+    assert.match(out.waiting.text, /proving… \d+:\d\d/, 'a long proof shows it is running, and for how long');
+    assert.equal(out.waiting.cancelHidden, false, 'and offers a stop');
+    assert.match(out.bounded, /at least 17 · \d+:\d\d/, 'a ruled-out contour becomes a lower bound on screen');
+    assert.ok(out.calls.includes('optimal_cancel'), 'the stop actually reaches the native side');
+    assert.equal(out.after, 'prove the minimum', 'stopping is a choice, so the affordance comes back');
+    assert.equal(out.afterCancelHidden, true, 'and the stop goes away with the wait');
+  });
+});
+
+test('a handheld asks for the camera that can see the cube; a desktop asks for nothing', async () => {
+  // getUserMedia with no facing constraint hands over the platform's default, and on a phone
+  // that is the front camera — a cube scanner pointed at the user's face. The hint is therefore
+  // platform-shaped, not taste: a desktop is deliberately left asking for nothing, because there
+  // a facing mode names a different physical machine rather than a different lens.
+  const facingFor = async (platform) => {
+    const page = await browser.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    try {
+      await page.goto(`${BASE}/?platform=${platform}#/scan`);
+      await page.waitForSelector('ai-scan-panel', { timeout: 30_000 });
+      const seen = await page.evaluate(() => ({
+        facing: document.querySelector('ai-scan-panel')?.getAttribute('facing'),
+        platform: document.documentElement.dataset.platform,
+      }));
+      assert.equal(seen.platform, platform, 'the platform pin did not take');
+      assert.deepEqual(errors, [], 'the page logged an uncaught error');
+      return seen.facing;
+    } finally {
+      await page.close();
+    }
+  };
+
+  for (const handheld of ['ios', 'android']) {
+    assert.equal(await facingFor(handheld), 'environment',
+      `${handheld} must ask for the rear camera, or the scanner opens on the user's face`);
+  }
+  for (const desktop of ['macos', 'windows', 'linux']) {
+    assert.equal(await facingFor(desktop), null,
+      `${desktop} must express no preference — a facing mode there names another machine`);
+  }
+});
+
+test('the prove affordance is off until Settings asks for it', async () => {
+  // Proving is minutes to hours on a typical cube, so it is not something to put in front of a
+  // beginner who did not ask. Default off, and the same walk that draws it when the setting is
+  // on must draw nothing when it is not — the native side being present is not enough.
+  await withFakeProver(async (page) => {
+    await page.waitForFunction(() => Boolean(window.cubusGo), null, { timeout: 20_000 });
+    await page.evaluate(async () => {
+      const app = await import('/lib/app.js');
+      const Cube = (await import('/vendor/cubejs.js')).default;
+      const scrambled = new Cube();
+      scrambled.move("R U2 F L' D B2 R' U F2 L D'");
+      const c = app.state.cube;
+      c.facelets = scrambled.asString();
+      c.solution = ''; c.crossChecked = false; c.solveResult = null; c.setupAlg = ''; c.derived = false;
+      window.cubusGo('home');
+    });
+    // Wait for the walk itself, so this is "the chips are there and the button is not" rather
+    // than "nothing has rendered yet", which would pass against any code at all.
+    await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null, { timeout: 30_000 });
+    const seen = await page.evaluate(() => {
+      const btn = document.querySelector('#proveBtn');
+      return { exists: Boolean(btn), hidden: btn?.hidden, stored: localStorage.getItem('cubusSettings') };
+    });
+    assert.equal(seen.exists, true, 'the button is in the DOM either way — it is drawn or not by its hidden flag');
+    assert.equal(seen.hidden, true, 'a fresh install must not offer a proof that can run for hours');
+    // Not "nothing was stored": boot legitimately writes settings (the nav-defaults migration).
+    // The claim is that OFF is what a fresh install gets without anyone choosing it.
+    assert.notEqual(seen.stored, null, 'boot writes settings, so this reads what it wrote');
+    assert.ok(!JSON.parse(seen.stored).proveMinimum, 'a fresh install must not have opted itself in');
+  }, { prove: false });
+});
+
+test('the move count sits at the right edge, clear of the prove button', async () => {
+  // The count is the heading's answer and belongs opposite it. With the auto margin on the
+  // button instead, the header's space-between stranded the number midway across the card.
+  await withFakeProver(async (page) => {
+    await walkAScrambledCube(page);
+    const box = await page.evaluate(() => {
+      const head = document.querySelector('#solLabel').parentElement;
+      const r = (el) => { const b = el.getBoundingClientRect(); return { left: b.left, right: b.right }; };
+      const cs = getComputedStyle(head);
+      return {
+        head: r(head),
+        headPadRight: Number.parseFloat(cs.paddingRight),
+        label: r(document.querySelector('#solLabel')),
+        count: r(document.querySelector('#moveCount')),
+        prove: r(document.querySelector('#proveBtn')),
+      };
+    });
+    // The count is on the right half, not stranded beside the heading.
+    assert.ok(box.count.left > box.label.right + 20,
+      `the count starts ${Math.round(box.count.left - box.label.right)}px after the heading — it is not right-aligned`);
+    // A real gap between the number and the pill, not a collision and not a chasm.
+    const gap = box.prove.left - box.count.right;
+    assert.ok(gap >= 8 && gap <= 24, `the gap between the count and the prove button is ${Math.round(gap)}px`);
+    // And the pair ends at the card's right edge.
+    assert.ok(box.head.right - box.prove.right <= box.headPadRight + 1,
+      'the prove button does not reach the card\'s right edge');
+  });
 });

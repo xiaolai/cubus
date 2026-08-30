@@ -31,12 +31,31 @@ test('a module without setBounds is refused rather than silently unbounded', () 
   assert.throws(() => createSolver(null), TypeError);
 });
 
+/**
+ * Ask, and escalate on a refusal — the same rule solve-target applies to a promised target, and
+ * for the same reason: God's number is 20, so a solution under either bound tested here always
+ * EXISTS, and null can only ever mean the budget was too small. Asserting non-null at one fixed
+ * budget was therefore a coin toss with good odds, and it came up tails on 2026-08-30 (`no
+ * solution under 21 for LBFFUDBLL…`) after passing for as long as it had existed. A rare
+ * failure is still a wrong claim about the engine, and raising the budget until it stops
+ * happening would only lengthen the odds.
+ */
+function solveOrEscalate(facelets, solLen) {
+  let probeMax = 50_000_000;
+  for (let attempt = 0; attempt <= 8; attempt++) {
+    const alg = solve(facelets, { solLen, probeMax });
+    if (alg !== null) return { alg, attempt };
+    probeMax *= 2;
+  }
+  return { alg: null, attempt: 9 };
+}
+
 test('asking for a length actually bounds the answer', () => {
   for (let i = 0; i < 8; i++) {
     const facelets = Cube.random().asString();
     for (const solLen of [LOOSEST_BOUND, 21]) {
-      const alg = solve(facelets, { solLen, probeMax: 50_000_000 });
-      assert.ok(alg, `no solution under ${solLen} for ${facelets}`);
+      const { alg } = solveOrEscalate(facelets, solLen);
+      assert.ok(alg, `no solution under ${solLen} for ${facelets}, even at 256x the budget`);
       assert.ok(movesIn(alg) < solLen, `asked for < ${solLen}, got ${movesIn(alg)}`);
       // cubejs is the oracle, exactly as it is for the two-phase path in app.js.
       const oracle = Cube.fromString(facelets);

@@ -54,6 +54,25 @@ jobs:
       - name: cubus-web — test
         run: pnpm --filter cubus-web test
 
+      # The icons had no gate at all, which is why the iOS and Android projects carried Tauri's
+      # placeholder mark from the day the mobile shells landed until someone looked at a phone.
+      # Every check that needs an Apple-only tool (sips, assetutil, ictool) reports as skipped
+      # here rather than failing the job; what still GATES on Linux is the whole mobile set —
+      # every rung the iOS catalogue declares, at its declared size, with no alpha channel, and
+      # the Android layers plus the anydpi wiring that makes them reachable at all.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: icons — the shipped rasters are the ones the sources produce
+        run: |
+          # librsvg, not just Pillow: the .ico round-trip decodes every member back and
+          # compares it against a fresh render of the same source, which needs a renderer.
+          # Without it the verifier raised before reporting a single gated check — and the
+          # skip path is only a floor, not a substitute for actually running the check.
+          sudo apt-get update -qq && sudo apt-get install -y -qq librsvg2-bin
+          pip install --quiet pillow
+          python scripts/verify-icons.py
+
   rust:
     name: Rust (fmt · clippy · check)
     runs-on: ubuntu-latest
