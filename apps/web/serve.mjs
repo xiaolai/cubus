@@ -56,10 +56,28 @@ function broadcastReload() {
   }
 }
 
+// Live-reload is for a human with an editor open, and it is actively hostile to a test.
+//
+// The watcher is recursive over the whole web directory, so ANY write under it — a save, a
+// rebuilt bundle, a scratch file someone drops in and deletes — pushes location.reload() to
+// every open page. In a browser test that lands mid-evaluate and surfaces as "Execution
+// context was destroyed, most likely because of a navigation", attributed to whichever test
+// happened to be running rather than to the write. Measured on 2026-08-30: one scratch file
+// created and deleted in apps/web while the suite ran failed three unrelated tests across two
+// files, and a different three on the next run.
+//
+// So it is off unless asked for. `pnpm dev` asks (it wants exactly this); every test spawn
+// sets CUBUS_LIVE_RELOAD=0 and gets a server that cannot pull the page out from under it.
+// Off means BOTH halves off: no watcher, and no snippet in the HTML, so a page served this way
+// never even opens the EventSource.
+const LIVE_RELOAD = process.env.CUBUS_LIVE_RELOAD !== '0';
+
 // A single save often emits several fs events; coalesce a burst into one reload, and
 // fire only after the burst settles so we never reload mid-write of a rebuilt bundle.
 let debounce = null;
-try {
+if (!LIVE_RELOAD) {
+  console.log('live-reload off (CUBUS_LIVE_RELOAD=0)');
+} else try {
   watch(ROOT, { recursive: true }, (_event, filename) => {
     if (filename?.includes('node_modules')) return;
     if (debounce) clearTimeout(debounce);
@@ -130,9 +148,13 @@ const server = createServer(async (req, res) => {
     const headers = { 'content-type': MIME[ext] ?? 'application/octet-stream', 'cache-control': 'no-store' };
 
     if (ext === '.html') {
-      // Inject the live-reload client just before </body> (or append if there is none).
+      // Inject the live-reload client just before </body> (or append if there is none) — unless
+      // live-reload is off, in which case the page must not even open the EventSource: a client
+      // that is merely never pushed to is one broadcastReload away from a reload nobody wanted.
       let html = await readFile(target, 'utf8');
-      html = html.includes('</body>') ? html.replace('</body>', `${RELOAD_SNIPPET}</body>`) : html + RELOAD_SNIPPET;
+      if (LIVE_RELOAD) {
+        html = html.includes('</body>') ? html.replace('</body>', `${RELOAD_SNIPPET}</body>`) : html + RELOAD_SNIPPET;
+      }
       res.writeHead(200, headers);
       res.end(html);
       return;
