@@ -20,6 +20,9 @@ const TREE = {
   'apps/desktop/src-tauri/tauri.conf.json': `{\n  "productName": "cubus",\n  "version": "0.4.2",\n  "plugins": {\n    "updater": {\n      "version": "1.0.0"\n    }\n  }\n}\n`,
   'apps/desktop/src-tauri/Cargo.toml': `[package]\nname = "cubus-desktop"\nversion = "0.4.2"\nedition = "2021"\n\n[dependencies]\ntauri = { version = "2", features = [] }\nlog = "0.4"\n`,
   'Cargo.lock': `[[package]]\nname = "cube-vision"\nversion = "0.1.0"\n\n[[package]]\nname = "cubus-desktop"\nversion = "0.4.2"\ndependencies = [\n "log",\n]\n\n[[package]]\nname = "log"\nversion = "0.4.22"\n`,
+  // The only file carrying TWO sites. Its decoy is the deployment target, which is a version
+  // number on an adjacent line and must not move.
+  'apps/desktop/src-tauri/gen/apple/project.yml': `options:\n  deploymentTarget:\n    iOS: 16.0\ntargets:\n  cubus-desktop_iOS:\n    info:\n      properties:\n        CFBundleShortVersionString: 0.4.2\n        CFBundleVersion: "0.4.2"\n`,
 };
 
 let root;
@@ -35,15 +38,18 @@ const snapshot = () => Object.fromEntries(Object.keys(TREE).map((f) => [f, read(
 before(() => { root = mkdtempSync(path.join(tmpdir(), 'cubus-bump-')); write(TREE); });
 after(() => rmSync(root, { recursive: true, force: true }));
 
-test('the script names the six places the version lives, and only those', () => {
-  assert.deepEqual(SITES.map((s) => s.file).sort(), Object.keys(TREE).sort());
+test('the script names every place the version lives, and only those', () => {
+  // Sites, not files: gen/apple/project.yml carries two, so the lists are compared as SETS and
+  // the duplicate is expected rather than a smell.
+  assert.deepEqual([...new Set(SITES.map((s) => s.file))].sort(), Object.keys(TREE).sort());
+  assert.equal(SITES.length, Object.keys(TREE).length + 1, 'project.yml contributes a second site');
 });
 
 test('a bump rewrites every site and nothing beside it', () => {
   const r = bump(root, '0.5.0');
   assert.equal(r.to, '0.5.0');
-  assert.deepEqual(r.sites.map((s) => s.from), Array(6).fill('0.4.2'));
-  assert.deepEqual(r.changed.sort(), Object.keys(TREE).sort(), 'every file was written');
+  assert.deepEqual(r.sites.map((s) => s.from), Array(SITES.length).fill('0.4.2'));
+  assert.deepEqual([...new Set(r.changed)].sort(), Object.keys(TREE).sort(), 'every file was written');
   const got = snapshot();
   // The version lines — each once, at the version asked for.
   assert.match(got['apps/web/lib/app.js'], /^export const VERSION = '0\.5\.0';$/m);
@@ -94,4 +100,19 @@ test('a file with no version line, or two, stops the whole bump with the file na
   assert.throws(() => bump(root, '0.5.0'), /ENOENT/, 'a missing manifest is an error, not a skipped site');
   write({ 'apps/desktop/package.json': TREE['apps/desktop/package.json'] });
   assert.deepEqual(snapshot(), TREE);
+});
+
+test('two sites in ONE file both land — the second must not clobber the first', () => {
+  // The defect, found 2026-08-31 the day gen/apple/project.yml gained a second version line:
+  // every site computed its replacement from the ORIGINAL text, so writing them in order kept
+  // only the last. It reported BOTH as bumped and moved one — the worst shape a version tool can
+  // fail in, because the log states the thing that did not happen.
+  const ios = 'apps/desktop/src-tauri/gen/apple/project.yml';
+  write(TREE);                 // back to 0.4.2 everywhere
+  bump(root, '0.9.9');
+  const got = read(ios);
+  assert.match(got, /^        CFBundleShortVersionString: 0\.9\.9$/m, 'the first site was clobbered');
+  assert.match(got, /^        CFBundleVersion: "0\.9\.9"$/m, 'the second site did not land');
+  assert.doesNotMatch(got, /0\.4\.2/, 'a site in this file still carries the old version');
+  assert.match(got, /^    iOS: 16\.0$/m, 'the deployment target is not a version site');
 });
