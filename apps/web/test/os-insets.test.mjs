@@ -74,3 +74,42 @@ test('the Android activity re-pushes after the document can exist', () => {
   // first write would leave the first screen with the wrong bottom edge for the whole session.
   assert.match(kotlin, /postDelayed/, 'MainActivity.kt should re-push the insets after page load');
 });
+
+// --- where the BOTTOM inset lives -------------------------------------------------------------
+// Reported from a real iPad screenshot: a strip of paper under the tab bar, because .app padded
+// itself by the bottom inset and the bar (a --panel background) stopped short of the screen edge.
+// A native tab bar bleeds its background into the safe area and insets only its content. The fix
+// moves the bottom inset off .app and onto whichever element is actually bottom-most in each
+// composition, so these pin that arrangement.
+
+test('.app does not own the bottom inset', () => {
+  assert.ok(
+    html.includes('padding: var(--inset-t) var(--inset-r) 0 var(--inset-l)'),
+    '.app should pad top/right/left only — the bottom inset belongs to whatever is bottom-most',
+  );
+  assert.ok(
+    !html.includes('var(--inset-t) var(--inset-r) var(--inset-b) var(--inset-l)'),
+    '.app padding the bottom itself is what put a strip of paper under the tab bar',
+  );
+});
+
+test('landscape gives the bottom inset to the window, portrait to the tab bar', () => {
+  // .win is bottom-most in landscape (there is no bottom bar there).
+  assert.match(
+    html,
+    /\.win \{[^}]*padding-bottom: var\(--inset-b\)/,
+    '.win should pad by the bottom inset, so landscape content clears the home indicator',
+  );
+  // In portrait the bar is bottom-most: taller by the inset, padded by it, so its background
+  // reaches the edge while the tabs stay put.
+  assert.match(
+    html,
+    /\.tabs \{[^}]*height: calc\(var\(--tabbar-h\) \+ var\(--inset-b\)\)[^}]*padding-bottom: var\(--inset-b\)/,
+    'the portrait tab bar should grow by the bottom inset and pad by it',
+  );
+  assert.match(
+    html,
+    /@container app \(orientation: portrait\) \{[\s\S]*?\.win \{ padding-bottom: 0; \}/,
+    'portrait should hand the bottom inset from .win to .tabs, not apply it twice',
+  );
+});

@@ -90,11 +90,19 @@
       .app {
         --inset-t: var(--os-inset-t, env(safe-area-inset-top, 0px)); --inset-r: var(--os-inset-r, env(safe-area-inset-right, 0px));
         --inset-b: var(--os-inset-b, env(safe-area-inset-bottom, 0px)); --inset-l: var(--os-inset-l, env(safe-area-inset-left, 0px));
-        height: 100dvh; padding: var(--inset-t) var(--inset-r) var(--inset-b) var(--inset-l);
+        height: 100dvh; padding: var(--inset-t) var(--inset-r) 0 var(--inset-l);
         container-type: size; container-name: app;
         display: flex; flex-direction: column; background: var(--bg);
       }
-      .win { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
+      /* The BOTTOM inset is not the app box's, it belongs to whatever is bottom-most — and that
+         differs by composition. In landscape the stage is, so .win pads by it and content keeps
+         clear of the home indicator. In portrait the tab bar is, so the bar takes it instead
+         (below): a bar whose background stops short of the screen edge leaves a strip of paper
+         under it, which is what a native tab bar never does. .app cannot make this choice itself —
+         an element is not styled by its own container query — which is why the inset moves down to
+         these two rather than being switched off up there. The other three insets stay on .app,
+         where nothing competes for them. */
+      .win { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; padding-bottom: var(--inset-b); }
       /* The title bar is the app's toolbar (paper-one TitleBar). Two zones at its ends: macOS
          leads with the traffic-light gap and the wordmark and trails with Settings; Windows/Linux
          lead with the wordmark and trail with Settings and the caption buttons; iOS/Android lead
@@ -149,7 +157,10 @@
       .tabs.compact .nav-item { padding: 0 10px; }
       .tabs.compact .nav-item .lbl { display: none; }
       @container app (orientation: portrait) {
-        .tabs { position: static; translate: none; height: var(--tabbar-h); width: 100%; flex: none; border-top: 1px solid var(--line); background: var(--panel); }
+        .win { padding-bottom: 0; }
+        /* Taller by the inset and padded by it: the background reaches the screen edge, the row of
+           tabs sits exactly where it did, and the stage above is unchanged. */
+        .tabs { position: static; translate: none; height: calc(var(--tabbar-h) + var(--inset-b)); padding-bottom: var(--inset-b); width: 100%; flex: none; border-top: 1px solid var(--line); background: var(--panel); }
         .tabs .capsule { width: 100%; height: 100%; padding: 0; gap: 0; border-radius: 0; background: none; }
         /* Icon over a word, every tab the same width — the tab-bar idiom of both phone platforms.
            Under every icon there is room for the word, so compact never applies here. Selectors
