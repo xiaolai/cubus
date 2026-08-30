@@ -221,11 +221,14 @@ test('a state in the proven library is answered from data — no search, no proo
 
 /** The app, booted with a FAKE native prover injected before any script runs.
  *  `optimal_prove` hangs until the test releases it, which is what a deep cube does for hours. */
-async function withFakeProver(run) {
+async function withFakeProver(run, { prove = true } = {}) {
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  await page.addInitScript(() => {
+  await page.addInitScript((prove) => {
+    // The affordance is opt-in from Settings and off by default, so a test about the affordance
+    // has to ask for it — which is itself the claim the pair of tests below pins.
+    if (prove) localStorage.setItem('cubusSettings', JSON.stringify({ proveMinimum: true }));
     window.__calls = [];
     window.__listeners = {};
     window.__emit = (name, payload) => (window.__listeners[name] ?? []).forEach((cb) => cb({ payload }));
@@ -252,7 +255,7 @@ async function withFakeProver(run) {
       window: { getCurrentWindow: () => ({ setTitle() {}, minimize() {}, close() {} }) },
       opener: { openUrl: () => {} },
     };
-  });
+  }, prove);
   await page.goto(`${BASE}/index.html`);
   try {
     return await run(page);
@@ -371,4 +374,65 @@ test('a handheld asks for the camera that can see the cube; a desktop asks for n
     assert.equal(await facingFor(desktop), null,
       `${desktop} must express no preference — a facing mode there names another machine`);
   }
+});
+
+test('the prove affordance is off until Settings asks for it', async () => {
+  // Proving is minutes to hours on a typical cube, so it is not something to put in front of a
+  // beginner who did not ask. Default off, and the same walk that draws it when the setting is
+  // on must draw nothing when it is not — the native side being present is not enough.
+  await withFakeProver(async (page) => {
+    await page.waitForFunction(() => Boolean(window.cubusGo), null, { timeout: 20_000 });
+    await page.evaluate(async () => {
+      const app = await import('/lib/app.js');
+      const Cube = (await import('/vendor/cubejs.js')).default;
+      const scrambled = new Cube();
+      scrambled.move("R U2 F L' D B2 R' U F2 L D'");
+      const c = app.state.cube;
+      c.facelets = scrambled.asString();
+      c.solution = ''; c.crossChecked = false; c.solveResult = null; c.setupAlg = ''; c.derived = false;
+      window.cubusGo('home');
+    });
+    // Wait for the walk itself, so this is "the chips are there and the button is not" rather
+    // than "nothing has rendered yet", which would pass against any code at all.
+    await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null, { timeout: 30_000 });
+    const seen = await page.evaluate(() => {
+      const btn = document.querySelector('#proveBtn');
+      return { exists: Boolean(btn), hidden: btn?.hidden, stored: localStorage.getItem('cubusSettings') };
+    });
+    assert.equal(seen.exists, true, 'the button is in the DOM either way — it is drawn or not by its hidden flag');
+    assert.equal(seen.hidden, true, 'a fresh install must not offer a proof that can run for hours');
+    // Not "nothing was stored": boot legitimately writes settings (the nav-defaults migration).
+    // The claim is that OFF is what a fresh install gets without anyone choosing it.
+    assert.notEqual(seen.stored, null, 'boot writes settings, so this reads what it wrote');
+    assert.ok(!JSON.parse(seen.stored).proveMinimum, 'a fresh install must not have opted itself in');
+  }, { prove: false });
+});
+
+test('the move count sits at the right edge, clear of the prove button', async () => {
+  // The count is the heading's answer and belongs opposite it. With the auto margin on the
+  // button instead, the header's space-between stranded the number midway across the card.
+  await withFakeProver(async (page) => {
+    await walkAScrambledCube(page);
+    const box = await page.evaluate(() => {
+      const head = document.querySelector('#solLabel').parentElement;
+      const r = (el) => { const b = el.getBoundingClientRect(); return { left: b.left, right: b.right }; };
+      const cs = getComputedStyle(head);
+      return {
+        head: r(head),
+        headPadRight: Number.parseFloat(cs.paddingRight),
+        label: r(document.querySelector('#solLabel')),
+        count: r(document.querySelector('#moveCount')),
+        prove: r(document.querySelector('#proveBtn')),
+      };
+    });
+    // The count is on the right half, not stranded beside the heading.
+    assert.ok(box.count.left > box.label.right + 20,
+      `the count starts ${Math.round(box.count.left - box.label.right)}px after the heading — it is not right-aligned`);
+    // A real gap between the number and the pill, not a collision and not a chasm.
+    const gap = box.prove.left - box.count.right;
+    assert.ok(gap >= 8 && gap <= 24, `the gap between the count and the prove button is ${Math.round(gap)}px`);
+    // And the pair ends at the card's right edge.
+    assert.ok(box.head.right - box.prove.right <= box.headPadRight + 1,
+      'the prove button does not reach the card\'s right edge');
+  });
 });

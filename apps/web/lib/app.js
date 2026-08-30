@@ -142,7 +142,7 @@ const TITLES = {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty' });
+const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty', proveMinimum: false });
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
@@ -280,6 +280,18 @@ const state = {
  *  shallow cube it is; over it, the button starts saying what it has ruled out and how long it
  *  has been at it, and a stop appears beside it. */
 const PROOF_WAIT_VISIBLE_MS = 250;
+
+/** The Settings row that turns the prove affordance on, worded once and named for the same
+ *  reason provenMinimumLabel is: it is the third and last place in this file allowed to use the
+ *  verdict's words. It is a different KIND of saying, which is why it is sanctioned rather than
+ *  reworded to slip under the check — the other two assert something about a particular cube,
+ *  this one names a feature, on a screen that is not reporting a solve, behind the same
+ *  capability gate as the affordance it controls. Naming the toggle after the button it turns on
+ *  is worth more than dodging a regex. */
+const PROVE_SETTING = {
+  label: 'Offer to prove the minimum',
+  blurb: 'A button on the solution that proves no shorter solution exists. The first run builds 86 MB of tables, and a proof can take minutes to hours',
+};
 
 /** The one sentence the SHIPPED library may put on a screen, and the second of exactly two
  *  places in this file where the word "proved" is allowed to originate (the other is the
@@ -2298,7 +2310,11 @@ const cubeScreen = (screenMode) => {
       ${!walking && rcNow() ? `<div class="card sheet reconnect-card">${reconnectAsk()}</div>` : ''}
       ${walking ? `<div class="card tight solution-card sheet">
         ${reconnectAsk()}
-        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount">—</span><button class="pill" id="proveBtn" hidden style="margin-left:auto">prove the minimum</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
+        <!-- The count carries the auto margin, not the button: with it on the button, the header's
+             space-between left the number stranded midway between the heading and the pill. The
+             count is the heading's ANSWER and belongs at the right edge whether or not anything
+             follows it; the buttons then sit beside it, each with a margin of its own. -->
+        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" style="margin-left:auto">—</span><button class="pill" id="proveBtn" hidden style="margin-left:12px">prove the minimum</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg"></span>
@@ -2927,8 +2943,14 @@ const cubeScreen = (screenMode) => {
         // `!provenHere`: the library already carries this state's proof, so there is nothing
         // left to ask the native prover for — offering minutes of search to re-derive a fact
         // we shipped would be the opposite of why the file exists.
+        // `settings.proveMinimum`: off by default. Proving is minutes to hours on a typical cube
+        // (optimal-solver-plan.md), so the affordance is not something to put in front of a
+        // beginner who did not ask for it — it is opt-in from Settings, where the row explains
+        // the cost. Everything else about the gate is unchanged: the commands must be injected,
+        // a desktop must be behind them, and a state the library already proved has nothing left
+        // to ask for.
         const proveBtn = $('#proveBtn', root);
-        if (proveBtn && optimalCapability() && !scrambling && !provenHere) {
+        if (proveBtn && optimalCapability() && !scrambling && !provenHere && settings.proveMinimum) {
           proveBtn.hidden = false;
           proveBtn.disabled = false;
           proveBtn.textContent = 'prove the minimum';
@@ -3346,6 +3368,9 @@ SCREENS.settings = () => {
           <button class="toggle ${settings.dragRotate ? 'on' : ''}" data-toggle="dragRotate" role="switch" aria-checked="${Boolean(settings.dragRotate)}" aria-label="Rotate the cube by dragging"><i></i></button></div>
         <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">How short a solution</div><div class="sub" style="color:var(--ink-4)">${TIER_BLURB[settings.solveTier] ?? TIER_BLURB.twenty}</div></div>
           <div class="wrap-row" style="gap:6px">${TIERS.map((t) => `<button class="pill ${settings.solveTier === t.name ? 'on' : ''}" data-set-tier="${t.name}">${TIER_LABEL[t.name]}</button>`).join('')}</div></div>
+        ${optimalCapability() ? `<div style="display:flex;align-items:center;gap:16px;padding:13px 0 0;border-top:1px solid var(--line-faint)">
+          <div style="flex:1"><div style="font-weight:600">${PROVE_SETTING.label}</div><div class="sub" style="color:var(--ink-4)">${PROVE_SETTING.blurb}</div></div>
+          <button class="toggle ${settings.proveMinimum ? 'on' : ''}" data-toggle="proveMinimum" role="switch" aria-checked="${Boolean(settings.proveMinimum)}" aria-label="${PROVE_SETTING.label}"><i></i></button></div>` : ''}
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
           <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}">${o}</button>`).join('')}</div></div>` : ''}</div>
       ${(() => {
