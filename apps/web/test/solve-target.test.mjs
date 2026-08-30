@@ -219,7 +219,7 @@ test('a target BELOW God\'s number still ends honestly when the search falls sho
   // and for the rest the search may simply not find it. Either way the run ends rather than
   // escalating forever — and `met: false` says only that this search did not get there.
   assert.ok(GODS_NUMBER === 20, 'the boundary these two tests sit either side of');
-  const solve = scripted([22, 20, 19, null]);
+  const solve = scripted([21, 20, 19, null]);
   const steps = await collect(refine('F', { solve, tier: 'eighteen' }));
   assert.equal(steps.at(-1).moves, 19);
   assert.equal(steps.at(-1).met, false);
@@ -266,6 +266,37 @@ test('a budget that cannot double stops honestly rather than being rejected down
   const steps = await collect(refine('F', { solve, tier: 'twenty', probeBudget: huge }));
   assert.equal(steps.at(-1).stopped, STOPPED.EXHAUSTED);
   assert.equal(steps.at(-1).met, false, 'and it says plainly that the target was not reached');
+});
+
+test('twenty is a floor under every tier, not only the one that names it', async () => {
+  // The bug: the guarantee keyed on `target >= 20`, so only the <= 20 rung had a floor. On the
+  // real engine at a reduced budget, the 19, 18 and "shortest" rungs each finished at 21 — and
+  // "shortest" is the worst of the three, because a person who asked for the shortest solution
+  // there is got a LONGER one than the <= 20 rung would have handed them, shown as a plain
+  // number with nothing to say it fell short.
+  for (const tier of ['nineteen', 'eighteen', 'shortest']) {
+    const solve = scripted([22, 21, null, null, 20, null]);
+    const steps = await collect(refine('F', { solve, tier }));
+    assert.equal(steps.at(-1).moves, 20, `${tier}: a refusal above 20 must buy more budget, not end the run`);
+    assert.deepEqual(
+      solve.asked.slice(2, 5).map((a) => a.probeMax),
+      [DEFAULT_PROBE_BUDGET, DEFAULT_PROBE_BUDGET * 2, DEFAULT_PROBE_BUDGET * 4],
+      `${tier}: each refusal above the floor doubles the budget`,
+    );
+  }
+});
+
+test('below the floor, exhaustion is an honest end for every tier', async () => {
+  // The other half, and the reason the floor is a floor rather than a promise to reach the
+  // target: 18 genuinely does not exist for roughly 3.5% of positions, so a search that stops
+  // at 19 or 20 must be allowed to stop and say so. Escalating there would spend forever
+  // chasing a length that may not exist.
+  const solve = scripted([22, 20, null]);
+  const steps = await collect(refine('F', { solve, tier: 'eighteen' }));
+  assert.equal(steps.at(-1).moves, 20);
+  assert.equal(steps.at(-1).met, false, 'it says plainly that 18 was not reached');
+  assert.equal(steps.at(-1).stopped, STOPPED.EXHAUSTED);
+  assert.equal(solve.asked.length, 3, 'and it did NOT escalate below the floor');
 });
 
 test('refine refuses to run without a solver', async () => {
