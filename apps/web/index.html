@@ -78,10 +78,18 @@
          orientation. Nothing in this stylesheet asks the viewport's — under the layout contract
          (dev-docs/stage-contract.md) the viewport is not the stage, and a viewport query is the
          wrong signal; a test bans them. The insets are custom properties so the harness can stand
-         in for a phone: app.js sets --inset-* from `?insets=t,r,b,l`. */
+         in for a phone: app.js sets --inset-* from `?insets=t,r,b,l`.
+
+         --os-inset-* is the platform's chance to say what env() cannot. In Chromium,
+         env(safe-area-inset-*) reports the DISPLAY CUTOUT only — Android's gesture navigation bar
+         is a system-bar inset, so safe-area-inset-bottom there is 0 and the tab row would sit under
+         the pill (measured on a Pixel 8, API 36, 2026-08-30: top 51px, bottom 0px). The Android
+         activity writes the real values as --os-inset-* (MainActivity.kt); nothing else sets them,
+         so every other build falls through to env() exactly as before, and `?insets=` — an inline
+         style on .app — still outranks both. Do not collapse this back to a bare env(). */
       .app {
-        --inset-t: env(safe-area-inset-top, 0px); --inset-r: env(safe-area-inset-right, 0px);
-        --inset-b: env(safe-area-inset-bottom, 0px); --inset-l: env(safe-area-inset-left, 0px);
+        --inset-t: var(--os-inset-t, env(safe-area-inset-top, 0px)); --inset-r: var(--os-inset-r, env(safe-area-inset-right, 0px));
+        --inset-b: var(--os-inset-b, env(safe-area-inset-bottom, 0px)); --inset-l: var(--os-inset-l, env(safe-area-inset-left, 0px));
         height: 100dvh; padding: var(--inset-t) var(--inset-r) var(--inset-b) var(--inset-l);
         container-type: size; container-name: app;
         display: flex; flex-direction: column; background: var(--bg);
