@@ -21,7 +21,15 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 15173;
-const HOST = '127.0.0.1';
+// Loopback by default, on purpose: this server has no auth and serves the whole app directory, so
+// it should not appear on the LAN because someone ran `pnpm dev`. CUBUS_DEV_HOST=0.0.0.0 opens it
+// for `tauri ios dev --host` / `tauri android dev --host`, where the app runs on a physical phone
+// and the dev URL is rewritten to this machine's LAN address — loopback is simply unreachable from
+// there. Note that a LAN origin is http, so it is NOT a secure context and getUserMedia is
+// unavailable on it; that is survivable only because a device build runs NativeDetector, and it is
+// exactly why the web fallback must not be relied on silently. The iOS simulator shares the host's
+// loopback and needs none of this.
+const HOST = process.env.CUBUS_DEV_HOST || '127.0.0.1';
 const RELOAD_PATH = '/__livereload';
 
 const MIME = {

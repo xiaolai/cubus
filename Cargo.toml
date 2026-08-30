@@ -5,3 +5,14 @@
 [workspace]
 resolver = "2"
 members = ["apps/desktop/src-tauri", "crates/cube-vision", "crates/gan-ble"]
+
+# The Swift half of cube-vision is built by swift-rs, which picks `swift build -c debug` whenever
+# cargo hands its build script DEBUG=true — i.e. under `tauri dev`. Unoptimized Swift runs the
+# plugin's per-frame loops (the byte-exact letterbox, the MLMultiArray copies) about 30× slower:
+# measured 2026-08-28 against the real model on a 1080p frame, 2.9 ms/frame at -O versus 89 ms at
+# -Onone, which dragged the dev app's scan to ~5–8 fps — the same rate as the wasm fallback, so the
+# native path looked like it did nothing. Turning debuginfo off for this ONE crate is what flips
+# swift-rs to `-c release` (it reads only DEBUG) while the desktop shell keeps its dev profile and
+# its debug_assertions-gated MCP harness. Debugging the Swift side wants this line commented out.
+[profile.dev.package.cube-vision]
+debug = false

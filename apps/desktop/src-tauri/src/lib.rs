@@ -30,7 +30,11 @@ use gan_ble::btleplug::api::{
 };
 use gan_ble::btleplug::platform::Peripheral;
 use gan_ble::{default_adapter, find_gan_cube, FFF5_WRITE, FFF6_NOTIFY};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
+// Desktop-only: the sole use is `app.path()` in `orientation_path`, and a phone has no window whose
+// orientation could be remembered. Un-gated it is an unused import on mobile.
+#[cfg(desktop)]
+use tauri::Manager;
 use tokio::sync::Mutex;
 
 /// The FFF6 notification stream btleplug hands back (owned, 'static).
@@ -227,6 +231,11 @@ fn configured_traffic_lights<R: tauri::Runtime, M: tauri::Manager<R>>(
 // webview's layout — that asks its own container (index.html) and does not care what shape the
 // window is.
 
+// Desktop-only, like every one of its callers: the window arithmetic exists to fit a window to a
+// monitor's work area, and a phone has neither. Un-gated it compiled into the iOS build as 13
+// dead-code warnings (found by the first `--target aarch64-apple-ios` build, 2026-08-30) — which a
+// mobile clippy leg would read as 13 errors under `-D warnings`.
+#[cfg(desktop)]
 mod stage;
 
 /// Where the desktop's orientation is remembered: one word in a file in the app's config dir.
@@ -296,17 +305,38 @@ fn place(
     (tauri::LogicalSize::new(w.width, w.height), position)
 }
 
-/// Build the main window from its config, at the size the contract gives it.
-#[cfg(desktop)]
-fn build_main_window(app: &tauri::App) -> tauri::Result<tauri::WebviewWindow> {
-    let config = app
-        .config()
+/// The main window's declaration in tauri.conf.json. Both builders below start here, because the
+/// window is declared with `create: false` — Tauri creates nothing, and something must. What
+/// differs between them is only the size and the position, which is to say: only the things a
+/// phone does not have.
+fn main_window_config(app: &tauri::App) -> tauri::utils::config::WindowConfig {
+    app.config()
         .app
         .windows
         .iter()
         .find(|w| w.label == "main")
         .cloned()
-        .expect("tauri.conf.json declares the main window (create: false)");
+        .expect("tauri.conf.json declares the main window (create: false)")
+}
+
+/// Mobile builds the declared window and nothing else: a phone's window is the screen, so there is
+/// no monitor to pick, no work area to fit it to, and no position to centre it in. The composition
+/// inside it is the webview's business and already keys on nothing but orientation
+/// (dev-docs/stage-contract.md).
+///
+/// Without this the app launches with no webview at all. `create: false` means Tauri creates
+/// nothing, and until the first mobile build the only builder was the `#[cfg(desktop)]` one below —
+/// which the compiler said out loud, as `unused variable: app` on a `setup` whose whole body was
+/// desktop-only.
+#[cfg(mobile)]
+fn build_main_window(app: &tauri::App) -> tauri::Result<tauri::WebviewWindow> {
+    tauri::WebviewWindowBuilder::from_config(app, &main_window_config(app))?.build()
+}
+
+/// Build the main window from its config, at the size the contract gives it.
+#[cfg(desktop)]
+fn build_main_window(app: &tauri::App) -> tauri::Result<tauri::WebviewWindow> {
+    let config = main_window_config(app);
     let handle = app.handle();
     let orientation = load_orientation(handle);
     // Built visible. Built hidden and shown after the traffic lights were placed, the window
@@ -392,18 +422,17 @@ fn get_orientation(app: tauri::AppHandle) -> String {
 pub fn run() {
     let builder = tauri::Builder::default()
         .setup(|app| {
-            #[cfg(desktop)]
+            // Every platform, deliberately: the window is declared `create: false`, so this is the
+            // only thing that brings a webview into existence anywhere.
+            let window = build_main_window(app)?;
+            #[cfg(target_os = "macos")]
+            if let (Some((x, y)), Ok(ptr)) =
+                (configured_traffic_lights(app, "main"), window.ns_window())
             {
-                let window = build_main_window(app)?;
-                #[cfg(target_os = "macos")]
-                if let (Some((x, y)), Ok(ptr)) =
-                    (configured_traffic_lights(app, "main"), window.ns_window())
-                {
-                    place_traffic_lights(ptr, x, y);
-                }
-                #[cfg(not(target_os = "macos"))]
-                let _ = window;
+                place_traffic_lights(ptr, x, y);
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = window;
             Ok(())
         })
         .on_window_event(|window, event| {

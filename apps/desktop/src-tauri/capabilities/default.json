@@ -1,16 +1,12 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
+  "$schema": "../gen/schemas/capabilities.json",
   "identifier": "default",
-  "description": "enables the default permissions",
+  "description": "Permissions every platform has. Window control is desktop-only and lives in desktop.json.",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
-    "core:window:allow-start-dragging",
-    "core:window:allow-minimize",
-    "core:window:allow-close",
-    "core:window:allow-set-title",
     "cube-vision:default",
     "opener:default"
   ]
