@@ -24,20 +24,37 @@ import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
 import { fitStage } from '../lib/stage.js';
+import { freePort } from './free-port.mjs';
 
-const PORT = 5197; // serve.test.mjs owns 5199; node --test runs files in parallel
-const BASE = `http://127.0.0.1:${PORT}`;
+// Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
+// from an interrupted run, which fails at startup and reads like a regression. See free-port.mjs.
+let PORT;
+let BASE;
 const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
 let proc;
 let browser;
 
 before(async () => {
+  PORT = await freePort();
+  BASE = `http://127.0.0.1:${PORT}`;
   proc = spawn(process.execPath, [SERVE], { env: { ...process.env, PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'pipe'] });
   await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('serve.mjs did not start within 5s')), 5000);
+    // Say WHY it did not start. serve.mjs refuses a busy port with a precise message naming the
+    // port and how to free it, but that goes to its own stderr, so a bare timeout here reads as a
+    // regression in whatever changed last. An interrupted run leaves the server orphaned and every
+    // later run then fails this way — it cost two wrong diagnoses on 2026-08-30 before anyone read
+    // the child's output. Fail loud: hand the child's own words back.
+    let said = '';
+    const note = (d) => { said += d.toString(); };
+    const timeout = setTimeout(
+      () => reject(new Error(`serve.mjs did not start within 5s on port ${PORT}. It said: ${said.trim() || '(nothing)'}`)),
+      5000,
+    );
     proc.stdout.on('data', (d) => {
+      note(d);
       if (d.toString().includes(`:${PORT}`)) { clearTimeout(timeout); resolve(); }
     });
+    proc.stderr.on('data', note);
     proc.on('error', reject);
   });
   try {
@@ -116,7 +133,8 @@ const measure = (page) =>
       stage: rect(stage),
       stagePad: [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(px),
       ref: { w: p.width, h: p.height },
-      nav: { position: getComputedStyle(nav).position, compact: nav.classList.contains('compact'), ...rect(nav) },
+      nav: { position: getComputedStyle(nav).position, compact: nav.classList.contains('compact'), padBottom: px(getComputedStyle(nav).paddingBottom), ...rect(nav) },
+      winPadBottom: px(getComputedStyle($('.win')).paddingBottom),
       lead: rect($('#tbLead')), trail: rect($('#tbTrail')), bar: rect($('#titlebar')),
       // The zones' CONTENT: the tabs must clear these, whatever box the engine gave the zones.
       brand: rect($('#tbLead .brand')), gear: rect($('#tbTrail [aria-label="Settings"]')),
@@ -137,14 +155,31 @@ for (const fixture of FIXTURES) {
       assert.equal(m.coarse, fixture.touch === true, 'the pointer the engine reports is not the one the fixture asked for');
 
       const [t, r, b, l] = fixture.insets;
-      assert.deepEqual(m.appPad, [t, r, b, l], '.app padding is not the insets');
+      // The BOTTOM inset is deliberately not .app's. Whatever is bottom-most owns it, because a
+      // bar whose background stops short of the screen edge leaves a strip of paper under it
+      // (reported from a real iPad, 2026-08-30). In landscape the stage is bottom-most, so .win
+      // pads; in portrait the tab bar is, so it grows by the inset and pads by it, and its
+      // background reaches the edge. The safe CONTENT area is identical either way, which the
+      // stage assertions below still measure against the same numbers as before.
+      assert.deepEqual(m.appPad, [t, r, 0, l], '.app should pad top/right/left only');
       const portrait = fixture.height - t - b > fixture.width - l - r;
+      assert.equal(
+        portrait ? m.winPadBottom : m.nav.padBottom, 0,
+        portrait ? 'portrait: .win must not also pad the bottom inset' : 'landscape: the floating tab row must not pad the bottom inset',
+      );
+      assert.equal(
+        portrait ? m.nav.padBottom : m.winPadBottom, b,
+        portrait ? 'portrait: the tab bar carries the bottom inset' : 'landscape: .win carries the bottom inset',
+      );
 
       // The chrome. Landscape: the tabs float over the bar's centre, clear of both outer zones
       // (compact if that is what it took). Portrait: a bottom bar, in flow, above the inset.
       if (portrait) {
         assert.equal(m.nav.position, 'static', 'portrait: the tab row is in flow');
-        near(m.nav.bottom, fixture.height - b, 'portrait: tab bar sits on the bottom inset');
+        // The bar bleeds its background through the inset and insets only its content — what a
+        // native tab bar does, and what leaves no paper strip under it.
+        near(m.nav.bottom, fixture.height, 'portrait: the tab bar background reaches the screen edge');
+        near(m.nav.bottom - m.nav.padBottom, fixture.height - b, 'portrait: the tabs themselves sit above the bottom inset');
         near(m.nav.left, l, 'portrait: tab bar spans from the left inset');
         near(m.nav.right, fixture.width - r, 'portrait: tab bar spans to the right inset');
         assert.ok(!m.nav.compact, 'portrait: labels always fit under the icons');
@@ -170,7 +205,7 @@ for (const fixture of FIXTURES) {
       }
 
       // The stage: the safe area, less the bar (and the tab bar in portrait), edge to edge.
-      const tabbar = m.nav.position === 'static' ? m.nav.height : 0;
+      const tabbar = m.nav.position === 'static' ? m.nav.height - m.nav.padBottom : 0;
       near(m.stage.left, l, 'stage left');
       near(m.stage.right, fixture.width - r, 'stage right');
       near(m.stage.top, t + m.titlebar, 'stage top');
