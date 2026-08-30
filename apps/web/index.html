@@ -474,45 +474,28 @@
          for the sake of it. A touch iPad in landscape lands between (34px stickers on an 11",
          57 on a 13") — the one control this sheet leaves under the 44px floor, and the geometry
          test names the number it holds instead. */
-      .scan-faces { width: 100%; max-width: 560px; display: grid; grid-template-columns: repeat(4, 1fr); column-gap: 10px; row-gap: 2px; }
-      /* The cross is the cube's shape, and it is the same cross in both windows: with a mouse
-         the six tiles are laid out as the net in portrait too (decided 2026-08-28 — one large
-         face over a strip of five read as a different screen, and a portrait window is not a
-         phone). The strip exists for ONE reason, a finger: six 3×3 tiles cannot give it 44px
-         stickers in a phone's width. So under a coarse pointer in portrait ONE face is large —
-         the one app.js marks .focus: the side the scanner asks to see again, else the side it
-         just read, else the one you tap — and the other five are a strip below it, status at a
-         glance and a tap target each (the tile, not its stickers, at that size). The large tile
-         is sized off the reference box so it, its label and the strip fit the primary region:
-         --ref-h × --primary-share is the region, and 140px is the strip, the label and the gaps.
-         The --focus flag is how app.js knows a tap on a strip tile means "show me this one"
-         rather than "correct this sticker". Everywhere else the .focus class is inert. */
-      @media (pointer: coarse) {
-      @container stage (orientation: portrait) {
-        .scan-faces { --focus: 1; max-width: none; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: auto auto; column-gap: 8px; row-gap: 8px; }
-        /* Three class-level parts, to outrank the cross placement (.scan-face[data-face="U"] …)
-           declared below this block. */
-        .scan-faces .scan-face[data-face] { grid-area: auto; }
-        .scan-faces .scan-face.focus { grid-column: 1 / -1; grid-row: 1; align-items: flex-start; }
-        /* The large tile sits at the LEFT of its row, its label centred under it: the card's tools
-           (reset / paint / camera) park in the top-right corner, and a centred tile ran under
-           them. The same expression sizes tile and label so the label knows the tile's width. */
-        .scan-face.focus { --focus-w: min(100%, 320px, calc(var(--ref-h) * var(--primary-share) - 140px)); }
-        .scan-face.focus .tile { width: var(--focus-w); }
-        .scan-face.focus .lbl { width: var(--focus-w); text-align: center; }
-        .scan-face:not(.focus) { cursor: pointer; }
-        .scan-face:not(.focus) .lbl { font-size: var(--fs-micro); }
-        .scan-face:not(.focus) .tile { border-width: 2px; padding: 3px; }
-        .scan-face:not(.focus) .tgrid { gap: 1px; }
-        .scan-face:not(.focus) .tgrid > .cell { border-radius: var(--r-1); } /* strip cells are a third the size; the sticker corner follows */
-        .scan-face:not(.focus) .tgrid > .cell:nth-child(5) > .ic { display: none; }
-        /* Strip cells are NOT tap targets — the TILE is (its whole face brings the side forward),
-           which is what lets the strip live below the 44px floor. pointer-events makes that true
-           at the hit-testing level: a finger can only ever hit the tile. Keyboard activation is
-           not hit-tested, so Enter on a strip cell still brings its side forward. */
-        .scan-face:not(.focus) .tgrid > .cell { pointer-events: none; }
+      /* The tile is whichever axis runs out first. Width alone was enough while a finger's
+         portrait had its own arrangement; with the net everywhere, an iPad split-view column
+         (320x1100) makes three width-derived rows taller than the primary region and the net
+         ran out of the top of it. Four columns across, three rows down — and a row costs its
+         label and the gaps as well as its tile, which is the 20px. --primary-h exists only in
+         the portrait container, so in landscape the fallback makes the height term inert and
+         the width decides exactly as it always did. */
+      .scan-faces {
+        --net-tile: min((100% - 30px) / 4, (var(--primary-h, 100000px) - 60px) / 3);
+        width: 100%; max-width: 560px; display: grid; justify-content: center;
+        grid-template-columns: repeat(4, var(--net-tile)); column-gap: 10px; row-gap: 2px;
       }
-      }
+      /* The cross is the cube's shape, and it is now the ONLY arrangement — every window, every
+         platform, mouse or finger (decided 2026-08-30). A phone used to get something else: one
+         face large over a strip of five, because six 3x3 tiles cannot give a finger 44px
+         stickers in a phone's width. That second arrangement read as a different screen from the
+         one the desktop shows, and the owner's call is that the cube's net is worth more than the
+         touch target. The cost is real and is recorded rather than glossed: at 393px wide a
+         sticker is 17px, so correcting a misread by tapping one is well under the floor every
+         other control in this sheet holds. dev-docs/stage-contract.md carries the decision, the
+         number, and what would undo it. The `.focus` class and the `--focus` flag went with the
+         layout they served — nothing styles or reads them now. */
       .scan-face[data-face="U"] { grid-area: 1 / 2; }
       .scan-face[data-face="L"] { grid-area: 2 / 1; }
       .scan-face[data-face="F"] { grid-area: 2 / 2; }
@@ -533,7 +516,11 @@
          while every cell was empty — putting a glyph in the centre gave the middle row a content
          height and stretched that whole row (33/48/33 instead of 38/38/38). A sticker grid must be
          square whatever a cell happens to contain. */
-      .scan-face .tile { width: 100%; aspect-ratio: 1; padding: 6px; border-radius: var(--r-5); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; }
+      /* min-height 0: the tile is a flex item, whose automatic minimum is its min-content
+         height — nine buttons' worth of line boxes — and that beat its own aspect-ratio
+         whenever the column was narrow. Without this the tile is only square by luck of having
+         enough width. */
+      .scan-face .tile { min-height: 0; width: 100%; aspect-ratio: 1; padding: 6px; border-radius: var(--r-5); border: 3px solid var(--line-strong); box-shadow: 0 0 0 1px var(--line); display: grid; }
       /* The 3x3 grid lives on an inner wrapper, NOT on the tile: when a scan settles, a face that
          was captured the wrong way up is animated turning to its true orientation, and rotating
          the tile itself would carry its edge colours along — which are canonical guidance and must
@@ -559,6 +546,13 @@
         border-radius: var(--r-sticker); background-color: var(--facelet-off); opacity: .3;
         border: 1px solid var(--sticker-edge); padding: 0; appearance: none; cursor: default;
         background-image: linear-gradient(180deg, rgba(255,255,255,.26), rgba(0,0,0,.10));
+        /* A grid item's automatic minimum is its MIN-CONTENT, and these are buttons: each one
+           carried a line box it could not shrink below, so nine of them held the tile 17px per
+           row taller than its own aspect-ratio asked for. Square tiles were an accident of
+           having enough width; in a 320px split-view column they came out 57x75 and the net
+           ran out of the top of the region. Zero here lets the three 1fr rows actually be the
+           tile's thirds. */
+        min-width: 0; min-height: 0;
       }
       .scan-face .lbl { font-size: var(--fs-caption); font-weight: 700; letter-spacing: .03em; color: var(--ink-5); }
       /* Every sticker but the centre is correctable, on every side. */
