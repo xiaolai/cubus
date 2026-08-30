@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import struct
 import subprocess
 import sys
@@ -43,6 +44,19 @@ PALETTE = {
 CREAM = (0xF6, 0xF2, 0xE9)
 
 results: list[tuple[str, str, str, bool, bool]] = []
+
+
+def have(tool: str) -> bool:
+    """Is this tool on the box?
+
+    Half the checks below shell out to something Apple-only — sips, assetutil,
+    ictool — and rsvg-convert is a brew/apt install rather than a given. Without
+    this the script simply raised on a Linux runner, which is the reason it has
+    never been gated anywhere and the reason the mobile app icons stayed Tauri's
+    placeholder for as long as they did. A check that cannot run reports as
+    informational; it never passes silently.
+    """
+    return shutil.which(tool) is not None
 
 
 def check(name: str, expected: str, got: str, ok: bool, *, gated: bool = True) -> None:
@@ -90,6 +104,10 @@ def contrast_ratio(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
 
 
 def verify_gutter() -> None:
+    if not have("rsvg-convert"):
+        check("verify_gutter", "needs rsvg-convert", "skipped", True, gated=False)
+        return
+
     src = ICONS / "icon.svg"
     out = REPO / ".verify-gutter.png"
     subprocess.run(
@@ -183,6 +201,10 @@ def parse_icns(path: Path) -> dict[str, int]:
 
 
 def verify_icns() -> None:
+    if not have("sips"):
+        check("verify_icns", "needs sips", "skipped", True, gated=False)
+        return
+
     members = parse_icns(ICONS / "icon.icns")
     missing = sorted(set(ICNS_EXPECTED) - set(members))
     check(
@@ -344,6 +366,10 @@ ICTOOL = Path(
 
 
 def verify_glass() -> None:
+    if not have("assetutil"):
+        check("verify_glass", "needs assetutil", "skipped", True, gated=False)
+        return
+
     car = ICONS / "Assets.car"
     check(
         "Assets.car exists and is non-empty",
@@ -410,6 +436,10 @@ def verify_glass() -> None:
 
 
 def verify_web() -> None:
+    if not have("rsvg-convert"):
+        check("verify_web", "needs rsvg-convert", "skipped", True, gated=False)
+        return
+
     # apple-touch-icon must be fully opaque. iOS composites a transparent one
     # against black, which puts a black ring around the tile.
     im = Image.open(WEB / "apple-touch-icon.png")
@@ -475,6 +505,10 @@ def verify_palette() -> None:
     SHIPPING master for the exact literal is a direct test that nothing has
     re-introduced an overlay.
     """
+    if not have("rsvg-convert"):
+        check("verify_palette", "needs rsvg-convert", "skipped", True, gated=False)
+        return
+
     for label, src in (
         ("flat source", DESIGN / "cubus-icon-flat.svg"),
         ("macOS master", ICONS / "icon.svg"),
@@ -533,6 +567,10 @@ def verify_palette() -> None:
 
 
 def verify_small_sizes() -> None:
+    if not have("rsvg-convert"):
+        check("verify_small_sizes", "needs rsvg-convert", "skipped", True, gated=False)
+        return
+
     for size in (16, 32, 64):
         out = REPO / f".verify-small-{size}.png"
         subprocess.run(
@@ -575,6 +613,114 @@ def verify_small_sizes() -> None:
             out.unlink(missing_ok=True)
 
 
+APPLE_ICONSET = (
+    REPO / "apps/desktop/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset"
+)
+ANDROID_RES = REPO / "apps/desktop/src-tauri/gen/android/app/src/main/res"
+
+
+def verify_ios() -> None:
+    """Every rung the catalogue declares, at its declared size, with NO alpha.
+
+    Driven from Contents.json rather than a list here, for the same reason the
+    build script is: Xcode owns which rungs exist. The alpha check is the one
+    that matters most — an iOS app icon with an alpha channel is rejected by App
+    Store validation, and before that it composites on black, so the failure is
+    a dark ring inside the mask rather than anything that looks like a mistake.
+    """
+    if not APPLE_ICONSET.is_dir():
+        check("ios: appiconset", "present", "no gen/apple", True, gated=False)
+        return
+    manifest = json.loads((APPLE_ICONSET / "Contents.json").read_text())
+    missing, wrong_size, with_alpha = [], [], []
+    for image in manifest["images"]:
+        name = image.get("filename")
+        if not name:
+            continue
+        want = round(float(image["size"].split("x")[0]) * float(image["scale"].rstrip("x")))
+        path = APPLE_ICONSET / name
+        if not path.exists():
+            missing.append(name)
+            continue
+        with Image.open(path) as im:
+            if im.width != want or im.height != want:
+                wrong_size.append(f"{name} {im.width}x{im.height}!={want}")
+            if im.mode in ("RGBA", "LA") or "transparency" in im.info:
+                with_alpha.append(name)
+    total = sum(1 for i in manifest["images"] if i.get("filename"))
+    check("ios: every rung present", f"{total} files", f"{total - len(missing)} present", not missing)
+    check("ios: each at its declared size", "all exact", ", ".join(wrong_size) or "all exact", not wrong_size)
+    check("ios: no alpha channel", "none", ", ".join(with_alpha) or "none", not with_alpha)
+    # Not the Tauri placeholder: that mark is cyan+amber on white, ours is on paper.
+    hero = APPLE_ICONSET / "AppIcon-512@2x.png"
+    if hero.exists():
+        with Image.open(hero) as im:
+            corner = im.convert("RGB").getpixel((4, 4))
+        check("ios: full-bleed on paper", "#F6F2E9 corner", "#%02X%02X%02X" % corner, corner == (246, 242, 233))
+
+
+def verify_android() -> None:
+    """The legacy bitmaps, the adaptive layers, and the wiring that reaches them.
+
+    The wiring is the part that was missing: Tauri's template ships the legacy
+    bitmaps and a pair of placeholder vector drawables but no mipmap-anydpi-v26
+    entry, so every Android 8+ launcher fell back to the legacy bitmap and the
+    layers were unreachable. A foreground that exists and is never drawn looks
+    exactly like one that is.
+    """
+    if not ANDROID_RES.is_dir():
+        check("android: res", "present", "no gen/android", True, gated=False)
+        return
+    legacy = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+    fore = {"mdpi": 108, "hdpi": 162, "xhdpi": 216, "xxhdpi": 324, "xxxhdpi": 432}
+    bad = []
+    for density, px in legacy.items():
+        for name in ("ic_launcher.png", "ic_launcher_round.png"):
+            path = ANDROID_RES / f"mipmap-{density}" / name
+            if not path.exists():
+                bad.append(f"{density}/{name} missing")
+                continue
+            with Image.open(path) as im:
+                if im.width != px:
+                    bad.append(f"{density}/{name} {im.width}!={px}")
+    check("android: legacy bitmaps", "5 densities x2, exact", ", ".join(bad) or "all exact", not bad)
+
+    bad = []
+    for density, px in fore.items():
+        path = ANDROID_RES / f"mipmap-{density}" / "ic_launcher_foreground.png"
+        if not path.exists():
+            bad.append(f"{density} missing")
+            continue
+        with Image.open(path) as im:
+            if im.width != px:
+                bad.append(f"{density} {im.width}!={px}")
+            box = alpha_bbox(path)
+        if box:
+            # The mark must sit inside the 72/108 safe zone, or a round launcher
+            # mask clips it. Measured, because "it looked fine on my launcher"
+            # is exactly the claim that does not survive a different launcher.
+            margin = (px - px * 72 / 108) / 2
+            if box[0] < margin - 1 or box[1] < margin - 1 or box[2] > px - margin + 1 or box[3] > px - margin + 1:
+                bad.append(f"{density} mark {box} escapes the safe zone")
+    check("android: adaptive foreground", "5 densities, inside safe zone", ", ".join(bad) or "all inside", not bad)
+
+    anydpi = ANDROID_RES / "mipmap-anydpi-v26"
+    have = sorted(p.name for p in anydpi.glob("*.xml")) if anydpi.is_dir() else []
+    check(
+        "android: adaptive icon reachable",
+        "ic_launcher.xml, ic_launcher_round.xml",
+        ", ".join(have) or "none — layers unreachable",
+        have == ["ic_launcher.xml", "ic_launcher_round.xml"],
+    )
+    manifest = (ANDROID_RES.parent / "AndroidManifest.xml").read_text()
+    check(
+        "android: roundIcon declared",
+        "android:roundIcon",
+        "declared" if "android:roundIcon" in manifest else "absent",
+        "android:roundIcon" in manifest,
+    )
+
+
 def main() -> int:
     verify_gutter()
     verify_icns()
@@ -584,6 +730,8 @@ def main() -> int:
     verify_web()
     verify_palette()
     verify_small_sizes()
+    verify_ios()
+    verify_android()
 
     width = max(len(r[0]) for r in results)
     failures = 0
