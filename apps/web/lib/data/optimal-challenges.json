@@ -1,0 +1,10 @@
+[
+  { "facelets": "LLRUULDUBDFBRRLFBDFBRRFBURLRFDUDDUULUFRDLDBLFUBFDBFBRL", "scramble": "L' F L2 F B U2 D F2 B R' L' F' L' B2 U2 D' L", "optimalLength": 17, "optimalSolution": "L' D U2 B2 L F L R B' F2 D' U2 B' F' L2 F' L" },
+  { "facelets": "URBBUBUDLDLRRRFULFLBBUFDLDFFLRUDURFDFUBFLFBRDDBLLBRRDU", "scramble": "B' R L2 U D2 R2 B' U2 R' L2 B D2 L' U L' B2 L2 F2", "optimalLength": 18, "optimalSolution": "F2 L2 B2 L U' L D2 B' L2 R U2 B R2 D2 U' L2 R' B" },
+  { "facelets": "UUDFUBRRRDUBDRDURLUUFFFRLBLFLFLDBLDURDBFLLBUDRFFBBRBLD", "scramble": "R' B L B' D2 B' R2 U2 R' F D' L U' R2 B' D2 R' U", "optimalLength": 18, "optimalSolution": "U' R D2 B R2 U L' D F' R U2 R2 B D2 B L' B' R" },
+  { "facelets": "BFLLUDDRFDRFFRUURBFFLBFLFBRULBDDBBBRLURFLULLRUUDRBDDDU", "scramble": "B R B D' F' L' F' R2 F' U F' R D L2 D2 F' D' L2", "optimalLength": 18, "optimalSolution": "L2 D F D2 L2 D' R' F U' F R2 F L F D B' R' B'" },
+  { "facelets": "BRBFUUBBFDBLURFBFFRRLDFRFLRUBDUDLUDDLRUULLLLRUDDDBFRBF", "scramble": "D' F B' D F B2 D B U B2 L' F D R' F2 R U B'", "optimalLength": 18, "optimalSolution": "B U' R' F2 R D' F' L B2 U' B' D' B2 F' D' B F' D" },
+  { "facelets": "LRBFUUBRLBBRDRFBUULBUBFLRDUFRRLDRFBLFDDLLLDUUDFDUBFFDR", "scramble": "R2 D L2 F2 L' B' L B' D R' L2 D2 F R B' R' U2 L'", "optimalLength": 18, "optimalSolution": "L U2 R B R' F' D2 L2 R D' B L' B L F2 L2 D' R2" },
+  { "facelets": "FLULUFUBFDUBURFFLBBDLDFRUDDFFRRDUBURUBRLLRDBLLFRRBDDBL", "scramble": "U F' U B L' U2 L' U2 B2 R' L U' B2 U2 F2 L2 U2 D'", "optimalLength": 18, "optimalSolution": "D U2 L2 F2 U2 B2 U L' R B2 U2 L U2 L B' U' F U'" },
+  { "facelets": "DUDFURRBFUFLRRUUBFUURLFURDLDBFLDLURLRDBBLDBFFBFBLBRDDL", "scramble": "U F U' L2 F B' D' L' F B2 L B D2 F U' B2 L D", "optimalLength": 18, "optimalSolution": "D' L' B2 U F' D2 B' L' B2 F' L D B F' L2 U F' U'" }
+]
