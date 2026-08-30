@@ -15,6 +15,7 @@ import {
   prove as optimalProve,
   status as optimalStatus,
 } from './optimal.js';
+import { NO_CHALLENGES, indexChallenges, loadChallenges, provenAnswer } from './optimal-challenges.js';
 import { isDesktopHost } from './host.js';
 import { randomCube } from './random-state.js';
 import { makeRouter } from './router.js';
@@ -269,6 +270,14 @@ const state = {
 
 // How the four rungs read on the Settings screen. A rung with no label here would render as
 // "undefined", so app-wiring.test.mjs checks every TIERS entry has one.
+/** The one sentence the SHIPPED library may put on a screen, and the second of exactly two
+ *  places in this file where the word "proved" is allowed to originate (the other is the
+ *  native prover's gated block). It is a named function rather than a slice of a ternary so
+ *  the wording invariant in optimal.test.mjs can sanction it precisely instead of loosening
+ *  to a pattern that would let a third source through unnoticed. Its guard is checked there
+ *  too: the only call must sit behind `provenHere`. */
+const provenMinimumLabel = (moves) => `${moves} — proved the minimum`;
+
 const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', shortest: 'shortest' };
 const TIER_BLURB = {
   twenty: 'Twenty moves or fewer — always possible, and quick. An easy cube still gets its short answer',
@@ -279,6 +288,9 @@ const TIER_BLURB = {
 
 // ---- solver pipeline (cubejs oracle + the two-phase engine in a worker), lazy-loaded ----------
 let Cube = null, solverReady = false;
+/** States whose minimum is already PROVED, by facelets. Empty until the solver loads, and empty
+ *  forever if the library did not validate — both of which a lookup answers with a miss. */
+let challenges = NO_CHALLENGES;
 const invMove = (m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : m + "'");
 /** An alg undone: the same turns, backwards, each reversed. The ONE place that rule is written.
  *  It is an involution on every move form (R->R'->R, R2->R2, R'->R->R'), which is what lets the
@@ -296,6 +308,17 @@ async function loadSolver() {
     try {
       Cube = (await import('../vendor/cubejs.js')).default;
       Cube.initSolver();
+      // The proven library rides along: it needs the same oracle, and it is what lets a known
+      // state answer with no search and no native proof at all. Its failure is loud but never
+      // fatal — an empty index simply misses on every lookup, and the app searches as it always
+      // did. A library that will not validate must yield NO claim rather than a plausible one,
+      // which is exactly what dropping the whole index achieves.
+      try {
+        challenges = indexChallenges(await loadChallenges({ Cube }));
+      } catch (err) {
+        challenges = NO_CHALLENGES;
+        console.error('optimal-challenges: the proven library did not load; every state will be searched', err);
+      }
       solverReady = true;
       return true;
     } catch {
@@ -351,6 +374,11 @@ function deriveCube() {
     // returned moves" is not evidence of anything to follow — every fresh launch put a transport
     // under the solved cube reading 0 / 0, its done tick already lit.
     if (cube.isSolved()) { c.setupAlg = ''; c.solvable = false; return c; }
+    // A proved state carries the alg that reaches it, checked against the oracle at load — so
+    // the setup is a fact we ship, not a search this thread runs. This is the second of the two
+    // Kociemba searches a library state would otherwise pay for; solve() skips the other.
+    const known = provenAnswer(challenges, c.facelets);
+    if (known) { c.setupAlg = known.setupAlg; c.solvable = known.moves > 0; return c; }
     const sol = cube.solve();
     const moves = movesOf(sol);
     c.setupAlg = moves.slice().reverse().map(invMove).join(' ');
@@ -427,6 +455,18 @@ async function solve({ onImprovement } = {}) {
     // is unchanged: finishSolve applies it through cubejs — move application, ~µs, no search —
     // and a definite refutation blocks exactly as it does on the searched path.
     return finishSolve(c, c.solution);
+  }
+
+  // Already proved, offline, by crates/optimal-solver — so there is nothing to search for and
+  // nothing to prove. This is the whole point of shipping the library as data: the minimum for
+  // these states is a fact we carry, not a computation the device repeats. finishSolve still
+  // applies it through the cubejs oracle, so a library entry gets exactly the same refutation
+  // every searched answer gets; what it skips is the search, not the check.
+  const proven = provenAnswer(challenges, c.facelets);
+  if (proven) {
+    c.solveResult = { key: 'solve.provenMinimum', moves: proven.moves };
+    onImprovement?.({ alg: proven.alg, moves: proven.moves, target: null, met: true, stopped: 'met' });
+    return finishSolve(c, proven.alg);
   }
 
   const client = solverWorker();
@@ -2868,9 +2908,13 @@ const cubeScreen = (screenMode) => {
         // from an earlier solve — shown here it would caption a fresh scramble with an old
         // cube's shortfall.
         const verdict = scrambling ? null : state.cube.solveResult;
-        setStatus(verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'
-          ? `${total} — couldn't get to ${verdict.target}`
-          : String(total));
+        const provenHere = verdict?.key === 'solve.provenMinimum';
+        setStatus(
+          provenHere ? provenMinimumLabel(total)
+            : verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'
+              ? `${total} — couldn't get to ${verdict.target}`
+              : String(total),
+        );
 
         // The optimal seam's affordance (AGENTS.md, fourth seam): drawn only where the native
         // prover is injected AND a desktop is behind it — the whole orientation-row precedent,
@@ -2879,8 +2923,11 @@ const cubeScreen = (screenMode) => {
         // mobile builds the button never appears and the wording above stands as the honest
         // answer: the shortest found, no claim of minimality. Re-wired per WALK: a retarget
         // replaced the subject, so the button must come back for the new one.
+        // `!provenHere`: the library already carries this state's proof, so there is nothing
+        // left to ask the native prover for — offering minutes of search to re-derive a fact
+        // we shipped would be the opposite of why the file exists.
         const proveBtn = $('#proveBtn', root);
-        if (proveBtn && optimalCapability() && !scrambling) {
+        if (proveBtn && optimalCapability() && !scrambling && !provenHere) {
           proveBtn.hidden = false;
           proveBtn.disabled = false;
           proveBtn.textContent = 'prove the minimum';
