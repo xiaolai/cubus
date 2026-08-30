@@ -30,7 +30,11 @@ use gan_ble::btleplug::api::{
 };
 use gan_ble::btleplug::platform::Peripheral;
 use gan_ble::{default_adapter, find_gan_cube, FFF5_WRITE, FFF6_NOTIFY};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
+// Desktop-only: the sole use is `app.path()` in `orientation_path`, and a phone has no window whose
+// orientation could be remembered. Un-gated it is an unused import on mobile.
+#[cfg(desktop)]
+use tauri::Manager;
 use tokio::sync::Mutex;
 
 /// The FFF6 notification stream btleplug hands back (owned, 'static).
@@ -227,6 +231,11 @@ fn configured_traffic_lights<R: tauri::Runtime, M: tauri::Manager<R>>(
 // webview's layout — that asks its own container (index.html) and does not care what shape the
 // window is.
 
+// Desktop-only, like every one of its callers: the window arithmetic exists to fit a window to a
+// monitor's work area, and a phone has neither. Un-gated it compiled into the iOS build as 13
+// dead-code warnings (found by the first `--target aarch64-apple-ios` build, 2026-08-30) — which a
+// mobile clippy leg would read as 13 errors under `-D warnings`.
+#[cfg(desktop)]
 mod stage;
 
 /// Where the desktop's orientation is remembered: one word in a file in the app's config dir.
