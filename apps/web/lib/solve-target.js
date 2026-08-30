@@ -8,11 +8,14 @@
 //
 // Two facts from that note shape everything here:
 //
-//   * **A first answer is nearly free.** Loosely bounded, the engine returns in ~25 ms. So there
-//     is never a reason to show a person nothing. Every search starts by putting an answer on
-//     screen and then improving it, which also dissolves the tail — at the <= 20 tier the
-//     median descent is ~30 ms but the worst of 40 was 0.65 s, and nobody should watch a
-//     spinner for that when a 21-move answer was available immediately.
+//   * **The first answer is shown, then improved — and it is never above God's number.** Every
+//     search puts an answer on screen and then shortens it, rather than making a person wait
+//     for the best one. The first ask used to be the engine's loose ceiling, which returned in
+//     ~25 ms and was above 20 in roughly three solves out of four; it PRESENTED a count that
+//     cannot be a minimum. It now asks for the floor instead (FIRST_BOUND), and if that runs
+//     out of budget it retries with more before yielding anything, so the first frame can cost
+//     more than one search. That is the trade, taken deliberately on 2026-08-30 — see
+//     FIRST_BOUND for what is and is not known about its latency cost.
 //   * **Twenty is a floor under EVERY tier, because it is a fact about the cube.** God's number
 //     is 20, so a <= 20 solution always exists — for every position, whatever the person asked
 //     for. This module keeps that rather than aiming at it: while the answer in hand is longer
@@ -39,9 +42,9 @@
 //
 // Pure: no DOM, no storage, no globals, no worker. The search itself is injected, so this is
 // testable against a fake and the same code drives the real engine. The two protocol imports
-// below are constants and a counter, not behavior — the injected-solve seam stays.
+// below are a move counter and the answer validator — the injected-solve seam stays.
 
-import { LOOSEST_BOUND, movesIn, validateAnswer } from './solver-engine.js';
+import { movesIn, validateAnswer } from './solver-engine.js';
 
 /** The rungs, in the order a learner climbs them. `target: null` means "no target — keep
  *  going". Each rung is frozen too: a mutated target would silently move every search's
@@ -62,26 +65,42 @@ export const TIERS = Object.freeze([
  *  7). What that leaves is a budget question, never an existence one. */
 export const GODS_NUMBER = 20;
 
-/** The bound the FIRST attempt uses: the engine's own ceiling, so an answer is on screen
- *  almost immediately. Accepts anything up to 22 moves.
+/** The bound the FIRST attempt uses — the floor, not the engine's ceiling.
  *
- *  This is the one place a count above God's number can still reach a screen, and it is a
- *  deliberate trade rather than an oversight. Measured over three runs of 40 random states,
- *  that first answer is above 20 in 28 to 34 of them — so roughly three solves in four show a
- *  number that cannot be a minimum, for the few milliseconds before the descent replaces it.
- *  Asking for `GODS_NUMBER + 1` here instead removes that entirely and is a genuine trade, not
- *  a free win: median is a wash (5-14 ms either way), the maximum comes DOWN (~722-962 ms to
- *  ~156-684 ms), but p90 gets 3-4x worse (~21-29 ms to ~39-115 ms). One line, and those are the
- *  numbers to weigh — the descent's own floor (below) is what makes the transient the only case
- *  left. */
-const FIRST_BOUND = LOOSEST_BOUND;
+ *  It was LOOSEST_BOUND, on the reasoning that a first answer should be nearly free so nobody
+ *  is ever shown nothing. The first half of that still holds and is why this is bounded at all;
+ *  the second half is what put counts above God's number on screen. Measured over three runs of
+ *  40 random states, the loose first answer was above 20 in 28 to 34 of them — roughly three
+ *  solves in four PRESENTED a number that cannot be a minimum.
+ *
+ *  Asking for the floor up front costs first-paint latency, and that is the whole trade
+ *  (owner's call, 2026-08-30). How much it costs is NOT recorded here, deliberately: every
+ *  attempt to measure it in this session ran on a machine at load 40-66 from an unrelated
+ *  build, and the runs disagreed by 10x — one even reported the floor's worst case as better,
+ *  which a paired run then contradicted. The only direction that held across every run is that
+ *  p90 gets worse. Re-measure on a quiet machine before quoting a number, and put it here.
+ *
+ *  What is NOT a timing claim, and holds regardless: across 160 solves (40 states x 4 tiers),
+ *  no frame — first or final — showed a count above 20.
+ *
+ *  GODS_NUMBER + 1 rather than a literal 21: the bound is EXCLUSIVE, and the only reason it is
+ *  21 is that the floor is 20. Declared after GODS_NUMBER on purpose — `node --check` passes on
+ *  the other order and the module then throws "Cannot access 'GODS_NUMBER' before
+ *  initialization" only on import, a temporal dead zone a syntax check cannot see. */
+const FIRST_BOUND = GODS_NUMBER + 1;
 
 /** Search nodes per attempt. A budget in the engine's own deterministic unit rather than in
  *  milliseconds, so a slow phone and a fast laptop do the same amount of work and only the
- *  waiting differs. ~20 ns each on a laptop, so ~1 s per attempt at worst — and only a FAILING
- *  attempt at a tight tier ever spends it all; every met target stops early. Chosen by the
+ *  waiting differs. ~20 ns each on a laptop, so ~1 s for one attempt that spends it all — and
+ *  only a FAILING attempt at a tight tier does; every met target stops early. Chosen by the
  *  ladder in dev-docs/solver-move-count.md §7: at n=40 a 4x budget moved no tier's success
- *  rate and only stretched the worst wait, so the smaller budget with the better tail ships. */
+ *  rate and only stretched the worst wait, so the smaller budget with the better tail ships.
+ *
+ *  This is the BASE attempt. The first search escalates on refusal (see FIRST_BOUND), so its
+ *  last attempt may spend 256x this and the whole first search up to 511x cumulatively — about
+ *  8.5 minutes of nodes if every rung were spent in full (511 x ~1 s; an earlier draft of this
+ *  comment said four, which is simply wrong). Nothing observed comes close, but the number is
+ *  written down because "~1 s at worst" is no longer the ceiling it once was. */
 export const DEFAULT_PROBE_BUDGET = 50_000_000;
 
 /** The free-improvement budget: once the target is met, further asks spend only this. Small
@@ -120,11 +139,13 @@ export const STOPPED = Object.freeze({
  * the boundary by lib/solver-engine.js.
  *
  * Yields `{ alg, moves, target, met, stopped }` — `stopped` is null while still improving.
- * The first yield happens after one loose search, so there is always something to show.
+ * The first yield comes from a search bounded at the FLOOR (FIRST_BOUND), so there is always
+ * something to show and it is never a count above God's number. That search escalates its
+ * budget on refusal, so the first yield may cost more than one search.
  *
- * @throws if the very first, loosest search fails — the state is unsolvable, the solver is
- *         broken, or the budget was too small even for the loose search. Either way there is
- *         nothing to show, which is what makes it an error and not a result.
+ * @throws if the first search still fails after every sanctioned escalation — the state is not
+ *         a solvable cube, the budget was far too small, or the engine is broken. Either way
+ *         there is nothing to show, which is what makes it an error and not a result.
  */
 export async function* refine(facelets, {
   solve,
@@ -150,12 +171,55 @@ export async function* refine(facelets, {
   // Cancelled before anything was searched: there is nothing to show, so nothing is yielded.
   if (signal?.aborted) return;
 
-  const first = await solve(facelets, { solLen: FIRST_BOUND, probeMax: probeBudget });
-  if (first === null) {
-    throw new Error(
-      'solver found no solution at all — the state is unsolvable, the solver is broken, or ' +
-        'the budget was too small even for the loose first search',
-    );
+  // The first answer IS the floor, so this is where the floor is kept — and the only place it
+  // can be missed now. For a LEGAL cube a refusal here cannot mean "no such solution exists":
+  // God's number says one of 20 or fewer always does, and the engine is complete (solvePattern
+  // deepens phase-1 to solLen - 1, and canonical pruning is proved to delete no optimal path).
+  // So the ask repeats with twice as much.
+  //
+  // "For a legal cube" is the whole caveat, and this module cannot discharge it: `solve` answers
+  // null both for "out of budget" and for "not a solvable state", with no way to ask which, and
+  // nothing here parses the facelets. So escalation is what happens to BOTH — harmlessly, since
+  // the engine rejects an unparseable state before searching and each retry returns at once —
+  // and the error at the cap names the unsolvable case rather than asserting a guarantee that
+  // holds only for the other one.
+  //
+  // Everything after this is a descent from a number already at or below 20, which is why the
+  // loop below needs no floor of its own: it can only shorten.
+  let budget = probeBudget;
+  let escalations = 0;
+  let first = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget });
+  while (first === null) {
+    // An abort here is a person leaving before the first answer — nothing to show, so nothing
+    // is yielded, exactly as an abort before any search at all.
+    if (signal?.aborted) return;
+    if (escalations >= MAX_PROMISE_ESCALATIONS) {
+      // Says what happened, not what it means. The engine IS complete, so on the shipped budget
+      // this can only be a bug — but a caller may pass any budget it likes, and `probeBudget: 1`
+      // exhausting after 256 nodes accuses the engine of something the caller did.
+      // Ordered so the claim never outruns what is known. God's number guarantees a <= 20
+      // solution for every LEGAL cube, and this module never establishes legality — the engine
+      // answers null both for "out of budget" and for "not a solvable state", and cannot be
+      // asked which. So the unsolvable case is named first, and the guarantee is stated as the
+      // conditional it actually is. (Escalating eight times on an unsolvable state costs
+      // nothing measurable: the engine rejects the facelets before searching, so each attempt
+      // returns immediately rather than spending its budget.)
+      throw new Error(
+        `solver found no solution of ${GODS_NUMBER} moves or fewer within ${escalations} ` +
+          `escalations, up to ${budget} nodes. Either this is not a solvable cube — for one ` +
+          'that is, a solution this short always exists — or the budget was far too small, or ' +
+          'the engine is broken',
+      );
+    }
+    if (!Number.isSafeInteger(budget * 2)) {
+      throw new Error(
+        `solver found no solution of ${GODS_NUMBER} moves or fewer, and the budget cannot be ` +
+          `doubled past ${budget} without leaving the safe-integer range`,
+      );
+    }
+    escalations += 1;
+    budget *= 2;
+    first = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget });
   }
 
   let alg = validateAnswer(first, FIRST_BOUND);
@@ -192,23 +256,9 @@ export async function* refine(facelets, {
   }
   yield snapshot(null);
 
-  // The floor is the CUBE's, not the tier's — and getting that wrong is what this replaces.
-  //
-  // God's number is a fact about every legal position: a solution of 20 moves or fewer always
-  // exists. So no tier may finish above it, and tying the guarantee to `target >= 20` covered
-  // only the rung that asks for exactly 20. The three others — 19, 18 and "shortest" — had no
-  // floor at all, and measured on this engine each of them could end at 21. The worst of those
-  // is "shortest": a person who asked for the shortest solution there is would be handed one
-  // LONGER than the <= 20 rung would have given them, captioned with the plain number and no
-  // hint that anything fell short.
-  //
-  // Above the floor, exhaustion only ever means the budget was too small, so the ask repeats
-  // with twice as much. At or below it, exhaustion is an honest end: 18 genuinely does not
-  // exist for every cube, and this loop must not pretend otherwise.
-  const owed = () => moves > GODS_NUMBER;
-  let budget = probeBudget;
-  let escalations = 0;
-
+  // No floor is needed here: the first answer is already at or below God's number and this
+  // loop only ever shortens it. A refusal below the floor is an honest end — 18 genuinely does
+  // not exist for roughly 3.5% of positions — so exhaustion here reports, never escalates.
   while (true) {
     if (signal?.aborted) {
       yield snapshot(endReason(STOPPED.CANCELLED));
@@ -216,39 +266,8 @@ export async function* refine(facelets, {
     }
     // Ask for strictly shorter than what we have. One move at a time: each answer is a real
     // improvement worth showing, and skipping ahead would throw away the cheap rungs.
-    const shorter = await solve(facelets, { solLen: moves, probeMax: met() ? bonusBudget : budget });
+    const shorter = await solve(facelets, { solLen: moves, probeMax: met() ? bonusBudget : probeBudget });
     if (shorter === null) {
-      if (owed()) {
-        // An abort that lands on this attempt is a person leaving, not a failure. Checked HERE
-        // as well as at the top of the loop, because the cap below throws and would otherwise
-        // report the last cancelled attempt as a broken engine.
-        if (signal?.aborted) {
-          yield snapshot(endReason(STOPPED.CANCELLED));
-          return;
-        }
-        // Not "impossible" — not yet. Escalate and ask again.
-        if (escalations >= MAX_PROMISE_ESCALATIONS) {
-          // Says what happened, not what it means. The engine IS complete, so on the shipped
-          // budget this can only be a bug — but a caller may pass any budget it likes, and
-          // `probeBudget: 1` exhausting after 256 nodes accuses the engine of something the
-          // caller did. State the work actually spent and let the reader draw the conclusion.
-          throw new Error(
-            `solver did not get below ${moves} moves within ${escalations} escalations, up to ` +
-              `${budget} nodes per attempt. A solution of ${GODS_NUMBER} or fewer always exists, ` +
-              'so either the budget was far too small or the engine is broken',
-          );
-        }
-        // A budget that cannot be doubled without leaving the safe-integer range would be
-        // rejected by the engine boundary as malformed — a confusing failure for a caller who
-        // only asked for a very large budget. Stop escalating and report honestly instead.
-        if (!Number.isSafeInteger(budget * 2)) {
-          yield snapshot(endReason(STOPPED.EXHAUSTED));
-          return;
-        }
-        escalations++;
-        budget *= 2;
-        continue;
-      }
       // Out of budget, or out of two-phase solutions. Either way the answer we have stands,
       // and if it does not meet the target we say so rather than presenting it as if it did.
       yield snapshot(endReason(STOPPED.EXHAUSTED));
