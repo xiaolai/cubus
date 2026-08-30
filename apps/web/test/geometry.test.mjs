@@ -34,7 +34,7 @@ let browser;
 before(async () => {
   proc = spawn(process.execPath, [SERVE], { env: { ...process.env, PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'pipe'] });
   await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('serve.mjs did not start within 5s')), 5000);
+    const timeout = setTimeout(() => reject(new Error('serve.mjs did not start within 20s')), 20_000);
     proc.stdout.on('data', (d) => {
       if (d.toString().includes(`:${PORT}`)) { clearTimeout(timeout); resolve(); }
     });
@@ -83,7 +83,11 @@ async function open(fixture, route = 'home') {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e));
   await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${route}`);
-  await page.waitForSelector('.screen.active', { timeout: 10_000 });
+  // 30 s, not 10: this is an AVAILABILITY wait (did the app mount), not an assertion —
+  // under test-concurrency=6, six webkits and dev servers share one machine, and the mount
+  // once lost a 10 s race (2026-08-30) while every geometry assertion behind it would have
+  // passed. Generous waits here; the strictness belongs to the geometry checks themselves.
+  await page.waitForSelector('.screen.active', { timeout: 30_000 });
   return { page, context, errors };
 }
 
@@ -514,7 +518,7 @@ for (const screen of SCREENS) {
       page.on('pageerror', (e) => errors.push(e));
       try {
         await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${screen}`);
-        await page.waitForSelector('.screen.active', { timeout: 10_000 });
+        await page.waitForSelector('.screen.active', { timeout: 30_000 });
         const m = await measureScreen(page);
         assert.deepEqual(errors.map(String), [], 'the page threw');
         assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);
