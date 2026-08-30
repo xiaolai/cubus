@@ -78,15 +78,31 @@
          orientation. Nothing in this stylesheet asks the viewport's — under the layout contract
          (dev-docs/stage-contract.md) the viewport is not the stage, and a viewport query is the
          wrong signal; a test bans them. The insets are custom properties so the harness can stand
-         in for a phone: app.js sets --inset-* from `?insets=t,r,b,l`. */
+         in for a phone: app.js sets --inset-* from `?insets=t,r,b,l`.
+
+         --os-inset-* is the platform's chance to say what env() cannot. In Chromium,
+         env(safe-area-inset-*) reports the DISPLAY CUTOUT only — Android's gesture navigation bar
+         is a system-bar inset, so safe-area-inset-bottom there is 0 and the tab row would sit under
+         the pill (measured on a Pixel 8, API 36, 2026-08-30: top 51px, bottom 0px). The Android
+         activity writes the real values as --os-inset-* (MainActivity.kt); nothing else sets them,
+         so every other build falls through to env() exactly as before, and `?insets=` — an inline
+         style on .app — still outranks both. Do not collapse this back to a bare env(). */
       .app {
-        --inset-t: env(safe-area-inset-top, 0px); --inset-r: env(safe-area-inset-right, 0px);
-        --inset-b: env(safe-area-inset-bottom, 0px); --inset-l: env(safe-area-inset-left, 0px);
-        height: 100dvh; padding: var(--inset-t) var(--inset-r) var(--inset-b) var(--inset-l);
+        --inset-t: var(--os-inset-t, env(safe-area-inset-top, 0px)); --inset-r: var(--os-inset-r, env(safe-area-inset-right, 0px));
+        --inset-b: var(--os-inset-b, env(safe-area-inset-bottom, 0px)); --inset-l: var(--os-inset-l, env(safe-area-inset-left, 0px));
+        height: 100dvh; padding: var(--inset-t) var(--inset-r) 0 var(--inset-l);
         container-type: size; container-name: app;
         display: flex; flex-direction: column; background: var(--bg);
       }
-      .win { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
+      /* The BOTTOM inset is not the app box's, it belongs to whatever is bottom-most — and that
+         differs by composition. In landscape the stage is, so .win pads by it and content keeps
+         clear of the home indicator. In portrait the tab bar is, so the bar takes it instead
+         (below): a bar whose background stops short of the screen edge leaves a strip of paper
+         under it, which is what a native tab bar never does. .app cannot make this choice itself —
+         an element is not styled by its own container query — which is why the inset moves down to
+         these two rather than being switched off up there. The other three insets stay on .app,
+         where nothing competes for them. */
+      .win { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; padding-bottom: var(--inset-b); }
       /* The title bar is the app's toolbar (paper-one TitleBar). Two zones at its ends: macOS
          leads with the traffic-light gap and the wordmark and trails with Settings; Windows/Linux
          lead with the wordmark and trail with Settings and the caption buttons; iOS/Android lead
@@ -99,9 +115,10 @@
         height: var(--titlebar-h); display: flex; justify-content: space-between; align-items: center;
         padding: 0 12px;
       }
-      /* flex: none — the zones never shrink; the tab row is what adapts (compact). With
-         `0 1 auto` WebKit sized the lead zone under its content while the bar had 600px free,
-         and the wordmark ran out of its box under the tabs. */
+      /* flex: none — the zones never shrink. With `0 1 auto` WebKit sized the lead zone under its
+         content while the bar had 600px free, and the wordmark ran out of its box under the tabs.
+         (The row used to adapt by dropping its labels; it is icons only now, so it is simply
+         narrow.) */
       .tb-zone { display: flex; align-items: center; gap: 4px; flex: none; }
       .tb-trail { justify-content: flex-end; }
       /* The traffic-light gap. The OS paints the real lights at trafficLightPosition; in a browser
@@ -135,23 +152,23 @@
          contract's fixtures subtract. Asked of the app container, never the window. */
       .tabs { position: absolute; top: 0; left: 50%; translate: -50% 0; z-index: 6; height: var(--titlebar-h); display: flex; align-items: center; }
       .tabs .capsule { display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--ink) 7%, transparent); }
-      /* Icons only when the labelled row would not fit between the bar's outer zones — measured
-         by app.js (fitTabs), because whether six labelled tabs fit depends on the tabs, the
-         language and the platform's lead zone, none of which a width can know. */
-      .tabs.compact .nav-item { padding: 0 10px; }
-      .tabs.compact .nav-item .lbl { display: none; }
+      /* The tab row is icons only (decided 2026-08-30), in both compositions. The word survives as
+         the button's aria-label and title, so the row is still announced and still translated —
+         it is simply not drawn. This replaced a measured label/icon switch (fitTabs), which had
+         nothing left to measure once no tab carried text. */
       @container app (orientation: portrait) {
-        .tabs { position: static; translate: none; height: var(--tabbar-h); width: 100%; flex: none; border-top: 1px solid var(--line); background: var(--panel); }
+        .win { padding-bottom: 0; }
+        /* Taller by the inset and padded by it: the background reaches the screen edge, the row of
+           tabs sits exactly where it did, and the stage above is unchanged. */
+        .tabs { position: static; translate: none; height: calc(var(--tabbar-h) + var(--inset-b)); padding-bottom: var(--inset-b); width: 100%; flex: none; border-top: 1px solid var(--line); background: var(--panel); }
         .tabs .capsule { width: 100%; height: 100%; padding: 0; gap: 0; border-radius: 0; background: none; }
-        /* Icon over a word, every tab the same width — the tab-bar idiom of both phone platforms.
-           Under every icon there is room for the word, so compact never applies here. Selectors
-           carry `.tabs` because the base .nav-item rules come later in this sheet at the same
-           specificity, and the bottom bar must win. */
-        .tabs .nav-item { flex: 1 1 0; min-width: 0; height: 100%; padding: 0; flex-direction: column; justify-content: center; gap: 3px; border-radius: 0; font-size: var(--fs-micro); font-weight: 600; color: var(--ink-4); }
+        /* One icon, centred, every tab the same width. Selectors carry `.tabs` because the base
+           .nav-item rules come later in this sheet at the same specificity, and the bottom bar
+           must win. */
+        .tabs .nav-item { flex: 1 1 0; min-width: 0; height: 100%; padding: 0; justify-content: center; border-radius: 0; color: var(--ink-4); }
         .tabs .nav-item .ico { width: auto; }
         .tabs .nav-item .ico svg { width: 22px; height: 22px; }
         .tabs .nav-item.active { background: none; color: var(--ink); }
-        .tabs.compact .nav-item .lbl { display: block; }
       }
       .nav-item {
         display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 13px;
@@ -720,7 +737,7 @@
       @media (pointer: coarse) {
         .screen { --chip: 44px; }
         .btn, .tbtn, .tb-ctl, .card-tools > button, .pill, .menu > button, .nav-item, .swatches > button, .field { min-height: 44px; }
-        .tbtn, .tb-ctl, .card-tools > button, .swatches > button { min-width: 44px; }
+        .tbtn, .tb-ctl, .card-tools > button, .swatches > button, .nav-item { min-width: 44px; }
         .eyebrow-row > button { width: 44px; height: 44px; margin: -14px -12px -14px 0; }
         .toggle::before { content: ''; position: absolute; inset: -11px -2px; }
         .transport { gap: 4px; }

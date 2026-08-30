@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "Window control: dragging the title bar, minimising and closing. On Windows and Linux the window is created undecorated, so the app's own caption buttons are the only ones the user has \u2014 see buildChrome in apps/web/lib/app.js. A phone has no window to drive, so this capability is not granted there.",
+  "platforms": [
+    "macOS",
+    "windows",
+    "linux"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-close",
+    "core:window:allow-set-title"
+  ]
+}
