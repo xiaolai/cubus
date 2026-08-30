@@ -272,8 +272,8 @@ const state = {
 const TIER_LABEL = { twenty: '≤ 20', nineteen: '≤ 19', eighteen: '≤ 18', shortest: 'shortest' };
 const TIER_BLURB = {
   twenty: 'Twenty moves or fewer — always possible, and quick. An easy cube still gets its short answer',
-  nineteen: 'Nineteen or fewer — a moment longer, and it always gets there',
-  eighteen: 'Eighteen if this cube allows it; some do not, and it will say so',
+  nineteen: 'Nineteen or fewer — a moment longer, and it almost always gets there',
+  eighteen: 'Eighteen when it can be found; often it cannot, and it says so rather than pretend',
   shortest: 'Keeps looking for a shorter one until you move on',
 };
 
@@ -2856,16 +2856,20 @@ const cubeScreen = (screenMode) => {
         total = moves.length;
         if (scrambling) paintNet(target);
         cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
-        // Just the number, unless the tier asked for something this cube cannot give. Eighteen
-        // moves do not exist for every position, so that case is said plainly rather than left
-        // to look like the target was met — but only when the search actually EXHAUSTED.
-        // A stopped search proved nothing impossible and must not claim it did.
+        // Just the number, unless the search fell short of the tier — and then a sentence about
+        // the SEARCH, never about the cube. This used to read "18 was not possible here", which
+        // two-phase has no way to know: it cannot prove a minimum, so it cannot prove one absent
+        // (solver-move-count.md section 4). Measured on 30 random states, the <= 18 tier fell
+        // short 19 times while only ~3.5% of positions are genuinely optimal-19-or-20 — so that
+        // sentence was false roughly eighteen times out of nineteen. At <= 20 it was false
+        // always, God's number being 20; solve-target now keeps that promise by escalating, so
+        // this branch cannot be reached from a promised tier at all.
         // A scramble walk never ran the solver, so any verdict on state.cube is a LEFTOVER
         // from an earlier solve — shown here it would caption a fresh scramble with an old
-        // cube's "18 was not possible".
+        // cube's shortfall.
         const verdict = scrambling ? null : state.cube.solveResult;
         setStatus(verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'
-          ? `${total} — ${verdict.target} was not possible here`
+          ? `${total} — couldn't get to ${verdict.target}`
           : String(total));
 
         // The optimal seam's affordance (AGENTS.md, fourth seam): drawn only where the native
