@@ -48,3 +48,16 @@ CLAUDE.local.md
 # per-run working state (findings + fix statuses), not authored content.
 .cc-suite/audits/
 # <<< cc-suite <<<
+
+# Signing material. None of this belongs in the repo, and the cost of one slip is a revoked
+# certificate and a re-keyed app listing — Android in particular cannot change its upload key
+# without Google's intervention. gen/android/.gitignore already covers keystore.properties;
+# these patterns cover the key files themselves, wherever anybody drops them.
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+*.cer
+*.certSigningRequest
+keystore.properties
+key.properties

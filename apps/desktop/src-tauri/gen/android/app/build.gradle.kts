@@ -13,6 +13,23 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release signing, read from a file that is NEVER committed (gen/android/.gitignore already
+// lists keystore.properties, and the repo root ignores the key material itself).
+//
+// Absent on purpose in a normal checkout: `tauri android build` is also the mobile compile gate
+// (dev-docs/mobile-shell-plan.md M0), and a missing keystore must not stop someone proving the
+// thing compiles. So the config is wired only when the file is there, and its ABSENCE is
+// announced rather than silently producing an unsigned artifact that looks like a release. The
+// release workflow does not trust this warning — it asserts the artifact is signed before it
+// uploads anything, because a warning in a 20-minute log is a warning nobody reads.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
+
 android {
     compileSdk = 36
     namespace = "im.cubus.app"
@@ -23,6 +40,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -38,6 +65,14 @@ android {
             }
         }
         getByName("release") {
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "cubus: no gen/android/keystore.properties, so this release build will be " +
+                    "UNSIGNED and cannot be installed or uploaded. See dev-docs/release-runbook.md."
+                )
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

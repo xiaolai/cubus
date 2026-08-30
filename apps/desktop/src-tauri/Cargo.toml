@@ -1,6 +1,6 @@
 [package]
 name = "cubus-desktop"
-version = "0.1.3"
+version = "0.2.0"
 description = "Cubus desktop app"
 edition = "2021"
 rust-version = "1.77.2"
