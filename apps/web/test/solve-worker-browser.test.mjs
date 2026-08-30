@@ -338,3 +338,37 @@ test('a proof that runs long says what it has ruled out, and can be stopped', as
     assert.equal(out.afterCancelHidden, true, 'and the stop goes away with the wait');
   });
 });
+
+test('a handheld asks for the camera that can see the cube; a desktop asks for nothing', async () => {
+  // getUserMedia with no facing constraint hands over the platform's default, and on a phone
+  // that is the front camera — a cube scanner pointed at the user's face. The hint is therefore
+  // platform-shaped, not taste: a desktop is deliberately left asking for nothing, because there
+  // a facing mode names a different physical machine rather than a different lens.
+  const facingFor = async (platform) => {
+    const page = await browser.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    try {
+      await page.goto(`${BASE}/?platform=${platform}#/scan`);
+      await page.waitForSelector('ai-scan-panel', { timeout: 30_000 });
+      const seen = await page.evaluate(() => ({
+        facing: document.querySelector('ai-scan-panel')?.getAttribute('facing'),
+        platform: document.documentElement.dataset.platform,
+      }));
+      assert.equal(seen.platform, platform, 'the platform pin did not take');
+      assert.deepEqual(errors, [], 'the page logged an uncaught error');
+      return seen.facing;
+    } finally {
+      await page.close();
+    }
+  };
+
+  for (const handheld of ['ios', 'android']) {
+    assert.equal(await facingFor(handheld), 'environment',
+      `${handheld} must ask for the rear camera, or the scanner opens on the user's face`);
+  }
+  for (const desktop of ['macos', 'windows', 'linux']) {
+    assert.equal(await facingFor(desktop), null,
+      `${desktop} must express no preference — a facing mode there names another machine`);
+  }
+});

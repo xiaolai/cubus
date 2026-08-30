@@ -1576,11 +1576,20 @@ SCREENS.scan = () => {
   // twin and a paragraph. `twin-low`: in portrait the twin sits beside the sheet, not beside the
   // cross — the cross is the same cross in both windows and wants the width (index.html). Only a
   // net in both compositions and on every platform (.scan-faces).
+  //
+  // `facing="environment"` off the desktop, and it is not a preference — it is which way the
+  // camera points. A handheld has two, and only one of them can see a cube you are holding;
+  // getUserMedia with no constraint hands over the platform's default, which on a phone is the
+  // front one, so the scanner opened pointed at your face. Desktops are deliberately left
+  // asking for nothing: there a facing mode names a different physical machine rather than a
+  // different lens (packages/cube-scanner/src/camera.ts says so at the constraint itself).
+  // A pinned camera still wins over this — deviceId is checked first — so choosing one from the
+  // menu is never overridden by the hint.
   return {
     html: `<div class="cols twin-low" style="--primary-share:0.66">
     <div class="col">
       <div class="card scanboard">
-        <ai-scan-panel headless autostart></ai-scan-panel>
+        <ai-scan-panel headless autostart${isDesktopHost() ? '' : ' facing="environment"'}></ai-scan-panel>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" role="group" aria-label="${SCAN_FACE_NAME[f]} side" data-face="${f}">
           <div class="tile" style="border-color:${edgeColors(f)}"><div class="tgrid">${pending(f)}</div></div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
         <div class="scan-cam card-tools">
