@@ -13,12 +13,16 @@
 //     screen and then improving it, which also dissolves the tail — at the <= 20 tier the
 //     median descent is ~30 ms but the worst of 40 was 0.65 s, and nobody should watch a
 //     spinner for that when a 21-move answer was available immediately.
-//   * **The tiers are not all the same kind of promise.** God's number is 20, so a <= 20
-//     solution always exists — and this module now KEEPS that promise rather than aiming at it:
-//     a target at or above 20 that runs out of budget asks again with more, because the engine
-//     is complete and only the budget can fail (see GODS_NUMBER below). <= 18 is a different
-//     kind of thing: roughly 3.5% of positions are optimally 19 or 20, and for those 18 moves
-//     is impossible rather than expensive. A tier that cannot always be met must say so rather
+//   * **Twenty is a floor under EVERY tier, because it is a fact about the cube.** God's number
+//     is 20, so a <= 20 solution always exists — for every position, whatever the person asked
+//     for. This module keeps that rather than aiming at it: while the answer in hand is longer
+//     than 20, running out of budget means the budget was too small (the engine is complete;
+//     see GODS_NUMBER below), so it asks again with more. Tying this to the TIER instead of the
+//     cube was a real bug — the 19, 18 and "shortest" rungs then had no floor, and each of them
+//     could end at 21. Asking for something shorter must never yield something longer.
+//   * **Below the floor the tiers are not the same kind of promise.** <= 18 is a different kind
+//     of thing: roughly 3.5% of positions are optimally 19 or 20, and for those 18 moves is
+//     impossible rather than expensive. A tier that cannot always be met must say so rather
 //     than quietly hand back something longer, which is why `met` is part of every result and
 //     never inferred from the move count alone.
 //   * **A missed target is never an impossibility.** Two-phase cannot prove a minimum, so it
@@ -49,9 +53,27 @@ export const TIERS = Object.freeze([
   Object.freeze({ name: 'shortest', target: null }),
 ]);
 
-/** The loose bound the first attempt uses: the engine's own ceiling, imported so the two
- *  halves of the protocol cannot drift. Accepts anything up to 22 moves; ~25 ms, always
- *  succeeds. */
+/** God's number in the half-turn metric: every one of the 43,252,003,274,489,856,000 legal
+ *  positions has a solution of 20 moves or fewer (Rokicki, Kociemba, Davidson and Dethridge,
+ *  2010). A target at or above it is therefore a PROMISE this app can always keep, and the
+ *  engine can always keep it: solvePattern deepens phase-1 to solLen - 1, so at d1 = L the
+ *  phase-2 tail is empty and a length-L solution is itself inside the enumeration — with
+ *  canonical pruning already proved to delete no optimal path (optimal-solver-plan.md section
+ *  7). What that leaves is a budget question, never an existence one. */
+export const GODS_NUMBER = 20;
+
+/** The bound the FIRST attempt uses: the engine's own ceiling, so an answer is on screen
+ *  almost immediately. Accepts anything up to 22 moves.
+ *
+ *  This is the one place a count above God's number can still reach a screen, and it is a
+ *  deliberate trade rather than an oversight. Measured over three runs of 40 random states,
+ *  that first answer is above 20 in 28 to 34 of them — so roughly three solves in four show a
+ *  number that cannot be a minimum, for the few milliseconds before the descent replaces it.
+ *  Asking for `GODS_NUMBER + 1` here instead removes that entirely and is a genuine trade, not
+ *  a free win: median is a wash (5-14 ms either way), the maximum comes DOWN (~722-962 ms to
+ *  ~156-684 ms), but p90 gets 3-4x worse (~21-29 ms to ~39-115 ms). One line, and those are the
+ *  numbers to weigh — the descent's own floor (below) is what makes the transient the only case
+ *  left. */
 const FIRST_BOUND = LOOSEST_BOUND;
 
 /** Search nodes per attempt. A budget in the engine's own deterministic unit rather than in
@@ -67,14 +89,6 @@ export const DEFAULT_PROBE_BUDGET = 50_000_000;
  *  which every rung down to its real answer is cheap by definition — descends all the way. */
 export const BONUS_BUDGET = 2_000_000;
 
-/** God's number in the half-turn metric: every one of the 43,252,003,274,489,856,000 legal
- *  positions has a solution of 20 moves or fewer (Rokicki, Kociemba, Davidson and Dethridge,
- *  2010). A target at or above it is therefore a PROMISE this app can always keep, and the
- *  engine can always keep it: solvePattern deepens phase-1 to solLen - 1, so at d1 = L the
- *  phase-2 tail is empty and a length-L solution is itself inside the enumeration — with
- *  canonical pruning already proved to delete no optimal path (optimal-solver-plan.md section
- *  7). What that leaves is a budget question, never an existence one. */
-export const GODS_NUMBER = 20;
 
 /** How many times a promised target may double its budget before the engine is declared broken.
  *  Eight doublings is 256x the shipped budget, against a measured worst of 447 ms and 0 misses
@@ -178,10 +192,20 @@ export async function* refine(facelets, {
   }
   yield snapshot(null);
 
-  // A target at or above God's number is owed, not merely aimed at. Below it, exhaustion is an
-  // honest end; at or above it, exhaustion only ever means the budget was too small, so the ask
-  // repeats with twice as much rather than ending on a promise the app broke.
-  const promised = target !== null && target >= GODS_NUMBER;
+  // The floor is the CUBE's, not the tier's — and getting that wrong is what this replaces.
+  //
+  // God's number is a fact about every legal position: a solution of 20 moves or fewer always
+  // exists. So no tier may finish above it, and tying the guarantee to `target >= 20` covered
+  // only the rung that asks for exactly 20. The three others — 19, 18 and "shortest" — had no
+  // floor at all, and measured on this engine each of them could end at 21. The worst of those
+  // is "shortest": a person who asked for the shortest solution there is would be handed one
+  // LONGER than the <= 20 rung would have given them, captioned with the plain number and no
+  // hint that anything fell short.
+  //
+  // Above the floor, exhaustion only ever means the budget was too small, so the ask repeats
+  // with twice as much. At or below it, exhaustion is an honest end: 18 genuinely does not
+  // exist for every cube, and this loop must not pretend otherwise.
+  const owed = () => moves > GODS_NUMBER;
   let budget = probeBudget;
   let escalations = 0;
 
@@ -194,7 +218,7 @@ export async function* refine(facelets, {
     // improvement worth showing, and skipping ahead would throw away the cheap rungs.
     const shorter = await solve(facelets, { solLen: moves, probeMax: met() ? bonusBudget : budget });
     if (shorter === null) {
-      if (promised && !met()) {
+      if (owed()) {
         // An abort that lands on this attempt is a person leaving, not a failure. Checked HERE
         // as well as at the top of the loop, because the cap below throws and would otherwise
         // report the last cancelled attempt as a broken engine.
@@ -209,7 +233,7 @@ export async function* refine(facelets, {
           // `probeBudget: 1` exhausting after 256 nodes accuses the engine of something the
           // caller did. State the work actually spent and let the reader draw the conclusion.
           throw new Error(
-            `solver did not reach ${target} moves within ${escalations} escalations, up to ` +
+            `solver did not get below ${moves} moves within ${escalations} escalations, up to ` +
               `${budget} nodes per attempt. A solution of ${GODS_NUMBER} or fewer always exists, ` +
               'so either the budget was far too small or the engine is broken',
           );
