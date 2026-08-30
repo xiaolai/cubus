@@ -3921,11 +3921,18 @@ function renderNav() {
   const items = NAV.filter(([id]) => !navHidden(id));
   // The capsule is the segmented control's pill; the nav around it is the positioned box the
   // stylesheet floats over the title bar (landscape) or lays at the foot of the window (portrait).
-  // Icons only (decided 2026-08-30). The word does not disappear — it becomes the button's
-  // accessible name and its desktop tooltip, so a screen reader still announces "Scramble" and
-  // i18n still has something to translate. Dropping the visible text and leaving nothing in its
-  // place would have made the whole row anonymous to assistive tech.
-  $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}" title="${t(lbl)}" aria-label="${t(lbl)}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span></button>`).join('')}</div>`;
+  // The label is DRAWN in one composition and undrawn in the other, from one DOM — the same
+  // rule the row's position follows. Portrait is a bottom tab bar with a word under every icon
+  // (the 49px height is the one iOS sizes for exactly that); landscape floats the row between
+  // the title bar's outer zones, where there was never room for words — that is what fitTabs()
+  // used to measure before the labels went away entirely on 2026-08-30.
+  //
+  // `aria-label` stays on the button in BOTH, and is what makes hiding the span safe: an
+  // accessible name given explicitly wins over the element's contents, so the landscape row is
+  // announced identically to the portrait one. Hiding a span that was the ONLY source of the
+  // name is what would leave a row of anonymous buttons — which is why the name was moved onto
+  // the button first, and stays there now that the word is back.
+  $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}" title="${t(lbl)}" aria-label="${t(lbl)}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span><span class="lbl">${t(lbl)}</span></button>`).join('')}</div>`;
   for (const b of $('#nav').querySelectorAll('[data-nav]')) b.onclick = () => go(b.dataset.nav);
   // Settings sits outside the row (buildChrome draws it), so it is marked here, not by the template.
   // The GEAR, found by its label: the smart-cube indicator beside it also carries

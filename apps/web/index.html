@@ -152,22 +152,31 @@
          contract's fixtures subtract. Asked of the app container, never the window. */
       .tabs { position: absolute; top: 0; left: 50%; translate: -50% 0; z-index: 6; height: var(--titlebar-h); display: flex; align-items: center; }
       .tabs .capsule { display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--ink) 7%, transparent); }
-      /* The tab row is icons only (decided 2026-08-30), in both compositions. The word survives as
-         the button's aria-label and title, so the row is still announced and still translated —
-         it is simply not drawn. This replaced a measured label/icon switch (fitTabs), which had
-         nothing left to measure once no tab carried text. */
+      /* The word is drawn in one composition and not the other, and which one is not a taste
+         call — it is where the room is. Portrait is a bottom tab bar, and 49px is the height iOS
+         sizes for an icon with a word under it; landscape floats the row between the title bar's
+         outer zones, which is exactly the space fitTabs() used to measure and never found enough
+         of. So: labelled below, icons only above. Either way the button carries the word as its
+         aria-label and title, so the row is announced and translated identically in both — an
+         explicit accessible name outranks the element's contents, which is what makes hiding the
+         span safe here and would not have been before the name moved onto the button. */
       @container app (orientation: portrait) {
         .win { padding-bottom: 0; }
         /* Taller by the inset and padded by it: the background reaches the screen edge, the row of
            tabs sits exactly where it did, and the stage above is unchanged. */
         .tabs { position: static; translate: none; height: calc(var(--tabbar-h) + var(--inset-b)); padding-bottom: var(--inset-b); width: 100%; flex: none; border-top: 1px solid var(--line); background: var(--panel); }
         .tabs .capsule { width: 100%; height: 100%; padding: 0; gap: 0; border-radius: 0; background: none; }
-        /* One icon, centred, every tab the same width. Selectors carry `.tabs` because the base
-           .nav-item rules come later in this sheet at the same specificity, and the bottom bar
-           must win. */
-        .tabs .nav-item { flex: 1 1 0; min-width: 0; height: 100%; padding: 0; justify-content: center; border-radius: 0; color: var(--ink-4); }
+        /* An icon with its word under it, centred, every tab the same width. Selectors carry
+           `.tabs` because the base .nav-item rules come later in this sheet at the same
+           specificity, and the bottom bar must win. */
+        .tabs .nav-item { flex: 1 1 0; min-width: 0; height: 100%; padding: 0 2px; flex-direction: column; gap: 2px; justify-content: center; border-radius: 0; color: var(--ink-4); }
         .tabs .nav-item .ico { width: auto; }
         .tabs .nav-item .ico svg { width: 22px; height: 22px; }
+        /* Ellipsis rather than wrap or shrink: eight tabs on a 320px split-view column leave 40px
+           each, and a label that wraps would push the icons off their common baseline while one
+           that shrinks would be a second type size nobody chose. The whole word is still in the
+           accessible name and the tooltip, so nothing is lost — only abbreviated. */
+        .tabs .nav-item .lbl { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-micro); font-weight: 600; line-height: 1; }
         .tabs .nav-item.active { background: none; color: var(--ink); }
       }
       .nav-item {
@@ -178,6 +187,10 @@
       .nav-item:hover { color: var(--ink); }
       .nav-item.active { background: var(--invert-bg); color: var(--invert-fg); }
       .nav-item .ico { display: grid; place-items: center; width: 15px; }
+      /* Landscape: undrawn, because the floating row has no room for words between the bar's
+         outer zones. Lower specificity than the portrait rule above on purpose, so the bottom
+         bar wins wherever the two meet regardless of source order. */
+      .nav-item .lbl { display: none; }
       /* Settings is a toolbar button, not a tab: it is not a stop on the way to a solved cube. */
       .tb-ctl { width: 32px; height: 32px; border-radius: var(--r-pill); display: grid; place-items: center; color: var(--ink-3); }
       .tb-ctl:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink); }
