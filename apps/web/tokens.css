@@ -201,8 +201,18 @@
  * the rooting.
  * ------------------------------------------------------------------------- */
 :root[data-theme="cream"] { color-scheme: light; }
-:root[data-theme="white"] {
-  color-scheme: light;
+:root[data-theme="white"] { color-scheme: light; }
+
+/* White is also what AUTO resolves to on a light system (decided 2026-08-31): the default light
+ * appearance is plain white, and Cream is the warm option you choose. Hence the second selector.
+ *
+ * `color-scheme` is deliberately NOT in this rule, and that is load-bearing. Under Auto it must
+ * follow the system, and `:root:not([data-theme])` (0,2,0) OUTRANKS the
+ * `@media (prefers-color-scheme: dark) { :root { color-scheme: dark } }` above (0,1,0) — so a
+ * `color-scheme: light` here would light-scheme every dark Auto window, giving it light
+ * scrollbars and form controls over dark surfaces. The token values below are safely shared
+ * because the dark-auto block later in this file both outranks them and comes after. */
+:root[data-theme="white"], :root:not([data-theme]) {
   --desk:          #DADADA;
   --bg:            #FFFFFF;
   --panel:         #FFFFFF;

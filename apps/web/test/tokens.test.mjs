@@ -36,7 +36,7 @@ const blockAfter = (source, opener, closer) => {
 
 // Cream is :root — the default, and what Auto shows on a light system.
 const light = blockAfter(css, ':root {', '\n}');
-const white = blockAfter(css, ':root[data-theme="white"] {', '\n}');
+const white = blockAfter(css, ':root[data-theme="white"], :root:not([data-theme]) {', '\n}');
 // The two night blocks are hand-duplicated: one for the explicit [data-theme] pin, one for the OS
 // preference. A media query cannot join a selector list, so the duplication is unavoidable.
 const darkPinned = blockAfter(css, ':root[data-theme="night"] {', '\n}');
