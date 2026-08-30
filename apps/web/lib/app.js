@@ -270,6 +270,17 @@ const state = {
 
 // How the four rungs read on the Settings screen. A rung with no label here would render as
 // "undefined", so app-wiring.test.mjs checks every TIERS entry has one.
+/** How long a proof may run before it has to account for itself.
+ *
+ *  Proof cost tracks DEPTH, not the incumbent: a cube a few turns from solved proves in
+ *  milliseconds, a random one at depth 17 takes about a minute, and depth 18 — which is 67% of
+ *  random states — has been measured at over an hour (optimal-solver-plan.md). So there is no
+ *  threshold worth guessing in advance, and no percentage worth inventing: the proof simply
+ *  earns its waiting state by taking one. Under this, a press looks instant, which for a
+ *  shallow cube it is; over it, the button starts saying what it has ruled out and how long it
+ *  has been at it, and a stop appears beside it. */
+const PROOF_WAIT_VISIBLE_MS = 250;
+
 /** The one sentence the SHIPPED library may put on a screen, and the second of exactly two
  *  places in this file where the word "proved" is allowed to originate (the other is the
  *  native prover's gated block). It is a named function rather than a slice of a ternary so
@@ -2297,7 +2308,7 @@ const cubeScreen = (screenMode) => {
       ${!walking && rcNow() ? `<div class="card sheet reconnect-card">${reconnectAsk()}</div>` : ''}
       ${walking ? `<div class="card tight solution-card sheet">
         ${reconnectAsk()}
-        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount">—</span><button class="pill" id="proveBtn" hidden style="margin-left:auto">prove the minimum</button></div>
+        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount">—</span><button class="pill" id="proveBtn" hidden style="margin-left:auto">prove the minimum</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg"></span>
@@ -2938,42 +2949,107 @@ const cubeScreen = (screenMode) => {
           // re-wires this handler with the new pair.
           const startFacelets = steps[0] ?? state.cube.facelets;
           const shown = total;
+          const cancelBtn = $('#proveCancel', root);
           proveBtn.onclick = async () => {
-            proveBtn.disabled = true;
-            // First ever press generates the tables (minutes) — the progress event keeps the
-            // button honest about why nothing seems to be happening. The listener is released
-            // in finally, so neither navigation nor a failure leaks it against the old DOM.
+            // Two waits with different shapes, and they must not be dressed the same. Table
+            // GENERATION is known-slow and has a denominator, so it announces itself and shows
+            // a percentage. The PROOF has neither: it is milliseconds on a shallow cube and
+            // hours on a deep one, and no fraction of it is knowable — so it stays silent until
+            // it has actually taken time, and then reports the only honest number it has.
             let unlisten = null;
+            let unlistenProof = null;
+            let ticking = null;
+            let reveal = null;
+            let ruledOut = null;
+            const startedAt = Date.now();
+
+            const clock = () => {
+              const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+              return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+            };
+            // "at least N" is a fact, not a spinner: every contour the native side reports has
+            // been exhausted, so the answer really is longer than it. Before the first one
+            // lands there is nothing true to say beyond the clock.
+            const paintWait = () => {
+              if (!fresh()) { clearInterval(ticking); ticking = null; return; }
+              proveBtn.textContent = ruledOut === null
+                ? `proving… ${clock()}`
+                : `at least ${ruledOut + 1} · ${clock()}`;
+            };
+            const showWaiting = () => {
+              if (!fresh()) return;
+              proveBtn.title = 'A deep cube can take hours to prove. Stop whenever you like — nothing is lost.';
+              if (cancelBtn) { cancelBtn.hidden = false; cancelBtn.disabled = false; cancelBtn.textContent = 'stop'; }
+              paintWait();
+              ticking ??= setInterval(paintWait, 1000);
+            };
+            const endWaiting = () => {
+              clearTimeout(reveal); clearInterval(ticking); ticking = null;
+              proveBtn.title = '';
+              if (cancelBtn) { cancelBtn.hidden = true; cancelBtn.onclick = null; }
+            };
+
+            proveBtn.disabled = true;
             try {
-              proveBtn.textContent = 'preparing…';
+              // Ask before announcing. Preparation is minutes, so a run that needs it says so at
+              // once; a run that does not must never flash the word at a person for whom it is
+              // already done.
+              let readiness = await optimalStatus();
+              if (!fresh()) return;
+              if (readiness !== 'ready') {
+                proveBtn.textContent = 'preparing…';
+                try {
+                  unlisten = await window.__TAURI__?.event?.listen?.('optimal-progress', (ev) => {
+                    const p = ev?.payload;
+                    if (fresh() && p?.total) proveBtn.textContent = `${p.stage} ${Math.round((p.done / p.total) * 100)}%`;
+                  });
+                } catch (err) {
+                  // Preparation still works without the heartbeat — but a silent subscribe
+                  // failure would make minutes of generation look like a hang, so say it once.
+                  console.warn('optimal: no progress events; preparation will look quiet', err);
+                }
+                if (!fresh()) return; // the listen await is an await like any other
+                // prepare() answers "preparing" when another call started the generation — the
+                // readiness contract is polling status to "ready", not trusting the first resolve.
+                await optimalPrepare();
+                if (!fresh()) return; // left during generation — the finally still frees the listener
+                for (;;) {
+                  readiness = await optimalStatus();
+                  if (!fresh()) return; // walked away during generation — start no proof at all
+                  if (readiness === 'ready') break;
+                  if (readiness !== 'preparing') {
+                    // 'cold' here means the generation this call was waiting on DIED in another
+                    // call — polling a corpse forever was the bug this loop once had.
+                    throw new Error(`optimal: preparation ended ${readiness}, not ready`);
+                  }
+                  await new Promise((r) => setTimeout(r, 500));
+                }
+              }
+
               try {
-                unlisten = await window.__TAURI__?.event?.listen?.('optimal-progress', (ev) => {
-                  const p = ev?.payload;
-                  if (fresh() && p?.total) proveBtn.textContent = `${p.stage} ${Math.round((p.done / p.total) * 100)}%`;
+                unlistenProof = await window.__TAURI__?.event?.listen?.('optimal-proof-progress', (ev) => {
+                  const depth = ev?.payload?.ruled_out;
+                  if (!fresh() || !Number.isInteger(depth)) return;
+                  ruledOut = depth;
+                  if (ticking) paintWait(); // only once the wait is on screen; before that, nothing to repaint
                 });
               } catch (err) {
-                // Preparation still works without the heartbeat — but a silent subscribe
-                // failure would make minutes of generation look like a hang, so say it once.
-                console.warn('optimal: no progress events; preparation will look quiet', err);
+                console.warn('optimal: no proof progress; a long proof will show only its clock', err);
               }
-              if (!fresh()) return; // the listen await is an await like any other
-              // prepare() answers "preparing" when another call started the generation — the
-              // readiness contract is polling status to "ready", not trusting the first resolve.
-              await optimalPrepare();
-              if (!fresh()) return; // left during generation — the finally still frees the listener
-              for (;;) {
-                const readiness = await optimalStatus();
-                if (!fresh()) return; // walked away during generation — start no proof at all
-                if (readiness === 'ready') break;
-                if (readiness !== 'preparing') {
-                  // 'cold' here means the generation this call was waiting on DIED in another
-                  // call — polling a corpse forever was the bug this loop once had.
-                  throw new Error(`optimal: preparation ended ${readiness}, not ready`);
-                }
-                await new Promise((r) => setTimeout(r, 500));
+              if (!fresh()) return;
+
+              // The stop is wired BEFORE the proof starts, so there is no window in which a
+              // proof is running and cannot be called off.
+              if (cancelBtn) {
+                cancelBtn.onclick = () => {
+                  cancelBtn.disabled = true;
+                  cancelBtn.textContent = 'stopping…';
+                  void optimalCancel().catch((err) => console.warn('optimal cancel failed', err));
+                };
               }
-              proveBtn.textContent = 'proving…';
+              reveal = setTimeout(showWaiting, PROOF_WAIT_VISIBLE_MS);
               const proof = await optimalProve(startFacelets, { Cube, upperBound: shown });
+              endWaiting();
               if (!fresh()) return;
               // The sentence this seam exists for — and the honest split when the shown
               // solution is longer than the proved minimum. A failed table save rides along:
@@ -2984,12 +3060,19 @@ const cubeScreen = (screenMode) => {
                 : `${shown} shown — the minimum is ${proof.moves}, proved`) + saved);
               proveBtn.hidden = true;
             } catch (err) {
+              endWaiting();
               if (!fresh()) return;
-              proveBtn.textContent = 'could not prove';
+              // Stopping is a choice, not a failure: the affordance comes back saying what it
+              // said before, so a person who changes their mind can simply press it again.
+              const stopped = /cancelled/i.test(String(err?.message ?? err));
+              proveBtn.textContent = stopped ? 'prove the minimum' : 'could not prove';
               proveBtn.disabled = false;
-              console.error('optimal proof failed', err);
+              if (stopped) console.info('optimal: the proof was stopped');
+              else console.error('optimal proof failed', err);
             } finally {
+              endWaiting();
               unlisten?.();
+              unlistenProof?.();
             }
           };
         }
