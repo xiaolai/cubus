@@ -151,8 +151,9 @@ settings.proveMinimum = settings.proveMinimum === true;
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
 
-/** The themes, as stored. Auto is a policy rather than a theme: cream while the system is light,
- * night while it is dark (tokens.css). */
+/** The themes, as stored. Auto is a policy rather than a theme: white while the system is light,
+ * night while it is dark (tokens.css). Cream is the warm option you choose, not the default you
+ * get — it was the auto-light appearance until 2026-08-31. */
 const THEMES = ['auto', 'white', 'cream', 'night'];
 // The names changed when White arrived: the kit's "light" is Cream and its "dark" is Night. A
 // stored value from before is mapped rather than dropped, so nobody's window changes colour on
@@ -2360,7 +2361,7 @@ const cubeScreen = (screenMode) => {
       ? '<button class="btn sm primary" data-reconnect="yes">Yes, that’s it</button>' : '';
     return `<div class="follow-note reconnect-ask" id="reconnectAsk" style="border-top:0">
       <b>${escHtml(ask)}</b>${sub ? `<span class="sub" style="color:var(--ink-4)">${escHtml(sub)}</span>` : ''}
-      <div class="acts">${yes}<button class="btn sm outline" data-reconnect="scan">Show a side to the camera</button></div>
+      <div class="acts">${yes}<button class="btn sm outline" data-reconnect="scan">Check with the camera</button></div>
     </div>`;
   };
   /** Set by mount, once this screen has a walk it can reload. Null while it has none — a solved
@@ -2393,10 +2394,10 @@ const cubeScreen = (screenMode) => {
           <button class="tbtn" id="repeatBtn" title="Show that move again" aria-label="Show that move again">${icon('refresh', 18)}</button>
           <button class="tbtn" id="nextBtn" title="Next move" aria-label="Next move">${icon('chevron-right', 20)}</button>
           <button class="tbtn primary" id="playBtn" title="Play from here to the end" aria-label="Play from here to the end">${icon('play', 18)}</button>
-          ${state.connected ? `<button class="pill${state.cube.trusted ? ' on' : ''}" data-mode="cube" title="Turn your smart cube and the guide keeps up">Follow cube</button>` : ''}
           <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
           <span class="done-mark" id="doneMark" hidden title="Done">${icon('check', 14)}</span>
           <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:56px;text-align:right">0 / 0</span>
+          ${state.connected ? `<button class="pill${state.cube.trusted ? ' on' : ''}" data-mode="cube" title="Turn your smart cube and the guide keeps up">Cube leads</button>` : ''}
           ${scrambling ? `<button class="btn sm primary" id="solveItBtn" hidden>Solve this scramble</button>` : ''}
         </div>
       </div>` : ''}
@@ -2651,7 +2652,7 @@ const cubeScreen = (screenMode) => {
       };
       // Neutral, not a warning, and without the rescue buttons: pausing is a choice, not a fault.
       const pauseNote = () => {
-        if (note) { note.hidden = false; note.classList.add('info'); noteMsg.textContent = 'Paused following — you are driving. Click Follow and your cube leads again.'; }
+        if (note) { note.hidden = false; note.classList.add('info'); noteMsg.textContent = 'Paused — you are driving. Switch Cube leads back on and your cube sets the pace.'; }
       };
       const clearNote = () => {
         if (note) { note.hidden = true; note.classList.remove('info'); }
@@ -3565,7 +3566,7 @@ SCREENS.settings = () => {
             </div>
             <div style="display:flex;gap:8px;margin-top:10px">
               ${rc.raw && rc.candidate ? '<button class="btn sm primary" data-reconnect="yes">Yes, that’s it</button>' : ''}
-              <button class="btn sm outline" data-reconnect="scan">Show a side to the camera</button>
+              <button class="btn sm outline" data-reconnect="scan">Check with the camera</button>
             </div>
           </div>`;
         };
