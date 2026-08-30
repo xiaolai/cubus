@@ -48,6 +48,15 @@ import { type Invoke, NativeDetector } from './native-detector.js';
 import { WebDetector } from './web-detector.js';
 
 /** Which runtime is actually doing inference — surfaced so "am I on the fast path?" is answerable. */
+// The scan pipeline's pure stages, re-exported so anything holding this bundle can run them.
+// They are already compiled in — the panel itself calls all three — so this costs no bytes; it
+// only makes them reachable. The reason they need to be: this bundle is the app's ONLY door into
+// the scanner package, and `ml/golden_frames.py` pins onnx, onnx-int8, coreml, tflite and the
+// native plugin but has no web leg, so nothing anywhere could check that the runtime Windows,
+// Linux and Android actually run reads the fixtures the way the pinned one does.
+export { preprocess } from '../src/onnx-detect.js';
+export { decodeDetections, nms, fitFace } from '../src/onnx-postprocess.js';
+
 export type ScanRuntime = 'native' | 'web';
 
 /** The window globals the desktop shell injects (`withGlobalTauri`). Absent in the browser build.
