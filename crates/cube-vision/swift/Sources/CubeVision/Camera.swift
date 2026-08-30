@@ -25,15 +25,28 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     /// looks identical to the built-in from the outside).
     public private(set) var current: CameraInfo?
 
-    // Types the webview cannot enumerate are exactly why this exists — list them explicitly. Both
-    // are gated: Continuity Camera as a discoverable type is macOS 14+, Desk View macOS 13+, and on
-    // an older system they simply are not offered rather than failing to build.
+    // Types the webview cannot enumerate are exactly why this exists — list them explicitly.
+    //
+    // Two DIFFERENT gates, and conflating them broke the iOS build (2026-08-30). `#available` is a
+    // RUNTIME check: it asks whether the OS running this binary is new enough, and it cannot make a
+    // symbol that does not exist on a platform compile for it. External and Continuity Camera are
+    // real on both platforms (macOS 14 / iOS 17), so availability is the whole story for them.
+    // Desk View is `API_UNAVAILABLE(ios)` — a Mac-only device type — so it needs `#if os(macOS)`,
+    // a COMPILE-time gate, or the first iOS build fails at this line. It did: swift-rs compiled the
+    // package against the iPhoneOS SDK and stopped here.
+    //
+    // Nothing iOS-specific is added in its place. A phone's ultra-wide/macro lens is the obvious
+    // candidate and is deliberately absent until it is measured against the sharpness floor on a
+    // real device (dev-docs/mobile-shell-plan.md, M3) — an unverifiable native guess is worth less
+    // than the default video device, which on iOS is already the rear wide camera.
     private static let deviceTypes: [AVCaptureDevice.DeviceType] = {
         var t: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera]
         if #available(macOS 14.0, iOS 17.0, *) {
             t.append(.external)
             t.append(.continuityCamera)
+            #if os(macOS)
             t.append(.deskViewCamera)
+            #endif
         }
         return t
     }()
