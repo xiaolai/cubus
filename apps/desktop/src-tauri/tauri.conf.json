@@ -49,12 +49,18 @@
     "android": {
       "debugApplicationIdSuffix": ".debug"
     },
+    "iOS": {
+      "minimumSystemVersion": "16.0",
+      "frameworks": [
+        "CoreBluetooth"
+      ]
+    },
     "resources": {
       "../../../ml/models/cube-yolo.mlpackage": "models/cube-yolo.mlpackage"
     },
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "infoPlist": "Info.plist",
+      "infoPlist": "Info.macos.plist",
       "entitlements": "Entitlements.plist",
       "files": {
         "Resources/Assets.car": "icons/Assets.car"

@@ -55,8 +55,7 @@ const P = {
   // between the two screens. `fill` is a presentation attribute so it beats the `fill: none`
   // inherited from svg.ic; `stroke="none"` keeps a filled cell from looking a stroke-width bigger
   // than an empty one.
-  grid: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>',
-  'grid-filled': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/><rect x="4" y="4" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/><rect x="16" y="10" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/><rect x="10" y="16" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/>',
+  scan: '<path d="M3 8V5a2 2 0 0 1 2-2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2h-3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="8.5" y="8.5" width="7" height="7" rx="1.5"/>',
   timer: '<line x1="10" y1="2" x2="14" y2="2"/><line x1="12" y1="14" x2="15" y2="11"/><circle cx="12" cy="14" r="8"/>',
   chart: '<path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="7"/><rect x="12" y="6" width="3" height="11"/><rect x="17" y="13" width="3" height="4"/>',
   cap: '<path d="M22 10 12 5 2 10l10 5 10-5Z"/><path d="M6 12v5c0 1 3 2 6 2s6-1 6-2v-5"/>',
@@ -72,7 +71,10 @@ const P = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
   refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
-  dice: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.2"/><circle cx="16" cy="16" r="1.2"/><circle cx="8" cy="16" r="1.2"/><circle cx="16" cy="8" r="1.2"/><circle cx="12" cy="12" r="1.2"/>',
+  // Pips are FILLED, not stroked. At r=1.2 with the sheet's 1.75 stroke and fill:none they were
+  // drawn as rings with a 0.65-unit hole — invisible at 18px, plainly wrong at any size a
+  // reader might zoom to. Same technique grid-filled used for its solid cells.
+  dice: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="8" cy="16" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="16" r="1.5" fill="currentColor" stroke="none"/>',
   minus: '<path d="M5 12h14"/>',
   square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
   webcam: '<circle cx="12" cy="10" r="8"/><circle class="lens" cx="12" cy="10" r="3"/><path d="M7 22h10"/><path d="M12 22v-4"/>',
@@ -96,8 +98,14 @@ const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="wi
 // carries no badge until there is something real to count.
 const NAV = [
   ['home', 'Home', 'box'],
-  ['scan', 'Restore', 'grid'],
-  ['scramble', 'Scramble', 'grid-filled'],
+  // Two 3x3 grids differing only in which cells were filled read as one picture at 22px, which is
+  // the cost the icons-only row took on (dev-docs/stage-contract.md). A viewfinder and a die are
+  // different silhouettes, and both say what the screen does rather than what a cube looks like:
+  // Restore asks you to hold a face up to the camera, Scramble hands you a random cube. `dice` is
+  // already the Random button's icon on the cube screen — the same meaning, deliberately the same
+  // picture.
+  ['scan', 'Restore', 'scan'],
+  ['scramble', 'Scramble', 'dice'],
   ['timer', 'Timer', 'timer'],
   ['stats', 'Stats', 'chart'],
   ['trainer', 'Alg trainer', 'cap'],
@@ -3626,33 +3634,19 @@ function renderNav() {
   const items = NAV.filter(([id]) => !navHidden(id));
   // The capsule is the segmented control's pill; the nav around it is the positioned box the
   // stylesheet floats over the title bar (landscape) or lays at the foot of the window (portrait).
-  $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span><span class="lbl">${t(lbl)}</span></button>`).join('')}</div>`;
+  // Icons only (decided 2026-08-30). The word does not disappear — it becomes the button's
+  // accessible name and its desktop tooltip, so a screen reader still announces "Scramble" and
+  // i18n still has something to translate. Dropping the visible text and leaving nothing in its
+  // place would have made the whole row anonymous to assistive tech.
+  $('#nav').innerHTML = `<div class="capsule">${items.map(([id, lbl, ic]) => `<button class="nav-item ${state.screen === id ? 'active' : ''}" data-nav="${id}" title="${t(lbl)}" aria-label="${t(lbl)}"${state.screen === id ? ' aria-current="page"' : ''}><span class="ico">${icon(ic, 15)}</span></button>`).join('')}</div>`;
   for (const b of $('#nav').querySelectorAll('[data-nav]')) b.onclick = () => go(b.dataset.nav);
   // Settings sits outside the row (buildChrome draws it), so it is marked here, not by the template.
   // The GEAR, found by its label: the smart-cube indicator beside it also carries
   // data-nav="settings" and comes first in the bar, so a data-nav match marked the hidden
   // indicator and the visible gear never once said "you are here".
   $('#tbTrail [aria-label="Settings"]')?.classList.toggle('active', state.screen === 'settings');
-  fitTabs();
 }
 
-/** Labels when the labelled row fits between the bar's outer zones, icons only when it does not.
- *  Measured, not thresholded: whether six labelled tabs fit a title bar depends on the tabs, the
- *  language and the platform's lead zone, none of which a width can know. Landscape only — the
- *  portrait tab bar (the stylesheet lays the row in flow there) has room for a word under every
- *  icon. Re-run by renderNav and whenever the bar resizes. */
-function fitTabs() {
-  const nav = $('#nav'), bar = $('#titlebar');
-  if (!nav || !bar || bar.clientWidth === 0) return; // not laid out (the test harness has no layout)
-  nav.classList.remove('compact');
-  if (getComputedStyle(nav).position !== 'absolute') return; // the portrait bar
-  // Centred on the bar, the row needs symmetric room: the wider of the two zones on both sides.
-  // scrollWidth, not offsetWidth: the zone's CONTENT is what the tabs must clear, whatever box
-  // the engine gave the zone.
-  const zone = Math.max($('#tbLead').scrollWidth, $('#tbTrail').scrollWidth) + 12; // + the bar's padding
-  const room = bar.clientWidth - 2 * zone - 8;
-  if (nav.scrollWidth > room) nav.classList.add('compact');
-}
 /** The spec currently on the stage — what refreshScreen() asks to take a new subject. */
 let liveScreen = null;
 let refreshing = false;
@@ -3797,8 +3791,6 @@ async function boot() {
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
   buildChrome(platform);
-  // The tab row refits when the bar's width changes — a window resize, an orientation change.
-  if (typeof ResizeObserver === 'function') new ResizeObserver(fitTabs).observe($('#titlebar'));
   installAdvancedShortcut();
   installExternalLinks();
   // '' = follow the browser/OS language. No-op until a catalog is registered; the picker arrives
