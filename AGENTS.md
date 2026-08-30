@@ -43,9 +43,18 @@ it walks you through solving it.
     everywhere. Same test as every seam: no screen exists on one build only — the prove
     affordance follows the orientation-row precedent in full (drawn only where the API is
     injected AND the platform is a desktop: `apps/web/lib/host.js`, which exists because the
-    mobile shells inject the identical API, and `optimal_prepare` refuses on mobile too), and
-    the word "optimal" can appear ONLY as the result of a native proof, never from the
-    two-phase engine. Provenance discipline as for the two-phase engine:
+    mobile shells inject the identical API, and `optimal_prepare` refuses on mobile too). It is
+    also **off by default** (`settings.proveMinimum`, 2026-08-30): a proof is minutes to hours on
+    a typical cube, which is not something to put in front of a beginner who did not ask, so the
+    Settings row that turns it on states the cost and is itself drawn only where the capability
+    is. A proof reports the contours it has RULED OUT as it goes (`optimal-proof-progress`), so
+    the wait shows a rising lower bound rather than a spinner, and it can be stopped.
+    **A minimality claim has exactly two sources, and `optimal.test.mjs` enforces it by name**:
+    the native proof, and the shipped library whose entries were proved offline and re-checked
+    against the cubejs oracle at load. Never the two-phase engine. A third region that merely
+    NAMES the feature (the button, the toggle) is sanctioned separately and asserts nothing —
+    the categories are the point, or the test degrades into one exception per string.
+    Provenance discipline as for the two-phase engine:
     `dev-docs/optimal-solver-provenance.md`, written before the Rust.
   - **Dev tooling, accepted 2026-08-27, never shipped**: `tauri-plugin-mcp` (git dep, pinned rev)
     — the control socket that lets an AI agent drive the app for verification: screenshots,
@@ -207,6 +216,26 @@ it walks you through solving it.
     keeps asking for shorter at a small bonus budget, so a cube a few turns from solved gets
     its real few-move answer instead of the target length. The day this was missing, a 7-turn
     cube was answered with ~20 moves — `lib/solve-target.js` records the mechanism.
+- **A search that ran out of budget is not a cube that cannot be solved** (2026-08-30). God's
+  number is 20, so `<= 20` is a PROMISE the app keeps rather than a target it aims at: a refusal
+  above a promised target doubles the budget and asks again (`GODS_NUMBER`,
+  `MAX_PROMISE_ESCALATIONS` in `lib/solve-target.js`), because `solvePattern` deepens phase-1 to
+  `solLen - 1` and canonical pruning is proved to delete no optimal path — so the engine is
+  complete and only the budget can fail. Eight refusals raise, stating the work actually spent;
+  there is deliberately no "give up and call it impossible" branch. **No screen may state that a
+  move count is impossible.** Two-phase cannot prove a minimum, so it cannot prove one absent:
+  the wording is about the search ("couldn't get to 18"), never about the cube. The old sentence
+  was false always at `<= 20` and, measured on 30 random states, false roughly eighteen times in
+  nineteen at `<= 18`. A comment-stripped sweep in `solve-tier-wiring.test.mjs` forbids the claim
+  reaching a screen while leaving the history of the wording recordable in the source.
+- **A gate nothing runs is not a gate** (2026-08-30, twice in one branch). `verify-icons.py`
+  measured every shipped icon and was in no CI job at all — which is why the iOS and Android
+  projects carried Tauri's placeholder mark from the day the mobile shells landed. It could not
+  be gated, either: it shelled out to `sips`/`assetutil`/`ictool` with no guards and raised on
+  anything but a Mac. Tool-dependent checks skip as informational now (never pass), it runs in
+  CI, and the whole mobile set still gates there. Guard the tool-using PART, never the whole
+  function — a guard wide enough to skip a check that needs no tool trades a crash for a silent
+  gap, which is the same bug one level finer.
 - **Never invent data**: a statistic that cannot be computed is a dash, not a number; a reading
   that cannot be validated is a refusal, not a guess. A plausible figure is worse than a blank.
 - **A misread scan may say HOW MANY, and may only point when it is one** (decided 2026-08-28).
