@@ -12,6 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
@@ -158,4 +159,62 @@ test('the walk seeks in a real engine — a chip press lands the counter on its 
   assert.equal(out.first, `0 / ${out.total}`, 'a fresh walk starts at zero');
   assert.equal(out.after, `${out.total} / ${out.total}`,
     'pressing the last chip must land the transport on the last move');
+});
+
+test('a state in the proven library is answered from data — no search, no proof offered', async () => {
+  // The point of shipping the library. `Cube.prototype.solve` is the only Kociemba search this
+  // thread can run (the engine's own lives in the worker, behind its own module instance), so
+  // counting calls to it is counting exactly the work a user would have waited for. A proved
+  // state must cost zero of them: deriveCube takes its setup alg from the entry and solve()
+  // takes the solution, both already checked against the oracle at load.
+  const entry = JSON.parse(
+    readFileSync(new URL('../lib/data/optimal-challenges.json', import.meta.url), 'utf8'),
+  )[0];
+
+  const out = await inBrowser(async (known) => {
+    const app = await import('/lib/app.js');
+    const Cube = (await import('/vendor/cubejs.js')).default;
+    // Wait for the library to be indexed — it loads with the solver, and a lookup before that
+    // would legitimately miss and search, which is not what this test is about.
+    const ready = async () => {
+      for (let i = 0; i < 100; i++) {
+        if (app.state.cube && document.querySelector('#stage')) return true;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return false;
+    };
+    await ready();
+    await new Promise((r) => setTimeout(r, 1500));
+
+    let searches = 0;
+    const real = Cube.prototype.solve;
+    Cube.prototype.solve = function (...a) { searches += 1; return real.apply(this, a); };
+    try {
+      const c = app.state.cube;
+      c.facelets = known.facelets;
+      c.solution = ''; c.crossChecked = false; c.solveResult = null;
+      c.setupAlg = ''; c.derived = false;
+      window.cubusGo('home');
+      for (let i = 0; i < 120; i++) {
+        if (document.querySelectorAll('.chip-m').length > 0) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const prove = document.querySelector('#proveBtn');
+      return {
+        searches,
+        chips: document.querySelectorAll('.chip-m').length,
+        status: document.querySelector('#moveCount')?.textContent ?? '',
+        solution: c.solution,
+        proveOffered: Boolean(prove) && prove.hidden === false,
+      };
+    } finally {
+      Cube.prototype.solve = real;
+    }
+  }, entry);
+
+  assert.equal(out.searches, 0, `a proved state cost ${out.searches} Kociemba search(es) — the library exists so it costs none`);
+  assert.equal(out.solution, entry.optimalSolution, 'the shown solution is the proved-minimal one, move for move');
+  assert.equal(out.chips, entry.optimalLength, 'and the walk is exactly that many moves');
+  assert.match(out.status, /proved the minimum/, 'a proved state says so');
+  assert.equal(out.proveOffered, false, 'nothing left to prove, so nothing is offered');
 });
