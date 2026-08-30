@@ -149,31 +149,51 @@ const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s
  *  actually reach a screen rather than at identifiers or module paths. */
 const stringLiterals = (src) => [...src.matchAll(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|\`(?:[^\`\\]|\\.)*\`/g)].map((m) => m[0]);
 
-test('the app can say "proved" from exactly two places, and nowhere else', () => {
-  // Two sanctioned sources, because there are two ways to hold a proof and only two:
+test('the app can say "proved" from exactly three places, and nowhere else', () => {
+  // Three sanctioned sources, and they are not the same kind of thing. Two make a CLAIM about a
+  // particular cube, and there are exactly two ways to hold one:
   //   1. the native prover's capability-gated block — a proof computed here, oracle-checked
   //      in optimal.js before the word can be spoken;
   //   2. provenMinimumLabel — the SHIPPED library, whose entries were proved offline by
   //      crates/optimal-solver and re-checked against the cubejs oracle at load.
-  // Widening this test was the deliberate part of wiring the library in. It is wider by one
-  // NAMED region and no looser anywhere else: a third source, or an unguarded call to the
-  // second, still fails here.
+  // The third makes no claim at all:
+  //   3. PROVE_SETTING — the Settings row that turns the affordance on. Naming the toggle after
+  //      the button it controls is worth more than rewording it to slip under this check, which
+  //      is what "Offer to prove a solution is the shortest possible" would have been: the same
+  //      sentence, chosen for the regex rather than for the reader.
+  // Each widening is one NAMED region and no looser anywhere else: a fourth source, or an
+  // unguarded use of the second or third, still fails here.
   const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
   const gated = app.match(/if \(proveBtn && optimalCapability\(\)[\s\S]*?\n      \}/)?.[0] ?? '';
   assert.ok(gated, 'the gated prove block must exist');
   const label = app.match(/const provenMinimumLabel = [^\n]*\n/)?.[0] ?? '';
   assert.ok(label, 'the library\'s one sanctioned sentence must exist, and be named');
+  const setting = app.match(/const PROVE_SETTING = \{[\s\S]*?\n\};/)?.[0] ?? '';
+  assert.ok(setting, 'the Settings row\'s wording must exist, and be named');
 
   const claims = (text) =>
     stringLiterals(stripComments(text)).filter((lit) => /proved|the minimum/i.test(lit)).length;
   assert.ok(claims(gated) >= 1, 'the gated block is where the native proof wording lives');
   assert.equal(claims(label), 1, 'the library\'s claim is one sentence, in one place');
+  assert.ok(claims(setting) >= 1, 'the Settings row is where the toggle names the feature');
   // Everywhere else, no string or template literal may carry the wording, in any casing —
   // "Proved" in a template is exactly as much a claim as "proved" in a string.
   assert.equal(
-    claims(app.replace(gated, '').replace(label, '')),
+    claims(app.replace(gated, '').replace(label, '').replace(setting, '')),
     0,
-    'proof wording outside the two sanctioned sources could reach a build that cannot back it',
+    'proof wording outside the three sanctioned sources could reach a build that cannot back it',
+  );
+
+  // The Settings row is drawn only where the affordance can exist. A toggle for a button that
+  // can never appear is a promise the build cannot keep, and it would be the same failure the
+  // gate on the button itself exists to prevent.
+  const settingsRow = stripComments(app).match(/\$\{optimalCapability\(\) \? `[\s\S]*?` : ''\}/)?.[0] ?? '';
+  assert.ok(settingsRow, 'the Settings row must sit behind optimalCapability()');
+  const uses = [...stripComments(app).matchAll(/PROVE_SETTING\./g)].length;
+  assert.ok(uses > 0, 'the named wording must actually be used');
+  assert.equal(
+    [...settingsRow.matchAll(/PROVE_SETTING\./g)].length, uses,
+    'every use of the Settings wording must be inside the capability-gated row',
   );
 
   // And the second source stays behind its guard. A call to it from anywhere else would put a
