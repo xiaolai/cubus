@@ -21,6 +21,18 @@
  *  single source for this number — solve-target's first bound and app.js's fallback import it. */
 export const LOOSEST_BOUND = 23;
 
+/** How many views the engine searches: three axes x normal/inverse.
+ *
+ *  Declared here rather than imported from two-phase.js because this module is the protocol
+ *  boundary — it takes the engine INJECTED and imports nothing from it, which is what lets it be
+ *  tested against a fake. app.js and solve-client.js need the number to size a pool and slice
+ *  it, and neither should pull the whole engine into the main bundle to read one integer.
+ *
+ *  It is therefore a second copy, and a second copy is only safe if it cannot drift: the range
+ *  check inside `createSolver` uses the INJECTED engine's own count, and a test asserts the two
+ *  agree. Without that test this would be exactly the duplication it looks like. */
+export const VIEW_COUNT = 6;
+
 /** The budget used when a caller does not pass one: effectively "take the time you need" at
  *  ~20 ns a node, while still terminating. One named number, never inherited from a previous
  *  call. */
@@ -64,7 +76,11 @@ export function validateAnswer(answer, requestedBound) {
 }
 
 /**
- * Wrap an engine module into `solve(facelets, { solLen, probeMax })`.
+ * Wrap an engine module into `solve(facelets, { solLen, probeMax, views })`.
+ *
+ * `views` is null for every caller but the parallel client: a non-empty array of distinct view
+ * indices in 0..VIEW_COUNT-1, restricting the search to that slice of the engine's views. Null
+ * searches all of them, which is what a single worker always does.
  *
  * The module must expose `initialize`, `solvePattern` and `setBounds` — the shape
  * lib/two-phase.js exports. Anything else is an engine with no way to bound it, which is worth
@@ -83,7 +99,7 @@ export function createSolver(engine) {
     }
   }
 
-  return function solve(facelets, { solLen = LOOSEST_BOUND, probeMax = DEFAULT_NODE_BUDGET } = {}) {
+  return function solve(facelets, { solLen = LOOSEST_BOUND, probeMax = DEFAULT_NODE_BUDGET, views = null } = {}) {
     if (typeof facelets !== 'string' || facelets.length !== 54) {
       throw new TypeError('solver-engine: expected a 54-character facelet string');
     }
@@ -95,11 +111,35 @@ export function createSolver(engine) {
     if (!Number.isSafeInteger(probeMax) || probeMax < 1) {
       throw new RangeError(`solver-engine: probeMax ${probeMax} is not a positive integer`);
     }
+    // BEFORE setBounds, like every other check here. setBounds mutates persistent engine state,
+    // so a filter validated after it would leave the bounds moved behind a thrown filter — the
+    // exact failure this wrapper's validate-first-commit-together rule exists to prevent, and
+    // the one setBounds itself documents.
+    if (views !== null) {
+      if (!Array.isArray(views) || views.length === 0) {
+        throw new RangeError('solver-engine: views must be null or a non-empty array of view indices');
+      }
+      // The upper bound comes from the ENGINE, not from a constant here: this module is written
+      // against an injected engine and imports nothing from two-phase.js, which is what lets it
+      // be tested against a fake. An engine that does not say how many views it has still gets
+      // the shape checked; the range check is simply the part only it can supply.
+      const count = Number.isInteger(engine.VIEW_COUNT) ? engine.VIEW_COUNT : null;
+      const seen = new Set();
+      for (const v of views) {
+        if (!Number.isInteger(v) || v < 0 || (count !== null && v >= count)) {
+          throw new RangeError(`solver-engine: view ${v} is not a view index${count === null ? '' : ` (0..${count - 1})`}`);
+        }
+        if (seen.has(v)) throw new RangeError(`solver-engine: view ${v} appears twice`);
+        seen.add(v);
+      }
+    }
     engine.setBounds({ solLen, probeMax });
 
     // solvePattern initializes its own tables on first use — one owner for that lifecycle,
     // not a second ready-flag here that can disagree with it.
-    const answer = engine.solvePattern(facelets);
+    // `views` is null for every caller but the parallel client: a slice of the engine's six
+    // search views, so several workers can divide them and still be comparing like with like.
+    const answer = engine.solvePattern(facelets, views);
     // No answer within the budget, or not a solvable state.
     if (answer === null) return null;
     return validateAnswer(answer, solLen);

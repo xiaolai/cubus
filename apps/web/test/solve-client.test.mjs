@@ -6,10 +6,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CANCELLED_MESSAGE, createSolveClient } from '../lib/solve-client.js';
+import {
+  CANCELLED_MESSAGE, createParallelSolveClient, createSolveClient, pickWinner, shareBudget,
+  sliceViews, stopDescriptor, stopWord,
+} from '../lib/solve-client.js';
+import { DEFAULT_NODE_BUDGET } from '../lib/solver-engine.js';
 
 /** A worker that answers however the test tells it to, in the tagged reply protocol. */
-function fakeWorker({ reply = (msg) => ({ id: msg.id, ok: true, alg: 'R U' }), autoReply = true } = {}) {
+function fakeWorker({ reply = (msg) => ({ id: msg.id, ok: true, alg: 'R U', depth: 9, view: (msg.views?.[0] ?? 0) }), autoReply = true } = {}) {
   const listeners = new Map();
   const w = {
     sent: [],
@@ -36,7 +40,16 @@ test('a search is forwarded with its bounds and answered', async () => {
   const client = createSolveClient({ spawn: () => w });
   const alg = await client.solve('F'.repeat(54), { solLen: 21, probeMax: 100 });
   assert.equal(alg, 'R U');
-  assert.deepEqual(w.sent[0], { id: 1, facelets: 'F'.repeat(54), solLen: 21, probeMax: 100 });
+  // `views: null` is on every request, not only a parallel one: the field is the protocol's,
+  // and a single-worker client sending a DIFFERENT shape from a pooled one is how the two
+  // drift apart. Null means "all six views", which is what one worker always searches.
+  // `views: null` and `shared: null` ride on EVERY request, not only a pooled one: the fields
+  // are the protocol's, and a single-worker client sending a different shape from a pooled one
+  // is how the two drift apart. Null views means all of them; null shared means nothing can
+  // call this search off, which is exactly a lone worker's situation.
+  assert.deepEqual(w.sent[0], {
+    id: 1, facelets: 'F'.repeat(54), solLen: 21, probeMax: 100, views: null, shared: null,
+  });
 });
 
 test('the worker is made once and reused across searches', async () => {
@@ -211,4 +224,151 @@ test('a failure reply whose error is not a string is a malformed reply', async (
   const w = fakeWorker({ reply: (msg) => ({ id: msg.id, ok: false, error: Symbol('boom') }) });
   const client = createSolveClient({ spawn: () => w });
   await assert.rejects(() => client.solve('F'.repeat(54)), /malformed reply/);
+});
+
+// ---- the parallel client ----------------------------------------------------------------------
+//
+// The property that makes this safe is DETERMINISM, not "identical to the single worker". The
+// pool sorts replies by (depth, view) — the order the sequential engine searches in — so arrival
+// order cannot change the result. It equals the single-worker answer whenever each slice can
+// afford what the shared budget would have reached, which held 40/40 offline and 90/90 in a
+// browser at the shipped budget; under budget pressure it diverges, and the boundary is pinned
+// below rather than left to be rediscovered.
+
+test('the views are dealt round-robin, so no worker gets all the slow ones', () => {
+  assert.deepEqual(sliceViews(3, 6), [[0, 3], [1, 4], [2, 5]]);
+  assert.deepEqual(sliceViews(2, 6), [[0, 2, 4], [1, 3, 5]]);
+  assert.deepEqual(sliceViews(6, 6), [[0], [1], [2], [3], [4], [5]]);
+  assert.deepEqual(sliceViews(10, 6), [[0], [1], [2], [3], [4], [5]], 'more workers than views is fewer workers');
+  assert.deepEqual(sliceViews(1, 6), [[0, 1, 2, 3, 4, 5]]);
+  // Refused rather than coerced: NaN once produced "Cannot read properties of undefined".
+  for (const bad of [0, -1, 1.5, Number.NaN, '3', undefined]) {
+    assert.throws(() => sliceViews(bad, 6), RangeError, String(bad));
+    assert.throws(() => sliceViews(3, bad), RangeError, String(bad));
+  }
+});
+
+test('the budget is divided into parts that add up to the whole', () => {
+  // A budget is a promise about TOTAL work. Flooring quietly spends less than asked; a
+  // max(1, ...) floor on a tiny budget quietly spends more.
+  assert.deepEqual(shareBudget(900, 3), [300, 300, 300]);
+  assert.deepEqual(shareBudget(10, 3), [4, 3, 3], 'the remainder is dealt, not dropped');
+  assert.equal(shareBudget(10, 3).reduce((a, b) => a + b, 0), 10);
+  assert.deepEqual(shareBudget(2, 5), [1, 1], 'slices that would get zero get no work at all');
+  assert.equal(shareBudget(2, 5).reduce((a, b) => a + b, 0), 2, 'and the total is still not exceeded');
+  for (const bad of [0, -1, 1.5, Number.NaN, undefined]) {
+    assert.throws(() => shareBudget(bad, 3), RangeError, String(bad));
+  }
+});
+
+test('the winner is the lowest depth, then the lowest view — never the fastest reply', () => {
+  // The determinism argument in one assertion. Sorting by arrival would make the same cube
+  // answer differently on a busy machine than on an idle one.
+  assert.equal(pickWinner([
+    { alg: 'late but shallow', depth: 3, view: 5 },
+    { alg: 'first but deeper', depth: 4, view: 0 },
+  ]), 'late but shallow');
+  assert.equal(pickWinner([
+    { alg: 'view 4', depth: 3, view: 4 },
+    { alg: 'view 1', depth: 3, view: 1 },
+  ]), 'view 1');
+  assert.equal(pickWinner([{ alg: null, depth: -1, view: -1 }, { alg: 'found', depth: 9, view: 2 }]), 'found');
+  assert.equal(pickWinner([{ alg: null, depth: -1, view: -1 }]), null);
+  assert.equal(pickWinner([]), null);
+  // A reply whose key is missing or malformed must not sort ahead of a real one — -1 would win
+  // every comparison, which is precisely backwards.
+  assert.equal(pickWinner([
+    { alg: 'no key', depth: -1, view: -1 },
+    { alg: 'real', depth: 12, view: 3 },
+  ]), 'real');
+  assert.equal(pickWinner([{ alg: 'garbage key', depth: 'x', view: null }]), null);
+});
+
+test('two solves IN FLIGHT AT ONCE each keep their own stop word', async () => {
+  // The race this closes: the app allows overlapping loadWalk(), and a client-lifetime buffer
+  // let one cube's answer publish a depth that made another cube's workers give up.
+  //
+  // Nobody auto-replies, so both solves are genuinely outstanding when the assertions run. An
+  // earlier draft awaited them one after the other, which is the arrangement the bug could not
+  // occur in — it proved the words differed between solves and nothing about overlap.
+  const words = [];
+  const made = [];
+  const spawn = () => { const w = fakeWorker({ autoReply: false }); made.push(w); return w; };
+  const client = createParallelSolveClient({
+    spawn, workers: 2, viewCount: 6,
+    makeShared: () => { const b = new Int32Array(new SharedArrayBuffer(4)); words.push(b); return b; },
+  });
+  const first = client.solve('F'.repeat(54), { solLen: 21, probeMax: 100 });
+  const second = client.solve('U'.repeat(54), { solLen: 21, probeMax: 100 });
+  await Promise.resolve();
+
+  assert.deepEqual(made.map((w) => w.sent.length), [2, 2], 'both solves must be in flight together');
+  assert.equal(words.length, 2, 'a word per solve, not one for the client');
+  for (const w of made) {
+    assert.notEqual(w.sent[0].shared.buffer, w.sent[1].shared.buffer,
+      'this worker got the same word twice — the second solve inherited the first solve\'s channel');
+  }
+  assert.equal(made[0].sent[0].shared.buffer, made[1].sent[0].shared.buffer,
+    'siblings of ONE solve must share one word, or nothing can stop early');
+
+  // The first solve finds a shallow answer while the second is still searching. Its depth must
+  // be invisible to the second — that is the whole point of a word per solve.
+  Atomics.store(words[0], 0, 9);
+  assert.equal(Atomics.load(words[1], 0), 0x7fffffff,
+    'the first solve\'s depth reached the second solve\'s workers');
+
+  for (const w of made) for (const m of w.sent) w.emit({ id: m.id, ok: true, alg: 'R U', depth: 9, view: m.views[0] });
+  assert.equal(await first, 'R U');
+  assert.equal(await second, 'R U');
+});
+
+test('the stop word survives the crossing with its offset, not just its buffer', () => {
+  // What this catches: posting `word.buffer` and rebuilding with `new Int32Array(buffer)`. Both
+  // sides then hold a valid Int32Array over the same memory and poll DIFFERENT words, so the
+  // stop simply never fires — and a stop that never fires is indistinguishable from a search
+  // that had nothing to stop for. The app allocates at offset 0 today; the protocol must not
+  // depend on that, because the day it stops being true nothing will say so.
+  const backing = new Int32Array(new SharedArrayBuffer(12));
+  const word = backing.subarray(2); // byteOffset 8, length 1
+  assert.equal(word.byteOffset, 8);
+
+  const rebuilt = stopWord(stopDescriptor(word));
+  Atomics.store(rebuilt, 0, 11);
+  assert.equal(Atomics.load(word, 0), 11, 'the two sides must address the same word');
+  assert.equal(backing[0], 0, 'and it is not word 0 — which is what the buffer-only rule read');
+  assert.equal(new Int32Array(word.buffer)[0], 0, 'the discarded-offset reconstruction, still wrong');
+
+  assert.equal(stopDescriptor(null), null, 'no word is a legitimate request shape');
+  assert.equal(stopWord(null), null);
+  assert.throws(() => stopDescriptor(new ArrayBuffer(4)), TypeError,
+    'a bare buffer must be refused at the boundary, not silently rebuilt at offset 0');
+});
+
+test('one worker failing cancels its siblings instead of leaving them running', async () => {
+  // Promise.all rejected on the first failure and left the others searching, pending, and able
+  // to publish into the next solve's word. Every sibling is waited for and ended now.
+  const made = [];
+  // Nobody answers on their own, so the only thing that settles this solve is the failure.
+  const spawn = () => { const w = fakeWorker({ autoReply: false }); made.push(w); return w; };
+  const client = createParallelSolveClient({ spawn, workers: 3, viewCount: 6 });
+  const inFlight = client.solve('F'.repeat(54), { solLen: 21, probeMax: 300 });
+  await Promise.resolve();
+  made[0].fail('boom');
+  await assert.rejects(() => inFlight, /boom/);
+  assert.equal(client.idle, true, 'no sibling is left pending');
+  assert.ok(made.slice(1).every((w) => w.terminated > 0), 'the siblings were ended, not abandoned');
+});
+
+test('an omitted budget is the engine default, divided — not one node each', async () => {
+  const made = [];
+  const client = createParallelSolveClient({ spawn: () => { const w = fakeWorker(); made.push(w); return w; }, workers: 3, viewCount: 6 });
+  await client.solve('F'.repeat(54), { solLen: 21 });
+  const total = made.map((w) => w.sent[0].probeMax).reduce((a, b) => a + b, 0);
+  assert.equal(total, DEFAULT_NODE_BUDGET, 'the parts add up to the default, not to 3');
+});
+
+test('without a shared word it still answers — it just never stops early', async () => {
+  const client = createParallelSolveClient({ spawn: () => fakeWorker(), workers: 2, viewCount: 6 });
+  assert.equal(await client.solve('F'.repeat(54), { solLen: 21, probeMax: 100 }), 'R U');
+  assert.equal(client.workers, 2);
 });

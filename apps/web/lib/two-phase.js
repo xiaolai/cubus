@@ -365,7 +365,7 @@ function phase1DFS(t, f, s, depthLeft, prevMove, path, onSolution) {
   }
   // The same abort channel, reached from outside. `exhausted` already stops both phases
   // wherever it is set, so a stop needs no new plumbing — only somewhere to be asked.
-  if ((nodesLeft & STOP_POLL_MASK) === 0 && stopRequested()) {
+  if ((nodesLeft & STOP_POLL_MASK) === 0 && stopRequested(currentDepth)) {
     exhausted = true;
     return true;
   }
@@ -408,6 +408,10 @@ export function solveIntoG1(state, { maxDepth = 12 } = {}) {
   resetStats();
   nodesLeft = Number.MAX_SAFE_INTEGER; // the 12-deep minimal search is small; no budget needed
   exhausted = false;
+  // This reaches phase1DFS, so it owns currentDepth for the duration. -1 rather than the loop's
+  // depth: there is no parallel slice behind this search, so no stop decision should be made
+  // about it — and a leftover depth from the last solvePattern is worse than none.
+  currentDepth = -1;
   const t = twistOf(state.co);
   const f = flipOf(state.eo);
   const s = sliceOf(state.ep);
@@ -566,6 +570,13 @@ function phase2DFS(c, e, s, depthLeft, prevMove, path) {
     exhausted = true;
     return false;
   }
+  // Phase 2 polls as well as phase 1. It used not to, which made the stop protocol a half
+  // measure: a worker already inside an expensive probe kept spending its whole budget after a
+  // shallower sibling had won, which is exactly the wait the shared word exists to avoid.
+  if ((nodesLeft & STOP_POLL_MASK) === 0 && stopRequested(currentDepth)) {
+    exhausted = true;
+    return false;
+  }
   searchStats.p2Nodes++;
   if (depthLeft === 0) return c === 0 && e === 0 && s === 0;
   if (Math.max(PRUNE2C[c * PERM4_COUNT + s], PRUNE2E[e * PERM4_COUNT + s]) > depthLeft) return false;
@@ -683,6 +694,11 @@ const BOUNDS = { solLen: 23, probeMax: 100_000_000 };
  *  READ-ONLY, like moveTables() and pruningTables(): these are live internals, exposed because
  *  copies would cost megabytes on a hot path, and the test suite pins the budget to these
  *  numbers so "probeMax bounds the work" is a checked claim, not a comment. */
+/** How many views the search has: three axes x normal/inverse. Exported because the parallel
+ *  client has to divide them, and a second copy of this number elsewhere is how a slice ends up
+ *  searching nothing or a filter ends up out of range. */
+export const VIEW_COUNT = 6;
+
 export const searchStats = { probes: 0, p1Nodes: 0, p2Nodes: 0, view: -1, depth: -1 };
 
 function resetStats() {
@@ -710,6 +726,17 @@ let nodesLeft = 0;
  *  reaches inside a running search. */
 let stopRequested = () => false;
 
+/** The phase-1 depth the outer loop is currently exploring, so the stop predicate can be asked
+ *  a question it can answer: not "should I stop" but "can anything I find from here still be
+ *  better than what someone else already has". Module-level for the same reason the bounds are:
+ *  the search is one synchronous walk with nowhere to thread a parameter through.
+ *
+ *  -1 means "no depth applies", and every entry point that reaches phase1DFS must leave it that
+ *  way. solveIntoG1 is such an entry point and has no depth of its own; without the reset it
+ *  would hand the predicate a depth left over from the last solvePattern, and a stop decision
+ *  would be made about a search that had already finished. */
+let currentDepth = -1;
+
 /** How often to ask. Every 65536 nodes: a node is ~20 ns, so the question costs well under a
  *  thousandth of the work between asks, and the latency it adds to a stop is ~1 ms. Checking
  *  every node would be correct and measurably slower; checking every million would make a stop
@@ -728,6 +755,8 @@ export function setStopSignal(fn) {
   }
   stopRequested = fn ?? (() => false);
 }
+
+
 let exhausted = false;
 
 /** How deep a phase-2 tail is worth searching. A failing probe costs the whole IDA* ladder up
@@ -845,7 +874,7 @@ function probeView(view, path, d2max) {
  * bound is returned as found — the caller asks again with a tighter bound to improve it, which
  * is exactly how lib/solve-target.js's tiered descent drives this.
  */
-export function solvePattern(facelets) {
+export function solvePattern(facelets, viewFilter = null) {
   initialize();
   resetStats();
   const state = parseFacelets(facelets);
@@ -855,7 +884,22 @@ export function solvePattern(facelets) {
   const maxTotal = solLen - 1;
   nodesLeft = probeMax;
   exhausted = false;
-  const views = buildViews(facelets, state);
+  let views = buildViews(facelets, state);
+  // A slice of the six, for a caller searching the rest elsewhere. Filtering rather than
+  // rebuilding keeps `view.index` the index within ALL views, which is what makes the answers
+  // from separate slices comparable: the sequential engine returns the lowest view index at the
+  // lowest depth, and a parallel caller can only reproduce that if the indices still mean the
+  // same thing. Null is every view, which is every caller but the parallel client.
+  if (viewFilter !== null) {
+    const wanted = new Set(viewFilter);
+    if (wanted.size === 0) throw new RangeError('two-phase: an empty view filter searches nothing');
+    for (const i of wanted) {
+      if (!Number.isInteger(i) || i < 0 || i >= views.length) {
+        throw new RangeError(`two-phase: view ${i} is not one of the ${views.length} views`);
+      }
+    }
+    views = views.filter((v) => wanted.has(v.index));
+  }
 
   let answer = null;
   // Phase-1 depth is not capped at the 12-move diameter: with a tight bound the best split may
@@ -863,12 +907,21 @@ export function solvePattern(facelets) {
   // is phase 1 alone. The node budget is what bounds the work, and it is shared across all six
   // views — deterministic however the search's luck falls.
   outer: for (let d1 = 0; d1 <= maxTotal && !exhausted; d1++) {
+    currentDepth = d1;
+    // Asked once per depth as well as every 65536 nodes: a slice whose remaining depths cannot
+    // beat an answer someone else already holds should not start the next one at all.
+    if (stopRequested(d1)) break;
     const d2max = maxTotal - d1;
     for (const view of views) {
       const aborted = phase1DFS(view.t, view.f, view.s, d1, -1, [], (path) => {
         answer = probeView(view, path, d2max);
         if (answer !== null) {
           searchStats.view = view.index;
+          // The phase-1 depth this answer was found at. With the view index it forms the key a
+          // parallel caller sorts on — (depth, view) is exactly the order this loop already
+          // searches in, so picking the minimum across slices reproduces the sequential answer
+          // whatever order the slices finished in.
+          searchStats.depth = d1;
           return true;
         }
         return exhausted; // a probe that ran out of budget stops the enumeration too
@@ -876,5 +929,6 @@ export function solvePattern(facelets) {
       if (answer !== null || aborted) break outer;
     }
   }
+  currentDepth = -1; // no depth applies once the loop is done; a stale one is a stop about nothing
   return answer;
 }

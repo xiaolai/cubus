@@ -6,8 +6,8 @@
 import { summarize, times } from './solve-stats.js';
 import { createSolveTimer } from './solve-timer.js';
 import { TIERS, describe, refine } from './solve-target.js';
-import { createSolveClient, spawnSolveWorker } from './solve-client.js';
-import { LOOSEST_BOUND } from './solver-engine.js';
+import { createParallelSolveClient, createSolveClient, spawnSolveWorker } from './solve-client.js';
+import { LOOSEST_BOUND, VIEW_COUNT } from './solver-engine.js';
 import {
   cancel as optimalCancel,
   capability as optimalCapability,
@@ -442,7 +442,38 @@ function setFacelets(f) {
 // The solver worker, made once and kept. Building the engine's pruning tables costs ~0.5-2.6 s
 // (dev-docs/solver-move-count.md §7), so a client per solve would pay it every time.
 let solveClient = null;
-const solverWorker = () => (solveClient ??= createSolveClient({ spawn: spawnSolveWorker }));
+/**
+ * The solver, on as many threads as this page is allowed and can use.
+ *
+ * Parallel needs SharedArrayBuffer, and not for the answer — for the STOP. A search is
+ * synchronous, so a worker that cannot possibly win still runs to its budget unless something
+ * reaches inside it, and waiting for those would cost more than the parallelism wins. Without
+ * isolation this is one worker searching every view, which is exactly what it was before.
+ *
+ * ONE WORKER PER VIEW, and that was measured rather than guessed. Three workers with two views
+ * each barely moved the tail — p95 302 ms to 313 ms, which is nothing — because the hard cubes
+ * are hard in ONE view, so a slice holding the expensive view is still doing all the work. One
+ * view each is the finest split this design allows and it is the one that pays: on 90 random
+ * cubes, p95 665 ms to 325 ms and worst 960 ms to 339 ms. The plan warned about exactly this,
+ * quoting the Rust prover's note that two-move roots collapsed to 3 of 20 cores.
+ *
+ * Capped by the cores actually present, less two for the camera and the renderer — the same
+ * reasoning as the scanner's thread count, and what keeps a four-core phone from starting a
+ * worker per view when each builds its own pruning tables.
+ */
+const SOLVER_WORKERS = Math.max(1, Math.min(VIEW_COUNT, (globalThis.navigator?.hardwareConcurrency ?? 4) - 2));
+const solverWorker = () => (solveClient ??= (() => {
+  const isolated = typeof SharedArrayBuffer !== 'undefined' && globalThis.crossOriginIsolated === true;
+  if (!isolated || SOLVER_WORKERS < 2) return createSolveClient({ spawn: spawnSolveWorker });
+  return createParallelSolveClient({
+    spawn: spawnSolveWorker,
+    workers: SOLVER_WORKERS,
+    viewCount: VIEW_COUNT,
+    // A fresh word per solve, not one for the client's lifetime: overlapping solves would
+    // otherwise publish each other's depths into the same channel.
+    makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
+  });
+})());
 
 /**
  * Whatever produced the solution, this is what makes it usable — and what checks it.
