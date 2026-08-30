@@ -201,9 +201,6 @@ def parse_icns(path: Path) -> dict[str, int]:
 
 
 def verify_icns() -> None:
-    if not have("sips"):
-        check("verify_icns", "needs sips", "skipped", True, gated=False)
-        return
 
     members = parse_icns(ICONS / "icon.icns")
     missing = sorted(set(ICNS_EXPECTED) - set(members))
@@ -215,6 +212,11 @@ def verify_icns() -> None:
         not missing,
     )
 
+    if not have("sips"):
+        # The ladder above is parsed straight out of the container and needs no tool, so it
+        # has already been gated. Only the render below is Apple-only.
+        check("icns renders at every rung", "needs sips", "skipped", True, gated=False)
+        return
     # Render through ImageIO (`sips`), the path macOS itself uses, and confirm
     # the pixels are the artwork rather than an empty or black plate.
     for size in (16, 32, 128, 512):
@@ -277,42 +279,50 @@ def verify_ico() -> None:
     # to get subtly wrong in a way that still produces a plausible file, so
     # decode every member back and compare it against a fresh render of the
     # same source at the same size.
-    for ico, src, sizes in (
-        (ICONS / "icon.ico", ICONS / "icon-square.svg",
-         (16, 24, 32, 48, 64, 128, 256)),
-        (WEB / "favicon.ico", WEB / "icon.svg", (16, 32, 48)),
-    ):
-        im = Image.open(ico)
-        worst = 0
-        for size in sizes:
-            member = im.ico.getimage((size, size)).convert("RGBA")
-            tmp = REPO / f".verify-ico-{size}.png"
-            subprocess.run(
-                ["rsvg-convert", "-w", str(size), "-h", str(size), str(src),
-                 "-o", str(tmp)],
-                check=True,
-            )
-            try:
-                ref = Image.open(tmp).convert("RGBA")
-                if member.size != (size, size):
-                    worst = 255
-                    break
-                worst = max(
-                    worst,
-                    max(
-                        abs(a - b)
-                        for pa, pb in zip(member.getdata(), ref.getdata())
-                        for a, b in zip(pa, pb)
-                    ),
-                )
-            finally:
-                tmp.unlink(missing_ok=True)
-        check(
-            f"{ico.name} members decode back to the source pixels",
-            "max channel diff 0",
-            str(worst),
-            worst == 0,
-        )
+    # `if`, not `return`: only the pixel round-trip needs a renderer, and returning here
+    # skipped the PNG-compression check further down — which needs nothing but the file's own
+    # bytes. This is the guard that was missing entirely (the function had none, so a box
+    # without librsvg raised before a single gated check was reported); putting it back too
+    # broadly would have traded a crash for a silent gap. A skip is informational, never a pass.
+    if not have("rsvg-convert"):
+        check("ico members decode back", "needs rsvg-convert", "skipped", True, gated=False)
+    else:
+      for ico, src, sizes in (
+          (ICONS / "icon.ico", ICONS / "icon-square.svg",
+           (16, 24, 32, 48, 64, 128, 256)),
+          (WEB / "favicon.ico", WEB / "icon.svg", (16, 32, 48)),
+      ):
+          im = Image.open(ico)
+          worst = 0
+          for size in sizes:
+              member = im.ico.getimage((size, size)).convert("RGBA")
+              tmp = REPO / f".verify-ico-{size}.png"
+              subprocess.run(
+                  ["rsvg-convert", "-w", str(size), "-h", str(size), str(src),
+                   "-o", str(tmp)],
+                  check=True,
+              )
+              try:
+                  ref = Image.open(tmp).convert("RGBA")
+                  if member.size != (size, size):
+                      worst = 255
+                      break
+                  worst = max(
+                      worst,
+                      max(
+                          abs(a - b)
+                          for pa, pb in zip(member.getdata(), ref.getdata())
+                          for a, b in zip(pa, pb)
+                      ),
+                  )
+              finally:
+                  tmp.unlink(missing_ok=True)
+          check(
+              f"{ico.name} members decode back to the source pixels",
+              "max channel diff 0",
+              str(worst),
+              worst == 0,
+          )
 
     # The 256 member must not be a raw BMP: 32-bit uncompressed is 270KB on its
     # own, which is how this file was once 372KB.
@@ -366,9 +376,6 @@ ICTOOL = Path(
 
 
 def verify_glass() -> None:
-    if not have("assetutil"):
-        check("verify_glass", "needs assetutil", "skipped", True, gated=False)
-        return
 
     car = ICONS / "Assets.car"
     check(
@@ -378,6 +385,12 @@ def verify_glass() -> None:
         car.exists() and car.stat().st_size > 0,
     )
     if car.exists():
+        if not have("assetutil"):
+            # Whether the catalogue EXISTS and is non-empty is checked above and gates
+            # everywhere — that is the check that catches a missing committed artefact.
+            # Reading its renditions is Apple-only.
+            check("Assets.car renditions", "needs assetutil", "skipped", True, gated=False)
+            return
         info = subprocess.run(
             ["assetutil", "--info", str(car)], capture_output=True, text=True
         ).stdout
@@ -436,9 +449,6 @@ def verify_glass() -> None:
 
 
 def verify_web() -> None:
-    if not have("rsvg-convert"):
-        check("verify_web", "needs rsvg-convert", "skipped", True, gated=False)
-        return
 
     # apple-touch-icon must be fully opaque. iOS composites a transparent one
     # against black, which puts a black ring around the tile.
@@ -681,9 +691,13 @@ def verify_android() -> None:
                 bad.append(f"{density}/{name} missing")
                 continue
             with Image.open(path) as im:
-                if im.width != px:
-                    bad.append(f"{density}/{name} {im.width}!={px}")
-    check("android: legacy bitmaps", "5 densities x2, exact", ", ".join(bad) or "all exact", not bad)
+                # BOTH dimensions: a width-only check passes a stretched or truncated file,
+                # which is the shape a half-written raster actually takes.
+                if im.size != (px, px):
+                    bad.append(f"{density}/{name} {im.width}x{im.height}!={px}")
+                if not im.getbbox():
+                    bad.append(f"{density}/{name} is entirely blank")
+    check("android: legacy bitmaps", "5 densities x2, exact and not blank", ", ".join(bad) or "all exact", not bad)
 
     bad = []
     for density, px in fore.items():
@@ -692,16 +706,21 @@ def verify_android() -> None:
             bad.append(f"{density} missing")
             continue
         with Image.open(path) as im:
-            if im.width != px:
-                bad.append(f"{density} {im.width}!={px}")
-            box = alpha_bbox(path)
-        if box:
-            # The mark must sit inside the 72/108 safe zone, or a round launcher
-            # mask clips it. Measured, because "it looked fine on my launcher"
-            # is exactly the claim that does not survive a different launcher.
-            margin = (px - px * 72 / 108) / 2
+            if im.size != (px, px):
+                bad.append(f"{density} {im.width}x{im.height}!={px}")
+        box = alpha_bbox(path)
+        if box is None:
+            # `if box:` silently passed a fully transparent layer, because an empty alpha
+            # bounding box is None — a foreground that draws NOTHING would have sailed
+            # through the geometry check by having no geometry to fault.
+            bad.append(f"{density} has no opaque pixels at all")
+        else:
+            # 66 of 108, matching the generator: 72dp is what the mask is guaranteed not to
+            # clip, but the logo keyline is 66dp because OEM mask shapes vary. Measured,
+            # because "it looked fine on my launcher" does not survive a different launcher.
+            margin = (px - px * 66 / 108) / 2
             if box[0] < margin - 1 or box[1] < margin - 1 or box[2] > px - margin + 1 or box[3] > px - margin + 1:
-                bad.append(f"{density} mark {box} escapes the safe zone")
+                bad.append(f"{density} mark {box} escapes the 66/108 keyline")
     check("android: adaptive foreground", "5 densities, inside safe zone", ", ".join(bad) or "all inside", not bad)
 
     anydpi = ANDROID_RES / "mipmap-anydpi-v26"

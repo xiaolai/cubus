@@ -195,13 +195,31 @@ export async function* refine(facelets, {
     const shorter = await solve(facelets, { solLen: moves, probeMax: met() ? bonusBudget : budget });
     if (shorter === null) {
       if (promised && !met()) {
-        // Not "impossible" — not yet. Escalate and ask again; the abort check at the top of the
-        // loop still governs, so a person can always leave.
+        // An abort that lands on this attempt is a person leaving, not a failure. Checked HERE
+        // as well as at the top of the loop, because the cap below throws and would otherwise
+        // report the last cancelled attempt as a broken engine.
+        if (signal?.aborted) {
+          yield snapshot(endReason(STOPPED.CANCELLED));
+          return;
+        }
+        // Not "impossible" — not yet. Escalate and ask again.
         if (escalations >= MAX_PROMISE_ESCALATIONS) {
+          // Says what happened, not what it means. The engine IS complete, so on the shipped
+          // budget this can only be a bug — but a caller may pass any budget it likes, and
+          // `probeBudget: 1` exhausting after 256 nodes accuses the engine of something the
+          // caller did. State the work actually spent and let the reader draw the conclusion.
           throw new Error(
-            `solver could not reach ${target} moves after ${escalations} escalations to ` +
-              `${budget} nodes, though God's number guarantees ${GODS_NUMBER} — the engine is broken`,
+            `solver did not reach ${target} moves within ${escalations} escalations, up to ` +
+              `${budget} nodes per attempt. A solution of ${GODS_NUMBER} or fewer always exists, ` +
+              'so either the budget was far too small or the engine is broken',
           );
+        }
+        // A budget that cannot be doubled without leaving the safe-integer range would be
+        // rejected by the engine boundary as malformed — a confusing failure for a caller who
+        // only asked for a very large budget. Stop escalating and report honestly instead.
+        if (!Number.isSafeInteger(budget * 2)) {
+          yield snapshot(endReason(STOPPED.EXHAUSTED));
+          return;
         }
         escalations++;
         budget *= 2;

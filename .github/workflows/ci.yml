@@ -65,6 +65,11 @@ jobs:
           python-version: "3.11"
       - name: icons — the shipped rasters are the ones the sources produce
         run: |
+          # librsvg, not just Pillow: the .ico round-trip decodes every member back and
+          # compares it against a fresh render of the same source, which needs a renderer.
+          # Without it the verifier raised before reporting a single gated check — and the
+          # skip path is only a floor, not a substitute for actually running the check.
+          sudo apt-get update -qq && sudo apt-get install -y -qq librsvg2-bin
           pip install --quiet pillow
           python scripts/verify-icons.py
 
