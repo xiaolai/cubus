@@ -798,6 +798,15 @@ test('the toolbar is one flat row of tabs, with Settings as its own button', asy
   // instruments, Alg trainer, Drill and Lessons are placeholder screens — all five start hidden,
   // in code, and are one chord away.
   assert.deepEqual(navLabels(), ['Home', 'Restore', 'Scramble']);
+  // Every tab draws a real glyph. icon() falls back to a bare dot for a name it does not know, so
+  // a deleted or renamed glyph does not throw — it renders something almost plausible, and in an
+  // icons-only row there is no label left to give the game away. Two icons were retired on
+  // 2026-08-30; this is what makes the next retirement safe.
+  const FALLBACK = '<circle cx="12" cy="12" r="2"></circle>';
+  for (const svg of win.document.querySelectorAll('#nav [data-nav] svg.ic')) {
+    assert.notEqual(svg.innerHTML.trim(), FALLBACK, `a tab fell back to the placeholder dot: ${svg.closest('[data-nav]').dataset.nav}`);
+    assert.ok(svg.innerHTML.length > 0, 'a tab icon is empty');
+  }
   assert.equal(win.document.querySelector('#nav .nav-group'), null, 'no grouping wrapper');
   assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'no SOLVE / PRACTICE / LEARN');
   // #nav holds one capsule (the segmented control's pill; the nav itself is the box the

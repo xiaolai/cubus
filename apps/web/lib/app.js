@@ -55,8 +55,7 @@ const P = {
   // between the two screens. `fill` is a presentation attribute so it beats the `fill: none`
   // inherited from svg.ic; `stroke="none"` keeps a filled cell from looking a stroke-width bigger
   // than an empty one.
-  grid: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>',
-  'grid-filled': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/><rect x="4" y="4" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/><rect x="16" y="10" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/><rect x="10" y="16" width="4" height="4" rx=".5" fill="currentColor" stroke="none"/>',
+  scan: '<path d="M3 8V5a2 2 0 0 1 2-2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2h-3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="8.5" y="8.5" width="7" height="7" rx="1.5"/>',
   timer: '<line x1="10" y1="2" x2="14" y2="2"/><line x1="12" y1="14" x2="15" y2="11"/><circle cx="12" cy="14" r="8"/>',
   chart: '<path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="7"/><rect x="12" y="6" width="3" height="11"/><rect x="17" y="13" width="3" height="4"/>',
   cap: '<path d="M22 10 12 5 2 10l10 5 10-5Z"/><path d="M6 12v5c0 1 3 2 6 2s6-1 6-2v-5"/>',
@@ -72,7 +71,10 @@ const P = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
   refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
-  dice: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.2"/><circle cx="16" cy="16" r="1.2"/><circle cx="8" cy="16" r="1.2"/><circle cx="16" cy="8" r="1.2"/><circle cx="12" cy="12" r="1.2"/>',
+  // Pips are FILLED, not stroked. At r=1.2 with the sheet's 1.75 stroke and fill:none they were
+  // drawn as rings with a 0.65-unit hole — invisible at 18px, plainly wrong at any size a
+  // reader might zoom to. Same technique grid-filled used for its solid cells.
+  dice: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="8" cy="16" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="16" r="1.5" fill="currentColor" stroke="none"/>',
   minus: '<path d="M5 12h14"/>',
   square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
   webcam: '<circle cx="12" cy="10" r="8"/><circle class="lens" cx="12" cy="10" r="3"/><path d="M7 22h10"/><path d="M12 22v-4"/>',
@@ -96,8 +98,14 @@ const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="wi
 // carries no badge until there is something real to count.
 const NAV = [
   ['home', 'Home', 'box'],
-  ['scan', 'Restore', 'grid'],
-  ['scramble', 'Scramble', 'grid-filled'],
+  // Two 3x3 grids differing only in which cells were filled read as one picture at 22px, which is
+  // the cost the icons-only row took on (dev-docs/stage-contract.md). A viewfinder and a die are
+  // different silhouettes, and both say what the screen does rather than what a cube looks like:
+  // Restore asks you to hold a face up to the camera, Scramble hands you a random cube. `dice` is
+  // already the Random button's icon on the cube screen — the same meaning, deliberately the same
+  // picture.
+  ['scan', 'Restore', 'scan'],
+  ['scramble', 'Scramble', 'dice'],
   ['timer', 'Timer', 'timer'],
   ['stats', 'Stats', 'chart'],
   ['trainer', 'Alg trainer', 'cap'],
