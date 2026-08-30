@@ -22,6 +22,7 @@
 // picture and whose move list disagreed.
 
 import Cube from '../vendor/cubejs.js';
+import { randomCube } from './random-state.js';
 
 // Built once, eagerly, so the first roll does not pay for it. Seconds of table building, on a
 // thread where seconds cost nobody anything.
@@ -30,7 +31,10 @@ self.postMessage({ ready: true });
 
 self.onmessage = () => {
   try {
-    const cube = Cube.random();
+    // Crypto random-state, never Cube.random(): the uniform draw from a cryptographic source
+    // is the project's scramble rule (AGENTS.md), and Math.random is exactly the quiet
+    // weakening it forbids — on this thread no less than on the main one.
+    const cube = randomCube(Cube);
     self.postMessage({ facelets: cube.asString(), solution: cube.solve() });
   } catch (err) {
     // Loud, not silent: the main thread falls back to rolling on itself, and a worker that has

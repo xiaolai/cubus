@@ -44,11 +44,14 @@ before(async () => {
     // regression in whatever changed last. An interrupted run leaves the server orphaned and every
     // later run then fails this way — it cost two wrong diagnoses on 2026-08-30 before anyone read
     // the child's output. Fail loud: hand the child's own words back.
+    // 20 s, not 5: the port is the OS's now, so a collision is no longer the cause — but under the
+    // full suite's fan-out a cold node start is queued work, and a start budget is an AVAILABILITY
+    // wait, not an assertion. Patience here costs nothing on success and removes a false red.
     let said = '';
     const note = (d) => { said += d.toString(); };
     const timeout = setTimeout(
-      () => reject(new Error(`serve.mjs did not start within 5s on port ${PORT}. It said: ${said.trim() || '(nothing)'}`)),
-      5000,
+      () => reject(new Error(`serve.mjs did not start within 20s on port ${PORT}. It said: ${said.trim() || '(nothing)'}`)),
+      20_000,
     );
     proc.stdout.on('data', (d) => {
       note(d);
@@ -90,11 +93,21 @@ const label = (f) => `${f.name} (${f.width}×${f.height}, insets ${f.insets.join
 
 async function open(fixture, route = 'home') {
   const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+  // node --test saturates the machine by design, and a WebKit navigation on a saturated
+  // machine is queued work, not a hung page — the 30 s default read exactly that as failure
+  // (2026-08-29, two fixtures, both clean alone), and even 120 s was exceeded under the full
+  // unbounded fan-out, which is why package.json bounds --test-concurrency as well. Both
+  // halves are needed. The selector waits below still bound the app's own boot.
+  context.setDefaultNavigationTimeout(120_000);
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e));
   await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${route}`);
-  await page.waitForSelector('.screen.active', { timeout: 10_000 });
+  // 30 s, not 10: this is an AVAILABILITY wait (did the app mount), not an assertion —
+  // under test-concurrency=6, six webkits and dev servers share one machine, and the mount
+  // once lost a 10 s race (2026-08-30) while every geometry assertion behind it would have
+  // passed. Generous waits here; the strictness belongs to the geometry checks themselves.
+  await page.waitForSelector('.screen.active', { timeout: 30_000 });
   return { page, context, errors };
 }
 
@@ -543,13 +556,14 @@ for (const screen of SCREENS) {
   for (const fixture of FIXTURES) {
     test(`${screen} screen: ${label(fixture)}`, async () => {
       const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+      context.setDefaultNavigationTimeout(120_000); // same saturation reasoning as above
       await context.addInitScript((session) => localStorage.setItem('cubusSolves', session), SESSION);
       const page = await context.newPage();
       const errors = [];
       page.on('pageerror', (e) => errors.push(e));
       try {
         await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${screen}`);
-        await page.waitForSelector('.screen.active', { timeout: 10_000 });
+        await page.waitForSelector('.screen.active', { timeout: 30_000 });
         const m = await measureScreen(page);
         assert.deepEqual(errors.map(String), [], 'the page threw');
         assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);

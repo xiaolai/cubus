@@ -5,7 +5,11 @@ import { SOLVED, createSolveTimer } from '../lib/solve-timer.js';
 
 const TARGET = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB'.replace('UUU', 'RRR');
 
-/** A move as the driver delivers it: a cube clock, a host clock, and a serial. */
+/** A move as the driver delivers it: a cube clock, a host clock, and a serial.
+ *  Serial convention (the driver's, 8-bit rolling): a FACELETS snapshot carries the serial of
+ *  the LAST move applied, so the first move after an arming snapshot S is S+1 — the timer
+ *  refuses anything else as a drop, and these fixtures must be consistent or they test the
+ *  refusal instead of what they claim to. */
 const mv = (cubeTimestamp, { host = null, serial = 0 } = {}) => ({
   notation: 'R',
   serial,
@@ -31,7 +35,7 @@ test('arms only on the exact scramble arrangement, never on a heuristic', () => 
 
 test('the clock runs from the cube hardware clock, not the host clock', () => {
   const t = make();
-  t.facelets(TARGET, 1);
+  t.facelets(TARGET, 0);
   // Host times deliberately disagree in SHAPE with the cube's — BLE jitter. The reported span
   // must follow the cube.
   t.move(mv(1_000, { host: 500_000, serial: 1 }));
@@ -46,7 +50,7 @@ test('the clock runs from the cube hardware clock, not the host clock', () => {
 
 test('a solve is not timed at all when the cube did not stamp its moves', () => {
   const t = make();
-  t.facelets(TARGET, 1);
+  t.facelets(TARGET, 0);
   t.move(mv(null, { serial: 1 }));
   t.move(mv(null, { serial: 2 }));
   t.facelets(SOLVED, 2);
@@ -68,7 +72,7 @@ test('dropped moves are detected by serial and refuse to report a short time', (
 
 test('a backwards cube clock (a reconnect resets it) is refused, not reported', () => {
   const t = make();
-  t.facelets(TARGET, 1);
+  t.facelets(TARGET, 0);
   t.move(mv(90_000, { serial: 1 }));
   t.move(mv(120, { serial: 2 })); // hardware clock restarted
   t.facelets(SOLVED, 2);
@@ -77,7 +81,7 @@ test('a backwards cube clock (a reconnect resets it) is refused, not reported', 
 
 test('an absurd span is refused — the cube was put down, not solved', () => {
   const t = make();
-  t.facelets(TARGET, 1);
+  t.facelets(TARGET, 0);
   t.move(mv(0, { serial: 1 }));
   t.move(mv(4 * 60 * 60 * 1000, { serial: 2 }));
   t.facelets(SOLVED, 2);
@@ -86,7 +90,7 @@ test('an absurd span is refused — the cube was put down, not solved', () => {
 
 test('gross host/cube disagreement is refused — one of the two clocks is lying', () => {
   const t = make();
-  t.facelets(TARGET, 1);
+  t.facelets(TARGET, 0);
   t.move(mv(1_000, { host: 1_000, serial: 1 }));
   t.move(mv(9_000, { host: 90_000, serial: 2 })); // cube says 8 s, host says 89 s
   t.facelets(SOLVED, 2);
@@ -106,7 +110,7 @@ test('an untrusted cube never arms — its arrangement is not evidence', () => {
 test('losing trust mid-solve abandons the timing rather than reporting it', () => {
   let ok = true;
   const t = make({ trusted: () => ok });
-  t.facelets(TARGET, 1);
+  t.facelets(TARGET, 0);
   t.move(mv(1_000, { serial: 1 }));
   assert.equal(t.state, 'running');
   ok = false;
@@ -132,7 +136,7 @@ test('with no scramble there is nothing to arm on', () => {
 
 test('reaching solved is what stops it — not a move count or a timeout', () => {
   const t = make();
-  t.facelets(TARGET, 1);
+  t.facelets(TARGET, 0);
   t.move(mv(1_000, { serial: 1 }));
   for (let i = 2; i < 40; i++) t.move(mv(1_000 + i * 400, { serial: i }));
   assert.equal(t.state, 'running', 'still running after 39 moves');
@@ -143,7 +147,7 @@ test('reaching solved is what stops it — not a move count or a timeout', () =>
 
 test('result is null until the solve actually finishes', () => {
   const t = make();
-  t.facelets(TARGET, 1);
+  t.facelets(TARGET, 0);
   assert.equal(t.result(), null);
   t.move(mv(1_000, { serial: 1 }));
   assert.equal(t.result(), null, 'running is not finished');
@@ -158,7 +162,7 @@ test('a one-move solve cannot be timed, and says so rather than reporting 0.00',
   // Inherent to measuring between move completions: with a single move, first and last are the
   // same instant. A 0.00 is not a truer number than no number, so it is refused.
   const t = make();
-  t.facelets(TARGET, 1);
+  t.facelets(TARGET, 0);
   t.move(mv(1_000, { serial: 1 }));
   t.facelets(SOLVED, 1);
   assert.equal(t.state, 'stopped');
@@ -180,7 +184,7 @@ test('reaching the scramble RECORDS a ready instant, not just a flag', () => {
 test('inspection is reported: how long the solver looked before touching it', () => {
   let clock = 10_000;
   const t = make({ now: () => clock });
-  t.facelets(TARGET, 1);           // ready at host 10_000
+  t.facelets(TARGET, 0);           // ready at host 10_000
   t.move(mv(500, { host: 17_400, serial: 1 }));  // first turn 7.4 s later
   t.move(mv(9_000, { host: 26_000, serial: 2 }));
   t.facelets(SOLVED, 2);
@@ -203,7 +207,7 @@ test('a stale ready lapses — a cube left at the scramble is furniture, not a s
 test('inspection is null rather than fabricated when the host times are unusable', () => {
   let clock = 1_000;
   const t = make({ now: () => clock });
-  t.facelets(TARGET, 1);
+  t.facelets(TARGET, 0);
   t.move(mv(100, { host: null, serial: 1 }));
   t.move(mv(5_100, { host: null, serial: 2 }));
   t.facelets(SOLVED, 2);
