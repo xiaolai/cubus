@@ -145,7 +145,26 @@ const server = createServer(async (req, res) => {
     if (s?.isDirectory()) target = join(target, 'index.html');
     const ext = extname(target);
     // Dev server: never cache, so a plain reload always fetches fresh files. Not for production.
-    const headers = { 'content-type': MIME[ext] ?? 'application/octet-stream', 'cache-control': 'no-store' };
+    // Cross-origin isolation, which is the whole reason the scanner can use more than one core.
+    //
+    // onnxruntime-web ships a THREADED wasm build (copy-ort.mjs picks the
+    // `ort-wasm-simd-threaded.jsep` pair) and it needs SharedArrayBuffer, which the browser only
+    // hands out to a cross-origin-isolated page. Without these two headers the runtime silently
+    // reports numThreads: 1 and one core does the work of eight — measured at 297 ms per
+    // inference in WebKit and 234 ms in Chromium, about 3-4 fps, which is the "same rate as the
+    // wasm fallback" the desktop shell's Cargo.toml already complains about.
+    //
+    // require-corp is safe here in a way it would not be in most apps: this page embeds nothing
+    // cross-origin at all. No CDN, no web fonts, no remote model — and solver-offline.test.mjs
+    // already fails the build if a CDN import ever creeps in. CORP on every response is the
+    // matching half, so a same-origin subresource cannot be refused by its own policy.
+    const headers = {
+      'content-type': MIME[ext] ?? 'application/octet-stream',
+      'cache-control': 'no-store',
+      'cross-origin-opener-policy': 'same-origin',
+      'cross-origin-embedder-policy': 'require-corp',
+      'cross-origin-resource-policy': 'same-origin',
+    };
 
     if (ext === '.html') {
       // Inject the live-reload client just before </body> (or append if there is none) — unless
