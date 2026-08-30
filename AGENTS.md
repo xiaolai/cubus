@@ -41,8 +41,10 @@ it walks you through solving it.
     (`crates/optimal-solver` behind prepare/prove/cancel commands), the browser answers with the
     two-phase tiers' honest "the shortest I found" and the precomputed proven library that ships
     everywhere. Same test as every seam: no screen exists on one build only — the prove
-    affordance follows the orientation-row precedent (drawn only where the API is injected),
-    and the word "optimal" can appear ONLY as the result of a native proof, never from the
+    affordance follows the orientation-row precedent in full (drawn only where the API is
+    injected AND the platform is a desktop: `apps/web/lib/host.js`, which exists because the
+    mobile shells inject the identical API, and `optimal_prepare` refuses on mobile too), and
+    the word "optimal" can appear ONLY as the result of a native proof, never from the
     two-phase engine. Provenance discipline as for the two-phase engine:
     `dev-docs/optimal-solver-provenance.md`, written before the Rust.
   - **Dev tooling, accepted 2026-08-27, never shipped**: `tauri-plugin-mcp` (git dep, pinned rev)
@@ -102,10 +104,13 @@ it walks you through solving it.
   against the search it replaces).
   **A THIRD search, in cubing.js's worker**: the solution was searched for again, when inverting
   the setup alg already IS one (`invertAlg` is an involution, so one search yields both). The
-  oracle rule is unchanged, only which side plays which part — cubing.js now VERIFIES a generated
-  cube's solution by applying it to a kpuzzle, no search, ~4 ms. Never let this become cubejs
-  checking cubejs: `state.cube.crossChecked` exists precisely because "solution is set" no longer
-  implies "someone else agreed".
+  oracle rule is unchanged, only which side plays which part — the oracle VERIFIES a generated
+  cube's solution by APPLYING it, no search. (cubing.js held that part when this was measured;
+  the in-house two-phase engine has since replaced it as the solver, so cubejs plays it —
+  `finishSolve` applies the carried solution and blocks on a definite refutation.) Never let this
+  become one implementation checking itself: `state.cube.crossChecked` exists precisely because
+  "solution is set" no longer implies "someone else agreed", and it is true only when the oracle
+  actually SAID yes — an oracle that could not run has verified nothing.
   **A presented frame with an empty solution**: the screen was replaced first and solved second,
   so one composited frame showed the new cube beside an empty chip grid under a count reading
   "working…". The die solves before it swaps now.
