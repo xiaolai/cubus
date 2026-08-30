@@ -346,7 +346,12 @@ function deriveCube() {
     const moves = movesOf(sol);
     c.setupAlg = moves.slice().reverse().map(invMove).join(' ');
     c.solvable = moves.length > 0;
-  } catch { c.setupAlg = ''; c.solvable = false; }
+  } catch {
+    // A throw here is a transient (cubejs failed to parse/solve something it normally can) —
+    // caching it as "unsolvable" would freeze a wrong answer until the next ingest. Leave
+    // `derived` false so the next reader simply tries again.
+    c.setupAlg = ''; c.solvable = false; c.derived = false;
+  }
   return c;
 }
 
@@ -384,7 +389,10 @@ function finishSolve(c, alg) {
   c.solution = solution; c.moves = moves;
   // Per-step facelets so the 2D net + move list can co-move with the 3D animation.
   c.stepFacelets = stepStates(c.facelets, moves);
-  c.crossChecked = true;
+  // True only when the oracle actually SAID yes. An oracle that could not run refuted
+  // nothing — but it verified nothing either, and marking that "checked" would let an
+  // unverified solution be reused forever. Left false, the next solve() retries the check.
+  c.crossChecked = verified === true;
   return solution;
 }
 
@@ -413,13 +421,21 @@ async function solve({ onImprovement } = {}) {
   }
 
   const client = solverWorker();
+  // Captured: the search is about THIS arrangement. A live snapshot can re-ingest the cube
+  // mid-await, and committing this search's answer onto the new subject would pair a solution
+  // with a cube it does not solve. (The oracle in finishSolve would catch it loudly — this
+  // makes it a clean refusal instead of a confusing one.)
+  const searched = c.facelets;
   let result = null;
-  for await (const step of refine(c.facelets, {
+  for await (const step of refine(searched, {
     solve: (facelets, bounds) => client.solve(facelets, bounds),
     tier: settings.solveTier,
   })) {
     result = step;
     onImprovement?.(step);
+  }
+  if (c.facelets !== searched) {
+    throw new Error('solve: the cube changed mid-search — this answer is about the previous one');
   }
   // Never inferred from the move count: a tier the cube cannot reach (18 does not exist for
   // every position) must read as "the shortest I found", not as the target met.
@@ -2745,6 +2761,11 @@ const cubeScreen = (screenMode) => {
         moves = []; steps = []; chips = []; total = 0; target = null;
         midpoints.clear();
         solList.innerHTML = '';
+        // The previous walk's prove button must not survive into the gap: its closure guards
+        // itself with fresh(), but a click would still flip it to "preparing…" and disable it
+        // BEFORE those guards run — and if the new walk fails, nothing ever puts it back.
+        const oldProve = $('#proveBtn', root);
+        if (oldProve) { oldProve.hidden = true; oldProve.disabled = true; oldProve.onclick = null; }
         // The heading and the open question describe the SUBJECT, not the walk, so they are
         // written here — synchronously, before any search — and not on the far side of one. A
         // reconnect answered on a screen whose solver is slow, or missing entirely, still has to
@@ -2830,7 +2851,10 @@ const cubeScreen = (screenMode) => {
         // moves do not exist for every position, so that case is said plainly rather than left
         // to look like the target was met — but only when the search actually EXHAUSTED.
         // A stopped search proved nothing impossible and must not claim it did.
-        const verdict = state.cube.solveResult;
+        // A scramble walk never ran the solver, so any verdict on state.cube is a LEFTOVER
+        // from an earlier solve — shown here it would caption a fresh scramble with an old
+        // cube's "18 was not possible".
+        const verdict = scrambling ? null : state.cube.solveResult;
         setStatus(verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'
           ? `${total} — ${verdict.target} was not possible here`
           : String(total));
@@ -2846,12 +2870,15 @@ const cubeScreen = (screenMode) => {
           proveBtn.hidden = false;
           proveBtn.disabled = false;
           proveBtn.textContent = 'prove the minimum';
+          // The pair being proved is the WALK's, captured at wiring: steps[0] IS the start
+          // state this walk displays and total IS its length. Reading state.cube at click
+          // time would race live ingestion (a snapshot can swap the subject or zero the move
+          // list under the button), and a re-solve replaces the walk through loadWalk, which
+          // re-wires this handler with the new pair.
+          const startFacelets = steps[0] ?? state.cube.facelets;
+          const shown = total;
           proveBtn.onclick = async () => {
             proveBtn.disabled = true;
-            // Snapshotted at CLICK, not at wiring: a Follow-cube re-solve replaces the shown
-            // solution without re-walking, and the proof must be about the pair on screen NOW.
-            const startFacelets = state.cube.facelets;
-            const shown = state.cube.moves.length;
             // First ever press generates the tables (minutes) — the progress event keeps the
             // button honest about why nothing seems to be happening. The listener is released
             // in finally, so neither navigation nor a failure leaks it against the old DOM.
@@ -3026,6 +3053,10 @@ SCREENS.timer = () => {
 
       warmRoller(); // New scramble is one press away on this screen; see cubeScreen's mount
       const newScr = () => {
+        // The scramble on screen is the one the RUNNING solve is recorded against — replacing
+        // it mid-solve would file the time under a scramble the solver never saw, and disarm
+        // the cube-driven stop. Stop the clock first; then roll.
+        if (running) return;
         if (!solverReady) {
           $('#scr', root).textContent = t('solver loading…');
           // Retry when it lands. Without this, opening Timer before the solver finished left

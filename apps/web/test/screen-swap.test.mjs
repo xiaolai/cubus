@@ -349,21 +349,26 @@ test('a refuted solution still blocks — the oracle can still say no', async ()
   // The negative control for the search that was removed. A generated cube's solution is not
   // searched for — it is the inverse of a setup alg the solver found — so the independent
   // check is the cubejs oracle applying it in finishSolve. If that check has quietly stopped
-  // being able to fail, the app would show any alg at all with confidence. So make it fail —
-  // every isSolved() now answers no, so every applied solution reads as a refutation — and
-  // watch the screen refuse.
+  // being able to fail, the app would show any alg at all with confidence.
+  //
+  // No monkey-patching: patching isSolved() globally would ALSO fail takeDerivation's own
+  // pre-check (app.js), so the carried solution would never be installed and the searched
+  // path would be the one refusing — a pass proving nothing about this path. Instead the
+  // CARRIED SOLUTION ITSELF is corrupted through the module's real state, unverified flag
+  // and all, and the real, untouched oracle must refuse it on the next walk.
   const { page, context, errors } = await openHome();
   try {
     await press(page);
-    const patched = await page.evaluate(`(async () => {
-      const Cube = (await import('/vendor/cubejs.js')).default;
-      if (typeof Cube.prototype.isSolved !== 'function') return false;
-      Cube.prototype.isSolved = () => false; // every oracle application now disagrees
+    const corrupted = await page.evaluate(`(async () => {
+      const { state } = await import('/lib/app.js');
+      if (!state.cube.solution) return false;
+      state.cube.solution = "R U"; // well-formed, reaches nothing
+      state.cube.crossChecked = false; // exactly how a carried solution arrives
       return true;
     })()`);
-    assert.ok(patched, 'cubejs no longer exposes isSolved — the cross-check needs rewriting');
+    assert.ok(corrupted, 'no carried solution to corrupt — the derivation path is gone');
 
-    await page.click('#randCube');
+    await page.evaluate('window.cubusGo("home")'); // re-walk the same subject
     await page.waitForTimeout(2500);
     const shown = await page.evaluate(() => ({
       count: document.querySelector('#moveCount')?.textContent ?? null,

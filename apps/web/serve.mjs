@@ -42,7 +42,10 @@ const MIME = {
 const clients = new Set();
 
 function broadcastReload() {
-  for (const res of clients) res.write('data: reload\n\n');
+  for (const res of clients) {
+    // A dead SSE client throws synchronously on write; it is retired, never mourned.
+    try { res.write('data: reload\n\n'); } catch { clients.delete(res); }
+  }
 }
 
 // A single save often emits several fs events; coalesce a burst into one reload, and
@@ -69,7 +72,26 @@ const RELOAD_SNIPPET =
   `\n<script>(() => { const es = new EventSource(${JSON.stringify(RELOAD_PATH)});` +
   ' es.onmessage = () => location.reload(); })();</script>\n';
 
+// A client that vanished mid-response — a tab closed, a test navigated, webkit tore a context
+// down — is churn, not a server fault: without handlers, the stream's 'error' event crashes the
+// whole process, and under a parallel test run (six webkits opening and closing pages against
+// this server) that killed it mid-suite on 2026-08-30, failing every later test with "could not
+// connect". ONLY the client-gone class is swallowed; anything else still fails loud.
+const CLIENT_GONE = new Set(['ECONNRESET', 'EPIPE', 'ERR_STREAM_DESTROYED', 'ERR_STREAM_WRITE_AFTER_END']);
+const ignoreClientLoss = (stream, onGone) => {
+  stream.on('error', (err) => {
+    if (CLIENT_GONE.has(err.code)) {
+      onGone?.();
+      return;
+    }
+    console.error('serve: stream error', err);
+    throw err; // unhandled on purpose — an unknown stream error must not be absorbed
+  });
+};
+
 const server = createServer(async (req, res) => {
+  ignoreClientLoss(req);
+  ignoreClientLoss(res);
   // SSE endpoint: keep the connection open and register this client for reload pushes.
   if (req.url === RELOAD_PATH) {
     res.writeHead(200, {
@@ -79,6 +101,7 @@ const server = createServer(async (req, res) => {
     });
     res.write(': connected\n\n');
     clients.add(res);
+    ignoreClientLoss(res, () => clients.delete(res));
     req.on('close', () => clients.delete(res));
     return;
   }
@@ -117,6 +140,9 @@ const server = createServer(async (req, res) => {
 
 // Fail with a clear, actionable message instead of an unhandled-error stack trace when the port
 // is taken (usually a dev server left running from an earlier session).
+// Malformed or aborted connections before a request exists — same churn class.
+server.on('clientError', (_err, socket) => socket.destroy());
+
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`Port ${PORT} is already in use — another dev server is probably still running.`);
