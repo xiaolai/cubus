@@ -441,9 +441,9 @@ for (const fixture of FIXTURES) {
 
 // ---- the scan screen's composition --------------------------------------------------------------
 //
-// Landscape: the six-face net in the primary region, the twin and the notice beside it.
-// Portrait: one face large and the other five as a strip — a finger needs 44px stickers and a
-// phone's width cannot give six tiles that. The camera is absent in headless WebKit; the screen
+// The six-face net in the primary region, the twin and the notice beside it — in BOTH
+// compositions and on every platform (decided 2026-08-30; a finger's portrait used to get one
+// face large over a strip of five instead). The camera is absent in headless WebKit; the screen
 // shows its notice and lays out all the same.
 
 const measureScan = (page) =>
@@ -495,32 +495,29 @@ for (const fixture of FIXTURES) {
       assert.ok(m.solve.height >= (fixture.touch ? 44 : 40) - 0.5, `"Solve this cube" is ${m.solve.height}px tall`);
       assert.ok(m.solve.width >= m.sheet.width - 1, `"Solve this cube" is ${m.solve.width}px wide in a ${m.sheet.width}px sheet`);
 
-      const focused = m.tiles.filter((t) => t.focus);
-      if (portrait && fixture.touch) {
-        // A finger's portrait, and only that: one face large over a strip of five.
-        assert.equal(m.focusFlag, '1', 'touch portrait: the focus layout is on');
-        assert.deepEqual(focused.map((t) => t.face), ['F'], 'portrait: exactly one large tile, F to begin with');
-        if (fixture.width >= 375) {
-          // At and above the floor: a finger can hit a sticker on the large tile, and a strip tile.
-          assert.ok(focused[0].sticker.width >= 44, `portrait: large-tile sticker ${focused[0].sticker.width}px < 44`);
-          for (const t of m.tiles.filter((t) => !t.focus)) assert.ok(t.tile.width >= 44 && t.tile.height >= 44, `strip tile ${t.face} ${t.tile.width}×${t.tile.height} < 44`);
-        }
-        for (const t of m.tiles.filter((t) => !t.focus)) assert.ok(t.tile.top >= focused[0].tile.bottom - 1, `strip tile ${t.face} is not below the large tile`);
-        // Since the stickers became buttons, this rule is what keeps the 44px floor honest: a
-        // strip cell is not a tap target — the TILE is — so a finger can only ever hit the tile.
-        assert.equal(focused[0].cellPointer, 'auto', 'the large tile\'s stickers must take the finger');
-        for (const t of m.tiles.filter((t) => !t.focus)) assert.equal(t.cellPointer, 'none', `strip tile ${t.face}'s cells must not be hit-testable — the tile is the target`);
-        // The card's tools park top-right; the large tile must not run under them.
-        assert.ok(!overlaps(m.tools, focused[0].tile), `the tools ${JSON.stringify(m.tools)} overlap the large tile ${JSON.stringify(focused[0].tile)}`);
-      } else {
-        // The cross — the same cross in landscape and in a mouse's portrait.
-        assert.notEqual(m.focusFlag, '1', 'the cross layout, no focus');
-        // The cross: a mouse hits a 24px sticker; the 840 reference gives 28 and the 574 portrait
-        // reference 34. A touch iPad in landscape holds 34 on an 11" — the deviation the
-        // stylesheet names — and 57 on a 13".
-        const floor = fixture.touch ? 34 : 24;
-        for (const t of m.tiles) assert.ok(t.sticker.width >= floor, `${t.face} sticker ${t.sticker.width}px < ${floor}`);
-      }
+      // One arrangement, everywhere: the cube's net (decided 2026-08-30). There is no second
+      // layout to branch on any more — a finger's portrait used to get one face large over a
+      // strip of five, and the focus flag that switched between them is gone with it.
+      assert.notEqual(m.focusFlag, '1', 'the focus layout is gone; nothing may turn it back on');
+      assert.deepEqual(m.tiles.filter((t) => t.focus).map((t) => t.face), [],
+        'no tile may still be marked .focus — the class styles nothing now');
+
+      // The sticker floor, named per fixture class rather than asserted as one number, because
+      // this screen is the one place the app deliberately goes under 44px. Measured on this
+      // tree, 2026-08-30: a mouse gets 28.3 landscape and 29.1 portrait; a touch iPad 11" gets
+      // 34.7 landscape and 36.2 portrait; a NARROW touch client gets 16.9 on an iPhone 16, 15.5
+      // on an SE and 11.2 in a 320px split-view column. The last three are under the 44px floor
+      // every other control holds, knowingly: the owner's call on 2026-08-30 was that one net
+      // everywhere is worth more than a tappable sticker on a phone. The numbers are named here
+      // so that shrinking them FURTHER still fails, which is the part that stays a test.
+      const narrow = fixture.touch && fixture.width < 500;
+      const floor = narrow ? 11 : fixture.touch ? 34 : 24;
+      for (const t of m.tiles) assert.ok(t.sticker.width >= floor, `${t.face} sticker ${t.sticker.width}px < ${floor}`);
+      // Every side is drawn at the same size — the net is six equal faces, not a hierarchy.
+      const widths = m.tiles.map((t) => Math.round(t.tile.width));
+      assert.equal(new Set(widths).size, 1, `the six faces are not the same size: ${widths.join(', ')}`);
+      // The card's tools park top-right; no tile may run under them.
+      for (const t of m.tiles) assert.ok(!overlaps(m.tools, t.tile), `the tools overlap the ${t.face} tile`);
     } finally {
       await context.close();
     }
