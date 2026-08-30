@@ -513,7 +513,10 @@ const chord = (over = {}) =>
   });
 const navIds = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((b) => b.dataset.nav);
 // The toolbar is one flat row of tabs, so there are no group headings to name.
-const navLabels = () => [...win.document.querySelectorAll('#nav [data-nav] .lbl')].map((e) => e.textContent);
+// The tab row is icons only (2026-08-30), so a tab's name is its aria-label rather than drawn
+// text. Reading the accessible name is also the stronger check: it is what a screen reader
+// announces, and an icon-only row that lost its names would still look right.
+const navLabels = () => [...win.document.querySelectorAll('#nav [data-nav]')].map((e) => e.getAttribute('aria-label'));
 
 test('the Advanced section is hidden until the chord asks for it', async () => {
   const { state } = await import('../lib/app.js');
