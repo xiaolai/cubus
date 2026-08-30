@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated iOS Info.plist. Tauri looks for `Info.ios.plist` beside
+  tauri.conf.json, which is why this needs no config entry — and why it survives a re-run of
+  `tauri ios init`, unlike an edit to gen/apple/project.yml or the plist that xcodegen writes
+  from it.
+
+  The two usage strings are the same promises the macOS Info.plist makes, for the same reasons:
+  iOS refuses camera access to an app that declares no purpose, and CoreBluetooth reports
+  `unauthorized` without the Bluetooth key — which btleplug then surfaces as "no cube found",
+  a permission problem wearing a hardware problem's face. Deliberately NO
+  NSMicrophoneUsageDescription: the scanner asks for `{ video: …, audio: false }`.
+
+  UISupportedInterfaceOrientations~iphone is stage-contract decision 6 — phones are portrait-
+  locked, iPad rotates freely, so the generated all-orientations list stands for iPad and this
+  narrows it for phones only. UIRequiresFullScreen is decision 7: Split View at 1/3 width is
+  unsupported for now, and the portrait floor stays at the iPhone SE's 375px. That key is still
+  honoured on iPadOS 26 and is deprecated for a later release; when Apple stops honouring it the
+  contract's decision 7 is what gets revisited, not this file.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Cubus reads your cube's six sides through the camera. Everything happens on this device — no image is stored or sent anywhere.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Cubus talks to your GAN smart cube over Bluetooth, so it can follow the moves you make. It connects only to a cube you choose.</string>
+	<key>UISupportedInterfaceOrientations~iphone</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UIRequiresFullScreen</key>
+	<true/>
+</dict>
+</plist>
