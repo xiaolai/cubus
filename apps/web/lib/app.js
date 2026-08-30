@@ -5,7 +5,7 @@
 
 import { summarize, times } from './solve-stats.js';
 import { createSolveTimer } from './solve-timer.js';
-import { TIERS, describe, refine } from './solve-target.js';
+import { TIERS, describe, refine, solveWithinGodsNumber } from './solve-target.js';
 import { createParallelSolveClient, createSolveClient, spawnSolveWorker } from './solve-client.js';
 import { LOOSEST_BOUND, VIEW_COUNT } from './solver-engine.js';
 import {
@@ -464,7 +464,11 @@ let solveClient = null;
 const SOLVER_WORKERS = Math.max(1, Math.min(VIEW_COUNT, (globalThis.navigator?.hardwareConcurrency ?? 4) - 2));
 const solverWorker = () => (solveClient ??= (() => {
   const isolated = typeof SharedArrayBuffer !== 'undefined' && globalThis.crossOriginIsolated === true;
-  if (!isolated || SOLVER_WORKERS < 2) return createSolveClient({ spawn: spawnSolveWorker });
+  // `Worker` absent means every "worker" is this thread. Six of those is six sequential searches
+  // blocking the page with a sixth of the budget each — strictly worse than one searching every
+  // view, and the pool's stop cannot help because nothing runs concurrently to be stopped.
+  const threaded = typeof Worker === 'function';
+  if (!isolated || !threaded || SOLVER_WORKERS < 2) return createSolveClient({ spawn: spawnSolveWorker });
   return createParallelSolveClient({
     spawn: spawnSolveWorker,
     workers: SOLVER_WORKERS,
@@ -1448,109 +1452,125 @@ function pushSolve(time, extra = {}) {
 
 let currentScramble = '';
 
+/** The eighteen face turns. Enough to recognise a state that is one turn from solved. */
+const SINGLE_MOVES = Object.freeze(
+  ['U', 'D', 'L', 'R', 'F', 'B'].flatMap((f) => [f, `${f}'`, `${f}2`]),
+);
+
+/** How many trivial draws in a row before we stop believing the random source. */
+const MAX_TRIVIAL_REDRAWS = 8;
+
+/**
+ * Is this state already solved, or one turn from it?
+ *
+ * TNoodle rejects these, so a scramble claiming to be WCA-standard has to as well. It asks the
+ * STATE rather than the solver, which is what makes it exact: "our answer came back short"
+ * would depend on the search finding the optimal route, and two-phase does not promise one.
+ *
+ * It essentially never fires — 19 states out of 43,252,003,274,489,856,000, about four in 10^19
+ * draws. That is the point: eighteen move-applications on a path that already runs a Kociemba
+ * search, and the conformance claim becomes true rather than nearly true.
+ */
+function trivialState(cube) {
+  if (cube.isSolved()) return true;
+  const facelets = cube.asString();
+  return SINGLE_MOVES.some((m) => {
+    const c = Cube.fromString(facelets);
+    c.move(m);
+    return c.isSolved();
+  });
+}
+
 /**
  * Roll one, without putting it in play.
  *
- * The search here is the ONE search a random cube needs. Its answer is the scramble (inverted),
- * and — because invertAlg is an involution — inverting the scramble hands that answer straight
- * back, which is how the solve side gets its solution without searching at all (takeDerivation).
+ * WCA-standard on both halves now. The STATE is a uniform draw from a cryptographic source
+ * (random-state.js) — that half was always right. The LENGTH is the half that was not: this
+ * handed the state to cubejs's `solve()`, whose default bound is 22, so 96% of scrambles came
+ * out above God's number and 79.5% were exactly 22 (measured, n=200).
+ *
+ * The bound is not a preference, it is the promise the solve path already keeps:
+ * `solveWithinGodsNumber`, one implementation, so a scramble and a solution cannot come to
+ * disagree about what 20 means. Inversion preserves length, so a <= 20 solution is a <= 20
+ * scramble — and because invertAlg is an involution, inverting the scramble hands that solution
+ * straight back, which is how the solve side gets its answer without searching (takeDerivation).
+ *
+ * Asking cubejs for 20 instead is the obvious one-argument fix and is a trap: measured mean
+ * 5,644 ms and worst 66 s per scramble, against 4 ms median through this engine, which searches
+ * six interleaved views under a node budget rather than depth-limited IDA* on one.
  *
  * Pure on purpose: `currentScramble` is the scramble a timed solve is RECORDED against, so a
  * roll that happens before anyone asked for one must not touch it. Rolling ahead while it did
  * would have filed a solve under a scramble the solver never saw.
  */
-function rollScramble() {
+async function rollScramble() {
+  // cubejs no longer SEARCHES here, but it is still the parser and the oracle: a state has to
+  // be drawn into a Cube, and the answer has to be checked by applying it.
   if (!solverReady) return null;
-  // Crypto random-state, never Cube.random(): the uniform draw is the project's scramble rule
-  // (AGENTS.md), and Math.random is exactly the quiet weakening it forbids.
-  const r = randomCube(Cube);
-  return { facelets: r.asString(), alg: invertAlg(r.solve()) };
+  for (let draw = 0; draw < MAX_TRIVIAL_REDRAWS; draw++) {
+    // Crypto random-state, never Cube.random(): the uniform draw is the project's scramble rule
+    // (AGENTS.md), and Math.random is exactly the quiet weakening it forbids.
+    const r = randomCube(Cube);
+    if (trivialState(r)) continue;
+    const facelets = r.asString();
+    const solution = await solveWithinGodsNumber(facelets, {
+      solve: (f, bounds) => solverWorker().solve(f, bounds),
+    });
+    if (solution === undefined) return null; // aborted before an answer; nothing to show
+    const alg = invertAlg(solution);
+    // Zero trust at the boundary — unchanged in substance and now worth MORE than it was. The
+    // answer crossed a thread and came from the two-phase engine; cubejs, a different
+    // implementation, checks it by applying it. Before this it was cubejs checking cubejs.
+    if (!alg || !reaches(facelets, alg)) {
+      console.error('solver returned a scramble its alg does not reach — refusing it');
+      return null;
+    }
+    return { facelets, alg };
+  }
+  // Unreachable short of a broken random source: it needs MAX_TRIVIAL_REDRAWS draws in a row
+  // from a set of 19 states. Loud, because the alternative is a die that quietly does nothing.
+  console.error('rollScramble: every draw was a trivial state — the random source is broken');
+  return null;
 }
 
 /** One cube rolled ahead, waiting to be asked for. */
 let nextRoll = null;
 let rollPending = false;
-let rollWorker = null;
-let rollerReady = false;      // its Kociemba tables are built; before that it can be asked nothing
-let rollOnThisThread = false; // the worker is gone or was never available; roll here instead
-
-/**
- * Start the thread that rolls cubes — see lib/scramble-worker.js — and let it build its tables.
- *
- * Called when a screen that CAN roll appears, not when one is first needed: those tables take
- * 3-6s, and a worker asked for a cube before they exist is no faster than this thread. Screens
- * that never roll never call this, and never pay for it.
- *
- * Built at most once. Anything that goes wrong with it is answered the same way: log it, and
- * roll on this thread from then on. A missing worker is slower, never wrong, so nothing here may
- * throw into a caller.
- */
-function warmRoller() {
-  if (rollWorker || rollOnThisThread) return rollWorker;
-  if (typeof Worker !== 'function') { rollOnThisThread = true; return null; }
-  try {
-    rollWorker = new Worker(new URL('./scramble-worker.js', import.meta.url), { type: 'module' });
-    rollWorker.onmessage = (e) => {
-      const d = e.data;
-      if (d?.ready) { rollerReady = true; return; } // its tables are built; nothing asked for yet
-      rollPending = false;
-      if (d?.error) { console.error('scramble worker could not roll a cube', d.error); return; }
-      const alg = typeof d?.solution === 'string' ? invertAlg(d.solution) : '';
-      // Zero trust at the boundary. This is a message from another thread, and everything after
-      // it — the picture, the move list, the walk — is built on the pair being consistent. One
-      // check, move application only, and a disagreement is refused rather than drawn.
-      if (!alg || !reaches(d.facelets, alg)) {
-        console.error('scramble worker returned a cube its alg does not reach — ignoring it');
-        return;
-      }
-      nextRoll = { facelets: d.facelets, alg };
-    };
-    rollWorker.onerror = (err) => {
-      console.error('scramble worker failed; rolling on the main thread from now on', err);
-      rollPending = false;
-      rollOnThisThread = true;
-      rollerReady = false;
-      rollWorker?.terminate();
-      rollWorker = null;
-    };
-  } catch (err) {
-    console.error('scramble worker could not be started; rolling on the main thread', err);
-    rollOnThisThread = true;
-    rollWorker = null;
-  }
-  return rollWorker;
-}
 
 /**
  * Roll the next one before anybody asks for it.
  *
- * cubejs's two-phase search blocks whichever thread runs it for 2-196ms — measured across
- * presses in WebKit, and the spread is the search's, not the machine's. On the UI thread that is
- * up to twelve dropped frames, and moving it off the click alone only moved the stutter a beat
- * later. It goes to a worker, and the click becomes a lookup.
+ * A Kociemba search blocks whichever thread runs it — 2-196 ms measured across presses in
+ * WebKit, and the spread is the search's, not the machine's. On the UI thread that is up to
+ * twelve dropped frames, and moving it off the click alone only moved the stutter a beat later.
  *
- * The die never DEPENDS on this having finished: an unrolled press searches on the spot, exactly
- * as it always did. Late is slow, never wrong.
+ * It goes to the SOLVER POOL, the same place a solve goes. There used to be a second worker for
+ * this — `scramble-worker.js` — carrying its own ~34 MB of cubejs Kociemba tables and 3-6 s of
+ * build, plus a `warmRoller()` to start it early. The pool's workers already hold warm two-phase
+ * tables, so that entire worker was the app paying twice for a capability it had once.
+ *
+ * The die never DEPENDS on this having finished: an unrolled press rolls on the spot. Late is
+ * slow, never wrong.
  */
 function schedulePreroll() {
   if (rollPending || nextRoll || !solverReady) return;
   rollPending = true;
-  // Only a worker that has finished building its tables is faster than doing it here. Asking a
-  // cold one would leave nothing rolled for the seconds it takes, and every press in that window
-  // would search on this thread — which is the whole thing being fixed.
-  if (rollWorker && rollerReady) { rollWorker.postMessage('roll'); return; }
-  // Idle time on this thread is the next best place — still off the press, even though it is not
-  // off the thread. It covers the worker's warm-up, and it is the whole story on a platform with
-  // no Worker at all.
-  const run = () => { rollPending = false; if (!nextRoll) nextRoll = rollScramble(); };
-  if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 2000 });
-  else setTimeout(run, 400);
+  void rollScramble().then(
+    (rolled) => { rollPending = false; if (rolled && !nextRoll) nextRoll = rolled; },
+    (err) => {
+      // Loud, and not fatal: the next press rolls on demand and reports its own failure.
+      rollPending = false;
+      console.warn('pre-roll failed; the next press will roll on demand', err);
+    },
+  );
 }
 
 /** The next random cube, and the alg that reaches it — now the scramble in play. */
-function randomScramble() {
-  const rolled = nextRoll ?? rollScramble();
+async function randomScramble() {
+  // Taken BEFORE any await: two presses must not be handed the same pre-rolled cube.
+  const ready = nextRoll;
   nextRoll = null;
+  const rolled = ready ?? await rollScramble();
   schedulePreroll(); // there should always be one waiting
   if (!rolled) return { facelets: '', alg: '' };
   currentScramble = rolled.alg;
@@ -2423,8 +2443,10 @@ const cubeScreen = (screenMode) => {
       const signal = screenAbort?.signal;
       // This screen can roll a scramble — start the roller's tables warming now, so the press
       // that asks for one is not the thing that waits for them.
-      if (scrambling || settings.devRandCube) warmRoller();
-      warmSolver(); // this screen solves on entry and on every press; see warmSolver
+      // Rolling and solving are the same pool now, so one warm-up covers both. This screen
+      // solves on entry and on every press of the die; see warmSolver.
+      warmSolver();
+      if (scrambling || settings.devRandCube) schedulePreroll();
       const cube = newCube({ animate: walking });
       // The view goes on BEFORE the element is connected, the way the scan screen's twin does it.
       // connectedCallback draws immediately, so attributes set after appendChild leave that first
@@ -2547,7 +2569,8 @@ const cubeScreen = (screenMode) => {
           // bug behind a solved physical cube instantly completing a random solve: the guide
           // accepted the real cube's snapshots as progress through an arrangement it had never
           // been in.
-          const rolled = randomScramble();
+          const rolled = await randomScramble();
+          if (stale()) return;              // rolling is a real search now, and can outlive the screen
           if (!rolled.facelets) return;
           adoptCube(rolled.facelets, { physical: false, source: 'generated', setupAlg: rolled.alg });
         }
@@ -2975,7 +2998,7 @@ const cubeScreen = (screenMode) => {
             // from solved. That alg is what we walk, so `setup` stays empty and the cube starts
             // solved. The target outlives this block: it is what "Solve this scramble" hands to
             // Home at the end of the walk.
-            const rolled = randomScramble();
+            const rolled = await randomScramble();
             gotTarget = rolled.facelets;
             if (!gotTarget || !rolled.alg) throw new Error('no scramble');
             gotAlg = rolled.alg; gotMoves = gotAlg.trim().split(/\s+/);
@@ -3294,9 +3317,9 @@ SCREENS.timer = () => {
       let byCube = false;
       const auto = createSolveTimer({ target: () => scrTarget, trusted: chainTrusted });
 
-      warmRoller(); // New scramble is one press away on this screen; see cubeScreen's mount
-      warmSolver(); // and every scramble it rolls is solved
-      const newScr = () => {
+      warmSolver();      // New scramble is one press away here; see cubeScreen's mount
+      schedulePreroll(); // and it should never be the press that waits for a search
+      const newScr = async () => {
         // The scramble on screen is the one the RUNNING solve is recorded against — replacing
         // it mid-solve would file the time under a scramble the solver never saw, and disarm
         // the cube-driven stop. Stop the clock first; then roll.
@@ -3309,7 +3332,8 @@ SCREENS.timer = () => {
           void loadSolver().then((ok) => { if (ok && state.screen === 'timer' && root.isConnected) void newScr(); });
           return;
         }
-        const rolled = randomScramble();
+        const rolled = await randomScramble();
+        if (!root.isConnected) return;    // rolling is a real search now, and can outlive the screen
         scrTarget = rolled.facelets || null;
         auto.reset();
         $('#scr', root).textContent = rolled.alg || '—';
