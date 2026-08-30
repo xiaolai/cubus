@@ -2,11 +2,12 @@
   "name": "cubus-desktop",
   "version": "0.1.3",
   "private": true,
-  "description": "Cubus — Tauri desktop app. Reuses apps/web as the frontend; native BLE via crates/gan-ble.",
+  "description": "Cubus \u2014 Tauri desktop app. Reuses apps/web as the frontend; native BLE via crates/gan-ble.",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev --features mcp",
-    "build": "tauri build"
+    "build": "tauri build",
+    "android": "node ../../scripts/tauri-android.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
