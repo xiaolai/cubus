@@ -1,9 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Merged into the generated Info.plist by tauri.conf.json's
+  Merged into the generated macOS Info.plist by tauri.conf.json's
   `bundle.macOS.infoPlist`. Tauri owns every other key in there; this file adds
   only the ones it has no setting for.
+
+  THE NAME IS LOAD-BEARING. This file used to be `Info.plist`, and Tauri's iOS
+  bundler auto-merges any `Info.plist` sitting beside tauri.conf.json into the
+  iOS bundle as well — no config entry, no mention in the build log. So every
+  macOS-only key here silently became an iOS key: the first iOS build shipped
+  CFBundleIconName=Cubus, which on iOS names an asset-catalogue entry that does
+  not exist, and would have surfaced as a blank icon or an App Store validation
+  failure rather than as a build error. The `.macos.` infix is what keeps that
+  auto-merge from finding it, and iOS gets `Info.ios.plist` instead. Do not
+  rename this back, and do not add a plain `Info.plist` to this directory.
 
   NSCameraUsageDescription is not optional: macOS refuses camera access to any
   app whose Info.plist does not declare a purpose string, so without it the
