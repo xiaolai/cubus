@@ -68,8 +68,25 @@ test('every screen that solves warms first', () => {
   const calls = app.match(/^\s*warmSolver\(\);/gm) ?? [];
   assert.equal(calls.length, 3,
     `expected the three solving screens to warm; found ${calls.length} call sites`);
-  // The roller has the same shape and the same reasoning, and the two are wired at the same
-  // places. If one grows a call site the other almost certainly should too.
-  const rollers = app.match(/^\s*warmRoller\(\);/gm) ?? [];
-  assert.ok(rollers.length >= 1, 'warmRoller is the precedent this is modelled on');
+});
+
+test('there is ONE pool, and rolling a scramble goes through it', () => {
+  // `warmRoller`/`scramble-worker.js` were the app paying twice for one capability: a second
+  // worker with its own ~34 MB of cubejs Kociemba tables and a 3-6 s build, beside a pool of
+  // workers already holding warm two-phase tables. Rolling is a solve, so it goes where solves
+  // go. A reintroduced second roller would show up here.
+  // Comments stripped, the way solve-tier-wiring does it: WHY the second roller was removed is
+  // worth keeping in the source, and a test that cannot tell a comment from code would forbid
+  // recording it.
+  const code = app
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/[^\n]*$/gm, '')
+    .replace(/([^:'"`])\/\/[^\n]*/g, '$1');
+  assert.doesNotMatch(code, /warmRoller\s*\(/, 'the separate scramble roller is gone by design');
+  assert.doesNotMatch(code, /scramble-worker/, 'and nothing constructs that worker');
+  assert.match(app, /solverWorker\(\)\.solve\(f, bounds\)/,
+    'rollScramble must ask the solver pool, not a roller of its own');
+  // Warmed at the two screens that can roll, and once at boot so the first press is cheap.
+  const prerolls = app.match(/^\s*schedulePreroll\(\);/gm) ?? [];
+  assert.equal(prerolls.length, 3, `expected boot + the two rolling screens; found ${prerolls.length}`);
 });

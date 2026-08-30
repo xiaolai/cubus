@@ -344,6 +344,25 @@ for (const fixture of FIXTURES) {
     try {
       await page.click('#randCube');
       await page.waitForSelector('.chip-m', { timeout: 15_000 });
+      // The renderer paints on its OWN animation frame, which nothing synchronises with the
+      // chips appearing. Reading the canvas straight after them is a race, and it was being won
+      // only by luck: the whole suite runs at --test-concurrency=6, and once the cube screen's
+      // mount started warming the solver pool (six workers building pruning tables) the frame
+      // began landing after the measurement. A blank read then failed for a reason that says
+      // nothing about the composition. So wait for the paint instead of racing it — a canvas
+      // that genuinely never paints still fails, one timeout later.
+      await page.waitForFunction(() => {
+        const c = document.querySelector('#viewCube canvas');
+        if (!c?.width || !c?.height) return false;
+        const copy = document.createElement('canvas');
+        copy.width = c.width; copy.height = c.height;
+        copy.getContext('2d').drawImage(c, 0, 0);
+        const x = Math.floor(c.width * 0.4), y = Math.floor(c.height * 0.4);
+        const px = copy.getContext('2d')
+          .getImageData(x, y, Math.max(1, Math.ceil(c.width * 0.2)), Math.max(1, Math.ceil(c.height * 0.2))).data;
+        for (let i = 3; i < px.length; i += 4) if (px[i] > 8) return true;
+        return false;
+      }, null, { timeout: 15_000 });
       const m = await measureCube(page);
       const portrait = m.content.h > m.content.w;
       assert.ok(m.walking, 'the scramble screen walks a scramble');

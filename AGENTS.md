@@ -143,18 +143,35 @@ it walks you through solving it.
   itself on the next tick, because a quiet GL-context leak is worse than a rebuild; and
   `isRenderer()` gates the whole thing, because until `vendor/cubus-cube.js` has upgraded the tag
   it is a plain unknown element — assuming otherwise took out 21 tests at once, all one mechanism.
-- **Rolling a scramble is the worker's job, and the worker warms before it is needed**
-  (2026-08-29). cubejs's two-phase search blocks whichever thread runs it for 2–196 ms — the
-  spread is the search's, not the machine's — so it moved to `lib/scramble-worker.js`, which
-  rolls one cube ahead of the press. Two things about it are deliberate and easy to undo by
-  accident. Its own copy of the Kociemba tables costs **~34 MB and 3–6 s to build**, so it is
-  started by `warmRoller()` from the screens that can actually roll (the cube screen with a die,
-  Timer) and never by a session that opens neither. And it is asked for a cube only once it has
-  reported ready — a cold worker is slower than this thread, so until then `schedulePreroll()`
-  rolls here, which is why a press in the first few seconds after launch can still cost a search.
-  What comes back is untrusted input, checked with `reaches()` before it can become the cube on
-  screen; a missing or broken Worker falls back to rolling here — slower, never wrong, and a test
-  denies the worker to prove it.
+- **A scramble is WCA-standard on BOTH halves, and rolling it is a solve** (2026-08-31; the
+  separate scramble worker of 2026-08-29 is gone). The STATE was always right — a uniform draw
+  from a cryptographic source (`lib/random-state.js`), which is TNoodle's method — and TNoodle's
+  other rule is enforced now too: a state already solved or one turn from it is redrawn
+  (`trivialState`, ~4 in 10^19, asked of the STATE and never of the solver, because two-phase
+  does not promise an optimal route and "the answer came back short" would be a different
+  question). The LENGTH was the half that was wrong: the scramble was cubejs's `solve()`
+  inverted, and **that method's default bound is 22**, so 96% of scrambles exceeded God's number
+  and 79.5% were exactly 22 (n=200). It now goes through `solveWithinGodsNumber` — the SAME
+  promise the solve path keeps, lifted out of `refine` so there is one implementation and a
+  scramble and a solution cannot come to disagree about what 20 means. Inversion preserves
+  length, so ≤ 20 solution ⇒ ≤ 20 scramble.
+  **Asking cubejs for 20 instead is the obvious one-argument fix and is a trap**: measured mean
+  5,644 ms and worst 66 s per scramble, against 4 ms median through the two-phase engine, which
+  searches six interleaved views under a node budget rather than depth-limited IDA* on one.
+  Rolling therefore goes to the SOLVER POOL, and `lib/scramble-worker.js` was deleted with
+  `warmRoller()`: a second worker carrying its own ~34 MB of cubejs tables and 3–6 s of build,
+  beside a pool already holding warm two-phase tables, was the app paying twice for one
+  capability. `schedulePreroll()` still rolls one ahead of the press, and the die never depends
+  on it having finished. What comes back is still untrusted input checked with `reaches()` — and
+  that check is worth MORE now, because cubejs is a different implementation from the one that
+  produced the answer, where before it was cubejs checking cubejs.
+  Two traps this left behind, both fixed in the same pass and both invisible until rolling
+  became a solve. `spawnSolveWorker` fell back to the inline on-thread worker only when `Worker`
+  was UNDEFINED, not when the constructor threw — a CSP or a blocked URL took solving down, and
+  now the die with it. And the inline worker did not report `depth`/`view`, which `pickWinner`
+  REQUIRES: a pooled solve on inline workers found answers, discarded every one, spent all eight
+  budget escalations and threw. The single-worker client ignores those fields, which is why
+  nothing noticed.
 - **A screen takes a new subject in place; only a new COMPOSITION is a new screen** (2026-08-29).
   `renderScreen()` was the app's only way to say "something about the cube changed", so a dozen
   callers destroyed and rebuilt the whole screen to change one fact about it — the die, both

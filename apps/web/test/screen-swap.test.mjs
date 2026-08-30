@@ -194,13 +194,20 @@ test('with no Worker at all the die still works — slower, never wrong', async 
         theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: [],
         navDefaults: 99, devRandCube: true, language: '', dragRotate: false,
       }));
-      // cubing.js builds its search worker the same way, so this must be surgical: only the
-      // app's own scramble worker is denied.
+      // Surgical: only the app's own solver worker is denied, so anything else that builds
+      // one is unaffected. Rolling a scramble IS a solve now — the separate scramble worker
+      // was removed once the solver pool could do the job — so this is the worker the die
+      // depends on, and denying it is what forces the on-thread path.
       const RealWorker = window.Worker;
       window.Worker = function (url, opts) {
-        if (String(url).includes('scramble-worker')) throw new Error('Worker disabled for this test');
+        if (String(url).includes('solve-worker')) throw new Error('Worker disabled for this test');
         return new RealWorker(url, opts);
       };
+      // The inline fallback announces that searches now block the page. Captured, because it
+      // is the only evidence available that the fallback was actually taken.
+      window.__warned = [];
+      const realWarn = console.warn;
+      console.warn = (...a) => { window.__warned.push(a.map(String).join(' ')); realWarn(...a); };
     });
     await page.goto(`${BASE}/#/home`);
     await page.waitForSelector('#randCube', { timeout: 15_000 });
@@ -226,8 +233,11 @@ test('with no Worker at all the die still works — slower, never wrong', async 
     assert.ok(r.chips > 0, 'with no worker the die produced no moves at all');
     assert.equal(r.solves, true, 'the fallback roll produced a walk that does not solve its cube');
     // Without this the test would pass just as happily if the worker had never been denied.
-    const onThread = await page.evaluate(() => window.__searches);
-    assert.ok(onThread > 0, 'no search ran on this thread either — the worker was not actually denied, so this test proved nothing');
+    // cubejs no longer searches on the roll path, so counting ITS calls proves nothing about
+    // the fallback; what does is the inline worker saying out loud that it is blocking.
+    const warned = await page.evaluate(() => window.__warned ?? []);
+    assert.ok(warned.some((w) => /no Worker|runs on this thread/.test(w)),
+      `the worker was not actually denied, so this test proved nothing. Warnings: ${JSON.stringify(warned)}`);
     assert.deepEqual(errors.map(String), [], 'the page threw');
   } finally {
     await context.close();

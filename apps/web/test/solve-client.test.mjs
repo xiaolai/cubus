@@ -461,3 +461,35 @@ test('a worker that DIES mid-solve falls back rather than losing the answer', as
   assert.equal(client.workers, 1);
   assert.equal(client.idle, true, 'no sibling and no fallback is left pending');
 });
+
+test('the POOL works through inline workers, not just the single client', async () => {
+  // The defect this pins cost a whole fallback path. The inline worker did not report
+  // depth/view, and pickWinner REJECTS a reply without them — so a pooled solve running on
+  // inline workers found answers, discarded every one, exhausted all eight budget escalations
+  // and threw. The single-worker client ignores those fields, so nothing noticed until rolling
+  // a scramble started going through the pool.
+  const { spawnSolveWorker } = await import('../lib/solve-client.js');
+  const realWorker = globalThis.Worker;
+  const realWarn = console.warn;
+  console.warn = () => {};
+  try {
+    Object.defineProperty(globalThis, 'Worker', { value: undefined, configurable: true });
+    const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
+    Cube.initSolver();
+    const facelets = new Cube().move("R U R' U' F2 L D L' B2 R").asString();
+    const client = createParallelSolveClient({
+      spawn: spawnSolveWorker, workers: 3, viewCount: 6,
+      makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
+    });
+    const alg = await client.solve(facelets, { solLen: 21, probeMax: 20_000_000 });
+    client.cancel();
+    assert.ok(alg, 'the pool discarded every inline answer — the sort key is missing again');
+    const oracle = Cube.fromString(facelets);
+    oracle.move(alg);
+    assert.ok(oracle.isSolved(), 'and what it did return must actually solve the cube');
+  } finally {
+    console.warn = realWarn;
+    if (realWorker === undefined) delete globalThis.Worker;
+    else Object.defineProperty(globalThis, 'Worker', { value: realWorker, configurable: true });
+  }
+});

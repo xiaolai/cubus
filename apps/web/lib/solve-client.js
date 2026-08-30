@@ -366,6 +366,12 @@ function inlineWorker() {
   );
   const listeners = new Map();
   let solve = null;
+  // The sort key, from the same place the real worker reads it. Omitting it was a silent
+  // defect: a reply with depth/view -1 is REJECTED by pickWinner, so a pooled solve running on
+  // inline workers could never produce a winner at all — it exhausted every budget escalation
+  // and then threw. The single-worker client ignores these fields, which is why it went
+  // unnoticed until rolling a scramble started going through the pool.
+  let readStats = () => ({});
   let closed = false;
   const ready = (async () => {
     const [{ createSolver }, twoPhase] = await Promise.all([
@@ -373,6 +379,7 @@ function inlineWorker() {
       import('./two-phase.js'),
     ]);
     solve = createSolver(twoPhase);
+    readStats = () => twoPhase.searchStats;
   })();
   return {
     addEventListener: (type, fn) => { listeners.set(type, fn); },
@@ -383,7 +390,7 @@ function inlineWorker() {
           // search from ever starting — a synchronous search cannot be interrupted, so not
           // starting it is the only cancellation this thread-less worker can honour.
           if (closed) return;
-          listeners.get('message')?.({ data: handleSolveRequest(solve, request) });
+          listeners.get('message')?.({ data: handleSolveRequest(solve, request, readStats) });
         },
         (err) => {
           if (closed) return;
@@ -400,9 +407,25 @@ function inlineWorker() {
 
 /** The real worker, for the app. Kept out of `createSolveClient` so nothing in a test ever
  *  needs a DOM or a thread. */
-export const spawnSolveWorker = () =>
-  (typeof Worker === 'undefined'
-    ? inlineWorker()
-    : new Worker(new URL('./solve-worker.js', import.meta.url), { type: 'module' }));
+/**
+ * A real worker where one can be had, and this thread where one cannot.
+ *
+ * Two different ways to have no worker, and they used to be treated as one: `Worker` missing
+ * from the platform, and `Worker` present but refusing to build THIS script — a CSP that
+ * forbids worker-src, a blocked module URL, a test denying it. Only the first fell back, so
+ * the second reached the caller as an error and took solving down with it. Since rolling a
+ * scramble became a solve, that would take the Random die down too.
+ *
+ * Loud either way: the inline worker announces that searches now block the page.
+ */
+export const spawnSolveWorker = () => {
+  if (typeof Worker === 'undefined') return inlineWorker();
+  try {
+    return new Worker(new URL('./solve-worker.js', import.meta.url), { type: 'module' });
+  } catch (cause) {
+    console.warn('solve-client: the solver worker could not be built, so it runs on this thread', cause);
+    return inlineWorker();
+  }
+};
 
 export const CANCELLED_MESSAGE = CANCELLED;
