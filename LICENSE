@@ -1,0 +1,20 @@
+Copyright (c) 2026 xiaolai
+
+All rights reserved.
+
+No licence is granted for this work. Absent a separate written agreement, no
+permission is given to use, copy, modify, merge, publish, distribute,
+sublicense or sell it, in whole or in part.
+
+This is a deliberate placeholder, not an intended end state. The choice
+between a permissive licence and a copyleft one is being deferred, because it
+is entangled with an unresolved question about a vendored dependency — see
+`apps/web/vendor/min2phase.PROVENANCE.md`. Reserving all rights does not
+settle that question: distributing a GPL-licensed component from an
+all-rights-reserved repository is no more permitted than from a permissive
+one, so min2phase still has to be replaced before any release. The plan is
+`dev-docs/two-phase-plan.md`.
+
+Third-party components retain their own licences. Vendored artifacts under
+`apps/web/vendor/` are generated from pinned dependencies rather than
+committed, and are governed by those dependencies' terms.
