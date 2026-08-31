@@ -34,6 +34,6 @@
  *  against, so this constant IS the guard. smartcube-pin.test.mjs asserts three things agree — the
  *  rev here, the rev pinned in package.json, and the rev baked into the built bundle. Bump the dep
  *  without rebuilding, or rebuild without bumping, and one of them goes red. */
-export const SMARTCUBE_REV = '56b13b0153b64df99544a39f57ff04fb35313403';
+export const SMARTCUBE_REV = '95bda9a0c528d9565e2ac0e4e72fdb630b6cf415';
 
 export { connectSmartCube, getRegisteredProtocols } from 'smartcube-web-bluetooth';
