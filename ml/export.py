@@ -8,9 +8,17 @@ writes into `ml/models/` (see --out):
 | file                  | runtime                          | what it is                                        |
 |-----------------------|----------------------------------|---------------------------------------------------|
 | cube-yolo.onnx        | reference (Python/onnxruntime)   | fp32, opset 12, simplified                        |
-| cube-yolo.int8.onnx   | web (onnxruntime-web, all desktop)| the above, onnxruntime `quantize_dynamic` (QInt8) |
+| cube-yolo.int8.onnx   | NOT SHIPPED (onnxruntime-web)    | the above, onnxruntime `quantize_dynamic` (QInt8) |
 | cube-yolo.mlpackage   | Apple (CoreML, macOS + iOS)      | ML program, fp16 compute, fp32 tensor IN, fp16 OUT |
-| cube-yolo.tflite      | Android (LiteRT/TFLite, XNNPACK) | dynamic-range int8 (int8 weights, fp32 activations), fp32 I/O — full-int8 collapses the head |
+| cube-yolo.tflite      | NOT SHIPPED (LiteRT/TFLite)      | dynamic-range int8 (int8 weights, fp32 activations), fp32 I/O — full-int8 collapses the head |
+
+The `runtime` column names the runtime an artefact is FOR, and says plainly when nothing ships it
+today. Two do not, and the table used to claim otherwise: `int8.onnx` said "web, all desktop" while
+apps/web/vendor/cube-yolo.onnx is byte-identical to the fp32 graph, and `tflite` said "Android"
+while the Android LiteRT backend is still device-gated work. That mattered more than a wrong label
+usually does — int8 is the one export that MISREADS (4 of 20 golden fixtures, two of them frames
+fp32 correctly refuses), so a reader had every reason to think the app was shipping the worst
+artefact to its widest audience. apps/web/test/shipped-model.test.mjs now pins which one ships.
 | MANIFEST.json         | —                                | checkpoint + artefact hashes, tool versions       |
 
 Every artefact is exported WITHOUT NMS: each runtime's job is the identical black box
@@ -246,7 +254,11 @@ def main() -> None:
         paths[fp32.name] = fp32
         paths[int8.name] = int8
         manifest["artefacts"][fp32.name] = {"runtime": "onnxruntime", "precision": "fp32", "opset": 12}
-        manifest["artefacts"][int8.name] = {"runtime": "onnxruntime-web", "precision": "dynamic int8 (QInt8 weights, uint8 activations)"}
+        manifest["artefacts"][int8.name] = {
+            "runtime": "onnxruntime-web — NOT SHIPPED; the web build serves the fp32 graph",
+            "precision": "dynamic int8 (QInt8 weights, uint8 activations)",
+            "quantisation_note": "quantises ACTIVATIONS as well as weights, and that is what costs the reads: 4 of 20 golden fixtures come back with a different face, two of them frames the fp32 graph correctly refuses. Contrast cube-yolo.tflite, which takes the same size reduction weight-only and diverges on none. Do not ship this without re-exporting weight-only.",
+        }
     if "coreml" not in args.skip:
         import coremltools as ct
 
@@ -263,7 +275,7 @@ def main() -> None:
         tfl, _ = export_tflite(args.pt, work, args.out, args.calib, args.calib_count)
         paths[tfl.name] = tfl
         manifest["artefacts"][tfl.name] = {
-            "runtime": "LiteRT/TFLite (onnx2tf)",
+            "runtime": "LiteRT/TFLite (onnx2tf) — NOT SHIPPED YET; the Android LiteRT backend is device-gated work, so Android runs the WebView fp32 path",
             "precision": "dynamic-range int8: int8 weights, fp32 activations, fp32 I/O",
             "layout": "NHWC input; box coords in 640-space (the read is scale-invariant, so the consumer need not rescale)",
             "quantisation_note": "full-integer int8 (int8 activations) was rejected — it collapses the detect head's class scores to ~0 (NO_FACE on all golden frames); weight-only int8 reads identical to fp32 (0/20). Verified by ml/golden_frames.py.",
