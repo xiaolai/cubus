@@ -1140,7 +1140,7 @@ test('a turn rate is never fabricated from a time that is not a number', async (
 // ---- Follow cube (state-matched; see dev-docs/follow-mode-redesign.md) ----------------------
 //
 // Exercised on the scramble screen, because it mounts completely here: it needs only cubejs to
-// build its moves, while the solve path needs cubing.js and bails early.
+// build its moves, while the solve path needs the two-phase engine and bails early.
 //
 // Two rules make these tests honest where the previous battery was not:
 //  * Moves are fed as QUARTER TURNS ONLY — the GAN driver never emits an "R2", and a battery
