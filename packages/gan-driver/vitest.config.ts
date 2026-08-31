@@ -1,6 +1,20 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
+const here = fileURLToPath(new URL('.', import.meta.url));
+
 export default defineConfig({
+  resolve: {
+    alias: [
+      {
+        // Runtime half of the mapping tsconfig.json documents: the decoders the cross-check needs
+        // are not public exports, so the specifier resolves to the dependency's own source here
+        // and to its shipped declarations under tsc.
+        find: /^smartcube-internal\/(.*)$/,
+        replacement: `${here}node_modules/smartcube-web-bluetooth/src/$1.ts`,
+      },
+    ],
+  },
   test: {
     coverage: {
       provider: 'v8',

@@ -24,7 +24,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dist = join(here, 'dist');
 
 // Whole directories, so a new import never silently misses the bundle. lib/ is
-// source (app.js and cube-transport.js load as ES modules directly); vendor/ is
+// source (app.js and its siblings load as ES modules directly); vendor/ is
 // esbuild output plus the onnxruntime wasm and the YOLO model.
 const DIRS = ['lib', 'vendor', 'icons'];
 const FILES = ['index.html', 'tokens.css', 'manifest.webmanifest'];
