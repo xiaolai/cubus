@@ -126,8 +126,43 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # Tauri signs the inner binary, the .app and the .dmg when it is given an identity —
+      # verified locally 2026-08-31, and it is why there is no separate codesign step here. What
+      # it does NOT do without the notarization variables is notarize, and notarization is the
+      # half that decides whether the app opens on a Mac that is not the build machine.
       - name: Build
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: pnpm --filter cubus-desktop exec tauri build ${{ matrix.args }}
+
+      # Notarize and staple, through the repo's own script rather than a re-implementation in
+      # YAML. The ORDER is load-bearing — staple the .app, rebuild the dmg around it, sign,
+      # notarize, staple — and duplicating that here is how the two copies drift. The script also
+      # carries the retry that notarytool needs (Apple drops connections) and the preflight
+      # assertions that turn a silently un-notarizable build into a named failure.
+      #
+      # Skipped, loudly, without credentials: a signed-but-unnotarized dmg is
+      # `rejected / source=Unnotarized Developer ID` — the "damaged and can't be opened" dialog on
+      # every Mac but this one. Shipping that quietly is worse than shipping nothing.
+      - name: Notarize and staple (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "::warning::no notarization credentials — the macOS build is signed but NOT notarized"
+            ./scripts/sign-macos.sh   # verify-only: reports the verdict, changes nothing
+            exit 0
+          fi
+          # A keychain profile, so the app-specific password never reaches argv or a build log.
+          xcrun notarytool store-credentials cubus-ci \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_PASSWORD"
+          ./scripts/sign-macos.sh --profile cubus-ci
 
       # Never `if-no-files-found: warn`. A release that silently ships nothing for a platform is
       # the exact defect AGENTS.md records from verify-icons.py: a gate nothing runs is not a gate.
