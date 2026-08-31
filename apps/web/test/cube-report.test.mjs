@@ -15,6 +15,7 @@ import {
   createCaptureRecorder,
   describeReport,
   reportFilename,
+  saveReport,
 } from '../lib/cube-report.js';
 
 const FIXTURE_DIR = fileURLToPath(new URL('./fixtures/smartcube/', import.meta.url));
@@ -168,6 +169,86 @@ describe('a report is machine-generated evidence, not an opinion', () => {
     // 20,000 — and the documented number is the one someone reasons about when a report is too
     // large to attach.
     assert.equal(f.traffic.length + f.events.length, 20000);
+  });
+});
+
+describe('getting the report off the device', () => {
+  /** A DOM stub that records the anchor a download would click. */
+  function fakeDoc() {
+    const state = { clicked: null, appended: 0, removed: 0 };
+    return {
+      state,
+      doc: {
+        createElement: () => ({
+          set href(v) { state.href = v; },
+          set download(v) { state.download = v; },
+          click() { state.clicked = { href: state.href, download: state.download }; },
+          remove() { state.removed++; },
+        }),
+        body: { appendChild: () => { state.appended++; } },
+      },
+    };
+  }
+
+  const withUrl = async (fn) => {
+    const saved = { c: globalThis.URL.createObjectURL, r: globalThis.URL.revokeObjectURL, B: globalThis.Blob };
+    const made = [];
+    globalThis.URL.createObjectURL = (b) => { made.push(b); return 'blob:report'; };
+    globalThis.URL.revokeObjectURL = () => {};
+    try {
+      return await fn(made);
+    } finally {
+      globalThis.URL.createObjectURL = saved.c;
+      globalThis.URL.revokeObjectURL = saved.r;
+      globalThis.Blob = saved.B;
+    }
+  };
+
+  test('a browser downloads it, under the upstream filename', async () => {
+    const f = recordASession().build();
+    const { doc, state } = fakeDoc();
+    const r = await withUrl(() => saveReport(f, { doc, nav: {}, isWebview: false }));
+    assert.equal(r.how, 'downloaded');
+    assert.equal(state.clicked.download, reportFilename(f));
+    assert.equal(state.clicked.href, 'blob:report');
+    assert.equal(state.removed, 1, 'the anchor must not be left in the document');
+  });
+
+  test('a webview copies it instead of pretending to download', async () => {
+    // The desktop build has no file-save capability at all — Tauri's `opener` and nothing else —
+    // and clicking a Blob anchor reports NOTHING, so success and silent failure are
+    // indistinguishable. Choosing by capability is what keeps the answer honest.
+    const f = recordASession().build();
+    let copied = null;
+    const r = await saveReport(f, {
+      doc: fakeDoc().doc,
+      nav: { clipboard: { writeText: async (t) => { copied = t; } } },
+      isWebview: true,
+    });
+    assert.equal(r.how, 'copied');
+    assert.equal(JSON.parse(copied).format, FIXTURE_FORMAT, 'and what it copied is the report');
+  });
+
+  test('says what it actually did, so the UI cannot claim more', async () => {
+    const f = recordASession().build();
+    const r = await saveReport(f, {
+      doc: null,
+      nav: { clipboard: { writeText: async () => {} } },
+      isWebview: true,
+    });
+    assert.equal(r.how, 'copied');
+    assert.equal(r.name, reportFilename(f));
+    assert.ok(r.bytes > 0, 'and how much, so a too-large report is visible');
+  });
+
+  test('refuses loudly where neither path exists', async () => {
+    // A report that could not leave the device is not a report. Saying "saved" here would waste
+    // the one thing the user was willing to give.
+    const f = recordASession().build();
+    await assert.rejects(
+      () => saveReport(f, { doc: null, nav: {}, isWebview: true }),
+      /no way to save or copy/,
+    );
   });
 });
 

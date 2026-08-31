@@ -1506,6 +1506,39 @@ test('the titlebar indicator appears with a connection and leaves with it', asyn
   } finally { resetCubeModel(state); }
 });
 
+test('Settings offers a compatibility report, and says so loudest when the cube was refused', async () => {
+  // dev-docs/universal-cube-driver.md §7: a self-check refusal that reaches nobody is a quiet
+  // failure one level above the one it guards against. This is the one affordance that closes it,
+  // so its ABSENCE is what this test is really about.
+  const { state } = await import('../lib/app.js');
+  try {
+    const report = () => ({ format: 'smartcube-fixture', version: 1, capturedAt: '2026-08-31T00:00:00.000Z',
+      device: { name: 'Test cube', id: '' }, protocol: { id: 'gan-gen4', name: 'GAN Gen4' },
+      services: [], traffic: [], events: [] });
+
+    win.cubusFeed.useConnection({ requestBattery: async () => 80, disconnect: async () => {}, verdict: 'stream', report });
+    win.cubusGo('settings');
+    await tick();
+    const btn = win.document.querySelector('#cubeReportBtn');
+    assert.ok(btn, 'a connected cube must be able to produce a report');
+    const calm = win.document.body.textContent;
+    assert.ok(calm.includes('Send us a report'), 'a working cube is asked gently');
+    assert.ok(!calm.includes('did not check out'), 'and is not accused of anything');
+
+    win.cubusFeed.useConnection({ requestBattery: async () => 80, disconnect: async () => {}, verdict: 'refused', report });
+    win.cubusGo('settings');
+    await tick();
+    const loud = win.document.body.textContent;
+    assert.ok(loud.includes('did not check out'), 'a refused cube says so plainly');
+    assert.ok(win.document.querySelector('#cubeReportBtn'), 'and still offers the report');
+
+    win.cubusFeed.useConnection(null);
+    win.cubusGo('settings');
+    await tick();
+    assert.equal(win.document.querySelector('#cubeReportBtn'), null, 'with no cube there is nothing to report');
+  } finally { resetCubeModel(state); }
+});
+
 // The 2D net is the ANCHOR, not a follower: its card says Initial/Target State, and a label
 // naming a fixed reference must never sit over a moving picture. What the cube does live is the
 // 3D cube's and the transport's story. Before this, snapshots repainted the net whenever follow
