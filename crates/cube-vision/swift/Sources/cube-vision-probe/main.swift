@@ -39,7 +39,45 @@ func loadRGBA(_ url: URL) -> (bytes: [UInt8], width: Int, height: Int) {
 }
 
 let args = CommandLine.arguments
-guard args.count >= 4 else { die("usage: cube-vision-probe <model.mlpackage> <frame.png> <out.bin> [units]") }
+
+// `--self-check`: prove the fp16 widening in CubeVision/Model.swift against Swift's own `Float16`,
+// exhaustively, over all 65,536 half bit patterns.
+//
+// It exists because `Float16` is arm64-only on macOS: the widening had to be rewritten by hand so a
+// universal binary could compile its x86_64 half, and a hand-written IEEE-754 conversion is exactly
+// the kind of code that is subtly wrong in the corners nothing exercises — subnormals, NaN payloads,
+// the exponent rebias. Exhaustive is cheap here: 65,536 cases is the WHOLE domain, so this is a
+// proof rather than a sample.
+//
+// It runs only where `Float16` exists, which is the point: on arm64 there are two implementations
+// to disagree, and that is where the check has content. On x86_64 there is nothing to compare
+// against, so it reports that it could not run rather than passing.
+if args.count > 1 && args[1] == "--self-check" {
+    #if arch(arm64)
+        var bad = 0
+        for bits in 0...UInt16.max {
+            let mine = float32(fromFloat16: bits)
+            let theirs = Float(Float16(bitPattern: bits))
+            // Compare BIT PATTERNS, not values: `==` is false for NaN and true across ±0, so it
+            // would pass over both a flattened NaN payload and a lost sign of zero.
+            if mine.bitPattern != theirs.bitPattern {
+                if bad < 8 {
+                    FileHandle.standardError.write(
+                        "0x\(String(bits, radix: 16)): mine \(mine.bitPattern) vs Float16 \(theirs.bitPattern)\n"
+                            .data(using: .utf8)!)
+                }
+                bad += 1
+            }
+        }
+        if bad > 0 { die("FAIL: the fp16 widening disagrees with Float16 on \(bad) of 65536 patterns") }
+        print("PASS: fp16 widening matches Float16 on all 65536 patterns, bit for bit")
+        exit(0)
+    #else
+        die("CANNOT RUN: --self-check needs Float16, which macOS provides only on arm64")
+    #endif
+}
+
+guard args.count >= 4 else { die("usage: cube-vision-probe <model.mlpackage> <frame.png> <out.bin> [units]\n       cube-vision-probe --self-check") }
 let modelURL = URL(fileURLWithPath: args[1])
 let pngURL = URL(fileURLWithPath: args[2])
 let outURL = URL(fileURLWithPath: args[3])

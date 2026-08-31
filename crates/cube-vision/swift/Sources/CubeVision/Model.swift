@@ -55,16 +55,27 @@ public final class CubeModel {
         var data = [Float](repeating: 0, count: count)
         // Copy honouring strides — an MLMultiArray is not guaranteed dense — into dense row-major.
         // Bind the raw pointer to exactly ONE element type, the model's own: binding one allocation
-        // to two types (Float16 and Float) is undefined behaviour even when the unused branch never
+        // to two types (UInt16 and Float) is undefined behaviour even when the unused branch never
         // runs. The exported model's output is fp16, but fp32 is handled for robustness.
         let strides = arr.strides.map { $0.intValue }
         let rStride = strides[strides.count - 2]
         let aStride = strides[strides.count - 1]
         if arr.dataType == .float16 {
-            let base = arr.dataPointer.bindMemory(to: Float16.self, capacity: arr.count)
+            // Read the halves as raw UInt16 and widen in `float32(fromFloat16:)`, rather than
+            // binding to Swift's `Float16`.
+            //
+            // `Float16` is arm64-only on macOS, and the universal binary the release workflow asks
+            // for builds BOTH halves — so this file compiled on Apple Silicon and failed the
+            // x86_64 half with "'Float16' is unavailable in macOS", taking the whole macOS leg down
+            // with it. It was the only red leg of five, and it had never been run.
+            //
+            // The widening is exact for every one of the 65,536 half patterns — fp32 has strictly
+            // more exponent range and mantissa bits — so this cannot change a single number the
+            // model produces on arm64, and the golden-frame native leg is what proves it did not.
+            let base = arr.dataPointer.bindMemory(to: UInt16.self, capacity: arr.count)
             for r in 0..<rows {
                 for a in 0..<anchors {
-                    data[r * anchors + a] = Float(base[r * rStride + a * aStride])
+                    data[r * anchors + a] = float32(fromFloat16: base[r * rStride + a * aStride])
                 }
             }
         } else {
@@ -78,6 +89,39 @@ public final class CubeModel {
         return Inference(data: data, rows: rows, anchors: anchors)
     }
 }
+
+/// Widen an IEEE-754 binary16 bit pattern to `Float`, on any architecture.
+///
+/// Exact by construction, for every input including subnormals, infinities and NaN payloads: binary32
+/// has both a wider exponent range and more mantissa bits, so no binary16 value needs rounding.
+/// `CubeVisionTests`-free by design — the exhaustive check against `Float16` lives in the probe's
+/// `--self-check`, which can run it on arm64 where both implementations exist.
+@inline(__always)
+public func float32(fromFloat16 h: UInt16) -> Float {
+    let sign = UInt32(h & 0x8000) << 16
+    let exp = UInt32((h >> 10) & 0x1F)
+    let mant = UInt32(h & 0x03FF)
+    if exp == 0 {
+        // Zero, or a subnormal whose value is exactly mant x 2^-24.
+        if mant == 0 { return Float(bitPattern: sign) }
+        let magnitude = Float(mant) * 0x1p-24
+        return Float(bitPattern: sign | magnitude.bitPattern)
+    }
+    if exp == 0x1F {
+        if mant == 0 { return Float(bitPattern: sign | 0x7F80_0000) }  // infinity
+        // NaN: payload carried across rather than flattened, and QUIETED — bit 22 forced on.
+        //
+        // Quieting is what IEEE-754 requires of a format conversion, and it is what Swift's own
+        // `Float(Float16)` does. Widening a signalling NaN without it left 1022 of the 65,536
+        // patterns disagreeing, every one of them an sNaN. Found by the exhaustive `--self-check`
+        // below, not by reading: the corners of a hand-written float conversion are precisely
+        // where reading it again does not help.
+        return Float(bitPattern: sign | 0x7F80_0000 | (mant << 13) | 0x0040_0000)
+    }
+    // Normal: rebias the exponent (127 - 15 = 112) and left-align the mantissa.
+    return Float(bitPattern: sign | ((exp + 112) << 23) | (mant << 13))
+}
+
 
 public enum CubeVisionError: Error, CustomStringConvertible {
     case badModel(String)
