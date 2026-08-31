@@ -209,9 +209,18 @@ test('with no Worker at all the die still works — slower, never wrong', async 
       const realWarn = console.warn;
       console.warn = (...a) => { window.__warned.push(a.map(String).join(' ')); realWarn(...a); };
     });
+    // These waits are LIVENESS bounds, not latency budgets, and only in this test are they
+    // generous. Every other test in this file keeps 15 s because it has a worker. Here the worker
+    // is denied on purpose, so cubejs builds its tables (3-6 s) and every Kociemba search runs on
+    // the main thread — and Home paints only once the die has solved ("the die solves before it
+    // swaps", AGENTS.md), so the very first selector is behind a full on-thread search. Under
+    // `--test-concurrency=6` on a 2-core CI runner that is wall clock this test's own title
+    // already accepts: "slower, never wrong". It failed at 15 s in CI while passing in ~2 s here.
+    // What the bound must still catch is a HANG — a fallback that never produces an answer — and
+    // 60 s catches that just as well.
     await page.goto(`${BASE}/#/home`);
-    await page.waitForSelector('#randCube', { timeout: 15_000 });
-    await page.waitForFunction(() => document.querySelector('#viewCube cubus-cube') !== null, null, { timeout: 15_000 });
+    await page.waitForSelector('#randCube', { timeout: 60_000 });
+    await page.waitForFunction(() => document.querySelector('#viewCube cubus-cube') !== null, null, { timeout: 60_000 });
     await page.evaluate(`(async () => {
       const Cube = (await import('/vendor/cubejs.js')).default;
       window.__searches = 0;
@@ -221,7 +230,7 @@ test('with no Worker at all the die still works — slower, never wrong', async 
 
     for (let i = 0; i < 2; i++) {
       await page.click('#randCube');
-      await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null, { timeout: 15_000 });
+      await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null, { timeout: 60_000 });
     }
     const r = await page.evaluate(`(async () => {
       const Cube = (await import('/vendor/cubejs.js')).default;

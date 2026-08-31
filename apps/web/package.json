@@ -7,14 +7,15 @@
   "scripts": {
     "copy-ort": "node copy-ort.mjs",
     "build:cube": "esbuild lib/cubus-cube.js --bundle --format=esm --target=es2022 --outfile=vendor/cubus-cube.js",
-    "predev": "node copy-ort.mjs && pnpm vendor:libs",
+    "predev": "pnpm vendor:libs",
     "dev": "node serve.mjs",
+    "pretest": "pnpm vendor:libs",
     "test": "node --test --test-concurrency=6",
     "check": "pnpm vendor:libs && node --test --test-concurrency=6",
     "build:dist": "node build.mjs",
     "build:cubejs": "esbuild lib/cubejs-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/cubejs.js",
     "build:mcp-guest": "esbuild lib/tauri-mcp-guest-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/tauri-mcp-guest.js",
-    "vendor:libs": "pnpm build:cubejs",
+    "vendor:libs": "node copy-ort.mjs && pnpm build:cubejs",
     "build:smartcube": "esbuild lib/smartcube-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/smartcube.js"
   },
   "devDependencies": {
