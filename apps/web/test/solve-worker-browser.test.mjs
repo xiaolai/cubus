@@ -97,19 +97,47 @@ test('a tighter tier is honoured, not silently ignored', async () => {
   // solver still works, so nothing looks wrong — it just ignores what it was asked for, every
   // time. solLen 21 is the tightest bound the engine meets reliably within this budget
   // (dev-docs/solver-move-count.md, the two-phase ladder).
+  //
+  // ESCALATION on null, for the same reason two-phase.test.mjs escalates: `probeMax` is a budget
+  // in search NODES, so it is deterministic per cube and identical on every machine — which means
+  // a fixed budget against a RANDOM cube asserts a probabilistic property as if it were a
+  // deterministic one. It duly failed in CI on a cube this machine never drew. null is a statement
+  // about the search, never about the cube (AGENTS.md: a search that ran out of budget is not a
+  // cube that cannot be solved), and doubling is what lib/solve-target.js does for the app.
+  //
+  // The assertion does not weaken. What is under test is that solLen REACHES the engine, and that
+  // is still checked exactly as before — on the answer's length. God's number is 20 and 21 is an
+  // exclusive bound above it, so after escalation an answer must exist.
   const out = await inBrowser(async () => {
     const { createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
     const Cube = (await import('/vendor/cubejs.js')).default;
     Cube.initSolver();
     const client = createSolveClient({ spawn: spawnSolveWorker });
     const facelets = Cube.random().asString();
-    const alg = await client.solve(facelets, { solLen: 21, probeMax: 50_000_000 });
+    let alg = null;
+    let budget = 50_000_000;
+    let spent = 0;
+    for (let attempt = 0; attempt <= 8 && alg === null; attempt++) {
+      alg = await client.solve(facelets, { solLen: 21, probeMax: budget });
+      spent += budget;
+      budget *= 2;
+    }
     client.cancel();
     const oracle = Cube.fromString(facelets);
     if (alg) oracle.move(alg);
-    return { moves: alg === null ? null : alg.trim().split(/\s+/).length, solved: alg === null ? null : oracle.isSolved() };
+    return {
+      facelets,
+      spent,
+      moves: alg === null ? null : alg.trim().split(/\s+/).length,
+      solved: alg === null ? null : oracle.isSolved(),
+    };
   });
-  assert.notEqual(out.moves, null, 'no solution under 21 within a generous budget');
+  assert.notEqual(
+    out.moves,
+    null,
+    `no solution under 21 for ${out.facelets} after 8 escalations (${out.spent} nodes) — ` +
+      'the engine is complete, so this is a real defect rather than an expensive cube',
+  );
   assert.ok(out.moves <= 20, `asked for fewer than 21 and got ${out.moves} — the length bound is not live`);
   assert.equal(out.solved, true);
 });
