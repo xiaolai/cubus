@@ -153,5 +153,10 @@ jobs:
       # it — this is what proves the shipped native code, not a Python stand-in, still reads identically.
       - name: Build the cube-vision probe
         run: swift build -c release --package-path crates/cube-vision/swift
+      # The fp16 widening in Model.swift is hand-written, because Swift's Float16 is arm64-only and
+      # the macOS release target is a universal binary. Exhaustive over all 65,536 half patterns, so
+      # it is a proof and not a sample — it caught 1022 wrong ones (signalling NaNs) on its first run.
+      - name: The fp16 widening matches Float16, exhaustively
+        run: crates/cube-vision/swift/.build/release/cube-vision-probe --self-check
       - name: coreml · native — exact class parity with THIS host's fp32, plus the pinned model bytes
         run: python ml/golden_frames.py --parity --legs onnx coreml native
