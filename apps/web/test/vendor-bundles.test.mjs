@@ -243,3 +243,46 @@ test('copy-ort ships only the wasm variant the loader can actually request', () 
   assert.deepEqual(referenced, ['ort-wasm-simd-threaded.jsep.mjs', 'ort-wasm-simd-threaded.jsep.wasm'],
     'the shipped loader references exactly the jsep variant pair, and nothing else');
 });
+
+// The test command must PROVISION what the tests read, and this asserts the wiring rather than the
+// files.
+//
+// The defect it closes ran red in CI for three days. `copy-ort.mjs` produces three gitignored
+// artifacts — the ort loader, and the one wasm variant pair — and only `predev` ran it. CI runs
+// `pnpm --filter cubus-web test`, never `dev`, so on every runner those three files simply did not
+// exist: `serve-reload` died on an ENOENT for the wasm, and both golden-fixture tests died on
+// "Importing a module script failed" for the loader. On a developer's machine all three pass,
+// because `pnpm dev` was run once months ago and the artifacts have been sitting in vendor/ ever
+// since. That is the shape worth guarding: a suite that cannot pass anywhere except where someone
+// happened to run a different command first.
+//
+// Asserting only that the files exist would reproduce exactly that blindness — it passes on the
+// machine that provisioned them and says nothing about the machine that did not. So the assertion
+// is on the SCRIPT GRAPH: whatever `pnpm test` triggers must reach `copy-ort`. Remove the hook and
+// this goes red on the developer's own machine, where the files are still present.
+test('`pnpm test` provisions the onnxruntime files that tests read', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const scripts = pkg.scripts ?? {};
+
+  // Expand `pnpm <script>` / `npm run <script>` references so the check follows the chain
+  // (pretest -> vendor:libs -> copy-ort) instead of pinning one arrangement of it.
+  const expand = (name, seen = new Set()) => {
+    if (seen.has(name) || !scripts[name]) return '';
+    seen.add(name);
+    const body = scripts[name];
+    const refs = [...body.matchAll(/(?:pnpm(?:\s+run)?|npm\s+run)\s+([\w:.-]+)/g)].map((m) => m[1]);
+    return [body, ...refs.map((r) => expand(r, seen))].join(' ');
+  };
+
+  const reached = expand('pretest') + ' ' + expand('test');
+  assert.match(reached, /copy-ort/,
+    'nothing `pnpm test` runs reaches copy-ort, so a clean checkout tests against missing ' +
+      'onnxruntime files — which is exactly how this was red in CI while green locally');
+
+  // And the artifacts themselves, with the command to fix it — because the ENOENT this replaces
+  // named a path and no remedy.
+  for (const f of ['ort.mjs', 'ort-wasm-simd-threaded.jsep.mjs', 'ort-wasm-simd-threaded.jsep.wasm']) {
+    assert.ok(existsSync(new URL(`../vendor/${f}`, import.meta.url)),
+      `vendor/${f} is missing — run \`pnpm --filter cubus-web copy-ort\``);
+  }
+});
