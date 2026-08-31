@@ -25,7 +25,7 @@
   need to make.
 
   NSBluetoothAlwaysUsageDescription is the same deal for the smart cube, and its
-  absence is why the packaged app could not connect while `cargo run -p gan-ble`
+  absence is why the packaged app could not connect while `cargo run -p cube-ble`
   could: the CLI inherits Terminal's Bluetooth permission, an app bundle has only
   what it declares. Without the key CoreBluetooth reports `unauthorized`, btleplug
   then sees no peripherals, and the failure surfaces as "no cube found" — which

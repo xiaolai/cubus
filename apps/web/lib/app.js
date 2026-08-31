@@ -22,7 +22,7 @@ import { makeRouter } from './router.js';
 // The smart-cube strands, recovered from v0 (2026-08-27): the transport seam (Web Bluetooth in a
 // browser, native BLE events under Tauri), one durable record per cube, and the trust model that
 // keeps "connected" from standing in for "known".
-import { makeTauriTransport, makeWebBluetoothTransport } from './cube-transport.js';
+import { connectCube } from './cube-session.js';
 import { MAX_LABEL, cubeLabel, forgetCube, listCubes, normaliseMac, parseRegistry, rememberCube, rememberLast, renameCube } from './cube-registry.js';
 import { applyOffset, deriveOffset, isIdentity } from './cube-trust.js';
 // Reconnecting a known cube: the readings that choose the picture and the words on reconnect, and
@@ -811,7 +811,9 @@ function setTitle(name) {
 
 // ---- smart cube: connection, registry, trust (recovered from v0) -----------------------------
 
-let conn = null, transport = null;
+// The live session (lib/cube-session.js), or null. It owns the transport, the protocol layer
+// and the self-check; app.js only ever holds this one handle.
+let conn = null;
 
 // One durable record per cube. Only durable facts live here — trust, the tracking offset, the
 // battery and the anchor flag are properties of a CONNECTION and are deliberately excluded
@@ -1107,9 +1109,12 @@ async function refreshBattery() {
   // must not land as the current cube's battery level.
   const asked = conn;
   try {
-    const ev = await conn.requestBattery();
+    // `null` means the cube would not say, and it must stay unknown. `Number(null)` is 0, which
+    // is finite — so the old line drew a flat battery for a cube that simply had not answered,
+    // which is the "never invent data" rule broken in the most alarming direction available.
+    const answer = await conn.requestBattery();
     if (conn !== asked) return;
-    const level = Number(ev?.level);
+    const level = answer === null || answer === undefined ? Number.NaN : Number(answer);
     if (Number.isFinite(level)) {
       state.battery = Math.max(0, Math.min(100, Math.round(level)));
       // A reply can land while someone is typing a nickname or an address into this very card,
@@ -1206,45 +1211,65 @@ async function doConnect(macFromUi) {
 }
 
 async function connectOnce(macFromUi) {
-  if (transport) { try { await transport.disconnect(); } catch {} transport = null; conn = null; }
+  if (conn) { try { await conn.disconnect(); } catch {} conn = null; }
   try {
-    const { GanCube } = await import('../vendor/gan-driver.js');
-    let mac = (macFromUi || lastCubeMac() || '').trim(), name = 'GAN cube';
-    if (isTauri) {
-      transport = makeTauriTransport(); await transport.start();
-      // Let go of any link the Rust side still holds. A page reload loses every scrap of JS
-      // state but NOT the Rust peripheral — and a cube that is still connected does not
-      // advertise, so the fresh scan below would stare into silence for its whole window while
-      // a second CoreBluetooth manager wedges against the first. Fast no-op when nothing is held.
-      try { await window.__TAURI__.core.invoke('disconnect_cube'); } catch {}
-      const info = await window.__TAURI__.core.invoke('connect_cube');
-      name = info.name || name; mac = info.mac || mac;
-      if (!mac) throw new Error('cube MAC unavailable — enter it and reconnect');
-    } else {
-      if (!navigator.bluetooth) throw new Error('Web Bluetooth unavailable in this browser');
-      if (!mac) throw new Error('enter your cube’s address first');
-      transport = makeWebBluetoothTransport(); await transport.start();
-    }
-    const cube = new GanCube({ mac, transport });
-    // Every callback is scoped to ITS cube: a slow packet or a late disconnect event from a
-    // connection that has since been replaced must not mutate the new cube's state, report a
-    // gap against it, or tear it down.
-    cube.onFacelets((f) => { if (conn === cube) onFacelets(f.facelets, f.serial); });
-    // Subscribe the move stream too: following runs on moves (immediate), snapshots (~1Hz) only
-    // correct drift — a turn sequence completed inside one second has no intermediate snapshots.
-    cube.onMove((m) => { if (conn === cube && liveMove) liveMove(m); });
-    cube.on('gap', (g) => { if (conn === cube) onGap(g); });
-    cube.on('disconnect', () => { if (conn === cube) onDisconnect(); });
-    // Not swallowed: a decrypt or transport error is a fact about the stream worth a trace,
-    // even when the driver recovers on the next packet.
-    cube.on('error', (e) => { if (conn === cube) console.warn('cube driver error', e); });
-    cube.connect(); conn = cube;
-    adoptConnection(mac, name);
-    cube.getState({ active: true }).then((f) => { if (conn === cube) onFacelets(f.facelets, f.serial); }).catch((e) => {
+    // The self-check needs cubejs, and a cube paired before the solver finished loading would be
+    // REFUSED for a reason that has nothing to do with the cube — an alarming verdict caused by
+    // our own start-up ordering. Wait for it instead; it is already loading.
+    if (!Cube) await loadSolver().catch(() => {});
+    if (!Cube) throw new Error('still starting up — try again in a moment');
+    const typed = (macFromUi || lastCubeMac() || '').trim();
+    // The typed address is a FALLBACK, not the source. Nearly every cube broadcasts its own and
+    // the protocol layer reads it per brand; this only answers when the advertisement did not
+    // carry one. It used to be mandatory in the browser, which asked a beginner for a hexadecimal
+    // address before they could connect at all.
+    const session = await connectCube({
+      Cube,
+      macProvider: typed ? async () => typed : undefined,
+    });
+
+    // Every callback is scoped to ITS session: a slow packet or a late disconnect from a
+    // connection since replaced must not mutate the new cube's state or tear it down.
+    session.onFacelets((facelets, serial) => { if (conn === session) onFacelets(facelets, serial); });
+    // Following runs on moves (immediate); snapshots (~1Hz) only correct drift — a turn sequence
+    // completed inside one second has no intermediate snapshots.
+    session.onMove((m) => {
+      if (conn !== session || !liveMove) return;
+      // The self-check GATES here, it does not merely observe. A refused cube has been proved to
+      // contradict itself — its moves and its own reported state do not add up — so letting it
+      // drive the walk would animate a cube nobody can vouch for. Everything short of a refusal
+      // still follows: mirroring a turn is not a claim about where the cube is.
+      if (!session.mayFollow()) return;
+      liveMove(m);
+    });
+    session.onDisconnect(() => { if (conn === session) onDisconnect(); });
+    // Trust lapses HERE rather than in a screen's handler, so a verdict changing while you are in
+    // Settings is not dropped. This replaces the driver's `gap` event and is a better trigger: the
+    // old one fired on a serial jump, this one fires when the cube's own moves and its own
+    // reported state stop agreeing — which is what a lost turn actually IS, proved rather than
+    // inferred, and available on every brand instead of only those that number their moves.
+    session.onVerdict((verdict, reason) => {
+      if (conn !== session) return;
+      if (verdict === 'refused') markStale('its reports stopped adding up');
+      else if (reason === 'resynced') markStale('a turn went unrecorded');
+    });
+
+    conn = session;
+    // A cube with no address is remembered under its NAME rather than under an empty string.
+    // Only the GAN protocols expose a MAC; the others report '', and keying the registry on that
+    // makes every such cube the same cube — one nickname, one shared last-seen record, and a
+    // reconnect that greets a stranger with another cube's memory.
+    const identity = session.mac || typed || `name:${session.name || 'cube'}`;
+    adoptConnection(identity, session.name || 'Smart cube');
+    // The reply is NOT fed to onFacelets here. It arrives on the event stream too, and the
+    // permanent listener above already handles it — passing it on as well delivered the
+    // connection's first report twice, which runs the reconnect classification against a question
+    // its own first answer had already closed.
+    session.requestState().catch((e) => {
       // Said, not swallowed: this rejection used to vanish into an empty catch, and the screen
       // showed a connected cube that had said nothing. The passive stream may still deliver a
       // first report later; until it does, the reading is 'no report' and the screens say so.
-      if (conn !== cube) return;
+      if (conn !== session) return;
       console.warn('the cube did not answer its state request', e);
       reportSilence();
     });
@@ -1252,8 +1277,8 @@ async function connectOnce(macFromUi) {
     // mid-solve, and a mid-solve disconnect is what silently desyncs its tracking from reality.
     void refreshBattery();
   } catch (err) {
-    try { if (transport) await transport.disconnect(); } catch {}
-    transport = null; onDisconnect();
+    if (conn) { try { await conn.disconnect(); } catch {} }
+    onDisconnect();
     throw err;
   }
 }
@@ -3625,7 +3650,7 @@ SCREENS.settings = () => {
         ${knownCubesRows()}
         ${on ? '' : `<div id="macRow" hidden style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">${known.length ? 'Add another cube' : 'Cube Bluetooth address'}</div>
-            <div class="sub" style="color:var(--ink-4)">The cube encrypts everything with this as the key, and browsers on macOS will not reveal it. Copy it from the GAN app, under your cube's details.</div></div>
+            <div class="sub" style="color:var(--ink-4)">Only needed if your cube does not broadcast its own address. Most do, and most cubes never ask you for this. If yours does, its own app lists it under the cube's details.</div></div>
           <input class="field" id="macIn" placeholder="AB:CD:EF:12:34:56" style="width:180px;flex:none">
         </div>`}
         <div style="display:flex;gap:10px;align-items:center;padding:12px 0">
@@ -3743,11 +3768,10 @@ SCREENS.settings = () => {
 
       if (pairBtn) pairBtn.onclick = async () => {
         if (state.connected) {
-          // The web transport removes its own disconnect listener before disconnecting, so the
-          // driver's event never fires here — without this call, deliberately disconnecting left
-          // the cube marked trusted with its correction still applied to nothing.
-          try { await transport?.disconnect(); } catch {}
-          transport = null;
+          // Called explicitly rather than waited for: a deliberate disconnect tears the session
+          // down locally, so no DISCONNECT event arrives to do it for us — and without this the
+          // cube stayed marked trusted with its correction applied to nothing.
+          try { await conn?.disconnect(); } catch {}
           onDisconnect();
           return;
         }

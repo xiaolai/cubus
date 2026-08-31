@@ -1,12 +1,12 @@
 # Rust workspace for the native side of cubus. Four members: the desktop app's Tauri backend (a
 # thin shell around apps/web); cube-vision, the sanctioned native capture-and-inference plugin
-# behind the Detector seam (AGENTS.md, 2026-08-26); gan-ble, the smart-cube BLE bridge —
+# behind the Detector seam (AGENTS.md, 2026-08-26); cube-ble, the brand-agnostic BLE bridge —
 # removed with smart-cube support on 2026-08-26 and recovered with its return (merged
 # 2026-08-28); and optimal-solver, the fourth accepted seam (AGENTS.md, 2026-08-29): Korf-style
 # proof of minimality, native because generating its 86 MB of pattern databases is.
 [workspace]
 resolver = "2"
-members = ["apps/desktop/src-tauri", "crates/cube-vision", "crates/gan-ble", "crates/optimal-solver"]
+members = ["apps/desktop/src-tauri", "crates/cube-vision", "crates/cube-ble", "crates/optimal-solver"]
 
 # The Swift half of cube-vision is built by swift-rs, which picks `swift build -c debug` whenever
 # cargo hands its build script DEBUG=true — i.e. under `tauri dev`. Unoptimized Swift runs the
