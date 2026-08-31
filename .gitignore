@@ -68,3 +68,11 @@ key.properties
 # undone with `git rm --cached -- './:memory:.ses'` — the leading `./` is required, because a
 # bare `:memory:` is git pathspec magic and matches nothing.
 :memory:.ses
+
+# Working notes and reasoning: plans, provenance records, measurements, the design kit, and the
+# grill reports. Kept locally, not shipped. Code comments and AGENTS.md still cite these paths on
+# purpose — the reasoning is worth naming even where the file is not in the clone — so the checks
+# that read them (stage.test.mjs, tokens.test.mjs, no-dangling-pointers.test.mjs) SKIP rather than
+# pass when they are absent, and say so.
+dev-docs/
+grill-report-*.md

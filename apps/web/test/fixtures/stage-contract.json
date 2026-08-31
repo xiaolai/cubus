@@ -1,0 +1,92 @@
+{
+  "_comment": "Generated from dev-docs/stage-contract.md. Cells are verbatim so the document and this file can be compared as strings. Regenerate with: node apps/web/test/fixtures/regen-stage-contract.mjs",
+  "source": "dev-docs/stage-contract.md",
+  "devices": [
+    [
+      "iPad 13\" landscape 1376×1032",
+      "1376×930",
+      "4:3 at 1240×930",
+      "sheet +136 wide"
+    ],
+    [
+      "iPad 11\" landscape 1180×820",
+      "1180×718",
+      "4:3 at 957×718",
+      "sheet +223 wide"
+    ],
+    [
+      "iPad mini landscape 1133×744",
+      "1133×642",
+      "4:3 at 856×642",
+      "sheet +277 wide"
+    ],
+    [
+      "iPad 13\" portrait 1032×1376",
+      "1032×1225",
+      "3:4 at 919×1225",
+      "paper 57 each side"
+    ],
+    [
+      "iPad 11\" portrait 820×1180",
+      "820×1029",
+      "3:4 at 772×1029",
+      "paper 24 each side"
+    ],
+    [
+      "iPad mini portrait 744×1133",
+      "744×982",
+      "3:4 at 737×982",
+      "paper 4 each side"
+    ],
+    [
+      "iPhone 16 Pro Max 440×956",
+      "440×759",
+      "3:4 at 440×587",
+      "sheet +172 tall"
+    ],
+    [
+      "iPhone 16 393×852",
+      "393×658",
+      "3:4 at 393×524",
+      "sheet +134 tall"
+    ],
+    [
+      "iPhone SE 375×667",
+      "375×546",
+      "3:4 at 375×500",
+      "sheet +46 tall"
+    ],
+    [
+      "Android phone ref. 412×915 (insets ≈48)",
+      "412×766",
+      "3:4 at 412×549",
+      "sheet +217 tall"
+    ]
+  ],
+  "desktop": [
+    [
+      "MacBook Air 13\" 1470×956, Dock shown",
+      "≈1470×850 *(estimate — see Unchecked)*",
+      "840×630 (`minW`)",
+      "574×765"
+    ],
+    [
+      "Studio Display 2560×1440 *(measured: menu bar 30, Dock hidden)*",
+      "2560×1410",
+      "1280×960",
+      "900×1200 (`maxH`)"
+    ],
+    [
+      "Windows 1366×768 @100%, taskbar 48",
+      "1366×720",
+      "840×630 (`minW`)",
+      "486×648"
+    ],
+    [
+      "Windows 1920×1080 @150% (= 1280×720), taskbar ≈48",
+      "1280×672",
+      "816×612 (height-bound, scales)",
+      "454×605"
+    ]
+  ]
+}
