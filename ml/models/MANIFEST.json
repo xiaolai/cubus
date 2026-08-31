@@ -24,8 +24,9 @@
     },
     "cube-yolo.int8.onnx": {
       "sha256": "4d1cef8480e3793f48808d7c5f6f9a03a88f1f42a958633e1e9d4818c3badaf9",
-      "runtime": "onnxruntime-web",
-      "precision": "dynamic int8 (QInt8 weights, uint8 activations)"
+      "runtime": "onnxruntime-web \u2014 NOT SHIPPED; the web build serves the fp32 graph",
+      "precision": "dynamic int8 (QInt8 weights, uint8 activations)",
+      "quantisation_note": "quantises ACTIVATIONS as well as weights, and that is what costs the reads: 4 of 20 golden fixtures come back with a different face, two of them frames the fp32 graph correctly refuses. Contrast cube-yolo.tflite, which takes the same size reduction weight-only and diverges on none. Do not ship this without re-exporting weight-only."
     },
     "cube-yolo.mlpackage": {
       "sha256": "f7e76d1bc93674b8d8893be55d94394908383225d8bf09dd527007db98d92737",
@@ -35,7 +36,7 @@
     },
     "cube-yolo.tflite": {
       "sha256": "d1a2d2cb15249737e3b97783fa67d16a96881040cfe244e95009415441f9c1a3",
-      "runtime": "LiteRT/TFLite (onnx2tf)",
+      "runtime": "LiteRT/TFLite (onnx2tf) \u2014 NOT SHIPPED YET; the Android LiteRT backend is device-gated work, so Android runs the WebView fp32 path",
       "precision": "dynamic-range int8: int8 weights, fp32 activations, fp32 I/O",
       "layout": "NHWC input; box coords in 640-space (the read is scale-invariant, so the consumer need not rescale)",
       "quantisation_note": "full-integer int8 (int8 activations) was rejected \u2014 it collapses the detect head's class scores to ~0 (NO_FACE on all golden frames); weight-only int8 reads identical to fp32 (0/20). Verified by ml/golden_frames.py."

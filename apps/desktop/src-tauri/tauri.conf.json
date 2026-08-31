@@ -60,9 +60,6 @@
         "CoreBluetooth"
       ]
     },
-    "resources": {
-      "../../../ml/models/cube-yolo.mlpackage": "models/cube-yolo.mlpackage"
-    },
     "macOS": {
       "minimumSystemVersion": "13.0",
       "infoPlist": "Info.macos.plist",
