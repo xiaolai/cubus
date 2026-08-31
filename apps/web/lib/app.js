@@ -22,7 +22,7 @@ import { makeRouter } from './router.js';
 // The smart-cube strands, recovered from v0 (2026-08-27): the transport seam (Web Bluetooth in a
 // browser, native BLE events under Tauri), one durable record per cube, and the trust model that
 // keeps "connected" from standing in for "known".
-import { makeTauriTransport, makeWebBluetoothTransport } from './cube-transport.js';
+import { connectCube } from './cube-session.js';
 import { MAX_LABEL, cubeLabel, forgetCube, listCubes, normaliseMac, parseRegistry, rememberCube, rememberLast, renameCube } from './cube-registry.js';
 import { applyOffset, deriveOffset, isIdentity } from './cube-trust.js';
 // Reconnecting a known cube: the readings that choose the picture and the words on reconnect, and
@@ -274,7 +274,7 @@ const state = {
 };
 
 // How the four rungs read on the Settings screen. A rung with no label here would render as
-// "undefined", so app-wiring.test.mjs checks every TIERS entry has one.
+// "undefined", so solve-tier-wiring.test.mjs checks every TIERS entry has one.
 /** How long a proof may run before it has to account for itself.
  *
  *  Proof cost tracks DEPTH, not the incumbent: a cube a few turns from solved proves in
@@ -811,7 +811,9 @@ function setTitle(name) {
 
 // ---- smart cube: connection, registry, trust (recovered from v0) -----------------------------
 
-let conn = null, transport = null;
+// The live session (lib/cube-session.js), or null. It owns the transport, the protocol layer
+// and the self-check; app.js only ever holds this one handle.
+let conn = null;
 
 // One durable record per cube. Only durable facts live here — trust, the tracking offset, the
 // battery and the anchor flag are properties of a CONNECTION and are deliberately excluded
@@ -953,11 +955,25 @@ function clearOffset() {
   state.cube.offsetFrom = '';
 }
 
-/** A missed move serial. Trust lapses HERE rather than in a screen's handler, so a gap arriving
- *  while you are in Settings is not dropped; the screen still gets told so it can stand down. */
-function onGap(g) {
-  markStale(`${g.missing} turn${g.missing === 1 ? '' : 's'} went unrecorded`);
-  if (liveGap) liveGap(g);
+/**
+ * A turn reached the cube but not us.
+ *
+ * Trust lapses HERE rather than in a screen's handler, so a loss arriving while you are in
+ * Settings is not dropped; the screen still gets told so it can stand down.
+ *
+ * It used to be reached by a SERIAL skip, which only cubes that number their moves can report —
+ * three brands the app now speaks to report a usable clock and number nothing. It is reached by
+ * PROOF now: the self-check replays the moves it saw onto the last reported state, and the next
+ * report does not match. That works on every brand, and it establishes the loss against the cube
+ * rather than inferring it from a counter.
+ *
+ * What it costs is the COUNT. A serial says two turns went missing; reconciliation says at least
+ * one did. So nothing here names a number any more — an invented one would be the more
+ * comfortable sentence and the less true one.
+ */
+function onMovesLost() {
+  markStale('a turn went unrecorded');
+  if (liveGap) liveGap();
 }
 
 /** Record a live connection. The registry write and the connected flag are ONE step on purpose:
@@ -1107,9 +1123,12 @@ async function refreshBattery() {
   // must not land as the current cube's battery level.
   const asked = conn;
   try {
-    const ev = await conn.requestBattery();
+    // `null` means the cube would not say, and it must stay unknown. `Number(null)` is 0, which
+    // is finite — so the old line drew a flat battery for a cube that simply had not answered,
+    // which is the "never invent data" rule broken in the most alarming direction available.
+    const answer = await conn.requestBattery();
     if (conn !== asked) return;
-    const level = Number(ev?.level);
+    const level = answer === null || answer === undefined ? Number.NaN : Number(answer);
     if (Number.isFinite(level)) {
       state.battery = Math.max(0, Math.min(100, Math.round(level)));
       // A reply can land while someone is typing a nickname or an address into this very card,
@@ -1206,45 +1225,69 @@ async function doConnect(macFromUi) {
 }
 
 async function connectOnce(macFromUi) {
-  if (transport) { try { await transport.disconnect(); } catch {} transport = null; conn = null; }
+  if (conn) { try { await conn.disconnect(); } catch {} conn = null; }
   try {
-    const { GanCube } = await import('../vendor/gan-driver.js');
-    let mac = (macFromUi || lastCubeMac() || '').trim(), name = 'GAN cube';
-    if (isTauri) {
-      transport = makeTauriTransport(); await transport.start();
-      // Let go of any link the Rust side still holds. A page reload loses every scrap of JS
-      // state but NOT the Rust peripheral — and a cube that is still connected does not
-      // advertise, so the fresh scan below would stare into silence for its whole window while
-      // a second CoreBluetooth manager wedges against the first. Fast no-op when nothing is held.
-      try { await window.__TAURI__.core.invoke('disconnect_cube'); } catch {}
-      const info = await window.__TAURI__.core.invoke('connect_cube');
-      name = info.name || name; mac = info.mac || mac;
-      if (!mac) throw new Error('cube MAC unavailable — enter it and reconnect');
-    } else {
-      if (!navigator.bluetooth) throw new Error('Web Bluetooth unavailable in this browser');
-      if (!mac) throw new Error('enter your cube’s address first');
-      transport = makeWebBluetoothTransport(); await transport.start();
-    }
-    const cube = new GanCube({ mac, transport });
-    // Every callback is scoped to ITS cube: a slow packet or a late disconnect event from a
-    // connection that has since been replaced must not mutate the new cube's state, report a
-    // gap against it, or tear it down.
-    cube.onFacelets((f) => { if (conn === cube) onFacelets(f.facelets, f.serial); });
-    // Subscribe the move stream too: following runs on moves (immediate), snapshots (~1Hz) only
-    // correct drift — a turn sequence completed inside one second has no intermediate snapshots.
-    cube.onMove((m) => { if (conn === cube && liveMove) liveMove(m); });
-    cube.on('gap', (g) => { if (conn === cube) onGap(g); });
-    cube.on('disconnect', () => { if (conn === cube) onDisconnect(); });
-    // Not swallowed: a decrypt or transport error is a fact about the stream worth a trace,
-    // even when the driver recovers on the next packet.
-    cube.on('error', (e) => { if (conn === cube) console.warn('cube driver error', e); });
-    cube.connect(); conn = cube;
-    adoptConnection(mac, name);
-    cube.getState({ active: true }).then((f) => { if (conn === cube) onFacelets(f.facelets, f.serial); }).catch((e) => {
+    // The self-check needs cubejs, and a cube paired before the solver finished loading would be
+    // REFUSED for a reason that has nothing to do with the cube — an alarming verdict caused by
+    // our own start-up ordering. Wait for it instead; it is already loading.
+    if (!Cube) await loadSolver().catch(() => {});
+    if (!Cube) throw new Error('still starting up — try again in a moment');
+    const typed = (macFromUi || lastCubeMac() || '').trim();
+    // The typed address is a FALLBACK, not the source. Nearly every cube broadcasts its own and
+    // the protocol layer reads it per brand; this only answers when the advertisement did not
+    // carry one. It used to be mandatory in the browser, which asked a beginner for a hexadecimal
+    // address before they could connect at all.
+    const session = await connectCube({
+      Cube,
+      macProvider: typed ? async () => typed : undefined,
+    });
+
+    // Every callback is scoped to ITS session: a slow packet or a late disconnect from a
+    // connection since replaced must not mutate the new cube's state or tear it down.
+    session.onFacelets((facelets, serial) => { if (conn === session) onFacelets(facelets, serial); });
+    // Following runs on moves (immediate); snapshots (~1Hz) only correct drift — a turn sequence
+    // completed inside one second has no intermediate snapshots.
+    session.onMove((m) => {
+      if (conn !== session || !liveMove) return;
+      // The self-check GATES here, it does not merely observe. A refused cube has been proved to
+      // contradict itself — its moves and its own reported state do not add up — so letting it
+      // drive the walk would animate a cube nobody can vouch for. Everything short of a refusal
+      // still follows: mirroring a turn is not a claim about where the cube is.
+      if (!session.mayFollow()) return;
+      liveMove(m);
+    });
+    session.onDisconnect(() => { if (conn === session) onDisconnect(); });
+    // Trust lapses HERE rather than in a screen's handler, so a verdict changing while you are in
+    // Settings is not dropped. This replaces the driver's `gap` event and is a better trigger: the
+    // old one fired on a serial jump, this one fires when the cube's own moves and its own
+    // reported state stop agreeing — which is what a lost turn actually IS, proved rather than
+    // inferred, and available on every brand instead of only those that number their moves.
+    session.onVerdict((verdict, reason) => {
+      if (conn !== session) return;
+      if (verdict === 'refused') markStale('its reports stopped adding up');
+      // A resync IS the lost-turn signal, and it must reach the screens rather than only the trust
+      // flag: standing follow down, refusing the timer's result, and saying what happened all live
+      // behind onMovesLost. Wiring only markStale here left every one of them dead in production
+      // while the test seam kept them green.
+      else if (reason === 'resynced') onMovesLost();
+    });
+
+    conn = session;
+    // A cube with no address is remembered under its NAME rather than under an empty string.
+    // Only the GAN protocols expose a MAC; the others report '', and keying the registry on that
+    // makes every such cube the same cube — one nickname, one shared last-seen record, and a
+    // reconnect that greets a stranger with another cube's memory.
+    const identity = session.mac || typed || `name:${session.name || 'cube'}`;
+    adoptConnection(identity, session.name || 'Smart cube');
+    // The reply is NOT fed to onFacelets here. It arrives on the event stream too, and the
+    // permanent listener above already handles it — passing it on as well delivered the
+    // connection's first report twice, which runs the reconnect classification against a question
+    // its own first answer had already closed.
+    session.requestState().catch((e) => {
       // Said, not swallowed: this rejection used to vanish into an empty catch, and the screen
       // showed a connected cube that had said nothing. The passive stream may still deliver a
       // first report later; until it does, the reading is 'no report' and the screens say so.
-      if (conn !== cube) return;
+      if (conn !== session) return;
       console.warn('the cube did not answer its state request', e);
       reportSilence();
     });
@@ -1252,8 +1295,8 @@ async function connectOnce(macFromUi) {
     // mid-solve, and a mid-solve disconnect is what silently desyncs its tracking from reality.
     void refreshBattery();
   } catch (err) {
-    try { if (transport) await transport.disconnect(); } catch {}
-    transport = null; onDisconnect();
+    if (conn) { try { await conn.disconnect(); } catch {} }
+    onDisconnect();
     throw err;
   }
 }
@@ -1313,12 +1356,13 @@ function takeDerivation(facelets, setupAlg) {
   c.derived = true;
   // AND THE SOLUTION, which is why the search that used to follow is gone. Undoing the setup alg
   // solves the cube by construction — there is nothing left to search FOR. The app used to send
-  // this state to cubing.js's worker for a second, independent Kociemba search, and then discard
+  // this state to the `cubing` package's worker (removed entirely, 2026-08-29) for a second,
+  // independent Kociemba search, and then discard
   // an answer it already held. That search is the longest thing a press of the die waited on.
   //
   // Not verified here: it is checked above by cubejs, which is the library that produced the
   // setup alg, so this pass proves our own reverse-and-invert rule and nothing about the search.
-  // The independent check — cubing.js applying it, no search — is solve()'s, once, on first use.
+  // The independent check — cubejs applying it, no search — is solve()'s, once, on first use.
   c.solution = solution;
   c.moves = solution.trim() ? solution.trim().split(/\s+/) : [];
   c.stepFacelets = stepStates(facelets, c.moves);
@@ -1546,7 +1590,8 @@ let rollPending = false;
  * twelve dropped frames, and moving it off the click alone only moved the stutter a beat later.
  *
  * It goes to the SOLVER POOL, the same place a solve goes. There used to be a second worker for
- * this — `scramble-worker.js` — carrying its own ~34 MB of cubejs Kociemba tables and 3-6 s of
+ * this — the since-deleted `lib/scramble-worker.js` — carrying its own ~34 MB of cubejs
+ * Kociemba tables and 3-6 s of
  * build, plus a `warmRoller()` to start it early. The pool's workers already hold warm two-phase
  * tables, so that entire worker was the app paying twice for a capability it had once.
  *
@@ -2879,15 +2924,16 @@ const cubeScreen = (screenMode) => {
       // Trust has already lapsed by the time this runs — onGap() owns that, with or without a
       // screen mounted to hear it — and the trust hook below has stood follow down. What is left
       // is this screen's own account of what happened.
-      liveGap = (g) => {
-        // The shutdown itself is NOT repeated here: onGap marks trust stale first, and the trust
-        // hook below owns standing follow down. What this adds is the gap-specific account.
-        // Disabled, not merely un-highlighted: following matches your turns against an
+      liveGap = () => {
+        // The shutdown itself is NOT repeated here: onMovesLost marks trust stale first, and the
+        // trust hook below owns standing follow down. What this adds is the account of what
+        // happened. Disabled, not merely un-highlighted: following matches your turns against an
         // arrangement we have just said we cannot vouch for.
         refuseFollow('Your cube missed a turn — read it again before following');
-        // The cube numbers its moves, and the driver says so when the count skips. Silence here
-        // would look exactly like a wrong turn; it is neither, and the snapshot will resync.
-        showNote(`Missed ${g.missing} turn${g.missing === 1 ? '' : 's'} — checking the cube…`);
+        // No count. Reconciliation proves a turn was lost; it cannot say how many, and the old
+        // "Missed 2 turns" came from a serial the app no longer has. Silence here would look
+        // exactly like a wrong turn; it is neither, and the next snapshot will resync.
+        showNote('A turn went unrecorded — checking the cube…');
       };
 
       // Any loss of trust while walking — a gap, a disconnect, a report that failed validation —
@@ -3318,6 +3364,12 @@ SCREENS.timer = () => {
       let byCube = false;
       const auto = createSolveTimer({ target: () => scrTarget, trusted: chainTrusted });
 
+      // A lost turn means the span cannot be vouched for, and this is the only path that says so
+      // on a cube that does not number its moves — which is three of the brands the app speaks to.
+      // The clock keeps running: a solve in progress is still a solve. It is the RESULT that is
+      // refused, and solve-timer already owns those words.
+      liveGap = () => auto.interrupted();
+
       warmSolver();      // New scramble is one press away here; see cubeScreen's mount
       schedulePreroll(); // and it should never be the press that waits for a search
       const newScr = async () => {
@@ -3612,6 +3664,18 @@ SCREENS.settings = () => {
         ${registryWriteBad ? `<div id="registryWriteWarn" style="display:flex;gap:8px;padding:0 0 12px;color:var(--err);font-size:var(--fs-body-s)">
           <span>This browser is refusing to store what cubus learns about this cube — its memory of it will not survive a reload, so the next reconnect will greet it as a stranger.</span>
         </div>` : ''}
+        ${on ? `<div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line-faint)">
+          <span class="ico" style="flex:none;color:${conn?.verdict === 'refused' ? 'var(--err)' : 'var(--ink-4)'}">${icon(conn?.verdict === 'refused' ? 'x' : 'check', 16)}</span>
+          <div style="flex:1">
+            <div style="font-weight:600">${conn?.verdict === 'refused'
+              ? 'This cube did not check out'
+              : 'Send us a report about this cube'}</div>
+            <div class="sub" style="color:var(--ink-4)">${conn?.verdict === 'refused'
+              ? 'What it reported did not add up, so cubus is not trusting it. That is worth telling us about — the file below is a recording of the conversation, and it is the only thing that can show why.'
+              : 'Only if you feel like it. Most cube types have never been tried on this app, and a recording of one that works is what makes the next person\u2019s cube work too.'}</div>
+          </div>
+          <button class="btn sm outline" id="cubeReportBtn" style="flex:none">Save report</button>
+        </div>` : ''}
         ${on && state.cube.offset ? `<div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line-faint)">
           <span class="ico" style="color:var(--ok);flex:none">${icon('check', 16)}</span>
           <div style="flex:1">
@@ -3625,7 +3689,7 @@ SCREENS.settings = () => {
         ${knownCubesRows()}
         ${on ? '' : `<div id="macRow" hidden style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">${known.length ? 'Add another cube' : 'Cube Bluetooth address'}</div>
-            <div class="sub" style="color:var(--ink-4)">The cube encrypts everything with this as the key, and browsers on macOS will not reveal it. Copy it from the GAN app, under your cube's details.</div></div>
+            <div class="sub" style="color:var(--ink-4)">Only needed if your cube does not broadcast its own address. Most do, and most cubes never ask you for this. If yours does, its own app lists it under the cube's details.</div></div>
           <input class="field" id="macIn" placeholder="AB:CD:EF:12:34:56" style="width:180px;flex:none">
         </div>`}
         <div style="display:flex;gap:10px;align-items:center;padding:12px 0">
@@ -3743,11 +3807,10 @@ SCREENS.settings = () => {
 
       if (pairBtn) pairBtn.onclick = async () => {
         if (state.connected) {
-          // The web transport removes its own disconnect listener before disconnecting, so the
-          // driver's event never fires here — without this call, deliberately disconnecting left
-          // the cube marked trusted with its correction still applied to nothing.
-          try { await transport?.disconnect(); } catch {}
-          transport = null;
+          // Called explicitly rather than waited for: a deliberate disconnect tears the session
+          // down locally, so no DISCONNECT event arrives to do it for us — and without this the
+          // cube stayed marked trusted with its correction applied to nothing.
+          try { await conn?.disconnect(); } catch {}
           onDisconnect();
           return;
         }
@@ -3805,6 +3868,29 @@ SCREENS.settings = () => {
         };
       }
       $('#battRefresh', root)?.addEventListener('click', () => void refreshBattery());
+
+      // The compatibility report (dev-docs/universal-cube-driver.md §7). One affordance, not a
+      // screen: the moment worth offering it is when the self-check has refused a cube, because a
+      // refusal that reaches nobody is a quiet failure one level above the one it guards against.
+      $('#cubeReportBtn', root)?.addEventListener('click', async () => {
+        const asked = conn;
+        if (!asked) { say('not connected', 'var(--err)'); return; }
+        try {
+          const { saveReport } = await import('./cube-report.js');
+          const r = await saveReport(asked.report({ scenario: 'saved from Settings' }), { isWebview: isTauri });
+          if (conn !== asked) return;
+          const kb = Math.max(1, Math.round(r.bytes / 1024));
+          // Says which thing happened, never a generic "done": a download and a clipboard copy
+          // need different next steps from the person holding it.
+          say(r.how === 'downloaded'
+            ? `Saved ${r.name} (${kb} KB) — attach it to an issue at github.com/xiaolai/cubus`
+            : `Copied ${kb} KB to your clipboard — paste it into an issue at github.com/xiaolai/cubus`,
+            'var(--ok)');
+        } catch (e) {
+          if (conn !== asked) return;
+          say(String(e.message || e).split('\n')[0], 'var(--err)');
+        }
+      });
 
       // anchorSolved() sends REQUEST_RESET only if the cube already reports solved — it throws
       // otherwise, and the refusal is what teaches the step. But the precondition can dead-end an
@@ -4165,7 +4251,10 @@ window.cubusGo = go;
 window.cubusFeed = {
   move: (m) => liveMove?.(m),
   facelets: (f, serial) => onFacelets(f, serial),
-  gap: (g) => onGap(g), // the driver's door, not the screen's — see onGap
+  /** A turn that reached the cube but not us. No argument: reconciliation proves the loss and
+   *  cannot count it, so a seam that took a number would let a test assert something the app can
+   *  never know. */
+  movesLost: () => onMovesLost(),
   disconnect: () => onDisconnect(),
   /** The cube answered nothing — what connectOnce's getState rejection reports. Exposed because
    *  that path needs Web Bluetooth to exercise for real, and the silence handling is exactly the

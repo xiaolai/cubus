@@ -3,6 +3,23 @@
 A verified BLE driver and diagnostic CLI for the **GAN16 ui** smart Rubik's cube
 on macOS.
 
+> **The app no longer ships this** (2026-08-31). Its protocol layer is
+> `smartcube-web-bluetooth`, pinned and vendored — see
+> `dev-docs/universal-cube-driver.md`. What this package is NOW is the
+> **independent test oracle**: `tests/cross-implementation.test.ts` decodes the
+> four committed captures with both this decoder and the linked library's, and
+> asserts they agree — 1,242 real packets, identical move notation, identical
+> facelet strings, identical event histograms.
+>
+> That is why it is kept rather than deleted, and why it must not be
+> "consolidated" into the dependency. A second implementation is the entire
+> value: it is what makes every future bump of the pinned revision a checkable
+> change rather than a hopeful one. The same reasoning `AGENTS.md` gives for
+> keeping cubejs beside the solver.
+>
+> The Node CLI and the `blew` transport still work and are still the way to take
+> a fresh capture from real hardware.
+
 **Result:** the GAN16 ui speaks the **GAN Gen4** protocol (hypothesis **H1**),
 with small additive extensions to the hardware-info response (**H2**). Moves,
 full cube state, whole-cube orientation (gyro), and hardware info all decode and

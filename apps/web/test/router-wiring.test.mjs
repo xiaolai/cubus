@@ -1140,7 +1140,7 @@ test('a turn rate is never fabricated from a time that is not a number', async (
 // ---- Follow cube (state-matched; see dev-docs/follow-mode-redesign.md) ----------------------
 //
 // Exercised on the scramble screen, because it mounts completely here: it needs only cubejs to
-// build its moves, while the solve path needs cubing.js and bails early.
+// build its moves, while the solve path needs the two-phase engine and bails early.
 //
 // Two rules make these tests honest where the previous battery was not:
 //  * Moves are fed as QUARTER TURNS ONLY — the GAN driver never emits an "R2", and a battery
@@ -1320,15 +1320,20 @@ test('a wrong turn says so, and undoing it clears the note by itself — no snap
   } finally { resetCubeModel(state); }
 });
 
-test('a missed-move gap stands follow down, says so, and restores the walk speed', async () => {
+test('a lost turn stands follow down, says so, and restores the walk speed', async () => {
   const { state } = await import('../lib/app.js');
   try {
     await followSetup(state);
     const el = win.document.querySelector('cubus-cube');
     assert.equal(el.getAttribute('tempo-scale'), '1', 'precondition: follow tempo active');
-    feed().gap({ missing: 2, from: 4, to: 7 });
+    feed().movesLost();
     assert.equal(win.document.querySelector('#followNote').hidden, false);
-    assert.match(win.document.querySelector('#followMsg').textContent, /Missed 2 turns/);
+    // No number. The old copy said "Missed 2 turns" from a move serial the app no longer has;
+    // reconciliation proves a turn was lost and cannot count it, and inventing the count would be
+    // the comfortable sentence rather than the true one.
+    assert.match(win.document.querySelector('#followMsg').textContent, /A turn went unrecorded/);
+    assert.doesNotMatch(win.document.querySelector('#followMsg').textContent, /\d/,
+      'and it must not name a number it cannot know');
     const btn = win.document.querySelector('[data-mode="cube"]');
     assert.ok(btn.disabled, 'following a cube we cannot vouch for is not on offer');
     assert.notEqual(el.getAttribute('tempo-scale'), '1', 'and the demonstration speed is back');
@@ -1496,13 +1501,46 @@ test('the titlebar indicator appears with a connection and leaves with it', asyn
     const ind = win.document.querySelector('#cubeLive');
     assert.ok(ind, 'the indicator exists in the titlebar');
     assert.equal(ind.hidden, true, 'and is absent with no cube');
-    win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 80 }) });
+    win.cubusFeed.useConnection({ requestBattery: async () => 80 });
     assert.equal(ind.hidden, false, 'a connection reveals it');
     assert.ok(ind.classList.contains('stale'), 'a fresh connection is connected, not trusted');
     state.cube.trusted = true;
     win.cubusFeed.facelets(SOLVED_FACELETS);
     win.cubusFeed.useConnection(null);
     assert.equal(ind.hidden, true, 'a disconnect takes it away');
+  } finally { resetCubeModel(state); }
+});
+
+test('Settings offers a compatibility report, and says so loudest when the cube was refused', async () => {
+  // dev-docs/universal-cube-driver.md §7: a self-check refusal that reaches nobody is a quiet
+  // failure one level above the one it guards against. This is the one affordance that closes it,
+  // so its ABSENCE is what this test is really about.
+  const { state } = await import('../lib/app.js');
+  try {
+    const report = () => ({ format: 'smartcube-fixture', version: 1, capturedAt: '2026-08-31T00:00:00.000Z',
+      device: { name: 'Test cube', id: '' }, protocol: { id: 'gan-gen4', name: 'GAN Gen4' },
+      services: [], traffic: [], events: [] });
+
+    win.cubusFeed.useConnection({ requestBattery: async () => 80, disconnect: async () => {}, verdict: 'stream', report });
+    win.cubusGo('settings');
+    await tick();
+    const btn = win.document.querySelector('#cubeReportBtn');
+    assert.ok(btn, 'a connected cube must be able to produce a report');
+    const calm = win.document.body.textContent;
+    assert.ok(calm.includes('Send us a report'), 'a working cube is asked gently');
+    assert.ok(!calm.includes('did not check out'), 'and is not accused of anything');
+
+    win.cubusFeed.useConnection({ requestBattery: async () => 80, disconnect: async () => {}, verdict: 'refused', report });
+    win.cubusGo('settings');
+    await tick();
+    const loud = win.document.body.textContent;
+    assert.ok(loud.includes('did not check out'), 'a refused cube says so plainly');
+    assert.ok(win.document.querySelector('#cubeReportBtn'), 'and still offers the report');
+
+    win.cubusFeed.useConnection(null);
+    win.cubusGo('settings');
+    await tick();
+    assert.equal(win.document.querySelector('#cubeReportBtn'), null, 'with no cube there is nothing to report');
   } finally { resetCubeModel(state); }
 });
 

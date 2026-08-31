@@ -45,7 +45,7 @@ optimal-solver = { path = "../../../crates/optimal-solver" }
 # build reaches the same cube over Web Bluetooth, the desktop over btleplug — gan-driver decodes
 # in the webview either way). FFF6 notifications go up as `cube-packet` events; FFF5 commands come
 # back through `write_fff5`.
-gan-ble = { path = "../../../crates/gan-ble" }
+cube-ble = { path = "../../../crates/cube-ble" }
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
