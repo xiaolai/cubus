@@ -3637,6 +3637,18 @@ SCREENS.settings = () => {
         ${registryWriteBad ? `<div id="registryWriteWarn" style="display:flex;gap:8px;padding:0 0 12px;color:var(--err);font-size:var(--fs-body-s)">
           <span>This browser is refusing to store what cubus learns about this cube — its memory of it will not survive a reload, so the next reconnect will greet it as a stranger.</span>
         </div>` : ''}
+        ${on ? `<div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line-faint)">
+          <span class="ico" style="flex:none;color:${conn?.verdict === 'refused' ? 'var(--err)' : 'var(--ink-4)'}">${icon(conn?.verdict === 'refused' ? 'x' : 'check', 16)}</span>
+          <div style="flex:1">
+            <div style="font-weight:600">${conn?.verdict === 'refused'
+              ? 'This cube did not check out'
+              : 'Send us a report about this cube'}</div>
+            <div class="sub" style="color:var(--ink-4)">${conn?.verdict === 'refused'
+              ? 'What it reported did not add up, so cubus is not trusting it. That is worth telling us about — the file below is a recording of the conversation, and it is the only thing that can show why.'
+              : 'Only if you feel like it. Most cube types have never been tried on this app, and a recording of one that works is what makes the next person\u2019s cube work too.'}</div>
+          </div>
+          <button class="btn sm outline" id="cubeReportBtn" style="flex:none">Save report</button>
+        </div>` : ''}
         ${on && state.cube.offset ? `<div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line-faint)">
           <span class="ico" style="color:var(--ok);flex:none">${icon('check', 16)}</span>
           <div style="flex:1">
@@ -3829,6 +3841,29 @@ SCREENS.settings = () => {
         };
       }
       $('#battRefresh', root)?.addEventListener('click', () => void refreshBattery());
+
+      // The compatibility report (dev-docs/universal-cube-driver.md §7). One affordance, not a
+      // screen: the moment worth offering it is when the self-check has refused a cube, because a
+      // refusal that reaches nobody is a quiet failure one level above the one it guards against.
+      $('#cubeReportBtn', root)?.addEventListener('click', async () => {
+        const asked = conn;
+        if (!asked) { say('not connected', 'var(--err)'); return; }
+        try {
+          const { saveReport } = await import('./cube-report.js');
+          const r = await saveReport(asked.report({ scenario: 'saved from Settings' }), { isWebview: isTauri });
+          if (conn !== asked) return;
+          const kb = Math.max(1, Math.round(r.bytes / 1024));
+          // Says which thing happened, never a generic "done": a download and a clipboard copy
+          // need different next steps from the person holding it.
+          say(r.how === 'downloaded'
+            ? `Saved ${r.name} (${kb} KB) — attach it to an issue at github.com/xiaolai/cubus`
+            : `Copied ${kb} KB to your clipboard — paste it into an issue at github.com/xiaolai/cubus`,
+            'var(--ok)');
+        } catch (e) {
+          if (conn !== asked) return;
+          say(String(e.message || e).split('\n')[0], 'var(--err)');
+        }
+      });
 
       // anchorSolved() sends REQUEST_RESET only if the cube already reports solved — it throws
       // otherwise, and the refusal is what teaches the step. But the precondition can dead-end an

@@ -174,6 +174,52 @@ function looksLikeMac(id) {
   return typeof id === 'string' && /^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i.test(id.trim());
 }
 
+/**
+ * Get a finished report off the device, and say which way it went.
+ *
+ * There is no file-save capability on the desktop build — the Tauri side has `opener` and nothing
+ * else, and adding `dialog` or `fs` would be a new seam rather than a UI detail. So the path is
+ * chosen by CAPABILITY rather than attempted and hoped for:
+ *
+ *   browser  → a Blob download, which is what a browser is good at
+ *   webview  → the clipboard, which works there and is verifiable
+ *
+ * Deliberately not "try the download and fall back". Clicking an anchor at a Blob URL reports
+ * nothing — success and silent failure look identical from JavaScript — so a fallback keyed on it
+ * would tell the user their report was saved when it may not have been. That is the one thing this
+ * function must never do: it returns what actually happened, or it throws.
+ *
+ * @returns {Promise<{how: 'downloaded'|'copied', name: string, bytes: number}>}
+ */
+export async function saveReport(fixture, { doc = globalThis.document, nav = globalThis.navigator, isWebview = false } = {}) {
+  const name = reportFilename(fixture);
+  const json = JSON.stringify(fixture, null, 1);
+  const bytes = json.length;
+
+  if (!isWebview && doc && typeof globalThis.URL?.createObjectURL === 'function') {
+    const url = globalThis.URL.createObjectURL(new globalThis.Blob([json], { type: 'application/json' }));
+    const a = doc.createElement('a');
+    a.href = url;
+    a.download = name;
+    doc.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Revoked on the next tick rather than immediately: some engines have not finished reading
+    // the blob when click() returns, and revoking under them produces an empty file.
+    setTimeout(() => globalThis.URL.revokeObjectURL(url), 0);
+    return { how: 'downloaded', name, bytes };
+  }
+
+  if (typeof nav?.clipboard?.writeText === 'function') {
+    await nav.clipboard.writeText(json);
+    return { how: 'copied', name, bytes };
+  }
+
+  // Loud. A report that could not leave the device is not a report, and pretending otherwise
+  // wastes the one thing the user was willing to give.
+  throw new Error('this platform offers no way to save or copy the report');
+}
+
 /** A stable filename, matching upstream's so a report can be dropped into their captures/ too. */
 export function reportFilename(fixture) {
   const safe = (s) => (s || 'unknown').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
