@@ -16,7 +16,7 @@
 # with the install steps if it does not.
 #
 # HOW THE SHIPPED cube-train:1 WAS ACTUALLY MADE, and why that was better. This build does not
-# currently work on train-host-b: its containers cannot resolve DNS at all (not a proxy — `--dns` and
+# currently work on the training box: its containers cannot resolve DNS at all (not a proxy — `--dns` and
 # even `--network host` fail too), so `apt-get update` exits 100. The image in use was instead
 # produced with no network at all, by committing the container that trained synth_v4:
 #

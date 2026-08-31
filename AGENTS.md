@@ -292,19 +292,19 @@ it walks you through solving it.
   likely to surprise you.** Run `ml/venv/bin/python ml/golden_frames.py` before vendoring a model,
   and never reach for `--write-expected` to make a failure go away — re-pinning is for a change you
   have already explained, not a way to turn CI green.
-- **Which machine renders, which machine trains** (measured 2026-08-29). **Render on
-  `render-host`** — M2 Ultra, 16 performance cores, and it already has Blender 4.2.1, the 200
-  HDRIs and `~/cubus-ml/venv`; it is where every earlier dataset was rendered. 2.7 img/s, so a
-  32k set takes ~3.5 h. **Never render on the MacBook Air**: 4 performance cores, fanless, 5.2×
-  slower — and it is the machine you are being asked to keep usable. Check `ssh` config for hosts
-  before assuming the local machine is the right one; a whole night was spent tuning worker counts
-  on the laptop while the Studio sat idle.
-  **Train on `train-host-a`** (GB10, on the local LAN): 2.4 MB/s from here, so a 2.6 GB dataset moves
-  in ~20 min, and its containers resolve DNS so images can be built there. **`train-host-b` is the same
-  GB10 but ~109 ms away at 0.1 MB/s** — 7 h for that same dataset — so use it only for work whose
-  data is already on it; it holds every historical dataset and the v3/v4 runs, which makes it the
-  right host for baseline evals and for parallel jobs. Its container DNS is broken, so build
-  images on train-host-a or `docker commit` a finished run.
+- **Which machine renders, which machine trains** (measured 2026-08-29). The hosts are named in
+  the maintainer's private ssh config, not here; what transfers is the shape of the decision.
+  **Render on the many-core desktop** — 16 performance cores, and it already holds Blender, the
+  200 HDRIs and the render venv. 2.7 img/s, so a 32k set takes ~3.5 h. **Never render on the
+  fanless laptop**: 4 performance cores, 5.2× slower — and it is the machine you are being asked
+  to keep usable. Check `ssh` config for hosts before assuming the local machine is the right one;
+  a whole night was spent tuning worker counts on the laptop while the desktop sat idle.
+  **Train on the near GPU box** — same hardware as the far one, but reachable at 2.4 MB/s, so a
+  2.6 GB dataset moves in ~20 min, and its containers resolve DNS so images can be built there.
+  **The far box is identical silicon at ~109 ms and 0.1 MB/s** — 7 h for that same dataset — so
+  use it only for work whose data is already on it; it holds every historical dataset and the
+  v3/v4 runs, which makes it the right host for baseline evals and parallel jobs. Its container
+  DNS is broken, so build images on the near box or `docker commit` a finished run.
   **Never change Blender or ultralytics versions mid-comparison** — either puts a renderer or
   training-code difference inside an experiment meant to isolate something else. `ml/train.sh`
   prefers the pinned `cube-train:1`; `ml/Dockerfile.train` pins the stack and asserts the pin took.

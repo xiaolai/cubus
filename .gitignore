@@ -76,3 +76,7 @@ key.properties
 # pass when they are absent, and say so.
 dev-docs/
 grill-report-*.md
+
+# Agent tooling configuration. Local to whoever is driving the repo, not part of the project.
+.codex/
+.cc-suite.md

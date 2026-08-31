@@ -3,14 +3,14 @@
 # PyTorch container on the training host (GB10 Blackwell). NGC is used because a plain `pip install
 # torch` on this arm64 box may lack Blackwell (sm_121) kernels; the NGC image ships them.
 #
-# THE TRAINING HOST IS train-host-b, NOT train-host-a. Both are GB10 boxes and the names invite the mistake,
-# so it is written here rather than left to memory: train-host-b has the NGC image cached, every cube
-# dataset, and an idle GPU. train-host-a has none of the three and runs seven resident AI services
-# holding ~20 GB of its GPU, so a job started there contends with live work and re-pulls 20 GB.
-# train-host-b is also NOT on the home LAN (~109 ms), which is why DETACH=1 below is not optional for a
-# multi-hour run.
+# THE TRAINING HOST IS THE FAR GPU BOX, NOT THE NEAR ONE. Both are the same hardware and the names
+# invite the mistake, so the reasoning is written here rather than left to memory: the far box has
+# the NGC image cached, every cube dataset, and an idle GPU. The near box has none of the three and
+# runs resident AI services holding most of its GPU, so a job started there contends with live work
+# and re-pulls 20 GB. The far box is also high-latency, which is why DETACH=1 below is not optional
+# for a multi-hour run. Which host is which is in the maintainer's ssh config, not in this repo.
 #
-# The exact NGC tag is filled in from Alan's container-verification result (the image proven
+# The exact NGC tag is filled in from the container-verification result (the image proven
 # to see the GB10). Override with NGC_IMAGE=... if needed.
 #
 # Usage: DATASET=~/datasets/cube/dataset ml/train.sh
