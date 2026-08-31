@@ -161,16 +161,39 @@ function namedAsGone(text, name) {
   return GONE.test(text.slice(Math.max(0, i - 220), i + 120));
 }
 
-test('every repo path a living comment names actually exists', () => {
+/**
+ * dev-docs is gitignored, so whether it is here is a fact about the MACHINE, not about the pointer.
+ *
+ * Comments across this repo cite dev-docs constantly — it is where the reasoning lives — and on a
+ * clone those citations point at nothing through no fault of their own. Checking them anyway would
+ * turn a green gate red everywhere except one laptop; skipping them silently would let a genuinely
+ * stale dev-docs pointer rot unnoticed on the machine that could have caught it.
+ *
+ * So the guard is on the dev-docs PART only, exactly as narrowly as the verify-icons precedent
+ * requires (AGENTS.md: guard the tool-using part, never the whole function). Every other path stays
+ * hard-checked everywhere, and when dev-docs is absent the count of unchecked pointers is REPORTED
+ * rather than passed over in silence.
+ */
+const DEV_DOCS_PRESENT = existsSync(`${ROOT}dev-docs`);
+
+test('every repo path a living comment names actually exists', (t) => {
   const dangling = [];
+  let unchecked = 0;
   for (const file of LIVING.flatMap((d) => sources(d))) {
     const { rooted } = extractCandidates(readFileSync(ROOT + file, 'utf8'));
     for (const p of rooted) {
       // Trailing punctuation from prose, and a fragment like `apps/web/lib/` on its own.
       const clean = p.replace(/[.,;:)]+$/, '');
       if (!clean.includes('/') || clean.endsWith('/')) continue;
+      if (clean.startsWith('dev-docs/') && !DEV_DOCS_PRESENT) {
+        unchecked += 1;
+        continue;
+      }
       if (!existsSync(ROOT + clean)) dangling.push(`${file}: ${clean}`);
     }
+  }
+  if (unchecked) {
+    t.diagnostic(`${unchecked} dev-docs pointer(s) NOT CHECKED — dev-docs is gitignored and absent here`);
   }
   assert.deepEqual(
     dangling.sort(),

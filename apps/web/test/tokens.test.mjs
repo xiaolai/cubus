@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
 const css = read('../tokens.css');
@@ -87,10 +87,21 @@ test('every var() without a fallback names a property something declares', () =>
   assert.deepEqual([...orphans].sort(), [], 'used with no fallback and never declared');
 });
 
-test('the design kit and the app ship the same token file', () => {
+test('the design kit and the app ship the same token file', (t) => {
   // dev-docs/design/tokens.css is the source that was adopted verbatim (design/README.md).
   // Letting the copies drift is how a fix to one silently fails to reach the app.
-  assert.equal(css, read('../../../dev-docs/design/tokens.css'), 'apps/web/tokens.css has drifted');
+  //
+  // dev-docs is gitignored, so the kit is only on a machine that has it. Skipped there rather than
+  // passed: this check has verified nothing without the kit, and reporting otherwise would be the
+  // exact failure mode the design system's own gate is for. It still runs where the edit would
+  // happen — nobody changes the kit on a machine that does not have it.
+  const KIT = new URL('../../../dev-docs/design/tokens.css', import.meta.url);
+  if (!existsSync(KIT)) {
+    t.diagnostic('dev-docs/design/tokens.css is not on this machine (gitignored) — SKIPPED, not passed');
+    t.skip();
+    return;
+  }
+  assert.equal(css, readFileSync(KIT, 'utf8'), 'apps/web/tokens.css has drifted');
 });
 
 // A `hidden` attribute is the app's only mechanism for "this control is not available yet", and

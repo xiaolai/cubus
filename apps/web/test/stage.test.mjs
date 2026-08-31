@@ -1,33 +1,41 @@
 // The stage contract's fixture tables are tested claims.
 //
-// dev-docs/stage-contract.md carries two tables of numbers: what the reference box does on every
-// iPad, iPhone and Android size, and what the desktop window is on four monitors. A number in a
-// document is exactly the kind of claim AGENTS.md says must be backed by a test, so this file
-// reads both tables OUT OF THE DOCUMENT and checks every row against lib/stage.js. Edit a
-// constant without re-running the table, or type a cell by hand, and this fails.
+// Two tables of numbers: what the reference box does on every iPad, iPhone and Android size, and
+// what the desktop window is on four monitors. A number stated as fact is exactly the kind of claim
+// AGENTS.md says must be backed by a test, so every row here is checked against lib/stage.js. Edit
+// a constant without re-running the tables, or type a cell by hand, and this fails.
+//
+// The rows live in fixtures/stage-contract.json, NOT in the document they came from. This file used
+// to read dev-docs/stage-contract.md directly, at module scope — and dev-docs is gitignored, so on
+// any machine without it (CI, a fresh clone) the import threw and took the whole suite with it. A
+// test whose fixtures are not in the repository is not a test anywhere but on one laptop.
+//
+// Moving them did not lose the document check, it inverted it: the fixture is authoritative for the
+// numbers, and where the document IS present it must agree with the fixture, verbatim. So the
+// document still cannot drift, and the drift is now caught on the machine where the edit happened.
 //
 // The oracle itself is checked first, on the cases the tables cannot express: the fall-through
 // when the long axis is too short, the square, and a viewport with nothing left.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import { DESKTOP, RATIO, desktopWindow, fitStage } from '../lib/stage.js';
 
-const doc = readFileSync(new URL('../../../dev-docs/stage-contract.md', import.meta.url), 'utf8');
+const TABLES = JSON.parse(readFileSync(new URL('./fixtures/stage-contract.json', import.meta.url), 'utf8'));
+
+/** The document the fixture was taken from. Absent on any machine that only has the repository. */
+const DOC_URL = new URL('../../../dev-docs/stage-contract.md', import.meta.url);
+const doc = existsSync(DOC_URL) ? readFileSync(DOC_URL, 'utf8') : null;
 
 /** `1376×1032` → [1376, 1032]; the first such pair in a string, or null. */
 const size = (s) => {
   const m = /(\d+)×(\d+)/.exec(s);
   return m ? [Number(m[1]), Number(m[2])] : null;
 };
-/** The cells of every table row whose first cell starts with `label`. */
-const rowsStartingWith = (label) =>
-  doc
-    .split('\n')
-    .filter((l) => l.startsWith(`| ${label}`))
-    .map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
+/** The cells of every fixture row whose first cell starts with `label`. */
+const rowsStartingWith = (label) => TABLES.devices.filter((cells) => cells[0].startsWith(label));
 
 // ---- the oracle -------------------------------------------------------------------------------
 
@@ -130,19 +138,16 @@ for (const { row, insets } of FIXTURES) {
 }
 
 test('the fixture table has no rows this test does not know the insets of', () => {
-  const start = doc.indexOf('| Client | Safe content |');
-  assert.notEqual(start, -1, 'the fixture table header moved — update this test');
-  const table = doc.slice(start).split('\n\n')[0].split('\n').slice(2);
-  const unknown = table.filter((l) => !FIXTURES.some(({ row }) => l.startsWith(`| ${row}`)));
+  const unknown = TABLES.devices
+    .map((cells) => cells[0])
+    .filter((client) => !FIXTURES.some(({ row }) => client.startsWith(row)));
   assert.deepEqual(unknown, [], 'a fixture row with no declared insets cannot be checked');
 });
 
-// ---- the document's desktop table -------------------------------------------------------------
+// ---- the desktop table --------------------------------------------------------------------------
 
 test('desktop table: every row is what the formulas give for its work area', () => {
-  const start = doc.indexOf('| Monitor (logical) | Work area |');
-  assert.notEqual(start, -1, 'the desktop table header moved — update this test');
-  const rows = doc.slice(start).split('\n\n')[0].split('\n').slice(2).map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
+  const rows = TABLES.desktop;
   assert.ok(rows.length >= 4, 'the desktop table lost rows');
   for (const [monitor, workCell, landCell, portCell] of rows) {
     const [workW, workH] = size(workCell);
@@ -154,7 +159,40 @@ test('desktop table: every row is what the formulas give for its work area', () 
   }
 });
 
-test('the document states the constants the oracle uses', () => {
+// ---- the document, where it exists ---------------------------------------------------------------
+//
+// dev-docs is gitignored, so these run on a machine that has the document and are reported as
+// skipped on one that does not. Skipped, never quietly passed: a check that cannot run has verified
+// nothing, and saying so is the difference between a gate and a decoration (AGENTS.md, the
+// verify-icons precedent). Everything above this line runs everywhere, because the numbers moved
+// into the repository — this section only asks whether the prose still matches them.
+
+const describeDoc = (t) => {
+  if (doc === null) {
+    t.diagnostic('dev-docs/stage-contract.md is not on this machine (it is gitignored) — SKIPPED, not passed');
+    t.skip();
+    return false;
+  }
+  return true;
+};
+
+test('the document\'s tables are verbatim what the fixture holds', (t) => {
+  if (!describeDoc(t)) return;
+  const table = (header) => {
+    const start = doc.indexOf(header);
+    assert.notEqual(start, -1, `the table header moved: ${header}`);
+    return doc.slice(start).split('\n\n')[0].split('\n').slice(2)
+      .map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
+  };
+  // Verbatim, because a re-parsed copy can drift from its source in ways that still parse.
+  assert.deepEqual(table('| Client | Safe content |'), TABLES.devices,
+    'the document and fixtures/stage-contract.json disagree — run scripts/regen-stage-contract.mjs');
+  assert.deepEqual(table('| Monitor (logical) | Work area |'), TABLES.desktop,
+    'the document and fixtures/stage-contract.json disagree — run scripts/regen-stage-contract.mjs');
+});
+
+test('the document states the constants the oracle uses', (t) => {
+  if (!describeDoc(t)) return;
   // The prose names each constant; if one is retuned in code the sentence must follow.
   for (const s of [
     `\`k = ${DESKTOP.landscape.k}\``,
