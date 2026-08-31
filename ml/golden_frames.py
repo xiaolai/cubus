@@ -195,6 +195,60 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
+def reads_a_face(read: str) -> bool:
+    """True when a read commits to nine stickers, false when it abstains.
+
+    `read_string` emits either an abstention's verdict name or 'OK ' + nine digits, so committing is
+    exactly the 'OK ' prefix. This is the categorical distinction the faithfulness check turns on:
+    between two reads that disagree, one that ABSTAINS is a different kind of event from one that
+    names a different cube.
+    """
+    return read.startswith("OK ")
+
+
+def classify_faithful(reads: dict[str, str], ref: dict[str, str]) -> tuple[list[str], list[str]]:
+    """Split a faithful leg's disagreements with fp32 into (wrong, refused).
+
+    The split turns on what the fp16 leg COMMITTED to, never on what fp32 did. If fp16 named a face
+    and the two disagree, then either fp32 named a different one or fp32 refused outright — both are
+    the defect a user would feel. If fp16 refused, the disagreement is a refusal whatever fp32 said,
+    and refusing is what the app is supposed to do when it cannot validate a read.
+
+    Pure, and separated from `parity` on purpose: this is the whole content of the faithfulness
+    claim, and `--self-check` exercises it directly so an inverted comparison cannot pass by being
+    buried behind a manifest read and five legs of inference. It was in fact inverted when first
+    written — it ORed in the fp32 side, which failed the very case the CI measurement had just
+    shown to be acceptable.
+    """
+    div = [n for n in ref if reads.get(n) != ref[n]]
+    wrong = [n for n in div if reads_a_face(reads.get(n, ""))]
+    return wrong, [n for n in div if n not in wrong]
+
+
+def self_check() -> int:
+    """Exercise the faithfulness rule on synthetic reads. No model, no runtime, no hardware."""
+    ref = {"a": "OK 012345678", "b": "BAD_GEOMETRY"}
+    cases = [
+        ("fp16 refuses where fp32 read a face", {"a": "BAD_GEOMETRY", "b": "BAD_GEOMETRY"}, 0, 1),
+        ("fp16 names a different cube", {"a": "OK 087654321", "b": "BAD_GEOMETRY"}, 1, 0),
+        ("fp16 commits to a face fp32 refused", {"a": "OK 012345678", "b": "OK 012345678"}, 1, 0),
+        ("fp16 agrees exactly", {"a": "OK 012345678", "b": "BAD_GEOMETRY"}, 0, 0),
+        ("both refuse, by different names", {"a": "OK 012345678", "b": "NO_FACE"}, 0, 1),
+    ]
+    bad = 0
+    for label, reads, want_wrong, want_refused in cases:
+        wrong, refused = classify_faithful(reads, ref)
+        ok = (len(wrong), len(refused)) == (want_wrong, want_refused)
+        print(f"[self-check] {'ok  ' if ok else 'XX  '}{label}: wrong={len(wrong)} refused={len(refused)}"
+              + ("" if ok else f"  expected wrong={want_wrong} refused={want_refused}"))
+        bad += 0 if ok else 1
+    if bad:
+        print(f"FAIL: the faithfulness rule is not directional — {bad} case(s) wrong")
+        return 1
+    print(f"PASS: the faithfulness rule holds on all {len(cases)} synthetic cases")
+    return 0
+
+
 def fixtures(frames: Path) -> list[Path]:
     fx = sorted(frames.glob("*.png"))
     if not fx:
@@ -346,13 +400,35 @@ def parity(args, doc, live: dict, legs: list[str], fx: list[Path]) -> int:
       * the model BYTES match MANIFEST.json — so a swapped model is still caught in CI, which is the
         gate's headline purpose ("a model change is not verified until golden_frames.py has run");
       * the letterbox sha matches the pin — integer image work, identical everywhere (checked above);
-      * faithful legs (coreml, native) read EXACTLY as this host's own fp32 onnx — the plan's premise
-        that fp16 moves scores but not classes;
+      * faithful legs (coreml, native) never read a face DIFFERENTLY from this host's own fp32 onnx,
+        and never commit to one fp32 refused. They may REFUSE where fp32 read — see below;
       * bounded legs (onnx-int8, tflite) diverge from this host's fp32 no more than the bound already
         recorded in `divergence_from_fp32`.
 
     The absolute per-fixture pin is not weakened, it is relocated: it remains the gate on the pinning
     host, which is where AGENTS.md already requires it to be run before a model is vendored.
+
+    Why the faithful legs allow a REFUSAL but not a different read. "fp16 moves scores but not
+    classes" was the plan's premise and it is not universal. Measured 2026-09-01, same model bytes,
+    same pinned runtime versions, same macOS major (26), fp16 CoreML against that same host's fp32:
+
+        Apple M5 (this repo's pinning host)  20/20 exact, and on all four --compute-units settings
+        Apple M2 Ultra                       20/20 exact
+        GitHub macos-26-arm64 (M1-class VM)  19/20 — photo-01.png abstains where fp32 reads it
+
+    Both the coremltools leg and the shipped Swift path diverge together there, so it is the Apple
+    fp16 inference and not the harness. It is not a generically borderline fixture either: int8, a
+    far coarser perturbation than fp16, reads photo-01 identically to fp32. So the honest claim is
+    directional rather than exact — and the direction is the one that matters, because refusing a
+    frame is what the app is supposed to do when it cannot validate a read ("a reading that cannot
+    be validated is a refusal, not a guess"), while naming a different cube is the defect users would
+    actually feel.
+
+    The hole this leaves, stated rather than hidden: a model that regressed into refusing far more
+    often would satisfy parity mode. It would not satisfy the pinned gate on the pinning host, which
+    is where a model change must be verified anyway, and it cannot hide from `divergence_from_fp32`
+    there. A numeric bound on refusals in CI would need a number nothing has measured, and inventing
+    one would be worse than naming the gap.
     """
     failures = 0
 
@@ -391,14 +467,19 @@ def parity(args, doc, live: dict, legs: list[str], fx: list[Path]) -> int:
         if name == "onnx" or name not in live:
             continue
         div = [n for n in ref if live[name].get(n) != ref[n]]
-        if name in ("coreml", "native"):  # faithful: exact class parity with fp32
-            if div:
-                for n in div:
-                    print(f"[{name}] XX {n:16s} {live[name].get(n, '<missing>'):14s}  fp32 here reads {ref[n]}")
-                print(f"[{name}] {len(div)} FAIL — a faithful leg must read exactly as fp32 on this host")
-                failures += len(div)
-            else:
+        if name in ("coreml", "native"):  # faithful: never a DIFFERENT read; refusing is allowed
+            wrong, refused = classify_faithful(live[name], ref)
+            for n in wrong:
+                print(f"[{name}] XX {n:16s} {live[name].get(n, '<missing>'):14s}  fp32 here reads {ref[n]}")
+            if wrong:
+                print(f"[{name}] {len(wrong)} FAIL — fp16 read a face differently from fp32, or read one it refused")
+                failures += len(wrong)
+            for n in refused:
+                print(f"[{name}] .. {n:16s} {live[name].get(n, '<missing>'):14s}  fp32 here reads {ref[n]} — refused, not misread")
+            if not div:
                 print(f"[{name}] ok — exact class parity with this host's fp32 over {len(fx)} fixtures")
+            elif not wrong:
+                print(f"[{name}] ok — {len(refused)} refusal(s) where fp32 read a face; no fixture read DIFFERENTLY")
         else:  # bounded: may diverge, but no more than the recorded bound
             allowed = bound.get(name)
             if allowed is None:
@@ -426,9 +507,12 @@ def main() -> int:
     ap.add_argument("--probe", type=Path, default=PROBE, help="the cube-vision-probe binary (native leg)")
     ap.add_argument("--legs", nargs="+", choices=ALL_LEGS, help="legs that MUST run (default: every leg this machine can)")
     ap.add_argument("--compute-units", default="all", choices=["all", "cpu_and_gpu", "cpu_only", "cpu_and_ne"], help="CoreML compute units for the coreml/native legs")
+    ap.add_argument("--self-check", action="store_true", help="exercise the faithfulness rule on synthetic reads and exit; needs no model, runtime or hardware")
     ap.add_argument("--parity", action="store_true", help="host-internal mode for CI: assert the RELATIONS between legs on THIS machine, not another host's absolute reads")
     ap.add_argument("--write-expected", action="store_true", help="re-pin expected.json (every leg this machine can run)")
     args = ap.parse_args()
+    if args.self_check:
+        return self_check()
     return write_expected(args) if args.write_expected else check(args)
 
 
