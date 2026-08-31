@@ -10,6 +10,21 @@
 // polyfill contract. The seam is the transport, and nothing above it can tell which one it got.
 
 import { createBluetooth } from './ble-polyfill.js';
+import { hostPlatform } from './host.js';
+
+/**
+ * Hosts where the Tauri API is injected but the native BLE bridge cannot work.
+ *
+ * Android compiles and would CRASH: btleplug's droidplug backend needs its Java classes in the APK
+ * and `platform::init()` called with a JNIEnv, and without them the first adapter call panics
+ * inside a Tauri command. `crates/cube-ble` refuses at that boundary too — this is the half that
+ * stops the app offering the affordance at all, because a button that reports "unavailable" the
+ * moment it is pressed is a worse answer than a screen that never claimed it.
+ *
+ * Remove a platform from this list only alongside the wiring that makes it true, and only after
+ * running it on the hardware. Compiling is not evidence here; the crate already compiles.
+ */
+const NATIVE_BLE_UNSUPPORTED = Object.freeze(['android']);
 
 /** The Tauri API, or null in a browser. Mirrors host.js rather than re-deriving the check. */
 function tauri() {
@@ -206,6 +221,11 @@ export function makeTauriBridge(api = tauri()) {
  */
 export function installBleBridge({ onRawPacket, onTraffic } = {}) {
   const api = tauri();
+  if (api && NATIVE_BLE_UNSUPPORTED.includes(hostPlatform())) {
+    // Same honest answer Safari and Firefox get, for the same reason: the host cannot reach a
+    // radio, so say so now rather than at the end of a connect that was never going to work.
+    return { kind: 'none', bluetooth: null, bridge: null, uninstall: () => {} };
+  }
   if (api) {
     const bridge = makeTauriBridge(api);
     const bluetooth = createBluetooth(bridge, { onRawPacket, onTraffic });
