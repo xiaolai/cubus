@@ -157,6 +157,34 @@ describe('choosing a transport', () => {
   });
 });
 
+  test('a host where native BLE cannot work gets the honest "none", not a crash', async () => {
+    // Android is the case. btleplug's droidplug backend needs Java classes in the APK and a JNI
+    // init that this project does not yet do, and WITHOUT them the first adapter call panics
+    // inside a Tauri command — a crash, not an error a screen can report. The crate compiles for
+    // Android regardless, so nothing catches it at build time.
+    const t = fakeTauri();
+    const doc = { documentElement: { dataset: { platform: 'android' } } };
+    await withGlobals({ window: { __TAURI__: t.api, performance: globalThis.performance }, document: doc }, async () => {
+      const r = installBleBridge();
+      assert.equal(r.kind, 'none', 'the Tauri API being present is not the same as a radio');
+      assert.equal(r.bluetooth, null);
+    });
+  });
+
+  test('and a host where it DOES work is unaffected by that guard', async () => {
+    const t = fakeTauri();
+    const doc = { documentElement: { dataset: { platform: 'macos' } } };
+    await withGlobals({ window: { __TAURI__: t.api, performance: globalThis.performance }, document: doc }, async () => {
+      const r = installBleBridge();
+      try {
+        assert.equal(r.kind, 'native');
+        assert.equal(typeof r.bluetooth.requestDevice, 'function');
+      } finally {
+        r.uninstall();
+      }
+    });
+  });
+
 describe('the Tauri adapter', () => {
   test('refuses to exist without the Tauri API rather than half-working', async () => {
     await withGlobals({ window: undefined }, () => {

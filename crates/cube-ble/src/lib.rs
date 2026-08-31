@@ -27,9 +27,16 @@ pub use btleplug;
 pub use uuid;
 
 use btleplug::api::{
-    Central, CharPropFlags, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
+    Central, CharPropFlags, Characteristic, Peripheral as _, ScanFilter, WriteType,
 };
-use btleplug::platform::{Adapter, Manager, Peripheral};
+// `Manager` and its trait exist only on the path that actually opens an adapter, which Android
+// does not have — see default_adapter. Importing them unconditionally is an unused-import warning
+// there, and a warning nobody can act on is how real ones stop being read.
+#[cfg(not(target_os = "android"))]
+use btleplug::api::Manager as _;
+#[cfg(not(target_os = "android"))]
+use btleplug::platform::Manager;
+use btleplug::platform::{Adapter, Peripheral};
 use std::collections::HashMap;
 use std::time::Duration;
 use uuid::Uuid;
@@ -204,6 +211,31 @@ pub fn matches_request(
 }
 
 /// First available BLE adapter.
+///
+/// # Android
+///
+/// Refused, deliberately and loudly. btleplug's Android backend (`droidplug`) needs two things
+/// this project does not yet provide: its `com.nonpolynomial.btleplug.android.impl.*` Java classes
+/// compiled into the APK, and `btleplug::platform::init(&env)` called with a `JNIEnv` before any
+/// use. Without them `Manager::adapters()` reaches `global_adapter()`, which **panics** —
+/// "Droidplug has not been initialized" — inside a Tauri command, which is a crash rather than an
+/// error a screen can report.
+///
+/// The crate compiles for `aarch64-linux-android` today, so nothing catches this at build time.
+/// That is exactly why the refusal is here: a capability that is absent must say so, and it must
+/// not be discovered by a user tapping a button.
+#[cfg(target_os = "android")]
+pub async fn default_adapter() -> Result<Adapter> {
+    Err(
+        "Bluetooth is not wired up on Android yet: btleplug's droidplug backend needs its Java \
+         classes in the APK and platform::init() called with a JNIEnv. The crate compiles without \
+         them, so this refusal is the only thing standing between a tap and a panic."
+            .into(),
+    )
+}
+
+/// First available BLE adapter.
+#[cfg(not(target_os = "android"))]
 pub async fn default_adapter() -> Result<Adapter> {
     let manager = Manager::new().await?;
     manager
