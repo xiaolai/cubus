@@ -70,6 +70,10 @@ export async function connectCube({
     // leaking the installed transport past it would leave a polyfill attached to nothing.
     const connectSmartCube = connect ?? (await import('../vendor/smartcube.js')).connectSmartCube;
     conn = await connectSmartCube({
+      // Passed, not installed. The protocol layer takes the implementation as an option, so the
+      // polyfill never has to become `navigator.bluetooth` — which on a native build it would
+      // have had to be, since there is no such global there to begin with.
+      bluetooth: bridge.bluetooth,
       macAddressProvider: macProvider ? (device) => macProvider(device?.id ?? null) : undefined,
       onStatus,
     });

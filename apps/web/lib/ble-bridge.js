@@ -9,7 +9,7 @@
 // Deliberately NOT a third code path: both builds run the same protocol layer over the same
 // polyfill contract. The seam is the transport, and nothing above it can tell which one it got.
 
-import { createBluetooth, installBluetooth } from './ble-polyfill.js';
+import { createBluetooth } from './ble-polyfill.js';
 
 /** The Tauri API, or null in a browser. Mirrors host.js rather than re-deriving the check. */
 function tauri() {
@@ -31,6 +31,9 @@ export function makeTauriBridge(api = tauri()) {
   let discCb = () => {};
   let unlisten = [];
   let disposed = false;
+  /** Subscription id -> what it addresses. Populated by `subscribe`, which is the only place the
+   *  triple is sent, and read once per packet so it never has to be sent again. */
+  const subscriptions = new Map();
 
   /**
    * Validate an event payload before it reaches the polyfill.
@@ -66,16 +69,28 @@ export function makeTauriBridge(api = tauri()) {
   const ready = (async () => {
     unlisten.push(
       await api.event.listen('ble-notification', (e) => {
-        const p = requireFields('ble-notification', e.payload, [
-          'device',
-          'service',
-          'characteristic',
-          'data',
-        ]);
+        const p = e.payload;
+        if (!p || typeof p.sub !== 'number' || typeof p.data !== 'string') {
+          throw new Error(
+            'ble-bridge: ble-notification payload is missing sub or data — the Rust event shape ' +
+              'and this adapter have drifted apart. See NotificationPayload in ' +
+              'apps/desktop/src-tauri/src/lib.rs.',
+          );
+        }
+        // The id is resolved HERE, from what we recorded at subscribe time. The alternative is
+        // what this replaced: the native side re-sending a device id and two 36-character UUIDs
+        // with every packet, 20 times a second, for 20 bytes of payload — 204 bytes on the wire
+        // where 54 carry anything, and every one of them serialised, copied and parsed.
+        const sub = subscriptions.get(p.sub);
+        if (!sub) {
+          // Loud, because a silently dropped packet is the failure this whole path avoids.
+          console.warn(`ble-bridge: notification for unknown subscription ${p.sub} — dropped`);
+          return;
+        }
         notifyCb({
-          device: p.device,
-          service: p.service,
-          characteristic: p.characteristic,
+          device: sub.device,
+          service: sub.service,
+          characteristic: sub.characteristic,
           // Hex across the webview boundary; the polyfill decodes. A byte array costs ~6x here.
           bytes: p.data,
         });
@@ -118,8 +133,22 @@ export function makeTauriBridge(api = tauri()) {
     },
     discoverServices: (id) => invoke('ble_discover_services', { id }),
     discoverCharacteristics: (id, service) => invoke('ble_discover_characteristics', { id, service }),
-    subscribe: (id, service, characteristic) => invoke('ble_subscribe', { id, service, characteristic }),
-    unsubscribe: (id, service, characteristic) => invoke('ble_unsubscribe', { id, service, characteristic }),
+    async subscribe(id, service, characteristic) {
+      const sub = await invoke('ble_subscribe', { id, service, characteristic });
+      if (typeof sub !== 'number') {
+        throw new Error(`ble-bridge: ble_subscribe returned ${typeof sub}, expected a subscription id`);
+      }
+      subscriptions.set(sub, { device: id, service, characteristic });
+      return sub;
+    },
+    async unsubscribe(id, service, characteristic) {
+      await invoke('ble_unsubscribe', { id, service, characteristic });
+      for (const [sub, s] of subscriptions) {
+        if (s.device === id && s.service === service && s.characteristic === characteristic) {
+          subscriptions.delete(sub);
+        }
+      }
+    },
     read: (id, service, characteristic) => invoke('ble_read', { id, service, characteristic }),
     write: (id, service, characteristic, bytes, withoutResponse) =>
       invoke('ble_write', {
@@ -134,6 +163,7 @@ export function makeTauriBridge(api = tauri()) {
     /** Tears the BRIDGE down. The only thing that releases listeners. */
     async dispose() {
       disposed = true;
+      subscriptions.clear();
       // Wait for registration to settle first. Disposing while `ready` is still in flight cleared
       // an EMPTY list, and the listeners then finished registering into a bridge nobody owns —
       // still firing, attached to a polyfill that has been uninstalled. The flag above stops any
@@ -158,10 +188,13 @@ export function makeTauriBridge(api = tauri()) {
 /**
  * Make `navigator.bluetooth` usable on this build, and say which one was used.
  *
- * Returns `{ kind, uninstall }`. `kind` is `'native'` when the polyfill was installed over the
- * Tauri bridge, `'browser'` when the platform already had Web Bluetooth, and `'none'` when there
- * is no way to reach a radio at all — Safari and Firefox, where the honest answer is that smart
- * cubes are unavailable, not that connecting mysteriously fails.
+ * Returns `{ kind, bluetooth, uninstall }`. `kind` is `'native'` when the polyfill is backed by
+ * the Tauri bridge, `'browser'` when the platform already had Web Bluetooth, and `'none'` when
+ * there is no way to reach a radio at all — Safari and Firefox, where the honest answer is that
+ * smart cubes are unavailable, not that connecting mysteriously fails.
+ *
+ * `bluetooth` is the implementation to HAND to the protocol layer. Both kinds return one, so the
+ * caller has a single path and never has to know which host it is on.
  *
  * @param {object} [hooks]
  * @param {(packet: object) => void} [hooks.onRawPacket] the capture tap (§7). Native builds only:
@@ -175,17 +208,27 @@ export function installBleBridge({ onRawPacket, onTraffic } = {}) {
   const api = tauri();
   if (api) {
     const bridge = makeTauriBridge(api);
-    const restore = installBluetooth(globalThis, createBluetooth(bridge, { onRawPacket, onTraffic }));
-    // Uninstalling must release the bridge too. Restoring only `navigator.bluetooth` would leave
-    // the old bridge's Tauri listeners attached and still firing into a polyfill nothing uses.
-    const uninstall = () => {
-      restore();
-      void bridge.dispose();
+    const bluetooth = createBluetooth(bridge, { onRawPacket, onTraffic });
+    // Handed over, not installed.
+    //
+    // This used to assign to `navigator.bluetooth` because the protocol layer read that global
+    // directly and there was no other way in. Mutating a global to satisfy a library is a poor
+    // trade even when it works: it cannot be scoped to one connection, two consumers on a page
+    // cannot both do it, and anything else reading `navigator.bluetooth` silently gets ours.
+    //
+    // The library takes a `bluetooth` option now (added upstream of our pin), so the polyfill is
+    // an argument. `uninstall` still exists and still releases the bridge's listeners — there is
+    // simply no global left to restore.
+    return {
+      kind: 'native',
+      bluetooth,
+      bridge,
+      uninstall: () => void bridge.dispose(),
     };
-    return { kind: 'native', uninstall, bridge };
   }
   if (globalThis.navigator?.bluetooth) {
-    return { kind: 'browser', uninstall: () => {}, bridge: null };
+    // The browser's own, passed the same way, so the caller has ONE path rather than a branch.
+    return { kind: 'browser', bluetooth: globalThis.navigator.bluetooth, bridge: null, uninstall: () => {} };
   }
-  return { kind: 'none', uninstall: () => {}, bridge: null };
+  return { kind: 'none', bluetooth: null, bridge: null, uninstall: () => {} };
 }

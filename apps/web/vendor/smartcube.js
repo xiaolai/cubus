@@ -1524,8 +1524,18 @@ function take(count) {
   });
 }
 
-// ../../node_modules/.pnpm/smartcube-web-bluetooth@https+++codeload.github.com+xiaolai+smartcube-web-bluetooth+tar_aa87b5d986415db46f33fa503a51f8f5/node_modules/smartcube-web-bluetooth/dist/esm/index.mjs
+// ../../node_modules/.pnpm/smartcube-web-bluetooth@https+++codeload.github.com+xiaolai+smartcube-web-bluetooth+tar_ab28b54509cf30dfb80f04bc8d5c2c7a/node_modules/smartcube-web-bluetooth/dist/esm/index.mjs
 var import_aes_js = __toESM(require_aes_js(), 1);
+function resolveBluetooth(injected) {
+  if (injected) {
+    return injected;
+  }
+  const fromGlobal = globalThis.navigator?.bluetooth;
+  if (fromGlobal) {
+    return fromGlobal;
+  }
+  throw new Error("No Web Bluetooth available. This environment has no navigator.bluetooth \u2014 pass one as the `bluetooth` option (any object with requestDevice) to run on a host that reaches the radio some other way.");
+}
 var BLE_UUID_SUFFIX = "-0000-1000-8000-00805f9b34fb";
 var GAN_TIMER_SERVICE = "0000fff0" + BLE_UUID_SUFFIX;
 var GAN_TIMER_TIME_CHARACTERISTIC = "0000fff2" + BLE_UUID_SUFFIX;
@@ -6764,7 +6774,7 @@ async function connectSmartCube(arg) {
     deviceName: opts.deviceName
   });
   status("Select your cube\u2026");
-  const device = await navigator.bluetooth.requestDevice(requestOptions);
+  const device = await resolveBluetooth(opts.bluetooth).requestDevice(requestOptions);
   let conn;
   try {
     throwIfAborted(opts.signal);
@@ -6833,7 +6843,7 @@ async function connectSmartCube(arg) {
 }
 
 // lib/smartcube-entry.js
-var SMARTCUBE_REV = "95bda9a0c528d9565e2ac0e4e72fdb630b6cf415";
+var SMARTCUBE_REV = "a6a162b7b06373218058ce427c67f376f1e5fdbb";
 export {
   SMARTCUBE_REV,
   connectSmartCube,
