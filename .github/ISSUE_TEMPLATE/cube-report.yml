@@ -47,11 +47,16 @@ body:
   - type: textarea
     id: report
     attributes:
-      label: The generated file
+      label: The report the app produced
       description: |
-        Drag the `fixture_*.json` file the app saved into this box. GitHub will attach it.
-        If your browser will not let you attach a `.json`, rename it to `.txt` first.
-      placeholder: Drop the file here.
+        Settings → your cube → **Save report**.
+
+        In a browser that saves a `fixture_*.json` file — drag it into this box and GitHub will
+        attach it. If GitHub will not take a `.json`, rename it to `.txt` first.
+
+        In the desktop app it copies the report to your clipboard instead, because the app has no
+        way to write files. Just paste it here; a large paste is fine.
+      placeholder: Drop the file here, or paste the copied report.
     validations:
       required: true
 
