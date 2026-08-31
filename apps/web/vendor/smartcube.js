@@ -1524,8 +1524,12 @@ function take(count) {
   });
 }
 
-// ../../node_modules/.pnpm/smartcube-web-bluetooth@https+++codeload.github.com+xiaolai+smartcube-web-bluetooth+tar_775c3733459314cbdcc8230d1fcac5d9/node_modules/smartcube-web-bluetooth/dist/esm/index.mjs
+// ../../node_modules/.pnpm/smartcube-web-bluetooth@https+++codeload.github.com+xiaolai+smartcube-web-bluetooth+tar_aa87b5d986415db46f33fa503a51f8f5/node_modules/smartcube-web-bluetooth/dist/esm/index.mjs
 var import_aes_js = __toESM(require_aes_js(), 1);
+var BLE_UUID_SUFFIX = "-0000-1000-8000-00805f9b34fb";
+var GAN_TIMER_SERVICE = "0000fff0" + BLE_UUID_SUFFIX;
+var GAN_TIMER_TIME_CHARACTERISTIC = "0000fff2" + BLE_UUID_SUFFIX;
+var GAN_TIMER_STATE_CHARACTERISTIC = "0000fff5" + BLE_UUID_SUFFIX;
 var GanTimerState;
 (function(GanTimerState2) {
   GanTimerState2[GanTimerState2["DISCONNECT"] = 0] = "DISCONNECT";
@@ -1537,14 +1541,18 @@ var GanTimerState;
   GanTimerState2[GanTimerState2["HANDS_ON"] = 6] = "HANDS_ON";
   GanTimerState2[GanTimerState2["FINISHED"] = 7] = "FINISHED";
 })(GanTimerState || (GanTimerState = {}));
-var GAN_GEN1_KEYS = [
-  [198, 202, 21, 223, 79, 110, 19, 182, 119, 13, 230, 89, 58, 175, 186, 162],
-  [67, 226, 91, 214, 125, 220, 120, 216, 7, 96, 163, 218, 130, 60, 1, 241],
-  [1, 2, 66, 40, 49, 145, 22, 7, 32, 5, 24, 84, 66, 17, 18, 83],
-  [17, 3, 50, 40, 33, 1, 118, 39, 32, 149, 120, 20, 50, 18, 2, 67],
-  [5, 18, 2, 69, 2, 1, 41, 86, 18, 120, 18, 118, 129, 1, 8, 3],
-  [1, 68, 40, 6, 134, 33, 34, 40, 81, 5, 8, 49, 130, 2, 33, 6]
-];
+var GAN_GEN2_BASE_KEY = Object.freeze([1, 2, 66, 40, 49, 145, 22, 7, 32, 5, 24, 84, 66, 17, 18, 83]);
+var GAN_GEN2_BASE_IV = Object.freeze([17, 3, 50, 40, 33, 1, 118, 39, 32, 149, 120, 20, 50, 18, 2, 67]);
+var MOYU_AI_2023_KEY = Object.freeze([5, 18, 2, 69, 2, 1, 41, 86, 18, 120, 18, 118, 129, 1, 8, 3]);
+var MOYU_AI_2023_IV = Object.freeze([1, 68, 40, 6, 134, 33, 34, 40, 81, 5, 8, 49, 130, 2, 33, 6]);
+var GAN_GEN1_KEYS = Object.freeze([
+  Object.freeze([198, 202, 21, 223, 79, 110, 19, 182, 119, 13, 230, 89, 58, 175, 186, 162]),
+  Object.freeze([67, 226, 91, 214, 125, 220, 120, 216, 7, 96, 163, 218, 130, 60, 1, 241]),
+  GAN_GEN2_BASE_KEY,
+  GAN_GEN2_BASE_IV,
+  MOYU_AI_2023_KEY,
+  MOYU_AI_2023_IV
+]);
 var GAN_GEN1_PRIMARY_SERVICE = "0000fff0-0000-1000-8000-00805f9b34fb";
 var GAN_GEN1_DEVICE_INFO_SERVICE = "0000180a-0000-1000-8000-00805f9b34fb";
 var GAN_GEN1_CHR_FIRMWARE = "00002a28-0000-1000-8000-00805f9b34fb";
@@ -1563,18 +1571,18 @@ var GAN_GEN3_STATE_CHARACTERISTIC = "8653000b-43e6-47b7-9cb0-5fc21d4ae340";
 var GAN_GEN4_SERVICE = "00000010-0000-fff7-fff6-fff5fff4fff0";
 var GAN_GEN4_COMMAND_CHARACTERISTIC = "0000fff5-0000-1000-8000-00805f9b34fb";
 var GAN_GEN4_STATE_CHARACTERISTIC = "0000fff6-0000-1000-8000-00805f9b34fb";
-var GAN_CIC_LIST = Array(256).fill(void 0).map((_v, i) => i << 8 | 1);
-var GAN_ENCRYPTION_KEYS = [
-  {
-    key: [1, 2, 66, 40, 49, 145, 22, 7, 32, 5, 24, 84, 66, 17, 18, 83],
-    iv: [17, 3, 50, 40, 33, 1, 118, 39, 32, 149, 120, 20, 50, 18, 2, 67]
-  },
-  {
-    key: [5, 18, 2, 69, 2, 1, 41, 86, 18, 120, 18, 118, 129, 1, 8, 3],
-    iv: [1, 68, 40, 6, 134, 33, 34, 40, 81, 5, 8, 49, 130, 2, 33, 6]
-  }
-];
-var now = typeof window != "undefined" && typeof window.performance?.now == "function" ? () => Math.floor(window.performance.now()) : typeof process != "undefined" && typeof process.hrtime?.bigint == "function" ? () => Number(process.hrtime.bigint() / 1000000n) : () => Date.now();
+var GAN_CIC_LIST = Object.freeze(Array(256).fill(void 0).map((_v, i) => i << 8 | 1));
+var GAN_ENCRYPTION_KEYS = Object.freeze([
+  Object.freeze({
+    key: GAN_GEN2_BASE_KEY,
+    iv: GAN_GEN2_BASE_IV
+  }),
+  Object.freeze({
+    key: MOYU_AI_2023_KEY,
+    iv: MOYU_AI_2023_IV
+  })
+]);
+var now = typeof globalThis !== "undefined" && typeof globalThis.performance?.now === "function" ? () => Math.floor(globalThis.performance.now()) : () => Date.now();
 var CORNER_FACELET_MAP = [
   [8, 9, 20],
   // URF
@@ -1619,9 +1627,34 @@ var EDGE_FACELET_MAP = [
   [48, 14]
   // BR
 ];
+function isPermutationOf(arr, size) {
+  if (arr.length !== size) {
+    return false;
+  }
+  const seen = new Array(size).fill(false);
+  for (const v of arr) {
+    if (!Number.isInteger(v) || v < 0 || v >= size || seen[v]) {
+      return false;
+    }
+    seen[v] = true;
+  }
+  return true;
+}
 function toKociembaFacelets(cp, co, ep, eo) {
-  var faces = "URFDLB";
-  var facelets = [];
+  if (!isPermutationOf(cp, 8)) {
+    throw new Error("toKociembaFacelets: cp must be a permutation of 0..7");
+  }
+  if (co.length !== 8 || co.some((v) => !Number.isInteger(v) || v < 0 || v > 2)) {
+    throw new Error("toKociembaFacelets: co must be 8 integers in [0,2]");
+  }
+  if (!isPermutationOf(ep, 12)) {
+    throw new Error("toKociembaFacelets: ep must be a permutation of 0..11");
+  }
+  if (eo.length !== 12 || eo.some((v) => v !== 0 && v !== 1)) {
+    throw new Error("toKociembaFacelets: eo must be 12 values in {0,1}");
+  }
+  const faces = "URFDLB";
+  const facelets = [];
   for (let i = 0; i < 54; i++) {
     facelets[i] = faces[~~(i / 9)];
   }
@@ -1693,11 +1726,17 @@ var CubieCube = class _CubieCube {
     return this;
   }
   static EdgeMult(a, b, prod) {
+    if (prod === a || prod === b) {
+      throw new Error("EdgeMult: prod must be a distinct instance (in-place multiplication corrupts input)");
+    }
     for (let ed = 0; ed < 12; ed++) {
       prod.ea[ed] = a.ea[b.ea[ed] >> 1] ^ b.ea[ed] & 1;
     }
   }
   static CornMult(a, b, prod) {
+    if (prod === a || prod === b) {
+      throw new Error("CornMult: prod must be a distinct instance (in-place multiplication corrupts input)");
+    }
     for (let corn = 0; corn < 8; corn++) {
       const ori = ((a.ca[b.ca[corn] & 7] >> 3) + (b.ca[corn] >> 3)) % 3;
       prod.ca[corn] = a.ca[b.ca[corn] & 7] & 7 | ori << 3;
@@ -1734,47 +1773,109 @@ var CubieCube = class _CubieCube {
   fromFacelet(facelet, customCFacelet, customEFacelet) {
     const cf = customCFacelet || cFacelet;
     const ef = customEFacelet || eFacelet;
-    let count = 0;
+    if (facelet.length !== 54) {
+      return -1;
+    }
     const fArr = [];
+    const colorCounts = [0, 0, 0, 0, 0, 0];
     const centers = facelet[4] + facelet[13] + facelet[22] + facelet[31] + facelet[40] + facelet[49];
     for (let i = 0; i < 54; ++i) {
       fArr[i] = centers.indexOf(facelet[i]);
-      if (fArr[i] == -1) {
+      if (fArr[i] === -1) {
         return -1;
       }
-      count += 1 << (fArr[i] << 2);
+      colorCounts[fArr[i]]++;
     }
-    if (count != 10066329) {
+    if (colorCounts.some((c) => c !== 9)) {
       return -1;
     }
+    const ca = new Array(8);
+    const ea = new Array(12);
+    const cornerUsed = new Array(8).fill(false);
+    const edgeUsed = new Array(12).fill(false);
     for (let i = 0; i < 8; ++i) {
       let ori;
       for (ori = 0; ori < 3; ++ori) {
-        if (fArr[cf[i][ori]] == 0 || fArr[cf[i][ori]] == 3)
+        if (fArr[cf[i][ori]] === 0 || fArr[cf[i][ori]] === 3)
           break;
+      }
+      if (ori === 3) {
+        return -1;
       }
       const col1 = fArr[cf[i][(ori + 1) % 3]];
       const col2 = fArr[cf[i][(ori + 2) % 3]];
+      let matched = false;
       for (let j = 0; j < 8; ++j) {
-        if (col1 == ~~(cf[j][1] / 9) && col2 == ~~(cf[j][2] / 9)) {
-          this.ca[i] = j | ori % 3 << 3;
+        if (!cornerUsed[j] && col1 === ~~(cf[j][1] / 9) && col2 === ~~(cf[j][2] / 9)) {
+          cornerUsed[j] = true;
+          ca[i] = j | ori << 3;
+          matched = true;
           break;
         }
+      }
+      if (!matched) {
+        return -1;
       }
     }
     for (let i = 0; i < 12; ++i) {
+      let matched = false;
       for (let j = 0; j < 12; ++j) {
-        if (fArr[ef[i][0]] == ~~(ef[j][0] / 9) && fArr[ef[i][1]] == ~~(ef[j][1] / 9)) {
-          this.ea[i] = j << 1;
+        if (edgeUsed[j]) {
+          continue;
+        }
+        if (fArr[ef[i][0]] === ~~(ef[j][0] / 9) && fArr[ef[i][1]] === ~~(ef[j][1] / 9)) {
+          edgeUsed[j] = true;
+          ea[i] = j << 1;
+          matched = true;
           break;
         }
-        if (fArr[ef[i][0]] == ~~(ef[j][1] / 9) && fArr[ef[i][1]] == ~~(ef[j][0] / 9)) {
-          this.ea[i] = j << 1 | 1;
+        if (fArr[ef[i][0]] === ~~(ef[j][1] / 9) && fArr[ef[i][1]] === ~~(ef[j][0] / 9)) {
+          edgeUsed[j] = true;
+          ea[i] = j << 1 | 1;
+          matched = true;
           break;
         }
       }
+      if (!matched) {
+        return -1;
+      }
     }
+    this.ca = ca;
+    this.ea = ea;
     return this;
+  }
+  /**
+   * Whether this state is reachable by legal turns from solved: corner orientation
+   * sum divisible by 3, edge orientation sum even, and matching permutation parity.
+   * `fromFacelet` deliberately does not enforce this — a physically twisted corner
+   * (after a pop) is a real state a cube can report.
+   */
+  isSolvable() {
+    let cornerOriSum = 0;
+    for (let c = 0; c < 8; c++) {
+      cornerOriSum += this.ca[c] >> 3;
+    }
+    if (cornerOriSum % 3 !== 0) {
+      return false;
+    }
+    let edgeOriSum = 0;
+    for (let e = 0; e < 12; e++) {
+      edgeOriSum += this.ea[e] & 1;
+    }
+    if (edgeOriSum % 2 !== 0) {
+      return false;
+    }
+    const permParity = (perm) => {
+      let inversions = 0;
+      for (let i = 0; i < perm.length; i++) {
+        for (let j = i + 1; j < perm.length; j++) {
+          if (perm[i] > perm[j])
+            inversions++;
+        }
+      }
+      return inversions % 2;
+    };
+    return permParity(this.ca.map((v) => v & 7)) === permParity(this.ea.map((v) => v >> 1));
   }
 };
 CubieCube.moveCube = (() => {
@@ -1802,29 +1903,40 @@ function moveDirectionFromNotation(move) {
     return 2;
   return 0;
 }
+var GEN1_FW_MASK = 16776704;
+var GEN1_FW_EXPECTED = 65536;
+var GEN1_FW_MIN = 65543;
+var GEN1_STATE_FRAME_LENGTH = 19;
+var GEN1_TIMING_FRAME_LENGTH = 19;
+var GEN1_FACELETS_FRAME_LENGTH = 18;
+var GEN1_POLL_INTERVAL_MS = 30;
+var GEN1_BATTERY_INTERVAL_MS = 6e4;
+var GEN1_MAX_POLL_FAILURES = 50;
+var GEN1_MOVES_PER_STATE_REFRESH = 20;
 var GanGen1Aes = class {
   constructor(keyBytes) {
     this.aes = new import_aes_js.default.AES([...keyBytes]);
   }
+  /** Two overlapping ECB blocks: the tail 16 bytes first, then the head 16 bytes. */
   decrypt(data) {
     if (data.length < 16)
       throw new Error("Invalid data length");
-    const t = Array.from(data);
-    if (t.length > 16) {
-      const i = t.length - 16;
-      const n = this.aes.decrypt(t.slice(i, i + 16));
-      for (let r = 0; r < 16; r++)
-        t[r + i] = n[r];
+    const bytes = Array.from(data);
+    if (bytes.length > 16) {
+      const tailOffset = bytes.length - 16;
+      const tailPlain = this.aes.decrypt(bytes.slice(tailOffset, tailOffset + 16));
+      for (let i = 0; i < 16; i++)
+        bytes[tailOffset + i] = tailPlain[i];
     }
-    const s = this.aes.decrypt(t.slice(0, 16));
-    for (let r = 0; r < 16; r++)
-      t[r] = s[r];
-    return new Uint8Array(t);
+    const headPlain = this.aes.decrypt(bytes.slice(0, 16));
+    for (let i = 0; i < 16; i++)
+      bytes[i] = headPlain[i];
+    return new Uint8Array(bytes);
   }
 };
 function deriveGen1Key(fwVersion, hw) {
   const idx = fwVersion >> 8 & 255;
-  const table = GAN_GEN1_KEYS[idx] ?? GAN_GEN1_KEYS[0];
+  const table = GAN_GEN1_KEYS[idx];
   if (!table || hw.byteLength < 6)
     return null;
   const arr = Array.from(table);
@@ -1833,53 +1945,60 @@ function deriveGen1Key(fwVersion, hw) {
   }
   return new Uint8Array(arr.slice(0, 16));
 }
-function gyroFromState(t) {
-  if (t.length < 6)
+function gyroFromState(state) {
+  if (state.length < 6)
     return null;
-  let x0 = t[0] | t[1] << 8;
-  let x1 = t[2] | t[3] << 8;
-  let x2 = t[4] | t[5] << 8;
-  if (x0 > 32767)
-    x0 -= 65536;
-  if (x1 > 32767)
-    x1 -= 65536;
-  if (x2 > 32767)
-    x2 -= 65536;
-  const r = x0 / 16384;
-  const s = x1 / 16384;
-  const a = x2 / 16384;
-  const o = 1 - r * r - s * s - a * a;
-  return { x: r, y: a, z: -s, w: o > 0 ? Math.sqrt(o) : 0 };
+  let raw0 = state[0] | state[1] << 8;
+  let raw1 = state[2] | state[3] << 8;
+  let raw2 = state[4] | state[5] << 8;
+  if (raw0 > 32767)
+    raw0 -= 65536;
+  if (raw1 > 32767)
+    raw1 -= 65536;
+  if (raw2 > 32767)
+    raw2 -= 65536;
+  const n0 = raw0 / 16384;
+  const n1 = raw1 / 16384;
+  const n2 = raw2 / 16384;
+  const wSquared = 1 - n0 * n0 - n1 * n1 - n2 * n2;
+  return { x: -n1, y: n2, z: -n0, w: wSquared > 0 ? Math.sqrt(wSquared) : 0 };
 }
-function parseGen1Facelets(t) {
+function parseGen1Facelets(bytes) {
   const out = [];
-  for (let i = 0; i < t.length - 2; i += 3) {
-    const n = t[1 ^ i] << 16 | t[i + 1 ^ 1] << 8 | t[i + 2 ^ 1];
-    for (let r = 21; r >= 0; r -= 3) {
-      out.push("URFDLB".charAt(n >> r & 7));
-      if (r === 12)
+  for (let i = 0; i < bytes.length - 2; i += 3) {
+    const faceBits = bytes[1 ^ i] << 16 | bytes[i + 1 ^ 1] << 8 | bytes[i + 2 ^ 1];
+    for (let shift = 21; shift >= 0; shift -= 3) {
+      out.push("URFDLB".charAt(faceBits >> shift & 7));
+      if (shift === 12)
         out.push("URFDLB".charAt(i / 3));
     }
   }
   return out.join("");
 }
-var GEN1_SOLVED_STATE = {
-  CP: [0, 1, 2, 3, 4, 5, 6, 7],
-  CO: [0, 0, 0, 0, 0, 0, 0, 0],
-  EP: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-  EO: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-};
+function cubieStateFromFacelets(facelets) {
+  const cubie = new CubieCube().fromFacelet(facelets);
+  if (cubie === -1) {
+    return null;
+  }
+  return {
+    CP: cubie.ca.map((v) => v & 7),
+    CO: cubie.ca.map((v) => v >> 3),
+    EP: cubie.ea.map((v) => v >> 1),
+    EO: cubie.ea.map((v) => v & 1)
+  };
+}
 var GanGen1CubeConnection = class _GanGen1CubeConnection {
   constructor(device, encrypter, events$, chrState, chrMoves, chrFacelets, chrBattery, chrGyroNotify) {
     this.deviceMAC = "";
     this.polling = false;
     this.prevMoveCnt = -1;
-    this.movePollTicks = 0;
-    this.batteryPollTicks = 0;
+    this.movesSinceStateRefresh = 0;
+    this.nextBatteryReadAt = 0;
     this.pollFailures = 0;
     this.teardown = false;
     this.lastBatteryLevel = null;
     this.forceNextBatteryEmission = false;
+    this.gattChain = Promise.resolve();
     this.onGyroNotify = (evt) => {
       try {
         const chr = evt.target;
@@ -1918,13 +2037,13 @@ var GanGen1CubeConnection = class _GanGen1CubeConnection {
     const hwChar = await deviceInfo.getCharacteristic(GAN_GEN1_CHR_HARDWARE);
     const fw = await fwChar.readValue();
     const n = fw.byteLength >= 3 ? fw.getUint8(0) << 16 | fw.getUint8(1) << 8 | fw.getUint8(2) : 0;
-    if (!(n > 65543 && (16776704 & n) === 65536)) {
+    if (!(n > GEN1_FW_MIN && (GEN1_FW_MASK & n) === GEN1_FW_EXPECTED)) {
       throw new Error(`Invalid firmware version: 0x${n.toString(16)}`);
     }
     const hwRaw = await hwChar.readValue();
     const keyArr = deriveGen1Key(n, hwRaw);
     if (!keyArr) {
-      throw new Error("Invalid encryption key");
+      throw new Error(`Unsupported gen1 firmware key index 0x${(n >> 8 & 255).toString(16)}`);
     }
     const encrypter = new GanGen1Aes(keyArr);
     const primary = await gatt.getPrimaryService(GAN_GEN1_PRIMARY_SERVICE);
@@ -1932,17 +2051,34 @@ var GanGen1CubeConnection = class _GanGen1CubeConnection {
     const chrMoves = await primary.getCharacteristic(GAN_GEN1_CHR_MOVES);
     const chrFacelets = await primary.getCharacteristic(GAN_GEN1_CHR_FACELETS);
     const chrBattery = await primary.getCharacteristic(GAN_GEN1_CHR_BATTERY);
-    const chrGyroNotify = await primary.getCharacteristic(GAN_GEN1_CHR_GYRO_NOTIFY);
+    const chrGyroNotify = await primary.getCharacteristic(GAN_GEN1_CHR_GYRO_NOTIFY).catch(() => null);
     const events$ = externalEvents$ ?? new Subject();
     const conn = new _GanGen1CubeConnection(device, encrypter, events$, chrState, chrMoves, chrFacelets, chrBattery, chrGyroNotify);
-    chrGyroNotify.addEventListener("characteristicvaluechanged", conn.onGyroNotify);
-    await chrGyroNotify.startNotifications();
-    await conn.readInitialState();
-    await conn.readBattery();
+    try {
+      if (chrGyroNotify) {
+        chrGyroNotify.addEventListener("characteristicvaluechanged", conn.onGyroNotify);
+        await chrGyroNotify.startNotifications();
+      }
+      await conn.readInitialState(false);
+      await conn.readBattery(false);
+    } catch (e) {
+      conn.device.removeEventListener("gattserverdisconnected", conn.onGattDisconnected);
+      if (chrGyroNotify) {
+        chrGyroNotify.removeEventListener("characteristicvaluechanged", conn.onGyroNotify);
+        await chrGyroNotify.stopNotifications().catch(() => {
+        });
+      }
+      throw e;
+    }
     conn.polling = true;
+    conn.nextBatteryReadAt = now() + GEN1_BATTERY_INTERVAL_MS;
     conn.schedulePoll(0);
     return conn;
   }
+  /**
+   * Battery dedupe mirrors the shared event-bus policy on purpose: this legacy
+   * connection is also used standalone, without a bus in front of it.
+   */
   emitBatteryLevel(rawLevel, timestamp = now()) {
     if (!Number.isFinite(rawLevel)) {
       return;
@@ -1960,33 +2096,53 @@ var GanGen1CubeConnection = class _GanGen1CubeConnection {
       timestamp
     });
   }
-  async readBattery() {
-    try {
-      const e = await this.chrBattery.readValue();
+  /** All GATT reads are funneled through one chain so operations never overlap. */
+  readDecrypted(chr, minLength) {
+    const run = async () => {
+      if (this.teardown) {
+        throw new Error("GAN gen1 connection is closed");
+      }
+      const e = await chr.readValue();
       const t = this.encrypter.decrypt(new Uint8Array(e.buffer, e.byteOffset, e.byteLength));
-      if (t.length < 8)
+      return t.length >= minLength ? t : null;
+    };
+    const result = this.gattChain.then(run, run);
+    this.gattChain = result.then(() => void 0, () => void 0);
+    return result;
+  }
+  async readBattery(swallowErrors) {
+    try {
+      const t = await this.readDecrypted(this.chrBattery, 8);
+      if (!t)
         return;
       this.emitBatteryLevel(t[7]);
-    } catch {
+    } catch (e) {
+      if (!swallowErrors)
+        throw e;
     }
   }
-  async readInitialState() {
+  async readInitialState(swallowErrors) {
     try {
-      const e = await this.chrFacelets.readValue();
-      const t = this.encrypter.decrypt(new Uint8Array(e.buffer, e.byteOffset, e.byteLength));
+      const t = await this.readDecrypted(this.chrFacelets, GEN1_FACELETS_FRAME_LENGTH);
+      if (!t)
+        return;
+      const facelets = parseGen1Facelets(t);
+      const state = cubieStateFromFacelets(facelets);
+      if (!state) {
+        if (!swallowErrors)
+          throw new Error("GAN gen1 returned an invalid facelet state");
+        return;
+      }
       this.events$.next({
         timestamp: now(),
         type: "FACELETS",
-        serial: 0,
-        facelets: parseGen1Facelets(t),
-        state: {
-          CP: [...GEN1_SOLVED_STATE.CP],
-          CO: [...GEN1_SOLVED_STATE.CO],
-          EP: [...GEN1_SOLVED_STATE.EP],
-          EO: [...GEN1_SOLVED_STATE.EO]
-        }
+        serial: this.prevMoveCnt >= 0 ? this.prevMoveCnt : 0,
+        facelets,
+        state
       });
-    } catch {
+    } catch (e) {
+      if (!swallowErrors)
+        throw e;
     }
   }
   schedulePoll(delayMs) {
@@ -1998,66 +2154,88 @@ var GanGen1CubeConnection = class _GanGen1CubeConnection {
     if (!this.polling || this.teardown)
       return;
     try {
-      const e = await this.chrState.readValue();
-      const t = this.encrypter.decrypt(new Uint8Array(e.buffer, e.byteOffset, e.byteLength));
+      const t = await this.readDecrypted(this.chrState, GEN1_STATE_FRAME_LENGTH);
       this.pollFailures = 0;
+      if (t) {
+        await this.handleStateFrame(t);
+      }
+      if (now() >= this.nextBatteryReadAt) {
+        this.nextBatteryReadAt = now() + GEN1_BATTERY_INTERVAL_MS;
+        await this.readBattery(true);
+      }
+      this.schedulePoll(GEN1_POLL_INTERVAL_MS);
+    } catch {
+      this.pollFailures++;
+      if (this.pollFailures >= GEN1_MAX_POLL_FAILURES) {
+        void this.handleDisconnect();
+        return;
+      }
+      const wait = Math.min(500 * 2 ** Math.min(this.pollFailures, 4), 2e3);
+      this.schedulePoll(wait);
+    }
+  }
+  async handleStateFrame(t) {
+    if (!this.chrGyroNotify) {
       const q = gyroFromState(t);
       if (q) {
         this.events$.next({ type: "GYRO", timestamp: now(), quaternion: q });
       }
-      const moveCnt = t[12];
-      if (this.prevMoveCnt === -1) {
-        this.prevMoveCnt = moveCnt;
-      } else if (moveCnt !== this.prevMoveCnt) {
-        let o = moveCnt - this.prevMoveCnt & 255;
-        if (o > 6)
-          o = 6;
-        const moves = [];
-        for (let l = 0; l < 6; l++) {
-          const u = t[13 + l];
-          moves.unshift("URFDLB".charAt(~~(u / 3)) + " 2'".charAt(u % 3));
-        }
-        const moveData = await this.chrMoves.readValue();
-        const mt = this.encrypter.decrypt(new Uint8Array(moveData.buffer, moveData.byteOffset, moveData.byteLength));
-        const stamps = [];
-        for (let r = 0; r < 9; r++) {
-          stamps.unshift(mt[2 * r + 1] | mt[2 * r + 2] << 8);
-        }
-        const ts = now();
-        for (let r = o - 1; r >= 0; r--) {
-          const d = moves[r]?.trim();
-          if (!d)
-            continue;
-          const f = "URFDLB".indexOf(d[0]);
-          const h = moveDirectionFromNotation(d);
-          this.events$.next({
-            timestamp: ts,
-            type: "MOVE",
-            serial: moveCnt - r & 255,
-            face: f,
-            direction: h,
-            move: d,
-            cubeTimestamp: stamps[r] ?? null,
-            localTimestamp: ts
-          });
-        }
-        this.prevMoveCnt = moveCnt;
+    }
+    const moveCnt = t[12];
+    if (this.prevMoveCnt === -1) {
+      this.prevMoveCnt = moveCnt;
+      return;
+    }
+    if (moveCnt === this.prevMoveCnt) {
+      return;
+    }
+    let o = moveCnt - this.prevMoveCnt & 255;
+    if (o > 6)
+      o = 6;
+    const moves = [];
+    let corrupt = false;
+    for (let l = 0; l < 6; l++) {
+      const u = t[13 + l];
+      if (u >= 18) {
+        corrupt = true;
       }
-      this.movePollTicks++;
-      if (this.movePollTicks >= 50) {
-        this.movePollTicks = 0;
-        await this.readInitialState();
+      moves.unshift("URFDLB".charAt(~~(u / 3)) + " 2'".charAt(u % 3));
+    }
+    this.prevMoveCnt = moveCnt;
+    if (corrupt) {
+      await this.readInitialState(true);
+      return;
+    }
+    const mt = await this.readDecrypted(this.chrMoves, GEN1_TIMING_FRAME_LENGTH);
+    const stamps = [];
+    if (mt) {
+      for (let r = 0; r < 9; r++) {
+        stamps.unshift(mt[2 * r + 1] | mt[2 * r + 2] << 8);
       }
-      this.batteryPollTicks += 30;
-      if (this.batteryPollTicks >= 6e4) {
-        this.batteryPollTicks = 0;
-        await this.readBattery();
-      }
-      this.schedulePoll(30);
-    } catch {
-      this.pollFailures++;
-      const wait = Math.min(500 * 2 ** Math.min(this.pollFailures, 4), 2e3);
-      this.schedulePoll(wait);
+    }
+    const ts = now();
+    for (let r = o - 1; r >= 0; r--) {
+      const d = moves[r]?.trim();
+      if (!d)
+        continue;
+      const f = "URFDLB".indexOf(d[0]);
+      const h = moveDirectionFromNotation(d);
+      this.events$.next({
+        timestamp: ts,
+        type: "MOVE",
+        serial: moveCnt - r & 255,
+        face: f,
+        direction: h,
+        move: d,
+        cubeTimestamp: stamps[r] ?? null,
+        // Only the newest move was actually observed at this host time.
+        localTimestamp: r === 0 ? ts : null
+      });
+    }
+    this.movesSinceStateRefresh += o;
+    if (this.movesSinceStateRefresh >= GEN1_MOVES_PER_STATE_REFRESH) {
+      this.movesSinceStateRefresh = 0;
+      await this.readInitialState(true);
     }
   }
   async handleDisconnect() {
@@ -2068,11 +2246,13 @@ var GanGen1CubeConnection = class _GanGen1CubeConnection {
     this.lastBatteryLevel = null;
     this.forceNextBatteryEmission = false;
     this.device.removeEventListener("gattserverdisconnected", this.onGattDisconnected);
-    try {
-      this.chrGyroNotify.removeEventListener("characteristicvaluechanged", this.onGyroNotify);
-      await this.chrGyroNotify.stopNotifications().catch(() => {
-      });
-    } catch {
+    if (this.chrGyroNotify) {
+      try {
+        this.chrGyroNotify.removeEventListener("characteristicvaluechanged", this.onGyroNotify);
+        await this.chrGyroNotify.stopNotifications().catch(() => {
+        });
+      } catch {
+      }
     }
     this.events$.next({ timestamp: now(), type: "DISCONNECT" });
     this.events$.complete();
@@ -2081,11 +2261,18 @@ var GanGen1CubeConnection = class _GanGen1CubeConnection {
     switch (command.type) {
       case "REQUEST_BATTERY":
         this.forceNextBatteryEmission = true;
-        await this.readBattery();
+        try {
+          await this.readBattery(false);
+        } catch (e) {
+          this.forceNextBatteryEmission = false;
+          throw e;
+        }
         break;
       case "REQUEST_FACELETS":
-        await this.readInitialState();
+        await this.readInitialState(false);
         break;
+      default:
+        throw new Error(`GAN gen1 does not support ${command.type}`);
     }
   }
   async disconnect() {
@@ -2180,8 +2367,11 @@ async function waitForManufacturerData(device, timeoutMs = 5e3, options) {
       const isFirstAdv = !sawAdvertisement;
       sawAdvertisement = true;
       if (merged.size > 0) {
-        finish(merged);
-        return;
+        const mergedData = merged;
+        if (!options?.resolveWhen || options.resolveWhen(mergedData)) {
+          finish(mergedData);
+          return;
+        }
       }
       if (emptyFirstAdvExit && isFirstAdv) {
         finish(null);
@@ -2192,20 +2382,30 @@ async function waitForManufacturerData(device, timeoutMs = 5e3, options) {
     }, timeoutMs);
     device.addEventListener("advertisementreceived", onAdvEvent);
     signal?.addEventListener("abort", onAbort, { once: true });
-    device.watchAdvertisements({ signal: abortController.signal }).catch(() => {
+    try {
+      device.watchAdvertisements({ signal: abortController.signal }).catch(() => {
+        clearTimeout(maxTimer);
+        finish(null);
+      });
+    } catch {
       clearTimeout(maxTimer);
       finish(null);
-    });
+    }
   });
 }
 function macFromGanManufacturerData(mf) {
   function getBytes(manufacturerData) {
     if (manufacturerData instanceof DataView) {
-      return new DataView(manufacturerData.buffer.slice(2, 11));
+      const start = manufacturerData.byteOffset + 2;
+      const end = manufacturerData.byteOffset + Math.min(manufacturerData.byteLength, 11);
+      return new DataView(manufacturerData.buffer.slice(start, Math.max(start, end)));
     }
     for (const id of GAN_CIC_LIST) {
-      if (manufacturerData.has(id)) {
-        return new DataView(manufacturerData.get(id).buffer.slice(0, 9));
+      const value = manufacturerData.get(id);
+      if (value && value.byteLength >= 6) {
+        const start = value.byteOffset;
+        const end = value.byteOffset + Math.min(value.byteLength, 9);
+        return new DataView(value.buffer.slice(start, end));
       }
     }
     return void 0;
@@ -2220,38 +2420,45 @@ function macFromGanManufacturerData(mf) {
   }
   return mac.join(":");
 }
-var { ModeOfOperation: ModeOfOperation$2 } = import_aes_js.default;
 var GanGen2CubeEncrypter = class {
   constructor(key, iv, salt) {
-    if (key.length != 16)
+    if (key.length !== 16)
       throw new Error("Key must be 16 bytes (128-bit) long");
-    if (iv.length != 16)
+    if (iv.length !== 16)
       throw new Error("Iv must be 16 bytes (128-bit) long");
-    if (salt.length != 6)
+    if (salt.length !== 6)
       throw new Error("Salt must be 6 bytes (48-bit) long");
-    this._key = new Uint8Array(key);
+    const saltedKey = new Uint8Array(key);
     this._iv = new Uint8Array(iv);
     for (let i = 0; i < 6; i++) {
-      this._key[i] = (key[i] + salt[i]) % 255;
+      saltedKey[i] = (key[i] + salt[i]) % 255;
       this._iv[i] = (iv[i] + salt[i]) % 255;
     }
+    this.aes = new import_aes_js.default.AES([...saltedKey]);
   }
-  /** Encrypt 16-byte buffer chunk starting at offset using AES-128-CBC */
+  /**
+   * Encrypt a 16-byte chunk at offset. Equivalent to single-block AES-128-CBC with the fixed
+   * iv (E(chunk XOR iv)), but reuses one precomputed key schedule instead of rebuilding the
+   * cipher for every chunk of every packet.
+   */
   encryptChunk(buffer, offset) {
-    var cipher2 = new ModeOfOperation$2.cbc(this._key, this._iv);
-    var chunk = cipher2.encrypt(buffer.subarray(offset, offset + 16));
-    buffer.set(chunk, offset);
+    const block = new Array(16);
+    for (let i = 0; i < 16; i++) {
+      block[i] = buffer[offset + i] ^ this._iv[i];
+    }
+    buffer.set(this.aes.encrypt(block), offset);
   }
-  /** Decrypt 16-byte buffer chunk starting at offset using AES-128-CBC */
+  /** Decrypt a 16-byte chunk at offset: single-block AES-128-CBC, D(chunk) XOR iv. */
   decryptChunk(buffer, offset) {
-    var cipher2 = new ModeOfOperation$2.cbc(this._key, this._iv);
-    var chunk = cipher2.decrypt(buffer.subarray(offset, offset + 16));
-    buffer.set(chunk, offset);
+    const decrypted = this.aes.decrypt(Array.from(buffer.subarray(offset, offset + 16)));
+    for (let i = 0; i < 16; i++) {
+      buffer[offset + i] = decrypted[i] ^ this._iv[i];
+    }
   }
   encrypt(data) {
     if (data.length < 16)
       throw Error("Data must be at least 16 bytes long");
-    var res = new Uint8Array(data);
+    const res = new Uint8Array(data);
     this.encryptChunk(res, 0);
     if (res.length > 16) {
       this.encryptChunk(res, res.length - 16);
@@ -2261,13 +2468,17 @@ var GanGen2CubeEncrypter = class {
   decrypt(data) {
     if (data.length < 16)
       throw Error("Data must be at least 16 bytes long");
-    var res = new Uint8Array(data);
+    const res = new Uint8Array(data);
     if (res.length > 16) {
       this.decryptChunk(res, res.length - 16);
     }
     this.decryptChunk(res, 0);
     return res;
   }
+};
+var GanGen3CubeEncrypter = class extends GanGen2CubeEncrypter {
+};
+var GanGen4CubeEncrypter = class extends GanGen2CubeEncrypter {
 };
 function parseMacBytes(mac) {
   const parts = mac.trim().split(/[\s:-]+/).filter((p) => p.length > 0);
@@ -2281,63 +2492,635 @@ function macStringToSaltOrThrow(mac) {
   return new Uint8Array(parseMacBytes(mac).reverse());
 }
 var GanBitReader = class {
+  /**
+   * A Uint8Array input is kept as a live view (no copy) — this is hot-path code and
+   * callers pass freshly decrypted buffers they do not reuse. Do not mutate the
+   * message after constructing a reader over it.
+   */
   constructor(message) {
-    this.bits = Array.from(message, (b) => (b + 256).toString(2).slice(1)).join("");
+    this.bytes = message instanceof Uint8Array ? message : Uint8Array.from(message);
+    this.bitLength = this.bytes.length * 8;
+  }
+  readBits(offset, count) {
+    const available = Math.min(count, this.bitLength - offset);
+    if (available <= 0) {
+      return NaN;
+    }
+    let value = 0;
+    for (let i = 0; i < available; i++) {
+      const idx = offset + i;
+      value = value << 1 | this.bytes[idx >> 3] >> 7 - (idx & 7) & 1;
+    }
+    return value;
   }
   getBitWord(offset, bitLength, littleEndian = false) {
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new RangeError(`Bit offset must be a nonnegative integer, got ${offset}`);
+    }
     if (bitLength <= 8) {
-      return parseInt(this.bits.slice(offset, offset + bitLength), 2);
+      return this.readBits(offset, bitLength);
     }
     if (bitLength === 16 || bitLength === 32) {
-      const buf = new Uint8Array(bitLength / 8);
-      for (let i = 0; i < buf.length; i++) {
-        buf[i] = parseInt(this.bits.slice(8 * i + offset, 8 * i + offset + 8), 2);
+      const byteCount = bitLength / 8;
+      const parts = [];
+      for (let i = 0; i < byteCount; i++) {
+        const b = this.readBits(offset + 8 * i, 8);
+        parts.push(Number.isNaN(b) ? 0 : b);
       }
-      const dv = new DataView(buf.buffer);
-      return bitLength === 16 ? dv.getUint16(0, littleEndian) : dv.getUint32(0, littleEndian);
+      if (littleEndian) {
+        parts.reverse();
+      }
+      let value = 0;
+      for (const b of parts) {
+        value = value * 256 + b;
+      }
+      return value;
     }
     throw new Error("Invalid BitWord size");
   }
 };
-function isValidGanGen2Packet(e) {
-  if (!e || e.length < 16)
+var sum = (arr) => arr.reduce((a, v) => a + v, 0);
+function decodeCornersEdges(msg, offsets) {
+  const cp = [];
+  const co = [];
+  const ep = [];
+  const eo = [];
+  for (let i = 0; i < 7; i++) {
+    cp.push(msg.getBitWord(offsets.cp + i * 3, 3));
+    co.push(msg.getBitWord(offsets.co + i * 2, 2));
+  }
+  cp.push(28 - sum(cp));
+  co.push((3 - sum(co) % 3) % 3);
+  for (let i = 0; i < 11; i++) {
+    ep.push(msg.getBitWord(offsets.ep + i * 4, 4));
+    eo.push(msg.getBitWord(offsets.eo + i, 1));
+  }
+  ep.push(66 - sum(ep));
+  eo.push((2 - sum(eo) % 2) % 2);
+  return { CP: cp, CO: co, EP: ep, EO: eo };
+}
+function decodeGyroEvent(msg, timestamp, quaternionOffset, velocityOffset) {
+  const qw = msg.getBitWord(quaternionOffset, 16);
+  const qx = msg.getBitWord(quaternionOffset + 16, 16);
+  const qy = msg.getBitWord(quaternionOffset + 32, 16);
+  const qz = msg.getBitWord(quaternionOffset + 48, 16);
+  const vx = msg.getBitWord(velocityOffset, 4);
+  const vy = msg.getBitWord(velocityOffset + 4, 4);
+  const vz = msg.getBitWord(velocityOffset + 8, 4);
+  return {
+    type: "GYRO",
+    timestamp,
+    quaternion: {
+      x: (1 - (qx >> 15) * 2) * (qx & 32767) / 32767,
+      y: (1 - (qy >> 15) * 2) * (qy & 32767) / 32767,
+      z: (1 - (qz >> 15) * 2) * (qz & 32767) / 32767,
+      w: (1 - (qw >> 15) * 2) * (qw & 32767) / 32767
+    },
+    velocity: {
+      x: (1 - (vx >> 3) * 2) * (vx & 7),
+      y: (1 - (vy >> 3) * 2) * (vy & 7),
+      z: (1 - (vz >> 3) * 2) * (vz & 7)
+    }
+  };
+}
+var GanMoveHistoryBuffer = class {
+  constructor(buildHistoryRequest) {
+    this.buildHistoryRequest = buildHistoryRequest;
+    this.serial = -1;
+    this.lastSerial = -1;
+    this.lastLocalTimestamp = null;
+    this.moveBuffer = [];
+  }
+  push(move) {
+    this.moveBuffer.push(move);
+  }
+  /** Private cube command for requesting move history */
+  async requestMoveHistory(conn, serial, count) {
+    if (serial % 2 === 0)
+      serial = serial - 1 & 255;
+    if (count % 2 === 1)
+      count++;
+    count = Math.min(count, serial + 1);
+    return conn.sendCommandMessage(this.buildHistoryRequest(serial, count)).catch(() => {
+    });
+  }
+  /**
+   * Evict move events from FIFO buffer until missing move event detected
+   * In case of missing move, and if connection is provided, submit request for move history to fill gap in buffer
+   */
+  async evictMoveBuffer(conn) {
+    const evictedEvents = [];
+    while (this.moveBuffer.length > 0) {
+      const bufferHead = this.moveBuffer[0];
+      const diff = this.lastSerial === -1 ? 1 : bufferHead.serial - this.lastSerial & 255;
+      if (diff === 0) {
+        this.moveBuffer.shift();
+      } else if (diff > 1) {
+        if (conn) {
+          await this.requestMoveHistory(conn, bufferHead.serial, diff);
+        }
+        break;
+      } else {
+        evictedEvents.push(this.moveBuffer.shift());
+        this.lastSerial = bufferHead.serial;
+      }
+    }
+    if (conn && this.moveBuffer.length > 16) {
+      conn.disconnect().catch(() => {
+      });
+    }
+    return evictedEvents;
+  }
+  /**
+   * Check if circular serial number (modulo 256) fits into (start,end) serial number range.
+   * By default range is open, set closedStart / closedEnd to make it closed.
+   */
+  isSerialInRange(start, end, serial, closedStart = false, closedEnd = false) {
+    return (end - start & 255) >= (serial - start & 255) && (closedStart || (start - serial & 255) > 0) && (closedEnd || (end - serial & 255) > 0);
+  }
+  /** Used to inject missed moves to FIFO buffer */
+  injectMissedMoveToBuffer(move) {
+    if (move.type === "MOVE") {
+      if (this.moveBuffer.length > 0) {
+        const bufferHead = this.moveBuffer[0];
+        if (this.moveBuffer.some((e) => e.type === "MOVE" && e.serial === move.serial))
+          return;
+        if (!this.isSerialInRange(this.lastSerial, bufferHead.serial, move.serial))
+          return;
+        if (move.serial === (bufferHead.serial - 1 & 255)) {
+          this.moveBuffer.unshift(move);
+        }
+      } else {
+        if (this.isSerialInRange(this.lastSerial, this.serial, move.serial, false, true)) {
+          this.moveBuffer.unshift(move);
+        }
+      }
+    }
+  }
+  /** Used in response to periodic facelets event to check if any moves missed */
+  async checkIfMoveMissed(conn) {
+    const diff = this.serial - this.lastSerial & 255;
+    if (diff > 0) {
+      if (this.serial !== 0) {
+        const bufferHead = this.moveBuffer[0];
+        const startSerial = bufferHead ? bufferHead.serial : this.serial + 1 & 255;
+        await this.requestMoveHistory(conn, startSerial, diff + 1);
+      }
+    }
+  }
+};
+var GanGen2ProtocolDriver = class {
+  constructor() {
+    this.lastSerial = -1;
+    this.lastMoveTimestamp = 0;
+    this.cubeTimestamp = 0;
+  }
+  createCommandMessage(command) {
+    let msg = new Uint8Array(20).fill(0);
+    switch (command.type) {
+      case "REQUEST_FACELETS":
+        msg[0] = 4;
+        break;
+      case "REQUEST_HARDWARE":
+        msg[0] = 5;
+        break;
+      case "REQUEST_BATTERY":
+        msg[0] = 9;
+        break;
+      case "REQUEST_RESET":
+        msg.set([10, 5, 57, 119, 0, 0, 1, 35, 69, 103, 137, 171, 0, 0, 0, 0, 0, 0, 0, 0]);
+        break;
+      default:
+        msg = void 0;
+    }
+    return msg;
+  }
+  async handleStateEvent(conn, eventMessage) {
+    const timestamp = now();
+    const cubeEvents = [];
+    const msg = new GanBitReader(eventMessage);
+    const eventType = msg.getBitWord(0, 4);
+    if (eventType === 1) {
+      cubeEvents.push(decodeGyroEvent(msg, timestamp, 4, 68));
+    } else if (eventType === 2) {
+      if (this.lastSerial !== -1) {
+        const serial = msg.getBitWord(4, 8);
+        const diff = Math.min(serial - this.lastSerial & 255, 7);
+        this.lastSerial = serial;
+        if (diff > 0) {
+          for (let i = diff - 1; i >= 0; i--) {
+            const face = msg.getBitWord(12 + 5 * i, 4);
+            const direction = msg.getBitWord(16 + 5 * i, 1);
+            const move = "URFDLB".charAt(face) + " '".charAt(direction);
+            let elapsed = msg.getBitWord(47 + 16 * i, 16);
+            if (elapsed === 0) {
+              elapsed = this.lastMoveTimestamp > 0 ? timestamp - this.lastMoveTimestamp : 0;
+            }
+            this.cubeTimestamp += elapsed;
+            cubeEvents.push({
+              type: "MOVE",
+              serial: serial - i & 255,
+              timestamp,
+              localTimestamp: i === 0 ? timestamp : null,
+              // Missed and recovered events has no meaningfull local timestamps
+              cubeTimestamp: this.cubeTimestamp,
+              face,
+              direction,
+              move: move.trim()
+            });
+          }
+          this.lastMoveTimestamp = timestamp;
+        }
+      }
+    } else if (eventType === 4) {
+      const serial = msg.getBitWord(4, 8);
+      if (this.lastSerial === -1)
+        this.lastSerial = serial;
+      const state = decodeCornersEdges(msg, { cp: 12, co: 33, ep: 47, eo: 91 });
+      cubeEvents.push({
+        type: "FACELETS",
+        serial,
+        timestamp,
+        facelets: toKociembaFacelets(state.CP, state.CO, state.EP, state.EO),
+        state
+      });
+    } else if (eventType === 5) {
+      const hwMajor = msg.getBitWord(8, 8);
+      const hwMinor = msg.getBitWord(16, 8);
+      const swMajor = msg.getBitWord(24, 8);
+      const swMinor = msg.getBitWord(32, 8);
+      const gyroSupported = msg.getBitWord(104, 1);
+      let hardwareName = "";
+      for (let i = 0; i < 8; i++) {
+        hardwareName += String.fromCharCode(msg.getBitWord(i * 8 + 40, 8));
+      }
+      cubeEvents.push({
+        type: "HARDWARE",
+        timestamp,
+        hardwareName,
+        hardwareVersion: `${hwMajor}.${hwMinor}`,
+        softwareVersion: `${swMajor}.${swMinor}`,
+        gyroSupported: !!gyroSupported
+      });
+    } else if (eventType === 9) {
+      const batteryLevel = msg.getBitWord(8, 8);
+      cubeEvents.push({
+        type: "BATTERY",
+        timestamp,
+        batteryLevel: Math.min(batteryLevel, 100)
+      });
+    } else if (eventType === 13) {
+      conn.disconnect().catch(() => {
+      });
+    }
+    return cubeEvents;
+  }
+};
+var GanGen3ProtocolDriver = class {
+  constructor() {
+    this.history = new GanMoveHistoryBuffer((serial, count) => {
+      const msg = new Uint8Array(16).fill(0);
+      msg.set([104, 3, serial, 0, count, 0]);
+      return msg;
+    });
+  }
+  createCommandMessage(command) {
+    let msg = new Uint8Array(16).fill(0);
+    switch (command.type) {
+      case "REQUEST_FACELETS":
+        msg.set([104, 1]);
+        break;
+      case "REQUEST_HARDWARE":
+        msg.set([104, 4]);
+        break;
+      case "REQUEST_BATTERY":
+        msg.set([104, 7]);
+        break;
+      case "REQUEST_RESET":
+        msg.set([104, 5, 5, 57, 119, 0, 0, 1, 35, 69, 103, 137, 171, 0, 0, 0]);
+        break;
+      default:
+        msg = void 0;
+    }
+    return msg;
+  }
+  async handleStateEvent(conn, eventMessage) {
+    const timestamp = now();
+    let cubeEvents = [];
+    const msg = new GanBitReader(eventMessage);
+    const magic = msg.getBitWord(0, 8);
+    const eventType = msg.getBitWord(8, 8);
+    const dataLength = msg.getBitWord(16, 8);
+    if (magic === 85 && dataLength > 0) {
+      if (eventType === 1) {
+        if (this.history.lastSerial !== -1) {
+          this.history.lastLocalTimestamp = timestamp;
+          const cubeTimestamp = msg.getBitWord(24, 32, true);
+          const serial = this.history.serial = msg.getBitWord(56, 16, true) & 255;
+          const direction = msg.getBitWord(72, 2);
+          const face = [2, 32, 8, 1, 16, 4].indexOf(msg.getBitWord(74, 6));
+          const move = "URFDLB".charAt(face) + " '".charAt(direction);
+          if (face >= 0) {
+            this.history.push({
+              type: "MOVE",
+              serial,
+              timestamp,
+              localTimestamp: timestamp,
+              cubeTimestamp,
+              face,
+              direction,
+              move: move.trim()
+            });
+          }
+          cubeEvents = await this.history.evictMoveBuffer(conn);
+        }
+      } else if (eventType === 6) {
+        const startSerial = msg.getBitWord(24, 8);
+        const count = (dataLength - 1) * 2;
+        for (let i = 0; i < count; i++) {
+          const face = [1, 5, 3, 0, 4, 2].indexOf(msg.getBitWord(32 + 4 * i, 3));
+          const direction = msg.getBitWord(35 + 4 * i, 1);
+          if (face >= 0) {
+            const move = "URFDLB".charAt(face) + " '".charAt(direction);
+            this.history.injectMissedMoveToBuffer({
+              type: "MOVE",
+              serial: startSerial - i & 255,
+              timestamp,
+              localTimestamp: null,
+              // Missed and recovered events has no meaningfull local timestamps
+              cubeTimestamp: null,
+              // Cube hardware timestamp for missed move you should interpolate using cubeTimestampLinearFit
+              face,
+              direction,
+              move: move.trim()
+            });
+          }
+        }
+        cubeEvents = await this.history.evictMoveBuffer();
+      } else if (eventType === 2) {
+        const serial = this.history.serial = msg.getBitWord(24, 16, true) & 255;
+        if (this.history.lastSerial !== -1) {
+          if (this.history.lastLocalTimestamp == null || timestamp - this.history.lastLocalTimestamp > 500) {
+            await this.history.checkIfMoveMissed(conn);
+          }
+        }
+        if (this.history.lastSerial === -1)
+          this.history.lastSerial = serial;
+        const state = decodeCornersEdges(msg, { cp: 40, co: 61, ep: 77, eo: 121 });
+        cubeEvents.push({
+          type: "FACELETS",
+          serial,
+          timestamp,
+          facelets: toKociembaFacelets(state.CP, state.CO, state.EP, state.EO),
+          state
+        });
+      } else if (eventType === 7) {
+        const swMajor = msg.getBitWord(72, 4);
+        const swMinor = msg.getBitWord(76, 4);
+        const hwMajor = msg.getBitWord(80, 4);
+        const hwMinor = msg.getBitWord(84, 4);
+        let hardwareName = "";
+        for (let i = 0; i < 5; i++) {
+          hardwareName += String.fromCharCode(msg.getBitWord(i * 8 + 32, 8));
+        }
+        cubeEvents.push({
+          type: "HARDWARE",
+          timestamp,
+          hardwareName,
+          hardwareVersion: `${hwMajor}.${hwMinor}`,
+          softwareVersion: `${swMajor}.${swMinor}`,
+          gyroSupported: false
+        });
+      } else if (eventType === 16) {
+        const batteryLevel = msg.getBitWord(24, 8);
+        cubeEvents.push({
+          type: "BATTERY",
+          timestamp,
+          batteryLevel: Math.min(batteryLevel, 100)
+        });
+      } else if (eventType === 17) {
+        conn.disconnect().catch(() => {
+        });
+      }
+    }
+    return cubeEvents;
+  }
+};
+var GanGen4ProtocolDriver = class {
+  constructor() {
+    this.history = new GanMoveHistoryBuffer((serial, count) => {
+      const msg = new Uint8Array(20).fill(0);
+      msg.set([209, 4, serial, 0, count, 0]);
+      return msg;
+    });
+    this.hwInfo = {};
+    this.gyroObserved = false;
+    this.hardwareInfoEmitted = false;
+  }
+  createCommandMessage(command) {
+    let msg = new Uint8Array(20).fill(0);
+    switch (command.type) {
+      case "REQUEST_FACELETS":
+        msg.set([221, 4, 0, 237, 0, 0]);
+        break;
+      case "REQUEST_HARDWARE":
+        this.hardwareInfoEmitted = false;
+        msg.set([223, 3, 0, 0, 0]);
+        break;
+      case "REQUEST_BATTERY":
+        msg.set([221, 4, 0, 239, 0, 0]);
+        break;
+      case "REQUEST_RESET":
+        msg.set([210, 13, 5, 57, 119, 0, 0, 1, 35, 69, 103, 137, 171, 0, 0, 0]);
+        break;
+      default:
+        msg = void 0;
+    }
+    return msg;
+  }
+  buildHardwareEvent(timestamp) {
+    return {
+      type: "HARDWARE",
+      timestamp,
+      hardwareName: this.hwInfo[252],
+      hardwareVersion: this.hwInfo[254],
+      softwareVersion: this.hwInfo[253],
+      productDate: this.hwInfo[250],
+      gyroSupported: this.gyroObserved
+    };
+  }
+  async handleStateEvent(conn, eventMessage) {
+    const timestamp = now();
+    let cubeEvents = [];
+    const msg = new GanBitReader(eventMessage);
+    const eventType = msg.getBitWord(0, 8);
+    const dataLength = msg.getBitWord(8, 8);
+    if (eventType === 1) {
+      if (this.history.lastSerial !== -1) {
+        const msgBitLen = eventMessage.length * 8;
+        let off = 0;
+        while (off + 72 <= msgBitLen && msg.getBitWord(off, 8) === 1) {
+          const cubeTimestamp = msg.getBitWord(off + 16, 32, true);
+          const serial = msg.getBitWord(off + 48, 16, true) & 255;
+          this.history.serial = serial;
+          const direction = msg.getBitWord(off + 64, 2);
+          const face = [2, 32, 8, 1, 16, 4].indexOf(msg.getBitWord(off + 66, 6));
+          const move = "URFDLB".charAt(face) + " '".charAt(direction);
+          if (face < 0) {
+            break;
+          }
+          this.history.push({
+            type: "MOVE",
+            serial,
+            timestamp,
+            localTimestamp: timestamp,
+            cubeTimestamp,
+            face,
+            direction,
+            move: move.trim()
+          });
+          this.history.lastLocalTimestamp = timestamp;
+          off += 72;
+        }
+        cubeEvents = await this.history.evictMoveBuffer(conn);
+      }
+    } else if (eventType === 209) {
+      const startSerial = msg.getBitWord(16, 8);
+      const count = (dataLength - 1) * 2;
+      for (let i = 0; i < count; i++) {
+        const face = [1, 5, 3, 0, 4, 2].indexOf(msg.getBitWord(24 + 4 * i, 3));
+        const direction = msg.getBitWord(27 + 4 * i, 1);
+        if (face >= 0) {
+          const move = "URFDLB".charAt(face) + " '".charAt(direction);
+          this.history.injectMissedMoveToBuffer({
+            type: "MOVE",
+            serial: startSerial - i & 255,
+            timestamp,
+            localTimestamp: null,
+            // Missed and recovered events has no meaningfull local timestamps
+            cubeTimestamp: null,
+            // Cube hardware timestamp for missed move you should interpolate using cubeTimestampLinearFit
+            face,
+            direction,
+            move: move.trim()
+          });
+        }
+      }
+      cubeEvents = await this.history.evictMoveBuffer();
+    } else if (eventType === 237) {
+      const serial = this.history.serial = msg.getBitWord(16, 16, true) & 255;
+      if (this.history.lastSerial !== -1) {
+        if (this.history.lastLocalTimestamp == null || timestamp - this.history.lastLocalTimestamp > 500) {
+          await this.history.checkIfMoveMissed(conn);
+        }
+      }
+      if (this.history.lastSerial === -1)
+        this.history.lastSerial = serial;
+      const state = decodeCornersEdges(msg, { cp: 32, co: 53, ep: 69, eo: 113 });
+      cubeEvents.push({
+        type: "FACELETS",
+        serial,
+        timestamp,
+        facelets: toKociembaFacelets(state.CP, state.CO, state.EP, state.EO),
+        state
+      });
+    } else if (eventType >= 250 && eventType <= 254) {
+      switch (eventType) {
+        case 250:
+          const year = msg.getBitWord(24, 16, true);
+          const month = msg.getBitWord(40, 8);
+          const day = msg.getBitWord(48, 8);
+          this.hwInfo[eventType] = `${year.toString().padStart(4, "0")}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+          break;
+        case 252:
+          this.hwInfo[eventType] = "";
+          for (let i = 0; i < dataLength - 1; i++) {
+            this.hwInfo[eventType] += String.fromCharCode(msg.getBitWord(i * 8 + 24, 8));
+          }
+          break;
+        case 253:
+          const swMajor = msg.getBitWord(24, 4);
+          const swMinor = msg.getBitWord(28, 4);
+          this.hwInfo[eventType] = `${swMajor}.${swMinor}`;
+          break;
+        case 254:
+          const hwMajor = msg.getBitWord(24, 4);
+          const hwMinor = msg.getBitWord(28, 4);
+          this.hwInfo[eventType] = `${hwMajor}.${hwMinor}`;
+          break;
+      }
+      if (!this.hardwareInfoEmitted && Object.keys(this.hwInfo).length === 4) {
+        this.hardwareInfoEmitted = true;
+        cubeEvents.push(this.buildHardwareEvent(timestamp));
+      }
+    } else if (eventType === 236) {
+      const firstGyroThisSession = !this.gyroObserved;
+      this.gyroObserved = true;
+      cubeEvents.push(decodeGyroEvent(msg, timestamp, 16, 80));
+      if (firstGyroThisSession && this.hardwareInfoEmitted && Object.keys(this.hwInfo).length === 4) {
+        cubeEvents.push(this.buildHardwareEvent(timestamp));
+      }
+    } else if (eventType === 239) {
+      const batteryLevel = msg.getBitWord(8 + dataLength * 8, 8);
+      cubeEvents.push({
+        type: "BATTERY",
+        timestamp,
+        batteryLevel: Math.min(batteryLevel, 100)
+      });
+    } else if (eventType === 234) {
+      conn.disconnect().catch(() => {
+      });
+    }
+    return cubeEvents;
+  }
+};
+var GAN_ONE_HOT_FACE_CODES = [2, 32, 8, 1, 16, 4];
+function hasValidCornerEdgeState(msg, offsets) {
+  const state = decodeCornersEdges(msg, offsets);
+  const cpSeen = new Set(state.CP);
+  if (cpSeen.size !== 8 || state.CP.some((v) => !Number.isInteger(v) || v < 0 || v > 7)) {
+    return false;
+  }
+  if (state.CO.some((v) => !Number.isInteger(v) || v < 0 || v > 2)) {
+    return false;
+  }
+  const epSeen = new Set(state.EP);
+  if (epSeen.size !== 12 || state.EP.some((v) => !Number.isInteger(v) || v < 0 || v > 11)) {
+    return false;
+  }
+  return true;
+}
+function isValidGanGen2Packet(payload) {
+  if (!payload || payload.length < 16)
     return false;
   try {
-    const t = new GanBitReader(e);
-    const i = t.getBitWord(0, 4);
-    if (![1, 2, 4, 5, 9, 13].includes(i))
+    const msg = new GanBitReader(payload);
+    const eventType = msg.getBitWord(0, 4);
+    if (![1, 2, 4, 5, 9, 13].includes(eventType))
       return false;
-    if (i === 1) {
-      const a = t.getBitWord(4, 16);
-      const b = t.getBitWord(20, 16);
-      const c = t.getBitWord(36, 16);
-      const d = t.getBitWord(52, 16);
-      if (a === 0 && b === 0 && c === 0 && d === 0)
+    if (eventType === 1) {
+      const qw = msg.getBitWord(4, 16);
+      const qx = msg.getBitWord(20, 16);
+      const qy = msg.getBitWord(36, 16);
+      const qz = msg.getBitWord(52, 16);
+      if (qw === 0 && qx === 0 && qy === 0 && qz === 0)
         return false;
-    } else if (i === 2) {
-      for (let j = 0; j < 7; j++) {
-        const v = t.getBitWord(12 + 5 * j, 4);
-        if (v > 5)
+    } else if (eventType === 2) {
+      for (let i = 0; i < 7; i++) {
+        const face = msg.getBitWord(12 + 5 * i, 4);
+        if (face > 5)
           return false;
       }
-    } else if (i === 4) {
-      let s = 0;
-      for (let j = 0; j < 7; j++)
-        s += t.getBitWord(12 + 3 * j, 3);
-      if (s > 28)
+    } else if (eventType === 4) {
+      if (!hasValidCornerEdgeState(msg, { cp: 12, co: 33, ep: 47, eo: 91 }))
         return false;
-      let x = 0;
-      for (let j = 0; j < 11; j++)
-        x += t.getBitWord(47 + 4 * j, 4);
-      if (x > 66)
+    } else if (eventType === 9) {
+      if (msg.getBitWord(8, 8) > 100)
         return false;
-    } else if (i === 9) {
-      if (t.getBitWord(8, 8) > 100)
-        return false;
-    } else if (i === 5) {
-      for (let j = 0; j < 8; j++) {
-        const v = t.getBitWord(8 * j + 40, 8);
-        if (v !== 0 && (v < 32 || v > 126))
+    } else if (eventType === 5) {
+      for (let i = 0; i < 8; i++) {
+        const charCode = msg.getBitWord(8 * i + 40, 8);
+        if (charCode !== 0 && (charCode < 32 || charCode > 126))
           return false;
       }
     }
@@ -2346,19 +3129,26 @@ function isValidGanGen2Packet(e) {
     return false;
   }
 }
-function isValidGanGen3Packet(e) {
-  if (!e || e.length < 16)
+function isValidGanGen3Packet(payload) {
+  if (!payload || payload.length < 16)
     return false;
   try {
-    const t = new GanBitReader(e);
-    const i = t.getBitWord(0, 8);
-    const n = t.getBitWord(8, 8);
-    const r = t.getBitWord(16, 8);
-    if (i !== 85 || r === 0 || ![1, 2, 6, 7, 16, 17].includes(n))
+    const msg = new GanBitReader(payload);
+    const magic = msg.getBitWord(0, 8);
+    const eventType = msg.getBitWord(8, 8);
+    const dataLength = msg.getBitWord(16, 8);
+    if (magic !== 85 || dataLength === 0 || ![1, 2, 6, 7, 16, 17].includes(eventType))
       return false;
-    if (n === 1) {
-      const f = t.getBitWord(74, 6);
-      if ([2, 32, 8, 1, 16, 4].indexOf(f) < 0)
+    if (dataLength > payload.length)
+      return false;
+    if (eventType === 1) {
+      const faceCode = msg.getBitWord(74, 6);
+      if (GAN_ONE_HOT_FACE_CODES.indexOf(faceCode) < 0)
+        return false;
+      if (msg.getBitWord(72, 2) > 1)
+        return false;
+    } else if (eventType === 2) {
+      if (!hasValidCornerEdgeState(msg, { cp: 40, co: 61, ep: 77, eo: 121 }))
         return false;
     }
     return true;
@@ -2366,17 +3156,33 @@ function isValidGanGen3Packet(e) {
     return false;
   }
 }
-function isValidGanGen4Packet(e) {
-  if (!e || e.length < 16)
+function isValidGanGen4Packet(payload) {
+  if (!payload || payload.length < 16)
     return false;
   try {
-    const t = new GanBitReader(e);
-    const i = t.getBitWord(0, 8);
-    if (![1, 209, 237, 236, 239, 234, 250, 251, 252, 253, 254].includes(i))
+    const msg = new GanBitReader(payload);
+    const eventType = msg.getBitWord(0, 8);
+    const dataLength = msg.getBitWord(8, 8);
+    if (![1, 209, 237, 236, 239, 234, 250, 252, 253, 254].includes(eventType))
       return false;
-    if (i === 1) {
-      const f = t.getBitWord(66, 6);
-      if ([2, 32, 8, 1, 16, 4].indexOf(f) < 0)
+    if (dataLength > payload.length)
+      return false;
+    if (eventType === 1) {
+      const msgBitLength = payload.length * 8;
+      let off = 0;
+      let chunks = 0;
+      while (off + 72 <= msgBitLength && msg.getBitWord(off, 8) === 1) {
+        if (GAN_ONE_HOT_FACE_CODES.indexOf(msg.getBitWord(off + 66, 6)) < 0)
+          return false;
+        if (msg.getBitWord(off + 64, 2) > 1)
+          return false;
+        chunks++;
+        off += 72;
+      }
+      if (chunks === 0)
+        return false;
+    } else if (eventType === 237) {
+      if (!hasValidCornerEdgeState(msg, { cp: 32, co: 53, ep: 69, eo: 113 }))
         return false;
     }
     return true;
@@ -2422,146 +3228,20 @@ function writeGattCharacteristicValueNow(characteristic, value) {
 function writeGattCharacteristicValue(characteristic, value) {
   return writeQueueForCharacteristic(characteristic).enqueue(() => writeGattCharacteristicValueNow(characteristic, value));
 }
-var sum = (arr) => arr.reduce((a, v) => a + v, 0);
-function decodeCornersEdges(msg, offsets) {
-  let cp = [];
-  let co = [];
-  let ep = [];
-  let eo = [];
-  for (let i = 0; i < 7; i++) {
-    cp.push(msg.getBitWord(offsets.cp + i * 3, 3));
-    co.push(msg.getBitWord(offsets.co + i * 2, 2));
-  }
-  cp.push(28 - sum(cp));
-  co.push((3 - sum(co) % 3) % 3);
-  for (let i = 0; i < 11; i++) {
-    ep.push(msg.getBitWord(offsets.ep + i * 4, 4));
-    eo.push(msg.getBitWord(offsets.eo + i, 1));
-  }
-  ep.push(66 - sum(ep));
-  eo.push((2 - sum(eo) % 2) % 2);
-  return { CP: cp, CO: co, EP: ep, EO: eo };
-}
-function decodeGyroEvent(msg, timestamp, quaternionOffset, velocityOffset) {
-  let qw = msg.getBitWord(quaternionOffset, 16);
-  let qx = msg.getBitWord(quaternionOffset + 16, 16);
-  let qy = msg.getBitWord(quaternionOffset + 32, 16);
-  let qz = msg.getBitWord(quaternionOffset + 48, 16);
-  let vx = msg.getBitWord(velocityOffset, 4);
-  let vy = msg.getBitWord(velocityOffset + 4, 4);
-  let vz = msg.getBitWord(velocityOffset + 8, 4);
-  return {
-    type: "GYRO",
-    timestamp,
-    quaternion: {
-      x: (1 - (qx >> 15) * 2) * (qx & 32767) / 32767,
-      y: (1 - (qy >> 15) * 2) * (qy & 32767) / 32767,
-      z: (1 - (qz >> 15) * 2) * (qz & 32767) / 32767,
-      w: (1 - (qw >> 15) * 2) * (qw & 32767) / 32767
-    },
-    velocity: {
-      x: (1 - (vx >> 3) * 2) * (vx & 7),
-      y: (1 - (vy >> 3) * 2) * (vy & 7),
-      z: (1 - (vz >> 3) * 2) * (vz & 7)
-    }
-  };
-}
-var GanMoveHistoryBuffer = class {
-  constructor(buildHistoryRequest) {
-    this.buildHistoryRequest = buildHistoryRequest;
-    this.serial = -1;
-    this.lastSerial = -1;
-    this.lastLocalTimestamp = null;
-    this.moveBuffer = [];
-  }
-  push(move) {
-    this.moveBuffer.push(move);
-  }
-  /** Private cube command for requesting move history */
-  async requestMoveHistory(conn, serial, count) {
-    if (serial % 2 == 0)
-      serial = serial - 1 & 255;
-    if (count % 2 == 1)
-      count++;
-    count = Math.min(count, serial + 1);
-    return conn.sendCommandMessage(this.buildHistoryRequest(serial, count)).catch(() => {
-    });
-  }
-  /**
-   * Evict move events from FIFO buffer until missing move event detected
-   * In case of missing move, and if connection is provided, submit request for move history to fill gap in buffer
-   */
-  async evictMoveBuffer(conn) {
-    var evictedEvents = [];
-    while (this.moveBuffer.length > 0) {
-      let bufferHead = this.moveBuffer[0];
-      let diff = this.lastSerial == -1 ? 1 : bufferHead.serial - this.lastSerial & 255;
-      if (diff > 1) {
-        if (conn) {
-          await this.requestMoveHistory(conn, bufferHead.serial, diff);
-        }
-        break;
-      } else {
-        evictedEvents.push(this.moveBuffer.shift());
-        this.lastSerial = bufferHead.serial;
-      }
-    }
-    if (conn && this.moveBuffer.length > 16) {
-      conn.disconnect().catch(() => {
-      });
-    }
-    return evictedEvents;
-  }
-  /**
-   * Check if circular serial number (modulo 256) fits into (start,end) serial number range.
-   * By default range is open, set closedStart / closedEnd to make it closed.
-   */
-  isSerialInRange(start, end, serial, closedStart = false, closedEnd = false) {
-    return (end - start & 255) >= (serial - start & 255) && (closedStart || (start - serial & 255) > 0) && (closedEnd || (end - serial & 255) > 0);
-  }
-  /** Used to inject missed moves to FIFO buffer */
-  injectMissedMoveToBuffer(move) {
-    if (move.type == "MOVE") {
-      if (this.moveBuffer.length > 0) {
-        var bufferHead = this.moveBuffer[0];
-        if (this.moveBuffer.some((e) => e.type == "MOVE" && e.serial == move.serial))
-          return;
-        if (!this.isSerialInRange(this.lastSerial, bufferHead.serial, move.serial))
-          return;
-        if (move.serial == (bufferHead.serial - 1 & 255)) {
-          this.moveBuffer.unshift(move);
-        }
-      } else {
-        if (this.isSerialInRange(this.lastSerial, this.serial, move.serial, false, true)) {
-          this.moveBuffer.unshift(move);
-        }
-      }
-    }
-  }
-  /** Used in response to periodic facelets event to check if any moves missed */
-  async checkIfMoveMissed(conn) {
-    let diff = this.serial - this.lastSerial & 255;
-    if (diff > 0) {
-      if (this.serial != 0) {
-        let bufferHead = this.moveBuffer[0];
-        let startSerial = bufferHead ? bufferHead.serial : this.serial + 1 & 255;
-        await this.requestMoveHistory(conn, startSerial, diff + 1);
-      }
-    }
-  }
-};
 var GanCubeClassicConnection = class _GanCubeClassicConnection {
-  constructor(device, commandCharacteristic, stateCharacteristic, encrypter, driver, validateDecrypted, events$) {
-    this.writeQueue = new GattWriteQueue();
+  constructor(device, commandCharacteristic, stateCharacteristic, encrypter, driver, validateDecrypted, events$, explicitMac) {
     this.disconnectOnce = false;
+    this.inNotificationHandler = false;
     this.notificationChain = Promise.resolve();
     this.onStateUpdate = (evt) => {
-      var characteristic = evt.target;
-      var eventMessage = characteristic.value;
+      const characteristic = evt.target;
+      const eventMessage = characteristic.value;
       if (!eventMessage || eventMessage.byteLength < 16)
         return;
-      var raw = new Uint8Array(eventMessage.buffer.slice(eventMessage.byteOffset, eventMessage.byteOffset + eventMessage.byteLength));
-      this.notificationChain = this.notificationChain.then(() => this.handleNotification(raw));
+      const raw = new Uint8Array(eventMessage.buffer.slice(eventMessage.byteOffset, eventMessage.byteOffset + eventMessage.byteLength));
+      this.notificationChain = this.notificationChain.then(() => this.handleNotification(raw)).catch((e) => {
+        console.error("[gan] notification handler failed; frame dropped", e);
+      });
     };
     this.onDisconnect = async () => {
       if (this.disconnectOnce)
@@ -2571,6 +3251,10 @@ var GanCubeClassicConnection = class _GanCubeClassicConnection {
       this.stateCharacteristic.removeEventListener("characteristicvaluechanged", this.onStateUpdate);
       await this.stateCharacteristic.stopNotifications().catch(() => {
       });
+      if (!this.inNotificationHandler) {
+        await this.notificationChain.catch(() => {
+        });
+      }
       if (!this.events$.closed) {
         this.events$.next({ timestamp: now(), type: "DISCONNECT" });
         this.events$.complete();
@@ -2583,36 +3267,64 @@ var GanCubeClassicConnection = class _GanCubeClassicConnection {
     this.driver = driver;
     this.validateDecrypted = validateDecrypted;
     this.events$ = events$ ?? new Subject();
+    this.explicitMac = explicitMac ?? null;
   }
   static async create(device, commandCharacteristic, stateCharacteristic, encrypter, driver, options) {
-    var conn = new _GanCubeClassicConnection(device, commandCharacteristic, stateCharacteristic, encrypter, driver, options?.validateDecrypted, options?.events$);
+    const conn = new _GanCubeClassicConnection(device, commandCharacteristic, stateCharacteristic, encrypter, driver, options?.validateDecrypted, options?.events$, options?.mac);
     conn.device.addEventListener("gattserverdisconnected", conn.onDisconnect);
     conn.stateCharacteristic.addEventListener("characteristicvaluechanged", conn.onStateUpdate);
-    await conn.stateCharacteristic.startNotifications();
+    try {
+      await conn.stateCharacteristic.startNotifications();
+    } catch (e) {
+      conn.device.removeEventListener("gattserverdisconnected", conn.onDisconnect);
+      conn.stateCharacteristic.removeEventListener("characteristicvaluechanged", conn.onStateUpdate);
+      throw e;
+    }
+    if (conn.disconnectOnce) {
+      throw new Error("Device disconnected during connection setup");
+    }
     return conn;
   }
+  /** Legacy API contract: an unnamed device reports "GAN-XXXX", never null. */
   get deviceName() {
     return this.device.name || "GAN-XXXX";
   }
+  /** Legacy API contract: an unknown MAC reports the zero address, never null. */
   get deviceMAC() {
-    return this.device.mac || "00:00:00:00:00:00";
+    return this.explicitMac || this.device.mac || "00:00:00:00:00:00";
   }
   async sendCommandMessage(message) {
-    var encryptedMessage = this.encrypter.encrypt(message);
-    return this.writeQueue.enqueue(() => writeGattCharacteristicValue(this.commandCharacteristic, encryptedMessage));
+    const encryptedMessage = this.encrypter.encrypt(message);
+    return writeGattCharacteristicValue(this.commandCharacteristic, encryptedMessage);
   }
   async handleNotification(raw) {
+    this.inNotificationHandler = true;
     try {
-      var decryptedMessage = this.encrypter.decrypt(raw);
-      if (this.validateDecrypted && !this.validateDecrypted(decryptedMessage))
+      let decryptedMessage;
+      try {
+        decryptedMessage = this.encrypter.decrypt(raw);
+      } catch {
         return;
-      var cubeEvents = await this.driver.handleStateEvent(this, decryptedMessage);
-      cubeEvents.forEach((e) => this.events$.next(e));
-    } catch {
+      }
+      try {
+        if (this.validateDecrypted && !this.validateDecrypted(decryptedMessage))
+          return;
+      } catch (e) {
+        console.error("[gan] packet validator threw", e);
+        return;
+      }
+      try {
+        const cubeEvents = await this.driver.handleStateEvent(this, decryptedMessage);
+        cubeEvents.forEach((e) => this.events$.next(e));
+      } catch (e) {
+        console.error("[gan] driver failed to handle a validated frame", e);
+      }
+    } finally {
+      this.inNotificationHandler = false;
     }
   }
   async sendCubeCommand(command) {
-    var commandMessage = this.driver.createCommandMessage(command);
+    const commandMessage = this.driver.createCommandMessage(command);
     if (commandMessage) {
       return this.sendCommandMessage(commandMessage);
     }
@@ -2624,462 +3336,56 @@ var GanCubeClassicConnection = class _GanCubeClassicConnection {
     }
   }
 };
-var GanGen2ProtocolDriver = class {
-  constructor() {
-    this.lastSerial = -1;
-    this.lastMoveTimestamp = 0;
-    this.cubeTimestamp = 0;
-  }
-  createCommandMessage(command) {
-    var msg = new Uint8Array(20).fill(0);
-    switch (command.type) {
-      case "REQUEST_FACELETS":
-        msg[0] = 4;
-        break;
-      case "REQUEST_HARDWARE":
-        msg[0] = 5;
-        break;
-      case "REQUEST_BATTERY":
-        msg[0] = 9;
-        break;
-      case "REQUEST_RESET":
-        msg.set([10, 5, 57, 119, 0, 0, 1, 35, 69, 103, 137, 171, 0, 0, 0, 0, 0, 0, 0, 0]);
-        break;
-      default:
-        msg = void 0;
-    }
-    return msg;
-  }
-  async handleStateEvent(conn, eventMessage) {
-    var timestamp = now();
-    var cubeEvents = [];
-    var msg = new GanBitReader(eventMessage);
-    var eventType = msg.getBitWord(0, 4);
-    if (eventType == 1) {
-      cubeEvents.push(decodeGyroEvent(msg, timestamp, 4, 68));
-    } else if (eventType == 2) {
-      if (this.lastSerial != -1) {
-        let serial = msg.getBitWord(4, 8);
-        let diff = Math.min(serial - this.lastSerial & 255, 7);
-        this.lastSerial = serial;
-        if (diff > 0) {
-          for (let i2 = diff - 1; i2 >= 0; i2--) {
-            let face = msg.getBitWord(12 + 5 * i2, 4);
-            let direction = msg.getBitWord(16 + 5 * i2, 1);
-            let move = "URFDLB".charAt(face) + " '".charAt(direction);
-            let elapsed = msg.getBitWord(47 + 16 * i2, 16);
-            if (elapsed == 0) {
-              elapsed = timestamp - this.lastMoveTimestamp;
-            }
-            this.cubeTimestamp += elapsed;
-            cubeEvents.push({
-              type: "MOVE",
-              serial: serial - i2 & 255,
-              timestamp,
-              localTimestamp: i2 == 0 ? timestamp : null,
-              // Missed and recovered events has no meaningfull local timestamps
-              cubeTimestamp: this.cubeTimestamp,
-              face,
-              direction,
-              move: move.trim()
-            });
-          }
-          this.lastMoveTimestamp = timestamp;
-        }
-      }
-    } else if (eventType == 4) {
-      let serial = msg.getBitWord(4, 8);
-      if (this.lastSerial == -1)
-        this.lastSerial = serial;
-      const state = decodeCornersEdges(msg, { cp: 12, co: 33, ep: 47, eo: 91 });
-      cubeEvents.push({
-        type: "FACELETS",
-        serial,
-        timestamp,
-        facelets: toKociembaFacelets(state.CP, state.CO, state.EP, state.EO),
-        state
-      });
-    } else if (eventType == 5) {
-      let hwMajor = msg.getBitWord(8, 8);
-      let hwMinor = msg.getBitWord(16, 8);
-      let swMajor = msg.getBitWord(24, 8);
-      let swMinor = msg.getBitWord(32, 8);
-      let gyroSupported = msg.getBitWord(104, 1);
-      let hardwareName = "";
-      for (var i = 0; i < 8; i++) {
-        hardwareName += String.fromCharCode(msg.getBitWord(i * 8 + 40, 8));
-      }
-      cubeEvents.push({
-        type: "HARDWARE",
-        timestamp,
-        hardwareName,
-        hardwareVersion: `${hwMajor}.${hwMinor}`,
-        softwareVersion: `${swMajor}.${swMinor}`,
-        gyroSupported: !!gyroSupported
-      });
-    } else if (eventType == 9) {
-      let batteryLevel = msg.getBitWord(8, 8);
-      cubeEvents.push({
-        type: "BATTERY",
-        timestamp,
-        batteryLevel: Math.min(batteryLevel, 100)
-      });
-    } else if (eventType == 13) {
-      conn.disconnect().catch(() => {
-      });
-    }
-    return cubeEvents;
-  }
-};
-var GanGen3ProtocolDriver = class {
-  constructor() {
-    this.history = new GanMoveHistoryBuffer((serial, count) => {
-      const msg = new Uint8Array(16).fill(0);
-      msg.set([104, 3, serial, 0, count, 0]);
-      return msg;
-    });
-  }
-  createCommandMessage(command) {
-    var msg = new Uint8Array(16).fill(0);
-    switch (command.type) {
-      case "REQUEST_FACELETS":
-        msg.set([104, 1]);
-        break;
-      case "REQUEST_HARDWARE":
-        msg.set([104, 4]);
-        break;
-      case "REQUEST_BATTERY":
-        msg.set([104, 7]);
-        break;
-      case "REQUEST_RESET":
-        msg.set([104, 5, 5, 57, 119, 0, 0, 1, 35, 69, 103, 137, 171, 0, 0, 0]);
-        break;
-      default:
-        msg = void 0;
-    }
-    return msg;
-  }
-  async handleStateEvent(conn, eventMessage) {
-    var timestamp = now();
-    var cubeEvents = [];
-    var msg = new GanBitReader(eventMessage);
-    var magic = msg.getBitWord(0, 8);
-    var eventType = msg.getBitWord(8, 8);
-    var dataLength = msg.getBitWord(16, 8);
-    if (magic == 85 && dataLength > 0) {
-      if (eventType == 1) {
-        if (this.history.lastSerial != -1) {
-          this.history.lastLocalTimestamp = timestamp;
-          let cubeTimestamp = msg.getBitWord(24, 32, true);
-          let serial = this.history.serial = msg.getBitWord(56, 16, true);
-          let direction = msg.getBitWord(72, 2);
-          let face = [2, 32, 8, 1, 16, 4].indexOf(msg.getBitWord(74, 6));
-          let move = "URFDLB".charAt(face) + " '".charAt(direction);
-          if (face >= 0) {
-            this.history.push({
-              type: "MOVE",
-              serial,
-              timestamp,
-              localTimestamp: timestamp,
-              cubeTimestamp,
-              face,
-              direction,
-              move: move.trim()
-            });
-          }
-          cubeEvents = await this.history.evictMoveBuffer(conn);
-        }
-      } else if (eventType == 6) {
-        let startSerial = msg.getBitWord(24, 8);
-        let count = (dataLength - 1) * 2;
-        for (let i2 = 0; i2 < count; i2++) {
-          let face = [1, 5, 3, 0, 4, 2].indexOf(msg.getBitWord(32 + 4 * i2, 3));
-          let direction = msg.getBitWord(35 + 4 * i2, 1);
-          if (face >= 0) {
-            let move = "URFDLB".charAt(face) + " '".charAt(direction);
-            this.history.injectMissedMoveToBuffer({
-              type: "MOVE",
-              serial: startSerial - i2 & 255,
-              timestamp,
-              localTimestamp: null,
-              // Missed and recovered events has no meaningfull local timestamps
-              cubeTimestamp: null,
-              // Cube hardware timestamp for missed move you should interpolate using cubeTimestampLinearFit
-              face,
-              direction,
-              move: move.trim()
-            });
-          }
-        }
-        cubeEvents = await this.history.evictMoveBuffer();
-      } else if (eventType == 2) {
-        let serial = this.history.serial = msg.getBitWord(24, 16, true);
-        if (this.history.lastSerial != -1) {
-          if (this.history.lastLocalTimestamp != null && timestamp - this.history.lastLocalTimestamp > 500) {
-            await this.history.checkIfMoveMissed(conn);
-          }
-        }
-        if (this.history.lastSerial == -1)
-          this.history.lastSerial = serial;
-        const state = decodeCornersEdges(msg, { cp: 40, co: 61, ep: 77, eo: 121 });
-        cubeEvents.push({
-          type: "FACELETS",
-          serial,
-          timestamp,
-          facelets: toKociembaFacelets(state.CP, state.CO, state.EP, state.EO),
-          state
-        });
-      } else if (eventType == 7) {
-        let swMajor = msg.getBitWord(72, 4);
-        let swMinor = msg.getBitWord(76, 4);
-        let hwMajor = msg.getBitWord(80, 4);
-        let hwMinor = msg.getBitWord(84, 4);
-        let hardwareName = "";
-        for (var i = 0; i < 5; i++) {
-          hardwareName += String.fromCharCode(msg.getBitWord(i * 8 + 32, 8));
-        }
-        cubeEvents.push({
-          type: "HARDWARE",
-          timestamp,
-          hardwareName,
-          hardwareVersion: `${hwMajor}.${hwMinor}`,
-          softwareVersion: `${swMajor}.${swMinor}`,
-          gyroSupported: false
-        });
-      } else if (eventType == 16) {
-        let batteryLevel = msg.getBitWord(24, 8);
-        cubeEvents.push({
-          type: "BATTERY",
-          timestamp,
-          batteryLevel: Math.min(batteryLevel, 100)
-        });
-      } else if (eventType == 17) {
-        conn.disconnect().catch(() => {
-        });
-      }
-    }
-    return cubeEvents;
-  }
-};
-var GanGen4ProtocolDriver = class {
-  constructor() {
-    this.history = new GanMoveHistoryBuffer((serial, count) => {
-      const msg = new Uint8Array(20).fill(0);
-      msg.set([209, 4, serial, 0, count, 0]);
-      return msg;
-    });
-    this.hwInfo = {};
-    this.gyroObserved = false;
-    this.hardwareInfoEmitted = false;
-  }
-  createCommandMessage(command) {
-    var msg = new Uint8Array(20).fill(0);
-    switch (command.type) {
-      case "REQUEST_FACELETS":
-        msg.set([221, 4, 0, 237, 0, 0]);
-        break;
-      case "REQUEST_HARDWARE":
-        this.hwInfo = {};
-        this.hardwareInfoEmitted = false;
-        msg.set([223, 3, 0, 0, 0]);
-        break;
-      case "REQUEST_BATTERY":
-        msg.set([221, 4, 0, 239, 0, 0]);
-        break;
-      case "REQUEST_RESET":
-        msg.set([210, 13, 5, 57, 119, 0, 0, 1, 35, 69, 103, 137, 171, 0, 0, 0]);
-        break;
-      default:
-        msg = void 0;
-    }
-    return msg;
-  }
-  buildHardwareEvent(timestamp) {
-    return {
-      type: "HARDWARE",
-      timestamp,
-      hardwareName: this.hwInfo[252],
-      hardwareVersion: this.hwInfo[254],
-      softwareVersion: this.hwInfo[253],
-      productDate: this.hwInfo[250],
-      gyroSupported: this.gyroObserved
-    };
-  }
-  async handleStateEvent(conn, eventMessage) {
-    var timestamp = now();
-    var cubeEvents = [];
-    var msg = new GanBitReader(eventMessage);
-    var eventType = msg.getBitWord(0, 8);
-    var dataLength = msg.getBitWord(8, 8);
-    if (eventType == 1) {
-      if (this.history.lastSerial != -1) {
-        const msgBitLen = eventMessage.length * 8;
-        let off = 0;
-        while (off + 72 <= msgBitLen && msg.getBitWord(off, 8) === 1) {
-          let cubeTimestamp = msg.getBitWord(off + 16, 32, true);
-          let serial = msg.getBitWord(off + 48, 16, true);
-          this.history.serial = serial;
-          let direction = msg.getBitWord(off + 64, 2);
-          let face = [2, 32, 8, 1, 16, 4].indexOf(msg.getBitWord(off + 66, 6));
-          let move = "URFDLB".charAt(face) + " '".charAt(direction);
-          if (face < 0) {
-            break;
-          }
-          this.history.push({
-            type: "MOVE",
-            serial,
-            timestamp,
-            localTimestamp: timestamp,
-            cubeTimestamp,
-            face,
-            direction,
-            move: move.trim()
-          });
-          this.history.lastLocalTimestamp = timestamp;
-          off += 72;
-        }
-        cubeEvents = await this.history.evictMoveBuffer(conn);
-      }
-    } else if (eventType == 209) {
-      let startSerial = msg.getBitWord(16, 8);
-      let count = (dataLength - 1) * 2;
-      for (let i2 = 0; i2 < count; i2++) {
-        let face = [1, 5, 3, 0, 4, 2].indexOf(msg.getBitWord(24 + 4 * i2, 3));
-        let direction = msg.getBitWord(27 + 4 * i2, 1);
-        if (face >= 0) {
-          let move = "URFDLB".charAt(face) + " '".charAt(direction);
-          this.history.injectMissedMoveToBuffer({
-            type: "MOVE",
-            serial: startSerial - i2 & 255,
-            timestamp,
-            localTimestamp: null,
-            // Missed and recovered events has no meaningfull local timestamps
-            cubeTimestamp: null,
-            // Cube hardware timestamp for missed move you should interpolate using cubeTimestampLinearFit
-            face,
-            direction,
-            move: move.trim()
-          });
-        }
-      }
-      cubeEvents = await this.history.evictMoveBuffer();
-    } else if (eventType == 237) {
-      let serial = this.history.serial = msg.getBitWord(16, 16, true);
-      if (this.history.lastSerial != -1) {
-        if (this.history.lastLocalTimestamp != null && timestamp - this.history.lastLocalTimestamp > 500) {
-          await this.history.checkIfMoveMissed(conn);
-        }
-      }
-      if (this.history.lastSerial == -1)
-        this.history.lastSerial = serial;
-      const state = decodeCornersEdges(msg, { cp: 32, co: 53, ep: 69, eo: 113 });
-      cubeEvents.push({
-        type: "FACELETS",
-        serial,
-        timestamp,
-        facelets: toKociembaFacelets(state.CP, state.CO, state.EP, state.EO),
-        state
-      });
-    } else if (eventType >= 250 && eventType <= 254) {
-      switch (eventType) {
-        case 250:
-          let year = msg.getBitWord(24, 16, true);
-          let month = msg.getBitWord(40, 8);
-          let day = msg.getBitWord(48, 8);
-          this.hwInfo[eventType] = `${year.toString().padStart(4, "0")}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
-          break;
-        case 252:
-          this.hwInfo[eventType] = "";
-          for (var i = 0; i < dataLength - 1; i++) {
-            this.hwInfo[eventType] += String.fromCharCode(msg.getBitWord(i * 8 + 24, 8));
-          }
-          break;
-        case 253:
-          let swMajor = msg.getBitWord(24, 4);
-          let swMinor = msg.getBitWord(28, 4);
-          this.hwInfo[eventType] = `${swMajor}.${swMinor}`;
-          break;
-        case 254:
-          let hwMajor = msg.getBitWord(24, 4);
-          let hwMinor = msg.getBitWord(28, 4);
-          this.hwInfo[eventType] = `${hwMajor}.${hwMinor}`;
-          break;
-      }
-      if (Object.keys(this.hwInfo).length == 4) {
-        this.hardwareInfoEmitted = true;
-        cubeEvents.push(this.buildHardwareEvent(timestamp));
-      }
-    } else if (eventType == 236) {
-      const firstGyroThisSession = !this.gyroObserved;
-      this.gyroObserved = true;
-      cubeEvents.push(decodeGyroEvent(msg, timestamp, 16, 80));
-      if (firstGyroThisSession && this.hardwareInfoEmitted && Object.keys(this.hwInfo).length == 4) {
-        cubeEvents.push(this.buildHardwareEvent(timestamp));
-      }
-    } else if (eventType == 239) {
-      let batteryLevel = msg.getBitWord(8 + dataLength * 8, 8);
-      cubeEvents.push({
-        type: "BATTERY",
-        timestamp,
-        batteryLevel: Math.min(batteryLevel, 100)
-      });
-    } else if (eventType == 234) {
-      conn.disconnect().catch(() => {
-      });
-    }
-    return cubeEvents;
-  }
-};
 function hasGanGen1Profile(serviceUuids) {
   const primary = normalizeUuid(GAN_GEN1_PRIMARY_SERVICE);
   const deviceInfo = normalizeUuid(GAN_GEN1_DEVICE_INFO_SERVICE);
   return serviceUuids.has(primary) && serviceUuids.has(deviceInfo);
 }
+var GAN_GENERATION_SETUPS = [
+  {
+    generation: "gen2",
+    service: GAN_GEN2_SERVICE,
+    command: GAN_GEN2_COMMAND_CHARACTERISTIC,
+    state: GAN_GEN2_STATE_CHARACTERISTIC,
+    /** MoYu AI 2023 speaks the GAN gen2 protocol with its own key. */
+    key: (device) => device.name?.startsWith("AiCube") ? GAN_ENCRYPTION_KEYS[1] : GAN_ENCRYPTION_KEYS[0],
+    Encrypter: GanGen2CubeEncrypter,
+    createDriver: () => new GanGen2ProtocolDriver(),
+    validate: isValidGanGen2Packet
+  },
+  {
+    generation: "gen3",
+    service: GAN_GEN3_SERVICE,
+    command: GAN_GEN3_COMMAND_CHARACTERISTIC,
+    state: GAN_GEN3_STATE_CHARACTERISTIC,
+    key: () => GAN_ENCRYPTION_KEYS[0],
+    Encrypter: GanGen3CubeEncrypter,
+    createDriver: () => new GanGen3ProtocolDriver(),
+    validate: isValidGanGen3Packet
+  },
+  {
+    generation: "gen4",
+    service: GAN_GEN4_SERVICE,
+    command: GAN_GEN4_COMMAND_CHARACTERISTIC,
+    state: GAN_GEN4_STATE_CHARACTERISTIC,
+    key: () => GAN_ENCRYPTION_KEYS[0],
+    Encrypter: GanGen4CubeEncrypter,
+    createDriver: () => new GanGen4ProtocolDriver(),
+    validate: isValidGanGen4Packet
+  }
+];
 async function createGanClassicConnection(device, gatt, serviceUuids, mac, options) {
-  const salt = macStringToSaltOrThrow(mac);
-  const setups = [
-    {
-      generation: "gen2",
-      service: GAN_GEN2_SERVICE,
-      command: GAN_GEN2_COMMAND_CHARACTERISTIC,
-      state: GAN_GEN2_STATE_CHARACTERISTIC,
-      /** MoYu AI 2023 speaks the GAN gen2 protocol with its own key. */
-      key: () => device.name?.startsWith("AiCube") ? GAN_ENCRYPTION_KEYS[1] : GAN_ENCRYPTION_KEYS[0],
-      Encrypter: GanGen2CubeEncrypter,
-      createDriver: () => new GanGen2ProtocolDriver(),
-      validate: isValidGanGen2Packet
-    },
-    {
-      generation: "gen3",
-      service: GAN_GEN3_SERVICE,
-      command: GAN_GEN3_COMMAND_CHARACTERISTIC,
-      state: GAN_GEN3_STATE_CHARACTERISTIC,
-      key: () => GAN_ENCRYPTION_KEYS[0],
-      Encrypter: GanGen2CubeEncrypter,
-      createDriver: () => new GanGen3ProtocolDriver(),
-      validate: isValidGanGen3Packet
-    },
-    {
-      generation: "gen4",
-      service: GAN_GEN4_SERVICE,
-      command: GAN_GEN4_COMMAND_CHARACTERISTIC,
-      state: GAN_GEN4_STATE_CHARACTERISTIC,
-      key: () => GAN_ENCRYPTION_KEYS[0],
-      Encrypter: GanGen2CubeEncrypter,
-      createDriver: () => new GanGen4ProtocolDriver(),
-      validate: isValidGanGen4Packet
-    }
-  ];
-  for (const setup of setups) {
+  for (const setup of GAN_GENERATION_SETUPS) {
     if (!serviceUuids.has(normalizeUuid(setup.service))) {
       continue;
     }
+    const salt = macStringToSaltOrThrow(mac);
     const service = await gatt.getPrimaryService(setup.service);
     const commandCharacteristic = await service.getCharacteristic(setup.command);
     const stateCharacteristic = await service.getCharacteristic(setup.state);
-    const key = setup.key();
-    const encrypter = new setup.Encrypter(new Uint8Array(key.key), new Uint8Array(key.iv), salt);
-    const conn = await GanCubeClassicConnection.create(device, commandCharacteristic, stateCharacteristic, encrypter, setup.createDriver(), { validateDecrypted: setup.validate, events$: options?.events$ });
+    const key = setup.key(device);
+    const encrypter = new setup.Encrypter(Uint8Array.from(key.key), Uint8Array.from(key.iv), salt);
+    const conn = await GanCubeClassicConnection.create(device, commandCharacteristic, stateCharacteristic, encrypter, setup.createDriver(), { validateDecrypted: setup.validate, events$: options?.events$, mac });
     return { conn, generation: setup.generation };
   }
   return null;
@@ -3090,9 +3396,11 @@ var SmartCubeEventBus = class {
     this.state = new ReplaySubject(1);
     this.stopped = false;
     this.lastBatteryLevel = null;
-    this.forceNextBatteryEmission = false;
-    this.events$ = this.live;
-    this.state$ = this.state;
+    this.forcedBatteryEmissions = 0;
+    this.emitting = false;
+    this.pendingEmits = [];
+    this.events$ = this.live.asObservable();
+    this.state$ = this.state.asObservable();
     this.snapshot = Object.freeze({
       revision: 0,
       connected: true,
@@ -3117,11 +3425,38 @@ var SmartCubeEventBus = class {
     });
     this.state.next(this.snapshot);
   }
-  /** Update the snapshot synchronously, then forward the event to live subscribers. */
+  /**
+   * Update the snapshot synchronously, then forward the event to live subscribers.
+   * A subscriber that emits reentrantly has its event queued until the current
+   * delivery finishes, so every subscriber observes events in emission order.
+   * BATTERY events are routed through the single clamp/dedupe policy.
+   */
   emit(event) {
     if (this.stopped) {
       return;
     }
+    if (event.type === "BATTERY") {
+      this.emitBattery(event.batteryLevel, event.timestamp);
+      return;
+    }
+    this.emitOrdered(event);
+  }
+  emitOrdered(event) {
+    if (this.emitting) {
+      this.pendingEmits.push(event);
+      return;
+    }
+    this.emitting = true;
+    try {
+      this.dispatch(event);
+      while (this.pendingEmits.length > 0) {
+        this.dispatch(this.pendingEmits.shift());
+      }
+    } finally {
+      this.emitting = false;
+    }
+  }
+  dispatch(event) {
     switch (event.type) {
       case "FACELETS":
         this.publish({ facelets: Object.freeze({ value: event.facelets, timestamp: event.timestamp }) });
@@ -3145,33 +3480,55 @@ var SmartCubeEventBus = class {
    * identical levels are dropped unless an explicit REQUEST_BATTERY forced the next emission.
    */
   emitBattery(rawLevel, timestamp = now()) {
+    if (this.stopped) {
+      return;
+    }
     if (!Number.isFinite(rawLevel)) {
       return;
     }
     const batteryLevel = Math.min(100, Math.max(0, Math.round(rawLevel)));
-    const forceEmission = this.forceNextBatteryEmission;
-    this.forceNextBatteryEmission = false;
+    const forceEmission = this.forcedBatteryEmissions > 0;
+    if (forceEmission) {
+      this.forcedBatteryEmissions--;
+    }
     if (!forceEmission && this.lastBatteryLevel === batteryLevel) {
       return;
     }
     this.lastBatteryLevel = batteryLevel;
-    this.emit({ timestamp, type: "BATTERY", batteryLevel });
+    this.emitOrdered({ timestamp, type: "BATTERY", batteryLevel });
   }
-  /** The next emitBattery emits even when the level is unchanged (REQUEST_BATTERY semantics). */
+  /**
+   * The next emitBattery emits even when the level is unchanged (REQUEST_BATTERY
+   * semantics). Forces are counted, so concurrent requests each get an emission.
+   */
   forceNextBattery() {
-    this.forceNextBatteryEmission = true;
+    this.forcedBatteryEmissions++;
+  }
+  /** Roll back one forceNextBattery() after its request failed to reach the cube. */
+  cancelForcedBattery() {
+    this.forcedBatteryEmissions = Math.max(0, this.forcedBatteryEmissions - 1);
   }
   resetBatteryDedupe() {
     this.lastBatteryLevel = null;
-    this.forceNextBatteryEmission = false;
+    this.forcedBatteryEmissions = 0;
   }
   /** Capability changes (e.g. lazy gyro detection) go through the bus so the snapshot stays true. */
   setCapabilities(patch) {
     if (this.stopped) {
       return;
     }
-    const capabilities = Object.freeze({ ...this.snapshot.capabilities, ...patch });
-    const hardware = this.snapshot.hardware && patch.gyroscope !== void 0 ? Object.freeze({ ...this.snapshot.hardware, gyroSupported: patch.gyroscope }) : this.snapshot.hardware;
+    const clean = {};
+    for (const [key, value] of Object.entries(patch)) {
+      if (typeof value === "boolean") {
+        clean[key] = value;
+      }
+    }
+    const capabilities = Object.freeze({ ...this.snapshot.capabilities, ...clean });
+    const hardware = this.snapshot.hardware && clean.gyroscope !== void 0 ? Object.freeze({ ...this.snapshot.hardware, gyroSupported: clean.gyroscope }) : this.snapshot.hardware;
+    const unchanged = hardware === this.snapshot.hardware && Object.entries(capabilities).every(([key, value]) => this.snapshot.capabilities[key] === value);
+    if (unchanged) {
+      return;
+    }
     this.publish({ capabilities, hardware });
   }
   /** Marks the connection disconnected and completes both streams; later emits are ignored. */
@@ -3179,15 +3536,10 @@ var SmartCubeEventBus = class {
     if (this.stopped) {
       return;
     }
-    this.stopped = true;
     if (this.snapshot.connected) {
-      this.snapshot = Object.freeze({
-        ...this.snapshot,
-        connected: false,
-        revision: this.snapshot.revision + 1
-      });
-      this.state.next(this.snapshot);
+      this.publish({ connected: false });
     }
+    this.stopped = true;
     this.live.complete();
     this.state.complete();
   }
@@ -3203,19 +3555,95 @@ function throwIfAborted(signal) {
     throw abortError();
   }
 }
+function validCachedMac(device) {
+  const cached = getCachedMacForDevice(device);
+  if (!cached) {
+    return null;
+  }
+  try {
+    parseMacBytes(cached);
+    return cached;
+  } catch {
+    removeCachedMacForDevice(device);
+    return null;
+  }
+}
+async function resolveCubeMac(device, macProvider, context2, options) {
+  throwIfAborted(context2?.signal);
+  let mac = options.parseFromManufacturerData(context2?.advertisementManufacturerData ?? null);
+  mac = mac || validCachedMac(device);
+  if (!mac && macProvider) {
+    const r = await macProvider(device, false);
+    throwIfAborted(context2?.signal);
+    if (r) {
+      mac = r;
+    }
+  }
+  if (!mac) {
+    const mfData = await waitForManufacturerData(device, context2?.enableAddressSearch ? options.advertisementTimeoutsMs[1] : options.advertisementTimeoutsMs[0], {
+      earlyExitOnEmptyFirstAdvertisement: false,
+      signal: context2?.signal,
+      // Keep merging until the data actually parses to a MAC: an unrelated
+      // manufacturer entry must not preempt a later MAC-bearing frame.
+      resolveWhen: (mf) => options.parseFromManufacturerData(mf) !== null
+    });
+    mac = options.parseFromManufacturerData(mfData);
+  }
+  const nameCandidates = !mac && options.candidatesFromName ? options.candidatesFromName(device.name) : [];
+  if (!mac && options.useSingleCandidateWithoutProbe && nameCandidates.length === 1) {
+    mac = nameCandidates[0];
+  }
+  if (!mac && context2?.enableAddressSearch && nameCandidates.length > 0 && options.probe) {
+    for (let i = 0; i < nameCandidates.length; i++) {
+      throwIfAborted(context2.signal);
+      context2.onStatus?.(`Testing address (${i + 1}/${nameCandidates.length})\u2026`);
+      try {
+        if (await options.probe(device, nameCandidates[i], {
+          timeoutMs: options.probeTimeoutMs ?? 2e3,
+          signal: context2.signal
+        })) {
+          mac = nameCandidates[i];
+          break;
+        }
+      } catch (e) {
+        if (isAbortError(e)) {
+          throw e;
+        }
+      }
+    }
+  }
+  if (!mac && macProvider) {
+    throwIfAborted(context2?.signal);
+    const r = await macProvider(device, true);
+    if (r) {
+      mac = r;
+    }
+  }
+  throwIfAborted(context2?.signal);
+  return mac;
+}
 var protocolRegistry = [];
 function registerProtocol(protocol) {
   if (!protocolRegistry.includes(protocol)) {
-    protocolRegistry.push(protocol);
+    Object.freeze(protocol.nameFilters);
+    Object.freeze(protocol.optionalServices);
+    if (protocol.optionalManufacturerData) {
+      Object.freeze(protocol.optionalManufacturerData);
+    }
+    protocolRegistry.push(Object.freeze(protocol));
   }
 }
 function getRegisteredProtocols() {
-  return protocolRegistry;
+  return [...protocolRegistry];
 }
 function deviceNameMatchesFilters(nameFilters) {
+  const filters = [...nameFilters];
   return (device) => {
-    const name = device.name || "";
-    return nameFilters.some((f) => "name" in f ? name === f.name : name.startsWith(f.namePrefix));
+    const name = device.name;
+    if (!name) {
+      return false;
+    }
+    return filters.some((f) => typeof f.name === "string" ? name === f.name : f.namePrefix !== "" && name.startsWith(f.namePrefix));
   };
 }
 var DEFAULT_GAN_CAPABILITIES = {
@@ -3246,13 +3674,15 @@ function ganEventToSmartEvent(event) {
         direction: event.direction,
         move: event.move,
         localTimestamp: event.localTimestamp,
-        cubeTimestamp: event.cubeTimestamp
+        cubeTimestamp: event.cubeTimestamp,
+        serial: event.serial
       };
     case "FACELETS":
       return {
         timestamp: event.timestamp,
         type: "FACELETS",
-        facelets: event.facelets
+        facelets: event.facelets,
+        serial: event.serial
       };
     case "GYRO":
       return {
@@ -3298,7 +3728,7 @@ async function createWithCapturedInit(create) {
 var GanSmartCubeConnection = class {
   constructor(ganConn, mac, protocol, capabilities) {
     this.forwardLegacyEvent = (event) => {
-      if (event.type === "HARDWARE" && this.protocol.id === "gan-gen2" && typeof event.gyroSupported === "boolean" && this.capabilities.gyroscope !== event.gyroSupported) {
+      if (event.type === "HARDWARE" && (this.protocol.id === "gan-gen2" || this.protocol.id === "gan-gen3") && typeof event.gyroSupported === "boolean" && this.capabilities.gyroscope !== event.gyroSupported) {
         this.bus.setCapabilities({ gyroscope: event.gyroSupported });
       }
       if (event.type === "BATTERY") {
@@ -3325,6 +3755,9 @@ var GanSmartCubeConnection = class {
   /** Events the legacy connection emitted during init, before this wrapper could subscribe. */
   replayCapturedEvents(events) {
     for (const event of events) {
+      if (event.type === "MOVE" || event.type === "GYRO") {
+        continue;
+      }
       this.forwardLegacyEvent(event);
     }
   }
@@ -3358,50 +3791,34 @@ async function connectGanDevice(device, macProvider, context2) {
   if (!gatt.connected) {
     await gatt.connect();
   }
-  const services = await gatt.getPrimaryServices();
-  const serviceUuidSet = new Set(services.map((s) => normalizeUuid(s.uuid)));
+  const serviceUuidSet = context2?.serviceUuids && context2.serviceUuids.size > 0 ? new Set([...context2.serviceUuids].map(normalizeUuid)) : new Set((await gatt.getPrimaryServices()).map((s) => normalizeUuid(s.uuid)));
   if (hasGanGen1Profile(serviceUuidSet)) {
     const { result: gen1Conn, captured: captured2 } = await createWithCapturedInit((events$) => GanGen1CubeConnection.create(device, events$));
     const wrapped2 = new GanSmartCubeConnection(gen1Conn, "", GAN_GEN1_PROTOCOL, GAN_GEN1_CAPABILITIES);
     wrapped2.replayCapturedEvents(captured2);
     return wrapped2;
   }
-  let mac = null;
-  if (context2?.advertisementManufacturerData) {
-    mac = macFromGanManufacturerData(context2.advertisementManufacturerData);
-  }
-  mac = mac || getCachedMacForDevice(device);
-  if (!mac && macProvider) {
-    const r = await macProvider(device, false);
-    if (r) {
-      mac = r;
-    }
-  }
-  if (!mac) {
-    const mf = await waitForManufacturerData(device, 5e3);
-    if (mf) {
-      mac = macFromGanManufacturerData(mf);
-    }
-  }
-  if (!mac && macProvider) {
-    const r = await macProvider(device, true);
-    if (r) {
-      mac = r;
-    }
-  }
+  const mac = await resolveCubeMac(device, macProvider, context2, {
+    parseFromManufacturerData: (mf) => mf ? macFromGanManufacturerData(mf) : null,
+    advertisementTimeoutsMs: [5e3, 5e3]
+  });
   throwIfAborted(context2?.signal);
   if (!mac) {
     throw new Error("Unable to determine cube MAC address, connection is not possible!");
   }
-  bleDevice.mac = mac;
   const { result: created, captured } = await createWithCapturedInit((events$) => createGanClassicConnection(bleDevice, gatt, serviceUuidSet, mac, { events$ }));
   if (!created) {
     throw new Error("Can't find target BLE services - wrong or unsupported cube device model");
   }
-  const wrapped = new GanSmartCubeConnection(created.conn, mac, created.generation === "gen2" ? GAN_GEN2_PROTOCOL : created.generation === "gen3" ? GAN_GEN3_PROTOCOL : GAN_GEN4_PROTOCOL);
+  const wrapped = new GanSmartCubeConnection(created.conn, mac, GENERATION_PROTOCOLS[created.generation]);
   wrapped.replayCapturedEvents(captured);
   return wrapped;
 }
+var GENERATION_PROTOCOLS = {
+  gen2: GAN_GEN2_PROTOCOL,
+  gen3: GAN_GEN3_PROTOCOL,
+  gen4: GAN_GEN4_PROTOCOL
+};
 var GAN_NAME_FILTERS = [{ namePrefix: "GAN" }, { namePrefix: "MG" }, { namePrefix: "AiCube" }];
 var ganProtocol = {
   nameFilters: GAN_NAME_FILTERS,
@@ -3412,7 +3829,7 @@ var ganProtocol = {
     GAN_GEN3_SERVICE,
     GAN_GEN4_SERVICE
   ],
-  optionalManufacturerData: GAN_CIC_LIST,
+  optionalManufacturerData: [...GAN_CIC_LIST],
   needsMac: true,
   matchesDevice: deviceNameMatchesFilters(GAN_NAME_FILTERS),
   gattAffinity(serviceUuids, device) {
@@ -3425,13 +3842,7 @@ var ganProtocol = {
     if (serviceUuids.has(g1Primary) && serviceUuids.has(deviceInfo) && ganProtocol.matchesDevice(device)) {
       return 125 + bonus;
     }
-    if (serviceUuids.has(g4)) {
-      return 120 + bonus;
-    }
-    if (serviceUuids.has(g3)) {
-      return 120 + bonus;
-    }
-    if (serviceUuids.has(g2)) {
+    if (serviceUuids.has(g2) || serviceUuids.has(g3) || serviceUuids.has(g4)) {
       return 120 + bonus;
     }
     return 0;
@@ -3453,11 +3864,12 @@ function extractMacFromManufacturerData(mfData, cicList, reversedByteOrder = tru
     return null;
   let dataView;
   if (mfData instanceof DataView) {
-    dataView = new DataView(mfData.buffer.slice(2));
+    dataView = new DataView(mfData.buffer.slice(mfData.byteOffset + 2, mfData.byteOffset + mfData.byteLength));
   } else {
     for (const id of cicList) {
-      if (mfData.has(id)) {
-        dataView = mfData.get(id);
+      const value = mfData.get(id);
+      if (value && value.byteLength >= 6) {
+        dataView = value;
         break;
       }
     }
@@ -3470,7 +3882,7 @@ function extractMacFromManufacturerData(mfData, cicList, reversedByteOrder = tru
       mac.push((dataView.getUint8(i) + 256).toString(16).slice(1));
     }
   } else {
-    for (let i = dataView.byteLength - 1; i >= dataView.byteLength - 6; i--) {
+    for (let i = dataView.byteLength - 6; i < dataView.byteLength; i++) {
       mac.push((dataView.getUint8(i) + 256).toString(16).slice(1));
     }
   }
@@ -3483,6 +3895,8 @@ var SERVICE_UUID_RW = "0000aaaa" + UUID_SUFFIX$4;
 var CHRCT_UUID_READ$2 = "0000aaab" + UUID_SUFFIX$4;
 var CHRCT_UUID_WRITE$2 = "0000aaac" + UUID_SUFFIX$4;
 var GIIKER_STATE_LENGTH = 20;
+var GIIKER_OP_BATTERY = 181;
+var GIIKER_OP_RESET = 161;
 var GIIKER_CFACELET = [
   [26, 15, 29],
   [20, 8, 9],
@@ -3528,18 +3942,27 @@ function giikerHexPayload(value) {
     valhex.push(raw[i] >> 4 & 15);
     valhex.push(raw[i] & 15);
   }
-  return { valhex, logicalBytes };
+  return valhex;
 }
 function giikerMoveString(faceNibble, dirNibble) {
   const face = ["?", "B", "D", "L", "U", "R", "F"][faceNibble];
   if (!face || face === "?")
     return null;
-  const dirKey = dirNibble === 9 ? 3 : dirNibble;
-  const suffix = ["", "", "2", "'"][dirKey] ?? "";
+  const suffix = { 1: "", 2: "2", 3: "'", 9: "2" }[dirNibble];
+  if (suffix === void 0)
+    return null;
   return `${face}${suffix}`;
 }
 function parseState(value) {
-  const { valhex } = giikerHexPayload(value);
+  const valhex = giikerHexPayload(value);
+  for (let i = 0; i < 8; i++) {
+    if (valhex[i] < 1 || valhex[i] > 8)
+      return null;
+  }
+  for (let i = 0; i < 12; i++) {
+    if (valhex[i + 16] < 1 || valhex[i + 16] > 12)
+      return null;
+  }
   const eo = [];
   for (let i = 0; i < 3; i++) {
     for (let mask = 8; mask !== 0; mask >>= 1) {
@@ -3547,11 +3970,18 @@ function parseState(value) {
     }
   }
   const cc = new CubieCube();
+  const cornersSeen = /* @__PURE__ */ new Set();
+  const edgesSeen = /* @__PURE__ */ new Set();
   for (let i = 0; i < 8; i++) {
     cc.ca[i] = valhex[i] - 1 | (3 + valhex[i + 8] * CO_MASK[i]) % 3 << 3;
+    cornersSeen.add(valhex[i]);
   }
   for (let i = 0; i < 12; i++) {
     cc.ea[i] = valhex[i + 16] - 1 << 1 | eo[i];
+    edgesSeen.add(valhex[i + 16]);
+  }
+  if (cornersSeen.size !== 8 || edgesSeen.size !== 12) {
+    return null;
   }
   const facelet = cc.toFaceCube(GIIKER_CFACELET, GIIKER_EFACELET);
   const prevMoves = [];
@@ -3570,48 +4000,32 @@ var GiikerConnection = class {
     this.protocol = GIIKER_PROTOCOL;
     this.bus = new SmartCubeEventBus({
       gyroscope: false,
-      battery: true,
+      // battery and reset are enabled only once the optional control service is up.
+      battery: false,
       facelets: true,
       hardware: true,
-      reset: true
+      reset: false
     });
     this.events$ = this.bus.events$;
     this.state$ = this.bus.state$;
     this.gatt = null;
     this.dataChrct = null;
     this.lastFacelet = "";
-    this.isReady = false;
-    this.pendingValues = [];
+    this.live = false;
+    this.closed = false;
     this.rwReadChrct = null;
     this.rwWriteChrct = null;
     this.batteryInterval = null;
     this.onBatteryChanged = null;
+    this.batteryPollFailures = 0;
     this.onStateChanged = (event) => {
       const value = event.target.value;
       if (!value || value.byteLength < GIIKER_STATE_LENGTH)
         return;
-      if (!this.isReady) {
-        const b = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
-        this.pendingValues.push(new DataView(b));
-        return;
-      }
-      this.handleStateValue(value);
+      this.handleStateValue(value, now());
     };
     this.onDisconnect = () => {
-      this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
-      this.isReady = false;
-      this.pendingValues = [];
-      this.bus.resetBatteryDedupe();
-      if (this.batteryInterval) {
-        clearInterval(this.batteryInterval);
-        this.batteryInterval = null;
-      }
-      if (this.rwReadChrct && this.onBatteryChanged) {
-        this.rwReadChrct.removeEventListener("characteristicvaluechanged", this.onBatteryChanged);
-      }
-      this.onBatteryChanged = null;
-      this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-      this.bus.complete();
+      this.teardown();
     };
     this.device = device;
     this.deviceName = name;
@@ -3624,10 +4038,13 @@ var GiikerConnection = class {
     return this.bus.getSnapshot();
   }
   /** Decode one state frame and emit the derived MOVE (if any) plus FACELETS. */
-  handleStateValue(value) {
-    const timestamp = now();
-    const { facelet, prevMoves } = parseState(value);
-    if (this.lastFacelet && this.lastFacelet !== facelet && prevMoves.length > 0) {
+  handleStateValue(value, timestamp) {
+    const parsed = parseState(value);
+    if (!parsed) {
+      return;
+    }
+    const { facelet, prevMoves } = parsed;
+    if (this.live && this.lastFacelet && this.lastFacelet !== facelet && prevMoves.length > 0) {
       const moveStr = prevMoves[0].trim();
       const face = "URFDLB".indexOf(moveStr[0]);
       const direction = moveDirectionFromNotation(moveStr);
@@ -3656,62 +4073,123 @@ var GiikerConnection = class {
       gyroSupported: false
     });
   }
+  /** Idempotent teardown shared by remote and explicit disconnects. */
+  teardown() {
+    this.closed = true;
+    this.live = false;
+    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
+    if (this.dataChrct) {
+      this.dataChrct.removeEventListener("characteristicvaluechanged", this.onStateChanged);
+      this.dataChrct = null;
+    }
+    if (this.rwReadChrct && this.onBatteryChanged) {
+      this.rwReadChrct.removeEventListener("characteristicvaluechanged", this.onBatteryChanged);
+    }
+    this.onBatteryChanged = null;
+    this.rwWriteChrct = null;
+    this.bus.resetBatteryDedupe();
+    if (this.batteryInterval) {
+      clearInterval(this.batteryInterval);
+      this.batteryInterval = null;
+    }
+    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
+    this.bus.complete();
+  }
   async init() {
     this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
-    this.gatt = await this.device.gatt.connect();
-    const dataService = await this.gatt.getPrimaryService(SERVICE_UUID_DATA);
-    this.dataChrct = await dataService.getCharacteristic(CHRCT_UUID_DATA);
-    this.dataChrct.addEventListener("characteristicvaluechanged", this.onStateChanged);
-    await this.dataChrct.startNotifications();
-    const initialValue = await this.dataChrct.readValue();
-    if (initialValue.byteLength < GIIKER_STATE_LENGTH) {
-      throw new Error(`[Giiker] Unexpected state length ${initialValue.byteLength}, expected ${GIIKER_STATE_LENGTH}`);
+    try {
+      this.gatt = await this.device.gatt.connect();
+      const dataService = await this.gatt.getPrimaryService(SERVICE_UUID_DATA);
+      this.dataChrct = await dataService.getCharacteristic(CHRCT_UUID_DATA);
+      this.dataChrct.addEventListener("characteristicvaluechanged", this.onStateChanged);
+      await this.dataChrct.startNotifications();
+      const initialValue = await this.dataChrct.readValue();
+      if (!this.lastFacelet) {
+        if (initialValue.byteLength < GIIKER_STATE_LENGTH) {
+          throw new Error(`[Giiker] Unexpected state length ${initialValue.byteLength}, expected ${GIIKER_STATE_LENGTH}`);
+        }
+        const parsed = parseState(initialValue);
+        if (!parsed) {
+          throw new Error("[Giiker] Initial state read is not a valid cube state");
+        }
+        this.lastFacelet = parsed.facelet;
+        this.bus.emit({
+          timestamp: now(),
+          type: "FACELETS",
+          facelets: parsed.facelet
+        });
+      }
+      await this.setupBatteryService();
+      if (this.closed) {
+        throw new Error("[Giiker] disconnected during initialization");
+      }
+      this.live = true;
+    } catch (e) {
+      this.teardown();
+      if (this.device.gatt?.connected) {
+        this.device.gatt.disconnect();
+      }
+      throw e;
     }
-    const { facelet } = parseState(initialValue);
-    this.lastFacelet = facelet;
-    const timestamp = now();
-    this.bus.emit({
-      timestamp,
-      type: "FACELETS",
-      facelets: facelet
-    });
+  }
+  /** Optional control service: capabilities are enabled only after setup succeeds. */
+  async setupBatteryService() {
     try {
       const rwService = await this.gatt.getPrimaryService(SERVICE_UUID_RW);
       const chrcts = await rwService.getCharacteristics();
-      this.rwReadChrct = findCharacteristic(chrcts, CHRCT_UUID_READ$2);
-      this.rwWriteChrct = findCharacteristic(chrcts, CHRCT_UUID_WRITE$2);
-      if (this.rwReadChrct && this.rwWriteChrct) {
-        this.onBatteryChanged = (evt) => {
-          const val = evt.target.value;
-          if (!val)
-            return;
-          this.bus.emitBattery(val.getUint8(1));
-        };
-        this.rwReadChrct.addEventListener("characteristicvaluechanged", this.onBatteryChanged);
-        await this.rwReadChrct.startNotifications();
-        const tick = () => {
-          if (!this.rwWriteChrct)
-            return;
-          writeGattCharacteristicValue(this.rwWriteChrct, new Uint8Array([181]).buffer).catch(() => {
-          });
-        };
-        tick();
-        this.batteryInterval = setInterval(tick, 6e4);
+      const readChrct = findCharacteristic(chrcts, CHRCT_UUID_READ$2);
+      const writeChrct = findCharacteristic(chrcts, CHRCT_UUID_WRITE$2);
+      if (!readChrct || !writeChrct) {
+        return;
       }
+      const onBatteryChanged = (evt) => {
+        const val = evt.target.value;
+        if (!val || val.byteLength < 2 || val.getUint8(0) !== GIIKER_OP_BATTERY)
+          return;
+        this.bus.emitBattery(val.getUint8(1));
+      };
+      readChrct.addEventListener("characteristicvaluechanged", onBatteryChanged);
+      try {
+        await readChrct.startNotifications();
+      } catch (e) {
+        readChrct.removeEventListener("characteristicvaluechanged", onBatteryChanged);
+        throw e;
+      }
+      this.rwReadChrct = readChrct;
+      this.rwWriteChrct = writeChrct;
+      this.onBatteryChanged = onBatteryChanged;
+      this.bus.setCapabilities({ battery: true, reset: true });
+      this.batteryPollFailures = 0;
+      this.requestBatteryPoll();
+      this.batteryInterval = setInterval(() => this.requestBatteryPoll(), 6e4);
     } catch {
     }
-    this.isReady = true;
-    const queued = this.pendingValues;
-    this.pendingValues = [];
-    for (const dv of queued) {
-      this.handleStateValue(dv);
-    }
+  }
+  requestBatteryPoll() {
+    if (!this.rwWriteChrct)
+      return;
+    writeGattCharacteristicValue(this.rwWriteChrct, new Uint8Array([GIIKER_OP_BATTERY]).buffer).then(() => {
+      this.batteryPollFailures = 0;
+    }, () => {
+      if (++this.batteryPollFailures >= 5) {
+        if (this.batteryInterval) {
+          clearInterval(this.batteryInterval);
+          this.batteryInterval = null;
+        }
+        this.bus.setCapabilities({ battery: false });
+      }
+    });
   }
   async sendCommand(command) {
     if (command.type === "REQUEST_BATTERY") {
       if (this.rwWriteChrct) {
         this.bus.forceNextBattery();
-        await writeGattCharacteristicValue(this.rwWriteChrct, new Uint8Array([181]).buffer);
+        try {
+          await writeGattCharacteristicValue(this.rwWriteChrct, new Uint8Array([GIIKER_OP_BATTERY]).buffer);
+        } catch (e) {
+          this.bus.cancelForcedBattery();
+          throw e;
+        }
       }
     } else if (command.type === "REQUEST_FACELETS") {
       if (this.lastFacelet) {
@@ -3725,35 +4203,23 @@ var GiikerConnection = class {
       this.emitHardwareEvent();
     } else if (command.type === "REQUEST_RESET") {
       if (this.rwWriteChrct) {
-        await writeGattCharacteristicValue(this.rwWriteChrct, new Uint8Array([161]).buffer);
+        await writeGattCharacteristicValue(this.rwWriteChrct, new Uint8Array([GIIKER_OP_RESET]).buffer);
       }
     }
   }
   async disconnect() {
-    if (this.dataChrct) {
-      this.dataChrct.removeEventListener("characteristicvaluechanged", this.onStateChanged);
-      await this.dataChrct.stopNotifications().catch(() => {
+    const dataChrct = this.dataChrct;
+    const rwReadChrct = this.rwReadChrct;
+    this.rwReadChrct = null;
+    this.teardown();
+    if (dataChrct) {
+      await dataChrct.stopNotifications().catch(() => {
       });
-      this.dataChrct = null;
     }
-    this.bus.resetBatteryDedupe();
-    if (this.batteryInterval) {
-      clearInterval(this.batteryInterval);
-      this.batteryInterval = null;
-    }
-    if (this.rwReadChrct) {
-      if (this.onBatteryChanged) {
-        this.rwReadChrct.removeEventListener("characteristicvaluechanged", this.onBatteryChanged);
-      }
-      await this.rwReadChrct.stopNotifications().catch(() => {
+    if (rwReadChrct) {
+      await rwReadChrct.stopNotifications().catch(() => {
       });
-      this.rwReadChrct = null;
     }
-    this.onBatteryChanged = null;
-    this.rwWriteChrct = null;
-    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
-    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-    this.bus.complete();
     if (this.device.gatt?.connected) {
       this.device.gatt.disconnect();
     }
@@ -3773,7 +4239,15 @@ var giikerProtocol = {
   },
   async connect(device, _macProvider, _context) {
     const devName = device.name || "";
-    const name = devName.startsWith("GiC") ? "Giiker i3" : devName.startsWith("GiS") ? "Giiker i3S" : devName.startsWith("GiY") ? "Giiker i3Y" : devName.startsWith("Mi Smart") ? "Mi Smart Magic Cube" : devName.startsWith("Gi") ? "Giiker i3SE" : devName.startsWith("Hi-") ? "Hi-" : devName || "Unknown";
+    const MODEL_NAMES = [
+      ["GiC", "Giiker i3"],
+      ["GiS", "Giiker i3S"],
+      ["GiY", "Giiker i3Y"],
+      ["Mi Smart", "Mi Smart Magic Cube"],
+      ["Gi", "Giiker i3SE"],
+      ["Hi-", "Hi-"]
+    ];
+    const name = MODEL_NAMES.find(([prefix]) => devName.startsWith(prefix))?.[1] ?? (devName || "Unknown");
     const conn = new GiikerConnection(device, name);
     await conn.init();
     return conn;
@@ -3860,14 +4334,7 @@ var GoCubeConnection = class {
       });
     };
     this.onDisconnect = () => {
-      this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
-      this.bus.resetBatteryDedupe();
-      if (this.batteryInterval) {
-        clearInterval(this.batteryInterval);
-        this.batteryInterval = null;
-      }
-      this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-      this.bus.complete();
+      this.teardown();
     };
     this.device = device;
     this.deviceName = name;
@@ -3913,7 +4380,15 @@ var GoCubeConnection = class {
     this.prevCubie = tmp;
     if (++this.moveCntFree > 20) {
       this.moveCntFree = 0;
-      this.writeChrct && writeGattCharacteristicValue(this.writeChrct, new Uint8Array([WRITE_STATE]).buffer).catch(() => {
+      if (this.writeChrct) {
+        writeGattCharacteristicValue(this.writeChrct, new Uint8Array([WRITE_STATE]).buffer).catch(() => {
+        });
+      }
+    }
+  }
+  requestStateResync() {
+    if (this.writeChrct) {
+      writeGattCharacteristicValue(this.writeChrct, new Uint8Array([WRITE_STATE]).buffer).catch(() => {
       });
     }
   }
@@ -3924,11 +4399,19 @@ var GoCubeConnection = class {
     if (value.getUint8(0) !== 42 || value.getUint8(value.byteLength - 2) !== 13 || value.getUint8(value.byteLength - 1) !== 10) {
       return;
     }
-    if (value.byteLength >= 7 && !gocubeChecksumValid(value)) {
-      return;
+    if (value.byteLength >= 7) {
+      if (value.getUint8(1) !== value.byteLength - 2) {
+        return;
+      }
+      if (!gocubeChecksumValid(value)) {
+        return;
+      }
     }
     const msgType = value.getUint8(2);
     const msgLen = value.byteLength - 6;
+    if (msgType !== 1 && value.byteLength < 7) {
+      return;
+    }
     if (msgType === 3) {
       if (!this.capabilities.gyroscope || value.byteLength < 8) {
         return;
@@ -3957,13 +4440,24 @@ var GoCubeConnection = class {
         }
         return;
       }
+      if (msgLen <= 0 || msgLen % 2 !== 0) {
+        return;
+      }
       for (let i = 0; i < msgLen; i += 2) {
-        const axis = AXIS_PERM[value.getUint8(3 + i) >> 1];
-        const dirBit = value.getUint8(3 + i) & 1;
+        const moveCode = value.getUint8(3 + i);
+        if (moveCode >> 1 > 5) {
+          this.requestStateResync();
+          return;
+        }
+        const axis = AXIS_PERM[moveCode >> 1];
+        const dirBit = moveCode & 1;
         this.lastMoveMeta = { axis, dirBit };
         this.applySingleMove(timestamp, axis, dirBit);
       }
     } else if (msgType === 2) {
+      if (value.byteLength < 60) {
+        return;
+      }
       const facelet = [];
       for (let a = 0; a < 6; a++) {
         const axis = AXIS_PERM[a] * 9;
@@ -3976,7 +4470,9 @@ var GoCubeConnection = class {
       const newFacelet = facelet.join("");
       const curFacelet = this.prevCubie.toFaceCube();
       if (newFacelet !== curFacelet) {
-        this.curCubie.fromFacelet(newFacelet);
+        if (this.curCubie.fromFacelet(newFacelet) === -1) {
+          return;
+        }
         const tmp = this.curCubie;
         this.curCubie = this.prevCubie;
         this.prevCubie = tmp;
@@ -4005,6 +4501,27 @@ var GoCubeConnection = class {
       gyroSupported: this.capabilities.gyroscope
     });
   }
+  /** Idempotent teardown shared by remote and explicit disconnects. */
+  teardown() {
+    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
+    if (this.readChrct) {
+      this.readChrct.removeEventListener("characteristicvaluechanged", this.onStateChanged);
+      this.readChrct = null;
+    }
+    this.writeChrct = null;
+    this.bus.resetBatteryDedupe();
+    if (this.batteryInterval) {
+      clearInterval(this.batteryInterval);
+      this.batteryInterval = null;
+    }
+    const rejectInit = this.rejectInitialState;
+    this.rejectInitialState = void 0;
+    this.resolveInitialState = void 0;
+    this.awaitingInitialState = false;
+    rejectInit?.(new Error("GoCube disconnected during initialization"));
+    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
+    this.bus.complete();
+  }
   async init() {
     this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
     const gatt = await this.device.gatt.connect();
@@ -4017,23 +4534,35 @@ var GoCubeConnection = class {
       await writeGattCharacteristicValue(this.writeChrct, new Uint8Array([WRITE_ENABLE_ORIENTATION]).buffer).catch(() => {
       });
     }
-    const firstStatePromise = new Promise((resolve) => {
+    const firstStatePromise = new Promise((resolve, reject) => {
       this.resolveInitialState = resolve;
+      this.rejectInitialState = reject;
     });
     this.awaitingInitialState = true;
     await writeGattCharacteristicValue(this.writeChrct, new Uint8Array([WRITE_STATE]).buffer);
     this.pollBattery();
     this.batteryInterval = setInterval(this.pollBattery, 6e4);
     let initialStateTimer;
-    await Promise.race([
-      firstStatePromise,
-      new Promise((resolve) => {
-        initialStateTimer = setTimeout(resolve, INITIAL_STATE_TIMEOUT_MS);
-      })
-    ]);
-    clearTimeout(initialStateTimer);
-    this.awaitingInitialState = false;
-    this.resolveInitialState = void 0;
+    let timedOut = false;
+    try {
+      await Promise.race([
+        firstStatePromise,
+        new Promise((resolve) => {
+          initialStateTimer = setTimeout(() => {
+            timedOut = true;
+            resolve();
+          }, INITIAL_STATE_TIMEOUT_MS);
+        })
+      ]);
+    } finally {
+      clearTimeout(initialStateTimer);
+      this.awaitingInitialState = false;
+      this.resolveInitialState = void 0;
+      this.rejectInitialState = void 0;
+    }
+    if (timedOut) {
+      return;
+    }
     this.bus.emit({
       timestamp: now(),
       type: "FACELETS",
@@ -4072,21 +4601,12 @@ var GoCubeConnection = class {
     }
   }
   async disconnect() {
-    if (this.readChrct) {
-      this.readChrct.removeEventListener("characteristicvaluechanged", this.onStateChanged);
-      await this.readChrct.stopNotifications().catch(() => {
+    const readChrct = this.readChrct;
+    this.teardown();
+    if (readChrct) {
+      await readChrct.stopNotifications().catch(() => {
       });
-      this.readChrct = null;
     }
-    this.bus.resetBatteryDedupe();
-    if (this.batteryInterval) {
-      clearInterval(this.batteryInterval);
-      this.batteryInterval = null;
-    }
-    this.writeChrct = null;
-    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
-    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-    this.bus.complete();
     if (this.device.gatt?.connected) {
       this.device.gatt.disconnect();
     }
@@ -4103,11 +4623,23 @@ var goCubeProtocol = {
   gattAffinity(serviceUuids, _device) {
     return serviceUuids.has(normalizeUuid(SERVICE_UUID$3)) ? 110 : 0;
   },
-  async connect(device, _macProvider, _context) {
+  async connect(device, _macProvider, context2) {
+    throwIfAborted(context2?.signal);
     const raw = device.name ?? "";
     const name = raw.startsWith("GoCube") ? "GoCube" : "Rubiks Connected";
     const conn = new GoCubeConnection(device, name, goCubeDeviceSupportsGyro(raw));
-    await conn.init();
+    try {
+      await conn.init();
+    } catch (e) {
+      await conn.disconnect().catch(() => {
+      });
+      throw e;
+    }
+    if (context2?.signal?.aborted) {
+      await conn.disconnect().catch(() => {
+      });
+      throw abortError();
+    }
     return conn;
   }
 };
@@ -4115,23 +4647,29 @@ registerProtocol(goCubeProtocol);
 var MOYU_V1_CMD_HW = 2;
 var MOYU_V1_CMD_BATTERY = 3;
 var MOYU_V1_CMD_CUBE_STATE = 10;
+var MOYU_V1_FRAME_SIZE = 20;
+var MOYU_V1_PART_PAYLOAD_SIZE = 18;
+var MOYU_V1_MAX_PARTS = 15;
+var MOYU_V1_MAX_COMMAND = 15;
+var MOYU_V1_RESPONSE_TIMEOUT_MS = 5e3;
+var MOYU_V1_CUBE_STATE_PAYLOAD_SIZE = 30;
 var STICKER_ID_TO_COLOR = "DLBRFU";
 var MOYU_CELL_TO_STD = [
   [27, 28, 29, 30, 31, 32, 33, 34, 35],
   [44, 43, 42, 41, 40, 39, 38, 37, 36],
   [53, 52, 51, 50, 49, 48, 47, 46, 45],
-  [17, 16, 26, 14, 13, 12, 11, 10, 9],
-  [29, 25, 24, 23, 22, 21, 20, 19, 18],
+  [17, 16, 15, 14, 13, 12, 11, 10, 9],
+  [26, 25, 24, 23, 22, 21, 20, 19, 18],
   [0, 1, 2, 3, 4, 5, 6, 7, 8]
 ];
-var MOYU_V1_SOLVED_STICKERS = [
-  [0, 0, 0, 0, 0, 0, 0, 0, 0],
-  [1, 1, 1, 1, 1, 1, 1, 1, 1],
-  [2, 2, 2, 2, 2, 2, 2, 2, 2],
-  [3, 3, 3, 3, 3, 3, 3, 3, 3],
-  [4, 4, 4, 4, 4, 4, 4, 4, 4],
-  [5, 5, 5, 5, 5, 5, 5, 5, 5]
-];
+var MOYU_V1_SOLVED_STICKERS = Object.freeze([
+  Object.freeze([0, 0, 0, 0, 0, 0, 0, 0, 0]),
+  Object.freeze([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+  Object.freeze([2, 2, 2, 2, 2, 2, 2, 2, 2]),
+  Object.freeze([3, 3, 3, 3, 3, 3, 3, 3, 3]),
+  Object.freeze([4, 4, 4, 4, 4, 4, 4, 4, 4]),
+  Object.freeze([5, 5, 5, 5, 5, 5, 5, 5, 5])
+]);
 function parseIncomingPart(dv) {
   const index = dv.getUint8(1) & 15;
   const total = dv.getUint8(1) >> 4;
@@ -4149,13 +4687,13 @@ function mergeParts(parts) {
   }
   return new DataView(out.buffer);
 }
-function parseResponse(merged, timestamp) {
+function parseResponse(merged) {
   const header = merged.getUint8(0);
   const command = header & 15;
   const success = (header >> 4 & 1) === 1;
   const id = header >> 5 & 7;
   const payload = new DataView(merged.buffer, merged.byteOffset + 1, merged.byteLength - 1);
-  return { command, success, id, timestamp, payload };
+  return { command, success, id, payload };
 }
 function concatU8(a, b) {
   const o = new Uint8Array(a.length + b.length);
@@ -4163,60 +4701,66 @@ function concatU8(a, b) {
   o.set(b, a.length);
   return o;
 }
-var IdGenerator = class {
-  constructor() {
-    this.lastId = 0;
+var WrappingCounter = class {
+  constructor(modulus, initial = -1) {
+    this.modulus = modulus;
+    this.last = initial;
   }
   next() {
-    this.lastId = (this.lastId + 1) % 8;
-    return this.lastId;
+    this.last = (this.last + 1) % this.modulus;
+    return this.last;
   }
 };
-var SendCountGenerator = class {
-  constructor() {
-    this.lastCount = -1;
+function assertStickerShape(stickers, angles) {
+  if (stickers.length !== 6 || stickers.some((row) => row.length !== 9 || row.some((v) => !Number.isInteger(v) || v < 0 || v > 15))) {
+    throw new Error("MoYu v1 stickers must be 6 faces x 9 integer cells in [0,15]");
   }
-  next() {
-    this.lastCount = (this.lastCount + 1) % 256;
-    return this.lastCount;
+  if (angles.length !== 6 || angles.some((v) => !Number.isInteger(v) || v < 0 || v > 15)) {
+    throw new Error("MoYu v1 angles must be 6 integers in [0,15]");
   }
-};
-function moyuV1ParseCubeStatePayload(t) {
+}
+function moyuV1ParseCubeStatePayload(payload) {
+  if (payload.byteLength < MOYU_V1_CUBE_STATE_PAYLOAD_SIZE) {
+    throw new Error(`MoYu v1 cube-state payload too short: ${payload.byteLength} bytes`);
+  }
   const stickers = [];
-  for (let s = 0; s < 6; s++) {
-    const r = [];
-    for (let a = 0; a < 9; a++) {
-      const o = t.getUint8(Math.floor((9 * s + a) / 2));
-      r.push(o >> ((9 * s + a) % 2 === 0 ? 0 : 4) & 15);
+  for (let face = 0; face < 6; face++) {
+    const faceStickers = [];
+    for (let cell = 0; cell < 9; cell++) {
+      const packed = payload.getUint8(Math.floor((9 * face + cell) / 2));
+      faceStickers.push(packed >> ((9 * face + cell) % 2 === 0 ? 0 : 4) & 15);
     }
-    stickers.push(r);
+    stickers.push(faceStickers);
   }
   const angles = [];
-  for (let s = 0; s < 6; s++) {
-    const row = 27 + Math.floor(s / 2);
-    const a = t.getUint8(row);
-    angles.push(a >> (s % 2 === 0 ? 0 : 4) & 15);
+  for (let face = 0; face < 6; face++) {
+    const packed = payload.getUint8(27 + Math.floor(face / 2));
+    angles.push(packed >> (face % 2 === 0 ? 0 : 4) & 15);
   }
   return { stickers, angles };
 }
 function moyuV1EncodeCubeStatePayload(stickers, angles) {
-  const e = new Uint8Array(30);
-  const i = new DataView(e.buffer);
-  for (let s = 0; s < 6; s++) {
-    for (let r = 0; r < 9; r++) {
-      const lo = (9 * s + r) % 2 === 0;
-      const o = Math.floor((9 * s + r) / 2);
-      i.setUint8(o, i.getUint8(o) | (15 & stickers[s][r]) << (lo ? 0 : 4));
+  assertStickerShape(stickers, angles);
+  const out = new Uint8Array(MOYU_V1_CUBE_STATE_PAYLOAD_SIZE);
+  const view = new DataView(out.buffer);
+  for (let face = 0; face < 6; face++) {
+    for (let cell = 0; cell < 9; cell++) {
+      const lowNibble = (9 * face + cell) % 2 === 0;
+      const byteIndex = Math.floor((9 * face + cell) / 2);
+      view.setUint8(byteIndex, view.getUint8(byteIndex) | (15 & stickers[face][cell]) << (lowNibble ? 0 : 4));
     }
   }
-  for (let s = 0; s < 6; s++) {
-    const lo = s % 2 === 0;
-    const row = 27 + Math.floor(s / 2);
-    i.setUint8(row, i.getUint8(row) | (15 & angles[s]) << (lo ? 0 : 4));
+  for (let face = 0; face < 6; face++) {
+    const lowNibble = face % 2 === 0;
+    const byteIndex = 27 + Math.floor(face / 2);
+    view.setUint8(byteIndex, view.getUint8(byteIndex) | (15 & angles[face]) << (lowNibble ? 0 : 4));
   }
-  return e;
+  return out;
 }
 function moyuStickersToFaceletString(stickers) {
+  if (stickers.length !== 6 || stickers.some((row) => row.length !== 9)) {
+    throw new Error("MoYu v1 stickers must be 6 faces x 9 cells");
+  }
   const chars = new Array(54).fill("?");
   for (let face = 0; face < 6; face++) {
     const row = MOYU_CELL_TO_STD[face];
@@ -4232,25 +4776,42 @@ function moyuStickersToFaceletString(stickers) {
 var MoyuV1Client = class {
   constructor(writeCharacteristic) {
     this.writeCharacteristic = writeCharacteristic;
-    this.idGen = new IdGenerator();
-    this.sendCountGen = new SendCountGenerator();
+    this.idGen = new WrappingCounter(8, 0);
+    this.sendCountGen = new WrappingCounter(256);
     this.incomplete = [];
     this.waiters = [];
+    this.writeQueue = Promise.resolve();
   }
   /** Call from 0x1002 notification handler. */
   onReadNotification(dv) {
-    const part = parseIncomingPart(dv);
-    this.incomplete.push(part);
-    if (part.total <= 0 || part.index !== part.total - 1) {
+    if (dv.byteLength < 2) {
       return;
     }
-    const merged = mergeParts(this.incomplete);
+    const part = parseIncomingPart(dv);
+    if (part.total <= 0 || part.index >= part.total) {
+      return;
+    }
+    if (this.incomplete.length > 0 && this.incomplete[0].total !== part.total) {
+      this.incomplete = [];
+    }
+    if (this.incomplete.some((p) => p.index === part.index)) {
+      this.incomplete = [];
+    }
+    this.incomplete.push(part);
+    if (part.index !== part.total - 1) {
+      return;
+    }
+    const parts = this.incomplete;
     this.incomplete = [];
+    if (parts.length !== part.total) {
+      return;
+    }
+    const merged = mergeParts(parts);
     if (merged.byteLength === 0) {
       return;
     }
     const receivedAt = Date.now();
-    const r = parseResponse(merged, receivedAt);
+    const r = parseResponse(merged);
     const idx = this.waiters.findIndex((w2) => w2.command === r.command && w2.id === r.id);
     if (idx < 0) {
       return;
@@ -4263,26 +4824,46 @@ var MoyuV1Client = class {
     }
     w.resolve({ sentAt: w.sentAt, receivedAt, value: r.payload });
   }
+  /** Reject all pending requests and clear fragment state (call on disconnect). */
+  dispose() {
+    const pending = this.waiters.splice(0);
+    for (const w of pending) {
+      clearTimeout(w.timeout);
+      w.reject(new Error("MoYu v1 client disposed"));
+    }
+    this.incomplete = [];
+  }
   headerByte(command, hasPayload, id) {
     return command | (hasPayload ? 1 : 0) << 4 | id << 5;
   }
+  removeWaiter(w) {
+    clearTimeout(w.timeout);
+    const i = this.waiters.indexOf(w);
+    if (i >= 0)
+      this.waiters.splice(i, 1);
+  }
   async sendRawRequest(body) {
-    const nParts = Math.ceil(body.length / 18);
-    if (nParts > 16)
+    const nParts = Math.ceil(body.length / MOYU_V1_PART_PAYLOAD_SIZE);
+    if (nParts > MOYU_V1_MAX_PARTS)
       throw new Error("Too many parts");
     for (let i = 0; i < nParts; i++) {
-      const frame = new Uint8Array(20);
+      const frame = new Uint8Array(MOYU_V1_FRAME_SIZE);
       const v = new DataView(frame.buffer);
       v.setUint8(0, this.sendCountGen.next());
       v.setUint8(1, i | nParts << 4);
-      const slice = body.subarray(18 * i, 18 * (i + 1));
+      const slice = body.subarray(MOYU_V1_PART_PAYLOAD_SIZE * i, MOYU_V1_PART_PAYLOAD_SIZE * (i + 1));
       frame.set(slice, 2);
       await writeGattCharacteristicValue(this.writeCharacteristic, frame);
     }
-    return Date.now();
   }
   async send(command, payload) {
+    if (!Number.isInteger(command) || command < 0 || command > MOYU_V1_MAX_COMMAND) {
+      throw new Error(`MoYu v1 command out of range: ${command}`);
+    }
     const id = this.idGen.next();
+    if (this.waiters.some((w) => w.command === command && w.id === id)) {
+      throw new Error(`MoYu v1 command ${command} already in flight with id ${id}`);
+    }
     const hasPayload = payload !== void 0;
     const h = this.headerByte(command, hasPayload, id);
     const first = new Uint8Array(1);
@@ -4291,24 +4872,21 @@ var MoyuV1Client = class {
     let waiter;
     const result = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        const i = this.waiters.findIndex((w) => w.command === command && w.id === id);
+        const i = this.waiters.indexOf(waiter);
         if (i >= 0)
           this.waiters.splice(i, 1);
         reject(new Error(`MoYu v1 command ${command} timeout`));
-      }, 5e3);
-      waiter = { command, id, sentAt: 0, resolve, reject, timeout };
+      }, MOYU_V1_RESPONSE_TIMEOUT_MS);
+      waiter = { command, id, sentAt: Date.now(), resolve, reject, timeout };
       this.waiters.push(waiter);
     });
-    try {
-      waiter.sentAt = await this.sendRawRequest(body);
-    } catch (e) {
-      clearTimeout(waiter.timeout);
-      const i = this.waiters.indexOf(waiter);
-      if (i >= 0)
-        this.waiters.splice(i, 1);
-      throw e;
-    }
-    return result;
+    const transmit = this.writeQueue.then(() => this.sendRawRequest(body));
+    this.writeQueue = transmit.then(() => void 0, () => void 0);
+    const transmitted = transmit.then(() => result, (e) => {
+      this.removeWaiter(waiter);
+      throw e instanceof Error ? e : new Error(String(e));
+    });
+    return Promise.race([transmitted, result]);
   }
   async getCubeState() {
     const r = await this.send(MOYU_V1_CMD_CUBE_STATE);
@@ -4319,27 +4897,33 @@ var MoyuV1Client = class {
     await this.send(MOYU_V1_CMD_CUBE_STATE, pl);
   }
   async getBatteryInfo() {
-    const r = await this.send(MOYU_V1_CMD_BATTERY);
-    const t = r.value;
+    const response = await this.send(MOYU_V1_CMD_BATTERY);
+    const data = response.value;
+    if (data.byteLength < 8) {
+      throw new Error(`MoYu v1 battery response too short: ${data.byteLength} bytes`);
+    }
     return {
-      sentAt: r.sentAt,
-      receivedAt: r.receivedAt,
+      sentAt: response.sentAt,
+      receivedAt: response.receivedAt,
       value: {
-        charging: !!t.getUint8(0),
-        full: !!t.getUint8(1),
-        percentage: t.getUint16(2, true),
-        voltage: t.getInt32(4, true) / 1e3
+        charging: !!data.getUint8(0),
+        full: !!data.getUint8(1),
+        percentage: data.getUint16(2, true),
+        voltage: data.getInt32(4, true) / 1e3
       }
     };
   }
   async getHardwareInfo() {
-    const r = await this.send(MOYU_V1_CMD_HW);
-    const t = r.value;
+    const response = await this.send(MOYU_V1_CMD_HW);
+    const data = response.value;
+    if (data.byteLength < 24) {
+      throw new Error(`MoYu v1 hardware response too short: ${data.byteLength} bytes`);
+    }
     return {
-      bootCount: t.getUint32(16, true),
-      major: t.getUint8(20),
-      minor: t.getUint8(21),
-      patch: t.getUint16(22, true)
+      bootCount: data.getUint32(16, true),
+      major: data.getUint8(20),
+      minor: data.getUint8(21),
+      patch: data.getUint16(22, true)
     };
   }
 };
@@ -4397,6 +4981,9 @@ var MoyuMhcConnection = class {
       const fx = e.getFloat32(8, true);
       const fy = e.getFloat32(12, true);
       const fz = e.getFloat32(16, true);
+      if (![fw, fx, fy, fz].every(Number.isFinite) || Math.hypot(fw, fx, fy, fz) < 1e-6) {
+        return;
+      }
       const quaternion = normalizeQuaternion({
         w: fw,
         x: fx,
@@ -4411,14 +4998,7 @@ var MoyuMhcConnection = class {
       });
     };
     this.onDisconnect = () => {
-      this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
-      this.bus.resetBatteryDedupe();
-      if (this.batteryInterval) {
-        clearInterval(this.batteryInterval);
-        this.batteryInterval = null;
-      }
-      this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-      this.bus.complete();
+      this.teardown();
     };
     this.device = device;
     this.deviceName = device.name || "MHC";
@@ -4436,18 +5016,16 @@ var MoyuMhcConnection = class {
    */
   applyCubeStateFromDevice(stickers, angles) {
     const facelet = moyuStickersToFaceletString(stickers);
-    this.prevCubie = new CubieCube();
-    const parsed = this.prevCubie.fromFacelet(facelet);
+    const parsed = new CubieCube().fromFacelet(facelet);
     if (parsed === -1) {
-      this.prevCubie = new CubieCube();
-      this.curCubie = new CubieCube();
-      this.faceStatus = [0, 0, 0, 0, 0, 0];
-      return;
+      return false;
     }
+    this.prevCubie = parsed;
     this.curCubie = new CubieCube();
     for (let i = 0; i < FACE_ORDER_LEN; i++) {
       this.faceStatus[i] = (angles[i] ?? 0) % 9;
     }
+    return true;
   }
   parseTurn(data) {
     const timestamp = now();
@@ -4458,8 +5036,8 @@ var MoyuMhcConnection = class {
       return;
     for (let i = 0; i < nMoves; i++) {
       const offset = 1 + i * 6;
-      let ts = data.getUint8(offset + 1) << 24 | data.getUint8(offset + 0) << 16 | data.getUint8(offset + 3) << 8 | data.getUint8(offset + 2);
-      ts = Math.round(ts / 65536 * 1e3);
+      const rawTs = (data.getUint8(offset + 1) << 24 | data.getUint8(offset + 0) << 16 | data.getUint8(offset + 3) << 8 | data.getUint8(offset + 2)) >>> 0;
+      const ts = Math.round(rawTs / 65536 * 1e3);
       const face = data.getUint8(offset + 4);
       if (face >= FACE_ORDER_LEN)
         continue;
@@ -4509,63 +5087,130 @@ var MoyuMhcConnection = class {
     } catch {
     }
   }
+  /** Idempotent teardown shared by remote and explicit disconnects. */
+  teardown() {
+    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
+    if (this.readChrct) {
+      this.readChrct.removeEventListener("characteristicvaluechanged", this.onReadEvent);
+      this.readChrct = null;
+    }
+    if (this.turnChrct) {
+      this.turnChrct.removeEventListener("characteristicvaluechanged", this.onTurnEvent);
+      this.turnChrct = null;
+    }
+    if (this.gyroChrct) {
+      this.gyroChrct.removeEventListener("characteristicvaluechanged", this.onGyroEvent);
+      this.gyroChrct = null;
+    }
+    this.writeChrct = null;
+    this.v1?.dispose();
+    this.v1 = null;
+    this.bus.resetBatteryDedupe();
+    if (this.batteryInterval) {
+      clearInterval(this.batteryInterval);
+      this.batteryInterval = null;
+    }
+    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
+    this.bus.complete();
+  }
   updateCapabilities() {
     const hasV1 = this.v1 !== null;
     this.bus.setCapabilities({
       gyroscope: this.gyroChrct !== null,
       battery: hasV1,
-      facelets: hasV1,
+      // Turn tracking also reports facelets, not just the v1 state read.
+      facelets: hasV1 || this.turnChrct !== null,
       hardware: hasV1,
       reset: hasV1
     });
   }
   async init() {
     this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
-    const gatt = await this.device.gatt.connect();
-    const service = await gatt.getPrimaryService(SERVICE_UUID$2);
-    const chrcts = await service.getCharacteristics();
-    this.writeChrct = findCharacteristic(chrcts, CHRCT_UUID_WRITE);
-    this.readChrct = findCharacteristic(chrcts, CHRCT_UUID_READ);
-    this.turnChrct = findCharacteristic(chrcts, CHRCT_UUID_TURN);
-    this.gyroChrct = findCharacteristic(chrcts, CHRCT_UUID_GYRO);
-    if (this.writeChrct) {
-      this.v1 = new MoyuV1Client(this.writeChrct);
-    }
-    if (this.readChrct) {
-      this.readChrct.addEventListener("characteristicvaluechanged", this.onReadEvent);
-      await this.readChrct.startNotifications();
-    }
-    if (this.turnChrct) {
-      this.turnChrct.addEventListener("characteristicvaluechanged", this.onTurnEvent);
-      await this.turnChrct.startNotifications();
-    }
-    if (this.gyroChrct) {
-      this.gyroChrct.addEventListener("characteristicvaluechanged", this.onGyroEvent);
-      await this.gyroChrct.startNotifications();
-    }
-    this.updateCapabilities();
-    if (this.v1) {
-      await this.pollBattery();
-      this.batteryInterval = setInterval(() => {
-        void this.pollBattery();
-      }, 6e4);
-      try {
-        const st = await this.v1.getCubeState();
-        this.applyCubeStateFromDevice(st.stickers, st.angles);
-        const facelets = this.prevCubie.toFaceCube();
-        this.bus.emit({
-          timestamp: now(),
-          type: "FACELETS",
-          facelets
-        });
-      } catch {
-        this.bus.emit({
-          timestamp: now(),
-          type: "FACELETS",
-          facelets: SOLVED_FACELET
-        });
+    try {
+      const gatt = await this.device.gatt.connect();
+      const service = await gatt.getPrimaryService(SERVICE_UUID$2);
+      const chrcts = await service.getCharacteristics();
+      this.writeChrct = findCharacteristic(chrcts, CHRCT_UUID_WRITE);
+      this.readChrct = findCharacteristic(chrcts, CHRCT_UUID_READ);
+      this.turnChrct = findCharacteristic(chrcts, CHRCT_UUID_TURN);
+      this.gyroChrct = findCharacteristic(chrcts, CHRCT_UUID_GYRO);
+      if (this.writeChrct && this.readChrct) {
+        this.v1 = new MoyuV1Client(this.writeChrct);
       }
-    } else {
+      if (!this.v1 && !this.turnChrct) {
+        throw new Error("MoYu MHC: no usable protocol path (need turn notifications or the v1 read/write pair)");
+      }
+      if (this.readChrct) {
+        this.readChrct.addEventListener("characteristicvaluechanged", this.onReadEvent);
+        await this.readChrct.startNotifications();
+      }
+      if (this.v1) {
+        try {
+          const st = await this.v1.getCubeState();
+          if (this.applyCubeStateFromDevice(st.stickers, st.angles)) {
+            this.bus.emit({
+              timestamp: now(),
+              type: "FACELETS",
+              facelets: this.prevCubie.toFaceCube()
+            });
+          }
+        } catch {
+        }
+      }
+      if (this.turnChrct) {
+        this.turnChrct.addEventListener("characteristicvaluechanged", this.onTurnEvent);
+        await this.turnChrct.startNotifications();
+      }
+      if (this.gyroChrct) {
+        this.gyroChrct.addEventListener("characteristicvaluechanged", this.onGyroEvent);
+        await this.gyroChrct.startNotifications();
+      }
+      this.updateCapabilities();
+      if (this.v1) {
+        await this.pollBattery();
+        this.batteryInterval = setInterval(() => {
+          void this.pollBattery();
+        }, 6e4);
+      }
+    } catch (e) {
+      this.teardown();
+      if (this.device.gatt?.connected) {
+        this.device.gatt.disconnect();
+      }
+      throw e;
+    }
+  }
+  async sendCommand(command) {
+    if (!this.v1)
+      return;
+    if (command.type === "REQUEST_FACELETS") {
+      const st = await this.v1.getCubeState();
+      if (!this.applyCubeStateFromDevice(st.stickers, st.angles)) {
+        throw new Error("MoYu MHC: device returned an invalid cube state");
+      }
+      this.bus.emit({
+        timestamp: now(),
+        type: "FACELETS",
+        facelets: this.prevCubie.toFaceCube()
+      });
+    } else if (command.type === "REQUEST_BATTERY") {
+      const b = await this.v1.getBatteryInfo();
+      this.bus.forceNextBattery();
+      this.bus.emitBattery(b.value.percentage, now());
+    } else if (command.type === "REQUEST_HARDWARE") {
+      const h = await this.v1.getHardwareInfo();
+      this.bus.emit({
+        timestamp: now(),
+        type: "HARDWARE",
+        hardwareName: this.deviceName,
+        softwareVersion: `${h.major}.${h.minor}.${h.patch}`,
+        gyroSupported: this.capabilities.gyroscope
+      });
+    } else if (command.type === "REQUEST_RESET") {
+      await this.v1.setCubeState(MOYU_V1_SOLVED_STICKERS, [0, 0, 0, 0, 0, 0]);
+      this.faceStatus = [0, 0, 0, 0, 0, 0];
+      this.curCubie = new CubieCube();
+      this.prevCubie = new CubieCube();
       this.bus.emit({
         timestamp: now(),
         type: "FACELETS",
@@ -4573,75 +5218,15 @@ var MoyuMhcConnection = class {
       });
     }
   }
-  async sendCommand(command) {
-    if (!this.v1)
-      return;
-    const ts = now();
-    try {
-      if (command.type === "REQUEST_FACELETS") {
-        const st = await this.v1.getCubeState();
-        this.applyCubeStateFromDevice(st.stickers, st.angles);
-        this.bus.emit({
-          timestamp: ts,
-          type: "FACELETS",
-          facelets: this.prevCubie.toFaceCube()
-        });
-      } else if (command.type === "REQUEST_BATTERY") {
-        const b = await this.v1.getBatteryInfo();
-        this.bus.forceNextBattery();
-        this.bus.emitBattery(b.value.percentage, ts);
-      } else if (command.type === "REQUEST_HARDWARE") {
-        const h = await this.v1.getHardwareInfo();
-        this.bus.emit({
-          timestamp: ts,
-          type: "HARDWARE",
-          softwareVersion: `${h.major}.${h.minor}.${h.patch}`,
-          hardwareVersion: `boot:${h.bootCount}`,
-          gyroSupported: this.capabilities.gyroscope
-        });
-      } else if (command.type === "REQUEST_RESET") {
-        await this.v1.setCubeState(MOYU_V1_SOLVED_STICKERS, [0, 0, 0, 0, 0, 0]);
-        this.faceStatus = [0, 0, 0, 0, 0, 0];
-        this.curCubie = new CubieCube();
-        this.prevCubie = new CubieCube();
-        this.bus.emit({
-          timestamp: ts,
-          type: "FACELETS",
-          facelets: SOLVED_FACELET
+  async disconnect() {
+    const notifying = [this.readChrct, this.turnChrct, this.gyroChrct];
+    this.teardown();
+    for (const chrct of notifying) {
+      if (chrct) {
+        await chrct.stopNotifications().catch(() => {
         });
       }
-    } catch {
     }
-  }
-  async disconnect() {
-    if (this.readChrct) {
-      this.readChrct.removeEventListener("characteristicvaluechanged", this.onReadEvent);
-      await this.readChrct.stopNotifications().catch(() => {
-      });
-    }
-    if (this.turnChrct) {
-      this.turnChrct.removeEventListener("characteristicvaluechanged", this.onTurnEvent);
-      await this.turnChrct.stopNotifications().catch(() => {
-      });
-    }
-    if (this.gyroChrct) {
-      this.gyroChrct.removeEventListener("characteristicvaluechanged", this.onGyroEvent);
-      await this.gyroChrct.stopNotifications().catch(() => {
-      });
-    }
-    this.bus.resetBatteryDedupe();
-    if (this.batteryInterval) {
-      clearInterval(this.batteryInterval);
-      this.batteryInterval = null;
-    }
-    this.readChrct = null;
-    this.turnChrct = null;
-    this.gyroChrct = null;
-    this.writeChrct = null;
-    this.v1 = null;
-    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
-    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-    this.bus.complete();
     if (this.device.gatt?.connected) {
       this.device.gatt.disconnect();
     }
@@ -4662,100 +5247,69 @@ var moyuMhcProtocol = {
   }
 };
 registerProtocol(moyuMhcProtocol);
-async function resolveCubeMac(device, macProvider, context2, options) {
-  let mac = options.parseFromManufacturerData(context2?.advertisementManufacturerData ?? null);
-  mac = mac || getCachedMacForDevice(device);
-  if (!mac && macProvider) {
-    const r = await macProvider(device, false);
-    if (r) {
-      mac = r;
-    }
-  }
-  if (!mac) {
-    const mfData = await waitForManufacturerData(device, context2?.enableAddressSearch ? options.advertisementTimeoutsMs[1] : options.advertisementTimeoutsMs[0], { earlyExitOnEmptyFirstAdvertisement: false, signal: context2?.signal });
-    mac = options.parseFromManufacturerData(mfData);
-  }
-  if (!mac && options.useSingleCandidateWithoutProbe && options.candidatesFromName) {
-    const candidates = options.candidatesFromName(device.name);
-    if (candidates.length === 1) {
-      mac = candidates[0];
-    }
-  }
-  if (!mac && context2?.enableAddressSearch && options.candidatesFromName && options.probe) {
-    const candidates = options.candidatesFromName(device.name);
-    for (let i = 0; i < candidates.length; i++) {
-      if (context2.signal?.aborted) {
-        break;
-      }
-      context2.onStatus?.(`Testing address (${i + 1}/${candidates.length})\u2026`);
-      try {
-        if (await options.probe(device, candidates[i], {
-          timeoutMs: options.probeTimeoutMs ?? 2e3,
-          signal: context2.signal
-        })) {
-          mac = candidates[i];
-          break;
-        }
-      } catch {
+function parseMoyu32FaceletBits(faceletBits) {
+  const state = [];
+  const faces = [2, 5, 0, 3, 4, 1];
+  for (let i = 0; i < 6; i++) {
+    const face = faceletBits.slice(faces[i] * 24, 24 + faces[i] * 24);
+    for (let j = 0; j < 8; j++) {
+      state.push("FBUDLR".charAt(parseInt(face.slice(j * 3, 3 + j * 3), 2)));
+      if (j === 3) {
+        state.push("FBUDLR".charAt(faces[i]));
       }
     }
   }
-  if (!mac && macProvider) {
-    const r = await macProvider(device, true);
-    if (r) {
-      mac = r;
-    }
-  }
-  throwIfAborted(context2?.signal);
-  return mac;
+  return state.join("");
 }
 var { ModeOfOperation: ModeOfOperation$1 } = import_aes_js.default;
 var BASE_KEY = [21, 119, 58, 92, 103, 14, 45, 31, 23, 103, 42, 19, 155, 103, 82, 87];
 var BASE_IV = [17, 35, 38, 37, 134, 42, 44, 59, 85, 6, 127, 49, 126, 103, 33, 87];
+var AES_BLOCK_SIZE$1 = 16;
+var MAC_BYTE_LENGTH = 6;
 function createMoyu32SessionCrypto(mac) {
-  const t = parseMacBytes(mac);
+  const macBytes = parseMacBytes(mac);
   const key = BASE_KEY.slice();
   const iv = BASE_IV.slice();
-  for (let i = 0; i < 6; i++) {
-    key[i] = (key[i] + t[5 - i]) % 255;
-    iv[i] = (iv[i] + t[5 - i]) % 255;
+  for (let i = 0; i < MAC_BYTE_LENGTH; i++) {
+    key[i] = (key[i] + macBytes[MAC_BYTE_LENGTH - 1 - i]) % 255;
+    iv[i] = (iv[i] + macBytes[MAC_BYTE_LENGTH - 1 - i]) % 255;
   }
+  const cipher2 = new ModeOfOperation$1.ecb(new Uint8Array(key));
+  const decryptBlock = (buffer, offset) => {
+    const block = cipher2.decrypt(Uint8Array.from(buffer.slice(offset, offset + AES_BLOCK_SIZE$1)));
+    for (let i = 0; i < AES_BLOCK_SIZE$1; i++) {
+      buffer[offset + i] = block[i] ^ iv[i];
+    }
+  };
+  const encryptBlock = (buffer, offset) => {
+    for (let i = 0; i < AES_BLOCK_SIZE$1; i++) {
+      buffer[offset + i] ^= iv[i];
+    }
+    const block = cipher2.encrypt(Uint8Array.from(buffer.slice(offset, offset + AES_BLOCK_SIZE$1)));
+    for (let i = 0; i < AES_BLOCK_SIZE$1; i++) {
+      buffer[offset + i] = block[i];
+    }
+  };
   return {
     decrypt(raw) {
-      const cipher2 = new ModeOfOperation$1.ecb(new Uint8Array(key));
+      if (raw.length < AES_BLOCK_SIZE$1) {
+        throw new Error(`MoYu32 frame too short to decrypt: ${raw.length} bytes`);
+      }
       const ret = raw.slice();
-      if (ret.length > 16) {
-        const offset = ret.length - 16;
-        const block2 = cipher2.decrypt(new Uint8Array(ret.slice(offset)));
-        for (let i = 0; i < 16; i++) {
-          ret[i + offset] = block2[i] ^ iv[i];
-        }
+      if (ret.length > AES_BLOCK_SIZE$1) {
+        decryptBlock(ret, ret.length - AES_BLOCK_SIZE$1);
       }
-      const block = cipher2.decrypt(new Uint8Array(ret.slice(0, 16)));
-      for (let i = 0; i < 16; i++) {
-        ret[i] = block[i] ^ iv[i];
-      }
+      decryptBlock(ret, 0);
       return ret;
     },
     encrypt(data) {
+      if (data.length < AES_BLOCK_SIZE$1) {
+        throw new Error(`MoYu32 frame too short to encrypt: ${data.length} bytes`);
+      }
       const ret = data.slice();
-      const cipher2 = new ModeOfOperation$1.ecb(new Uint8Array(key));
-      for (let i = 0; i < 16; i++) {
-        ret[i] ^= iv[i];
-      }
-      const block = cipher2.encrypt(new Uint8Array(ret.slice(0, 16)));
-      for (let i = 0; i < 16; i++) {
-        ret[i] = block[i];
-      }
-      if (ret.length > 16) {
-        const offset = ret.length - 16;
-        for (let i = 0; i < 16; i++) {
-          ret[i + offset] ^= iv[i];
-        }
-        const block2 = cipher2.encrypt(new Uint8Array(ret.slice(offset, offset + 16)));
-        for (let i = 0; i < 16; i++) {
-          ret[i + offset] = block2[i];
-        }
+      encryptBlock(ret, 0);
+      if (ret.length > AES_BLOCK_SIZE$1) {
+        encryptBlock(ret, ret.length - AES_BLOCK_SIZE$1);
       }
       return ret;
     }
@@ -4819,132 +5373,170 @@ function buildMoyu32MacCandidatesFromName(deviceName) {
   }
   return out.slice(0, 100);
 }
+var { ModeOfOperation } = import_aes_js.default;
+var QIYI_KEY = [87, 177, 249, 171, 205, 90, 232, 167, 156, 185, 140, 231, 87, 140, 81, 8];
+var AES_BLOCK_SIZE = 16;
+var QIYI_MAX_CONTENT_LENGTH = 251;
+var cachedCipher = null;
+function cipher() {
+  return cachedCipher ?? (cachedCipher = new ModeOfOperation.ecb(new Uint8Array(QIYI_KEY)));
+}
+function crc16modbus(data) {
+  let crc = 65535;
+  for (let i = 0; i < data.length; i++) {
+    const byte = data[i];
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
+      throw new TypeError(`crc16modbus: value at index ${i} is not a byte: ${byte}`);
+    }
+    crc ^= byte;
+    for (let j = 0; j < 8; j++) {
+      crc = (crc & 1) > 0 ? crc >> 1 ^ 40961 : crc >> 1;
+    }
+  }
+  return crc;
+}
+function assertBlockAligned(length, operation) {
+  if (length === 0 || length % AES_BLOCK_SIZE !== 0) {
+    throw new Error(`QiYi ${operation}: frame length must be a positive multiple of 16, got ${length}`);
+  }
+}
+function decryptQiYiBlocks(enc) {
+  assertBlockAligned(enc.length, "decrypt");
+  return new Uint8Array(cipher().decrypt(enc));
+}
+function encryptQiYiBlocks(plain) {
+  assertBlockAligned(plain.length, "encrypt");
+  return new Uint8Array(cipher().encrypt(plain));
+}
+function encryptQiYiMessage(content) {
+  if (content.length > QIYI_MAX_CONTENT_LENGTH) {
+    throw new Error(`QiYi message content too long: ${content.length} bytes (max ${QIYI_MAX_CONTENT_LENGTH})`);
+  }
+  const msg = [254, 4 + content.length, ...content];
+  const crc = crc16modbus(msg);
+  msg.push(crc & 255, crc >> 8);
+  while (msg.length % AES_BLOCK_SIZE !== 0) {
+    msg.push(0);
+  }
+  return encryptQiYiBlocks(Uint8Array.from(msg));
+}
+var QIYI_HELLO_PREFIX = Object.freeze([0, 107, 1, 0, 0, 34, 6, 0, 2, 8, 0]);
+function qiyiHelloContent(macBytes) {
+  if (macBytes.length !== 6 || macBytes.some((b) => !Number.isInteger(b) || b < 0 || b > 255)) {
+    throw new Error("QiYi hello requires exactly 6 MAC bytes");
+  }
+  const content = [...QIYI_HELLO_PREFIX];
+  for (let i = 5; i >= 0; i--) {
+    content.push(macBytes[i]);
+  }
+  return content;
+}
+var MOYU32_FRAME_SIZE = 20;
+var OP_HARDWARE_INFO$1 = 161;
+var OP_FACELETS$1 = 163;
+var OP_BATTERY$1 = 164;
+var OP_MOVE$1 = 165;
+var OP_GYRO$1 = 171;
 function isValidMoYu32DecryptedPacket(bytes) {
-  if (!bytes || bytes.length < 20) {
+  if (!bytes || bytes.length !== MOYU32_FRAME_SIZE) {
     return false;
   }
-  try {
-    for (let i = 0; i < bytes.length; i++) {
-      if (bytes[i] < 0 || bytes[i] > 255) {
-        return false;
-      }
-    }
-    let z = 0;
-    let f = 0;
-    for (let n2 = 0; n2 < Math.min(bytes.length, 20); n2++) {
-      if (bytes[n2] === 0) {
-        z++;
-      } else if (bytes[n2] === 255) {
-        f++;
-      }
-    }
-    if (z > 14 || f > 14 || new Set(bytes.slice(0, 20)).size > 18) {
-      return false;
-    }
-    let n = "";
-    for (let i = 0; i < bytes.length; i++) {
-      n += (bytes[i] + 256).toString(2).slice(1);
-    }
-    const r = parseInt(n.slice(0, 8), 2);
-    return validateMoYu32BitBody(n, r);
-  } catch {
+  if (bytes.some((b) => !Number.isInteger(b) || b < 0 || b > 255)) {
     return false;
+  }
+  let bits = "";
+  for (let i = 0; i < bytes.length; i++) {
+    bits += (bytes[i] + 256).toString(2).slice(1);
+  }
+  const opcode = parseInt(bits.slice(0, 8), 2);
+  switch (opcode) {
+    case OP_HARDWARE_INFO$1:
+      return isValidMoyu32HardwareBody(bits);
+    case OP_FACELETS$1:
+      return isValidMoyu32FaceletsBody(bits);
+    case OP_BATTERY$1:
+      return isValidMoyu32BatteryBody(bytes);
+    case OP_MOVE$1:
+      return isValidMoyu32MoveBody(bits);
+    case OP_GYRO$1:
+      return isValidMoyu32GyroBody(bits);
+    default:
+      return false;
   }
 }
-function validateMoYu32BitBody(e, t) {
-  if (!e || e.length < 160) {
-    return false;
-  }
-  try {
-    const i = parseInt(e.slice(0, 8), 2);
-    if (i !== t || ![161, 163, 164, 165, 171].includes(i) || i === 164 && parseInt(e.slice(8, 16), 2) > 100) {
+function isValidMoyu32HardwareBody(bits) {
+  let printable = 0;
+  for (let i = 0; i < 8; i++) {
+    const charCode = parseInt(bits.slice(8 + 8 * i, 16 + 8 * i), 2);
+    if (charCode !== 0 && (charCode < 32 || charCode > 126)) {
       return false;
     }
-    if (i === 161) {
-      for (let k = 0; k < 8; k++) {
-        const v = parseInt(e.slice(8 + 8 * k, 16 + 8 * k), 2);
-        if (v !== 0 && (v < 32 || v > 126)) {
-          return false;
-        }
-      }
+    if (charCode !== 0) {
+      printable++;
     }
-    if (i === 165) {
-      let c = 0;
-      for (let j = 0; j < 5; j++) {
-        const v = parseInt(e.slice(96 + 5 * j, 101 + 5 * j), 2);
-        if (v <= 11) {
-          c++;
-        } else if (v < 31) {
-          return false;
-        }
-      }
-      if (c === 0) {
-        return false;
-      }
-      let allZero = true;
-      let allMax = true;
-      for (let r = 0; r < c; r++) {
-        const v = parseInt(e.slice(8 + 16 * r, 24 + 16 * r), 2);
-        if (v !== 0) {
-          allZero = false;
-        }
-        if (v !== 65535) {
-          allMax = false;
-        }
-      }
-      if (allZero || allMax) {
-        return false;
-      }
-    }
-    if (i === 163) {
-      const body = e.slice(8, 152);
-      const zeros = (body.match(/0/g) || []).length;
-      const ones = (body.match(/1/g) || []).length;
-      if (zeros > 0.9 * body.length || ones > 0.9 * body.length) {
-        return false;
-      }
-    }
-    return true;
-  } catch {
-    return false;
   }
+  return printable > 0;
 }
-function isValidQiYiDecryptedPacket(e) {
-  if (!e || e.length < 7) {
+function isValidMoyu32FaceletsBody(bits) {
+  const facelet = parseMoyu32FaceletBits(bits.slice(8, 152));
+  return new CubieCube().fromFacelet(facelet) !== -1;
+}
+function isValidMoyu32BatteryBody(bytes) {
+  if (bytes[1] > 100) {
     return false;
   }
-  try {
-    const t = e[0];
-    if (t === 254) {
-      const cmd = e[1];
-      const sub = e[2];
-      if (![2, 3].includes(sub) || cmd < 7 || cmd > 100) {
-        return false;
-      }
-      const n = (e[3] << 24 | e[4] << 16 | e[5] << 8 | e[6]) >>> 0;
-      if (n === 0 || n === 4294967295) {
-        return false;
-      }
-      return true;
+  for (let i = 2; i < MOYU32_FRAME_SIZE; i++) {
+    if (bytes[i] !== 0) {
+      return false;
     }
-    if (t === 204 && e[1] === 16) {
-      if (e.length < 16) {
-        return false;
+  }
+  return true;
+}
+function isValidMoyu32MoveBody(bits) {
+  let validMoveCount = 0;
+  let allZero = true;
+  let allMax = true;
+  for (let i = 0; i < 5; i++) {
+    const moveCode = parseInt(bits.slice(96 + 5 * i, 101 + 5 * i), 2);
+    if (moveCode <= 11) {
+      validMoveCount++;
+      const timeOffset = parseInt(bits.slice(8 + 16 * i, 24 + 16 * i), 2);
+      if (timeOffset !== 0) {
+        allZero = false;
       }
-      const dv = new DataView(e.buffer, e.byteOffset);
-      const x = dv.getInt16(6, false);
-      const y = dv.getInt16(8, false);
-      const z = dv.getInt16(10, false);
-      const w = dv.getInt16(12, false);
-      if (Math.abs(x) > 2e3 || Math.abs(y) > 2e3 || Math.abs(z) > 2e3 || Math.abs(w) > 2e3) {
-        return false;
+      if (timeOffset !== 65535) {
+        allMax = false;
       }
-      return true;
+    } else if (moveCode < 31) {
+      return false;
     }
-    return false;
-  } catch {
+  }
+  if (validMoveCount === 0) {
     return false;
   }
+  return !allZero && !allMax;
+}
+function isValidMoyu32GyroBody(bits) {
+  const body = bits.slice(8, 152);
+  const zeros = (body.match(/0/g) || []).length;
+  return zeros < 0.9 * body.length && body.length - zeros < 0.9 * body.length;
+}
+function isValidQiYiDecryptedPacket(payload) {
+  if (!payload || payload.length < 7) {
+    return false;
+  }
+  if (payload[0] !== 254) {
+    return false;
+  }
+  const frameLength = payload[1];
+  if (frameLength < 7 || frameLength > payload.length) {
+    return false;
+  }
+  const storedCrc = payload[frameLength - 2] | payload[frameLength - 1] << 8;
+  if (crc16modbus(payload.subarray(0, frameLength - 2)) !== storedCrc) {
+    return false;
+  }
+  return payload[2] === 2;
 }
 var MOYU32_SVC = "0783b03e-7735-b5a0-1760-a305d2795cb0";
 var MOYU32_CHR_READ = "0783b03e-7735-b5a0-1760-a305d2795cb1";
@@ -5060,13 +5652,13 @@ var ENABLE_GYRO_PAYLOAD = Object.freeze([
   0,
   0
 ]);
-function moyu32MacColonFromManufacturerDataView(dv) {
-  const n = dv.byteLength;
-  if (n < 6) {
-    return null;
-  }
-  const skipCid = n >= 8 ? 2 : 0;
-  if (n < skipCid + 6) {
+var OP_HARDWARE_INFO = 161;
+var OP_FACELETS = 163;
+var OP_BATTERY = 164;
+var OP_MOVE = 165;
+var OP_GYRO = 171;
+function moyu32MacColonFromManufacturerDataView(dv, skipCid) {
+  if (dv.byteLength < skipCid + 6) {
     return null;
   }
   const parts = [];
@@ -5080,32 +5672,18 @@ function parseMoyu32MacFromMf(mfData) {
     return null;
   }
   if (mfData instanceof DataView) {
-    return moyu32MacColonFromManufacturerDataView(mfData);
+    return moyu32MacColonFromManufacturerDataView(mfData, mfData.byteLength >= 8 ? 2 : 0);
   }
   for (const id of mfData.keys()) {
     const dataView = mfData.get(id);
     if (dataView) {
-      const mac = moyu32MacColonFromManufacturerDataView(dataView);
+      const mac = moyu32MacColonFromManufacturerDataView(dataView, dataView.byteLength >= 8 ? 2 : 0);
       if (mac) {
         return mac;
       }
     }
   }
   return null;
-}
-function parseFacelet$1(faceletBits) {
-  const state = [];
-  const faces = [2, 5, 0, 3, 4, 1];
-  for (let i = 0; i < 6; i++) {
-    const face = faceletBits.slice(faces[i] * 24, 24 + faces[i] * 24);
-    for (let j = 0; j < 8; j++) {
-      state.push("FBUDLR".charAt(parseInt(face.slice(j * 3, 3 + j * 3), 2)));
-      if (j === 3) {
-        state.push("FBUDLR".charAt(faces[i]));
-      }
-    }
-  }
-  return state.join("");
 }
 var MOYU32_PROTOCOL = { id: "moyu32", name: "MoYu32" };
 var Moyu32Connection = class {
@@ -5125,30 +5703,24 @@ var Moyu32Connection = class {
     this.encrypter = null;
     this.prevCubie = new CubieCube();
     this.curCubie = new CubieCube();
-    this.latestFacelet = SOLVED_FACELET;
     this.deviceTime = 0;
     this.deviceTimeOffset = 0;
-    this.moveCnt = -1;
     this.prevMoveCnt = -1;
     this.batteryInterval = null;
     this.onStateChanged = (event) => {
       const value = event.target.value;
       if (!value || !this.encrypter)
         return;
+      if (value.byteLength !== 20)
+        return;
       this.parseData(value);
     };
     this.pollBattery = () => {
-      void this.sendSimpleRequest(164);
+      this.sendSimpleRequest(OP_BATTERY).catch(() => {
+      });
     };
     this.onDisconnect = () => {
-      this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
-      this.bus.resetBatteryDedupe();
-      if (this.batteryInterval) {
-        clearInterval(this.batteryInterval);
-        this.batteryInterval = null;
-      }
-      this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-      this.bus.complete();
+      this.teardown();
     };
     this.device = device;
     this.deviceName = device.name || "WCU_MY3";
@@ -5161,8 +5733,9 @@ var Moyu32Connection = class {
     return this.bus.getSnapshot();
   }
   sendRequest(req) {
-    if (!this.writeChrct)
-      return Promise.resolve();
+    if (!this.writeChrct) {
+      return Promise.reject(new Error("[Moyu32] Not connected"));
+    }
     const encoded = this.encrypter ? this.encrypter.encrypt(req.slice()) : req;
     return writeGattCharacteristicValue(this.writeChrct, new Uint8Array(encoded).buffer).then(() => {
     });
@@ -5179,7 +5752,7 @@ var Moyu32Connection = class {
       raw[i] = value.getUint8(i);
     }
     const decoded = this.encrypter ? this.encrypter.decrypt(raw) : raw;
-    if ((decoded[0] | 0) === 171) {
+    if ((decoded[0] | 0) === OP_GYRO) {
       if (!this.capabilities.gyroscope) {
         this.bus.setCapabilities({ gyroscope: true });
       }
@@ -5188,95 +5761,108 @@ var Moyu32Connection = class {
     }
     const bits = decoded.map((b) => (b + 256 & 255).toString(2).padStart(8, "0")).join("");
     const msgType = parseInt(bits.slice(0, 8), 2);
-    if (msgType === 161) {
-      let devName = "";
-      for (let i = 0; i < 8; i++) {
-        devName += String.fromCharCode(parseInt(bits.slice(8 + i * 8, 16 + i * 8), 2));
-      }
-      const hardwareVersion = parseInt(bits.slice(88, 96), 2) + "." + parseInt(bits.slice(96, 104), 2);
-      const softwareVersion = parseInt(bits.slice(72, 80), 2) + "." + parseInt(bits.slice(80, 88), 2);
-      this.bus.emit({
-        timestamp,
-        type: "HARDWARE",
-        hardwareName: devName.trim(),
-        softwareVersion,
-        hardwareVersion,
-        gyroSupported: this.capabilities.gyroscope
+    if (msgType === OP_HARDWARE_INFO) {
+      this.handleHardwareInfo(bits, timestamp);
+    } else if (msgType === OP_FACELETS) {
+      this.handleFacelets(bits, timestamp);
+    } else if (msgType === OP_BATTERY) {
+      this.bus.emitBattery(parseInt(bits.slice(8, 16), 2), timestamp);
+    } else if (msgType === OP_MOVE) {
+      this.handleMoves(bits, timestamp);
+    }
+  }
+  handleHardwareInfo(bits, timestamp) {
+    let devName = "";
+    for (let i = 0; i < 8; i++) {
+      devName += String.fromCharCode(parseInt(bits.slice(8 + i * 8, 16 + i * 8), 2));
+    }
+    const hardwareVersion = parseInt(bits.slice(88, 96), 2) + "." + parseInt(bits.slice(96, 104), 2);
+    const softwareVersion = parseInt(bits.slice(72, 80), 2) + "." + parseInt(bits.slice(80, 88), 2);
+    this.bus.emit({
+      timestamp,
+      type: "HARDWARE",
+      // The 8-byte field is NUL-padded; trim() alone leaves embedded NULs behind.
+      hardwareName: devName.split("\0")[0].trim(),
+      softwareVersion,
+      hardwareVersion,
+      gyroSupported: this.capabilities.gyroscope
+    });
+  }
+  handleFacelets(bits, timestamp) {
+    const seq = parseInt(bits.slice(152, 160), 2);
+    const facelet = parseMoyu32FaceletBits(bits.slice(8, 152));
+    if (this.prevCubie.fromFacelet(facelet) === -1) {
+      return;
+    }
+    this.prevMoveCnt = seq;
+    this.bus.emit({
+      timestamp,
+      type: "FACELETS",
+      facelets: facelet
+    });
+  }
+  handleMoves(bits, timestamp) {
+    const moveCnt = parseInt(bits.slice(88, 96), 2);
+    if (this.prevMoveCnt === -1) {
+      this.prevMoveCnt = moveCnt;
+      this.sendSimpleRequest(OP_FACELETS).catch(() => {
       });
-    } else if (msgType === 163) {
-      const seq = parseInt(bits.slice(152, 160), 2);
-      const facelet = parseFacelet$1(bits.slice(8, 152));
-      if (this.prevCubie.fromFacelet(facelet) === -1) {
+      return;
+    }
+    if (moveCnt === this.prevMoveCnt)
+      return;
+    const rawDelta = moveCnt - this.prevMoveCnt & 255;
+    if (rawDelta > 5) {
+      console.warn("[Moyu32] lost move events", rawDelta - 5);
+    }
+    const moveDiff = Math.min(rawDelta, 5);
+    const prevMoves = [];
+    const timeOffs = [];
+    for (let i = 0; i < moveDiff; i++) {
+      const m = parseInt(bits.slice(96 + i * 5, 101 + i * 5), 2);
+      timeOffs[i] = parseInt(bits.slice(8 + i * 16, 24 + i * 16), 2);
+      if (m >= 12) {
+        this.prevMoveCnt = moveCnt;
+        this.sendSimpleRequest(OP_FACELETS).catch(() => {
+        });
         return;
       }
-      this.latestFacelet = facelet;
-      this.moveCnt = seq;
-      this.prevMoveCnt = seq;
+      prevMoves[i] = "FBUDLR".charAt(m >> 1) + " '".charAt(m & 1);
+    }
+    this.prevMoveCnt = moveCnt;
+    let calcTs = this.deviceTime + this.deviceTimeOffset;
+    for (let i = moveDiff - 1; i >= 0; i--) {
+      calcTs += timeOffs[i];
+    }
+    if (!this.deviceTime || Math.abs(timestamp - calcTs) > 2e3) {
+      this.deviceTime += timestamp - calcTs;
+    }
+    for (let i = moveDiff - 1; i >= 0; i--) {
+      const moveNotation = prevMoves[i].trim();
+      const m = "URFDLB".indexOf(moveNotation[0]) * 3 + " 2'".indexOf(moveNotation[1] || " ");
+      CubieCube.CubeMult(this.prevCubie, CubieCube.moveCube[m], this.curCubie);
+      this.deviceTime += timeOffs[i];
+      const face = Math.floor(m / 3);
+      const direction = moveDirectionFromNotation(moveNotation);
+      this.bus.emit({
+        timestamp,
+        type: "MOVE",
+        face,
+        direction,
+        move: moveNotation,
+        localTimestamp: i === 0 ? timestamp : null,
+        cubeTimestamp: this.deviceTime
+      });
       this.bus.emit({
         timestamp,
         type: "FACELETS",
-        facelets: this.latestFacelet
+        facelets: this.curCubie.toFaceCube()
       });
-    } else if (msgType === 164) {
-      this.bus.emitBattery(parseInt(bits.slice(8, 16), 2), timestamp);
-    } else if (msgType === 165) {
-      this.moveCnt = parseInt(bits.slice(88, 96), 2);
-      if (this.moveCnt === this.prevMoveCnt || this.prevMoveCnt === -1)
-        return;
-      const prevMoves = [];
-      const timeOffs = [];
-      let invalidMove = false;
-      for (let i = 0; i < 5; i++) {
-        const m = parseInt(bits.slice(96 + i * 5, 101 + i * 5), 2);
-        timeOffs[i] = parseInt(bits.slice(8 + i * 16, 24 + i * 16), 2);
-        prevMoves[i] = "FBUDLR".charAt(m >> 1) + " '".charAt(m & 1);
-        if (m >= 12) {
-          prevMoves[i] = "U ";
-          invalidMove = true;
-        }
-      }
-      if (!invalidMove) {
-        const rawDelta = this.moveCnt - this.prevMoveCnt & 255;
-        if (rawDelta > prevMoves.length) {
-          console.warn("[Moyu32] lost move events", rawDelta - prevMoves.length);
-        }
-        const moveDiff = Math.min(rawDelta, prevMoves.length);
-        this.prevMoveCnt = this.moveCnt;
-        let calcTs = this.deviceTime + this.deviceTimeOffset;
-        for (let i = moveDiff - 1; i >= 0; i--) {
-          calcTs += timeOffs[i];
-        }
-        if (!this.deviceTime || Math.abs(timestamp - calcTs) > 2e3) {
-          this.deviceTime += timestamp - calcTs;
-        }
-        for (let i = moveDiff - 1; i >= 0; i--) {
-          const moveNotation = prevMoves[i].trim();
-          const m = "URFDLB".indexOf(moveNotation[0]) * 3 + " 2'".indexOf(moveNotation[1] || " ");
-          CubieCube.CubeMult(this.prevCubie, CubieCube.moveCube[m], this.curCubie);
-          this.deviceTime += timeOffs[i];
-          const face = Math.floor(m / 3);
-          const direction = moveDirectionFromNotation(moveNotation);
-          this.bus.emit({
-            timestamp,
-            type: "MOVE",
-            face,
-            direction,
-            move: moveNotation,
-            localTimestamp: i === 0 ? timestamp : null,
-            cubeTimestamp: this.deviceTime
-          });
-          this.bus.emit({
-            timestamp,
-            type: "FACELETS",
-            facelets: this.curCubie.toFaceCube()
-          });
-          const tmp = this.curCubie;
-          this.curCubie = this.prevCubie;
-          this.prevCubie = tmp;
-        }
-        this.deviceTimeOffset = timestamp - this.deviceTime;
-      }
+      const tmp = this.curCubie;
+      this.curCubie = this.prevCubie;
+      this.prevCubie = tmp;
     }
+    this.deviceTimeOffset = timestamp - this.deviceTime;
   }
   parseGyroData(decoded, timestamp) {
     const dv = new DataView(Uint8Array.from(decoded).buffer);
@@ -5298,59 +5884,82 @@ var Moyu32Connection = class {
       quaternion: { x, y, z, w }
     });
   }
-  async init() {
-    this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
-    const gatt = await this.device.gatt.connect();
-    const service = await gatt.getPrimaryService(SERVICE_UUID$1);
-    const chrcts = await service.getCharacteristics();
-    this.readChrct = findCharacteristic(chrcts, CHRT_UUID_READ);
-    this.writeChrct = findCharacteristic(chrcts, CHRT_UUID_WRITE);
-    if (!this.readChrct || !this.writeChrct) {
-      throw new Error("[Moyu32] Cannot find read/write characteristics");
-    }
-    this.readChrct.addEventListener("characteristicvaluechanged", this.onStateChanged);
-    await this.readChrct.startNotifications();
-    this.encrypter = createMoyu32SessionCrypto(this.deviceMAC);
-    await this.sendSimpleRequest(161);
-    await this.sendSimpleRequest(163);
-    await this.sendSimpleRequest(164);
-    await this.sendSimpleRequest(161);
-    await this.sendSimpleRequest(163);
-    await this.sendSimpleRequest(164);
-    this.batteryInterval = setInterval(this.pollBattery, 6e4);
-    await this.sendRequest(Array.from(ENABLE_GYRO_PAYLOAD));
-    await this.sendSimpleRequest(163);
-  }
-  async sendCommand(command) {
-    switch (command.type) {
-      case "REQUEST_HARDWARE":
-        await this.sendSimpleRequest(161);
-        break;
-      case "REQUEST_FACELETS":
-        await this.sendSimpleRequest(163);
-        break;
-      case "REQUEST_BATTERY":
-        this.bus.forceNextBattery();
-        await this.sendSimpleRequest(164);
-        break;
-    }
-  }
-  async disconnect() {
+  /** Idempotent teardown shared by remote and explicit disconnects. */
+  teardown() {
+    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
     if (this.readChrct) {
       this.readChrct.removeEventListener("characteristicvaluechanged", this.onStateChanged);
-      await this.readChrct.stopNotifications().catch(() => {
-      });
       this.readChrct = null;
     }
+    this.writeChrct = null;
+    this.encrypter = null;
     this.bus.resetBatteryDedupe();
     if (this.batteryInterval) {
       clearInterval(this.batteryInterval);
       this.batteryInterval = null;
     }
-    this.writeChrct = null;
-    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
     this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
     this.bus.complete();
+  }
+  /** Hardware, facelets, and battery requests in the order the cube expects. */
+  async sendInitBurst() {
+    await this.sendSimpleRequest(OP_HARDWARE_INFO);
+    await this.sendSimpleRequest(OP_FACELETS);
+    await this.sendSimpleRequest(OP_BATTERY);
+  }
+  async init() {
+    this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
+    try {
+      const gatt = await this.device.gatt.connect();
+      const service = await gatt.getPrimaryService(SERVICE_UUID$1);
+      const chrcts = await service.getCharacteristics();
+      this.readChrct = findCharacteristic(chrcts, CHRT_UUID_READ);
+      this.writeChrct = findCharacteristic(chrcts, CHRT_UUID_WRITE);
+      if (!this.readChrct || !this.writeChrct) {
+        throw new Error("[Moyu32] Cannot find read/write characteristics");
+      }
+      this.encrypter = createMoyu32SessionCrypto(this.deviceMAC);
+      this.readChrct.addEventListener("characteristicvaluechanged", this.onStateChanged);
+      await this.readChrct.startNotifications();
+      await this.sendInitBurst();
+      await this.sendInitBurst();
+      this.batteryInterval = setInterval(this.pollBattery, 6e4);
+      await this.sendRequest(Array.from(ENABLE_GYRO_PAYLOAD));
+      await this.sendSimpleRequest(OP_FACELETS);
+    } catch (e) {
+      this.teardown();
+      if (this.device.gatt?.connected) {
+        this.device.gatt.disconnect();
+      }
+      throw e;
+    }
+  }
+  async sendCommand(command) {
+    switch (command.type) {
+      case "REQUEST_HARDWARE":
+        await this.sendSimpleRequest(OP_HARDWARE_INFO);
+        break;
+      case "REQUEST_FACELETS":
+        await this.sendSimpleRequest(OP_FACELETS);
+        break;
+      case "REQUEST_BATTERY":
+        this.bus.forceNextBattery();
+        try {
+          await this.sendSimpleRequest(OP_BATTERY);
+        } catch (e) {
+          this.bus.cancelForcedBattery();
+          throw e;
+        }
+        break;
+    }
+  }
+  async disconnect() {
+    const readChrct = this.readChrct;
+    this.teardown();
+    if (readChrct) {
+      await readChrct.stopNotifications().catch(() => {
+      });
+    }
     if (this.device.gatt?.connected) {
       this.device.gatt.disconnect();
     }
@@ -5372,7 +5981,7 @@ async function connectMoyu32Device(device, macProvider, context2) {
   await conn.init();
   return conn;
 }
-var MOYU32_NAME_FILTERS = [{ namePrefix: "^S" }, { namePrefix: "WCU_" }, { namePrefix: "WCU_MY3" }];
+var MOYU32_NAME_FILTERS = [{ namePrefix: "WCU_" }];
 var moyu32Protocol = {
   nameFilters: MOYU32_NAME_FILTERS,
   optionalServices: [SERVICE_UUID$1],
@@ -5384,59 +5993,14 @@ var moyu32Protocol = {
   connect: connectMoyu32Device
 };
 registerProtocol(moyu32Protocol);
-var { ModeOfOperation } = import_aes_js.default;
-var QIYI_KEY = [87, 177, 249, 171, 205, 90, 232, 167, 156, 185, 140, 231, 87, 140, 81, 8];
-var cachedCipher = null;
-function cipher() {
-  return cachedCipher ?? (cachedCipher = new ModeOfOperation.ecb(new Uint8Array(QIYI_KEY)));
-}
-function crc16modbus(data) {
-  let crc = 65535;
-  for (let i = 0; i < data.length; i++) {
-    crc ^= data[i];
-    for (let j = 0; j < 8; j++) {
-      crc = (crc & 1) > 0 ? crc >> 1 ^ 40961 : crc >> 1;
-    }
-  }
-  return crc;
-}
-function decryptQiYiBlocks(enc) {
-  const c = cipher();
-  const out = new Uint8Array(enc.length);
-  for (let i = 0; i < enc.length; i += 16) {
-    out.set(c.decrypt(enc.subarray(i, i + 16)), i);
-  }
-  return out;
-}
-function encryptQiYiBlocks(plain) {
-  const c = cipher();
-  const out = new Uint8Array(plain.length);
-  for (let i = 0; i < plain.length; i += 16) {
-    out.set(c.encrypt(plain.subarray(i, i + 16)), i);
-  }
-  return out;
-}
-function encryptQiYiMessage(content) {
-  const msg = [254, 4 + content.length, ...content];
-  const crc = crc16modbus(msg);
-  msg.push(crc & 255, crc >> 8);
-  while (msg.length % 16 !== 0) {
-    msg.push(0);
-  }
-  return encryptQiYiBlocks(Uint8Array.from(msg));
-}
-function qiyiHelloContent(macBytes) {
-  const content = [0, 107, 1, 0, 0, 34, 6, 0, 2, 8, 0];
-  for (let i = 5; i >= 0; i--) {
-    content.push(macBytes[i] ?? 0);
-  }
-  return content;
-}
 var UUID_SUFFIX$1 = "-0000-1000-8000-00805f9b34fb";
 var QIYI_SVC = "0000fff0" + UUID_SUFFIX$1;
 var QIYI_CHR = "0000fff6" + UUID_SUFFIX$1;
+var HELLO_RETRY_INTERVAL_MS = 200;
 async function probeQiYiMac(device, mac, options) {
   const timeoutMs = options?.timeoutMs ?? 3e3;
+  const signal = options?.signal;
+  throwIfAborted(signal);
   const helloFrame = encryptQiYiMessage(qiyiHelloContent(parseMacBytes(mac)));
   const gatt = device.gatt;
   if (!gatt) {
@@ -5444,17 +6008,29 @@ async function probeQiYiMac(device, mac, options) {
   }
   if (!gatt.connected) {
     await gatt.connect();
+    throwIfAborted(signal);
   }
   const service = await gatt.getPrimaryService(QIYI_SVC);
+  throwIfAborted(signal);
   const chrcts = await service.getCharacteristics();
+  throwIfAborted(signal);
   const chrct = findCharacteristic(chrcts, QIYI_CHR);
   if (!chrct) {
     return false;
   }
-  let stopped = false;
   let ok = false;
+  let settled = false;
+  let settle;
+  const done = new Promise((resolve) => {
+    settle = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+  });
   const onNotify = (ev) => {
-    if (stopped) {
+    if (settled) {
       return;
     }
     const v = ev.target.value;
@@ -5466,40 +6042,44 @@ async function probeQiYiMac(device, mac, options) {
       const dec = decryptQiYiBlocks(raw);
       if (isValidQiYiDecryptedPacket(dec)) {
         ok = true;
-        stopped = true;
+        settle();
       }
     } catch {
     }
   };
+  const onAbort = () => settle();
+  const maxTimer = setTimeout(settle, timeoutMs);
+  let notificationsStarted = false;
   chrct.addEventListener("characteristicvaluechanged", onNotify);
-  await chrct.startNotifications();
-  const wake = () => {
-    if (stopped) {
-      return;
-    }
-    try {
-      void writeGattCharacteristicValue(chrct, helloFrame).catch(() => {
-      });
-    } catch {
-    }
-  };
-  const iv = setInterval(wake, 100);
-  wake();
-  await new Promise((resolve) => {
-    const maxTimer = setTimeout(() => resolve(), timeoutMs);
-    const poll = setInterval(() => {
-      if (ok || options?.signal?.aborted) {
-        clearInterval(poll);
-        clearTimeout(maxTimer);
-        resolve();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    await chrct.startNotifications();
+    notificationsStarted = true;
+    while (!settled) {
+      try {
+        await writeGattCharacteristicValue(chrct, helloFrame);
+      } catch {
       }
-    }, 40);
-  });
-  clearInterval(iv);
-  stopped = true;
-  chrct.removeEventListener("characteristicvaluechanged", onNotify);
-  await chrct.stopNotifications().catch(() => {
-  });
+      if (settled) {
+        break;
+      }
+      await Promise.race([
+        done,
+        new Promise((r) => setTimeout(r, HELLO_RETRY_INTERVAL_MS))
+      ]);
+    }
+    await done;
+  } finally {
+    settle();
+    clearTimeout(maxTimer);
+    signal?.removeEventListener("abort", onAbort);
+    chrct.removeEventListener("characteristicvaluechanged", onNotify);
+    if (notificationsStarted) {
+      await chrct.stopNotifications().catch(() => {
+      });
+    }
+  }
+  throwIfAborted(signal);
   return ok;
 }
 var UUID_SUFFIX = "-0000-1000-8000-00805f9b34fb";
@@ -5507,6 +6087,11 @@ var SERVICE_UUID = "0000fff0" + UUID_SUFFIX;
 var CHRCT_UUID_CUBE = "0000fff6" + UUID_SUFFIX;
 var QIYI_CIC_LIST = [1284];
 var QIYI_SOLVED_FACELETS = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
+var OP_STATE_HELLO = 2;
+var OP_STATE_CHANGE = 3;
+var OP_SYNC_CONFIRM = 4;
+var QUATERNION_HEADER = 204;
+var QIYI_TICKS_PER_MS = 1.6;
 function parseFacelet(faceMsg) {
   const ret = [];
   for (let i = 0; i < 54; i++) {
@@ -5515,7 +6100,7 @@ function parseFacelet(faceMsg) {
   return ret.join("");
 }
 function readQiYiTimestampBE(msg, offset) {
-  return msg[offset] << 24 | msg[offset + 1] << 16 | msg[offset + 2] << 8 | msg[offset + 3];
+  return (msg[offset] << 24 | msg[offset + 1] << 16 | msg[offset + 2] << 8 | msg[offset + 3]) >>> 0;
 }
 function collectQiYiStateChangeMoves(msg, headerTs) {
   const out = [[msg[34], headerTs]];
@@ -5564,13 +6149,14 @@ var QiYiConnection = class {
     this.prevCubie = new CubieCube();
     this.lastTs = 0;
     this.writeChain = Promise.resolve();
+    this.closed = false;
     this.onCubeEvent = (event) => {
       const value = event.target.value;
       if (!value || value.byteLength === 0 || value.byteLength % 16 !== 0)
         return;
       const raw = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
       const msg = Array.from(decryptQiYiBlocks(raw));
-      if (msg[0] === 204 && msg[1] === 16) {
+      if (msg[0] === QUATERNION_HEADER && msg[1] === 16) {
         this.handleQuaternionPacket(msg);
         return;
       }
@@ -5581,10 +6167,7 @@ var QiYiConnection = class {
       this.parseCubeData(trimmed);
     };
     this.onDisconnect = () => {
-      this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
-      this.bus.resetBatteryDedupe();
-      this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-      this.bus.complete();
+      this.teardown();
     };
     this.device = device;
     this.deviceName = device.name || "QiYi";
@@ -5597,14 +6180,25 @@ var QiYiConnection = class {
     return this.bus.getSnapshot();
   }
   sendMessage(content) {
-    if (!this.cubeChrct)
+    if (this.closed || !this.cubeChrct)
       return Promise.reject(new Error("[QiYi] Not connected"));
     const ch = this.cubeChrct;
     const run = async () => {
+      if (this.closed) {
+        throw new Error("[QiYi] Not connected");
+      }
       await writeGattCharacteristicValue(ch, encryptQiYiMessage(content));
     };
     this.writeChain = this.writeChain.then(run, run);
     return this.writeChain;
+  }
+  /**
+   * Protocol ACKs are best-effort: a failed ACK is followed either by working traffic
+   * (the cube retransmits) or by a GATT disconnect that tears the connection down.
+   */
+  sendAck(msg) {
+    this.sendMessage(msg.slice(2, 7)).catch(() => {
+    });
   }
   sendHello() {
     return this.sendMessage(qiyiHelloContent(parseMacBytes(this.deviceMAC)));
@@ -5648,93 +6242,141 @@ var QiYiConnection = class {
     if (msg[0] !== 254)
       return;
     const opcode = msg[2];
+    if (opcode === OP_STATE_HELLO) {
+      this.handleHello(msg, timestamp);
+    } else if (opcode === OP_STATE_CHANGE) {
+      this.handleStateChange(msg, timestamp);
+    } else if (opcode === OP_SYNC_CONFIRM) {
+      this.handleSyncConfirm(msg, timestamp);
+    }
+  }
+  handleHello(msg, timestamp) {
+    if (msg.length < 38) {
+      return;
+    }
+    this.sendAck(msg);
+    const newFacelet = parseFacelet(msg.slice(7, 34));
+    if (this.prevCubie.fromFacelet(newFacelet) === -1) {
+      return;
+    }
+    this.bus.emit({
+      timestamp,
+      type: "FACELETS",
+      facelets: newFacelet
+    });
+    this.bus.emitBattery(msg[35], timestamp);
+    this.lastTs = readQiYiTimestampBE(msg, 3);
+  }
+  handleStateChange(msg, timestamp) {
+    if (msg.length < 36) {
+      return;
+    }
     const ts = readQiYiTimestampBE(msg, 3);
-    if (opcode === 2) {
-      this.sendMessage(msg.slice(2, 7)).catch(() => {
+    const needsAck = msg.length > 91 && msg[91] !== 0;
+    if (needsAck) {
+      this.sendAck(msg);
+    }
+    const candidates = collectQiYiStateChangeMoves(msg, ts);
+    const newMoves = candidates.filter(([code, moveTs]) => code >= 1 && code <= 12 && moveTs > this.lastTs);
+    for (let k = 0; k < newMoves.length; k++) {
+      const [code, moveTs] = newMoves[k];
+      const axis = [4, 1, 3, 0, 2, 5][code - 1 >> 1];
+      const power = [0, 2][code & 1];
+      const m = axis * 3 + power;
+      const moveStr = ("URFDLB".charAt(axis) + " 2'".charAt(power)).trim();
+      CubieCube.CubeMult(this.prevCubie, CubieCube.moveCube[m], this.curCubie);
+      const facelet = this.curCubie.toFaceCube();
+      this.bus.emit({
+        timestamp,
+        type: "MOVE",
+        face: axis,
+        direction: power === 0 ? 0 : 1,
+        move: moveStr,
+        localTimestamp: k === newMoves.length - 1 ? timestamp : null,
+        cubeTimestamp: Math.trunc(moveTs / QIYI_TICKS_PER_MS)
       });
-      const newFacelet = parseFacelet(msg.slice(7, 34));
-      if (this.prevCubie.fromFacelet(newFacelet) === -1) {
-        return;
-      }
       this.bus.emit({
         timestamp,
         type: "FACELETS",
-        facelets: newFacelet
+        facelets: facelet
       });
-      this.bus.emitBattery(msg[35], timestamp);
-      this.lastTs = ts;
-      return;
+      const tmp = this.curCubie;
+      this.curCubie = this.prevCubie;
+      this.prevCubie = tmp;
     }
-    if (opcode === 3) {
-      const needsAck = msg.length > 91 && msg[91] !== 0;
-      if (needsAck) {
-        this.sendMessage(msg.slice(2, 7)).catch(() => {
-        });
-      }
-      const candidates = collectQiYiStateChangeMoves(msg, ts);
-      const newMoves = candidates.filter(([code, moveTs]) => code >= 1 && code <= 12 && moveTs > this.lastTs);
-      for (let k = 0; k < newMoves.length; k++) {
-        const [code, moveTs] = newMoves[k];
-        const axis = [4, 1, 3, 0, 2, 5][code - 1 >> 1];
-        const power = [0, 2][code & 1];
-        const m = axis * 3 + power;
-        const moveStr = ("URFDLB".charAt(axis) + " 2'".charAt(power)).trim();
-        CubieCube.CubeMult(this.prevCubie, CubieCube.moveCube[m], this.curCubie);
-        const facelet = this.curCubie.toFaceCube();
-        this.bus.emit({
-          timestamp,
-          type: "MOVE",
-          face: axis,
-          direction: power === 0 ? 0 : 1,
-          move: moveStr,
-          localTimestamp: k === newMoves.length - 1 ? timestamp : null,
-          cubeTimestamp: Math.trunc(moveTs / 1.6)
-        });
+    if (newMoves.length > 0) {
+      this.lastTs = newMoves[newMoves.length - 1][1];
+    }
+    const packetFacelet = parseFacelet(msg.slice(7, 34));
+    if (packetFacelet !== this.prevCubie.toFaceCube()) {
+      const packetCubie = new CubieCube().fromFacelet(packetFacelet);
+      if (packetCubie !== -1) {
+        this.prevCubie = packetCubie;
+        this.curCubie = new CubieCube();
         this.bus.emit({
           timestamp,
           type: "FACELETS",
-          facelets: facelet
+          facelets: packetFacelet
         });
-        const tmp = this.curCubie;
-        this.curCubie = this.prevCubie;
-        this.prevCubie = tmp;
       }
-      if (newMoves.length > 0) {
-        this.lastTs = newMoves[newMoves.length - 1][1];
-      }
-      this.bus.emitBattery(msg[35], timestamp);
-      return;
     }
-    if (opcode === 4) {
-      if (msg[1] !== 38)
-        return;
-      this.bus.emit({
-        timestamp,
-        type: "FACELETS",
-        facelets: QIYI_SOLVED_FACELETS
-      });
-      this.prevCubie.fromFacelet(QIYI_SOLVED_FACELETS);
-      this.lastTs = ts;
+    this.bus.emitBattery(msg[35], timestamp);
+  }
+  handleSyncConfirm(msg, timestamp) {
+    if (msg[1] !== 38)
       return;
+    this.bus.emit({
+      timestamp,
+      type: "FACELETS",
+      facelets: QIYI_SOLVED_FACELETS
+    });
+    this.prevCubie.fromFacelet(QIYI_SOLVED_FACELETS);
+    this.lastTs = readQiYiTimestampBE(msg, 3);
+  }
+  /** Idempotent teardown shared by remote and explicit disconnects. */
+  teardown() {
+    this.closed = true;
+    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
+    if (this.cubeChrct) {
+      this.cubeChrct.removeEventListener("characteristicvaluechanged", this.onCubeEvent);
+      this.cubeChrct = null;
     }
+    this.bus.resetBatteryDedupe();
+    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
+    this.bus.complete();
   }
   async init() {
     this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
-    const gatt = await this.device.gatt.connect();
-    const service = await gatt.getPrimaryService(SERVICE_UUID);
-    const chrcts = await service.getCharacteristics();
-    this.cubeChrct = findCharacteristic(chrcts, CHRCT_UUID_CUBE);
-    if (!this.cubeChrct) {
-      throw new Error("[QiYi] Cannot find required characteristic");
+    try {
+      const gatt = await this.device.gatt.connect();
+      const service = await gatt.getPrimaryService(SERVICE_UUID);
+      const chrcts = await service.getCharacteristics();
+      this.cubeChrct = findCharacteristic(chrcts, CHRCT_UUID_CUBE);
+      if (!this.cubeChrct) {
+        throw new Error("[QiYi] Cannot find required characteristic");
+      }
+      this.cubeChrct.addEventListener("characteristicvaluechanged", this.onCubeEvent);
+      await this.cubeChrct.startNotifications();
+      await this.sendHello();
+    } catch (e) {
+      this.teardown();
+      if (this.device.gatt?.connected) {
+        this.device.gatt.disconnect();
+      }
+      throw e;
     }
-    this.cubeChrct.addEventListener("characteristicvaluechanged", this.onCubeEvent);
-    await this.cubeChrct.startNotifications();
-    await this.sendHello();
   }
   async sendCommand(command) {
     if (command.type === "REQUEST_FACELETS" || command.type === "REQUEST_BATTERY") {
       if (command.type === "REQUEST_BATTERY") {
         this.bus.forceNextBattery();
+        try {
+          await this.sendHello();
+        } catch (e) {
+          this.bus.cancelForcedBattery();
+          throw e;
+        }
+        return;
       }
       await this.sendHello();
     } else if (command.type === "REQUEST_HARDWARE") {
@@ -5742,16 +6384,14 @@ var QiYiConnection = class {
     }
   }
   async disconnect() {
-    if (this.cubeChrct) {
-      this.cubeChrct.removeEventListener("characteristicvaluechanged", this.onCubeEvent);
-      await this.cubeChrct.stopNotifications().catch(() => {
+    const cubeChrct = this.cubeChrct;
+    this.teardown();
+    await this.writeChain.catch(() => {
+    });
+    if (cubeChrct) {
+      await cubeChrct.stopNotifications().catch(() => {
       });
-      this.cubeChrct = null;
     }
-    this.bus.resetBatteryDedupe();
-    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
-    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-    this.bus.complete();
     if (this.device.gatt?.connected) {
       this.device.gatt.disconnect();
     }
@@ -5903,43 +6543,60 @@ var GATT_CONNECT_TIMEOUT_MS = 25e3;
 var GATT_RETRY_MAX = 2;
 var GATT_RETRY_BASE_DELAY_MS = 150;
 function disconnectGattSafe(gatt) {
-  return Promise.resolve(gatt.disconnect()).catch(() => {
+  try {
+    return Promise.resolve(gatt.disconnect()).catch(() => {
+    });
+  } catch {
+    return Promise.resolve();
+  }
+}
+function abortableDelay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
-async function delay(ms) {
-  await new Promise((r) => setTimeout(r, ms));
+function raceWithAbort(work, signal) {
+  if (!signal) {
+    return work;
+  }
+  let onAbort;
+  return Promise.race([
+    work,
+    new Promise((_, reject) => {
+      onAbort = () => reject(abortError());
+      signal.addEventListener("abort", onAbort, { once: true });
+    })
+  ]).finally(() => {
+    if (onAbort) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  });
 }
 async function connectGattWithTimeout(gatt, timeoutMs, signal) {
   const sym = Symbol("gattTimeout");
   let timer;
-  let onAbort;
   try {
-    await Promise.race([
+    await raceWithAbort(Promise.race([
       gatt.connect(),
       new Promise((_, rej) => {
         timer = setTimeout(() => rej(sym), timeoutMs);
-      }),
-      new Promise((_, rej) => {
-        if (!signal) {
-          return;
-        }
-        onAbort = () => rej(abortError());
-        signal.addEventListener("abort", onAbort, { once: true });
       })
-    ]);
+    ]), signal);
   } catch (e) {
     if (e === sym) {
-      await disconnectGattSafe(gatt);
       throw new Error("GATT connection timeout");
     }
-    await disconnectGattSafe(gatt).catch(() => {
-    });
     throw e;
   } finally {
     clearTimeout(timer);
-    if (signal && onAbort) {
-      signal.removeEventListener("abort", onAbort);
-    }
   }
 }
 async function collectPrimaryServiceUuids(device, options) {
@@ -5953,7 +6610,7 @@ async function collectPrimaryServiceUuids(device, options) {
     throwIfAborted(signal);
     try {
       await connectGattWithTimeout(gatt, GATT_CONNECT_TIMEOUT_MS, signal);
-      const services = await gatt.getPrimaryServices();
+      const services = await raceWithAbort(gatt.getPrimaryServices(), signal);
       const set = /* @__PURE__ */ new Set();
       for (const s of services) {
         set.add(normalizeUuid(s.uuid));
@@ -5966,7 +6623,7 @@ async function collectPrimaryServiceUuids(device, options) {
         throw e;
       }
       if (attempt < GATT_RETRY_MAX) {
-        await delay(GATT_RETRY_BASE_DELAY_MS * (attempt + 1));
+        await abortableDelay(GATT_RETRY_BASE_DELAY_MS * (attempt + 1), signal);
       }
     }
   }
@@ -5996,14 +6653,21 @@ function isMacCacheProofEvent(e) {
   }
   return new CubieCube().fromFacelet(e.facelets) !== -1;
 }
+function macProofPredicate(conn) {
+  if (conn.capabilities.facelets) {
+    return isMacCacheProofEvent;
+  }
+  return (e) => e.type === "HARDWARE" || e.type === "BATTERY";
+}
 var MAC_VERIFY_TIMEOUT_MS = 1e4;
-function requestFreshStateForMacVerify(conn) {
+var ADVERTISEMENT_WAIT_MS = 2500;
+var ADVERTISEMENT_SEARCH_WAIT_MS = 8e3;
+function requestFreshStateForMacVerify(conn, onError) {
   const c = conn.capabilities;
   const p = c.facelets ? conn.sendCommand({ type: "REQUEST_FACELETS" }) : c.hardware ? conn.sendCommand({ type: "REQUEST_HARDWARE" }) : c.battery ? conn.sendCommand({ type: "REQUEST_BATTERY" }) : Promise.resolve();
-  p.catch(() => {
-  });
+  p.catch(onError);
 }
-function waitForVerifiedCubeEvent(conn, timeoutMs, signal) {
+function waitForVerifiedCubeEvent(conn, timeoutMs, signal, proof = isMacCacheProofEvent) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let timer;
@@ -6044,12 +6708,15 @@ function waitForVerifiedCubeEvent(conn, timeoutMs, signal) {
         meta: null
       })));
     }, timeoutMs);
-    sub = conn.events$.pipe(filter(isMacCacheProofEvent), take(1)).subscribe({
+    sub = conn.events$.pipe(filter(proof), take(1)).subscribe({
       next: () => {
         finish(() => resolve());
       },
       error: (err) => {
         finish(() => reject(err));
+      },
+      complete: () => {
+        finish(() => reject(new Error("Connection closed before cube data could be verified")));
       }
     });
   });
@@ -6073,28 +6740,41 @@ function deviceMayNeedMac(protocols, device) {
   }
   return matching.some((p) => p.needsMac === true);
 }
+function disconnectGattQuietly(device) {
+  try {
+    device.gatt?.disconnect();
+  } catch {
+  }
+}
 async function connectSmartCube(arg) {
   const opts = normalizeOptions(arg);
   const protocols = getRegisteredProtocols();
+  const status = (message) => {
+    try {
+      opts.onStatus?.(message);
+    } catch {
+    }
+  };
   if (protocols.length === 0) {
     throw new Error("No smartcube protocols registered");
   }
+  throwIfAborted(opts.signal);
   const mode = opts.deviceSelection ?? "filtered";
   const requestOptions = buildRequestDeviceOptions(protocols, mode, {
     deviceName: opts.deviceName
   });
-  opts.onStatus?.("Select your cube\u2026");
+  status("Select your cube\u2026");
   const device = await navigator.bluetooth.requestDevice(requestOptions);
   let conn;
   try {
     throwIfAborted(opts.signal);
     let advertisementManufacturerData = null;
     if (deviceMayNeedMac(protocols, device)) {
-      opts.onStatus?.("Reading advertisements\u2026");
-      advertisementManufacturerData = await waitForManufacturerData(device, opts.enableAddressSearch ? 8e3 : 2500, { signal: opts.signal });
+      status("Reading advertisements\u2026");
+      advertisementManufacturerData = await waitForManufacturerData(device, opts.enableAddressSearch ? ADVERTISEMENT_SEARCH_WAIT_MS : ADVERTISEMENT_WAIT_MS, { signal: opts.signal });
       throwIfAborted(opts.signal);
     }
-    opts.onStatus?.("Connecting\u2026");
+    status("Connecting\u2026");
     const serviceUuids = await collectPrimaryServiceUuids(device, { signal: opts.signal });
     const protocol = resolveProtocolByGatt(protocols, serviceUuids, device);
     if (!protocol) {
@@ -6110,27 +6790,35 @@ async function connectSmartCube(arg) {
     };
     conn = await protocol.connect(device, opts.macAddressProvider, context2);
   } catch (e) {
-    try {
-      device.gatt?.disconnect();
-    } catch {
-    }
+    disconnectGattQuietly(device);
     throw e;
   }
+  if (opts.signal?.aborted) {
+    await conn.disconnect().catch(() => disconnectGattQuietly(device));
+    throw abortError();
+  }
   if (conn.deviceMAC) {
-    opts.onStatus?.("Verifying connection\u2026");
+    status("Verifying connection\u2026");
     try {
-      const verifyPromise = waitForVerifiedCubeEvent(conn, MAC_VERIFY_TIMEOUT_MS, opts.signal);
-      requestFreshStateForMacVerify(conn);
-      await verifyPromise;
+      let commandError = null;
+      const verifyPromise = waitForVerifiedCubeEvent(conn, MAC_VERIFY_TIMEOUT_MS, opts.signal, macProofPredicate(conn));
+      requestFreshStateForMacVerify(conn, (e) => {
+        commandError = e;
+      });
+      try {
+        await verifyPromise;
+      } catch (e) {
+        if (e instanceof TimeoutError && commandError) {
+          throw commandError;
+        }
+        throw e;
+      }
     } catch (e) {
       const aborted = isAbortError(e);
       if (!aborted) {
         removeCachedMacForDevice(device);
       }
-      try {
-        device.gatt?.disconnect();
-      } catch {
-      }
+      await conn.disconnect().catch(() => disconnectGattQuietly(device));
       if (aborted) {
         throw e;
       }
@@ -6145,7 +6833,7 @@ async function connectSmartCube(arg) {
 }
 
 // lib/smartcube-entry.js
-var SMARTCUBE_REV = "56b13b0153b64df99544a39f57ff04fb35313403";
+var SMARTCUBE_REV = "95bda9a0c528d9565e2ac0e4e72fdb630b6cf415";
 export {
   SMARTCUBE_REV,
   connectSmartCube,
