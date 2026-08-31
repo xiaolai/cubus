@@ -274,7 +274,7 @@ const state = {
 };
 
 // How the four rungs read on the Settings screen. A rung with no label here would render as
-// "undefined", so app-wiring.test.mjs checks every TIERS entry has one.
+// "undefined", so solve-tier-wiring.test.mjs checks every TIERS entry has one.
 /** How long a proof may run before it has to account for itself.
  *
  *  Proof cost tracks DEPTH, not the incumbent: a cube a few turns from solved proves in
@@ -1356,12 +1356,13 @@ function takeDerivation(facelets, setupAlg) {
   c.derived = true;
   // AND THE SOLUTION, which is why the search that used to follow is gone. Undoing the setup alg
   // solves the cube by construction — there is nothing left to search FOR. The app used to send
-  // this state to cubing.js's worker for a second, independent Kociemba search, and then discard
+  // this state to the `cubing` package's worker (removed entirely, 2026-08-29) for a second,
+  // independent Kociemba search, and then discard
   // an answer it already held. That search is the longest thing a press of the die waited on.
   //
   // Not verified here: it is checked above by cubejs, which is the library that produced the
   // setup alg, so this pass proves our own reverse-and-invert rule and nothing about the search.
-  // The independent check — cubing.js applying it, no search — is solve()'s, once, on first use.
+  // The independent check — cubejs applying it, no search — is solve()'s, once, on first use.
   c.solution = solution;
   c.moves = solution.trim() ? solution.trim().split(/\s+/) : [];
   c.stepFacelets = stepStates(facelets, c.moves);
@@ -1589,7 +1590,8 @@ let rollPending = false;
  * twelve dropped frames, and moving it off the click alone only moved the stutter a beat later.
  *
  * It goes to the SOLVER POOL, the same place a solve goes. There used to be a second worker for
- * this — `scramble-worker.js` — carrying its own ~34 MB of cubejs Kociemba tables and 3-6 s of
+ * this — the since-deleted `lib/scramble-worker.js` — carrying its own ~34 MB of cubejs
+ * Kociemba tables and 3-6 s of
  * build, plus a `warmRoller()` to start it early. The pool's workers already hold warm two-phase
  * tables, so that entire worker was the app paying twice for a capability it had once.
  *

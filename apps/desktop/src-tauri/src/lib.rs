@@ -53,7 +53,7 @@ type NotifyStream = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
 /// One inbound notification, as the web side's bridge expects it.
 ///
 /// Typed rather than an ad-hoc json literal: this is a contract with
-/// `apps/web/lib/ble-bridge-tauri.js`, and a renamed field would otherwise fail as a silently
+/// `apps/web/lib/ble-bridge.js`, and a renamed field would otherwise fail as a silently
 /// undefined value in the polyfill rather than as a compile error here.
 #[derive(serde::Serialize, Clone)]
 struct NotificationPayload {

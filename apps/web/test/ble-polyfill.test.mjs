@@ -567,7 +567,8 @@ describe('the polyfill itself', () => {
   });
 
   test('buffers notifications that arrive before a listener attaches', async () => {
-    // cube-transport.js fixed this once. A packet delivered to an EventTarget with no listener is
+    // The GAN-only transport this replaced fixed this once, and went with the driver. A packet
+    // delivered to an EventTarget with no listener is
     // gone, and a driver takes the first move serial it sees as its gap baseline — so a move lost
     // here is never reported missing. Rebuilding the transport is exactly where that gets lost.
     const { bridge, notify } = makeUnitBridge();

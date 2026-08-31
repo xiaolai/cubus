@@ -7,7 +7,7 @@
 // error lands unevenly across a solve. The GAN driver hands every move TWO times:
 //
 //     timestamp       host receive time (performance.now() in this app's transports,
-//                     see cube-transport.js) — carries BLE jitter
+//                     see ble-polyfill.js) — carries BLE jitter
 //     cubeTimestamp   the cube's own hardware clock (ms)  — monotonic while connected
 //
 // The cube stamps the move when it registers it, before any radio is involved, so `cubeTimestamp`
@@ -112,7 +112,7 @@ function serialOf(v) {
  * @param {() => boolean} opts.trusted     whether the cube's reports may be believed at all
  * @param {() => number} [opts.now]        host clock, injectable so staleness is testable.
  *   Defaults to performance.now() because that is the clock the transports stamp move
- *   arrivals with (cube-transport.js) — ready.at and move.timestamp MUST share a clock, or
+ *   arrivals with (ble-polyfill.js) — ready.at and move.timestamp MUST share a clock, or
  *   the inspection span compares an epoch number against a monotonic one and is silently
  *   never reported. That was the shipped bug this default replaces.
  */
