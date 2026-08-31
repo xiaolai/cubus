@@ -266,11 +266,34 @@ export function createSolveTimer({ target, trusted, now = () => performance.now(
     return { ms, moves, seconds: (ms / 1000).toFixed(2), inspectionMs };
   };
 
+  /**
+   * The move stream was interrupted — a turn reached the cube but not us.
+   *
+   * The serial checks above are one way to learn this and they only work on cubes that NUMBER
+   * their moves. Measured against the protocol layer, three brands that report a usable cube
+   * clock number nothing: moyu32, moyu-mhc and qiyi. On those, both serial checks are inert and
+   * the timer would report a span with nothing able to tell it a turn went missing — which is a
+   * measurement claiming to be one while resting on an assumption.
+   *
+   * Every one of those brands DOES report full state, about once per move. So the self-check's
+   * reconciliation — replay the observed moves onto the last reported state and require the next
+   * one to match — detects the same loss, proves it against the cube rather than inferring it
+   * from a counter, and works on every brand. This is where that finding arrives.
+   *
+   * Idempotent, and it does not stop the clock: a solve in progress is still a solve. It refuses
+   * the RESULT, which is the only thing that was ever in doubt.
+   */
+  const interrupted = () => {
+    if (state === 'idle') return;
+    refusal = 'moves were dropped, so this solve could not be timed';
+  };
+
   return {
     facelets,
     move,
     reset,
     result,
+    interrupted,
     get state() {
       return state;
     },
