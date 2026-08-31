@@ -132,8 +132,9 @@ class PolyfillCharacteristic extends EventTarget {
     // listener AFTER awaiting startNotifications(). Anything arriving in that window would be
     // dispatched to an EventTarget with no listener and vanish — and a dropped early packet is not
     // a cosmetic loss: a driver takes the first move serial it sees as its gap baseline, so a move
-    // lost there is never reported missing. cube-transport.js solved this once; a rewrite is
-    // exactly where such a fix gets lost, so it is reimplemented here on purpose.
+    // lost there is never reported missing. The GAN-only transport this replaced solved it once
+    // and was deleted with the driver — a rewrite is exactly where such a fix gets lost, so it is
+    // reimplemented here on purpose rather than inherited.
     this._queue = [];
     this._listening = false;
   }
