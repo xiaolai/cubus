@@ -5,7 +5,9 @@
 # which is the only honest way to find out whether a release build works before you need it to.
 #
 # It publishes a DRAFT release. Nothing reaches anybody until a human presses publish, and the
-# draft is where the artifacts can be checked against what the runbook says should be there.
+# draft is where the artifacts can be checked against what the runbook says should be there. On a
+# `workflow_dispatch` run there is no draft at all — that job is gated on a v-tag ref — so a manual
+# run builds every platform and publishes nothing, with no flag to get wrong.
 #
 # What this workflow cannot do, and does not pretend to:
 #   * iOS and Android release artifacts need signing material that only the owner has. Each mobile
@@ -19,12 +21,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # No inputs. A dispatch run cannot publish, because the draft job is gated on the REF being a
+  # v-tag — so "build everything, publish nothing" is what a dispatch already is, structurally.
+  # There used to be a `dry_run` boolean here, declared and read by nothing: the one thing worse
+  # than a missing safeguard is a control that appears to be one. It implied that setting it false
+  # would publish, which was never true either.
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Build every platform but publish nothing'
-        type: boolean
-        default: true
 
 concurrency:
   group: release-${{ github.ref }}
