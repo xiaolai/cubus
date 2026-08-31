@@ -30,6 +30,7 @@ function fakeTauri() {
             return [{ uuid: '0000fff6-0000-1000-8000-00805f9b34fb', properties: { notify: true } }];
           }
           if (cmd === 'ble_read') return 'a1b2';
+          if (cmd === 'ble_subscribe') return 7; // the id the real command hands back
           return null;
         },
       },
@@ -60,16 +61,39 @@ const withGlobals = async (globals, fn) => {
 };
 
 describe('choosing a transport', () => {
-  test('a native build gets the polyfill over the Tauri bridge', async () => {
+  test('a native build gets a polyfill it can HAND OVER, without touching any global', async () => {
+    // The improvement this pins. The bridge used to assign to `navigator.bluetooth` because the
+    // protocol layer read that global directly; it takes the implementation as an option now, so
+    // there is nothing to mutate. A global mutation cannot be scoped to one connection, two
+    // consumers on a page cannot both do it, and anything else reading that global silently got
+    // ours.
     const t = fakeTauri();
+    const before = globalThis.navigator?.bluetooth;
     await withGlobals({ window: { __TAURI__: t.api, performance: globalThis.performance } }, async () => {
-      const { kind, uninstall } = installBleBridge();
+      const { kind, bluetooth, uninstall } = installBleBridge();
       try {
         assert.equal(kind, 'native');
-        assert.equal(typeof globalThis.navigator.bluetooth.requestDevice, 'function');
+        assert.equal(typeof bluetooth.requestDevice, 'function', 'it hands back an implementation');
+        assert.equal(globalThis.navigator?.bluetooth, before, 'and leaves the global exactly as it was');
       } finally {
         uninstall();
       }
+    });
+  });
+
+  test('every kind returns a bluetooth, so the caller has one path', async () => {
+    // A caller that has to branch on `kind` to find the implementation would be reintroducing the
+    // per-host special-casing this seam exists to remove.
+    const real = { requestDevice: () => {} };
+    await withGlobals({ window: undefined, navigator: { bluetooth: real } }, async () => {
+      const r = installBleBridge();
+      assert.equal(r.kind, 'browser');
+      assert.equal(r.bluetooth, real, 'the browser hands back its own, untouched');
+    });
+    await withGlobals({ window: undefined, navigator: {} }, async () => {
+      const r = installBleBridge();
+      assert.equal(r.kind, 'none');
+      assert.equal(r.bluetooth, null, 'and nothing pretends to be one where none exists');
     });
   });
 
@@ -82,13 +106,13 @@ describe('choosing a transport', () => {
     await withGlobals({ window: { __TAURI__: t.api, performance: globalThis.performance } }, async () => {
       const packets = [];
       const traffic = [];
-      const { bridge, uninstall } = installBleBridge({
+      const { bridge, bluetooth, uninstall } = installBleBridge({
         onRawPacket: (p) => packets.push(p),
         onTraffic: (e) => traffic.push(e),
       });
       try {
         await bridge.ready;
-        const device = await globalThis.navigator.bluetooth.requestDevice({});
+        const device = await bluetooth.requestDevice({});
         const svc = await device.gatt.getPrimaryService('0000fff0-0000-1000-8000-00805f9b34fb');
         const chr = await svc.getCharacteristic('0000fff6-0000-1000-8000-00805f9b34fb');
         await chr.writeValueWithoutResponse(Uint8Array.of(0xdd, 0x04));
@@ -98,12 +122,14 @@ describe('choosing a transport', () => {
         assert.ok(ops.includes('discover-char'), 'characteristic discovery must reach the tap');
         assert.ok(ops.includes('write'), 'writes must reach the tap — a handshake IS a write');
 
-        t.fire('ble-notification', {
-          device: 'dev-1',
-          service: '0000fff0-0000-1000-8000-00805f9b34fb',
-          characteristic: '0000fff6-0000-1000-8000-00805f9b34fb',
-          data: 'beef',
-        });
+        // startNotifications() ran during the writes above? No — subscribe explicitly, so the id
+        // exists before the packet that uses it.
+        await bridge.subscribe(
+          'dev-1',
+          '0000fff0-0000-1000-8000-00805f9b34fb',
+          '0000fff6-0000-1000-8000-00805f9b34fb',
+        );
+        t.fire('ble-notification', { sub: 7, data: 'beef' });
         assert.equal(packets.length, 1, 'and notifications still reach the other tap');
       } finally {
         uninstall();
@@ -187,8 +213,46 @@ describe('the Tauri adapter', () => {
     await b.ready;
     const seen = [];
     b.onNotification((p) => seen.push(p));
-    t.fire('ble-notification', { device: 'd', service: 's', characteristic: 'c', data: 'beef' });
+    await b.subscribe('d', 's', 'c'); // the id is learned here, once
+    t.fire('ble-notification', { sub: 7, data: 'beef' });
     assert.deepEqual(seen, [{ device: 'd', service: 's', characteristic: 'c', bytes: 'beef' }]);
+  });
+
+  test('a packet carries only an id, and the triple is resolved locally', async () => {
+    // The reason this indirection exists. The native side used to re-send a device id and two
+    // 36-character UUIDs with every notification — identical for the whole session — which is 204
+    // bytes on the wire for 20 bytes of payload, twenty times a second. The triple is sent ONCE,
+    // at subscribe, and every packet after that is an integer.
+    const t = fakeTauri();
+    const b = makeTauriBridge(t.api);
+    await b.ready;
+    const seen = [];
+    b.onNotification((p) => seen.push(p));
+    await b.subscribe('dev-9', 'svc-9', 'chr-9');
+    t.fire('ble-notification', { sub: 7, data: 'aabb' });
+    assert.deepEqual(seen, [{ device: 'dev-9', service: 'svc-9', characteristic: 'chr-9', bytes: 'aabb' }]);
+  });
+
+  test('a packet for an unknown subscription is dropped loudly, not routed by guess', async () => {
+    const t = fakeTauri();
+    const b = makeTauriBridge(t.api);
+    await b.ready;
+    const seen = [];
+    b.onNotification((p) => seen.push(p));
+    t.fire('ble-notification', { sub: 999, data: 'aabb' });
+    assert.equal(seen.length, 0, 'nothing may be delivered against an id we never issued');
+  });
+
+  test('unsubscribing forgets the id, so a late packet cannot be routed', async () => {
+    const t = fakeTauri();
+    const b = makeTauriBridge(t.api);
+    await b.ready;
+    const seen = [];
+    b.onNotification((p) => seen.push(p));
+    await b.subscribe('d', 's', 'c');
+    await b.unsubscribe('d', 's', 'c');
+    t.fire('ble-notification', { sub: 7, data: '01' });
+    assert.equal(seen.length, 0);
   });
 
   test('forwards a native disconnect', async () => {
@@ -209,7 +273,8 @@ describe('the Tauri adapter', () => {
     await b.ready;
     const seen = [];
     b.onNotification((p) => seen.push(p));
-    t.fire('ble-notification', { device: 'd', service: 's', characteristic: 'c', data: '01' });
+    await b.subscribe('d', 's', 'c');
+    t.fire('ble-notification', { sub: 7, data: '01' });
     assert.equal(seen.length, 1, 'an event fired before any connect must still be delivered');
   });
 
@@ -224,9 +289,10 @@ describe('the Tauri adapter', () => {
     const seen = [];
     b.onNotification((p) => seen.push(p.bytes));
 
+    await b.subscribe('d', 's', 'c');
     await b.disconnect('d');
     await b.connect('d');
-    t.fire('ble-notification', { device: 'd', service: 's', characteristic: 'c', data: '01' });
+    t.fire('ble-notification', { sub: 7, data: '01' });
     assert.deepEqual(seen, ['01'], 'a reconnected bridge must still deliver notifications');
   });
 
@@ -236,8 +302,9 @@ describe('the Tauri adapter', () => {
     await b.ready;
     const seen = [];
     b.onNotification((p) => seen.push(p.bytes));
+    await b.subscribe('d', 's', 'c');
     await b.dispose();
-    t.fire('ble-notification', { device: 'd', service: 's', characteristic: 'c', data: '01' });
+    t.fire('ble-notification', { sub: 7, data: '01' });
     assert.equal(seen.length, 0, 'a disposed bridge must be silent');
     await assert.rejects(() => b.connect('d'), /disposed/, 'and must refuse to be reused');
   });
@@ -253,7 +320,7 @@ describe('the Tauri adapter', () => {
       bridge.onNotification((p) => seen.push(p));
       uninstall();
       await new Promise((r) => queueMicrotask(r));
-      t.fire('ble-notification', { device: 'd', service: 's', characteristic: 'c', data: '01' });
+      t.fire('ble-notification', { sub: 7, data: '01' });
       assert.equal(seen.length, 0);
     });
   });
@@ -267,10 +334,8 @@ describe('the Tauri adapter', () => {
     const b = makeTauriBridge(t.api);
     await b.ready;
     b.onNotification(() => {});
-    assert.throws(
-      () => t.fire('ble-notification', { device: 'd', service: 's', data: '01' }),
-      /missing characteristic/,
-    );
+    assert.throws(() => t.fire('ble-notification', { data: '01' }), /missing sub or data/);
+    assert.throws(() => t.fire('ble-notification', { sub: 7 }), /missing sub or data/);
     assert.throws(() => t.fire('ble-disconnect', {}), /missing device/);
   });
 });
