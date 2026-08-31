@@ -17,7 +17,7 @@
   },
   "artefacts": {
     "cube-yolo.onnx": {
-      "sha256": "a8ca53a6a14f47a178010b1173c11c1e33d8f15b7409dff1b5c2a4267af25c98",
+      "sha256": "5be4e55a9bae7d162775b431e09ea71947838dfeca421c1369f5cd6ad89fb472",
       "runtime": "onnxruntime",
       "precision": "fp32",
       "opset": 12

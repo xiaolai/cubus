@@ -38,6 +38,8 @@ import { spawn } from 'node:child_process';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
+
+import { pace } from './browser-wait.mjs';
 import { freePort } from './free-port.mjs';
 
 // Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
@@ -88,6 +90,7 @@ after(async () => {
 async function openHome() {
   const context = await browser.newContext({ viewport: { width: 840, height: 682 } });
   const page = await context.newPage();
+  pace(page);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e));
   await page.addInitScript(() => {
@@ -113,17 +116,17 @@ async function openHome() {
     };
   });
   await page.goto(`${BASE}/#/home`);
-  await page.waitForSelector('#randCube', { timeout: 15_000 });
+  await page.waitForSelector('#randCube');
   // The die does nothing until the solver's tables are built, and boot loads them in the
   // background. Wait for a press to actually land rather than racing it.
-  await page.waitForFunction(() => document.querySelector('#viewCube cubus-cube') !== null, null, { timeout: 15_000 });
+  await page.waitForFunction(() => document.querySelector('#viewCube cubus-cube') !== null, null);
   return { page, context, errors };
 }
 
 /** Press the die and settle on the screen it produces. */
 async function press(page) {
   await page.click('#randCube');
-  await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null, { timeout: 15_000 });
+  await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
 }
 
 /** Record, once per animation frame, exactly what a composited frame would show. A rAF callback
@@ -170,7 +173,7 @@ test('no press runs a Kociemba search on the UI thread — at the press or after
         return window.__searches;
       })()`);
       assert.equal(duringClick, 0, `the ${nth} press searched ${duringClick} time(s) while the user waited — the cube should already have been rolled`);
-      await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null, { timeout: 15_000 });
+      await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
       await page.waitForTimeout(2500);
     }
     const total = await page.evaluate(() => window.__searches);
@@ -186,6 +189,7 @@ test('with no Worker at all the die still works — slower, never wrong', async 
   // A platform without Worker (or one where it fails to start) must fall back to rolling here.
   const context = await browser.newContext({ viewport: { width: 840, height: 682 } });
   const page = await context.newPage();
+  pace(page);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e));
   try {
@@ -209,18 +213,13 @@ test('with no Worker at all the die still works — slower, never wrong', async 
       const realWarn = console.warn;
       console.warn = (...a) => { window.__warned.push(a.map(String).join(' ')); realWarn(...a); };
     });
-    // These waits are LIVENESS bounds, not latency budgets, and only in this test are they
-    // generous. Every other test in this file keeps 15 s because it has a worker. Here the worker
-    // is denied on purpose, so cubejs builds its tables (3-6 s) and every Kociemba search runs on
-    // the main thread — and Home paints only once the die has solved ("the die solves before it
-    // swaps", AGENTS.md), so the very first selector is behind a full on-thread search. Under
-    // `--test-concurrency=6` on a 2-core CI runner that is wall clock this test's own title
-    // already accepts: "slower, never wrong". It failed at 15 s in CI while passing in ~2 s here.
-    // What the bound must still catch is a HANG — a fallback that never produces an answer — and
-    // 60 s catches that just as well.
+    // This test is the slowest in the file by construction: the worker is denied, so cubejs builds
+    // its tables and every Kociemba search runs on the main thread. Its own title already accepts
+    // that — "slower, never wrong". The wait it needs is the suite's shared liveness bound; see
+    // test/browser-wait.mjs for why there is one number rather than one per call site.
     await page.goto(`${BASE}/#/home`);
-    await page.waitForSelector('#randCube', { timeout: 60_000 });
-    await page.waitForFunction(() => document.querySelector('#viewCube cubus-cube') !== null, null, { timeout: 60_000 });
+    await page.waitForSelector('#randCube');
+    await page.waitForFunction(() => document.querySelector('#viewCube cubus-cube') !== null, null);
     await page.evaluate(`(async () => {
       const Cube = (await import('/vendor/cubejs.js')).default;
       window.__searches = 0;
@@ -230,7 +229,7 @@ test('with no Worker at all the die still works — slower, never wrong', async 
 
     for (let i = 0; i < 2; i++) {
       await page.click('#randCube');
-      await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null, { timeout: 60_000 });
+      await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
     }
     const r = await page.evaluate(`(async () => {
       const Cube = (await import('/vendor/cubejs.js')).default;
@@ -531,7 +530,7 @@ test('a retarget mid-walk resets the position rather than keeping the old one', 
     await press(page);
     // Walk three moves in, so there is a position to be wrongly carried over.
     for (let i = 0; i < 3; i++) await page.click('#nextBtn');
-    await page.waitForFunction(() => document.querySelector('#stepLbl').textContent.startsWith('3 '), null, { timeout: 10_000 });
+    await page.waitForFunction(() => document.querySelector('#stepLbl').textContent.startsWith('3 '), null);
 
     await press(page);
     const r = await page.evaluate(() => ({
