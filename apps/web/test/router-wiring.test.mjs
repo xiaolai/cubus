@@ -1320,15 +1320,20 @@ test('a wrong turn says so, and undoing it clears the note by itself — no snap
   } finally { resetCubeModel(state); }
 });
 
-test('a missed-move gap stands follow down, says so, and restores the walk speed', async () => {
+test('a lost turn stands follow down, says so, and restores the walk speed', async () => {
   const { state } = await import('../lib/app.js');
   try {
     await followSetup(state);
     const el = win.document.querySelector('cubus-cube');
     assert.equal(el.getAttribute('tempo-scale'), '1', 'precondition: follow tempo active');
-    feed().gap({ missing: 2, from: 4, to: 7 });
+    feed().movesLost();
     assert.equal(win.document.querySelector('#followNote').hidden, false);
-    assert.match(win.document.querySelector('#followMsg').textContent, /Missed 2 turns/);
+    // No number. The old copy said "Missed 2 turns" from a move serial the app no longer has;
+    // reconciliation proves a turn was lost and cannot count it, and inventing the count would be
+    // the comfortable sentence rather than the true one.
+    assert.match(win.document.querySelector('#followMsg').textContent, /A turn went unrecorded/);
+    assert.doesNotMatch(win.document.querySelector('#followMsg').textContent, /\d/,
+      'and it must not name a number it cannot know');
     const btn = win.document.querySelector('[data-mode="cube"]');
     assert.ok(btn.disabled, 'following a cube we cannot vouch for is not on offer');
     assert.notEqual(el.getAttribute('tempo-scale'), '1', 'and the demonstration speed is back');
