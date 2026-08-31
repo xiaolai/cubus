@@ -955,11 +955,25 @@ function clearOffset() {
   state.cube.offsetFrom = '';
 }
 
-/** A missed move serial. Trust lapses HERE rather than in a screen's handler, so a gap arriving
- *  while you are in Settings is not dropped; the screen still gets told so it can stand down. */
-function onGap(g) {
-  markStale(`${g.missing} turn${g.missing === 1 ? '' : 's'} went unrecorded`);
-  if (liveGap) liveGap(g);
+/**
+ * A turn reached the cube but not us.
+ *
+ * Trust lapses HERE rather than in a screen's handler, so a loss arriving while you are in
+ * Settings is not dropped; the screen still gets told so it can stand down.
+ *
+ * It used to be reached by a SERIAL skip, which only cubes that number their moves can report —
+ * three brands the app now speaks to report a usable clock and number nothing. It is reached by
+ * PROOF now: the self-check replays the moves it saw onto the last reported state, and the next
+ * report does not match. That works on every brand, and it establishes the loss against the cube
+ * rather than inferring it from a counter.
+ *
+ * What it costs is the COUNT. A serial says two turns went missing; reconciliation says at least
+ * one did. So nothing here names a number any more — an invented one would be the more
+ * comfortable sentence and the less true one.
+ */
+function onMovesLost() {
+  markStale('a turn went unrecorded');
+  if (liveGap) liveGap();
 }
 
 /** Record a live connection. The registry write and the connected flag are ONE step on purpose:
@@ -1251,7 +1265,11 @@ async function connectOnce(macFromUi) {
     session.onVerdict((verdict, reason) => {
       if (conn !== session) return;
       if (verdict === 'refused') markStale('its reports stopped adding up');
-      else if (reason === 'resynced') markStale('a turn went unrecorded');
+      // A resync IS the lost-turn signal, and it must reach the screens rather than only the trust
+      // flag: standing follow down, refusing the timer's result, and saying what happened all live
+      // behind onMovesLost. Wiring only markStale here left every one of them dead in production
+      // while the test seam kept them green.
+      else if (reason === 'resynced') onMovesLost();
     });
 
     conn = session;
@@ -2904,15 +2922,16 @@ const cubeScreen = (screenMode) => {
       // Trust has already lapsed by the time this runs — onGap() owns that, with or without a
       // screen mounted to hear it — and the trust hook below has stood follow down. What is left
       // is this screen's own account of what happened.
-      liveGap = (g) => {
-        // The shutdown itself is NOT repeated here: onGap marks trust stale first, and the trust
-        // hook below owns standing follow down. What this adds is the gap-specific account.
-        // Disabled, not merely un-highlighted: following matches your turns against an
+      liveGap = () => {
+        // The shutdown itself is NOT repeated here: onMovesLost marks trust stale first, and the
+        // trust hook below owns standing follow down. What this adds is the account of what
+        // happened. Disabled, not merely un-highlighted: following matches your turns against an
         // arrangement we have just said we cannot vouch for.
         refuseFollow('Your cube missed a turn — read it again before following');
-        // The cube numbers its moves, and the driver says so when the count skips. Silence here
-        // would look exactly like a wrong turn; it is neither, and the snapshot will resync.
-        showNote(`Missed ${g.missing} turn${g.missing === 1 ? '' : 's'} — checking the cube…`);
+        // No count. Reconciliation proves a turn was lost; it cannot say how many, and the old
+        // "Missed 2 turns" came from a serial the app no longer has. Silence here would look
+        // exactly like a wrong turn; it is neither, and the next snapshot will resync.
+        showNote('A turn went unrecorded — checking the cube…');
       };
 
       // Any loss of trust while walking — a gap, a disconnect, a report that failed validation —
@@ -3342,6 +3361,12 @@ SCREENS.timer = () => {
       // True while the clock was started by the cube, so a manual press can take it back.
       let byCube = false;
       const auto = createSolveTimer({ target: () => scrTarget, trusted: chainTrusted });
+
+      // A lost turn means the span cannot be vouched for, and this is the only path that says so
+      // on a cube that does not number its moves — which is three of the brands the app speaks to.
+      // The clock keeps running: a solve in progress is still a solve. It is the RESULT that is
+      // refused, and solve-timer already owns those words.
+      liveGap = () => auto.interrupted();
 
       warmSolver();      // New scramble is one press away here; see cubeScreen's mount
       schedulePreroll(); // and it should never be the press that waits for a search
@@ -4224,7 +4249,10 @@ window.cubusGo = go;
 window.cubusFeed = {
   move: (m) => liveMove?.(m),
   facelets: (f, serial) => onFacelets(f, serial),
-  gap: (g) => onGap(g), // the driver's door, not the screen's — see onGap
+  /** A turn that reached the cube but not us. No argument: reconciliation proves the loss and
+   *  cannot count it, so a seam that took a number would let a test assert something the app can
+   *  never know. */
+  movesLost: () => onMovesLost(),
   disconnect: () => onDisconnect(),
   /** The cube answered nothing — what connectOnce's getState rejection reports. Exposed because
    *  that path needs Web Bluetooth to exercise for real, and the silence handling is exactly the

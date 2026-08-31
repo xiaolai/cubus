@@ -217,6 +217,42 @@ describe('the verdict is a gate, not a note', () => {
   });
 });
 
+describe('a lost turn reaches the app', () => {
+  test('a reconciliation failure is announced, not merely recorded', async () => {
+    // The defect this exists for: the session announced only VERDICT changes, and a resync leaves
+    // the verdict where it is. Everything downstream of it — trust lapsing, follow standing down,
+    // the timer refusing the span — was therefore dead in production while the test seam kept it
+    // green. Nothing about that is visible from the outside until a turn actually goes missing.
+    const { session, f } = await open();
+    const told = [];
+    session.onVerdict((v, reason) => told.push(reason));
+
+    f.emit({ type: 'FACELETS', facelets: IDENTITY });
+    f.emit({ type: 'MOVE', move: 'R', face: 0, direction: 0 });
+    f.emit({ type: 'FACELETS', facelets: after_('R') });
+    assert.deepEqual(told, ['reconciled'], 'the stream verified');
+
+    // Now a turn reaches the cube but not us: the reported state moves further than the moves
+    // we saw can account for.
+    f.emit({ type: 'MOVE', move: 'U', face: 1, direction: 0 });
+    f.emit({ type: 'FACELETS', facelets: after_('R U F') });
+    assert.deepEqual(told, ['reconciled', 'resynced'], 'and the loss must be announced');
+  });
+
+  test('the verdict stays put through it, which is exactly why the reason must carry', async () => {
+    const { session, f } = await open();
+    f.emit({ type: 'FACELETS', facelets: IDENTITY });
+    f.emit({ type: 'MOVE', move: 'R', face: 0, direction: 0 });
+    f.emit({ type: 'FACELETS', facelets: after_('R') });
+    const before = session.verdict;
+    f.emit({ type: 'MOVE', move: 'U', face: 1, direction: 0 });
+    f.emit({ type: 'FACELETS', facelets: after_('R U F') });
+    assert.equal(session.verdict, before, 'one loss is weather, not a verdict');
+    assert.equal(session.reason, 'resynced');
+    assert.equal(session.evidence.resyncs, 1);
+  });
+});
+
 describe('ending a session', () => {
   test('a disconnect event tears the session down and releases the transport', async () => {
     const { session, f, b } = await open();
