@@ -61,3 +61,10 @@ CLAUDE.local.md
 *.certSigningRequest
 keystore.properties
 key.properties
+
+# A scratch file some tool writes by treating SQLite's `:memory:` DSN as a path — 51 bytes of
+# timestamp and UUID, in the repo root. It is not ours and it is not content, but it IS untracked
+# junk that `git add -A` happily stages: that near-miss happened on 2026-08-31 and had to be
+# undone with `git rm --cached -- './:memory:.ses'` — the leading `./` is required, because a
+# bare `:memory:` is git pathspec magic and matches nothing.
+:memory:.ses
