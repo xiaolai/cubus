@@ -4,7 +4,7 @@
 // server, and neither rewrites unknown paths back to index.html. A hash needs no server help.
 //
 // The factory takes location and history by argument, so these run with plain objects — no jsdom,
-// no globals, matching cube-transport.test.mjs.
+// no globals, matching cube-session.test.mjs.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

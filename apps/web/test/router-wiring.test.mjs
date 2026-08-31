@@ -1496,7 +1496,7 @@ test('the titlebar indicator appears with a connection and leaves with it', asyn
     const ind = win.document.querySelector('#cubeLive');
     assert.ok(ind, 'the indicator exists in the titlebar');
     assert.equal(ind.hidden, true, 'and is absent with no cube');
-    win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 80 }) });
+    win.cubusFeed.useConnection({ requestBattery: async () => 80 });
     assert.equal(ind.hidden, false, 'a connection reveals it');
     assert.ok(ind.classList.contains('stale'), 'a fresh connection is connected, not trusted');
     state.cube.trusted = true;

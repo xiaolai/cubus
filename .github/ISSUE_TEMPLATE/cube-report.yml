@@ -1,0 +1,80 @@
+name: Smart cube compatibility report
+description: Tell us how a smart cube behaved, with the file the app generated
+title: "[cube] "
+labels: ["cube-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for this — reports are the only evidence we have for hardware nobody on the project
+        owns.
+
+        **Please attach the file the app generated.** It is the whole report. We are not asking you
+        to judge whether the cube worked; the app already checked that, and its answer is inside the
+        file along with the raw Bluetooth traffic that backs it up. A description without the file
+        is something we cannot act on, however carefully written.
+
+        **What is in the file, before you post it.** The app shows you this too. It contains the
+        Bluetooth conversation with your cube and, for GAN and MoYu cubes, the cube's own Bluetooth
+        address — that address is needed to decrypt the traffic, and the cube broadcasts it in the
+        clear to anything nearby. It is an identifier for the toy, not for your phone or computer.
+        Nothing about you is in the file.
+
+  - type: input
+    id: cube
+    attributes:
+      label: Which cube is it?
+      description: Brand and model as printed on the box, however roughly.
+      placeholder: GAN 356 i Carry 2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Where were you running it?
+      options:
+        - macOS (desktop app)
+        - Windows (desktop app)
+        - Linux (desktop app)
+        - iPhone or iPad
+        - Android
+        - Chrome or Edge (browser)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: The generated file
+      description: |
+        Drag the `fixture_*.json` file the app saved into this box. GitHub will attach it.
+        If your browser will not let you attach a `.json`, rename it to `.txt` first.
+      placeholder: Drop the file here.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: verdict
+    attributes:
+      label: What did the app say about the cube?
+      description: Copy the word the app showed. It is also inside the file; this just makes issues easier to sort.
+      options:
+        - Trusted — everything checked out
+        - Refused — the app would not trust it
+        - Reduced — it followed my turns but could not read the whole cube
+        - It never connected at all
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: anything_else
+    attributes:
+      label: Anything else worth knowing?
+      description: |
+        Optional. What you were doing, whether it had worked before, whether the cube was newly
+        paired. Skip it if nothing comes to mind — the file is the part that matters.
+    validations:
+      required: false
