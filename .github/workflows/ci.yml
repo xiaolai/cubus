@@ -160,3 +160,16 @@ jobs:
         run: crates/cube-vision/swift/.build/release/cube-vision-probe --self-check
       - name: coreml · native — exact class parity with THIS host's fp32, plus the pinned model bytes
         run: python ml/golden_frames.py --parity --legs onnx coreml native
+      # The same check with CoreML pinned to the CPU, which discriminates between the two candidate
+      # causes of the fp16 divergence this runner shows and no local Mac does. `--compute-units all`
+      # lets CoreML choose ANE, GPU or CPU by what the machine has; `cpu_only` removes that choice.
+      # If the refusal on photo-01 disappears here, the cause is DISPATCH and pinning the units is a
+      # real fix. If it survives, the cause is the silicon's fp16 arithmetic and no configuration
+      # will remove it. On every local Mac all four settings agree, so this runner is the only place
+      # the question can be asked.
+      #
+      # A gate, not a probe: the faithful legs must never MISREAD under either dispatch. A refusal
+      # is tolerated by the rule in golden_frames.py either way, so this cannot go red merely for
+      # reproducing what we already know.
+      - name: coreml · native — parity holds with dispatch removed (cpu_only)
+        run: python ml/golden_frames.py --parity --legs onnx coreml native --compute-units cpu_only
