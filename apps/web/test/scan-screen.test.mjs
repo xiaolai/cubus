@@ -630,7 +630,7 @@ test('a scan agreeing with the connected cube is adopted, and trust follows', as
   const { state } = await import('../lib/app.js');
   win.location.hash = '#/scan';
   await tick();
-  win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 60 }) });
+  win.cubusFeed.useConnection({ requestBattery: async () => 60 });
   const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
   win.cubusFeed.facelets(S); // the cube reports S — and the camera then reads exactly S
   panel().dispatchEvent(new win.CustomEvent('scan-complete', {
@@ -649,7 +649,7 @@ test('a scan contradicting a tracking cube adopts nothing and disables Solve', a
   const { state } = await import('../lib/app.js');
   win.location.hash = '#/scan';
   await tick();
-  win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 60 }) });
+  win.cubusFeed.useConnection({ requestBattery: async () => 60 });
   const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
   win.cubusFeed.facelets(S);
   state.cube.trusted = true; state.cube.source = 'cube'; // the cube was tracking at S
@@ -677,7 +677,7 @@ test('auto-solve fires only for a believed scan — a refused one stays put', as
   win.location.hash = '#/scan';
   await tick();
   try {
-    win.cubusFeed.useConnection({ requestBattery: async () => ({ level: 60 }) });
+    win.cubusFeed.useConnection({ requestBattery: async () => 60 });
     const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
     win.cubusFeed.facelets(S);
     state.cube.trusted = true; state.cube.source = 'cube'; // the cube was tracking at S

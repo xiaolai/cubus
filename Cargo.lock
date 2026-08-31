@@ -992,6 +992,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
+name = "cube-ble"
+version = "0.1.0"
+dependencies = [
+ "btleplug",
+ "futures",
+ "hex",
+ "serde",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "cube-vision"
 version = "0.1.0"
 dependencies = [
@@ -1007,9 +1019,9 @@ dependencies = [
 name = "cubus-desktop"
 version = "0.2.0"
 dependencies = [
+ "cube-ble",
  "cube-vision",
  "futures",
- "gan-ble",
  "hex",
  "log",
  "objc2-app-kit",
@@ -1753,16 +1765,6 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "gan-ble"
-version = "0.1.0"
-dependencies = [
- "btleplug",
- "futures",
- "tokio",
- "uuid",
 ]
 
 [[package]]

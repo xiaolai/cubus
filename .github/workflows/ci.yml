@@ -37,10 +37,10 @@ jobs:
       - name: vendored bundles are built from the current sources
         run: |
           pnpm build:panel
-          pnpm build:driver
           pnpm --filter cubus-web build:mcp-guest
           pnpm --filter cubus-web build:cube
           pnpm --filter cubus-web build:cubejs
+          pnpm --filter cubus-web build:smartcube
           git diff --exit-code -- apps/web/vendor/ \
             || { echo "::error::a vendored bundle is behind its source — rebuild and commit it"; exit 1; }
 
