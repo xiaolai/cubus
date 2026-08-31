@@ -8,10 +8,14 @@
 // Native capabilities, each behind a seam the browser build also satisfies (AGENTS.md):
 //   - `cube-vision` (2026-08-26) — native camera capture and CoreML inference behind the
 //     `Detector` seam; the browser runs `WebDetector`. Inert on non-Apple targets.
-//   - native BLE (removed 2026-08-26, recovered from v0 on 2026-08-27) — the GAN smart-cube
-//     bridge below: FFF6 notifications are forwarded as `cube-packet` events (hex), FFF5
-//     commands come back via `write_fff5`, and the browser-safe gan-driver decodes in the
-//     webview. The browser build reaches the same cube over Web Bluetooth — same seam shape.
+//   - native BLE (removed 2026-08-26, recovered from v0 on 2026-08-27, generalised 2026-08-31) —
+//     the `ble_*` commands below, a brand-agnostic bridge over `crates/cube-ble`. They implement
+//     the operations `apps/web/lib/ble-polyfill.js` needs to present a `navigator.bluetooth` to
+//     the protocol layer: scan by the filters it supplies, enumerate, subscribe, read, write, and
+//     stream notifications back as `ble-notification` events. The browser build reaches the same
+//     cube over the real Web Bluetooth — same seam shape, same protocol layer above it.
+//     No cube brand appears here; `crates/cube-ble/tests/no_brand_constants.rs` scans this file
+//     too and fails the build over one.
 //   - the optimal solver (2026-08-29, src/optimal.rs) — prove a solution minimal. Native
 //     because generating its 86 MB of pattern databases is; the browser answers the same
 //     capability with the two-phase tiers' "shortest found" and the proven library.
@@ -23,16 +27,17 @@
 // Android backend (LiteRT/CameraX) is the remaining device-gated work.
 // ---- smart-cube BLE bridge (recovered verbatim from v0 — proven against a real GAN16) --------
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{Stream, StreamExt};
-use gan_ble::btleplug::api::{
-    Central, CentralEvent, Peripheral as _, ValueNotification, WriteType,
+use cube_ble::btleplug::api::{Central, CentralEvent, Peripheral as _, ValueNotification};
+use cube_ble::btleplug::platform::Peripheral;
+use cube_ble::{
+    default_adapter, find_device, AdvertisedDevice, CharacteristicInfo, RequestOptions,
 };
-use gan_ble::btleplug::platform::Peripheral;
-use gan_ble::{default_adapter, find_gan_cube, FFF5_WRITE, FFF6_NOTIFY};
+use futures::{Stream, StreamExt};
 use tauri::{AppHandle, Emitter, State};
 // Desktop-only: the sole use is `app.path()` in `orientation_path`, and a phone has no window whose
 // orientation could be remembered. Un-gated it is an unused import on mobile.
@@ -42,70 +47,148 @@ use tokio::sync::Mutex;
 
 mod optimal;
 
-/// The FFF6 notification stream btleplug hands back (owned, 'static).
+/// The notification stream btleplug hands back (owned, 'static).
 type NotifyStream = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
 
-/// The currently-connected cube (if any).
+/// One inbound notification, as the web side's bridge expects it.
+///
+/// Typed rather than an ad-hoc json literal: this is a contract with
+/// `apps/web/lib/ble-bridge.js`, and a renamed field would otherwise fail as a silently
+/// undefined value in the polyfill rather than as a compile error here.
+#[derive(serde::Serialize, Clone)]
+struct NotificationPayload {
+    device: String,
+    service: String,
+    characteristic: String,
+    /// Hex. The webview boundary is JSON, and a byte array costs ~6x the bytes of hex.
+    data: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct DisconnectPayload {
+    device: String,
+}
+
+/// The BLE session: the adapter, what it discovered, and what is connected.
+///
+/// The adapter is held deliberately. A `Peripheral` belongs to the `Adapter` that discovered it,
+/// and `ble_request_device` used to drop both — then `ble_connect` built a FRESH adapter and
+/// searched its cache by id, which is a different adapter's cache and need not contain anything.
+/// On a good day it worked because CoreBluetooth had cached the scan; on a bad one the connect
+/// failed with "no longer in range" for a cube sitting on the desk.
+///
+/// Keyed by id rather than assuming one cube, because the polyfill passes a device id on every
+/// call and silently ignoring it would let a stale id operate on whatever happens to be connected.
 #[derive(Default)]
-struct CubeState(Arc<Mutex<Option<Peripheral>>>);
+struct CubeState(Arc<Mutex<BleSession>>);
 
-#[derive(serde::Serialize)]
-struct CubeInfo {
-    name: String,
-    mac: Option<String>,
+#[derive(Default)]
+struct BleSession {
+    /// Kept alive for as long as any peripheral it produced is in use.
+    adapter: Option<cube_ble::btleplug::platform::Adapter>,
+    discovered: HashMap<String, Peripheral>,
+    connected: HashMap<String, Peripheral>,
 }
 
-/// Discover services, find FFF6, subscribe, and open the notification stream. Split out so
-/// `connect_cube` can tear the peripheral down if any step here fails.
-async fn init_notifications(peripheral: &Peripheral) -> Result<NotifyStream, String> {
-    peripheral
-        .discover_services()
-        .await
-        .map_err(|e| e.to_string())?;
-    let notify = peripheral
-        .characteristics()
-        .into_iter()
-        .find(|c| c.uuid == FFF6_NOTIFY)
-        .ok_or_else(|| "FFF6 notify characteristic not found".to_string())?;
-    peripheral
-        .subscribe(&notify)
-        .await
-        .map_err(|e| e.to_string())?;
-    peripheral.notifications().await.map_err(|e| e.to_string())
+impl CubeState {
+    async fn get(&self, id: &str) -> Result<Peripheral, String> {
+        self.0
+            .lock()
+            .await
+            .connected
+            .get(id)
+            .cloned()
+            .ok_or_else(|| format!("no connected device with id {id}"))
+    }
 }
 
-/// Scan → connect → subscribe FFF6. Each notification is emitted to the webview as a
-/// `cube-packet` event carrying the raw 20-byte packet as hex; gan-driver decodes it there.
+/// Scan for a device satisfying the web side's `requestDevice` filters.
+///
+/// The filters come from the protocol layer, which owns the brand table; nothing here knows what a
+/// cube is called. Twenty seconds because most smart cubes advertise only while moving, and a
+/// beginner reaching for one takes a moment.
 #[tauri::command]
-async fn connect_cube(app: AppHandle, state: State<'_, CubeState>) -> Result<CubeInfo, String> {
+async fn ble_request_device(
+    state: State<'_, CubeState>,
+    options: RequestOptions,
+) -> Result<AdvertisedDevice, String> {
     let central = default_adapter().await.map_err(|e| e.to_string())?;
-    // Subscribe to adapter events BEFORE connecting so a fast disconnect can't slip past us.
-    let events = central.events().await.map_err(|e| e.to_string())?;
-    let cube = find_gan_cube(&central, Duration::from_secs(20))
+    let found = find_device(&central, &options, Duration::from_secs(20))
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no GAN cube found — is it awake and advertising?".to_string())?;
+        .map_err(|e| e.to_string())?;
+    match found {
+        Some((peripheral, dev)) => {
+            // Keep BOTH. The peripheral is only usable through the adapter that found it.
+            let mut session = state.0.lock().await;
+            session.adapter = Some(central);
+            session.discovered.insert(dev.id.clone(), peripheral);
+            Ok(dev)
+        }
+        None => Err("no matching device found — is the cube awake and advertising?".into()),
+    }
+}
 
-    let peripheral = cube.peripheral;
+/// Connect, and start forwarding every notification from this peripheral to the webview.
+///
+/// The forwarding task resolves each notification's SERVICE before emitting. btleplug reports only
+/// the characteristic UUID, and the web side keys its characteristic objects on the (service,
+/// characteristic) pair — so an unresolved notification is delivered to nothing and the packet is
+/// gone. A dropped packet is not cosmetic: a driver takes the first move serial it sees as its gap
+/// baseline, so a move lost here is never reported missing.
+#[tauri::command]
+async fn ble_connect(
+    app: AppHandle,
+    state: State<'_, CubeState>,
+    id: String,
+) -> Result<(), String> {
+    // The adapter and peripheral from the scan that produced this id — not a fresh adapter, whose
+    // cache is a different cache and need not contain this device at all.
+    let (central, peripheral) = {
+        let session = state.0.lock().await;
+        let central = session
+            .adapter
+            .clone()
+            .ok_or_else(|| "no scan has run — call ble_request_device first".to_string())?;
+        let peripheral = session
+            .discovered
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| format!("device {id} was not returned by the last scan"))?;
+        (central, peripheral)
+    };
+    // Subscribe to adapter events BEFORE connecting so a fast disconnect cannot slip past.
+    let events = central.events().await.map_err(|e| e.to_string())?;
+
     peripheral.connect().await.map_err(|e| e.to_string())?;
-
-    // The peripheral is now connected; if any initialization step fails, disconnect it before
-    // returning so we never leak an open BLE link behind an error the frontend can't clean up
-    // (its disconnect_cube would run against an empty CubeState).
-    let stream = match init_notifications(&peripheral).await {
+    // Discover up front so `service_of` can resolve notifications, and so the web side's
+    // getPrimaryServices() does not race the first packet.
+    if let Err(e) = peripheral.discover_services().await {
+        let _ = peripheral.disconnect().await;
+        return Err(e.to_string());
+    }
+    let stream: NotifyStream = match peripheral.notifications().await {
         Ok(s) => s,
         Err(e) => {
             let _ = peripheral.disconnect().await;
-            return Err(e);
+            return Err(e.to_string());
         }
     };
 
-    // Forward FFF6 notifications as `cube-packet`, and detect a real disconnect from the adapter's
-    // DeviceDisconnected event — NOT from stream exhaustion. On CoreBluetooth the notifications
-    // stream can stay open after the cube drops, so relying on it would leave the UI "Connected"
-    // forever and leak this task; the event fires on a genuine disconnect and ends the task.
+    // Recorded BEFORE the watcher is spawned. Inserting afterwards left a window in which a fast
+    // disconnect fired, found nothing to remove, and was then overwritten by this insert — leaving
+    // a dead peripheral in the session that every later command would be dispatched to.
+    state
+        .0
+        .lock()
+        .await
+        .connected
+        .insert(id.clone(), peripheral.clone());
+
     let app_for_task = app.clone();
     let pid = peripheral.id();
+    let device_id = id.clone();
+    let p_for_task = peripheral.clone();
+    let state_for_task = state.0.clone();
     tauri::async_runtime::spawn(async move {
         let _central = central; // keep the adapter alive so its event stream stays fed
         let mut stream = stream;
@@ -114,50 +197,151 @@ async fn connect_cube(app: AppHandle, state: State<'_, CubeState>) -> Result<Cub
             tokio::select! {
                 packet = stream.next() => match packet {
                     Some(v) => {
-                        let _ = app_for_task.emit("cube-packet", hex::encode(&v.value));
+                        // No service, no delivery — and say so rather than emitting a packet the
+                        // web side will silently drop.
+                        match cube_ble::service_of(&p_for_task, v.uuid) {
+                            Some(service) => {
+                                let _ = app_for_task.emit(
+                                    "ble-notification",
+                                    NotificationPayload {
+                                        device: device_id.clone(),
+                                        service,
+                                        characteristic: v.uuid.to_string(),
+                                        data: hex::encode(&v.value),
+                                    },
+                                );
+                            }
+                            None => {
+                                // Unknown OR ambiguous: a characteristic uuid is unique only
+                                // within a service, so `service_of` refuses to guess when two
+                                // services expose the same one. Said out loud, because a silently
+                                // dropped packet is the failure this whole path exists to avoid.
+                                eprintln!(
+                                    "cube-ble: cannot resolve the service for characteristic {} \
+                                     (unknown or ambiguous) — packet dropped",
+                                    v.uuid
+                                );
+                            }
+                        }
                     }
                     None => break,
                 },
+                // A real disconnect comes from the adapter event, NOT from stream exhaustion. On
+                // CoreBluetooth the notification stream can stay open after the cube drops, so
+                // trusting it leaves the UI "Connected" forever and leaks this task.
                 event = events.next() => match event {
-                    Some(CentralEvent::DeviceDisconnected(id)) if id == pid => break,
+                    Some(CentralEvent::DeviceDisconnected(pid_seen)) if pid_seen == pid => break,
                     Some(_) => {}
                     None => break,
                 },
             }
         }
-        let _ = app_for_task.emit("cube-disconnect", ());
+        // Drop it from the session as well as telling the webview. Emitting alone left a
+        // disconnected peripheral in `connected`, so a later command would be dispatched to a dead
+        // handle and fail with a puzzling error instead of a clear "not connected".
+        {
+            let mut session = state_for_task.lock().await;
+            session.connected.remove(&device_id);
+        }
+        let _ = app_for_task.emit("ble-disconnect", DisconnectPayload { device: device_id });
     });
 
-    let info = CubeInfo {
-        name: cube.name,
-        mac: cube.mac,
-    };
-    *state.0.lock().await = Some(peripheral);
-    Ok(info)
-}
-
-/// Write an FFF5 command (encrypted, built by gan-driver) — passed as hex from the webview.
-#[tauri::command]
-async fn write_fff5(state: State<'_, CubeState>, hex_data: String) -> Result<(), String> {
-    let bytes = hex::decode(&hex_data).map_err(|e| e.to_string())?;
-    let guard = state.0.lock().await;
-    let peripheral = guard.as_ref().ok_or_else(|| "not connected".to_string())?;
-    let write = peripheral
-        .characteristics()
-        .into_iter()
-        .find(|c| c.uuid == FFF5_WRITE)
-        .ok_or_else(|| "FFF5 write characteristic not found".to_string())?;
-    peripheral
-        .write(&write, &bytes, WriteType::WithoutResponse)
-        .await
-        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-async fn disconnect_cube(state: State<'_, CubeState>) -> Result<(), String> {
-    if let Some(peripheral) = state.0.lock().await.take() {
-        let _ = peripheral.disconnect().await;
+async fn ble_discover_services(
+    state: State<'_, CubeState>,
+    id: String,
+) -> Result<Vec<String>, String> {
+    let p = state.get(&id).await?;
+    cube_ble::discover_services(&p)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ble_discover_characteristics(
+    state: State<'_, CubeState>,
+    id: String,
+    service: String,
+) -> Result<Vec<CharacteristicInfo>, String> {
+    let p = state.get(&id).await?;
+    cube_ble::discover_characteristics(&p, &service)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ble_subscribe(
+    state: State<'_, CubeState>,
+    id: String,
+    service: String,
+    characteristic: String,
+) -> Result<(), String> {
+    let p = state.get(&id).await?;
+    cube_ble::subscribe(&p, &service, &characteristic)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ble_unsubscribe(
+    state: State<'_, CubeState>,
+    id: String,
+    service: String,
+    characteristic: String,
+) -> Result<(), String> {
+    let p = state.get(&id).await?;
+    cube_ble::unsubscribe(&p, &service, &characteristic)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ble_read(
+    state: State<'_, CubeState>,
+    id: String,
+    service: String,
+    characteristic: String,
+) -> Result<String, String> {
+    let p = state.get(&id).await?;
+    let bytes = cube_ble::read(&p, &service, &characteristic)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(hex::encode(bytes))
+}
+
+#[tauri::command]
+async fn ble_write(
+    state: State<'_, CubeState>,
+    id: String,
+    service: String,
+    characteristic: String,
+    data: String,
+    without_response: bool,
+) -> Result<(), String> {
+    let p = state.get(&id).await?;
+    let bytes = hex::decode(&data).map_err(|e| e.to_string())?;
+    cube_ble::write(&p, &service, &characteristic, &bytes, without_response)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ble_disconnect(state: State<'_, CubeState>, id: String) -> Result<(), String> {
+    // Looked up, not removed: a disconnect that FAILS leaves the peripheral connected, and having
+    // already dropped it from the map would leave the app unable to reach or release it again.
+    // It is removed below, after the teardown actually succeeds.
+    let peripheral = state.0.lock().await.connected.get(&id).cloned();
+    if let Some(peripheral) = peripheral {
+        // Reported rather than swallowed: a teardown that failed leaves the peripheral held by the
+        // native side, and a cube that is still connected does not advertise — so the NEXT scan
+        // stares into silence for its whole window and reads as a cube that will not reconnect.
+        if let Err(e) = peripheral.disconnect().await {
+            return Err(format!("the cube did not release cleanly: {e}"));
+        }
+        state.0.lock().await.connected.remove(&id);
     }
     Ok(())
 }
@@ -476,9 +660,15 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_orientation,
             get_orientation,
-            connect_cube,
-            write_fff5,
-            disconnect_cube,
+            ble_request_device,
+            ble_connect,
+            ble_discover_services,
+            ble_discover_characteristics,
+            ble_subscribe,
+            ble_unsubscribe,
+            ble_read,
+            ble_write,
+            ble_disconnect,
             optimal::optimal_prepare,
             optimal::optimal_status,
             optimal::optimal_prove,

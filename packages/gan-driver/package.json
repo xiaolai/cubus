@@ -2,7 +2,7 @@
   "name": "gan-driver",
   "version": "0.1.0",
   "type": "module",
-  "description": "Verified BLE driver + diagnostic CLI for the GAN16 ui smart cube (GAN Gen4 protocol) on macOS",
+  "description": "Independent GAN Gen4 decoder, kept as the test oracle the linked protocol layer is measured against; plus the diagnostic CLI used to take captures from real hardware",
   "license": "MIT",
   "bin": {
     "gan16": "./src/cli.ts"
@@ -15,7 +15,6 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "check": "npm run typecheck && npm run lint && npm run test",
-    "build:driver": "esbuild src/index.ts --bundle --format=esm --target=es2022 --outfile=../../apps/web/vendor/gan-driver.js",
     "spike:refresh": "tsx scripts/spike-refresh.ts",
     "spike:serve": "tsx scripts/spike-server.ts"
   },
@@ -30,6 +29,7 @@
     "cubejs": "^1.3.2",
     "esbuild": "^0.21.5",
     "eslint": "^9.15.0",
+    "smartcube-web-bluetooth": "github:xiaolai/smartcube-web-bluetooth#56b13b0153b64df99544a39f57ff04fb35313403",
     "tsx": "^4.23.12",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.16.0",

@@ -58,25 +58,16 @@ const BUNDLES = [
     treeShaken: ['SOLVED_FACELETS', 'encodeFacelets'],
   },
   {
-    // The GAN16 smart-cube driver, recovered from v0 (2026-08-27): protocol, crypto, decode and
-    // the Web Bluetooth transport, fixture-tested in its own package with no hardware.
-    name: 'gan-driver',
-    build: 'pnpm --filter gan-driver build:driver',
-    bundle: '../vendor/gan-driver.js',
-    sources: [
-      '../../../packages/gan-driver/src/index.ts',
-      '../../../packages/gan-driver/src/driver.ts',
-      '../../../packages/gan-driver/src/gen4/decode.ts',
-      '../../../packages/gan-driver/src/gen4/crypto.ts',
-      '../../../packages/gan-driver/src/gen4/facelets.ts',
-      '../../../packages/gan-driver/src/transport/blew.ts',
-    ],
-    // execFileP/scanForCube serve the package's Node CLI, isValidFaceletCounts its tests — none
-    // is on the browser entry's path, so esbuild drops them and their absence is correct, not
-    // stale. If the app ever starts using one, delete it here and the guard covers it again.
-    treeShaken: ['execFileP', 'scanForCube', 'isValidFaceletCounts'],
-    // These sentences live inside those same shaken CLI helpers.
-    treeShakenMessages: ['attempts with no data', 'gave up reconnecting to', 'scan helper not found at'],
+    // The protocol layer for every smart cube: an unpublished git dependency, pinned by commit
+    // sha and bundled here because its published ESM build is not Node-importable. The staleness
+    // guard that MATTERS for this one is smartcube-pin.test.mjs — a re-export entry has almost no
+    // declarations to compare, so the checks below are close to vacuous and the revision is what
+    // is actually pinned. Listed here anyway because the meta-test above requires every emitted
+    // bundle to appear, and an unlisted one is an unguarded one.
+    name: 'smartcube',
+    build: 'pnpm --filter cubus-web build:smartcube',
+    bundle: '../vendor/smartcube.js',
+    sources: ['../lib/smartcube-entry.js'],
   },
   {
     // The dev-only Tauri MCP guest (selector clicks, DOM queries, JS eval for the agent bridge).

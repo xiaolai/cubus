@@ -71,7 +71,8 @@ test('every screen that solves warms first', () => {
 });
 
 test('there is ONE pool, and rolling a scramble goes through it', () => {
-  // `warmRoller`/`scramble-worker.js` were the app paying twice for one capability: a second
+  // `warmRoller` and the since-deleted `lib/scramble-worker.js` were the app paying twice for
+  // one capability: a second
   // worker with its own ~34 MB of cubejs Kociemba tables and a 3-6 s build, beside a pool of
   // workers already holding warm two-phase tables. Rolling is a solve, so it goes where solves
   // go. A reintroduced second roller would show up here.

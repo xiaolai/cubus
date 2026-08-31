@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Cubus SPA \u2014 camera (YOLO) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",
+  "description": "Cubus SPA — camera (YOLO) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",
   "scripts": {
     "copy-ort": "node copy-ort.mjs",
     "build:cube": "esbuild lib/cubus-cube.js --bundle --format=esm --target=es2022 --outfile=vendor/cubus-cube.js",
@@ -14,12 +14,14 @@
     "build:dist": "node build.mjs",
     "build:cubejs": "esbuild lib/cubejs-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/cubejs.js",
     "build:mcp-guest": "esbuild lib/tauri-mcp-guest-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/tauri-mcp-guest.js",
-    "vendor:libs": "pnpm build:cubejs"
+    "vendor:libs": "pnpm build:cubejs",
+    "build:smartcube": "esbuild lib/smartcube-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/smartcube.js"
   },
   "devDependencies": {
     "esbuild": "^0.21.5",
     "happy-dom": "^20.11.6",
     "playwright": "1.62.1",
+    "smartcube-web-bluetooth": "github:xiaolai/smartcube-web-bluetooth#56b13b0153b64df99544a39f57ff04fb35313403",
     "tauri-plugin-mcp": "0.3.1",
     "three": "^0.169.0"
   },

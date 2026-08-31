@@ -13,6 +13,15 @@
     "skipLibCheck": true,
     "types": ["node"],
     "allowImportingTsExtensions": true,
+    // The cross-implementation test reaches into smartcube-web-bluetooth for decoders that are
+    // not public exports (dev-docs/universal-cube-driver.md §2). Importing its .ts SOURCE would
+    // drag a dependency's code through OUR strict settings — ~30 errors in files we do not own
+    // and cannot fix. So TypeScript reads the shipped .d.ts, which skipLibCheck covers, while
+    // vitest.config.ts aliases the same specifier to the real source at runtime. Two mappings,
+    // one specifier, each tool given the thing it is actually good at.
+    "paths": {
+      "smartcube-internal/*": ["./node_modules/smartcube-web-bluetooth/dist/types/*"]
+    },
     "noEmit": true
   },
   "include": ["src", "tests"]

@@ -302,15 +302,63 @@ test('the whole engine, behind createSolver: bounded, verified, every view exerc
   const solve = createSolver(twoPhase);
   // solLen 21 forces real searching, which spreads winners across the six views — a broken
   // rotation map or inverse map would surface as an alg that does not solve.
+  //
+  // ESCALATION on null, rather than one fixed budget. `probeMax` is a budget in search NODES and
+  // null means "spent it", which is a statement about the search and not about the cube — the
+  // engine deepens phase 1 to solLen - 1 and canonical pruning is proved to delete no optimal
+  // path, so it is complete and only the budget can fail. A single fixed budget therefore asserts
+  // a PROBABILISTIC property as if it were deterministic: this test failed on
+  // FULLUURBBDRBFRFUBDFURLFDUDLBBFLDRLRRDUULLBUDRDFLRBFFDB, a state that is perfectly solvable
+  // and merely expensive, while the very next test in this file already tolerates null as "rare
+  // at this budget". Doubling and asking again is exactly what lib/solve-target.js does for the
+  // app (GODS_NUMBER, MAX_PROMISE_ESCALATIONS), so this now tests the engine the way the app
+  // actually uses it.
+  //
+  // The assertion does not get weaker: after escalation a solution MUST be found, because God's
+  // number is 20 and 21 is an exclusive bound above it. Raising the ceiling is not a threshold
+  // being loosened to buy green — it is the mechanism the contract already specifies.
+  const ESCALATIONS = 8;
   for (let trial = 0; trial < 10; trial++) {
     const facelets = randomCube(Cube).asString();
-    const alg = solve(facelets, { solLen: 21, probeMax: 50_000_000 });
-    assert.ok(alg, `no solution under 21 within the budget for ${facelets}`);
+    let alg = null;
+    let budget = 50_000_000;
+    let spent = 0;
+    for (let attempt = 0; attempt <= ESCALATIONS && alg === null; attempt++) {
+      alg = solve(facelets, { solLen: 21, probeMax: budget });
+      spent += budget;
+      budget *= 2;
+    }
+    assert.ok(
+      alg,
+      `no solution under 21 for ${facelets} after ${ESCALATIONS} escalations (${spent} nodes) — ` +
+        'the engine is complete, so this is a real defect rather than an expensive cube',
+    );
     assert.ok(alg.split(/\s+/).length < 21, 'the bound is exclusive');
     const oracle = Cube.fromString(facelets);
     oracle.move(alg);
     assert.ok(oracle.isSolved(), `does not solve ${facelets}: ${alg}`);
   }
+});
+
+test('the escalation above is reachable, not decorative', () => {
+  // A budget so small that the first attempt must refuse. Without this, the escalation loop could
+  // silently never run — every state solving on the first try — and a future change that broke
+  // escalation would still read green. The state is fixed so this cannot itself go flaky.
+  const solve = createSolver(twoPhase);
+  // `SOLVED` in this file is the PIECES representation, not a facelet string — cubejs builds its
+  // own solved cube, and a fixed scramble keeps this test from ever going flaky itself.
+  const facelets = new Cube().move("R U R' U' F R U R' U' F' L D2 B").asString();
+  assert.equal(solve(facelets, { solLen: 21, probeMax: 1 }), null, 'one node must not be enough');
+  let alg = null;
+  let budget = 1;
+  for (let i = 0; i < 30 && alg === null; i++) {
+    alg = solve(facelets, { solLen: 21, probeMax: budget });
+    budget *= 4;
+  }
+  assert.ok(alg, 'doubling the budget must eventually produce the answer');
+  const oracle = Cube.fromString(facelets);
+  oracle.move(alg);
+  assert.ok(oracle.isSolved(), 'and the escalated answer must actually solve');
 });
 
 test('all six views win searches, and every winner is oracle-verified', () => {

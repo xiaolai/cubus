@@ -29,6 +29,9 @@ importers:
       playwright:
         specifier: 1.62.1
         version: 1.62.1
+      smartcube-web-bluetooth:
+        specifier: github:xiaolai/smartcube-web-bluetooth#56b13b0153b64df99544a39f57ff04fb35313403
+        version: https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/56b13b0153b64df99544a39f57ff04fb35313403
       tauri-plugin-mcp:
         specifier: 0.3.1
         version: 0.3.1
@@ -100,6 +103,9 @@ importers:
       eslint:
         specifier: ^9.15.0
         version: 9.39.5
+      smartcube-web-bluetooth:
+        specifier: github:xiaolai/smartcube-web-bluetooth#56b13b0153b64df99544a39f57ff04fb35313403
+        version: https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/56b13b0153b64df99544a39f57ff04fb35313403
       tsx:
         specifier: ^4.23.12
         version: 4.23.12
@@ -836,6 +842,9 @@ packages:
   '@types/node@22.20.1':
     resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
 
+  '@types/web-bluetooth@0.0.20':
+    resolution: {integrity: sha512-g9gZnnXVq7gM7v3tJCWV/qw7w+KeOlSHAhgF9RytFyifW6AF61hdT2ucrYhPq9hLs5JIryeupHV3qGk95dH9ow==}
+
   '@types/whatwg-mimetype@3.0.2':
     resolution: {integrity: sha512-c2AKvDT8ToxLIOUlN51gTiHXflsfIFisS4pO7pDPoKouJCESkhZnEy623gwP9laCy5lnLDAw1vAzu2vM2YLOrA==}
 
@@ -1553,6 +1562,9 @@ packages:
     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
     hasBin: true
 
+  rxjs@7.8.2:
+    resolution: {integrity: sha512-dhKf903U/PQZY6boNNtAGdWbG85WAbjT/1xYoZIC7FAY0yWapOBQVsVrDl58W86//e1VpMNBtRV4MaXfdMySFA==}
+
   semver@7.8.5:
     resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
     engines: {node: '>=10'}
@@ -1572,6 +1584,11 @@ packages:
   signal-exit@4.1.0:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
+
+  smartcube-web-bluetooth@https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/56b13b0153b64df99544a39f57ff04fb35313403:
+    resolution: {tarball: https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/56b13b0153b64df99544a39f57ff04fb35313403}
+    version: 4.0.0
+    engines: {node: '>=18'}
 
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
@@ -1644,6 +1661,9 @@ packages:
     engines: {node: '>=18.12'}
     peerDependencies:
       typescript: '>=4.8.4'
+
+  tslib@2.8.1:
+    resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
   tsx@4.23.12:
     resolution: {integrity: sha512-FDf4L4sYzKtzWYhU/Xm0AQFdTjdIxNo9ElTf2mxXM6k8YMHXzYUe4yODVaXP4V9uMFbVg8c0qyBccK2OOxb45Q==}
@@ -2225,6 +2245,8 @@ snapshots:
   '@types/node@22.20.1':
     dependencies:
       undici-types: 6.21.0
+
+  '@types/web-bluetooth@0.0.20': {}
 
   '@types/whatwg-mimetype@3.0.2': {}
 
@@ -2924,6 +2946,10 @@ snapshots:
       '@rollup/rollup-win32-x64-msvc': 4.62.5
       fsevents: 2.3.3
 
+  rxjs@7.8.2:
+    dependencies:
+      tslib: 2.8.1
+
   semver@7.8.5: {}
 
   shebang-command@2.0.0:
@@ -2935,6 +2961,12 @@ snapshots:
   siginfo@2.0.0: {}
 
   signal-exit@4.1.0: {}
+
+  smartcube-web-bluetooth@https://codeload.github.com/xiaolai/smartcube-web-bluetooth/tar.gz/56b13b0153b64df99544a39f57ff04fb35313403:
+    dependencies:
+      '@types/web-bluetooth': 0.0.20
+      aes-js: 3.1.2
+      rxjs: 7.8.2
 
   source-map-js@1.2.1: {}
 
@@ -2998,6 +3030,8 @@ snapshots:
   ts-api-utils@2.5.0(typescript@5.9.3):
     dependencies:
       typescript: 5.9.3
+
+  tslib@2.8.1: {}
 
   tsx@4.23.12:
     dependencies:

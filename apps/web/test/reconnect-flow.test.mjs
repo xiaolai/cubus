@@ -53,7 +53,10 @@ const feed = () => win.cubusFeed;
 const appState = async () => (await import('../lib/app.js')).state;
 const storedLast = () => JSON.parse(win.localStorage.getItem('cubusCubes'))[MAC]?.last;
 const go = async (id) => { win.cubusGo(id); await tick(); };
-const fakeConn = () => ({ requestBattery: async () => ({ level: 80 }) });
+// Session-shaped (lib/cube-session.js), not driver-shaped: requestBattery answers a NUMBER or
+// null, because a level the cube would not give is an absence rather than an object with an
+// undefined field inside it.
+const fakeConn = () => ({ requestBattery: async () => 80, disconnect: async () => {} });
 
 before(async () => {
   win = new Window({
