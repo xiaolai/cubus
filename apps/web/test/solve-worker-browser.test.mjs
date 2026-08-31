@@ -17,6 +17,8 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
+import { pace } from './browser-wait.mjs';
+
 const PORT = 5196; // geometry owns 5197, serve.test.mjs 5199; node --test runs files in parallel
 const BASE = `http://127.0.0.1:${PORT}`;
 const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
@@ -45,6 +47,7 @@ after(async () => {
 /** Drive the real client, in the real engine, over the real thread boundary. */
 async function inBrowser(fn, arg) {
   const page = await browser.newPage();
+  pace(page);
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.goto(`${BASE}/index.html`);
@@ -215,10 +218,11 @@ test('the walk seeks in a real engine — a chip press lands the counter on its 
   // The half the happy-dom tests cannot reach: they do not load <cubus-cube>, so the transport
   // never advances there. Here the renderer is real, so the walk really walks.
   const page = await browser.newPage();
+  pace(page);
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.goto(`${BASE}/index.html#/scramble`);
-  await page.waitForSelector('#solList .chip-m', { timeout: 20000 });
+  await page.waitForSelector('#solList .chip-m');
 
   const out = await page.evaluate(async () => {
     const settle = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -301,6 +305,7 @@ test('a state in the proven library is answered from data — no search, no proo
  *  `optimal_prove` hangs until the test releases it, which is what a deep cube does for hours. */
 async function withFakeProver(run, { prove = true } = {}) {
   const page = await browser.newPage();
+  pace(page);
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.addInitScript((prove) => {
@@ -345,7 +350,7 @@ async function withFakeProver(run, { prove = true } = {}) {
 
 /** Put a scrambled (NOT library) cube on the cube screen and wait for its walk. */
 const walkAScrambledCube = async (page) => {
-  await page.waitForFunction(() => Boolean(window.cubusGo), null, { timeout: 20_000 });
+  await page.waitForFunction(() => Boolean(window.cubusGo), null);
   await page.evaluate(async () => {
     const app = await import('/lib/app.js');
     const Cube = (await import('/vendor/cubejs.js')).default;
@@ -356,7 +361,7 @@ const walkAScrambledCube = async (page) => {
     c.solution = ''; c.crossChecked = false; c.solveResult = null; c.setupAlg = ''; c.derived = false;
     window.cubusGo('home');
   });
-  await page.waitForSelector('#proveBtn:not([hidden])', { timeout: 30_000 });
+  await page.waitForSelector('#proveBtn:not([hidden])');
 };
 
 test('a proof that answers quickly never shows a waiting state', async () => {
@@ -427,11 +432,12 @@ test('a handheld asks for the camera that can see the cube; a desktop asks for n
   // a facing mode names a different physical machine rather than a different lens.
   const facingFor = async (platform) => {
     const page = await browser.newPage();
+    pace(page);
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
     try {
       await page.goto(`${BASE}/?platform=${platform}#/scan`);
-      await page.waitForSelector('ai-scan-panel', { timeout: 30_000 });
+      await page.waitForSelector('ai-scan-panel');
       const seen = await page.evaluate(() => ({
         facing: document.querySelector('ai-scan-panel')?.getAttribute('facing'),
         platform: document.documentElement.dataset.platform,
@@ -459,7 +465,7 @@ test('the prove affordance is off until Settings asks for it', async () => {
   // beginner who did not ask. Default off, and the same walk that draws it when the setting is
   // on must draw nothing when it is not — the native side being present is not enough.
   await withFakeProver(async (page) => {
-    await page.waitForFunction(() => Boolean(window.cubusGo), null, { timeout: 20_000 });
+    await page.waitForFunction(() => Boolean(window.cubusGo), null);
     await page.evaluate(async () => {
       const app = await import('/lib/app.js');
       const Cube = (await import('/vendor/cubejs.js')).default;
@@ -472,7 +478,7 @@ test('the prove affordance is off until Settings asks for it', async () => {
     });
     // Wait for the walk itself, so this is "the chips are there and the button is not" rather
     // than "nothing has rendered yet", which would pass against any code at all.
-    await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null, { timeout: 30_000 });
+    await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
     const seen = await page.evaluate(() => {
       const btn = document.querySelector('#proveBtn');
       return { exists: Boolean(btn), hidden: btn?.hidden, stored: localStorage.getItem('cubusSettings') };

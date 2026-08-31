@@ -2,9 +2,23 @@
 """The golden-frame parity harness: every runtime must read every fixture the way it was pinned to.
 
     ml/venv/bin/python ml/golden_frames.py                       # every leg this machine can run
-    ml/venv/bin/python ml/golden_frames.py --legs onnx onnx-int8 tflite   # Linux CI
-    ml/venv/bin/python ml/golden_frames.py --legs coreml native           # macOS CI (Python + the plugin's own path)
-    ml/venv/bin/python ml/golden_frames.py --write-expected               # re-pin after a deliberate model change
+    ml/venv/bin/python ml/golden_frames.py --write-expected      # re-pin after a deliberate model change
+    ml/venv/bin/python ml/golden_frames.py --parity --legs onnx onnx-int8 tflite   # Linux CI
+    ml/venv/bin/python ml/golden_frames.py --parity --legs onnx coreml native      # macOS CI
+
+TWO MODES, because only one of the things this compares is reproducible off the pinning host.
+
+  PINNED (default) — every leg must reproduce `golden/expected.json` EXACTLY, fixture by fixture.
+  This is the gate AGENTS.md requires before a model is vendored, and it is only meaningful on the
+  machine the pin was written on: `pinned_on` records that host for a reason. A read is the output
+  of floating-point inference, and the arithmetic is not portable — ONNX's dynamic-int8 kernels
+  differ between x86 (AVX-512/VNNI) and Apple Silicon (NEON), and CoreML dispatches to ANE, GPU or
+  CPU by what the machine has. Near a decision boundary that flips the decoded class.
+
+  PARITY (--parity) — for CI, on hardware that is not the pinning host. It asserts the RELATIONS
+  between legs, both sides computed in the same run on the same machine, plus the two things that
+  ARE portable: the model bytes (MANIFEST.json) and the letterbox sha (integer image work). See
+  `parity()` for the measurements that forced the split.
 
 Each fixture in `golden/frames/` goes through the app's exact letterbox, one runtime, then the app's
 exact post-processing (decode → NMS → fitFace). What is compared is the DECODED READ — the verdict
@@ -40,6 +54,7 @@ static destructor at normal interpreter shutdown; the exit code is taken first, 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -161,6 +176,25 @@ class Leg:
         return cube_infer.tensor_sha256(chw), read_string(cube_infer.read_face(self._out(chw)))
 
 
+def sha256_of(path: Path) -> str:
+    """Hash a file, or a directory (an .mlpackage) by its sorted relative paths and contents.
+
+    Deliberately the same method as ml/export.py's `sha256`, because it is that function's output
+    this compares against — MANIFEST.json is written by export.py. Duplicated rather than imported
+    so the gate does not drag ultralytics and torch into a CI job that only needs to read bytes; if
+    the two ever disagree the manifest check goes red, which is the loud failure, not a silent one.
+    """
+    h = hashlib.sha256()
+    if path.is_dir():
+        for p in sorted(path.rglob("*")):
+            if p.is_file():
+                h.update(str(p.relative_to(path)).encode())
+                h.update(p.read_bytes())
+    else:
+        h.update(path.read_bytes())
+    return h.hexdigest()
+
+
 def fixtures(frames: Path) -> list[Path]:
     fx = sorted(frames.glob("*.png"))
     if not fx:
@@ -226,6 +260,8 @@ def check(args) -> int:
 
     legs = args.legs or runnable_legs(args.models, args.probe)
     failures = 0
+    live: dict[str, dict[str, str]] = {}
+
     for name in legs:
         try:
             leg = Leg(name, args.models, args.compute_units, args.probe)
@@ -234,29 +270,54 @@ def check(args) -> int:
             failures += 1
             continue
         leg_fail = 0
+        reads: dict[str, str] = {}
         for f in fx:
             pin = pins[f.name]
+            sha, got = leg.evaluate(f)
+            reads[f.name] = got
+            # The letterbox is integer image work, identical on every host, and every leg in a run
+            # must agree on it. Checking it against the pin stays valid in BOTH modes — unlike a
+            # read, it is not the output of floating-point inference.
+            if sha != pin["preprocess_sha256"]:
+                print(f"[{name}] XX {f.name:16s} {'letterbox sha drifted':14s}  {sha[:12]} vs pinned {pin['preprocess_sha256'][:12]}")
+                leg_fail += 1
+                continue
+            if args.parity:
+                continue
             want = pin["legs"].get(name)
             if want is None:
                 print(f"[{name}] {f.name}: no pin for this leg — re-run --write-expected on a machine that can run it")
                 leg_fail += 1
-                continue
-            sha, got = leg.evaluate(f)
-            ok = got == want and sha == pin["preprocess_sha256"]
-            if not ok:
-                why = "letterbox sha drifted" if got == want else f"expected {want}"
-                print(f"[{name}] XX {f.name:16s} {got:14s}  {why}")
+            elif got != want:
+                print(f"[{name}] XX {f.name:16s} {got:14s}  expected {want}")
                 leg_fail += 1
-        print(f"[{name}] {'ok' if leg_fail == 0 else str(leg_fail) + ' FAIL'} over {len(fx)} fixtures")
+        live[name] = reads
+        if not args.parity:
+            print(f"[{name}] {'ok' if leg_fail == 0 else str(leg_fail) + ' FAIL'} over {len(fx)} fixtures")
+        elif leg_fail:
+            print(f"[{name}] {leg_fail} letterbox FAIL over {len(fx)} fixtures")
         failures += leg_fail
 
-    ref = {n: fr["legs"]["onnx"] for n, fr in pins.items()}
+    if args.parity:
+        # Normalised to the documented 0/1 verdict: a leg that could not run has already
+        # counted a failure here, and parity() counts its own, so the sum can exceed 1.
+        return 1 if failures + parity(args, doc, live, legs, fx) else 0
+
+    # Faithfulness, computed from the LIVE reads of this run.
+    #
+    # This used to read `pins` on both sides of the comparison — the pinned coreml read against the
+    # pinned onnx read — so it compared the file to itself and could not fail unless someone hand-
+    # edited it. It duly printed "0 divergence(s) (exact class parity)" in the very CI run where
+    # coreml disagreed with its own pin on photo-01.png. A gate that cannot fail is not a gate.
+    ref = live.get("onnx")
     for faithful in ("coreml", "native"):
-        if all(faithful in fr["legs"] for fr in pins.values()):
-            div = [n for n, fr in pins.items() if fr["legs"][faithful] != ref[n]]
-            print(f"pinned: {faithful} (fp16) vs fp32 — {len(div)} divergence(s){' : ' + ', '.join(div) if div else ' (exact class parity, as the plan claims)'}")
+        if faithful in live and ref is not None:
+            div = [n for n in ref if live[faithful].get(n) != ref[n]]
+            print(f"live: {faithful} (fp16) vs fp32 — {len(div)} divergence(s){' : ' + ', '.join(div) if div else ' (exact class parity, as the plan claims)'}")
             if div:
                 failures += 1  # the headline faithfulness claim regressed
+    if ref is None and any(f in live for f in ("coreml", "native")):
+        print("live: no fp32 reference in this run — add `onnx` to --legs to check faithfulness")
     print(f"pinned: divergence from fp32 = {doc.get('divergence_from_fp32')}")
 
     if failures:
@@ -266,6 +327,97 @@ def check(args) -> int:
     return 0
 
 
+def parity(args, doc, live: dict, legs: list[str], fx: list[Path]) -> int:
+    """Host-internal mode: assert the RELATIONS between legs, never one host's absolute reads.
+
+    Why CI cannot use the absolute pin. `expected.json` records, in `pinned_on`, the single host it
+    was written on, and a read is the output of floating-point inference: ONNX's dynamic-int8 kernels
+    differ between x86 (AVX-512/VNNI) and Apple Silicon (NEON), and CoreML dispatches to ANE, GPU or
+    CPU by what the machine has. On a fixture sitting near a decision boundary that is enough to flip
+    the decoded class. Measured, with the SAME committed model bytes and the SAME pinned runtime
+    versions: `render-07.png` reads OK on Linux int8 where this Mac pinned BAD_GEOMETRY, and
+    `photo-01.png` reads BAD_GEOMETRY on a GitHub macOS runner where this Mac pinned OK. The
+    harness's own docstring claimed decoded classes were "robust to small numerical drift"; two
+    fixtures out of twenty say otherwise, so the claim is corrected rather than re-pinned.
+
+    What is asserted here is hardware-independent by construction, because both sides of every
+    comparison are computed in the same run on the same machine:
+
+      * the model BYTES match MANIFEST.json — so a swapped model is still caught in CI, which is the
+        gate's headline purpose ("a model change is not verified until golden_frames.py has run");
+      * the letterbox sha matches the pin — integer image work, identical everywhere (checked above);
+      * faithful legs (coreml, native) read EXACTLY as this host's own fp32 onnx — the plan's premise
+        that fp16 moves scores but not classes;
+      * bounded legs (onnx-int8, tflite) diverge from this host's fp32 no more than the bound already
+        recorded in `divergence_from_fp32`.
+
+    The absolute per-fixture pin is not weakened, it is relocated: it remains the gate on the pinning
+    host, which is where AGENTS.md already requires it to be run before a model is vendored.
+    """
+    failures = 0
+
+    # The model bytes. Without this, parity mode would pass a wholesale model swap — every leg would
+    # move together and the relations would still hold.
+    manifest_path = args.models / "MANIFEST.json"
+    if not manifest_path.is_file():
+        print(f"[manifest] MISSING {manifest_path} — cannot verify the model bytes")
+        return failures + 1
+    manifest = json.loads(manifest_path.read_text())
+    for artefact, meta in manifest.get("artefacts", {}).items():
+        path = args.models / artefact
+        if not path.exists():
+            print(f"[manifest] MISSING {artefact}")
+            failures += 1
+            continue
+        want = meta.get("sha256")
+        if not want:
+            print(f"[manifest] {artefact}: no sha256 recorded — re-run export.py")
+            failures += 1
+            continue
+        got = sha256_of(path)
+        if got != want:
+            print(f"[manifest] XX {artefact}: {got[:12]} vs pinned {want[:12]} — the model changed")
+            failures += 1
+    if not failures:
+        print(f"[manifest] ok — {len(manifest.get('artefacts', {}))} artefact(s) match their pinned sha256")
+
+    ref = live.get("onnx")
+    if ref is None:
+        print("[parity] CANNOT RUN: parity mode needs the `onnx` fp32 leg as its reference — add it to --legs")
+        return failures + 1
+
+    bound = doc.get("divergence_from_fp32", {})
+    for name in legs:
+        if name == "onnx" or name not in live:
+            continue
+        div = [n for n in ref if live[name].get(n) != ref[n]]
+        if name in ("coreml", "native"):  # faithful: exact class parity with fp32
+            if div:
+                for n in div:
+                    print(f"[{name}] XX {n:16s} {live[name].get(n, '<missing>'):14s}  fp32 here reads {ref[n]}")
+                print(f"[{name}] {len(div)} FAIL — a faithful leg must read exactly as fp32 on this host")
+                failures += len(div)
+            else:
+                print(f"[{name}] ok — exact class parity with this host's fp32 over {len(fx)} fixtures")
+        else:  # bounded: may diverge, but no more than the recorded bound
+            allowed = bound.get(name)
+            if allowed is None:
+                print(f"[{name}] no divergence bound recorded for this leg — re-pin")
+                failures += 1
+            elif len(div) > allowed:
+                for n in div:
+                    print(f"[{name}] .. {n:16s} {live[name].get(n, '<missing>'):14s}  fp32 here reads {ref[n]}")
+                print(f"[{name}] {len(div)} divergence(s) from fp32, bound is {allowed} — FAIL")
+                failures += 1
+            else:
+                print(f"[{name}] ok — {len(div)} divergence(s) from this host's fp32, within the pinned bound of {allowed}")
+
+    if failures:
+        print(f"FAIL: {failures} problem(s)")
+        return 1
+    print(f"PASS: host-internal parity holds for {len(legs)} leg(s) on all {len(fx)} fixtures")
+    return 0
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--models", type=Path, default=MODELS)
@@ -274,6 +426,7 @@ def main() -> int:
     ap.add_argument("--probe", type=Path, default=PROBE, help="the cube-vision-probe binary (native leg)")
     ap.add_argument("--legs", nargs="+", choices=ALL_LEGS, help="legs that MUST run (default: every leg this machine can)")
     ap.add_argument("--compute-units", default="all", choices=["all", "cpu_and_gpu", "cpu_only", "cpu_and_ne"], help="CoreML compute units for the coreml/native legs")
+    ap.add_argument("--parity", action="store_true", help="host-internal mode for CI: assert the RELATIONS between legs on THIS machine, not another host's absolute reads")
     ap.add_argument("--write-expected", action="store_true", help="re-pin expected.json (every leg this machine can run)")
     args = ap.parse_args()
     return write_expected(args) if args.write_expected else check(args)

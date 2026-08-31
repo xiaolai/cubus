@@ -23,6 +23,8 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
+import { pace } from './browser-wait.mjs';
+
 import { fitStage } from '../lib/stage.js';
 import { freePort } from './free-port.mjs';
 
@@ -100,6 +102,7 @@ async function open(fixture, route = 'home') {
   // halves are needed. The selector waits below still bound the app's own boot.
   context.setDefaultNavigationTimeout(120_000);
   const page = await context.newPage();
+  pace(page);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e));
   await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${route}`);
@@ -107,7 +110,7 @@ async function open(fixture, route = 'home') {
   // under test-concurrency=6, six webkits and dev servers share one machine, and the mount
   // once lost a 10 s race (2026-08-30) while every geometry assertion behind it would have
   // passed. Generous waits here; the strictness belongs to the geometry checks themselves.
-  await page.waitForSelector('.screen.active', { timeout: 30_000 });
+  await page.waitForSelector('.screen.active');
   return { page, context, errors };
 }
 
@@ -343,7 +346,7 @@ for (const fixture of FIXTURES) {
     const { page, context } = await open(fixture, 'scramble');
     try {
       await page.click('#randCube');
-      await page.waitForSelector('.chip-m', { timeout: 15_000 });
+      await page.waitForSelector('.chip-m');
       // The renderer paints on its OWN animation frame, which nothing synchronises with the
       // chips appearing. Reading the canvas straight after them is a race, and it was being won
       // only by luck: the whole suite runs at --test-concurrency=6, and once the cube screen's
@@ -362,7 +365,7 @@ for (const fixture of FIXTURES) {
           .getImageData(x, y, Math.max(1, Math.ceil(c.width * 0.2)), Math.max(1, Math.ceil(c.height * 0.2))).data;
         for (let i = 3; i < px.length; i += 4) if (px[i] > 8) return true;
         return false;
-      }, null, { timeout: 15_000 });
+      }, null);
       const m = await measureCube(page);
       const portrait = m.content.h > m.content.w;
       assert.ok(m.walking, 'the scramble screen walks a scramble');
@@ -493,7 +496,7 @@ for (const fixture of FIXTURES) {
   test(`scan screen composition: ${label(fixture)}`, async () => {
     const { page, context } = await open(fixture, 'scan');
     try {
-      await page.waitForSelector('.scan-face', { timeout: 10_000 });
+      await page.waitForSelector('.scan-face');
       const m = await measureScan(page);
       const portrait = m.stage.h > m.stage.w;
       assert.equal(m.tiles.length, 6);
@@ -605,11 +608,12 @@ for (const screen of SCREENS) {
       context.setDefaultNavigationTimeout(120_000); // same saturation reasoning as above
       await context.addInitScript((session) => localStorage.setItem('cubusSolves', session), SESSION);
       const page = await context.newPage();
+      pace(page);
       const errors = [];
       page.on('pageerror', (e) => errors.push(e));
       try {
         await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${screen}`);
-        await page.waitForSelector('.screen.active', { timeout: 30_000 });
+        await page.waitForSelector('.screen.active');
         const m = await measureScreen(page);
         assert.deepEqual(errors.map(String), [], 'the page threw');
         assert.ok(m.overflow.doc <= 0, `the page overflows the viewport by ${m.overflow.doc}px`);

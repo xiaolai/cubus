@@ -132,8 +132,8 @@ jobs:
           python-version: "3.11"
       - name: Install the golden-harness runtimes
         run: pip install -r ml/requirements-golden.txt
-      - name: onnx · onnx-int8 · tflite must match their pins
-        run: python ml/golden_frames.py --legs onnx onnx-int8 tflite
+      - name: onnx · onnx-int8 · tflite — host-internal parity (see golden_frames.py, PARITY mode)
+        run: python ml/golden_frames.py --parity --legs onnx onnx-int8 tflite
 
   golden-macos:
     name: Golden frames (coreml · native plugin)
@@ -149,5 +149,5 @@ jobs:
       # it — this is what proves the shipped native code, not a Python stand-in, still reads identically.
       - name: Build the cube-vision probe
         run: swift build -c release --package-path crates/cube-vision/swift
-      - name: coreml · native must match their pins (exact fp32 class parity)
-        run: python ml/golden_frames.py --legs coreml native
+      - name: coreml · native — exact class parity with THIS host's fp32, plus the pinned model bytes
+        run: python ml/golden_frames.py --parity --legs onnx coreml native
