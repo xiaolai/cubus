@@ -132,6 +132,10 @@ jobs:
           python-version: "3.11"
       - name: Install the golden-harness runtimes
         run: pip install -r ml/requirements-golden.txt
+      # Needs no model, no runtime and no hardware — it exercises the faithfulness rule itself,
+      # which was inverted when first written and passed every real leg anyway.
+      - name: The faithfulness rule is directional
+        run: python ml/golden_frames.py --self-check
       - name: onnx · onnx-int8 · tflite — host-internal parity (see golden_frames.py, PARITY mode)
         run: python ml/golden_frames.py --parity --legs onnx onnx-int8 tflite
 
