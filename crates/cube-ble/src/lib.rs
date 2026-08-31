@@ -21,6 +21,10 @@
 //! name-suffix comparison this crate used to do, because it tests the key rather than the layout.
 
 pub use btleplug;
+// Re-exported for the same reason as btleplug: this crate hands back types that CONTAIN a Uuid
+// (and `parse_uuid` returns one), so a consumer has to be able to name it without taking its own
+// dependency and risking a version skew that would make the two Uuids different types.
+pub use uuid;
 
 use btleplug::api::{
     Central, CharPropFlags, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,

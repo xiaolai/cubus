@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use cube_ble::btleplug::api::{Central, CentralEvent, Peripheral as _, ValueNotification};
 use cube_ble::btleplug::platform::Peripheral;
+use cube_ble::uuid::Uuid;
 use cube_ble::{
     default_adapter, find_device, AdvertisedDevice, CharacteristicInfo, RequestOptions,
 };
@@ -55,11 +56,18 @@ type NotifyStream = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
 /// Typed rather than an ad-hoc json literal: this is a contract with
 /// `apps/web/lib/ble-bridge.js`, and a renamed field would otherwise fail as a silently
 /// undefined value in the polyfill rather than as a compile error here.
+///
+/// `sub` is a subscription id, not the (device, service, characteristic) triple this used to
+/// carry. Those three strings are IDENTICAL for every packet of a session — a device id and two
+/// 36-character UUIDs — so sending them 20 times a second was 150 bytes of repetition around 20
+/// bytes of payload: 204 bytes per notification, of which 54 carried anything. Over a ten-minute
+/// session that is 2.3 MB across the webview boundary instead of 0.6 MB, and every one of those
+/// bytes is serialised, copied and parsed. The id is assigned once at subscribe time and the web
+/// side keeps the mapping.
 #[derive(serde::Serialize, Clone)]
 struct NotificationPayload {
-    device: String,
-    service: String,
-    characteristic: String,
+    /// Subscription id, from `ble_subscribe`.
+    sub: u32,
     /// Hex. The webview boundary is JSON, and a byte array costs ~6x the bytes of hex.
     data: String,
 }
@@ -82,12 +90,23 @@ struct DisconnectPayload {
 #[derive(Default)]
 struct CubeState(Arc<Mutex<BleSession>>);
 
+/// A subscribed (device, service, characteristic), addressed by a small integer.
+struct Subscription {
+    device: String,
+    service: String,
+    characteristic: Uuid,
+}
+
 #[derive(Default)]
 struct BleSession {
     /// Kept alive for as long as any peripheral it produced is in use.
     adapter: Option<cube_ble::btleplug::platform::Adapter>,
     discovered: HashMap<String, Peripheral>,
     connected: HashMap<String, Peripheral>,
+    /// Live subscriptions by id. The id is what crosses the boundary per packet instead of three
+    /// strings that never change within a session.
+    subscriptions: HashMap<u32, Subscription>,
+    next_subscription: u32,
 }
 
 impl CubeState {
@@ -187,7 +206,6 @@ async fn ble_connect(
     let app_for_task = app.clone();
     let pid = peripheral.id();
     let device_id = id.clone();
-    let p_for_task = peripheral.clone();
     let state_for_task = state.0.clone();
     tauri::async_runtime::spawn(async move {
         let _central = central; // keep the adapter alive so its event stream stays fed
@@ -197,28 +215,49 @@ async fn ble_connect(
             tokio::select! {
                 packet = stream.next() => match packet {
                     Some(v) => {
-                        // No service, no delivery — and say so rather than emitting a packet the
-                        // web side will silently drop.
-                        match cube_ble::service_of(&p_for_task, v.uuid) {
-                            Some(service) => {
+                        // Resolve to the subscription the web side already knows about. This is a
+                        // map lookup on a handful of entries, once per packet, and it replaces
+                        // three strings on the wire with one integer.
+                        //
+                        // No subscription, no delivery — and say so rather than emitting a packet
+                        // the web side will silently drop.
+                        // Exactly one match, or none — never "the first".
+                        //
+                        // A characteristic uuid is unique only WITHIN a service, so a device that
+                        // exposes the same one under two subscribed services makes this ambiguous.
+                        // `find` would have picked whichever the map iterated first, which is
+                        // unspecified, so a stream could be routed to the wrong subscription and
+                        // decoded as the wrong thing. That is the same defect `service_of` refuses
+                        // to commit three functions away, and refusing here keeps the two honest.
+                        let sub = {
+                            let session = state_for_task.lock().await;
+                            let mut matches = session
+                                .subscriptions
+                                .iter()
+                                .filter(|(_, s)| s.device == device_id && s.characteristic == v.uuid)
+                                .map(|(id, _)| *id);
+                            match (matches.next(), matches.next()) {
+                                (Some(id), None) => Some(id),
+                                _ => None,
+                            }
+                        };
+                        match sub {
+                            Some(sub) => {
                                 let _ = app_for_task.emit(
                                     "ble-notification",
                                     NotificationPayload {
-                                        device: device_id.clone(),
-                                        service,
-                                        characteristic: v.uuid.to_string(),
+                                        sub,
                                         data: hex::encode(&v.value),
                                     },
                                 );
                             }
                             None => {
-                                // Unknown OR ambiguous: a characteristic uuid is unique only
-                                // within a service, so `service_of` refuses to guess when two
-                                // services expose the same one. Said out loud, because a silently
-                                // dropped packet is the failure this whole path exists to avoid.
+                                // The stream is delivering something nothing asked for. Said out
+                                // loud, because a silently dropped packet is the failure this
+                                // whole path exists to avoid.
                                 eprintln!(
-                                    "cube-ble: cannot resolve the service for characteristic {} \
-                                     (unknown or ambiguous) — packet dropped",
+                                    "cube-ble: notification for characteristic {} matches no live \
+                                     subscription, or more than one — packet dropped",
                                     v.uuid
                                 );
                             }
@@ -272,17 +311,31 @@ async fn ble_discover_characteristics(
         .map_err(|e| e.to_string())
 }
 
+/// Subscribe, and hand back the id that will identify this stream's packets.
 #[tauri::command]
 async fn ble_subscribe(
     state: State<'_, CubeState>,
     id: String,
     service: String,
     characteristic: String,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     let p = state.get(&id).await?;
     cube_ble::subscribe(&p, &service, &characteristic)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let uuid = cube_ble::parse_uuid(&characteristic).map_err(|e| e.to_string())?;
+    let mut session = state.0.lock().await;
+    let sub_id = session.next_subscription;
+    session.next_subscription += 1;
+    session.subscriptions.insert(
+        sub_id,
+        Subscription {
+            device: id,
+            service,
+            characteristic: uuid,
+        },
+    );
+    Ok(sub_id)
 }
 
 #[tauri::command]
@@ -295,7 +348,13 @@ async fn ble_unsubscribe(
     let p = state.get(&id).await?;
     cube_ble::unsubscribe(&p, &service, &characteristic)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let uuid = cube_ble::parse_uuid(&characteristic).map_err(|e| e.to_string())?;
+    let mut session = state.0.lock().await;
+    session
+        .subscriptions
+        .retain(|_, s| !(s.device == id && s.service == service && s.characteristic == uuid));
+    Ok(())
 }
 
 #[tauri::command]
