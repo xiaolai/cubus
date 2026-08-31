@@ -132,12 +132,46 @@ jobs:
       # verified locally 2026-08-31, and it is why there is no separate codesign step here. What
       # it does NOT do without the notarization variables is notarize, and notarization is the
       # half that decides whether the app opens on a Mac that is not the build machine.
+      # Windows and Linux take no signing material, so they take no signing branch either.
       - name: Build
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        if: runner.os != 'macOS'
         run: pnpm --filter cubus-desktop exec tauri build ${{ matrix.args }}
+
+      # macOS, where the certificate has to be CHECKED before it is handed over.
+      #
+      # This step used to pass `secrets.APPLE_CERTIFICATE_BASE64` straight into APPLE_CERTIFICATE.
+      # An unset secret is the empty string, not an absent variable, so Tauri saw a certificate,
+      # tried to import it, and the whole macOS leg died on
+      # `SecKeychainItemImport: One or more parameters passed to a function were not valid` —
+      # AFTER a clean 3m34s universal build. The guard already existed twice in this file, on the
+      # notarize step below and in the iOS job, which is why iOS passes the same dispatch that
+      # macOS fails. Two of three places had it.
+      #
+      # Absent material is not the same event on a dispatch as on a tag, so it is not the same
+      # verdict: a dispatch exists to exercise the matrix and gets an unsigned build with a
+      # warning, while a v-tag cannot ship unsigned and fails here rather than producing something
+      # that will not open on anyone else's Mac.
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        env:
+          CERT_B64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -z "$CERT_B64" ]; then
+            case "$GITHUB_REF" in
+              refs/tags/v*)
+                echo "::error::APPLE_CERTIFICATE_BASE64 is not set — a tagged macOS release cannot ship unsigned"
+                exit 1 ;;
+              *)
+                echo "::warning::APPLE_CERTIFICATE_BASE64 is not set — this macOS build is UNSIGNED. That is fine for a dispatch run; a v-tag fails here instead." ;;
+            esac
+          else
+            export APPLE_CERTIFICATE="$CERT_B64"
+            export APPLE_CERTIFICATE_PASSWORD="$CERT_PASSWORD"
+            export APPLE_SIGNING_IDENTITY="$IDENTITY"
+          fi
+          pnpm --filter cubus-desktop exec tauri build ${{ matrix.args }}
 
       # Notarize and staple, through the repo's own script rather than a re-implementation in
       # YAML. The ORDER is load-bearing — staple the .app, rebuild the dmg around it, sign,
