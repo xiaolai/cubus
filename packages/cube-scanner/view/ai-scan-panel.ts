@@ -44,7 +44,8 @@ import type { Detector } from '../src/detector.js';
 import { fitFromOutput } from '../src/onnx-detect.js';
 import type { FitReason } from '../src/onnx-postprocess.js';
 import { FACES, type Face } from '../src/types.js';
-import { type ScanRuntime, pickDetector } from './pick-detector.js';
+import { CameraSession } from './camera-session.js';
+import type { ScanRuntime } from './pick-detector.js';
 import { Stillness } from './stillness.js';
 
 /** Which runtime is actually doing inference — surfaced so "am I on the fast path?" is answerable. */
@@ -256,15 +257,9 @@ export class AiScanPanel extends HTMLElement {
    * `<video>` is current because it holds a getter, not the element. Web today; Phase 2 chooses a
    * NativeDetector here when the desktop shell's plugin answers.
    */
-  private detector: Detector | null = null;
   /** Caches the one-time async detector choice (native vs web); see ensureDetector. */
-  private detectorPromise: Promise<Detector> | null = null;
   /** Which runtime the chosen detector uses; drives the tick cadence and rides on every report. */
-  private runtime: ScanRuntime | null = null;
   /** True once the model has loaded, so a re-`start()` doesn't re-report 'loading' or reload it. */
-  private modelLoaded = false;
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private startGen = 0;
   private busy = false;
   /** `headless`: draw nothing, and let the host draw from 'scan-progress'. */
   private headless = false;
@@ -283,9 +278,13 @@ export class AiScanPanel extends HTMLElement {
    * camera, a detector, a timer and a DOM element.
    */
   private readonly still = new Stillness(STABLE, STABLE_MS);
+  /**
+   * The camera, its detector, its loop, and the two counters that keep a stale attempt or a
+   * stale frame from speaking. It never speaks itself — see CameraSession.
+   */
+  private readonly cam = new CameraSession();
   /** When the current run of failing ticks began, or null when the last tick completed. */
   private tickFailingSince: number | null = null;
-  private device: CameraDevice | null = null;
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   private confirmed: Partial<Record<Face, ColorFace>> = {};
   private awaiting: ConfirmRequest | null = null;
@@ -293,7 +292,6 @@ export class AiScanPanel extends HTMLElement {
   private painting = false;
   /** Contradictory confirmations this scan; past one, the notice starts offering restart too. */
   private mismatches = 0;
-  private scanEpoch = 0; // bumped by loop()/stop(); rejects stale in-flight inferences
   /**
    * The scan reached a valid cube and delivered it. A finished scan is a state, not a moment:
    * the camera can be reopened over it (picking a camera from the host's menu does exactly that),
@@ -356,18 +354,16 @@ export class AiScanPanel extends HTMLElement {
   /** Release the camera + stop the loop. Safe repeatedly and before first render. The detector
    *  itself is kept, so the loaded model survives a stop()/start() (only the camera is released). */
   stop(): void {
-    this.startGen++;
-    this.scanEpoch++;
-    if (this.timer !== null) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
     if (this.checkTimer !== null) {
       clearTimeout(this.checkTimer);
       this.checkTimer = null;
     }
-    this.detector?.stop();
-    this.device = null;
+    // close(), not releaseCamera(): stopping must ALSO supersede an attempt still opening and any
+    // inference in flight. Migrating this to the session dropped those two bumps, and the
+    // superseded-start test — written half an hour earlier precisely to protect this refactor —
+    // caught it: a stop() during an open left the late attempt free to install its camera, so the
+    // stream stayed live with nothing showing it.
+    this.cam.close();
     // The preview is the LAST camera frame. Leaving it set means a report published after stop()
     // carries a `live` face that no camera is producing — setPainting(true) calls stop() and then
     // reports immediately, so painting began by claiming a live lens it had just released.
@@ -411,16 +407,15 @@ export class AiScanPanel extends HTMLElement {
     }
     const startBtn = this.maybe<HTMLButtonElement>('start');
     if (startBtn) startBtn.disabled = true;
-    const gen = ++this.startGen;
+    const gen = this.cam.beginAttempt();
     this.report('starting', 'Opening the camera…');
     // Release any camera a prior attempt left open (e.g. a failed model load under the
     // camera-first design) before opening a fresh one, so streams can't accumulate.
-    this.detector?.stop();
-    this.device = null;
+    this.cam.releaseCamera();
     // Choosing the detector is async on the first call (it probes for the native plugin); a stop()
     // during that probe supersedes this attempt, so re-check the generation before going on.
     const detector = await this.ensureDetector();
-    if (gen !== this.startGen) {
+    if (!this.cam.current(gen)) {
       detector.stop();
       return;
     }
@@ -428,7 +423,7 @@ export class AiScanPanel extends HTMLElement {
     // be cut off. It only stops the silence — and a late grant still resolves, reports 'scanning'
     // and overwrites this. Cleared in the finally below, so it can only fire while still opening.
     const slowOpen = setTimeout(() => {
-      if (gen === this.startGen && this.device === null) {
+      if (this.cam.current(gen) && this.cam.device === null) {
         this.report('error', this.tinted('err', SLOW_OPEN));
       }
     }, SLOW_OPEN_MS);
@@ -447,27 +442,27 @@ export class AiScanPanel extends HTMLElement {
         // phone wandered off. Falling back beats dead-ending on an exact-deviceId constraint that
         // can no longer be satisfied. The pin is deliberately KEPT, so the preferred camera is
         // picked up again the moment it returns.
-        if (pinned === undefined || gen !== this.startGen) throw err;
+        if (pinned === undefined || !this.cam.current(gen)) throw err;
         fellBack = true;
         await detector.use({ facingMode });
       }
       // Cancelled (stop()/restart bumped the generation) while opening → the detector's stream is
       // orphaned; release it here rather than letting it linger behind a superseded start.
-      if (gen !== this.startGen) {
+      if (!this.cam.current(gen)) {
         detector.stop();
         return;
       }
-      this.device = detector.device;
+      this.cam.device = detector.device;
       if (startBtn) startBtn.hidden = true;
-      if (!this.modelLoaded) {
+      if (!this.cam.modelLoaded) {
         this.report('loading', 'Camera ready — loading the model…');
         // The detector owns the model: for the browser that is onnxruntime-web (loaded as its own
         // module, off the main thread); for the native builds it is the plugin. Either way the
         // panel only waits for load() and reports progress — the wasm-path and worker subtleties
         // live in WebDetector, behind the seam.
         await detector.load();
-        this.modelLoaded = true;
-        if (gen !== this.startGen) return; // stop() already released the camera
+        this.cam.modelLoaded = true;
+        if (!this.cam.current(gen)) return; // stop() already released the camera
       }
       // A camera reopening mid-flow (after painting, after a done-scan correction) resumes where
       // the scan was: a pending confirm request keeps its phase and its ask.
@@ -496,7 +491,7 @@ export class AiScanPanel extends HTMLElement {
     detector: Detector,
     startBtn: HTMLButtonElement | null,
   ): void {
-    if (gen !== this.startGen) {
+    if (!this.cam.current(gen)) {
       detector.stop(); // orphaned camera on a cancelled attempt
       return;
     }
@@ -517,8 +512,10 @@ export class AiScanPanel extends HTMLElement {
    * asks the plugin whether it is there.
    */
   private ensureDetector(): Promise<Detector> {
-    this.detectorPromise ??= this.selectDetector();
-    return this.detectorPromise;
+    return this.cam.ensureDetector(
+      () => this.el<HTMLVideoElement>('video'),
+      () => this.modelUrl,
+    );
   }
 
   /**
@@ -527,35 +524,15 @@ export class AiScanPanel extends HTMLElement {
    * Production hosts never call this — the panel chooses its own detector.
    */
   useDetector(detector: Detector, runtime: ScanRuntime): void {
-    this.detector = detector;
-    this.detectorPromise = Promise.resolve(detector);
-    this.runtime = runtime;
-  }
-
-  /**
-   * Pick the detector for this environment. Native when the desktop shell's `cube-vision` plugin
-   * answers its probe — `__TAURI__` present AND the probe resolves truthy; the browser's WebDetector
-   * otherwise, which is also what Windows and Linux get (their Tauri build ships no native backend,
-   * so the probe fails and they fall back exactly as the accepted platform table says). Nothing else
-   * in the panel changes with the choice — that is the whole point of the seam. The video is passed
-   * as a getter so the detector survives a reconnect that rebuilds the shadow DOM.
-   */
-  private async selectDetector(): Promise<Detector> {
-    const { detector, runtime } = await pickDetector({
-      video: () => this.el<HTMLVideoElement>('video'),
-      modelUrl: () => this.modelUrl,
-    });
-    this.detector = detector;
-    this.runtime = runtime;
+    this.cam.use(detector, runtime);
     this.announceRuntime();
-    return detector;
   }
 
   /** Say which runtime won, once, on the console — so "is it on the fast native path?" has an
    *  answer without a debugger. The same fact rides on every 'scan-progress' event as `runtime`. */
   private announceRuntime(): void {
     const where =
-      this.runtime === 'native'
+      this.cam.runtime === 'native'
         ? 'native (CoreML on the ANE, ~1.5 ms/frame)'
         : 'web (wasm model, ~400 ms/frame)';
     console.info(`[cubus] scanner runtime: ${where}`);
@@ -579,8 +556,8 @@ export class AiScanPanel extends HTMLElement {
    * why we are starting over survives instead of being overwritten within one tick.
    */
   private loop(phase: ScanPhase, ...opening: (string | Node)[]): void {
-    if (this.timer !== null) clearInterval(this.timer);
-    this.scanEpoch++;
+    this.cam.stopLoop();
+    this.cam.dropFramesInFlight();
     this.showPreview(null);
     this.still.reset();
     const restart = this.maybe<HTMLButtonElement>('restart');
@@ -590,33 +567,30 @@ export class AiScanPanel extends HTMLElement {
     // the screen after a scan finishes (the camera is released on 'done') and a correction then
     // needs another look. Reopen the camera rather than dead-ending: start() keeps the captures
     // and resumes this loop — including a pending confirm — once the camera answers.
-    if (this.device === null) {
+    if (this.cam.device === null) {
       void this.start();
       return;
     }
     this.report(phase, ...(opening.length > 0 ? opening : [OPENING]));
     // Tick as fast as the chosen runtime can keep up: native inference frees the cadence the wasm run
     // used to cap. The busy guard in onTick still prevents overlap if a frame ever runs long.
-    const tick = this.runtime === 'native' ? TICK_MS_NATIVE : TICK_MS_WEB;
-    this.timer = setInterval(() => void this.onTick(), tick);
+    const tick = this.cam.runtime === 'native' ? TICK_MS_NATIVE : TICK_MS_WEB;
+    this.cam.beginLoop(tick, () => void this.onTick());
   }
 
   private stopLoop(): void {
-    if (this.timer !== null) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
+    this.cam.stopLoop();
   }
 
   private async onTick(): Promise<void> {
-    if (this.busy || this.device === null || !this.detector || !this.modelLoaded) return;
+    if (this.busy || this.cam.device === null || !this.cam.chosen || !this.cam.modelLoaded) return;
     this.busy = true;
-    const epoch = this.scanEpoch;
+    const epoch = this.cam.frameEpoch();
     try {
-      const output = await this.detector.next();
-      // Reject a stale result: stop()/restart() between grab and here bumps scanEpoch, so an
+      const output = await this.cam.chosen.next();
+      // Reject a stale result: stop()/restart() between grab and here bumps the session epoch, so an
       // in-flight inference can't bleed into a new scan (or land after the loop was stopped).
-      if (this.scanEpoch !== epoch || this.timer === null) return;
+      if (!this.cam.freshFrame(epoch)) return;
       if (output === null) return; // camera opened but no frame yet — try again next tick
       const fit = fitFromOutput(output);
       if (!fit.ok) {
@@ -773,11 +747,11 @@ export class AiScanPanel extends HTMLElement {
     this.notice = null;
     this.suspects = [];
     this.report('checking', ...opening);
-    const epoch = this.scanEpoch;
+    const epoch = this.cam.frameEpoch();
     if (this.checkTimer !== null) clearTimeout(this.checkTimer);
     this.checkTimer = setTimeout(() => {
       this.checkTimer = null;
-      if (epoch === this.scanEpoch) this.assemble();
+      if (epoch === this.cam.frameEpoch()) this.assemble();
     }, CHECK_BEAT_MS);
   }
 
@@ -1277,9 +1251,9 @@ export class AiScanPanel extends HTMLElement {
           message,
           captured: this.capturedFaces(),
           live: this.live,
-          device: this.device,
+          device: this.cam.device,
           confirm: this.awaiting,
-          runtime: this.runtime,
+          runtime: this.cam.runtime,
           notice: this.notice,
           suspects: [...this.suspects],
           complete: this.finished,
