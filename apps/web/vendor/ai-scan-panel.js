@@ -2764,44 +2764,6 @@ function decodeTensorResponse(buf) {
   return { data, anchors };
 }
 
-// view/stillness.ts
-var Stillness = class {
-  /**
-   * @param reads Identical consecutive reads required.
-   * @param ms Wall-clock stillness required, from the first read of the current run.
-   */
-  constructor(reads, ms) {
-    this.reads = reads;
-    this.ms = ms;
-  }
-  key = "";
-  count = 0;
-  since = 0;
-  /**
-   * Offer the latest read. True once it has been identical `reads` times AND still for `ms`.
-   *
-   * `now` is injectable because the alternative is a test that sleeps: the timing rule is the whole
-   * point of this class, so it has to be drivable without wall-clock waits.
-   */
-  offer(colors, now = Date.now()) {
-    const key = colors.join(",");
-    if (key === this.key) {
-      this.count += 1;
-    } else {
-      this.key = key;
-      this.count = 1;
-      this.since = now;
-    }
-    return this.count >= this.reads && now - this.since >= this.ms;
-  }
-  /** Forget the current run — the cube left the frame, or the scan was restarted. */
-  reset() {
-    this.key = "";
-    this.count = 0;
-    this.since = 0;
-  }
-};
-
 // src/camera.ts
 async function listCameras() {
   const devices = await navigator.mediaDevices.enumerateDevices();
@@ -2980,6 +2942,58 @@ var WebDetector = class {
     this.opening = null;
     this.source?.stop();
     this.source = null;
+  }
+};
+
+// view/pick-detector.ts
+async function pickDetector(opts) {
+  const invoke = globalThis.__TAURI__?.core?.invoke;
+  if (invoke) {
+    try {
+      if (await invoke("plugin:cube-vision|probe")) {
+        return { detector: new NativeDetector(invoke), runtime: "native" };
+      }
+    } catch {
+    }
+  }
+  return { detector: new WebDetector(opts.video, opts.modelUrl), runtime: "web" };
+}
+
+// view/stillness.ts
+var Stillness = class {
+  /**
+   * @param reads Identical consecutive reads required.
+   * @param ms Wall-clock stillness required, from the first read of the current run.
+   */
+  constructor(reads, ms) {
+    this.reads = reads;
+    this.ms = ms;
+  }
+  key = "";
+  count = 0;
+  since = 0;
+  /**
+   * Offer the latest read. True once it has been identical `reads` times AND still for `ms`.
+   *
+   * `now` is injectable because the alternative is a test that sleeps: the timing rule is the whole
+   * point of this class, so it has to be drivable without wall-clock waits.
+   */
+  offer(colors, now = Date.now()) {
+    const key = colors.join(",");
+    if (key === this.key) {
+      this.count += 1;
+    } else {
+      this.key = key;
+      this.count = 1;
+      this.since = now;
+    }
+    return this.count >= this.reads && now - this.since >= this.ms;
+  }
+  /** Forget the current run — the cube left the frame, or the scan was restarted. */
+  reset() {
+    this.key = "";
+    this.count = 0;
+    this.since = 0;
   }
 };
 
@@ -3295,25 +3309,14 @@ var AiScanPanel = class extends HTMLElement {
    * as a getter so the detector survives a reconnect that rebuilds the shadow DOM.
    */
   async selectDetector() {
-    const invoke = globalThis.__TAURI__?.core?.invoke;
-    if (invoke) {
-      try {
-        if (await invoke("plugin:cube-vision|probe")) {
-          this.detector = new NativeDetector(invoke);
-          this.runtime = "native";
-          this.announceRuntime();
-          return this.detector;
-        }
-      } catch {
-      }
-    }
-    this.detector = new WebDetector(
-      () => this.el("video"),
-      () => this.modelUrl
-    );
-    this.runtime = "web";
+    const { detector, runtime } = await pickDetector({
+      video: () => this.el("video"),
+      modelUrl: () => this.modelUrl
+    });
+    this.detector = detector;
+    this.runtime = runtime;
     this.announceRuntime();
-    return this.detector;
+    return detector;
   }
   /** Say which runtime won, once, on the console — so "is it on the fast native path?" has an
    *  answer without a debugger. The same fact rides on every 'scan-progress' event as `runtime`. */

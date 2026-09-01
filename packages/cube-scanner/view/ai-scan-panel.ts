@@ -44,9 +44,8 @@ import type { Detector } from '../src/detector.js';
 import { fitFromOutput } from '../src/onnx-detect.js';
 import type { FitReason } from '../src/onnx-postprocess.js';
 import { FACES, type Face } from '../src/types.js';
-import { type Invoke, NativeDetector } from './native-detector.js';
+import { type ScanRuntime, pickDetector } from './pick-detector.js';
 import { Stillness } from './stillness.js';
-import { WebDetector } from './web-detector.js';
 
 /** Which runtime is actually doing inference — surfaced so "am I on the fast path?" is answerable. */
 // The scan pipeline's pure stages, re-exported so anything holding this bundle can run them.
@@ -58,15 +57,11 @@ import { WebDetector } from './web-detector.js';
 export { preprocess } from '../src/onnx-detect.js';
 export { decodeDetections, nms, fitFace } from '../src/onnx-postprocess.js';
 
-export type ScanRuntime = 'native' | 'web';
+// Re-exported so the panel's public surface is unchanged; the type belongs with the choice.
+export type { ScanRuntime } from './pick-detector.js';
 
 /** The window globals the desktop shell injects (`withGlobalTauri`). Absent in the browser build.
  *  Only `core.invoke` is needed — the native model is resolved by the plugin, not via the JS path API. */
-interface TauriGlobal {
-  __TAURI__?: {
-    core?: { invoke?: Invoke };
-  };
-}
 
 const GUIDE: Record<Face, { color: string; name: string; swatch: string }> = {
   U: { color: 'WHITE', name: 'Up', swatch: '#f6f7f8' },
@@ -546,29 +541,14 @@ export class AiScanPanel extends HTMLElement {
    * as a getter so the detector survives a reconnect that rebuilds the shadow DOM.
    */
   private async selectDetector(): Promise<Detector> {
-    const invoke = (globalThis as TauriGlobal).__TAURI__?.core?.invoke;
-    // The ONLY requirement for the native path is that the plugin answers its probe. It resolves its
-    // own model, so no JS path API is involved — depending on one is what used to drop the desktop
-    // app silently onto the wasm runtime.
-    if (invoke) {
-      try {
-        if (await invoke('plugin:cube-vision|probe')) {
-          this.detector = new NativeDetector(invoke);
-          this.runtime = 'native';
-          this.announceRuntime();
-          return this.detector;
-        }
-      } catch {
-        // Plugin absent or errored — fall through to the browser path, which every build has.
-      }
-    }
-    this.detector = new WebDetector(
-      () => this.el<HTMLVideoElement>('video'),
-      () => this.modelUrl,
-    );
-    this.runtime = 'web';
+    const { detector, runtime } = await pickDetector({
+      video: () => this.el<HTMLVideoElement>('video'),
+      modelUrl: () => this.modelUrl,
+    });
+    this.detector = detector;
+    this.runtime = runtime;
     this.announceRuntime();
-    return this.detector;
+    return detector;
   }
 
   /** Say which runtime won, once, on the console — so "is it on the fast native path?" has an
