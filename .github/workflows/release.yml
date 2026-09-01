@@ -189,7 +189,33 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          CERT_B64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
+          # Re-import the certificate, because the previous step's keychain is GONE.
+          #
+          # tauri-bundler signs by creating a TEMPORARY keychain, importing APPLE_CERTIFICATE into
+          # it, signing, and deleting it again — all inside its own step. That is fine for the
+          # build and invisible until something later needs the identity. This step does: after
+          # stapling the .app it rebuilds the .dmg around it and re-signs that dmg, so it needs a
+          # signing identity of its own. Without this the run reached `== preflight` and stopped at
+          # "signing identity not in keychain", with the build itself perfectly signed.
+          if [ -n "$CERT_B64" ]; then
+            kc="$RUNNER_TEMP/notarize.keychain"
+            security create-keychain -p "" "$kc"
+            security set-keychain-settings -lut 21600 "$kc"
+            security unlock-keychain -p "" "$kc"
+            printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/notarize.p12"
+            security import "$RUNNER_TEMP/notarize.p12" -k "$kc" -P "$CERT_PASSWORD" -T /usr/bin/codesign -A
+            rm -f "$RUNNER_TEMP/notarize.p12"
+            # Prepend to the SEARCH LIST rather than replace it: codesign resolves the identity by
+            # searching, and dropping the login keychain has broken signing on runners before.
+            security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$kc" >/dev/null
+            echo "identities available to this step:"
+            security find-identity -v -p codesigning | sed 's/^/  /'
+          fi
+
           if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
             echo "::warning::no notarization credentials — the macOS build is signed but NOT notarized"
             ./scripts/sign-macos.sh   # verify-only: reports the verdict, changes nothing
