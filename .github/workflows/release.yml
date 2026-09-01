@@ -329,8 +329,16 @@ jobs:
       - name: Signing
         id: signing
         env:
-          CERT_B64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # iOS-SPECIFIC secret names, deliberately not shared with the macOS desktop job.
+          #
+          # Both jobs used to read APPLE_CERTIFICATE_BASE64. That is one name for two certificate
+          # types that cannot substitute for each other: Developer ID signs macOS and is rejected
+          # for the App Store; Apple Distribution signs iOS and is useless for Gatekeeper. So the
+          # day a Developer ID certificate was added for the macOS leg, this job's gate opened and
+          # it began failing an iOS build it had never been capable of. Separate names make that
+          # collision impossible rather than merely unlikely.
+          CERT_B64: ${{ secrets.APPLE_IOS_CERTIFICATE_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_IOS_CERTIFICATE_PASSWORD }}
           PROFILE_B64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
         run: |
           # BOTH, not just the certificate. iOS needs a provisioning profile as well, and this
@@ -340,9 +348,9 @@ jobs:
           # empty variable, producing a zero-byte profile and reporting signed=true.
           if [ -z "$CERT_B64" ] || [ -z "$PROFILE_B64" ]; then
             missing=""
-            [ -z "$CERT_B64" ] && missing="APPLE_CERTIFICATE_BASE64"
+            [ -z "$CERT_B64" ] && missing="APPLE_IOS_CERTIFICATE_BASE64"
             [ -z "$PROFILE_B64" ] && missing="${missing:+$missing and }APPLE_PROVISIONING_PROFILE_BASE64"
-            echo "::warning::$missing not set — iOS release build skipped"
+            echo "::warning::$missing not set — iOS release build skipped (unsigned IPA still produced)"
             echo "signed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
