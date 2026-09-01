@@ -1,0 +1,135 @@
+name: Update Homebrew Tap
+
+# Dispatched by release.yml AFTER the assets are uploaded — never `on: release`. The release event
+# fires before uploads finish, so a job triggered by it polls for files that do not exist yet and
+# either times out or races and wins. Can also be run by hand if the automation ever misses one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.2.2 — no leading v)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  update-tap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ github.event.inputs.version }}
+      REPO: xiaolai/cubus
+      ASSET: cubus_${{ github.event.inputs.version }}_universal.dmg
+    steps:
+      # Guards 1 and 3 come before any network work, so a bad dispatch dies in seconds.
+      - name: Stable versions only
+        run: |
+          set -eu
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$VERSION' is not a bare X.Y.Z. A prerelease in the tap reaches every"
+            echo "::error::stable `brew upgrade` user. release.yml gates this too; a manual"
+            echo "::error::dispatch bypasses that gate, which is why the check is repeated here."
+            exit 1
+          fi
+
+      - name: Check out the tap
+        uses: actions/checkout@v4
+        with:
+          repository: xiaolai/homebrew-tap
+          # A deploy key, not a PAT: it can write to this one repository and nothing else, and it
+          # does not expire. An expired token would fail SILENTLY here, because the dispatch in
+          # release.yml is continue-on-error — releases would stay green while the tap quietly
+          # stopped tracking them.
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+
+      - name: Refuse to downgrade
+        run: |
+          set -eu
+          current=$(grep -oE '^  version "[^"]+"' tap/Casks/cubus.rb | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "0.0.0")
+          newest=$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -1)
+          # Nothing orders these runs. A re-run, a late-finishing job and a manual backfill all
+          # write last-writer-wins; on another project three landed inside 40 seconds and left the
+          # tap advertising an older version than was already out. Equal is allowed so a re-run is
+          # idempotent; older is refused.
+          if [ "$newest" != "$VERSION" ]; then
+            echo "::error::tap has $current; refusing to write the older $VERSION"
+            exit 1
+          fi
+          echo "tap has $current, publishing $VERSION"
+
+      - name: Wait for the release asset
+        run: |
+          set -eu
+          URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
+          for attempt in $(seq 1 30); do
+            code=$(curl -sI -o /dev/null -w "%{http_code}" -L "$URL")
+            case "$code" in
+              200|302) echo "$ASSET available"; exit 0 ;;
+            esac
+            echo "attempt ${attempt}/30 — $ASSET: HTTP $code, waiting 30s…"
+            sleep 30
+          done
+          echo "::error::$ASSET never appeared. Check the filename: tauri names the universal"
+          echo "::error::bundle <product>_<version>_universal.dmg, and a wrong name here fails as"
+          echo "::error::this 15-minute timeout with nothing else to point at it."
+          exit 1
+
+      - name: Download and hash
+        id: sha
+        run: |
+          set -eu
+          curl -sL -o asset.dmg "https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
+          echo "sha256=$(sha256sum asset.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate the cask
+        env:
+          SHA256: ${{ steps.sha.outputs.sha256 }}
+        run: |
+          set -eu
+          # Unquoted delimiter, so ${VERSION} and ${SHA256} expand while Ruby's own #{version}
+          # survives — the shell does not interpolate `#{`. Every backtick inside must be escaped
+          # as \` or the shell runs it as a command substitution and splices stdout into the cask.
+          cat > tap/Casks/cubus.rb <<RUBY
+          cask "cubus" do
+            version "${VERSION}"
+            sha256 "${SHA256}"
+
+            url "https://github.com/xiaolai/cubus/releases/download/v#{version}/cubus_#{version}_universal.dmg"
+            name "cubus"
+            desc "Rubik's Cube tutor that reads your cube with the camera and guides the solve"
+            homepage "https://github.com/xiaolai/cubus"
+
+            # One universal binary covers both architectures, so there is no arch split here.
+            # No auto_updates: the app does not update itself, so plain \`brew upgrade\` is correct.
+            depends_on macos: :ventura
+
+            app "cubus.app"
+
+            zap trash: [
+              "~/Library/Application Support/im.cubus.app",
+              "~/Library/Caches/im.cubus.app",
+              "~/Library/HTTPStorages/im.cubus.app",
+              "~/Library/Preferences/im.cubus.app.plist",
+              "~/Library/Saved Application State/im.cubus.app.savedState",
+              "~/Library/WebKit/im.cubus.app",
+            ]
+          end
+          RUBY
+          echo "--- generated ---"; cat tap/Casks/cubus.rb
+
+      - name: Commit and push
+        run: |
+          set -eu
+          cd tap
+          if git diff --quiet -- Casks/cubus.rb; then
+            echo "cask already describes $VERSION — nothing to push"
+            exit 0
+          fi
+          git config user.name "xiaolai"
+          git config user.email "lixiaolai@gmail.com"
+          git add Casks/cubus.rb
+          git commit -m "cubus ${VERSION}"
+          git push

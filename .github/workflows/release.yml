@@ -423,6 +423,11 @@ jobs:
     # is publish — a human presses that, having looked at what is actually in the draft.
     if: always() && needs.desktop.result == 'success' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Needed by the tap dispatch below; without it `gh workflow run` returns 403. Granted on this
+      # job only rather than workflow-wide, since no other job dispatches anything.
+      actions: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -430,6 +435,23 @@ jobs:
 
       - name: what came back
         run: find dist -type f | sort
+
+      # Dispatch, not `on: release` — the release event fires before the assets finish uploading,
+      # so a tap job triggered by it races the upload and can win. This runs after the draft has
+      # its files, and the tap job polls for the asset anyway. continue-on-error because a tap that
+      # is briefly behind is not a reason to fail a release that has already been built.
+      - name: Trigger the Homebrew tap update
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION_NUM="${TAG#v}"
+          case "$VERSION_NUM" in
+            *[!0-9.]*) echo "::warning::$TAG is not a stable X.Y.Z — tap not updated"; exit 0 ;;
+          esac
+          gh workflow run update-homebrew.yml --repo "$GITHUB_REPOSITORY" -f version="$VERSION_NUM"
 
       - uses: softprops/action-gh-release@v2
         with:
