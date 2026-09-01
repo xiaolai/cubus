@@ -24,11 +24,19 @@ export enum ComputeUnits {
   CpuAndNeuralEngine = 3,
 }
 
-const P = 'plugin:cube-vision|';
+/**
+ * The plugin's command namespace. Exported because `pickDetector` probes the SAME plugin before
+ * this class is ever constructed, and a rename that reached only one of the two would leave the
+ * probe answering for a plugin whose commands no longer exist.
+ */
+export const CUBE_VISION = 'plugin:cube-vision|';
+const P = CUBE_VISION;
 
 export class NativeDetector implements Detector {
   private dev: CameraDevice | null = null;
   private loaded = false;
+  /** Bumped by `stop()`, so an open still crossing the bridge knows it has been cancelled. */
+  private opening = 0;
 
   /**
    * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`). This is the ONLY thing
@@ -48,13 +56,36 @@ export class NativeDetector implements Detector {
     return this.dev;
   }
 
+  /**
+   * Open a camera, and abandon the attempt if `stop()` lands while it is still crossing the bridge.
+   *
+   * The cancellation is not decoration: `Detector.use` DOCUMENTS that a `stop()` while it is
+   * pending releases the camera and rejects, and `WebDetector` has always honoured it through an
+   * AbortController, so callers were written against a contract only one implementation kept. This
+   * one used to resume after a `stop()` and set `dev` again — reopening a camera the caller had
+   * released, which on the panel's painting path meant the lens stayed on while the app reported
+   * no camera at all.
+   *
+   * A counter rather than an AbortController, because there is nothing to abort: the plugin call
+   * is already gone. What can be done is refuse to INSTALL its result, and close the camera it
+   * opened behind us, which is what `close_camera` here is for.
+   */
   async use(opts: CameraOptions = {}): Promise<void> {
+    const attempt = ++this.opening;
+    const cancelled = (): boolean => attempt !== this.opening;
+    const abort = (): never => {
+      // The camera may already be open on the plugin side; close what we are abandoning.
+      void this.invoke(`${P}close_camera`).catch(() => {});
+      throw new DOMException('camera open superseded', 'AbortError');
+    };
     // `facingMode` is meaningless natively (the plugin selects by deviceId or the platform default);
     // a pinned deviceId is honoured, everything else opens the default camera.
     await this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+    if (cancelled()) abort();
     // Learn which camera actually opened — a host that shows no preview needs it, and a Continuity
     // Camera or a virtual one is indistinguishable from the built-in otherwise.
     const info = (await this.invoke(`${P}current_camera`)) as CameraDevice | null;
+    if (cancelled()) abort();
     this.dev = info ?? { deviceId: opts.deviceId ?? '', label: 'Camera' };
   }
 
@@ -75,6 +106,7 @@ export class NativeDetector implements Detector {
   }
 
   stop(): void {
+    this.opening++; // supersede an open still in flight — see `use`
     this.dev = null;
     // Fire-and-forget: releasing the camera must not make stop() async (the panel calls it from
     // synchronous teardown). A failure here only means the camera closes a tick later.

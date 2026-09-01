@@ -10,11 +10,25 @@
 //
 //   * ONE misread sticker is always uniquely recoverable. The true cube is 1 away; every other
 //     legal cube is >= 3 from the true cube, hence >= 2 from the reading. The nearest legal cube
-//     is unique and it is the right one. This is why `distance === 1` may be pointed at.
+//     is unique and it is the right one.
 //   * From TWO onward there is no guarantee, ever. A reading two stickers from your cube can sit
 //     one sticker from a DIFFERENT legal cube, and a nearest-cube decoder will then "repair" a
 //     sticker that was read correctly. So above 1 this module reports a COUNT and refuses to
-//     accuse. Measured, that undershoot starts appearing at three misreads.
+//     accuse. Measured on random misreads, that undershoot starts appearing at three.
+//   * `distance === 1` is therefore NOT the same statement as "one sticker was misread", and the
+//     difference is the trap. The first bullet is about the TRUE count, which nothing here can
+//     observe; `distance` is a property of the READING. They come apart on exactly the inputs the
+//     second bullet describes, and one is constructible by hand: read two of the 3-cycle witness's
+//     three stickers and the reading is two from the cube in your hand and one from a legal cube
+//     you never held. `decodeMisread` then answers `distance: 1` — honestly, since it is still a
+//     lower bound — about a two-sticker misread.
+//     So a caller may only accuse when the search itself says the answer is unambiguous:
+//     `distance === 1` AND `unique` AND exactly one sticker named. All three, because the search
+//     runs over 4^6 rotations and a rotationally symmetric face maps one canonical repair to a
+//     different as-shown index under each of its four turns — the witness case above comes back
+//     naming FOUR stickers, only one of which repairs the reading as given. `diagnose`
+//     (`ai-assemble.ts`) is the one caller and it checks all three; tests/misread-decode.test.ts
+//     pins the reading, tests/ai-assemble.test.ts pins what the app says about it.
 //   * The distance is never an OVERSTATEMENT — the true cube is always a legal repair at exactly
 //     the true number of misreads, so the minimum can never exceed it. That is what makes
 //     "at least N stickers were misread" an honest sentence at every N.
@@ -67,9 +81,13 @@ export interface DecodedSticker {
  * What the decoder concluded.
  *
  * - `repair`  — `distance` stickers must change, and `stickers` lists every sticker that some
- *               minimum repair changes. Trustworthy as an ACCUSATION only at distance 1, where
- *               the repair is provably unique; above that it is a set of candidates and the
- *               caller must not present it as fact.
+ *               minimum repair changes. NEVER an accusation, at any distance. `distance === 1`
+ *               says the READING is one change from legal, which is not the same as one sticker
+ *               having been misread: a reading two stickers from your cube can sit one from a
+ *               legal cube you never held, and this then names — uniquely, with `unique` true and
+ *               one sticker listed — a sticker that was read correctly. What a caller may say is
+ *               "changing this would make the cube solvable", which is exactly what was measured.
+ *               See the header, and the counterexample in tests/misread-decode.test.ts.
  * - `beyond`  — no repair exists within `distance` edits, so strictly more than that are wrong.
  *               Still an honest lower bound, just a loose one.
  * - `unknown` — the search hit its work budget. Nothing may be claimed.
@@ -80,9 +98,11 @@ export type MisreadDecode =
   | { kind: 'unknown' };
 
 export interface DecodeOptions {
-  /** Largest repair to look for. Past this the answer is `beyond`, which is still truthful. */
+  /** Largest repair to look for. Past this the answer is `beyond`, which is still truthful.
+   *  A non-negative integer; anything else throws rather than producing a nonsense distance. */
   maxDistance?: number;
-  /** Hard backstop on search nodes. Exceeding it yields `unknown` rather than a silent wrong answer. */
+  /** Hard backstop on search WORK — the DFS walks and the pairings they feed. Exceeding it yields
+   *  `unknown` rather than a silent wrong answer. A non-negative integer; anything else throws. */
   nodeBudget?: number;
   /**
    * Take the faces exactly as given instead of searching all 4^6 rotations.
@@ -98,6 +118,15 @@ export interface DecodeOptions {
    * that had just been refused, because the decoder was allowed to rotate the face back.
    */
   fixedRotation?: boolean;
+}
+
+/** A count that has to be a whole non-negative number, or the caller gets an error, never a guess. */
+function whole(name: string, value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`decodeMisread: ${name} must be a non-negative integer, got ${value}`);
+  }
+  return value;
 }
 
 const CORNER_ORI = 3;
@@ -137,41 +166,44 @@ function canonicalColors(faceCentre: number[]): { corner: number[][]; edge: numb
   };
 }
 
+/**
+ * The per-slot cost table for ONE piece kind: `[slot][cubie][orientation] -> stickers that differ`.
+ *
+ * Corners and edges were written out twice, differing only in the facelet table, the piece count
+ * and the number of orientations — one indexing rule with two lifetimes, in the one place where a
+ * drift between them would silently corrupt every distance this module reports.
+ */
+function pieceTensor(
+  colors54: number[],
+  facelet: readonly (readonly number[])[],
+  canon: readonly (readonly number[])[],
+  orientations: number,
+): number[][][] {
+  const stickers = orientations; // a corner has 3 stickers and 3 turns, an edge 2 and 2
+  return facelet.map((slot) => {
+    const observed = slot.map((x) => colors54[x]!);
+    return canon.map((cubie) => {
+      const row: number[] = [];
+      for (let r = 0; r < orientations; r++) {
+        let d = 0;
+        for (let t = 0; t < stickers; t++) if (observed[t] !== cubie[(t + r) % stickers]) d++;
+        row.push(d);
+      }
+      return row;
+    });
+  });
+}
+
 function buildTensors(
   colors54: number[],
   canon: { corner: number[][]; edge: number[][] },
 ): Tensors {
-  const corner: number[][][] = [];
-  for (let i = 0; i < 8; i++) {
-    const observed = CORNER_FACELET[i]!.map((x) => colors54[x]!);
-    const perCubie: number[][] = [];
-    for (let j = 0; j < 8; j++) {
-      const row: number[] = [];
-      for (let r = 0; r < CORNER_ORI; r++) {
-        let d = 0;
-        for (let t = 0; t < 3; t++) if (observed[t] !== canon.corner[j]![(t + r) % 3]) d++;
-        row.push(d);
-      }
-      perCubie.push(row);
-    }
-    corner.push(perCubie);
-  }
-  const edge: number[][][] = [];
-  for (let i = 0; i < 12; i++) {
-    const observed = EDGE_FACELET[i]!.map((x) => colors54[x]!);
-    const perCubie: number[][] = [];
-    for (let j = 0; j < 12; j++) {
-      const row: number[] = [];
-      for (let r = 0; r < EDGE_ORI; r++) {
-        let d = 0;
-        for (let t = 0; t < 2; t++) if (observed[t] !== canon.edge[j]![(t + r) % 2]) d++;
-        row.push(d);
-      }
-      perCubie.push(row);
-    }
-    edge.push(perCubie);
-  }
-  return { corner, edge, cornerColors: canon.corner, edgeColors: canon.edge };
+  return {
+    corner: pieceTensor(colors54, CORNER_FACELET, canon.corner, CORNER_ORI),
+    edge: pieceTensor(colors54, EDGE_FACELET, canon.edge, EDGE_ORI),
+    cornerColors: canon.corner,
+    edgeColors: canon.edge,
+  };
 }
 
 /**
@@ -311,8 +343,12 @@ export function decodeMisread(
   centreOwner: Map<number, Face>,
   options: DecodeOptions = {},
 ): MisreadDecode {
-  const maxDistance = options.maxDistance ?? DEFAULT_MAX_DISTANCE;
-  const counter = { nodes: 0, limit: options.nodeBudget ?? DEFAULT_NODE_BUDGET };
+  // Validated, not trusted. A NaN or negative `maxDistance` walks straight past every `<=` here
+  // and comes out as `{ kind: 'beyond', distance: NaN }`, which `diagnose` turns into a misread
+  // COUNT and the panel puts in a sentence — a number this module would have invented out of a
+  // caller's typo. Loud is the only acceptable answer to input that cannot mean anything.
+  const maxDistance = whole('maxDistance', options.maxDistance, DEFAULT_MAX_DISTANCE);
+  const counter = { nodes: 0, limit: whole('nodeBudget', options.nodeBudget, DEFAULT_NODE_BUDGET) };
   const faceCentre = FACES.map((f) => faces[f]!.colors[4]!);
   const canon = canonicalColors(faceCentre);
 
@@ -339,6 +375,21 @@ export function decodeMisread(
       if (edges === null) return { kind: 'unknown' };
       for (const c of corners) {
         for (const e of edges) {
+          // Charged to the SAME counter as the search that produced these lists. `nodeBudget` is
+          // documented as a hard backstop on the WORK, and it used to cover only the two DFS
+          // walks — leaving |corners| x |edges| pairings, each with a `realise` and a cubejs
+          // `isLegal`, outside it and on the main thread.
+          //
+          // Every assignment returned costs at least one DFS node, so |corners| and |edges| are
+          // each at most `nodes` and the product is at most `nodes^2` — quadratic in the very
+          // quantity the budget is supposed to bound. It is not theoretical: on the reading
+          // `misread-decode.test.ts` pins, the DFS spends 3,404 nodes and the pairing loop then
+          // wants 3,968 more, so at a budget of 3,500 removing this line turns an honest
+          // `unknown` into a distance-4 answer bought with work the caller refused to lend.
+          // (Three misreads on a scrambled cube do NOT show it — the DFS dominates there, which
+          // is why the first search for a witness came back empty and the comment that went with
+          // it claimed more than the search had established.)
+          if (++counter.nodes > counter.limit) return { kind: 'unknown' };
           if (c.total + e.total !== budget) continue;
           const repaired = realise(tensors, c, e, observed);
           if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
@@ -348,6 +399,12 @@ export function decodeMisread(
     if (found.length === 0) continue;
 
     // Every sticker some minimum repair changes, in the coordinates the user taps.
+    //
+    // Keyed by POSITION, so where two tied repairs disagree about the colour to write, the last
+    // one wins. That is safe only because the one caller allowed to act on `to` — `diagnose`, for
+    // an accusation — requires `unique` and a single sticker, i.e. exactly the case where no
+    // disagreement can exist. Everywhere else `stickers` is read for its FACES, which the merge
+    // preserves. Widening who may read `to` means giving this a set, not a winner.
     const stickers = new Map<string, DecodedSticker>();
     const shapes = new Set<string>();
     for (const { rotations, observed, repaired } of found) {

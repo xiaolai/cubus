@@ -28,15 +28,20 @@
 //
 // A confirmation is a ROTATION measurement, not a colour measurement — the colours were already
 // accepted from the first capture; the second look exists only to say which way up the side was.
-// So it is matched by BEST rotation (minimum sticker disagreement), not sticker-for-sticker.
-// Exact matching was the original sin here: the detector's held-out colour accuracy is ~90%, so
-// the re-shown side routinely reads one sticker differently, exact match then fails at EVERY
-// rotation, and a correctly-held look got blamed as "held the wrong way up". Measured against the
-// panel's old drop-and-retry policy, a 2% per-sticker misread on the second look threw away 11%
-// of once-turned scans; at 10% it threw away two thirds. Min-distance matching with one flipped
-// sticker finds the unique true rotation in 93.5% of trials, ties (harmlessly — tied rotations
-// are near-symmetries that mostly read the same) in the rest, and picked a WRONG rotation in 0 of
-// 400. When no rotation comes within CONFIRM_TOLERANCE the two reads disagree about COLOURS, not
+// So it is matched by TOLERANCE — every rotation within CONFIRM_TOLERANCE stickers — not
+// sticker-for-sticker, and not by the closest one either. Exact matching was the original sin
+// here: the detector's held-out colour accuracy is ~90%, so the re-shown side routinely reads one
+// sticker differently, exact match then fails at EVERY rotation, and a correctly-held look got
+// blamed as "held the wrong way up". Measured against the panel's old drop-and-retry policy, a 2%
+// per-sticker misread on the second look threw away 11% of once-turned scans; at 10% it threw
+// away two thirds. Distance-based matching with one flipped sticker finds the unique true rotation
+// in 93.5% of trials, ties (harmlessly — tied rotations are near-symmetries that mostly read the
+// same) in the rest, and picked a WRONG rotation in 0 of 400.
+// Keeping only the MINIMUM-distance rotations was a second, unstated rule on top of the tolerance,
+// and it undid the first: with distances [2, 8, 1, 8] the true rotation sits at 2 — inside the
+// tolerance this constant exists to grant — and was discarded for one that collides on a single
+// sticker by chance, leaving no candidate reading at all and telling a user who did everything
+// right that they held it wrong. A filter here can only be safely widened; see matchingRotations. When no rotation comes within CONFIRM_TOLERANCE the two reads disagree about COLOURS, not
 // about the hold — that is `reread`: the caller adopts the fresh, deliberately-held capture as the
 // side's reading and re-assembles, rather than blaming the user for a read the camera changed.
 //
@@ -167,23 +172,33 @@ function reject(reason: string, extra: Partial<AiScanResult> = {}): AiScanResult
 }
 
 /**
- * The rotations of `face` under which the original capture best matches `confirmed` — the ones at
- * MINIMUM sticker disagreement, provided that minimum is within CONFIRM_TOLERANCE. Best-rotation
- * rather than exact, because a confirmation only carries rotation information (see the header):
- * one sticker read differently on the second look must not turn into "held the wrong way up".
- * A tie returns every tied rotation — a filter can only be safely widened, never narrowed.
+ * The rotations of `face` under which the original capture matches `confirmed` to within
+ * CONFIRM_TOLERANCE — EVERY such rotation, not only the closest. Tolerant rather than exact,
+ * because a confirmation only carries rotation information (see the header): one sticker read
+ * differently on the second look must not turn into "held the wrong way up".
  * Empty means the two reads disagree about colours (or are of different faces entirely), so the
  * confirmation cannot measure the rotation at all.
+ *
+ * It used to keep only the rotations at MINIMUM disagreement, which is a narrowing — and this
+ * docstring already said, one line above where it happened, that a filter here can only be safely
+ * widened. The two claims cannot both hold, and the code was the one that was wrong: with
+ * distances [2, 8, 1, 8], the true rotation is discarded at 2 — inside the tolerance the constant
+ * exists to grant — in favour of one that happens to collide on a single sticker, and the caller
+ * then finds no reading at all and tells a user who did everything right that they held it wrong.
+ * The tolerance is the rule; the minimum was a second, unstated, stricter one on top of it.
+ *
+ * Exported for tests only. The failure it exists to prevent needs a face that is two stickers from
+ * its OWN quarter-turn, which is a property of the colouring rather than of the scan — searching
+ * legal cubes for one is a worse test than stating the pair outright, and a worse test is how a
+ * rule with no red-when-broken case comes back.
  */
-function matchingRotations(original: ColorFace, confirmed: ColorFace): Set<number> {
+export function matchingRotations(original: ColorFace, confirmed: ColorFace): Set<number> {
   // Centres never move under rotation, so differing centres mean a different face, not a hold.
   if (original.colors[4] !== confirmed.colors[4]) return new Set();
   const dist = [0, 1, 2, 3].map((k) =>
     rotateFace(original.colors, k).reduce((s, c, i) => s + (c === confirmed.colors[i] ? 0 : 1), 0),
   );
-  const min = Math.min(...dist);
-  if (min > CONFIRM_TOLERANCE) return new Set();
-  return new Set([0, 1, 2, 3].filter((k) => dist[k] === min));
+  return new Set([0, 1, 2, 3].filter((k) => dist[k]! <= CONFIRM_TOLERANCE));
 }
 
 /**
@@ -300,11 +315,25 @@ function diagnose(
   if (decoded.kind === 'unknown') return {};
   // No repair within the cap means strictly more than the cap are wrong, which is still a floor.
   if (decoded.kind === 'beyond') return { misreadCount: decoded.distance + 1 };
-  // One wrong sticker is the only case a repair is unique, hence the only case worth accusing.
-  const suspects: StickerSuspect[] =
-    decoded.distance === 1
-      ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to }))
-      : [];
+  // Pointing takes THREE facts, not one, and this used to check only the first.
+  //
+  //   * `distance === 1` — the reading is one sticker from legal.
+  //   * `unique` — there is only ONE such legal cube. The decoder already computes this and
+  //     nothing consumed it, which is exactly how the gap got in: the guarantee was assumed from
+  //     the minimum-distance argument instead of read off the search that had just measured it.
+  //   * exactly one sticker — a repair can be one CHANGE and still name several stickers, because
+  //     the search runs over 4^6 rotations and a rotationally symmetric face maps the same
+  //     canonical position to a different as-shown index under each of its four turns.
+  //
+  // Measured: a solved cube read with two of the U-layer 3-cycle's three stickers comes back at
+  // distance 1, `unique: false`, naming FOUR stickers — and the app said "One sticker looks
+  // wrong" over all four, three of which had been read correctly. `misread-decode.test.ts` pins
+  // that reading. Above one misread the nearest legal cube need not be the user's cube, so the
+  // decoder may report a COUNT and nothing more.
+  const pointable = decoded.distance === 1 && decoded.unique && decoded.stickers.length === 1;
+  const suspects: StickerSuspect[] = pointable
+    ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to }))
+    : [];
   // A side to re-show, but only when every minimal repair blames that one side. Otherwise the
   // honest instruction is "show the sides again", not a guess dressed as a lead.
   const blamed = new Set(decoded.stickers.map((s) => s.face));
@@ -313,6 +342,65 @@ function diagnose(
     ...(suspects.length > 0 ? { suspects } : {}),
     ...(blamed.size === 1 ? { misreadFace: [...blamed][0]! } : {}),
   };
+}
+
+/**
+ * Validate six faces and build the centre-colour → face map, for both entry points.
+ *
+ * Returns the map, or the rejection to hand straight back — the caller discriminates on
+ * `instanceof Map`. It was written twice, comment included, once in each of the two public
+ * functions; two lifetimes of one validation rule is how a caller comes to be trusted on one path
+ * and not the other.
+ *
+ * Malformed input THROWS rather than rejecting, because a reject is a sentence shown to a child
+ * about their cube and none of these is about the cube. What is checked is what the rest of this
+ * module then assumes without asking again: nine colours and nine confidences per face, and every
+ * confidence a real number in [0, 1]. That last one is not pedantry — `NaN` compares false against
+ * every threshold, so 54 of them used to sail through as `confidence: 1` with no low-confidence
+ * stickers, which is a number this module invented.
+ */
+function buildCentreOwner(faces: Record<Face, ColorFace>): Map<number, Face> | AiScanResult {
+  const centreOwner = new Map<number, Face>();
+  for (const face of FACES) {
+    const f = faces[face];
+    if (!f || f.colors.length !== 9 || f.confidence.length !== 9) {
+      throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
+    }
+    // Colours are deliberately NOT range-checked here. A sticker that is not one of the six centre
+    // colours is a statement about the CUBE — `assemblePainted` already refuses it with a sentence
+    // a child can act on — so making it throw would replace an answer with a crash.
+    for (const c of f.confidence) {
+      if (!Number.isFinite(c) || c < 0 || c > 1) {
+        throw new Error(`face ${face}: confidence ${c} is not a number in [0, 1]`);
+      }
+    }
+    const centre = f.colors[4]!;
+    // Unreachable from either host path, and kept as a guard on the public API rather than a
+    // case with a UI: the camera files every capture under FACES[centre] (so a second face with
+    // the same centre overwrites the first rather than joining it), and a painted side is seeded
+    // with its own colour while setSticker refuses index 4. A caller feeding faces directly can
+    // still hit it, which is why it stays a loud refusal instead of an assumption.
+    if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
+    centreOwner.set(centre, face);
+  }
+  // No `size !== 6` check follows. Six iterations that each return on a duplicate leave a map of
+  // exactly six; the check that used to be here was unreachable in both callers, and an
+  // unreachable guard reads as a second, weaker line of defence that is not there.
+  return centreOwner;
+}
+
+/** The reported confidence of a facelet string: its weakest sticker, and every one below the bar. */
+function summariseConfidence(
+  conf: readonly number[],
+  threshold: number,
+): { confidence: number; lowConfidence: number[] } {
+  let min = 1;
+  const lowConfidence: number[] = [];
+  conf.forEach((c, i) => {
+    if (c < min) min = c;
+    if (c < threshold) lowConfidence.push(i);
+  });
+  return { confidence: min, lowConfidence };
 }
 
 /**
@@ -326,22 +414,8 @@ function diagnose(
  * question left is whether it is a legal cube.
  */
 export function assemblePainted(faces: Record<Face, ColorFace>, threshold = 0.15): AiScanResult {
-  const centreOwner = new Map<number, Face>();
-  for (const face of FACES) {
-    const f = faces[face];
-    if (!f || f.colors.length !== 9 || f.confidence.length !== 9) {
-      throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
-    }
-    const centre = f.colors[4]!;
-    // Unreachable from either host path, and kept as a guard on the public API rather than a
-    // case with a UI: the camera files every capture under FACES[centre] (so a second face with
-    // the same centre overwrites the first rather than joining it), and a painted side is seeded
-    // with its own colour while setSticker refuses index 4. A caller feeding faces directly can
-    // still hit it, which is why it stays a loud refusal instead of an assumption.
-    if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
-    centreOwner.set(centre, face);
-  }
-  if (centreOwner.size !== 6) return reject('the 6 centres are not 6 distinct colours');
+  const centreOwner = buildCentreOwner(faces);
+  if (!(centreOwner instanceof Map)) return centreOwner;
 
   const letters: string[] = [];
   for (const face of FACES) {
@@ -371,13 +445,7 @@ export function assemblePainted(faces: Record<Face, ColorFace>, threshold = 0.15
   }
 
   const conf = FACES.flatMap((f) => faces[f]!.confidence);
-  let min = 1;
-  const lowConfidence: number[] = [];
-  conf.forEach((c, i) => {
-    if (c < min) min = c;
-    if (c < threshold) lowConfidence.push(i);
-  });
-  return { facelets, valid: true, confidence: min, lowConfidence };
+  return { facelets, valid: true, ...summariseConfidence(conf, threshold) };
 }
 
 /**
@@ -396,22 +464,8 @@ export function assembleColors(
 ): AiScanResult {
   // Centre colour → face letter. Centres don't move under rotation, so this is fixed. Two faces
   // sharing a centre colour is impossible on a real cube, so bail out loudly.
-  const centreOwner = new Map<number, Face>();
-  for (const face of FACES) {
-    const f = faces[face];
-    if (!f || f.colors.length !== 9 || f.confidence.length !== 9) {
-      throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
-    }
-    const centre = f.colors[4]!;
-    // Unreachable from either host path, and kept as a guard on the public API rather than a
-    // case with a UI: the camera files every capture under FACES[centre] (so a second face with
-    // the same centre overwrites the first rather than joining it), and a painted side is seeded
-    // with its own colour while setSticker refuses index 4. A caller feeding faces directly can
-    // still hit it, which is why it stays a loud refusal instead of an assumption.
-    if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
-    centreOwner.set(centre, face);
-  }
-  if (centreOwner.size !== 6) return reject('the 6 centres are not 6 distinct colours');
+  const centreOwner = buildCentreOwner(faces);
+  if (!(centreOwner instanceof Map)) return centreOwner;
 
   const all = solvableReadings(faces, centreOwner);
 
@@ -469,10 +523,10 @@ export function assembleColors(
   if (candidates.length > 1) {
     const confirm = pickConfirm(candidates, confirmed);
     if (confirm) {
-      return reject(
-        `${candidates.length} readings fit — this cube is close to solved, so one more look decides it`,
-        { ambiguous: true, confirm },
-      );
+      return reject(`${candidates.length} readings fit — another look narrows them`, {
+        ambiguous: true,
+        confirm,
+      });
     }
     // No unconfirmed side can tell the surviving readings apart (their rotation sets agree on
     // every face we could still ask about) — the same dead end as the too-symmetric case below,
@@ -525,11 +579,10 @@ export function assembleColors(
   for (let fi = 0; fi < 6; fi++) {
     for (const c of rotateFace(faces[FACES[fi]!]!.confidence, chosen[fi]!)) conf.push(c);
   }
-  let min = 1;
-  const lowConfidence: number[] = [];
-  conf.forEach((c, i) => {
-    if (c < min) min = c;
-    if (c < threshold) lowConfidence.push(i);
-  });
-  return { facelets, valid: true, confidence: min, lowConfidence, rotations: [...chosen] };
+  return {
+    facelets,
+    valid: true,
+    ...summariseConfidence(conf, threshold),
+    rotations: [...chosen],
+  };
 }
