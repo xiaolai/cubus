@@ -354,6 +354,48 @@ describe('assemblePainted', () => {
     expect(r.suspects).toEqual([{ face: 'U', index: 0, to: was }]);
   });
 
+  it('a painted face turned 90 degrees is counted, not waved through as zero', () => {
+    // The rotation search exists for the CAMERA, where a side is photographed however it was held.
+    // A painted cube has no such freedom, and letting the decoder rotate a face back made it report
+    // "0 stickers wrong" about a cube assemblePainted had just refused — measured on nine scrambles
+    // with one face turned, all nine. Painting a face a quarter-turn off is an ordinary mistake, so
+    // it is the case the diagnosis most needs to get right.
+    const rot = (c: number[]): number[] => [6, 3, 0, 7, 4, 1, 8, 5, 2].map((i) => c[i]!);
+    for (const alg of ["F R U' L2 D B", "R U R' U' F2 L"]) {
+      for (const face of ['F', 'R', 'U'] as Face[]) {
+        const f = faces(scrambleFacelets(alg));
+        f[face]!.colors = rot(f[face]!.colors);
+        const r = assemblePainted(f);
+        expect(r.valid).toBe(false);
+        expect(r.misreadCount ?? 0).toBeGreaterThan(1); // a floor, never a confident zero
+        expect(r.suspects ?? []).toEqual([]); // and far too damaged to accuse anything
+      }
+    }
+  });
+
+  it('every one-sticker suggestion it offers actually makes the painting legal', () => {
+    // The property that licenses pointing at all. Checked by APPLYING each suggestion rather than
+    // trusting the reported distance: a decoder optimising under a freedom the caller does not have
+    // can return a repair that is minimal in its own search space and wrong in the caller's.
+    const truth = scrambleFacelets("R U R' U' F2 L");
+    let pointed = 0;
+    for (let k = 0; k < 9; k++) {
+      if (k === 4) continue; // the centre names the face and cannot be repainted
+      const broken = faces(truth);
+      const was = broken.U!.colors[k]!;
+      broken.U!.colors[k] = (was + 1) % 6;
+      const r = assemblePainted(broken);
+      if (!r.suspects || r.suspects.length !== 1) continue;
+      pointed += 1;
+      const s = r.suspects[0]!;
+      const repaired = faces(truth);
+      repaired.U!.colors[k] = (was + 1) % 6;
+      repaired[s.face]!.colors[s.index] = s.to;
+      expect(assemblePainted(repaired).valid).toBe(true);
+    }
+    expect(pointed).toBeGreaterThan(0); // the loop must actually have exercised the claim
+  });
+
   it('flags low-confidence stickers below the threshold', () => {
     const f = faces(SOLVED_FACELETS);
     f.D.confidence[3] = 0.05;

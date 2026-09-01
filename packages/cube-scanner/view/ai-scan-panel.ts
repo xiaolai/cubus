@@ -768,23 +768,20 @@ export class AiScanPanel extends HTMLElement {
           this.finish(result);
           return;
         }
-        // Say WHICH sticker when that is answerable, and never guess when it is not.
-        //
-        // The old wording ended "tap stickers until every colour appears nine times", which is
-        // advice that cannot succeed in the commonest way a painted cube is illegal: nine of every
-        // colour and a twisted corner. The decoder answers the two questions that are honest —
-        // how many are wrong (a proven lower bound), and, only at exactly one, which.
+        // Same classification, same proven wording, same public event as the camera path — the
+        // only difference is how you get out of it, which here is tapping rather than re-showing.
+        // Painting used to build its own notice and emit nothing, so `scan-invalid` fired for a
+        // refused SCAN and not for a refused PAINTING: a public event that depended on which mode
+        // the user happened to be in.
         this.suspects = result.suspects ?? [];
-        const wrong = result.misreadCount;
-        this.notice = {
+        this.dispatchEvent(new CustomEvent<AiScanResult>('scan-invalid', { detail: result }));
+        this.notice = this.misreadNotice(result, {
+          one: 'tap it and pick the colour it offers.',
+          many: 'Check those sides against the cube in your hand and repaint what does not match.',
+        }) ?? {
           title: 'Not solvable yet',
           tone: 'info',
-          body:
-            this.suspects.length > 0
-              ? 'One sticker is wrong — it is marked, and tapping it offers the colour that makes the cube legal.'
-              : wrong !== undefined && wrong > 1
-                ? `At least ${wrong} stickers are wrong. Which ones cannot be said — more than one wrong sticker has more than one possible repair — so check the sides against your cube.`
-                : `${result.reason ?? 'Not a legal cube yet'} — check the sides against your cube.`,
+          body: `${result.reason ?? 'Not a legal cube yet'} — check the sides against your cube.`,
         };
       }
       this.report(
@@ -941,6 +938,47 @@ export class AiScanPanel extends HTMLElement {
     }
   }
 
+  /**
+   * Turn a refused reading into words. ONE implementation, for the camera and for painting.
+   *
+   * There were two. Painting grew its own copy the day it learned to diagnose, and within a single
+   * commit the copies had already disagreed about the mathematics: the camera says "there is no
+   * single sticker to point at", which is what is proven, while the painting copy said "more than
+   * one wrong sticker has more than one possible repair", which is NOT — the guarantee is that
+   * above distance one the nearest legal cube need not be the USER'S cube, and a given input may
+   * still have a unique nearest repair. Overclaiming is the failure this project treats most
+   * seriously, and duplication is how it got in.
+   *
+   * What genuinely differs between the modes is only how you RECOVER — show the side again, or tap
+   * the sticker — so that is what the caller supplies. Classification, tone, and the proven wording
+   * live here. `params` starts with the count so the sentence keeps its %1 and a catalog can
+   * translate it before substitution; extra params follow as %2 onward.
+   */
+  private misreadNotice(
+    result: AiScanResult,
+    recovery: { one: string; many: string; params?: (string | number)[] },
+  ): ScanNotice | null {
+    const misread = result.misreadCount ?? 0;
+    if (this.suspects.length > 0) {
+      // Exactly one sticker is wrong and WHICH is provable: two legal cubes are never closer than
+      // three stickers, so a one-sticker repair is unique. The only branch allowed to accuse.
+      return {
+        title: 'One sticker looks wrong',
+        tone: 'err',
+        body: `Fixing the marked sticker makes this a solvable cube — ${recovery.one}`,
+      };
+    }
+    if (misread > 1) {
+      return {
+        title: 'More than one sticker looks wrong',
+        tone: 'err',
+        body: `At least %1 stickers were misread, so there is no single sticker to point at. ${recovery.many}`,
+        params: [misread, ...(recovery.params ?? [])],
+      };
+    }
+    return null;
+  }
+
   private finish(result: AiScanResult): void {
     this.stopLoop();
     this.showPreview(null);
@@ -1022,28 +1060,17 @@ export class AiScanPanel extends HTMLElement {
     this.awaiting = null;
     const hold =
       " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
-    const misread = result.misreadCount ?? 0;
-    if (this.suspects.length > 0) {
-      // Exactly one sticker is wrong, and which one is PROVABLE: two legal cubes are never closer
-      // than three stickers, so a one-sticker repair is unique. This is the only branch allowed
-      // to accuse a sticker (dev-docs/misread-decoding.md).
-      this.notice = {
-        title: 'One sticker looks wrong',
-        tone: 'err',
-        body: `Fixing the marked sticker makes this a solvable cube — tap it and pick the right colour, or show that side again to re-read it.${hold}`,
-      };
-    } else if (misread > 1) {
-      // More than one is wrong, so there is no sticker to point at that can be trusted — the
-      // nearest legal cube need not be the user's. Say the count, which IS proven, and ask for a
-      // fresh look instead of inviting 48 guesses.
-      this.notice = {
-        title: 'More than one sticker looks wrong',
-        tone: 'err',
-        body: result.misreadFace
-          ? `At least %1 stickers were misread, so there is no single sticker to point at. Show the %2 side to the camera again — it will be read fresh.${hold}`
-          : `At least %1 stickers were misread, so there is no single sticker to point at. Show those sides to the camera again — each one is read fresh.${hold}`,
-        params: result.misreadFace ? [misread, GUIDE[result.misreadFace].color] : [misread],
-      };
+    // Classification and the proven wording come from misreadNotice(); only the way OUT is the
+    // camera's own — show the side again, and hold it the way the tile shows.
+    const camera = this.misreadNotice(result, {
+      one: `tap it and pick the right colour, or show that side again to re-read it.${hold}`,
+      many: result.misreadFace
+        ? `Show the %2 side to the camera again — it will be read fresh.${hold}`
+        : `Show those sides to the camera again — each one is read fresh.${hold}`,
+      params: result.misreadFace ? [GUIDE[result.misreadFace].color] : [],
+    });
+    if (camera) {
+      this.notice = camera;
     } else if (result.valid) {
       // valid but with low-confidence stickers: solvable, read too faintly to trust. fitFace's
       // 0.25 floor keeps this from the camera path today; a future runtime could reach it.

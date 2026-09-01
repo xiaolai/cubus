@@ -2307,7 +2307,8 @@ function decodeMisread(faces, centreOwner, options = {}) {
   const faceCentre = FACES.map((f) => faces[f].colors[4]);
   const canon = canonicalColors(faceCentre);
   const candidates = [];
-  for (let combo = 0; combo < 4096; combo++) {
+  const combos = options.fixedRotation ? 1 : 4096;
+  for (let combo = 0; combo < combos; combo++) {
     const rotations = [0, 1, 2, 3, 4, 5].map((i) => combo >> 2 * i & 3);
     const bound = lowerBound(buildTensors(flatten(faces, rotations), canon));
     if (bound <= maxDistance) candidates.push({ rotations, bound });
@@ -2441,8 +2442,8 @@ function solvableReadings(faces, centreOwner) {
   }
   return [...seen].filter((e) => e[1] !== null);
 }
-function diagnose(faces, centreOwner) {
-  const decoded = decodeMisread(faces, centreOwner);
+function diagnose(faces, centreOwner, options = {}) {
+  const decoded = decodeMisread(faces, centreOwner, options);
   if (decoded.kind === "unknown") return {};
   if (decoded.kind === "beyond") return { misreadCount: decoded.distance + 1 };
   const suspects = decoded.distance === 1 ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to })) : [];
@@ -2475,7 +2476,7 @@ function assemblePainted(faces, threshold = 0.15) {
   }
   const facelets = letters.join("");
   if (!isStructurallyValid(facelets) || !cubejsRoundTrips(facelets)) {
-    return reject("not a solvable cube yet \u2014 keep painting");
+    return reject("not a solvable cube yet", diagnose(faces, centreOwner, { fixedRotation: true }));
   }
   const conf = FACES.flatMap((f) => faces[f].confidence);
   let min = 1;
@@ -3457,10 +3458,15 @@ var AiScanPanel = class extends HTMLElement {
           this.finish(result);
           return;
         }
-        this.notice = {
+        this.suspects = result.suspects ?? [];
+        this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
+        this.notice = this.misreadNotice(result, {
+          one: "tap it and pick the colour it offers.",
+          many: "Check those sides against the cube in your hand and repaint what does not match."
+        }) ?? {
           title: "Not solvable yet",
           tone: "info",
-          body: `${result.reason ?? "Not a legal cube yet"} \u2014 tap stickers until every colour appears nine times.`
+          body: `${result.reason ?? "Not a legal cube yet"} \u2014 check the sides against your cube.`
         };
       }
       this.report(
@@ -3600,6 +3606,41 @@ var AiScanPanel = class extends HTMLElement {
       this.faces[face] = fresh;
     }
   }
+  /**
+   * Turn a refused reading into words. ONE implementation, for the camera and for painting.
+   *
+   * There were two. Painting grew its own copy the day it learned to diagnose, and within a single
+   * commit the copies had already disagreed about the mathematics: the camera says "there is no
+   * single sticker to point at", which is what is proven, while the painting copy said "more than
+   * one wrong sticker has more than one possible repair", which is NOT — the guarantee is that
+   * above distance one the nearest legal cube need not be the USER'S cube, and a given input may
+   * still have a unique nearest repair. Overclaiming is the failure this project treats most
+   * seriously, and duplication is how it got in.
+   *
+   * What genuinely differs between the modes is only how you RECOVER — show the side again, or tap
+   * the sticker — so that is what the caller supplies. Classification, tone, and the proven wording
+   * live here. `params` starts with the count so the sentence keeps its %1 and a catalog can
+   * translate it before substitution; extra params follow as %2 onward.
+   */
+  misreadNotice(result, recovery) {
+    const misread = result.misreadCount ?? 0;
+    if (this.suspects.length > 0) {
+      return {
+        title: "One sticker looks wrong",
+        tone: "err",
+        body: `Fixing the marked sticker makes this a solvable cube \u2014 ${recovery.one}`
+      };
+    }
+    if (misread > 1) {
+      return {
+        title: "More than one sticker looks wrong",
+        tone: "err",
+        body: `At least %1 stickers were misread, so there is no single sticker to point at. ${recovery.many}`,
+        params: [misread, ...recovery.params ?? []]
+      };
+    }
+    return null;
+  }
   finish(result) {
     this.stopLoop();
     this.showPreview(null);
@@ -3658,20 +3699,13 @@ var AiScanPanel = class extends HTMLElement {
     this.confirmed = {};
     this.awaiting = null;
     const hold = " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
-    const misread = result.misreadCount ?? 0;
-    if (this.suspects.length > 0) {
-      this.notice = {
-        title: "One sticker looks wrong",
-        tone: "err",
-        body: `Fixing the marked sticker makes this a solvable cube \u2014 tap it and pick the right colour, or show that side again to re-read it.${hold}`
-      };
-    } else if (misread > 1) {
-      this.notice = {
-        title: "More than one sticker looks wrong",
-        tone: "err",
-        body: result.misreadFace ? `At least %1 stickers were misread, so there is no single sticker to point at. Show the %2 side to the camera again \u2014 it will be read fresh.${hold}` : `At least %1 stickers were misread, so there is no single sticker to point at. Show those sides to the camera again \u2014 each one is read fresh.${hold}`,
-        params: result.misreadFace ? [misread, GUIDE[result.misreadFace].color] : [misread]
-      };
+    const camera = this.misreadNotice(result, {
+      one: `tap it and pick the right colour, or show that side again to re-read it.${hold}`,
+      many: result.misreadFace ? `Show the %2 side to the camera again \u2014 it will be read fresh.${hold}` : `Show those sides to the camera again \u2014 each one is read fresh.${hold}`,
+      params: result.misreadFace ? [GUIDE[result.misreadFace].color] : []
+    });
+    if (camera) {
+      this.notice = camera;
     } else if (result.valid) {
       this.notice = {
         title: "Some stickers were unclear",

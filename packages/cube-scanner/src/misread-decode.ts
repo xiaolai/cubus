@@ -84,6 +84,20 @@ export interface DecodeOptions {
   maxDistance?: number;
   /** Hard backstop on search nodes. Exceeding it yields `unknown` rather than a silent wrong answer. */
   nodeBudget?: number;
+  /**
+   * Take the faces exactly as given instead of searching all 4^6 rotations.
+   *
+   * The rotation search exists for the CAMERA: a side is photographed however the user held it, so
+   * a reading is only meaningful up to rotation. A hand-painted cube has no such freedom — the user
+   * authored each sticker in place, and a face painted a quarter-turn off is a genuinely different
+   * cube, not the same cube seen sideways.
+   *
+   * Searching rotations for a painted cube gives a confidently wrong answer rather than a vague
+   * one: measured on nine scrambles with one face rotated 90°, `assemblePainted` rejected all nine
+   * while the decoder reported `misreadCount: 0` for every one — "nothing is wrong" about a cube
+   * that had just been refused, because the decoder was allowed to rotate the face back.
+   */
+  fixedRotation?: boolean;
 }
 
 const CORNER_ORI = 3;
@@ -302,9 +316,11 @@ export function decodeMisread(
   const faceCentre = FACES.map((f) => faces[f]!.colors[4]!);
   const canon = canonicalColors(faceCentre);
 
-  // Pass 1 — price every rotation cheaply, and keep only those that could still win.
+  // Pass 1 — price every rotation cheaply, and keep only those that could still win. With
+  // `fixedRotation` there is exactly one candidate: the faces as the caller supplied them.
   const candidates: { rotations: number[]; bound: number }[] = [];
-  for (let combo = 0; combo < 4096; combo++) {
+  const combos = options.fixedRotation ? 1 : 4096;
+  for (let combo = 0; combo < combos; combo++) {
     const rotations = [0, 1, 2, 3, 4, 5].map((i) => (combo >> (2 * i)) & 3);
     const bound = lowerBound(buildTensors(flatten(faces, rotations), canon));
     if (bound <= maxDistance) candidates.push({ rotations, bound });
