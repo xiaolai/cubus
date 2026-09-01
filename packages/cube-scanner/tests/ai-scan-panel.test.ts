@@ -13,6 +13,7 @@
 import Cube from 'cubejs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { rotateFace } from '../src/ai-assemble.js';
+import type { AiScanResult } from '../src/ai-assemble.js';
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { FACES, type Face } from '../src/types.js';
@@ -367,11 +368,40 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
       for (let i = 0; i < 9; i++) if (i !== 4) panel.setSticker(f, i, truth[f]![i]!);
 
     // Now break exactly one sticker, which is the only distance a repair is unique at.
+    const invalid: AiScanResult[] = [];
+    panel.addEventListener('scan-invalid', (e) =>
+      invalid.push((e as CustomEvent<AiScanResult>).detail),
+    );
     const was = truth.U[0]!;
     panel.setSticker('U', 0, (was + 1) % 6);
     const p = last();
     expect(p.suspects).toContainEqual({ face: 'U', index: 0, to: was });
     expect(p.notice?.body ?? '').not.toMatch(/nine|count/i); // never the advice that cannot work
+    // The public event is not allowed to depend on which mode the user is in. It fired for a
+    // refused scan and not for a refused painting, so a host listening for it saw half the story.
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0]!.valid).toBe(false);
+  });
+
+  it('states only what the decoder proves when more than one sticker is wrong', async () => {
+    // The wording bug duplication caused: painting claimed "more than one wrong sticker has more
+    // than one possible repair", which is stronger than anything proved. The guarantee is that
+    // above distance one the nearest legal cube need not be the USER'S — a given input may still
+    // have a unique nearest repair. Both modes share one sentence now, so they cannot drift again.
+    panel.setPainting(true);
+    const truth = facesOf(DEEP);
+    for (const f of FACES)
+      for (let i = 0; i < 9; i++) if (i !== 4) panel.setSticker(f, i, truth[f]![i]!);
+    // Two stickers that are genuinely a different colour — swapping equal ones is a no-op, and
+    // setSticker returns early on it, which is how this test first passed while changing nothing.
+    const a = truth.U![0]!;
+    panel.setSticker('U', 0, (a + 1) % 6);
+    panel.setSticker('U', 1, (truth.U![1]! + 1) % 6); // two wrong: nothing may be accused
+    const p = last();
+    expect(p.suspects).toEqual([]);
+    expect(p.notice?.body ?? '').toMatch(/no single sticker to point at/);
+    expect(p.notice?.body ?? '').not.toMatch(/more than one possible repair/);
+    expect(p.notice?.params?.[0]).toBeGreaterThanOrEqual(2); // the count rides in params, not the string
   });
 
   it('toggling painting off and on keeps the sides already captured', async () => {

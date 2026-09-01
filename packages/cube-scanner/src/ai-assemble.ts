@@ -294,8 +294,9 @@ function solvableReadings(
 function diagnose(
   faces: Record<Face, ColorFace>,
   centreOwner: Map<number, Face>,
+  options: { fixedRotation?: boolean } = {},
 ): Partial<AiScanResult> {
-  const decoded: MisreadDecode = decodeMisread(faces, centreOwner);
+  const decoded: MisreadDecode = decodeMisread(faces, centreOwner, options);
   if (decoded.kind === 'unknown') return {};
   // No repair within the cap means strictly more than the cap are wrong, which is still a floor.
   if (decoded.kind === 'beyond') return { misreadCount: decoded.distance + 1 };
@@ -363,7 +364,10 @@ export function assemblePainted(faces: Record<Face, ColorFace>, threshold = 0.15
     //
     // Only reached with all six centres distinct and every sticker a centre colour, which the
     // guards above have already established; decodeMisread needs both to say anything.
-    return reject('not a solvable cube yet', diagnose(faces, centreOwner));
+    // fixedRotation, because a painted face is authored in place. Without it the decoder is free
+    // to rotate a face back and report "0 misreads" about a cube this function has just refused —
+    // measured on nine scrambles with one face turned 90°, all nine. See DecodeOptions.
+    return reject('not a solvable cube yet', diagnose(faces, centreOwner, { fixedRotation: true }));
   }
 
   const conf = FACES.flatMap((f) => faces[f]!.confidence);
