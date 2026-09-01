@@ -2964,6 +2964,7 @@ var TICK_MS_WEB = 200;
 var TICK_MS_NATIVE = 60;
 var STABLE = 3;
 var STABLE_MS = 500;
+var TICK_FAIL_MS = 3e3;
 var CHECK_BEAT_MS = 350;
 var OPENING = "Show any side to the camera \u2014 held flat and centred.";
 var PAINTING = "Painting by hand \u2014 tap any sticker and pick its colour.";
@@ -3041,6 +3042,8 @@ var AiScanPanel = class extends HTMLElement {
   /** When the current identical-read streak began; captures need STABLE reads AND STABLE_MS. */
   stableSince = 0;
   live = null;
+  /** When the current run of failing ticks began, or null when the last tick completed. */
+  tickFailingSince = null;
   device = null;
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   confirmed = {};
@@ -3083,6 +3086,25 @@ var AiScanPanel = class extends HTMLElement {
   disconnectedCallback() {
     this.stop();
   }
+  /**
+   * Why the camera must not open right now — one answer, consulted by every entry point.
+   *
+   * This replaces three half-guards that each protected one caller and left the others. `start()`
+   * had a generation counter, which defends against a LATER start superseding an in-flight one and
+   * cannot see that the element has been removed: it takes a fresh generation, so the
+   * `queueMicrotask(() => start())` queued by connectedCallback still opened the camera on an
+   * element that disconnectedCallback had already stopped. And nothing at all stopped `start()`
+   * while painting, though setPainting's own comment calls the modes "exclusive by nature" — so
+   * the Start button that `stop()` helpfully re-revealed would open a camera whose captures
+   * overwrite the stickers the user had just painted.
+   *
+   * Both are the same absence: the two facts that gate the camera were never asked in one place.
+   */
+  cameraRefusal() {
+    if (!this.isConnected) return "detached";
+    if (this.painting) return "painting";
+    return null;
+  }
   /** Release the camera + stop the loop. Safe repeatedly and before first render. The detector
    *  itself is kept, so the loaded model survives a stop()/start() (only the camera is released). */
   stop() {
@@ -3098,10 +3120,11 @@ var AiScanPanel = class extends HTMLElement {
     }
     this.detector?.stop();
     this.device = null;
+    this.showPreview(null);
     const start = this.maybe("start");
     if (start) {
       start.disabled = false;
-      start.hidden = false;
+      start.hidden = this.painting;
     }
     const restart = this.maybe("restart");
     if (restart) restart.hidden = true;
@@ -3121,6 +3144,11 @@ var AiScanPanel = class extends HTMLElement {
    * painting, must not cost the user the sides they already showed. `restart()` is the wipe.
    */
   async start() {
+    const refusal = this.cameraRefusal();
+    if (refusal !== null) {
+      if (refusal === "painting") this.report("painting", PAINTING);
+      return;
+    }
     const startBtn = this.maybe("start");
     if (startBtn) startBtn.disabled = true;
     const gen = ++this.startGen;
@@ -3361,7 +3389,20 @@ var AiScanPanel = class extends HTMLElement {
         return;
       }
       this.capture(face, fit.face);
-    } catch {
+      this.tickFailingSince = null;
+    } catch (err) {
+      const now = Date.now();
+      this.tickFailingSince ??= now;
+      if (now - this.tickFailingSince >= TICK_FAIL_MS) {
+        this.stopLoop();
+        this.notice = {
+          title: "The scanner stopped",
+          tone: "err",
+          body: "The camera opened but no frame could be read for several seconds. Try Start again, and if it keeps happening the model or the camera driver is at fault rather than the cube."
+        };
+        this.report("error", "Could not read from the camera.");
+        console.error("[ai-scan-panel] scan loop stopped after repeated failures", err);
+      }
     } finally {
       this.busy = false;
     }
