@@ -333,8 +333,16 @@ jobs:
           CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           PROFILE_B64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
         run: |
-          if [ -z "$CERT_B64" ]; then
-            echo "::warning::APPLE_CERTIFICATE_BASE64 is not set — iOS release build skipped"
+          # BOTH, not just the certificate. iOS needs a provisioning profile as well, and this
+          # gate used to open on the certificate alone — so the day a Developer ID cert was added
+          # for the macOS leg, this job stopped skipping and started FAILING, on an iOS build it
+          # had never been able to do. It also wrote ~/Library/.../cubus.mobileprovision from an
+          # empty variable, producing a zero-byte profile and reporting signed=true.
+          if [ -z "$CERT_B64" ] || [ -z "$PROFILE_B64" ]; then
+            missing=""
+            [ -z "$CERT_B64" ] && missing="APPLE_CERTIFICATE_BASE64"
+            [ -z "$PROFILE_B64" ] && missing="${missing:+$missing and }APPLE_PROVISIONING_PROFILE_BASE64"
+            echo "::warning::$missing not set — iOS release build skipped"
             echo "signed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -346,6 +354,15 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
           security list-keychain -d user -s "$keychain"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$keychain" >/dev/null
+          # A Developer ID certificate cannot sign for the App Store, and xcodebuild does not say
+          # so — it reports "No profiles for 'im.cubus.app' were found", which sends you looking
+          # for a missing profile you may well have. Name the real cause here instead.
+          if ! security find-identity -v -p codesigning "$keychain" | grep -qE "Apple Distribution|iPhone Distribution"; then
+            echo "::error::the imported certificate cannot sign for iOS distribution. Found:"
+            security find-identity -v -p codesigning "$keychain" | sed 's/^/::error::  /'
+            echo "::error::iOS needs an Apple Distribution certificate; Developer ID is macOS-only."
+            exit 1
+          fi
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           printf '%s' "$PROFILE_B64" | base64 -d \
             > ~/Library/MobileDevice/Provisioning\ Profiles/cubus.mobileprovision
