@@ -2160,6 +2160,13 @@ function isStructurallyValid(f) {
 
 // src/misread-decode.ts
 var import_cubejs = __toESM(require_cubejs(), 1);
+function whole(name, value, fallback) {
+  if (value === void 0) return fallback;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`decodeMisread: ${name} must be a non-negative integer, got ${value}`);
+  }
+  return value;
+}
 var CORNER_ORI = 3;
 var EDGE_ORI = 2;
 var DEFAULT_MAX_DISTANCE = 4;
@@ -2178,38 +2185,28 @@ function canonicalColors(faceCentre) {
     edge: EDGE_COLOR.map((t) => t.map((l) => faceCentre[letterIndex(l)]))
   };
 }
+function pieceTensor(colors54, facelet, canon, orientations) {
+  const stickers = orientations;
+  return facelet.map((slot) => {
+    const observed = slot.map((x) => colors54[x]);
+    return canon.map((cubie) => {
+      const row = [];
+      for (let r = 0; r < orientations; r++) {
+        let d = 0;
+        for (let t = 0; t < stickers; t++) if (observed[t] !== cubie[(t + r) % stickers]) d++;
+        row.push(d);
+      }
+      return row;
+    });
+  });
+}
 function buildTensors(colors54, canon) {
-  const corner = [];
-  for (let i = 0; i < 8; i++) {
-    const observed = CORNER_FACELET[i].map((x) => colors54[x]);
-    const perCubie = [];
-    for (let j = 0; j < 8; j++) {
-      const row = [];
-      for (let r = 0; r < CORNER_ORI; r++) {
-        let d = 0;
-        for (let t = 0; t < 3; t++) if (observed[t] !== canon.corner[j][(t + r) % 3]) d++;
-        row.push(d);
-      }
-      perCubie.push(row);
-    }
-    corner.push(perCubie);
-  }
-  const edge = [];
-  for (let i = 0; i < 12; i++) {
-    const observed = EDGE_FACELET[i].map((x) => colors54[x]);
-    const perCubie = [];
-    for (let j = 0; j < 12; j++) {
-      const row = [];
-      for (let r = 0; r < EDGE_ORI; r++) {
-        let d = 0;
-        for (let t = 0; t < 2; t++) if (observed[t] !== canon.edge[j][(t + r) % 2]) d++;
-        row.push(d);
-      }
-      perCubie.push(row);
-    }
-    edge.push(perCubie);
-  }
-  return { corner, edge, cornerColors: canon.corner, edgeColors: canon.edge };
+  return {
+    corner: pieceTensor(colors54, CORNER_FACELET, canon.corner, CORNER_ORI),
+    edge: pieceTensor(colors54, EDGE_FACELET, canon.edge, EDGE_ORI),
+    cornerColors: canon.corner,
+    edgeColors: canon.edge
+  };
 }
 function lowerBound(t) {
   let lb = 0;
@@ -2302,8 +2299,8 @@ function flatten(faces, rotations) {
   return out;
 }
 function decodeMisread(faces, centreOwner, options = {}) {
-  const maxDistance = options.maxDistance ?? DEFAULT_MAX_DISTANCE;
-  const counter = { nodes: 0, limit: options.nodeBudget ?? DEFAULT_NODE_BUDGET };
+  const maxDistance = whole("maxDistance", options.maxDistance, DEFAULT_MAX_DISTANCE);
+  const counter = { nodes: 0, limit: whole("nodeBudget", options.nodeBudget, DEFAULT_NODE_BUDGET) };
   const faceCentre = FACES.map((f) => faces[f].colors[4]);
   const canon = canonicalColors(faceCentre);
   const candidates = [];
@@ -2325,6 +2322,7 @@ function decodeMisread(faces, centreOwner, options = {}) {
       if (edges === null) return { kind: "unknown" };
       for (const c of corners) {
         for (const e of edges) {
+          if (++counter.nodes > counter.limit) return { kind: "unknown" };
           if (c.total + e.total !== budget) continue;
           const repaired = realise(tensors, c, e, observed);
           if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
@@ -2385,9 +2383,7 @@ function matchingRotations(original, confirmed) {
   const dist = [0, 1, 2, 3].map(
     (k) => rotateFace(original.colors, k).reduce((s, c, i) => s + (c === confirmed.colors[i] ? 0 : 1), 0)
   );
-  const min = Math.min(...dist);
-  if (min > CONFIRM_TOLERANCE) return /* @__PURE__ */ new Set();
-  return new Set([0, 1, 2, 3].filter((k) => dist[k] === min));
+  return new Set([0, 1, 2, 3].filter((k) => dist[k] <= CONFIRM_TOLERANCE));
 }
 function pickConfirm(candidates, confirmed) {
   const useful = FACES.filter((face2, fi) => {
@@ -2446,7 +2442,8 @@ function diagnose(faces, centreOwner, options = {}) {
   const decoded = decodeMisread(faces, centreOwner, options);
   if (decoded.kind === "unknown") return {};
   if (decoded.kind === "beyond") return { misreadCount: decoded.distance + 1 };
-  const suspects = decoded.distance === 1 ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to })) : [];
+  const pointable = decoded.distance === 1 && decoded.unique && decoded.stickers.length === 1;
+  const suspects = pointable ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to })) : [];
   const blamed = new Set(decoded.stickers.map((s) => s.face));
   return {
     misreadCount: decoded.distance,
@@ -2454,18 +2451,36 @@ function diagnose(faces, centreOwner, options = {}) {
     ...blamed.size === 1 ? { misreadFace: [...blamed][0] } : {}
   };
 }
-function assemblePainted(faces, threshold = 0.15) {
+function buildCentreOwner(faces) {
   const centreOwner = /* @__PURE__ */ new Map();
   for (const face of FACES) {
     const f = faces[face];
     if (!f || f.colors.length !== 9 || f.confidence.length !== 9) {
       throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
     }
+    for (const c of f.confidence) {
+      if (!Number.isFinite(c) || c < 0 || c > 1) {
+        throw new Error(`face ${face}: confidence ${c} is not a number in [0, 1]`);
+      }
+    }
     const centre = f.colors[4];
     if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
     centreOwner.set(centre, face);
   }
-  if (centreOwner.size !== 6) return reject("the 6 centres are not 6 distinct colours");
+  return centreOwner;
+}
+function summariseConfidence(conf, threshold) {
+  let min = 1;
+  const lowConfidence = [];
+  conf.forEach((c, i) => {
+    if (c < min) min = c;
+    if (c < threshold) lowConfidence.push(i);
+  });
+  return { confidence: min, lowConfidence };
+}
+function assemblePainted(faces, threshold = 0.15) {
+  const centreOwner = buildCentreOwner(faces);
+  if (!(centreOwner instanceof Map)) return centreOwner;
   const letters = [];
   for (const face of FACES) {
     for (const colour of faces[face].colors) {
@@ -2479,26 +2494,11 @@ function assemblePainted(faces, threshold = 0.15) {
     return reject("not a solvable cube yet", diagnose(faces, centreOwner, { fixedRotation: true }));
   }
   const conf = FACES.flatMap((f) => faces[f].confidence);
-  let min = 1;
-  const lowConfidence = [];
-  conf.forEach((c, i) => {
-    if (c < min) min = c;
-    if (c < threshold) lowConfidence.push(i);
-  });
-  return { facelets, valid: true, confidence: min, lowConfidence };
+  return { facelets, valid: true, ...summariseConfidence(conf, threshold) };
 }
 function assembleColors(faces, threshold = 0.15, confirmed = {}) {
-  const centreOwner = /* @__PURE__ */ new Map();
-  for (const face of FACES) {
-    const f = faces[face];
-    if (!f || f.colors.length !== 9 || f.confidence.length !== 9) {
-      throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
-    }
-    const centre = f.colors[4];
-    if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
-    centreOwner.set(centre, face);
-  }
-  if (centreOwner.size !== 6) return reject("the 6 centres are not 6 distinct colours");
+  const centreOwner = buildCentreOwner(faces);
+  if (!(centreOwner instanceof Map)) return centreOwner;
   const all = solvableReadings(faces, centreOwner);
   if (all.length === 0) {
     return reject(
@@ -2534,10 +2534,10 @@ function assembleColors(faces, threshold = 0.15, confirmed = {}) {
   if (candidates.length > 1) {
     const confirm = pickConfirm(candidates, confirmed);
     if (confirm) {
-      return reject(
-        `${candidates.length} readings fit \u2014 this cube is close to solved, so one more look decides it`,
-        { ambiguous: true, confirm }
-      );
+      return reject(`${candidates.length} readings fit \u2014 another look narrows them`, {
+        ambiguous: true,
+        confirm
+      });
     }
     return reject(
       "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
@@ -2567,13 +2567,12 @@ function assembleColors(faces, threshold = 0.15, confirmed = {}) {
   for (let fi = 0; fi < 6; fi++) {
     for (const c of rotateFace(faces[FACES[fi]].confidence, chosen[fi])) conf.push(c);
   }
-  let min = 1;
-  const lowConfidence = [];
-  conf.forEach((c, i) => {
-    if (c < min) min = c;
-    if (c < threshold) lowConfidence.push(i);
-  });
-  return { facelets, valid: true, confidence: min, lowConfidence, rotations: [...chosen] };
+  return {
+    facelets,
+    valid: true,
+    ...summariseConfidence(conf, threshold),
+    rotations: [...chosen]
+  };
 }
 
 // src/onnx-postprocess.ts
@@ -2705,7 +2704,8 @@ function fitFromOutput(output, opts = {}) {
 }
 
 // view/native-detector.ts
-var P = "plugin:cube-vision|";
+var CUBE_VISION = "plugin:cube-vision|";
+var P = CUBE_VISION;
 var NativeDetector = class {
   /**
    * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`). This is the ONLY thing
@@ -2722,12 +2722,37 @@ var NativeDetector = class {
   }
   dev = null;
   loaded = false;
+  /** Bumped by `stop()`, so an open still crossing the bridge knows it has been cancelled. */
+  opening = 0;
   get device() {
     return this.dev;
   }
+  /**
+   * Open a camera, and abandon the attempt if `stop()` lands while it is still crossing the bridge.
+   *
+   * The cancellation is not decoration: `Detector.use` DOCUMENTS that a `stop()` while it is
+   * pending releases the camera and rejects, and `WebDetector` has always honoured it through an
+   * AbortController, so callers were written against a contract only one implementation kept. This
+   * one used to resume after a `stop()` and set `dev` again — reopening a camera the caller had
+   * released, which on the panel's painting path meant the lens stayed on while the app reported
+   * no camera at all.
+   *
+   * A counter rather than an AbortController, because there is nothing to abort: the plugin call
+   * is already gone. What can be done is refuse to INSTALL its result, and close the camera it
+   * opened behind us, which is what `close_camera` here is for.
+   */
   async use(opts = {}) {
+    const attempt = ++this.opening;
+    const cancelled = () => attempt !== this.opening;
+    const abort = () => {
+      void this.invoke(`${P}close_camera`).catch(() => {
+      });
+      throw new DOMException("camera open superseded", "AbortError");
+    };
     await this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+    if (cancelled()) abort();
     const info = await this.invoke(`${P}current_camera`);
+    if (cancelled()) abort();
     this.dev = info ?? { deviceId: opts.deviceId ?? "", label: "Camera" };
   }
   async load() {
@@ -2743,6 +2768,7 @@ var NativeDetector = class {
     return await this.invoke(`${P}list_cameras`);
   }
   stop() {
+    this.opening++;
     this.dev = null;
     void this.invoke(`${P}close_camera`).catch(() => {
     });
@@ -2946,14 +2972,22 @@ var WebDetector = class {
 };
 
 // view/pick-detector.ts
+function absentCommand(err) {
+  const text = typeof err === "string" ? err : err?.message ?? "";
+  return /not found|unknown command/i.test(text);
+}
 async function pickDetector(opts) {
   const invoke = globalThis.__TAURI__?.core?.invoke;
   if (invoke) {
     try {
-      if (await invoke("plugin:cube-vision|probe")) {
+      if (await invoke(`${CUBE_VISION}probe`) === true) {
         return { detector: new NativeDetector(invoke), runtime: "native" };
       }
-    } catch {
+    } catch (err) {
+      (absentCommand(err) ? console.info : console.warn)(
+        `[cubus] no native cube-vision runtime \u2014 using the browser one${absentCommand(err) ? "" : " after an unexpected failure"}`,
+        err
+      );
     }
   }
   return { detector: new WebDetector(opts.video, opts.modelUrl), runtime: "web" };
@@ -2966,14 +3000,22 @@ var CameraSession = class {
   timer = null;
   generation = 0;
   epoch = 0;
+  /** Bumped by `use()`, so an injection beats a probe that is still in flight. See `use`. */
+  detectorChoice = 0;
+  /** The `detector.use()` still in flight, so the next one queues behind it. See `open`. */
+  opening = null;
   /** Which backend was chosen. Read by the panel purely to report it. */
   runtime = null;
   /** The open camera, or null. Null is also how the panel knows to stop showing a lens. */
   device = null;
   /** The model is loaded once per detector and survives a stop()/start(). */
   modelLoaded = false;
-  /** Begin an attempt, superseding every earlier one. Hold the token and check `current()`. */
+  /**
+   * Begin an attempt, superseding every earlier one AND every frame in flight. Hold the token and
+   * check `current()`.
+   */
   beginAttempt() {
+    this.epoch++;
     return ++this.generation;
   }
   /** Is the attempt holding this token still the one that should finish? */
@@ -2992,22 +3034,50 @@ var CameraSession = class {
   get chosen() {
     return this.detector;
   }
-  /** Inject a detector — the tests' seam, and the native host's. */
+  /**
+   * Inject a detector — the tests' seam, and the native host's.
+   *
+   * Retires whatever was there: a replaced detector may hold a live camera, and dropping the
+   * reference would leak it with nothing able to close it. The choice is versioned so a
+   * `pickDetector` probe still in flight cannot resolve afterwards and overwrite the injection —
+   * the panel calls `useDetector` before `start()`, but nothing stopped a host doing it in the
+   * other order, and the loser of that race was silent.
+   *
+   * It ABANDONS the scan, and says so here because it cannot restart one: a `start()` in flight
+   * finds itself superseded and returns, the loop stops, and no frame from the old detector can
+   * still land. A caller injecting mid-scan owns calling `start()` afterwards. Doing it for them
+   * would mean this method deciding a camera should be open, which is the panel's call and not
+   * the session's — the session never speaks.
+   */
   use(detector, runtime) {
+    this.detector?.stop();
+    this.generation++;
+    this.epoch++;
+    this.stopLoop();
+    this.detectorChoice++;
     this.detector = detector;
     this.detectorPromise = Promise.resolve(detector);
     this.runtime = runtime;
+    this.modelLoaded = false;
+    this.device = null;
   }
   /**
    * The detector, chosen once and kept for the session's life, so the model survives a stop()/
    * start() and the native probe runs only once. Cached as a promise because the choice is async.
    */
   ensureDetector(video, modelUrl) {
-    this.detectorPromise ??= pickDetector({ video, modelUrl }).then(({ detector, runtime }) => {
-      this.detector = detector;
-      this.runtime = runtime;
-      return detector;
-    });
+    if (this.detectorPromise === null) {
+      const choice = this.detectorChoice;
+      this.detectorPromise = pickDetector({ video, modelUrl }).then(({ detector, runtime }) => {
+        if (choice !== this.detectorChoice) {
+          detector.stop();
+          return this.detector ?? detector;
+        }
+        this.detector = detector;
+        this.runtime = runtime;
+        return detector;
+      });
+    }
     return this.detectorPromise;
   }
   /** Release the camera, keeping the detector (and therefore the loaded model). */
@@ -3022,14 +3092,19 @@ var CameraSession = class {
       this.timer = null;
     }
   }
-  /** Start ticking. Replaces any existing loop rather than running two. */
+  /**
+   * Start ticking, and supersede every frame in flight. Replaces any existing loop rather than
+   * running two.
+   *
+   * The invalidation belongs HERE and not at the call site. It used to be a separate
+   * `dropFramesInFlight()` the one caller had to remember alongside this, which is a two-call
+   * protocol enforced by nothing: a second caller restarting the loop directly would make an
+   * inference from the previous loop pass `freshFrame` again the instant the new timer existed.
+   */
   beginLoop(ms, tick) {
     this.stopLoop();
+    this.epoch++;
     this.timer = setInterval(tick, ms);
-  }
-  /** True while the loop is running — the panel's guard against acting on a stopped scan. */
-  get looping() {
-    return this.timer !== null;
   }
   /** Supersede everything in flight, stop ticking, and release the camera. */
   close() {
@@ -3038,20 +3113,54 @@ var CameraSession = class {
     this.stopLoop();
     this.releaseCamera();
   }
-  /** Supersede in-flight FRAMES only — a restart keeps the camera but must drop stale inferences. */
-  dropFramesInFlight() {
-    this.epoch++;
-  }
-  /** Open a camera, preferring `deviceId` but never dead-ending on it. */
+  /**
+   * Open a camera, preferring `deviceId` but never dead-ending on it.
+   *
+   * `token` is the caller's attempt. A superseded attempt does NOT clean up after itself: whoever
+   * bumped the generation — a newer `start()`, or `close()` — has already called `releaseCamera()`,
+   * and this detector is SHARED, so a late `stop()` here would close the camera the newer attempt
+   * has just opened. Rethrowing is the whole of the correct behaviour.
+   *
+   * Opens are SERIALISED, and that is what makes the rule above safe. `use()` mutates the shared
+   * detector's camera, so two of them in flight race to be last, and the loser is whichever
+   * happens to settle later — not whichever is current. `WebDetector` hides this by aborting a
+   * pending open when the next one starts; `NativeDetector` did not until it was made to, and the
+   * `Detector` contract is what says it must, so the ordering cannot rest on it.
+   *
+   * A CHAIN, not a barrier. The first attempt at this snapshotted the pending open and awaited it,
+   * which serialises two attempts and not three: with A pending, B and C both snapshot A, so both
+   * start the moment A settles and race each other exactly as before. Measured — three opens
+   * arriving A, B, C and settling A, C, B left the detector on B while C was current. Each link
+   * has to queue behind the ACTUAL latest, which means assigning the new tail before awaiting it.
+   *
+   * Serialising is also what lets a superseded attempt clean up after itself again. Its `stop()`
+   * used to close whatever camera was open — including a newer attempt's — because the two ran
+   * concurrently. Inside the chain nothing else is running: the next link starts after this one
+   * returns, so releasing here can only release what THIS attempt opened, and not doing it leaves
+   * a camera live with nothing showing it. That is what `stop()` during an open used to do — the
+   * panel released the camera, the pending open then settled and reopened it, and painting ran
+   * with the lens on and the app reporting no device.
+   */
   async open(detector, opts, token) {
-    try {
-      await detector.use(opts);
-      return { fellBack: false };
-    } catch (err) {
-      if (opts.deviceId === void 0 || !this.current(token)) throw err;
-      await detector.use({ facingMode: opts.facingMode });
-      return { fellBack: true };
-    }
+    const run = async () => {
+      try {
+        await detector.use(opts);
+        return { fellBack: false };
+      } catch (err) {
+        if (opts.deviceId === void 0 || !this.current(token)) throw err;
+        const { deviceId: _dropped, ...fallback } = opts;
+        await detector.use(fallback);
+        return { fellBack: true };
+      } finally {
+        if (!this.current(token)) detector.stop();
+      }
+    };
+    const chained = (this.opening ?? Promise.resolve()).then(run, run);
+    this.opening = chained.then(
+      () => void 0,
+      () => void 0
+    );
+    return chained;
   }
 };
 
@@ -3065,7 +3174,15 @@ var Stillness = class {
     this.reads = reads;
     this.ms = ms;
   }
-  key = "";
+  /**
+   * The read the current run is made of, or null when there is no run.
+   *
+   * `null` rather than `''`, because `''` is also what an empty read joins to — so an empty first
+   * read used to look like a CONTINUATION of a run that had already been reset, and inherit its
+   * start time. Unreachable from the scanner (a read is always nine stickers) and kept impossible
+   * rather than merely unlikely, since the sentinel costs nothing to make unambiguous.
+   */
+  key = null;
   count = 0;
   since = 0;
   /**
@@ -3073,8 +3190,13 @@ var Stillness = class {
    *
    * `now` is injectable because the alternative is a test that sleeps: the timing rule is the whole
    * point of this class, so it has to be drivable without wall-clock waits.
+   *
+   * The default clock is MONOTONIC. `Date.now()` is not: it follows an NTP correction or a manual
+   * clock change, and a step forward of half a second satisfies the duration gate outright — the
+   * one thing this class exists to refuse. "Held still for 500 ms" is a claim about elapsed time,
+   * so it is measured with the clock that only measures elapsed time.
    */
-  offer(colors, now = Date.now()) {
+  offer(colors, now = performance.now()) {
     const key = colors.join(",");
     if (key === this.key) {
       this.count += 1;
@@ -3087,7 +3209,7 @@ var Stillness = class {
   }
   /** Forget the current run — the cube left the frame, or the scan was restarted. */
   reset() {
-    this.key = "";
+    this.key = null;
     this.count = 0;
     this.since = 0;
   }
@@ -3166,20 +3288,12 @@ var AiScanPanel = class extends HTMLElement {
   root;
   /** Model URL; the app can override before the element renders. */
   modelUrl = "./vendor/cube-yolo.onnx";
-  /**
-   * The capture-and-inference seam. One instance for the element's life: it survives a reconnect
-   * (which rebuilds the shadow DOM) so the model is not re-downloaded, and it drives whichever
-   * `<video>` is current because it holds a getter, not the element. Web today; Phase 2 chooses a
-   * NativeDetector here when the desktop shell's plugin answers.
-   */
-  /** Caches the one-time async detector choice (native vs web); see ensureDetector. */
-  /** Which runtime the chosen detector uses; drives the tick cadence and rides on every report. */
-  /** True once the model has loaded, so a re-`start()` doesn't re-report 'loading' or reload it. */
+  /** A tick is mid-inference; the next one returns rather than running two at once. */
   busy = false;
   /** `headless`: draw nothing, and let the host draw from 'scan-progress'. */
   headless = false;
   faces = {};
-  /** When the current identical-read streak began; captures need STABLE reads AND STABLE_MS. */
+  /** The 9 colour classes in view right now, or null when no clean side is; rides on every report. */
   live = null;
   /**
    * The count-and-duration gate that decides a read is worth capturing.
@@ -3287,6 +3401,14 @@ var AiScanPanel = class extends HTMLElement {
    * Open the camera and begin scanning. Public so a host can autostart it, or retry an error.
    * Deliberately does NOT clear captured sides: switching cameras mid-scan, or reopening after
    * painting, must not cost the user the sides they already showed. `restart()` is the wipe.
+   *
+   * WHO OWNS THE CAMERA. The detector is ONE object shared by every attempt, so `detector.stop()`
+   * closes whatever camera is open right now — not "this attempt's camera", which does not exist
+   * as a separate thing. A superseded attempt therefore cleans up NOTHING and simply returns: the
+   * only two things that can supersede one are a newer `start()` and `close()`, and both call
+   * `releaseCamera()` themselves before opening anything. Tidying up on the way out looked
+   * obviously right and closed the newer attempt's camera — a start superseded while awaiting a
+   * permission prompt would land afterwards and shut off the lens that had just been granted.
    */
   async start() {
     const refusal = this.cameraRefusal();
@@ -3300,31 +3422,18 @@ var AiScanPanel = class extends HTMLElement {
     this.report("starting", "Opening the camera\u2026");
     this.cam.releaseCamera();
     const detector = await this.ensureDetector();
-    if (!this.cam.current(gen)) {
-      detector.stop();
-      return;
-    }
+    if (!this.cam.current(gen)) return;
     const slowOpen = setTimeout(() => {
       if (this.cam.current(gen) && this.cam.device === null) {
         this.report("error", this.tinted("err", SLOW_OPEN));
       }
     }, SLOW_OPEN_MS);
-    let fellBack = false;
     try {
       const facing = this.getAttribute("facing");
       const facingMode = facing === "user" || facing === "environment" ? facing : void 0;
       const pinned = this.getAttribute("device-id") || void 0;
-      try {
-        await detector.use({ deviceId: pinned, facingMode });
-      } catch (err) {
-        if (pinned === void 0 || !this.cam.current(gen)) throw err;
-        fellBack = true;
-        await detector.use({ facingMode });
-      }
-      if (!this.cam.current(gen)) {
-        detector.stop();
-        return;
-      }
+      const { fellBack } = await this.cam.open(detector, { deviceId: pinned, facingMode }, gen);
+      if (!this.cam.current(gen)) return;
       this.cam.device = detector.device;
       if (startBtn) startBtn.hidden = true;
       if (!this.cam.modelLoaded) {
@@ -3338,7 +3447,7 @@ var AiScanPanel = class extends HTMLElement {
       if (fellBack) this.loop(phase, this.tinted("err", PINNED_GONE), " ", ...opening);
       else this.loop(phase, ...opening);
     } catch (err) {
-      this.startFailed(err, gen, detector, startBtn);
+      this.startFailed(err, gen, startBtn);
     } finally {
       clearTimeout(slowOpen);
     }
@@ -3351,11 +3460,8 @@ var AiScanPanel = class extends HTMLElement {
    * other. The generation is passed rather than re-read because it is the caller's attempt that is
    * being judged, not whatever attempt is current by the time this runs.
    */
-  startFailed(err, gen, detector, startBtn) {
-    if (!this.cam.current(gen)) {
-      detector.stop();
-      return;
-    }
+  startFailed(err, gen, startBtn) {
+    if (!this.cam.current(gen)) return;
     if (startBtn) {
       startBtn.hidden = false;
       startBtn.disabled = false;
@@ -3409,9 +3515,9 @@ var AiScanPanel = class extends HTMLElement {
    */
   loop(phase, ...opening) {
     this.cam.stopLoop();
-    this.cam.dropFramesInFlight();
     this.showPreview(null);
     this.still.reset();
+    this.tickFailingSince = null;
     const restart = this.maybe("restart");
     if (restart) restart.hidden = false;
     if (this.cam.device === null) {
@@ -3432,7 +3538,11 @@ var AiScanPanel = class extends HTMLElement {
     try {
       const output = await this.cam.chosen.next();
       if (!this.cam.freshFrame(epoch)) return;
-      if (output === null) return;
+      this.tickFailingSince = null;
+      if (output === null) {
+        this.still.reset();
+        return;
+      }
       const fit = fitFromOutput(output);
       if (!fit.ok) {
         this.still.reset();
@@ -3451,21 +3561,39 @@ var AiScanPanel = class extends HTMLElement {
       }
       this.fileSettledRead(fit.face);
     } catch (err) {
+      if (!this.cam.freshFrame(epoch)) return;
       const now = Date.now();
       this.tickFailingSince ??= now;
       if (now - this.tickFailingSince >= TICK_FAIL_MS) {
-        this.stopLoop();
-        this.notice = {
-          title: "The scanner stopped",
-          tone: "err",
-          body: "The camera opened but no frame could be read for several seconds. Try Start again, and if it keeps happening the model or the camera driver is at fault rather than the cube."
-        };
-        this.report("error", "Could not read from the camera.");
-        console.error("[ai-scan-panel] scan loop stopped after repeated failures", err);
+        this.tickFail(err);
       }
     } finally {
       this.busy = false;
     }
+  }
+  /**
+   * Ticks have failed for TICK_FAIL_MS: stop, say so, and leave a way back on.
+   *
+   * The way back is the part that was missing. This used to call `stopLoop()` and nothing else,
+   * while the notice it wrote told the user to press Start — a button `start()` had hidden the
+   * moment the camera opened. The camera is released too: the failure is in reading from it, and a
+   * lens left live under a dead loop is a light on for nothing.
+   */
+  tickFail(err) {
+    this.cam.close();
+    this.showPreview(null);
+    const start = this.maybe("start");
+    if (start) {
+      start.hidden = false;
+      start.disabled = false;
+    }
+    this.notice = {
+      title: "The scanner stopped",
+      tone: "err",
+      body: "The camera opened but no frame could be read for several seconds. Try Start again, and if it keeps happening the model or the camera driver is at fault rather than the cube."
+    };
+    this.report("error", "Could not read from the camera.");
+    console.error("[ai-scan-panel] scan loop stopped after repeated failures", err);
   }
   /**
    * A read that has held still: work out which side it is, and file it.
@@ -3528,7 +3656,6 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     this.capture(face, read);
-    this.tickFailingSince = null;
   }
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
   capture(face, read) {
@@ -3611,6 +3738,7 @@ var AiScanPanel = class extends HTMLElement {
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
+    this.finished = false;
     this.notice = null;
     this.suspects = [];
     const done = this.capturedFaces().length;
@@ -3643,7 +3771,7 @@ var AiScanPanel = class extends HTMLElement {
       this.suspects = result.suspects ?? [];
       this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
       this.notice = this.misreadNotice(result, {
-        one: "tap it and pick the colour it offers.",
+        one: "If it is wrong, tap it and pick the colour you see.",
         many: "Check those sides against the cube in your hand and repaint what does not match."
       }) ?? {
         title: "Not solvable yet",
@@ -3655,7 +3783,6 @@ var AiScanPanel = class extends HTMLElement {
       "painting",
       `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
     );
-    return;
   }
   /**
    * Turn hand-painting on or off. The two are exclusive by nature, not by policy: painting means
@@ -3802,9 +3929,9 @@ var AiScanPanel = class extends HTMLElement {
     const misread = result.misreadCount ?? 0;
     if (this.suspects.length > 0) {
       return {
-        title: "One sticker looks wrong",
+        title: "Check the marked sticker",
         tone: "err",
-        body: `Fixing the marked sticker makes this a solvable cube \u2014 ${recovery.one}`
+        body: `Changing it would make this a solvable cube. Check it against your cube first \u2014 when more than one sticker is misread, the marked one can be a sticker that was read correctly. ${recovery.one}`
       };
     }
     if (misread > 1) {
@@ -3812,6 +3939,14 @@ var AiScanPanel = class extends HTMLElement {
         title: "More than one sticker looks wrong",
         tone: "err",
         body: `At least %1 stickers were misread, so there is no single sticker to point at. ${recovery.many}`,
+        params: [misread, ...recovery.params ?? []]
+      };
+    }
+    if (misread === 1) {
+      return {
+        title: "A sticker looks wrong",
+        tone: "err",
+        body: `At least %1 sticker was misread, and the reading does not pin down which one. ${recovery.many}`,
         params: [misread, ...recovery.params ?? []]
       };
     }
@@ -3862,7 +3997,6 @@ var AiScanPanel = class extends HTMLElement {
     this.stop();
     this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
     this.dispatchEvent(new CustomEvent("scan-complete", { detail: result }));
-    return;
   }
   /**
    * One reading is not enough: name a side to show again, and how to hold it.
@@ -3892,10 +4026,9 @@ var AiScanPanel = class extends HTMLElement {
     this.notice = {
       title: "One more look",
       tone: "info",
-      body: (result.ambiguous ? "This cube is so close to solved that six photos genuinely cannot pin it down \u2014 one more look, held as asked, decides it. " : "A single look could have been held wrong, so a second one settles it for sure. ") + this.confirmSentence(confirm)
+      body: (result.ambiguous ? "Several readings of this cube fit what the camera saw, and six photos cannot tell them apart \u2014 another look, held as asked, narrows them. " : "A single look could have been held wrong, so another one checks it. ") + this.confirmSentence(confirm)
     };
     this.loop("confirm", ...this.confirmWords(confirm));
-    return;
   }
   /** Refused: keep every capture, and say what would make it a cube. */
   finishRefused(result) {
@@ -3904,7 +4037,7 @@ var AiScanPanel = class extends HTMLElement {
     this.awaiting = null;
     const hold = " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
     const camera = this.misreadNotice(result, {
-      one: `tap it and pick the right colour, or show that side again to re-read it.${hold}`,
+      one: `If it is wrong, tap it and pick the colour you see; if it is right, show that side again to re-read it.${hold}`,
       many: result.misreadFace ? `Show the %2 side to the camera again \u2014 it will be read fresh.${hold}` : `Show those sides to the camera again \u2014 each one is read fresh.${hold}`,
       params: result.misreadFace ? [GUIDE[result.misreadFace].color] : []
     });

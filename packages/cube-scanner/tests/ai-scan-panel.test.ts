@@ -52,8 +52,20 @@ const emptyTensor = (): ModelOutput => ({ data: new Float32Array((4 + 6) * 9), a
 class FakeDetector implements Detector {
   device: CameraDevice | null = null;
   output: ModelOutput | null = null;
+  /** Set to a pending promise to hold `use()` open — the only way to overlap two start()s. */
+  hold: Promise<void> | null = null;
+  /**
+   * Deliberately does NOT abort a pending open when a later one starts.
+   *
+   * `WebDetector` does, which is why the shared-detector race is invisible through it — but that
+   * is one implementation's courtesy, not the `Detector` contract, and `NativeDetector` has no
+   * abort at all. A fake that is kinder than the weakest real implementation cannot catch the
+   * bug, so this one is deliberately the weakest: the last `use()` to SETTLE wins.
+   */
   async use(opts?: CameraOptions): Promise<void> {
     this.uses.push(opts);
+    const gate = this.hold;
+    if (gate) await gate;
     if (this.openFails === 'always') throw new Error('camera denied');
     if (this.openFails === 'pinned' && opts?.deviceId) throw new Error('that camera is gone');
     this.device = { deviceId: opts?.deviceId ?? 'fake', label: 'Fake Camera' };
@@ -131,7 +143,24 @@ async function answerConfirms(
 }
 
 beforeEach(async () => {
-  vi.useFakeTimers();
+  // `performance` is faked alongside the defaults, because the stillness gate measures elapsed
+  // time with `performance.now()` — a monotonic clock, since "held still for 500 ms" is a claim
+  // about elapsed time and `Date.now()` follows an NTP correction. Vitest's default `toFake` list
+  // does not include it, so without this the gate reads a clock these tests never advance and no
+  // side is ever captured. Faking it is also the more faithful harness: the test now drives the
+  // same clock the panel reads.
+  vi.useFakeTimers({
+    toFake: [
+      'setTimeout',
+      'clearTimeout',
+      'setInterval',
+      'clearInterval',
+      'setImmediate',
+      'clearImmediate',
+      'Date',
+      'performance',
+    ],
+  });
   fake = new FakeDetector();
   events = [];
   completions = [];
@@ -206,7 +235,7 @@ describe('ai-scan-panel — a refusal keeps the captures', () => {
     expect(completions).toEqual([]);
     const p = last();
     expect(p.captured).toHaveLength(6); // the user's work survives the refusal
-    expect(p.notice?.title).toMatch(/sticker looks wrong/i);
+    expect(p.notice?.title).toMatch(/check the marked sticker/i);
     expect(p.suspects).toContainEqual({ face: 'F', index: 0, to: F_TRUE });
     // The pin: a later tick's transient hint must not erase the notice — and with all six sides
     // in, the idle line offers a re-read, not "show any side" (there is no side left to show).
@@ -214,8 +243,33 @@ describe('ai-scan-panel — a refusal keeps the captures', () => {
     await vi.advanceTimersByTimeAsync(TICK);
     fake.output = null;
     expect(last().message).toMatch(/re-read/);
-    expect(last().notice?.title).toMatch(/sticker looks wrong/i);
+    expect(last().notice?.title).toMatch(/check the marked sticker/i);
     expect(last().captured).toHaveLength(6);
+  });
+
+  it('the marked sticker is offered for checking, never asserted to be wrong', async () => {
+    // A decoded distance of 1 says the READING is one change from legal. It does not say one
+    // sticker was misread: a reading two stickers from your cube can sit one from a legal cube you
+    // never held, and the decoder then names — uniquely, unanswerably — a sticker you read
+    // correctly. `ai-assemble.test.ts` measures exactly that pair of cubes.
+    //
+    // No code can tell the two cases apart, so the copy carries the difference. Both halves are
+    // asserted: the claim that IS proven must be made, and the claim that is not must be absent.
+    await scanWithMisread();
+    const body = last().notice?.body ?? '';
+    expect(body).toMatch(/would make this a solvable cube/i); // proven
+    expect(body).toMatch(/check it against your cube/i); // and who decides
+    expect(body).toMatch(/read correctly/i); // and why they have to
+    for (const claim of [
+      /this sticker is wrong/i,
+      // Lookbehind, because the body's own disclosure contains the phrase inside "when MORE THAN
+      // one sticker is misread" — which is the opposite claim and the whole point of the sentence.
+      /(?<!more than )one sticker (was|is) (misread|wrong)/i,
+      /pick the right colour/i, // the app does not know the right colour, only a colour that fits
+    ]) {
+      expect(body).not.toMatch(claim);
+    }
+    expect(last().notice?.title ?? '').not.toMatch(/looks wrong/i);
   });
 
   it('a tapped correction on the suspect completes the scan', async () => {
@@ -393,6 +447,31 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     expect(invalid[0]!.valid).toBe(false);
   });
 
+  it('editing an accepted painting into an invalid one takes the verdict back', async () => {
+    // A finished scan is a state, and painting had no way to leave it. `scheduleCheck` clears
+    // `finished` on the camera path because a capture re-decides the verdict; a paint stroke
+    // re-decides it just the same and cleared everything EXCEPT that. So breaking an accepted
+    // painting emitted 'scan-invalid' while still reporting complete: true, and the host's Solve
+    // button stayed lit over a cube the panel had that instant refused.
+    panel.setPainting(true);
+    const truth = facesOf(DEEP);
+    for (const f of FACES)
+      for (let i = 0; i < 9; i++) if (i !== 4) panel.setSticker(f, i, truth[f]![i]!);
+    expect(last().complete).toBe(true);
+
+    const invalid: AiScanResult[] = [];
+    panel.addEventListener('scan-invalid', (e) =>
+      invalid.push((e as CustomEvent<AiScanResult>).detail),
+    );
+    panel.setSticker('U', 0, (truth.U![0]! + 1) % 6);
+    expect(invalid).toHaveLength(1);
+    expect(last().complete).toBe(false); // refused and complete cannot both be true
+
+    // And putting it back re-accepts it, so the flag is a state and not a one-way door.
+    panel.setSticker('U', 0, truth.U![0]!);
+    expect(last().complete).toBe(true);
+  });
+
   it('states only what the decoder proves when more than one sticker is wrong', async () => {
     // The wording bug duplication caused: painting claimed "more than one wrong sticker has more
     // than one possible repair", which is stronger than anything proved. The guarantee is that
@@ -440,15 +519,40 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
   it('a brief camera hiccup is still forgiven, and forgotten once a tick succeeds', async () => {
     // The other half of the same claim: if this were a plain counter the transient case would
     // eventually trip it too, and the fix would have traded a silent failure for a false alarm.
+    //
+    // The gap between the two hiccups is deliberately LONGER than TICK_FAIL_MS. It used to be
+    // 400 ms, and with a total elapsed time under 3 s this test could not fail however stale the
+    // failure clock was — while the clock was only ever cleared where a BRAND NEW face was filed,
+    // so an abstaining tick like this one left it standing. A healthy minute of scanning followed
+    // by one hiccup then read as three seconds of solid failure and killed the scanner.
     fake.failWith = new Error('camera not ready');
     await vi.advanceTimersByTimeAsync(TICK * 4);
     fake.failWith = null;
-    fake.output = emptyTensor();
-    await vi.advanceTimersByTimeAsync(TICK * 2);
+    fake.output = emptyTensor(); // healthy, but abstaining — no face, nothing captured
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(last().phase).not.toBe('error');
     fake.failWith = new Error('camera not ready again');
     await vi.advanceTimersByTimeAsync(TICK * 4); // the clock restarted at the healthy tick
     expect(last().phase).not.toBe('error');
+  });
+
+  it('a frame that never arrives is not a cube held still', async () => {
+    // `output === null` means the camera has opened but produced no frame. An ABSTAINING frame
+    // already reset the streak; a MISSING one did not, so identical reads either side of a stall
+    // satisfied both the count and the duration with nothing observed in between — the one thing
+    // the duration half of the gate exists to refuse.
+    const shown = facesOf(DEEP);
+    fake.output = tensorFor(shown.U);
+    await vi.advanceTimersByTimeAsync(TICK * 3); // 3 reads, only 400 ms of stillness — not yet
+    expect(last().captured).toHaveLength(0);
+    fake.output = null; // the camera stalls
+    await vi.advanceTimersByTimeAsync(TICK);
+    fake.output = tensorFor(shown.U); // the same read comes back
+    await vi.advanceTimersByTimeAsync(TICK * 3);
+    // The run restarted at the first read AFTER the stall, so this is 400 ms old, not 1200.
+    expect(last().captured).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(TICK); // and one more tick does settle it
+    expect(last().captured).toHaveLength(1);
   });
 
   it('start() refuses while painting, and painting hides the button that would call it', async () => {
@@ -557,5 +661,112 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     panel.setPainting(false);
     await vi.advanceTimersByTimeAsync(TICK);
     expect(last().captured).toHaveLength(2);
+  });
+
+  it('a start superseded while opening does not close the camera the newer one opened', async () => {
+    // The detector is ONE object shared by every attempt, so `detector.stop()` closes whatever is
+    // open now — not "this attempt's camera", which does not exist. A superseded attempt tidying
+    // up therefore shut off the lens a newer attempt had just been granted: reachable whenever a
+    // start is superseded while it waits on a permission prompt, and invisible afterwards because
+    // the panel reports a camera it no longer has.
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+
+    solo.setAttribute('device-id', 'camera-A');
+    let openFirst = (): void => {};
+    det.hold = new Promise<void>((res) => {
+      openFirst = () => res();
+    });
+    const first = solo.start(); // blocks inside detector.use()
+    await vi.advanceTimersByTimeAsync(0);
+    det.hold = null;
+    solo.setAttribute('device-id', 'camera-B');
+    const second = solo.start(); // supersedes it, and opens for real
+
+    // The superseded open lands while the newer one is queued behind it. Opens are SERIALISED for
+    // exactly this reason: `use()` mutates the shared detector's camera, so without a queue the
+    // winner is whichever settles last rather than whichever is current, and the panel ends up
+    // reporting camera-B over a detector left holding camera-A.
+    openFirst();
+    await Promise.all([first, second]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // WHICH camera, not merely that there is one — asserting non-nullness passes with the wrong
+    // one, which is the entire failure.
+    expect(det.device?.deviceId).toBe('camera-B');
+    expect(seen.at(-1)?.device?.deviceId).toBe('camera-B');
+    solo.remove();
+  });
+
+  it('a scanner that gave up leaves a working way back on', async () => {
+    // Not headless: the notice says "Try Start again", and only a drawn panel can be wrong about
+    // whether that button exists. It said it while Start was hidden — start() hides it the moment
+    // the camera opens — so the one instruction the fatal path gives had nothing behind it.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const drawn = new AiScanPanel();
+    const det = new FakeDetector();
+    drawn.useDetector(det, 'web');
+    document.body.appendChild(drawn);
+    const seen: ScanProgress[] = [];
+    drawn.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    await drawn.start();
+    const startBtn = drawn.shadowRoot?.getElementById('start') as HTMLButtonElement;
+    expect(startBtn.hidden).toBe(true); // scanning: no Start on offer
+
+    det.failWith = new Error('malformed tensor');
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(seen.at(-1)?.phase).toBe('error');
+    expect(seen.at(-1)?.notice?.body ?? '').toMatch(/Try Start again/);
+    expect(startBtn.hidden).toBe(false);
+    expect(startBtn.disabled).toBe(false);
+    // And the camera is released, not left live under a dead loop.
+    expect(seen.at(-1)?.device).toBeNull();
+    expect(det.device).toBeNull();
+
+    // Pressing it works: the failure clock does not survive into the new loop.
+    det.failWith = null;
+    await drawn.start();
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(seen.at(-1)?.phase).toBe('scanning');
+    logged.mockRestore();
+    drawn.remove();
+  });
+
+  it('an inference that rejects after the scan ended says nothing', async () => {
+    // The success path has always rejected a stale frame; the failure path did not. A `next()`
+    // that rejects after stop() — or after painting is switched on — restarted the failure clock
+    // and could report an error over a panel that had moved on.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Wind the failure clock up to just under TICK_FAIL_MS, so the late rejection is the one that
+    // would tip it over. Anything less and the test passes with or without the guard, because a
+    // first failure never reports — which is exactly how this went unnoticed.
+    fake.failWith = new Error('camera not ready');
+    await vi.advanceTimersByTimeAsync(2600);
+    expect(last().phase).not.toBe('error');
+
+    let failLate = (): void => {};
+    fake.next = () =>
+      new Promise((_res, rej) => {
+        failLate = () => rej(new Error('landed too late'));
+      });
+    await vi.advanceTimersByTimeAsync(TICK); // one tick is now in flight
+    panel.setPainting(true); // the scan is over; the camera is released
+    await vi.advanceTimersByTimeAsync(1000); // now past TICK_FAIL_MS since the first failure
+    const after = events.length;
+    failLate();
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(events.length).toBe(after); // not one word about it
+    expect(last().phase).toBe('painting');
+    expect(logged).not.toHaveBeenCalled();
+    logged.mockRestore();
   });
 });
