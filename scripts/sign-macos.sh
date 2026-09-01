@@ -56,8 +56,29 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$ROOT/target/release/bundle/macos/cubus.app"
-DMG_DIR="$ROOT/target/release/bundle/dmg"
+# Locate the bundle under ANY target triple, not just the native one.
+#
+# `tauri build` writes to target/release/bundle/, but `tauri build --target
+# universal-apple-darwin` writes to target/universal-apple-darwin/release/bundle/ — and the
+# release workflow builds universal. This script had the native path hardcoded, so it worked on
+# a developer Mac and died in CI with `find: .../target/release/bundle/dmg: No such file or
+# directory`, AFTER notarytool had already validated credentials. Searching is the fix: there is
+# exactly one macOS bundle in a given build, and preferring the universal one when both exist
+# matches what a release actually ships.
+find_bundle() {
+	local kind="$1" name="$2" hit
+	for base in "$ROOT/target/universal-apple-darwin/release/bundle" \
+	            "$ROOT/target/release/bundle" \
+	            "$ROOT/target"/*/release/bundle; do
+		[ -d "$base/$kind" ] || continue
+		hit="$(find "$base/$kind" -maxdepth 1 -name "$name" -not -name 'rw.*' | head -1)"
+		[ -n "$hit" ] && { printf '%s' "$hit"; return 0; }
+	done
+	return 1
+}
+
+APP="$(find_bundle macos 'cubus.app' || true)"
+DMG_DIR="$(dirname "$(find_bundle dmg 'cubus_*.dmg' || echo "$ROOT/target/release/bundle/dmg/none")")"
 IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: HANDO K.K. (Y53RSUA3SM)}"
 PROFILE=""
 

@@ -1,6 +1,7 @@
 [package]
 name = "cubus-desktop"
 version = "0.2.0"
+license = "AGPL-3.0-only"
 description = "Cubus desktop app"
 edition = "2021"
 rust-version = "1.77.2"

@@ -1,6 +1,7 @@
 {
   "name": "cubus-web",
   "version": "0.2.0",
+  "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "description": "Cubus SPA — camera (YOLO) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",

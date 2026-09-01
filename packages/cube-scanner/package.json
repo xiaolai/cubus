@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Webcam Rubik's Cube face scanner — pure, tested CV core (framework-agnostic) plus a thin browser shell",
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "private": true,
   "scripts": {
     "typecheck": "tsc --noEmit",

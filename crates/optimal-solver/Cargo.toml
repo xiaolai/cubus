@@ -4,6 +4,7 @@
 [package]
 name = "optimal-solver"
 version = "0.1.0"
+license = "AGPL-3.0-only"
 description = "Prove a 3x3 solution minimal: three pattern databases and IDA*, per Korf 1997"
 edition = "2021"
 rust-version = "1.77.2"

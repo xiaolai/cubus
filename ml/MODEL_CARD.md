@@ -144,3 +144,16 @@ Render on a Mac (`ml/render.sh` with `GEN=generate_cube3d.py`), train on an NVID
 (`ml/train.sh`). Note for the DGX Spark GB10: it hard-resets under sustained load unless the GPU
 clock is capped — `sudo nvidia-smi -lgc 300,2200` (community-verified; it's power *spikes*, not
 average temp). Real cube datasets are CC BY 4.0 (Roboflow) — attribution required if shipped.
+
+## Licence
+
+The detector is a YOLO model trained with [Ultralytics](https://github.com/ultralytics/ultralytics)
+(pinned at 8.4.126 in `ml/models/MANIFEST.json`), which is **AGPL-3.0**. Ultralytics' stated
+position is that the licence reaches models trained with their software, and applications that use
+those models — so this file is part of why cubus is AGPL-3.0 rather than permissive. See
+`LICENSE-COMMERCIAL.md`.
+
+The practical consequence for anyone reusing this model: a closed-source product cannot simply take
+`cube-yolo.onnx`. It needs an Ultralytics Enterprise Licence, or a detector trained on a stack that
+is not copyleft. A commercial licence for cubus covers cubus, and cannot grant rights to
+Ultralytics' work.
