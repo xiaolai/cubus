@@ -2,7 +2,7 @@
 #
 # Rebuild every shipped icon raster from the one source mark.
 #
-#   dev-docs/design/icons/cubus-icon-flat.svg   <- the ONLY hand-authored file
+#   design/icons/cubus-icon-flat.svg            <- the ONLY hand-authored file
 #
 # Everything this script writes is derived. Hand-editing any output is always
 # wrong: the next run overwrites it, and in the meantime two surfaces disagree.
@@ -37,7 +37,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 icons="$repo_root/apps/desktop/src-tauri/icons"
 web="$repo_root/apps/web/icons"
-design="$repo_root/dev-docs/design/icons"
+design="$repo_root/design/icons"
 
 for tool in rsvg-convert magick iconutil; do
   command -v "$tool" >/dev/null 2>&1 || {
