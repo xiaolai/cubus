@@ -417,7 +417,10 @@ def parity(args, doc, live: dict, legs: list[str], fx: list[Path]) -> int:
         GitHub macos-26-arm64 (M1-class VM)  19/20 — photo-01.png abstains where fp32 reads it
 
     Both the coremltools leg and the shipped Swift path diverge together there, so it is the Apple
-    fp16 inference and not the harness. It is not a generically borderline fixture either: int8, a
+    fp16 inference and not the harness. And it is the SILICON, not dispatch: the same run with
+    `--compute-units cpu_only`, which removes CoreML's choice of ANE/GPU/CPU entirely, refuses
+    photo-01 exactly the same way (measured on the runner 2026-09-01, both legs). No configuration
+    removes it, so the directional rule below is the answer rather than a stopgap. It is not a generically borderline fixture either: int8, a
     far coarser perturbation than fp16, reads photo-01 identically to fp32. So the honest claim is
     directional rather than exact — and the direction is the one that matters, because refusing a
     frame is what the app is supposed to do when it cannot validate a read ("a reading that cannot
