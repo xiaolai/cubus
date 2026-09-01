@@ -97,6 +97,20 @@ const STABLE = 3; // identical reads in a row before we auto-capture a face
 // on the tick rate: 3 web reads span ~1.2 s, but 3 native reads span 180 ms — fast enough to
 // capture a cube still being turned into position. Time is what stillness is, so require both.
 const STABLE_MS = 500;
+/**
+ * How long a failing tick may stay silent before it becomes an error.
+ *
+ * `detector.next()` throws while the camera is still warming up — a 0x0 video element — and that
+ * is genuinely transient, resolving within a tick or two. It also throws when the model failed to
+ * load, when a native tensor comes back malformed, or when post-processing has a defect, and none
+ * of those ever resolve. The old code could not tell them apart because it caught everything and
+ * commented that it was the first kind, so a broken scanner looped forever showing "hold still"
+ * and the project's fail-loud rule was quietly suspended for its most important surface.
+ *
+ * Wall clock rather than a tick count, because the web tick is 200 ms and the native one 60 ms —
+ * a count would mean three seconds of patience on one path and one second on the other.
+ */
+const TICK_FAIL_MS = 3000;
 // The beat between "captured/corrected" and the verdict. Assembly itself is ~5 ms; this exists so
 // the capture that triggered the check — the sixth tile going green, a corrected sticker — paints
 // before any refusal lands. Everything used to run in one task, so the browser painted once,
@@ -265,6 +279,8 @@ export class AiScanPanel extends HTMLElement {
   /** When the current identical-read streak began; captures need STABLE reads AND STABLE_MS. */
   private stableSince = 0;
   private live: number[] | null = null;
+  /** When the current run of failing ticks began, or null when the last tick completed. */
+  private tickFailingSince: number | null = null;
   private device: CameraDevice | null = null;
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   private confirmed: Partial<Record<Face, ColorFace>> = {};
@@ -313,6 +329,26 @@ export class AiScanPanel extends HTMLElement {
     this.stop();
   }
 
+  /**
+   * Why the camera must not open right now — one answer, consulted by every entry point.
+   *
+   * This replaces three half-guards that each protected one caller and left the others. `start()`
+   * had a generation counter, which defends against a LATER start superseding an in-flight one and
+   * cannot see that the element has been removed: it takes a fresh generation, so the
+   * `queueMicrotask(() => start())` queued by connectedCallback still opened the camera on an
+   * element that disconnectedCallback had already stopped. And nothing at all stopped `start()`
+   * while painting, though setPainting's own comment calls the modes "exclusive by nature" — so
+   * the Start button that `stop()` helpfully re-revealed would open a camera whose captures
+   * overwrite the stickers the user had just painted.
+   *
+   * Both are the same absence: the two facts that gate the camera were never asked in one place.
+   */
+  private cameraRefusal(): 'detached' | 'painting' | null {
+    if (!this.isConnected) return 'detached';
+    if (this.painting) return 'painting';
+    return null;
+  }
+
   /** Release the camera + stop the loop. Safe repeatedly and before first render. The detector
    *  itself is kept, so the loaded model survives a stop()/start() (only the camera is released). */
   stop(): void {
@@ -328,10 +364,17 @@ export class AiScanPanel extends HTMLElement {
     }
     this.detector?.stop();
     this.device = null;
+    // The preview is the LAST camera frame. Leaving it set means a report published after stop()
+    // carries a `live` face that no camera is producing — setPainting(true) calls stop() and then
+    // reports immediately, so painting began by claiming a live lens it had just released.
+    this.showPreview(null);
     const start = this.maybe<HTMLButtonElement>('start');
     if (start) {
       start.disabled = false;
-      start.hidden = false;
+      // Not while painting: start() refuses then, and a button that does nothing when pressed is
+      // worse than an absent one. stop() used to reveal it unconditionally, which is how painting
+      // came to offer the one control that could destroy the work.
+      start.hidden = this.painting;
     }
     const restart = this.maybe<HTMLButtonElement>('restart');
     if (restart) restart.hidden = true;
@@ -353,6 +396,15 @@ export class AiScanPanel extends HTMLElement {
    * painting, must not cost the user the sides they already showed. `restart()` is the wipe.
    */
   async start(): Promise<void> {
+    const refusal = this.cameraRefusal();
+    if (refusal !== null) {
+      // Detached: the element is gone, there is no host listening and nothing to show a lens in,
+      // so returning is the whole of the correct behaviour. Painting: the user is authoring the
+      // cube and a camera would overwrite it — say so, because unlike the detached case somebody
+      // pressed something and is owed an answer.
+      if (refusal === 'painting') this.report('painting', PAINTING);
+      return;
+    }
     const startBtn = this.maybe<HTMLButtonElement>('start');
     if (startBtn) startBtn.disabled = true;
     const gen = ++this.startGen;
@@ -655,8 +707,24 @@ export class AiScanPanel extends HTMLElement {
         return;
       }
       this.capture(face, fit.face);
-    } catch {
-      // camera not ready (0x0) — try again next tick
+      this.tickFailingSince = null; // a tick that got all the way here is healthy
+    } catch (err) {
+      // Transient at first, an error if it persists. The distinction is duration, not type: the
+      // camera-not-ready case clears in a tick or two, and nothing else does.
+      const now = Date.now();
+      this.tickFailingSince ??= now;
+      if (now - this.tickFailingSince >= TICK_FAIL_MS) {
+        this.stopLoop();
+        this.notice = {
+          title: 'The scanner stopped',
+          tone: 'err',
+          body: 'The camera opened but no frame could be read for several seconds. Try Start again, and if it keeps happening the model or the camera driver is at fault rather than the cube.',
+        };
+        this.report('error', 'Could not read from the camera.');
+        // Rethrown into the console for whoever is debugging: the notice tells the user what to do,
+        // and this is the only place the underlying cause survives at all.
+        console.error('[ai-scan-panel] scan loop stopped after repeated failures', err);
+      }
     } finally {
       this.busy = false;
     }

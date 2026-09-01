@@ -56,7 +56,10 @@ class FakeDetector implements Detector {
     this.device = { deviceId: 'fake', label: 'Fake Camera' };
   }
   async load(): Promise<void> {}
+  /** Set to make every `next()` throw — a model that failed to load, or a malformed tensor. */
+  failWith: Error | null = null;
   async next(): Promise<ModelOutput | null> {
+    if (this.failWith) throw this.failWith;
     return this.output;
   }
   async cameras(): Promise<CameraDevice[]> {
@@ -402,6 +405,77 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     expect(p.notice?.body ?? '').toMatch(/no single sticker to point at/);
     expect(p.notice?.body ?? '').not.toMatch(/more than one possible repair/);
     expect(p.notice?.params?.[0]).toBeGreaterThanOrEqual(2); // the count rides in params, not the string
+  });
+
+  it('a scan loop that keeps failing says so instead of looping in silence', async () => {
+    // The blanket `catch {}` here commented that it was the camera warming up, and swallowed
+    // everything: a model that failed to load, a malformed native tensor, a post-processing defect.
+    // The scanner looped forever showing "hold still" and the fail-loud rule was suspended for the
+    // app's most important surface. The distinction is DURATION, not exception type.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fake.failWith = new Error('malformed tensor');
+    await vi.advanceTimersByTimeAsync(TICK * 3); // under TICK_FAIL_MS: still patient
+    expect(last().phase).not.toBe('error');
+    await vi.advanceTimersByTimeAsync(3000); // past it: now it must speak
+    expect(last().phase).toBe('error');
+    // The cause must survive somewhere. The notice tells the user what to do; only this carries
+    // the underlying error to whoever has to fix it.
+    expect(logged).toHaveBeenCalled();
+    expect(String(logged.mock.calls[0]?.[1] ?? '')).toMatch(/malformed tensor/);
+    logged.mockRestore();
+    expect(last().notice?.title ?? '').toMatch(/stopped/i);
+    // And it stopped: a loop that keeps throwing must not keep throwing.
+    const after = events.length;
+    await vi.advanceTimersByTimeAsync(TICK * 5);
+    expect(events.length).toBe(after);
+  });
+
+  it('a brief camera hiccup is still forgiven, and forgotten once a tick succeeds', async () => {
+    // The other half of the same claim: if this were a plain counter the transient case would
+    // eventually trip it too, and the fix would have traded a silent failure for a false alarm.
+    fake.failWith = new Error('camera not ready');
+    await vi.advanceTimersByTimeAsync(TICK * 4);
+    fake.failWith = null;
+    fake.output = emptyTensor();
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(last().phase).not.toBe('error');
+    fake.failWith = new Error('camera not ready again');
+    await vi.advanceTimersByTimeAsync(TICK * 4); // the clock restarted at the healthy tick
+    expect(last().phase).not.toBe('error');
+  });
+
+  it('start() refuses while painting, and painting hides the button that would call it', async () => {
+    // setPainting's own comment calls the modes "exclusive by nature, not by policy" — and nothing
+    // enforced it. stop() re-revealed the Start button, so painting offered the one control that
+    // could overwrite the stickers the user had just authored.
+    panel.setPainting(true);
+    expect(last().device).toBeNull();
+    await panel.start();
+    expect(last().device).toBeNull(); // no camera, whatever pressed it
+    expect(last().phase).toBe('painting');
+  });
+
+  it('an element removed before its autostart fires never opens the camera', async () => {
+    // connectedCallback defers start() by a microtask so a host attaching a listener in the same
+    // block does not miss the first report. Remove the element in that window and the microtask
+    // still ran: disconnectedCallback stopped a scan that had not begun, and then it began — on a
+    // detached element, with no host and nothing to show a lens in.
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    solo.setAttribute('autostart', '');
+    const det = new FakeDetector();
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo); // queues the autostart microtask
+    solo.remove(); // ...and leaves before it runs
+    await vi.advanceTimersByTimeAsync(TICK * 3);
+    expect(det.device).toBeNull(); // the camera was never opened
+  });
+
+  it('a report published after stop() does not claim a live camera face', async () => {
+    await show(facesOf(DEEP).U);
+    expect(last().live).not.toBeNull();
+    panel.setPainting(true); // calls stop(), then reports immediately
+    expect(last().live).toBeNull();
   });
 
   it('toggling painting off and on keeps the sides already captured', async () => {
