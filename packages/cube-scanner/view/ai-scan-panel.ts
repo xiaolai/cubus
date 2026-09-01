@@ -45,6 +45,7 @@ import { fitFromOutput } from '../src/onnx-detect.js';
 import type { FitReason } from '../src/onnx-postprocess.js';
 import { FACES, type Face } from '../src/types.js';
 import { type Invoke, NativeDetector } from './native-detector.js';
+import { Stillness } from './stillness.js';
 import { WebDetector } from './web-detector.js';
 
 /** Which runtime is actually doing inference — surfaced so "am I on the fast path?" is answerable. */
@@ -274,11 +275,19 @@ export class AiScanPanel extends HTMLElement {
   private headless = false;
 
   private readonly faces = {} as Record<Face, ColorFace>;
-  private lastColors = '';
-  private stableCount = 0;
   /** When the current identical-read streak began; captures need STABLE reads AND STABLE_MS. */
-  private stableSince = 0;
   private live: number[] | null = null;
+  /**
+   * The count-and-duration gate that decides a read is worth capturing.
+   *
+   * It replaces three fields that FOUR different sites reset by hand, three of them clearing only
+   * two of the three. That was harmless — clearing the key forces the "new run" branch, which
+   * reassigns the timestamp — but harmless by a coincidence of control flow two branches away is
+   * not the same as correct, and it is what makes the next edit to that branch dangerous. One
+   * object with one reset needs no coincidence, and the timing rule becomes testable without a
+   * camera, a detector, a timer and a DOM element.
+   */
+  private readonly still = new Stillness(STABLE, STABLE_MS);
   /** When the current run of failing ticks began, or null when the last tick completed. */
   private tickFailingSince: number | null = null;
   private device: CameraDevice | null = null;
@@ -472,22 +481,39 @@ export class AiScanPanel extends HTMLElement {
       if (fellBack) this.loop(phase, this.tinted('err', PINNED_GONE), ' ', ...opening);
       else this.loop(phase, ...opening);
     } catch (err) {
-      if (gen !== this.startGen) {
-        detector.stop(); // orphaned camera on a cancelled attempt
-        return;
-      }
-      // Keep the camera preview alive (camera-first) but re-offer Start so the user can retry.
-      if (startBtn) {
-        startBtn.hidden = false;
-        startBtn.disabled = false;
-      }
-      this.report(
-        'error',
-        this.tinted('err', `Cannot start: ${String((err as Error)?.message ?? err)}`),
-      );
+      this.startFailed(err, gen, detector, startBtn);
     } finally {
       clearTimeout(slowOpen);
     }
+  }
+
+  /**
+   * A camera that would not open: re-offer Start, and say which of the several causes it was.
+   *
+   * Lifted out of start(), which was 100 lines of which a quarter was this. The happy path and the
+   * failure path share nothing but their variables, and reading either meant scrolling past the
+   * other. The generation is passed rather than re-read because it is the caller's attempt that is
+   * being judged, not whatever attempt is current by the time this runs.
+   */
+  private startFailed(
+    err: unknown,
+    gen: number,
+    detector: Detector,
+    startBtn: HTMLButtonElement | null,
+  ): void {
+    if (gen !== this.startGen) {
+      detector.stop(); // orphaned camera on a cancelled attempt
+      return;
+    }
+    // Keep the camera preview alive (camera-first) but re-offer Start so the user can retry.
+    if (startBtn) {
+      startBtn.hidden = false;
+      startBtn.disabled = false;
+    }
+    this.report(
+      'error',
+      this.tinted('err', `Cannot start: ${String((err as Error)?.message ?? err)}`),
+    );
   }
 
   /**
@@ -556,9 +582,7 @@ export class AiScanPanel extends HTMLElement {
   }
 
   private reset(): void {
-    this.lastColors = '';
-    this.stableCount = 0;
-    this.stableSince = 0;
+    this.still.reset();
     this.live = null;
     this.confirmed = {};
     this.awaiting = null;
@@ -578,8 +602,7 @@ export class AiScanPanel extends HTMLElement {
     if (this.timer !== null) clearInterval(this.timer);
     this.scanEpoch++;
     this.showPreview(null);
-    this.stableCount = 0;
-    this.lastColors = '';
+    this.still.reset();
     const restart = this.maybe<HTMLButtonElement>('restart');
     if (restart) restart.hidden = false;
     // Asking for a side with no camera open is a promise nothing can keep — and it reads exactly
@@ -617,8 +640,7 @@ export class AiScanPanel extends HTMLElement {
       if (output === null) return; // camera opened but no frame yet — try again next tick
       const fit = fitFromOutput(output);
       if (!fit.ok) {
-        this.stableCount = 0;
-        this.lastColors = '';
+        this.still.reset();
         this.showPreview(null);
         // Keep the confirm phase while a confirm is pending: reporting 'scanning' here used to
         // flip the host back to its idle heading the moment the cube left the frame — which it
@@ -629,85 +651,19 @@ export class AiScanPanel extends HTMLElement {
         );
         return;
       }
-      // Require a few identical reads in a row AND a real stretch of wall-clock stillness, so we
-      // never capture a blurred / moving frame — on the 60 ms native tick, reads alone span 180 ms.
-      const key = fit.face.colors.join(',');
-      if (key === this.lastColors) {
-        this.stableCount += 1;
-      } else {
-        this.stableCount = 1;
-        this.stableSince = Date.now();
-      }
-      this.lastColors = key;
+      // Both a count and a duration; see Stillness for why either alone is wrong.
+      const settled = this.still.offer(fit.face.colors);
       this.showPreview(fit.face.colors);
-      if (this.stableCount < STABLE || Date.now() - this.stableSince < STABLE_MS) {
+      if (!settled) {
         this.report(this.awaiting ? 'confirm' : 'scanning', 'Reading a side — hold still…');
         return;
       }
       // A face's CENTRE colour is its identity (centres never move): colour class i ↔ FACES[i].
       // So sides can be shown in any order — file each stable read under the face it belongs to.
-      const centre = fit.face.colors[4];
-      const face = centre === undefined ? undefined : FACES[centre];
-      // While confirming, only the side we asked for counts, and it is taken as a CANONICAL
-      // capture rather than filed as a new face: its rotation is the whole point of asking.
-      if (this.awaiting) {
-        if (face !== this.awaiting.face) {
-          this.report('confirm', ...this.confirmWords(this.awaiting));
-          return;
-        }
-        this.confirmed[face] = fit.face;
-        this.awaiting = null;
-        this.flash();
-        this.scheduleCheck(this.tinted('ok', 'Got it — checking…'));
-        return;
-      }
-      if (face === undefined) {
-        this.report('scanning', this.tinted('err', "Couldn't read the centre — hold it steadier."));
-        return;
-      }
-      // A finished scan captures nothing: the cube in view is most likely just being picked up —
-      // to be solved, not re-scanned — and silently replacing part of an ACCEPTED scan because a
-      // side drifted through the frame would be the worst kind of helpfulness.
-      if (this.finished) {
-        this.report(
-          'scanning',
-          'This cube is already scanned — tap a sticker to fix one, or start the scan over for a different cube.',
-        );
-        return;
-      }
-      if (this.faces[face]) {
-        // With all six sides in, the loop only runs because the scan was refused — so a re-shown
-        // side is a correction: replace its reading and check again. A read identical to the one
-        // already filed would re-run the same refusal forever, so it just restates the options.
-        if (this.capturedFaces().length >= FACES.length) {
-          if (key === this.faces[face].colors.join(',')) {
-            this.report(
-              'scanning',
-              'The ',
-              this.bold(GUIDE[face].name),
-              ' side reads the same as before — tap a sticker to fix it, or show another side.',
-            );
-            return;
-          }
-          this.faces[face] = fit.face;
-          this.confirmed = {};
-          this.mismatches = 0;
-          this.buildDots();
-          this.flash();
-          this.scheduleCheck(this.tinted('ok', `Re-read the ${GUIDE[face].name} side — checking…`));
-          return;
-        }
-        const named = this.missingSides();
-        this.report(
-          'scanning',
-          'Already have the ',
-          this.bold(GUIDE[face].name),
-          named ? ` side — still need ${named}.` : ' side — show a different one.',
-        );
-        return;
-      }
-      this.capture(face, fit.face);
-      this.tickFailingSince = null; // a tick that got all the way here is healthy
+      // Everything above decides whether there is a read worth acting on; this decides what
+      // the read MEANS and where it goes. Separated because the first half is about the
+      // camera and the second is about the cube, and only the second can capture anything.
+      this.fileSettledRead(fit.face);
     } catch (err) {
       // Transient at first, an error if it persists. The distinction is duration, not type: the
       // camera-not-ready case clears in a tick or two, and nothing else does.
@@ -730,11 +686,82 @@ export class AiScanPanel extends HTMLElement {
     }
   }
 
+  /**
+   * A read that has held still: work out which side it is, and file it.
+   *
+   * Split out of onTick, which had grown to 117 lines covering four unrelated decisions —
+   * whether the loop should run at all, whether the frame is usable, whether the cube has
+   * stopped moving, and what the resulting read means. Only the last one is about cubes.
+   */
+  private fileSettledRead(read: ColorFace): void {
+    const centre = read.colors[4];
+    const face = centre === undefined ? undefined : FACES[centre];
+    // While confirming, only the side we asked for counts, and it is taken as a CANONICAL
+    // capture rather than filed as a new face: its rotation is the whole point of asking.
+    if (this.awaiting) {
+      if (face !== this.awaiting.face) {
+        this.report('confirm', ...this.confirmWords(this.awaiting));
+        return;
+      }
+      this.confirmed[face] = read;
+      this.awaiting = null;
+      this.flash();
+      this.scheduleCheck(this.tinted('ok', 'Got it — checking…'));
+      return;
+    }
+    if (face === undefined) {
+      this.report('scanning', this.tinted('err', "Couldn't read the centre — hold it steadier."));
+      return;
+    }
+    // A finished scan captures nothing: the cube in view is most likely just being picked up —
+    // to be solved, not re-scanned — and silently replacing part of an ACCEPTED scan because a
+    // side drifted through the frame would be the worst kind of helpfulness.
+    if (this.finished) {
+      this.report(
+        'scanning',
+        'This cube is already scanned — tap a sticker to fix one, or start the scan over for a different cube.',
+      );
+      return;
+    }
+    if (this.faces[face]) {
+      // With all six sides in, the loop only runs because the scan was refused — so a re-shown
+      // side is a correction: replace its reading and check again. A read identical to the one
+      // already filed would re-run the same refusal forever, so it just restates the options.
+      if (this.capturedFaces().length >= FACES.length) {
+        if (read.colors.join(',') === this.faces[face].colors.join(',')) {
+          this.report(
+            'scanning',
+            'The ',
+            this.bold(GUIDE[face].name),
+            ' side reads the same as before — tap a sticker to fix it, or show another side.',
+          );
+          return;
+        }
+        this.faces[face] = read;
+        this.confirmed = {};
+        this.mismatches = 0;
+        this.buildDots();
+        this.flash();
+        this.scheduleCheck(this.tinted('ok', `Re-read the ${GUIDE[face].name} side — checking…`));
+        return;
+      }
+      const named = this.missingSides();
+      this.report(
+        'scanning',
+        'Already have the ',
+        this.bold(GUIDE[face].name),
+        named ? ` side — still need ${named}.` : ' side — show a different one.',
+      );
+      return;
+    }
+    this.capture(face, read);
+    this.tickFailingSince = null; // a tick that got all the way here is healthy
+  }
+
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
   private capture(face: Face, read: ColorFace): void {
     this.faces[face] = read;
-    this.stableCount = 0;
-    this.lastColors = '';
+    this.still.reset();
     this.buildDots();
     this.flash();
     const done = this.capturedFaces().length;
@@ -827,35 +854,7 @@ export class AiScanPanel extends HTMLElement {
     this.suspects = [];
     const done = this.capturedFaces().length;
     if (this.painting) {
-      // Every stroke is checked, and only a finished cube is acted on. Half-painted states are
-      // invalid by definition, so reporting each one as a failure would be noise, not news — but
-      // once all six sides ARE painted, silence stops being kindness: say what still blocks it.
-      if (done === FACES.length) {
-        const result = assemblePainted(this.faces);
-        if (result.valid) {
-          this.finish(result);
-          return;
-        }
-        // Same classification, same proven wording, same public event as the camera path — the
-        // only difference is how you get out of it, which here is tapping rather than re-showing.
-        // Painting used to build its own notice and emit nothing, so `scan-invalid` fired for a
-        // refused SCAN and not for a refused PAINTING: a public event that depended on which mode
-        // the user happened to be in.
-        this.suspects = result.suspects ?? [];
-        this.dispatchEvent(new CustomEvent<AiScanResult>('scan-invalid', { detail: result }));
-        this.notice = this.misreadNotice(result, {
-          one: 'tap it and pick the colour it offers.',
-          many: 'Check those sides against the cube in your hand and repaint what does not match.',
-        }) ?? {
-          title: 'Not solvable yet',
-          tone: 'info',
-          body: `${result.reason ?? 'Not a legal cube yet'} — check the sides against your cube.`,
-        };
-      }
-      this.report(
-        'painting',
-        `Painted the ${GUIDE[face].name} side — ${done}/${FACES.length} sides.`,
-      );
+      this.afterPaintStroke(face, done);
       return;
     }
     if (done < FACES.length) {
@@ -863,6 +862,48 @@ export class AiScanPanel extends HTMLElement {
       return;
     }
     this.scheduleCheck(this.tinted('ok', 'Corrected — checking…'));
+  }
+
+  /**
+   * A stroke landed while the user is authoring the cube: check it, and act only on a
+   * finished one.
+   *
+   * Half of setSticker was this branch, and it shares nothing with the correction path
+   * below it but the bookkeeping above them both. A half-painted cube is invalid BY
+   * DEFINITION, so reporting each stroke as a failure would be noise rather than news —
+   * and once all six sides are there, silence stops being kindness.
+   */
+  private afterPaintStroke(face: Face, done: number): void {
+    // Every stroke is checked, and only a finished cube is acted on. Half-painted states are
+    // invalid by definition, so reporting each one as a failure would be noise, not news — but
+    // once all six sides ARE painted, silence stops being kindness: say what still blocks it.
+    if (done === FACES.length) {
+      const result = assemblePainted(this.faces);
+      if (result.valid) {
+        this.finish(result);
+        return;
+      }
+      // Same classification, same proven wording, same public event as the camera path — the
+      // only difference is how you get out of it, which here is tapping rather than re-showing.
+      // Painting used to build its own notice and emit nothing, so `scan-invalid` fired for a
+      // refused SCAN and not for a refused PAINTING: a public event that depended on which mode
+      // the user happened to be in.
+      this.suspects = result.suspects ?? [];
+      this.dispatchEvent(new CustomEvent<AiScanResult>('scan-invalid', { detail: result }));
+      this.notice = this.misreadNotice(result, {
+        one: 'tap it and pick the colour it offers.',
+        many: 'Check those sides against the cube in your hand and repaint what does not match.',
+      }) ?? {
+        title: 'Not solvable yet',
+        tone: 'info',
+        body: `${result.reason ?? 'Not a legal cube yet'} — check the sides against your cube.`,
+      };
+    }
+    this.report(
+      'painting',
+      `Painted the ${GUIDE[face].name} side — ${done}/${FACES.length} sides.`,
+    );
+    return;
   }
 
   /**
@@ -1047,78 +1088,109 @@ export class AiScanPanel extends HTMLElement {
     return null;
   }
 
+  /**
+   * Route an assembled verdict to the one branch that handles it.
+   *
+   * This was 124 lines holding three unrelated jobs: settling an accepted scan, asking for a
+   * side, and explaining a refusal. Nothing was shared between them but the argument, so the
+   * length was the only thing making them look related — and a reader chasing one branch had
+   * to step over the other two to be sure they were not reached.
+   */
   private finish(result: AiScanResult): void {
     this.stopLoop();
     this.showPreview(null);
     this.suspects = result.suspects ?? [];
     if (result.valid && result.lowConfidence.length === 0) {
-      // Settle the captures into canonical rotation. The host repaints its tiles from the
-      // validated string after the settle, so from here on a click on sticker i must mean index i
-      // of what is stored — without this, correcting a side captured 90° off edited the wrong
-      // sticker and turned a good scan invalid.
-      const rots = result.rotations;
-      if (rots) {
-        FACES.forEach((f, fi) => {
-          const read = this.faces[f];
-          const k = rots[fi] ?? 0;
-          if (read && k !== 0) {
-            this.faces[f] = {
-              colors: rotateFace(read.colors, k),
-              confidence: rotateFace(read.confidence, k),
-            };
-          }
-        });
-      }
-      this.confirmed = {};
-      this.awaiting = null;
-      this.mismatches = 0;
-      this.finished = true;
-      this.notice = null;
-      // Release the camera BEFORE reporting, so the 'done' report carries device: null and a host
-      // that stays on the scan screen stops showing a live lens over a finished scan.
-      this.stop();
-      this.report('done', this.tinted('ok', 'Scan complete — solvable cube captured.'));
-      this.dispatchEvent(new CustomEvent<AiScanResult>('scan-complete', { detail: result }));
+      this.finishAccepted(result);
       return;
     }
     if (result.confirm && result.reread === undefined) {
-      if (result.mismatch) {
-        // The looks genuinely contradict each other about the HOLD (colour disagreements were
-        // already resolved as rereads), and which look lied is not knowable — so drop them all
-        // and ask again. The captures stay: they were never the problem. Past the first
-        // contradiction the notice also names the way out a user may prefer.
-        this.confirmed = {};
-        this.mismatches++;
-        this.awaiting = result.confirm;
-        this.notice = {
-          title: 'Those looks disagree',
-          tone: 'err',
-          body: `One of them was held a different way up. ${this.confirmSentence(result.confirm)}${
-            this.mismatches >= 2
-              ? " Each tile's edge colours show which way up to hold that side — or start the scan over."
-              : ''
-          }`,
-        };
-        this.loop(
-          'confirm',
-          this.tinted('err', 'Those two looks disagree. '),
-          ...this.confirmWords(result.confirm),
-        );
-        return;
-      }
-      this.awaiting = result.confirm;
-      this.notice = {
-        title: 'One more look',
-        tone: 'info',
-        body:
-          (result.ambiguous
-            ? 'This cube is so close to solved that six photos genuinely cannot pin it down — one more look, held as asked, decides it. '
-            : 'A single look could have been held wrong, so a second one settles it for sure. ') +
-          this.confirmSentence(result.confirm),
-      };
-      this.loop('confirm', ...this.confirmWords(result.confirm));
+      this.finishConfirming(result, result.confirm);
       return;
     }
+    this.finishRefused(result);
+  }
+
+  /** Accepted: settle the captures into canonical rotation, release the camera, announce it. */
+  private finishAccepted(result: AiScanResult): void {
+    // Settle the captures into canonical rotation. The host repaints its tiles from the
+    // validated string after the settle, so from here on a click on sticker i must mean index i
+    // of what is stored — without this, correcting a side captured 90° off edited the wrong
+    // sticker and turned a good scan invalid.
+    const rots = result.rotations;
+    if (rots) {
+      FACES.forEach((f, fi) => {
+        const read = this.faces[f];
+        const k = rots[fi] ?? 0;
+        if (read && k !== 0) {
+          this.faces[f] = {
+            colors: rotateFace(read.colors, k),
+            confidence: rotateFace(read.confidence, k),
+          };
+        }
+      });
+    }
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
+    this.finished = true;
+    this.notice = null;
+    // Release the camera BEFORE reporting, so the 'done' report carries device: null and a host
+    // that stays on the scan screen stops showing a live lens over a finished scan.
+    this.stop();
+    this.report('done', this.tinted('ok', 'Scan complete — solvable cube captured.'));
+    this.dispatchEvent(new CustomEvent<AiScanResult>('scan-complete', { detail: result }));
+    return;
+  }
+
+  /**
+   * One reading is not enough: name a side to show again, and how to hold it.
+   *
+   * `confirm` is a parameter rather than read off `result` because the caller has already
+   * established it is there. Inside the old single method a type guard did that silently; making
+   * it an argument states the precondition where a reader looks for it, and the compiler keeps it.
+   */
+  private finishConfirming(result: AiScanResult, confirm: ConfirmRequest): void {
+    if (result.mismatch) {
+      // The looks genuinely contradict each other about the HOLD (colour disagreements were
+      // already resolved as rereads), and which look lied is not knowable — so drop them all
+      // and ask again. The captures stay: they were never the problem. Past the first
+      // contradiction the notice also names the way out a user may prefer.
+      this.confirmed = {};
+      this.mismatches++;
+      this.awaiting = confirm;
+      this.notice = {
+        title: 'Those looks disagree',
+        tone: 'err',
+        body: `One of them was held a different way up. ${this.confirmSentence(confirm)}${
+          this.mismatches >= 2
+            ? " Each tile's edge colours show which way up to hold that side — or start the scan over."
+            : ''
+        }`,
+      };
+      this.loop(
+        'confirm',
+        this.tinted('err', 'Those two looks disagree. '),
+        ...this.confirmWords(confirm),
+      );
+      return;
+    }
+    this.awaiting = confirm;
+    this.notice = {
+      title: 'One more look',
+      tone: 'info',
+      body:
+        (result.ambiguous
+          ? 'This cube is so close to solved that six photos genuinely cannot pin it down — one more look, held as asked, decides it. '
+          : 'A single look could have been held wrong, so a second one settles it for sure. ') +
+        this.confirmSentence(confirm),
+    };
+    this.loop('confirm', ...this.confirmWords(confirm));
+    return;
+  }
+
+  /** Refused: keep every capture, and say what would make it a cube. */
+  private finishRefused(result: AiScanResult): void {
     // Refused — but NOT thrown away. The six captures are the user's work and every way out of a
     // refusal needs them: fix a sticker, re-show a side (the loop below replaces its reading), or
     // restart. The old code reset everything here, which wiped the board in the same paint as the

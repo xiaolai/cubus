@@ -2764,6 +2764,44 @@ function decodeTensorResponse(buf) {
   return { data, anchors };
 }
 
+// view/stillness.ts
+var Stillness = class {
+  /**
+   * @param reads Identical consecutive reads required.
+   * @param ms Wall-clock stillness required, from the first read of the current run.
+   */
+  constructor(reads, ms) {
+    this.reads = reads;
+    this.ms = ms;
+  }
+  key = "";
+  count = 0;
+  since = 0;
+  /**
+   * Offer the latest read. True once it has been identical `reads` times AND still for `ms`.
+   *
+   * `now` is injectable because the alternative is a test that sleeps: the timing rule is the whole
+   * point of this class, so it has to be drivable without wall-clock waits.
+   */
+  offer(colors, now = Date.now()) {
+    const key = colors.join(",");
+    if (key === this.key) {
+      this.count += 1;
+    } else {
+      this.key = key;
+      this.count = 1;
+      this.since = now;
+    }
+    return this.count >= this.reads && now - this.since >= this.ms;
+  }
+  /** Forget the current run — the cube left the frame, or the scan was restarted. */
+  reset() {
+    this.key = "";
+    this.count = 0;
+    this.since = 0;
+  }
+};
+
 // src/camera.ts
 async function listCameras() {
   const devices = await navigator.mediaDevices.enumerateDevices();
@@ -3037,11 +3075,19 @@ var AiScanPanel = class extends HTMLElement {
   /** `headless`: draw nothing, and let the host draw from 'scan-progress'. */
   headless = false;
   faces = {};
-  lastColors = "";
-  stableCount = 0;
   /** When the current identical-read streak began; captures need STABLE reads AND STABLE_MS. */
-  stableSince = 0;
   live = null;
+  /**
+   * The count-and-duration gate that decides a read is worth capturing.
+   *
+   * It replaces three fields that FOUR different sites reset by hand, three of them clearing only
+   * two of the three. That was harmless — clearing the key forces the "new run" branch, which
+   * reassigns the timestamp — but harmless by a coincidence of control flow two branches away is
+   * not the same as correct, and it is what makes the next edit to that branch dangerous. One
+   * object with one reset needs no coincidence, and the timing rule becomes testable without a
+   * camera, a detector, a timer and a DOM element.
+   */
+  still = new Stillness(STABLE, STABLE_MS);
   /** When the current run of failing ticks began, or null when the last tick completed. */
   tickFailingSince = null;
   device = null;
@@ -3194,21 +3240,32 @@ var AiScanPanel = class extends HTMLElement {
       if (fellBack) this.loop(phase, this.tinted("err", PINNED_GONE), " ", ...opening);
       else this.loop(phase, ...opening);
     } catch (err) {
-      if (gen !== this.startGen) {
-        detector.stop();
-        return;
-      }
-      if (startBtn) {
-        startBtn.hidden = false;
-        startBtn.disabled = false;
-      }
-      this.report(
-        "error",
-        this.tinted("err", `Cannot start: ${String(err?.message ?? err)}`)
-      );
+      this.startFailed(err, gen, detector, startBtn);
     } finally {
       clearTimeout(slowOpen);
     }
+  }
+  /**
+   * A camera that would not open: re-offer Start, and say which of the several causes it was.
+   *
+   * Lifted out of start(), which was 100 lines of which a quarter was this. The happy path and the
+   * failure path share nothing but their variables, and reading either meant scrolling past the
+   * other. The generation is passed rather than re-read because it is the caller's attempt that is
+   * being judged, not whatever attempt is current by the time this runs.
+   */
+  startFailed(err, gen, detector, startBtn) {
+    if (gen !== this.startGen) {
+      detector.stop();
+      return;
+    }
+    if (startBtn) {
+      startBtn.hidden = false;
+      startBtn.disabled = false;
+    }
+    this.report(
+      "error",
+      this.tinted("err", `Cannot start: ${String(err?.message ?? err)}`)
+    );
   }
   /**
    * The detector, chosen once and kept for the element's life (so the model survives a stop()/
@@ -3265,9 +3322,7 @@ var AiScanPanel = class extends HTMLElement {
     console.info(`[cubus] scanner runtime: ${where}`);
   }
   reset() {
-    this.lastColors = "";
-    this.stableCount = 0;
-    this.stableSince = 0;
+    this.still.reset();
     this.live = null;
     this.confirmed = {};
     this.awaiting = null;
@@ -3286,8 +3341,7 @@ var AiScanPanel = class extends HTMLElement {
     if (this.timer !== null) clearInterval(this.timer);
     this.scanEpoch++;
     this.showPreview(null);
-    this.stableCount = 0;
-    this.lastColors = "";
+    this.still.reset();
     const restart = this.maybe("restart");
     if (restart) restart.hidden = false;
     if (this.device === null) {
@@ -3314,8 +3368,7 @@ var AiScanPanel = class extends HTMLElement {
       if (output === null) return;
       const fit = fitFromOutput(output);
       if (!fit.ok) {
-        this.stableCount = 0;
-        this.lastColors = "";
+        this.still.reset();
         this.showPreview(null);
         this.report(
           this.awaiting ? "confirm" : "scanning",
@@ -3323,73 +3376,13 @@ var AiScanPanel = class extends HTMLElement {
         );
         return;
       }
-      const key = fit.face.colors.join(",");
-      if (key === this.lastColors) {
-        this.stableCount += 1;
-      } else {
-        this.stableCount = 1;
-        this.stableSince = Date.now();
-      }
-      this.lastColors = key;
+      const settled = this.still.offer(fit.face.colors);
       this.showPreview(fit.face.colors);
-      if (this.stableCount < STABLE || Date.now() - this.stableSince < STABLE_MS) {
+      if (!settled) {
         this.report(this.awaiting ? "confirm" : "scanning", "Reading a side \u2014 hold still\u2026");
         return;
       }
-      const centre = fit.face.colors[4];
-      const face = centre === void 0 ? void 0 : FACES[centre];
-      if (this.awaiting) {
-        if (face !== this.awaiting.face) {
-          this.report("confirm", ...this.confirmWords(this.awaiting));
-          return;
-        }
-        this.confirmed[face] = fit.face;
-        this.awaiting = null;
-        this.flash();
-        this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
-        return;
-      }
-      if (face === void 0) {
-        this.report("scanning", this.tinted("err", "Couldn't read the centre \u2014 hold it steadier."));
-        return;
-      }
-      if (this.finished) {
-        this.report(
-          "scanning",
-          "This cube is already scanned \u2014 tap a sticker to fix one, or start the scan over for a different cube."
-        );
-        return;
-      }
-      if (this.faces[face]) {
-        if (this.capturedFaces().length >= FACES.length) {
-          if (key === this.faces[face].colors.join(",")) {
-            this.report(
-              "scanning",
-              "The ",
-              this.bold(GUIDE[face].name),
-              " side reads the same as before \u2014 tap a sticker to fix it, or show another side."
-            );
-            return;
-          }
-          this.faces[face] = fit.face;
-          this.confirmed = {};
-          this.mismatches = 0;
-          this.buildDots();
-          this.flash();
-          this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[face].name} side \u2014 checking\u2026`));
-          return;
-        }
-        const named = this.missingSides();
-        this.report(
-          "scanning",
-          "Already have the ",
-          this.bold(GUIDE[face].name),
-          named ? ` side \u2014 still need ${named}.` : " side \u2014 show a different one."
-        );
-        return;
-      }
-      this.capture(face, fit.face);
-      this.tickFailingSince = null;
+      this.fileSettledRead(fit.face);
     } catch (err) {
       const now = Date.now();
       this.tickFailingSince ??= now;
@@ -3407,11 +3400,73 @@ var AiScanPanel = class extends HTMLElement {
       this.busy = false;
     }
   }
+  /**
+   * A read that has held still: work out which side it is, and file it.
+   *
+   * Split out of onTick, which had grown to 117 lines covering four unrelated decisions —
+   * whether the loop should run at all, whether the frame is usable, whether the cube has
+   * stopped moving, and what the resulting read means. Only the last one is about cubes.
+   */
+  fileSettledRead(read) {
+    const centre = read.colors[4];
+    const face = centre === void 0 ? void 0 : FACES[centre];
+    if (this.awaiting) {
+      if (face !== this.awaiting.face) {
+        this.report("confirm", ...this.confirmWords(this.awaiting));
+        return;
+      }
+      this.confirmed[face] = read;
+      this.awaiting = null;
+      this.flash();
+      this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
+      return;
+    }
+    if (face === void 0) {
+      this.report("scanning", this.tinted("err", "Couldn't read the centre \u2014 hold it steadier."));
+      return;
+    }
+    if (this.finished) {
+      this.report(
+        "scanning",
+        "This cube is already scanned \u2014 tap a sticker to fix one, or start the scan over for a different cube."
+      );
+      return;
+    }
+    if (this.faces[face]) {
+      if (this.capturedFaces().length >= FACES.length) {
+        if (read.colors.join(",") === this.faces[face].colors.join(",")) {
+          this.report(
+            "scanning",
+            "The ",
+            this.bold(GUIDE[face].name),
+            " side reads the same as before \u2014 tap a sticker to fix it, or show another side."
+          );
+          return;
+        }
+        this.faces[face] = read;
+        this.confirmed = {};
+        this.mismatches = 0;
+        this.buildDots();
+        this.flash();
+        this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[face].name} side \u2014 checking\u2026`));
+        return;
+      }
+      const named = this.missingSides();
+      this.report(
+        "scanning",
+        "Already have the ",
+        this.bold(GUIDE[face].name),
+        named ? ` side \u2014 still need ${named}.` : " side \u2014 show a different one."
+      );
+      return;
+    }
+    this.capture(face, read);
+    this.tickFailingSince = null;
+  }
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
   capture(face, read) {
     this.faces[face] = read;
-    this.stableCount = 0;
-    this.lastColors = "";
+    this.still.reset();
     this.buildDots();
     this.flash();
     const done = this.capturedFaces().length;
@@ -3493,27 +3548,7 @@ var AiScanPanel = class extends HTMLElement {
     this.suspects = [];
     const done = this.capturedFaces().length;
     if (this.painting) {
-      if (done === FACES.length) {
-        const result = assemblePainted(this.faces);
-        if (result.valid) {
-          this.finish(result);
-          return;
-        }
-        this.suspects = result.suspects ?? [];
-        this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
-        this.notice = this.misreadNotice(result, {
-          one: "tap it and pick the colour it offers.",
-          many: "Check those sides against the cube in your hand and repaint what does not match."
-        }) ?? {
-          title: "Not solvable yet",
-          tone: "info",
-          body: `${result.reason ?? "Not a legal cube yet"} \u2014 check the sides against your cube.`
-        };
-      }
-      this.report(
-        "painting",
-        `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
-      );
+      this.afterPaintStroke(face, done);
       return;
     }
     if (done < FACES.length) {
@@ -3521,6 +3556,39 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     this.scheduleCheck(this.tinted("ok", "Corrected \u2014 checking\u2026"));
+  }
+  /**
+   * A stroke landed while the user is authoring the cube: check it, and act only on a
+   * finished one.
+   *
+   * Half of setSticker was this branch, and it shares nothing with the correction path
+   * below it but the bookkeeping above them both. A half-painted cube is invalid BY
+   * DEFINITION, so reporting each stroke as a failure would be noise rather than news —
+   * and once all six sides are there, silence stops being kindness.
+   */
+  afterPaintStroke(face, done) {
+    if (done === FACES.length) {
+      const result = assemblePainted(this.faces);
+      if (result.valid) {
+        this.finish(result);
+        return;
+      }
+      this.suspects = result.suspects ?? [];
+      this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
+      this.notice = this.misreadNotice(result, {
+        one: "tap it and pick the colour it offers.",
+        many: "Check those sides against the cube in your hand and repaint what does not match."
+      }) ?? {
+        title: "Not solvable yet",
+        tone: "info",
+        body: `${result.reason ?? "Not a legal cube yet"} \u2014 check the sides against your cube.`
+      };
+    }
+    this.report(
+      "painting",
+      `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
+    );
+    return;
   }
   /**
    * Turn hand-painting on or off. The two are exclusive by nature, not by policy: painting means
@@ -3682,60 +3750,88 @@ var AiScanPanel = class extends HTMLElement {
     }
     return null;
   }
+  /**
+   * Route an assembled verdict to the one branch that handles it.
+   *
+   * This was 124 lines holding three unrelated jobs: settling an accepted scan, asking for a
+   * side, and explaining a refusal. Nothing was shared between them but the argument, so the
+   * length was the only thing making them look related — and a reader chasing one branch had
+   * to step over the other two to be sure they were not reached.
+   */
   finish(result) {
     this.stopLoop();
     this.showPreview(null);
     this.suspects = result.suspects ?? [];
     if (result.valid && result.lowConfidence.length === 0) {
-      const rots = result.rotations;
-      if (rots) {
-        FACES.forEach((f, fi) => {
-          const read = this.faces[f];
-          const k = rots[fi] ?? 0;
-          if (read && k !== 0) {
-            this.faces[f] = {
-              colors: rotateFace(read.colors, k),
-              confidence: rotateFace(read.confidence, k)
-            };
-          }
-        });
-      }
-      this.confirmed = {};
-      this.awaiting = null;
-      this.mismatches = 0;
-      this.finished = true;
-      this.notice = null;
-      this.stop();
-      this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
-      this.dispatchEvent(new CustomEvent("scan-complete", { detail: result }));
+      this.finishAccepted(result);
       return;
     }
     if (result.confirm && result.reread === void 0) {
-      if (result.mismatch) {
-        this.confirmed = {};
-        this.mismatches++;
-        this.awaiting = result.confirm;
-        this.notice = {
-          title: "Those looks disagree",
-          tone: "err",
-          body: `One of them was held a different way up. ${this.confirmSentence(result.confirm)}${this.mismatches >= 2 ? " Each tile's edge colours show which way up to hold that side \u2014 or start the scan over." : ""}`
-        };
-        this.loop(
-          "confirm",
-          this.tinted("err", "Those two looks disagree. "),
-          ...this.confirmWords(result.confirm)
-        );
-        return;
-      }
-      this.awaiting = result.confirm;
-      this.notice = {
-        title: "One more look",
-        tone: "info",
-        body: (result.ambiguous ? "This cube is so close to solved that six photos genuinely cannot pin it down \u2014 one more look, held as asked, decides it. " : "A single look could have been held wrong, so a second one settles it for sure. ") + this.confirmSentence(result.confirm)
-      };
-      this.loop("confirm", ...this.confirmWords(result.confirm));
+      this.finishConfirming(result, result.confirm);
       return;
     }
+    this.finishRefused(result);
+  }
+  /** Accepted: settle the captures into canonical rotation, release the camera, announce it. */
+  finishAccepted(result) {
+    const rots = result.rotations;
+    if (rots) {
+      FACES.forEach((f, fi) => {
+        const read = this.faces[f];
+        const k = rots[fi] ?? 0;
+        if (read && k !== 0) {
+          this.faces[f] = {
+            colors: rotateFace(read.colors, k),
+            confidence: rotateFace(read.confidence, k)
+          };
+        }
+      });
+    }
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
+    this.finished = true;
+    this.notice = null;
+    this.stop();
+    this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
+    this.dispatchEvent(new CustomEvent("scan-complete", { detail: result }));
+    return;
+  }
+  /**
+   * One reading is not enough: name a side to show again, and how to hold it.
+   *
+   * `confirm` is a parameter rather than read off `result` because the caller has already
+   * established it is there. Inside the old single method a type guard did that silently; making
+   * it an argument states the precondition where a reader looks for it, and the compiler keeps it.
+   */
+  finishConfirming(result, confirm) {
+    if (result.mismatch) {
+      this.confirmed = {};
+      this.mismatches++;
+      this.awaiting = confirm;
+      this.notice = {
+        title: "Those looks disagree",
+        tone: "err",
+        body: `One of them was held a different way up. ${this.confirmSentence(confirm)}${this.mismatches >= 2 ? " Each tile's edge colours show which way up to hold that side \u2014 or start the scan over." : ""}`
+      };
+      this.loop(
+        "confirm",
+        this.tinted("err", "Those two looks disagree. "),
+        ...this.confirmWords(confirm)
+      );
+      return;
+    }
+    this.awaiting = confirm;
+    this.notice = {
+      title: "One more look",
+      tone: "info",
+      body: (result.ambiguous ? "This cube is so close to solved that six photos genuinely cannot pin it down \u2014 one more look, held as asked, decides it. " : "A single look could have been held wrong, so a second one settles it for sure. ") + this.confirmSentence(confirm)
+    };
+    this.loop("confirm", ...this.confirmWords(confirm));
+    return;
+  }
+  /** Refused: keep every capture, and say what would make it a cube. */
+  finishRefused(result) {
     this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
     this.confirmed = {};
     this.awaiting = null;
