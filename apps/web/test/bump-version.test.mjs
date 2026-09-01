@@ -23,6 +23,10 @@ const TREE = {
   // The only file carrying TWO sites. Its decoy is the deployment target, which is a version
   // number on an adjacent line and must not move.
   'apps/desktop/src-tauri/gen/apple/project.yml': `options:\n  deploymentTarget:\n    iOS: 16.0\ntargets:\n  cubus-desktop_iOS:\n    info:\n      properties:\n        CFBundleShortVersionString: 0.4.2\n        CFBundleVersion: "0.4.2"\n`,
+  // xcodegen's OUTPUT from the file above, and committed, so it ships whatever it last said.
+  // It carries two sites for the same reason project.yml does. Its decoy is CFBundleInfoDictionaryVersion,
+  // which is a plist schema version that has nothing to do with the app and must never move.
+  'apps/desktop/src-tauri/gen/apple/cubus-desktop_iOS/Info.plist': `<plist version="1.0">\n<dict>\n\t<key>CFBundleInfoDictionaryVersion</key>\n\t<string>6.0</string>\n\t<key>CFBundleShortVersionString</key>\n\t<string>0.4.2</string>\n\t<key>CFBundleVersion</key>\n\t<string>0.4.2</string>\n</dict>\n</plist>\n`,
 };
 
 let root;
@@ -39,10 +43,11 @@ before(() => { root = mkdtempSync(path.join(tmpdir(), 'cubus-bump-')); write(TRE
 after(() => rmSync(root, { recursive: true, force: true }));
 
 test('the script names every place the version lives, and only those', () => {
-  // Sites, not files: gen/apple/project.yml carries two, so the lists are compared as SETS and
-  // the duplicate is expected rather than a smell.
+  // Sites, not files: gen/apple/project.yml and the iOS Info.plist each carry two, so the lists
+  // are compared as SETS and the duplicates are expected rather than a smell.
   assert.deepEqual([...new Set(SITES.map((s) => s.file))].sort(), Object.keys(TREE).sort());
-  assert.equal(SITES.length, Object.keys(TREE).length + 1, 'project.yml contributes a second site');
+  assert.equal(SITES.length, Object.keys(TREE).length + 2,
+    'project.yml and Info.plist each contribute a second site');
 });
 
 test('a bump rewrites every site and nothing beside it', () => {

@@ -31,6 +31,15 @@ export const SITES = [
   // xcodegen builds Info.plist FROM this file, so this is the source and the plist is an output.
   { file: 'apps/desktop/src-tauri/gen/apple/project.yml', re: /^(        CFBundleShortVersionString: )([^\s]+)()$/m },
   { file: 'apps/desktop/src-tauri/gen/apple/project.yml', re: /^(        CFBundleVersion: ")([^"]+)(")$/m },
+  // gen/apple/.../Info.plist is xcodegen's OUTPUT from project.yml above — and it is committed,
+  // so it ships whatever it last said until someone regenerates it. AGENTS.md claimed the wiring
+  // test asserted both; it did not, and the plist sat at 0.2.0 through a bump to 0.2.1 with every
+  // gate green. That is the same defect the iOS pair itself was added for: a bundle reporting a
+  // version the app denies. An output that is committed has to be maintained like a source.
+  { file: 'apps/desktop/src-tauri/gen/apple/cubus-desktop_iOS/Info.plist',
+    re: /^(\t<key>CFBundleShortVersionString<\/key>\n\t<string>)([^<]+)(<\/string>)$/m },
+  { file: 'apps/desktop/src-tauri/gen/apple/cubus-desktop_iOS/Info.plist',
+    re: /^(\t<key>CFBundleVersion<\/key>\n\t<string>)([^<]+)(<\/string>)$/m },
 ];
 
 /**

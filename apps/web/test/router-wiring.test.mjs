@@ -641,13 +641,21 @@ test('every manifest carries the same version the app displays', async () => {
   // The generated plist is committed and ships until someone regenerates it, so it has to agree
   // with its own source rather than being trusted to.
   const plist = readFileSync(at('../../desktop/src-tauri/gen/apple/cubus-desktop_iOS/Info.plist'), 'utf8');
-  assert.match(plist, new RegExp(`<string>${v}</string>`), 'the generated Info.plist');
+  // BOTH keys, each tied to its own key line. `<string>${v}</string>` anywhere in the file used to
+  // satisfy this, so a plist carrying 0.2.1 in one key and 0.2.0 in the other would have passed —
+  // and CFBundleVersion is the one the App Store rejects a duplicate of.
+  for (const key of ['CFBundleShortVersionString', 'CFBundleVersion']) {
+    assert.match(plist, new RegExp(`<key>${key}</key>\\s*<string>${v}</string>`),
+      `the generated Info.plist ${key}`);
+  }
 
   // And these are exactly the places `pnpm bump` moves — one more would drift silently.
   const { SITES } = await import('../../../scripts/bump-version.mjs');
   assert.deepEqual(SITES.map((s) => s.file).sort(), [
     'Cargo.lock', 'apps/desktop/package.json',
     'apps/desktop/src-tauri/Cargo.toml',
+    'apps/desktop/src-tauri/gen/apple/cubus-desktop_iOS/Info.plist',
+    'apps/desktop/src-tauri/gen/apple/cubus-desktop_iOS/Info.plist',
     'apps/desktop/src-tauri/gen/apple/project.yml',
     'apps/desktop/src-tauri/gen/apple/project.yml',
     'apps/desktop/src-tauri/tauri.conf.json', 'apps/web/lib/app.js', 'apps/web/package.json',
