@@ -29,7 +29,7 @@ from PIL import Image
 REPO = Path(__file__).resolve().parent.parent
 ICONS = REPO / "apps" / "desktop" / "src-tauri" / "icons"
 WEB = REPO / "apps" / "web" / "icons"
-DESIGN = REPO / "dev-docs" / "design" / "icons"
+DESIGN = REPO / "design" / "icons"
 
 CANVAS = 1024
 GUTTER = 100
