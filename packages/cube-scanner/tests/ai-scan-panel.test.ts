@@ -356,6 +356,24 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     expect(last().captured).toHaveLength(2);
   });
 
+  it('a painted cube one sticker from legal marks it, and offers the colour', async () => {
+    // The claim: decodeMisread's guarantee is about the COLOURING, not about who produced it, so a
+    // painted cube gets the same pointing a scanned one does. Before this, painting threw the
+    // diagnosis away and said "tap stickers until every colour appears nine times" — advice that
+    // cannot succeed here, since these counts are already nine each.
+    panel.setPainting(true);
+    const truth = facesOf(DEEP);
+    for (const f of FACES)
+      for (let i = 0; i < 9; i++) if (i !== 4) panel.setSticker(f, i, truth[f]![i]!);
+
+    // Now break exactly one sticker, which is the only distance a repair is unique at.
+    const was = truth.U[0]!;
+    panel.setSticker('U', 0, (was + 1) % 6);
+    const p = last();
+    expect(p.suspects).toContainEqual({ face: 'U', index: 0, to: was });
+    expect(p.notice?.body ?? '').not.toMatch(/nine|count/i); // never the advice that cannot work
+  });
+
   it('toggling painting off and on keeps the sides already captured', async () => {
     const shown = facesOf(DEEP);
     await show(shown.U);

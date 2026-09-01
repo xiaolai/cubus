@@ -323,13 +323,35 @@ describe('assemblePainted', () => {
     expect(r.reason).toMatch(/centre colours/);
   });
 
-  it('rejects an unsolvable painting with "keep painting", not a misread accusation', () => {
+  it('counts an unsolvable painting, and still accuses nobody above one sticker', () => {
+    // This case used to assert the words "keep painting" and no diagnosis at all. The
+    // no-accusation half was right and is kept — two wrong stickers have more than one possible
+    // repair, so naming one would sometimes blame a sticker the user painted correctly. The
+    // silence was the part that was wrong: it also withheld the count, which IS answerable and is
+    // a proven lower bound.
     const f = faces(SOLVED_FACELETS);
     f.U.colors[0] = LETTER_CLASS.R;
     f.R.colors[0] = LETTER_CLASS.U; // counts stay 9/9 but the state is illegal
     const r = assemblePainted(f);
     expect(r.valid).toBe(false);
-    expect(r.reason).toMatch(/keep painting/);
+    expect(r.misreadCount).toBeGreaterThanOrEqual(2);
+    expect(r.suspects ?? []).toEqual([]); // above distance 1 the repair is not unique
+  });
+
+  it('points at the one wrong sticker in a painting that is one from legal', () => {
+    // The whole reason to diagnose a PAINTED cube: decodeMisread's guarantee is about the
+    // colouring, not about who produced it. Two legal colourings are never closer than three
+    // stickers, so at distance 1 the repair is unique whether a camera read it or a child painted
+    // it — and "this sticker, make it that colour" is the difference between fixing a cube and
+    // recounting all 54.
+    const truth = scrambleFacelets("F R U' L2 D B");
+    const f = faces(truth);
+    const was = f.U.colors[0]!;
+    f.U.colors[0] = (was + 1) % 6; // exactly one sticker away from a legal cube
+    const r = assemblePainted(f);
+    expect(r.valid).toBe(false);
+    expect(r.misreadCount).toBe(1);
+    expect(r.suspects).toEqual([{ face: 'U', index: 0, to: was }]);
   });
 
   it('flags low-confidence stickers below the threshold', () => {
