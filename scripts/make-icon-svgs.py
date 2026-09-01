@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Derive every icon SVG in the repo from ONE source mark.
 
-The single source of truth is `dev-docs/design/icons/cubus-icon-flat.svg`: the
+The single source of truth is `design/icons/cubus-icon-flat.svg`: the
 "Fold" mark as drawn, with no shading and no background. Everything else — the
 light/dark previews, the macOS legacy tile, the Windows/Linux tile, the `.icon`
 layer and the web tiles — is a mechanical transform of it and is written by
@@ -40,7 +40,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DESIGN = REPO / "dev-docs" / "design" / "icons"
+DESIGN = REPO / "design" / "icons"
 SOURCE = DESIGN / "cubus-icon-flat.svg"
 
 # --- palette -----------------------------------------------------------------
