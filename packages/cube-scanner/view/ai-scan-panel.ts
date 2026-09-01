@@ -768,10 +768,23 @@ export class AiScanPanel extends HTMLElement {
           this.finish(result);
           return;
         }
+        // Say WHICH sticker when that is answerable, and never guess when it is not.
+        //
+        // The old wording ended "tap stickers until every colour appears nine times", which is
+        // advice that cannot succeed in the commonest way a painted cube is illegal: nine of every
+        // colour and a twisted corner. The decoder answers the two questions that are honest —
+        // how many are wrong (a proven lower bound), and, only at exactly one, which.
+        this.suspects = result.suspects ?? [];
+        const wrong = result.misreadCount;
         this.notice = {
           title: 'Not solvable yet',
           tone: 'info',
-          body: `${result.reason ?? 'Not a legal cube yet'} — tap stickers until every colour appears nine times.`,
+          body:
+            this.suspects.length > 0
+              ? 'One sticker is wrong — it is marked, and tapping it offers the colour that makes the cube legal.'
+              : wrong !== undefined && wrong > 1
+                ? `At least ${wrong} stickers are wrong. Which ones cannot be said — more than one wrong sticker has more than one possible repair — so check the sides against your cube.`
+                : `${result.reason ?? 'Not a legal cube yet'} — check the sides against your cube.`,
         };
       }
       this.report(
