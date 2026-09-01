@@ -352,7 +352,18 @@ export function assemblePainted(faces: Record<Face, ColorFace>, threshold = 0.15
   }
   const facelets = letters.join('');
   if (!isStructurallyValid(facelets) || !cubejsRoundTrips(facelets)) {
-    return reject('not a solvable cube yet — keep painting');
+    // Diagnose a painted cube exactly as a scanned one. decodeMisread's guarantee is about the
+    // COLOURING, not about who produced it — two legal colourings are never closer than three
+    // stickers, so at distance 1 the repair is provably unique however the colours got there.
+    //
+    // It matters more here than for a scan, because the guidance it replaces was wrong in the
+    // commonest case: a hand-painted cube very often has nine of every colour and is still
+    // unsolvable (a twisted corner, a flipped edge), and the old advice — keep painting until the
+    // counts are nine — sends someone to recount stickers that are already right.
+    //
+    // Only reached with all six centres distinct and every sticker a centre colour, which the
+    // guards above have already established; decodeMisread needs both to say anything.
+    return reject('not a solvable cube yet', diagnose(faces, centreOwner));
   }
 
   const conf = FACES.flatMap((f) => faces[f]!.confidence);
