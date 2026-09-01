@@ -80,3 +80,7 @@ grill-report-*.md
 # Agent tooling configuration. Local to whoever is driving the repo, not part of the project.
 .codex/
 .cc-suite.md
+
+# Where scripts/check-on-clone.sh parks gitignored dirs for the length of a run. A fixed path so
+# an interrupted run is recoverable; the script empties it on the next start.
+.check-on-clone-stash/
