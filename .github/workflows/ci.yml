@@ -163,10 +163,10 @@ jobs:
       # The same check with CoreML pinned to the CPU, which discriminates between the two candidate
       # causes of the fp16 divergence this runner shows and no local Mac does. `--compute-units all`
       # lets CoreML choose ANE, GPU or CPU by what the machine has; `cpu_only` removes that choice.
-      # If the refusal on photo-01 disappears here, the cause is DISPATCH and pinning the units is a
-      # real fix. If it survives, the cause is the silicon's fp16 arithmetic and no configuration
-      # will remove it. On every local Mac all four settings agree, so this runner is the only place
-      # the question can be asked.
+      # It survived: measured 2026-09-01, cpu_only refuses photo-01 exactly as `all` does, on both
+      # legs. So the cause is the silicon's fp16 arithmetic and not dispatch, and no compute-unit
+      # setting removes it. The step stays as a REGRESSION guard rather than a question: if a future
+      # runner ever diverges under one setting and not the other, that is new information.
       #
       # A gate, not a probe: the faithful legs must never MISREAD under either dispatch. A refusal
       # is tolerated by the rule in golden_frames.py either way, so this cannot go red merely for
