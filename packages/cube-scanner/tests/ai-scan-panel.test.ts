@@ -52,12 +52,19 @@ const emptyTensor = (): ModelOutput => ({ data: new Float32Array((4 + 6) * 9), a
 class FakeDetector implements Detector {
   device: CameraDevice | null = null;
   output: ModelOutput | null = null;
-  async use(_opts?: CameraOptions): Promise<void> {
-    this.device = { deviceId: 'fake', label: 'Fake Camera' };
+  async use(opts?: CameraOptions): Promise<void> {
+    this.uses.push(opts);
+    if (this.openFails === 'always') throw new Error('camera denied');
+    if (this.openFails === 'pinned' && opts?.deviceId) throw new Error('that camera is gone');
+    this.device = { deviceId: opts?.deviceId ?? 'fake', label: 'Fake Camera' };
   }
   async load(): Promise<void> {}
   /** Set to make every `next()` throw — a model that failed to load, or a malformed tensor. */
   failWith: Error | null = null;
+  /** Every `use()` call, so a test can see whether the pinned deviceId was dropped on retry. */
+  uses: (CameraOptions | undefined)[] = [];
+  /** Make `use()` throw — always, or only when a deviceId is pinned (an unplugged webcam). */
+  openFails: 'never' | 'always' | 'pinned' = 'never';
   async next(): Promise<ModelOutput | null> {
     if (this.failWith) throw this.failWith;
     return this.output;
@@ -476,6 +483,69 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     expect(last().live).not.toBeNull();
     panel.setPainting(true); // calls stop(), then reports immediately
     expect(last().live).toBeNull();
+  });
+
+  it('a pinned camera that has gone away falls back, and keeps the pin', async () => {
+    // A webcam unplugged, or a Continuity Camera whose phone wandered off. Dead-ending on an
+    // exact-deviceId constraint that can no longer be satisfied is the worst available answer, and
+    // the pin is deliberately KEPT so the preferred camera is picked up the moment it returns.
+    // None of this had a test: every branch of start() except the happy path was unverified.
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    solo.setAttribute('device-id', 'the-good-one');
+    const det = new FakeDetector();
+    det.openFails = 'pinned';
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    await solo.start();
+
+    expect(det.uses[0]?.deviceId).toBe('the-good-one'); // asked for the pinned one first
+    expect(det.uses[1]?.deviceId).toBeUndefined(); // then any camera at all
+    expect(solo.getAttribute('device-id')).toBe('the-good-one'); // and the pin survives
+    expect(seen.at(-1)?.device).not.toBeNull(); // a camera IS open
+    solo.remove();
+  });
+
+  it('a camera that will not open at all says why, and re-offers Start', async () => {
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    det.openFails = 'always';
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    await solo.start();
+
+    const end = seen.at(-1);
+    expect(end?.phase).toBe('error');
+    expect(end?.device).toBeNull();
+    // The message must carry the underlying reason: "cannot start" alone tells a user nothing they
+    // can act on, and a denied permission and an absent device need different answers from them.
+    expect(JSON.stringify(end?.message ?? '')).toMatch(/camera denied/);
+    solo.remove();
+  });
+
+  it('a start superseded while opening releases the camera it opened', async () => {
+    // stop() during the open bumps the generation, so the stream this attempt obtained belongs to
+    // nobody. Left alone it lingers — a live camera with no panel showing it, which on a laptop is
+    // an indicator light the user cannot explain.
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const opening = solo.start();
+    solo.stop(); // supersede it mid-flight
+    await opening;
+    expect(det.device).toBeNull(); // the orphaned stream was released
+    solo.remove();
   });
 
   it('toggling painting off and on keeps the sides already captured', async () => {
