@@ -48,3 +48,43 @@ test('and specifically not the int8 export, which misreads', () => {
     'the int8 export is being served to the browser. It commits to a face on frames the fp32 graph ' +
       'refuses (abstain-00.png, abstain-02.png) and reads two stickers wrong on photo-00.png.');
 });
+
+// A model the plugin resolves but the bundler never ships is a native path that cannot run.
+//
+// This is the assertion left behind by a real defect rather than an imagined one. `windows.rs`
+// resolved `cube-yolo.onnx` and `tauri.windows.conf.json` declared no `bundle.resources` at all,
+// so `probe()` answered false in EVERY build and the whole DirectML module was unreachable code
+// that compiled, passed clippy, and was described in a commit message as verified. Nothing
+// contradicted it because a native path that is never selected looks exactly like one that is not
+// preferred — the app just uses WebDetector and says nothing.
+//
+// It reads the Rust constant rather than repeating the string, so renaming the resource on one
+// side and not the other fails here instead of at runtime on a user's machine.
+const NATIVE_MODEL_PLUGINS = [
+  { rust: '../../../crates/cube-vision/src/apple.rs', confs: ['tauri.macos.conf.json', 'tauri.ios.conf.json'] },
+  { rust: '../../../crates/cube-vision/src/windows.rs', confs: ['tauri.windows.conf.json'] },
+];
+
+for (const { rust, confs } of NATIVE_MODEL_PLUGINS) {
+  for (const conf of confs) {
+    test(`${conf} bundles the model its plugin resolves`, () => {
+      const src = readFileSync(new URL(rust, import.meta.url), 'utf8');
+      const declared = /const MODEL_RESOURCE: &str = "([^"]+)";/.exec(src);
+      assert.ok(declared, `${rust} no longer declares MODEL_RESOURCE — this test cannot check what it resolves`);
+
+      const url = new URL(`../../desktop/src-tauri/${conf}`, import.meta.url);
+      assert.ok(existsSync(url), `${conf} is missing`);
+      const resources = JSON.parse(readFileSync(url, 'utf8'))?.bundle?.resources;
+      assert.ok(
+        resources && typeof resources === 'object',
+        `${conf} declares no bundle.resources, so the model is never staged — the plugin will ` +
+          `resolve nothing and probe false on every build of this platform`,
+      );
+      assert.ok(
+        Object.values(resources).includes(declared[1]),
+        `${conf} does not stage anything to "${declared[1]}", which is what ${rust} resolves ` +
+          `from the Resource dir. Declared destinations: ${JSON.stringify(Object.values(resources))}`,
+      );
+    });
+  }
+}
