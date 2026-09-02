@@ -44,15 +44,32 @@ jobs:
           git diff --exit-code -- apps/web/vendor/ \
             || { echo "::error::a vendored bundle is behind its source — rebuild and commit it"; exit 1; }
 
-      # The geometry test (apps/web/test/geometry.test.mjs) measures the layout contract in a real
-      # WebKit — the engine every shipped build is — because the CSS is the runtime and no text
-      # test can tell whether a container unit resolved. Playwright is an exact-pinned dev dep of
-      # apps/web; this fetches its matching WebKit build. Missing it fails the test, loudly.
-      - name: cubus-web — WebKit for the geometry test
-        run: pnpm --filter cubus-web exec playwright install --with-deps webkit
+      # TWO ENGINES, because two suites need different things from a browser.
+      #
+      # WebKit for the geometry test (apps/web/test/geometry.test.mjs): it measures the layout
+      # contract in the engine every shipped build actually is, because the CSS is the runtime and
+      # no text test can tell whether a container unit resolved.
+      #
+      # Chromium for the scanner test (apps/web/test/scanner-gpu.test.mjs): WebKit has no WebGPU to
+      # test at all. That suite was written and merged without ever running here, and its first CI
+      # run failed on a missing executable — a test that cannot start is not a test that passed.
+      #
+      # Playwright is an exact-pinned dev dep of apps/web; this fetches the matching builds. Missing
+      # either fails the tests, loudly.
+      - name: cubus-web — browser engines for the geometry and scanner suites
+        run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
 
+      # UNDER XVFB, because the scanner suite launches Chromium HEADED and a runner has no display.
+      # Headed is not a preference there: headless Chromium substitutes a software GPU that is
+      # ~500x slower than a real one (measured, 7320 ms a frame against 15), so a headless run would
+      # not test the GPU path, it would libel it.
+      #
+      # This does NOT give the runner a GPU. `requestAdapter()` still returns null here, and the
+      # suite reports that and asserts the wasm floor instead — which is the half CI can honestly
+      # gate. `--enable-unsafe-swiftshader` is deliberately not passed anywhere, so a software
+      # adapter can never masquerade as hardware and turn this into a green that means nothing.
       - name: cubus-web — test
-        run: pnpm --filter cubus-web test
+        run: xvfb-run -a pnpm --filter cubus-web test
 
       # The icons had no gate at all, which is why the iOS and Android projects carried Tauri's
       # placeholder mark from the day the mobile shells landed until someone looked at a phone.
