@@ -23,7 +23,7 @@
     "esbuild": "^0.21.5",
     "happy-dom": "^20.11.6",
     "playwright": "1.62.1",
-    "smartcube-web-bluetooth": "github:xiaolai/smartcube-web-bluetooth#a6a162b7b06373218058ce427c67f376f1e5fdbb",
+    "smartcube-web-bluetooth": "github:xiaolai/smartcube-web-bluetooth#77df8e9507ac87031c12ad1717d71de98d56784b",
     "tauri-plugin-mcp": "0.3.1",
     "three": "^0.169.0"
   },

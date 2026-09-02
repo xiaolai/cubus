@@ -50,4 +50,17 @@ export interface Detector {
   readonly device: CameraDevice | null;
   /** Release the camera. The model stays loaded; a later `use()` reopens. Safe to call repeatedly. */
   stop(): void;
+  /**
+   * Release EVERYTHING, including the model. The detector is unusable afterwards.
+   *
+   * Distinct from `stop()` on purpose, and the distinction is the whole point: `stop()` runs at the
+   * start of every `use()`, so releasing the session there would recompile the model on every
+   * camera switch. This runs only where a detector is genuinely discarded — replaced by an
+   * injection, or built by a probe that lost its race. Those sites called `stop()`, which left the
+   * old detector's inference session holding its wasm heap or its GPU device for the life of the
+   * page.
+   *
+   * Optional because not every detector owns anything a `stop()` does not already release.
+   */
+  dispose?(): void;
 }

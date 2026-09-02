@@ -18,8 +18,22 @@
 // timeout at the call site. That is a different kind of bound and it does not belong to this one.
 export const BROWSER_WAIT_MS = 60_000;
 
-/** Give `page` the suite's shared liveness bound. Returns the page, so it can wrap `newPage()`. */
+// NAVIGATION gets its own, larger bound, and it lives here for the reason the whole file exists.
+//
+// Two call sites set `context.setDefaultNavigationTimeout(120_000)` with a comment explaining why a
+// page load needs longer than an in-page wait — and then called `pace(page)` on the next line,
+// which set the PAGE's default timeout. Playwright resolves navigation in the order
+// page-navigation > page-default > context-navigation > context-default, so the page-level 60 s won
+// and the 120 s both sites asked for had never applied to anything. Measured, not reasoned: a
+// `page.goto` that ran out reported `Timeout 60000ms exceeded`, naming the number nobody set for it.
+//
+// So navigation is paced here too. A load that is merely slow — a saturated runner, a machine that
+// has gone to swap — is then slow rather than red, which is what the 120 s was for.
+export const BROWSER_NAV_MS = 120_000;
+
+/** Give `page` the suite's shared liveness bounds. Returns the page, so it can wrap `newPage()`. */
 export function pace(page) {
   page.setDefaultTimeout(BROWSER_WAIT_MS);
+  page.setDefaultNavigationTimeout(BROWSER_NAV_MS);
   return page;
 }

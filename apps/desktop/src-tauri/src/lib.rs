@@ -44,8 +44,13 @@ use tauri::{AppHandle, Emitter, State};
 // orientation could be remembered. Un-gated it is an unused import on mobile.
 #[cfg(desktop)]
 use tauri::Manager;
+// Android-only: `relay_notification` reaches the shared subscription map through managed state.
+#[cfg(target_os = "android")]
+use tauri::Manager;
 use tokio::sync::Mutex;
 
+#[cfg(target_os = "android")]
+mod android_ble;
 mod optimal;
 
 /// The notification stream btleplug hands back (owned, 'static).
@@ -121,6 +126,101 @@ impl CubeState {
     }
 }
 
+/// Which live subscription a packet belongs to: exactly one match, or none.
+///
+/// Named and shared because BOTH notification paths have to obey it — the desktop's btleplug
+/// stream task and, since the Android bridge started re-keying its own packets, `relay`. A
+/// characteristic uuid is unique only WITHIN a service, so a device exposing the same one under
+/// two subscribed services makes this ambiguous; `find` would have taken whichever the map
+/// iterated first, which is unspecified, and routed a stream to the wrong decoder.
+///
+/// The refusal is deliberate and it is also load-bearing in a way that was not obvious: it turns
+/// a LEAKED subscription into total silence rather than a wrong answer. That is the right trade,
+/// and it is why `forget_subscriptions` below is not merely tidiness.
+fn subscription_for(
+    subs: &HashMap<u32, Subscription>,
+    device: &str,
+    characteristic: Uuid,
+) -> Option<u32> {
+    let mut matches = subs
+        .iter()
+        .filter(|(_, s)| s.device == device && s.characteristic == characteristic)
+        .map(|(id, _)| *id);
+    match (matches.next(), matches.next()) {
+        (Some(id), None) => Some(id),
+        _ => None,
+    }
+}
+
+/// Let a device go: drop the peripheral AND every subscription that addressed it.
+///
+/// ONE function rather than two calls, because the two halves were separable and drifted. Every
+/// disconnect path removed the peripheral; none of them removed the subscriptions, which looked
+/// harmless since nothing reads them for a device that is gone. It is not harmless across a
+/// RECONNECT, a flow this app is built around (`apps/web/lib/cube-reconnect.js`): subscribing to
+/// the same characteristic again inserted a SECOND entry, `subscription_for` then saw two matches
+/// and refused, and every packet from that characteristic was dropped for the rest of the session
+/// — a cube that connects, reports trusted, and then says nothing.
+///
+/// Written as one operation so a future disconnect path cannot do half of it. That is the whole
+/// design: the unit test below can prove this function does both, and it cannot prove a call site
+/// remembered to.
+fn release_device(session: &mut BleSession, device: &str) {
+    session.connected.remove(device);
+    session.subscriptions.retain(|_, s| s.device != device);
+}
+
+/// Re-key one Android notification onto the wire shape the web side actually validates.
+///
+/// Kotlin reports `(device, service, characteristic)` because that is all a GATT callback knows.
+/// `ble-bridge.js` requires `{ sub, data }` and THROWS on anything else, so until this existed
+/// every Android packet was rejected at the boundary — by a check working exactly as designed,
+/// which is why nothing about it was quiet. The map is the same one the desktop stream task reads
+/// and `ble_subscribe` populates on BOTH platforms, deliberately, so that the two never answer the
+/// same question with different numbers.
+///
+/// Asynchronous because the session is behind an async mutex and the Kotlin channel callback is
+/// synchronous. Ordering within one characteristic is preserved by the GATT queue upstream, and a
+/// packet that loses its race with `ble_subscribe`'s bookkeeping is dropped loudly below rather
+/// than delivered under an id the web side has never heard of.
+#[cfg(target_os = "android")]
+pub(crate) fn relay_notification<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    device: String,
+    characteristic: String,
+    data: String,
+) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let uuid = match cube_ble::parse_uuid(&characteristic) {
+            Ok(uuid) => uuid,
+            Err(e) => {
+                // Loud: a characteristic Kotlin can name but Rust cannot parse is a bridge bug,
+                // and the quiet version of it is a cube that connects and then says nothing.
+                eprintln!("cube-ble: unparseable characteristic {characteristic} from Kotlin: {e}");
+                return;
+            }
+        };
+        let Some(session) = app.try_state::<CubeState>().map(|s| s.0.clone()) else {
+            eprintln!("cube-ble: notification arrived before the BLE session was managed");
+            return;
+        };
+        let sub = subscription_for(&session.lock().await.subscriptions, &device, uuid);
+        match sub {
+            Some(sub) => {
+                let _ = app.emit("ble-notification", NotificationPayload { sub, data });
+            }
+            None => {
+                // The same sentence, and the same reasoning, as the desktop stream task.
+                eprintln!(
+                    "cube-ble: notification for characteristic {uuid} matches no live \
+                     subscription, or more than one — packet dropped"
+                );
+            }
+        }
+    });
+}
+
 /// Scan for a device satisfying the web side's `requestDevice` filters.
 ///
 /// The filters come from the protocol layer, which owns the brand table; nothing here knows what a
@@ -128,9 +228,14 @@ impl CubeState {
 /// beginner reaching for one takes a moment.
 #[tauri::command]
 async fn ble_request_device(
-    state: State<'_, CubeState>,
+    #[allow(unused_variables)] app: AppHandle,
+    #[allow(unused_variables)] state: State<'_, CubeState>,
     options: RequestOptions,
 ) -> Result<AdvertisedDevice, String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(&app, "ble_request_device", options);
+    }
     let central = default_adapter().await.map_err(|e| e.to_string())?;
     let found = find_device(&central, &options, Duration::from_secs(20))
         .await
@@ -157,9 +262,13 @@ async fn ble_request_device(
 #[tauri::command]
 async fn ble_connect(
     app: AppHandle,
-    state: State<'_, CubeState>,
+    #[allow(unused_variables)] state: State<'_, CubeState>,
     id: String,
 ) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(&app, "ble_connect", android_ble::DeviceArgs { id });
+    }
     // The adapter and peripheral from the scan that produced this id — not a fresh adapter, whose
     // cache is a different cache and need not contain this device at all.
     let (central, peripheral) = {
@@ -229,18 +338,11 @@ async fn ble_connect(
                         // unspecified, so a stream could be routed to the wrong subscription and
                         // decoded as the wrong thing. That is the same defect `service_of` refuses
                         // to commit three functions away, and refusing here keeps the two honest.
-                        let sub = {
-                            let session = state_for_task.lock().await;
-                            let mut matches = session
-                                .subscriptions
-                                .iter()
-                                .filter(|(_, s)| s.device == device_id && s.characteristic == v.uuid)
-                                .map(|(id, _)| *id);
-                            match (matches.next(), matches.next()) {
-                                (Some(id), None) => Some(id),
-                                _ => None,
-                            }
-                        };
+                        let sub = subscription_for(
+                            &state_for_task.lock().await.subscriptions,
+                            &device_id,
+                            v.uuid,
+                        );
                         match sub {
                             Some(sub) => {
                                 let _ = app_for_task.emit(
@@ -279,8 +381,7 @@ async fn ble_connect(
         // disconnected peripheral in `connected`, so a later command would be dispatched to a dead
         // handle and fail with a puzzling error instead of a clear "not connected".
         {
-            let mut session = state_for_task.lock().await;
-            session.connected.remove(&device_id);
+            release_device(&mut *state_for_task.lock().await, &device_id);
         }
         let _ = app_for_task.emit("ble-disconnect", DisconnectPayload { device: device_id });
     });
@@ -290,9 +391,18 @@ async fn ble_connect(
 
 #[tauri::command]
 async fn ble_discover_services(
-    state: State<'_, CubeState>,
+    #[allow(unused_variables)] app: AppHandle,
+    #[allow(unused_variables)] state: State<'_, CubeState>,
     id: String,
 ) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(
+            &app,
+            "ble_discover_services",
+            android_ble::DeviceArgs { id },
+        );
+    }
     let p = state.get(&id).await?;
     cube_ble::discover_services(&p)
         .await
@@ -301,10 +411,19 @@ async fn ble_discover_services(
 
 #[tauri::command]
 async fn ble_discover_characteristics(
-    state: State<'_, CubeState>,
+    #[allow(unused_variables)] app: AppHandle,
+    #[allow(unused_variables)] state: State<'_, CubeState>,
     id: String,
     service: String,
 ) -> Result<Vec<CharacteristicInfo>, String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(
+            &app,
+            "ble_discover_characteristics",
+            android_ble::ServiceArgs { id, service },
+        );
+    }
     let p = state.get(&id).await?;
     cube_ble::discover_characteristics(&p, &service)
         .await
@@ -314,15 +433,32 @@ async fn ble_discover_characteristics(
 /// Subscribe, and hand back the id that will identify this stream's packets.
 #[tauri::command]
 async fn ble_subscribe(
+    #[allow(unused_variables)] app: AppHandle,
     state: State<'_, CubeState>,
     id: String,
     service: String,
     characteristic: String,
 ) -> Result<u32, String> {
-    let p = state.get(&id).await?;
-    cube_ble::subscribe(&p, &service, &characteristic)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Only the TRANSPORT differs by platform; the bookkeeping below is shared on purpose. The
+    // subscription id is what the web side keys packets by, so if Android allocated its own the two
+    // platforms would be answering the same question with different numbers.
+    #[cfg(target_os = "android")]
+    android_ble::call::<_, _, ()>(
+        &app,
+        "ble_subscribe",
+        android_ble::CharArgs {
+            id: id.clone(),
+            service: service.clone(),
+            characteristic: characteristic.clone(),
+        },
+    )?;
+    #[cfg(not(target_os = "android"))]
+    {
+        let p = state.get(&id).await?;
+        cube_ble::subscribe(&p, &service, &characteristic)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let uuid = cube_ble::parse_uuid(&characteristic).map_err(|e| e.to_string())?;
     let mut session = state.0.lock().await;
     let sub_id = session.next_subscription;
@@ -340,15 +476,33 @@ async fn ble_subscribe(
 
 #[tauri::command]
 async fn ble_unsubscribe(
+    #[allow(unused_variables)] app: AppHandle,
     state: State<'_, CubeState>,
     id: String,
     service: String,
     characteristic: String,
 ) -> Result<(), String> {
-    let p = state.get(&id).await?;
-    cube_ble::unsubscribe(&p, &service, &characteristic)
-        .await
-        .map_err(|e| e.to_string())?;
+    // The TRANSPORT differs by platform; the bookkeeping below does not — the same rule
+    // `ble_subscribe` states, and the reason its Android branch is not an early return either.
+    // This one WAS an early return, so on Android the entry was never removed and the map grew a
+    // duplicate on the next subscribe, which `subscription_for` then refuses to resolve.
+    #[cfg(target_os = "android")]
+    android_ble::call::<_, _, ()>(
+        &app,
+        "ble_unsubscribe",
+        android_ble::CharArgs {
+            id: id.clone(),
+            service: service.clone(),
+            characteristic: characteristic.clone(),
+        },
+    )?;
+    #[cfg(not(target_os = "android"))]
+    {
+        let p = state.get(&id).await?;
+        cube_ble::unsubscribe(&p, &service, &characteristic)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let uuid = cube_ble::parse_uuid(&characteristic).map_err(|e| e.to_string())?;
     let mut session = state.0.lock().await;
     session
@@ -359,11 +513,16 @@ async fn ble_unsubscribe(
 
 #[tauri::command]
 async fn ble_read(
-    state: State<'_, CubeState>,
+    #[allow(unused_variables)] app: AppHandle,
+    #[allow(unused_variables)] state: State<'_, CubeState>,
     id: String,
     service: String,
     characteristic: String,
 ) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::read(&app, id, service, characteristic);
+    }
     let p = state.get(&id).await?;
     let bytes = cube_ble::read(&p, &service, &characteristic)
         .await
@@ -373,13 +532,28 @@ async fn ble_read(
 
 #[tauri::command]
 async fn ble_write(
-    state: State<'_, CubeState>,
+    #[allow(unused_variables)] app: AppHandle,
+    #[allow(unused_variables)] state: State<'_, CubeState>,
     id: String,
     service: String,
     characteristic: String,
     data: String,
     without_response: bool,
 ) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(
+            &app,
+            "ble_write",
+            android_ble::WriteArgs {
+                id: id.clone(),
+                service: service.clone(),
+                characteristic: characteristic.clone(),
+                data: data.clone(),
+                with_response: !without_response,
+            },
+        );
+    }
     let p = state.get(&id).await?;
     let bytes = hex::decode(&data).map_err(|e| e.to_string())?;
     cube_ble::write(&p, &service, &characteristic, &bytes, without_response)
@@ -388,7 +562,15 @@ async fn ble_write(
 }
 
 #[tauri::command]
-async fn ble_disconnect(state: State<'_, CubeState>, id: String) -> Result<(), String> {
+async fn ble_disconnect(
+    #[allow(unused_variables)] app: AppHandle,
+    #[allow(unused_variables)] state: State<'_, CubeState>,
+    id: String,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(&app, "ble_disconnect", android_ble::DeviceArgs { id });
+    }
     // Looked up, not removed: a disconnect that FAILS leaves the peripheral connected, and having
     // already dropped it from the map would leave the app unable to reach or release it again.
     // It is removed below, after the teardown actually succeeds.
@@ -400,7 +582,7 @@ async fn ble_disconnect(state: State<'_, CubeState>, id: String) -> Result<(), S
         if let Err(e) = peripheral.disconnect().await {
             return Err(format!("the cube did not release cleanly: {e}"));
         }
-        state.0.lock().await.connected.remove(&id);
+        release_device(&mut *state.0.lock().await, &id);
     }
     Ok(())
 }
@@ -734,6 +916,12 @@ pub fn run() {
             optimal::optimal_cancel
         ]);
 
+    // Android's BLE is Kotlin (src/android_ble.rs); every other platform's is btleplug in-process
+    // and needs no plugin at all. The nine command NAMES are identical either way, which is what
+    // keeps `apps/web/lib/ble-bridge.js` from having to learn a platform.
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(android_ble::plugin());
+
     // Dev-only MCP bridge (AGENTS.md exception, accepted 2026-08-27): a control socket that lets
     // an AI agent drive the app — screenshots, selector clicks, DOM queries, arbitrary JS in the
     // app's origin. Exactly because it is control-everything, it is triple-gated: the `mcp` cargo
@@ -754,4 +942,110 @@ pub fn run() {
     builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+
+    fn uuid(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn session_with(entries: &[(u32, &str, u128)]) -> BleSession {
+        let mut s = BleSession::default();
+        for &(id, device, ch) in entries {
+            s.subscriptions.insert(
+                id,
+                Subscription {
+                    device: device.to_string(),
+                    service: "service".into(),
+                    characteristic: uuid(ch),
+                },
+            );
+            s.next_subscription = s.next_subscription.max(id + 1);
+        }
+        s
+    }
+
+    #[test]
+    fn one_live_subscription_resolves() {
+        let s = session_with(&[(0, "cube", 1)]);
+        assert_eq!(subscription_for(&s.subscriptions, "cube", uuid(1)), Some(0));
+    }
+
+    #[test]
+    fn a_packet_for_another_device_resolves_to_nothing() {
+        let s = session_with(&[(0, "cube", 1)]);
+        assert_eq!(subscription_for(&s.subscriptions, "other", uuid(1)), None);
+    }
+
+    // The refusal that makes leaked entries dangerous rather than merely untidy, asserted directly
+    // so the two halves of this behaviour can never be changed independently.
+    #[test]
+    fn two_matches_refuse_rather_than_guess() {
+        let s = session_with(&[(0, "cube", 1), (1, "cube", 1)]);
+        assert_eq!(subscription_for(&s.subscriptions, "cube", uuid(1)), None);
+    }
+
+    // The bug this pair of functions exists to prevent, written as the sequence that produced it:
+    // connect, subscribe, drop, reconnect, subscribe again. Before `forget_subscriptions` ran on
+    // the disconnect paths, the second subscribe left two entries and the cube went silent.
+    #[test]
+    fn a_reconnect_does_not_silence_the_cube() {
+        let mut s = session_with(&[(0, "cube", 1)]);
+        assert_eq!(subscription_for(&s.subscriptions, "cube", uuid(1)), Some(0));
+
+        release_device(&mut s, "cube"); // the disconnect
+        assert_eq!(subscription_for(&s.subscriptions, "cube", uuid(1)), None);
+
+        // Re-subscribing after the reconnect, exactly as `ble_subscribe` does.
+        let id = s.next_subscription;
+        s.next_subscription += 1;
+        s.subscriptions.insert(
+            id,
+            Subscription {
+                device: "cube".into(),
+                service: "service".into(),
+                characteristic: uuid(1),
+            },
+        );
+        assert_eq!(
+            subscription_for(&s.subscriptions, "cube", uuid(1)),
+            Some(id),
+            "a reconnected cube's packets must still resolve — this is the defect the disconnect \
+             paths leaked before they called forget_subscriptions"
+        );
+    }
+
+    #[test]
+    fn releasing_one_device_leaves_another_alone() {
+        let mut s = session_with(&[(0, "cube", 1), (1, "spare", 1)]);
+        release_device(&mut s, "cube");
+        assert_eq!(
+            subscription_for(&s.subscriptions, "spare", uuid(1)),
+            Some(1)
+        );
+        assert_eq!(s.subscriptions.len(), 1);
+    }
+
+    // Every subscription goes, not just the one that matched a packet. A device is subscribed to
+    // more than one characteristic in practice, and half a release is what leaves the duplicate
+    // behind on the NEXT connect.
+    //
+    // The peripheral half is deliberately NOT asserted: `connected` holds a btleplug `Peripheral`,
+    // which cannot be constructed off a real adapter, so the map is empty in any test and
+    // `assert!(!connected.contains_key(..))` would pass without `release_device` doing anything at
+    // all. It is checked by the compiler instead — the function is the only way to leave the
+    // session, so `connected.remove` cannot be dropped from a call site without deleting the call.
+    #[test]
+    fn releasing_a_device_drops_all_of_its_subscriptions() {
+        let mut s = session_with(&[(0, "cube", 1), (1, "cube", 2)]);
+        assert_eq!(s.subscriptions.len(), 2);
+        release_device(&mut s, "cube");
+        assert!(
+            s.subscriptions.is_empty(),
+            "subscriptions must go with the device"
+        );
+    }
 }

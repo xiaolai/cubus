@@ -97,8 +97,10 @@ export class NativeDetector implements Detector {
   }
 
   async next(): Promise<ModelOutput | null> {
-    const buf = (await this.invoke(`${P}next_detection`)) as ArrayBuffer;
-    return decodeTensorResponse(buf);
+    // ArrayBuffer on Apple, `{ tensor }` on Android — see decodeTensorResponse for why the two
+    // platforms cannot agree on this one shape.
+    const reply = (await this.invoke(`${P}next_detection`)) as ArrayBuffer | { tensor?: string };
+    return decodeTensorResponse(reply instanceof ArrayBuffer ? reply : (reply?.tensor ?? ''));
   }
 
   async cameras(): Promise<CameraDevice[]> {
@@ -114,13 +116,36 @@ export class NativeDetector implements Detector {
   }
 }
 
+/** Base64 → ArrayBuffer, or null for the empty string. Kept here beside its only caller. */
+function base64ToBuffer(b64: string): ArrayBuffer | null {
+  if (b64.length === 0) return null;
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
+}
+
 /**
  * Decode the plugin's tensor response: `int32 rows, int32 anchors` (little-endian) then
  * `rows*anchors` f32. A header of `0` anchors means "no frame yet" → null, which the panel treats as
  * a tick to skip. Exported so a test can pin the wire format without a running plugin.
  */
-export function decodeTensorResponse(buf: ArrayBuffer): ModelOutput | null {
-  if (buf.byteLength < 8) return null;
+export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput | null {
+  // TWO shapes, because the two native plugin APIs cannot produce the same one. Tauri's Rust
+  // commands can return a raw `Response`, so Apple hands back an ArrayBuffer and nothing is
+  // copied. Tauri's ANDROID plugin API is JSON only — `invoke.resolve(JSObject)` — so there is no
+  // way to return bytes, and the Kotlin side base64-encodes instead.
+  //
+  // Base64 and not the hex this project uses on the BLE boundary, and the difference is deliberate
+  // rather than an oversight: hex was chosen there against a JSON number array and costs 2x, which
+  // is nothing on a 20-byte cube packet. This tensor is ~170 KB EVERY FRAME, where hex would cost
+  // 340 KB against base64's 227 KB. The encoding follows the payload, and the reason is written
+  // down here so the next reader does not "fix" the inconsistency.
+  //
+  // An empty string is the Android plugin's "camera open, no frame yet" — the same null the Apple
+  // path expresses with a short buffer, and what the panel treats as a tick to skip.
+  const buf = typeof input === 'string' ? base64ToBuffer(input) : input;
+  if (buf === null || buf.byteLength < 8) return null;
   const header = new Int32Array(buf, 0, 2);
   const rows = header[0]!;
   const anchors = header[1]!;
