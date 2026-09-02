@@ -77,14 +77,32 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
     // ---- capability ----------------------------------------------------------------------------
 
     /**
-     * The one question `pickDetector` asks. True only when this plugin can actually do the work:
-     * a build that answers true and then fails per-frame is worse than one that answers false,
-     * because the fallback is silently skipped.
+     * The one question `pickDetector` asks. True only when this plugin can actually do the work.
+     *
+     * TWO conditions, and the second is the one that matters today. The model asset has to be
+     * present — but the asset IS present, because the Gradle copy task puts it in every APK, so
+     * that condition alone would answer true on a build where not one line of this file has ever
+     * run. `pickDetector` would then take the native path and the WebGPU fallback would be
+     * silently skipped, which is the exact failure the sentence above warns about, committed by
+     * the code that warns about it.
+     *
+     * That asymmetry is not sanctioned anywhere: Android's BLE plugin ships behind
+     * `NATIVE_BLE_UNSUPPORTED` in ble-bridge.js precisely so that unverified native code cannot be
+     * reached, and this had no equivalent. It does now.
+     *
+     * THE FLIP IS THIS CONSTANT. Set it true only after running on a device and checking, at
+     * minimum: that a frame is captured at all; that the letterbox agrees with `preprocess()` —
+     * ml/golden_frames.py proves the .tflite matches the other runtimes, not that this code feeds
+     * it the same pixels; and that it is actually FASTER than what it replaces, which on a recent
+     * Android WebView is WebGPU rather than the slow wasm path this plugin was planned against.
+     * Being native is not by itself a reason to win.
      */
+    private val verifiedOnDevice = false
+
     @Command
     fun probe(invoke: Invoke) {
-        val ok = runCatching { activity.assets.open(MODEL).close(); true }.getOrDefault(false)
-        invoke.resolve(JSObject().apply { put("value", ok) })
+        val hasModel = runCatching { activity.assets.open(MODEL).close(); true }.getOrDefault(false)
+        invoke.resolve(JSObject().apply { put("value", verifiedOnDevice && hasModel) })
     }
 
     // ---- camera --------------------------------------------------------------------------------
