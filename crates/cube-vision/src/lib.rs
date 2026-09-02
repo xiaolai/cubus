@@ -1,14 +1,30 @@
-//! `cube-vision` — native camera capture + CoreML inference, as a Tauri plugin.
+//! `cube-vision` — native camera capture + native model inference, as a Tauri plugin.
 //!
-//! This is the ONE place the desktop shell grows commands, and it is the deliberate exception
-//! AGENTS.md sanctioned on 2026-08-26: every command here sits behind the `Detector` seam the
-//! browser build also implements (`WebDetector`), so the desktop and web builds stay the same app in
-//! behaviour while the desktop one gets the ANE and cameras the webview cannot reach. The RGBA frame
-//! never crosses the bridge — only the ~170 KB output tensor does (see the IPC round-trip spike).
+//! The FIRST of the seams AGENTS.md sanctioned — native capture and inference, accepted 2026-08-26.
+//! (It is not the only one now: the shell has since grown BLE, the window's orientation, external
+//! links and the optimal solver, each accepted on its own terms and listed there. It was written
+//! when it was the only one, and said so.)
 //!
-//! The real implementation is Apple-only (CoreML + AVFoundation, in the linked Swift package). On
-//! every other target this compiles to an inert plugin that registers no commands, so the shell still
-//! builds — and there the app runs `WebDetector`, exactly as the accepted plan's platform table says.
+//! Every command here sits behind the `Detector` seam the browser build also implements
+//! (`WebDetector`), so the native and web builds stay the same app in behaviour while the native
+//! one gets accelerators and cameras the webview cannot reach. The RGBA frame never crosses the
+//! bridge — only the ~170 KB output tensor does (see the IPC round-trip spike).
+//!
+//! THE PLATFORM MATRIX, which is no longer "Apple, and nothing else":
+//!
+//! | Target        | Frames                | Model                    | Where it lives      |
+//! |---------------|-----------------------|--------------------------|---------------------|
+//! | macOS / iOS   | AVFoundation          | CoreML (`.mlpackage`)    | `apple.rs` + Swift  |
+//! | Windows       | Media Foundation      | onnxruntime + DirectML   | `windows.rs`        |
+//! | Android       | CameraX               | LiteRT (`.tflite`)       | Kotlin, see below   |
+//! | everything else | —                   | —                        | inert plugin below  |
+//!
+//! On the last row the plugin registers no commands, so the shell still builds and the app runs
+//! `WebDetector` — which since 2026-09-02 is WebGPU wherever the webview has an adapter, and is
+//! also what the other three fall back to when their `probe` answers false.
+//!
+//! Only Apple's path is verified on hardware. Android's is gated by `verifiedOnDevice` in
+//! `VisionPlugin.kt` and Windows' by whether its model resolves; neither has captured a frame.
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;

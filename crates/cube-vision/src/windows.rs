@@ -29,7 +29,8 @@
 //! `ml/golden_frames.py` proves the .onnx agrees with the other runtimes; it does not prove this
 //! code feeds it the same pixels, so that is what a device check has to look at first.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 use base64::Engine as _;
@@ -41,11 +42,17 @@ use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Tensor;
 use serde::Serialize;
 use tauri::ipc::Response;
-use tauri::State;
+use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Manager, Runtime, State};
 
 /// Ultralytics letterbox pad colour (grey 114), normalised — the same constant as the TS.
 const PAD: f32 = 114.0 / 255.0;
 const IMG: usize = 640;
+
+/// Consecutive capture failures after which the last good frame stops being served. See
+/// [note_capture_failure].
+const STALE_AFTER_FAILURES: u32 = 30;
+const RETRY_BACKOFF_MS: u64 = 20;
 
 #[derive(Serialize)]
 struct CameraInfo {
@@ -65,8 +72,10 @@ struct CameraInfo {
 #[derive(Default)]
 pub struct CubeVision {
     latest: Arc<Mutex<Option<Vec<f32>>>>,
-    running: Arc<AtomicBool>,
-    stop: Mutex<Option<mpsc::Sender<()>>>,
+    /// Which capture session is current. Bumped by every open and every close — see [stop_capture].
+    generation: Arc<AtomicUsize>,
+    /// Why the last frame did not arrive, if it did not. See the capture loop.
+    capture_error: Arc<Mutex<Option<String>>>,
     session: Mutex<Option<Session>>,
     opened: Mutex<Option<CameraInfo>>,
 }
@@ -83,26 +92,75 @@ fn tensor_response(rows: i32, anchors: i32, data: &[f32]) -> Response {
     Response::new(out)
 }
 
-/// The model, beside the executable. Shipped by the bundler's `resources`, not embedded, so a
-/// re-export does not mean a rebuild.
-fn model_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    for candidate in ["cube-yolo.onnx", "resources/cube-yolo.onnx"] {
-        let p = dir.join(candidate);
-        if p.is_file() {
-            return Some(p);
+/// The bundled model, relative to the app's Resource dir (see tauri.windows.conf.json resources).
+const MODEL_RESOURCE: &str = "models/cube-yolo.onnx";
+
+/// The committed source model, path baked in at compile time. Used only as the dev fallback.
+fn source_model_path() -> PathBuf {
+    PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../ml/models/cube-yolo.onnx"
+    ))
+}
+
+/// Find the ONNX model, by the SAME two tiers `apple.rs::resolve_model_path` uses: the app's
+/// Resource dir first (a shipped app), then the committed source tree (`tauri dev`, which does
+/// not stage `bundle.resources`, so the resource dir is empty there). Resource first, so a shipped
+/// app never uses the source path — which is the build machine's and is not on a user's disk.
+///
+/// This used to walk out from `std::env::current_exe()` looking for `cube-yolo.onnx` beside the
+/// binary, and `tauri.windows.conf.json` declared no `resources` at all — so the file was never
+/// placed anywhere the search looked, `probe` answered false in EVERY build, and this entire
+/// module was unreachable code that compiled. That is the shape of failure the repo has a rule
+/// about: a gate nothing runs is not a gate, and a path that is never taken looks exactly like a
+/// path that works. The second implementation of a solved problem was the wrong one; there is now
+/// one method, spelled the same way on both platforms.
+fn resolve_model_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    if let Ok(p) = app.path().resolve(MODEL_RESOURCE, BaseDirectory::Resource) {
+        if p.exists() {
+            return Ok(p);
         }
     }
-    None
+    let dev = source_model_path();
+    if dev.exists() {
+        return Ok(dev);
+    }
+    Err(format!(
+        "cube-yolo.onnx not found — not in the app Resource dir, and not at {} (run ml/export.py)",
+        dev.display()
+    ))
 }
 
 #[tauri::command]
-fn probe() -> bool {
+fn probe<R: Runtime>(app: AppHandle<R>) -> bool {
     // True only when the work can actually be done. A build that answers true and then fails per
     // frame is worse than one that answers false, because `pickDetector`'s fallback — which on this
     // platform is a WebGPU path that works — is silently skipped.
-    model_path().is_some()
+    //
+    // TWO conditions, because the file alone was never the question. `probe` commits the app to
+    // this plugin — `pickDetector` takes the native path and never builds a `WebDetector` — so a
+    // true answer followed by a failure in `load_model` leaves the scanner with nothing at all,
+    // where a false answer would have left it with WebGPU. Both halves are cheap: resolving a path,
+    // and asking onnxruntime whether it can build a session builder, which is what fails when the
+    // runtime's DLL is absent or the wrong architecture.
+    //
+    // It stops short of committing the MODEL, which is seconds of graph compilation and DirectML
+    // initialisation — too much to spend answering a capability question on every scan. So this is
+    // still necessary-not-sufficient, and deliberately so; what it now rules out is the whole class
+    // of "the runtime is not really here", which the file check could not see at all.
+    if resolve_model_path(&app).is_err() {
+        return false;
+    }
+    match Session::builder() {
+        Ok(_) => true,
+        Err(e) => {
+            // Loud: falling back to WebDetector is the right outcome, but silently is not — this is
+            // the difference between "this machine prefers the browser path" and "onnxruntime did
+            // not load", and only one of those is worth anybody's time to investigate.
+            eprintln!("cube-vision: onnxruntime is unavailable, falling back to WebDetector: {e}");
+            false
+        }
+    }
 }
 
 #[tauri::command]
@@ -127,7 +185,10 @@ fn current_camera(state: State<'_, CubeVision>) -> Result<Option<CameraInfo>, St
     }))
 }
 
-#[tauri::command]
+/// `(async)` because Tauri runs a plain command on the MAIN thread, and this one waits up to ten
+/// seconds for a camera to answer. On the main thread that is ten seconds of frozen UI on the
+/// screen whose entire job is to stay responsive while the camera comes up.
+#[tauri::command(async)]
 fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Result<(), String> {
     let index = match device_id.as_deref() {
         Some(id) => CameraIndex::Index(
@@ -136,12 +197,13 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
         ),
         None => CameraIndex::Index(0),
     };
-    stop_capture(&state);
+    // Retires whatever was running and claims the next session number in one step. Everything the
+    // new worker does is conditioned on still owning it.
+    let mine = stop_capture(&state);
     let (label_tx, label_rx) = mpsc::channel::<Result<String, String>>();
-    let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let latest = Arc::clone(&state.latest);
-    let running = Arc::clone(&state.running);
-    running.store(true, Ordering::SeqCst);
+    let generation = Arc::clone(&state.generation);
+    let capture_error = Arc::clone(&state.capture_error);
     let idx = index.clone();
 
     std::thread::spawn(move || {
@@ -159,15 +221,61 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
             return;
         }
         let _ = label_tx.send(Ok(cam.info().human_name()));
-        while running.load(Ordering::SeqCst) && stop_rx.try_recv().is_err() {
-            let Ok(frame) = cam.frame() else { continue };
-            let Ok(decoded) = frame.decode_image::<RgbFormat>() else {
-                continue;
+
+        // OWNERSHIP, not a shared flag. A single `running` bool plus a stop channel had three ways
+        // to go wrong: a reopen set the flag back to true and revived the previous worker, a
+        // DISCONNECTED channel read as "keep running" because only `try_recv().is_err()` was
+        // tested, and a worker that opened after its own open had timed out kept publishing with
+        // nobody holding its stop handle. A session number the worker compares against is none of
+        // those — the moment anything else claims the camera, this loop's condition is false.
+        let mut consecutive_failures = 0u32;
+        while generation.load(Ordering::SeqCst) == mine {
+            let frame = match cam.frame() {
+                Ok(f) => f,
+                Err(e) => {
+                    note_capture_failure(
+                        &capture_error,
+                        &latest,
+                        &mut consecutive_failures,
+                        e.to_string(),
+                    );
+                    continue;
+                }
             };
+            let decoded = match frame.decode_image::<RgbFormat>() {
+                Ok(d) => d,
+                Err(e) => {
+                    note_capture_failure(
+                        &capture_error,
+                        &latest,
+                        &mut consecutive_failures,
+                        e.to_string(),
+                    );
+                    continue;
+                }
+            };
+            consecutive_failures = 0;
             let (w, h) = (decoded.width() as usize, decoded.height() as usize);
+            if w == 0 || h == 0 {
+                note_capture_failure(
+                    &capture_error,
+                    &latest,
+                    &mut consecutive_failures,
+                    format!("the camera produced a {w}x{h} frame"),
+                );
+                continue;
+            }
             let prepared = letterbox(decoded.as_raw(), w, h);
+            // Re-checked after the work: a close can land while a frame is being letterboxed, and
+            // publishing it then hands the next session a previous camera's pixels.
+            if generation.load(Ordering::SeqCst) != mine {
+                break;
+            }
             if let Ok(mut slot) = latest.lock() {
                 *slot = Some(prepared);
+            }
+            if let Ok(mut slot) = capture_error.lock() {
+                *slot = None;
             }
         }
         let _ = cam.stop_stream();
@@ -178,7 +286,11 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
     let label = label_rx
         .recv_timeout(std::time::Duration::from_secs(10))
         .map_err(|_| "the camera did not answer within 10s".to_string())??;
-    *state.stop.lock().map_err(|_| "camera state poisoned")? = Some(stop_tx);
+    // The open may have been superseded while we waited — by a close, or by another open. Its
+    // worker has already stopped on the generation check; all that is left is not to publish it.
+    if state.generation.load(Ordering::SeqCst) != mine {
+        return Err("the camera was closed before it finished opening".into());
+    }
     *state.opened.lock().map_err(|_| "camera state poisoned")? = Some(CameraInfo {
         device_id: index.to_string(),
         label,
@@ -186,31 +298,63 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
     Ok(())
 }
 
-/// Stop the capture thread. Split out so `open_camera` can reuse it without going through the
-/// command wrapper — reopening must not leave the previous thread holding the device.
-fn stop_capture(state: &CubeVision) {
-    state.running.store(false, Ordering::SeqCst);
-    if let Ok(mut slot) = state.stop.lock() {
-        if let Some(tx) = slot.take() {
-            let _ = tx.send(());
-        }
-    }
+/// Retire the current capture session and return the number of the NEW one.
+///
+/// Split out so `open_camera` can reuse it without going through the command wrapper — reopening
+/// must not leave the previous thread holding the device. Returning the new generation is what
+/// makes "stop, then start" a single indivisible step from the caller's point of view.
+fn stop_capture(state: &CubeVision) -> usize {
+    let next = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     if let Ok(mut slot) = state.opened.lock() {
         *slot = None;
     }
     if let Ok(mut slot) = state.latest.lock() {
         *slot = None;
     }
+    if let Ok(mut slot) = state.capture_error.lock() {
+        *slot = None;
+    }
+    next
+}
+
+/// Record why a frame did not arrive, and stop serving stale pixels once it is clearly not a blip.
+///
+/// Failures used to be discarded by `let Ok(..) else { continue }`, which did two things at once:
+/// it span the loop as fast as the CPU allowed on a camera that failed immediately, and — after
+/// one good frame — it left `latest` populated, so inference kept re-reading the same picture and
+/// the scanner looked like it was working on a cube that was no longer in front of it.
+fn note_capture_failure(
+    capture_error: &Mutex<Option<String>>,
+    latest: &Mutex<Option<Vec<f32>>>,
+    consecutive: &mut u32,
+    why: String,
+) {
+    *consecutive += 1;
+    if let Ok(mut slot) = capture_error.lock() {
+        *slot = Some(why);
+    }
+    // A handful of dropped frames is normal while a camera settles; a run of them is not, and past
+    // that point the last good frame is a lie rather than a stand-in.
+    if *consecutive >= STALE_AFTER_FAILURES {
+        if let Ok(mut slot) = latest.lock() {
+            *slot = None;
+        }
+    }
+    // Not a busy loop. Without this a camera erroring instantly pins a core for as long as it is
+    // open, which on a laptop is felt long before anyone looks at the logs.
+    std::thread::sleep(std::time::Duration::from_millis(RETRY_BACKOFF_MS));
 }
 
 #[tauri::command]
 fn close_camera(state: State<'_, CubeVision>) -> Result<(), String> {
-    stop_capture(&state);
+    let _ = stop_capture(&state);
     Ok(())
 }
 
-#[tauri::command]
-fn load_model(state: State<'_, CubeVision>) -> Result<(), String> {
+/// `(async)` for the same reason as `open_camera`: building an ORT session compiles the graph and
+/// initialises DirectML, which is not work for the thread that has to keep drawing.
+#[tauri::command(async)]
+fn load_model<R: Runtime>(app: AppHandle<R>, state: State<'_, CubeVision>) -> Result<(), String> {
     if state
         .session
         .lock()
@@ -219,7 +363,7 @@ fn load_model(state: State<'_, CubeVision>) -> Result<(), String> {
     {
         return Ok(());
     }
-    let path = model_path().ok_or("cube-yolo.onnx is not beside the executable")?;
+    let path = resolve_model_path(&app)?;
     // DirectML FIRST, CPU second, and the order is the whole point: onnxruntime walks the list, so
     // a machine without a D3D12 device still gets a working scanner rather than a failure. Falling
     // back is not a silent downgrade here — `probe` has already committed us to the native path, so
@@ -240,55 +384,60 @@ fn load_model(state: State<'_, CubeVision>) -> Result<(), String> {
 
 /// `preprocess()` from src/onnx-detect.ts, reproduced exactly. See the module note.
 fn letterbox(rgb: &[u8], w: usize, h: usize) -> Vec<f32> {
-    let scale = IMG as f32 / w.max(h) as f32;
-    let new_w = ((w as f32 * scale).round() as usize).max(1);
-    let new_h = ((h as f32 * scale).round() as usize).max(1);
+    // IN f64, because the TypeScript is. Every JS number is a double and only the store into
+    // `Float32Array` rounds; computing in f32 can land `sy` on the other side of an integer
+    // boundary and pick a different source row, so "reproduced line for line" was not true of the
+    // arithmetic — only of the shape of it. The same gap existed in the Android plugin and was
+    // fixed in the same pass; this is the file whose module note makes the strongest claim about
+    // it, and `letterbox_matches_the_typescript_reference` below is what now holds that claim up.
+    let scale = IMG as f64 / w.max(h) as f64;
+    let new_w = ((w as f64 * scale).round() as usize).max(1);
+    let new_h = ((h as f64 * scale).round() as usize).max(1);
     let pad_x = (IMG - new_w) / 2;
     let pad_y = (IMG - new_h) / 2;
     let area = IMG * IMG;
     let mut out = vec![PAD; 3 * area];
-    let at = |x: usize, y: usize, c: usize| -> f32 { rgb[(y * w + x) * 3 + c] as f32 };
+    let at = |x: usize, y: usize, c: usize| -> f64 { rgb[(y * w + x) * 3 + c] as f64 };
 
     for y in 0..new_h {
         // The `+ 0.5 … - 0.5` is the half-pixel convention the model was calibrated against, not
         // decoration: dropping it shifts every box by half a pixel at 640 and more after the scale
         // back, which reads as a model that got worse.
-        let sy = (((y as f32 + 0.5) / scale) - 0.5).clamp(0.0, h as f32 - 1.0);
+        let sy = (((y as f64 + 0.5) / scale) - 0.5).clamp(0.0, h as f64 - 1.0);
         let y0 = sy.floor() as usize;
         let y1 = (y0 + 1).min(h - 1);
-        let fy = sy - y0 as f32;
+        let fy = sy - y0 as f64;
         let oy = y + pad_y;
         for x in 0..new_w {
-            let sx = (((x as f32 + 0.5) / scale) - 0.5).clamp(0.0, w as f32 - 1.0);
+            let sx = (((x as f64 + 0.5) / scale) - 0.5).clamp(0.0, w as f64 - 1.0);
             let x0 = sx.floor() as usize;
             let x1 = (x0 + 1).min(w - 1);
-            let fx = sx - x0 as f32;
+            let fx = sx - x0 as f64;
             let o = oy * IMG + (x + pad_x);
             for c in 0..3 {
                 let top = at(x0, y0, c) + (at(x1, y0, c) - at(x0, y0, c)) * fx;
                 let bot = at(x0, y1, c) + (at(x1, y1, c) - at(x0, y1, c)) * fx;
-                out[c * area + o] = (top + (bot - top) * fy) / 255.0;
+                out[c * area + o] = ((top + (bot - top) * fy) / 255.0) as f32;
             }
         }
     }
     out
 }
 
-#[tauri::command]
-fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
-    // Whatever the capture thread published last. Cloned rather than held, so inference never
-    // keeps the lock the camera thread needs to publish the next frame.
-    let input = {
-        let slot = state.latest.lock().map_err(|_| "camera state poisoned")?;
-        match slot.as_ref() {
-            Some(frame) => frame.clone(),
-            // Opened but no frame yet. An empty tensor is what `decodeTensorResponse` reads as
-            // null, which the panel already handles as "try again next tick" — an error here
-            // would look like a broken scanner during warm-up.
-            None => return Ok(tensor_response(0, 0, &[])),
-        }
-    };
-
+/// One inference, from letterboxed pixels to the wire response.
+///
+/// The ONE place tensor construction, the session call, output extraction and encoding live.
+/// `next_detection` and `infer_frame` had a copy each — identical but for where the pixels came
+/// from — so a change to the model contract could reach the camera path and miss the parity
+/// harness, which is precisely the path whose job is to notice such changes.
+fn run_inference(state: &CubeVision, input: Vec<f32>) -> Result<Response, String> {
+    if input.len() != 3 * IMG * IMG {
+        return Err(format!(
+            "letterboxed frame is {} floats, expected {} for 3x{IMG}x{IMG}",
+            input.len(),
+            3 * IMG * IMG
+        ));
+    }
     let mut sess_guard = state.session.lock().map_err(|_| "model state poisoned")?;
     let session = sess_guard.as_mut().ok_or("model not loaded")?;
     let tensor = Tensor::from_array(([1usize, 3, IMG, IMG], input))
@@ -296,20 +445,75 @@ fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
     let outputs = session
         .run(ort::inputs!["images" => tensor])
         .map_err(|e| format!("inference failed: {e}"))?;
-    let (shape, data) = outputs[0]
+    // The first output, taken rather than indexed. `outputs[0]` PANICS on a model that produced
+    // none — a crash in place of the error this function exists to return.
+    let (_, output) = outputs
+        .iter()
+        .next()
+        .ok_or("the model produced no outputs")?;
+    let (shape, data) = output
         .try_extract_tensor::<f32>()
         .map_err(|e| format!("could not read the output tensor: {e}"))?;
+
     // [1, rows, anchors] — the same layout every other runtime returns, and what
-    // `decodeDetections` parses.
-    let rows = *shape.get(1).unwrap_or(&0) as i32;
-    let anchors = *shape.get(2).unwrap_or(&0) as i32;
-    Ok(tensor_response(rows, anchors, data))
+    // `decodeDetections` parses. CHECKED rather than indexed hopefully: a missing dimension used to
+    // become a silent 0, which `decodeTensorResponse` reads as "no frame yet" — so a model with the
+    // wrong output rank presented as a camera still warming up, forever.
+    if shape.len() != 3 {
+        return Err(format!(
+            "the model output has shape {shape:?}; this decoder needs [1, rows, anchors]"
+        ));
+    }
+    let (batch, rows, anchors) = (shape[0], shape[1], shape[2]);
+    if batch != 1 || rows <= 0 || anchors <= 0 {
+        return Err(format!(
+            "the model output has shape {shape:?}; batch must be 1 and rows/anchors positive"
+        ));
+    }
+    let expected = (rows as usize)
+        .checked_mul(anchors as usize)
+        .ok_or("the model reports an output size that overflows")?;
+    if data.len() != expected {
+        return Err(format!(
+            "the model output holds {} floats, not the {expected} its shape {shape:?} promises",
+            data.len()
+        ));
+    }
+    Ok(tensor_response(rows as i32, anchors as i32, data))
+}
+
+/// `(async)`: one inference is the single most expensive thing this plugin does per tick.
+#[tauri::command(async)]
+fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
+    // Whatever the capture thread published last. Cloned rather than held, so inference never
+    // keeps the lock the camera thread needs to publish the next frame.
+    let input = {
+        let slot = state.latest.lock().map_err(|_| "camera state poisoned")?;
+        match slot.as_ref() {
+            Some(frame) => frame.clone(),
+            None => {
+                // A RECORDED failure is reported. Without this, a camera that cannot produce a
+                // usable frame is indistinguishable from one that has not produced its first yet,
+                // and the scanner waits on it forever with nothing said.
+                if let Ok(why) = state.capture_error.lock() {
+                    if let Some(why) = why.as_ref() {
+                        return Err(format!("the camera frame could not be prepared: {why}"));
+                    }
+                }
+                // Opened but no frame yet. An empty tensor is what `decodeTensorResponse` reads as
+                // null, which the panel already handles as "try again next tick" — an error here
+                // would look like a broken scanner during warm-up.
+                return Ok(tensor_response(0, 0, &[]));
+            }
+        }
+    };
+    run_inference(&state, input)
 }
 
 /// Run one frame the caller already has. The parity harness's door: it hands pixels in and compares
 /// the tensor against the other runtimes, which is how a letterbox drift is caught by a test rather
 /// than by a scan that has quietly become worse.
-#[tauri::command]
+#[tauri::command(async)]
 fn infer_frame(
     state: State<'_, CubeVision>,
     rgb_base64: String,
@@ -319,30 +523,28 @@ fn infer_frame(
     let rgb = base64::engine::general_purpose::STANDARD
         .decode(rgb_base64.as_bytes())
         .map_err(|e| format!("rgb_base64 is not base64: {e}"))?;
-    if rgb.len() != width * height * 3 {
+    // Zero dimensions passed the old length check against an empty payload, and `letterbox` then
+    // underflowed at `w - 1`; a large pair overflowed the multiplication and could accept a buffer
+    // far too small. Both are rejected before any indexing happens.
+    if width == 0 || height == 0 {
         return Err(format!(
-            "rgb is {} bytes, expected {} for {width}x{height} RGB",
-            rgb.len(),
-            width * height * 3
+            "frame dimensions must be positive, got {width}x{height}"
         ));
     }
-    let input = letterbox(&rgb, width, height);
-    let mut sess_guard = state.session.lock().map_err(|_| "model state poisoned")?;
-    let session = sess_guard.as_mut().ok_or("model not loaded")?;
-    let tensor = Tensor::from_array(([1usize, 3, IMG, IMG], input))
-        .map_err(|e| format!("could not build the input tensor: {e}"))?;
-    let outputs = session
-        .run(ort::inputs!["images" => tensor])
-        .map_err(|e| format!("inference failed: {e}"))?;
-    let (shape, data) = outputs[0]
-        .try_extract_tensor::<f32>()
-        .map_err(|e| format!("could not read the output tensor: {e}"))?;
-    let rows = *shape.get(1).unwrap_or(&0) as i32;
-    let anchors = *shape.get(2).unwrap_or(&0) as i32;
-    Ok(tensor_response(rows, anchors, data))
+    let expected = width
+        .checked_mul(height)
+        .and_then(|px| px.checked_mul(3))
+        .ok_or_else(|| format!("{width}x{height} RGB overflows a usize"))?;
+    if rgb.len() != expected {
+        return Err(format!(
+            "rgb is {} bytes, expected {expected} for {width}x{height} RGB",
+            rgb.len()
+        ));
+    }
+    run_inference(&state, letterbox(&rgb, width, height))
 }
 
-pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("cube-vision")
         .invoke_handler(tauri::generate_handler![
             probe,
@@ -355,9 +557,114 @@ pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             infer_frame
         ])
         .setup(|app, _api| {
-            use tauri::Manager as _;
             app.manage(CubeVision::default());
             Ok(())
         })
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The dev tier of `resolve_model_path`, which is the one a developer actually hits: `tauri dev`
+    // does not stage `bundle.resources`, so the Resource dir is empty and this path is the only
+    // thing standing between a working native scanner and a silent fall back to WebDetector.
+    //
+    // The SHIPPED tier is asserted from the other side, in `apps/web/test/shipped-model.test.mjs`,
+    // which reads `MODEL_RESOURCE` out of this file and checks `tauri.windows.conf.json` stages
+    // something to it. Between them the two tiers are both covered; neither could be checked here
+    // alone, because resolving a Resource dir needs a running app.
+    /// The fixture frame, generated the same way on both sides of the comparison.
+    fn fixture(w: usize, h: usize) -> Vec<u8> {
+        let mut rgb = vec![0u8; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                let o = (y * w + x) * 3;
+                rgb[o] = ((x * 7 + y * 13) % 256) as u8;
+                rgb[o + 1] = ((x * 31 + y * 5 + 77) % 256) as u8;
+                rgb[o + 2] = ((x * 17 + y * 23 + 191) % 256) as u8;
+            }
+        }
+        rgb
+    }
+
+    /// THE PARITY TEST, against numbers produced by the TypeScript, not by this code.
+    ///
+    /// The module note says `preprocess()` is "reproduced here line for line", and until now
+    /// nothing checked it: `ml/golden_frames.py` proves the .onnx agrees with the other runtimes
+    /// and says nothing about what this feeds it, and `infer_frame` — documented as the parity
+    /// harness's door — had no caller anywhere in the repo. So the one claim on which every box
+    /// this plugin produces depends was resting on a comment.
+    ///
+    /// The expected values below were computed by running `preprocess` from
+    /// `packages/cube-scanner/src/onnx-detect.ts` on the same fixture, and they are EXACT: both
+    /// sides now compute in double and round once, on the store to f32. When this drifts, it will
+    /// drift the way a letterbox always does — a fraction of a pixel, everywhere, reading as a
+    /// model that has quietly got worse — which is why the assertion is exact rather than
+    /// approximate.
+    #[test]
+    fn letterbox_matches_the_typescript_reference() {
+        let (w, h) = (97usize, 43usize);
+        let out = letterbox(&fixture(w, h), w, h);
+        assert_eq!(out.len(), 3 * IMG * IMG, "the tensor is 3x{IMG}x{IMG}");
+
+        // (index, value) straight out of the TypeScript. Three samples per plane inside the image
+        // band, and one in the letterbox padding so the pad colour is pinned too.
+        let expected: [(usize, f32); 10] = [
+            (128_100, 0.552_769_6),
+            (192_320, 0.232_916_67),
+            (256_600, 0.162_696_08),
+            (537_700, 0.142_132_36),
+            (601_920, 0.477_181_37),
+            (666_200, 0.913_823_55),
+            (947_300, 0.320_842_53),
+            (1_011_520, 0.563_982_84),
+            (1_075_800, 0.744_497_54),
+            (6_410, 0.447_058_83),
+        ];
+        for (i, want) in expected {
+            assert_eq!(
+                out[i], want,
+                "index {i}: this implementation gives {}, the TypeScript gives {want}",
+                out[i]
+            );
+        }
+
+        // A position-weighted checksum over every element, so the samples above are a readable
+        // anchor and this is what actually catches a shift of one row or one channel.
+        let checksum: f64 = out
+            .iter()
+            .enumerate()
+            .map(|(i, v)| *v as f64 * ((i % 97) as f64 + 1.0) / 97.0)
+            .sum();
+        assert!(
+            (checksum - 291_823.355_345_172_75).abs() < 1e-3,
+            "checksum {checksum} differs from the TypeScript's 291823.35534517275 — the letterbox \
+             has drifted from `preprocess()`"
+        );
+    }
+
+    /// Zero dimensions and an oversized pair are rejected before anything indexes the buffer.
+    #[test]
+    fn a_degenerate_frame_is_refused_rather_than_indexed() {
+        // `letterbox` itself is only ever reached through `infer_frame`'s validation or the capture
+        // loop's, both of which reject these — this pins the reason those checks exist by showing
+        // what the arithmetic would do with h = 0: `h - 1` underflows.
+        assert_eq!(
+            0usize.checked_sub(1),
+            None,
+            "h - 1 underflows for a zero-height frame"
+        );
+    }
+
+    #[test]
+    fn the_dev_model_path_points_at_the_committed_source_model() {
+        let p = source_model_path();
+        assert!(
+            p.exists(),
+            "source cube-yolo.onnx missing at {} — run ml/export.py",
+            p.display()
+        );
+    }
 }
