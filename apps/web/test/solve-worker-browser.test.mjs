@@ -18,14 +18,21 @@ import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
 import { pace } from './browser-wait.mjs';
+import { freePort } from './free-port.mjs';
 
-const PORT = 5196; // geometry owns 5197, serve.test.mjs 5199; node --test runs files in parallel
-const BASE = `http://127.0.0.1:${PORT}`;
+// From the OS. The hand-allocated scheme this replaces — "geometry owns 5197, serve.test.mjs
+// 5199" — is a list that has to be maintained, cannot survive two checkouts running at once, and
+// above all outlives the run: a killed suite leaves serve.mjs holding the number, and every later
+// run fails at startup for a reason that has nothing to do with the code. See free-port.mjs.
+let PORT;
+let BASE;
 const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
 let proc;
 let browser;
 
 before(async () => {
+  PORT = await freePort();
+  BASE = `http://127.0.0.1:${PORT}`;
   proc = spawn(process.execPath, [SERVE], { env: { ...process.env, PORT: String(PORT), CUBUS_LIVE_RELOAD: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('serve.mjs did not start within 5s')), 5000);

@@ -136,6 +136,101 @@ describe('decodeMisread', () => {
     expect(r.stickers).toEqual([{ face: 'F', index: 2, to: was }]);
   });
 
+  it('the work budget covers the pairing, not only the two searches', () => {
+    // `nodeBudget` is documented as a hard backstop on the WORK. It used to bound only the two DFS
+    // walks, leaving |corners| x |edges| pairings — each with a `realise` and a cubejs `isLegal` —
+    // outside it and on the main thread, quadratic in the quantity being bounded.
+    //
+    // This reading is the witness. Its DFS costs 3,404 nodes and its pairing loop then wants 3,968
+    // more, so a budget of 3,500 must come back `unknown`: the search cannot finish for the work
+    // it was lent. Uncharged, the same call returns a distance-4 repair — an answer bought with
+    // work the caller refused. Three misreads on a scrambled cube do not show this at any budget;
+    // the DFS dominates there, which is why an earlier search for a witness came back empty.
+    const rows: Record<Face, string> = {
+      U: '000000000',
+      R: '111211131',
+      F: '222222222',
+      D: '313333533',
+      L: '444443444',
+      B: '555555535',
+    };
+    const shown = {} as Record<Face, ColorFaces>;
+    for (const f of FACES) shown[f] = { colors: [...rows[f]].map(Number) };
+    const own = new Map<number, Face>();
+    FACES.forEach((f, i) => own.set(i, f));
+    const opts = { fixedRotation: true, maxDistance: 4 };
+
+    expect(decodeMisread(shown, own, { ...opts, nodeBudget: 3500 })).toEqual({ kind: 'unknown' });
+    // …and lent enough, it answers. A backstop that refuses everything would pass the line above
+    // while proving nothing.
+    expect(decodeMisread(shown, own, { ...opts, nodeBudget: 20_000 })).toMatchObject({
+      kind: 'repair',
+      distance: 4,
+    });
+  });
+
+  it('refuses a budget that cannot mean anything, rather than answering from it', () => {
+    // `maxDistance` walks straight into every `<=` in the search. A NaN or a negative came back
+    // as `{ kind: 'beyond', distance: NaN }` or `distance: -1`, which `diagnose` turns into a
+    // misread COUNT and the panel puts in a sentence to a child — a number invented out of a
+    // caller's typo, in the module whose whole discipline is never to invent one.
+    const f = faces(SOLVED_FACELETS);
+    const own = centreOwner(f);
+    for (const bad of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY]) {
+      expect(() => decodeMisread(f, own, { maxDistance: bad })).toThrow(/maxDistance/);
+      expect(() => decodeMisread(f, own, { nodeBudget: bad })).toThrow(/nodeBudget/);
+    }
+    // Absent still means "use the default", which is the whole point of them being optional.
+    expect(decodeMisread(f, own, {})).toMatchObject({ kind: 'repair', distance: 0 });
+  });
+
+  it('a decoded distance of 1 is NOT a proof that one sticker was misread', () => {
+    // The limit of minimum-distance decoding, pinned so it stays a known fact rather than a
+    // surprise. `distance` is what the READING is worth, never what the user did.
+    //
+    // Take the solved cube and the 3-cycle witness three stickers away from it (above), then read
+    // TWO of those three the witness's way. The reading is two stickers from the cube in the
+    // user's hand and one from a legal cube they never held — so the decoder reports distance 1,
+    // uniquely, and names the third sticker, which was read CORRECTLY. It cannot do better: on
+    // this input there is no evidence anywhere that distinguishes the two cubes.
+    //
+    // Nothing here is a defect to fix; it is why the accusation the app makes is "fixing the
+    // marked sticker makes this a solvable cube" — provable — and never "you misread this one".
+    const arr = [...SOLVED_FACELETS];
+    arr[19] = 'R';
+    arr[37] = 'F'; // two of the witness's three, so the third (index 10) still reads correctly
+    const reading = faces(arr.join(''));
+    expect(legal(arr.join(''))).toBe(false); // two misreads: not a cube
+    const r = decode(reading);
+    expect(r.kind).toBe('repair');
+    if (r.kind !== 'repair') throw new Error('unreachable');
+    // ONE change away from legal, though two stickers were actually misread. The distance is a
+    // property of the reading, and it is still an honest lower bound — just a loose one.
+    expect(r.distance).toBe(1);
+    // And it is not even one candidate. `unique` is false and four stickers are named: the search
+    // runs over 4^6 rotations, and the R face's reading here is symmetric under a quarter turn, so
+    // the same canonical repair lands on a different as-shown index under each of its four turns.
+    // R1 — the sticker the camera read RIGHT — is one of the four.
+    expect(r.unique).toBe(false);
+    expect(r.stickers.map((s) => `${s.face}${s.index}`).sort()).toEqual(['R1', 'R3', 'R5', 'R7']);
+    // And the four are not even interchangeable. Applied to the reading AS GIVEN, exactly ONE
+    // yields a legal cube; the other three are legal only under the rotation combo that found
+    // them, because `stickers` is in as-shown coordinates. So the list is not "four equally good
+    // repairs" — it is one repair of an ambiguous reading plus three coordinates that only mean
+    // anything alongside a rotation the caller never receives. A second, independent reason it
+    // must never be shown as "fix this and you are done"; `ai-assemble.test.ts` pins what the app
+    // now says instead.
+    const legalAsGiven = r.stickers.filter((st) => {
+      const repaired = [...arr];
+      repaired[FACES.indexOf(st.face) * 9 + st.index] = FACES[st.to]!;
+      return legal(repaired.join(''));
+    });
+    expect(legalAsGiven).toHaveLength(1);
+    // The one that works is R1 — and it repairs the reading into the WITNESS, not into the solved
+    // cube the user was holding. Being right about the colouring is not being right about the cube.
+    expect(legalAsGiven[0]).toMatchObject({ face: 'R', index: 1 });
+  });
+
   it('minimum distance 3 makes a single-sticker repair unique — never a list to choose from', () => {
     // Two legal cubes both one sticker from the same reading would be at most two apart, and the
     // suite above proves no such pair exists. Checked over many cubes, holds, and misreads.
@@ -154,9 +249,13 @@ describe('decodeMisread', () => {
           const shown = shownAs(scrambleFacelets(alg), rot);
           shown[face]!.colors[index] = (shown[face]!.colors[index]! + 3) % 6;
           const r = decode(shown);
-          if (r.kind !== 'repair' || r.distance !== 1) continue;
-          expect(r.unique).toBe(true);
-          expect(r.stickers).toHaveLength(1);
+          // Unconditionally. `if (r.kind !== 'repair' || r.distance !== 1) continue` skipped
+          // exactly the failure this test names — a single misread the decoder does not find, or
+          // finds at the wrong distance — and left it asserting uniqueness only where uniqueness
+          // was already certain.
+          expect(r.kind).toBe('repair');
+          expect(r).toMatchObject({ kind: 'repair', distance: 1, unique: true });
+          if (r.kind === 'repair') expect(r.stickers).toHaveLength(1);
         }
       }
     }
@@ -166,6 +265,7 @@ describe('decodeMisread', () => {
     // The property that makes "at least N stickers were misread" honest. A single overstatement
     // here would make the app claim more damage than exists.
     // A fixed generator, so a failure here is always reproducible.
+    let claimed = 0;
     let seed = 20260828;
     const rnd = (): number => {
       seed = (seed * 1103515245 + 12345) % 2147483648;
@@ -205,9 +305,15 @@ describe('decodeMisread', () => {
         checked++;
         if (r.kind === 'repair') expect(r.distance).toBeLessThanOrEqual(k);
         else if (r.kind === 'beyond') expect(r.distance).toBeLessThanOrEqual(k);
+        else continue; // 'unknown' claims nothing, so it cannot overstate — but see below
+        claimed++;
       }
     }
     expect(checked).toBeGreaterThan(15);
+    // `unknown` is the one verdict this property cannot be tested against, so a decoder that
+    // returned it every time would pass the loop above without ever being examined. Require that
+    // the runs mostly produced a claim.
+    expect(claimed).toBeGreaterThan(checked / 2);
   });
 
   it('a balanced red/orange swap — invisible to colour counting — is found', () => {
@@ -269,12 +375,26 @@ describe('decodeMisread', () => {
   it('stays inside the checking budget for the failures it is meant to handle', () => {
     // scheduleCheck stops the camera and shows "Checking" before this runs, so it fills a
     // labelled wait — but it is still the main thread, and a phone is several times slower.
+    //
+    // Measured in NODES, not milliseconds. This asserted `elapsed < 1000` against a case that
+    // takes ~58 ms on an idle machine — a 17x margin — and still went red on a laptop busy with
+    // other work, which is a gate that reports the machine rather than the code. A node is
+    // deterministic and proportional to time, so the budget travels: it is the same substitution
+    // the solver already made for `probeMax`, for the same reason.
+    //
+    // 40,000 against a measured need between 10,000 and 25,000: loose enough that a fair
+    // implementation change does not trip it, tight enough that the ~14x blow-up the old
+    // count-guided search had would.
     const shown = shownAs(DEEP, HELD);
     misread(shown, ORANGE, RED, 3);
-    const started = performance.now();
-    const r = decode(shown);
-    const elapsed = performance.now() - started;
+    const r = decodeMisread(shown, centreOwner(shown), { maxDistance: 4, nodeBudget: 40_000 });
     expect(r.kind).toBe('repair');
-    expect(elapsed).toBeLessThan(1000);
+    // And the budget is doing work: the same call at a quarter of it must refuse rather than
+    // answer, or this test would pass against any cost at all.
+    const again = shownAs(DEEP, HELD);
+    misread(again, ORANGE, RED, 3);
+    expect(
+      decodeMisread(again, centreOwner(again), { maxDistance: 4, nodeBudget: 10_000 }),
+    ).toEqual({ kind: 'unknown' });
   });
 });

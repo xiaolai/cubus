@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeTensorResponse } from '../view/native-detector.js';
+import { NativeDetector, decodeTensorResponse } from '../view/native-detector.js';
 
 // The wire format the cube-vision plugin returns over the Tauri bridge — int32 rows, int32 anchors
 // (little-endian), then rows*anchors f32. This is the TS half of the contract; the Rust half is
@@ -47,5 +47,51 @@ describe('decodeTensorResponse', () => {
     const out = decodeTensorResponse(encode(10, anchors, new Array(10 * anchors).fill(0)));
     expect(out?.anchors).toBe(anchors);
     expect(out?.data.length).toBe(10 * anchors);
+  });
+});
+
+describe('NativeDetector — stop() cancels a pending use()', () => {
+  /** An `invoke` whose `open_camera` blocks until released, so a stop can land inside `use()`. */
+  function bridge() {
+    const calls: string[] = [];
+    let openGate = (): void => {};
+    const invoke = async (cmd: string): Promise<unknown> => {
+      calls.push(cmd.replace('plugin:cube-vision|', ''));
+      if (cmd.endsWith('open_camera')) {
+        await new Promise<void>((r) => {
+          openGate = r;
+        });
+      }
+      if (cmd.endsWith('current_camera')) return { deviceId: 'native-1', label: 'Native' };
+      return null;
+    };
+    return { calls, invoke, finishOpen: () => openGate() };
+  }
+
+  it('rejects with AbortError and does not install the camera', async () => {
+    // `Detector.use` documents this, and `WebDetector` has always honoured it — so callers were
+    // written against a contract only one implementation kept. This one used to resume after a
+    // stop() and set `device` again, reopening a camera the caller had released; on the panel's
+    // painting path that left the lens on while the app reported no camera.
+    const b = bridge();
+    const det = new NativeDetector(b.invoke);
+    const opening = det.use({});
+    det.stop();
+    b.finishOpen();
+    await expect(opening).rejects.toMatchObject({ name: 'AbortError' });
+    expect(det.device).toBeNull();
+    // And it closes what it abandoned rather than leaving the plugin holding a camera nobody has.
+    expect(b.calls.filter((c) => c === 'close_camera').length).toBeGreaterThanOrEqual(2);
+    // It never asked which camera opened — the attempt was over before that mattered.
+    expect(b.calls).not.toContain('current_camera');
+  });
+
+  it('an uninterrupted open still installs the camera', async () => {
+    const b = bridge();
+    const det = new NativeDetector(b.invoke);
+    const opening = det.use({});
+    b.finishOpen();
+    await opening;
+    expect(det.device).toEqual({ deviceId: 'native-1', label: 'Native' });
   });
 });
