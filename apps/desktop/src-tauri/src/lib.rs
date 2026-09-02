@@ -916,6 +916,22 @@ pub fn run() {
             optimal::optimal_cancel
         ]);
 
+    // Self-update, and the relaunch that completes it. DESKTOP ONLY, because only a desktop has
+    // anything to update: a phone goes through its store, and the browser build is whatever the
+    // server last served. That makes this the same shape as the window's orientation — a capability
+    // one build has and the other cannot want — which is the seam AGENTS.md already sanctions, so
+    // the affordance is drawn behind `isDesktopHost()` exactly as the orientation row is.
+    //
+    // The pubkey and endpoint live in tauri.conf.json. An update is verified against that key
+    // before it is ever unpacked, which is the whole reason this is safe to ship: the endpoint is
+    // plain HTTPS on a public URL, and a signature nobody but the maintainer can produce is what
+    // stops that URL from being an install-anything hole.
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init());
+
     // Android's BLE is Kotlin (src/android_ble.rs); every other platform's is btleplug in-process
     // and needs no plugin at all. The nine command NAMES are identical either way, which is what
     // keeps `apps/web/lib/ble-bridge.js` from having to learn a platform.

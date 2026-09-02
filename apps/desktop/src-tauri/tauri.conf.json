@@ -67,6 +67,15 @@
       "files": {
         "Resources/Assets.car": "icons/Assets.car"
       }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_WITH_MINISIGN_PUBLIC_KEY",
+      "endpoints": [
+        "https://github.com/xiaolai/cubus/releases/latest/download/latest.json"
+      ]
     }
   }
 }

@@ -144,6 +144,12 @@ jobs:
       # Windows and Linux take no signing material, so they take no signing branch either.
       - name: Build
         if: runner.os != 'macOS'
+        env:
+          # Signs the updater artifacts. Without these the build still succeeds and simply produces
+          # no .sig files — which `make-updater-manifest.mjs` then refuses, loudly, rather than
+          # publishing a manifest no client can verify.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm --filter cubus-desktop exec tauri build ${{ matrix.args }}
 
       # macOS, where the certificate has to be CHECKED before it is handed over.
@@ -166,6 +172,11 @@ jobs:
           CERT_B64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Apple's signature proves who built it; minisign proves the UPDATE is ours. Different
+          # keys, different jobs — an update is verified against the pubkey in tauri.conf.json
+          # before a byte is unpacked, on a machine that never asked Apple anything.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if [ -z "$CERT_B64" ]; then
             case "$GITHUB_REF" in
@@ -249,6 +260,12 @@ jobs:
             target/**/bundle/**/*.deb
             target/**/bundle/**/*.AppImage
             target/**/bundle/**/*.rpm
+            # The updater's payloads and their signatures. `.app.tar.gz` is already above; these
+            # are the Windows and Linux equivalents plus every detached signature, which is what
+            # make-updater-manifest.mjs reads to build latest.json.
+            target/**/bundle/**/*.nsis.zip
+            target/**/bundle/**/*.msi.zip
+            target/**/bundle/**/*.sig
 
   android:
     name: Android (AAB + APK)
@@ -458,6 +475,25 @@ jobs:
 
       - name: what came back
         run: find dist -type f | sort
+
+      # latest.json — what the in-app updater actually reads.
+      #
+      # Generated from the artifacts that came back, never from names spelled here: Tauri's bundler
+      # owns those names, they differ per bundle kind, and a manifest pointing at a URL that 404s is
+      # NOT an error anybody sees. The client reports "no update available" and every user stays put
+      # forever. `scripts/make-updater-manifest.mjs` builds it from the .sig files on disk and
+      # refuses — loudly, failing this job — when there are none, when one is empty, or when the
+      # version is not bare X.Y.Z (Tauri parses it with semver, which rejects the tag's leading v).
+      # Its rules are tested in apps/web/test/updater-manifest.test.mjs.
+      - name: Build latest.json for the in-app updater
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          node scripts/make-updater-manifest.mjs \
+            --dir dist \
+            --version "$VERSION" \
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
+            --out dist/latest.json
 
       # Dispatch, not `on: release` — the release event fires before the assets finish uploading,
       # so a tap job triggered by it races the upload and can win. This runs after the draft has

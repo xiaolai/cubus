@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop",
-  "description": "Window control: dragging the title bar, minimising and closing. On Windows and Linux the window is created undecorated, so the app's own caption buttons are the only ones the user has \u2014 see buildChrome in apps/web/lib/app.js. A phone has no window to drive, so this capability is not granted there.",
+  "description": "Window control and self-update. Window: dragging the title bar, minimising and closing \u2014 on Windows and Linux the window is created undecorated, so the app's own caption buttons are the only ones the user has (see buildChrome in apps/web/lib/app.js). Update: `updater:default` lets the app ask its endpoint whether a newer signed build exists and install it, and `process:allow-restart` is what completes the install \u2014 without it the new version sits on disk until the user happens to quit and reopen. Both are granted HERE rather than in default.json because a phone updates through its store and has no window to drive either, so the two capabilities have the same platform list for the same reason. `dialog:allow-ask` / `dialog:allow-message` draw the update question and its answer: the app has no general modal of its own, and a two-button question is something the OS draws better than a component invented for it would.",
   "platforms": [
     "macOS",
     "windows",
@@ -14,6 +14,10 @@
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",
     "core:window:allow-close",
-    "core:window:allow-set-title"
+    "core:window:allow-set-title",
+    "updater:default",
+    "process:allow-restart",
+    "dialog:allow-ask",
+    "dialog:allow-message"
   ]
 }
