@@ -15,7 +15,9 @@
 // dependency bump that reaches for something new goes red instead of returning undefined.
 
 /**
- * The Web Bluetooth members `smartcube-web-bluetooth` actually calls, measured at rev 44f1f09.
+ * The Web Bluetooth members `smartcube-web-bluetooth` actually calls, measured at rev 77df8e9 and
+ * unchanged since 44f1f09 — including across the GATT-lifecycle base-class lift, which moved a lot
+ * of calling code without changing which members it calls.
  *
  * This list is the contract, and ble-polyfill.test.mjs asserts two things about it: that every
  * name here exists on the objects we hand out, and that the library's own source calls nothing

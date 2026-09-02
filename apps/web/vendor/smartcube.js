@@ -139,7 +139,7 @@ var require_aes_js = __commonJS({
       }();
       var numberOfRounds = { 16: 10, 24: 12, 32: 14 };
       var rcon = [1, 2, 4, 8, 16, 32, 64, 128, 27, 54, 108, 216, 171, 77, 154, 47, 94, 188, 99, 198, 151, 53, 106, 212, 179, 125, 250, 239, 197, 145];
-      var S2 = [99, 124, 119, 123, 242, 107, 111, 197, 48, 1, 103, 43, 254, 215, 171, 118, 202, 130, 201, 125, 250, 89, 71, 240, 173, 212, 162, 175, 156, 164, 114, 192, 183, 253, 147, 38, 54, 63, 247, 204, 52, 165, 229, 241, 113, 216, 49, 21, 4, 199, 35, 195, 24, 150, 5, 154, 7, 18, 128, 226, 235, 39, 178, 117, 9, 131, 44, 26, 27, 110, 90, 160, 82, 59, 214, 179, 41, 227, 47, 132, 83, 209, 0, 237, 32, 252, 177, 91, 106, 203, 190, 57, 74, 76, 88, 207, 208, 239, 170, 251, 67, 77, 51, 133, 69, 249, 2, 127, 80, 60, 159, 168, 81, 163, 64, 143, 146, 157, 56, 245, 188, 182, 218, 33, 16, 255, 243, 210, 205, 12, 19, 236, 95, 151, 68, 23, 196, 167, 126, 61, 100, 93, 25, 115, 96, 129, 79, 220, 34, 42, 144, 136, 70, 238, 184, 20, 222, 94, 11, 219, 224, 50, 58, 10, 73, 6, 36, 92, 194, 211, 172, 98, 145, 149, 228, 121, 231, 200, 55, 109, 141, 213, 78, 169, 108, 86, 244, 234, 101, 122, 174, 8, 186, 120, 37, 46, 28, 166, 180, 198, 232, 221, 116, 31, 75, 189, 139, 138, 112, 62, 181, 102, 72, 3, 246, 14, 97, 53, 87, 185, 134, 193, 29, 158, 225, 248, 152, 17, 105, 217, 142, 148, 155, 30, 135, 233, 206, 85, 40, 223, 140, 161, 137, 13, 191, 230, 66, 104, 65, 153, 45, 15, 176, 84, 187, 22];
+      var S = [99, 124, 119, 123, 242, 107, 111, 197, 48, 1, 103, 43, 254, 215, 171, 118, 202, 130, 201, 125, 250, 89, 71, 240, 173, 212, 162, 175, 156, 164, 114, 192, 183, 253, 147, 38, 54, 63, 247, 204, 52, 165, 229, 241, 113, 216, 49, 21, 4, 199, 35, 195, 24, 150, 5, 154, 7, 18, 128, 226, 235, 39, 178, 117, 9, 131, 44, 26, 27, 110, 90, 160, 82, 59, 214, 179, 41, 227, 47, 132, 83, 209, 0, 237, 32, 252, 177, 91, 106, 203, 190, 57, 74, 76, 88, 207, 208, 239, 170, 251, 67, 77, 51, 133, 69, 249, 2, 127, 80, 60, 159, 168, 81, 163, 64, 143, 146, 157, 56, 245, 188, 182, 218, 33, 16, 255, 243, 210, 205, 12, 19, 236, 95, 151, 68, 23, 196, 167, 126, 61, 100, 93, 25, 115, 96, 129, 79, 220, 34, 42, 144, 136, 70, 238, 184, 20, 222, 94, 11, 219, 224, 50, 58, 10, 73, 6, 36, 92, 194, 211, 172, 98, 145, 149, 228, 121, 231, 200, 55, 109, 141, 213, 78, 169, 108, 86, 244, 234, 101, 122, 174, 8, 186, 120, 37, 46, 28, 166, 180, 198, 232, 221, 116, 31, 75, 189, 139, 138, 112, 62, 181, 102, 72, 3, 246, 14, 97, 53, 87, 185, 134, 193, 29, 158, 225, 248, 152, 17, 105, 217, 142, 148, 155, 30, 135, 233, 206, 85, 40, 223, 140, 161, 137, 13, 191, 230, 66, 104, 65, 153, 45, 15, 176, 84, 187, 22];
       var Si = [82, 9, 106, 213, 48, 54, 165, 56, 191, 64, 163, 158, 129, 243, 215, 251, 124, 227, 57, 130, 155, 47, 255, 135, 52, 142, 67, 68, 196, 222, 233, 203, 84, 123, 148, 50, 166, 194, 35, 61, 238, 76, 149, 11, 66, 250, 195, 78, 8, 46, 161, 102, 40, 217, 36, 178, 118, 91, 162, 73, 109, 139, 209, 37, 114, 248, 246, 100, 134, 104, 152, 22, 212, 164, 92, 204, 93, 101, 182, 146, 108, 112, 72, 80, 253, 237, 185, 218, 94, 21, 70, 87, 167, 141, 157, 132, 144, 216, 171, 0, 140, 188, 211, 10, 247, 228, 88, 5, 184, 179, 69, 6, 208, 44, 30, 143, 202, 63, 15, 2, 193, 175, 189, 3, 1, 19, 138, 107, 58, 145, 17, 65, 79, 103, 220, 234, 151, 242, 207, 206, 240, 180, 230, 115, 150, 172, 116, 34, 231, 173, 53, 133, 226, 249, 55, 232, 28, 117, 223, 110, 71, 241, 26, 113, 29, 41, 197, 137, 111, 183, 98, 14, 170, 24, 190, 27, 252, 86, 62, 75, 198, 210, 121, 32, 154, 219, 192, 254, 120, 205, 90, 244, 31, 221, 168, 51, 136, 7, 199, 49, 177, 18, 16, 89, 39, 128, 236, 95, 96, 81, 127, 169, 25, 181, 74, 13, 45, 229, 122, 159, 147, 201, 156, 239, 160, 224, 59, 77, 174, 42, 245, 176, 200, 235, 187, 60, 131, 83, 153, 97, 23, 43, 4, 126, 186, 119, 214, 38, 225, 105, 20, 99, 85, 33, 12, 125];
       var T1 = [3328402341, 4168907908, 4000806809, 4135287693, 4294111757, 3597364157, 3731845041, 2445657428, 1613770832, 33620227, 3462883241, 1445669757, 3892248089, 3050821474, 1303096294, 3967186586, 2412431941, 528646813, 2311702848, 4202528135, 4026202645, 2992200171, 2387036105, 4226871307, 1101901292, 3017069671, 1604494077, 1169141738, 597466303, 1403299063, 3832705686, 2613100635, 1974974402, 3791519004, 1033081774, 1277568618, 1815492186, 2118074177, 4126668546, 2211236943, 1748251740, 1369810420, 3521504564, 4193382664, 3799085459, 2883115123, 1647391059, 706024767, 134480908, 2512897874, 1176707941, 2646852446, 806885416, 932615841, 168101135, 798661301, 235341577, 605164086, 461406363, 3756188221, 3454790438, 1311188841, 2142417613, 3933566367, 302582043, 495158174, 1479289972, 874125870, 907746093, 3698224818, 3025820398, 1537253627, 2756858614, 1983593293, 3084310113, 2108928974, 1378429307, 3722699582, 1580150641, 327451799, 2790478837, 3117535592, 0, 3253595436, 1075847264, 3825007647, 2041688520, 3059440621, 3563743934, 2378943302, 1740553945, 1916352843, 2487896798, 2555137236, 2958579944, 2244988746, 3151024235, 3320835882, 1336584933, 3992714006, 2252555205, 2588757463, 1714631509, 293963156, 2319795663, 3925473552, 67240454, 4269768577, 2689618160, 2017213508, 631218106, 1269344483, 2723238387, 1571005438, 2151694528, 93294474, 1066570413, 563977660, 1882732616, 4059428100, 1673313503, 2008463041, 2950355573, 1109467491, 537923632, 3858759450, 4260623118, 3218264685, 2177748300, 403442708, 638784309, 3287084079, 3193921505, 899127202, 2286175436, 773265209, 2479146071, 1437050866, 4236148354, 2050833735, 3362022572, 3126681063, 840505643, 3866325909, 3227541664, 427917720, 2655997905, 2749160575, 1143087718, 1412049534, 999329963, 193497219, 2353415882, 3354324521, 1807268051, 672404540, 2816401017, 3160301282, 369822493, 2916866934, 3688947771, 1681011286, 1949973070, 336202270, 2454276571, 201721354, 1210328172, 3093060836, 2680341085, 3184776046, 1135389935, 3294782118, 965841320, 831886756, 3554993207, 4068047243, 3588745010, 2345191491, 1849112409, 3664604599, 26054028, 2983581028, 2622377682, 1235855840, 3630984372, 2891339514, 4092916743, 3488279077, 3395642799, 4101667470, 1202630377, 268961816, 1874508501, 4034427016, 1243948399, 1546530418, 941366308, 1470539505, 1941222599, 2546386513, 3421038627, 2715671932, 3899946140, 1042226977, 2521517021, 1639824860, 227249030, 260737669, 3765465232, 2084453954, 1907733956, 3429263018, 2420656344, 100860677, 4160157185, 470683154, 3261161891, 1781871967, 2924959737, 1773779408, 394692241, 2579611992, 974986535, 664706745, 3655459128, 3958962195, 731420851, 571543859, 3530123707, 2849626480, 126783113, 865375399, 765172662, 1008606754, 361203602, 3387549984, 2278477385, 2857719295, 1344809080, 2782912378, 59542671, 1503764984, 160008576, 437062935, 1707065306, 3622233649, 2218934982, 3496503480, 2185314755, 697932208, 1512910199, 504303377, 2075177163, 2824099068, 1841019862, 739644986];
       var T2 = [2781242211, 2230877308, 2582542199, 2381740923, 234877682, 3184946027, 2984144751, 1418839493, 1348481072, 50462977, 2848876391, 2102799147, 434634494, 1656084439, 3863849899, 2599188086, 1167051466, 2636087938, 1082771913, 2281340285, 368048890, 3954334041, 3381544775, 201060592, 3963727277, 1739838676, 4250903202, 3930435503, 3206782108, 4149453988, 2531553906, 1536934080, 3262494647, 484572669, 2923271059, 1783375398, 1517041206, 1098792767, 49674231, 1334037708, 1550332980, 4098991525, 886171109, 150598129, 2481090929, 1940642008, 1398944049, 1059722517, 201851908, 1385547719, 1699095331, 1587397571, 674240536, 2704774806, 252314885, 3039795866, 151914247, 908333586, 2602270848, 1038082786, 651029483, 1766729511, 3447698098, 2682942837, 454166793, 2652734339, 1951935532, 775166490, 758520603, 3000790638, 4004797018, 4217086112, 4137964114, 1299594043, 1639438038, 3464344499, 2068982057, 1054729187, 1901997871, 2534638724, 4121318227, 1757008337, 0, 750906861, 1614815264, 535035132, 3363418545, 3988151131, 3201591914, 1183697867, 3647454910, 1265776953, 3734260298, 3566750796, 3903871064, 1250283471, 1807470800, 717615087, 3847203498, 384695291, 3313910595, 3617213773, 1432761139, 2484176261, 3481945413, 283769337, 100925954, 2180939647, 4037038160, 1148730428, 3123027871, 3813386408, 4087501137, 4267549603, 3229630528, 2315620239, 2906624658, 3156319645, 1215313976, 82966005, 3747855548, 3245848246, 1974459098, 1665278241, 807407632, 451280895, 251524083, 1841287890, 1283575245, 337120268, 891687699, 801369324, 3787349855, 2721421207, 3431482436, 959321879, 1469301956, 4065699751, 2197585534, 1199193405, 2898814052, 3887750493, 724703513, 2514908019, 2696962144, 2551808385, 3516813135, 2141445340, 1715741218, 2119445034, 2872807568, 2198571144, 3398190662, 700968686, 3547052216, 1009259540, 2041044702, 3803995742, 487983883, 1991105499, 1004265696, 1449407026, 1316239930, 504629770, 3683797321, 168560134, 1816667172, 3837287516, 1570751170, 1857934291, 4014189740, 2797888098, 2822345105, 2754712981, 936633572, 2347923833, 852879335, 1133234376, 1500395319, 3084545389, 2348912013, 1689376213, 3533459022, 3762923945, 3034082412, 4205598294, 133428468, 634383082, 2949277029, 2398386810, 3913789102, 403703816, 3580869306, 2297460856, 1867130149, 1918643758, 607656988, 4049053350, 3346248884, 1368901318, 600565992, 2090982877, 2632479860, 557719327, 3717614411, 3697393085, 2249034635, 2232388234, 2430627952, 1115438654, 3295786421, 2865522278, 3633334344, 84280067, 33027830, 303828494, 2747425121, 1600795957, 4188952407, 3496589753, 2434238086, 1486471617, 658119965, 3106381470, 953803233, 334231800, 3005978776, 857870609, 3151128937, 1890179545, 2298973838, 2805175444, 3056442267, 574365214, 2450884487, 550103529, 1233637070, 4289353045, 2018519080, 2057691103, 2399374476, 4166623649, 2148108681, 387583245, 3664101311, 836232934, 3330556482, 3100665960, 3280093505, 2955516313, 2002398509, 287182607, 3413881008, 4238890068, 3597515707, 975967766];
@@ -195,7 +195,7 @@ var require_aes_js = __commonJS({
         var t = KC, tt;
         while (t < roundKeyCount) {
           tt = tk[KC - 1];
-          tk[0] ^= S2[tt >> 16 & 255] << 24 ^ S2[tt >> 8 & 255] << 16 ^ S2[tt & 255] << 8 ^ S2[tt >> 24 & 255] ^ rcon[rconpointer] << 24;
+          tk[0] ^= S[tt >> 16 & 255] << 24 ^ S[tt >> 8 & 255] << 16 ^ S[tt & 255] << 8 ^ S[tt >> 24 & 255] ^ rcon[rconpointer] << 24;
           rconpointer += 1;
           if (KC != 8) {
             for (var i = 1; i < KC; i++) {
@@ -206,7 +206,7 @@ var require_aes_js = __commonJS({
               tk[i] ^= tk[i - 1];
             }
             tt = tk[KC / 2 - 1];
-            tk[KC / 2] ^= S2[tt & 255] ^ S2[tt >> 8 & 255] << 8 ^ S2[tt >> 16 & 255] << 16 ^ S2[tt >> 24 & 255] << 24;
+            tk[KC / 2] ^= S[tt & 255] ^ S[tt >> 8 & 255] << 8 ^ S[tt >> 16 & 255] << 16 ^ S[tt >> 24 & 255] << 24;
             for (var i = KC / 2 + 1; i < KC; i++) {
               tk[i] ^= tk[i - 1];
             }
@@ -246,10 +246,10 @@ var require_aes_js = __commonJS({
         var result = createArray(16), tt;
         for (var i = 0; i < 4; i++) {
           tt = this._Ke[rounds][i];
-          result[4 * i] = (S2[t[i] >> 24 & 255] ^ tt >> 24) & 255;
-          result[4 * i + 1] = (S2[t[(i + 1) % 4] >> 16 & 255] ^ tt >> 16) & 255;
-          result[4 * i + 2] = (S2[t[(i + 2) % 4] >> 8 & 255] ^ tt >> 8) & 255;
-          result[4 * i + 3] = (S2[t[(i + 3) % 4] & 255] ^ tt) & 255;
+          result[4 * i] = (S[t[i] >> 24 & 255] ^ tt >> 24) & 255;
+          result[4 * i + 1] = (S[t[(i + 1) % 4] >> 16 & 255] ^ tt >> 16) & 255;
+          result[4 * i + 2] = (S[t[(i + 2) % 4] >> 8 & 255] ^ tt >> 8) & 255;
+          result[4 * i + 3] = (S[t[(i + 3) % 4] & 255] ^ tt) & 255;
         }
         return result;
       };
@@ -1524,7 +1524,7 @@ function take(count) {
   });
 }
 
-// ../../node_modules/.pnpm/smartcube-web-bluetooth@https+++codeload.github.com+xiaolai+smartcube-web-bluetooth+tar_ab28b54509cf30dfb80f04bc8d5c2c7a/node_modules/smartcube-web-bluetooth/dist/esm/index.mjs
+// ../../node_modules/.pnpm/smartcube-web-bluetooth@https+++codeload.github.com+xiaolai+smartcube-web-bluetooth+tar_f81bca087a6a52c8d7466f2bc0b76de3/node_modules/smartcube-web-bluetooth/dist/esm/index.mjs
 var import_aes_js = __toESM(require_aes_js(), 1);
 function resolveBluetooth(injected) {
   if (injected) {
@@ -1536,10 +1536,34 @@ function resolveBluetooth(injected) {
   }
   throw new Error("No Web Bluetooth available. This environment has no navigator.bluetooth \u2014 pass one as the `bluetooth` option (any object with requestDevice) to run on a host that reaches the radio some other way.");
 }
-var BLE_UUID_SUFFIX = "-0000-1000-8000-00805f9b34fb";
-var GAN_TIMER_SERVICE = "0000fff0" + BLE_UUID_SUFFIX;
-var GAN_TIMER_TIME_CHARACTERISTIC = "0000fff2" + BLE_UUID_SUFFIX;
-var GAN_TIMER_STATE_CHARACTERISTIC = "0000fff5" + BLE_UUID_SUFFIX;
+var BLUETOOTH_BASE_UUID_SUFFIX = "-0000-1000-8000-00805f9b34fb";
+function uuidFromShort(short) {
+  return `0000${short}${BLUETOOTH_BASE_UUID_SUFFIX}`;
+}
+var GENERIC_ACCESS_SERVICE = uuidFromShort("1800");
+var DEVICE_INFORMATION_SERVICE = uuidFromShort("180a");
+var QIYI_SERVICE = uuidFromShort("fff0");
+var QIYI_CUBE_CHARACTERISTIC = uuidFromShort("fff6");
+var MOYU_MHC_SERVICE = uuidFromShort("1000");
+var MOYU_MHC_WRITE_CHARACTERISTIC = uuidFromShort("1001");
+var MOYU_MHC_READ_CHARACTERISTIC = uuidFromShort("1002");
+var MOYU_MHC_TURN_CHARACTERISTIC = uuidFromShort("1003");
+var MOYU_MHC_GYRO_CHARACTERISTIC = uuidFromShort("1004");
+var MOYU32_SERVICE = "0783b03e-7735-b5a0-1760-a305d2795cb0";
+var MOYU32_READ_CHARACTERISTIC = "0783b03e-7735-b5a0-1760-a305d2795cb1";
+var MOYU32_WRITE_CHARACTERISTIC = "0783b03e-7735-b5a0-1760-a305d2795cb2";
+var GIIKER_DATA_SERVICE = uuidFromShort("aadb");
+var GIIKER_DATA_CHARACTERISTIC = uuidFromShort("aadc");
+var GIIKER_CONTROL_SERVICE = uuidFromShort("aaaa");
+var GIIKER_CONTROL_READ_CHARACTERISTIC = uuidFromShort("aaab");
+var GIIKER_CONTROL_WRITE_CHARACTERISTIC = uuidFromShort("aaac");
+var GOCUBE_UART_SUFFIX = "-b5a3-f393-e0a9-e50e24dcca9e";
+var GOCUBE_UART_SERVICE = "6e400001" + GOCUBE_UART_SUFFIX;
+var GOCUBE_UART_WRITE_CHARACTERISTIC = "6e400002" + GOCUBE_UART_SUFFIX;
+var GOCUBE_UART_READ_CHARACTERISTIC = "6e400003" + GOCUBE_UART_SUFFIX;
+var GAN_TIMER_SERVICE = uuidFromShort("fff0");
+var GAN_TIMER_TIME_CHARACTERISTIC = uuidFromShort("fff2");
+var GAN_TIMER_STATE_CHARACTERISTIC = uuidFromShort("fff5");
 var GanTimerState;
 (function(GanTimerState2) {
   GanTimerState2[GanTimerState2["DISCONNECT"] = 0] = "DISCONNECT";
@@ -1581,6 +1605,14 @@ var GAN_GEN3_STATE_CHARACTERISTIC = "8653000b-43e6-47b7-9cb0-5fc21d4ae340";
 var GAN_GEN4_SERVICE = "00000010-0000-fff7-fff6-fff5fff4fff0";
 var GAN_GEN4_COMMAND_CHARACTERISTIC = "0000fff5-0000-1000-8000-00805f9b34fb";
 var GAN_GEN4_STATE_CHARACTERISTIC = "0000fff6-0000-1000-8000-00805f9b34fb";
+var GAN_NAME_PREFIXES = Object.freeze(["GAN", "MG", "AiCube"]);
+var GAN_OPTIONAL_SERVICES = Object.freeze([
+  GAN_GEN1_PRIMARY_SERVICE,
+  GAN_GEN1_DEVICE_INFO_SERVICE,
+  GAN_GEN2_SERVICE,
+  GAN_GEN3_SERVICE,
+  GAN_GEN4_SERVICE
+]);
 var GAN_CIC_LIST = Object.freeze(Array(256).fill(void 0).map((_v, i) => i << 8 | 1));
 var GAN_ENCRYPTION_KEYS = Object.freeze([
   Object.freeze({
@@ -1592,94 +1624,6 @@ var GAN_ENCRYPTION_KEYS = Object.freeze([
     iv: MOYU_AI_2023_IV
   })
 ]);
-var now = typeof globalThis !== "undefined" && typeof globalThis.performance?.now === "function" ? () => Math.floor(globalThis.performance.now()) : () => Date.now();
-var CORNER_FACELET_MAP = [
-  [8, 9, 20],
-  // URF
-  [6, 18, 38],
-  // UFL
-  [0, 36, 47],
-  // ULB
-  [2, 45, 11],
-  // UBR
-  [29, 26, 15],
-  // DFR
-  [27, 44, 24],
-  // DLF
-  [33, 53, 42],
-  // DBL
-  [35, 17, 51]
-  // DRB
-];
-var EDGE_FACELET_MAP = [
-  [5, 10],
-  // UR
-  [7, 19],
-  // UF
-  [3, 37],
-  // UL
-  [1, 46],
-  // UB
-  [32, 16],
-  // DR
-  [28, 25],
-  // DF
-  [30, 43],
-  // DL
-  [34, 52],
-  // DB
-  [23, 12],
-  // FR
-  [21, 41],
-  // FL
-  [50, 39],
-  // BL
-  [48, 14]
-  // BR
-];
-function isPermutationOf(arr, size) {
-  if (arr.length !== size) {
-    return false;
-  }
-  const seen = new Array(size).fill(false);
-  for (const v of arr) {
-    if (!Number.isInteger(v) || v < 0 || v >= size || seen[v]) {
-      return false;
-    }
-    seen[v] = true;
-  }
-  return true;
-}
-function toKociembaFacelets(cp, co, ep, eo) {
-  if (!isPermutationOf(cp, 8)) {
-    throw new Error("toKociembaFacelets: cp must be a permutation of 0..7");
-  }
-  if (co.length !== 8 || co.some((v) => !Number.isInteger(v) || v < 0 || v > 2)) {
-    throw new Error("toKociembaFacelets: co must be 8 integers in [0,2]");
-  }
-  if (!isPermutationOf(ep, 12)) {
-    throw new Error("toKociembaFacelets: ep must be a permutation of 0..11");
-  }
-  if (eo.length !== 12 || eo.some((v) => v !== 0 && v !== 1)) {
-    throw new Error("toKociembaFacelets: eo must be 12 values in {0,1}");
-  }
-  const faces = "URFDLB";
-  const facelets = [];
-  for (let i = 0; i < 54; i++) {
-    facelets[i] = faces[~~(i / 9)];
-  }
-  for (let i = 0; i < 8; i++) {
-    for (let p = 0; p < 3; p++) {
-      facelets[CORNER_FACELET_MAP[i][(p + co[i]) % 3]] = faces[~~(CORNER_FACELET_MAP[cp[i]][p] / 9)];
-    }
-  }
-  for (let i = 0; i < 12; i++) {
-    for (let p = 0; p < 2; p++) {
-      facelets[EDGE_FACELET_MAP[i][(p + eo[i]) % 2]] = faces[~~(EDGE_FACELET_MAP[ep[i]][p] / 9)];
-    }
-  }
-  return facelets.join("");
-}
 var SOLVED_FACELET = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
 var cFacelet = [
   [8, 9, 20],
@@ -1912,6 +1856,35 @@ function moveDirectionFromNotation(move) {
   if (move.endsWith("2"))
     return 2;
   return 0;
+}
+var now = typeof globalThis !== "undefined" && typeof globalThis.performance?.now === "function" ? () => Math.floor(globalThis.performance.now()) : () => Date.now();
+function isPermutationOf(arr, size) {
+  if (arr.length !== size) {
+    return false;
+  }
+  const seen = new Array(size).fill(false);
+  for (const v of arr) {
+    if (!Number.isInteger(v) || v < 0 || v >= size || seen[v]) {
+      return false;
+    }
+    seen[v] = true;
+  }
+  return true;
+}
+function toKociembaFacelets(cp, co, ep, eo) {
+  if (!isPermutationOf(cp, 8)) {
+    throw new Error("toKociembaFacelets: cp must be a permutation of 0..7");
+  }
+  if (co.length !== 8 || co.some((v) => !Number.isInteger(v) || v < 0 || v > 2)) {
+    throw new Error("toKociembaFacelets: co must be 8 integers in [0,2]");
+  }
+  if (!isPermutationOf(ep, 12)) {
+    throw new Error("toKociembaFacelets: ep must be a permutation of 0..11");
+  }
+  if (eo.length !== 12 || eo.some((v) => v !== 0 && v !== 1)) {
+    throw new Error("toKociembaFacelets: eo must be 12 values in {0,1}");
+  }
+  return new CubieCube().init(cp.map((p, i) => p | co[i] << 3), ep.map((p, i) => p << 1 | eo[i])).toFaceCube();
 }
 var GEN1_FW_MASK = 16776704;
 var GEN1_FW_EXPECTED = 65536;
@@ -2293,11 +2266,7 @@ var GanGen1CubeConnection = class _GanGen1CubeConnection {
   }
 };
 function normalizeUuid(uuid) {
-  let u = uuid;
-  if (/^[0-9A-Fa-f]{4}$/.exec(u)) {
-    u = "0000" + u + "-0000-1000-8000-00805F9B34FB";
-  }
-  return u.toUpperCase();
+  return (/^[0-9A-Fa-f]{4}$/.test(uuid) ? uuidFromShort(uuid) : uuid).toUpperCase();
 }
 var STORAGE_PREFIX = "smartcube-ble-mac:";
 function getCachedMacForDevice(device) {
@@ -2550,6 +2519,30 @@ var GanBitReader = class {
   }
 };
 var sum = (arr) => arr.reduce((a, v) => a + v, 0);
+var GAN_ONE_HOT_FACE_CODES = [2, 32, 8, 1, 16, 4];
+var GAN_HISTORY_FACE_CODES = [1, 5, 3, 0, 4, 2];
+function moveNotation(face, direction) {
+  return ("URFDLB".charAt(face) + " '".charAt(direction)).trim();
+}
+function asciiField(msg, bitOffset, length) {
+  let text = "";
+  for (let i = 0; i < length; i++) {
+    text += String.fromCharCode(msg.getBitWord(bitOffset + i * 8, 8));
+  }
+  return text;
+}
+function batteryEvent(timestamp, level) {
+  return { type: "BATTERY", timestamp, batteryLevel: Math.min(level, 100) };
+}
+function faceletsEvent(timestamp, serial, state) {
+  return {
+    type: "FACELETS",
+    serial,
+    timestamp,
+    facelets: toKociembaFacelets(state.CP, state.CO, state.EP, state.EO),
+    state
+  };
+}
 function decodeCornersEdges(msg, offsets) {
   const cp = [];
   const co = [];
@@ -2679,6 +2672,52 @@ var GanMoveHistoryBuffer = class {
     }
   }
 };
+var GAN_GEN3_LAYOUT = {
+  faceletsSerial: 24,
+  faceletsState: { cp: 40, co: 61, ep: 77, eo: 121 },
+  historySerial: 24,
+  historyMoves: 32
+};
+var GAN_GEN4_LAYOUT = {
+  faceletsSerial: 16,
+  faceletsState: { cp: 32, co: 53, ep: 69, eo: 113 },
+  historySerial: 16,
+  historyMoves: 24
+};
+async function handleGen34MoveHistory(history, msg, timestamp, dataLength, layout) {
+  const startSerial = msg.getBitWord(layout.historySerial, 8);
+  const count = (dataLength - 1) * 2;
+  for (let i = 0; i < count; i++) {
+    const face = GAN_HISTORY_FACE_CODES.indexOf(msg.getBitWord(layout.historyMoves + 4 * i, 3));
+    const direction = msg.getBitWord(layout.historyMoves + 3 + 4 * i, 1);
+    if (face >= 0) {
+      history.injectMissedMoveToBuffer({
+        type: "MOVE",
+        serial: startSerial - i & 255,
+        timestamp,
+        localTimestamp: null,
+        // Missed and recovered events has no meaningfull local timestamps
+        cubeTimestamp: null,
+        // Cube hardware timestamp for missed move you should interpolate using cubeTimestampLinearFit
+        face,
+        direction,
+        move: moveNotation(face, direction)
+      });
+    }
+  }
+  return history.evictMoveBuffer();
+}
+async function handleGen34Facelets(history, conn, msg, timestamp, layout) {
+  const serial = history.serial = msg.getBitWord(layout.faceletsSerial, 16, true) & 255;
+  if (history.lastSerial !== -1) {
+    if (history.lastLocalTimestamp == null || timestamp - history.lastLocalTimestamp > 500) {
+      await history.checkIfMoveMissed(conn);
+    }
+  }
+  if (history.lastSerial === -1)
+    history.lastSerial = serial;
+  return [faceletsEvent(timestamp, serial, decodeCornersEdges(msg, layout.faceletsState))];
+}
 var GanGen2ProtocolDriver = class {
   constructor() {
     this.lastSerial = -1;
@@ -2721,7 +2760,6 @@ var GanGen2ProtocolDriver = class {
           for (let i = diff - 1; i >= 0; i--) {
             const face = msg.getBitWord(12 + 5 * i, 4);
             const direction = msg.getBitWord(16 + 5 * i, 1);
-            const move = "URFDLB".charAt(face) + " '".charAt(direction);
             let elapsed = msg.getBitWord(47 + 16 * i, 16);
             if (elapsed === 0) {
               elapsed = this.lastMoveTimestamp > 0 ? timestamp - this.lastMoveTimestamp : 0;
@@ -2736,7 +2774,7 @@ var GanGen2ProtocolDriver = class {
               cubeTimestamp: this.cubeTimestamp,
               face,
               direction,
-              move: move.trim()
+              move: moveNotation(face, direction)
             });
           }
           this.lastMoveTimestamp = timestamp;
@@ -2746,24 +2784,14 @@ var GanGen2ProtocolDriver = class {
       const serial = msg.getBitWord(4, 8);
       if (this.lastSerial === -1)
         this.lastSerial = serial;
-      const state = decodeCornersEdges(msg, { cp: 12, co: 33, ep: 47, eo: 91 });
-      cubeEvents.push({
-        type: "FACELETS",
-        serial,
-        timestamp,
-        facelets: toKociembaFacelets(state.CP, state.CO, state.EP, state.EO),
-        state
-      });
+      cubeEvents.push(faceletsEvent(timestamp, serial, decodeCornersEdges(msg, { cp: 12, co: 33, ep: 47, eo: 91 })));
     } else if (eventType === 5) {
       const hwMajor = msg.getBitWord(8, 8);
       const hwMinor = msg.getBitWord(16, 8);
       const swMajor = msg.getBitWord(24, 8);
       const swMinor = msg.getBitWord(32, 8);
       const gyroSupported = msg.getBitWord(104, 1);
-      let hardwareName = "";
-      for (let i = 0; i < 8; i++) {
-        hardwareName += String.fromCharCode(msg.getBitWord(i * 8 + 40, 8));
-      }
+      const hardwareName = asciiField(msg, 40, 8);
       cubeEvents.push({
         type: "HARDWARE",
         timestamp,
@@ -2773,12 +2801,7 @@ var GanGen2ProtocolDriver = class {
         gyroSupported: !!gyroSupported
       });
     } else if (eventType === 9) {
-      const batteryLevel = msg.getBitWord(8, 8);
-      cubeEvents.push({
-        type: "BATTERY",
-        timestamp,
-        batteryLevel: Math.min(batteryLevel, 100)
-      });
+      cubeEvents.push(batteryEvent(timestamp, msg.getBitWord(8, 8)));
     } else if (eventType === 13) {
       conn.disconnect().catch(() => {
       });
@@ -2828,8 +2851,7 @@ var GanGen3ProtocolDriver = class {
           const cubeTimestamp = msg.getBitWord(24, 32, true);
           const serial = this.history.serial = msg.getBitWord(56, 16, true) & 255;
           const direction = msg.getBitWord(72, 2);
-          const face = [2, 32, 8, 1, 16, 4].indexOf(msg.getBitWord(74, 6));
-          const move = "URFDLB".charAt(face) + " '".charAt(direction);
+          const face = GAN_ONE_HOT_FACE_CODES.indexOf(msg.getBitWord(74, 6));
           if (face >= 0) {
             this.history.push({
               type: "MOVE",
@@ -2839,60 +2861,21 @@ var GanGen3ProtocolDriver = class {
               cubeTimestamp,
               face,
               direction,
-              move: move.trim()
+              move: moveNotation(face, direction)
             });
           }
           cubeEvents = await this.history.evictMoveBuffer(conn);
         }
       } else if (eventType === 6) {
-        const startSerial = msg.getBitWord(24, 8);
-        const count = (dataLength - 1) * 2;
-        for (let i = 0; i < count; i++) {
-          const face = [1, 5, 3, 0, 4, 2].indexOf(msg.getBitWord(32 + 4 * i, 3));
-          const direction = msg.getBitWord(35 + 4 * i, 1);
-          if (face >= 0) {
-            const move = "URFDLB".charAt(face) + " '".charAt(direction);
-            this.history.injectMissedMoveToBuffer({
-              type: "MOVE",
-              serial: startSerial - i & 255,
-              timestamp,
-              localTimestamp: null,
-              // Missed and recovered events has no meaningfull local timestamps
-              cubeTimestamp: null,
-              // Cube hardware timestamp for missed move you should interpolate using cubeTimestampLinearFit
-              face,
-              direction,
-              move: move.trim()
-            });
-          }
-        }
-        cubeEvents = await this.history.evictMoveBuffer();
+        cubeEvents = await handleGen34MoveHistory(this.history, msg, timestamp, dataLength, GAN_GEN3_LAYOUT);
       } else if (eventType === 2) {
-        const serial = this.history.serial = msg.getBitWord(24, 16, true) & 255;
-        if (this.history.lastSerial !== -1) {
-          if (this.history.lastLocalTimestamp == null || timestamp - this.history.lastLocalTimestamp > 500) {
-            await this.history.checkIfMoveMissed(conn);
-          }
-        }
-        if (this.history.lastSerial === -1)
-          this.history.lastSerial = serial;
-        const state = decodeCornersEdges(msg, { cp: 40, co: 61, ep: 77, eo: 121 });
-        cubeEvents.push({
-          type: "FACELETS",
-          serial,
-          timestamp,
-          facelets: toKociembaFacelets(state.CP, state.CO, state.EP, state.EO),
-          state
-        });
+        cubeEvents = await handleGen34Facelets(this.history, conn, msg, timestamp, GAN_GEN3_LAYOUT);
       } else if (eventType === 7) {
         const swMajor = msg.getBitWord(72, 4);
         const swMinor = msg.getBitWord(76, 4);
         const hwMajor = msg.getBitWord(80, 4);
         const hwMinor = msg.getBitWord(84, 4);
-        let hardwareName = "";
-        for (let i = 0; i < 5; i++) {
-          hardwareName += String.fromCharCode(msg.getBitWord(i * 8 + 32, 8));
-        }
+        const hardwareName = asciiField(msg, 32, 5);
         cubeEvents.push({
           type: "HARDWARE",
           timestamp,
@@ -2902,12 +2885,7 @@ var GanGen3ProtocolDriver = class {
           gyroSupported: false
         });
       } else if (eventType === 16) {
-        const batteryLevel = msg.getBitWord(24, 8);
-        cubeEvents.push({
-          type: "BATTERY",
-          timestamp,
-          batteryLevel: Math.min(batteryLevel, 100)
-        });
+        cubeEvents.push(batteryEvent(timestamp, msg.getBitWord(24, 8)));
       } else if (eventType === 17) {
         conn.disconnect().catch(() => {
         });
@@ -2974,8 +2952,7 @@ var GanGen4ProtocolDriver = class {
           const serial = msg.getBitWord(off + 48, 16, true) & 255;
           this.history.serial = serial;
           const direction = msg.getBitWord(off + 64, 2);
-          const face = [2, 32, 8, 1, 16, 4].indexOf(msg.getBitWord(off + 66, 6));
-          const move = "URFDLB".charAt(face) + " '".charAt(direction);
+          const face = GAN_ONE_HOT_FACE_CODES.indexOf(msg.getBitWord(off + 66, 6));
           if (face < 0) {
             break;
           }
@@ -2987,7 +2964,7 @@ var GanGen4ProtocolDriver = class {
             cubeTimestamp,
             face,
             direction,
-            move: move.trim()
+            move: moveNotation(face, direction)
           });
           this.history.lastLocalTimestamp = timestamp;
           off += 72;
@@ -2995,45 +2972,9 @@ var GanGen4ProtocolDriver = class {
         cubeEvents = await this.history.evictMoveBuffer(conn);
       }
     } else if (eventType === 209) {
-      const startSerial = msg.getBitWord(16, 8);
-      const count = (dataLength - 1) * 2;
-      for (let i = 0; i < count; i++) {
-        const face = [1, 5, 3, 0, 4, 2].indexOf(msg.getBitWord(24 + 4 * i, 3));
-        const direction = msg.getBitWord(27 + 4 * i, 1);
-        if (face >= 0) {
-          const move = "URFDLB".charAt(face) + " '".charAt(direction);
-          this.history.injectMissedMoveToBuffer({
-            type: "MOVE",
-            serial: startSerial - i & 255,
-            timestamp,
-            localTimestamp: null,
-            // Missed and recovered events has no meaningfull local timestamps
-            cubeTimestamp: null,
-            // Cube hardware timestamp for missed move you should interpolate using cubeTimestampLinearFit
-            face,
-            direction,
-            move: move.trim()
-          });
-        }
-      }
-      cubeEvents = await this.history.evictMoveBuffer();
+      cubeEvents = await handleGen34MoveHistory(this.history, msg, timestamp, dataLength, GAN_GEN4_LAYOUT);
     } else if (eventType === 237) {
-      const serial = this.history.serial = msg.getBitWord(16, 16, true) & 255;
-      if (this.history.lastSerial !== -1) {
-        if (this.history.lastLocalTimestamp == null || timestamp - this.history.lastLocalTimestamp > 500) {
-          await this.history.checkIfMoveMissed(conn);
-        }
-      }
-      if (this.history.lastSerial === -1)
-        this.history.lastSerial = serial;
-      const state = decodeCornersEdges(msg, { cp: 32, co: 53, ep: 69, eo: 113 });
-      cubeEvents.push({
-        type: "FACELETS",
-        serial,
-        timestamp,
-        facelets: toKociembaFacelets(state.CP, state.CO, state.EP, state.EO),
-        state
-      });
+      cubeEvents = await handleGen34Facelets(this.history, conn, msg, timestamp, GAN_GEN4_LAYOUT);
     } else if (eventType >= 250 && eventType <= 254) {
       switch (eventType) {
         case 250:
@@ -3043,10 +2984,7 @@ var GanGen4ProtocolDriver = class {
           this.hwInfo[eventType] = `${year.toString().padStart(4, "0")}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
           break;
         case 252:
-          this.hwInfo[eventType] = "";
-          for (let i = 0; i < dataLength - 1; i++) {
-            this.hwInfo[eventType] += String.fromCharCode(msg.getBitWord(i * 8 + 24, 8));
-          }
+          this.hwInfo[eventType] = asciiField(msg, 24, dataLength - 1);
           break;
         case 253:
           const swMajor = msg.getBitWord(24, 4);
@@ -3071,12 +3009,7 @@ var GanGen4ProtocolDriver = class {
         cubeEvents.push(this.buildHardwareEvent(timestamp));
       }
     } else if (eventType === 239) {
-      const batteryLevel = msg.getBitWord(8 + dataLength * 8, 8);
-      cubeEvents.push({
-        type: "BATTERY",
-        timestamp,
-        batteryLevel: Math.min(batteryLevel, 100)
-      });
+      cubeEvents.push(batteryEvent(timestamp, msg.getBitWord(8 + dataLength * 8, 8)));
     } else if (eventType === 234) {
       conn.disconnect().catch(() => {
       });
@@ -3084,7 +3017,6 @@ var GanGen4ProtocolDriver = class {
     return cubeEvents;
   }
 };
-var GAN_ONE_HOT_FACE_CODES = [2, 32, 8, 1, 16, 4];
 function hasValidCornerEdgeState(msg, offsets) {
   const state = decodeCornersEdges(msg, offsets);
   const cpSeen = new Set(state.CP);
@@ -3829,16 +3761,18 @@ var GENERATION_PROTOCOLS = {
   gen3: GAN_GEN3_PROTOCOL,
   gen4: GAN_GEN4_PROTOCOL
 };
-var GAN_NAME_FILTERS = [{ namePrefix: "GAN" }, { namePrefix: "MG" }, { namePrefix: "AiCube" }];
+var GAN_NAME_FILTERS = GAN_NAME_PREFIXES.map((namePrefix) => ({ namePrefix }));
 var ganProtocol = {
   nameFilters: GAN_NAME_FILTERS,
-  optionalServices: [
-    GAN_GEN1_PRIMARY_SERVICE,
-    GAN_GEN1_DEVICE_INFO_SERVICE,
-    GAN_GEN2_SERVICE,
-    GAN_GEN3_SERVICE,
-    GAN_GEN4_SERVICE
-  ],
+  optionalServices: [...GAN_OPTIONAL_SERVICES],
+  // SUPERSEDED: the list lives in gan-cube-definitions.ts, shared with the legacy connectGanCube.
+  // optionalServices: [
+  //     def.GAN_GEN1_PRIMARY_SERVICE,
+  //     def.GAN_GEN1_DEVICE_INFO_SERVICE,
+  //     def.GAN_GEN2_SERVICE,
+  //     def.GAN_GEN3_SERVICE,
+  //     def.GAN_GEN4_SERVICE,
+  // ],
   optionalManufacturerData: [...GAN_CIC_LIST],
   needsMac: true,
   matchesDevice: deviceNameMatchesFilters(GAN_NAME_FILTERS),
@@ -3860,6 +3794,90 @@ var ganProtocol = {
   connect: connectGanDevice
 };
 registerProtocol(ganProtocol);
+var BATTERY_POLL_INTERVAL_MS = 6e4;
+var GattSmartCubeConnection = class {
+  constructor(device, protocol, deviceName, deviceMAC, capabilities) {
+    this.batteryInterval = null;
+    this.onDisconnect = () => {
+      this.teardown();
+    };
+    this.device = device;
+    this.protocol = protocol;
+    this.deviceName = deviceName;
+    this.deviceMAC = deviceMAC;
+    this.bus = new SmartCubeEventBus(capabilities);
+    this.events$ = this.bus.events$;
+    this.state$ = this.bus.state$;
+  }
+  get capabilities() {
+    return this.bus.capabilities;
+  }
+  getSnapshot() {
+    return this.bus.getSnapshot();
+  }
+  /** Route a remote disconnect through the same teardown as an explicit one. */
+  watchDisconnect() {
+    this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
+  }
+  /** Watch for disconnects, run the brand's GATT setup, and undo everything if it fails. */
+  async initialize(setup) {
+    this.watchDisconnect();
+    try {
+      await setup();
+    } catch (e) {
+      this.teardown();
+      this.disconnectGatt();
+      throw e;
+    }
+  }
+  startBatteryPolling(poll) {
+    this.batteryInterval = setInterval(poll, BATTERY_POLL_INTERVAL_MS);
+  }
+  stopBatteryPolling() {
+    if (this.batteryInterval) {
+      clearInterval(this.batteryInterval);
+      this.batteryInterval = null;
+    }
+  }
+  /** HARDWARE for drivers without a hardware-info frame: the model name and the gyro capability. */
+  emitHardwareEventFromName() {
+    this.bus.emit({
+      timestamp: now(),
+      type: "HARDWARE",
+      hardwareName: this.deviceName,
+      gyroSupported: this.capabilities.gyroscope
+    });
+  }
+  /** Idempotent teardown shared by remote and explicit disconnects. */
+  teardown() {
+    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
+    this.releaseResources();
+    this.bus.resetBatteryDedupe();
+    this.stopBatteryPolling();
+    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
+    this.bus.complete();
+  }
+  disconnectGatt() {
+    if (this.device.gatt?.connected) {
+      this.device.gatt.disconnect();
+    }
+  }
+  /** Work that must settle between teardown and stopping notifications (e.g. queued writes). */
+  async settleBeforeStopNotifications() {
+  }
+  async disconnect() {
+    const notifying = this.notifyingCharacteristics();
+    this.teardown();
+    await this.settleBeforeStopNotifications();
+    for (const chrct of notifying) {
+      if (chrct) {
+        await chrct.stopNotifications().catch(() => {
+        });
+      }
+    }
+    this.disconnectGatt();
+  }
+};
 function findCharacteristic(characteristics, uuid) {
   const targetUuid = normalizeUuid(uuid);
   for (const chrct of characteristics) {
@@ -3898,12 +3916,6 @@ function extractMacFromManufacturerData(mfData, cicList, reversedByteOrder = tru
   }
   return mac.join(":");
 }
-var UUID_SUFFIX$4 = "-0000-1000-8000-00805f9b34fb";
-var SERVICE_UUID_DATA = "0000aadb" + UUID_SUFFIX$4;
-var CHRCT_UUID_DATA = "0000aadc" + UUID_SUFFIX$4;
-var SERVICE_UUID_RW = "0000aaaa" + UUID_SUFFIX$4;
-var CHRCT_UUID_READ$2 = "0000aaab" + UUID_SUFFIX$4;
-var CHRCT_UUID_WRITE$2 = "0000aaac" + UUID_SUFFIX$4;
 var GIIKER_STATE_LENGTH = 20;
 var GIIKER_OP_BATTERY = 181;
 var GIIKER_OP_RESET = 161;
@@ -4005,19 +4017,17 @@ function parseState(value) {
   return { facelet, prevMoves };
 }
 var GIIKER_PROTOCOL = { id: "giiker", name: "Giiker" };
-var GiikerConnection = class {
+var GIIKER_CAPABILITIES = {
+  gyroscope: false,
+  // battery and reset are enabled only once the optional control service is up.
+  battery: false,
+  facelets: true,
+  hardware: true,
+  reset: false
+};
+var GiikerConnection = class extends GattSmartCubeConnection {
   constructor(device, name) {
-    this.protocol = GIIKER_PROTOCOL;
-    this.bus = new SmartCubeEventBus({
-      gyroscope: false,
-      // battery and reset are enabled only once the optional control service is up.
-      battery: false,
-      facelets: true,
-      hardware: true,
-      reset: false
-    });
-    this.events$ = this.bus.events$;
-    this.state$ = this.bus.state$;
+    super(device, GIIKER_PROTOCOL, name, "", GIIKER_CAPABILITIES);
     this.gatt = null;
     this.dataChrct = null;
     this.lastFacelet = "";
@@ -4025,7 +4035,6 @@ var GiikerConnection = class {
     this.closed = false;
     this.rwReadChrct = null;
     this.rwWriteChrct = null;
-    this.batteryInterval = null;
     this.onBatteryChanged = null;
     this.batteryPollFailures = 0;
     this.onStateChanged = (event) => {
@@ -4034,18 +4043,6 @@ var GiikerConnection = class {
         return;
       this.handleStateValue(value, now());
     };
-    this.onDisconnect = () => {
-      this.teardown();
-    };
-    this.device = device;
-    this.deviceName = name;
-    this.deviceMAC = "";
-  }
-  get capabilities() {
-    return this.bus.capabilities;
-  }
-  getSnapshot() {
-    return this.bus.getSnapshot();
   }
   /** Decode one state frame and emit the derived MOVE (if any) plus FACELETS. */
   handleStateValue(value, timestamp) {
@@ -4075,19 +4072,18 @@ var GiikerConnection = class {
       facelets: facelet
     });
   }
-  emitHardwareEvent() {
-    this.bus.emit({
-      timestamp: now(),
-      type: "HARDWARE",
-      hardwareName: this.deviceName,
-      gyroSupported: false
-    });
-  }
-  /** Idempotent teardown shared by remote and explicit disconnects. */
-  teardown() {
+  // SUPERSEDED: GattSmartCubeConnection.emitHardwareEventFromName(). Giiker never enables the gyroscope capability, so `this.capabilities.gyroscope` is the same `false`.
+  // private emitHardwareEvent(): void {
+  //     this.bus.emit({
+  //         timestamp: now(),
+  //         type: "HARDWARE",
+  //         hardwareName: this.deviceName,
+  //         gyroSupported: false
+  //     });
+  // }
+  releaseResources() {
     this.closed = true;
     this.live = false;
-    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
     if (this.dataChrct) {
       this.dataChrct.removeEventListener("characteristicvaluechanged", this.onStateChanged);
       this.dataChrct = null;
@@ -4095,22 +4091,42 @@ var GiikerConnection = class {
     if (this.rwReadChrct && this.onBatteryChanged) {
       this.rwReadChrct.removeEventListener("characteristicvaluechanged", this.onBatteryChanged);
     }
+    this.rwReadChrct = null;
     this.onBatteryChanged = null;
     this.rwWriteChrct = null;
-    this.bus.resetBatteryDedupe();
-    if (this.batteryInterval) {
-      clearInterval(this.batteryInterval);
-      this.batteryInterval = null;
-    }
-    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-    this.bus.complete();
   }
+  // SUPERSEDED: GattSmartCubeConnection.teardown() runs releaseResources() at the same point in the same order.
+  // /** Idempotent teardown shared by remote and explicit disconnects. */
+  // private teardown(): void {
+  //     this.closed = true;
+  //     this.live = false;
+  //     this.device.removeEventListener('gattserverdisconnected', this.onDisconnect);
+  //     if (this.dataChrct) {
+  //         this.dataChrct.removeEventListener('characteristicvaluechanged', this.onStateChanged);
+  //         this.dataChrct = null;
+  //     }
+  //     if (this.rwReadChrct && this.onBatteryChanged) {
+  //         this.rwReadChrct.removeEventListener('characteristicvaluechanged', this.onBatteryChanged);
+  //     }
+  //     this.onBatteryChanged = null;
+  //     this.rwWriteChrct = null;
+  //     this.bus.resetBatteryDedupe();
+  //     if (this.batteryInterval) {
+  //         clearInterval(this.batteryInterval);
+  //         this.batteryInterval = null;
+  //     }
+  //     this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
+  //     this.bus.complete();
+  // }
+  //
+  // private onDisconnect = (): void => {
+  //     this.teardown();
+  // };
   async init() {
-    this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
-    try {
+    await this.initialize(async () => {
       this.gatt = await this.device.gatt.connect();
-      const dataService = await this.gatt.getPrimaryService(SERVICE_UUID_DATA);
-      this.dataChrct = await dataService.getCharacteristic(CHRCT_UUID_DATA);
+      const dataService = await this.gatt.getPrimaryService(GIIKER_DATA_SERVICE);
+      this.dataChrct = await dataService.getCharacteristic(GIIKER_DATA_CHARACTERISTIC);
       this.dataChrct.addEventListener("characteristicvaluechanged", this.onStateChanged);
       await this.dataChrct.startNotifications();
       const initialValue = await this.dataChrct.readValue();
@@ -4134,21 +4150,15 @@ var GiikerConnection = class {
         throw new Error("[Giiker] disconnected during initialization");
       }
       this.live = true;
-    } catch (e) {
-      this.teardown();
-      if (this.device.gatt?.connected) {
-        this.device.gatt.disconnect();
-      }
-      throw e;
-    }
+    });
   }
   /** Optional control service: capabilities are enabled only after setup succeeds. */
   async setupBatteryService() {
     try {
-      const rwService = await this.gatt.getPrimaryService(SERVICE_UUID_RW);
+      const rwService = await this.gatt.getPrimaryService(GIIKER_CONTROL_SERVICE);
       const chrcts = await rwService.getCharacteristics();
-      const readChrct = findCharacteristic(chrcts, CHRCT_UUID_READ$2);
-      const writeChrct = findCharacteristic(chrcts, CHRCT_UUID_WRITE$2);
+      const readChrct = findCharacteristic(chrcts, GIIKER_CONTROL_READ_CHARACTERISTIC);
+      const writeChrct = findCharacteristic(chrcts, GIIKER_CONTROL_WRITE_CHARACTERISTIC);
       if (!readChrct || !writeChrct) {
         return;
       }
@@ -4171,7 +4181,7 @@ var GiikerConnection = class {
       this.bus.setCapabilities({ battery: true, reset: true });
       this.batteryPollFailures = 0;
       this.requestBatteryPoll();
-      this.batteryInterval = setInterval(() => this.requestBatteryPoll(), 6e4);
+      this.startBatteryPolling(() => this.requestBatteryPoll());
     } catch {
     }
   }
@@ -4182,10 +4192,7 @@ var GiikerConnection = class {
       this.batteryPollFailures = 0;
     }, () => {
       if (++this.batteryPollFailures >= 5) {
-        if (this.batteryInterval) {
-          clearInterval(this.batteryInterval);
-          this.batteryInterval = null;
-        }
+        this.stopBatteryPolling();
         this.bus.setCapabilities({ battery: false });
       }
     });
@@ -4210,29 +4217,15 @@ var GiikerConnection = class {
         });
       }
     } else if (command.type === "REQUEST_HARDWARE") {
-      this.emitHardwareEvent();
+      this.emitHardwareEventFromName();
     } else if (command.type === "REQUEST_RESET") {
       if (this.rwWriteChrct) {
         await writeGattCharacteristicValue(this.rwWriteChrct, new Uint8Array([GIIKER_OP_RESET]).buffer);
       }
     }
   }
-  async disconnect() {
-    const dataChrct = this.dataChrct;
-    const rwReadChrct = this.rwReadChrct;
-    this.rwReadChrct = null;
-    this.teardown();
-    if (dataChrct) {
-      await dataChrct.stopNotifications().catch(() => {
-      });
-    }
-    if (rwReadChrct) {
-      await rwReadChrct.stopNotifications().catch(() => {
-      });
-    }
-    if (this.device.gatt?.connected) {
-      this.device.gatt.disconnect();
-    }
+  notifyingCharacteristics() {
+    return [this.dataChrct, this.rwReadChrct];
   }
 };
 var GIIKER_NAME_FILTERS = [
@@ -4242,10 +4235,10 @@ var GIIKER_NAME_FILTERS = [
 ];
 var giikerProtocol = {
   nameFilters: GIIKER_NAME_FILTERS,
-  optionalServices: [SERVICE_UUID_DATA, SERVICE_UUID_RW],
+  optionalServices: [GIIKER_DATA_SERVICE, GIIKER_CONTROL_SERVICE],
   matchesDevice: deviceNameMatchesFilters(GIIKER_NAME_FILTERS),
   gattAffinity(serviceUuids, _device) {
-    return serviceUuids.has(normalizeUuid(SERVICE_UUID_DATA)) ? 115 : 0;
+    return serviceUuids.has(normalizeUuid(GIIKER_DATA_SERVICE)) ? 115 : 0;
   },
   async connect(device, _macProvider, _context) {
     const devName = device.name || "";
@@ -4264,10 +4257,6 @@ var giikerProtocol = {
   }
 };
 registerProtocol(giikerProtocol);
-var UUID_SUFFIX$3 = "-b5a3-f393-e0a9-e50e24dcca9e";
-var SERVICE_UUID$3 = "6e400001" + UUID_SUFFIX$3;
-var CHRCT_UUID_WRITE$1 = "6e400002" + UUID_SUFFIX$3;
-var CHRCT_UUID_READ$1 = "6e400003" + UUID_SUFFIX$3;
 var WRITE_BATTERY = 50;
 var WRITE_STATE = 51;
 var WRITE_RESET = 53;
@@ -4319,15 +4308,20 @@ var FACE_PERM = [0, 1, 2, 5, 8, 7, 6, 3];
 var FACE_OFFSET = [0, 0, 6, 2, 0, 0];
 var OPPOSITE_AXIS = [3, 4, 5, 0, 1, 2];
 var GOCUBE_PROTOCOL = { id: "gocube", name: "GoCube" };
-var GoCubeConnection = class {
+var GoCubeConnection = class extends GattSmartCubeConnection {
   constructor(device, name, gyroSupported) {
-    this.protocol = GOCUBE_PROTOCOL;
+    super(device, GOCUBE_PROTOCOL, name, "", {
+      gyroscope: gyroSupported,
+      battery: true,
+      facelets: true,
+      hardware: true,
+      reset: true
+    });
     this.readChrct = null;
     this.writeChrct = null;
     this.curCubie = new CubieCube();
     this.prevCubie = new CubieCube();
     this.moveCntFree = 100;
-    this.batteryInterval = null;
     this.lastMoveMeta = null;
     this.awaitingInitialState = false;
     this.onStateChanged = (event) => {
@@ -4343,27 +4337,6 @@ var GoCubeConnection = class {
       writeGattCharacteristicValue(this.writeChrct, new Uint8Array([WRITE_BATTERY]).buffer).catch(() => {
       });
     };
-    this.onDisconnect = () => {
-      this.teardown();
-    };
-    this.device = device;
-    this.deviceName = name;
-    this.deviceMAC = "";
-    this.bus = new SmartCubeEventBus({
-      gyroscope: gyroSupported,
-      battery: true,
-      facelets: true,
-      hardware: true,
-      reset: true
-    });
-    this.events$ = this.bus.events$;
-    this.state$ = this.bus.state$;
-  }
-  get capabilities() {
-    return this.bus.capabilities;
-  }
-  getSnapshot() {
-    return this.bus.getSnapshot();
   }
   applySingleMove(timestamp, axis, dirBit) {
     const power = [0, 2][dirBit];
@@ -4503,41 +4476,59 @@ var GoCubeConnection = class {
       this.bus.emitBattery(value.getUint8(3), timestamp);
     }
   }
-  emitHardwareEvent() {
-    this.bus.emit({
-      timestamp: now(),
-      type: "HARDWARE",
-      hardwareName: this.deviceName,
-      gyroSupported: this.capabilities.gyroscope
-    });
-  }
-  /** Idempotent teardown shared by remote and explicit disconnects. */
-  teardown() {
-    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
+  // SUPERSEDED: GattSmartCubeConnection.emitHardwareEventFromName().
+  // private emitHardwareEvent(): void {
+  //     this.bus.emit({
+  //         timestamp: now(),
+  //         type: "HARDWARE",
+  //         hardwareName: this.deviceName,
+  //         gyroSupported: this.capabilities.gyroscope
+  //     });
+  // }
+  releaseResources() {
     if (this.readChrct) {
       this.readChrct.removeEventListener("characteristicvaluechanged", this.onStateChanged);
       this.readChrct = null;
     }
     this.writeChrct = null;
-    this.bus.resetBatteryDedupe();
-    if (this.batteryInterval) {
-      clearInterval(this.batteryInterval);
-      this.batteryInterval = null;
-    }
     const rejectInit = this.rejectInitialState;
     this.rejectInitialState = void 0;
     this.resolveInitialState = void 0;
     this.awaitingInitialState = false;
     rejectInit?.(new Error("GoCube disconnected during initialization"));
-    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-    this.bus.complete();
   }
+  // SUPERSEDED: GattSmartCubeConnection.teardown() runs releaseResources() at the same point in the same order. Rejecting the init promise before the DISCONNECT emit is preserved; its handlers run on a later microtask either way.
+  // /** Idempotent teardown shared by remote and explicit disconnects. */
+  // private teardown(): void {
+  //     this.device.removeEventListener('gattserverdisconnected', this.onDisconnect);
+  //     if (this.readChrct) {
+  //         this.readChrct.removeEventListener('characteristicvaluechanged', this.onStateChanged);
+  //         this.readChrct = null;
+  //     }
+  //     this.writeChrct = null;
+  //     this.bus.resetBatteryDedupe();
+  //     if (this.batteryInterval) {
+  //         clearInterval(this.batteryInterval);
+  //         this.batteryInterval = null;
+  //     }
+  //     const rejectInit = this.rejectInitialState;
+  //     this.rejectInitialState = undefined;
+  //     this.resolveInitialState = undefined;
+  //     this.awaitingInitialState = false;
+  //     rejectInit?.(new Error('GoCube disconnected during initialization'));
+  //     this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
+  //     this.bus.complete();
+  // }
+  //
+  // private onDisconnect = (): void => {
+  //     this.teardown();
+  // };
   async init() {
-    this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
+    this.watchDisconnect();
     const gatt = await this.device.gatt.connect();
-    const service = await gatt.getPrimaryService(SERVICE_UUID$3);
-    this.writeChrct = await service.getCharacteristic(CHRCT_UUID_WRITE$1);
-    this.readChrct = await service.getCharacteristic(CHRCT_UUID_READ$1);
+    const service = await gatt.getPrimaryService(GOCUBE_UART_SERVICE);
+    this.writeChrct = await service.getCharacteristic(GOCUBE_UART_WRITE_CHARACTERISTIC);
+    this.readChrct = await service.getCharacteristic(GOCUBE_UART_READ_CHARACTERISTIC);
     await this.readChrct.startNotifications();
     this.readChrct.addEventListener("characteristicvaluechanged", this.onStateChanged);
     if (this.capabilities.gyroscope) {
@@ -4551,7 +4542,7 @@ var GoCubeConnection = class {
     this.awaitingInitialState = true;
     await writeGattCharacteristicValue(this.writeChrct, new Uint8Array([WRITE_STATE]).buffer);
     this.pollBattery();
-    this.batteryInterval = setInterval(this.pollBattery, 6e4);
+    this.startBatteryPolling(this.pollBattery);
     let initialStateTimer;
     let timedOut = false;
     try {
@@ -4595,7 +4586,7 @@ var GoCubeConnection = class {
       });
       await writeGattCharacteristicValue(this.writeChrct, new Uint8Array([WRITE_STATE]).buffer);
     } else if (command.type === "REQUEST_HARDWARE") {
-      this.emitHardwareEvent();
+      this.emitHardwareEventFromName();
     } else if (command.type === "REQUEST_RESET") {
       await writeGattCharacteristicValue(this.writeChrct, new Uint8Array([WRITE_RESET]).buffer);
       this.curCubie = new CubieCube();
@@ -4610,16 +4601,8 @@ var GoCubeConnection = class {
       });
     }
   }
-  async disconnect() {
-    const readChrct = this.readChrct;
-    this.teardown();
-    if (readChrct) {
-      await readChrct.stopNotifications().catch(() => {
-      });
-    }
-    if (this.device.gatt?.connected) {
-      this.device.gatt.disconnect();
-    }
+  notifyingCharacteristics() {
+    return [this.readChrct];
   }
 };
 var GOCUBE_NAME_FILTERS = [
@@ -4628,10 +4611,10 @@ var GOCUBE_NAME_FILTERS = [
 ];
 var goCubeProtocol = {
   nameFilters: GOCUBE_NAME_FILTERS,
-  optionalServices: [SERVICE_UUID$3],
+  optionalServices: [GOCUBE_UART_SERVICE],
   matchesDevice: deviceNameMatchesFilters(GOCUBE_NAME_FILTERS),
   gattAffinity(serviceUuids, _device) {
-    return serviceUuids.has(normalizeUuid(SERVICE_UUID$3)) ? 110 : 0;
+    return serviceUuids.has(normalizeUuid(GOCUBE_UART_SERVICE)) ? 110 : 0;
   },
   async connect(device, _macProvider, context2) {
     throwIfAborted(context2?.signal);
@@ -4902,7 +4885,7 @@ var MoyuV1Client = class {
     const r = await this.send(MOYU_V1_CMD_CUBE_STATE);
     return moyuV1ParseCubeStatePayload(r.value);
   }
-  async setCubeState(stickers = MOYU_V1_SOLVED_STICKERS, angles = [0, 0, 0, 0, 0, 0]) {
+  async setCubeState(stickers, angles) {
     const pl = moyuV1EncodeCubeStatePayload(stickers, angles);
     await this.send(MOYU_V1_CMD_CUBE_STATE, pl);
   }
@@ -4937,12 +4920,6 @@ var MoyuV1Client = class {
     };
   }
 };
-var UUID_SUFFIX$2 = "-0000-1000-8000-00805f9b34fb";
-var SERVICE_UUID$2 = "00001000" + UUID_SUFFIX$2;
-var CHRCT_UUID_WRITE = "00001001" + UUID_SUFFIX$2;
-var CHRCT_UUID_READ = "00001002" + UUID_SUFFIX$2;
-var CHRCT_UUID_TURN = "00001003" + UUID_SUFFIX$2;
-var CHRCT_UUID_GYRO = "00001004" + UUID_SUFFIX$2;
 var FACE_ORDER_LEN = 6;
 var DEVICE_FACE_TO_AXIS = [3, 4, 5, 1, 2, 0];
 function normalizeQuaternion(q) {
@@ -4950,18 +4927,16 @@ function normalizeQuaternion(q) {
   return { w: q.w / n, x: q.x / n, y: q.y / n, z: q.z / n };
 }
 var MOYU_MHC_PROTOCOL = { id: "moyu-mhc", name: "MoYu MHC" };
-var MoyuMhcConnection = class {
+var MOYU_MHC_INITIAL_CAPABILITIES = {
+  gyroscope: false,
+  battery: false,
+  facelets: false,
+  hardware: false,
+  reset: false
+};
+var MoyuMhcConnection = class extends GattSmartCubeConnection {
   constructor(device) {
-    this.protocol = MOYU_MHC_PROTOCOL;
-    this.bus = new SmartCubeEventBus({
-      gyroscope: false,
-      battery: false,
-      facelets: false,
-      hardware: false,
-      reset: false
-    });
-    this.events$ = this.bus.events$;
-    this.state$ = this.bus.state$;
+    super(device, MOYU_MHC_PROTOCOL, device.name || "MHC", "", MOYU_MHC_INITIAL_CAPABILITIES);
     this.writeChrct = null;
     this.readChrct = null;
     this.turnChrct = null;
@@ -4970,7 +4945,6 @@ var MoyuMhcConnection = class {
     this.faceStatus = [0, 0, 0, 0, 0, 0];
     this.curCubie = new CubieCube();
     this.prevCubie = new CubieCube();
-    this.batteryInterval = null;
     this.onTurnEvent = (event) => {
       const value = event.target.value;
       if (!value)
@@ -5007,18 +4981,6 @@ var MoyuMhcConnection = class {
         quaternion
       });
     };
-    this.onDisconnect = () => {
-      this.teardown();
-    };
-    this.device = device;
-    this.deviceName = device.name || "MHC";
-    this.deviceMAC = "";
-  }
-  get capabilities() {
-    return this.bus.capabilities;
-  }
-  getSnapshot() {
-    return this.bus.getSnapshot();
   }
   /**
    * After each move, `prevCubie` holds the latest physical state (see parseTurn swap).
@@ -5097,9 +5059,7 @@ var MoyuMhcConnection = class {
     } catch {
     }
   }
-  /** Idempotent teardown shared by remote and explicit disconnects. */
-  teardown() {
-    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
+  releaseResources() {
     if (this.readChrct) {
       this.readChrct.removeEventListener("characteristicvaluechanged", this.onReadEvent);
       this.readChrct = null;
@@ -5115,14 +5075,38 @@ var MoyuMhcConnection = class {
     this.writeChrct = null;
     this.v1?.dispose();
     this.v1 = null;
-    this.bus.resetBatteryDedupe();
-    if (this.batteryInterval) {
-      clearInterval(this.batteryInterval);
-      this.batteryInterval = null;
-    }
-    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-    this.bus.complete();
   }
+  // SUPERSEDED: GattSmartCubeConnection.teardown() runs releaseResources() at the same point in the same order.
+  // /** Idempotent teardown shared by remote and explicit disconnects. */
+  // private teardown(): void {
+  //     this.device.removeEventListener('gattserverdisconnected', this.onDisconnect);
+  //     if (this.readChrct) {
+  //         this.readChrct.removeEventListener('characteristicvaluechanged', this.onReadEvent);
+  //         this.readChrct = null;
+  //     }
+  //     if (this.turnChrct) {
+  //         this.turnChrct.removeEventListener('characteristicvaluechanged', this.onTurnEvent);
+  //         this.turnChrct = null;
+  //     }
+  //     if (this.gyroChrct) {
+  //         this.gyroChrct.removeEventListener('characteristicvaluechanged', this.onGyroEvent);
+  //         this.gyroChrct = null;
+  //     }
+  //     this.writeChrct = null;
+  //     this.v1?.dispose();
+  //     this.v1 = null;
+  //     this.bus.resetBatteryDedupe();
+  //     if (this.batteryInterval) {
+  //         clearInterval(this.batteryInterval);
+  //         this.batteryInterval = null;
+  //     }
+  //     this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
+  //     this.bus.complete();
+  // }
+  //
+  // private onDisconnect = (): void => {
+  //     this.teardown();
+  // };
   updateCapabilities() {
     const hasV1 = this.v1 !== null;
     this.bus.setCapabilities({
@@ -5135,15 +5119,14 @@ var MoyuMhcConnection = class {
     });
   }
   async init() {
-    this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
-    try {
+    await this.initialize(async () => {
       const gatt = await this.device.gatt.connect();
-      const service = await gatt.getPrimaryService(SERVICE_UUID$2);
+      const service = await gatt.getPrimaryService(MOYU_MHC_SERVICE);
       const chrcts = await service.getCharacteristics();
-      this.writeChrct = findCharacteristic(chrcts, CHRCT_UUID_WRITE);
-      this.readChrct = findCharacteristic(chrcts, CHRCT_UUID_READ);
-      this.turnChrct = findCharacteristic(chrcts, CHRCT_UUID_TURN);
-      this.gyroChrct = findCharacteristic(chrcts, CHRCT_UUID_GYRO);
+      this.writeChrct = findCharacteristic(chrcts, MOYU_MHC_WRITE_CHARACTERISTIC);
+      this.readChrct = findCharacteristic(chrcts, MOYU_MHC_READ_CHARACTERISTIC);
+      this.turnChrct = findCharacteristic(chrcts, MOYU_MHC_TURN_CHARACTERISTIC);
+      this.gyroChrct = findCharacteristic(chrcts, MOYU_MHC_GYRO_CHARACTERISTIC);
       if (this.writeChrct && this.readChrct) {
         this.v1 = new MoyuV1Client(this.writeChrct);
       }
@@ -5178,17 +5161,11 @@ var MoyuMhcConnection = class {
       this.updateCapabilities();
       if (this.v1) {
         await this.pollBattery();
-        this.batteryInterval = setInterval(() => {
+        this.startBatteryPolling(() => {
           void this.pollBattery();
-        }, 6e4);
+        });
       }
-    } catch (e) {
-      this.teardown();
-      if (this.device.gatt?.connected) {
-        this.device.gatt.disconnect();
-      }
-      throw e;
-    }
+    });
   }
   async sendCommand(command) {
     if (!this.v1)
@@ -5228,27 +5205,17 @@ var MoyuMhcConnection = class {
       });
     }
   }
-  async disconnect() {
-    const notifying = [this.readChrct, this.turnChrct, this.gyroChrct];
-    this.teardown();
-    for (const chrct of notifying) {
-      if (chrct) {
-        await chrct.stopNotifications().catch(() => {
-        });
-      }
-    }
-    if (this.device.gatt?.connected) {
-      this.device.gatt.disconnect();
-    }
+  notifyingCharacteristics() {
+    return [this.readChrct, this.turnChrct, this.gyroChrct];
   }
 };
 var MOYU_MHC_NAME_FILTERS = [{ namePrefix: "MHC" }];
 var moyuMhcProtocol = {
   nameFilters: MOYU_MHC_NAME_FILTERS,
-  optionalServices: [SERVICE_UUID$2],
+  optionalServices: [MOYU_MHC_SERVICE],
   matchesDevice: deviceNameMatchesFilters(MOYU_MHC_NAME_FILTERS),
   gattAffinity(serviceUuids, _device) {
-    return serviceUuids.has(normalizeUuid(SERVICE_UUID$2)) ? 110 : 0;
+    return serviceUuids.has(normalizeUuid(MOYU_MHC_SERVICE)) ? 110 : 0;
   },
   async connect(device, _macProvider, _context) {
     const conn = new MoyuMhcConnection(device);
@@ -5548,9 +5515,6 @@ function isValidQiYiDecryptedPacket(payload) {
   }
   return payload[2] === 2;
 }
-var MOYU32_SVC = "0783b03e-7735-b5a0-1760-a305d2795cb0";
-var MOYU32_CHR_READ = "0783b03e-7735-b5a0-1760-a305d2795cb1";
-var MOYU32_CHR_WRITE = "0783b03e-7735-b5a0-1760-a305d2795cb2";
 async function probeMoyu32Mac(device, mac, options) {
   const timeoutMs = options?.timeoutMs ?? 2e3;
   const gatt = device.gatt;
@@ -5560,10 +5524,10 @@ async function probeMoyu32Mac(device, mac, options) {
   if (!gatt.connected) {
     await gatt.connect();
   }
-  const service = await gatt.getPrimaryService(MOYU32_SVC);
+  const service = await gatt.getPrimaryService(MOYU32_SERVICE);
   const chrcts = await service.getCharacteristics();
-  const readChrct = findCharacteristic(chrcts, MOYU32_CHR_READ);
-  const writeChrct = findCharacteristic(chrcts, MOYU32_CHR_WRITE);
+  const readChrct = findCharacteristic(chrcts, MOYU32_READ_CHARACTERISTIC);
+  const writeChrct = findCharacteristic(chrcts, MOYU32_WRITE_CHARACTERISTIC);
   if (!readChrct || !writeChrct) {
     return false;
   }
@@ -5637,9 +5601,6 @@ async function probeMoyu32Mac(device, mac, options) {
   });
   return good >= 3;
 }
-var SERVICE_UUID$1 = "0783b03e-7735-b5a0-1760-a305d2795cb0";
-var CHRT_UUID_READ = "0783b03e-7735-b5a0-1760-a305d2795cb1";
-var CHRT_UUID_WRITE = "0783b03e-7735-b5a0-1760-a305d2795cb2";
 var ENABLE_GYRO_PAYLOAD = Object.freeze([
   172,
   0,
@@ -5696,18 +5657,16 @@ function parseMoyu32MacFromMf(mfData) {
   return null;
 }
 var MOYU32_PROTOCOL = { id: "moyu32", name: "MoYu32" };
-var Moyu32Connection = class {
+var MOYU32_CAPABILITIES = {
+  gyroscope: false,
+  battery: true,
+  facelets: true,
+  hardware: true,
+  reset: false
+};
+var Moyu32Connection = class extends GattSmartCubeConnection {
   constructor(device, mac) {
-    this.protocol = MOYU32_PROTOCOL;
-    this.bus = new SmartCubeEventBus({
-      gyroscope: false,
-      battery: true,
-      facelets: true,
-      hardware: true,
-      reset: false
-    });
-    this.events$ = this.bus.events$;
-    this.state$ = this.bus.state$;
+    super(device, MOYU32_PROTOCOL, device.name || "WCU_MY3", mac, MOYU32_CAPABILITIES);
     this.readChrct = null;
     this.writeChrct = null;
     this.encrypter = null;
@@ -5716,7 +5675,6 @@ var Moyu32Connection = class {
     this.deviceTime = 0;
     this.deviceTimeOffset = 0;
     this.prevMoveCnt = -1;
-    this.batteryInterval = null;
     this.onStateChanged = (event) => {
       const value = event.target.value;
       if (!value || !this.encrypter)
@@ -5729,19 +5687,27 @@ var Moyu32Connection = class {
       this.sendSimpleRequest(OP_BATTERY).catch(() => {
       });
     };
-    this.onDisconnect = () => {
-      this.teardown();
-    };
-    this.device = device;
-    this.deviceName = device.name || "WCU_MY3";
-    this.deviceMAC = mac;
   }
-  get capabilities() {
-    return this.bus.capabilities;
-  }
-  getSnapshot() {
-    return this.bus.getSnapshot();
-  }
+  // SUPERSEDED: the bus facade, device and lifecycle live in GattSmartCubeConnection.
+  // readonly deviceName: string;
+  // readonly deviceMAC: string;
+  // readonly protocol: SmartCubeProtocolInfo = MOYU32_PROTOCOL;
+  // private readonly bus = new SmartCubeEventBus({ ...MOYU32_CAPABILITIES });
+  // readonly events$: Observable<SmartCubeEvent> = this.bus.events$;
+  // readonly state$: Observable<SmartCubeSnapshot> = this.bus.state$;
+  // private device: BluetoothDevice;
+  // private batteryInterval: ReturnType<typeof setInterval> | null = null;
+  // constructor(device: BluetoothDevice, mac: string) {
+  //     this.device = device;
+  //     this.deviceName = device.name || 'WCU_MY3';
+  //     this.deviceMAC = mac;
+  // }
+  // get capabilities(): SmartCubeCapabilities {
+  //     return this.bus.capabilities as SmartCubeCapabilities;
+  // }
+  // getSnapshot(): SmartCubeSnapshot {
+  //     return this.bus.getSnapshot();
+  // }
   sendRequest(req) {
     if (!this.writeChrct) {
       return Promise.reject(new Error("[Moyu32] Not connected"));
@@ -5848,18 +5814,18 @@ var Moyu32Connection = class {
       this.deviceTime += timestamp - calcTs;
     }
     for (let i = moveDiff - 1; i >= 0; i--) {
-      const moveNotation = prevMoves[i].trim();
-      const m = "URFDLB".indexOf(moveNotation[0]) * 3 + " 2'".indexOf(moveNotation[1] || " ");
+      const moveNotation2 = prevMoves[i].trim();
+      const m = "URFDLB".indexOf(moveNotation2[0]) * 3 + " 2'".indexOf(moveNotation2[1] || " ");
       CubieCube.CubeMult(this.prevCubie, CubieCube.moveCube[m], this.curCubie);
       this.deviceTime += timeOffs[i];
       const face = Math.floor(m / 3);
-      const direction = moveDirectionFromNotation(moveNotation);
+      const direction = moveDirectionFromNotation(moveNotation2);
       this.bus.emit({
         timestamp,
         type: "MOVE",
         face,
         direction,
-        move: moveNotation,
+        move: moveNotation2,
         localTimestamp: i === 0 ? timestamp : null,
         cubeTimestamp: this.deviceTime
       });
@@ -5894,23 +5860,36 @@ var Moyu32Connection = class {
       quaternion: { x, y, z, w }
     });
   }
-  /** Idempotent teardown shared by remote and explicit disconnects. */
-  teardown() {
-    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
+  releaseResources() {
     if (this.readChrct) {
       this.readChrct.removeEventListener("characteristicvaluechanged", this.onStateChanged);
       this.readChrct = null;
     }
     this.writeChrct = null;
     this.encrypter = null;
-    this.bus.resetBatteryDedupe();
-    if (this.batteryInterval) {
-      clearInterval(this.batteryInterval);
-      this.batteryInterval = null;
-    }
-    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-    this.bus.complete();
   }
+  // SUPERSEDED: GattSmartCubeConnection.teardown() runs releaseResources() at the same point in the same order.
+  // /** Idempotent teardown shared by remote and explicit disconnects. */
+  // private teardown(): void {
+  //     this.device.removeEventListener('gattserverdisconnected', this.onDisconnect);
+  //     if (this.readChrct) {
+  //         this.readChrct.removeEventListener('characteristicvaluechanged', this.onStateChanged);
+  //         this.readChrct = null;
+  //     }
+  //     this.writeChrct = null;
+  //     this.encrypter = null;
+  //     this.bus.resetBatteryDedupe();
+  //     if (this.batteryInterval) {
+  //         clearInterval(this.batteryInterval);
+  //         this.batteryInterval = null;
+  //     }
+  //     this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
+  //     this.bus.complete();
+  // }
+  //
+  // private onDisconnect = (): void => {
+  //     this.teardown();
+  // };
   /** Hardware, facelets, and battery requests in the order the cube expects. */
   async sendInitBurst() {
     await this.sendSimpleRequest(OP_HARDWARE_INFO);
@@ -5918,13 +5897,12 @@ var Moyu32Connection = class {
     await this.sendSimpleRequest(OP_BATTERY);
   }
   async init() {
-    this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
-    try {
+    await this.initialize(async () => {
       const gatt = await this.device.gatt.connect();
-      const service = await gatt.getPrimaryService(SERVICE_UUID$1);
+      const service = await gatt.getPrimaryService(MOYU32_SERVICE);
       const chrcts = await service.getCharacteristics();
-      this.readChrct = findCharacteristic(chrcts, CHRT_UUID_READ);
-      this.writeChrct = findCharacteristic(chrcts, CHRT_UUID_WRITE);
+      this.readChrct = findCharacteristic(chrcts, MOYU32_READ_CHARACTERISTIC);
+      this.writeChrct = findCharacteristic(chrcts, MOYU32_WRITE_CHARACTERISTIC);
       if (!this.readChrct || !this.writeChrct) {
         throw new Error("[Moyu32] Cannot find read/write characteristics");
       }
@@ -5933,16 +5911,10 @@ var Moyu32Connection = class {
       await this.readChrct.startNotifications();
       await this.sendInitBurst();
       await this.sendInitBurst();
-      this.batteryInterval = setInterval(this.pollBattery, 6e4);
+      this.startBatteryPolling(this.pollBattery);
       await this.sendRequest(Array.from(ENABLE_GYRO_PAYLOAD));
       await this.sendSimpleRequest(OP_FACELETS);
-    } catch (e) {
-      this.teardown();
-      if (this.device.gatt?.connected) {
-        this.device.gatt.disconnect();
-      }
-      throw e;
-    }
+    });
   }
   async sendCommand(command) {
     switch (command.type) {
@@ -5963,16 +5935,8 @@ var Moyu32Connection = class {
         break;
     }
   }
-  async disconnect() {
-    const readChrct = this.readChrct;
-    this.teardown();
-    if (readChrct) {
-      await readChrct.stopNotifications().catch(() => {
-      });
-    }
-    if (this.device.gatt?.connected) {
-      this.device.gatt.disconnect();
-    }
+  notifyingCharacteristics() {
+    return [this.readChrct];
   }
 };
 async function connectMoyu32Device(device, macProvider, context2) {
@@ -5994,18 +5958,15 @@ async function connectMoyu32Device(device, macProvider, context2) {
 var MOYU32_NAME_FILTERS = [{ namePrefix: "WCU_" }];
 var moyu32Protocol = {
   nameFilters: MOYU32_NAME_FILTERS,
-  optionalServices: [SERVICE_UUID$1],
+  optionalServices: [MOYU32_SERVICE],
   needsMac: true,
   matchesDevice: deviceNameMatchesFilters(MOYU32_NAME_FILTERS),
   gattAffinity(serviceUuids, _device) {
-    return serviceUuids.has(normalizeUuid(SERVICE_UUID$1)) ? 110 : 0;
+    return serviceUuids.has(normalizeUuid(MOYU32_SERVICE)) ? 110 : 0;
   },
   connect: connectMoyu32Device
 };
 registerProtocol(moyu32Protocol);
-var UUID_SUFFIX$1 = "-0000-1000-8000-00805f9b34fb";
-var QIYI_SVC = "0000fff0" + UUID_SUFFIX$1;
-var QIYI_CHR = "0000fff6" + UUID_SUFFIX$1;
 var HELLO_RETRY_INTERVAL_MS = 200;
 async function probeQiYiMac(device, mac, options) {
   const timeoutMs = options?.timeoutMs ?? 3e3;
@@ -6020,11 +5981,11 @@ async function probeQiYiMac(device, mac, options) {
     await gatt.connect();
     throwIfAborted(signal);
   }
-  const service = await gatt.getPrimaryService(QIYI_SVC);
+  const service = await gatt.getPrimaryService(QIYI_SERVICE);
   throwIfAborted(signal);
   const chrcts = await service.getCharacteristics();
   throwIfAborted(signal);
-  const chrct = findCharacteristic(chrcts, QIYI_CHR);
+  const chrct = findCharacteristic(chrcts, QIYI_CUBE_CHARACTERISTIC);
   if (!chrct) {
     return false;
   }
@@ -6092,9 +6053,6 @@ async function probeQiYiMac(device, mac, options) {
   throwIfAborted(signal);
   return ok;
 }
-var UUID_SUFFIX = "-0000-1000-8000-00805f9b34fb";
-var SERVICE_UUID = "0000fff0" + UUID_SUFFIX;
-var CHRCT_UUID_CUBE = "0000fff6" + UUID_SUFFIX;
 var QIYI_CIC_LIST = [1284];
 var QIYI_SOLVED_FACELETS = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
 var OP_STATE_HELLO = 2;
@@ -6142,18 +6100,16 @@ function collectQiYiStateChangeMoves(msg, headerTs) {
   });
 }
 var QIYI_PROTOCOL = { id: "qiyi", name: "QiYi" };
-var QiYiConnection = class {
+var QIYI_CAPABILITIES = {
+  gyroscope: false,
+  battery: true,
+  facelets: true,
+  hardware: true,
+  reset: false
+};
+var QiYiConnection = class extends GattSmartCubeConnection {
   constructor(device, mac) {
-    this.protocol = QIYI_PROTOCOL;
-    this.bus = new SmartCubeEventBus({
-      gyroscope: false,
-      battery: true,
-      facelets: true,
-      hardware: true,
-      reset: false
-    });
-    this.events$ = this.bus.events$;
-    this.state$ = this.bus.state$;
+    super(device, QIYI_PROTOCOL, device.name || "QiYi", mac, QIYI_CAPABILITIES);
     this.cubeChrct = null;
     this.curCubie = new CubieCube();
     this.prevCubie = new CubieCube();
@@ -6176,19 +6132,26 @@ var QiYiConnection = class {
       }
       this.parseCubeData(trimmed);
     };
-    this.onDisconnect = () => {
-      this.teardown();
-    };
-    this.device = device;
-    this.deviceName = device.name || "QiYi";
-    this.deviceMAC = mac;
   }
-  get capabilities() {
-    return this.bus.capabilities;
-  }
-  getSnapshot() {
-    return this.bus.getSnapshot();
-  }
+  // SUPERSEDED: the bus facade, device and lifecycle live in GattSmartCubeConnection.
+  // readonly deviceName: string;
+  // readonly deviceMAC: string;
+  // readonly protocol: SmartCubeProtocolInfo = QIYI_PROTOCOL;
+  // private readonly bus = new SmartCubeEventBus({ ...QIYI_CAPABILITIES });
+  // readonly events$: Observable<SmartCubeEvent> = this.bus.events$;
+  // readonly state$: Observable<SmartCubeSnapshot> = this.bus.state$;
+  // private device: BluetoothDevice;
+  // constructor(device: BluetoothDevice, mac: string) {
+  //     this.device = device;
+  //     this.deviceName = device.name || 'QiYi';
+  //     this.deviceMAC = mac;
+  // }
+  // get capabilities(): SmartCubeCapabilities {
+  //     return this.bus.capabilities as SmartCubeCapabilities;
+  // }
+  // getSnapshot(): SmartCubeSnapshot {
+  //     return this.bus.getSnapshot();
+  // }
   sendMessage(content) {
     if (this.closed || !this.cubeChrct)
       return Promise.reject(new Error("[QiYi] Not connected"));
@@ -6239,14 +6202,15 @@ var QiYiConnection = class {
       }
     });
   }
-  emitHardwareEvent() {
-    this.bus.emit({
-      timestamp: now(),
-      type: "HARDWARE",
-      hardwareName: this.deviceName,
-      gyroSupported: this.capabilities.gyroscope
-    });
-  }
+  // SUPERSEDED: GattSmartCubeConnection.emitHardwareEventFromName().
+  // private emitHardwareEvent(): void {
+  //     this.bus.emit({
+  //         timestamp: now(),
+  //         type: "HARDWARE",
+  //         hardwareName: this.deviceName,
+  //         gyroSupported: this.capabilities.gyroscope
+  //     });
+  // }
   parseCubeData(msg) {
     const timestamp = now();
     if (msg[0] !== 254)
@@ -6343,38 +6307,43 @@ var QiYiConnection = class {
     this.prevCubie.fromFacelet(QIYI_SOLVED_FACELETS);
     this.lastTs = readQiYiTimestampBE(msg, 3);
   }
-  /** Idempotent teardown shared by remote and explicit disconnects. */
-  teardown() {
+  releaseResources() {
     this.closed = true;
-    this.device.removeEventListener("gattserverdisconnected", this.onDisconnect);
     if (this.cubeChrct) {
       this.cubeChrct.removeEventListener("characteristicvaluechanged", this.onCubeEvent);
       this.cubeChrct = null;
     }
-    this.bus.resetBatteryDedupe();
-    this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
-    this.bus.complete();
   }
+  // SUPERSEDED: GattSmartCubeConnection.teardown() runs releaseResources() at the same point in the same order.
+  // /** Idempotent teardown shared by remote and explicit disconnects. */
+  // private teardown(): void {
+  //     this.closed = true;
+  //     this.device.removeEventListener('gattserverdisconnected', this.onDisconnect);
+  //     if (this.cubeChrct) {
+  //         this.cubeChrct.removeEventListener('characteristicvaluechanged', this.onCubeEvent);
+  //         this.cubeChrct = null;
+  //     }
+  //     this.bus.resetBatteryDedupe();
+  //     this.bus.emit({ timestamp: now(), type: "DISCONNECT" });
+  //     this.bus.complete();
+  // }
+  //
+  // private onDisconnect = (): void => {
+  //     this.teardown();
+  // };
   async init() {
-    this.device.addEventListener("gattserverdisconnected", this.onDisconnect);
-    try {
+    await this.initialize(async () => {
       const gatt = await this.device.gatt.connect();
-      const service = await gatt.getPrimaryService(SERVICE_UUID);
+      const service = await gatt.getPrimaryService(QIYI_SERVICE);
       const chrcts = await service.getCharacteristics();
-      this.cubeChrct = findCharacteristic(chrcts, CHRCT_UUID_CUBE);
+      this.cubeChrct = findCharacteristic(chrcts, QIYI_CUBE_CHARACTERISTIC);
       if (!this.cubeChrct) {
         throw new Error("[QiYi] Cannot find required characteristic");
       }
       this.cubeChrct.addEventListener("characteristicvaluechanged", this.onCubeEvent);
       await this.cubeChrct.startNotifications();
       await this.sendHello();
-    } catch (e) {
-      this.teardown();
-      if (this.device.gatt?.connected) {
-        this.device.gatt.disconnect();
-      }
-      throw e;
-    }
+    });
   }
   async sendCommand(command) {
     if (command.type === "REQUEST_FACELETS" || command.type === "REQUEST_BATTERY") {
@@ -6390,21 +6359,16 @@ var QiYiConnection = class {
       }
       await this.sendHello();
     } else if (command.type === "REQUEST_HARDWARE") {
-      this.emitHardwareEvent();
+      this.emitHardwareEventFromName();
     }
   }
-  async disconnect() {
-    const cubeChrct = this.cubeChrct;
-    this.teardown();
+  notifyingCharacteristics() {
+    return [this.cubeChrct];
+  }
+  /** Let any in-flight queued write settle before stopping notifications so the two GATT operations cannot collide. */
+  async settleBeforeStopNotifications() {
     await this.writeChain.catch(() => {
     });
-    if (cubeChrct) {
-      await cubeChrct.stopNotifications().catch(() => {
-      });
-    }
-    if (this.device.gatt?.connected) {
-      this.device.gatt.disconnect();
-    }
   }
 };
 function parseQiYiMacFromMf(mfData) {
@@ -6436,43 +6400,19 @@ var QIYI_NAME_FILTERS = [
 ];
 var qiyiProtocol = {
   nameFilters: QIYI_NAME_FILTERS,
-  optionalServices: [SERVICE_UUID],
+  optionalServices: [QIYI_SERVICE],
   optionalManufacturerData: QIYI_CIC_LIST,
   needsMac: true,
   matchesDevice: deviceNameMatchesFilters(QIYI_NAME_FILTERS),
   gattAffinity(serviceUuids, _device) {
-    return serviceUuids.has(normalizeUuid(SERVICE_UUID)) ? 110 : 0;
+    return serviceUuids.has(normalizeUuid(QIYI_SERVICE)) ? 110 : 0;
   },
   connect: connectQiYiDevice
 };
 registerProtocol(qiyiProtocol);
-var S = "-0000-1000-8000-00805f9b34fb";
-var DEVICE_INFORMATION_SERVICE = "0000180a" + S;
-var GENERIC_ACCESS_SERVICE = "00001800" + S;
-var QIYI_LIKE_FFF0 = "0000fff0" + S;
-var MOYU_PLAIN_SERVICE = "00001000" + S;
-var MOYU32_SERVICE = "0783b03e-7735-b5a0-1760-a305d2795cb0";
-var GIIKER_DATA_SERVICE = "0000aadb" + S;
-var GIIKER_CTRL_SERVICE = "0000aaaa" + S;
-var GOCUBE_UART_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 var DEFAULT_SMARTCUBE_OPTIONAL_SERVICES = [
   GENERIC_ACCESS_SERVICE,
-  DEVICE_INFORMATION_SERVICE,
-  GAN_GEN2_SERVICE,
-  GAN_GEN2_COMMAND_CHARACTERISTIC,
-  GAN_GEN2_STATE_CHARACTERISTIC,
-  GAN_GEN3_SERVICE,
-  GAN_GEN3_COMMAND_CHARACTERISTIC,
-  GAN_GEN3_STATE_CHARACTERISTIC,
-  GAN_GEN4_SERVICE,
-  GAN_GEN4_COMMAND_CHARACTERISTIC,
-  GAN_GEN4_STATE_CHARACTERISTIC,
-  QIYI_LIKE_FFF0,
-  MOYU_PLAIN_SERVICE,
-  MOYU32_SERVICE,
-  GIIKER_DATA_SERVICE,
-  GIIKER_CTRL_SERVICE,
-  GOCUBE_UART_SERVICE
+  DEVICE_INFORMATION_SERVICE
 ];
 function mergeOptionalServiceUuids(protocolServices) {
   const u = new Set(DEFAULT_SMARTCUBE_OPTIONAL_SERVICES);
@@ -6677,7 +6617,7 @@ function requestFreshStateForMacVerify(conn, onError) {
   const p = c.facelets ? conn.sendCommand({ type: "REQUEST_FACELETS" }) : c.hardware ? conn.sendCommand({ type: "REQUEST_HARDWARE" }) : c.battery ? conn.sendCommand({ type: "REQUEST_BATTERY" }) : Promise.resolve();
   p.catch(onError);
 }
-function waitForVerifiedCubeEvent(conn, timeoutMs, signal, proof = isMacCacheProofEvent) {
+function waitForVerifiedCubeEvent(conn, timeoutMs, proof, signal) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let timer;
@@ -6811,7 +6751,7 @@ async function connectSmartCube(arg) {
     status("Verifying connection\u2026");
     try {
       let commandError = null;
-      const verifyPromise = waitForVerifiedCubeEvent(conn, MAC_VERIFY_TIMEOUT_MS, opts.signal, macProofPredicate(conn));
+      const verifyPromise = waitForVerifiedCubeEvent(conn, MAC_VERIFY_TIMEOUT_MS, macProofPredicate(conn), opts.signal);
       requestFreshStateForMacVerify(conn, (e) => {
         commandError = e;
       });
@@ -6843,7 +6783,7 @@ async function connectSmartCube(arg) {
 }
 
 // lib/smartcube-entry.js
-var SMARTCUBE_REV = "a6a162b7b06373218058ce427c67f376f1e5fdbb";
+var SMARTCUBE_REV = "77df8e9507ac87031c12ad1717d71de98d56784b";
 export {
   SMARTCUBE_REV,
   connectSmartCube,
