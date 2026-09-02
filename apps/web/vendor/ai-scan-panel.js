@@ -2884,23 +2884,35 @@ var loadOrt = (url) => {
   }
   return pending;
 };
+async function preferredProviders() {
+  const gpu = globalThis.navigator?.gpu;
+  if (!gpu) return ["wasm"];
+  try {
+    return await gpu.requestAdapter() ? ["webgpu", "wasm"] : ["wasm"];
+  } catch {
+    return ["wasm"];
+  }
+}
+var usesGpu = (eps) => eps.some((e) => (typeof e === "string" ? e : e.name) === "webgpu");
 function defaultThreadCount(isolated = typeof globalThis.crossOriginIsolated === "boolean" ? globalThis.crossOriginIsolated : false, cores = globalThis.navigator?.hardwareConcurrency ?? 1) {
   if (!isolated) return 1;
   return Math.max(1, Math.min(cores - 2, 6));
 }
 async function createModelRunner(modelUrl, opts = {}) {
   const ort = await loadOrt(opts.ortUrl ?? "./ort.mjs");
+  const executionProviders = opts.executionProviders ?? await preferredProviders();
+  const gpu = usesGpu(executionProviders);
   ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
-  ort.env.wasm.proxy = true;
+  ort.env.wasm.proxy = !gpu;
   ort.env.wasm.wasmPaths = opts.wasmPaths ?? "./";
   const session = await ort.InferenceSession.create(modelUrl, {
-    executionProviders: opts.executionProviders ?? ["wasm"],
+    executionProviders,
     graphOptimizationLevel: "all"
   });
   const inputName = session.inputNames[0];
   const outputName = session.outputNames[0];
   if (!inputName || !outputName) throw new Error("model has no input/output tensor");
-  return async (input, imgsz) => {
+  const run = async (input, imgsz) => {
     const tensor = new ort.Tensor("float32", input, [1, 3, imgsz, imgsz]);
     const result = await session.run({ [inputName]: tensor });
     const out = result[outputName];
@@ -2908,6 +2920,14 @@ async function createModelRunner(modelUrl, opts = {}) {
     const anchors = out.dims[out.dims.length - 1] ?? 0;
     return { data: out.data, anchors };
   };
+  if (opts.warmUp ?? true) {
+    const meta = session.inputMetadata?.[0];
+    const dims = meta?.isTensor ? meta.shape : void 0;
+    const h = dims?.[2];
+    const side = typeof h === "number" && h > 0 ? h : 640;
+    await run(new Float32Array(3 * side * side), side);
+  }
+  return run;
 }
 
 // view/web-detector.ts
@@ -4145,8 +4165,11 @@ if (!customElements.get("ai-scan-panel")) {
 }
 export {
   AiScanPanel,
+  createModelRunner,
   decodeDetections,
+  defaultThreadCount,
   fitFace,
   nms,
+  preferredProviders,
   preprocess
 };

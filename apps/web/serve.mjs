@@ -148,7 +148,7 @@ const server = createServer(async (req, res) => {
     // Cross-origin isolation, which is the whole reason the scanner can use more than one core.
     //
     // onnxruntime-web ships a THREADED wasm build (copy-ort.mjs picks the
-    // `ort-wasm-simd-threaded.jsep` pair) and it needs SharedArrayBuffer, which the browser only
+    // `ort-wasm-simd-threaded.asyncify` pair) and it needs SharedArrayBuffer, which the browser only
     // hands out to a cross-origin-isolated page. Without these two headers the runtime silently
     // reports numThreads: 1 and one core does the work of eight — measured at 297 ms per
     // inference in WebKit and 234 ms in Chromium, about 3-4 fps, which is the "same rate as the

@@ -56,6 +56,12 @@ import { Stillness } from './stillness.js';
 // Linux and Android actually run reads the fixtures the way the pinned one does.
 export { preprocess } from '../src/onnx-detect.js';
 export { decodeDetections, nms, fitFace } from '../src/onnx-postprocess.js';
+// The runtime factory and the provider choice, for the same reason and one more. `apps/web/test/
+// scanner-gpu.test.mjs` drives them in a real browser to prove the vendored runtime can reach a
+// GPU and that both providers read a frame identically — and it has to reach them THROUGH this
+// bundle, because the bundle is what ships. Importing the TypeScript source instead would test a
+// file no build consumes, which is exactly how the wasm-only runtime came to look GPU-capable.
+export { createModelRunner, defaultThreadCount, preferredProviders } from './onnx-runtime.js';
 
 // Re-exported so the panel's public surface is unchanged; the type belongs with the choice.
 export type { ScanRuntime } from './pick-detector.js';

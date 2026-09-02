@@ -214,11 +214,16 @@ test('onnxruntime is loaded as its own module, not bundled into the panel', () =
     new URL('../../../packages/cube-scanner/view/onnx-runtime.ts', import.meta.url), 'utf8');
   assert.match(src, /import\(\s*\/\*[^*]*\*\/\s*url\s*\)|import\(\s*url\s*\)/, 'must import a URL variable');
   assert.doesNotMatch(src, /^\s*import\s+\*\s+as\s+ort\s+from\s+'onnxruntime-web'/m, 'no static runtime import');
-  assert.match(src, /env\.wasm\.proxy\s*=\s*true/, 'and inference must be proxied to a worker');
+  // The proxy is now CONDITIONAL, and the condition is the point. A ~200 ms wasm run has to leave
+  // the page's thread or the UI is blocked the whole time the camera is open; a 15 ms GPU run does
+  // not, and keeping the worker there would mean reaching the GPU device from a worker onnxruntime
+  // spawned for its own reasons. Pinned as the rule rather than the literal, so "someone turned the
+  // proxy off for wasm" still fails while the GPU exemption stays legible.
+  assert.match(src, /env\.wasm\.proxy\s*=\s*!gpu/, 'wasm inference must still be proxied to a worker');
 });
 
 // onnxruntime-web ships eight `ort-wasm-simd-threaded.*` files — plain / jsep / asyncify / jspi,
-// each a .wasm and a .mjs, ~90 MB in all — but the loader we ship (`ort.bundle.min.mjs`) references
+// each a .wasm and a .mjs, ~90 MB in all — but the loader we ship (`ort.webgpu.bundle.min.mjs`) references
 // exactly ONE pair by name and can fetch no other, because a bundle cannot request a filename it
 // does not contain. copy-ort therefore copies only that pair; it used to glob all eight, which put
 // ~50 MB of unreachable wasm in every dist/. This pins two things that must move together: the
@@ -232,16 +237,28 @@ test('copy-ort ships only the wasm variant the loader can actually request', () 
   assert.doesNotMatch(copyOrt, /startsWith\('ort-wasm-simd-threaded\.'\)[^\n]*\n[^\n]*copyFileSync/,
     'must not copy every ort-wasm-simd-threaded.* variant');
 
+  // WHICH entrypoint is read off copy-ort rather than named again here. This test hardcoded
+  // `ort.bundle.min.mjs` while copy-ort had already moved to the WebGPU build, so it went on
+  // checking the variant of a file the app no longer ships — green, and about nothing. Two places
+  // naming the same artifact is the bug; one place naming it and the other reading that name is
+  // the fix.
+  const entry = /const ORT_ESM = '([^']+)'/.exec(copyOrt)?.[1];
+  assert.ok(entry, 'copy-ort no longer declares ORT_ESM — this test cannot tell what ships');
+
   // With the dependency installed (locally, and in CI after `pnpm install`), compute the same set
-  // copy-ort computes and pin it: exactly one variant, the jsep pair. If onnxruntime-web is not
+  // copy-ort computes and pin it: exactly one variant, the asyncify pair. If onnxruntime-web is not
   // installed, skip rather than fail — mirrors the optional-bundle guard above.
   const loaderPath = new URL(
-    '../../../packages/cube-scanner/node_modules/onnxruntime-web/dist/ort.bundle.min.mjs', import.meta.url);
+    `../../../packages/cube-scanner/node_modules/onnxruntime-web/dist/${entry}`, import.meta.url);
   if (!existsSync(loaderPath)) return;
   const referenced = [...new Set(
     [...readFileSync(loaderPath, 'utf8').matchAll(/ort-wasm[a-z0-9.\-]*\.(?:wasm|mjs)/g)].map((m) => m[0]))].sort();
-  assert.deepEqual(referenced, ['ort-wasm-simd-threaded.jsep.mjs', 'ort-wasm-simd-threaded.jsep.wasm'],
-    'the shipped loader references exactly the jsep variant pair, and nothing else');
+  // ASYNCIFY, not jsep, since 2026-09-02. We ship `ort.webgpu.bundle.min.mjs` now — the wasm-only
+  // `ort.bundle.min.mjs` cannot reach a GPU however many "webgpu" strings it contains, because the
+  // EP-name registry is shared across builds. Naming the expected pair here is what turns a silent
+  // switch back to a CPU-only runtime into a red test.
+  assert.deepEqual(referenced, ['ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm'],
+    'the shipped loader references exactly the asyncify variant pair, and nothing else');
 });
 
 // The test command must PROVISION what the tests read, and this asserts the wiring rather than the
@@ -281,7 +298,7 @@ test('`pnpm test` provisions the onnxruntime files that tests read', () => {
 
   // And the artifacts themselves, with the command to fix it — because the ENOENT this replaces
   // named a path and no remedy.
-  for (const f of ['ort.mjs', 'ort-wasm-simd-threaded.jsep.mjs', 'ort-wasm-simd-threaded.jsep.wasm']) {
+  for (const f of ['ort.mjs', 'ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm']) {
     assert.ok(existsSync(new URL(`../vendor/${f}`, import.meta.url)),
       `vendor/${f} is missing — run \`pnpm --filter cubus-web copy-ort\``);
   }

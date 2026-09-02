@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { defaultThreadCount } from '../view/onnx-runtime.js';
+import { defaultThreadCount, preferredProviders } from '../view/onnx-runtime.js';
 
 describe('defaultThreadCount', () => {
   it('asks for exactly one thread when the page is not isolated', () => {
@@ -41,5 +41,62 @@ describe('defaultThreadCount', () => {
     expect(defaultThreadCount(true, 1)).toBe(1);
     expect(defaultThreadCount(true, 2)).toBe(1);
     expect(defaultThreadCount(true, 0)).toBe(1);
+  });
+});
+
+describe('preferredProviders', () => {
+  /** Swap `navigator.gpu` for the duration of one case, and put it back whatever happens. */
+  const withGpu = async (gpu: unknown, run: () => Promise<void>) => {
+    const g = globalThis as Record<string, unknown>;
+    const had = 'navigator' in g;
+    const nav = (g.navigator ?? {}) as Record<string, unknown>;
+    const prev = nav.gpu;
+    nav.gpu = gpu; // assignment, not delete: `?.gpu` reads undefined either way
+    if (!had) g.navigator = nav;
+    try {
+      await run();
+    } finally {
+      nav.gpu = prev;
+      if (!had) g.navigator = undefined;
+    }
+  };
+
+  it('asks for the GPU first when the browser hands back an adapter', async () => {
+    // Measured on this model in Chromium on a real GPU: 15 ms a frame against 198 ms for threaded
+    // wasm. wasm stays SECOND rather than being replaced — onnxruntime walks the list, so this is
+    // a fallback and not a preference.
+    await withGpu({ requestAdapter: async () => ({}) }, async () => {
+      expect(await preferredProviders()).toEqual(['webgpu', 'wasm']);
+    });
+  });
+
+  it('asks the adapter rather than trusting that navigator.gpu exists', async () => {
+    // The case this exists for: `navigator.gpu` is present and `requestAdapter()` still resolves
+    // null — a blocklisted or absent GPU. onnxruntime handed `webgpu` with nothing behind it does
+    // not fail fast, it sits in session creation, which reads as a hung scanner.
+    await withGpu({ requestAdapter: async () => null }, async () => {
+      expect(await preferredProviders()).toEqual(['wasm']);
+    });
+  });
+
+  it('falls back to wasm when there is no WebGPU at all', async () => {
+    await withGpu(undefined, async () => {
+      expect(await preferredProviders()).toEqual(['wasm']);
+    });
+  });
+
+  it('treats a throwing requestAdapter as no GPU, not as a failure to start', async () => {
+    // A refusal is still an answer. Letting this reject would take the scanner down on a browser
+    // that merely dislikes the question.
+    await withGpu(
+      {
+        requestAdapter: async () => {
+          throw new Error('WebGPU is disabled by policy');
+        },
+      },
+      async () => {
+        expect(await preferredProviders()).toEqual(['wasm']);
+      },
+    );
   });
 });
