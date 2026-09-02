@@ -464,10 +464,10 @@ jobs:
     if: always() && needs.desktop.result == 'success' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
+      # `contents: write` alone now. `actions: write` was here only so this job could dispatch the
+      # tap update; that dispatch is gone (see below), so the grant goes with it rather than
+      # outliving its reason.
       contents: write
-      # Needed by the tap dispatch below; without it `gh workflow run` returns 403. Granted on this
-      # job only rather than workflow-wide, since no other job dispatches anything.
-      actions: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -512,23 +512,14 @@ jobs:
             --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
             --out dist/latest.json
 
-      # Dispatch, not `on: release` — the release event fires before the assets finish uploading,
-      # so a tap job triggered by it races the upload and can win. This runs after the draft has
-      # its files, and the tap job polls for the asset anyway. continue-on-error because a tap that
-      # is briefly behind is not a reason to fail a release that has already been built.
-      - name: Trigger the Homebrew tap update
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -eu
-          VERSION_NUM="${TAG#v}"
-          case "$VERSION_NUM" in
-            *[!0-9.]*) echo "::warning::$TAG is not a stable X.Y.Z — tap not updated"; exit 0 ;;
-          esac
-          gh workflow run update-homebrew.yml --repo "$GITHUB_REPOSITORY" -f version="$VERSION_NUM"
-
+      # NO TAP DISPATCH HERE. It used to fire from this job, one step ABOVE the step that creates
+      # the release — so it asked the tap to update before there was anything to update from, and
+      # then polled `releases/download/vX.Y.Z/...`, which a DRAFT does not serve to anyone
+      # unauthenticated. It 404'd for fifteen minutes and failed, every time, and the tap only ever
+      # moved because someone re-ran the job by hand after publishing.
+      #
+      # update-homebrew.yml now triggers on `release: published` instead, which is the moment those
+      # assets actually become public. Publishing the draft below is what updates the tap.
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
