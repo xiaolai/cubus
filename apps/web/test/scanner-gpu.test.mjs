@@ -65,14 +65,36 @@ after(() => {
  * poisoned every case after it in the same browser. Carrying it here rather than re-learning it.
  */
 async function withBrowser(fn) {
-  const browser = await chromium.launch({
-    headless: false,
-    args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'],
-  });
-  try {
-    return await fn(browser);
-  } finally {
-    await browser.close();
+  // ONE retry, and only for the browser dying on the way up.
+  //
+  // A browser per use fixed the first version of this (a shared instance dying poisoned every
+  // later case). It did not fix the second: on a developer machine that has gone to swap, a HEADED
+  // Chromium launched alongside a dozen WebKit instances at `--test-concurrency=6` can crash
+  // before it ever runs anything — "Target crashed" out of `newPage`, at 19 s, on a suite that
+  // passes in 12 s alone and passes on a CI runner every time.
+  //
+  // Retried ONCE rather than swallowed, and the second failure is reported as-is. A GPU path that
+  // genuinely crashes the renderer reproduces on the retry; a machine that was briefly out of
+  // memory does not. That distinction is the whole reason this is bounded at one attempt: the
+  // point is to stop reporting a fact about the machine as a fact about the GPU, not to keep
+  // trying until something passes.
+  const crashed = (e) => /Target crashed|Target page, context or browser has been closed|browserType\.launch/.test(String(e?.message ?? e));
+  for (let attempt = 0; ; attempt++) {
+    const browser = await chromium.launch({
+      headless: false,
+      args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'],
+    });
+    try {
+      return await fn(browser);
+    } catch (e) {
+      if (attempt === 0 && crashed(e)) {
+        console.log(`    the browser died on the way up (${e.message}) — retrying once`);
+        continue;
+      }
+      throw e;
+    } finally {
+      await browser.close().catch(() => {});
+    }
   }
 }
 
