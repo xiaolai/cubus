@@ -94,12 +94,26 @@ if (missing.length > 0) {
 
 mkdirSync(dest, { recursive: true });
 
-// Remove any variant a previous run copied that the current loader does not want, so trimming does
-// not leave megabytes of stale wasm behind in vendor/.
-for (const f of readdirSync(dest)) {
-  if (f.startsWith('ort-wasm-simd-threaded.') && !wanted.includes(f)) rmSync(join(dest, f));
-}
+// ONE predicate for what this script owns, used by both discovery and cleanup.
+//
+// Cleanup used to hardcode `ort-wasm-simd-threaded.`, while discovery accepted any `ort-wasm*` the
+// loader named. A rename inside that family — which is exactly what happens when onnxruntime
+// changes SIMD or threading variants — therefore stranded the old multi-megabyte .wasm in vendor/,
+// and vendor/ ships, so it reached dist/. Two spellings of "our asset" is how the pruning contract
+// stopped holding without anything failing.
+const isOwnedAsset = (f) => /^ort-wasm[a-z0-9.\-]*\.(?:wasm|mjs)$/.test(f);
 
+// COPY FIRST, THEN PRUNE. Deleting the live assets before writing their replacements left a window
+// where `ort.mjs` referenced files that no longer existed — and if the copy then failed, or the run
+// was interrupted, that window never closed and the scanner was broken until someone re-ran this.
+// Copying over them is atomic enough for the purpose: a file is either the old bytes or the new
+// ones, and both are loadable.
 for (const f of wanted) copyFileSync(join(src, f), join(dest, f));
 copyFileSync(join(src, ORT_ESM), join(dest, 'ort.mjs'));
+
+// Now that the wanted set is present, remove anything this script previously copied that the
+// current loader does not name — nothing reachable is deleted, because `wanted` is on disk above.
+for (const f of readdirSync(dest)) {
+  if (isOwnedAsset(f) && !wanted.includes(f)) rmSync(join(dest, f));
+}
 console.log(`copied ${wanted.length} onnxruntime-web runtime asset(s) (${wanted.join(', ')}) + ort.mjs into web/vendor/`);
