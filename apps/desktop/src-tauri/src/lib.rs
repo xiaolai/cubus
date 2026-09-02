@@ -46,6 +46,8 @@ use tauri::{AppHandle, Emitter, State};
 use tauri::Manager;
 use tokio::sync::Mutex;
 
+#[cfg(target_os = "android")]
+mod android_ble;
 mod optimal;
 
 /// The notification stream btleplug hands back (owned, 'static).
@@ -128,9 +130,14 @@ impl CubeState {
 /// beginner reaching for one takes a moment.
 #[tauri::command]
 async fn ble_request_device(
+    #[allow(unused_variables)] app: AppHandle,
     state: State<'_, CubeState>,
     options: RequestOptions,
 ) -> Result<AdvertisedDevice, String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(&app, "ble_request_device", options);
+    }
     let central = default_adapter().await.map_err(|e| e.to_string())?;
     let found = find_device(&central, &options, Duration::from_secs(20))
         .await
@@ -160,6 +167,10 @@ async fn ble_connect(
     state: State<'_, CubeState>,
     id: String,
 ) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(&app, "ble_connect", android_ble::DeviceArgs { id });
+    }
     // The adapter and peripheral from the scan that produced this id — not a fresh adapter, whose
     // cache is a different cache and need not contain this device at all.
     let (central, peripheral) = {
@@ -290,9 +301,18 @@ async fn ble_connect(
 
 #[tauri::command]
 async fn ble_discover_services(
+    #[allow(unused_variables)] app: AppHandle,
     state: State<'_, CubeState>,
     id: String,
 ) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(
+            &app,
+            "ble_discover_services",
+            android_ble::DeviceArgs { id },
+        );
+    }
     let p = state.get(&id).await?;
     cube_ble::discover_services(&p)
         .await
@@ -301,10 +321,19 @@ async fn ble_discover_services(
 
 #[tauri::command]
 async fn ble_discover_characteristics(
+    #[allow(unused_variables)] app: AppHandle,
     state: State<'_, CubeState>,
     id: String,
     service: String,
 ) -> Result<Vec<CharacteristicInfo>, String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(
+            &app,
+            "ble_discover_characteristics",
+            android_ble::ServiceArgs { id, service },
+        );
+    }
     let p = state.get(&id).await?;
     cube_ble::discover_characteristics(&p, &service)
         .await
@@ -314,15 +343,32 @@ async fn ble_discover_characteristics(
 /// Subscribe, and hand back the id that will identify this stream's packets.
 #[tauri::command]
 async fn ble_subscribe(
+    #[allow(unused_variables)] app: AppHandle,
     state: State<'_, CubeState>,
     id: String,
     service: String,
     characteristic: String,
 ) -> Result<u32, String> {
-    let p = state.get(&id).await?;
-    cube_ble::subscribe(&p, &service, &characteristic)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Only the TRANSPORT differs by platform; the bookkeeping below is shared on purpose. The
+    // subscription id is what the web side keys packets by, so if Android allocated its own the two
+    // platforms would be answering the same question with different numbers.
+    #[cfg(target_os = "android")]
+    android_ble::call::<_, _, ()>(
+        &app,
+        "ble_subscribe",
+        android_ble::CharArgs {
+            id: id.clone(),
+            service: service.clone(),
+            characteristic: characteristic.clone(),
+        },
+    )?;
+    #[cfg(not(target_os = "android"))]
+    {
+        let p = state.get(&id).await?;
+        cube_ble::subscribe(&p, &service, &characteristic)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let uuid = cube_ble::parse_uuid(&characteristic).map_err(|e| e.to_string())?;
     let mut session = state.0.lock().await;
     let sub_id = session.next_subscription;
@@ -340,11 +386,24 @@ async fn ble_subscribe(
 
 #[tauri::command]
 async fn ble_unsubscribe(
+    #[allow(unused_variables)] app: AppHandle,
     state: State<'_, CubeState>,
     id: String,
     service: String,
     characteristic: String,
 ) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(
+            &app,
+            "ble_unsubscribe",
+            android_ble::CharArgs {
+                id,
+                service,
+                characteristic,
+            },
+        );
+    }
     let p = state.get(&id).await?;
     cube_ble::unsubscribe(&p, &service, &characteristic)
         .await
@@ -359,11 +418,16 @@ async fn ble_unsubscribe(
 
 #[tauri::command]
 async fn ble_read(
+    #[allow(unused_variables)] app: AppHandle,
     state: State<'_, CubeState>,
     id: String,
     service: String,
     characteristic: String,
 ) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::read(&app, id, service, characteristic);
+    }
     let p = state.get(&id).await?;
     let bytes = cube_ble::read(&p, &service, &characteristic)
         .await
@@ -373,6 +437,7 @@ async fn ble_read(
 
 #[tauri::command]
 async fn ble_write(
+    #[allow(unused_variables)] app: AppHandle,
     state: State<'_, CubeState>,
     id: String,
     service: String,
@@ -380,6 +445,20 @@ async fn ble_write(
     data: String,
     without_response: bool,
 ) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(
+            &app,
+            "ble_write",
+            android_ble::WriteArgs {
+                id: id.clone(),
+                service: service.clone(),
+                characteristic: characteristic.clone(),
+                data: data.clone(),
+                with_response: !without_response,
+            },
+        );
+    }
     let p = state.get(&id).await?;
     let bytes = hex::decode(&data).map_err(|e| e.to_string())?;
     cube_ble::write(&p, &service, &characteristic, &bytes, without_response)
@@ -388,7 +467,15 @@ async fn ble_write(
 }
 
 #[tauri::command]
-async fn ble_disconnect(state: State<'_, CubeState>, id: String) -> Result<(), String> {
+async fn ble_disconnect(
+    #[allow(unused_variables)] app: AppHandle,
+    state: State<'_, CubeState>,
+    id: String,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        return android_ble::call(&app, "ble_disconnect", android_ble::DeviceArgs { id });
+    }
     // Looked up, not removed: a disconnect that FAILS leaves the peripheral connected, and having
     // already dropped it from the map would leave the app unable to reach or release it again.
     // It is removed below, after the teardown actually succeeds.
@@ -733,6 +820,12 @@ pub fn run() {
             optimal::optimal_prove,
             optimal::optimal_cancel
         ]);
+
+    // Android's BLE is Kotlin (src/android_ble.rs); every other platform's is btleplug in-process
+    // and needs no plugin at all. The nine command NAMES are identical either way, which is what
+    // keeps `apps/web/lib/ble-bridge.js` from having to learn a platform.
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(android_ble::plugin());
 
     // Dev-only MCP bridge (AGENTS.md exception, accepted 2026-08-27): a control socket that lets
     // an AI agent drive the app — screenshots, selector clicks, DOM queries, arbitrary JS in the
