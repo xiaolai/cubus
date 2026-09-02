@@ -60,11 +60,20 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: WebKit for the browser suites
-        run: pnpm --filter cubus-web exec playwright install --with-deps webkit
+      # BOTH ENGINES AND A DISPLAY — the same requirement ci.yml's TS job has, for the same
+      # reason, and this is the second workflow to learn it. `pnpm check` runs apps/web's browser
+      # suites: geometry needs WebKit (the engine every shipped build is), and scanner-gpu needs
+      # Chromium HEADED, because WebKit has no WebGPU and headless Chromium substitutes a software
+      # GPU measured ~500x slower than a real one. Installing one engine failed the gate on a
+      # missing executable; running headed without xvfb would fail it on a missing display.
+      #
+      # The two workflows state this separately because they are separate workflows, not because
+      # the requirement differs. If a third ever runs the web suites, it needs both lines too.
+      - name: Browser engines for the web suites
+        run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
 
       - name: pnpm check
-        run: pnpm check
+        run: xvfb-run -a pnpm check
 
       # The tag must be the version the app will SHOW. A release named v0.2.0 whose About card
       # says 0.1.9 is a support problem that outlives the release, and it is one grep to prevent.
