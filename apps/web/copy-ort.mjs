@@ -47,7 +47,7 @@ if (!existsSync(src)) {
 // its own entrypoint, backed by the ASYNCIFY wasm rather than the `.jsep` pair (jsep was the
 // pre-1.20 mechanism, and its name on our wasm is the reason the old build looked WebGPU-capable).
 //
-// Measured on this model, 640x640, Chromium, one page, nothing else running:
+// Measured on this model, 640x640, macOS, Chromium, one page, nothing else running:
 //
 //     wasm, 6 threads, proxy   198 ms   5.1 fps     <- what we shipped
 //     webgpu, real GPU          15 ms    66 fps     <- this entrypoint, headed
@@ -55,6 +55,12 @@ if (!existsSync(src)) {
 //
 // The headless row is here as a warning, not a result: it is what a CI box measures, and taking it
 // at face value says WebGPU is 37x SLOWER. Benchmark the GPU path on a real GPU or not at all.
+//
+// WINDOWS is confirmed to WORK and is NOT timed. On a Windows laptop running Edge/WebView2 152,
+// the shipped path reaches a real hardware adapter (an Intel Xe2 iGPU, reported by name rather
+// than inferred) and a compute shader returns the right answer. That says the provider is
+// reachable on the runtime Windows users actually have; it says nothing about how fast it is
+// there, and the 15 ms above is a macOS number. Two operating systems, one of them timed.
 //
 // It is also smaller — 23.1 MB against 25.6 for the wasm-only pair, and a 0.1 MB loader against
 // 0.4 — so there is no size argument against it either. The same file still serves the wasm path
