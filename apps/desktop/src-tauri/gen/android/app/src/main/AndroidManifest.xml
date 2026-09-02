@@ -16,6 +16,10 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <!-- Through API 30 a BLE SCAN is a location capability: without this the scan does not fail,
+         it returns nothing, which reads as a cube that will not advertise. `neverForLocation` on
+         BLUETOOTH_SCAN above is the API 31+ half of the same story. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <!-- AndroidTV support -->
