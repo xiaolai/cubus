@@ -4,3 +4,6 @@
 /tauri.build.gradle.kts
 /proguard-tauri.pro
 /tauri.properties
+# Copied from ml/models by :app:copyCubeModel. One source of truth; a second committed copy
+# would be a file nothing regenerates and nothing compares.
+/src/main/assets/cube-yolo.tflite
