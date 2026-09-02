@@ -50,6 +50,34 @@ describe('decodeTensorResponse', () => {
   });
 });
 
+describe('decodeTensorResponse — the Android shape', () => {
+  /** The same bytes the Apple path returns raw, as the base64 string Android must send instead. */
+  const asBase64 = (buf: ArrayBuffer): string => {
+    const b = new Uint8Array(buf);
+    let s = '';
+    for (const byte of b) s += String.fromCharCode(byte);
+    return btoa(s);
+  };
+
+  it('reads a base64 tensor identically to the raw buffer', () => {
+    // Tauri's Android plugin API is JSON only, so Kotlin cannot return an ArrayBuffer and encodes
+    // instead. Both shapes have to decode to the same thing or the two native platforms disagree
+    // about what the model said — with everything downstream written against one tensor.
+    const buf = encode(2, 3, [1, 2, 3, 4, 5, 6]);
+    const raw = decodeTensorResponse(buf);
+    const viaString = decodeTensorResponse(asBase64(buf));
+    expect(viaString?.anchors).toBe(raw?.anchors);
+    expect(Array.from(viaString!.data)).toEqual(Array.from(raw!.data));
+  });
+
+  it('treats the empty string as "no frame yet", not as a malformed tensor', () => {
+    // Android's way of saying the camera is open but has produced nothing — the same null the
+    // Apple path expresses with a short buffer, and what the panel skips a tick on. Throwing here
+    // would turn a warm-up into a scanner that looks broken.
+    expect(decodeTensorResponse('')).toBeNull();
+  });
+});
+
 describe('NativeDetector — stop() cancels a pending use()', () => {
   /** An `invoke` whose `open_camera` blocks until released, so a stop can land inside `use()`. */
   function bridge() {

@@ -96,6 +96,11 @@ export class CameraSession {
     // clears `device` and `modelLoaded` — so skipping the release for a re-injection left the
     // session reporting no camera over one that was still open, which is the leak this line is
     // here to prevent in the first place.
+    //
+    // A DIFFERENT detector is discarded outright and gets `dispose()`, which releases its model
+    // too; the same one handed back is only stopped, because disposing it would throw away the
+    // very session the caller is re-injecting.
+    if (this.detector && this.detector !== detector) this.detector.dispose?.();
     this.detector?.stop();
     // A different detector is a different camera and a different model, so everything measured
     // against the old one is stale: the attempt that is opening it, the inference in flight over
@@ -124,6 +129,8 @@ export class CameraSession {
         // A `use()` landed while the probe was out: the injection wins, and the detector this
         // probe built is released rather than left holding whatever it opened.
         if (choice !== this.detectorChoice) {
+          // This one lost and is thrown away, so its model goes with it.
+          detector.dispose?.();
           detector.stop();
           return this.detector ?? detector;
         }

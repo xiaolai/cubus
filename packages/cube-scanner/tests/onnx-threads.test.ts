@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { defaultThreadCount, preferredProviders } from '../view/onnx-runtime.js';
+import { defaultThreadCount, preferredProviders, usesGpu } from '../view/onnx-runtime.js';
 
 describe('defaultThreadCount', () => {
   it('asks for exactly one thread when the page is not isolated', () => {
@@ -98,5 +98,31 @@ describe('preferredProviders', () => {
         expect(await preferredProviders()).toEqual(['wasm']);
       },
     );
+  });
+});
+
+// Which provider WINS decides whether the wasm proxy is on, and onnxruntime picks the first in the
+// list that can take the work. Asserting membership instead of order meant `['wasm', 'webgpu']`
+// reported a GPU run, turned the proxy off, and put a ~200 ms wasm inference back on the page's
+// thread — the exact arrangement `ort.env.wasm.proxy` exists to prevent, reached by the flag that
+// controls it.
+describe('usesGpu', () => {
+  it('is true only when webgpu is the provider that would actually run', () => {
+    expect(usesGpu(['webgpu', 'wasm'])).toBe(true);
+    expect(usesGpu(['webgpu'])).toBe(true);
+  });
+
+  it('is false when wasm wins, however far down the list webgpu appears', () => {
+    expect(usesGpu(['wasm', 'webgpu'])).toBe(false);
+    expect(usesGpu(['wasm'])).toBe(false);
+  });
+
+  it('is false for an empty list rather than throwing', () => {
+    expect(usesGpu([])).toBe(false);
+  });
+
+  it('reads the name off an object-form provider, not just a bare string', () => {
+    expect(usesGpu([{ name: 'webgpu' }, 'wasm'])).toBe(true);
+    expect(usesGpu([{ name: 'wasm' }, { name: 'webgpu' }])).toBe(false);
   });
 });
