@@ -7,13 +7,22 @@ import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { freePort } from './test/free-port.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PORT = 5199;
-const BASE = `http://127.0.0.1:${PORT}`;
+// From the OS, not chosen by hand. `free-port.mjs` was written for exactly this failure — a run
+// killed between spawning serve.mjs and reaching its `after` hook leaves the port held, and every
+// later run then dies at startup with "server did not start within 5s", which reads as a
+// regression in whatever changed most recently. Its own note records that being misdiagnosed
+// twice; this file and solve-worker-browser.test.mjs were simply never moved over, and both were
+// still squatting a port hours after the runs that spawned them had been killed.
+let PORT;
+let BASE;
 let proc;
 
 before(async () => {
+  PORT = await freePort();
+  BASE = `http://127.0.0.1:${PORT}`;
   proc = spawn(process.execPath, [join(HERE, 'serve.mjs')], {
     env: { ...process.env, PORT: String(PORT) },
     stdio: ['ignore', 'pipe', 'pipe'],

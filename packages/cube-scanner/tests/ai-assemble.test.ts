@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { type ColorFace, assembleColors, assemblePainted } from '../src/ai-assemble.js';
+import {
+  type ColorFace,
+  assembleColors,
+  assemblePainted,
+  matchingRotations,
+} from '../src/ai-assemble.js';
 import { SOLVED_FACELETS } from '../src/facelet-cube.js';
 import { FACES, type Face } from '../src/types.js';
 import { scrambleFacelets } from './helpers.js';
@@ -169,12 +174,19 @@ describe('assembleColors — cubes that six face photographs cannot pin down', (
       ["R U R' U'", [0, 1, 2, 3, 0, 1]],
       ["F R U2 B'", [2, 0, 3, 1, 0, 2]],
     ];
+    let accepted = 0;
     for (const [alg, rots] of CASES) {
       const truth = scrambleFacelets(alg);
       const r = scanWithConfirmations(truth, rots, 0);
       // Refusing is fine. Returning someone else's cube is not.
-      if (r.valid) expect(`${alg}: ${r.facelets}`).toBe(`${alg}: ${truth}`);
+      if (r.valid) {
+        accepted++;
+        expect(`${alg}: ${r.facelets}`).toBe(`${alg}: ${truth}`);
+      }
     }
+    // A conditional assertion needs a witness that the condition ever held, or a regression that
+    // simply refuses everything passes this test while proving nothing about what it accepts.
+    expect(accepted).toBeGreaterThan(0);
   });
 
   it('still recovers those same cubes when the looks are held correctly', () => {
@@ -247,13 +259,111 @@ describe('assembleColors — confirmations are rotation measurements, and refusa
     expect(assembleColors(shown).facelets).toBe(deep);
   });
 
+  it('a reading one change from legal is not always one sticker, and is not accused', () => {
+    // The counterexample `misread-decode.test.ts` measures, taken to the surface the user sees.
+    //
+    // A solved cube read with two of the U-layer 3-cycle's three stickers sits ONE change from a
+    // legal cube that is not the user's. Before this was pinned, `distance === 1` alone licensed
+    // pointing, and the app marked FOUR stickers — every quarter turn of a rotationally symmetric
+    // face names a different as-shown index for the same repair — under a heading reading "One
+    // sticker looks wrong". Three of the four had been read correctly, and applying any of them
+    // does not give back the cube in the user's hand.
+    const shown = faces(SOLVED_FACELETS);
+    shown.F!.colors[1] = LETTER_CLASS.R; // the UF slot shows the UR piece's red sticker
+    shown.L!.colors[1] = LETTER_CLASS.F; // the UL slot shows the UF piece's green sticker
+    const r = assembleColors(shown);
+    expect(r.valid).toBe(false);
+    // A count is still honest — it is a proven lower bound, just a loose one here.
+    expect(r.misreadCount).toBe(1);
+    // An accusation is not.
+    expect(r.suspects ?? []).toEqual([]);
+  });
+
+  it('a confidence that is not a number is refused, never averaged into one', () => {
+    // `NaN < min` and `NaN < threshold` are both false, so 54 of them used to sail through as
+    // `confidence: 1` with no low-confidence stickers — the module reporting perfect certainty
+    // about a reading that carried none. A fabricated number is worse than a refusal.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -0.5, 1.5]) {
+      const f = faces(SOLVED_FACELETS);
+      f.U.confidence[3] = bad;
+      expect(() => assembleColors(f)).toThrow(/confidence/);
+      expect(() => assemblePainted(f)).toThrow(/confidence/);
+    }
+    // The legal range still passes, ends included.
+    const ok = faces(SOLVED_FACELETS);
+    ok.U.confidence[3] = 0;
+    ok.R.confidence[3] = 1;
+    expect(assembleColors(ok).valid).toBe(true);
+  });
+
+  it('a confirmation matches at every rotation inside the tolerance, not only the closest', () => {
+    // CONFIRM_TOLERANCE grants two differing stickers. Keeping only the MINIMUM-distance rotations
+    // was a second, stricter rule on top of it that undid the first: on this pair the distances
+    // are [2, 8, 1, 8], so the true rotation at 2 — inside the tolerance — was discarded for one
+    // that collides on a single sticker by chance. The confirmation then matched no candidate
+    // reading at all, and a user who held the side exactly as asked was told they held it wrong.
+    const face = (s: string) => ({
+      colors: [...s].map((c) => LETTER_CLASS[c as Face]!),
+      confidence: Array<number>(9).fill(1),
+    });
+    const original = face('BFRRRRRBB');
+    const confirmed = face('BURRRRRFB');
+    const dist = [0, 1, 2, 3].map((k) =>
+      rot(original.colors, k).reduce((n, c, i) => n + (c === confirmed.colors[i] ? 0 : 1), 0),
+    );
+    expect(dist).toEqual([2, 8, 1, 8]); // the measurement the rule has to survive
+    // Rotation 0 is the truth and sits inside the tolerance. Argmin would have kept only 2.
+    expect([...matchingRotations(original, confirmed)].sort()).toEqual([0, 2]);
+
+    // The tolerance is still a bound, not an invitation: when NO rotation comes within it the two
+    // looks disagree about colours, which the caller turns into a `reread` rather than a hold.
+    expect(matchingRotations(original, face('UUURRRUUU')).size).toBe(0);
+    // And a different centre is a different FACE, whatever the distance says.
+    expect(matchingRotations(original, face('BFRRURRBB')).size).toBe(0);
+  });
+
+  it('a lone suspect is a sticker to CHECK, and provably not a sticker known to be wrong', () => {
+    // The limit of minimum-distance decoding, measured rather than argued, because the copy that
+    // sits on top of it has to be true. `distance === 1` is a property of the READING, and it is
+    // not a proof that one sticker was misread — nor do `unique` and a single named sticker make
+    // it one, which is what the first attempt at this assumed.
+    //
+    // These two cubes are both legal and stand exactly three stickers apart (7, 21, 39). The
+    // reading takes TWO of those three from the cube the user was NOT holding, so it sits two
+    // stickers from theirs and one from the other. The decoder therefore names position 7 —
+    // uniquely, with nothing to contradict it — and position 7 was read CORRECTLY.
+    const user = 'DLDBUBDRBULLDRUDRFLULLFFURRFDFFDBBDRRDFFLUURLBFBBBUULR';
+    const other = 'DLDBUBDLBULLDRUDRFLULFFFURRFDFFDBBDRRDFRLUURLBFBBBUULR';
+    const reading = 'DLDBUBDRBULLDRUDRFLULFFFURRFDFFDBBDRRDFRLUURLBFBBBUULR';
+    const differ = [...Array(54).keys()].filter((i) => user[i] !== other[i]);
+    expect(differ).toEqual([7, 21, 39]); // the minimum distance between two legal cubes
+    expect([...Array(54).keys()].filter((i) => user[i] !== reading[i])).toEqual([21, 39]);
+
+    const r = assembleColors(faces(reading));
+    expect(r.valid).toBe(false);
+    // Honest, and loose: at least one sticker is wrong. Two are.
+    expect(r.misreadCount).toBe(1);
+    // It points at U7 — the sticker the camera got RIGHT — and taking its advice yields `other`,
+    // a legal cube the user never held. Nothing in the reading distinguishes this from a genuine
+    // single misread, so the app may say "changing this makes it solvable" and must never say
+    // "this sticker is wrong". `ai-scan-panel.test.ts` pins the wording that rests on this.
+    expect(r.suspects).toEqual([{ face: 'U', index: 7, to: LETTER_CLASS[other[7] as Face] }]);
+    const repaired = [...reading];
+    repaired[7] = other[7]!;
+    expect(assembleColors(faces(repaired.join(''))).facelets).toBe(other);
+  });
+
   it('anything messier than a single 10/8 imbalance gets no suspects rather than a guess', () => {
     const shown = shownAs(deep, [0, 0, 0, 0, 0, 0]);
     shown.F!.colors[0] = (shown.F!.colors[0]! + 1) % 6;
     shown.R!.colors[1] = (shown.R!.colors[1]! + 2) % 6;
     shown.L!.colors[3] = (shown.L!.colors[3]! + 3) % 6;
     const r = assembleColors(shown);
-    if (!r.valid) expect(r.suspects ?? []).toEqual([]);
+    // Unconditionally, and in this order. `if (!r.valid) expect(...)` was the whole of this test,
+    // so the one regression that matters most — three misreads accepted as a cube the user never
+    // held — skipped every assertion and the test still passed.
+    expect(r.valid).toBe(false);
+    expect(r.suspects ?? []).toEqual([]);
   });
 
   it('success returns the rotation applied to each as-shown face', () => {
