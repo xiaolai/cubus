@@ -56,12 +56,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 futures = "0.3"
 hex = "0.4"
 
-# Self-update, DESKTOP ONLY (accepted 2026-09-02). A phone updates through its store and a browser
-# is always current, so this is a capability only a desktop has — the same shape as the window's
-# orientation, and gated the same way (`isDesktopHost()` plus an injected API). `process` is what
-# relaunches the app once the new version is staged; without it the user has to quit and reopen,
-# which is the step people do not take.
-[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+# Self-update, WINDOWS AND LINUX ONLY (accepted 2026-09-02). A phone updates through its store and
+# a browser is always current — and macOS ships through a Homebrew cask, which is already its
+# updater. An app that also updated itself on macOS would be reinstalled over by the next
+# `brew upgrade`, silently downgrading whoever ran it; the cask deliberately does NOT declare
+# `auto_updates true`, so Homebrew stays in charge there and this code is not even compiled.
+# Windows and Linux installers track nothing after they run, so self-update is the only path those
+# users have. `process` relaunches once the new version is staged; without it the user has to quit
+# and reopen, which is the step people do not take.
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # The question the updater asks. A NATIVE dialog rather than a component of our own: this app has

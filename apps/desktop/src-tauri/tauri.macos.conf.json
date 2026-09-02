@@ -3,6 +3,7 @@
   "bundle": {
     "resources": {
       "../../../ml/models/cubedet.mlpackage": "models/cubedet.mlpackage"
-    }
+    },
+    "createUpdaterArtifacts": false
   }
 }

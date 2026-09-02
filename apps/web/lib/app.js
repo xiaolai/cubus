@@ -16,8 +16,8 @@ import {
   status as optimalStatus,
 } from './optimal.js';
 import { NO_CHALLENGES, loadIndex, provenAnswer } from './optimal-challenges.js';
-import { STARTUP_DELAY_MS, makeUpdater } from './app-update.js';
-import { isDesktopHost } from './host.js';
+import { STARTUP_DELAY_MS, makeUpdater, selfUpdateSupported } from './app-update.js';
+import { hostPlatform, isDesktopHost } from './host.js';
 import { randomCube } from './random-state.js';
 import { makeRouter } from './router.js';
 // The smart-cube strands, recovered from v0 (2026-08-27): the transport seam (Web Bluetooth in a
@@ -4326,12 +4326,18 @@ function applyInsetOverride() {
 /**
  * The self-updater, or null where there is nothing to update.
  *
- * Desktop only, and gated exactly as the orientation row is (`isTauri && isDesktopHost()`) rather
- * than on platform sniffing: a phone updates through its store and the browser build is whatever
- * the server last served, so neither can want this. `app-update.js` holds the decisions and is
- * tested without any of this; what lives here is only the wiring to the host.
+ * Desktop only, and gated as the orientation row is (`isTauri && isDesktopHost()`) rather than on
+ * platform sniffing: a phone updates through its store and the browser build is whatever the
+ * server last served, so neither can want this.
+ *
+ * And then NARROWER still — see `SELF_UPDATE_PLATFORMS`. macOS ships through a Homebrew cask,
+ * which is its updater; an app that also updated itself there would be overwritten by the next
+ * `brew upgrade`, silently downgrading whoever ran it. So macOS has no row and no launch check.
+ *
+ * `app-update.js` holds the decisions and is tested without any of this; what lives here is only
+ * the wiring to the host.
  */
-const updater = isTauri && isDesktopHost()
+const updater = isTauri && isDesktopHost() && selfUpdateSupported(hostPlatform())
   ? makeUpdater({
       api: window.__TAURI__,
       storage: (() => { try { return window.localStorage; } catch { return null; } })(),

@@ -20,6 +20,30 @@
 // quietly, interrupt only when there is genuinely something to install, and never download until
 // the answer is yes.
 
+/**
+ * The platforms whose copy of cubus updates ITSELF.
+ *
+ * macOS is deliberately absent. It ships through a Homebrew cask, and a cask and a self-updater
+ * both write to the same `/Applications/cubus.app` while only one of them knows what is really
+ * there: if the app moved itself to 0.3.0, the cask still describes 0.2.9, and the next
+ * `brew upgrade` reinstalls 0.2.9 over the top. The user would be downgraded by the command meant
+ * to keep them current, and nothing anywhere would report it. Homebrew is the macOS updater, so
+ * the app does not compete with it — and `auto_updates true`, which would have told brew to stand
+ * down instead, is deliberately NOT in the cask.
+ *
+ * Windows and Linux have no such owner: their installers do not track versions afterwards, so the
+ * app updating itself is the only path those users have.
+ *
+ * Exported and tested rather than inlined at the call site, because "which platforms self-update"
+ * is a decision with a reason, and the next person to add a platform needs to meet the reason.
+ */
+export const SELF_UPDATE_PLATFORMS = Object.freeze(['windows', 'linux']);
+
+/** Does this platform update itself, or does something else own it? */
+export function selfUpdateSupported(platform) {
+  return SELF_UPDATE_PLATFORMS.includes(platform);
+}
+
 /** Once a day. A cube tutor does not need to poll for updates more often than someone opens it. */
 export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
