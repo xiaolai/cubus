@@ -18,6 +18,22 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 
+# Windows gets its own native path: Media Foundation for frames (nokhwa), onnxruntime with the
+# DirectML execution provider for the model (ort). Windows-only on purpose — every dependency here
+# is a platform runtime, and pulling them in anywhere else would make a Linux CI build download an
+# inference engine to compile an inert plugin.
+#
+# `ort`'s `download-binaries` fetches a prebuilt onnxruntime; `directml` selects the build that
+# carries the EP. If a future bump makes those two disagree the failure is a load-time "DirectML
+# provider not available", which `load_model` turns into a CPU session rather than a dead scanner —
+# see the provider list there. No `ndarray` feature: tensors are built from a flat Vec and a shape
+# tuple, and enabling it only pulls ort into a version fight with whatever ndarray the tree resolves.
+# `std` IS needed though: `default-features = false` drops it, and `commit_from_file` lives behind it.
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "2.0.0-rc.10", default-features = false, features = ["std", "download-binaries", "tls-rustls", "directml"] }
+nokhwa = { version = "0.10", features = ["input-msmf"] }
+base64 = "0.22"
+
 # Generates the command permission ACL the app's capability references. Runs on every host, so the
 # desktop build resolves `cube-vision:default` on Linux CI too (where the commands are inert).
 [build-dependencies]
