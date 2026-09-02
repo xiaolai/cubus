@@ -23,10 +23,16 @@ import { basename, join } from 'node:path';
 /**
  * Which Tauri platform keys an artifact serves.
  *
- * macOS is ONE universal bundle covering both architectures (see tauri.windows/macos conf and the
- * cask's note that there is no arch split), so a single `.app.tar.gz` answers for `darwin-aarch64`
- * and `darwin-x86_64` alike. Listing both is not a guess: it is what "universal" means, and
- * omitting either would leave half of macOS never offered an update.
+ * macOS DOES NOT CURRENTLY PRODUCE ONE. `tauri.macos.conf.json` sets `createUpdaterArtifacts:
+ * false`, because macOS ships through a Homebrew cask and that cask is its updater — the app's own
+ * updater is not even compiled there (`SELF_UPDATE_PLATFORMS` in apps/web/lib/app-update.js). So
+ * no `.app.tar.gz` reaches this function today and no `darwin-*` entry appears in latest.json,
+ * which is the correct manifest for a platform whose updates somebody else owns.
+ *
+ * The mapping is kept because it is a true statement about what an `.app.tar.gz` IS, and because
+ * the decision is a policy rather than a fact about the format: a universal bundle covers both
+ * architectures, so one file answers for `darwin-aarch64` and `darwin-x86_64` alike, and listing
+ * only one would leave half of macOS unserved if this is ever turned back on.
  */
 export function platformsFor(name) {
   if (name.endsWith('.app.tar.gz')) return ['darwin-aarch64', 'darwin-x86_64'];

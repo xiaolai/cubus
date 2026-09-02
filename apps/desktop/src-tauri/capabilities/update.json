@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "update",
+  "description": "Self-update, on the platforms that own their own updates. NOT macOS: it ships through a Homebrew cask, and a cask plus a self-updater both write to the same /Applications/cubus.app while only one knows what is really there \u2014 an app that moved itself to 0.3.0 would be reinstalled as 0.2.9 by the next `brew upgrade`, a downgrade performed by the command meant to keep you current and reported by nothing. `updater:default` asks the endpoint whether a newer signed build exists and installs it; `process:allow-restart` completes the install, without which the new version sits on disk until the user happens to quit; `dialog:allow-ask`/`allow-message` draw the question and its answer, because this app has no general modal and a two-button question is something the OS draws better than a component invented for it would.",
+  "platforms": [
+    "windows",
+    "linux"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "updater:default",
+    "process:allow-restart",
+    "dialog:allow-ask",
+    "dialog:allow-message"
+  ]
+}

@@ -7,6 +7,7 @@
 // bash in a workflow, and why these tests are mostly about refusing rather than producing.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, test } from 'node:test';
 
 import { buildManifest, platformsFor } from '../../../scripts/make-updater-manifest.mjs';
@@ -16,10 +17,23 @@ const sigOf = (name) => `${name}.sig`;
 const reader = (map) => (path) => map[path.split('/').pop()] ?? '';
 
 describe('platformsFor', () => {
-  // ONE universal macOS bundle answers for both architectures. Listing only one would leave half
-  // of macOS never offered an update, and nothing would report that.
-  test('a universal .app.tar.gz serves both macOS architectures', () => {
+  // macOS does not produce this today — `createUpdaterArtifacts` is false there, because Homebrew
+  // owns macOS updates and the app's updater is not compiled for it. The mapping stays because it
+  // is a true statement about the FORMAT (one universal bundle covers both architectures), and the
+  // exclusion is a policy that could be reversed; serving only one arch would then quietly leave
+  // half of macOS unserved.
+  test('a universal .app.tar.gz would serve both macOS architectures', () => {
     assert.deepEqual(platformsFor('cubus.app.tar.gz'), ['darwin-aarch64', 'darwin-x86_64']);
+  });
+
+  // The decision, asserted where someone changing it will trip over it: macOS emits no updater
+  // artifact, so a real release produces no darwin entry at all.
+  test('the macOS config emits no updater artifacts, so no darwin entry is ever built', () => {
+    const conf = JSON.parse(
+      readFileSync(new URL('../../desktop/src-tauri/tauri.macos.conf.json', import.meta.url), 'utf8'),
+    );
+    assert.equal(conf?.bundle?.createUpdaterArtifacts, false,
+      'macOS must not produce updater artifacts while Homebrew owns its updates');
   });
 
   test('windows and linux artifacts map to their single targets', () => {
