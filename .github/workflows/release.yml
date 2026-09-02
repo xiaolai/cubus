@@ -485,10 +485,27 @@ jobs:
       # refuses — loudly, failing this job — when there are none, when one is empty, or when the
       # version is not bare X.Y.Z (Tauri parses it with semver, which rejects the tag's leading v).
       # Its rules are tested in apps/web/test/updater-manifest.test.mjs.
+      #
+      # Absent signatures are not the same event on a dispatch as on a tag — the same rule the
+      # macOS certificate step above follows, for the same reason. A dispatch is a build; a v-tag
+      # is a release, and a release with no manifest leaves every existing user's updater finding
+      # nothing, forever, with nothing to see. So: warn on a dispatch, fail on a tag.
       - name: Build latest.json for the in-app updater
         run: |
           set -eu
           VERSION="${GITHUB_REF_NAME#v}"
+          if ! find dist -name '*.sig' -type f | grep -q .; then
+            case "$GITHUB_REF" in
+              refs/tags/v*)
+                echo "::error::no updater signatures were produced — set TAURI_SIGNING_PRIVATE_KEY"
+                echo "::error::and TAURI_SIGNING_PRIVATE_KEY_PASSWORD. A tagged release must be"
+                echo "::error::updatable: without latest.json every installed copy silently stays put."
+                exit 1 ;;
+              *)
+                echo "::warning::no updater signatures — skipping latest.json. Fine for a dispatch; a v-tag fails here instead."
+                exit 0 ;;
+            esac
+          fi
           node scripts/make-updater-manifest.mjs \
             --dir dist \
             --version "$VERSION" \
