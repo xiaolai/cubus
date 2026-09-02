@@ -15,14 +15,22 @@ import { hostPlatform } from './host.js';
 /**
  * Hosts where the Tauri API is injected but the native BLE bridge cannot work.
  *
- * Android compiles and would CRASH: btleplug's droidplug backend needs its Java classes in the APK
- * and `platform::init()` called with a JNIEnv, and without them the first adapter call panics
- * inside a Tauri command. `crates/cube-ble` refuses at that boundary too — this is the half that
- * stops the app offering the affordance at all, because a button that reports "unavailable" the
- * moment it is pressed is a worse answer than a screen that never claimed it.
+ * Android's wiring now EXISTS and is still listed here, which is the unusual case worth spelling
+ * out. `gen/android/.../BlePlugin.kt` implements all nine commands over Android's own GATT stack,
+ * and `src-tauri/src/android_ble.rs` forwards to it, so the crash this list originally guarded —
+ * btleplug's droidplug backend panicking without its Java classes — is no longer what would
+ * happen. What has not happened is a phone: nothing in that path has spoken to a radio.
  *
- * Remove a platform from this list only alongside the wiring that makes it true, and only after
- * running it on the hardware. Compiling is not evidence here; the crate already compiles.
+ * THE FLIP IS THIS LINE. Delete 'android' from the array below and the app offers Bluetooth on
+ * Android. Do it only after running `pnpm tauri android dev` on a device with a real cube and
+ * seeing, at minimum: a scan that finds a cube advertising WITHOUT a recognisable name (the
+ * manufacturer-data filter path, which is the one a summary loses); a subscribe that actually
+ * delivers packets, since Android needs both `setCharacteristicNotification` AND a CCCD write and
+ * the failure mode of doing one is silence rather than an error; and sustained traffic, because
+ * Android GATT permits one outstanding operation per connection and a queue bug looks fine until
+ * the protocol layer talks at speed.
+ *
+ * Compiling is not evidence. It compiled before this was written, too.
  */
 const NATIVE_BLE_UNSUPPORTED = Object.freeze(['android']);
 
