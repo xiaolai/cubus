@@ -30,8 +30,10 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 /// The handle to `BlePlugin`, put in managed state at setup.
 pub struct AndroidBle<R: Runtime>(pub PluginHandle<R>);
 
-/// One event out of Kotlin. `event` names which of the two globals to re-emit; the rest is the
-/// payload shape `ble-bridge.js` already validates, field for field.
+/// One event out of Kotlin. `event` names which of the two globals to re-emit; the rest is what a
+/// GATT callback knows, which is NOT what `ble-bridge.js` validates — a notification is re-keyed
+/// to `{ sub, data }` by `relay` before it reaches the web side. Only `device` crosses unchanged,
+/// and only the disconnect event needs it to.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KotlinEvent {
@@ -41,7 +43,10 @@ pub struct KotlinEvent {
     pub service: String,
     #[serde(default)]
     pub characteristic: String,
-    /// Base64. JSON cannot carry bytes, and a lossy encoding here corrupts a protocol silently.
+    /// HEX, matching `NotificationPayload.data` and every other byte-carrying field on this
+    /// boundary. Not base64: `ble-polyfill.js`'s `toBytes` throws on a non-hex string, and the
+    /// strings that happen to be valid hex AND valid base64 are the dangerous ones — they decode
+    /// to different bytes without complaint.
     #[serde(default)]
     pub data: String,
 }
@@ -75,6 +80,7 @@ pub struct WriteArgs {
     pub id: String,
     pub service: String,
     pub characteristic: String,
+    /// Hex, passed through from the web side exactly as the desktop path receives it.
     pub data: String,
     pub with_response: bool,
 }
@@ -110,16 +116,26 @@ pub fn plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
 
 /// Re-emit one Kotlin event as the global the web side is already listening for.
 ///
-/// A notification is RE-KEYED on the way through. Kotlin reports (device, service, characteristic)
-/// because that is what a GATT callback knows; `ble-bridge.js` expects `{ sub, data }`, because a
-/// subscription id is what crosses the boundary per packet instead of three strings that never
-/// change within a session. The map is `CubeState`'s, so the Kotlin half never learns that ids
-/// exist — and a packet for a subscription that has gone is dropped with a word, exactly as the
-/// desktop path does, rather than reaching the web side with an id that means nothing.
+/// A notification is RE-KEYED on the way through, by `crate::relay_notification`. Kotlin reports
+/// (device, service, characteristic) because that is what a GATT callback knows; `ble-bridge.js`
+/// expects `{ sub, data }`, because a subscription id is what crosses the boundary per packet
+/// instead of three strings that never change within a session. The map is `CubeState`'s, so the
+/// Kotlin half never learns that ids exist — and a packet for a subscription that has gone is
+/// dropped with a word, exactly as the desktop path does, rather than reaching the web side with
+/// an id that means nothing.
+///
+/// This comment described that re-keying for a while before any of it was implemented, and the
+/// function simply re-emitted `ev` unchanged. It cost nothing only because `ble-bridge.js` throws
+/// on a payload with no `sub` instead of dropping it — a boundary check earning its keep against
+/// the very code that documented the contract it was checking.
+///
+/// A DISCONNECT is re-emitted as-is on purpose: `DisconnectPayload` is `{ device }`, the field is
+/// present in `KotlinEvent`, and the bridge ignores the extra ones. Only the notification needs
+/// the map.
 pub fn relay<R: Runtime>(app: &AppHandle<R>, ev: KotlinEvent) {
     match ev.event.as_str() {
         "ble-notification" => {
-            let _ = app.emit("ble-notification", ev);
+            crate::relay_notification(app, ev.device, ev.characteristic, ev.data);
         }
         "ble-disconnect" => {
             let _ = app.emit("ble-disconnect", ev);
@@ -132,13 +148,16 @@ pub fn relay<R: Runtime>(app: &AppHandle<R>, ev: KotlinEvent) {
     }
 }
 
-/// What Kotlin resolves a read with. Base64, because JSON cannot carry bytes.
+/// What Kotlin resolves a read with. HEX, because that is what this boundary speaks everywhere
+/// else — `ble_read` returns `hex::encode`, `ble_write` takes `hex::decode`, and
+/// `ble-polyfill.js`'s `toBytes` throws on anything that is not hex. This said base64 for as long
+/// as the Kotlin side did, and stayed saying it for a moment after the code was corrected.
 #[derive(Deserialize)]
 struct ReadReply {
     data: String,
 }
 
-/// `ble_read` hands the web side base64 directly; Kotlin wraps it in an object, so unwrap it here
+/// `ble_read` hands the web side hex directly; Kotlin wraps it in an object, so unwrap it here
 /// rather than changing either side's shape.
 pub fn read<R: Runtime>(
     app: &AppHandle<R>,
