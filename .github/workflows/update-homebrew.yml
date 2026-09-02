@@ -104,15 +104,13 @@ jobs:
 
             # One universal binary covers both architectures, so there is no arch split here.
             #
-            # auto_updates true since 0.2.3: the app updates itself (tauri-plugin-updater, checked
-            # on launch, installed only when the user agrees). Homebrew therefore stops upgrading
-            # it — which is the POINT, not a side effect. Without this the two fight: the app moves
-            # itself to a version the cask has never heard of, and the next \`brew upgrade\`
-            # reinstalls the cask's older build over the top of it. The cask stays how cubus is
-            # INSTALLED; \`brew upgrade --greedy\` still moves it for anyone who wants Homebrew in
-            # charge.
-            auto_updates true
-
+            # NO auto_updates, deliberately, and it is the macOS update story rather than an
+            # omission: Homebrew is in charge here, so \`brew upgrade\` keeps moving cubus exactly
+            # as it always has. The app's own updater (tauri-plugin-updater) is compiled only for
+            # Windows and Linux — see SELF_UPDATE_PLATFORMS in apps/web/lib/app-update.js — because
+            # a cask and a self-updater both write to this same bundle while only one of them knows
+            # what is really there. Declaring auto_updates would tell brew to stand down and hand
+            # the job to an updater macOS does not have.
             depends_on macos: :ventura
 
             app "cubus.app"

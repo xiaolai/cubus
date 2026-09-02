@@ -12,9 +12,11 @@ import { describe, test } from 'node:test';
 import {
   CHECK_INTERVAL_MS,
   LAST_CHECK_KEY,
+  SELF_UPDATE_PLATFORMS,
   dueForCheck,
   makeUpdater,
   readLastCheck,
+  selfUpdateSupported,
 } from '../lib/app-update.js';
 
 /** A localStorage that is just a Map, plus a switch for the quota failure real ones have. */
@@ -29,6 +31,29 @@ function fakeStorage(initial = {}, { throwOnSet = false } = {}) {
     map,
   };
 }
+
+describe('selfUpdateSupported', () => {
+  // macOS is the interesting entry, and it is ABSENT on purpose. It ships through a Homebrew cask,
+  // which is its updater; an app that also updated itself there would be reinstalled over by the
+  // next `brew upgrade` — a downgrade performed by the command meant to keep you current, and
+  // reported by nothing. The cask correspondingly does NOT declare `auto_updates true`.
+  test('macOS does not self-update — Homebrew owns it', () => {
+    assert.equal(selfUpdateSupported('macos'), false);
+    assert.ok(!SELF_UPDATE_PLATFORMS.includes('macos'));
+  });
+
+  test('windows and linux do, because nothing else tracks their installs', () => {
+    assert.equal(selfUpdateSupported('windows'), true);
+    assert.equal(selfUpdateSupported('linux'), true);
+  });
+
+  // Unknown must fall to the side that promises less, the same rule `isDesktopHost` follows.
+  test('a phone, the browser harness, and an unknown host do not self-update', () => {
+    for (const p of ['ios', 'android', null, undefined, '', 'freebsd']) {
+      assert.equal(selfUpdateSupported(p), false, String(p));
+    }
+  });
+});
 
 describe('dueForCheck', () => {
   test('a machine that has never checked is due', () => {

@@ -916,17 +916,24 @@ pub fn run() {
             optimal::optimal_cancel
         ]);
 
-    // Self-update, and the relaunch that completes it. DESKTOP ONLY, because only a desktop has
-    // anything to update: a phone goes through its store, and the browser build is whatever the
-    // server last served. That makes this the same shape as the window's orientation — a capability
-    // one build has and the other cannot want — which is the seam AGENTS.md already sanctions, so
-    // the affordance is drawn behind `isDesktopHost()` exactly as the orientation row is.
+    // Self-update, and the relaunch that completes it. WINDOWS AND LINUX ONLY.
+    //
+    // Not macOS: it ships through a Homebrew cask, and a cask plus a self-updater both write to
+    // the same /Applications/cubus.app while only one of them knows what is really there. An app
+    // that moved itself to 0.3.0 would be reinstalled as 0.2.9 by the next `brew upgrade` — a
+    // downgrade performed by the command meant to keep you current, and reported by nothing.
+    // Homebrew is the macOS updater; this is not compiled there at all.
+    //
+    // Not a phone either, and not the browser build: one goes through a store, the other is
+    // whatever the server last served. So this is the same shape as the window's orientation — a
+    // capability one build has and another cannot want — and the affordance is drawn behind the
+    // same predicate, narrowed by `SELF_UPDATE_PLATFORMS`.
     //
     // The pubkey and endpoint live in tauri.conf.json. An update is verified against that key
     // before it is ever unpacked, which is the whole reason this is safe to ship: the endpoint is
     // plain HTTPS on a public URL, and a signature nobody but the maintainer can produce is what
     // stops that URL from being an install-anything hole.
-    #[cfg(desktop)]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
