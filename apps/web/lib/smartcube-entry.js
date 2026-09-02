@@ -6,7 +6,7 @@
 // copy it; the reasoning and the measurement behind that are in
 // dev-docs/universal-cube-driver.md §1-2.
 //
-// It is pinned to a FORK (xiaolai/smartcube-web-bluetooth, branch `integration`), which is a
+// It is pinned to a FORK (xiaolai/smartcube-web-bluetooth, branch `main`), which is a
 // deliberate narrowing of the link-vs-copy decision rather than a reversal of it: the fork keeps
 // `upstream` as a remote and is intended to stay a strict superset, with its work going back to
 // poliva/smartcube-web-bluetooth. A fork that diverges becomes the copy §1 measured and rejected —
@@ -34,6 +34,6 @@
  *  against, so this constant IS the guard. smartcube-pin.test.mjs asserts three things agree — the
  *  rev here, the rev pinned in package.json, and the rev baked into the built bundle. Bump the dep
  *  without rebuilding, or rebuild without bumping, and one of them goes red. */
-export const SMARTCUBE_REV = 'a6a162b7b06373218058ce427c67f376f1e5fdbb';
+export const SMARTCUBE_REV = '77df8e9507ac87031c12ad1717d71de98d56784b';
 
 export { connectSmartCube, getRegisteredProtocols } from 'smartcube-web-bluetooth';
