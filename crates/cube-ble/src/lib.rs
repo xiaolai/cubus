@@ -45,7 +45,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 
 /// One entry of Web Bluetooth's `filters` array. A device matches a filter when every field the
 /// filter sets is satisfied; it matches the request when it satisfies any one filter.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(serde::Serialize, Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceFilter {
     pub name: Option<String>,
@@ -61,7 +61,7 @@ pub struct DeviceFilter {
     pub manufacturer_data: Vec<ManufacturerDataFilter>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(serde::Serialize, Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManufacturerDataFilter {
     pub company_identifier: u16,
@@ -71,7 +71,7 @@ pub struct ManufacturerDataFilter {
 }
 
 /// The subset of `requestDevice` options this bridge acts on.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(serde::Serialize, Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestOptions {
     #[serde(default)]
@@ -90,7 +90,7 @@ pub struct RequestOptions {
 
 /// What a scan saw. `manufacturer_data` is passed through untouched — the protocol layer reads a
 /// MAC out of it per brand, and this crate deliberately does not know how.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(serde::Deserialize, Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdvertisedDevice {
     /// Stable within a session. On macOS this is CoreBluetooth's per-host UUID, not a hardware
@@ -103,7 +103,7 @@ pub struct AdvertisedDevice {
     pub rssi: Option<i16>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(serde::Deserialize, Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CharacteristicInfo {
     pub uuid: String,
@@ -111,7 +111,7 @@ pub struct CharacteristicInfo {
 }
 
 /// The property flags Web Bluetooth exposes on a characteristic.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(serde::Deserialize, Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CharacteristicProperties {
     pub broadcast: bool,
@@ -224,6 +224,11 @@ pub fn matches_request(
 /// The crate compiles for `aarch64-linux-android` today, so nothing catches this at build time.
 /// That is exactly why the refusal is here: a capability that is absent must say so, and it must
 /// not be discovered by a user tapping a button.
+///
+/// It is also no longer the path Android takes. `apps/desktop/src-tauri/src/android_ble.rs`
+/// forwards the `ble_*` commands to a Kotlin plugin instead, so this function is unreachable
+/// there — it stays as the refusal for any OTHER caller that reaches for a btleplug adapter on
+/// Android, which would still panic.
 #[cfg(target_os = "android")]
 pub async fn default_adapter() -> Result<Adapter> {
     Err(
