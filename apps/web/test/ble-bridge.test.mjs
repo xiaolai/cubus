@@ -362,8 +362,158 @@ describe('the Tauri adapter', () => {
     const b = makeTauriBridge(t.api);
     await b.ready;
     b.onNotification(() => {});
-    assert.throws(() => t.fire('ble-notification', { data: '01' }), /missing sub or data/);
-    assert.throws(() => t.fire('ble-notification', { sub: 7 }), /missing sub or data/);
-    assert.throws(() => t.fire('ble-disconnect', {}), /missing device/);
+    assert.throws(() => t.fire('ble-notification', { data: '01' }), /wrong at sub \(want number/);
+    assert.throws(() => t.fire('ble-notification', { sub: 7 }), /wrong at data \(want string/);
+    assert.throws(() => t.fire('ble-disconnect', {}), /wrong at device \(want string/);
+
+    // A `sub` of the wrong TYPE, not merely absent. The old check tested `typeof p.sub !== 'number'`
+    // for notifications and `typeof payload[f] !== 'string'` for everything else, in two separate
+    // implementations — so this case was covered on one path and not the other.
+    assert.throws(() => t.fire('ble-notification', { sub: '7', data: '01' }), /want number, got string/);
+  });
+
+  // The first packet after a subscribe is usually the one carrying the cube's current state, and
+  // it is the one most likely to arrive before the id exists here: the id is allocated in RUST, so
+  // it does not reach this side until `ble_subscribe` resolves. Before this was held, that packet
+  // hit the "unknown subscription" branch and was dropped with a warning.
+  test('a packet that arrives before ble_subscribe resolves is delivered, not dropped', async () => {
+    let release;
+    const pending = new Promise((r) => {
+      release = r;
+    });
+    const t = fakeTauri();
+    // Hold `ble_subscribe` open so the notification can land inside the window.
+    const realInvoke = t.api.core.invoke;
+    t.api.core.invoke = async (cmd, args) => {
+      if (cmd === 'ble_subscribe') {
+        await pending;
+        return 7;
+      }
+      return realInvoke(cmd, args);
+    };
+
+    const b = makeTauriBridge(t.api);
+    await b.ready;
+    const seen = [];
+    b.onNotification((n) => seen.push(n));
+
+    const subscribing = b.subscribe('dev-1', 'svc', 'chr');
+    await new Promise((r) => queueMicrotask(r));
+    // The cube starts talking while the subscribe is still out.
+    t.fire('ble-notification', { sub: 7, data: 'aa' });
+    assert.equal(seen.length, 0, 'nothing can be delivered yet — the id is not known here');
+
+    release();
+    await subscribing;
+    await new Promise((r) => queueMicrotask(r));
+    assert.equal(seen.length, 1, 'the held packet must be delivered once the id is registered');
+    assert.equal(seen[0].bytes, 'aa');
+    assert.equal(seen[0].characteristic, 'chr');
+  });
+
+  // The buffer is scoped to the window and is not a general retry: outside it, an unknown id is a
+  // real drop — a stale subscription — and must still say so rather than accumulating silently.
+  test('an unknown subscription outside a pending subscribe is still dropped loudly', async () => {
+    const t = fakeTauri();
+    const b = makeTauriBridge(t.api);
+    await b.ready;
+    const seen = [];
+    b.onNotification((n) => seen.push(n));
+    const warnings = [];
+    const warn = console.warn;
+    console.warn = (m) => warnings.push(m);
+    try {
+      t.fire('ble-notification', { sub: 99, data: 'aa' });
+    } finally {
+      console.warn = warn;
+    }
+    assert.equal(seen.length, 0);
+    assert.match(warnings.join('\n'), /unknown subscription 99 — dropped/);
+  });
+
+  // Registration is NOT transactional: `ble-notification` can install and `ble-disconnect` then
+  // fail. The bridge is supposed to release whatever landed rather than leaving half of itself
+  // attached to the app — a listener nobody owns, firing into a polyfill that was never returned.
+  // The recovery path existed and nothing exercised it.
+  test('a listener that fails to register releases the ones that already did', async () => {
+    const released = [];
+    let n = 0;
+    const api = {
+      core: { invoke: async () => null },
+      event: {
+        listen: async (name) => {
+          n++;
+          if (n === 2) throw new Error('registration refused');
+          return () => released.push(name);
+        },
+      },
+    };
+    const b = makeTauriBridge(api);
+    await assert.rejects(b.ready, /registration refused/);
+    assert.deepEqual(released, ['ble-notification'],
+      'the listener that DID install must be released exactly once');
+  });
+
+  // Disposing while registration is still in flight. `dispose()` waits for `ready` to settle before
+  // releasing, precisely so the listeners it releases are the ones that actually landed — clearing
+  // an empty list first left them registering into a bridge nobody owns.
+  test('disposing during registration still releases every listener that lands', async () => {
+    const released = [];
+    let openTheGate;
+    const gate = new Promise((r) => {
+      openTheGate = r;
+    });
+    const api = {
+      core: { invoke: async () => null },
+      event: {
+        listen: async (name) => {
+          await gate;
+          return () => released.push(name);
+        },
+      },
+    };
+    const b = makeTauriBridge(api);
+    const disposing = b.dispose(); // begins while both listens are still pending
+    assert.deepEqual(released, [], 'nothing has registered yet, so nothing can be released yet');
+    openTheGate();
+    await disposing;
+    assert.deepEqual(released.sort(), ['ble-disconnect', 'ble-notification'],
+      'both listeners registered after dispose began, and both must still be released');
+  });
+
+  // And a disposed bridge refuses work rather than driving the radio. Every command, not just the
+  // two that used to check.
+  test('every command on a disposed bridge refuses', async () => {
+    const t = fakeTauri();
+    const b = makeTauriBridge(t.api);
+    await b.ready;
+    await b.dispose();
+    const before = t.calls.length;
+    for (const call of [
+      () => b.requestDevice({}),
+      () => b.connect('dev-1'),
+      () => b.discoverServices('dev-1'),
+      () => b.discoverCharacteristics('dev-1', 'svc'),
+      () => b.subscribe('dev-1', 'svc', 'chr'),
+      () => b.unsubscribe('dev-1', 'svc', 'chr'),
+      () => b.read('dev-1', 'svc', 'chr'),
+      () => b.write('dev-1', 'svc', 'chr', new Uint8Array([1]), false),
+      () => b.disconnect('dev-1'),
+    ]) {
+      await assert.rejects(call(), /was disposed/);
+    }
+    assert.equal(t.calls.length, before, 'a disposed bridge must not invoke a single command');
+  });
+
+  // The drift that made the two validators worth merging: a malformed DISCONNECT sent whoever was
+  // debugging it to read `NotificationPayload`, which is a different struct with different fields.
+  test('a malformed payload names the Rust struct that actually governs it', async () => {
+    const t = fakeTauri();
+    const b = makeTauriBridge(t.api);
+    await b.ready;
+    b.onNotification(() => {});
+    assert.throws(() => t.fire('ble-disconnect', {}), /DisconnectPayload/);
+    assert.throws(() => t.fire('ble-disconnect', {}), (e) => !/NotificationPayload/.test(e.message));
+    assert.throws(() => t.fire('ble-notification', { sub: 7 }), /NotificationPayload/);
   });
 });
