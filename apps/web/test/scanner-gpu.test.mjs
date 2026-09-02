@@ -27,7 +27,6 @@ import { freePort } from './free-port.mjs';
 
 const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
 let proc;
-let browser;
 let base;
 
 before(async () => {
@@ -47,19 +46,39 @@ before(async () => {
     });
     proc.on('error', reject);
   });
-  browser = await chromium.launch({
-    headless: false,
-    args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'],
-  });
 });
 
-after(async () => {
-  await browser?.close();
+after(() => {
   proc?.kill('SIGTERM');
 });
 
-/** Run the model once under an explicit provider list, in a fresh page. */
+/**
+ * A BROWSER per use, not one for the file.
+ *
+ * A single headed instance held across the suite is fragile in exactly the conditions this suite
+ * runs in: `node --test` at concurrency 6, a dozen other browsers alive, and a headed Chromium
+ * competing for memory. When it dies, every later `newPage` fails with "Target page, context or
+ * browser has been closed" — which is not a fact about the GPU, but reads exactly like one. Seen
+ * once already: this test went red at 2.5 s in a loaded run and passed at 6.8 s alone.
+ *
+ * The same lesson the WebGPU benchmark learned earlier the same day, where one hung GPU process
+ * poisoned every case after it in the same browser. Carrying it here rather than re-learning it.
+ */
+async function withBrowser(fn) {
+  const browser = await chromium.launch({
+    headless: false,
+    args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'],
+  });
+  try {
+    return await fn(browser);
+  } finally {
+    await browser.close();
+  }
+}
+
+/** Run the model once under an explicit provider list, in a fresh browser. */
 async function runUnder(executionProviders) {
+  return withBrowser(async (browser) => {
   const page = await browser.newPage();
   try {
     await page.goto(`${base}/index.html`);
@@ -87,16 +106,20 @@ async function runUnder(executionProviders) {
   } finally {
     await page.close();
   }
+  });
 }
 
 test('the vendored runtime can actually reach a GPU', async () => {
-  const page = await browser.newPage();
-  await page.goto(`${base}/index.html`);
-  const gpu = await page.evaluate(async () => ({
-    api: !!navigator.gpu,
-    adapter: navigator.gpu ? !!(await navigator.gpu.requestAdapter()) : false,
-  }));
-  await page.close();
+  const gpu = await withBrowser(async (browser) => {
+    const page = await browser.newPage();
+    await page.goto(`${base}/index.html`);
+    const seen = await page.evaluate(async () => ({
+      api: !!navigator.gpu,
+      adapter: navigator.gpu ? !!(await navigator.gpu.requestAdapter()) : false,
+    }));
+    await page.close();
+    return seen;
+  });
   // Reported rather than skipped: on a box with no GPU this is a fact about the box, and the rest
   // of the file still asserts the wasm path. A silent skip is how a gate stops being one.
   if (!gpu.adapter) {
@@ -112,12 +135,15 @@ test('both providers read the same frame the same way', async () => {
   const wasm = await runUnder(['wasm']);
   assert.equal(wasm.anchors, 8400, 'the wasm path is the floor and must always work');
 
-  const page = await browser.newPage();
-  await page.goto(`${base}/index.html`);
-  const hasGpu = await page.evaluate(async () =>
-    navigator.gpu ? !!(await navigator.gpu.requestAdapter()) : false,
-  );
-  await page.close();
+  const hasGpu = await withBrowser(async (browser) => {
+    const page = await browser.newPage();
+    await page.goto(`${base}/index.html`);
+    const seen = await page.evaluate(async () =>
+      navigator.gpu ? !!(await navigator.gpu.requestAdapter()) : false,
+    );
+    await page.close();
+    return seen;
+  });
   if (!hasGpu) {
     console.log('    no WebGPU adapter here — cross-provider agreement cannot be checked');
     return;
