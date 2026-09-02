@@ -8,11 +8,11 @@
 //
 // Only the ONE wasm variant the loader can actually request is copied. onnxruntime-web ships eight
 // `ort-wasm-simd-threaded.*` files (plain / jsep / asyncify / jspi, each a .wasm + a .mjs), ~90 MB;
-// a given ort entrypoint references exactly one pair by name and can fetch no other. We ship
-// `ort.bundle.min.mjs`, which references only the `.jsep` pair, so copying all eight put ~50 MB of
-// unreachable wasm in every dist/. The wanted set is DERIVED from the loader's own text rather than
-// hardcoded, so an onnxruntime-web bump that switches variants is followed automatically; if the
-// derivation ever finds nothing, that is a loud failure, not a silent empty copy.
+// a given ort entrypoint references exactly one pair by name and can fetch no other. Copying all
+// eight put ~50 MB of unreachable wasm in every dist/. The wanted set is DERIVED from the loader's
+// own text rather than hardcoded, so a switch of entrypoint or an onnxruntime-web bump that moves
+// variants is followed automatically; if the derivation ever finds nothing, that is a loud failure,
+// not a silent empty copy. That derivation is what made the WebGPU switch below a one-line change.
 // `apps/web/test/vendor-bundles.test.mjs` pins that the loader references exactly one variant and
 // that this script copies exactly it.
 
@@ -37,7 +37,30 @@ if (!existsSync(src)) {
 // a custom-element bundle inside a worker, which throws on `document`, and the run falls back to
 // "no available backend found". Loaded as its own file, import.meta.url points at ort.mjs and the
 // worker is the runtime, which is what it expects to be.
-const ORT_ESM = 'ort.bundle.min.mjs';
+//
+// WHICH ENTRYPOINT, and why it is the WebGPU one.
+//
+// `ort.bundle.min.mjs` — what we shipped until now — is the wasm-only build. It contains the
+// strings "webgpu" and "webnn" because the EP-name registry is shared, which is exactly the sort of
+// evidence that looks conclusive and is not: asking it for the `webgpu` EP does not fail, it sits
+// in `InferenceSession.create` compiling nothing while the caller waits. In 1.27 WebGPU lives in
+// its own entrypoint, backed by the ASYNCIFY wasm rather than the `.jsep` pair (jsep was the
+// pre-1.20 mechanism, and its name on our wasm is the reason the old build looked WebGPU-capable).
+//
+// Measured on this model, 640x640, Chromium, one page, nothing else running:
+//
+//     wasm, 6 threads, proxy   198 ms   5.1 fps     <- what we shipped
+//     webgpu, real GPU          15 ms    66 fps     <- this entrypoint, headed
+//     webgpu, headless        7320 ms   0.1 fps     <- Chromium's software GPU, not a GPU
+//
+// The headless row is here as a warning, not a result: it is what a CI box measures, and taking it
+// at face value says WebGPU is 37x SLOWER. Benchmark the GPU path on a real GPU or not at all.
+//
+// It is also smaller — 23.1 MB against 25.6 for the wasm-only pair, and a 0.1 MB loader against
+// 0.4 — so there is no size argument against it either. The same file still serves the wasm path
+// wherever WebGPU is absent (measured 216 ms, within noise of the old build's 198), which is what
+// makes ONE artifact enough for every target.
+const ORT_ESM = 'ort.webgpu.bundle.min.mjs';
 if (!existsSync(join(src, ORT_ESM))) {
   console.error(`onnxruntime-web is missing ${ORT_ESM} in:\n  ${src}`);
   process.exit(1);
