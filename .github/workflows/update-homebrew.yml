@@ -103,7 +103,16 @@ jobs:
             homepage "https://github.com/xiaolai/cubus"
 
             # One universal binary covers both architectures, so there is no arch split here.
-            # No auto_updates: the app does not update itself, so plain \`brew upgrade\` is correct.
+            #
+            # auto_updates true since 0.2.3: the app updates itself (tauri-plugin-updater, checked
+            # on launch, installed only when the user agrees). Homebrew therefore stops upgrading
+            # it — which is the POINT, not a side effect. Without this the two fight: the app moves
+            # itself to a version the cask has never heard of, and the next \`brew upgrade\`
+            # reinstalls the cask's older build over the top of it. The cask stays how cubus is
+            # INSTALLED; \`brew upgrade --greedy\` still moves it for anyone who wants Homebrew in
+            # charge.
+            auto_updates true
+
             depends_on macos: :ventura
 
             app "cubus.app"

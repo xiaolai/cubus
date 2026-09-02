@@ -16,6 +16,7 @@ import {
   status as optimalStatus,
 } from './optimal.js';
 import { NO_CHALLENGES, loadIndex, provenAnswer } from './optimal-challenges.js';
+import { STARTUP_DELAY_MS, makeUpdater } from './app-update.js';
 import { isDesktopHost } from './host.js';
 import { randomCube } from './random-state.js';
 import { makeRouter } from './router.js';
@@ -3729,6 +3730,7 @@ SCREENS.settings = () => {
       <div class="card"><div class="eyebrow">ABOUT</div>
         <div class="about-brand"><img src="./icons/icon.svg" alt="" width="22" height="22" /><b>Cubus</b></div>
         <div class="about-row">${icon('tag', 15)}<span class="k">${t('Version')}</span><span class="num">${VERSION}</span></div>
+        ${updater ? `<div class="about-row">${icon('refresh', 15)}<span class="k">${t('Updates')}</span><button class="pill" id="checkUpdate">${t('Check now')}</button></div>` : ''}
         <div class="about-row">${icon('globe', 15)}<span class="k">${t('Website')}</span><a class="link" href="https://cubus.im" target="_blank" rel="noopener">cubus.im</a></div>
         <div class="about-row">${icon('user', 15)}<span class="k">${t('Author')}</span><a class="link" href="https://lixiaolai.com" target="_blank" rel="noopener">@xiaolai</a></div>
         <div class="sub" style="color:var(--ink-3);margin-top:10px;line-height:1.55">${t('Solver and vision run locally. Nothing leaves the device.')}</div></div>
@@ -3736,6 +3738,26 @@ SCREENS.settings = () => {
     mount(root) {
       const swatch = () => { const p = NET_COLORS[settings.palette]; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
       swatch();
+      // Drawn only where `updater` exists, which is the desktop gate — so this never looks for a
+      // button the browser build does not have. The press ALWAYS checks (it ignores the daily
+      // throttle) and always answers, because somebody is waiting for one; the launch check is the
+      // quiet half. Disabled while in flight, since `check` joins one flight and a button that
+      // keeps accepting presses while nothing visibly happens reads as broken.
+      const checkBtn = $('#checkUpdate', root);
+      if (checkBtn && updater) {
+        checkBtn.onclick = async () => {
+          const was = checkBtn.textContent;
+          checkBtn.disabled = true;
+          checkBtn.textContent = t('Checking…');
+          try {
+            await reportUpdateOutcome(await updater.checkNow());
+          } finally {
+            // The button may have gone with a re-render, and an installed update never comes back
+            // here at all — the app relaunches out from under it.
+            if (checkBtn.isConnected) { checkBtn.disabled = false; checkBtn.textContent = was; }
+          }
+        };
+      }
       for (const b of root.querySelectorAll('[data-set-theme]')) b.onclick = () => { settings.theme = b.dataset.setTheme; save('cubusSettings', settings); applyTheme(); renderScreen(); };
       // Changing the target does not re-solve anything now — the next solve uses it. Clearing
       // the cached solution is what makes that true; without it the old answer would stand.
@@ -4301,6 +4323,40 @@ function applyInsetOverride() {
   ['t', 'r', 'b', 'l'].forEach((side, i) => app.style.setProperty(`--inset-${side}`, `${px[i]}px`));
 }
 
+/**
+ * The self-updater, or null where there is nothing to update.
+ *
+ * Desktop only, and gated exactly as the orientation row is (`isTauri && isDesktopHost()`) rather
+ * than on platform sniffing: a phone updates through its store and the browser build is whatever
+ * the server last served, so neither can want this. `app-update.js` holds the decisions and is
+ * tested without any of this; what lives here is only the wiring to the host.
+ */
+const updater = isTauri && isDesktopHost()
+  ? makeUpdater({
+      api: window.__TAURI__,
+      storage: (() => { try { return window.localStorage; } catch { return null; } })(),
+      // A NATIVE question. The app has no general modal, and one invented for this would be a new
+      // component in a design system that does not have it — for a question the OS draws better.
+      confirm: (update) =>
+        window.__TAURI__?.dialog?.ask?.(
+          `Cubus ${update.version} is available. You have ${VERSION}.\n\nInstall it and restart?`,
+          { title: 'A newer Cubus', kind: 'info', okLabel: 'Install and restart', cancelLabel: 'Not now' },
+        ) ?? false,
+      warn: (msg, err) => console.warn(msg, err ?? ''),
+    })
+  : null;
+
+/** Say the outcome of a check the user ASKED for. A launch check stays silent unless it found one. */
+async function reportUpdateOutcome(result) {
+  const say = (message, kind = 'info') =>
+    window.__TAURI__?.dialog?.message?.(message, { title: 'Cubus', kind });
+  if (result.status === 'current') return say(`Cubus ${VERSION} is the latest version.`);
+  if (result.status === 'error') return say('Could not reach the update server. Check your connection and try again.', 'warning');
+  if (result.status === 'failed') return say('The update could not be installed. Try again, or download it from the website.', 'error');
+  if (result.status === 'installed-needs-restart') return say('The update is installed. Quit and reopen Cubus to use it.');
+  return undefined;
+}
+
 async function boot() {
   assertStageSupport();
   applyInsetOverride();
@@ -4337,6 +4393,15 @@ async function boot() {
     setFacelets(state.cube.facelets);
     schedulePreroll(); // so the first press of the die is as cheap as every one after it
     if (['home', 'viewer', 'timer'].includes(state.screen)) renderScreen();
+  }
+  // LAST, and on a timer. The check is the least important thing happening at startup, and the app
+  // measures its own first paint closely enough that a DNS lookup inside that window would change
+  // the numbers. It also stays quiet: `checkOnLaunch` throttles to once a day and only interrupts
+  // when there is genuinely something to install.
+  if (updater) {
+    setTimeout(() => {
+      updater.checkOnLaunch().catch((e) => console.warn('app-update: launch check failed', e));
+    }, STARTUP_DELAY_MS);
   }
 }
 boot();
