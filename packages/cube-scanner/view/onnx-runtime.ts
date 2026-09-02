@@ -11,6 +11,7 @@
 // TYPE-ONLY. The runtime is loaded from a URL at call time (see `loadOrt`) so that esbuild leaves
 // it out of the panel bundle — which is the whole reason inference can run off the main thread.
 import type * as ortNs from 'onnxruntime-web';
+import { IMG_SIZE } from '../src/onnx-detect.js';
 import type { RunModel } from '../src/onnx-detect.js';
 
 type Ort = typeof ortNs;
@@ -21,10 +22,42 @@ type Ort = typeof ortNs;
  * same module to every later caller whatever URL they asked for, so a second panel pointed at a
  * different vendor directory silently got the first one's runtime.
  *
- * A rejection is evicted rather than kept. A cached failed promise makes the first network blip
- * permanent for the life of the page — every retry returns the original error, and the scanner can
- * never recover without a reload. */
+ * A rejection is evicted rather than kept, so a caller that retries is not handed the original
+ * error by THIS map.
+ *
+ * That is the whole of what the eviction buys, and it is worth being precise about: the browser
+ * keeps its own module map, keyed by URL, and a failed dynamic import stays failed there. So a
+ * retry of the SAME url generally re-raises the same failure no matter what this map does, and
+ * recovery really does need a reload. What the eviction prevents is the narrower case that is
+ * still worth preventing — a caller retrying with a URL the module map never cached, and every
+ * later caller of a url whose first import failed for a reason outside the module system. */
 const ortByUrl = new Map<string, Promise<Ort>>();
+
+/**
+ * Session creation is serialised per runtime module, because `ort.env` is GLOBAL to it.
+ *
+ * Providers, thread count, proxy and wasmPaths are written onto the one `ort.env` object and read
+ * by onnxruntime when the session is created. Two runners created concurrently against the same
+ * runtime therefore interleave: the second overwrites `proxy` and `numThreads` while the first is
+ * still in `InferenceSession.create`, and the first session comes up with the second's settings —
+ * a GPU runner that quietly took the wasm runner's proxy, or the reverse, with nothing to show for
+ * it but a latency that is wrong by an order of magnitude.
+ *
+ * A chain rather than a lock because the whole critical section is one await. It does not stop a
+ * caller reconfiguring the runtime for a LATER session — that is legitimate, and how a GPU failure
+ * falls back to wasm — it stops two of them being half-applied at once.
+ */
+const configuring = new WeakMap<Ort, Promise<unknown>>();
+
+function serialise<T>(ort: Ort, work: () => Promise<T>): Promise<T> {
+  const next = (configuring.get(ort) ?? Promise.resolve()).then(work, work);
+  // Kept whatever the outcome, so one failed creation does not wedge the queue behind a rejection.
+  configuring.set(
+    ort,
+    next.catch(() => {}),
+  );
+  return next;
+}
 const loadOrt = (url: string): Promise<Ort> => {
   let pending = ortByUrl.get(url);
   if (!pending) {
@@ -110,9 +143,24 @@ export async function preferredProviders(): Promise<
   }
 }
 
-/** Is the GPU the provider that actually won? Decides the proxy rule — see createModelRunner. */
-const usesGpu = (eps: readonly ortNs.InferenceSession.ExecutionProviderConfig[]): boolean =>
-  eps.some((e) => (typeof e === 'string' ? e : e.name) === 'webgpu');
+/**
+ * Is the GPU the provider that actually won? Decides the proxy rule — see createModelRunner.
+ *
+ * The FIRST entry, not "webgpu appears somewhere". onnxruntime walks the list in order and the
+ * first provider that can take a node gets it, so `['wasm', 'webgpu']` runs on wasm — and
+ * answering true there turned the proxy OFF for a wasm session, putting a ~200 ms run back on the
+ * page's thread, which is the one arrangement this whole flag exists to prevent. `preferredProviders`
+ * never produces that order, but `opts.executionProviders` is a public option and a test seam.
+ *
+ * Exported so a test can pin the rule without a runtime, the same reason `decodeTensorResponse` is.
+ */
+export const usesGpu = (
+  eps: readonly ortNs.InferenceSession.ExecutionProviderConfig[],
+): boolean => {
+  const first = eps[0];
+  if (first === undefined) return false;
+  return (typeof first === 'string' ? first : first.name) === 'webgpu';
+};
 
 /**
  * How many wasm threads to ask onnxruntime for.
@@ -169,26 +217,28 @@ export async function createModelRunner(
   // the threads asked for here are real. It still falls back to 1 wherever it is not.
   const executionProviders = opts.executionProviders ?? (await preferredProviders());
   const gpu = usesGpu(executionProviders);
-  ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
-  // Off the main thread. A single run of this model is ~400ms of straight-line wasm and the scan
-  // loop fires one every 200ms, so on the page's own thread the UI is blocked essentially all the
-  // time the camera is open — a click on the sidebar is not handled until the run finishes.
-  // proxy:true moves session creation and every run() into a worker onnxruntime spawns itself.
-  // proxy and threads are independent: proxy moves the work off the page's thread, threads
-  // decide how many cores do it. Both are wanted, and proxy still works with numThreads 1.
-  //
-  // OFF for the GPU path, and that is not a compromise. The proxy exists because a ~200 ms wasm run
-  // on the page's thread blocks the UI essentially all the time the camera is open. A GPU run is
-  // 15 ms — a fifth of one 60 Hz frame, and an order of magnitude inside the 200 ms tick — so the
-  // reason for the worker is gone, while keeping it means the GPU device has to be reached from a
-  // worker that onnxruntime spawns for its own purposes. The cheaper arrangement is also the
-  // simpler one here.
-  ort.env.wasm.proxy = !gpu;
-  ort.env.wasm.wasmPaths = opts.wasmPaths ?? './';
+  const session = await serialise(ort, async () => {
+    ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
+    // Off the main thread. A single run of this model is ~400ms of straight-line wasm and the scan
+    // loop fires one every 200ms, so on the page's own thread the UI is blocked essentially all the
+    // time the camera is open — a click on the sidebar is not handled until the run finishes.
+    // proxy:true moves session creation and every run() into a worker onnxruntime spawns itself.
+    // proxy and threads are independent: proxy moves the work off the page's thread, threads
+    // decide how many cores do it. Both are wanted, and proxy still works with numThreads 1.
+    //
+    // OFF for the GPU path, and that is not a compromise. The proxy exists because a ~200 ms wasm run
+    // on the page's thread blocks the UI essentially all the time the camera is open. A GPU run is
+    // 15 ms — a fifth of one 60 Hz frame, and an order of magnitude inside the 200 ms tick — so the
+    // reason for the worker is gone, while keeping it means the GPU device has to be reached from a
+    // worker that onnxruntime spawns for its own purposes. The cheaper arrangement is also the
+    // simpler one here.
+    ort.env.wasm.proxy = !gpu;
+    ort.env.wasm.wasmPaths = opts.wasmPaths ?? './';
 
-  const session = await ort.InferenceSession.create(modelUrl, {
-    executionProviders,
-    graphOptimizationLevel: 'all',
+    return ort.InferenceSession.create(modelUrl, {
+      executionProviders,
+      graphOptimizationLevel: 'all',
+    });
   });
   const inputName = session.inputNames[0];
   const outputName = session.outputNames[0];
@@ -199,8 +249,27 @@ export async function createModelRunner(
     const result = await session.run({ [inputName]: tensor });
     const out = result[outputName];
     if (!out) throw new Error(`model produced no '${outputName}' output`);
+    // CHECKED, not cast. `decodeDetections` reads this as `[1, 4+classes, anchors]` of float32 and
+    // indexes it arithmetically, so a model whose output is a different type or rank produces
+    // silent nonsense — boxes computed off whatever the bytes happened to mean — rather than an
+    // error. That is the failure mode this project treats as worse than a crash: a misread is a
+    // wrong cube, and a wrong cube is a beginner solving something that is not in their hands.
+    if (out.type !== 'float32' || !(out.data instanceof Float32Array)) {
+      throw new Error(`model output '${outputName}' is ${out.type}, not float32`);
+    }
     const anchors = out.dims[out.dims.length - 1] ?? 0;
-    return { data: out.data as Float32Array, anchors };
+    if (out.dims.length < 2 || !Number.isInteger(anchors) || anchors <= 0) {
+      throw new Error(
+        `model output '${outputName}' has dims [${out.dims.join(', ')}], which has no anchor axis`,
+      );
+    }
+    const rows = out.data.length / anchors;
+    if (!Number.isInteger(rows)) {
+      throw new Error(
+        `model output '${outputName}' holds ${out.data.length} floats, which is not a whole number of ${anchors}-anchor rows`,
+      );
+    }
+    return { data: out.data, anchors };
   };
 
   // See `warmUp`. The size is read off the model rather than assumed, so a re-exported model at a
@@ -210,11 +279,26 @@ export async function createModelRunner(
     const meta = session.inputMetadata?.[0];
     // `inputMetadata` is a union — a non-tensor input has no shape at all — so it is narrowed
     // rather than indexed hopefully. A dynamic axis comes back as a string or -1, which is not a
-    // size to warm, hence the positive-number test and the 640 the model is exported at.
+    // size to warm, hence the positive-number test and `IMG_SIZE` — the SAME constant `preprocess`
+    // defaults to, so a re-export at another resolution cannot warm one shape and be fed another.
     const dims = meta?.isTensor ? meta.shape : undefined;
     const h = dims?.[2];
-    const side = typeof h === 'number' && h > 0 ? h : 640;
-    await run(new Float32Array(3 * side * side), side);
+    const side = typeof h === 'number' && h > 0 ? h : IMG_SIZE;
+    try {
+      await run(new Float32Array(3 * side * side), side);
+    } catch (err) {
+      // A warm-up that throws leaves a live session holding wasm memory or a GPU device, and the
+      // caller never gets a handle to release it — so release it here before the error escapes.
+      await session.release().catch(() => {});
+      throw err;
+    }
   }
-  return run;
+  // The session is reachable for release. `RunModel` is a bare function by design — `detectFace`
+  // takes it and knows nothing about runtimes — so the handle is attached rather than wrapped,
+  // which keeps every existing caller working while giving the ones that own the lifecycle a way
+  // to end it. Without this each rebuilt scan panel left a session behind holding its wasm heap or
+  // its GPU device, for the life of the page.
+  return Object.assign(run, {
+    dispose: () => session.release(),
+  });
 }

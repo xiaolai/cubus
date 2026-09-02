@@ -85,4 +85,14 @@ export class WebDetector implements Detector {
     this.source?.stop();
     this.source = null;
   }
+
+  dispose(): void {
+    this.stop();
+    // `createModelRunner` attaches the handle; a runner built before it did, or injected by a test,
+    // simply has nothing to release. Fire-and-forget because disposal happens on teardown paths
+    // that are synchronous, and a failed release is not something a caller can act on.
+    const run = this.run as (RunModel & { dispose?: () => Promise<void> }) | null;
+    this.run = null;
+    void run?.dispose?.().catch(() => {});
+  }
 }
