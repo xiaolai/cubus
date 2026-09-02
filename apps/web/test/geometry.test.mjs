@@ -100,9 +100,9 @@ async function open(fixture, route = 'home') {
   // (2026-08-29, two fixtures, both clean alone), and even 120 s was exceeded under the full
   // unbounded fan-out, which is why package.json bounds --test-concurrency as well. Both
   // halves are needed. The selector waits below still bound the app's own boot.
-  context.setDefaultNavigationTimeout(120_000);
   const page = await context.newPage();
-  pace(page);
+  pace(page); // both bounds, navigation included — see BROWSER_NAV_MS
+
   const errors = [];
   page.on('pageerror', (e) => errors.push(e));
   await page.goto(`${BASE}/?insets=${fixture.insets.join(',')}#/${route}`);
@@ -605,7 +605,6 @@ for (const screen of SCREENS) {
   for (const fixture of FIXTURES) {
     test(`${screen} screen: ${label(fixture)}`, async () => {
       const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
-      context.setDefaultNavigationTimeout(120_000); // same saturation reasoning as above
       await context.addInitScript((session) => localStorage.setItem('cubusSolves', session), SESSION);
       const page = await context.newPage();
       pace(page);

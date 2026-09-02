@@ -15,14 +15,22 @@ import { hostPlatform } from './host.js';
 /**
  * Hosts where the Tauri API is injected but the native BLE bridge cannot work.
  *
- * Android compiles and would CRASH: btleplug's droidplug backend needs its Java classes in the APK
- * and `platform::init()` called with a JNIEnv, and without them the first adapter call panics
- * inside a Tauri command. `crates/cube-ble` refuses at that boundary too — this is the half that
- * stops the app offering the affordance at all, because a button that reports "unavailable" the
- * moment it is pressed is a worse answer than a screen that never claimed it.
+ * Android's wiring now EXISTS and is still listed here, which is the unusual case worth spelling
+ * out. `gen/android/.../BlePlugin.kt` implements all nine commands over Android's own GATT stack,
+ * and `src-tauri/src/android_ble.rs` forwards to it, so the crash this list originally guarded —
+ * btleplug's droidplug backend panicking without its Java classes — is no longer what would
+ * happen. What has not happened is a phone: nothing in that path has spoken to a radio.
  *
- * Remove a platform from this list only alongside the wiring that makes it true, and only after
- * running it on the hardware. Compiling is not evidence here; the crate already compiles.
+ * THE FLIP IS THIS LINE. Delete 'android' from the array below and the app offers Bluetooth on
+ * Android. Do it only after running `pnpm tauri android dev` on a device with a real cube and
+ * seeing, at minimum: a scan that finds a cube advertising WITHOUT a recognisable name (the
+ * manufacturer-data filter path, which is the one a summary loses); a subscribe that actually
+ * delivers packets, since Android needs both `setCharacteristicNotification` AND a CCCD write and
+ * the failure mode of doing one is silence rather than an error; and sustained traffic, because
+ * Android GATT permits one outstanding operation per connection and a queue bug looks fine until
+ * the protocol layer talks at speed.
+ *
+ * Compiling is not evidence. It compiled before this was written, too.
  */
 const NATIVE_BLE_UNSUPPORTED = Object.freeze(['android']);
 
@@ -51,6 +59,39 @@ export function makeTauriBridge(api = tauri()) {
   const subscriptions = new Map();
 
   /**
+   * Packets that arrived before the subscription they belong to was recorded.
+   *
+   * The id is allocated by RUST — deliberately, so Android and the desktop cannot answer the same
+   * question with different numbers — which means it does not exist here until `ble_subscribe`
+   * resolves. A device that starts notifying the instant the descriptor write lands can therefore
+   * get a packet across before that: the id is unknown, and the packet was dropped with a warning.
+   * For a smart cube the packet immediately after subscribe is usually the one carrying its current
+   * state, so it is the worst one to lose.
+   *
+   * Held ONLY while a subscribe is actually in flight, and only up to a bound: outside that window
+   * an unknown id means a stale subscription, which is a real drop and still says so.
+   */
+  const early = [];
+  const EARLY_LIMIT = 64;
+  let subscribesInFlight = 0;
+
+  /** Deliver whatever the just-registered id was waiting on, in arrival order. */
+  function drainEarly() {
+    if (early.length === 0) return;
+    const held = early.splice(0, early.length);
+    for (const packet of held) {
+      const s = subscriptions.get(packet.sub);
+      if (s) {
+        notifyCb({ device: s.device, service: s.service, characteristic: s.characteristic, bytes: packet.data });
+      } else if (subscribesInFlight > 0) {
+        early.push(packet); // another subscribe is still out; it may be that one's
+      } else {
+        console.warn(`ble-bridge: notification for unknown subscription ${packet.sub} — dropped`);
+      }
+    }
+  }
+
+  /**
    * Validate an event payload before it reaches the polyfill.
    *
    * Zero trust at boundaries, and this one is a real boundary despite both sides being ours: the
@@ -59,15 +100,17 @@ export function makeTauriBridge(api = tauri()) {
    * keyed on "undefined", find nothing, and drop the packet — silently, forever, with no error
    * anywhere. Loud beats silent: a malformed payload is a bug in the pair, not a packet to skip.
    */
-  function requireFields(kind, payload, fields) {
+  function requireShape(kind, payload, shape, struct) {
     if (!payload || typeof payload !== 'object') {
       throw new Error(`ble-bridge: ${kind} payload is not an object (got ${typeof payload})`);
     }
-    const missing = fields.filter((f) => typeof payload[f] !== 'string');
-    if (missing.length) {
+    const wrong = Object.entries(shape)
+      .filter(([field, type]) => typeof payload[field] !== type)
+      .map(([field, type]) => `${field} (want ${type}, got ${typeof payload[field]})`);
+    if (wrong.length) {
       throw new Error(
-        `ble-bridge: ${kind} payload is missing ${missing.join(', ')} — the Rust event shape and ` +
-          'this adapter have drifted apart. See NotificationPayload in apps/desktop/src-tauri/src/lib.rs.',
+        `ble-bridge: ${kind} payload is wrong at ${wrong.join(', ')} — the Rust event shape and ` +
+          `this adapter have drifted apart. See ${struct} in apps/desktop/src-tauri/src/lib.rs.`,
       );
     }
     return payload;
@@ -84,20 +127,27 @@ export function makeTauriBridge(api = tauri()) {
   const ready = (async () => {
     unlisten.push(
       await api.event.listen('ble-notification', (e) => {
-        const p = e.payload;
-        if (!p || typeof p.sub !== 'number' || typeof p.data !== 'string') {
-          throw new Error(
-            'ble-bridge: ble-notification payload is missing sub or data — the Rust event shape ' +
-              'and this adapter have drifted apart. See NotificationPayload in ' +
-              'apps/desktop/src-tauri/src/lib.rs.',
-          );
-        }
+        // The SAME validator as the disconnect below, which is why it takes types rather than a
+        // list of field names: `sub` is a number and the old helper could only require strings, so
+        // this branch was hand-written beside it — and then drifted, telling anyone debugging a
+        // malformed DISCONNECT to go and read `NotificationPayload`.
+        const p = requireShape(
+          'ble-notification',
+          e.payload,
+          { sub: 'number', data: 'string' },
+          'NotificationPayload',
+        );
         // The id is resolved HERE, from what we recorded at subscribe time. The alternative is
         // what this replaced: the native side re-sending a device id and two 36-character UUIDs
         // with every packet, 20 times a second, for 20 bytes of payload — 204 bytes on the wire
         // where 54 carry anything, and every one of them serialised, copied and parsed.
         const sub = subscriptions.get(p.sub);
         if (!sub) {
+          if (subscribesInFlight > 0 && early.length < EARLY_LIMIT) {
+            // A subscribe is mid-flight and this may well be its first packet. Held, not dropped.
+            early.push({ sub: p.sub, data: p.data });
+            return;
+          }
           // Loud, because a silently dropped packet is the failure this whole path avoids.
           console.warn(`ble-bridge: notification for unknown subscription ${p.sub} — dropped`);
           return;
@@ -113,7 +163,7 @@ export function makeTauriBridge(api = tauri()) {
     );
     unlisten.push(
       await api.event.listen('ble-disconnect', (e) => {
-        const p = requireFields('ble-disconnect', e.payload, ['device']);
+        const p = requireShape('ble-disconnect', e.payload, { device: 'string' }, 'DisconnectPayload');
         discCb({ device: p.device });
       }),
     );
@@ -133,40 +183,64 @@ export function makeTauriBridge(api = tauri()) {
     if (disposed) throw new Error('ble-bridge: this bridge was disposed — build a new one');
   }
 
+  /**
+   * Every command goes through here: refuse after disposal, and never run before the listeners are
+   * up.
+   *
+   * Only `requestDevice` and `connect` used to do this, and the rest went straight to `invoke`. So a
+   * disposed bridge still drove the radio — `subscribe` even repopulated the map `dispose()` had
+   * just cleared, re-attaching a torn-down bridge to a live subscription. Awaiting `ready` for all
+   * of them is the same argument one level on: a `read` issued before the listeners exist cannot
+   * lose a packet, but a `subscribe` can, and having one rule is what stops the next method being
+   * added on the wrong side of it.
+   */
+  async function command(name, args) {
+    assertLive();
+    await ready;
+    // Re-checked: `ready` is a real await, so a dispose can land while we were queued behind it.
+    assertLive();
+    return invoke(name, args);
+  }
+
   return {
     ready,
-    async requestDevice(options) {
-      assertLive();
-      await ready;
-      // The filters come from the protocol layer's brand table. Nothing here reads them.
-      return invoke('ble_request_device', { options });
-    },
-    async connect(id) {
-      assertLive();
-      await ready;
-      return invoke('ble_connect', { id });
-    },
-    discoverServices: (id) => invoke('ble_discover_services', { id }),
-    discoverCharacteristics: (id, service) => invoke('ble_discover_characteristics', { id, service }),
+    // The filters come from the protocol layer's brand table. Nothing here reads them.
+    requestDevice: (options) => command('ble_request_device', { options }),
+    connect: (id) => command('ble_connect', { id }),
+    discoverServices: (id) => command('ble_discover_services', { id }),
+    discoverCharacteristics: (id, service) => command('ble_discover_characteristics', { id, service }),
     async subscribe(id, service, characteristic) {
-      const sub = await invoke('ble_subscribe', { id, service, characteristic });
-      if (typeof sub !== 'number') {
-        throw new Error(`ble-bridge: ble_subscribe returned ${typeof sub}, expected a subscription id`);
+      // Counted BEFORE the await: the window this covers opens the moment the command goes out.
+      subscribesInFlight++;
+      let sub;
+      try {
+        sub = await command('ble_subscribe', { id, service, characteristic });
+        if (typeof sub !== 'number') {
+          throw new Error(`ble-bridge: ble_subscribe returned ${typeof sub}, expected a subscription id`);
+        }
+        // A dispose that landed while the subscribe was in flight already cleared the map; adding
+        // to it here would resurrect one entry of a bridge that no longer exists.
+        if (disposed) throw new Error('ble-bridge: this bridge was disposed — build a new one');
+        subscriptions.set(sub, { device: id, service, characteristic });
+      } finally {
+        subscribesInFlight--;
+        // After the decrement, so a failed subscribe releases anything held for it rather than
+        // leaving packets queued against an id that will never be registered.
+        drainEarly();
       }
-      subscriptions.set(sub, { device: id, service, characteristic });
       return sub;
     },
     async unsubscribe(id, service, characteristic) {
-      await invoke('ble_unsubscribe', { id, service, characteristic });
+      await command('ble_unsubscribe', { id, service, characteristic });
       for (const [sub, s] of subscriptions) {
         if (s.device === id && s.service === service && s.characteristic === characteristic) {
           subscriptions.delete(sub);
         }
       }
     },
-    read: (id, service, characteristic) => invoke('ble_read', { id, service, characteristic }),
+    read: (id, service, characteristic) => command('ble_read', { id, service, characteristic }),
     write: (id, service, characteristic, bytes, withoutResponse) =>
-      invoke('ble_write', {
+      command('ble_write', {
         id,
         service,
         characteristic,
@@ -174,7 +248,7 @@ export function makeTauriBridge(api = tauri()) {
         withoutResponse,
       }),
     /** Ends ONE connection. Listeners survive, because a reconnect needs them. */
-    disconnect: (id) => invoke('ble_disconnect', { id }),
+    disconnect: (id) => command('ble_disconnect', { id }),
     /** Tears the BRIDGE down. The only thing that releases listeners. */
     async dispose() {
       disposed = true;
@@ -203,7 +277,9 @@ export function makeTauriBridge(api = tauri()) {
 /**
  * Make `navigator.bluetooth` usable on this build, and say which one was used.
  *
- * Returns `{ kind, bluetooth, uninstall }`. `kind` is `'native'` when the polyfill is backed by
+ * Returns `{ kind, bluetooth, uninstall }`. `uninstall()` returns a promise on the native path —
+ * awaiting it is how a caller knows the old listeners are gone before installing new ones.
+ * `kind` is `'native'` when the polyfill is backed by
  * the Tauri bridge, `'browser'` when the platform already had Web Bluetooth, and `'none'` when
  * there is no way to reach a radio at all — Safari and Firefox, where the honest answer is that
  * smart cubes are unavailable, not that connecting mysteriously fails.
@@ -243,7 +319,11 @@ export function installBleBridge({ onRawPacket, onTraffic } = {}) {
       kind: 'native',
       bluetooth,
       bridge,
-      uninstall: () => void bridge.dispose(),
+      // RETURNS the promise. `dispose()` waits for listener registration to settle before it
+      // releases anything, so discarding it left a caller that replaces the bridge immediately with
+      // the old listeners still attached alongside the new ones — both firing into the polyfill.
+      // Callers that do not care may still ignore it; the ones that must order a teardown now can.
+      uninstall: () => bridge.dispose(),
     };
   }
   if (globalThis.navigator?.bluetooth) {

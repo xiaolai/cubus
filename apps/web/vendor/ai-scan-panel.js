@@ -2761,8 +2761,8 @@ var NativeDetector = class {
     this.loaded = true;
   }
   async next() {
-    const buf = await this.invoke(`${P}next_detection`);
-    return decodeTensorResponse(buf);
+    const reply = await this.invoke(`${P}next_detection`);
+    return decodeTensorResponse(reply instanceof ArrayBuffer ? reply : reply?.tensor ?? "");
   }
   async cameras() {
     return await this.invoke(`${P}list_cameras`);
@@ -2774,8 +2774,16 @@ var NativeDetector = class {
     });
   }
 };
-function decodeTensorResponse(buf) {
-  if (buf.byteLength < 8) return null;
+function base64ToBuffer(b64) {
+  if (b64.length === 0) return null;
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
+}
+function decodeTensorResponse(input) {
+  const buf = typeof input === "string" ? base64ToBuffer(input) : input;
+  if (buf === null || buf.byteLength < 8) return null;
   const header = new Int32Array(buf, 0, 2);
   const rows = header[0];
   const anchors = header[1];
@@ -2870,6 +2878,16 @@ async function openCamera(video, opts = {}, signal) {
 
 // view/onnx-runtime.ts
 var ortByUrl = /* @__PURE__ */ new Map();
+var configuring = /* @__PURE__ */ new WeakMap();
+function serialise(ort, work) {
+  const next = (configuring.get(ort) ?? Promise.resolve()).then(work, work);
+  configuring.set(
+    ort,
+    next.catch(() => {
+    })
+  );
+  return next;
+}
 var loadOrt = (url) => {
   let pending = ortByUrl.get(url);
   if (!pending) {
@@ -2884,30 +2902,78 @@ var loadOrt = (url) => {
   }
   return pending;
 };
+async function preferredProviders() {
+  const gpu = globalThis.navigator?.gpu;
+  if (!gpu) return ["wasm"];
+  try {
+    return await gpu.requestAdapter() ? ["webgpu", "wasm"] : ["wasm"];
+  } catch {
+    return ["wasm"];
+  }
+}
+var usesGpu = (eps) => {
+  const first = eps[0];
+  if (first === void 0) return false;
+  return (typeof first === "string" ? first : first.name) === "webgpu";
+};
 function defaultThreadCount(isolated = typeof globalThis.crossOriginIsolated === "boolean" ? globalThis.crossOriginIsolated : false, cores = globalThis.navigator?.hardwareConcurrency ?? 1) {
   if (!isolated) return 1;
   return Math.max(1, Math.min(cores - 2, 6));
 }
 async function createModelRunner(modelUrl, opts = {}) {
   const ort = await loadOrt(opts.ortUrl ?? "./ort.mjs");
-  ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
-  ort.env.wasm.proxy = true;
-  ort.env.wasm.wasmPaths = opts.wasmPaths ?? "./";
-  const session = await ort.InferenceSession.create(modelUrl, {
-    executionProviders: opts.executionProviders ?? ["wasm"],
-    graphOptimizationLevel: "all"
+  const executionProviders = opts.executionProviders ?? await preferredProviders();
+  const gpu = usesGpu(executionProviders);
+  const session = await serialise(ort, async () => {
+    ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
+    ort.env.wasm.proxy = !gpu;
+    ort.env.wasm.wasmPaths = opts.wasmPaths ?? "./";
+    return ort.InferenceSession.create(modelUrl, {
+      executionProviders,
+      graphOptimizationLevel: "all"
+    });
   });
   const inputName = session.inputNames[0];
   const outputName = session.outputNames[0];
   if (!inputName || !outputName) throw new Error("model has no input/output tensor");
-  return async (input, imgsz) => {
+  const run = async (input, imgsz) => {
     const tensor = new ort.Tensor("float32", input, [1, 3, imgsz, imgsz]);
     const result = await session.run({ [inputName]: tensor });
     const out = result[outputName];
     if (!out) throw new Error(`model produced no '${outputName}' output`);
+    if (out.type !== "float32" || !(out.data instanceof Float32Array)) {
+      throw new Error(`model output '${outputName}' is ${out.type}, not float32`);
+    }
     const anchors = out.dims[out.dims.length - 1] ?? 0;
+    if (out.dims.length < 2 || !Number.isInteger(anchors) || anchors <= 0) {
+      throw new Error(
+        `model output '${outputName}' has dims [${out.dims.join(", ")}], which has no anchor axis`
+      );
+    }
+    const rows = out.data.length / anchors;
+    if (!Number.isInteger(rows)) {
+      throw new Error(
+        `model output '${outputName}' holds ${out.data.length} floats, which is not a whole number of ${anchors}-anchor rows`
+      );
+    }
     return { data: out.data, anchors };
   };
+  if (opts.warmUp ?? true) {
+    const meta = session.inputMetadata?.[0];
+    const dims = meta?.isTensor ? meta.shape : void 0;
+    const h = dims?.[2];
+    const side = typeof h === "number" && h > 0 ? h : IMG_SIZE;
+    try {
+      await run(new Float32Array(3 * side * side), side);
+    } catch (err) {
+      await session.release().catch(() => {
+      });
+      throw err;
+    }
+  }
+  return Object.assign(run, {
+    dispose: () => session.release()
+  });
 }
 
 // view/web-detector.ts
@@ -2968,6 +3034,13 @@ var WebDetector = class {
     this.opening = null;
     this.source?.stop();
     this.source = null;
+  }
+  dispose() {
+    this.stop();
+    const run = this.run;
+    this.run = null;
+    void run?.dispose?.().catch(() => {
+    });
   }
 };
 
@@ -3050,6 +3123,7 @@ var CameraSession = class {
    * the session's — the session never speaks.
    */
   use(detector, runtime) {
+    if (this.detector && this.detector !== detector) this.detector.dispose?.();
     this.detector?.stop();
     this.generation++;
     this.epoch++;
@@ -3070,6 +3144,7 @@ var CameraSession = class {
       const choice = this.detectorChoice;
       this.detectorPromise = pickDetector({ video, modelUrl }).then(({ detector, runtime }) => {
         if (choice !== this.detectorChoice) {
+          detector.dispose?.();
           detector.stop();
           return this.detector ?? detector;
         }
@@ -4145,8 +4220,11 @@ if (!customElements.get("ai-scan-panel")) {
 }
 export {
   AiScanPanel,
+  createModelRunner,
   decodeDetections,
+  defaultThreadCount,
   fitFace,
   nms,
+  preferredProviders,
   preprocess
 };

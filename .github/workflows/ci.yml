@@ -73,6 +73,66 @@ jobs:
           pip install --quiet pillow
           python scripts/verify-icons.py
 
+  # THE PLATFORM BRANCHES THE LINUX JOB CANNOT SEE.
+  #
+  # `cargo check` on ubuntu compiles cube-vision's INERT branch — the one that registers no
+  # commands. So `windows.rs` and the Android `android_ble.rs` could break, drift, or (as happened)
+  # be dead on arrival, and every gate stayed green: a cfg'd-out module is not compiled, and code
+  # that is not compiled cannot fail. Windows' native path was in fact unreachable in every build
+  # for as long as it existed, because nothing bundled its model, and nothing here would have said
+  # so.
+  #
+  # Compile-only, deliberately. These runners have no camera, no cube and no GPU, so they cannot
+  # tell whether the paths WORK — only that they still build and that their command surfaces still
+  # typecheck against the seam. That is the honest limit of what CI can assert here, and it is
+  # strictly more than zero.
+  rust-platforms:
+    name: Rust (windows · android compile)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows
+          - os: ubuntu-latest
+            target: aarch64-linux-android
+            label: android
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.label }}
+
+      # Android needs the NDK's linker on PATH for `cargo check` to resolve its target.
+      - uses: nttld/setup-ndk@v1
+        if: matrix.label == 'android'
+        id: ndk
+        with:
+          ndk-version: r27c
+
+      - name: check
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: cargo check -p cube-vision -p cubus-desktop --target ${{ matrix.target }}
+
+      - name: clippy
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: cargo clippy -p cube-vision --target ${{ matrix.target }} -- -D warnings
+
+      # Windows can also RUN its unit tests; the Android target cannot execute on the runner.
+      - name: test
+        if: matrix.label == 'windows'
+        run: cargo test -p cube-vision -p cubus-desktop --lib --target ${{ matrix.target }}
+
   rust:
     name: Rust (fmt · clippy · check)
     runs-on: ubuntu-latest

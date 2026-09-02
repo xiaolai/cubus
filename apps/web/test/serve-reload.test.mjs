@@ -91,11 +91,11 @@ test('a large binary asset arrives whole, and declares its length', async () => 
   // parses, so this asserts the header AND the byte count, not just that a response arrived.
   const s = await serve({ CUBUS_LIVE_RELOAD: '0' });
   try {
-    const path = new URL('../vendor/ort-wasm-simd-threaded.jsep.wasm', import.meta.url);
+    const path = new URL('../vendor/ort-wasm-simd-threaded.asyncify.wasm', import.meta.url);
     const onDisk = statSync(path).size;
     assert.ok(onDisk > 20_000_000, `the fixture must be big enough to expose this: ${onDisk} bytes`);
 
-    const res = await fetch(`${s.base}/vendor/ort-wasm-simd-threaded.jsep.wasm`);
+    const res = await fetch(`${s.base}/vendor/ort-wasm-simd-threaded.asyncify.wasm`);
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('content-length'), String(onDisk),
       'no Content-Length means a truncated body ends cleanly and reads as complete');
