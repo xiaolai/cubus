@@ -237,6 +237,21 @@ test('copy-ort ships only the wasm variant the loader can actually request', () 
   assert.doesNotMatch(copyOrt, /startsWith\('ort-wasm-simd-threaded\.'\)[^\n]*\n[^\n]*copyFileSync/,
     'must not copy every ort-wasm-simd-threaded.* variant');
 
+  // ONE predicate for "our asset", used by discovery and cleanup alike. They were two spellings:
+  // discovery took any `ort-wasm*` the loader named, cleanup only pruned `ort-wasm-simd-threaded.*`,
+  // so a rename within that family stranded the old multi-MB wasm in vendor/ — which ships.
+  assert.doesNotMatch(copyOrt, /rmSync[\s\S]{0,120}startsWith\('ort-wasm/,
+    'cleanup must not hardcode a naming family that discovery does not');
+
+  // COPY BEFORE PRUNE. Deleting the live assets first left `ort.mjs` pointing at files that no
+  // longer existed, and an interrupted or failed copy made that window permanent.
+  const copyAt = copyOrt.indexOf('copyFileSync(join(src, f)');
+  const pruneAt = copyOrt.indexOf('rmSync(');
+  assert.ok(copyAt > 0 && pruneAt > 0, 'copy-ort must both copy and prune');
+  assert.ok(copyAt < pruneAt,
+    'copy-ort must copy the wanted assets before pruning stale ones, so no window exists in which ' +
+      'the shipped loader references a file that has been deleted');
+
   // WHICH entrypoint is read off copy-ort rather than named again here. This test hardcoded
   // `ort.bundle.min.mjs` while copy-ort had already moved to the WebGPU build, so it went on
   // checking the variant of a file the app no longer ships — green, and about nothing. Two places
