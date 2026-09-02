@@ -8,10 +8,19 @@
 //!
 //! WHAT THIS HAS TO BEAT, and it is no longer the number the accepted plan was written against.
 //! Windows' WebView2 is Chromium, so since 2026-09-02 the fallback `WebDetector` is not the 198 ms
-//! threaded-wasm path — it is WebGPU, measured at 15 ms a frame on a real GPU. DirectML has to be
-//! faster than that to be worth switching on, and `probe` is what decides. Until someone measures
-//! both on this hardware, the honest reading of a passing build here is "the native path exists",
-//! not "the native path is better".
+//! threaded-wasm path — it is WebGPU, and WebGPU is confirmed WORKING on Windows: a real hardware
+//! adapter and a correct compute result on Edge/WebView2 152, measured. What is NOT measured is how
+//! fast it is there — the 15 ms figure quoted around this repo is a macOS number, and no Windows
+//! timing exists for either path. So DirectML has something real to beat, of unknown size, and
+//! `probe` is what decides. The honest reading of a passing build here is "the native path
+//! exists", not "the native path is better".
+//!
+//! The browser path is also not available on every Windows machine. On a laptop with hybrid
+//! graphics, Chromium's GPU process was measured dying at startup, leaving no WebGPU adapter at
+//! ANY power preference — high-performance and low-power both — though the machine has two working
+//! GPUs and one is driving the panel. On hardware like that this plugin would be the only
+//! accelerated path rather than a faster one. That is an argument for it existing. It is still not
+//! a measurement of it.
 //!
 //! THE LETTERBOX IS THE CORRECTNESS PROBLEM, exactly as it is on Android. Everything downstream of
 //! `next_detection` is one TypeScript implementation calibrated against one preprocessing:

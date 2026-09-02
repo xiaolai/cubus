@@ -87,6 +87,14 @@ export interface ModelRunnerOptions {
  *
  * Deliberately async, and deliberately not cached here: a caller creating one runner per session
  * asks once, and pinning the answer for the page's life would outlive a GPU that went away.
+ *
+ * The wasm fallback is EXERCISED BY REAL HARDWARE, not only by the stubbed test below it. On a
+ * Windows laptop with hybrid graphics, Chromium's GPU process dies at startup (`exit_code=34`), so
+ * `requestAdapter()` resolves null for every power preference — high-performance AND low-power,
+ * measured — even though the machine has two working GPUs and one of them is driving the panel.
+ * A build that assumed a GPU from the hardware present would have picked `webgpu` there and sat in
+ * session creation. Asking, and believing the answer, is what makes that machine merely slower
+ * instead of broken.
  */
 export async function preferredProviders(): Promise<
   ortNs.InferenceSession.ExecutionProviderConfig[]
