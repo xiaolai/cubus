@@ -6,14 +6,22 @@
  * a DOM element to reach four lines of arithmetic.
  *
  * The rule is deliberately BOTH a count and a duration. A count alone is a lie about time, because
- * the two runtimes tick at very different rates — three identical reads span 180 ms on the 60 ms
- * native tick and 600 ms on the 200 ms web one, so a count that means "still" on one path means
- * "glimpsed" on the other. A duration alone would accept a cube that drifted through several
- * different readings during the window. Requiring both is what makes a captured frame a frame
- * somebody actually held.
+ * the two runtimes tick at very different rates — the duration is measured from the FIRST read of
+ * the run, so three identical reads span 120 ms on the 60 ms native tick and 400 ms on the 200 ms
+ * web one, and a count that means "still" on one path means "glimpsed" on the other. A duration
+ * alone would accept a cube that drifted through several different readings during the window.
+ * Requiring both is what makes a captured frame a frame somebody actually held.
  */
 export class Stillness {
-  private key = '';
+  /**
+   * The read the current run is made of, or null when there is no run.
+   *
+   * `null` rather than `''`, because `''` is also what an empty read joins to — so an empty first
+   * read used to look like a CONTINUATION of a run that had already been reset, and inherit its
+   * start time. Unreachable from the scanner (a read is always nine stickers) and kept impossible
+   * rather than merely unlikely, since the sentinel costs nothing to make unambiguous.
+   */
+  private key: string | null = null;
   private count = 0;
   private since = 0;
 
@@ -31,8 +39,13 @@ export class Stillness {
    *
    * `now` is injectable because the alternative is a test that sleeps: the timing rule is the whole
    * point of this class, so it has to be drivable without wall-clock waits.
+   *
+   * The default clock is MONOTONIC. `Date.now()` is not: it follows an NTP correction or a manual
+   * clock change, and a step forward of half a second satisfies the duration gate outright — the
+   * one thing this class exists to refuse. "Held still for 500 ms" is a claim about elapsed time,
+   * so it is measured with the clock that only measures elapsed time.
    */
-  offer(colors: readonly number[], now: number = Date.now()): boolean {
+  offer(colors: readonly number[], now: number = performance.now()): boolean {
     const key = colors.join(',');
     if (key === this.key) {
       this.count += 1;
@@ -46,7 +59,7 @@ export class Stillness {
 
   /** Forget the current run — the cube left the frame, or the scan was restarted. */
   reset(): void {
-    this.key = '';
+    this.key = null;
     this.count = 0;
     this.since = 0;
   }
