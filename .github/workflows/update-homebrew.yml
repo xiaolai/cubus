@@ -1,14 +1,28 @@
 name: Update Homebrew Tap
 
-# Dispatched by release.yml AFTER the assets are uploaded — never `on: release`. The release event
-# fires before uploads finish, so a job triggered by it polls for files that do not exist yet and
-# either times out or races and wins. Can also be run by hand if the automation ever misses one.
+# ON PUBLICATION, because that is the moment the thing this job needs starts existing.
+#
+# It used to be dispatched from release.yml's draft job, and that could not work: the cask points at
+# `releases/download/vX.Y.Z/...`, a DRAFT does not serve that URL to anyone unauthenticated, and
+# this job polls it with plain curl. So every release failed here on a 404 — measured, twice — and
+# the tap was only ever updated by someone re-running the job by hand after publishing. The
+# dispatch also fired BEFORE the release was created at all, one step ahead of the job that makes
+# it, which no amount of polling fixes.
+#
+# `published` fires when a draft is published, which is exactly when the assets become public. The
+# old note warned against `on: release` because the event beats the uploads — true for a release
+# created WITH its files, and not true here: a draft's assets were uploaded minutes earlier, and
+# publishing only flips its visibility. The poll below remains as the belt.
+#
+# workflow_dispatch stays, for re-running a release whose tap update failed.
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g. 0.2.2 — no leading v)'
+        description: 'Version to publish (e.g. 0.2.3 — no leading v)'
         required: true
 
 permissions:
@@ -19,10 +33,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      VERSION: ${{ github.event.inputs.version }}
       REPO: xiaolai/cubus
-      ASSET: cubus_${{ github.event.inputs.version }}_universal.dmg
     steps:
+      # WHICH VERSION, resolved in a shell rather than an expression: the two triggers name it
+      # differently (a published release gives `v0.2.3`, a hand dispatch gives `0.2.3`), and
+      # Actions expressions have no way to strip a prefix without becoming unreadable. One `#v`
+      # here is clearer than a nested ternary nobody can check.
+      - name: Which version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -eu
+          VERSION="${INPUT_VERSION:-${RELEASE_TAG#v}}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "ASSET=cubus_${VERSION}_universal.dmg" >> "$GITHUB_ENV"
+          echo "resolved version: $VERSION"
+
       # Guards 1 and 3 come before any network work, so a bad dispatch dies in seconds.
       - name: Stable versions only
         run: |
