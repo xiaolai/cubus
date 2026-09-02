@@ -13,6 +13,9 @@
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
 
+#[cfg(target_os = "windows")]
+mod windows;
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use apple::init;
 
@@ -36,10 +39,20 @@ pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+/// Windows: Media Foundation for frames, onnxruntime + DirectML for the model. See `windows.rs`
+/// for what it has to beat, which since WebGPU landed is no longer the number the plan assumed.
+#[cfg(target_os = "windows")]
+pub use windows::init;
+
 /// The plugin on the remaining targets: present, named, and empty. The webview probes for a command
 /// and, finding none, falls back to `WebDetector` — the same fallback Windows and Linux use by
 /// design, and since 2026-09-02 that fallback is WebGPU where the WebView has one.
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+    target_os = "windows"
+)))]
 pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("cube-vision").build()
 }
