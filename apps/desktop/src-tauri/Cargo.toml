@@ -48,9 +48,26 @@ optimal-solver = { path = "../../../crates/optimal-solver" }
 # back through `write_fff5`.
 cube-ble = { path = "../../../crates/cube-ble" }
 serde = { version = "1.0", features = ["derive"] }
+# Required in scope by `tauri::generate_context!` since tauri.conf.json grew a `plugins` section:
+# the macro expands plugin config into serde_json values and resolves the crate by name, so the
+# dependency has to be direct even though nothing in src/ imports it.
+serde_json = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 hex = "0.4"
+
+# Self-update, DESKTOP ONLY (accepted 2026-09-02). A phone updates through its store and a browser
+# is always current, so this is a capability only a desktop has — the same shape as the window's
+# orientation, and gated the same way (`isDesktopHost()` plus an injected API). `process` is what
+# relaunches the app once the new version is staged; without it the user has to quit and reopen,
+# which is the step people do not take.
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+# The question the updater asks. A NATIVE dialog rather than a component of our own: this app has
+# no general modal, and inventing one would cut across `dev-docs/design/` for a two-button question
+# the OS already draws better than we would.
+tauri-plugin-dialog = "2"
 
 # Already in the tree via tao/wry (same version), pulled in directly to place the macOS traffic
 # lights deterministically — see place_traffic_lights in lib.rs for why the framework's own
