@@ -1,8 +1,8 @@
 package im.cubus.app
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.graphics.ImageFormat
 import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -10,10 +10,12 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.lifecycle.LifecycleOwner
 import app.tauri.annotation.Command
+import app.tauri.PermissionState
 import app.tauri.annotation.InvokeArg
+import app.tauri.annotation.Permission
+import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
-import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import org.tensorflow.lite.Interpreter
@@ -22,7 +24,9 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -39,9 +43,14 @@ import java.util.concurrent.atomic.AtomicReference
  * and it is calibrated against a specific preprocessing. `preprocess()` in `src/onnx-detect.ts`
  * resizes so the LONG side becomes 640 with bilinear sampling at pixel centres, centre-pads with
  * grey 114, normalises to [0,1] and lays the result out CHW. Any deviation — nearest-neighbour, a
- * half-pixel offset, HWC, BGR — produces boxes that are slightly wrong everywhere, which reads as
- * a model that has become worse rather than a preprocessing that has drifted. It is reproduced
- * below line for line, and `ml/golden_frames.py` is what proves the model half agrees.
+ * half-pixel offset, BGR — produces boxes that are slightly wrong everywhere, which reads as a
+ * model that has become worse rather than a preprocessing that has drifted. It is reproduced below
+ * line for line, in DOUBLE as the TypeScript is, and `ml/golden_frames.py` is what proves the model
+ * half agrees.
+ *
+ * The one deliberate difference is LAYOUT: this `.tflite` takes NHWC `[1,640,640,3]` where the ONNX
+ * graph takes CHW, so the same samples are written in a different order. `load_model` asserts the
+ * shape rather than trusting this note.
  *
  * NOT VERIFIED. This compiles. Nothing here has run on a phone, opened a camera, or produced a
  * tensor. `pickDetector` only takes the native path when `probe` answers true, so an Android build
@@ -49,7 +58,11 @@ import java.util.concurrent.atomic.AtomicReference
  * where the WebView has it, measured at 15 ms a frame against this path's unmeasured promise.
  * That is the honest reason not to rush the switch: the thing it has to beat is no longer slow.
  */
-@TauriPlugin
+@TauriPlugin(
+    permissions = [
+        Permission(strings = [Manifest.permission.CAMERA], alias = VisionPlugin.CAMERA_ALIAS),
+    ],
+)
 class VisionPlugin(private val activity: Activity) : Plugin(activity) {
 
     @InvokeArg
@@ -64,15 +77,51 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private val analysisExecutor = Executors.newSingleThreadExecutor()
+
+    /**
+     * Model work, on its OWN thread and never the caller's.
+     *
+     * Tauri dispatches Android commands on the main thread, so loading a model and running
+     * inference inline froze the UI and risked an ANR — on the very screen whose whole job is to
+     * stay responsive while the camera runs. A second single-threaded executor rather than reusing
+     * [analysisExecutor], because inference must not block frame delivery; being single-threaded is
+     * what keeps interpreter access serialised without a lock.
+     */
+    private val modelExecutor = Executors.newSingleThreadExecutor()
+
     private var provider: ProcessCameraProvider? = null
     private var analysis: ImageAnalysis? = null
     private var openedId: String? = null
 
+    /**
+     * Which camera session a frame belongs to. Bumped by every open and every close.
+     *
+     * An `ImageAnalysis` callback already in flight when the camera closes used to publish its
+     * frame into [latest] AFTER `close_camera` had cleared it, and a provider callback that
+     * arrived late could bind a camera the app had already asked to close. Both produce the same
+     * symptom: the scanner reading pixels from a camera that is no longer open. The analyzer
+     * compares the generation it was bound with against this before publishing anything.
+     */
+    private val generation = AtomicInteger(0)
+
     /** The most recent frame, already letterboxed. One slot: a scan wants the newest, not a queue. */
     private val latest = AtomicReference<FloatArray?>(null)
 
+    /**
+     * Why the last frame did not arrive, if it did not.
+     *
+     * Preprocessing failures used to be swallowed by a bare `runCatching`, so a camera that
+     * produced unreadable frames looked exactly like a camera warming up — `next_detection` kept
+     * answering "no frame yet" forever, or worse, kept re-inferring one stale frame. The repo's
+     * rule is fail loud, and this is where the failure is kept until someone asks.
+     */
+    private val lastFrameError = AtomicReference<String?>(null)
+
     private var interpreter: Interpreter? = null
     private var outputShape: IntArray = intArrayOf(1, 0, 0)
+
+    /** What to run once the camera permission is answered, keyed by the command that asked. */
+    private val pendingPermissionAction = ConcurrentHashMap<String, () -> Unit>()
 
     // ---- capability ----------------------------------------------------------------------------
 
@@ -102,29 +151,72 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun probe(invoke: Invoke) {
         val hasModel = runCatching { activity.assets.open(MODEL).close(); true }.getOrDefault(false)
-        invoke.resolve(JSObject().apply { put("value", verifiedOnDevice && hasModel) })
+        // A BARE boolean. `pickDetector` tests `=== true`, so `{ "value": … }` was never going to
+        // select this plugin however the gate below was set — the native path would have stayed
+        // unreachable even after someone verified it on a device and flipped the constant, which is
+        // the worst moment for a wiring bug to still be waiting.
+        invoke.resolveObject(verifiedOnDevice && hasModel)
     }
 
     // ---- camera --------------------------------------------------------------------------------
 
+    /**
+     * The cameras this phone actually has, as a bare array — `NativeDetector.cameras()` types the
+     * reply `CameraDevice[]`, so `{ "cameras": [...] }` arrived as an object pretending to be one.
+     *
+     * ASKED, not assumed. This used to return a fixed front/back pair, so a device with no front
+     * lens still offered one and selecting it failed later, at bind time, as an opaque camera
+     * error rather than an absence the picker could have shown.
+     */
     @Command
     fun list_cameras(invoke: Invoke) {
-        val list = listOf(
-            JSObject().apply {
-                put("deviceId", BACK)
-                put("label", "Back camera")
-            },
-            JSObject().apply {
-                put("deviceId", FRONT)
-                put("label", "Front camera")
-            },
-        )
-        invoke.resolve(JSObject().apply { put("cameras", JSArray(list.toTypedArray())) })
+        val future = ProcessCameraProvider.getInstance(activity)
+        future.addListener({
+            runCatching {
+                val p = future.get()
+                val cameras = buildList {
+                    if (p.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
+                        add(mapOf("deviceId" to BACK, "label" to "Back camera"))
+                    }
+                    if (p.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
+                        add(mapOf("deviceId" to FRONT, "label" to "Front camera"))
+                    }
+                }
+                invoke.resolveObject(cameras)
+            }.onFailure { invoke.reject("could not enumerate cameras: ${it.message}") }
+        }, androidx.core.content.ContextCompat.getMainExecutor(activity))
+    }
+
+    /**
+     * Ask for the camera permission, then run [proceed].
+     *
+     * A manifest entry grants nothing on Android 6+; this plugin had no request path at all, so a
+     * fresh install would fail to open the camera with no prompt ever shown to explain why.
+     */
+    private fun withCameraPermission(invoke: Invoke, proceed: () -> Unit) {
+        if (getPermissionState(CAMERA_ALIAS) == PermissionState.GRANTED) {
+            proceed()
+            return
+        }
+        pendingPermissionAction[invoke.command] = proceed
+        requestPermissionForAlias(CAMERA_ALIAS, invoke, "onCameraPermissionResult")
+    }
+
+    @PermissionCallback
+    private fun onCameraPermissionResult(invoke: Invoke) {
+        val proceed = pendingPermissionAction.remove(invoke.command)
+        if (getPermissionState(CAMERA_ALIAS) != PermissionState.GRANTED) {
+            return invoke.reject("camera permission was not granted")
+        }
+        proceed?.invoke() ?: invoke.reject("the permission result arrived with nothing waiting on it")
     }
 
     @SuppressLint("UnsafeOptInUsageError")
     @Command
-    fun open_camera(invoke: Invoke) {
+    fun open_camera(invoke: Invoke) = withCameraPermission(invoke) { bindCamera(invoke) }
+
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun bindCamera(invoke: Invoke) {
         val args = invoke.parseArgs(OpenArgs::class.java)
         // The REAR camera by default. A phone's front lens is the trap the web path documents:
         // the app expresses no preference and the platform hands back a selfie camera, so the
@@ -133,8 +225,20 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
         val selector =
             if (id == FRONT) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
 
+        // Claim this session BEFORE anything async starts, and clear the last camera's frame with
+        // it. Whatever was in `latest` belongs to a camera that is about to be unbound.
+        val mine = generation.incrementAndGet()
+        latest.set(null)
+        lastFrameError.set(null)
+
         val future = ProcessCameraProvider.getInstance(activity)
         future.addListener({
+            // A provider callback that lost its race with a `close_camera` — or with another
+            // `open_camera` — must not bind. Without this a camera the app asked to close could be
+            // brought back up moments later by a listener nobody was waiting for any more.
+            if (generation.get() != mine) {
+                return@addListener invoke.reject("the camera was closed before it finished opening")
+            }
             runCatching {
                 val p = future.get()
                 provider = p
@@ -145,8 +249,30 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                     .build()
                 a.setAnalyzer(analysisExecutor) { image ->
-                    runCatching { latest.set(letterbox(image)) }
-                    image.close()
+                    // `use` rather than a bare close, so a throwing letterbox still releases the
+                    // image — a leaked ImageProxy stalls the whole analysis pipeline after two
+                    // frames, which looks like a camera that froze.
+                    image.use {
+                        if (generation.get() != mine) return@use
+                        runCatching { letterbox(it) }
+                            .onSuccess { frame ->
+                                // Re-checked after the work: a close can land while a frame is
+                                // being letterboxed, and publishing it then revives a closed
+                                // camera's pixels.
+                                if (generation.get() == mine) {
+                                    lastFrameError.set(null)
+                                    latest.set(frame)
+                                }
+                            }
+                            .onFailure { e ->
+                                if (generation.get() == mine) {
+                                    // Recorded AND the stale frame dropped: answering with older
+                                    // pixels would let a broken camera read as a working one.
+                                    latest.set(null)
+                                    lastFrameError.set(e.message ?: e.toString())
+                                }
+                            }
+                    }
                 }
                 p.bindToLifecycle(activity as LifecycleOwner, selector, a)
                 analysis = a
@@ -169,11 +295,19 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun close_camera(invoke: Invoke) {
+        closeCamera()
+        invoke.resolve()
+    }
+
+    /** Retire this session first, so an analyzer mid-frame cannot publish into the next one. */
+    private fun closeCamera() {
+        generation.incrementAndGet()
+        analysis?.clearAnalyzer()
         provider?.unbindAll()
         analysis = null
         openedId = null
         latest.set(null)
-        invoke.resolve()
+        lastFrameError.set(null)
     }
 
     // ---- model ---------------------------------------------------------------------------------
@@ -181,29 +315,43 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun load_model(invoke: Invoke) {
         invoke.parseArgs(LoadArgs::class.java)
-        if (interpreter != null) return invoke.resolve()
-        runCatching {
-            val opts = Interpreter.Options().apply {
-                // XNNPACK and the cores the app can spare — the same reasoning as the wasm path's
-                // thread count, which leaves two for the camera and the renderer.
-                numThreads = maxOf(1, Runtime.getRuntime().availableProcessors() - 2)
-                setUseXNNPACK(true)
-            }
-            val i = Interpreter(loadModel(), opts)
-            outputShape = i.getOutputTensor(0).shape()
-            interpreter = i
-            invoke.resolve()
-        }.onFailure { invoke.reject("could not load the model: ${it.message}") }
+        // On the model thread: building an Interpreter maps the file and initialises XNNPACK, which
+        // is not work for the thread that has to keep drawing.
+        modelExecutor.execute {
+            if (interpreter != null) return@execute invoke.resolve()
+            runCatching {
+                val opts = Interpreter.Options().apply {
+                    // XNNPACK and the cores the app can spare — the same reasoning as the wasm
+                    // path's thread count, which leaves two for the camera and the renderer.
+                    numThreads = maxOf(1, Runtime.getRuntime().availableProcessors() - 2)
+                    setUseXNNPACK(true)
+                }
+                val i = Interpreter(loadModel(), opts)
+                // ASSERTED, not assumed. The shipped graph takes NHWC [1,640,640,3]; an export that
+                // changed layout would otherwise be discovered as boxes that are subtly wrong
+                // everywhere, which reads as a worse model rather than a wrong tensor.
+                val inShape = i.getInputTensor(0).shape()
+                check(inShape.contentEquals(intArrayOf(1, IMG, IMG, 3))) {
+                    "the model wants input ${inShape.joinToString()}, not [1, $IMG, $IMG, 3] — " +
+                        "this plugin builds NHWC and would feed it the wrong pixels"
+                }
+                outputShape = i.getOutputTensor(0).shape()
+                interpreter = i
+                invoke.resolve()
+            }.onFailure { invoke.reject("could not load the model: ${it.message}") }
+        }
     }
 
     private fun loadModel(): MappedByteBuffer {
-        val fd = activity.assets.openFd(MODEL)
-        FileInputStream(fd.fileDescriptor).use { stream ->
-            return stream.channel.map(
-                FileChannel.MapMode.READ_ONLY,
-                fd.startOffset,
-                fd.declaredLength,
-            )
+        // `use`, so the descriptor is released even when the map fails.
+        activity.assets.openFd(MODEL).use { fd ->
+            FileInputStream(fd.fileDescriptor).use { stream ->
+                return stream.channel.map(
+                    FileChannel.MapMode.READ_ONLY,
+                    fd.startOffset,
+                    fd.declaredLength,
+                )
+            }
         }
     }
 
@@ -213,98 +361,162 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
      * The reply is the RAW output tensor in the wire format `decodeTensorResponse` reads: two
      * little-endian int32s (rows, anchors) then rows*anchors float32. The RGBA frame never crosses
      * the bridge — that is the whole efficiency argument for doing this natively at all.
+     *
+     * On the model thread, and serialised there: LiteRT's `Interpreter` is not safe to call from
+     * two threads, and running it on the command thread froze the UI.
      */
     @Command
     fun next_detection(invoke: Invoke) {
-        val i = interpreter ?: return invoke.reject("the model is not loaded — call load_model first")
-        val input = latest.get() ?: return invoke.resolve(JSObject().apply { put("tensor", "") })
-        val rows = outputShape.getOrElse(1) { 0 }
-        val anchors = outputShape.getOrElse(2) { 0 }
-        if (rows <= 0 || anchors <= 0) return invoke.reject("the model reports no output shape")
-
-        val out = Array(1) { Array(rows) { FloatArray(anchors) } }
-        runCatching {
-            i.run(arrayOf(reshapeToNCHW(input)), mapOf(0 to out))
-        }.onFailure { return invoke.reject("inference failed: ${it.message}") }
-
-        val buf = ByteBuffer.allocate(8 + rows * anchors * 4).order(ByteOrder.LITTLE_ENDIAN)
-        buf.putInt(rows)
-        buf.putInt(anchors)
-        for (r in 0 until rows) for (a in 0 until anchors) buf.putFloat(out[0][r][a])
-        invoke.resolve(
-            JSObject().apply {
-                put("tensor", android.util.Base64.encodeToString(buf.array(), android.util.Base64.NO_WRAP))
-            },
-        )
-    }
-
-    /** CHW float array → the [1,3,640,640] nesting LiteRT's Java API wants. */
-    private fun reshapeToNCHW(chw: FloatArray): Array<Array<Array<FloatArray>>> {
-        val plane = IMG * IMG
-        return Array(1) { _ ->
-            Array(3) { c ->
-                Array(IMG) { y ->
-                    FloatArray(IMG) { x -> chw[c * plane + y * IMG + x] }
+        modelExecutor.execute {
+            val i = interpreter
+                ?: return@execute invoke.reject("the model is not loaded — call load_model first")
+            val input = latest.get()
+            if (input == null) {
+                // A recorded preprocessing failure is reported, not papered over as "no frame yet".
+                lastFrameError.get()?.let {
+                    return@execute invoke.reject("the camera frame could not be prepared: $it")
                 }
+                return@execute invoke.resolve(JSObject().apply { put("tensor", "") })
             }
+            val rows = outputShape.getOrElse(1) { 0 }
+            val anchors = outputShape.getOrElse(2) { 0 }
+            if (rows <= 0 || anchors <= 0) return@execute invoke.reject("the model reports no output shape")
+
+            val out = Array(1) { Array(rows) { FloatArray(anchors) } }
+            runCatching {
+                // A DIRECT ByteBuffer, and `run` rather than `runForMultipleInputsOutputs`.
+                //
+                // This previously nested the frame into `[1,3,640,640]` and wrapped THAT in
+                // `arrayOf(...)`, producing a five-dimensional NCHW tensor for a model whose input
+                // is `[1,640,640,3]` — and handed `run()` a Map, which is the multi-input API. Three
+                // mistakes that all had to be fixed together, because each one alone still threw.
+                val buf = inputBuffer()
+                buf.clear()
+                val f = buf.asFloatBuffer()
+                f.put(input)
+                buf.rewind()
+                i.run(buf, out)
+            }.onFailure { return@execute invoke.reject("inference failed: ${it.message}") }
+
+            val bytes = ByteBuffer.allocate(8 + rows * anchors * 4).order(ByteOrder.LITTLE_ENDIAN)
+            bytes.putInt(rows)
+            bytes.putInt(anchors)
+            for (r in 0 until rows) for (a in 0 until anchors) bytes.putFloat(out[0][r][a])
+            invoke.resolve(
+                JSObject().apply {
+                    put("tensor", android.util.Base64.encodeToString(bytes.array(), android.util.Base64.NO_WRAP))
+                },
+            )
         }
     }
 
     /**
-     * `preprocess()` from src/onnx-detect.ts, reproduced exactly.
+     * The one input buffer, reused. Safe without a lock because every caller is [modelExecutor],
+     * which is single-threaded — the same property that serialises the interpreter.
+     */
+    private var input: ByteBuffer? = null
+
+    private fun inputBuffer(): ByteBuffer =
+        input ?: ByteBuffer.allocateDirect(IMG * IMG * 3 * 4)
+            .order(ByteOrder.nativeOrder())
+            .also { input = it }
+
+    /** Release what a plugin instance owns; an activity can be recreated under us. */
+    override fun onDestroy() {
+        closeCamera()
+        analysisExecutor.shutdown()
+        modelExecutor.shutdown()
+        interpreter?.close()
+        interpreter = null
+        input = null
+    }
+
+    /**
+     * `preprocess()` from src/onnx-detect.ts, reproduced exactly — including its arithmetic.
      *
-     * Bilinear at PIXEL CENTRES — the `+ 0.5 … - 0.5` is not decoration, it is the half-pixel
+     * Bilinear at PIXEL CENTRES: the `+ 0.5 … - 0.5` is not decoration, it is the half-pixel
      * convention the model was trained and calibrated against, and dropping it shifts every box by
      * half a pixel at 640 and more after the scale back. Long side to 640, centre pad with grey
-     * 114/255, CHW, RGB. The one thing that legitimately differs from the TS is where the pixels
-     * come from: an ImageProxy row is `rowStride` bytes wide, which is NOT width*4 on most devices.
+     * 114/255, RGB.
+     *
+     * IN DOUBLE, because the TypeScript is. Every JS number is a double and only the store into
+     * `Float32Array` rounds; this computed the scale, the source coordinates, the interpolation
+     * weights and the normalisation in `Float`, which can land `sy` on the other side of an integer
+     * boundary and pick a different source row. The comment claimed byte-exact parity that the code
+     * did not deliver — and this is the one file where that claim carries real weight, since
+     * `golden_frames.py` proves the .tflite agrees with the other runtimes and proves nothing at all
+     * about what this feeds it.
+     *
+     * NHWC, unlike the TS and the Apple/Windows paths, which are CHW. Not a divergence in the
+     * pixels — the same samples in a different order — but in the LAYOUT the runtime demands: the
+     * ONNX graph takes `[1,3,640,640]` and this `.tflite` takes `[1,640,640,3]`, asserted in
+     * `load_model` so an export that changes it fails loudly instead of quietly misreading.
+     *
+     * The one thing that legitimately differs from the TS is where the pixels come from: an
+     * ImageProxy row is `rowStride` bytes wide, which is NOT width*4 on most devices.
      */
     private fun letterbox(image: ImageProxy): FloatArray {
         val w = image.width
         val h = image.height
+        require(w > 0 && h > 0) { "the camera produced a ${w}x${h} frame" }
         val plane = image.planes[0]
         val row = plane.rowStride
         val pixel = plane.pixelStride
         val src = plane.buffer
+        // The ImageProxy is unwrapped HERE and the arithmetic lives in a pure function, so the
+        // letterbox can be tested off a device. It could not be before: the only entry point took
+        // an Android type that exists on a phone, which is why the file's strongest claim — that
+        // this reproduces `preprocess()` — was never checked by anything.
+        return letterboxFrom(w, h) { x, y, c -> src.get(y * row + x * pixel + c).toInt() and 0xff }
+    }
 
-        val scale = IMG.toFloat() / maxOf(w, h)
-        val newW = maxOf(1, Math.round(w * scale))
-        val newH = maxOf(1, Math.round(h * scale))
+    companion object Letterbox {
+        /**
+         * The letterbox itself, over any pixel source.
+         *
+         * `sample(x, y, channel)` returns 0..255. Pulled out of [letterbox] so
+         * `VisionPluginLetterboxTest` can run it against the exact numbers
+         * `packages/cube-scanner/src/onnx-detect.ts` produces for the same fixture — the cross
+         * language check that `crates/cube-vision/src/windows.rs` also carries, because there is
+         * one preprocessing contract and three implementations of it.
+         */
+        fun letterboxFrom(w: Int, h: Int, sample: (Int, Int, Int) -> Int): FloatArray {
+        val scale = IMG.toDouble() / maxOf(w, h)
+        val newW = maxOf(1, Math.round(w * scale).toInt())
+        val newH = maxOf(1, Math.round(h * scale).toInt())
         val padX = (IMG - newW) / 2
         val padY = (IMG - newH) / 2
-        val area = IMG * IMG
-        val out = FloatArray(3 * area) { PAD }
-
-        fun at(x: Int, y: Int, c: Int): Int = src.get(y * row + x * pixel + c).toInt() and 0xff
+        val out = FloatArray(IMG * IMG * 3) { PAD }
 
         for (y in 0 until newH) {
-            val sy = minOf(h - 1.0f, maxOf(0.0f, (y + 0.5f) / scale - 0.5f))
+            val sy = minOf(h - 1.0, maxOf(0.0, (y + 0.5) / scale - 0.5))
             val y0 = sy.toInt()
             val y1 = minOf(h - 1, y0 + 1)
             val fy = sy - y0
             val oy = y + padY
             for (x in 0 until newW) {
-                val sx = minOf(w - 1.0f, maxOf(0.0f, (x + 0.5f) / scale - 0.5f))
+                val sx = minOf(w - 1.0, maxOf(0.0, (x + 0.5) / scale - 0.5))
                 val x0 = sx.toInt()
                 val x1 = minOf(w - 1, x0 + 1)
                 val fx = sx - x0
-                val o = oy * IMG + (x + padX)
+                // NHWC: three contiguous channels per pixel, rather than three 640x640 planes.
+                val o = (oy * IMG + (x + padX)) * 3
                 for (c in 0 until 3) {
-                    val p00 = at(x0, y0, c)
-                    val p01 = at(x1, y0, c)
-                    val p10 = at(x0, y1, c)
-                    val p11 = at(x1, y1, c)
+                    val p00 = sample(x0, y0, c).toDouble()
+                    val p01 = sample(x1, y0, c).toDouble()
+                    val p10 = sample(x0, y1, c).toDouble()
+                    val p11 = sample(x1, y1, c).toDouble()
                     val top = p00 + (p01 - p00) * fx
                     val bot = p10 + (p11 - p10) * fx
-                    out[c * area + o] = (top + (bot - top) * fy) / 255f
+                    out[o + c] = ((top + (bot - top) * fy) / 255.0).toFloat()
                 }
             }
         }
         return out
-    }
+        }
 
-    companion object {
-        private const val IMG = 640
+        const val CAMERA_ALIAS = "camera"
+        const val IMG = 640
         /** Ultralytics letterbox pad colour (grey 114), normalised — same constant as the TS. */
         private const val PAD = 114f / 255f
         private const val MODEL = "cube-yolo.tflite"
