@@ -33,18 +33,16 @@ function fakeStorage(initial = {}, { throwOnSet = false } = {}) {
 }
 
 describe('selfUpdateSupported', () => {
-  // macOS is the interesting entry, and it is ABSENT on purpose. It ships through a Homebrew cask,
-  // which is its updater; an app that also updated itself there would be reinstalled over by the
-  // next `brew upgrade` — a downgrade performed by the command meant to keep you current, and
-  // reported by nothing. The cask correspondingly does NOT declare `auto_updates true`.
-  test('macOS does not self-update — Homebrew owns it', () => {
-    assert.equal(selfUpdateSupported('macos'), false);
-    assert.ok(!SELF_UPDATE_PLATFORMS.includes('macos'));
-  });
-
-  test('windows and linux do, because nothing else tracks their installs', () => {
+  // macOS is here alongside its Homebrew cask, and that is deliberate rather than an oversight.
+  // Both follow the same GitHub releases and the tap updates on `release: published`, so they move
+  // together: `brew upgrade` reinstalls the version the app already has instead of replacing a
+  // newer one. The downgrade this was once written to avoid needs the cask to LAG the app, which
+  // is a property of a tap that updates late — not of having two updaters.
+  test('every desktop self-updates, macOS included', () => {
+    assert.equal(selfUpdateSupported('macos'), true);
     assert.equal(selfUpdateSupported('windows'), true);
     assert.equal(selfUpdateSupported('linux'), true);
+    assert.deepEqual([...SELF_UPDATE_PLATFORMS].sort(), ['linux', 'macos', 'windows']);
   });
 
   // Unknown must fall to the side that promises less, the same rule `isDesktopHost` follows.

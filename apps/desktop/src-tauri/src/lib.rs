@@ -938,24 +938,24 @@ pub fn run() {
             optimal::optimal_cancel
         ]);
 
-    // Self-update, and the relaunch that completes it. WINDOWS AND LINUX ONLY.
+    // Self-update, and the relaunch that completes it. EVERY DESKTOP, macOS included.
     //
-    // Not macOS: it ships through a Homebrew cask, and a cask plus a self-updater both write to
-    // the same /Applications/cubus.app while only one of them knows what is really there. An app
-    // that moved itself to 0.3.0 would be reinstalled as 0.2.9 by the next `brew upgrade` — a
-    // downgrade performed by the command meant to keep you current, and reported by nothing.
-    // Homebrew is the macOS updater; this is not compiled there at all.
+    // macOS also has a Homebrew cask, and the two coexist because they move together: both follow
+    // the same GitHub releases, and the tap updates on `release: published`, within seconds of the
+    // manifest the app reads. So `brew upgrade` reinstalls the version the app already has instead
+    // of replacing a newer one. The cask deliberately does not declare `auto_updates true`, which
+    // leaves both paths working for whoever prefers which.
     //
-    // Not a phone either, and not the browser build: one goes through a store, the other is
-    // whatever the server last served. So this is the same shape as the window's orientation — a
-    // capability one build has and another cannot want — and the affordance is drawn behind the
-    // same predicate, narrowed by `SELF_UPDATE_PLATFORMS`.
+    // Not a phone, and not the browser build: one goes through a store, the other is whatever the
+    // server last served. So this is the same shape as the window's orientation — a capability one
+    // build has and another cannot want — and the affordance is drawn behind the same predicate,
+    // narrowed by `SELF_UPDATE_PLATFORMS`.
     //
     // The pubkey and endpoint live in tauri.conf.json. An update is verified against that key
     // before it is ever unpacked, which is the whole reason this is safe to ship: the endpoint is
     // plain HTTPS on a public URL, and a signature nobody but the maintainer can produce is what
     // stops that URL from being an install-anything hole.
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
