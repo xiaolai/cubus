@@ -866,6 +866,28 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // CMD+W CLOSES THE WINDOW; CMD+Q QUITS. On macOS those are different things, and this
+            // app used to make them the same one: it has a single window, so closing it ended the
+            // process — which meant the reflex that dismisses a window on every other Mac app threw
+            // away a scan in progress, a solve in progress, and every warm table behind them
+            // (cubejs alone costs 3-6 s and ~34 MB to rebuild, and the renderer's GL context goes
+            // with it). Hidden rather than closed, reopening is instantaneous AND lands exactly
+            // where the user left off, because the webview was never torn down.
+            //
+            // This is only correct BECAUSE `RunEvent::Reopen` below brings it back. An app that
+            // keeps a Dock icon it cannot restore a window from is worse than one that quits: the
+            // icon is there, clicking it does nothing, and the only way out is Force Quit. The two
+            // halves are a pair and neither is safe alone.
+            //
+            // macOS only, deliberately. On Windows and Linux the close button IS quit — an app
+            // that lingered with no window there would be a process nobody asked for and nothing
+            // in the taskbar to reach it by.
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+                return;
+            }
             #[cfg(target_os = "macos")]
             {
                 use tauri::WindowEvent;
@@ -962,9 +984,30 @@ pub fn run() {
         builder
     };
 
+    // `build().run(handler)` rather than `run()`, for one reason: `RunEvent::Reopen` is the Dock
+    // icon being clicked, and it is only reachable from the handler form.
     builder
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // The other half of the hide-on-close pair above. Without it the app would keep a Dock
+            // icon that restores nothing, which is a worse outcome than quitting.
+            //
+            // `has_visible_windows` is false exactly when every window is hidden — the state
+            // CloseRequested leaves behind. When it is true macOS has already brought a window
+            // forward and there is nothing to do; showing again would be a no-op that steals focus.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } = _event
+            {
+                if let Some(window) = _app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
 
 #[cfg(test)]
