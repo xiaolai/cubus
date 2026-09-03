@@ -469,6 +469,11 @@ jobs:
       # outliving its reason.
       contents: write
     steps:
+      # CHECKED OUT, because this job runs a script from the repo. It did not, and the first tagged
+      # release to reach the manifest step died on `Cannot find module` — the one job that had never
+      # needed the source now does.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist

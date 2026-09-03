@@ -36,17 +36,25 @@ import { basename, join } from 'node:path';
  */
 export function platformsFor(name) {
   if (name.endsWith('.app.tar.gz')) return ['darwin-aarch64', 'darwin-x86_64'];
-  // NSIS first: it is what `createUpdaterArtifacts` produces for the .exe installer, and it is the
-  // one Tauri's Windows updater prefers. The .msi zip is accepted so a build that produces only
-  // that still yields a manifest rather than an empty windows entry.
-  if (name.endsWith('.nsis.zip')) return ['windows-x86_64'];
-  if (name.endsWith('.msi.zip')) return ['windows-x86_64'];
+  // WINDOWS SIGNS THE INSTALLERS THEMSELVES. Measured from a real tagged build, not assumed: the
+  // v0.2.3 run produced `cubus_0.2.3_x64-setup.exe.sig` and `cubus_0.2.3_x64_en-US.msi.sig`, not
+  // the `.nsis.zip` / `.msi.zip` this originally looked for. The zip forms are still accepted
+  // because other Tauri configurations emit them and costing nothing to keep; the bare installers
+  // are what this project actually ships.
+  if (name.endsWith('-setup.exe') || name.endsWith('.nsis.zip')) return ['windows-x86_64'];
+  if (name.endsWith('.msi') || name.endsWith('.msi.zip')) return ['windows-x86_64'];
+  // Linux updates through the AppImage. `.deb` and `.rpm` are signed too — createUpdaterArtifacts
+  // signs every bundle — but they are how Linux INSTALLS, not how it updates, and handing the
+  // updater a payload it cannot apply is worse than offering nothing.
   if (name.endsWith('.AppImage')) return ['linux-x86_64'];
   return [];
 }
 
 /** NSIS beats MSI when a build produced both, so one platform never gets two candidate URLs. */
-const RANK = (name) => (name.endsWith('.nsis.zip') ? 0 : name.endsWith('.msi.zip') ? 1 : 0);
+const RANK = (name) =>
+  name.endsWith('-setup.exe') || name.endsWith('.nsis.zip') ? 0
+  : name.endsWith('.msi') || name.endsWith('.msi.zip') ? 1
+  : 0;
 
 /**
  * @param {object} o
