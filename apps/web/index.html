@@ -29,7 +29,7 @@
       * { box-sizing: border-box; }
       html, body { height: 100%; }
 
-      /* Scrollbars: thin, quiet, and themed — the STANDARD properties only.
+      /* Scrollbars: NONE, on every scroller — the STANDARD property only.
        *
        * `::-webkit-scrollbar` is what every recipe reaches for, and in this engine it is the
        * thing that CAUSES the heavy permanent gutter it is meant to fix. Measured in the WebKit
@@ -37,15 +37,28 @@
        *
        *     unstyled                              0px   (overlay)
        *     scrollbar-width + scrollbar-color     0px   (overlay, still)
+       *     scrollbar-width: none                 0px   (no bar at all)
        *     ::-webkit-scrollbar { width: 10px }  10px   (classic, forever)
        *
-       * So the pseudo-element trades an overlay bar that appears while scrolling for a slab that
-       * never goes away. The standard properties style it without taking it out of overlay, and
-       * both are supported here (CSS.supports: true for width, color and gutter).
+       * `thin` was already gutter-free on a trackpad, and that is exactly why the complaint was
+       * hard to see from here: macOS "Automatic" means show-while-scrolling on a trackpad but
+       * ALWAYS with a mouse, and the always-shown kind is the legacy sort that does take layout
+       * width. So the app looked clean when measured and had a permanent grey strip for anyone
+       * using a mouse. `none` is the only setting that answers both.
        *
-       * Inherited, so `:root` reaches every scroller including the popovers. The thumb is a
-       * token, so it follows the theme rather than staying grey on Night. */
-      :root { scrollbar-width: thin; scrollbar-color: var(--ink-6) transparent; }
+       * WHAT IT COSTS, because it is a real cost and not a free win: the scrollbar is the only
+       * signal that a region continues past its edge. The places that scroll here — Settings,
+       * Lessons, the case grid, the popovers — all show a partial row or card at the fold, so the
+       * content says it continues even when nothing else does. A future screen where the fold
+       * lands cleanly between items would need its own affordance.
+       *
+       * Standard property only, no `::-webkit-scrollbar { display: none }` alongside it: all three
+       * shipping engines support `scrollbar-width` (WebKit 18.2+, Chromium 121+ for WebView2,
+       * recent WebKitGTK), and reaching for the pseudo-element is what started the gutter problem
+       * in the first place.
+       *
+       * Inherited, so `:root` reaches every scroller including the popovers. */
+      :root { scrollbar-width: none; }
       /* Chrome is not a document. Clicking a sticker, a nav item or a button placed a real text
          caret (getSelection().type === 'Caret') inside it; Chrome does not paint one, but the
          WKWebView the desktop app runs in does, so clicking a cube face blinked an insertion point
