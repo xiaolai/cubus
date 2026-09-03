@@ -146,17 +146,25 @@ test('drawn stickers wear the shared edge and corner', () => {
   assert.ok(corners >= 2, `--r-sticker is used ${corners}× — the net and the scan grid corners come from it`);
 });
 
-test('scrollbars are styled with the standard properties, never ::-webkit-scrollbar', () => {
+test('scrollbars are hidden with the standard property, never ::-webkit-scrollbar', () => {
   // The trap, measured in the WebKit this app ships (Version/26.5) on a 200px scroller:
   //
   //     unstyled                              0px   (overlay — costs no layout width)
   //     scrollbar-width + scrollbar-color     0px   (overlay, still)
+  //     scrollbar-width: none                 0px   (no bar at all)
   //     ::-webkit-scrollbar { width: 10px }  10px   (classic, permanently)
   //
   // So the pseudo-element every recipe recommends is the thing that CREATES a permanent gutter,
   // which is the complaint it gets reached for to solve. Anyone "fixing" the scrollbar again
   // will reach for it, and the regression is invisible in a headless DOM test — it is layout
   // width on someone's desktop. Hence a sweep.
+  //
+  // `thin` was here until 0.2.5 and was already gutter-free ON A TRACKPAD, which is why the
+  // complaint was invisible from a test machine: macOS "Automatic" means show-while-scrolling on
+  // a trackpad but ALWAYS with a mouse, and the always-shown kind is the legacy sort that does
+  // take layout width. `none` is the only setting that answers both, and hiding the bar entirely
+  // is the owner's call rather than a measurement — recorded here so the next reader knows it was
+  // a decision and not a drift.
   //
   // Comments stripped before the sweep: the measurement above is worth keeping in the
   // stylesheet next to the rule, and a sweep that cannot tell a comment from a selector would
@@ -165,7 +173,10 @@ test('scrollbars are styled with the standard properties, never ::-webkit-scroll
     .replace(/\/\*[\s\S]*?\*\//g, '');
   assert.doesNotMatch(css, /::-webkit-scrollbar/,
     'a ::-webkit-scrollbar rule takes the bar out of overlay and reserves its width forever');
-  assert.match(css, /scrollbar-width:\s*thin/, 'the standard thinning must still be there');
-  assert.match(css, /scrollbar-color:\s*var\(--[\w-]+\)\s+transparent/,
-    'the thumb must be a token (so it follows the theme) over a transparent track');
+  assert.match(css, /scrollbar-width:\s*none/,
+    'the bar is hidden with the standard property — see 0.2.5, a mouse made `thin` a grey strip');
+  assert.doesNotMatch(css, /scrollbar-width:\s*(thin|auto)/,
+    'a visible bar is a permanent strip for anyone on a mouse, which is what `none` removed');
+  assert.doesNotMatch(css, /scrollbar-gutter:\s*stable/,
+    'reserving the gutter is the opposite of hiding the bar — it takes the width back');
 });
