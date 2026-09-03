@@ -3730,7 +3730,7 @@ SCREENS.settings = () => {
       <div class="card"><div class="eyebrow">ABOUT</div>
         <div class="about-brand"><img src="./icons/icon.svg" alt="" width="22" height="22" /><b>Cubus</b></div>
         <div class="about-row">${icon('tag', 15)}<span class="k">${t('Version')}</span><span class="num">${VERSION}</span></div>
-        ${updater ? `<div class="about-row">${icon('refresh', 15)}<span class="k">${t('Updates')}</span><button class="pill" id="checkUpdate">${t('Check now')}</button></div>` : ''}
+        ${appUpdater() ? `<div class="about-row">${icon('refresh', 15)}<span class="k">${t('Updates')}</span><button class="pill" id="checkUpdate">${t('Check now')}</button></div>` : ''}
         <div class="about-row">${icon('globe', 15)}<span class="k">${t('Website')}</span><a class="link" href="https://cubus.im" target="_blank" rel="noopener">cubus.im</a></div>
         <div class="about-row">${icon('user', 15)}<span class="k">${t('Author')}</span><a class="link" href="https://lixiaolai.com" target="_blank" rel="noopener">@xiaolai</a></div>
         <div class="sub" style="color:var(--ink-3);margin-top:10px;line-height:1.55">${t('Solver and vision run locally. Nothing leaves the device.')}</div></div>
@@ -3744,13 +3744,14 @@ SCREENS.settings = () => {
       // quiet half. Disabled while in flight, since `check` joins one flight and a button that
       // keeps accepting presses while nothing visibly happens reads as broken.
       const checkBtn = $('#checkUpdate', root);
-      if (checkBtn && updater) {
+      const upd = appUpdater();
+      if (checkBtn && upd) {
         checkBtn.onclick = async () => {
           const was = checkBtn.textContent;
           checkBtn.disabled = true;
           checkBtn.textContent = t('Checking…');
           try {
-            await reportUpdateOutcome(await updater.checkNow());
+            await reportUpdateOutcome(await upd.checkNow());
           } finally {
             // The button may have gone with a re-render, and an installed update never comes back
             // here at all — the app relaunches out from under it.
@@ -4326,31 +4327,55 @@ function applyInsetOverride() {
 /**
  * The self-updater, or null where there is nothing to update.
  *
- * Desktop only, and gated as the orientation row is (`isTauri && isDesktopHost()`) rather than on
- * platform sniffing: a phone updates through its store and the browser build is whatever the
- * server last served, so neither can want this.
+ * LAZY, and that is the whole point of the function rather than a const.
  *
- * And then NARROWER still — see `SELF_UPDATE_PLATFORMS`. macOS ships through a Homebrew cask,
- * which is its updater; an app that also updated itself there would be overwritten by the next
- * `brew upgrade`, silently downgrading whoever ran it. So macOS has no row and no launch check.
+ * `hostPlatform()` reads `<html data-platform>`, which `boot()` publishes — and a module-level
+ * const is evaluated when this file is IMPORTED, before boot has run. So the first version of this
+ * asked which platform it was on before anything had said, got null, and disabled itself on every
+ * platform including the ones it was written for. The feature shipped in 0.2.4 completely inert:
+ * no Settings row, no launch check, nothing to see, on macOS and Windows and Linux alike.
  *
- * `app-update.js` holds the decisions and is tested without any of this; what lives here is only
- * the wiring to the host.
+ * Nothing caught it because the tests drive `makeUpdater` and `selfUpdateSupported` directly, and
+ * both were right. The wiring between them and the host was the part with no test, and the module
+ * note in host.js had already written the trap down: the platform string is "published on
+ * <html data-platform> BEFORE the first screen renders" — before the screen, and after this file
+ * is evaluated.
+ *
+ * Memoised on first use, which is after boot by construction: the Settings row and the launch
+ * check are both reached from a rendered screen.
  */
-const updater = isTauri && isDesktopHost() && selfUpdateSupported(hostPlatform())
-  ? makeUpdater({
-      api: window.__TAURI__,
-      storage: (() => { try { return window.localStorage; } catch { return null; } })(),
-      // A NATIVE question. The app has no general modal, and one invented for this would be a new
-      // component in a design system that does not have it — for a question the OS draws better.
-      confirm: (update) =>
-        window.__TAURI__?.dialog?.ask?.(
-          `Cubus ${update.version} is available. You have ${VERSION}.\n\nInstall it and restart?`,
-          { title: 'A newer Cubus', kind: 'info', okLabel: 'Install and restart', cancelLabel: 'Not now' },
-        ) ?? false,
-      warn: (msg, err) => console.warn(msg, err ?? ''),
-    })
-  : null;
+let updaterInstance;
+function appUpdater() {
+  if (updaterInstance !== undefined) return updaterInstance;
+  updaterInstance =
+    isTauri && isDesktopHost() && selfUpdateSupported(hostPlatform())
+      ? makeUpdater({
+          api: window.__TAURI__,
+          storage: (() => {
+            try {
+              return window.localStorage;
+            } catch {
+              return null;
+            }
+          })(),
+          // A NATIVE question. The app has no general modal, and one invented for this would be a
+          // new component in a design system that does not have it — for a question the OS draws
+          // better.
+          confirm: (update) =>
+            window.__TAURI__?.dialog?.ask?.(
+              `Cubus ${update.version} is available. You have ${VERSION}.\n\nInstall it and restart?`,
+              {
+                title: 'A newer Cubus',
+                kind: 'info',
+                okLabel: 'Install and restart',
+                cancelLabel: 'Not now',
+              },
+            ) ?? false,
+          warn: (msg, err) => console.warn(msg, err ?? ''),
+        })
+      : null;
+  return updaterInstance;
+}
 
 /** Say the outcome of a check the user ASKED for. A launch check stays silent unless it found one. */
 async function reportUpdateOutcome(result) {
@@ -4404,9 +4429,9 @@ async function boot() {
   // measures its own first paint closely enough that a DNS lookup inside that window would change
   // the numbers. It also stays quiet: `checkOnLaunch` throttles to once a day and only interrupts
   // when there is genuinely something to install.
-  if (updater) {
+  if (appUpdater()) {
     setTimeout(() => {
-      updater.checkOnLaunch().catch((e) => console.warn('app-update: launch check failed', e));
+      appUpdater().checkOnLaunch().catch((e) => console.warn('app-update: launch check failed', e));
     }, STARTUP_DELAY_MS);
   }
 }
