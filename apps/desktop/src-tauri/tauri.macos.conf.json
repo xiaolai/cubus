@@ -4,6 +4,6 @@
     "resources": {
       "../../../ml/models/cube-yolo.mlpackage": "models/cube-yolo.mlpackage"
     },
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": true
   }
 }

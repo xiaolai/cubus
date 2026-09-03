@@ -17,23 +17,22 @@ const sigOf = (name) => `${name}.sig`;
 const reader = (map) => (path) => map[path.split('/').pop()] ?? '';
 
 describe('platformsFor', () => {
-  // macOS does not produce this today — `createUpdaterArtifacts` is false there, because Homebrew
-  // owns macOS updates and the app's updater is not compiled for it. The mapping stays because it
-  // is a true statement about the FORMAT (one universal bundle covers both architectures), and the
-  // exclusion is a policy that could be reversed; serving only one arch would then quietly leave
-  // half of macOS unserved.
-  test('a universal .app.tar.gz would serve both macOS architectures', () => {
+  // ONE universal macOS bundle answers for both architectures, so a single `.app.tar.gz` serves
+  // `darwin-aarch64` and `darwin-x86_64` alike. Listing only one would leave half of macOS never
+  // offered an update, and nothing would report that.
+  test('a universal .app.tar.gz serves both macOS architectures', () => {
     assert.deepEqual(platformsFor('cubus.app.tar.gz'), ['darwin-aarch64', 'darwin-x86_64']);
   });
 
-  // The decision, asserted where someone changing it will trip over it: macOS emits no updater
-  // artifact, so a real release produces no darwin entry at all.
-  test('the macOS config emits no updater artifacts, so no darwin entry is ever built', () => {
+  // macOS self-updates alongside its Homebrew cask, so it has to actually EMIT the artifact. This
+  // was false for one commit, and the effect would have been silent in the worst way: a manifest
+  // with no darwin entry, and every macOS copy checking, finding nothing, and staying put forever.
+  test('the macOS config emits updater artifacts, or no darwin entry is ever built', () => {
     const conf = JSON.parse(
       readFileSync(new URL('../../desktop/src-tauri/tauri.macos.conf.json', import.meta.url), 'utf8'),
     );
-    assert.equal(conf?.bundle?.createUpdaterArtifacts, false,
-      'macOS must not produce updater artifacts while Homebrew owns its updates');
+    assert.equal(conf?.bundle?.createUpdaterArtifacts, true,
+      'macOS must produce updater artifacts now that it self-updates');
   });
 
   // THE REAL NAMES, taken from the v0.2.3 tagged build rather than guessed. The first version of

@@ -23,21 +23,27 @@
 /**
  * The platforms whose copy of cubus updates ITSELF.
  *
- * macOS is deliberately absent. It ships through a Homebrew cask, and a cask and a self-updater
- * both write to the same `/Applications/cubus.app` while only one of them knows what is really
- * there: if the app moved itself to 0.3.0, the cask still describes 0.2.9, and the next
- * `brew upgrade` reinstalls 0.2.9 over the top. The user would be downgraded by the command meant
- * to keep them current, and nothing anywhere would report it. Homebrew is the macOS updater, so
- * the app does not compete with it — and `auto_updates true`, which would have told brew to stand
- * down instead, is deliberately NOT in the cask.
+ * ALL THREE DESKTOPS, macOS included — and macOS is the one with a story.
  *
- * Windows and Linux have no such owner: their installers do not track versions afterwards, so the
- * app updating itself is the only path those users have.
+ * It also ships through a Homebrew cask, so two things can move the same
+ * /Applications/cubus.app. That is fine, and the reason is timing: both track the same GitHub
+ * releases, and since the tap started updating on `release: published` it moves within seconds of
+ * the manifest the app reads. They stay in lockstep, so `brew upgrade` reinstalls the version the
+ * app already has rather than replacing a newer one — a redundant copy, not a downgrade. The
+ * downgrade this was once written to avoid needs the cask to LAG the app, which is a property of a
+ * tap that updates late, not of having two updaters.
+ *
+ * The cask deliberately does NOT declare `auto_updates true`. That would tell Homebrew to stand
+ * down and leave the app as the only path; leaving it off means both work, and someone who manages
+ * their Mac with `brew upgrade` keeps doing exactly that. It is the arrangement vmark ships.
+ *
+ * A phone still updates through its store and the browser build is whatever the server last
+ * served, so neither is here.
  *
  * Exported and tested rather than inlined at the call site, because "which platforms self-update"
  * is a decision with a reason, and the next person to add a platform needs to meet the reason.
  */
-export const SELF_UPDATE_PLATFORMS = Object.freeze(['windows', 'linux']);
+export const SELF_UPDATE_PLATFORMS = Object.freeze(['macos', 'windows', 'linux']);
 
 /** Does this platform update itself, or does something else own it? */
 export function selfUpdateSupported(platform) {
