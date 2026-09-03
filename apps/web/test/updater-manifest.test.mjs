@@ -36,18 +36,50 @@ describe('platformsFor', () => {
       'macOS must not produce updater artifacts while Homebrew owns its updates');
   });
 
-  test('windows and linux artifacts map to their single targets', () => {
-    assert.deepEqual(platformsFor('cubus_0.2.3_x64-setup.nsis.zip'), ['windows-x86_64']);
-    assert.deepEqual(platformsFor('cubus_0.2.3_x64_en-US.msi.zip'), ['windows-x86_64']);
+  // THE REAL NAMES, taken from the v0.2.3 tagged build rather than guessed. The first version of
+  // this looked for `.nsis.zip` / `.msi.zip`; Tauri signs the installers themselves. Guessing here
+  // is the failure mode the whole generator exists to avoid — a manifest pointing at a file that
+  // does not exist is a 404, and a 404 is reported to the user as "no update available".
+  test('the artifacts a real build actually produces map to their targets', () => {
+    assert.deepEqual(platformsFor('cubus_0.2.3_x64-setup.exe'), ['windows-x86_64']);
+    assert.deepEqual(platformsFor('cubus_0.2.3_x64_en-US.msi'), ['windows-x86_64']);
     assert.deepEqual(platformsFor('cubus_0.2.3_amd64.AppImage'), ['linux-x86_64']);
   });
 
+  test('the zipped Windows forms other Tauri configs emit still map', () => {
+    assert.deepEqual(platformsFor('cubus_0.2.3_x64-setup.nsis.zip'), ['windows-x86_64']);
+    assert.deepEqual(platformsFor('cubus_0.2.3_x64_en-US.msi.zip'), ['windows-x86_64']);
+  });
+
   // The .dmg, .deb and .rpm are how people INSTALL; they are not what the updater consumes, and
-  // pointing the updater at one would hand the client a payload it cannot apply.
-  test('installer-only formats serve no updater platform', () => {
+  // pointing the updater at one would hand the client a payload it cannot apply. The real build
+  // signs .deb and .rpm too — createUpdaterArtifacts signs every bundle — so this is the rule that
+  // stops those signatures becoming a linux entry the client would choke on.
+  test('installer-only formats serve no updater platform, even when signed', () => {
     for (const n of ['cubus_0.2.3_universal.dmg', 'cubus_0.2.3_amd64.deb', 'cubus-0.2.3-1.x86_64.rpm']) {
       assert.deepEqual(platformsFor(n), [], n);
     }
+  });
+
+  // The exact set the v0.2.3 build produced, end to end: five signatures, of which only two belong
+  // to an updater platform, and the AppImage must win Linux over the .deb and .rpm beside it.
+  test('a real build\'s full artifact set yields exactly the two updatable platforms', () => {
+    const names = [
+      'cubus_0.2.3_amd64.AppImage', 'cubus_0.2.3_amd64.deb', 'cubus-0.2.3-1.x86_64.rpm',
+      'cubus_0.2.3_x64_en-US.msi', 'cubus_0.2.3_x64-setup.exe', 'cubus_0.2.3_universal.dmg',
+    ];
+    const m = buildManifest({
+      files: [...names, ...names.filter((n) => !n.endsWith('.dmg')).map(sigOf)],
+      readSignature: (f) => `SIG(${f.split('/').pop()})`,
+      version: '0.2.3',
+      baseUrl: BASE,
+    });
+    assert.deepEqual(Object.keys(m.platforms).sort(), ['linux-x86_64', 'windows-x86_64']);
+    assert.equal(m.platforms['linux-x86_64'].url, `${BASE}/cubus_0.2.3_amd64.AppImage`);
+    // NSIS over MSI, so Windows gets one URL and it is the installer Tauri's updater prefers.
+    assert.equal(m.platforms['windows-x86_64'].url, `${BASE}/cubus_0.2.3_x64-setup.exe`);
+    // And no macOS entry, because macOS emits no updater artifact at all — Homebrew owns it.
+    assert.ok(!('darwin-aarch64' in m.platforms));
   });
 });
 
