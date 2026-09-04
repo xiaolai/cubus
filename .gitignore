@@ -84,3 +84,15 @@ grill-report-*.md
 # Where scripts/check-on-clone.sh parks gitignored dirs for the length of a run. A fixed path so
 # an interrupted run is recoverable; the script empties it on the next start.
 .check-on-clone-stash/
+
+# Rendered algorithm media (scripts/alg-video.mjs). Generated, large and reproducible: one 4-move
+# algorithm is ~3.7 MB across the five formats, and the APNG alone is 2.7 MB. Six of these reached
+# a commit because a `git add -A` swept the output directory in, and had to be filtered back out of
+# history. Anything the tool writes is a build artefact — put the COMMAND in a doc, not the bytes,
+# and re-render when the renderer changes, which is exactly what made those six stale within a day.
+#
+# The tool's own default output lives under dev-docs/, already ignored above. This covers the other
+# common destination, and the extension catches a run pointed somewhere new — an APNG in this repo
+# is always something this tool made.
+docs/media/
+*.apng
