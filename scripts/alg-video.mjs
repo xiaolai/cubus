@@ -34,6 +34,17 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const DEFAULTS = Object.freeze({
+  // THE APP'S PRESENTATION, not the element's bare defaults — which are two different things, and
+  // getting that wrong is how a tool that drives the real renderer still produces a picture nobody
+  // in the app would recognise. `<cubus-cube>` ships with no ghosts and a 0.9 facelet scale; the
+  // app draws ghosts floating at elevation 9 with stickers full-bleed at 1, and app.js calls that
+  // "the reference the walking screens must match". A teaching video is exactly the place that
+  // reference matters, so these follow it rather than the element.
+  ghosts: 'floating',
+  ghostElevation: 9,
+  faceletScale: 1,
+  cameraLatitude: 35,
+  cameraLongitude: 45,
   fps: 60,
   size: 512,
   // A beat before and after. A hard cut into the first turn reads as a glitch, and a loop with no
@@ -353,7 +364,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error(`usage: alg-video.mjs --alg "R U R' U'" [--out-dir DIR --name NAME | --out FILE]
        [--formats mp4,webm,apng,gif,png] [--fps ${DEFAULTS.fps}] [--size ${DEFAULTS.size}]
        [--hold ${DEFAULTS.hold}] [--tempo ${DEFAULTS.tempo}] [--background '${DEFAULTS.background}']
-       [--scramble ALG | --facelets STR] [--ghosts ...] [--palette ...] [--camera-latitude N]`);
+       [--scramble ALG | --facelets STR] [--palette NAME] [--back-view none|ghost]
+       [--ghosts floating|none (${DEFAULTS.ghosts})] [--ghost-elevation ${DEFAULTS.ghostElevation}]
+       [--facelet-scale ${DEFAULTS.faceletScale}] [--camera-latitude ${DEFAULTS.cameraLatitude}]
+       [--camera-longitude ${DEFAULTS.cameraLongitude}]`);
     process.exit(2);
   }
   const single = arg('out');
@@ -377,9 +391,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     hold: Number(arg('hold', DEFAULTS.hold)),
     tempo: Number(arg('tempo', DEFAULTS.tempo)),
     background: arg('background', DEFAULTS.background),
-    cameraLatitude: arg('camera-latitude'),
-    cameraLongitude: arg('camera-longitude'),
-    ghosts: arg('ghosts'),
+    // Every flag the usage above advertises is read here. Three of them were not, which is its own
+    // small lesson: an option that is documented and silently ignored is worse than one that does
+    // not exist, because the picture comes back wrong and the command looks right.
+    cameraLatitude: arg('camera-latitude', DEFAULTS.cameraLatitude),
+    cameraLongitude: arg('camera-longitude', DEFAULTS.cameraLongitude),
+    ghosts: arg('ghosts', DEFAULTS.ghosts),
+    ghostElevation: arg('ghost-elevation', DEFAULTS.ghostElevation),
+    faceletScale: arg('facelet-scale', DEFAULTS.faceletScale),
+    backView: arg('back-view'),
     palette: arg('palette'),
   };
   const t0 = Date.now();
