@@ -20,8 +20,15 @@ import Cube from '../vendor/cubejs.js';
 const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
 
 test('the warm cube is actually solved, so warming costs only the tables', () => {
-  const facelets = app.match(/const SOLVED_FACELETS = '([A-Z]{54})'/)?.[1];
-  assert.ok(facelets, 'SOLVED_FACELETS is gone or no longer a 54-character literal');
+  // Matched by VALUE and not by name: this looked for `SOLVED_FACELETS` until 2026-09-04, when
+  // app.js merged its two identical 54-character literals into one named `SOLVED` — and the test
+  // then failed for the naming rather than for the fact, which is the wrong thing to notice. The
+  // fact is that the string warmSolver hands the pool is a solved cube; whatever it is called,
+  // it must be the one the warm request actually sends.
+  const name = app.match(/warmSolver\(\) \{[\s\S]*?\.solve\(\s*([A-Za-z_$][\w$]*)\s*,/)?.[1];
+  assert.ok(name, 'warmSolver no longer solves a named constant');
+  const facelets = app.match(new RegExp(`const ${name} = '([A-Z]{54})'`))?.[1];
+  assert.ok(facelets, `${name} is gone or no longer a 54-character literal`);
   assert.equal(Cube.fromString(facelets).isSolved(), true,
     'the warm request must be a solved cube — anything else makes the warm-up a real search');
 });

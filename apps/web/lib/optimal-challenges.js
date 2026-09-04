@@ -56,15 +56,48 @@ export function validateChallenges(data, { Cube } = {}) {
   return data;
 }
 
+/**
+ * "There is nothing here to fetch FROM" — raised before the fetch, and one line long.
+ *
+ * `fetch` is specified not to read `file:`, so in Node the library's URL — resolved beside this
+ * module — cannot be loaded at all. That is not a defect and not a library problem; it is the
+ * app's boot running in a test process. It used to be an undici `TypeError: fetch failed` whose
+ * `cause` chain Node prints in full, so every green gate run carried a nine-line stack trace of
+ * someone else's internals through a condition nobody can act on.
+ *
+ * The stack is replaced deliberately, and it costs nothing: the only frames it could hold are
+ * this function and its caller, both named in the message. Anything that CAN be fetched — a
+ * browser tab on http(s), a WKWebView, Tauri's custom protocol — never reaches here, so the
+ * shipped path is untouched. Nor is the refusal quiet: it leaves through `loadIndex`'s one door
+ * like every other failure, and yields NO index rather than a partial one.
+ */
+class NotFetchable extends Error {
+  constructor(url) {
+    super(
+      `optimal-challenges: the library is at a ${url.protocol} URL, which fetch cannot read — ` +
+        'this is not a browser, so no proven-library claim is available here',
+    );
+    this.name = 'NotFetchable';
+    this.stack = `${this.name}: ${this.message}`;
+  }
+}
+
 /** Load and validate the shipped library — oracle included when the caller has cubejs in
  *  hand, which the app always does. A challenge whose numbers cannot be trusted is worse
  *  than no challenge.
  *
  *  `fetch` is injectable so the whole load path — not merely the validator — can be driven by
  *  a test. Node's fetch cannot read a file: URL, so without this seam the one function the app
- *  actually calls would be the one function nothing exercises. */
-export async function loadChallenges({ Cube, fetch: get = globalThis.fetch } = {}) {
-  const response = await get(new URL('./data/optimal-challenges.json', import.meta.url));
+ *  actually calls would be the one function nothing exercises — and an injected fetch is also
+ *  the way to load the library from somewhere else entirely, which is why it is checked for
+ *  before the URL is. */
+export async function loadChallenges({ Cube, fetch: get } = {}) {
+  const url = new URL('./data/optimal-challenges.json', import.meta.url);
+  if (typeof get !== 'function') {
+    if (url.protocol === 'file:') throw new NotFetchable(url);
+    get = globalThis.fetch;
+  }
+  const response = await get(url);
   if (!response.ok) {
     throw new Error(`optimal-challenges: the library did not load (${response.status})`);
   }

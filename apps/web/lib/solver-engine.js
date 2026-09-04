@@ -38,12 +38,20 @@ export const VIEW_COUNT = 6;
  *  call. */
 export const DEFAULT_NODE_BUDGET = 100_000_000;
 
-/** Moves in an algorithm string — '' is zero moves, the solved cube's answer. The one shared
- *  counter for the solver pipeline; solve-target imports it rather than growing its own. */
-export const movesIn = (alg) => {
+/** An algorithm string as its move tokens — `''` and `'   '` are zero moves, the solved cube's
+ *  answer, and NOT one empty token.
+ *
+ *  The one tokenizer for the solver pipeline. It was written out three times (here, optimal.js's
+ *  `htmMoves`, app.js's `movesOf`) with the same `trim().split(/\s+/)` and the same
+ *  empty-string special case — three chances for a count and a move list to disagree about the
+ *  same alg, which is the one thing a screen showing "N moves" beside N chips cannot survive. */
+export const moveTokens = (alg) => {
   const trimmed = alg.trim();
-  return trimmed ? trimmed.split(/\s+/).length : 0;
+  return trimmed ? trimmed.split(/\s+/) : [];
 };
+
+/** Moves in an algorithm string. solve-target imports it rather than growing its own. */
+export const movesIn = (alg) => moveTokens(alg).length;
 
 /** The face-turn grammar: U R F D L B, optionally primed or doubled. Anything else in an
  *  answer is not a move the app can show or apply. */
@@ -61,7 +69,7 @@ export function validateAnswer(answer, requestedBound) {
     throw new TypeError(`solver returned ${typeof answer}, not an algorithm string`);
   }
   const alg = answer.trim();
-  const tokens = alg ? alg.split(/\s+/) : [];
+  const tokens = moveTokens(alg);
   for (const token of tokens) {
     if (!MOVE_TOKEN.test(token)) {
       throw new Error(`solver returned "${token}", which is not a face turn`);
