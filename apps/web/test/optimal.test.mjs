@@ -140,14 +140,165 @@ test('a solved cube proves at zero moves', async () => {
 
 import { readFileSync } from 'node:fs';
 
-/** Strip // and /* comments so neither scanner below can be satisfied — or fooled — by
- *  commentary. Quoted strings survive (a // inside a string is rare enough in app.js that
- *  the simpler strip is the right trade; both scanners fail LOUD, not silent, if it bites). */
+/** Strip // and /* comments, for the STRUCTURAL matches below — the ones that locate a named
+ *  region with a regex. Quoted strings survive (a // inside a string is rare enough in app.js
+ *  that the simpler strip is the right trade). The wording scanner does not use this: it skips
+ *  comments itself, as part of reading the source properly. */
 const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '').replace(/([^:'"\`])\/\/[^\n]*/g, '$1');
+
+// ---- reading app.js properly enough to make an invariant out of it ------------------------------
+//
+// This used to be one regex alternating over the three quote characters, and it could be walked
+// straight past (found by the 2026-09-04 audit; fixed the same day). Two ways, both live in
+// app.js today:
+//
+//   * A NESTED TEMPLATE. `` `${cond ? `proved the minimum` : ''}` `` pairs backticks 1-2 and 3-4,
+//     so the claim lands BETWEEN two matches and is invisible. app.js has 38 nested-template
+//     sites. The negative fixture below is exactly this, and it is checked against the old
+//     scanner too, so the bypass stays demonstrated rather than described.
+//   * A REGEX LITERAL holding a quote — `/[&<>"']/g` is on line 52 of app.js. The old scanner
+//     read the `"` as the start of a string and paired it with the next one, desynchronising
+//     everything after it. Nothing said so, because a desynchronised scan still returns a list.
+//
+// So the source is walked rather than matched: strings, templates (with `${}` expressions
+// scanned as code, and their own literals collected), comments and regex literals, in one pass.
+// It ends LOUD — an unterminated string, or a scan that finishes inside a template, throws
+// instead of returning a shorter list, because a quietly incomplete scan is precisely how this
+// invariant stopped holding without failing.
+
+const REGEX_MAY_FOLLOW = new Set([...'(,=:[!&|?{};+-*%~^<>']);
+const REGEX_KEYWORDS = new Set(['return', 'typeof', 'case', 'in', 'of', 'new', 'delete', 'void',
+  'instanceof', 'do', 'else', 'yield', 'await']);
+
+/** Is the `/` at `at` a regex literal rather than a division? The standard heuristic: look back
+ *  at the last significant token. A regex can only follow an operator, a punctuator or one of a
+ *  few keywords; after an identifier, a `)` or a `]` it is division. */
+function startsRegex(src, at) {
+  let k = at - 1;
+  while (k >= 0 && /\s/.test(src[k])) k -= 1;
+  if (k < 0) return true;
+  if (REGEX_MAY_FOLLOW.has(src[k])) return true;
+  if (!/[\w$]/.test(src[k])) return false;
+  let s = k;
+  while (s >= 0 && /[\w$]/.test(src[s])) s -= 1;
+  return REGEX_KEYWORDS.has(src.slice(s + 1, k + 1));
+}
+
+function endOfQuoted(src, at) {
+  const quote = src[at];
+  for (let i = at + 1; i < src.length; i += 1) {
+    if (src[i] === '\\') { i += 1; continue; }
+    if (src[i] === '\n') throw new Error(`scan: a ${quote} string ran past the end of its line at ${at}`);
+    if (src[i] === quote) return i + 1;
+  }
+  throw new Error(`scan: unterminated ${quote} string at ${at}`);
+}
+
+function endOfRegex(src, at) {
+  let inClass = false;
+  for (let i = at + 1; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '\\') { i += 1; continue; }
+    if (ch === '\n') throw new Error(`scan: a regex literal ran past the end of its line at ${at}`);
+    if (inClass) { if (ch === ']') inClass = false; continue; }
+    if (ch === '[') { inClass = true; continue; }
+    if (ch === '/') {
+      let end = i + 1;
+      while (end < src.length && /[a-z]/.test(src[end])) end += 1;
+      return end;
+    }
+  }
+  throw new Error(`scan: unterminated regex literal at ${at}`);
+}
+
+/**
+ * Walk JavaScript, collecting every literal's TEXT.
+ *
+ * A template contributes the parts outside its `${}` — its cooked text — and each expression
+ * inside is walked as code, so a literal nested three deep is collected exactly once and counts
+ * exactly once. (Collecting the whole template as well would double-count every nested claim,
+ * and `claims(label) === 1` below is an equality.)
+ *
+ * With `balanced`, the scan starts at a `{` and stops after the `}` that closes it, ignoring
+ * braces inside strings, templates, comments and regexes — which is how a gated block is
+ * extracted without depending on how it happens to be indented.
+ */
+function walk(src, { from = 0, balanced = false } = {}) {
+  const literals = [];
+  const modes = [];
+  let i = from;
+  let part = '';
+  if (balanced) {
+    if (src[i] !== '{') throw new Error('scan: a balanced walk must start at a {');
+    modes.push('block');
+    i += 1;
+  }
+  while (i < src.length) {
+    const ch = src[i];
+    if (modes[modes.length - 1] === 'template') {
+      if (ch === '\\') { part += src.slice(i, i + 2); i += 2; continue; }
+      if (ch === '`') { literals.push(part); part = ''; modes.pop(); i += 1; continue; }
+      if (ch === '$' && src[i + 1] === '{') { literals.push(part); part = ''; modes.push('expr'); i += 2; continue; }
+      part += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i);
+      i = nl < 0 ? src.length : nl;
+      continue;
+    }
+    if (ch === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      if (end < 0) throw new Error(`scan: unterminated block comment at ${i}`);
+      i = end + 2;
+      continue;
+    }
+    if (ch === '/' && startsRegex(src, i)) { i = endOfRegex(src, i); continue; }
+    if (ch === "'" || ch === '"') {
+      const end = endOfQuoted(src, i);
+      literals.push(src.slice(i + 1, end - 1));
+      i = end;
+      continue;
+    }
+    if (ch === '`') { modes.push('template'); i += 1; continue; }
+    if (ch === '{') { modes.push('block'); i += 1; continue; }
+    if (ch === '}') {
+      if (modes.length === 0) throw new Error(`scan: a } closing nothing at ${i}`);
+      modes.pop();
+      i += 1;
+      if (balanced && modes.length === 0) return { literals, end: i };
+      continue;
+    }
+    i += 1;
+  }
+  if (modes.length > 0) throw new Error(`scan: ended inside a ${modes[modes.length - 1]}`);
+  if (balanced) throw new Error('scan: the block never closed');
+  return { literals, end: i };
+}
 
 /** Every string and template literal in the source, so wording checks look at what can
  *  actually reach a screen rather than at identifiers or module paths. */
-const stringLiterals = (src) => [...src.matchAll(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|\`(?:[^\`\\]|\\.)*\`/g)].map((m) => m[0]);
+const stringLiterals = (src) => walk(src).literals;
+
+/** The prove block, by ANCHOR and balanced braces — not by matching up to a `}` at a particular
+ *  indentation, which is what the old pattern did. That pattern stopped at the first six-space
+ *  `}` inside the block and silently sanctioned the 66 lines between there and the real close;
+ *  re-indenting the block by two spaces would equally have made it match nothing at all, and
+ *  `assert.ok(gated)` was the only thing standing between that and a vacuous pass. */
+const PROVE_ANCHOR = 'if (proveBtn && optimalCapability()';
+function gatedProveBlock(src) {
+  const at = src.indexOf(PROVE_ANCHOR);
+  if (at < 0) return '';
+  const brace = src.indexOf('{', at);
+  if (brace < 0) return '';
+  // The `{` must really be the body's: nothing between it and the anchor may open a literal, or
+  // the brace found could be one inside a string.
+  if (/['"`]/.test(src.slice(at, brace))) {
+    throw new Error('scan: the prove condition now contains a literal — find the body another way');
+  }
+  return src.slice(at, walk(src, { from: brace, balanced: true }).end);
+}
 
 test('the app can say "proved" from exactly three places, and nowhere else', () => {
   // Three sanctioned regions, in two categories — and the categories are what keep this test
@@ -166,7 +317,7 @@ test('the app can say "proved" from exactly three places, and nowhere else', () 
   //      sentence chosen for the regex rather than for the reader.
   // A fourth region, or an unguarded use of the Settings copy, still fails here.
   const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
-  const gated = app.match(/if \(proveBtn && optimalCapability\(\)[\s\S]*?\n      \}/)?.[0] ?? '';
+  const gated = gatedProveBlock(app);
   assert.ok(gated, 'the gated prove block must exist');
   const label = app.match(/const provenMinimumLabel = [^\n]*\n/)?.[0] ?? '';
   assert.ok(label, 'the library\'s one sanctioned sentence must exist, and be named');
@@ -174,7 +325,7 @@ test('the app can say "proved" from exactly three places, and nowhere else', () 
   assert.ok(setting, 'the feature\'s own wording must exist, and be named');
 
   const claims = (text) =>
-    stringLiterals(stripComments(text)).filter((lit) => /proved|the minimum/i.test(lit)).length;
+    stringLiterals(text).filter((lit) => /proved|the minimum/i.test(lit)).length;
   assert.ok(claims(gated) >= 1, 'the gated block is where the native proof wording lives');
   assert.equal(claims(label), 1, 'the library\'s claim is one sentence, in one place');
   assert.ok(claims(setting) >= 1, 'PROVE_COPY is where the feature names itself');
@@ -210,6 +361,55 @@ test('the app can say "proved" from exactly three places, and nowhere else', () 
   assert.equal(calls.length, 1, 'the library sentence is used exactly once');
   const line = stripComments(app).slice(0, calls[0].index).split('\n').pop();
   assert.match(line, /provenHere \?/, 'the library sentence must sit behind the proven-state guard');
+});
+
+test('the wording scanner cannot be walked past — the two ways it could be, pinned', () => {
+  // Negative fixtures, as source strings: the point is to prove the SCANNER, and doing that by
+  // editing app.js would be putting a claim in the app to see whether the app notices.
+  //
+  // The old scanner is kept here, applied to the same fixtures, so what changed is visible
+  // rather than asserted. Both of these pass against it, which is the whole finding.
+  const naiveLiterals = (src) =>
+    [...src.matchAll(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g)].map((m) => m[0]);
+  const claimsIn = (scan) => (src) => scan(src).filter((lit) => /proved|the minimum/i.test(lit)).length;
+  const claims = claimsIn(stringLiterals);
+  const naiveClaims = claimsIn(naiveLiterals);
+
+  // 1. A claim inside a NESTED template. The naive pairing closes the outer template on the
+  //    inner one's opening backtick, so the sentence falls between two matches.
+  const nested = "const label = `${moves} ${sure ? `proved the minimum` : 'the shortest found'}`;";
+  assert.equal(naiveClaims(nested), 0, 'the fixture must actually bypass the old scanner');
+  assert.equal(claims(nested), 1, 'a claim nested in a ${} template must still be seen');
+
+  // 2. A regex holding a quote — app.js line 52 — desynchronises the naive scan, so a claim
+  //    after it can be read as part of a "string" that started inside the regex.
+  const afterRegex = 'const esc = (s) => s.replace(/[&<>"\']/g, e); const t = "proved the minimum";';
+  assert.equal(naiveClaims(afterRegex), 0, 'the fixture must actually bypass the old scanner');
+  assert.equal(claims(afterRegex), 1, 'a claim after a regex containing a quote must still be seen');
+
+  // 3. A scan that cannot be completed must THROW rather than return a short list: a quietly
+  //    incomplete scan is how the invariant stopped holding without ever failing.
+  assert.throws(() => stringLiterals('const a = "unterminated;'), /unterminated/);
+  assert.throws(() => stringLiterals('const a = `open ${1}'), /ended inside a template/);
+
+  // 4. And the block extraction stops at the block's own close, wherever it is indented. The old
+  //    pattern ran to the first `}` at a fixed indentation — which over-matched by 66 lines in
+  //    app.js, and would have matched NOTHING at all had the block moved two spaces right.
+  const body = [
+    'if (proveBtn && optimalCapability() && settings.proveMinimum) {',
+    '  btn.textContent = `${n} — proved the minimum`;',
+    '  if (deep) { note(`${a ? `nested` : \'\'}`); }',
+    '}',
+    'el.textContent = "proved the minimum";',
+  ].join('\n');
+  for (const indent of ['', '  ', '        ']) {
+    const src = body.split('\n').map((line) => indent + line).join('\n');
+    const block = gatedProveBlock(src);
+    assert.match(block, /proved the minimum/, `${indent.length}-space indent: the block was not found`);
+    assert.doesNotMatch(block, /el\.textContent/,
+      `${indent.length}-space indent: the extraction ran past the block's close`);
+    assert.equal(claims(block), 1, 'exactly the claim inside the block, counted once');
+  }
 });
 
 test('every prove call carries the two-phase answer as its upper bound', () => {

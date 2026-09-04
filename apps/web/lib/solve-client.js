@@ -13,11 +13,44 @@
 // A constant, not the engine: the solver itself is still injected.
 import { DEFAULT_NODE_BUDGET } from './solver-engine.js';
 
-/** How a search is abandoned. The solver cannot be interrupted mid-call — it is a synchronous
- *  search loop — so the only way to stop one already running is to end the thread it is on.
- *  That costs the table build (~0.5-2.6 s) on the next search, which is the right trade for a
- *  deliberate "stop": nothing else would actually stop it. */
+/** How a whole client is abandoned. The solver cannot be interrupted between messages — it is a
+ *  synchronous search loop — so the only way to stop one already running with nothing shared is
+ *  to end the thread it is on. That costs the table build (~0.5-2.6 s) on the next search, which
+ *  is the right trade for a deliberate teardown.
+ *
+ *  A single SEARCH is stopped by STOP_NOW below instead, which costs nothing at all. */
 const CANCELLED = 'solve cancelled';
+
+/**
+ * The stop word's "give up, whatever you are doing" value.
+ *
+ * Word 0 normally holds the shallowest phase-1 depth a sibling has already answered at, and a
+ * worker stops when that is STRICTLY shallower than the depth it is exploring. -1 is shallower
+ * than every real depth, so it needs no second channel, no message the worker cannot read
+ * mid-search, and no terminate: the next poll — ~1 ms of search — sees it, the search returns
+ * null, and the thread keeps its tables for the next cube.
+ *
+ * It is also lower than any depth a winner can publish, so a late compare-exchange from a
+ * sibling's reply cannot overwrite it and quietly un-cancel the solve.
+ */
+export const STOP_NOW = -1;
+
+/**
+ * The worker's stop rule, as a function rather than as a closure inside solve-worker.js.
+ *
+ * Strictness is the whole of it: `<` and not `<=`. At the SAME depth a lower view index still
+ * wins, so a worker that gave up there would change which answer comes back and the pooled
+ * result would stop being deterministic. `depth >= 0` is the other half — -1 means "no depth
+ * applies" (solveIntoG1, or a finished loop), and a stop decision about no depth is a decision
+ * about nothing.
+ *
+ * Exported so it can be unit-tested at all: inside the worker it runs only on a thread no test
+ * process has, and the two ways it can be wrong — the wrong comparison, and reading a depth that
+ * means nothing — are both invisible from outside (a search that stops early still returns a
+ * valid answer, just not the same one).
+ */
+export const shouldStop = (word, depth) =>
+  word !== null && word !== undefined && depth >= 0 && Atomics.load(word, 0) < depth;
 
 /**
  * One request, one reply — shared by the real worker and the inline fallback so the two
@@ -126,6 +159,20 @@ export function createSolveClient({ spawn } = {}) {
         waiting.reject(new Error('solver worker sent a malformed reply'));
       }
     });
+    // A reply that could not be DESERIALISED. It arrives with no data, so there is no id to
+    // match it to; the one thing known is that some search's answer was lost, and a lost answer
+    // is a promise that never settles — on screen, indistinguishable from a search still going.
+    // So everything in flight is failed rather than one guess at which, and it is tagged as a
+    // WORKER failure so the pool retries on fewer threads instead of telling anyone their cube
+    // cannot be solved. The thread is NOT ended: one message failed to cross, which says nothing
+    // about the engine or its tables, and throwing away a 2.6 s table build over it would be a
+    // worse answer than re-asking.
+    spawned.addEventListener('messageerror', () => {
+      if (worker !== spawned) return;
+      const reason = workerFailure('solver worker sent a reply that could not be read');
+      for (const [, waiting] of pending) waiting.reject(reason);
+      pending.clear();
+    });
     // A worker that dies takes every search in flight with it. Rejecting them is the only way
     // the caller finds out; leaving them pending would hang the screen with no error anywhere.
     spawned.addEventListener('error', (event) => {
@@ -149,14 +196,57 @@ export function createSolveClient({ spawn } = {}) {
    * @param {Int32Array|null} [bounds.shared]  this solve's stop word — an Int32Array, not a bare
    *   buffer, so its offset can cross with it. Rejected with a TypeError if it is anything else.
    * @param {boolean} [bounds.detailed]  resolve `{alg, depth, view}` instead of the algorithm
+   * @param {AbortSignal|null} [bounds.signal]  stops THIS search and nothing else. With a stop
+   *   word that is a write the running search reads at its next poll; without one, the only
+   *   stop is ending the thread, which is done only when this search is the last one on it.
    */
-  function solve(facelets, { solLen, probeMax, views = null, shared = null, detailed = false } = {}) {
+  function solve(facelets, { solLen, probeMax, views = null, shared = null, detailed = false, signal = null } = {}) {
     const id = nextId++;
+    // Nothing to stop if it never starts. Checked before attach() so an already-abandoned solve
+    // cannot be the thing that spawns a worker and pays for a table build.
+    if (signal?.aborted) return Promise.resolve(detailed ? { alg: null, depth: -1, view: -1 } : null);
     return new Promise((resolve, reject) => {
       // attach() lives INSIDE the executor: a spawn() that throws must reject this promise,
       // not escape solve() synchronously — the function's contract is asynchronous either way.
       const active = attach();
-      pending.set(id, { resolve, reject, detailed });
+      /**
+       * Stop THIS search, by request id, and leave every other search alone.
+       *
+       * The scoping is the point. `cancel()` — which is what a failing sibling used to call —
+       * rejects every entry on the client, and the app allows overlapping solves: a die press
+       * whose thread died took the reconnect's search down with it, and that solve reported
+       * "could not work it out" about a cube nothing was wrong with.
+       *
+       * Two shapes, because there are two situations. With a stop word the search really stops:
+       * the worker sees STOP_NOW at its next poll and answers null, keeping its thread and its
+       * tables, and this promise settles on that reply like any other. Without one there is no
+       * channel into a synchronous search at all, so the request is abandoned here (its reply,
+       * if it ever comes, is dropped by the guard in the message listener) and the thread is
+       * ended only when nothing else is waiting on it — stealing a sibling's answer to hurry
+       * this one would be the same bug one level down.
+       */
+      const abandon = () => {
+        const waiting = pending.get(id);
+        if (!waiting) return; // already settled, or already abandoned
+        if (shared) {
+          Atomics.store(shared, 0, STOP_NOW);
+          return;
+        }
+        pending.delete(id);
+        if (pending.size === 0) {
+          worker?.terminate();
+          worker = null;
+        }
+        waiting.resolve(detailed ? { alg: null, depth: -1, view: -1 } : null);
+      };
+      signal?.addEventListener('abort', abandon, { once: true });
+      // Every exit removes the listener: a long-lived signal that outlives its solve would
+      // otherwise accumulate one handler per search, each holding this promise's closure.
+      const done = (settle) => (value) => {
+        signal?.removeEventListener('abort', abandon);
+        settle(value);
+      };
+      pending.set(id, { resolve: done(resolve), reject: done(reject), detailed });
       try {
         // `shared` travels WITH the request, not as a one-off init message. One word per solve
         // is what keeps overlapping solves — which the app allows — from publishing each other's
@@ -167,7 +257,7 @@ export function createSolveClient({ spawn } = {}) {
         // A synchronous send failure would otherwise leave this entry pending forever — the
         // promise would reject, but `idle` would lie and cancel() would re-reject a corpse.
         pending.delete(id);
-        reject(err);
+        done(reject)(err);
       }
     });
   }
@@ -180,7 +270,17 @@ export function createSolveClient({ spawn } = {}) {
     worker = null;
   }
 
-  return { solve, cancel, get idle() { return pending.size === 0; } };
+  return {
+    solve,
+    cancel,
+    /** Make the worker now, and hand it back, so a caller can see WHAT it got before committing
+     *  work to it. The pool needs exactly that: `spawnSolveWorker` answers with a main-thread
+     *  worker where it cannot build a real one, and dividing a budget between several of those
+     *  is strictly worse than giving one of them all of it. A spawn that throws still throws —
+     *  it is the same worker failure the first solve would have raised, only earlier. */
+    ensureWorker: () => attach(),
+    get idle() { return pending.size === 0; },
+  };
 }
 
 /** Deal the views round-robin, so every slice gets a spread rather than a block. Views differ in
@@ -262,10 +362,10 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
   // that on every solve would cost a spawn attempt and a table build each time.
   let lone = null;
 
-  async function solve(facelets, { solLen, probeMax = DEFAULT_NODE_BUDGET } = {}) {
-    if (lone) return lone.solve(facelets, { solLen, probeMax });
+  async function solve(facelets, { solLen, probeMax = DEFAULT_NODE_BUDGET, signal = null } = {}) {
+    if (lone) return lone.solve(facelets, { solLen, probeMax, signal });
     try {
-      return await pooled(facelets, { solLen, probeMax });
+      return await pooled(facelets, { solLen, probeMax, signal });
     } catch (err) {
       // A pool that cannot be staffed still answers. A thread that failed to spawn, or died,
       // says nothing about this cube — and one worker searching all six views under the whole
@@ -283,14 +383,29 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
         'in the tail; answers are unaffected.',
       );
       for (const c of clients) c.cancel();
-      lone = createSolveClient({ spawn });
-      return lone.solve(facelets, { solLen, probeMax });
+      // `??=`: two overlapping solves can fall back at once, and the second assignment would
+      // orphan the first one's client — still holding a search, and no longer cancellable
+      // through this pool.
+      lone ??= createSolveClient({ spawn });
+      return lone.solve(facelets, { solLen, probeMax, signal });
     }
   }
 
-  async function pooled(facelets, { solLen, probeMax }) {
+  async function pooled(facelets, { solLen, probeMax, signal }) {
     const shares = shareBudget(probeMax, clients.length);
     const used = clients.slice(0, shares.length);
+    // Look at the threads BEFORE dividing a budget between them. `spawnSolveWorker` answers with
+    // a main-thread worker where it cannot build a real one — no `Worker` at all, a CSP
+    // forbidding worker-src, a blocked module URL — and N of those is not a pool: they run one
+    // after another on this thread with a share of the budget each, which is strictly worse than
+    // one of them searching every view with all of it, and the stop word buys nothing because
+    // nothing runs concurrently to be stopped. Raised as a worker failure so the collapse goes
+    // through the one fallback path that already exists, loudly.
+    if (used.some((c) => c.ensureWorker()?.inline === true)) {
+      throw workerFailure(
+        'there is no real worker here, so a pool would be main-thread searches with a share of the budget each',
+      );
+    }
     // A fresh word per solve. `makeShared` is injected so a page without SharedArrayBuffer — or
     // a test — gets a correct client that simply never stops early.
     const stop = makeShared?.() ?? null;
@@ -300,11 +415,24 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
     // Waiting first deadlocks: a worker that died takes its promise with it, and the others are
     // still searching a cube whose answer nobody will use — `allSettled` would wait for replies
     // that are never coming. Cancelling is what makes them settle, so the order matters.
+    //
+    // ONE CONTROLLER FOR THIS SOLVE. It used to be `c.cancel()` per client, which rejects every
+    // entry on that client — including a second, overlapping solve's, which the app allows and
+    // which had nothing to do with the failure. That solve then failed with "could not work it
+    // out" about a cube nothing was wrong with. Aborting is scoped by request id, and where
+    // there is a stop word it is also cheaper than cancelling: the siblings stop at their next
+    // poll instead of losing their threads and rebuilding their tables.
+    const abandon = new AbortController();
+    const relay = () => abandon.abort();
+    if (signal) {
+      if (signal.aborted) abandon.abort();
+      else signal.addEventListener('abort', relay, { once: true });
+    }
     let firstError = null;
     const abandonAll = (err) => {
       if (firstError !== null) return;
       firstError = err;
-      for (const c of used) c.cancel();
+      abandon.abort();
     };
     const settled = await Promise.allSettled(used.map((client, i) =>
       client.solve(facelets, {
@@ -313,6 +441,7 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
         views: slices[i],
         shared: stop,
         detailed: true,
+        signal: abandon.signal,
       }).catch((err) => { abandonAll(err); throw err; }).then((reply) => {
         // Publish only a real answer, and only when it is SHALLOWER than what is published. A
         // sibling exploring deeper can stop; one at the same depth cannot, because a lower view
@@ -326,7 +455,7 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
           }
         }
         return reply;
-      })));
+      }))).finally(() => signal?.removeEventListener('abort', relay));
 
     // allSettled, not all: `all` would resolve the caller's promise while siblings were still
     // running and pending. Everyone is waited for, and the FIRST failure propagates — not a
@@ -382,6 +511,10 @@ function inlineWorker() {
     readStats = () => twoPhase.searchStats;
   })();
   return {
+    /** What this IS, said out loud, because from the outside it is worker-shaped and nothing
+     *  else could tell. The pool asks before it divides a budget: several of these are several
+     *  main-thread searches with a share each, run one after another. */
+    inline: true,
     addEventListener: (type, fn) => { listeners.set(type, fn); },
     postMessage(request) {
       void ready.then(
@@ -407,23 +540,44 @@ function inlineWorker() {
 
 /** The real worker, for the app. Kept out of `createSolveClient` so nothing in a test ever
  *  needs a DOM or a thread. */
+/** Set once a module worker has proved it cannot LOAD — see below. Module state on purpose: it
+ *  is a fact about this page, not about one client, and every client's spawn must learn it. */
+let moduleWorkerBroken = false;
+
 /**
  * A real worker where one can be had, and this thread where one cannot.
  *
- * Two different ways to have no worker, and they used to be treated as one: `Worker` missing
- * from the platform, and `Worker` present but refusing to build THIS script — a CSP that
- * forbids worker-src, a blocked module URL, a test denying it. Only the first fell back, so
- * the second reached the caller as an error and took solving down with it. Since rolling a
- * scramble became a solve, that would take the Random die down too.
+ * THREE ways to have no worker, and they were treated as one, then as two:
+ *
+ *   1. `Worker` missing from the platform.
+ *   2. `Worker` present but refusing to build THIS script, synchronously — a CSP that forbids
+ *      worker-src, a blocked module URL, a test denying it. Only (1) fell back at first, so this
+ *      reached the caller as an error and took solving down with it. Since rolling a scramble
+ *      became a solve, that took the Random die down too.
+ *   3. `Worker` built, and then the module fails to LOAD — a 404, a syntax error, an import the
+ *      page cannot resolve. This one is ASYNCHRONOUS: the constructor has already handed back a
+ *      Worker object and the failure arrives later as an `error` event, so neither of the fixes
+ *      above sees it. Every spawn after it built another thread exactly as doomed, and the pool
+ *      fell back to a "single worker" that could not load either.
+ *
+ * The distinction that makes (3) safe to remember is whether the worker ever SPOKE. A module
+ * that will not load never delivers a message; a thread that answered once and then died of
+ * memory pressure is not a reason to move every future search onto the main thread, and marking
+ * it broken would trade one lost search for a permanently blocked page.
  *
  * Loud either way: the inline worker announces that searches now block the page.
  */
 export const spawnSolveWorker = () => {
-  if (typeof Worker === 'undefined') return inlineWorker();
+  if (moduleWorkerBroken || typeof Worker === 'undefined') return inlineWorker();
   try {
-    return new Worker(new URL('./solve-worker.js', import.meta.url), { type: 'module' });
+    const spawned = new Worker(new URL('./solve-worker.js', import.meta.url), { type: 'module' });
+    let spoke = false;
+    spawned.addEventListener('message', () => { spoke = true; }, { once: true });
+    spawned.addEventListener('error', () => { if (!spoke) moduleWorkerBroken = true; }, { once: true });
+    return spawned;
   } catch (cause) {
     console.warn('solve-client: the solver worker could not be built, so it runs on this thread', cause);
+    moduleWorkerBroken = true;
     return inlineWorker();
   }
 };

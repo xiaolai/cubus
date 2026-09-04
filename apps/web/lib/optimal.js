@@ -17,6 +17,10 @@
 // error at this boundary, not a wrong number wearing the word "proved".
 
 import { isDesktopHost } from './host.js';
+// The pipeline's one tokenizer. solver-engine.js is the protocol boundary and imports no engine,
+// so this costs the seam nothing; what it buys is that a proof's move count and the app's move
+// count cannot come from two different splitters.
+import { moveTokens } from './solver-engine.js';
 
 /** The face-turn grammar the proofs are stated in. cubejs would happily apply rotations,
  *  slices and wide moves too — and a native answer using them would "solve" while proving
@@ -25,7 +29,7 @@ export const HTM_TOKEN = /^[URFDLB](?:2|')?$/;
 
 /** Split an alg into tokens, refusing anything outside the HTM face-turn grammar. */
 export function htmMoves(alg, what) {
-  const tokens = alg.trim() ? alg.trim().split(/\s+/) : [];
+  const tokens = moveTokens(alg);
   for (const token of tokens) {
     if (!HTM_TOKEN.test(token)) {
       throw new Error(`${what}: "${token}" is not a face turn — wrong metric, refusing`);
