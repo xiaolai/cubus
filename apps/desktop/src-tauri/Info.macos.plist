@@ -56,7 +56,7 @@
 	<key>CFBundleIconName</key>
 	<string>Cubus</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Cubus talks to your GAN smart cube over Bluetooth, so it can follow the moves you make. It connects only to a cube you choose.</string>
+	<string>Cubus talks to your smart cube over Bluetooth, so it can follow the moves you make. It connects only to a cube you choose.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Cubus reads your cube's six sides through the camera. Everything happens on this device — no image is stored or sent anywhere.</string>
 </dict>

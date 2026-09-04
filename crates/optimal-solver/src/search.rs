@@ -51,7 +51,11 @@ pub enum Certification {
     FoundAt(u8),
 }
 
-const CANCEL_STRIDE: u64 = 4096; // ~0.1 ms of nodes, so cancel and contour-stop bite immediately
+/// How many nodes a DFS visits between looks at the cancel flag — ~0.1 ms of work, so cancel and
+/// contour-stop bite immediately. Public because it is the unit of the cancellation PROMISE:
+/// after the flag flips, each active thread visits at most this many more nodes before it
+/// unwinds, and `plan_checks.rs` asserts that bound in nodes rather than in milliseconds.
+pub const CANCEL_STRIDE: u64 = 4096;
 
 struct Dfs<'a> {
     tables: &'a Tables,
@@ -60,6 +64,12 @@ struct Dfs<'a> {
     /// active subtrees unwind within a stride instead of finishing enormous root branches
     /// nobody will read.
     stop: &'a AtomicBool,
+    /// The search-wide counter, flushed at every poll point rather than once per opening. A
+    /// thread deep in a root branch used to hold millions of nodes locally until it finished,
+    /// so a reader of the total — the progress callback, and the cancellation test — saw a
+    /// number that lagged the work by whole subtrees. One atomic add per CANCEL_STRIDE nodes
+    /// is the cost, which is nothing.
+    total_nodes: &'a AtomicU64,
     nodes: u64,
     since_check: u64,
     path: Vec<u8>,
@@ -73,11 +83,18 @@ enum DfsOut {
 }
 
 impl Dfs<'_> {
+    /// Publish the nodes counted since the last flush.
+    fn flush(&mut self) {
+        self.total_nodes.fetch_add(self.nodes, Ordering::Relaxed);
+        self.nodes = 0;
+    }
+
     fn run(&mut self, c: Coords, g: u8, bound: u8, prev: i8) -> DfsOut {
         self.nodes += 1;
         self.since_check += 1;
         if self.since_check >= CANCEL_STRIDE {
             self.since_check = 0;
+            self.flush();
             if self.cancel.load(Ordering::Relaxed) || self.stop.load(Ordering::Relaxed) {
                 return DfsOut::Aborted;
             }
@@ -126,7 +143,14 @@ fn run_contour(
     let stop = AtomicBool::new(false);
     let cancelled = AtomicBool::new(false);
     openings.par_iter().for_each(|prefix| {
-        if stop.load(Ordering::Relaxed) {
+        // The cancel flag as well as the contour's stop: without it a cancel that lands between
+        // openings started every remaining root, each of which then spent a full stride
+        // discovering it — thousands of roots at four-move depth.
+        if stop.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed) {
+            if cancel.load(Ordering::Relaxed) {
+                cancelled.store(true, Ordering::Relaxed);
+                stop.store(true, Ordering::Relaxed);
+            }
             return;
         }
         let mut at = *start;
@@ -141,6 +165,7 @@ fn run_contour(
             tables,
             cancel,
             stop: &stop,
+            total_nodes,
             nodes: 0,
             since_check: 0,
             path: prefix.clone(),
@@ -156,7 +181,7 @@ fn run_contour(
         } else {
             dfs.run(at, g, bound, prev)
         };
-        total_nodes.fetch_add(dfs.nodes, Ordering::Relaxed);
+        dfs.flush();
         match out {
             DfsOut::Found => {
                 let mut slot = found.lock().unwrap();
@@ -245,21 +270,44 @@ pub fn prove(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u8, u64),
 ) -> Result<Proof, SearchEnd> {
+    let total_nodes = AtomicU64::new(0);
+    prove_counted(tables, start, cap, cancel, &total_nodes, progress)
+}
+
+/// [prove], with the node counter supplied by the caller and kept current to within one
+/// CANCEL_STRIDE per thread — so a caller that cancels can read how much work happened AFTER
+/// it asked, which is the deterministic half of the cancellation promise and what
+/// `plan_checks.rs` measures instead of a wall clock.
+///
+/// The roots are expanded to `root_ply(bound)` moves PER CONTOUR, exactly as
+/// `certify_no_solution_within` does and for the reason its comment records: 18 one-move roots
+/// left the last giant subtrees grinding on three cores of twenty at the deep contours
+/// (measured 2026-08-30), and a proof at length 18–20 spends nearly all of its time there. The
+/// partition is exact (`expand_openings`), so the maneuvers covered are the same; only the
+/// scheduling changes.
+pub fn prove_counted(
+    tables: &Tables,
+    start: &Coords,
+    cap: u8,
+    cancel: &AtomicBool,
+    total_nodes: &AtomicU64,
+    progress: &mut dyn FnMut(u8, u64),
+) -> Result<Proof, SearchEnd> {
     if start.is_solved() {
+        total_nodes.fetch_add(1, Ordering::Relaxed);
         return Ok(Proof {
             length: 0,
             solution: Vec::new(),
             nodes: 1,
         });
     }
-    let openings = root_openings();
-    let total_nodes = AtomicU64::new(0);
     let mut bound = tables.heuristic(start).max(1);
     while bound <= cap {
         if cancel.load(Ordering::Relaxed) {
             return Err(SearchEnd::Cancelled);
         }
-        let (found, cancelled) = run_contour(tables, start, bound, &openings, cancel, &total_nodes);
+        let roots = expand_openings(root_openings(), root_ply(bound));
+        let (found, cancelled) = run_contour(tables, start, bound, &roots, cancel, total_nodes);
         if let Some(solution) = found {
             return Ok(Proof {
                 length: bound,

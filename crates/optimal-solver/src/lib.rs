@@ -67,6 +67,46 @@ pub struct Tables {
     pub(crate) edge_b: Pdb,
 }
 
+/// Write `bytes` to `path` so that the file is either absent, or whole and durable — never a
+/// plausible-looking fragment.
+///
+/// Write-then-rename is the shape, and two details make it hold. The temp name carries the
+/// process id and a random word: a FIXED `name.tmp` meant two instances of the app preparing
+/// tables at once wrote into one file, and the loser's rename published the winner's half-written
+/// bytes under a valid-looking name (the loader's checksum refuses those, at the cost of minutes
+/// of regeneration on the next launch — a wasted night, not a wrong proof). And the file is
+/// `sync_all`ed before the rename: without it a power loss after the rename can leave a
+/// zero-length or partially-written file under the FINAL name on filesystems that reorder the
+/// data behind the metadata, which is the one outcome a rename was supposed to rule out.
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write as _;
+    let dir = path.parent().ok_or("artifact path has no directory")?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("artifact path has no file name")?;
+    let mut nonce = [0u8; 8];
+    getrandom::getrandom(&mut nonce)
+        .map_err(|e| format!("no random source for a temp name: {e}"))?;
+    let tmp = dir.join(format!(
+        ".{name}.{}-{:016x}.tmp",
+        std::process::id(),
+        u64::from_le_bytes(nonce)
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(e) = result {
+        // Leave nothing behind: a stray temp file is a plausible-looking fragment by another name.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("{}: {e}", path.display()));
+    }
+    Ok(())
+}
+
 impl Tables {
     pub fn moves(&self) -> &MoveTables {
         &self.moves
@@ -141,17 +181,11 @@ impl Tables {
 
     pub fn save(&self, dir: &std::path::Path) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        let write = |name: &str, p: &Pdb| -> Result<(), String> {
-            // Write-then-rename, so an interrupted save leaves no plausible-looking file.
-            let tmp = dir.join(format!("{name}.tmp"));
-            std::fs::write(&tmp, pdb::serialize(p)).map_err(|e| e.to_string())?;
-            std::fs::rename(&tmp, dir.join(name)).map_err(|e| e.to_string())
-        };
         for ((name, _), table) in ARTIFACTS
             .iter()
             .zip([&self.corner, &self.edge_a, &self.edge_b])
         {
-            write(name, table)?;
+            write_atomic(&dir.join(name), &pdb::serialize(table))?;
         }
         Ok(())
     }
@@ -164,5 +198,80 @@ impl Tables {
         let b = self.edge_a.get(c.edge_a_index());
         let d = self.edge_b.get(c.edge_b_index());
         a.max(b).max(d)
+    }
+}
+
+#[cfg(test)]
+mod write_atomic_tests {
+    use super::write_atomic;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("cubus-write-atomic-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_saved_file_is_whole_and_no_temp_survives() {
+        let d = scratch("whole");
+        let target = d.join("corner.pdb");
+        write_atomic(&target, b"hello tables").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"hello tables");
+        let leftovers: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n != "corner.pdb")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+        // Overwriting is the same operation, and the reader never sees a partial file.
+        write_atomic(&target, b"newer").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"newer");
+    }
+
+    /// Two writers, one target, at once: each uses its own temp name, so neither publishes the
+    /// other's bytes half-written. The fixed `.tmp` name this replaces made exactly that possible.
+    #[test]
+    fn concurrent_writers_never_publish_each_others_fragments() {
+        let d = scratch("race");
+        let target = d.join("edge-a.pdb");
+        let payloads: Vec<Vec<u8>> = (0..8u8).map(|i| vec![i; 200_000]).collect();
+        std::thread::scope(|scope| {
+            for p in &payloads {
+                let target = target.clone();
+                scope.spawn(move || {
+                    for _ in 0..5 {
+                        write_atomic(&target, p).unwrap();
+                    }
+                });
+            }
+        });
+        let got = std::fs::read(&target).unwrap();
+        assert_eq!(got.len(), 200_000, "the published file is a whole payload");
+        assert!(
+            got.iter().all(|&b| b == got[0]),
+            "the published file is ONE writer's bytes, not a mix"
+        );
+        let leftovers = std::fs::read_dir(&d).unwrap().count();
+        assert_eq!(leftovers, 1, "only the target remains");
+    }
+
+    #[test]
+    fn a_failed_write_leaves_nothing_behind() {
+        let d = scratch("fail");
+        // A directory where the FINAL name is a directory: the rename fails after the temp is
+        // written, and the temp must be cleaned up.
+        let target = d.join("blocked");
+        std::fs::create_dir_all(&target).unwrap();
+        assert!(write_atomic(&target, b"x").is_err());
+        assert_eq!(
+            std::fs::read_dir(&d).unwrap().count(),
+            1,
+            "only the blocking dir remains"
+        );
     }
 }

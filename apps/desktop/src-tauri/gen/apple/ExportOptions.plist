@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The BASE export options, not the shipped ones. tauri-cli (2.11+) generates its own ExportOptions
+  from `--export-method` and the signing settings and merges that OVER this file, so `method` here
+  is only what a bare `tauri ios build` with no export method exports as: a debugging build for a
+  paired device. The release workflow passes `--export-method app-store-connect`, which wins.
+  Kept committed so the merge has a base and a local build without flags is a local build.
+-->
 <plist version="1.0">
 <dict>
     <key>method</key>

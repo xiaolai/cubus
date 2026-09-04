@@ -59,15 +59,11 @@ targets:
         # Split View 1/3 is unsupported: the portrait floor is 375px and a 1/3 column is narrower
         # (decision 7). Deprecated by Apple, still honoured on iPadOS 26.
         UIRequiresFullScreen: true
-        # iOS TERMINATES the app on first camera or CoreBluetooth access without these, and the
-        # App Store rejects a build whose strings do not describe the use. They lived only in the
-        # generated Info.plist until 2026-08-31, which meant one `tauri ios init` away from an app
-        # that crashed the moment a child pointed it at a cube.
-        NSCameraUsageDescription: >-
-          Cubus reads your cube's six sides through the camera. Everything happens on this device
-          — no image is stored or sent anywhere.
-        NSBluetoothAlwaysUsageDescription: >-
-          Cubus connects to a smart cube over Bluetooth to follow your turns as you make them.
+        # No NSCameraUsageDescription / NSBluetoothAlwaysUsageDescription HERE. Both live in
+        # ../../Info.ios.plist, which Tauri merges over this file's output on every
+        # `tauri ios dev|build` — so it survives `tauri ios init` as this file does not, and it
+        # is the copy that ships. Declaring them here as well (2026-08-31 to 2026-09-05) meant two
+        # sources in different words, of which only this non-shipping one was tested.
         CFBundleShortVersionString: 0.2.6
         CFBundleVersion: "0.2.6"
     entitlements:
