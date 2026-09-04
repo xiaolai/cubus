@@ -1,9 +1,14 @@
 // The cube as 20 pieces, not 54 stickers.
 //
-// A method solver reasons in cubies — "the blue-white edge is in the top layer, flipped" —
-// and a facelet string cannot answer that without a lookup per question. So this module
-// carries the piece-level model the layer-by-layer stages are written against, and nothing
-// else: no DOM, no storage, no cubejs at runtime.
+// A solver reasons in cubies — "which slot holds this edge, and which way up" — and a facelet
+// string cannot answer that without a lookup per question. So this module carries the piece-level
+// model, and nothing else: no DOM, no storage, no cubejs at runtime.
+//
+// It was written for the method solver, which was removed on 2026-08-29 (dev-docs/solver-research.md).
+// It stayed because two things that outlived it are built on it, and neither is optional:
+// `two-phase.js` COMPOSES every one of its move tables from `MOVES` here rather than typing them,
+// and `cube-selfcheck.test.mjs` uses `rotateState` to build a genuinely conjugated decoder — the
+// one thing that can tell a uniformly relabelled cube from an offset one.
 //
 // The permutation/orientation convention is cubejs's (Kociemba ordering), and the quarter-turn
 // tables below were DERIVED from cubejs rather than typed from memory. `cube-pieces.test.mjs`

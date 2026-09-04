@@ -5,7 +5,11 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __commonJS = (cb, mod) => function __require() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -78,7 +82,7 @@ var require_aes_js = __commonJS({
         }
         targetArray.set(sourceArray, targetStart);
       }
-      var convertUtf8 = /* @__PURE__ */ function() {
+      var convertUtf8 = /* @__PURE__ */ (function() {
         function toBytes(text) {
           var result = [], i = 0;
           text = encodeURI(text);
@@ -114,8 +118,8 @@ var require_aes_js = __commonJS({
           toBytes,
           fromBytes
         };
-      }();
-      var convertHex = /* @__PURE__ */ function() {
+      })();
+      var convertHex = /* @__PURE__ */ (function() {
         function toBytes(text) {
           var result = [];
           for (var i = 0; i < text.length; i += 2) {
@@ -136,7 +140,7 @@ var require_aes_js = __commonJS({
           toBytes,
           fromBytes
         };
-      }();
+      })();
       var numberOfRounds = { 16: 10, 24: 12, 32: 14 };
       var rcon = [1, 2, 4, 8, 16, 32, 64, 128, 27, 54, 108, 216, 171, 77, 154, 47, 94, 188, 99, 198, 151, 53, 106, 212, 179, 125, 250, 239, 197, 145];
       var S = [99, 124, 119, 123, 242, 107, 111, 197, 48, 1, 103, 43, 254, 215, 171, 118, 202, 130, 201, 125, 250, 89, 71, 240, 173, 212, 162, 175, 156, 164, 114, 192, 183, 253, 147, 38, 54, 63, 247, 204, 52, 165, 229, 241, 113, 216, 49, 21, 4, 199, 35, 195, 24, 150, 5, 154, 7, 18, 128, 226, 235, 39, 178, 117, 9, 131, 44, 26, 27, 110, 90, 160, 82, 59, 214, 179, 41, 227, 47, 132, 83, 209, 0, 237, 32, 252, 177, 91, 106, 203, 190, 57, 74, 76, 88, 207, 208, 239, 170, 251, 67, 77, 51, 133, 69, 249, 2, 127, 80, 60, 159, 168, 81, 163, 64, 143, 146, 157, 56, 245, 188, 182, 218, 33, 16, 255, 243, 210, 205, 12, 19, 236, 95, 151, 68, 23, 196, 167, 126, 61, 100, 93, 25, 115, 96, 129, 79, 220, 34, 42, 144, 136, 70, 238, 184, 20, 222, 94, 11, 219, 224, 50, 58, 10, 73, 6, 36, 92, 194, 211, 172, 98, 145, 149, 228, 121, 231, 200, 55, 109, 141, 213, 78, 169, 108, 86, 244, 234, 101, 122, 174, 8, 186, 120, 37, 46, 28, 166, 180, 198, 232, 221, 116, 31, 75, 189, 139, 138, 112, 62, 181, 102, 72, 3, 246, 14, 97, 53, 87, 185, 134, 193, 29, 158, 225, 248, 152, 17, 105, 217, 142, 148, 155, 30, 135, 233, 206, 85, 40, 223, 140, 161, 137, 13, 191, 230, 66, 104, 65, 153, 45, 15, 176, 84, 187, 22];
@@ -675,7 +679,7 @@ function arrRemove(arr, item) {
 }
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/Subscription.js
-var Subscription = function() {
+var Subscription = (function() {
   function Subscription2(initialTeardown) {
     this.initialTeardown = initialTeardown;
     this.closed = false;
@@ -788,13 +792,13 @@ var Subscription = function() {
       teardown._removeParent(this);
     }
   };
-  Subscription2.EMPTY = function() {
+  Subscription2.EMPTY = (function() {
     var empty = new Subscription2();
     empty.closed = true;
     return empty;
-  }();
+  })();
   return Subscription2;
-}();
+})();
 var EMPTY_SUBSCRIPTION = Subscription.EMPTY;
 function isSubscription(value) {
   return value instanceof Subscription || value && "closed" in value && isFunction(value.remove) && isFunction(value.add) && isFunction(value.unsubscribe);
@@ -853,9 +857,9 @@ function noop() {
 }
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/NotificationFactories.js
-var COMPLETE_NOTIFICATION = function() {
+var COMPLETE_NOTIFICATION = (function() {
   return createNotification("C", void 0, void 0);
-}();
+})();
 function errorNotification(error) {
   return createNotification("E", void 0, error);
 }
@@ -898,7 +902,7 @@ function captureError(err) {
 }
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/Subscriber.js
-var Subscriber = function(_super) {
+var Subscriber = (function(_super) {
   __extends(Subscriber2, _super);
   function Subscriber2(destination) {
     var _this = _super.call(this) || this;
@@ -964,12 +968,12 @@ var Subscriber = function(_super) {
     }
   };
   return Subscriber2;
-}(Subscription);
+})(Subscription);
 var _bind = Function.prototype.bind;
 function bind(fn, thisArg) {
   return _bind.call(fn, thisArg);
 }
-var ConsumerObserver = function() {
+var ConsumerObserver = (function() {
   function ConsumerObserver2(partialObserver) {
     this.partialObserver = partialObserver;
   }
@@ -1006,8 +1010,8 @@ var ConsumerObserver = function() {
     }
   };
   return ConsumerObserver2;
-}();
-var SafeSubscriber = function(_super) {
+})();
+var SafeSubscriber = (function(_super) {
   __extends(SafeSubscriber2, _super);
   function SafeSubscriber2(observerOrNext, error, complete) {
     var _this = _super.call(this) || this;
@@ -1038,7 +1042,7 @@ var SafeSubscriber = function(_super) {
     return _this;
   }
   return SafeSubscriber2;
-}(Subscriber);
+})(Subscriber);
 function handleUnhandledError(error) {
   if (config.useDeprecatedSynchronousErrorHandling) {
     captureError(error);
@@ -1063,9 +1067,9 @@ var EMPTY_OBSERVER = {
 };
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/symbol/observable.js
-var observable = function() {
+var observable = (function() {
   return typeof Symbol === "function" && Symbol.observable || "@@observable";
-}();
+})();
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/util/identity.js
 function identity(x) {
@@ -1088,7 +1092,7 @@ function pipeFromArray(fns) {
 }
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/Observable.js
-var Observable = function() {
+var Observable = (function() {
   function Observable2(subscribe) {
     if (subscribe) {
       this._subscribe = subscribe;
@@ -1167,7 +1171,7 @@ var Observable = function() {
     return new Observable2(subscribe);
   };
   return Observable2;
-}();
+})();
 function getPromiseCtor(promiseCtor) {
   var _a;
   return (_a = promiseCtor !== null && promiseCtor !== void 0 ? promiseCtor : config.Promise) !== null && _a !== void 0 ? _a : Promise;
@@ -1202,7 +1206,7 @@ function operate(init) {
 function createOperatorSubscriber(destination, onNext, onComplete, onError, onFinalize) {
   return new OperatorSubscriber(destination, onNext, onComplete, onError, onFinalize);
 }
-var OperatorSubscriber = function(_super) {
+var OperatorSubscriber = (function(_super) {
   __extends(OperatorSubscriber2, _super);
   function OperatorSubscriber2(destination, onNext, onComplete, onError, onFinalize, shouldUnsubscribe) {
     var _this = _super.call(this, destination) || this;
@@ -1244,7 +1248,7 @@ var OperatorSubscriber = function(_super) {
     }
   };
   return OperatorSubscriber2;
-}(Subscriber);
+})(Subscriber);
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/util/ObjectUnsubscribedError.js
 var ObjectUnsubscribedError = createErrorClass(function(_super) {
@@ -1256,7 +1260,7 @@ var ObjectUnsubscribedError = createErrorClass(function(_super) {
 });
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/Subject.js
-var Subject = function(_super) {
+var Subject = (function(_super) {
   __extends(Subject2, _super);
   function Subject2() {
     var _this = _super.call(this) || this;
@@ -1382,8 +1386,8 @@ var Subject = function(_super) {
     return new AnonymousSubject(destination, source);
   };
   return Subject2;
-}(Observable);
-var AnonymousSubject = function(_super) {
+})(Observable);
+var AnonymousSubject = (function(_super) {
   __extends(AnonymousSubject2, _super);
   function AnonymousSubject2(destination, source) {
     var _this = _super.call(this) || this;
@@ -1408,7 +1412,7 @@ var AnonymousSubject = function(_super) {
     return (_b = (_a = this.source) === null || _a === void 0 ? void 0 : _a.subscribe(subscriber)) !== null && _b !== void 0 ? _b : EMPTY_SUBSCRIPTION;
   };
   return AnonymousSubject2;
-}(Subject);
+})(Subject);
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/scheduler/dateTimestampProvider.js
 var dateTimestampProvider = {
@@ -1419,7 +1423,7 @@ var dateTimestampProvider = {
 };
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/ReplaySubject.js
-var ReplaySubject = function(_super) {
+var ReplaySubject = (function(_super) {
   __extends(ReplaySubject2, _super);
   function ReplaySubject2(_bufferSize, _windowTime, _timestampProvider) {
     if (_bufferSize === void 0) {
@@ -1477,7 +1481,7 @@ var ReplaySubject = function(_super) {
     }
   };
   return ReplaySubject2;
-}(Subject);
+})(Subject);
 
 // ../../node_modules/.pnpm/rxjs@7.8.2/node_modules/rxjs/dist/esm5/internal/observable/empty.js
 var EMPTY = new Observable(function(subscriber) {
@@ -6531,7 +6535,7 @@ function raceWithAbort(work, signal) {
   });
 }
 async function connectGattWithTimeout(gatt, timeoutMs, signal) {
-  const sym = Symbol("gattTimeout");
+  const sym = /* @__PURE__ */ Symbol("gattTimeout");
   let timer;
   try {
     await raceWithAbort(Promise.race([
@@ -6784,7 +6788,9 @@ async function connectSmartCube(arg) {
 
 // lib/smartcube-entry.js
 var SMARTCUBE_REV = "77df8e9507ac87031c12ad1717d71de98d56784b";
+var SMARTCUBE_BRANCH = "main";
 export {
+  SMARTCUBE_BRANCH,
   SMARTCUBE_REV,
   connectSmartCube,
   getRegisteredProtocols
