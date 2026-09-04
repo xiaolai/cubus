@@ -9,7 +9,8 @@
 
 import assert from 'node:assert/strict';
 import { test, describe } from 'node:test';
-import { installBleBridge, makeTauriBridge } from '../lib/ble-bridge.js';
+import { NATIVE_BLE_UNSUPPORTED, forgetLibraryMac, installBleBridge, makeTauriBridge } from '../lib/ble-bridge.js';
+import { DESKTOP_PLATFORMS } from '../lib/host.js';
 
 /** A Tauri API stub that records every invoke and lets tests fire events. */
 function fakeTauri() {
@@ -157,18 +158,35 @@ describe('choosing a transport', () => {
   });
 });
 
-  test('a host where native BLE cannot work gets the honest "none", not a crash', async () => {
-    // Android is the case. btleplug's droidplug backend needs Java classes in the APK and a JNI
-    // init that this project does not yet do, and WITHOUT them the first adapter call panics
-    // inside a Tauri command — a crash, not an error a screen can report. The crate compiles for
-    // Android regardless, so nothing catches it at build time.
-    const t = fakeTauri();
-    const doc = { documentElement: { dataset: { platform: 'android' } } };
-    await withGlobals({ window: { __TAURI__: t.api, performance: globalThis.performance }, document: doc }, async () => {
-      const r = installBleBridge();
-      assert.equal(r.kind, 'none', 'the Tauri API being present is not the same as a radio');
-      assert.equal(r.bluetooth, null);
-    });
+  test('a host where native BLE is unproven gets the honest "none", not a crash', async () => {
+    // Android is the case that named the rule. btleplug's droidplug backend needs Java classes in
+    // the APK and a JNI init that this project does not yet do, and WITHOUT them the first adapter
+    // call panics inside a Tauri command — a crash, not an error a screen can report. The crate
+    // compiles for Android regardless, so nothing catches it at build time.
+    //
+    // iOS is the case the rule was then broken for: it compiles, the usage strings are in place,
+    // and it had never been run on a device, yet it was offered. Both are `kind: 'none'` until a
+    // radio says otherwise, which is dev-docs/native-ble-platforms.md §3 in one assertion.
+    for (const platform of ['android', 'ios']) {
+      const t = fakeTauri();
+      const doc = { documentElement: { dataset: { platform } } };
+      await withGlobals({ window: { __TAURI__: t.api, performance: globalThis.performance }, document: doc }, async () => {
+        const r = installBleBridge();
+        assert.equal(r.kind, 'none', `${platform}: the Tauri API being present is not a radio`);
+        assert.equal(r.bluetooth, null);
+        assert.equal(r.bridge, null, 'and nothing is installed that would have to be torn down');
+      });
+    }
+  });
+
+  test('the refused list is the whole of the gate, and it says which platforms', async () => {
+    // Read from the module rather than restated, so "which platforms are refused" has one answer.
+    // A platform moves OFF this list only on hardware evidence: a refusal is removed when a
+    // platform is proven, never when it builds (native-ble-platforms.md §3).
+    assert.deepEqual([...NATIVE_BLE_UNSUPPORTED].sort(), ['android', 'ios']);
+    for (const platform of DESKTOP_PLATFORMS) {
+      assert.ok(!NATIVE_BLE_UNSUPPORTED.includes(platform), `${platform} has been proven on hardware`);
+    }
   });
 
   test('and a host where it DOES work is unaffected by that guard', async () => {
@@ -515,5 +533,60 @@ describe('the Tauri adapter', () => {
     assert.throws(() => t.fire('ble-disconnect', {}), /DisconnectPayload/);
     assert.throws(() => t.fire('ble-disconnect', {}), (e) => !/NotificationPayload/.test(e.message));
     assert.throws(() => t.fire('ble-notification', { sub: 7 }), /NotificationPayload/);
+  });
+});
+
+describe('forgetting a cube reaches the protocol layer’s own cache', () => {
+  // The gap: "Forget" cleared the app's registry and left `smartcube-ble-mac:<device id>` behind.
+  // On Windows, Linux and Android the device id IS the Bluetooth address, so a forgotten cube
+  // still had its MAC on disk and the next connect derived a key from it without asking anything.
+  // A forget that leaves the identifying value in storage is not a forget.
+
+  /** A localStorage stand-in. Node has no Web Storage in this harness, and a real one would make
+   *  this test depend on process-wide state shared with every other file. */
+  const fakeStorage = (entries = {}) => {
+    const map = new Map(Object.entries(entries));
+    return {
+      map,
+      getItem: (k) => (map.has(k) ? map.get(k) : null),
+      setItem: (k, v) => map.set(k, String(v)),
+      removeItem: (k) => map.delete(k),
+    };
+  };
+
+  test('removes the entry the library wrote, and nothing else', () => {
+    const s = fakeStorage({
+      'smartcube-ble-mac:AA:BB:CC:DD:EE:FF': '54:6C:50:89:C8:D3',
+      'smartcube-ble-mac:11:22:33:44:55:66': '11:22:33:44:55:66',
+      settings: '{"theme":"night"}',
+    });
+    assert.equal(forgetLibraryMac('AA:BB:CC:DD:EE:FF', s), 1);
+    assert.equal(s.getItem('smartcube-ble-mac:AA:BB:CC:DD:EE:FF'), null, 'the address is gone');
+    assert.equal(s.getItem('smartcube-ble-mac:11:22:33:44:55:66'), '11:22:33:44:55:66', 'the other cube is untouched');
+    assert.equal(s.getItem('settings'), '{"theme":"night"}', 'and so is everything else');
+  });
+
+  test('reaches the entry whichever case the platform wrote the id in', () => {
+    // btleplug prints an address upper-case on one platform and lower on another, and the key is
+    // the id verbatim. Missing by case would leave exactly the value this exists to remove.
+    const s = fakeStorage({ 'smartcube-ble-mac:aa:bb:cc:dd:ee:ff': '54:6C:50:89:C8:D3' });
+    assert.equal(forgetLibraryMac('AA:BB:CC:DD:EE:FF', s), 1);
+    assert.equal(s.map.size, 0);
+  });
+
+  test('reports what it removed rather than what it was asked to remove', () => {
+    // A count, so a caller says nothing rather than claiming a cleanup that did not happen.
+    const s = fakeStorage({});
+    assert.equal(forgetLibraryMac('AA:BB:CC:DD:EE:FF', s), 0);
+    assert.equal(forgetLibraryMac('', s), 0);
+    assert.equal(forgetLibraryMac(null, s), 0);
+  });
+
+  test('a platform with no storage, or a hostile one, is not a crash', () => {
+    assert.equal(forgetLibraryMac('dev-1', undefined), 0);
+    assert.equal(forgetLibraryMac('dev-1', {
+      getItem() { throw new Error('storage is disabled'); },
+      removeItem() {},
+    }), 0);
   });
 });

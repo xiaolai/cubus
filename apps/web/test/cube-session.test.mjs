@@ -18,7 +18,16 @@ before(async () => {
 const after_ = (alg) => Cube.fromString(IDENTITY).move(alg).asString();
 
 /** A stand-in for SmartCubeConnection: an event bus plus the three methods the session calls. */
-function fakeConnection({ capabilities = { facelets: true, battery: true }, battery = null, answerFacelets = null } = {}) {
+function fakeConnection({
+  capabilities = { facelets: true, battery: true },
+  battery = null,
+  answerFacelets = null,
+  // Records what the transport looked like when the disconnect was attempted, so the ORDER of
+  // teardown can be asserted rather than assumed.
+  bridgeState = null,
+  disconnectFails = false,
+  sendThrowsSync = false,
+} = {}) {
   const subs = new Set();
   const sent = [];
   let disconnected = false;
@@ -33,6 +42,10 @@ function fakeConnection({ capabilities = { facelets: true, battery: true }, batt
     get disconnected() {
       return disconnected;
     },
+    /** Live subscriptions on the event stream. A leak shows up here and nowhere else. */
+    get subscribers() {
+      return subs.size;
+    },
     conn: {
       deviceName: 'GAN16ui_C8D3',
       deviceMAC: '54:6C:50:89:C8:D3',
@@ -45,18 +58,27 @@ function fakeConnection({ capabilities = { facelets: true, battery: true }, batt
         },
       },
       getSnapshot: () => ({ battery: battery === null ? null : { value: battery } }),
-      sendCommand: async (c) => {
-        sent.push(c.type);
-        // Answer a state request the way a cube does, so the request path is exercised rather
-        // than silently falling through to a timeout.
-        if (c.type === 'REQUEST_FACELETS' && answerFacelets !== null) {
-          queueMicrotask(() => {
-            for (const sub of [...subs]) sub.next?.({ type: 'FACELETS', facelets: answerFacelets });
-          });
-        }
-      },
+      // Not `async` when it is meant to throw synchronously: an async function's throw is a
+      // rejection, which is a different code path from the one being tested.
+      sendCommand: sendThrowsSync
+        ? (c) => {
+            sent.push(c.type);
+            throw new Error('the transport is gone');
+          }
+        : async (c) => {
+            sent.push(c.type);
+            // Answer a state request the way a cube does, so the request path is exercised rather
+            // than silently falling through to a timeout.
+            if (c.type === 'REQUEST_FACELETS' && answerFacelets !== null) {
+              queueMicrotask(() => {
+                for (const sub of [...subs]) sub.next?.({ type: 'FACELETS', facelets: answerFacelets });
+              });
+            }
+          },
       disconnect: async () => {
         disconnected = true;
+        bridgeState?.order.push(bridgeState.uninstalled ? 'disconnect-through-dead-bridge' : 'disconnect');
+        if (disconnectFails) throw new Error('the radio would not let go');
       },
     },
   };
@@ -64,13 +86,28 @@ function fakeConnection({ capabilities = { facelets: true, battery: true }, batt
 
 /** A bridge stub. `kind` decides which branch of installBleBridge the session took. */
 function fakeBridge(kind = 'native') {
-  const state = { uninstalled: false, packets: [] };
+  const state = { uninstalled: false, packets: [], released: 0, order: [] };
   return {
     state,
     install: ({ onRawPacket, onTraffic }) => {
       state.tap = onRawPacket;
       state.traffic = onTraffic;
-      return { kind, uninstall: () => { state.uninstalled = true; }, bridge: null };
+      return {
+        kind,
+        // The polyfill's extension: resolves once no native release is still in flight. Present
+        // on the native path only, which is why the session reaches it optionally.
+        bluetooth: {
+          async whenReleased() {
+            state.released++;
+            state.order.push('released');
+          },
+        },
+        uninstall: () => {
+          state.uninstalled = true;
+          state.order.push('uninstall');
+        },
+        bridge: null,
+      };
     },
   };
 }
@@ -84,8 +121,8 @@ function clock(start = 1_800_000_000_000) {
 }
 
 async function open(opts = {}) {
-  const f = fakeConnection(opts.connection ?? {});
   const b = fakeBridge(opts.kind);
+  const f = fakeConnection({ bridgeState: b.state, ...(opts.connection ?? {}) });
   const c = opts.clock ?? clock();
   const session = await connectCube({
     Cube,
@@ -217,6 +254,43 @@ describe('the verdict is a gate, not a note', () => {
   });
 });
 
+describe('the timer’s question: does this cube number its turns', () => {
+  // `numbersMoves()` decides whether solve-timer.js may report a span at all: both of its "moves
+  // were dropped" refusals compare serials, and on a cube that numbers nothing both go inert.
+
+  test('a snapshot serial answers it, because that is when the timer asks', async () => {
+    // The timer ARMS on a snapshot — the cube reaching the scramble — and asks there, before the
+    // first turn of the solve. Reading move events only, the answer at that instant was "no" for
+    // every GAN cube on earth, so wiring the timer to it would have declined to time the one
+    // family that CAN be timed. Moves and snapshots share the counter; either proves it exists.
+    const { session, f } = await open();
+    assert.equal(session.numbersMoves(), false, 'nothing seen yet, so nothing is claimed');
+    f.emit({ type: 'FACELETS', facelets: IDENTITY, serial: 3 });
+    assert.equal(session.numbersMoves(), true);
+    assert.equal(session.report().selfCheck.numbersMoves, true, 'and the report agrees');
+  });
+
+  test('a cube that numbers nothing is never claimed to — moyu32, moyu-mhc, qiyi', async () => {
+    // Measured against the protocol layer at the pinned rev: only the GAN drivers set `serial`,
+    // on either channel. These three report a usable cube clock and no counter at all, which is
+    // exactly the combination that would time unverifiably.
+    const { session, f } = await open();
+    f.emit({ type: 'FACELETS', facelets: IDENTITY });
+    f.emit({ type: 'MOVE', move: 'R', face: 0, direction: 0, cubeTimestamp: 1200 });
+    f.emit({ type: 'FACELETS', facelets: after_('R') });
+    f.emit({ type: 'MOVE', move: 'U', face: 1, direction: 0, cubeTimestamp: 2400 });
+    assert.equal(session.numbersMoves(), false, 'a clock is not a counter');
+    assert.equal(session.report().selfCheck.numbersMoves, false);
+  });
+
+  test('a serial that is not a number is not a serial', async () => {
+    const { session, f } = await open();
+    f.emit({ type: 'FACELETS', facelets: IDENTITY, serial: Number.NaN });
+    f.emit({ type: 'MOVE', move: 'R', face: 0, direction: 0, serial: '7' });
+    assert.equal(session.numbersMoves(), false);
+  });
+});
+
 describe('a lost turn reaches the app', () => {
   test('a reconciliation failure is announced, not merely recorded', async () => {
     // The defect this exists for: the session announced only VERDICT changes, and a resync leaves
@@ -250,6 +324,47 @@ describe('a lost turn reaches the app', () => {
     assert.equal(session.verdict, before, 'one loss is weather, not a verdict');
     assert.equal(session.reason, 'resynced');
     assert.equal(session.evidence.resyncs, 1);
+  });
+
+  test('a loss on a TRUSTED cube is announced too — on its own channel', async () => {
+    // The hole this closes. A camera-confirmed cube stays trusted through a lost packet by design,
+    // and the reason used to be suppressed there as well, so a trusted cube losing a turn produced
+    // no event of any kind: the guide went on describing a cube that was no longer in that state,
+    // and nothing on any screen could have said so.
+    const { session, f } = await open();
+    const verdicts = [];
+    const losses = [];
+    session.onVerdict((v, reason) => verdicts.push(reason));
+    session.onMovesLost((e) => losses.push(e));
+
+    f.emit({ type: 'FACELETS', facelets: IDENTITY });
+    f.emit({ type: 'MOVE', move: 'R', face: 0, direction: 0 });
+    f.emit({ type: 'FACELETS', facelets: after_('R') });
+    session.cameraScan(after_('R'), after_('R'));
+    assert.equal(session.verdict, VERDICT.TRUSTED);
+    assert.deepEqual(losses, [], 'nothing lost yet');
+
+    f.emit({ type: 'MOVE', move: 'U', face: 1, direction: 0 });
+    f.emit({ type: 'FACELETS', facelets: after_('R U F') });
+
+    assert.equal(session.verdict, VERDICT.TRUSTED, 'the verdict is designed not to move here');
+    assert.deepEqual(losses, [{ lost: 1, total: 1, verdict: VERDICT.TRUSTED }]);
+    assert.equal(session.losses, 1);
+    assert.ok(verdicts.includes('resynced'), 'and the reason carries it as well');
+  });
+
+  test('the loss channel is silent while nothing is lost', async () => {
+    const { session, f } = await open();
+    const losses = [];
+    session.onMovesLost((e) => losses.push(e));
+    f.emit({ type: 'FACELETS', facelets: IDENTITY });
+    let alg = '';
+    for (const m of ['R', 'U', "F'"]) {
+      alg = alg ? `${alg} ${m}` : m;
+      f.emit({ type: 'MOVE', move: m, face: 0, direction: 0 });
+      f.emit({ type: 'FACELETS', facelets: after_(alg) });
+    }
+    assert.deepEqual(losses, [], 'an intact stream announces nothing');
   });
 });
 
@@ -292,6 +407,44 @@ describe('ending a session', () => {
     await session.disconnect();
     assert.equal(told, 1);
   });
+
+  test('the goodbye travels over a LIVE transport, and the transport goes last', async () => {
+    // The defect: `disconnect()` released the bridge first, and a disposed bridge refuses every
+    // command — so `ble_disconnect` was never issued at all. The protocol layer swallows the throw
+    // (`gatt.disconnect()` is fire-and-forget against the real API), so the goodbye looked clean
+    // while Rust went on holding the peripheral for the life of the process. Every symptom of that
+    // lands on the NEXT connect, which is why it survived.
+    const { session, b } = await open();
+    await session.disconnect();
+    assert.deepEqual(b.state.order, ['disconnect', 'released', 'uninstall']);
+  });
+
+  test('it waits for the radio to have let go, not merely for the library to say goodbye', async () => {
+    // The protocol layer calls `gatt.disconnect()` without awaiting it, so its own promise
+    // resolves while the native side still holds the peripheral. A connect on the next line races
+    // a release that has not happened.
+    const { session, b } = await open();
+    await session.disconnect();
+    assert.equal(b.state.released, 1);
+  });
+
+  test('a disconnect that fails is reported, never swallowed', async () => {
+    // It used to be an empty catch — the worst available answer, because the app tears its own
+    // state down either way, so a peripheral the native side never released looked exactly like a
+    // clean goodbye until the next connect failed for reasons nothing could explain.
+    const { session, b } = await open({ connection: { disconnectFails: true } });
+    const err = await session.disconnect();
+    assert.match(String(err), /would not let go/);
+    assert.equal(session.disconnectError, err, 'and it stays readable, so a screen can say it');
+    assert.equal(session.alive, false, 'the session still ends');
+    assert.equal(b.state.uninstalled, true, 'and the transport is still released');
+  });
+
+  test('a clean disconnect reports no error', async () => {
+    const { session } = await open();
+    assert.equal(await session.disconnect(), null);
+    assert.equal(session.disconnectError, null);
+  });
 });
 
 describe('asking the cube things', () => {
@@ -313,6 +466,27 @@ describe('asking the cube things', () => {
     // unknown cube state is the thing every screen is about. Silence there must surface.
     const { session } = await open();
     await assert.rejects(() => session.requestState({ timeoutMs: 20 }), /did not answer with FACELETS/);
+  });
+
+  test('a send that throws on the spot releases the listener on the spot', async () => {
+    // A SYNCHRONOUS throw from sendCommand — a closed transport, a characteristic the polyfill
+    // refuses — escaped the promise executor and rejected the request directly, leaving the
+    // subscription and the timer alive until the full timeout elapsed. The caller saw the right
+    // error at the right moment while a listener went on receiving events for a request that had
+    // already failed; with a five-second default and a retrying caller, those accumulate.
+    const { session, f } = await open({ connection: { sendThrowsSync: true } });
+    const before = f.subscribers;
+    await assert.rejects(() => session.requestState({ timeoutMs: 60_000 }), /the transport is gone/);
+    assert.equal(f.subscribers, before, 'the request left nothing subscribed behind it');
+  });
+
+  test('a battery request whose send throws on the spot answers null without waiting', async () => {
+    // Same mechanism, through the path that swallows the rejection: it must still not hold the
+    // subscription for the full timeout.
+    const { session, f } = await open({ connection: { sendThrowsSync: true } });
+    const before = f.subscribers;
+    assert.equal(await session.requestBattery({ timeoutMs: 60_000 }), null);
+    assert.equal(f.subscribers, before);
   });
 
   test('a state request resolves with the report that answers it', async () => {

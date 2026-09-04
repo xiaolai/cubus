@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { test, describe } from 'node:test';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { CALLED_SURFACE, DELIBERATELY_ABSENT } from '../lib/ble-polyfill.js';
+import { CALLED_SURFACE, DELIBERATELY_ABSENT, createBluetooth } from '../lib/ble-polyfill.js';
 
 const SRC = fileURLToPath(new URL('../node_modules/smartcube-web-bluetooth/src/', import.meta.url));
 
@@ -197,5 +197,136 @@ describe('the Web Bluetooth surface the protocol layer calls', () => {
   test('comments naming a member are not mistaken for calls', () => {
     const src = '// we could use .requestLEScan here one day\nconst x = 1;';
     assert.ok(!/[.?]\s*requestLEScan\b/.test(stripComments(src)), 'a comment is not a call');
+  });
+});
+
+// ---- the other half of the surface: the EVENTS ---------------------------------------------
+//
+// Everything above is about members the polyfill's OBJECTS must have. The library also reads
+// fields off the events the polyfill dispatches, and those are a second, unrelated way for the
+// surface to grow — one the member scan cannot see at all, because `evt.serviceData` is a property
+// read on an Event, not a call on a device.
+//
+// The failure is the same shape and just as quiet: an absent field arrives as `undefined`, the
+// library reads it, finds nothing, and moves on. For `manufacturerData` that means no MAC, hence
+// no AES key, hence a cube that connects and decodes to noise.
+
+/** Every field of `BluetoothAdvertisingEvent`, per the Web Bluetooth spec. */
+const ADVERTISEMENT_EVENT_FIELDS = [
+  'device', 'uuids', 'name', 'appearance', 'txPower', 'rssi', 'manufacturerData', 'serviceData',
+];
+
+/**
+ * Advertisement fields the polyfill supplies whatever the library currently reads.
+ *
+ * Three of the eight collide with ordinary JavaScript — `device`, `name` and `rssi` appear on
+ * half the objects in any codebase — so a text scan cannot attribute them to an advertisement.
+ * They are supplied unconditionally instead and asserted below by construction, which is stronger
+ * than a scan would have been. `name` is deliberately NOT here: the library reads `device.name`,
+ * which is on the device object and already covered by CALLED_SURFACE.
+ */
+const ALWAYS_SUPPLIED = ['device', 'manufacturerData', 'rssi'];
+
+/** Fields whose names are distinctive enough for the scan to attribute honestly. */
+const SCANNABLE_EVENT_FIELDS = ADVERTISEMENT_EVENT_FIELDS.filter(
+  (f) => !['device', 'name', 'rssi'].includes(f),
+);
+
+/** Where the library reads each scannable advertisement field, across the whole dependency. */
+function scanAdvertisementFields() {
+  const found = new Map();
+  for (const file of sources(SRC)) {
+    const text = stripComments(readFileSync(file, 'utf8'));
+    for (const field of SCANNABLE_EVENT_FIELDS) {
+      if (found.has(field)) continue;
+      const re = new RegExp(`(?:[.?]\\s*|\\[\\s*['"\`])${field}\\b`, 's');
+      const m = re.exec(text);
+      if (m) found.set(field, `${file.slice(SRC.length)}:${text.slice(0, m.index).split('\n').length}`);
+    }
+  }
+  return found;
+}
+
+/** One advertisement event, dispatched by the real polyfill over a stub transport. */
+async function captureAdvertisement(manufacturerData = { 1: '000000d3c889506c54' }) {
+  const bridge = {
+    requestDevice: async () => ({ id: 'd', name: 'GAN16ui', rssi: -54, manufacturerData }),
+    connect: async () => {},
+    disconnect: async () => {},
+    discoverServices: async () => [],
+    discoverCharacteristics: async () => [],
+    subscribe: async () => {},
+    unsubscribe: async () => {},
+    read: async () => '',
+    write: async () => {},
+    onNotification: () => {},
+    onDisconnect: () => {},
+  };
+  const device = await createBluetooth(bridge).requestDevice({});
+  const controller = new AbortController();
+  const event = await new Promise((resolve) => {
+    device.addEventListener('advertisementreceived', (e) => {
+      controller.abort(); // one is enough; stop the polyfill asking for more
+      resolve(e);
+    });
+    device.watchAdvertisements({ signal: controller.signal });
+  });
+  return event;
+}
+
+describe('the events the protocol layer reads off our dispatches', () => {
+  test('every advertisement field the library reads is on the event we dispatch', async () => {
+    const found = scanAdvertisementFields();
+    const event = await captureAdvertisement();
+    const missing = [...found]
+      .filter(([field]) => event[field] === undefined)
+      .map(([field, where]) => `${field} (read at ${where})`);
+    assert.deepEqual(
+      missing.sort(),
+      [],
+      'the protocol layer reads an advertisement field our event does not carry. Supply it in ' +
+        "PolyfillDevice.watchAdvertisements — an absent field arrives as `undefined`, which the " +
+        'library reads as "the radio saw nothing" rather than as a bug.',
+    );
+    // And at least one really was found, or this test is measuring an empty set.
+    assert.ok(found.has('manufacturerData'), 'the GAN MAC recovery reads manufacturerData');
+  });
+
+  test('the fields too common to scan for are supplied unconditionally', async () => {
+    // `device`, `manufacturerData` and `rssi` cannot be attributed by a text scan, so they are
+    // asserted by construction instead: dispatch a real advertisement and look at it.
+    const event = await captureAdvertisement();
+    for (const field of ALWAYS_SUPPLIED) {
+      assert.notEqual(event[field], undefined, `the advertisement event must carry ${field}`);
+    }
+    assert.equal(event.type, 'advertisementreceived');
+    assert.equal(event.device.id, 'd', 'and `device` is the device, not a copy of the scan result');
+    assert.equal(event.rssi, -54);
+    const payload = event.manufacturerData.get(1);
+    assert.ok(payload instanceof DataView, 'manufacturerData maps company id -> DataView');
+    assert.equal(payload.byteOffset, 0, 'each payload owns its buffer — the extractor reads it whole');
+  });
+
+  test('an empty advertisement is an empty MAP, never a missing field', async () => {
+    // The distinction the library depends on: it calls `.size` and merges, so `undefined` would
+    // throw inside its listener rather than reading as "this frame carried nothing".
+    const event = await captureAdvertisement({});
+    assert.ok(event.manufacturerData instanceof Map);
+    assert.equal(event.manufacturerData.size, 0);
+  });
+
+  test('the scan would notice a new advertisement field appearing', () => {
+    // The gate's own failure mode is a regex that matches nothing. Proven against a sample that
+    // contains fields the library does not currently read.
+    const sample = 'const s = evt.serviceData; const t = evt?.txPower; const u = evt["uuids"];';
+    const hits = SCANNABLE_EVENT_FIELDS.filter((f) =>
+      new RegExp(`(?:[.?]\\s*|\\[\\s*['"\`])${f}\\b`, 's').test(sample),
+    );
+    assert.deepEqual(hits.sort(), ['serviceData', 'txPower', 'uuids']);
+    // …and those three are not read by the library today, so the assertion above is not vacuous.
+    const found = scanAdvertisementFields();
+    for (const f of ['serviceData', 'txPower', 'uuids', 'appearance']) {
+      assert.ok(!found.has(f), `${f} is now read at ${found.get(f)} — the polyfill must supply it`);
+    }
   });
 });

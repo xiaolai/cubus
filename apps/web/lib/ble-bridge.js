@@ -13,26 +13,75 @@ import { createBluetooth } from './ble-polyfill.js';
 import { hostPlatform } from './host.js';
 
 /**
- * Hosts where the Tauri API is injected but the native BLE bridge cannot work.
+ * Hosts where the Tauri API is injected but the native BLE bridge is not offered.
  *
- * Android's wiring now EXISTS and is still listed here, which is the unusual case worth spelling
- * out. `gen/android/.../BlePlugin.kt` implements all nine commands over Android's own GATT stack,
- * and `src-tauri/src/android_ble.rs` forwards to it, so the crash this list originally guarded —
+ * **The rule, from dev-docs/native-ble-platforms.md §3: a refusal is removed when a platform is
+ * PROVEN, never when it builds.** Both entries below compile cleanly today. Neither has spoken to
+ * a radio, and a build that succeeds is not a platform that works — Android is on this list
+ * precisely because every gate stayed green over a guaranteed panic.
+ *
+ * `android` — the wiring EXISTS, which is the unusual case worth spelling out.
+ * `gen/android/.../BlePlugin.kt` implements all nine commands over Android's own GATT stack, and
+ * `src-tauri/src/android_ble.rs` forwards to it, so the crash this list originally guarded —
  * btleplug's droidplug backend panicking without its Java classes — is no longer what would
- * happen. What has not happened is a phone: nothing in that path has spoken to a radio.
+ * happen. What has not happened is a phone.
  *
- * THE FLIP IS THIS LINE. Delete 'android' from the array below and the app offers Bluetooth on
- * Android. Do it only after running `pnpm tauri android dev` on a device with a real cube and
- * seeing, at minimum: a scan that finds a cube advertising WITHOUT a recognisable name (the
- * manufacturer-data filter path, which is the one a summary loses); a subscribe that actually
+ * `ios` — it compiles for `aarch64-apple-ios`, the usage string is in `Info.ios.plist` and
+ * `project.yml`, and CoreBluetooth is the same btleplug backend macOS proved on hardware with a
+ * real GAN16 ui. What is missing is one run on a physical device, and BLE does not work in the
+ * simulator, so there is no cheaper proof available. It was offered on the strength of the
+ * compile alone until 2026-09-04, which is exactly what §3 forbids and what Android is the
+ * cautionary case for. `native-ble-platforms.md` step 2 is what removes it.
+ *
+ * THE FLIP IS THIS LINE. Delete a platform from the array below and the app offers Bluetooth
+ * there. For Android, do it only after running `pnpm tauri android dev` on a device with a real
+ * cube and seeing, at minimum: a scan that finds a cube advertising WITHOUT a recognisable name
+ * (the manufacturer-data filter path, which is the one a summary loses); a subscribe that actually
  * delivers packets, since Android needs both `setCharacteristicNotification` AND a CCCD write and
  * the failure mode of doing one is silence rather than an error; and sustained traffic, because
  * Android GATT permits one outstanding operation per connection and a queue bug looks fine until
- * the protocol layer talks at speed.
+ * the protocol layer talks at speed. For iOS, one connect-and-turn on a real iPhone is the whole
+ * gate.
  *
  * Compiling is not evidence. It compiled before this was written, too.
  */
-const NATIVE_BLE_UNSUPPORTED = Object.freeze(['android']);
+export const NATIVE_BLE_UNSUPPORTED = Object.freeze(['android', 'ios']);
+
+/** The protocol layer's own localStorage cache of a device's Bluetooth address.
+ *  `smartcube/attachment/address-hints.ts` writes `smartcube-ble-mac:<device id>` after resolving
+ *  one, and reads it back on every later connect. Spelled here because Forget has to reach it. */
+const LIBRARY_MAC_PREFIX = 'smartcube-ble-mac:';
+
+/**
+ * Erase what the protocol layer remembers about a device's address.
+ *
+ * Forget used to clear the app's own registry and leave this behind, so on Windows, Linux and
+ * Android — where the device id IS the Bluetooth address — a "forgotten" cube still had its MAC
+ * on disk, and the next connect resolved a key from it without asking anything. A forget that
+ * leaves the identifying value in storage is not a forget.
+ *
+ * Takes the device id rather than the address, because that is what the library keys on and it is
+ * what a session exposes. Both spellings are removed: the id may be canonicalised differently by
+ * the platform that produced it, and removing a key that is not there costs nothing.
+ *
+ * @returns how many entries were removed — a fact, so a caller can say nothing rather than claim.
+ */
+export function forgetLibraryMac(deviceId, storage = globalThis.localStorage) {
+  if (typeof deviceId !== 'string' || deviceId === '') return 0;
+  let removed = 0;
+  for (const id of new Set([deviceId, deviceId.toUpperCase(), deviceId.toLowerCase()])) {
+    const key = LIBRARY_MAC_PREFIX + id;
+    try {
+      // Read before removing, so the count is what was actually there rather than what was asked
+      // for. A storage that throws on either call is a platform without one, not a failure to
+      // report: the caller's own registry write is the part that must be loud.
+      if (storage?.getItem(key) === null || storage?.getItem(key) === undefined) continue;
+      storage.removeItem(key);
+      removed++;
+    } catch {}
+  }
+  return removed;
+}
 
 /** The Tauri API, or null in a browser. Mirrors host.js rather than re-deriving the check. */
 function tauri() {

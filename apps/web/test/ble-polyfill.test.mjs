@@ -258,27 +258,71 @@ function withTimeout(promise, ms, message) {
  * One fixture instead of three near-identical literals: the copies had already started to drift,
  * and each new lifecycle or error case had to be added to all of them or silently covered only one.
  */
-function makeUnitBridge({ characteristics = [{ uuid: '0000fff6-0000-1000-8000-00805f9b34fb', properties: { notify: true } }] } = {}) {
-  const state = { notify: null };
+function makeUnitBridge({
+  characteristics = [{ uuid: '0000fff6-0000-1000-8000-00805f9b34fb', properties: { notify: true } }],
+  // Successive scan results, so the merging of advertisements can be driven. The last one repeats.
+  scanResults = null,
+  // What the native `disconnect` command does, so a slow or failing release can be exercised.
+  disconnectCommand = async () => {},
+} = {}) {
+  const state = { notify: null, disconnect: null };
+  const calls = [];
+  let scans = 0;
   const bridge = {
-    requestDevice: async () => ({ id: 'd', name: 'x' }),
-    connect: async () => {},
-    disconnect: async () => {},
-    discoverServices: async () => ['0000fff0-0000-1000-8000-00805f9b34fb'],
-    discoverCharacteristics: async () => characteristics,
-    subscribe: async () => {},
-    unsubscribe: async () => {},
+    requestDevice: async (options) => {
+      calls.push('requestDevice');
+      const info = scanResults ? scanResults[Math.min(scans, scanResults.length - 1)] : { id: 'd', name: 'x' };
+      scans++;
+      return typeof info === 'function' ? info(options) : info;
+    },
+    connect: async () => {
+      calls.push('connect');
+    },
+    disconnect: async (id) => {
+      calls.push('disconnect');
+      return disconnectCommand(id);
+    },
+    discoverServices: async () => {
+      calls.push('discoverServices');
+      return ['0000fff0-0000-1000-8000-00805f9b34fb'];
+    },
+    discoverCharacteristics: async () => {
+      calls.push('discoverCharacteristics');
+      return characteristics;
+    },
+    subscribe: async () => {
+      calls.push('subscribe');
+    },
+    unsubscribe: async () => {
+      calls.push('unsubscribe');
+    },
     read: async () => '',
     write: async () => {},
     onNotification: (cb) => {
       state.notify = cb;
     },
-    onDisconnect: () => {},
+    onDisconnect: (cb) => {
+      state.disconnect = cb;
+    },
   };
-  // A function rather than the captured value: the polyfill registers its callback during
+  // Functions rather than captured values: the polyfill registers its callbacks during
   // createBluetooth(), which happens after this returns.
-  return { bridge, notify: (p) => state.notify(p) };
+  return {
+    bridge,
+    calls,
+    get scans() {
+      return scans;
+    },
+    notify: (p) => state.notify(p),
+    fireDisconnect: (device = 'd') => state.disconnect({ device }),
+  };
 }
+
+/** How many times the bridge was asked to do `name`. */
+const countCalls = (calls, name) => calls.filter((c) => c === name).length;
+
+/** Manufacturer data in the shape the native bridge sends it: company id -> hex. */
+const mfr = (id, hex) => ({ [id]: hex });
 
 const expectedMoves = (fx, limit) => {
   const m = fx.events.map((e) => e.event).filter((e) => e.type === 'MOVE').map((e) => e.move);
@@ -643,6 +687,167 @@ describe('the polyfill itself', () => {
     }
     // A vendor 128-bit uuid is passed through, lowercased, not mangled into the base range.
     assert.equal(canonicalUuid('6E400001-B5A3-F393-E0A9-E50E24DCCA9E'), '6e400001-b5a3-f393-e0a9-e50e24dcca9e');
+  });
+
+  test('a disconnect drops every handle the dead link produced', async () => {
+    // The polyfill keeps ONE device object per address for the life of the page, so the services
+    // and characteristics discovered over a link that has gone would otherwise be reused across
+    // the next connect. `_load()` returns early on a non-empty map and `startNotifications()` is a
+    // no-op while `_notifying` is set — so a reconnect through the same polyfill skipped
+    // `ble_subscribe` entirely and the cube sat there connected and silent.
+    const { bridge, calls, fireDisconnect } = makeUnitBridge();
+    const bt = createBluetooth(bridge);
+    const device = await bt.requestDevice({});
+    const chr = await (await device.gatt.getPrimaryService(0xfff0)).getCharacteristic(0xfff6);
+    await chr.startNotifications();
+    assert.equal(countCalls(calls, 'subscribe'), 1);
+
+    fireDisconnect();
+    assert.equal(device.gatt.connected, false);
+    assert.equal(chr._notifying, false, 'a subscription cannot outlive the link it was made over');
+
+    const chr2 = await (await device.gatt.getPrimaryService(0xfff0)).getCharacteristic(0xfff6);
+    await chr2.startNotifications();
+    assert.equal(countCalls(calls, 'discoverServices'), 2, 'services must be discovered again');
+    assert.equal(countCalls(calls, 'discoverCharacteristics'), 2);
+    assert.equal(countCalls(calls, 'subscribe'), 2, 'and the CCCD written again');
+    assert.notEqual(chr2, chr, 'and it is a fresh characteristic, not the dead one');
+  });
+
+  test('an explicit disconnect forgets them too, and returns the native release', async () => {
+    // Web Bluetooth's disconnect returns void. A native transport cannot: the peripheral is held
+    // until the command lands, so a caller that reconnects on the next line races a release that
+    // has not happened — which is how the following scan stares into silence at a cube on the desk.
+    let released = false;
+    let letGo;
+    const gate = new Promise((r) => {
+      letGo = r;
+    });
+    const { bridge, calls } = makeUnitBridge({
+      disconnectCommand: () => gate.then(() => {
+        released = true;
+      }),
+    });
+    const bt = createBluetooth(bridge);
+    const device = await bt.requestDevice({});
+    const chr = await (await device.gatt.getPrimaryService(0xfff0)).getCharacteristic(0xfff6);
+    await chr.startNotifying?.();
+
+    const pending = device.gatt.disconnect();
+    assert.equal(typeof pending?.then, 'function', 'there must be something to wait on');
+    assert.equal(device.gatt.connected, false);
+    assert.equal(chr._notifying, false);
+    assert.equal(released, false, 'and it has not happened yet');
+
+    letGo();
+    await pending;
+    assert.equal(released, true);
+    assert.equal(countCalls(calls, 'disconnect'), 1);
+
+    // The whole-transport form waits for the same thing, for a caller that holds no device.
+    await bt.whenReleased();
+  });
+
+  test('a native release that fails is reported, and is never an unhandled rejection', async () => {
+    // A peripheral the native side never let go of is the one fault that looks identical to a
+    // clean goodbye. It must say so — and it must not reject, because the protocol layer calls
+    // this without awaiting it and an unhandled rejection would take the page down instead.
+    const { bridge } = makeUnitBridge({
+      disconnectCommand: async () => {
+        throw new Error('the radio would not let go');
+      },
+    });
+    const bt = createBluetooth(bridge);
+    const device = await bt.requestDevice({});
+    await device.gatt.getPrimaryServices();
+    const warned = [];
+    const original = console.warn;
+    console.warn = (...a) => warned.push(a.map(String).join(' '));
+    try {
+      await device.gatt.disconnect();
+    } finally {
+      console.warn = original;
+    }
+    assert.match(warned.join('\n'), /native disconnect failed/);
+  });
+
+  test('advertisements keep arriving and merging until the caller stops asking', async () => {
+    // The failure this prevents: the protocol layer's MAC recovery merges advertisement frames
+    // until its own timeout, because a GAN cube's FIRST frame routinely carries an empty
+    // manufacturer-data map and the MAC-bearing one arrives later. Delivering exactly one meant
+    // that cube could never yield a MAC on a packaged build — "Unable to determine cube MAC
+    // address" for a cube sitting on the desk, with the radio perfectly healthy.
+    const { bridge } = makeUnitBridge({
+      scanResults: [
+        { id: 'd', name: 'GAN16ui', manufacturerData: {} },
+        { id: 'd', name: 'GAN16ui', manufacturerData: mfr(1, '000000d3c889506c54') },
+      ],
+    });
+    const bt = createBluetooth(bridge);
+    const device = await bt.requestDevice({ filters: [{ namePrefix: 'GAN' }] });
+
+    const controller = new AbortController();
+    const seen = [];
+    device.addEventListener('advertisementreceived', (e) => {
+      seen.push(new Map(e.manufacturerData));
+      // What the library does the moment its filter is satisfied: finish, and abort the watch.
+      if (e.manufacturerData.size > 0) controller.abort();
+    });
+    await device.watchAdvertisements({ signal: controller.signal });
+    for (let i = 0; i < 12; i++) await new Promise((r) => setTimeout(r, 0));
+
+    assert.ok(seen.length >= 2, `only ${seen.length} advertisement(s) — the first one was empty`);
+    assert.equal(seen[0].size, 0, 'the first frame is reported as it was, empty');
+    const found = seen.at(-1).get(1);
+    assert.ok(found, 'the later frame must reach the listener');
+    assert.equal(
+      [...new Uint8Array(found.buffer)].map((b) => b.toString(16).padStart(2, '0')).join(''),
+      '000000d3c889506c54',
+    );
+    assert.equal(found.byteOffset, 0, 'each payload owns its buffer — the extractor reads it whole');
+  });
+
+  test('it stops the moment the caller aborts, and never reports another cube as this one', async () => {
+    let asked = 0;
+    const { bridge } = makeUnitBridge({
+      scanResults: [
+        { id: 'd', name: 'GAN16ui', manufacturerData: {} },
+        () => {
+          asked++;
+          // A different cube answered the same filter. Its payload under this device's name would
+          // derive a key for the wrong cube — worse than reporting nothing at all.
+          return { id: 'other', name: 'GAN12', manufacturerData: mfr(1, 'aabbccddeeff001122') };
+        },
+      ],
+    });
+    const bt = createBluetooth(bridge);
+    const device = await bt.requestDevice({});
+    const seen = [];
+    device.addEventListener('advertisementreceived', (e) => seen.push(new Map(e.manufacturerData)));
+    await device.watchAdvertisements({});
+    for (let i = 0; i < 12; i++) await new Promise((r) => setTimeout(r, 0));
+    assert.equal(asked, 1, 'one look was enough to know it was the wrong cube');
+    assert.deepEqual(seen.map((m) => m.size), [0], 'and nothing of its was reported');
+
+    // And an already-aborted watch reports nothing and scans not at all.
+    const aborted = AbortSignal.abort();
+    const before = seen.length;
+    await device.watchAdvertisements({ signal: aborted });
+    for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+    assert.equal(seen.length, before);
+  });
+
+  test('a transport that cannot scan again still reports the advertisement it has', async () => {
+    // The old behaviour, kept: a bridge with no way to look again is not a failure.
+    const { bridge } = makeUnitBridge();
+    const bt = createBluetooth(bridge);
+    const device = await bt.requestDevice({});
+    device._rescan = null;
+    const seen = [];
+    device.addEventListener('advertisementreceived', () => seen.push(1));
+    await device.watchAdvertisements({});
+    for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(seen, [1]);
   });
 
   test('a native disconnect reaches the library as gattserverdisconnected', async () => {
