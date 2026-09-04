@@ -377,10 +377,18 @@ class CubusCube extends HTMLElement {
 
   /** Drag-to-orbit is a preference, not a given. For a learner reading a guide, a drag that swings
    *  the cube away from the angle the ghost faces are set up for is a mistake waiting to happen,
-   *  so the host can lock it. Only the angle: zoom and damping are untouched. */
+   *  so the host can lock it.
+   *
+   *  LOCKED MEANS LOCKED, zoom included. It used to set `enableRotate` alone, on the reasoning
+   *  that only the angle mattered — but a wheel or a trackpad pinch over a locked cube then drove
+   *  it to `minDistance` with no way back, because the drag that would restore the view is the
+   *  thing that was disabled (found by audit, 2026-09-04). Pan was already off in both states:
+   *  the camera is fitted to the slot (lib/cube-frame.js), so a panned cube is a clipped one. */
   _applyOrbit() {
     if (!this.controls) return;
-    this.controls.enableRotate = this._attrs.orbit !== 'locked';
+    const free = this._attrs.orbit !== 'locked';
+    this.controls.enableRotate = free;
+    this.controls.enableZoom = free;
   }
 
   _applyCamera() {
@@ -618,7 +626,14 @@ class CubusCube extends HTMLElement {
     // which silently doubled as the slowest speed anyone could ask for — 760ms per quarter turn,
     // and a smaller tempo-scale was clamped away with nothing said. 0.05 is 3.8s per quarter turn.
     const tempo = Math.max(0.05, this._num('tempo-scale', 1));
-    this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: (190 / tempo) * m.turns };
+    // Reduced motion SHORTENS the turn; it does not remove it. Everything else the app animates is
+    // decoration whose job something else also does, so the stylesheet simply stops it — but a
+    // solve guide with no turn is a slideshow of positions, and the turn is the thing being
+    // taught. 120ms per quarter is quick enough not to be a sweep and long enough to see which
+    // layer moved; at the Slow setting this is a 32x cut, which is the point.
+    const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+    const dur = (190 / tempo) * m.turns;
+    this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
   }
 
   reset() {

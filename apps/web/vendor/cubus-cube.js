@@ -11006,56 +11006,83 @@ function getSingularSetter(type) {
   switch (type) {
     case 5126:
       return setValueV1f;
+    // FLOAT
     case 35664:
       return setValueV2f;
+    // _VEC2
     case 35665:
       return setValueV3f;
+    // _VEC3
     case 35666:
       return setValueV4f;
+    // _VEC4
     case 35674:
       return setValueM2;
+    // _MAT2
     case 35675:
       return setValueM3;
+    // _MAT3
     case 35676:
       return setValueM4;
+    // _MAT4
     case 5124:
     case 35670:
       return setValueV1i;
+    // INT, BOOL
     case 35667:
     case 35671:
       return setValueV2i;
+    // _VEC2
     case 35668:
     case 35672:
       return setValueV3i;
+    // _VEC3
     case 35669:
     case 35673:
       return setValueV4i;
+    // _VEC4
     case 5125:
       return setValueV1ui;
+    // UINT
     case 36294:
       return setValueV2ui;
+    // _VEC2
     case 36295:
       return setValueV3ui;
+    // _VEC3
     case 36296:
       return setValueV4ui;
+    // _VEC4
     case 35678:
+    // SAMPLER_2D
     case 36198:
+    // SAMPLER_EXTERNAL_OES
     case 36298:
+    // INT_SAMPLER_2D
     case 36306:
+    // UNSIGNED_INT_SAMPLER_2D
     case 35682:
       return setValueT1;
     case 35679:
+    // SAMPLER_3D
     case 36299:
+    // INT_SAMPLER_3D
     case 36307:
       return setValueT3D1;
     case 35680:
+    // SAMPLER_CUBE
     case 36300:
+    // INT_SAMPLER_CUBE
     case 36308:
+    // UNSIGNED_INT_SAMPLER_CUBE
     case 36293:
       return setValueT6;
     case 36289:
+    // SAMPLER_2D_ARRAY
     case 36303:
+    // INT_SAMPLER_2D_ARRAY
     case 36311:
+    // UNSIGNED_INT_SAMPLER_2D_ARRAY
     case 36292:
       return setValueT2DArray1;
   }
@@ -11163,56 +11190,83 @@ function getPureArraySetter(type) {
   switch (type) {
     case 5126:
       return setValueV1fArray;
+    // FLOAT
     case 35664:
       return setValueV2fArray;
+    // _VEC2
     case 35665:
       return setValueV3fArray;
+    // _VEC3
     case 35666:
       return setValueV4fArray;
+    // _VEC4
     case 35674:
       return setValueM2Array;
+    // _MAT2
     case 35675:
       return setValueM3Array;
+    // _MAT3
     case 35676:
       return setValueM4Array;
+    // _MAT4
     case 5124:
     case 35670:
       return setValueV1iArray;
+    // INT, BOOL
     case 35667:
     case 35671:
       return setValueV2iArray;
+    // _VEC2
     case 35668:
     case 35672:
       return setValueV3iArray;
+    // _VEC3
     case 35669:
     case 35673:
       return setValueV4iArray;
+    // _VEC4
     case 5125:
       return setValueV1uiArray;
+    // UINT
     case 36294:
       return setValueV2uiArray;
+    // _VEC2
     case 36295:
       return setValueV3uiArray;
+    // _VEC3
     case 36296:
       return setValueV4uiArray;
+    // _VEC4
     case 35678:
+    // SAMPLER_2D
     case 36198:
+    // SAMPLER_EXTERNAL_OES
     case 36298:
+    // INT_SAMPLER_2D
     case 36306:
+    // UNSIGNED_INT_SAMPLER_2D
     case 35682:
       return setValueT1Array;
     case 35679:
+    // SAMPLER_3D
     case 36299:
+    // INT_SAMPLER_3D
     case 36307:
       return setValueT3DArray;
     case 35680:
+    // SAMPLER_CUBE
     case 36300:
+    // INT_SAMPLER_CUBE
     case 36308:
+    // UNSIGNED_INT_SAMPLER_CUBE
     case 36293:
       return setValueT6Array;
     case 36289:
+    // SAMPLER_2D_ARRAY
     case 36303:
+    // INT_SAMPLER_2D_ARRAY
     case 36311:
+    // UNSIGNED_INT_SAMPLER_2D_ARRAY
     case 36292:
       return setValueT2DArrayArray;
   }
@@ -14084,6 +14138,7 @@ function WebGLState(gl) {
 function getByteLength(width, height, format, type) {
   const typeByteLength = getTextureTypeByteLength(type);
   switch (format) {
+    // https://registry.khronos.org/OpenGL-Refpages/es3.0/html/glTexImage2D.xhtml
     case AlphaFormat:
       return width * height;
     case LuminanceFormat:
@@ -14104,23 +14159,27 @@ function getByteLength(width, height, format, type) {
       return width * height * 4 / typeByteLength.components * typeByteLength.byteLength;
     case RGBAIntegerFormat:
       return width * height * 4 / typeByteLength.components * typeByteLength.byteLength;
+    // https://registry.khronos.org/webgl/extensions/WEBGL_compressed_texture_s3tc_srgb/
     case RGB_S3TC_DXT1_Format:
     case RGBA_S3TC_DXT1_Format:
       return Math.floor((width + 3) / 4) * Math.floor((height + 3) / 4) * 8;
     case RGBA_S3TC_DXT3_Format:
     case RGBA_S3TC_DXT5_Format:
       return Math.floor((width + 3) / 4) * Math.floor((height + 3) / 4) * 16;
+    // https://registry.khronos.org/webgl/extensions/WEBGL_compressed_texture_pvrtc/
     case RGB_PVRTC_2BPPV1_Format:
     case RGBA_PVRTC_2BPPV1_Format:
       return Math.max(width, 16) * Math.max(height, 8) / 4;
     case RGB_PVRTC_4BPPV1_Format:
     case RGBA_PVRTC_4BPPV1_Format:
       return Math.max(width, 8) * Math.max(height, 8) / 2;
+    // https://registry.khronos.org/webgl/extensions/WEBGL_compressed_texture_etc/
     case RGB_ETC1_Format:
     case RGB_ETC2_Format:
       return Math.floor((width + 3) / 4) * Math.floor((height + 3) / 4) * 8;
     case RGBA_ETC2_EAC_Format:
       return Math.floor((width + 3) / 4) * Math.floor((height + 3) / 4) * 16;
+    // https://registry.khronos.org/webgl/extensions/WEBGL_compressed_texture_astc/
     case RGBA_ASTC_4x4_Format:
       return Math.floor((width + 3) / 4) * Math.floor((height + 3) / 4) * 16;
     case RGBA_ASTC_5x4_Format:
@@ -14149,10 +14208,12 @@ function getByteLength(width, height, format, type) {
       return Math.floor((width + 11) / 12) * Math.floor((height + 9) / 10) * 16;
     case RGBA_ASTC_12x12_Format:
       return Math.floor((width + 11) / 12) * Math.floor((height + 11) / 12) * 16;
+    // https://registry.khronos.org/webgl/extensions/EXT_texture_compression_bptc/
     case RGBA_BPTC_Format:
     case RGB_BPTC_SIGNED_Format:
     case RGB_BPTC_UNSIGNED_Format:
       return Math.ceil(width / 4) * Math.ceil(height / 4) * 16;
+    // https://registry.khronos.org/webgl/extensions/EXT_texture_compression_rgtc/
     case RED_RGTC1_Format:
     case SIGNED_RED_RGTC1_Format:
       return Math.ceil(width / 4) * Math.ceil(height / 4) * 8;
@@ -21041,10 +21102,18 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   /** Drag-to-orbit is a preference, not a given. For a learner reading a guide, a drag that swings
    *  the cube away from the angle the ghost faces are set up for is a mistake waiting to happen,
-   *  so the host can lock it. Only the angle: zoom and damping are untouched. */
+   *  so the host can lock it.
+   *
+   *  LOCKED MEANS LOCKED, zoom included. It used to set `enableRotate` alone, on the reasoning
+   *  that only the angle mattered — but a wheel or a trackpad pinch over a locked cube then drove
+   *  it to `minDistance` with no way back, because the drag that would restore the view is the
+   *  thing that was disabled (found by audit, 2026-09-04). Pan was already off in both states:
+   *  the camera is fitted to the slot (lib/cube-frame.js), so a panned cube is a clipped one. */
   _applyOrbit() {
     if (!this.controls) return;
-    this.controls.enableRotate = this._attrs.orbit !== "locked";
+    const free = this._attrs.orbit !== "locked";
+    this.controls.enableRotate = free;
+    this.controls.enableZoom = free;
   }
   _applyCamera() {
     if (!this.camera) return;
@@ -21255,7 +21324,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
       return;
     }
     const tempo = Math.max(0.05, this._num("tempo-scale", 1));
-    this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: 190 / tempo * m.turns };
+    const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+    const dur = 190 / tempo * m.turns;
+    this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
   }
   reset() {
     if (this._anim) this.root.remove(this._anim.temp);

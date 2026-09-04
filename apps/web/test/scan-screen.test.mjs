@@ -15,6 +15,8 @@ import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
+import Cube from '../vendor/cubejs.js';
+import { createSelfCheck } from '../lib/cube-selfcheck.js';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -28,6 +30,25 @@ const progress = (detail) =>
 
 const FACES = ['U', 'R', 'F', 'D', 'L', 'B'];
 const face = (n) => ({ face: n, colors: Array(9).fill(FACES.indexOf(n)) });
+
+/** A stand-in for a live session (lib/cube-session.js), with the REAL self-check behind it.
+ *
+ *  app.js hands every camera reading to `session.cameraScan()` — that is what derives the
+ *  correction and what makes the session's verdict and the app's trust one model instead of two.
+ *  A fake without it is not a session, and a fake that stubbed the derivation would be testing a
+ *  private copy the app no longer has. */
+const fakeConn = (over = {}) => {
+  const check = createSelfCheck({ Cube });
+  return {
+    requestBattery: async () => 60,
+    disconnect: async () => {},
+    mayFollow: () => check.verdict !== 'refused',
+    numbersMoves: () => true,
+    get verdict() { return check.verdict; },
+    cameraScan: (scanned, reported) => { check.onCameraScan(scanned, reported); return check.offset; },
+    ...over,
+  };
+};
 
 before(async () => {
   win = new Window({
@@ -630,7 +651,7 @@ test('a scan agreeing with the connected cube is adopted, and trust follows', as
   const { state } = await import('../lib/app.js');
   win.location.hash = '#/scan';
   await tick();
-  win.cubusFeed.useConnection({ requestBattery: async () => 60 });
+  win.cubusFeed.useConnection(fakeConn());
   const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
   win.cubusFeed.facelets(S); // the cube reports S — and the camera then reads exactly S
   panel().dispatchEvent(new win.CustomEvent('scan-complete', {
@@ -649,7 +670,7 @@ test('a scan contradicting a tracking cube adopts nothing and disables Solve', a
   const { state } = await import('../lib/app.js');
   win.location.hash = '#/scan';
   await tick();
-  win.cubusFeed.useConnection({ requestBattery: async () => 60 });
+  win.cubusFeed.useConnection(fakeConn());
   const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
   win.cubusFeed.facelets(S);
   state.cube.trusted = true; state.cube.source = 'cube'; // the cube was tracking at S
@@ -667,6 +688,62 @@ test('a scan contradicting a tracking cube adopts nothing and disables Solve', a
   state.live = null; state.reported = null;
 });
 
+// A refusal has to SURVIVE the next tick, and that is the whole of this test.
+//
+// The panel reports `complete` on every state change once it has a finished scan, and `complete`
+// deliberately survives a camera reopen — that is what stops a reopened camera overwriting an
+// accepted scan. So `solveBtn.disabled = !p.complete` handed the button straight back on the very
+// next progress event, over a cube the screen had just said it did not believe. The flag is the
+// screen's own, because the panel is right not to carry it: the panel judged the scan LEGAL, and
+// what was refused is what the app made of it.
+test('a refused scan keeps Solve off across every later progress event', async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/scan';
+  await tick();
+  win.cubusFeed.useConnection(fakeConn());
+  const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  win.cubusFeed.facelets(S);
+  state.cube.trusted = true; state.cube.source = 'cube'; // the cube was tracking at S
+  const OTHER = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: OTHER, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  assert.equal($('#scanSolveBtn').disabled, true, 'precondition: the screen refused the reading');
+
+  // Every shape of later report that still stands complete. Each of these re-enabled it.
+  for (const detail of [
+    { phase: 'done', complete: true, captured: FACES.map(face), device: null, message: '' },
+    { phase: 'idle', complete: true, captured: FACES.map(face), device: { deviceId: 'x', label: 'Cam' }, message: '' },
+    { phase: 'done', complete: true, captured: FACES.map(face), device: { deviceId: 'x', label: 'Cam' }, message: 'this cube is already scanned' },
+  ]) {
+    progress(detail);
+    assert.equal($('#scanSolveBtn').disabled, true,
+      `a "${detail.phase}" report handed Solve back over a cube the screen refused`);
+  }
+
+  // A CAPTURE reopens the verdict, and that is the event that clears it: there is a new reading
+  // to judge, so the old refusal has nothing left to be about.
+  progress({ phase: 'capturing', complete: false, captured: [], device: null, message: '' });
+  assert.equal($('#scanSolveBtn').disabled, true, 'an incomplete scan has nothing to solve either');
+  progress({ phase: 'done', complete: true, captured: FACES.map(face), device: null, message: '' });
+  assert.equal($('#scanSolveBtn').disabled, false, 'and a fresh complete scan is solvable again');
+
+  win.cubusFeed.useConnection(null);
+  state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
+  state.live = null; state.reported = null;
+});
+
+// A scan the SCANNER refused is a scan this screen must not offer to solve either — and here the
+// standing `complete` belongs to an EARLIER, accepted scan, so nothing else would take it away.
+test('a scan the scanner rejects takes Solve away too', async () => {
+  win.location.hash = '#/scan';
+  await tick();
+  progress({ phase: 'done', complete: true, captured: FACES.map(face), device: null, message: '' });
+  assert.equal($('#scanSolveBtn').disabled, false, 'precondition: a complete scan is solvable');
+  panel().dispatchEvent(new win.CustomEvent('scan-invalid', { detail: { reason: 'not a cube' } }));
+  assert.equal($('#scanSolveBtn').disabled, true, 'a rejected reading left Solve standing over the previous cube');
+});
+
 // Auto-solve is a promise about a scan that was BELIEVED. Firing it on a refused reading walked
 // the PREVIOUS cube behind a disabled Solve button — the navigation quietly overrode the refusal.
 test('auto-solve fires only for a believed scan — a refused one stays put', async () => {
@@ -677,7 +754,7 @@ test('auto-solve fires only for a believed scan — a refused one stays put', as
   win.location.hash = '#/scan';
   await tick();
   try {
-    win.cubusFeed.useConnection({ requestBattery: async () => 60 });
+    win.cubusFeed.useConnection(fakeConn());
     const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
     win.cubusFeed.facelets(S);
     state.cube.trusted = true; state.cube.source = 'cube'; // the cube was tracking at S

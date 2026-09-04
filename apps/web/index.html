@@ -17,8 +17,15 @@
     <link rel="icon" href="./icons/favicon.ico" sizes="16x16 32x32 48x48" />
     <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
     <link rel="manifest" href="./manifest.webmanifest" />
-    <meta name="theme-color" content="#F6F2E9" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#241F18" media="(prefers-color-scheme: dark)" />
+    <!-- The window's own colour, told to the OS chrome around it (a phone's status bar, a PWA's
+         title area). These are the AUTO theme's two surfaces and nothing else: tokens.css resolves
+         Auto to white on a light system (`:root:not([data-theme])`, --bg #FFFFFF) and to night on
+         a dark one (--bg #1B1814). They were the cream pair for as long as cream was the light
+         default, so a white window sat under a cream status bar and a night window under a
+         lighter brown one — a seam the app cannot draw over. tokens.test.mjs pins both to the
+         token values, in both directions, so neither can drift again. -->
+    <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1B1814" media="(prefers-color-scheme: dark)" />
     <!-- No web fonts, by decision (2026-08-27): tokens.css names system stacks only, so the page
          loads NOTHING remote — the offline test enforces zero exceptions now that the Google
          Fonts stylesheet, the one accepted gap, is gone. -->
@@ -66,7 +73,14 @@
          cursor in is broken. It used to be restored for .mono, the raw facelet string, but both
          screens that printed one dropped it, so that exception guarded nothing and is gone. */
       body { user-select: none; -webkit-user-select: none; }
-      input, select, textarea { user-select: text; -webkit-user-select: text; }
+      /* Selection is restored for real form controls — a text input you cannot put a cursor in is
+         broken — and for the three places the app prints something a person legitimately wants to
+         COPY: the scramble on the Timer (to paste into a solver or a post), the version on the
+         About card (to quote in a bug report), and the move list (to keep an algorithm). Those
+         were uncopyable for the same reason the caret was suppressed, which is a chrome argument
+         that does not apply to content (found by audit, 2026-09-04). */
+      input, select, textarea,
+      #scr, .about-row .num, .move-chips { user-select: text; -webkit-user-select: text; }
       body {
         margin: 0; background: var(--bg); color: var(--ink);
         font-family: var(--font-ui); font-size: var(--fs-body); line-height: var(--lh-body);
@@ -102,6 +116,38 @@
           box-shadow var(--fade), opacity var(--fade), transform var(--fade);
       }
       .eyebrow { font-size: var(--fs-meta); font-weight: 700; letter-spacing: .13em; color: var(--ink-5); text-transform: uppercase; }
+
+      /* Said, not shown. A live region needs somewhere to put its words, and some of what this
+         app has to announce — "your cube's position is unverified", "that time was not saved" —
+         is already drawn elsewhere as colour, an icon, or a control's own state. The classic
+         clip-rect recipe rather than `display: none` or `visibility: hidden`, both of which take
+         the text out of the accessibility tree along with the picture, which is the opposite of
+         the point. Not `width: 0`: a zero-width box is dropped by some engines too. */
+      .sr-only {
+        position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+        overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+      }
+
+      /* Motion is a preference the OS already knows the answer to.
+       *
+       * Everything here is DECORATION with a job that survives without it: the connection dot
+       * pulses to say "live" (its colour says the same), a suspect sticker pulses to be found
+       * (its ring says the same), a mis-held tile turns to explain what was corrected (the
+       * repaint says the same, instantly). None of it carries information nothing else does, so
+       * all of it can simply stop — which for a vestibular disorder is the difference between a
+       * usable app and one that cannot be looked at. The cube's own turns are NOT stopped, only
+       * shortened: a solve guide with no turn is a slideshow of positions, and watching the turn
+       * is the thing being taught. cubus-cube.js reads the same query for that.
+       *
+       * `prefers-*` is one of the four query families the layout contract allows, and this is
+       * the case its allowance was written for (layout-queries.test.mjs). */
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: .001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: .001ms !important;
+        }
+      }
 
       /* ---- window + title bar --------------------------------------------- */
       /* The app box is the OS-safe area: 100dvh less the safe-area insets (Dynamic Island, home
@@ -231,7 +277,7 @@
          colour of certainty. Hidden entirely with no cube; paintTrust() owns all three states. */
       .tb-ctl.tb-live { color: var(--ok); }
       .tb-ctl.tb-live .ic { animation: cubusPulse var(--pulse) infinite; }
-      .tb-ctl.tb-live.stale { color: var(--warn); }
+      .tb-ctl.tb-live.stale { color: var(--warn-ink); }
       .tb-ctl.tb-live.stale .ic { animation: none; }
       /* Windows/Linux caption buttons, drawn by the app because the window has no decorations. */
       .tb-caption { margin-left: 8px; }
@@ -412,7 +458,10 @@
       .wrap-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
       /* The timer's clock: 150px at the reference, and never wider than the stage — "12.34" in
          the mono stack is ~3.6 characters of width, so 24cqw keeps it inside a phone. */
-      .timer-clock { font-size: clamp(48px, 24cqw, var(--fs-timer)); font-weight: 600; line-height: .95; letter-spacing: -.03em; cursor: pointer; }
+      /* A real <button> now, and it must not look like one: no padding, no min-height from the
+         touch floor below, and the inherited font it already had. What it gains is a focus ring,
+         Enter/Space activation and a name — none of which change a pixel until it is focused. */
+      .timer-clock { font-size: clamp(48px, 24cqw, var(--fs-timer)); font-weight: 600; line-height: .95; letter-spacing: -.03em; cursor: pointer; padding: 0; background: none; border: 0; color: inherit; }
       /* One rule for the whole document, ahead of every component. Any class that sets `display`
          beats the user-agent [hidden] rule, so each component that needed hiding had grown its own
          [hidden] override — six of them — and the two buttons this branch added were left out.
@@ -487,8 +536,8 @@
       /* The scanner speaks through the aside card rather than a status line under the tiles: one
          voice instead of a caption competing with an explanation that says the same thing. */
       .scan-say { color: var(--ink-4); }
-      .scan-say.ok { color: var(--ok); }
-      .scan-say.err { color: var(--err); }
+      .scan-say.ok { color: var(--ok-ink); }
+      .scan-say.err { color: var(--err-ink); }
       /* The transient camera hint ("hold still…", "show the whole face…"), shown UNDER a pinned
          notice rather than in place of it — the pin is the whole point: an explanation must not be
          overwritten by whatever the camera sees 60 ms later. */
@@ -649,7 +698,7 @@
          ringed in the same error colour the suspect pulses in — the suggestion, not a selection. */
       .swatches > button.suggest { box-shadow: inset 0 0 0 1px var(--sticker-edge), 0 0 0 2px var(--err); }
       .scan-face.done .tgrid > .cell { opacity: 1; }
-      .scan-face.done .lbl { color: var(--ok); }
+      .scan-face.done .lbl { color: var(--ok-ink); }
       /* The side the scanner is waiting to be shown again, to settle a reading it cannot settle
          from the six captures alone. Outranks .done: it has been captured, that is the point. */
       /* Keeps its edge colours: the point of asking is that this side be held a particular way up,
@@ -681,7 +730,7 @@
       .menu > button { display: block; width: 100%; padding: 7px 10px; border-radius: var(--r-3); text-align: left; font-size: var(--fs-body-s); color: var(--ink-2); white-space: nowrap; }
       .menu > button:hover { background: var(--panel-sunk); color: var(--ink); }
       .menu > button.now { font-weight: 700; color: var(--ink); }
-      .menu > button.now::before { content: '✓ '; color: var(--ok); }
+      .menu > button.now::before { content: '✓ '; color: var(--ok-ink); }
       .menu > hr { height: 1px; border: 0; margin: 5px 6px; background: var(--line); }
 
       /* Transport on the cube screen, all on one line: four buttons (back, repeat, next, play), the
@@ -703,7 +752,7 @@
       /* The off-track note lives at the FOOT OF THE SOLUTION CARD, and that placement is the fix,
          not a preference: in the transport row it resized the cube card above on every stray turn,
          flashing the whole page. Here it takes its space from #solList, which flexes and scrolls. */
-      .follow-note { display: flex; flex-direction: column; align-items: stretch; gap: 8px; flex: none; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: var(--fs-body-s); color: var(--warn); }
+      .follow-note { display: flex; flex-direction: column; align-items: stretch; gap: 8px; flex: none; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: var(--fs-body-s); color: var(--warn-ink); }
       .follow-note .acts { display: flex; gap: 8px; }
       /* The pause line: information, not a warning — and no rescue buttons, because pausing is a
          choice, not a fault. */
@@ -732,7 +781,7 @@
       /* Shown only when the last move lands, in the transport row just before the step count — the
          count's own tick. It was a 46px badge over the cube, which said "done" where the count
          already read 22 / 22, and covered the cube to say it. */
-      .done-mark { flex: none; width: 22px; height: 22px; border-radius: var(--r-pill); display: inline-grid; place-items: center; color: var(--on-accent); background: var(--ok); }
+      .done-mark { flex: none; width: 22px; height: 22px; border-radius: var(--r-pill); display: inline-grid; place-items: center; color: var(--on-ok); background: var(--ok); }
 
       /* 2D net */
       .net { display: grid; grid-template-columns: repeat(12,1fr); grid-template-rows: repeat(9,1fr); gap: 3px; aspect-ratio: 12/9; max-width: 320px; margin: 0 auto; }

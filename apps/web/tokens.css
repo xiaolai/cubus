@@ -21,7 +21,7 @@
   --ink:           #241F18;  /* primary text, inverted surfaces */
   --ink-2:         #4A4237;  /* secondary on sunk surfaces */
   --ink-3:         #6B6154;  /* body dim */
-  --ink-4:         #8B8072;  /* captions */
+  --ink-4:         #6F675A;  /* captions — ≥ 4.5:1 on --bg and --panel (pinned by tokens.test.mjs) */
   --ink-5:         #756D61;  /* eyebrow labels — ≥4.5:1 on --bg and --panel (pinned by tokens.test.mjs) */
   --ink-6:         #C4BAA9;  /* disabled, chevrons */
   --on-ink:        #F6F2E9;  /* text on --ink */
@@ -41,18 +41,45 @@
   --bar:           #B8AFA0;  /* its filled portion */
 
   /* ---- accent & status ------------------------------------------------ */
-  --accent:        #2E6BFF;
+  /* Darkened from #2E6BFF on 2026-09-04. It is a FILL and a TEXT colour at once — the primary
+   * accent button, and .link and .btn.accent-outline — and at the old value the text half read
+   * 4.03:1 on cream, under AA. The change is ~6% and imperceptible as a brand colour; it also
+   * lifted white-on-accent from 4.50:1 to 5.05:1, so both halves improved together. */
+  --accent:        #2B64EE;
   --accent-hover:  #1B4FCC;
   --accent-wash:   #E4EBFF;  /* M3 secondary container */
   --accent-ink:    #16357E;  /* text on --accent-wash */
   --accent-ink-2:  #3E5288;
+
+  /* STATUS: a FILL and its INK are two tokens, the way --accent-wash and --accent-ink already
+   * are (split 2026-09-04).
+   *
+   * One token cannot be both. A status colour has to be saturated enough to read as green, amber
+   * or red at 16px of icon, and dark enough to clear 4.5:1 as a sentence — and at the values that
+   * satisfied the first, --warn text was 2.98:1 and --ok 3.56:1 on the window. Merging them cost
+   * the app a class of failure it could not see: every "tracking repaired", every low-battery
+   * line, every follow note was under AA.
+   *
+   * So: --ok / --warn / --err stay the FILLS and the icon colours (a graphic needs 3:1, which
+   * they clear), and --ok-ink / --warn-ink / --err-ink are what any SENTENCE in that colour uses.
+   * In night the fills are already lifted far enough to be read as text, so the ink tokens there
+   * are the same values — declared anyway, because the call sites must not have to know which
+   * theme they are in. */
   --ok:            #4E8C6A;
   --warn:          #C87A3C;
   --err:           #B8503F;
+  --ok-ink:        #43795C;  /* ≥ 4.5:1 on --bg and --panel */
+  --warn-ink:      #9E602F;
+  --err-ink:       #B54F3E;
   /* Ink ON an accent or status fill (the paint-mode button, the done mark). Pure white in every
    * theme — the fills themselves lift in night — and distinct from the invert pair, which is for
    * inverted SURFACES, not saturated fills. */
   --on-accent:     #FFFFFF;
+  /* And the one fill white cannot sit on. In night --ok lifts to #6BA987, where white is 2.75:1 —
+   * below even the 3:1 floor a non-text graphic needs, on the done mark, which is the app's
+   * "you finished" tick. It takes a dark ink there instead; in the light themes white is right
+   * and stays. */
+  --on-ok:         #FFFFFF;
 
   /* ---- camera / AR surfaces ------------------------------------------ */
   --lens:          #17150F;
@@ -160,25 +187,18 @@
   --light-size:       12px;
   --light-gap:      11.75px; /* measured, not chosen */
 
-  /* ---- panes ---------------------------------------------------------- */
-  --pane-w:        236px;  /* desktop leading pane */
-  --pane-w-ipad:   320px;
-  --pane-min:      200px;
-  --aside-w:       300px;  /* desktop trailing column, shrinkable */
-  --aside-min:     240px;
-  --win-min-w:    1120px;
-  --win-max-w:    1600px;
-  --win-min-h:     640px;
-
-  /* ---- mobile --------------------------------------------------------- */
-  --tabbar-ios:      49px;  /* + safe area */
-  --safe-bottom-ios: 34px;
-  --appbar-md:       64px;
-  --navbar-md:       80px;
-  --touch-min:       44px;  /* never smaller, either platform */
-  --fab-h:           56px;
-  --r-sheet:         26px;  /* iOS */
-  --r-sheet-md:      28px;  /* Material 3 */
+  /* The pane and mobile-chrome tokens that used to sit here are GONE (2026-09-04): a desktop
+   * leading pane (--pane-w, --pane-min, --pane-w-ipad), a resizable window's bounds
+   * (--win-min-w/-max-w/-min-h), and a platform-shaped mobile chrome (--tabbar-ios,
+   * --safe-bottom-ios, --appbar-md, --navbar-md, --touch-min, --fab-h, --r-sheet, --r-sheet-md).
+   * Every one described a layout the app no longer has: the pane went when the navigation moved
+   * into the title bar, the window bounds went when the desktop window became fixed-size, and
+   * the per-platform mobile chrome went with the layout contract's two compositions
+   * (dev-docs/stage-contract.md). Nothing in the app or in the design kit referenced any of them
+   * through var(). tokens.test.mjs now checks BOTH directions — every var() names a declared
+   * token, AND every declared token is used or explicitly named as kit-only — so a token that
+   * outlives its layout is a failing test rather than a line nobody reads.
+   */
 
   /* ---- 3D renderer defaults (cubus-cube attributes) ------------------- */
   --cube-camera-distance:  12;
@@ -225,7 +245,7 @@
   --ink:           #202020;
   --ink-2:         #434343;
   --ink-3:         #626262;
-  --ink-4:         #828282;
+  --ink-4:         #686868;
   --ink-5:         #6E6E6E;
   --ink-6:         #BBBBBB;
   --on-ink:        #FFFFFF;
@@ -288,6 +308,12 @@
   --ok:            #6BA987;
   --warn:          #D9955A;
   --err:           #D4705E;
+  /* Already ≥ 4.5:1 on --bg and --panel at these values, so the ink IS the fill here — but
+   * declared, so no call site has to know that. */
+  --ok-ink:        #6BA987;
+  --warn-ink:      #D9955A;
+  --err-ink:       #D4705E;
+  --on-ok:         #12211A;  /* white on the lifted --ok is 2.75:1; this is 6.08:1 */
 
   --lens:          #0F0D0A;
   --facelet-off:   #7A7266;  /* lighter than --panel in dark, ~3.4:1 */
@@ -317,6 +343,7 @@
     --accent:#5B8CFF; --accent-hover:#7FA6FF; --accent-wash:#1E2A4A;
     --accent-ink:#B9CCFF; --accent-ink-2:#8EA6DA;
     --ok:#6BA987; --warn:#D9955A; --err:#D4705E;
+    --ok-ink:#6BA987; --warn-ink:#D9955A; --err-ink:#D4705E; --on-ok:#12211A;
     --lens:#0F0D0A; --facelet-off:#7A7266;
     --on-lens:#F6F2E9; --on-lens-dim:#BDB3A2; --on-lens-inverse:#241F18;
     --shadow-card:0 1px 2px rgba(0,0,0,.40), 0 8px 24px rgba(0,0,0,.34);

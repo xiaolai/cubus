@@ -74,6 +74,38 @@ after(async () => {
   proc?.kill('SIGTERM');
 });
 
+/**
+ * A context, from a browser that has not served too many.
+ *
+ * ONE browser for the whole file was the shape until 2026-09-04, and it has a ceiling. This
+ * WebKit build stops completing navigations after ~63 sequential contexts in one browser
+ * process: the 64th `page.goto` waits for a `load` that never arrives and dies on the 120 s
+ * navigation bound. Measured deterministically — three full runs, the same ordinal every time,
+ * on a loaded machine and on an idle one — and the dev server was verified RESPONSIVE at the
+ * moment of the hang (`curl` returned index.html and both vendor bundles in milliseconds), so
+ * the wedge is on the browser side and has nothing to do with what is being served.
+ *
+ * The cost of not handling it is a test suite that accuses whichever screen happens to be 64th.
+ * It was `lessons` three times running, and that same test passes in 1.3 s when it is not 64th —
+ * which is exactly the kind of red that gets "fixed" by changing an innocent screen.
+ *
+ * Nothing about a test changes here: same fixtures, same measurements, same assertions, same
+ * one-context-per-test isolation. Only which browser process serves it. The bound is well under
+ * the observed ceiling rather than at it, because a ceiling measured on one machine is not a
+ * constant — and a browser relaunch costs about a second, twice in a full run.
+ */
+const CONTEXTS_PER_BROWSER = 24;
+let servedContexts = 0;
+async function freshContext(options) {
+  if (servedContexts >= CONTEXTS_PER_BROWSER) {
+    await browser.close();
+    browser = await webkit.launch();
+    servedContexts = 0;
+  }
+  servedContexts += 1;
+  return browser.newContext(options);
+}
+
 // [top, right, bottom, left] insets are the OS's: status bar / Dynamic Island / home indicator.
 // The desktop windows are what the contract's formulas give for a 13" Air (stage 840×630 and
 // 574×765) plus the 52px title bar the Mac draws in WebKit — detectPlatform() reads the engine,
@@ -94,7 +126,7 @@ const near = (a, b, what, tol = 1) => assert.ok(Math.abs(a - b) <= tol, `${what}
 const label = (f) => `${f.name} (${f.width}×${f.height}, insets ${f.insets.join('/')}${f.touch ? ', touch' : ''})`;
 
 async function open(fixture, route = 'home') {
-  const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+  const context = await freshContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
   // node --test saturates the machine by design, and a WebKit navigation on a saturated
   // machine is queued work, not a hung page — the 30 s default read exactly that as failure
   // (2026-08-29, two fixtures, both clean alone), and even 120 s was exceeded under the full
@@ -604,7 +636,7 @@ const measureScreen = (page) =>
 for (const screen of SCREENS) {
   for (const fixture of FIXTURES) {
     test(`${screen} screen: ${label(fixture)}`, async () => {
-      const context = await browser.newContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+      const context = await freshContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
       await context.addInitScript((session) => localStorage.setItem('cubusSolves', session), SESSION);
       const page = await context.newPage();
       pace(page);

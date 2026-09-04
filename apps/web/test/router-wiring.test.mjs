@@ -585,7 +585,7 @@ test('a partial chord does nothing — every modifier is required', async () => 
 // The About card: the app's mark, then a short table — version, website, author — each row led
 // by an inline icon from the app's own set (there is no icon library to need; the paths in `P`
 // are drawn by hand). The links are real anchors: the old card printed "cubus.im" as dead text.
-test('the About card states version, website and author, with real links', async () => {
+test('the About card states version, website, author and credits, with real links', async () => {
   win.location.hash = '#/settings';
   await tick();
   const { VERSION } = await import('../lib/app.js');
@@ -595,7 +595,7 @@ test('the About card states version, website and author, with real links', async
   assert.ok(card.querySelector('.about-brand img[src="./icons/icon.svg"]'), 'led by the app mark');
   assert.equal(card.querySelector('.about-brand b').textContent, 'Cubus');
   const rows = [...card.querySelectorAll('.about-row')];
-  assert.deepEqual(rows.map((r) => r.querySelector('.k').textContent), ['Version', 'Website', 'Author']);
+  assert.deepEqual(rows.map((r) => r.querySelector('.k').textContent), ['Version', 'Website', 'Author', 'Credits']);
   assert.ok(rows.every((r) => r.querySelector('svg.ic')), 'each row is led by an icon');
   assert.equal(rows[0].querySelector('.num').textContent, VERSION, 'the version shown IS the constant');
   const site = rows[1].querySelector('a.link');
@@ -607,6 +607,27 @@ test('the About card states version, website and author, with real links', async
     assert.equal(a.getAttribute('target'), '_blank', 'external links must not navigate the app away');
     assert.equal(a.getAttribute('rel'), 'noopener');
   }
+  // The notices are a LOCAL file that ships in dist, so the link is relative and must NOT carry
+  // target=_blank: under Tauri it is an app asset, and the opener seam only claims http(s)
+  // anchors. A remote URL here would be a network request from a card whose own sentence is
+  // about what does and does not leave the device.
+  const credits = rows[3].querySelector('a.link');
+  assert.equal(credits.getAttribute('href'), './THIRD_PARTY_NOTICES.md');
+  assert.equal(credits.getAttribute('target'), null, 'a local asset opens in place');
+});
+
+// The sentence under "Check now" claimed "Nothing leaves the device" while the button beside it
+// makes an HTTPS request to github.com — and the desktop build makes the same one daily on its
+// own. The claim has to be true on the build it is drawn on, so it is keyed on the updater's
+// existence, which is the same gate the Check now row uses.
+test('the privacy sentence names the one request the build actually makes', async () => {
+  const { privacyLine } = await import('../lib/app.js');
+  assert.match(privacyLine(false), /Nothing leaves the device/, 'with no updater there is genuinely nothing');
+  assert.doesNotMatch(privacyLine(false), /github/i);
+  const withUpdater = privacyLine(true);
+  assert.match(withUpdater, /github\.com/, 'the update check is named');
+  assert.match(withUpdater, /never leave|nothing about you/i, 'and what does NOT go with it');
+  assert.doesNotMatch(withUpdater, /Nothing leaves the device/, 'the false half is gone');
 });
 
 // The version is written by hand in exactly one place — app.js — and every manifest must agree
