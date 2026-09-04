@@ -76,6 +76,82 @@ cubus-cube{display:block}</style>
   window.__ready = true;
 </script></body>`;
 
+/**
+ * The highlight, applied per frame: dim everything else, and breathe the named stickers.
+ *
+ * DIM RATHER THAN GLOW, because "which one is he pointing at" is answered faster by taking the
+ * others away than by making one brighter — a brightened sticker on a cube of bright stickers is
+ * a comparison, and a lone lit sticker on a muted cube is a fact. The dim is a colour lerp toward
+ * the paper rather than transparency: transparency reorders the draw and puts the cube's own
+ * inside through it, which reads as a glass puzzle rather than a quiet one.
+ *
+ * The scale pulse is small on purpose (1.0 -> 1.18). A sticker that leaps reads as a glitch; one
+ * that breathes reads as being indicated. Two cycles over the hold is enough to notice and not
+ * enough to become the subject.
+ *
+ * Everything is restored by `_paint()` and `_applyScale()`, which the element already owns — this
+ * never has to remember the original colours.
+ */
+function highlightPainter() {
+  window.__highlight = (spec, k) => {
+    const cube = window.__cube;
+    const stickers = cube.stickers ?? [];
+    cube._paint();          // back to the true colours before this frame's dim
+    cube._applyScale();     // and the true scale
+    if (!spec) return;
+    const chosen = new Set(window.__select(spec));
+    const paper = new (Object.getPrototypeOf(stickers[0].material.color).constructor)('#e8e4da');
+    for (const m of stickers) {
+      if (chosen.has(m)) continue;
+      m.material.color.lerp(paper, 0.82);
+    }
+    // Two breaths across the pass, easing at both ends so it never snaps.
+    const pulse = 1 + 0.18 * Math.sin(k * Math.PI * 4) ** 2;
+    for (const m of chosen) m.scale.set(m.scale.x * pulse, m.scale.y * pulse, 1);
+    cube._dirty = true;
+  };
+}
+
+/**
+ * Which stickers a `--highlight` spec names.
+ *
+ * The vocabulary is the cube's own, so a tutorial script reads the way a person talks:
+ *
+ *     U        a whole FACE          — "the top face"
+ *     URF      a corner PIECE        — "this corner", all three of its stickers
+ *     UF       an edge PIECE         — "this edge", both of its stickers
+ *     URF/U    one STICKER of a piece — "the white side of this corner"
+ *
+ * Pieces are addressed by the faces they touch, never by a facelet index, and that is deliberate:
+ * the index-within-a-face mapping lives inside `<cubus-cube>` as `FACELET_INDEX` and is not
+ * exported. Reimplementing it here would be a second copy of the one thing that must not drift —
+ * and it would drift silently, painting the highlight onto the wrong sticker while everything
+ * still rendered. Faces and coordinates are unambiguous from the outside.
+ *
+ * Runs in the page, so it is written as a plain function with no imports.
+ */
+function highlightSelector() {
+  window.__select = (spec) => {
+    const AXIS = { U: ['y', 1], D: ['y', -1], R: ['x', 1], L: ['x', -1], F: ['z', 1], B: ['z', -1] };
+    const IDX = { x: 0, y: 1, z: 2 };
+    const [piece, only] = String(spec).split('/');
+    const letters = [...piece.toUpperCase()];
+    if (letters.some((l) => !AXIS[l])) throw new Error(`highlight "${spec}": ${letters.filter((l) => !AXIS[l]).join('')} is not a face letter (U D R L F B)`);
+    const stickers = window.__cube.stickers ?? [];
+    if (!stickers.length) throw new Error('highlight: the element exposes no stickers — its shape changed');
+    // One letter and no `/` means the whole face: every sticker wearing it, wherever it has moved.
+    if (letters.length === 1 && !only) return stickers.filter((m) => m.userData.face === letters[0]);
+    // Two or three letters name a cubie by the coordinates those faces pin down.
+    const want = {};
+    for (const l of letters) { const [ax, v] = AXIS[l]; want[ax] = v; }
+    const on = stickers.filter((m) =>
+      Object.entries(want).every(([ax, v]) => m.userData.home[IDX[ax]] === v));
+    const chosen = only ? on.filter((m) => m.userData.face === only.toUpperCase()) : on;
+    if (!chosen.length) throw new Error(`highlight "${spec}" matched no sticker`);
+    return chosen;
+  };
+}
+
 /** Installed before any script: frame N is at exactly N/fps, and nothing advances on its own. */
 function fakeClock() {
   window.__t = 0;
@@ -156,6 +232,8 @@ export async function capture(o) {
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
     await page.addInitScript(fakeClock);
+    await page.addInitScript(highlightSelector);
+    await page.addInitScript(highlightPainter);
     // Served by interception: the page needs the server's ORIGIN so `./vendor/…` resolves, but it
     // must not be a file inside apps/web — nothing here should write into the app's tree.
     await page.route('**/__cubus_capture.html', (route) =>
@@ -208,7 +286,29 @@ export async function capture(o) {
 
     const frames = [];
     const holdFrames = Math.round(opts.hold * opts.fps);
-    for (let i = 0; i < holdFrames; i++) frames.push(png(first));
+    if (opts.highlight) {
+      // The hold stops being a still and becomes the explanation: the piece is named while nothing
+      // else is moving, which is exactly when a viewer can take it in. A tutorial that highlights
+      // DURING the turns is asking someone to watch two things at once.
+      const pulseFrames = Math.max(holdFrames, Math.round(opts.fps * 1.2));
+      for (let i = 0; i < pulseFrames; i++) {
+        const url = await page.evaluate(
+          ({ spec, k, dt }) => {
+            window.__highlight(spec, k);
+            window.__frame(dt);
+            const cv = window.__cube.shadowRoot?.querySelector('canvas') ?? window.__cube.querySelector('canvas');
+            return cv.toDataURL('image/png');
+          },
+          { spec: opts.highlight, k: i / (pulseFrames - 1 || 1), dt: 1000 / opts.fps },
+        );
+        frames.push(png(url));
+      }
+      // Put the cube back before the walk, or the last dim state rides through the whole solve.
+      await page.evaluate(() => window.__highlight(null, 0));
+      await page.evaluate(() => window.__frame(1000 / 60));
+    } else {
+      for (let i = 0; i < holdFrames; i++) frames.push(png(first));
+    }
 
     await page.evaluate(() => window.__cube.play());
     const dt = 1000 / opts.fps;
@@ -398,6 +498,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error(`usage: alg-video.mjs --alg "R U R' U'" [--out-dir DIR --name NAME | --out FILE]
        [--formats mp4,webm,apng,gif,png] [--fps ${DEFAULTS.fps}] [--size ${DEFAULTS.size}]
        [--supersample ${DEFAULTS.supersample}]
+       [--highlight U | URF | UF | URF/U   name a face, a piece, or one sticker of a piece]
        [--hold ${DEFAULTS.hold}] [--tempo ${DEFAULTS.tempo}] [--background '${DEFAULTS.background}']
        [--scramble ALG | --facelets STR] [--palette NAME] [--back-view none|ghost]
        [--ghosts floating|none (${DEFAULTS.ghosts})] [--ghost-elevation ${DEFAULTS.ghostElevation}]
@@ -424,6 +525,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     fps: Number(arg('fps', DEFAULTS.fps)),
     size: Number(arg('size', DEFAULTS.size)),
     supersample: Number(arg('supersample', DEFAULTS.supersample)),
+    highlight: arg('highlight'),
     hold: Number(arg('hold', DEFAULTS.hold)),
     tempo: Number(arg('tempo', DEFAULTS.tempo)),
     background: arg('background', DEFAULTS.background),

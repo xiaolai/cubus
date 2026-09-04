@@ -25,9 +25,11 @@ import { after, describe, test } from 'node:test';
 
 import { DEFAULTS, capture, encode } from '../../../scripts/alg-video.mjs';
 
-// Small and slow-framed on purpose: this is a correctness test, not a render. 128px at 10fps keeps
-// a four-move algorithm around a second while still being a real WebGL draw.
-const SMALL = { size: 128, fps: 10, hold: 0.1, tempo: 1 };
+// Small, fast-tempo and short-held on purpose: these are correctness tests, not renders. Each
+// `capture()` pays for its own server and browser — about four seconds before a single frame — so
+// the settings below buy coverage rather than pixels. 96px at 10fps with a doubled tempo keeps the
+// whole file under a minute while every frame is still a real WebGL draw at a real size.
+const SMALL = { size: 96, fps: 10, hold: 0.1, tempo: 2 };
 const ALG = "R U R' U'";
 
 const hasFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0;
@@ -73,6 +75,45 @@ describe('capture', () => {
 
   test('an algorithm that is not one is refused, not rendered as nothing', async () => {
     await assert.rejects(() => capture({ alg: 'NOT A MOVE', ...SMALL }), /did not finish|valid/);
+  });
+});
+
+describe('highlight', () => {
+  // For tutorials: name the piece being talked about while nothing else is moving. The assertions
+  // are decoder-free on purpose — there is no PNG decoder here and adding one for this would be a
+  // dependency bought for a test — so they lean on two things a dimmed, pulsing cube cannot fake:
+  // it does not look like the undimmed one, and it does not hold still.
+  test('a highlighted render differs from an unhighlighted one', async () => {
+    const plain = await capture({ alg: 'R', ...SMALL });
+    const lit = await capture({ alg: 'R', ...SMALL, highlight: 'URF' });
+    assert.ok(!plain.frames[0].equals(lit.frames[0]), 'the highlight changed nothing on the first frame');
+  });
+
+  test('the highlight breathes rather than holding a pose', async () => {
+    // The opening hold is a live pass when a highlight is asked for, so those frames must vary.
+    // If the pulse were a constant the hold would be one repeated still, which is what it is
+    // WITHOUT a highlight — and that difference is the thing being asserted.
+    const { frames } = await capture({ alg: 'R', ...SMALL, highlight: 'URF' });
+    const early = frames.slice(0, Math.max(3, Math.round(SMALL.fps * 0.5)));
+    assert.ok(new Set(early.map((f) => f.length)).size > 2,
+      'the highlighted hold is not animating — every frame is the same size');
+  });
+
+  test('faces, pieces and single stickers are all namable', async () => {
+    // One per BRANCH of the selector — a face, a cubie, and one sticker of a cubie. 'UF' and
+    // 'URF' take the same path as each other, so a fourth capture would buy nothing but seconds.
+    for (const spec of ['U', 'URF', 'URF/U']) {
+      const { frames } = await capture({ alg: 'R', ...SMALL, highlight: spec });
+      assert.ok(frames.length > 0, `${spec} produced no frames`);
+    }
+  });
+
+  // A spec that names nothing must say so. Silently highlighting the wrong piece — or nothing —
+  // in a teaching video is worse than a failed render, because it is a lesson that points at the
+  // wrong thing while looking finished.
+  test('a spec that names nothing is refused, not quietly ignored', async () => {
+    await assert.rejects(() => capture({ alg: 'R', ...SMALL, highlight: 'XY' }), /face letter/);
+    await assert.rejects(() => capture({ alg: 'R', ...SMALL, highlight: 'URF/Z' }), /matched no sticker/);
   });
 });
 
