@@ -410,7 +410,15 @@ test('a refuted solution still blocks — the oracle can still say no', async ()
       chips: document.querySelectorAll('.chip-m').length,
     }));
     assert.equal(shown.chips, 0, 'a refuted solution was drawn as moves to make anyway');
-    assert.equal(shown.count, 'could not work it out', `the screen said "${shown.count}" instead of refusing`);
+    // The refusal NAMES ITSELF. One sentence used to cover four unrelated failures — the solver
+    // never loading, no scramble, a dead worker, and this: the oracle refusing an answer. "Could
+    // not work it out" blamed the cube for all four and offered re-scanning as the remedy even
+    // where re-scanning cannot help. Here it can and does, which is why this branch says so.
+    assert.equal(
+      shown.count,
+      'the answer did not check out — read the cube again',
+      `the screen said "${shown.count}" instead of refusing`,
+    );
     // The page is allowed to complain loudly here; it is not allowed to throw uncaught.
     assert.deepEqual(errors.map(String), [], 'the refusal escaped as an uncaught error');
   } finally {
