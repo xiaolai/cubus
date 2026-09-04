@@ -25,7 +25,7 @@ import { makeRouter } from './router.js';
 // keeps "connected" from standing in for "known".
 import { VERDICT, connectCube } from './cube-session.js';
 import { MAX_LABEL, NAME_PREFIX, cubeLabel, forgetCube, listCubes, normaliseIdentity, normaliseMac, parseRegistry, rememberCube, rememberLast, renameCube } from './cube-registry.js';
-import { applyOffset, deriveOffset, isIdentity } from './cube-trust.js';
+import { applyOffset, deriveOffset, isCubeState, isIdentity } from './cube-trust.js';
 // What the host can actually reach a radio with. Imported rather than re-derived: the list of
 // platforms whose native BLE is not yet proved on a device is one line in one file by design
 // ("THE FLIP IS THIS LINE"), and a second copy here would let the app offer Pair on a platform
@@ -266,10 +266,19 @@ const state = {
   anchored: false,
   cube: {
     facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [], solveResult: null,
-    // Has the Kociemba derivation been run for these facelets? Declared here rather than
-    // appearing on first write, so the shape of `state.cube` is readable in one place — it was
-    // set by ingestFacelets and read by deriveCube and existed in neither declaration.
+    // Has this arrangement been classified? Declared here rather than appearing on first write, so
+    // the shape of `state.cube` is readable in one place — it was set by ingestFacelets and read
+    // by deriveCube and existed in neither declaration.
     derived: false,
+    // Is this an arrangement NO cube can be turned into — a twisted corner, a flipped edge, two
+    // swapped pieces? A distinct outcome from `!solvable`, which a solved cube also has: there is
+    // nothing to walk in both cases, and only one of them is something to tell a person about.
+    //
+    // It comes from cubejs's parser and the four classical conditions (classifyCube), never from
+    // the engine answering null. The engine's null means "out of budget OR not a solvable state"
+    // and cannot be asked which (solve-target.js) — reading it as a verdict about the cube is
+    // exactly the claim AGENTS.md forbids.
+    unsolvable: false,
     // Has `solution` been checked by the implementation that did NOT produce it? A solution
     // reaches this state two ways — searched for by the two-phase worker, or inverted from a
     // setup alg that worker already searched for — and only one of them has been cross-checked
@@ -377,17 +386,30 @@ const invMove = (m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : m + "'");
  *  same function turn a solution into a setup alg and a setup alg back into a solution. */
 const invertAlg = (a) => (String(a).trim() ? String(a).trim().split(/\s+/).reverse().map(invMove).join(' ') : '');
 
-// Single-flight: boot and an async screen mount both call this, and initSolver() builds the
-// Kociemba tables — running it twice is seconds of wasted main-thread work, and both callers
-// racing on `Cube` is worse. The in-flight promise is shared; a failure clears it so a later
-// call can retry rather than being stuck with a rejected one.
+// Single-flight: boot and an async screen mount both call this, and two callers racing on `Cube`
+// would each import and each publish. The in-flight promise is shared; a failure clears it so a
+// later call can retry rather than being stuck with a rejected one.
+//
+// `Cube.initSolver()` USED TO BE HERE, right after first paint, and it was the largest block the
+// app took at boot — two to four times that on a phone (dev-docs/deferred-plans-2026-09-05.md §1).
+// Measured in WebKit on 2026-09-05, ten boots each, as the longest gap between two consecutive
+// 4 ms timer callbacks installed before any page script (the main thread cannot run one while it
+// is blocked, so the gap IS the block): median 723 ms and worst 793 ms with it, median 40 ms and
+// worst 59 ms without. What remains is the renderer's first WebGL build, which is present in both
+// and is a different item.
+//
+// It built cubejs's Kociemba tables, and the ONLY thing on this thread that ever needed them was
+// `cube.solve()` in deriveCube — a search for an answer the worker pool produces anyway, and
+// whose inverse IS the setup alg (takeSetupAlg). Nothing else cubejs does here needs a table:
+// parsing a facelet string, applying moves, asking whether a state is solved and judging a state
+// legal are all arithmetic. So the tables are gone from this thread entirely, and the engine's
+// own live in the pool's workers, where a user is not waiting behind them (removed 2026-09-05).
 let solverLoading = null;
 async function loadSolver() {
   if (solverReady) return true;
   solverLoading ??= (async () => {
     try {
       Cube = (await import('../vendor/cubejs.js')).default;
-      Cube.initSolver();
       solverReady = true;
       // The proven library rides ALONGSIDE, never in front. It needs the same oracle and it is
       // what lets a known state answer with no search at all — but it is an optimisation, and
@@ -422,16 +444,8 @@ async function loadSolver() {
   return solverLoading;
 }
 
-// Given a scanned/known facelet state, derive the setup alg (solved -> scrambled, for the 3D
-// animation) and whether it needs solving. cubejs is the oracle here.
-//
-// PRECONDITION: `f` must be a SOLVABLE cube, not merely a well-formed string. cubejs's solve() is
-// a Kociemba search that assumes solvability; hand a it a state with the right colour counts and
-// centres but broken parity and it searches forever, freezing the tab — no throw, no timeout. Both
-// callers hold up their end: assembleColors clears a scan through the parity gate before emitting
-// it, and the driver's facelets come from hardware the state invariant checks. A future caller
-// that does neither would hang here, and nothing in this function can tell.
-// Ingesting a state and DERIVING from it are separate costs, and they used to be one call.
+// Record a scanned/known facelet state. Ingesting a state and DERIVING from it are separate
+// costs, and they used to be one call.
 //
 // Storing facelets is free. Working out the setup alg is a full Kociemba search, and it ran on
 // every arriving snapshot — the cube emits those at ~1Hz for as long as it is connected, on the
@@ -441,54 +455,86 @@ function ingestFacelets(f) {
   const c = state.cube;
   c.facelets = f;
   c.solution = ''; c.moves = []; c.stepFacelets = []; c.solveResult = null;
-  c.setupAlg = ''; c.derived = false; c.crossChecked = false;
+  c.setupAlg = ''; c.derived = false; c.unsolvable = false; c.crossChecked = false;
 }
 
-/** Derive setupAlg/solvable from the stored facelets. Idempotent; cheap after the first call.
- *  Every reader of `solvable` or `setupAlg` must go through here first. */
 /** An algorithm string as its move list — the one tokenizer both solve paths share. */
 const movesOf = (alg) => (alg.trim() ? alg.trim().split(/\s+/) : []);
 
-function deriveCube() {
+/**
+ * What the stored facelets ARE, before anything searches: a walk to make, nothing to do, or an
+ * arrangement no cube can be turned into. Idempotent; every reader of `solvable` or `unsolvable`
+ * goes through here first.
+ *
+ * SYNCHRONOUS AND TABLE-FREE, which is the whole point. This used to run `cube.solve()` — a
+ * Kociemba search on the UI thread — which is the only reason `Cube.initSolver()`'s ~1 s table
+ * build was ever a boot cost. Neither is needed to answer what the screens actually ask:
+ *
+ *   * **A legal cube that is not solved HAS a walk.** God's number says every one of the
+ *     43,252,003,274,489,856,000 legal positions has a solution of 20 moves or fewer, so "is
+ *     there one" is a fact about the cube rather than something a search establishes. Which one
+ *     it is, is the pool's job (deriveCube).
+ *   * **A state that is not legal has none, and legality is arithmetic.** cubejs's parser plus
+ *     the four classical conditions — `isCubeState` in lib/cube-trust.js, the same gate the cube
+ *     registry and the reconnect readings go through, so a string one of them accepts and
+ *     another refuses cannot drift apart. Microseconds, and no table anywhere.
+ *
+ * The old code could not tell the two apart at all: handed a twisted corner, cubejs's `solve()`
+ * returns a well-formed 16-move alg that does not solve it (measured 2026-09-05), so the screen
+ * went walking, the engine refused the state, and eight budget escalations later `failWalk` said
+ * "could not work it out" — blaming a search for something parity had already settled.
+ */
+function classifyCube() {
   const c = state.cube;
   if (c.derived) return c;
-  if (!solverReady) {
-    // Without a solver the best we can say is "not the solved state". Deliberately NOT marked
-    // derived, so the real derivation still happens once the solver arrives.
-    c.setupAlg = '';
-    c.solvable = c.facelets !== SOLVED;
+  // A solved cube has no walk, and needs no library to say so. Asked for one anyway, cubejs's
+  // two-phase search answers the identity with a 14-move no-op ("R L U2 R L F2 R2 U2 R2 F2 R2 U2
+  // F2 L2"), so "the solver returned moves" was never evidence of anything to follow — every
+  // fresh launch put a transport under the solved cube reading 0 / 0, its done tick already lit.
+  if (c.facelets === SOLVED) {
+    c.setupAlg = ''; c.solvable = false; c.unsolvable = false; c.derived = true;
+    return c;
+  }
+  if (!Cube) {
+    // No parser yet, so legality is not knowable — and an unknown must never be reported as a
+    // verdict ("Never invent data"). The best that can be said is "not the solved state".
+    // Deliberately NOT marked derived, so the real classification still happens once cubejs
+    // arrives. Gated on `Cube` rather than on `solverReady` because the parser is the thing this
+    // needs, and there is no longer anything else to be ready.
+    c.solvable = true; c.unsolvable = false;
     return c;
   }
   c.derived = true;
-  try {
-    const cube = Cube.fromString(c.facelets);
-    // A solved cube has no walk. Asked for one anyway, cubejs's two-phase search answers the
-    // identity with a 14-move no-op ("R L U2 R L F2 R2 U2 R2 F2 R2 U2 F2 L2"), so "the solver
-    // returned moves" is not evidence of anything to follow — every fresh launch put a transport
-    // under the solved cube reading 0 / 0, its done tick already lit.
-    if (cube.isSolved()) { c.setupAlg = ''; c.solvable = false; return c; }
-    // A proved state carries the alg that reaches it, checked against the oracle at load — so
-    // the setup is a fact we ship, not a search this thread runs. This is the second of the two
-    // Kociemba searches a library state would otherwise pay for; solve() skips the other.
-    const known = provenAnswer(challenges, c.facelets);
-    if (known) { c.setupAlg = known.setupAlg; c.solvable = known.moves > 0; return c; }
-    const sol = cube.solve();
-    const moves = movesOf(sol);
-    c.setupAlg = moves.slice().reverse().map(invMove).join(' ');
-    c.solvable = moves.length > 0;
-  } catch {
-    // A throw here is a transient (cubejs failed to parse/solve something it normally can) —
-    // caching it as "unsolvable" would freeze a wrong answer until the next ingest. Leave
-    // `derived` false so the next reader simply tries again.
-    c.setupAlg = ''; c.solvable = false; c.derived = false;
-  }
+  c.unsolvable = !isCubeState(c.facelets, Cube);
+  c.solvable = !c.unsolvable;
   return c;
 }
 
-/** Ingest AND derive — for callers that are about to use the result immediately. */
+/**
+ * The walk for the stored facelets, worked out THROUGH THE POOL — never on this thread.
+ *
+ * The setup alg (solved -> this arrangement, the path the 3D twin animates from) used to be its
+ * own Kociemba search here, over the same state, for the same answer the pool is asked for
+ * anyway. It is the inverse of that answer: `finishSolve` takes it, checked (takeSetupAlg), for
+ * every path a solution can arrive by. So this is classification plus the one ask.
+ *
+ * Throws for a subject with no walk. That cannot happen down the ordinary route — the screen's
+ * composition is chosen from `classifyCube()` and a cube with nothing to walk draws no solution
+ * card — but a live snapshot can replace the subject inside the await this stands in front of,
+ * and an empty chip grid under a count reading "0" would be the screen quietly lying about a
+ * cube it cannot walk.
+ */
+async function deriveCube(opts = {}) {
+  const c = classifyCube();
+  if (!c.solvable) throw new Error('nothing to walk on this cube');
+  await solve(opts);
+  return c;
+}
+
+/** Ingest AND classify — for callers that are about to read `solvable` immediately. */
 function setFacelets(f) {
   ingestFacelets(f);
-  deriveCube();
+  classifyCube();
 }
 
 // The solver worker, made once and kept. Building the engine's pruning tables costs ~0.5-2.6 s
@@ -565,11 +611,39 @@ function warmSolver() {
 }
 
 /**
+ * The setup alg, taken from the solution the pool already found — CHECKED, never trusted.
+ *
+ * A solution takes this arrangement to solved, so its inverse takes solved to this arrangement:
+ * one search yields both halves. That is the rule the scramble side has followed since
+ * 2026-08-29 ("inverting the setup alg already IS one search"), applied to the other direction —
+ * `invertAlg` is an involution, so there is one rule and not two. It replaces the Kociemba search
+ * `deriveCube` used to run on the UI thread for exactly this, and with it the cubejs tables that
+ * search needed.
+ *
+ * `reaches()` is what makes it a fact rather than an assumption: applying the alg to a solved
+ * cube must reproduce the facelets — a couple of dozen move applications, microseconds against
+ * the search it replaces, and the same check `takeDerivation` puts a carried alg through. A
+ * disagreement leaves the setup alg EMPTY rather than wrong, and says so: `newCube` then draws
+ * the arrangement instead of animating a walk that does not lead to it.
+ */
+function takeSetupAlg(c, solution) {
+  // Already carried in with the cube and already checked (takeDerivation), or already taken from
+  // an earlier solve of this same arrangement.
+  if (c.setupAlg) return;
+  const setupAlg = invertAlg(solution);
+  if (!reaches(c.facelets, setupAlg)) {
+    console.error('the inverse of the solution does not reach the cube it solves — no setup alg to animate from', { solution });
+    return;
+  }
+  c.setupAlg = setupAlg;
+}
+
+/**
  * Whatever produced the solution, this is what makes it usable — and what checks it.
  *
- * Both solvers end here on purpose. The oracle cross-check and the per-step facelets are not
- * properties of one search or the other, and having two copies is how one of them would quietly
- * stop being verified.
+ * Both solvers end here on purpose. The oracle cross-check, the per-step facelets and the setup
+ * alg are not properties of one search or the other, and having two copies is how one of them
+ * would quietly stop being verified.
  */
 function finishSolve(c, alg) {
   const solution = alg;
@@ -591,6 +665,9 @@ function finishSolve(c, alg) {
   // nothing — but it verified nothing either, and marking that "checked" would let an
   // unverified solution be reused forever. Left false, the next solve() retries the check.
   c.crossChecked = verified === true;
+  // And the other half of the same answer. After the refutation gate, not before it: a solution
+  // the oracle rejects must not leave a setup alg behind for the next screen to animate from.
+  takeSetupAlg(c, solution);
   return solution;
 }
 
@@ -617,8 +694,10 @@ async function solve({ onImprovement, onProgress, signal } = {}) {
   const aborted = () => Object.assign(new Error('solve: superseded'), { name: 'AbortError' });
   if (signal?.aborted) throw aborted();
   const c = state.cube;
-  // If a state arrived before the solver was ready, its setup alg is stale — recompute now.
-  if (solverReady && c.facelets !== SOLVED && !c.setupAlg) deriveCube();
+  // There used to be a "the setup alg is stale — recompute now" line here, which called back into
+  // deriveCube for a second Kociemba search on this thread. The setup alg is now the INVERSE of
+  // the answer this function is about to produce (takeSetupAlg, from finishSolve), so a stale one
+  // is repaired by the search that was going to run anyway rather than by one of its own.
   if (c.solution && c.crossChecked) return c.solution;
   if (c.solution) {
     // A solution that arrived WITHOUT a search — the inverse of a setup alg the worker already
@@ -743,8 +822,19 @@ function newCube({ animate = false } = {}) {
   // it), and a stray drag on a touch screen or a trackpad swung it away with no way back.
   el.setAttribute('orbit', settings.dragRotate ? 'free' : 'locked');
   const c = state.cube;
-  if (animate && deriveCube().solvable) { el.setAttribute('scramble', c.setupAlg); el.setAttribute('alg', c.solution || ''); }
-  else el.setAttribute('facelets', c.facelets);
+  // A walk is animated only when the alg it would animate is KNOWN — which now means the pool has
+  // answered and `reaches()` has agreed the alg builds this very cube (takeSetupAlg). The setup
+  // alg used to be a Kociemba search this call could force on the UI thread, so "walking" and
+  // "the alg is in hand" were the same instant; they are not any more, and `scramble=""` draws a
+  // SOLVED cube — one presented frame of a solved cube beside a scrambled walk, which is the
+  // exact class the die invariant forbids ("the die solves before it swaps", AGENTS.md).
+  //
+  // So an unknown alg draws the ARRANGEMENT instead, with no animation, and loadWalk swaps the
+  // attributes the moment the answer lands. Nothing waits, and nothing lies in the meantime.
+  if (animate && classifyCube().solvable && c.setupAlg) {
+    el.setAttribute('scramble', c.setupAlg);
+    el.setAttribute('alg', c.solution || '');
+  } else el.setAttribute('facelets', c.facelets);
   return el;
 }
 
@@ -1656,7 +1746,7 @@ function adoptCube(facelets, { physical, source, setupAlg = '' } = { physical: f
  * is a couple of dozen move applications — microseconds against the search it replaces — so the
  * shortcut is free AND cannot install a walk that does not lead to the cube on screen. A
  * disagreement means the caller paired the two wrongly; it says so and leaves the state
- * underived, so deriveCube() does the search after all rather than the app drawing a lie.
+ * underived, so the pool's answer supplies the alg after all rather than the app drawing a lie.
  */
 /** Does applying `setupAlg` to a solved cube produce exactly `facelets`? Move application only —
  *  microseconds, and no search. The one check that makes a setup alg from anywhere usable. */
@@ -1683,9 +1773,12 @@ function takeDerivation(facelets, setupAlg) {
     return;
   }
   c.setupAlg = setupAlg;
-  // It took moves to get here, so there are moves back. deriveCube reaches the same conclusion
-  // the same way (`moves.length > 0`); the check above is what makes it a fact here too.
+  // It took moves to get here, so there are moves back — and an arrangement a real alg reaches is
+  // a real arrangement, which is what the check above has just established. `unsolvable` is
+  // written beside `solvable` rather than left to whoever ingested: the two are one verdict, and
+  // a record carrying both as true is a state nothing downstream can read correctly.
   c.solvable = true;
+  c.unsolvable = false;
   c.derived = true;
   // AND THE SOLUTION, which is why the search that used to follow is gone. Undoing the setup alg
   // solves the cube by construction — there is nothing left to search FOR. The app used to send
@@ -2840,7 +2933,16 @@ const cubeScreen = (screenMode) => {
   if ('camDist' in v) { delete v.camDist; save('cubeView', v); }
   // A scramble is always available: it is generated here rather than read off the cube, so there is
   // no state that makes this screen have nothing to do.
-  const walking = scrambling || deriveCube().solvable;
+  //
+  // Chosen SYNCHRONOUSLY, from arithmetic — that is why `classifyCube` had to stop being a
+  // search. The composition is decided before the first frame is composited, so a screen with no
+  // walk never briefly draws a transport over one, and a screen with a walk never draws an empty
+  // solution card while a search runs.
+  const walking = scrambling || classifyCube().solvable;
+  // The other reason there is no walk, and the only one worth a sentence. `!solvable` covers both
+  // a solved cube (nothing to do, and the picture says so) and an arrangement no turning can
+  // produce (nothing to do, and nothing on screen would otherwise explain why).
+  const unsolvable = !scrambling && state.cube.unsolvable;
   const label = scrambling ? 'Scramble' : 'Solution';
   const walked = scrambling ? 'scramble' : 'solution';
   // The open reconnect question, on the solve side only — Scramble's subject is always the
@@ -2940,6 +3042,12 @@ const cubeScreen = (screenMode) => {
              breathing spaces the eye compares, made equal. The margin is the stylesheet's
              (.state-card .net): beside the cube in portrait the net centres instead. -->
         <div class="net" id="viewNet"></div></div>
+      ${unsolvable ? `<div class="card sheet unsolvable-card">
+        <div class="follow-note" id="unsolvableNote" style="border-top:0">
+          <b>${escHtml(t('This arrangement is not one a cube can be turned into.'))}</b>
+          <span class="sub" style="color:var(--ink-4)">${escHtml(t('At least one sticker is somewhere turning a real cube could never put it — a corner twisted in place, an edge flipped, or two pieces swapped — so there is no walk to follow. Read the cube again on Restore, or correct the sticker there.'))}</span>
+        </div>
+      </div>` : ''}
       ${!walking && rcNow() ? `<div class="card sheet reconnect-card">${reconnectAsk()}</div>` : ''}
       ${walking ? `<div class="card tight solution-card sheet">
         ${reconnectAsk()}
@@ -3129,9 +3237,9 @@ const cubeScreen = (screenMode) => {
         }
         // Held while the solver works, so a second press cannot roll a third cube over the one
         // being solved. A failure is not swallowed into silence — it leaves `solution` empty, and
-        // the screen says "could not work it out" the way it does for any unsolvable state.
+        // the screen says "could not work it out" the way it does for any walk it cannot build.
         die.disabled = true;
-        try { if (!scrambling) await solve({ signal }); }
+        try { if (!scrambling) await deriveCube({ signal }); }
         catch (err) {
           // A search the screen's own teardown called off is not a failure worth a line: the
           // subject is gone and nobody is waiting on it.
@@ -3601,7 +3709,10 @@ const cubeScreen = (screenMode) => {
             // the same wait: an escalation is the search doubling its budget and starting again,
             // which from outside is a count that has stopped moving for seconds — so it says, in
             // the smallest words available, that it is still going.
-            await solve({
+            //
+            // deriveCube, not solve: the walk and the setup alg the twin animates from are one
+            // answer now, so there is one ask. `gotSetup` below reads the alg this produced.
+            await deriveCube({
               signal: abort.signal,
               onImprovement: (step) => { if (fresh()) setStatus(String(step.moves)); },
               onProgress: ({ attempt }) => {
@@ -3634,7 +3745,21 @@ const cubeScreen = (screenMode) => {
         setup = gotSetup; alg = gotAlg; moves = gotMoves; steps = gotSteps; target = gotTarget;
         total = moves.length;
         if (scrambling) paintNet(target);
-        cube.setAttribute('scramble', setup ?? ''); cube.removeAttribute('facelets'); cube.setAttribute('alg', alg);
+        // The Scramble side genuinely starts from solved, so an empty setup alg is its normal
+        // case and `scramble=""` says exactly that. On the SOLVE side an empty one means
+        // takeSetupAlg refused the inverse of the answer — the walk is still cross-checked and
+        // still right, but there is no verified path from solved to this arrangement, and
+        // `scramble=""` would draw a solved cube under a scrambled walk. So the arrangement is
+        // drawn instead: `facelets` outranks `scramble` in the renderer and `alg` is independent
+        // of both, so the walk still animates, just from where the cube actually is.
+        if (scrambling || setup) {
+          cube.setAttribute('scramble', setup ?? '');
+          cube.removeAttribute('facelets');
+        } else {
+          cube.removeAttribute('scramble');
+          cube.setAttribute('facelets', state.cube.facelets);
+        }
+        cube.setAttribute('alg', alg);
         // Just the number, unless the search fell short of the tier — and then a sentence about
         // the SEARCH, never about the cube. This used to read "18 was not possible here", which
         // two-phase has no way to know: it cannot prove a minimum, so it cannot prove one absent
@@ -3894,7 +4019,7 @@ const cubeScreen = (screenMode) => {
     update() {
       if (!retarget) return false;                            // nothing mounted, or nothing to walk
       if (!walking) return false;                             // this screen has no walk to replace
-      if (!(scrambling || deriveCube().solvable)) return false; // and now there is none to show
+      if (!(scrambling || classifyCube().solvable)) return false; // and now there is none to show
       void retarget();
       return true;
     },
