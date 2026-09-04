@@ -1,0 +1,41 @@
+# Weekly, one grouped PR per ecosystem, so a Monday brings four PRs and not forty.
+#
+# Every third-party action in .github/workflows is pinned to a full commit SHA with its version in
+# a trailing comment; Dependabot moves both together. An npm bump that touches a bundled package
+# (three, cubejs, onnxruntime-web, smartcube-web-bluetooth) is not done until the vendored bundles
+# are rebuilt and committed — CI's bundle-diff step fails until they are — so those PRs are merged
+# read, never on green alone. Cargo majors are left ungrouped on purpose: a Tauri major is a
+# migration, not an update.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+
+  # The golden-harness pins (ml/requirements-golden.txt). A bump here can move a golden read, which
+  # is exactly what the golden jobs exist to say; expected.json is re-pinned only for a change that
+  # has been explained (AGENTS.md).
+  - package-ecosystem: pip
+    directory: /ml
+    schedule:
+      interval: weekly
