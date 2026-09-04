@@ -1,6 +1,6 @@
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector } from '../src/detector.js';
-import { type ScanRuntime, pickDetector } from './pick-detector.js';
+import { type ScanRuntime, parkDetector, pickDetector } from './pick-detector.js';
 
 /**
  * The camera's lifecycle, and the two counters that keep a stale one from speaking.
@@ -32,7 +32,15 @@ import { type ScanRuntime, pickDetector } from './pick-detector.js';
 export class CameraSession {
   private detectorPromise: Promise<Detector> | null = null;
   private detector: Detector | null = null;
-  private timer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Did this session's detector come from `pickDetector`, i.e. may it go back to the page's park?
+   *
+   * An INJECTED one may not. `use()` is the test seam and the native host's, and a fake handed in
+   * by one case must never reach a page-wide slot where the next case would be given it — the
+   * failure mode is a suite that passes alone and fails in a file.
+   */
+  private parkable = false;
+  private timer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
   private epoch = 0;
   /** Bumped by `use()`, so an injection beats a probe that is still in flight. See `use`. */
@@ -112,10 +120,35 @@ export class CameraSession {
     this.stopLoop();
     this.detectorChoice++;
     this.detector = detector;
+    this.parkable = false; // the caller's object, never the page's — see `parkable`
     this.detectorPromise = Promise.resolve(detector);
     this.runtime = runtime;
     this.modelLoaded = false;
     this.device = null;
+  }
+
+  /**
+   * Hand the detector back to the page, so the next mount reuses its session and its model.
+   *
+   * Called when the OWNER goes away — `<ai-scan-panel>`'s disconnectedCallback — and not from
+   * `close()`, which runs on every `stop()` and would give the detector away while the same panel
+   * still intends to scan with it. `parkDetector` stops the camera; the model survives.
+   *
+   * The session forgets it either way: a parked detector is no longer this session's to drive, and
+   * a later `ensureDetector()` must ask the page for one afresh rather than resolve a promise
+   * holding the one it gave back.
+   */
+  park(): void {
+    this.close();
+    const detector = this.detector;
+    const parkable = this.parkable;
+    this.detector = null;
+    this.detectorPromise = null;
+    this.parkable = false;
+    const runtime = this.runtime;
+    const modelLoaded = this.modelLoaded;
+    this.modelLoaded = false;
+    if (detector && parkable && runtime) parkDetector({ detector, runtime, modelLoaded });
   }
 
   /**
@@ -125,19 +158,26 @@ export class CameraSession {
   ensureDetector(video: () => HTMLVideoElement, modelUrl: () => string): Promise<Detector> {
     if (this.detectorPromise === null) {
       const choice = this.detectorChoice;
-      this.detectorPromise = pickDetector({ video, modelUrl }).then(({ detector, runtime }) => {
-        // A `use()` landed while the probe was out: the injection wins, and the detector this
-        // probe built is released rather than left holding whatever it opened.
-        if (choice !== this.detectorChoice) {
-          // This one lost and is thrown away, so its model goes with it.
-          detector.dispose?.();
-          detector.stop();
-          return this.detector ?? detector;
-        }
-        this.detector = detector;
-        this.runtime = runtime;
-        return detector;
-      });
+      this.detectorPromise = pickDetector({ video, modelUrl }).then(
+        ({ detector, runtime, modelLoaded }) => {
+          // A `use()` landed while the probe was out: the injection wins, and the detector this
+          // probe built is released rather than left holding whatever it opened.
+          if (choice !== this.detectorChoice) {
+            // This one lost and is thrown away, so its model goes with it.
+            detector.dispose?.();
+            detector.stop();
+            return this.detector ?? detector;
+          }
+          this.detector = detector;
+          this.parkable = true;
+          this.runtime = runtime;
+          // A parked detector arrives with its model already compiled, and says so — otherwise
+          // every re-mount reported "loading the model…" and crossed the bridge again for a load
+          // both implementations would only short-circuit.
+          this.modelLoaded = modelLoaded;
+          return detector;
+        },
+      );
     }
     return this.detectorPromise;
   }
@@ -151,7 +191,7 @@ export class CameraSession {
   /** Stop ticking. Does not touch the camera — `restart` keeps the lens alive on purpose. */
   stopLoop(): void {
     if (this.timer !== null) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
   }
@@ -164,11 +204,30 @@ export class CameraSession {
    * `dropFramesInFlight()` the one caller had to remember alongside this, which is a two-call
    * protocol enforced by nothing: a second caller restarting the loop directly would make an
    * inference from the previous loop pass `freshFrame` again the instant the new timer existed.
+   *
+   * A RE-ARMED TIMEOUT, not an interval, because the cadence is a function rather than a constant:
+   * the panel ticks as fast as the runtime it actually got can answer, and that is known only
+   * after the first inference. `setInterval` fixes its period when it is created, so following a
+   * measurement would have meant tearing the loop down and rebuilding it on every change — which
+   * bumps the epoch, and an epoch bump mid-scan discards the inference in flight.
+   *
+   * Re-armed BEFORE the tick runs, so a `stopLoop()` from inside the tick — `scheduleCheck` does
+   * exactly that — clears the timer that was just set instead of being overwritten by it.
    */
-  beginLoop(ms: number, tick: () => void): void {
+  beginLoop(delay: number | (() => number), tick: () => void): void {
     this.stopLoop();
     this.epoch++;
-    this.timer = setInterval(tick, ms);
+    const next = typeof delay === 'function' ? delay : (): number => delay;
+    const arm = (): void => {
+      this.timer = setTimeout(
+        () => {
+          arm();
+          tick();
+        },
+        Math.max(1, next()),
+      );
+    };
+    arm();
   }
 
   /** Supersede everything in flight, stop ticking, and release the camera. */

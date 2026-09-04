@@ -1,9 +1,76 @@
-import type { Detector } from '../src/detector.js';
+import type { Detector, DetectorSource } from '../src/detector.js';
 import { CUBE_VISION, type Invoke, NativeDetector } from './native-detector.js';
 import { WebDetector } from './web-detector.js';
 
 /** Which inference backend a panel ended up on. */
 export type ScanRuntime = 'native' | 'web';
+
+/** A chosen detector, and what a later owner needs to know about it. */
+export interface DetectorChoice {
+  detector: Detector;
+  runtime: ScanRuntime;
+  /** True once this detector's model is loaded — carried with it, so a re-mount does not reload. */
+  modelLoaded: boolean;
+}
+
+/**
+ * THE PAGE'S ONE DETECTOR, parked between `<ai-scan-panel>` mounts.
+ *
+ * A detector owns an InferenceSession — a wasm heap or a GPU device — plus a 1–5 s model load, and
+ * every visit to the scan screen built a fresh one: `stage.innerHTML` is replaced, the old panel
+ * disconnects, a new panel connects, and the old session was never released by anything. The page
+ * accumulated one live session per visit.
+ *
+ * The fix is the `<cubus-cube>` rule, which the app already applies to the WebGL context for
+ * exactly this reason: park one instance between renders rather than rebuilding it. So:
+ *
+ *   - `pickDetector` hands out the parked one when there is one, re-pointed at the new owner's
+ *     `<video>` and model URL (`Detector.retarget`) — a detector still driving the previous
+ *     panel's detached shadow root is a camera nobody can see.
+ *   - `parkDetector` takes it back when the owner disconnects, stopping the CAMERA and keeping the
+ *     MODEL. That is the whole distinction `Detector.stop` and `Detector.dispose` exist to draw.
+ *   - Exactly ONE is kept. While it is lent out the slot is null, so a second panel alive at the
+ *     same time gets a detector of its own rather than fighting over one camera — and that one is
+ *     disposed when it is handed back, because a quiet session leak is worse than a rebuild. This
+ *     is the same rule `<cubus-cube>` states as "a detached, unparked cube releases itself".
+ *   - Nothing is parked automatically. An injected detector (`CameraSession.use`, the test seam)
+ *     belongs to its caller and must never reach a page-wide slot, so the session tracks which of
+ *     the two it holds and only offers the one that came from here.
+ */
+let parked: DetectorChoice | null = null;
+
+/**
+ * Give the page's detector back, or dispose it if the slot is already taken.
+ *
+ * `stop()` and not `dispose()`: the camera is released and the compiled model is kept, which is
+ * the entire point of parking. The only thing parking may cost is a lens left on.
+ */
+export function parkDetector(choice: DetectorChoice): void {
+  choice.detector.stop();
+  if (parked && parked.detector !== choice.detector) {
+    choice.detector.dispose?.();
+    return;
+  }
+  parked = choice;
+}
+
+/** What the page is keeping, or null while it is lent out. Reading it never takes it. */
+export function parkedDetector(): DetectorChoice | null {
+  return parked;
+}
+
+/**
+ * Release the page's parked detector, model and all. The next scan builds a fresh one.
+ *
+ * For a host that genuinely wants the memory back — and for tests, which must not carry one
+ * page's session into the next case.
+ */
+export function disposeParkedDetector(): void {
+  const kept = parked;
+  parked = null;
+  kept?.detector.dispose?.();
+  kept?.detector.stop();
+}
 
 interface TauriGlobal {
   __TAURI__?: { core?: { invoke?: Invoke } };
@@ -46,10 +113,16 @@ function absentCommand(err: unknown): boolean {
  * and the model URL can be set by an attribute after construction, so taking either by value here
  * would capture whatever happened to be true at selection time.
  */
-export async function pickDetector(opts: {
-  video: () => HTMLVideoElement;
-  modelUrl: () => string;
-}): Promise<{ detector: Detector; runtime: ScanRuntime }> {
+export async function pickDetector(opts: DetectorSource): Promise<DetectorChoice> {
+  // The page already has one, and it is not in use: take it, and point it at this owner. The
+  // probe is not repeated either — which runtime this build has cannot change between two mounts
+  // of the same element on the same page.
+  const kept = parked;
+  if (kept) {
+    parked = null;
+    kept.detector.retarget?.(opts);
+    return kept;
+  }
   const invoke = (globalThis as TauriGlobal).__TAURI__?.core?.invoke;
   if (invoke) {
     try {
@@ -59,7 +132,7 @@ export async function pickDetector(opts: {
       // on a native path whose commands then fail one frame at a time. Only the one answer the
       // plugin promises counts as yes.
       if ((await invoke(`${CUBE_VISION}probe`)) === true) {
-        return { detector: new NativeDetector(invoke), runtime: 'native' };
+        return { detector: new NativeDetector(invoke), runtime: 'native', modelLoaded: false };
       }
     } catch (err) {
       // The browser path is what every build has, so falling through is always right. But
@@ -80,5 +153,9 @@ export async function pickDetector(opts: {
       );
     }
   }
-  return { detector: new WebDetector(opts.video, opts.modelUrl), runtime: 'web' };
+  return {
+    detector: new WebDetector(opts.video, opts.modelUrl),
+    runtime: 'web',
+    modelLoaded: false,
+  };
 }

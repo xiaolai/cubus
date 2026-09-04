@@ -118,6 +118,14 @@ export type AiScanResult = ScanResult & {
   /**
    * How many stickers are wrong, as a proven LOWER BOUND — never an overstatement, so "at least N
    * stickers were misread" is always honest. At 1 it is exact, and only then may `suspects` point.
+   *
+   * PRESUMING THE SIX CENTRES WERE READ RIGHT. The bound is proved against the colouring implied
+   * by the centres, because the centres are what name the faces — so a misread CENTRE is not one
+   * wrong sticker, it is a relabelling of every sticker of that colour, and the count reported is
+   * about a cube nobody has. Two swapped centres are the reachable case and they inflate the
+   * count well past their own two (measured, and pinned in misread-decode.test.ts). The decoder
+   * cannot detect it, so this is a limit of the guarantee rather than a bug in it —
+   * dev-docs/misread-decoding.md has the argument.
    */
   misreadCount?: number;
   /** The one side every minimal repair blames, when they agree on one — a hint for what to re-show. */
@@ -152,6 +160,18 @@ const TOP_NEIGHBOUR: Readonly<Record<Face, Face>> = {
  */
 const CONFIRM_TOLERANCE = 2;
 
+/**
+ * Below this a sticker's detector score is reported as too faint to trust.
+ *
+ * The other half of an invariant that spans two files: `MIN_STICKER_CONFIDENCE` (0.25) in
+ * onnx-postprocess sits ABOVE it, and `fitFace` builds no face out of a sticker below that — so a
+ * camera capture can never carry a sticker under this bar, and "a valid cube with low-confidence
+ * stickers" is unreachable rather than merely unlikely. `onnx-postprocess.test.ts` pins the
+ * ordering; `ai-scan-panel` still has a branch for the state, because a threshold is a number
+ * someone can change and the app must say something true if the two ever cross.
+ */
+export const LOW_CONFIDENCE_THRESHOLD = 0.15;
+
 function cubejsRoundTrips(facelets: string): boolean {
   try {
     return Cube.fromString(facelets).asString() === facelets;
@@ -160,15 +180,19 @@ function cubejsRoundTrips(facelets: string): boolean {
   }
 }
 
+/**
+ * A refusal, carrying only what was actually established.
+ *
+ * NO `confidence` AND NO `lowConfidence`. It used to report `confidence: 0` and all 54 indices as
+ * low-confidence, and both were fiction: the detector's per-sticker scores are whatever they
+ * were, and a scan refused because no rotation is solvable — or because two looks disagreed about
+ * a hold — has measured nothing whatever about them. "Never invent data" applies hardest to the
+ * numbers that look most harmless, and a caller reading `confidence` off a refusal was being told
+ * every sticker was unreadable when the real answer is that nobody asked. They are optional on
+ * `ScanResult` so their absence is a fact the type carries rather than a convention.
+ */
 function reject(reason: string, extra: Partial<AiScanResult> = {}): AiScanResult {
-  return {
-    facelets: '',
-    valid: false,
-    confidence: 0,
-    lowConfidence: [...Array(54).keys()],
-    reason,
-    ...extra,
-  };
+  return { facelets: '', valid: false, reason, ...extra };
 }
 
 /**
@@ -413,7 +437,10 @@ function summariseConfidence(
  * to be shown a side, in a mode where the camera is off. The painted layout IS the answer; the only
  * question left is whether it is a legal cube.
  */
-export function assemblePainted(faces: Record<Face, ColorFace>, threshold = 0.15): AiScanResult {
+export function assemblePainted(
+  faces: Record<Face, ColorFace>,
+  threshold = LOW_CONFIDENCE_THRESHOLD,
+): AiScanResult {
   const centreOwner = buildCentreOwner(faces);
   if (!(centreOwner instanceof Map)) return centreOwner;
 
@@ -459,7 +486,7 @@ export function assemblePainted(faces: Record<Face, ColorFace>, threshold = 0.15
  */
 export function assembleColors(
   faces: Record<Face, ColorFace>,
-  threshold = 0.15,
+  threshold = LOW_CONFIDENCE_THRESHOLD,
   confirmed: Partial<Record<Face, ColorFace>> = {},
 ): AiScanResult {
   // Centre colour → face letter. Centres don't move under rotation, so this is fixed. Two faces

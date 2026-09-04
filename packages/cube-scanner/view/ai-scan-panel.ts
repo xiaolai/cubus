@@ -65,6 +65,12 @@ export { createModelRunner, defaultThreadCount, preferredProviders } from './onn
 
 // Re-exported so the panel's public surface is unchanged; the type belongs with the choice.
 export type { ScanRuntime } from './pick-detector.js';
+// The page-level detector park, for the same reason as the three above: this bundle is the app's
+// only door into the scanner package. `disposeParkedDetector` is how a host gives the model's
+// memory back when it knows no scan is coming; `parkedDetector` is how anything can ASK what the
+// page is keeping, which is what makes "two mounts, one InferenceSession" an assertion rather than
+// a hope.
+export { disposeParkedDetector, parkedDetector } from './pick-detector.js';
 
 const GUIDE: Record<Face, { color: string; name: string; swatch: string }> = {
   U: { color: 'WHITE', name: 'Up', swatch: '#f6f7f8' },
@@ -85,18 +91,26 @@ const FRAME_HINT: Record<FitReason, string> = {
   PARTIAL_FACE: ' Get the whole side in the frame.',
   BAD_GEOMETRY: ' Hold it flatter and steadier.',
 };
-// The capture cadence, per runtime. On the web the ~400 ms wasm run dominates, so 200 ms (~5 fps) is
-// as fast as it goes; native inference is ~1.5 ms on the ANE, so a 200 ms tick would waste all that
-// headroom and leave the scan feeling no faster — 60 ms (~16 fps) lets the native speed actually show
-// while staying comfortably inside the camera's frame rate and the ANE's budget.
-const TICK_MS_WEB = 200;
-const TICK_MS_NATIVE = 60;
+// The capture cadence, MEASURED rather than assumed per runtime.
+//
+// There were two constants, 200 ms for "web" and 60 ms for "native", and the 200 was justified by a
+// ~400 ms wasm run that no longer exists: measured on this model, wasm at six threads is 57 ms and a
+// real GPU is 20 ms, so a fixed 200 ms tick had become the bottleneck on the path it was chosen for
+// — and it was chosen for a runtime label rather than for a speed, so a Windows machine with a GPU
+// and a phone on the ANE were told apart by which class built them.
+//
+// The rule instead is "as fast as the run actually comes back, and no faster than the floor". The
+// floor is 60 ms (~16 fps), which is comfortably inside a camera's frame rate and leaves the ANE and
+// the wasm worker idle time; above it, a slow machine paces itself, because asking again while the
+// previous answer is still being computed only queues work the `busy` guard then drops.
+const TICK_FLOOR_MS = 60;
 const STABLE = 3; // identical reads in a row before we auto-capture a face
 // A face must also have held still this long, measured from the FIRST read of the run. Counting
-// reads alone made the stillness bar depend on the tick rate: 3 web reads span 400 ms, but 3
-// native reads span 120 ms — fast enough to capture a cube still being turned into position. Time
-// is what stillness is, so require both. (So the real gate is 4 reads on the web tick and 9 on the
-// native one; the count is the floor, and the clock is what actually decides.)
+// reads alone made the stillness bar depend on the tick rate: 3 fast reads can span 180 ms — fast
+// enough to capture a cube still being turned into position. Time is what stillness is, so require
+// both, and with the tick now following the runtime it is the CLOCK that decides on every machine:
+// at the 60 ms floor the real gate is 9 reads, at a 200 ms run it is 4. The count is only a floor
+// against a runtime that answers implausibly fast.
 const STABLE_MS = 500;
 /**
  * How long a failing tick may stay silent before it becomes an error.
@@ -108,8 +122,13 @@ const STABLE_MS = 500;
  * commented that it was the first kind, so a broken scanner looped forever showing "hold still"
  * and the project's fail-loud rule was quietly suspended for its most important surface.
  *
- * Wall clock rather than a tick count, because the web tick is 200 ms and the native one 60 ms —
- * a count would mean three seconds of patience on one path and one second on the other.
+ * Wall clock rather than a tick count, because the tick follows whatever the runtime measures at —
+ * a count would mean three seconds of patience on one machine and half a second on another.
+ *
+ * MONOTONIC, and read from `performance.now()`. `Date.now()` follows an NTP correction or a manual
+ * clock change, so a step forward of a few seconds declares a healthy scanner dead, and a step
+ * backwards makes a dead one immortal. `Stillness` already measures its own duration this way and
+ * says why; this is the same claim about elapsed time.
  */
 const TICK_FAIL_MS = 3000;
 // The beat between "captured/corrected" and the verdict. Assembly itself is ~5 ms; this exists so
@@ -125,6 +144,58 @@ const PAINTING = 'Painting by hand — tap any sticker and pick its colour.';
 const SLOW_OPEN_MS = 8000;
 const SLOW_OPEN = 'The camera has not opened. Allow camera access for this app, then try again.';
 const PINNED_GONE = 'The camera you chose is unavailable — using the default one.';
+// The model is fetched once and is several megabytes, so a slow connection is a legitimate wait —
+// and an indefinite one is not. `load()` had neither a notice nor a limit, so a fetch that stalled
+// left "Camera ready — loading the model…" on screen for as long as the user was willing to look at
+// it, with a live camera behind it and nothing to press. After SLOW_LOAD_MS say what is happening;
+// after LOAD_TIMEOUT_MS stop waiting and offer the two things that actually help.
+const SLOW_LOAD_MS = 8000;
+const LOAD_TIMEOUT_MS = 60_000;
+// How the scanner names each of the nine positions, for a hint that has to point at one of them.
+// Reading order, matching the capture indices a host draws and a user taps.
+const CELL_NAMES = [
+  'top left',
+  'top middle',
+  'top right',
+  'middle left',
+  'centre',
+  'middle right',
+  'bottom left',
+  'bottom middle',
+  'bottom right',
+];
+
+/**
+ * The four ways a camera refuses, as sentences a child can act on — or null for anything else.
+ *
+ * `getUserMedia` rejects with a DOMException whose NAME is the diagnosis and whose message is
+ * whatever the engine felt like saying: "Permission denied", "The request is not allowed by the
+ * user agent or the platform in the current context", "Could not start video source". The panel
+ * used to show that text verbatim behind "Cannot start:", which tells a beginner nothing they can
+ * do — and the four causes need four different actions, which is exactly what the raw string
+ * conceals. The name is the part that is specified, so the name is what is mapped.
+ *
+ * Anything unrecognised falls through to the raw message on purpose: a wording nobody predicted
+ * must reach a person intact rather than be flattened into a guess.
+ */
+function cameraRefusalWords(name: string | undefined): string | null {
+  switch (name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'The camera is blocked for this app. Allow the camera in your browser or system settings, then press Start.';
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return 'No camera was found. Plug one in or connect one, then press Start. You can also paint the cube by hand.';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return 'Another app is using the camera. Close it — a video call is the usual one — then press Start.';
+    case 'OverconstrainedError':
+    case 'ConstraintNotSatisfiedError':
+      return 'That camera cannot be used for scanning. Press Start to try the default one instead.';
+    default:
+      return null;
+  }
+}
 
 /** Where a scan is. Coarse on purpose: enough for a host to style around, no more. */
 export type ScanPhase =
@@ -184,9 +255,11 @@ export interface ScanProgress {
    */
   confirm: ConfirmRequest | null;
   /**
-   * Which runtime is doing inference — 'native' (the desktop CoreML plugin, ~1.5 ms) or 'web' (the
-   * onnxruntime-web wasm model, ~400 ms), or null before one is chosen. A host can show it so the
-   * fast path is visible rather than guessed at.
+   * Which runtime is doing inference — 'native' (the cube-vision plugin: CoreML on Apple, LiteRT
+   * on Android) or 'web' (onnxruntime-web, on a GPU where there is one and wasm otherwise), or
+   * null before one is chosen. A host can show it so the fast path is visible rather than guessed
+   * at. Deliberately no per-frame timing: that is a property of the machine, and the numbers that
+   * used to be written here outlived the runtimes they were measured on by three regimes.
    */
   runtime: ScanRuntime | null;
   /** The pinned explanation/instruction, or null when nothing needs saying beyond `message`. */
@@ -250,6 +323,9 @@ const HEADLESS_TEMPLATE = `
 <video id="video" playsinline muted></video>
 `;
 
+/** Detectors whose runtime has already been announced — see `announceRuntime`. */
+const announced = new WeakSet<Detector>();
+
 export class AiScanPanel extends HTMLElement {
   private readonly root: ShadowRoot;
   /** Model URL; the app can override before the element renders. */
@@ -281,6 +357,39 @@ export class AiScanPanel extends HTMLElement {
   private readonly cam = new CameraSession();
   /** When the current run of failing ticks began, or null when the last tick completed. */
   private tickFailingSince: number | null = null;
+  /**
+   * When the current run of frameless ticks began, or null when a frame last arrived.
+   *
+   * A SECOND clock, because "the tick threw" and "the tick answered, with no frame" are different
+   * facts and only one of them was watched. A camera that opens and never delivers answers every
+   * tick with `null` — which cleared the failure clock above, on the reasoning that a tick which
+   * got an answer at all is a working scanner. It is not: the panel idled on "Show any side" for
+   * as long as the screen was open, with a live lens and nothing to say. Both clocks route to the
+   * same `tickFail`, whose wording ("the camera opened but no frame could be read") was already
+   * describing this case while being unreachable from it.
+   */
+  private noFrameSince: number | null = null;
+  /** How long the last inference took, so the tick can follow the runtime — see TICK_FLOOR_MS. */
+  private lastInferenceMs = 0;
+  /**
+   * Faces whose rotation is KNOWN to be the canonical one — painted in place, or settled by an
+   * accepted scan (`finishAccepted` rotates the captures and then says so here).
+   *
+   * A camera capture is at whatever rotation the user held the side, and nothing about the capture
+   * itself says which. Two places need that distinction and both were getting it wrong:
+   * hand-painting, which edits stickers by index and therefore cannot edit a face whose index
+   * mapping is unknown; and a re-check after a settle, which was searching 4^6 rotations it had
+   * already solved and asking for confirmations all over again.
+   */
+  private readonly settled = new Set<Face>();
+  /**
+   * What `loop()` was about to say when it found the camera dark, so `start()` can say it once the
+   * lens answers. Without this the instruction was simply lost: `rescanFace` says "Show the ORANGE
+   * side again", a finished scan has released the camera, and the reopen replaced that sentence
+   * with "Opening the camera…" and then the generic idle line — so the one side the scanner was
+   * waiting for was never named.
+   */
+  private pendingOpening: { phase: ScanPhase; words: (string | Node)[] } | null = null;
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   private confirmed: Partial<Record<Face, ColorFace>> = {};
   private awaiting: ConfirmRequest | null = null;
@@ -325,6 +434,13 @@ export class AiScanPanel extends HTMLElement {
 
   disconnectedCallback(): void {
     this.stop();
+    // PARK the detector rather than dropping it on the floor. Every visit to the scan screen
+    // rebuilds this element, and a dropped detector takes its InferenceSession with it — nothing
+    // else holds a reference, so nothing can ever release it, and the page accumulated one live
+    // wasm heap or GPU device per visit plus a 1–5 s model load. `park()` releases the camera and
+    // keeps the model, which is the whole distinction stop() and dispose() exist to draw; see
+    // `pickDetector` for the page-wide slot and why exactly one is kept.
+    this.cam.park();
   }
 
   /**
@@ -452,20 +568,90 @@ export class AiScanPanel extends HTMLElement {
         // module, off the main thread); for the native builds it is the plugin. Either way the
         // panel only waits for load() and reports progress — the wasm-path and worker subtleties
         // live in WebDetector, behind the seam.
-        await detector.load();
+        await this.loadModel(detector, gen);
         this.cam.modelLoaded = true;
         if (!this.cam.current(gen)) return; // stop() already released the camera
+        this.announceRuntime(detector);
       }
-      // A camera reopening mid-flow (after painting, after a done-scan correction) resumes where
+      // The instruction `loop()` could not give because the camera was dark, given now. A camera
+      // reopening mid-flow (after painting, after a done-scan correction) otherwise resumes where
       // the scan was: a pending confirm request keeps its phase and its ask.
-      const phase = this.awaiting ? 'confirm' : 'scanning';
-      const opening = this.awaiting ? this.confirmWords(this.awaiting) : [OPENING];
+      const pending = this.pendingOpening;
+      this.pendingOpening = null;
+      const phase = pending?.phase ?? (this.awaiting ? 'confirm' : 'scanning');
+      const opening =
+        pending?.words ?? (this.awaiting ? this.confirmWords(this.awaiting) : [OPENING]);
       if (fellBack) this.loop(phase, this.tinted('err', PINNED_GONE), ' ', ...opening);
       else this.loop(phase, ...opening);
     } catch (err) {
       this.startFailed(err, gen, startBtn);
     } finally {
       clearTimeout(slowOpen);
+    }
+  }
+
+  /**
+   * Wait for the model, but not forever, and say so while waiting.
+   *
+   * The load is a multi-megabyte fetch plus a compile, so several seconds is normal and a minute
+   * on a bad connection is not a fault. What was wrong is that there was no upper bound at all: a
+   * stalled fetch left "Camera ready — loading the model…" standing for the life of the screen,
+   * with the lens on and no control to press, which is the shape of a hung app rather than of a
+   * slow one.
+   *
+   * The timeout ABANDONS THE WAIT, not the load — `Detector.load` is idempotent and now guards its
+   * own in-flight promise, so a load that eventually finishes is still there for the next Start
+   * rather than being started a second time.
+   */
+  private async loadModel(detector: Detector, gen: number): Promise<void> {
+    // Whether the "taking a while" notice was pinned, so it can be TAKEN DOWN again. A notice
+    // stands until the situation changes, and the situation changing is exactly what a finished
+    // load is — leaving it up means a working scanner explaining that it is still downloading.
+    let waiting = false;
+    const slow = setTimeout(() => {
+      if (!this.cam.current(gen) || this.cam.modelLoaded) return;
+      waiting = true;
+      this.notice = {
+        title: 'The model is taking a while',
+        tone: 'info',
+        body: 'The scanner downloads its model once, and this connection is slow. It will start on its own when the download finishes — or paint the cube by hand instead.',
+      };
+      this.report('loading', 'Still loading the model…');
+    }, SLOW_LOAD_MS);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    try {
+      await Promise.race([
+        detector.load(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            reject(
+              new Error(
+                `the model did not load within ${Math.round(LOAD_TIMEOUT_MS / 1000)} seconds`,
+              ),
+            );
+          }, LOAD_TIMEOUT_MS);
+        }),
+      ]);
+      if (waiting) this.notice = null; // it arrived after all
+    } catch (err) {
+      if (timedOut) {
+        // A REMEDY, not just a diagnosis. `startFailed` puts the underlying message on the status
+        // line and re-offers Start; this is the part that says what to do about it, including the
+        // way forward that needs no model at all.
+        this.notice = {
+          title: 'The model did not load',
+          tone: 'err',
+          body: 'The scanner could not finish downloading its model. Check the connection and press Start to try again — or paint the cube by hand, which needs no model.',
+        };
+      } else if (waiting) {
+        this.notice = null;
+      }
+      throw err;
+    } finally {
+      clearTimeout(slow);
+      clearTimeout(timer);
     }
   }
 
@@ -486,10 +672,18 @@ export class AiScanPanel extends HTMLElement {
       startBtn.hidden = false;
       startBtn.disabled = false;
     }
-    this.report(
-      'error',
-      this.tinted('err', `Cannot start: ${String((err as Error)?.message ?? err)}`),
-    );
+    const raw = String((err as Error)?.message ?? err);
+    const said = cameraRefusalWords((err as Error)?.name);
+    if (said) {
+      // The browser's own message is kept — on the console, where whoever has to fix it will look.
+      // It is the ONLY record of which of several causes it was, and the sentence shown instead is
+      // deliberately not a translation of it.
+      console.warn('[ai-scan-panel] the camera would not open', err);
+      this.notice = { title: 'The camera did not open', tone: 'err', body: said };
+      this.report('error', this.tinted('err', said));
+      return;
+    }
+    this.report('error', this.tinted('err', `Cannot start: ${raw}`));
   }
 
   /**
@@ -511,16 +705,40 @@ export class AiScanPanel extends HTMLElement {
    */
   useDetector(detector: Detector, runtime: ScanRuntime): void {
     this.cam.use(detector, runtime);
-    this.announceRuntime();
   }
 
-  /** Say which runtime won, once, on the console — so "is it on the fast native path?" has an
-   *  answer without a debugger. The same fact rides on every 'scan-progress' event as `runtime`. */
-  private announceRuntime(): void {
+  /**
+   * Say which runtime won, and what it is running on — once per detector, on the console.
+   *
+   * TWO defects in one line. It was called only from `useDetector`, the test seam, so the question
+   * it exists to answer ("is this build on the fast native path, or has it silently demoted itself
+   * to wasm?") had no answer in any production build — the only place it ever printed was a test.
+   * And its text carried three stale numbers: "~400 ms/frame" for a wasm run measured at 57 ms,
+   * and a per-frame figure for the native path that is a claim about one machine's ANE.
+   *
+   * So it prints what is actually KNOWN here: the runtime that was chosen, and the provider list
+   * the loaded runner was created with. No timings — a number that was true on the machine the
+   * comment was written on is worse than no number, because it reads as a measurement of THIS
+   * machine. `ModelRunner.providers` documents the one thing the list does not say: which provider
+   * executed each node, which onnxruntime exposes no way to ask.
+   *
+   * Once per DETECTOR, not per panel: the detector is parked and reused across screen visits, so
+   * per-panel would print the same line on every visit to the scan screen, and per-page would miss
+   * a runner rebuilt on wasm after the GPU was judged too slow.
+   */
+  private announceRuntime(detector: Detector): void {
+    if (announced.has(detector)) return;
+    announced.add(detector);
+    const providers = detector.providers;
+    const on = providers && providers.length > 0 ? ` — providers: ${providers.join(', ')}` : '';
+    // Deliberately NOT spelling the runtime's package name: `vendor-bundles.test.mjs` uses that
+    // exact string as the marker for "onnxruntime got inlined into the panel bundle", which is the
+    // regression that quietly puts inference back on the page's thread. A message of ours carrying
+    // the marker would make that gate pass on any bundle at all.
     const where =
       this.cam.runtime === 'native'
-        ? 'native (CoreML on the ANE, ~1.5 ms/frame)'
-        : 'web (wasm model, ~400 ms/frame)';
+        ? 'native (the cube-vision plugin — CoreML on Apple, LiteRT on Android)'
+        : `web (the browser runtime${on})`;
     console.info(`[cubus] scanner runtime: ${where}`);
   }
 
@@ -533,6 +751,8 @@ export class AiScanPanel extends HTMLElement {
     this.finished = false;
     this.notice = null;
     this.suspects = [];
+    this.settled.clear();
+    this.pendingOpening = null;
     for (const f of FACES) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
     this.buildDots();
   }
@@ -549,6 +769,7 @@ export class AiScanPanel extends HTMLElement {
     // fatal-tick notice offers was a lie: the timestamp survived the restart, so the FIRST failing
     // tick of the new loop was already past TICK_FAIL_MS and stopped it again immediately.
     this.tickFailingSince = null;
+    this.noFrameSince = null;
     const restart = this.maybe<HTMLButtonElement>('restart');
     if (restart) restart.hidden = false;
     // Asking for a side with no camera open is a promise nothing can keep — and it reads exactly
@@ -557,14 +778,21 @@ export class AiScanPanel extends HTMLElement {
     // needs another look. Reopen the camera rather than dead-ending: start() keeps the captures
     // and resumes this loop — including a pending confirm — once the camera answers.
     if (this.cam.device === null) {
+      // CARRY THE WORDS ACROSS THE REOPEN. They were dropped here, so `rescanFace`'s "Show the
+      // ORANGE side again" — the whole point of pressing a centre sticker — was replaced by
+      // "Opening the camera…" and then by the generic idle line, in exactly the case that needs
+      // it: after a finished scan, where the camera has been released.
+      if (opening.length > 0) this.pendingOpening = { phase, words: opening };
       void this.start();
       return;
     }
     this.report(phase, ...(opening.length > 0 ? opening : [OPENING]));
-    // Tick as fast as the chosen runtime can keep up: native inference frees the cadence the wasm run
-    // used to cap. The busy guard in onTick still prevents overlap if a frame ever runs long.
-    const tick = this.cam.runtime === 'native' ? TICK_MS_NATIVE : TICK_MS_WEB;
-    this.cam.beginLoop(tick, () => void this.onTick());
+    // Tick as fast as the runtime actually answers, floored — see TICK_FLOOR_MS. The busy guard in
+    // onTick still prevents overlap if a frame ever runs long.
+    this.cam.beginLoop(
+      () => Math.max(TICK_FLOOR_MS, Math.round(this.lastInferenceMs)),
+      () => void this.onTick(),
+    );
   }
 
   private stopLoop(): void {
@@ -575,11 +803,14 @@ export class AiScanPanel extends HTMLElement {
     if (this.busy || this.cam.device === null || !this.cam.chosen || !this.cam.modelLoaded) return;
     this.busy = true;
     const epoch = this.cam.frameEpoch();
+    const started = performance.now();
     try {
       const output = await this.cam.chosen.next();
       // Reject a stale result: stop()/restart() between grab and here bumps the session epoch, so an
       // in-flight inference can't bleed into a new scan (or land after the loop was stopped).
       if (!this.cam.freshFrame(epoch)) return;
+      // How long this runtime actually takes, which is what the next tick's delay is made of.
+      this.lastInferenceMs = performance.now() - started;
       // A tick that got an answer at all is a working scanner. This used to be cleared only where
       // a BRAND NEW face was filed, so every other outcome — no frame yet, an abstain, a read still
       // settling, a confirm, a side already captured, a finished scan — left the timestamp of some
@@ -592,8 +823,22 @@ export class AiScanPanel extends HTMLElement {
         // stall could satisfy both the count and the duration without the cube having been
         // watched in between.
         this.still.reset();
+        // …and it is not a working scanner either, which is the half that was missing. A camera
+        // that opens and never delivers answers `null` on every tick, and `null` cleared the
+        // failure clock above — so the one failure that needs no exception to happen was the one
+        // failure nothing watched. Its own clock, same limit, same fail-loud exit.
+        const now = performance.now();
+        this.noFrameSince ??= now;
+        if (now - this.noFrameSince >= TICK_FAIL_MS) {
+          this.tickFail(
+            new Error(
+              `the camera has been open for ${Math.round(now - this.noFrameSince)} ms without delivering a frame`,
+            ),
+          );
+        }
         return; // camera opened but no frame yet — try again next tick
       }
+      this.noFrameSince = null;
       const fit = fitFromOutput(output);
       if (!fit.ok) {
         this.still.reset();
@@ -611,7 +856,18 @@ export class AiScanPanel extends HTMLElement {
       const settled = this.still.offer(fit.face.colors);
       this.showPreview(fit.face.colors);
       if (!settled) {
-        this.report(this.awaiting ? 'confirm' : 'scanning', 'Reading a side — hold still…');
+        // WHY it is not settling, when the answer is one sticker. The gate keys on all nine
+        // colours, so a single sticker flickering between red and orange — the detector's known
+        // weak pair — means no run ever completes and this line repeats forever with nothing to
+        // act on. The settle rule is unchanged (a majority vote would let a cube still being
+        // turned settle); what is added is the missing sentence.
+        const flicker = this.still.flickering();
+        this.report(
+          this.awaiting ? 'confirm' : 'scanning',
+          flicker === null
+            ? 'Reading a side — hold still…'
+            : `Reading a side — the ${CELL_NAMES[flicker] ?? 'marked'} sticker keeps changing colour. More light on it, or a steadier hold, will settle it.`,
+        );
         return;
       }
       // A face's CENTRE colour is its identity (centres never move): colour class i ↔ FACES[i].
@@ -627,8 +883,9 @@ export class AiScanPanel extends HTMLElement {
       // error into a scan that had already moved on, or over a panel that is now painting.
       if (!this.cam.freshFrame(epoch)) return;
       // Transient at first, an error if it persists. The distinction is duration, not type: the
-      // camera-not-ready case clears in a tick or two, and nothing else does.
-      const now = Date.now();
+      // camera-not-ready case clears in a tick or two, and nothing else does. `performance.now()`,
+      // because this is a claim about ELAPSED time — see TICK_FAIL_MS.
+      const now = performance.now();
       this.tickFailingSince ??= now;
       if (now - this.tickFailingSince >= TICK_FAIL_MS) {
         this.tickFail(err);
@@ -649,6 +906,8 @@ export class AiScanPanel extends HTMLElement {
   private tickFail(err: unknown): void {
     this.cam.close();
     this.showPreview(null);
+    this.tickFailingSince = null;
+    this.noFrameSince = null;
     const start = this.maybe<HTMLButtonElement>('start');
     if (start) {
       start.hidden = false;
@@ -717,6 +976,9 @@ export class AiScanPanel extends HTMLElement {
           return;
         }
         this.faces[face] = read;
+        // A fresh camera read is at whatever rotation it was held at, so whatever the settle knew
+        // about this side is no longer true of what is stored.
+        this.settled.delete(face);
         this.confirmed = {};
         this.mismatches = 0;
         this.buildDots();
@@ -739,6 +1001,9 @@ export class AiScanPanel extends HTMLElement {
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
   private capture(face: Face, read: ColorFace): void {
     this.faces[face] = read;
+    // The camera cannot see which way up a side was held, so a capture's rotation is unknown until
+    // the assembly solves it. See `settled`.
+    this.settled.delete(face);
     this.still.reset();
     this.buildDots();
     this.flash();
@@ -819,6 +1084,9 @@ export class AiScanPanel extends HTMLElement {
         confidence: Array<number>(9).fill(1),
       };
       this.faces[face] = read;
+      // Painted in place: the user authored it into the canonical net, so its rotation is known
+      // by construction — which is what makes editing it by index meaningful at all.
+      this.settled.add(face);
       this.buildDots();
     } else if (read.colors[index] === colour) {
       return;
@@ -899,11 +1167,49 @@ export class AiScanPanel extends HTMLElement {
     this.notice = null; // whichever mode's guidance was pinned, the mode it spoke to is over
     this.suspects = [];
     if (on) {
+      const dropped = this.dropUnsettledCaptures();
       this.stop(); // stop() clears the device, so a host stops showing a live lens
+      if (dropped.length > 0) {
+        this.notice = {
+          title: 'Those sides need painting too',
+          tone: 'info',
+          body: 'The camera cannot see which way up a side was held, so a side it had not finished checking cannot be edited sticker by sticker. %1 was cleared — paint it the way it sits on your cube.',
+          params: [dropped.map((f) => GUIDE[f].color).join(', ')],
+        };
+      }
       this.report('painting', PAINTING);
       return;
     }
     void this.start();
+  }
+
+  /**
+   * Entering painting: forget every capture whose rotation is still unknown, and say which.
+   *
+   * THE MODE BOUNDARY, stated rather than implied. Painting edits stickers BY INDEX, and
+   * `finishAccepted` already spells out why that needs a settled rotation: "a click on sticker i
+   * must mean index i of what is stored — without this, correcting a side captured 90° off edited
+   * the wrong sticker and turned a good scan invalid." An unsettled camera capture is exactly that
+   * side. Carrying it into painting broke two things at once: the tiles a user taps did not match
+   * the cube in their hand, and `assemblePainted` — which searches no rotations, by design —
+   * judged a 90°-off capture as authored-in-place and reported an INVENTED count. Measured: a
+   * correct cube with one side captured a quarter turn off came back as "At least 5 stickers were
+   * misread", about a cube with nothing wrong with it.
+   *
+   * Only the UNSETTLED ones go. A finished scan settles all six into canonical rotation, so the
+   * common path — scan, then hand-fix one sticker — loses nothing at all.
+   */
+  private dropUnsettledCaptures(): Face[] {
+    const dropped = FACES.filter((f) => this.faces[f] && !this.settled.has(f));
+    if (dropped.length === 0) return dropped;
+    for (const f of dropped) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
+    // Every confirmation answered a question about a reading that no longer exists.
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
+    this.finished = false;
+    this.buildDots();
+    return dropped;
   }
 
   /**
@@ -917,6 +1223,7 @@ export class AiScanPanel extends HTMLElement {
   rescanFace(face: Face): void {
     if (!this.faces[face]) return;
     delete (this.faces as Partial<Record<Face, ColorFace>>)[face];
+    this.settled.delete(face);
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
@@ -1001,6 +1308,18 @@ export class AiScanPanel extends HTMLElement {
   /** Read the six faces (plus any confirmations) into a cube, and act on what comes back. */
   private assemble(): void {
     let result: AiScanResult;
+    // A CUBE WHOSE ROTATIONS ARE ALREADY KNOWN IS NOT A ROTATION PROBLEM.
+    //
+    // Once a scan has been accepted, `finishAccepted` turns every capture into canonical rotation
+    // and records it. A tap that re-opens the verdict was nevertheless re-running the full 4^6
+    // search, which is free to find a SECOND legal reading of the same stickers — so correcting
+    // one sticker on a finished near-solved cube dropped every confirmation the user had already
+    // answered and asked to be shown a side again, for an orientation nobody had lost. Pinning is
+    // what `assemblePainted` is: same validation, same diagnosis, no rotation search.
+    if (this.capturedFaces().length === FACES.length && FACES.every((f) => this.settled.has(f))) {
+      this.finish(assemblePainted(this.faces));
+      return;
+    }
     // A `reread` means a confirmation disagreed with its first capture about colours: adopt the
     // fresh, deliberately-held look as that side's reading and check again. Each adoption pins its
     // side at distance 0, so this settles within six rounds; the cap is a backstop, not a path.
@@ -1111,8 +1430,22 @@ export class AiScanPanel extends HTMLElement {
     this.stopLoop();
     this.showPreview(null);
     this.suspects = result.suspects ?? [];
-    if (result.valid && result.lowConfidence.length === 0) {
-      this.finishAccepted(result);
+    if (result.valid) {
+      if ((result.lowConfidence?.length ?? 0) === 0) {
+        this.finishAccepted(result);
+        return;
+      }
+      // Solvable, but read too faintly to trust. It used to fall through to the refusal path,
+      // which dispatches `scan-invalid` — carrying a detail whose own `valid` field says true. A
+      // host acting on the event name and a host acting on the payload would then disagree about
+      // the same cube, which is a state no host can handle correctly because it is not a state.
+      //
+      // Unreachable today, and kept impossible rather than merely unlikely: `fitFace` builds no
+      // face out of a sticker below MIN_STICKER_CONFIDENCE (0.25) and `assembleColors` calls one
+      // faint below LOW_CONFIDENCE_THRESHOLD (0.15), so the camera cannot produce one and a
+      // painted sticker is confidence 1. `onnx-postprocess.test.ts` pins that ordering. If the two
+      // numbers ever cross, this says something true instead of emitting a contradiction.
+      this.finishUnsure();
       return;
     }
     if (result.confirm && result.reread === undefined) {
@@ -1120,6 +1453,16 @@ export class AiScanPanel extends HTMLElement {
       return;
     }
     this.finishRefused(result);
+  }
+
+  /** Solvable but too faint to trust: no public verdict, a pinned explanation, keep scanning. */
+  private finishUnsure(): void {
+    this.notice = {
+      title: 'Some stickers were unclear',
+      tone: 'err',
+      body: 'The cube reads as solvable, but some stickers were too faint to trust. Show those sides again, or tap stickers to confirm them.',
+    };
+    this.loop('scanning', this.tinted('err', 'Some stickers were too faint to trust.'));
   }
 
   /** Accepted: settle the captures into canonical rotation, release the camera, announce it. */
@@ -1145,6 +1488,9 @@ export class AiScanPanel extends HTMLElement {
     this.awaiting = null;
     this.mismatches = 0;
     this.finished = true;
+    // Every side is now in canonical rotation — that is what the settle above just did — so from
+    // here a tap means the sticker it shows, and a re-check needs no rotation search at all.
+    for (const f of FACES) this.settled.add(f);
     this.notice = null;
     // Release the camera BEFORE reporting, so the 'done' report carries device: null and a host
     // that stays on the scan screen stops showing a live lens over a finished scan.
@@ -1218,22 +1564,22 @@ export class AiScanPanel extends HTMLElement {
         : `Show those sides to the camera again — each one is read fresh.${hold}`,
       params: result.misreadFace ? [GUIDE[result.misreadFace].color] : [],
     });
+    // The transient line has to describe the SAME refusal the notice does. It was one sentence for
+    // every branch — "That isn't a solvable cube yet" — which is simply false for the ambiguous
+    // one: a cube that reads several ways is solvable, and every reading of it is, and the notice
+    // three lines above says so. The two voices contradicting each other about the user's cube is
+    // worse than either being terse.
+    let line = "That isn't a solvable cube yet — fix a sticker, or show a side again.";
     if (camera) {
       this.notice = camera;
-    } else if (result.valid) {
-      // valid but with low-confidence stickers: solvable, read too faintly to trust. fitFace's
-      // 0.25 floor keeps this from the camera path today; a future runtime could reach it.
-      this.notice = {
-        title: 'Some stickers were unclear',
-        tone: 'err',
-        body: 'The cube reads as solvable, but some stickers were too faint to trust. Show those sides again, or tap stickers to confirm them.',
-      };
     } else if (result.ambiguous) {
       this.notice = {
         title: 'Too symmetric to tell',
         tone: 'err',
         body: 'This cube reads the same several ways, and no extra look can split them. Turn any one face a quarter turn, then start the scan over to read the changed cube.',
       };
+      line =
+        'This cube reads the same several ways — turn any one face a quarter turn, then start over.';
     } else {
       // The decoder could not say how much is wrong (it hit its work budget, or the damage is past
       // what it will search). Claim nothing about a count, and ask for the one thing that always
@@ -1246,10 +1592,7 @@ export class AiScanPanel extends HTMLElement {
       };
     }
     // Keep scanning: with all six sides in, a re-shown side replaces its reading (see onTick).
-    this.loop(
-      'scanning',
-      this.tinted('err', "That isn't a solvable cube yet — fix a sticker, or show a side again."),
-    );
+    this.loop('scanning', this.tinted('err', line));
   }
 
   private buildDots(): void {

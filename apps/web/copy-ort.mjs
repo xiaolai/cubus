@@ -89,6 +89,23 @@ export const ORT_ESM = 'ort.webgpu.bundle.min.mjs';
 // multi-megabyte .wasm in vendor/, and vendor/ ships. The comment below already claimed "ONE
 // predicate"; it was two spellings agreeing by hand, which is the same defect with a note on it.
 const OWNED_ASSET = 'ort-wasm[a-z0-9.\\-]*\\.(?:wasm|mjs)';
+
+/**
+ * The second name the SAME loader is published under, for the proxied wasm module instance.
+ *
+ * onnxruntime reads `env.wasm.proxy` once, when its backend initialises, so the proxied and direct
+ * modes cannot share one module instance — `view/onnx-runtime.ts` explains the "worker not ready"
+ * failure that costs. It gets that second identity from a query string (`?cubus-runtime=proxied`),
+ * which every http origin serves and which `apps/web/serve.mjs` is tested against.
+ *
+ * A Tauri asset protocol is not an http origin. On Windows, Linux and Android the app is served by
+ * a custom protocol handler, wasm is the ONLY inference path there, and a handler that resolves a
+ * request by its path alone answers 404 for a name it has not seen — which is not a slow scanner,
+ * it is a scanner whose model never loads. A second FILE cannot be misread by any protocol, so one
+ * is published beside the first, byte-identical and from the same source so they cannot drift.
+ * `createModelRunner` tries the query form first and falls back to this.
+ */
+export const ORT_PROXIED = 'ort.proxied.mjs';
 /** Every asset the loader names, anywhere in its text. */
 const ownedAssetsIn = (text) => [...new Set([...text.matchAll(new RegExp(OWNED_ASSET, 'g'))].map((m) => m[0]))];
 /** Is this filename one of ours? Anchored, so it matches a whole name and not a substring. */
@@ -151,7 +168,14 @@ export function publishRuntime({ src, dest, ortEsm = ORT_ESM } = { src: SRC, des
   // touched until all of them have succeeded.
   const staged = [];
   try {
-    for (const [from, to] of [...wanted.map((f) => [join(src, f), f]), [join(src, ortEsm), 'ort.mjs']]) {
+    for (const [from, to] of [
+      ...wanted.map((f) => [join(src, f), f]),
+      [join(src, ortEsm), 'ort.mjs'],
+      // The same bytes under the proxied module's own name — see ORT_PROXIED. Staged with the
+      // rest, so the pair either both land or neither does: a vendor/ holding one of the two is a
+      // scanner that works on one proxy mode and not the other, which is worse than a failed copy.
+      [join(src, ortEsm), ORT_PROXIED],
+    ]) {
       const at = join(dest, `.tmp-${process.pid}-${to}`);
       copyFileSync(from, at);
       staged.push([at, join(dest, to)]);
@@ -177,7 +201,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     const wanted = publishRuntime({ src: SRC, dest: DEST });
     console.log(
-      `copied ${wanted.length} onnxruntime-web runtime asset(s) (${wanted.join(', ')}) + ort.mjs into web/vendor/`,
+      `copied ${wanted.length} onnxruntime-web runtime asset(s) (${wanted.join(', ')}) + ort.mjs + ${ORT_PROXIED} into web/vendor/`,
     );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));

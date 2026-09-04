@@ -4,7 +4,13 @@
 // a heavy wasm runtime, and the whole path is exercised in tests with a fake `run`.
 
 import type { ModelOutput } from './detector.js';
-import { type FitResult, decodeDetections, fitFace, nms } from './onnx-postprocess.js';
+import {
+  type FitResult,
+  MIN_STICKER_CONFIDENCE,
+  decodeDetections,
+  fitFace,
+  nms,
+} from './onnx-postprocess.js';
 import type { Frame } from './types.js';
 
 export const IMG_SIZE = 640;
@@ -73,6 +79,9 @@ export const DETECT_ROWS = 4 + NUM_CLASSES;
 /** The injected model call: input CHW tensor → flat output tensor + its anchor count. */
 export type RunModel = (input: Float32Array, imgsz: number) => Promise<ModelOutput>;
 
+/** Re-exported beside its two consumers: `fitFromOutput` defaults both thresholds to it. */
+export { MIN_STICKER_CONFIDENCE } from './onnx-postprocess.js';
+
 export interface DetectOptions {
   numClasses?: number;
   confThreshold?: number;
@@ -89,10 +98,31 @@ export interface DetectOptions {
 export function fitFromOutput(output: ModelOutput, opts: DetectOptions = {}): FitResult {
   const {
     numClasses = NUM_CLASSES,
-    confThreshold = 0.25,
+    confThreshold = MIN_STICKER_CONFIDENCE,
     iouThreshold = 0.45,
-    minConf = 0.25,
+    minConf = MIN_STICKER_CONFIDENCE,
   } = opts;
+  // THE ROW COUNT, at the seam both runtimes pass through.
+  //
+  // `decodeDetections` reads four box coordinates and then one score per class at FIXED offsets
+  // into this tensor, so a head with a different row count is a different model decoded against
+  // stale offsets — and the result is not an error anywhere downstream, just a cube read off the
+  // wrong axis. The browser runtime has checked this since 515002d, inside `validatedRun`; the
+  // native plugin decoded `rows` out of its own header and discarded it, so the one path that
+  // crosses a bridge was the one path with no check. Asserting here covers both, and covers any
+  // runtime added later for free.
+  const expected = 4 + numClasses;
+  if (output.rows !== expected) {
+    // Rows are the SMALLER axis by orders of magnitude in a real detect head, so a row count at or
+    // above the anchor count names the likeliest cause rather than leaving it to be guessed at.
+    const why =
+      output.rows >= output.anchors
+        ? ` — ${output.rows} rows against ${output.anchors} anchors is the transpose of a detect head`
+        : '';
+    throw new Error(
+      `model output has ${output.rows} rows, not the ${expected} a ${numClasses}-class detect head produces${why}`,
+    );
+  }
   const dets = nms(
     decodeDetections(output.data, numClasses, output.anchors, confThreshold),
     iouThreshold,

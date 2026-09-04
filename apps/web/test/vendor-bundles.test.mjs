@@ -49,23 +49,40 @@ const BUNDLES = [
     // The panel pulls the scanner core in with it, so an edit to any of these must be rebuilt.
     // camera.ts is the one that proved it: a fix landed there and the committed bundle kept the
     // pre-fix code, with nothing red, because only cubus-cube.js was guarded.
+    //
+    // EVERY FILE THE BUNDLE CONTAINS, not the ones somebody remembered. `esbuild --metafile` says
+    // the panel bundle is built from fourteen sources plus cubejs; this list named eight of them,
+    // so seven files could be edited and left un-rebuilt with nothing red — including
+    // misread-decode.ts, which decides what the app is allowed to CLAIM about a bad scan, and
+    // onnx-postprocess.ts, which decides whether a frame is a face at all. detector.ts is the
+    // fifteenth: type-only, so nothing of it survives compilation, and listed anyway because it is
+    // the seam both implementations answer to and a reader looking for the set should find it here.
     sources: [
       '../../../packages/cube-scanner/view/ai-scan-panel.ts',
-      '../../../packages/cube-scanner/src/camera.ts',
-      '../../../packages/cube-scanner/src/ai-assemble.ts',
-      '../../../packages/cube-scanner/src/facelet-cube.ts',
+      '../../../packages/cube-scanner/view/camera-session.ts',
       '../../../packages/cube-scanner/view/onnx-runtime.ts',
+      '../../../packages/cube-scanner/view/pick-detector.ts',
+      '../../../packages/cube-scanner/view/stillness.ts',
       // The Detector seam and both implementations: the panel drives capture + inference through
       // these now, so an edit to any must be rebuilt into the bundle the app loads. native-detector
       // is dormant in the browser (it needs __TAURI__) but is bundled, so it is guarded too.
       '../../../packages/cube-scanner/src/detector.ts',
       '../../../packages/cube-scanner/view/web-detector.ts',
       '../../../packages/cube-scanner/view/native-detector.ts',
+      '../../../packages/cube-scanner/src/ai-assemble.ts',
+      '../../../packages/cube-scanner/src/camera.ts',
+      '../../../packages/cube-scanner/src/facelet-cube.ts',
+      '../../../packages/cube-scanner/src/misread-decode.ts',
+      '../../../packages/cube-scanner/src/onnx-detect.ts',
+      '../../../packages/cube-scanner/src/onnx-postprocess.ts',
+      '../../../packages/cube-scanner/src/types.ts',
     ],
     // Exported from the package entry and used by its tests, but never by the panel — so esbuild
     // drops them and their absence is correct, not stale. Listed rather than silently ignored: if
     // the panel ever starts using one, delete it here and the guard covers it again.
-    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets'],
+    // `detectFace` is the composed preprocess→run→fit convenience the package entry offers and the
+    // tests exercise; the panel drives the two halves through a `Detector`, so esbuild drops it.
+    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets', 'detectFace'],
   },
   {
     // The protocol layer for every smart cube: an unpublished git dependency, pinned by commit
@@ -314,7 +331,13 @@ test('copy-ort publishes atomically and prunes what the loader no longer names',
     'ort-wasm-simd-threaded.asyncify.mjs',
     'ort-wasm-simd-threaded.asyncify.wasm',
     'ort.mjs',
-  ], 'the stale variant must be pruned, the loader published as ort.mjs, and foreign files left alone');
+    // The SAME loader under a second name, for the proxied wasm module instance. onnxruntime reads
+    // env.wasm.proxy once per module, so the two modes need two module identities; the query form
+    // (?cubus-runtime=proxied) is what an http origin gives, and a Tauri asset protocol that
+    // resolves by path alone has never been shown to. A second file cannot be misread by any
+    // protocol, and both come from one source here so they cannot drift.
+    'ort.proxied.mjs',
+  ], 'the stale variant must be pruned, both loader names published, and foreign files left alone');
   assert.equal(readFileSync(join(dest, 'ort-wasm-simd-threaded.asyncify.wasm'), 'utf8'), 'NEW-WASM');
   // NO STAGING LEFTOVERS. The temp files are how the publish is made atomic; one surviving a
   // successful run would ship in vendor/, which is the cost of that safety being paid for nothing.
@@ -411,7 +434,7 @@ test('`pnpm test` provisions the onnxruntime files that tests read', () => {
 
   // And the artifacts themselves, with the command to fix it — because the ENOENT this replaces
   // named a path and no remedy.
-  for (const f of ['ort.mjs', 'ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm']) {
+  for (const f of ['ort.mjs', 'ort.proxied.mjs', 'ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm']) {
     assert.ok(existsSync(new URL(`../vendor/${f}`, import.meta.url)),
       `vendor/${f} is missing — run \`pnpm --filter cubus-web copy-ort\``);
   }
