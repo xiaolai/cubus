@@ -86,17 +86,21 @@ after(async () => {
 });
 
 /** Home with the developer die showing — the button the report was about. A desktop landscape
- *  window, the shape the layout contract's own fixture table calls the desktop reference. */
-async function openHome() {
+ *  window, the shape the layout contract's own fixture table calls the desktop reference.
+ *
+ *  `solveTier` is a parameter because one test here needs the answer to take REAL TIME: the
+ *  default rung is met in single-digit milliseconds, which resolves inside one frame and hides
+ *  every intermediate state a frame sampler exists to catch. */
+async function openHome({ solveTier = 'twenty' } = {}) {
   const context = await browser.newContext({ viewport: { width: 840, height: 682 } });
   const page = await context.newPage();
   pace(page);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e));
-  await page.addInitScript(() => {
+  await page.addInitScript((tier) => {
     localStorage.setItem('cubusSettings', JSON.stringify({
       theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: [],
-      navDefaults: 99, devRandCube: true, language: '', dragRotate: false,
+      navDefaults: 99, devRandCube: true, language: '', dragRotate: false, solveTier: tier,
     }));
     // Installed before the app runs, so nothing escapes the count.
     window.__gl = 0;
@@ -114,7 +118,7 @@ async function openHome() {
       if (type !== 'cubus-step' || typeof fn !== 'function') return addEventListener.call(this, type, fn, opts);
       return addEventListener.call(this, type, (...a) => { window.__steps += 1; return fn(...a); }, opts);
     };
-  });
+  }, solveTier);
   await page.goto(`${BASE}/#/home`);
   await page.waitForSelector('#randCube');
   // The die does nothing until the solver's tables are built, and boot loads them in the
@@ -333,6 +337,109 @@ test('no frame is ever presented with the solution card empty', async () => {
       const wrongCubes = frames.filter((f) => f.cubes !== 1);
       assert.deepEqual(wrongCubes, [], 'a composited frame had no cube, or two');
     }
+    assert.deepEqual(errors.map(String), [], 'the page threw');
+  } finally {
+    await context.close();
+  }
+});
+
+test('the renderer is never told to draw a SOLVED cube while the subject is a scrambled one', async () => {
+  // The frame the initSolver removal could have created, and the reason `newCube` changed with it
+  // (2026-09-05, dev-docs/deferred-plans-2026-09-05.md §1).
+  //
+  // The setup alg — the path the twin animates from solved to the scanned arrangement — used to be
+  // a Kociemba search `newCube()` could force on THIS thread, so "the screen is walking" and "the
+  // alg is in hand" were the same instant. They are not any more: the alg is the inverse of the
+  // pool's answer, so it arrives WITH the walk. `scramble=""` in the meantime is the renderer's
+  // instruction to draw a solved cube and animate nothing — a solved cube beside a scrambled walk,
+  // the exact class the die invariant forbids ("the die solves before it swaps", AGENTS.md).
+  //
+  // MEASURED AT THE INSTRUCTION, NOT AT THE FRAME, and that distinction is the whole reason this
+  // test is written this way. A frame sampler cannot see it: `beginWalk()` runs synchronously at
+  // the top of loadWalk, in the same task as the mount, and it clears `scramble` and sets
+  // `facelets` before any frame is composited — so the wrong instruction is issued, obeyed by a
+  // renderer that draws on `connectedCallback`, and then overwritten inside one frame. That is the
+  // same accident AGENTS.md already records for the ghost attributes: "it never reached the screen
+  // only because the element's own animation frame happened to run later in the same frame as the
+  // mount, which is the engine's ordering to change and nothing tested it." Patching
+  // `setAttribute` records what the app ASKED for, attached or detached, whatever the engine then
+  // chooses to do about it. (The composited frames are checked too, because that is the claim a
+  // person experiences — but on its own it would pass against code with the guard removed.)
+  //
+  // Driven through `state.cube` because that is what a reading does: the die adopts a rolled cube
+  // that already CARRIES its alg (takeDerivation), so it can never exercise the gap. The last
+  // claim is what fails against the OLD code — the search that filled that gap ran here.
+  const { page, context, errors } = await openHome({ solveTier: 'shortest' });
+  try {
+    const scrambled = await page.evaluate(`(async () => {
+      const Cube = (await import('/vendor/cubejs.js')).default;
+      const { state } = await import('/lib/app.js');
+      const c = new Cube();
+      c.move("R U R' U' F2 D L2 B' R2 U2");
+      window.__state = state;
+      window.__searches = 0;
+      const real = Cube.prototype.solve;
+      Cube.prototype.solve = function (...a) { window.__searches += 1; return real.apply(this, a); };
+      return c.asString();
+    })()`);
+
+    // Every instruction the app gives a <cubus-cube> about WHAT to draw, with the subject that was
+    // current when it gave it. Recorded from here on, so the solved cube this app booted on — for
+    // which `facelets` = SOLVED is simply the truth — is not in the sample.
+    await page.evaluate(`(() => {
+      window.__told = [];
+      const real = Element.prototype.setAttribute;
+      Element.prototype.setAttribute = function (name, value) {
+        if (this.tagName === 'CUBUS-CUBE' && (name === 'facelets' || name === 'scramble')) {
+          window.__told.push({ name, value, subject: window.__state.cube.facelets });
+        }
+        return real.call(this, name, value);
+      };
+      // The composited frames as well: same rAF discipline as SAMPLER above.
+      window.__seen = [];
+      const t0 = performance.now();
+      const snap = () => {
+        const el = document.querySelector('#viewCube cubus-cube');
+        window.__seen.push({
+          t: +(performance.now() - t0).toFixed(1),
+          subject: window.__state.cube.facelets,
+          drawn: el ? el.getAttribute('facelets') : null,
+          scramble: el ? el.getAttribute('scramble') : null,
+        });
+        if (performance.now() - t0 < 4000) requestAnimationFrame(snap);
+      };
+      requestAnimationFrame(snap);
+    })()`);
+    await page.evaluate(`(async () => {
+      const { state } = await import('/lib/app.js');
+      Object.assign(state.cube, {
+        facelets: ${JSON.stringify(scrambled)},
+        derived: false, unsolvable: false, setupAlg: '', solution: '', moves: [],
+        stepFacelets: [], solveResult: null, crossChecked: false,
+        isPhysical: false, source: 'generated', trusted: false,
+      });
+      window.cubusGo('home');
+    })()`);
+    await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null);
+    await page.waitForTimeout(600);
+
+    const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+    const told = await page.evaluate(() => window.__told);
+    assert.ok(told.length > 0, 'the renderer was never told anything — this probe stopped watching what it claims to watch');
+    // An empty `scramble` draws a solved cube; `facelets` = SOLVED says so outright. Either is a
+    // lie while the subject is scrambled.
+    const lies = told.filter((a) => a.subject !== SOLVED
+      && ((a.name === 'scramble' && a.value === '') || (a.name === 'facelets' && a.value === SOLVED)));
+    assert.deepEqual(lies, [], 'the renderer was told to draw a solved cube while the subject was scrambled');
+
+    const seen = await page.evaluate(() => window.__seen);
+    assert.ok(seen.length > 8, `only ${seen.length} frames sampled — the change of subject was not observed`);
+    const lying = seen.filter((f) => f.subject !== SOLVED && (f.drawn === SOLVED || f.scramble === ''));
+    assert.deepEqual(lying, [], 'a composited frame drew a solved cube while the subject was scrambled');
+
+    const searched = await page.evaluate(() => window.__searches);
+    assert.equal(searched, 0,
+      `taking a new subject cost ${searched} Kociemba search(es) on the UI thread — the setup alg is the inverse of the pool's answer, not a search of its own`);
     assert.deepEqual(errors.map(String), [], 'the page threw');
   } finally {
     await context.close();
