@@ -85,6 +85,57 @@ describe('preferredProviders', () => {
     });
   });
 
+  it('refuses an adapter the browser itself calls a fallback', async () => {
+    // The regression this exists for, measured on the shipped code with one page and this model:
+    // a real GPU runs it in 20 ms, 6-thread wasm in 57 ms, and Chromium's SwiftShader in 6184 ms
+    // with an 86-SECOND model load. `requestAdapter()` hands that out unasked wherever the real
+    // GPU is blocklisted, its driver is broken, or the app runs in a VM or over remote desktop —
+    // so accepting any non-null adapter moved those machines from the wasm path to one a hundred
+    // times slower, which is what a scanner that has stopped working looks like.
+    for (const adapter of [
+      { isFallbackAdapter: true }, // where the flag sits in the shipped Chromium
+      { info: { isFallbackAdapter: true } }, // where the current spec moved it
+    ]) {
+      await withGpu({ requestAdapter: async () => adapter }, async () => {
+        expect(await preferredProviders()).toEqual(['wasm']);
+      });
+    }
+  });
+
+  it('refuses a CPU rasteriser that does not set the flag', async () => {
+    // WARP in particular does not always report itself as a fallback, and which FIELD carries the
+    // name differs by browser — Chromium puts SwiftShader in `architecture`, Mesa puts lavapipe in
+    // `vendor`, Windows puts its Basic Render Driver in `description`. All three are checked, and
+    // none of them is load-bearing alone: `createModelRunner` also times the provider it chose.
+    const rasterisers = [
+      { architecture: 'swiftshader' },
+      { vendor: 'mesa', architecture: 'llvmpipe' },
+      { description: 'Microsoft Basic Render Driver' },
+      { description: 'WARP software adapter' },
+    ];
+    for (const info of rasterisers) {
+      await withGpu({ requestAdapter: async () => ({ info }) }, async () => {
+        expect(await preferredProviders()).toEqual(['wasm']);
+      });
+    }
+  });
+
+  it('still takes a real GPU that describes itself', async () => {
+    // The other half of the rule above: a name check that rejected anything it did not recognise
+    // would cost every real GPU the fast path. Only the known rasterisers are refused.
+    await withGpu(
+      {
+        requestAdapter: async () => ({
+          isFallbackAdapter: false,
+          info: { vendor: 'apple', architecture: 'metal-3', description: '' },
+        }),
+      },
+      async () => {
+        expect(await preferredProviders()).toEqual(['webgpu', 'wasm']);
+      },
+    );
+  });
+
   it('treats a throwing requestAdapter as no GPU, not as a failure to start', async () => {
     // A refusal is still an answer. Letting this reject would take the scanner down on a browser
     // that merely dislikes the question.
