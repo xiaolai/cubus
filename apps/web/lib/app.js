@@ -23,9 +23,14 @@ import { makeRouter } from './router.js';
 // The smart-cube strands, recovered from v0 (2026-08-27): the transport seam (Web Bluetooth in a
 // browser, native BLE events under Tauri), one durable record per cube, and the trust model that
 // keeps "connected" from standing in for "known".
-import { connectCube } from './cube-session.js';
-import { MAX_LABEL, cubeLabel, forgetCube, listCubes, normaliseMac, parseRegistry, rememberCube, rememberLast, renameCube } from './cube-registry.js';
+import { VERDICT, connectCube } from './cube-session.js';
+import { MAX_LABEL, NAME_PREFIX, cubeLabel, forgetCube, listCubes, normaliseIdentity, normaliseMac, parseRegistry, rememberCube, rememberLast, renameCube } from './cube-registry.js';
 import { applyOffset, deriveOffset, isIdentity } from './cube-trust.js';
+// What the host can actually reach a radio with. Imported rather than re-derived: the list of
+// platforms whose native BLE is not yet proved on a device is one line in one file by design
+// ("THE FLIP IS THIS LINE"), and a second copy here would let the app offer Pair on a platform
+// that file had already refused.
+import { NATIVE_BLE_UNSUPPORTED, forgetLibraryMac } from './ble-bridge.js';
 // Reconnecting a known cube: the readings that choose the picture and the words on reconnect, and
 // the two-adjacent-side camera check that supports the user's answer. Never the trust — only the
 // user's answer grants that (dev-docs/smart-cube-ux-prd.md, "Reconnecting a known cube").
@@ -33,7 +38,7 @@ import { classifyReconnect, confirmCheck } from './cube-reconnect.js';
 // Translation is wired at the render choke points (nav labels, window titles, the scan aside,
 // Settings) and is an identity function until a catalog registers — see dev-docs/i18n.md for the
 // convention and for the surfaces still to be converted.
-import { t, initLocale } from './i18n.js';
+import { t, initLocale, locale, plural } from './i18n.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 /** The app's version — written HERE and nowhere else by hand. The About card renders it, and a
@@ -42,8 +47,10 @@ const $ = (sel, root = document) => root.querySelector(sel);
  * About card spent months claiming 0.4.2 over manifests that all said 0.1.0. Exported for that
  * test, not as API. */
 export const VERSION = '0.2.6';
+/** A cube with nothing wrong with it: the solved state, and the one search that costs only the
+ *  tables. There used to be a second copy of this string under the name SOLVED_FACELETS, which is
+ *  how two identical 54-character literals come to disagree. */
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
-const PALETTE_ATTR = { muted: 'muted', classic: 'classic', colorsafe: 'colorsafe' };
 /** Escape text destined for an innerHTML template. Scramble strings, solve times and anything
  * else out of localStorage are untrusted input — storage is writable by anything on the origin —
  * and must never be parsed as markup. Screens that can use textContent do; this is for the ones
@@ -165,6 +172,39 @@ const THEMES = ['auto', 'white', 'cream', 'night'];
   if (mapped !== settings.theme) { settings.theme = mapped; save('cubusSettings', settings); }
 }
 
+/** The cube palettes, as stored — and the same three keys `NET_COLORS` and the renderer's own
+ *  PALETTES use. Validated at load for the same reason the theme is: localStorage is untrusted
+ *  input, and an unknown value here was not a cosmetic fallback but a crash. `NET_COLORS[p]`
+ *  returned undefined at three sites with no `||`, so Trainer, Drill and the Settings swatch
+ *  threw on the first property read and left the previous screen's DOM under the new title
+ *  (found by audit, 2026-09-04). Repaired ONCE, here, and saved — so a hand-edited value is
+ *  corrected rather than re-read on every render — with the `||` kept at every read as the
+ *  belt: this validation is what makes them unreachable, not what replaces them. */
+const PALETTES = ['muted', 'classic', 'colorsafe'];
+/** Every stored field whose value STEERS something, checked once, here.
+ *
+ *  The palette was the one that crashed, but it was not the only one that could: an unknown
+ *  `solveTier` reaches `tierByName` inside the solver, which throws by contract; a non-string
+ *  `language` reached `.toLowerCase()` in initLocale and took the whole of boot() with it, so the
+ *  app came up with a blank stage; and a non-numeric `navDefaults` made the one-time nav
+ *  migration silently never apply. Each is the same defect — a value the app's own writes cannot
+ *  produce, trusted because it was in storage — so each is repaired the same way and at the same
+ *  moment, rather than being caught at whichever call site happens to reach it first. */
+const repairs = [
+  [() => PALETTES.includes(settings.palette), () => { settings.palette = 'muted'; }],
+  [() => TIERS.some((tier) => tier.name === settings.solveTier), () => { settings.solveTier = 'twenty'; }],
+  [() => typeof settings.language === 'string', () => { settings.language = ''; }],
+  [() => typeof settings.cameraId === 'string', () => { settings.cameraId = ''; }],
+  [() => Number.isFinite(settings.navDefaults), () => { settings.navDefaults = 0; }],
+];
+{
+  let repaired = false;
+  for (const [ok, fix] of repairs) if (!ok()) { fix(); repaired = true; }
+  // Written back, so a hand-edited value is corrected once rather than re-read and re-repaired on
+  // every launch — the theme migration's precedent.
+  if (repaired) save('cubusSettings', settings);
+}
+
 /** Is the Advanced section revealed? Deliberately NOT part of `settings`, so it is not persisted:
  * a section you reach with an undocumented chord should start closed every time, not stay open
  * forever because you once looked at it. What it CONTROLS (navHidden) is a real preference and is
@@ -226,6 +266,10 @@ const state = {
   anchored: false,
   cube: {
     facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [], solveResult: null,
+    // Has the Kociemba derivation been run for these facelets? Declared here rather than
+    // appearing on first write, so the shape of `state.cube` is readable in one place — it was
+    // set by ingestFacelets and read by deriveCube and existed in neither declaration.
+    derived: false,
     // Has `solution` been checked by the implementation that did NOT produce it? A solution
     // reaches this state two ways — searched for by the two-phase worker, or inverted from a
     // setup alg that worker already searched for — and only one of them has been cross-checked
@@ -364,7 +408,13 @@ async function loadSolver() {
         ),
       }).then((index) => { challenges = index; });
       return true;
-    } catch {
+    } catch (err) {
+      // Loud. This was an empty catch, and its silence was the whole defect: the die became a
+      // no-op, `loadWalk` blamed the CUBE ("could not work it out") for a failure of the APP, and
+      // the Timer sat on "solver loading…" forever behind a retry that could never fire. A
+      // console line is the least a developer needs; the screens now say the other half in words
+      // a user can act on (found by audit, 2026-09-04).
+      console.error('the solver did not load — solving, scrambles and the die are unavailable', err);
       solverLoading = null;
       return false;
     }
@@ -481,8 +531,6 @@ const solverWorker = () => (solveClient ??= (() => {
   });
 })());
 
-/** A cube with nothing wrong with it — the one search that costs only the tables. */
-const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 let solverWarmed = false;
 /**
  * Build the pool's pruning tables before a user is waiting on them.
@@ -508,7 +556,7 @@ function warmSolver() {
   solverWarmed = true;
   try {
     void solverWorker()
-      .solve(SOLVED_FACELETS, { solLen: LOOSEST_BOUND, probeMax: 1000 * VIEW_COUNT })
+      .solve(SOLVED, { solLen: LOOSEST_BOUND, probeMax: 1000 * VIEW_COUNT })
       .catch(() => {});
   } catch {
     // A client that cannot even be constructed is the real solve's problem to report, loudly,
@@ -556,8 +604,18 @@ function finishSolve(c, alg) {
  *
  * `onImprovement` is called with every strictly shorter answer, so a screen can show 21 becoming
  * 20 becoming 19 instead of a spinner. The promise resolves with the final one.
+ *
+ * `signal` stops a search whose subject has been replaced. A cancelled search is SUPERSEDED, not
+ * failed: it throws an AbortError, which callers recognise and say nothing about — the walk that
+ * replaced it is the one on screen, and an error message about the cube it abandoned would be
+ * about a cube nobody is looking at. `onProgress` is the engine's "still going", forwarded.
  */
-async function solve({ onImprovement } = {}) {
+async function solve({ onImprovement, onProgress, signal } = {}) {
+  /** The one shape a superseded search reports with. `AbortError` rather than a sentinel value
+   *  because every caller already has a catch, and a sentinel returned through one is a value
+   *  that gets committed by whoever forgets to check it. */
+  const aborted = () => Object.assign(new Error('solve: superseded'), { name: 'AbortError' });
+  if (signal?.aborted) throw aborted();
   const c = state.cube;
   // If a state arrived before the solver was ready, its setup alg is stale — recompute now.
   if (solverReady && c.facelets !== SOLVED && !c.setupAlg) deriveCube();
@@ -592,10 +650,19 @@ async function solve({ onImprovement } = {}) {
   for await (const step of refine(searched, {
     solve: (facelets, bounds) => client.solve(facelets, bounds),
     tier: settings.solveTier,
+    signal,
+    onProgress,
   })) {
     result = step;
+    // A yield that arrives WITH the abort is real work and refine reports it, but it describes a
+    // cube this screen has already replaced. Nothing is shown for it.
+    if (signal?.aborted) throw aborted();
     onImprovement?.(step);
   }
+  // Two ways to come back with nothing: cancelled before the first answer (refine yields nothing
+  // at all), or cancelled between yields. Both are superseded, and neither may reach
+  // `finishSolve` — `result.alg` on null is a TypeError dressed as a solver failure.
+  if (signal?.aborted || result === null) throw aborted();
   if (c.facelets !== searched) {
     throw new Error('solve: the cube changed mid-search — this answer is about the previous one');
   }
@@ -650,9 +717,28 @@ function reuseCube() {
   return el;
 }
 
+/** What the 3D cube is SHOWING, in words. A canvas is nothing to a screen reader — the element
+ *  had no role and no name at all, so the largest thing on most screens was silent. The label
+ *  names the state rather than the picture, because the state is the information. */
+function cubeLabelWords() {
+  const c = state.cube;
+  if (c.facelets === SOLVED) return t('A solved cube');
+  const who = c.isPhysical ? t('Your cube') : t('A scrambled cube');
+  return c.moves.length
+    ? `${who} — ${plural(c.moves.length, { one: '%1 move from solved', other: '%1 moves from solved' })}`
+    : who;
+}
+
 function newCube({ animate = false } = {}) {
   const el = reuseCube();
-  el.setAttribute('palette', PALETTE_ATTR[settings.palette] || 'muted');
+  // A drawing, with a description. `role="img"` is what makes the label be READ rather than the
+  // element being walked into as a container of nothing.
+  el.setAttribute('role', 'img');
+  el.setAttribute('aria-label', cubeLabelWords());
+  // The stored key IS the renderer's attribute value — validated at load, so there is nothing
+  // left to map. There used to be a PALETTE_ATTR identity map here, which read as a translation
+  // between two vocabularies that have always been the same one.
+  el.setAttribute('palette', settings.palette);
   // Off by default: every cube in the app is set up at a chosen angle (the ghost faces depend on
   // it), and a stray drag on a touch screen or a trackpad swung it away with no way back.
   el.setAttribute('orbit', settings.dragRotate ? 'free' : 'locked');
@@ -694,6 +780,75 @@ function applyTheme() {
   else document.documentElement.setAttribute('data-theme', settings.theme);
 }
 
+/**
+ * Keep the screen awake while the app is being LOOKED at rather than touched.
+ *
+ * Two screens earn it and no others: the scan, where the user is holding a cube up to a camera
+ * with both hands, and a walk in progress, where they are turning a cube and reading the next
+ * move. On a phone both are minutes of no input at all, and the display sleeping mid-solve is
+ * the one interruption this audience cannot recover from gracefully — they put the cube down.
+ *
+ * A capability seam both builds satisfy, in the sense AGENTS.md means: `navigator.wakeLock` is a
+ * web API the browser build has and the webviews either have or do not. No screen exists on one
+ * build only; where the API is absent, nothing happens and nothing is said, because a screen
+ * timeout is not a failure to report.
+ *
+ * REFERENCE-COUNTED, because two screens can want it across one navigation and a naive
+ * release-on-teardown would drop the lock the incoming screen just took. And re-taken on
+ * `visibilitychange`: the platform revokes a wake lock whenever the page is hidden, so a lock
+ * acquired once and never renewed is gone the first time somebody takes a phone call.
+ */
+let wakeHolders = 0;
+let wakeLock = null;
+/** A request already out. SINGLE-FLIGHT, because the request is asynchronous and every check
+ *  below it reads `wakeLock`, which is still null while one is in flight: two screens asking in
+ *  the same tick — a navigation from the scan screen to a walk does exactly that — would each
+ *  take a lock, and the second assignment would drop the first handle on the floor with the
+ *  platform still holding it. */
+let wakeAsking = false;
+const wakeSupported = () => typeof globalThis.navigator?.wakeLock?.request === 'function';
+async function takeWakeLock() {
+  if (!wakeSupported() || wakeAsking || wakeHolders === 0 || wakeLock) return;
+  if (document.visibilityState !== 'visible') return;
+  wakeAsking = true;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    // Released by the platform as well as by us; clearing the handle is what lets the
+    // visibility listener take a fresh one rather than believing it still holds this.
+    wakeLock.addEventListener?.('release', () => { wakeLock = null; });
+    if (wakeHolders === 0) releaseWakeLock(); // the last holder left while this was in flight
+  } catch (err) {
+    // A refusal is normal — a battery-saver mode declines these — and is not worth a word to a
+    // user who did not ask for it. Recorded once, at debug level, so it is findable.
+    console.debug('screen wake lock refused', err);
+  } finally {
+    wakeAsking = false;
+  }
+}
+function releaseWakeLock() {
+  const held = wakeLock;
+  wakeLock = null;
+  void Promise.resolve(held?.release?.()).catch(() => {});
+}
+/** Ask for the screen to stay on. Returns the release, so a caller holds it exactly the way a
+ *  screen holds anything else: take it at mount, call it in cleanup. */
+function keepAwake() {
+  wakeHolders += 1;
+  void takeWakeLock();
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    wakeHolders -= 1;
+    if (wakeHolders === 0) releaseWakeLock();
+  };
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void takeWakeLock();
+  });
+}
+
 // ---- host ------------------------------------------------------------------------------------
 // The app runs as a plain web page and inside the Tauri window, and the two draw their chrome
 // differently. This is not a smart-cube leftover: it is what tells a real window from a preview.
@@ -704,10 +859,17 @@ const isTauri = typeof window.__TAURI__ !== 'undefined';
 // (persisted); `?platform=auto` clears.
 function detectPlatform() {
   try {
+    // sessionStorage, not localStorage. The pin is a DESIGN-REVIEW tool — "show me this window as
+    // Windows draws it" — and persisting it meant a shared link pinned the visitor's browser to
+    // somebody else's platform permanently, with `?platform=auto` the only way back and nothing
+    // anywhere saying so (found by audit, 2026-09-04). A tab is exactly the right lifetime: the
+    // pin survives reloads and deep links while the review is happening, and is gone when the tab
+    // is. The old key is removed on sight, so a browser already pinned by a link is freed.
+    try { localStorage.removeItem('cubus.platform'); } catch {}
     const q = new URLSearchParams(window.location.search).get('platform');
-    if (['macos', 'windows', 'linux', 'ios', 'android'].includes(q)) { localStorage.setItem('cubus.platform', q); return q; }
-    if (q === 'auto') localStorage.removeItem('cubus.platform');
-    const s = localStorage.getItem('cubus.platform'); if (s) return s;
+    if (['macos', 'windows', 'linux', 'ios', 'android'].includes(q)) { sessionStorage.setItem('cubus.platform', q); return q; }
+    if (q === 'auto') sessionStorage.removeItem('cubus.platform');
+    const s = sessionStorage.getItem('cubus.platform'); if (s) return s;
   } catch {}
   const ua = navigator.userAgent;
   // iPadOS calls itself a Mac; a finger gives it away — the touch points (5 on a real iPad), or a
@@ -761,7 +923,13 @@ function buildChrome(platform) {
   // amber and still when the position is unverified, absent when no cube is connected. It sits
   // before Settings and clicks through to it — Settings is where the cube is managed. Painted by
   // paintTrust(); hidden is its boot state.
-  const cubeLive = `<button class="tb-ctl tb-live" id="cubeLive" hidden data-nav="settings">${icon('bluetooth', 17)}</button>`;
+  // The indicator is a BUTTON — it leads to cube management — and it stays one. It used to be
+  // given role="status" as well, which REPLACES the button role: the one control that reaches the
+  // smart-cube card stopped being announced as a control at all, and a keyboard user had no way
+  // to know it could be pressed (found by audit, 2026-09-04). The live text belongs to a status
+  // region, so it has one of its own: an off-screen sibling nobody has to be able to click.
+  const cubeLive = `<button class="tb-ctl tb-live" id="cubeLive" hidden data-nav="settings">${icon('bluetooth', 17)}</button>`
+    + '<span class="sr-only" id="cubeLiveSay" role="status" aria-live="polite"></span>';
   const gear = `<button class="tb-ctl" data-nav="settings" title="Settings" aria-label="Settings">${icon('settings', 18)}</button>`;
   const cap = (name, win, round = false) => `<button class="tb-cap ${win}${round ? ' round' : ''}" data-win="${win}" title="${win}" aria-label="${win === 'min' ? 'Minimise' : 'Close'}">${icon(name, round ? 14 : 16)}</button>`;
   if (platform === 'macos') {
@@ -821,8 +989,11 @@ let conn = null;
 // (see lib/cube-registry.js).
 let cubes = parseRegistry(load('cubusCubes', {}));
 
-/** The address a bare "Pair" should try: whichever cube was used most recently. */
-const lastCubeMac = () => listCubes(cubes)[0]?.mac || '';
+/** The address a bare "Pair" should try: whichever cube was used most recently — and only if it
+ *  HAS one. Since a cube with no address is remembered under `name:<its name>` (normaliseIdentity),
+ *  the most recent record's key is not necessarily an address, and handing `name:green cube` to
+ *  the protocol layer as a Bluetooth address is a connect that cannot work and cannot say why. */
+const lastCubeMac = () => listCubes(cubes).map((c) => normaliseMac(c.mac)).find(Boolean) || '';
 
 /** The connected cube's remembered record at the moment it connected — what the reconnect
  *  reading compares the first report against. Cleared with the connection. */
@@ -877,11 +1048,27 @@ let anchoring = false;
  *  the whole point of routing trust through one function. Cleared on navigation. */
 let onTrustLost = null;
 
+/** Has the session PROVED this cube's own reports do not add up?
+ *
+ *  One predicate, because it now gates three different things — the report stream, the repair
+ *  scan, and re-trusting after one — and three copies of a verdict comparison is how a refusal
+ *  comes to mean different things per screen. A session that is not there refuses nothing:
+ *  "no cube" and "a cube known to be wrong" are not the same state. */
+const cubeRefused = () => conn?.verdict === VERDICT.REFUSED;
+
 /** Repair tracking from one camera reading, WITHOUT solving the cube.
  *
  *  This is the whole point of the trust design: the old repair was "solve it, then re-anchor",
  *  which for a beginner is not a recovery path at all — someone who could solve the cube would
  *  not need the app, and that is exactly where a new player gives up.
+ *
+ *  The correction is derived BY THE SESSION'S CHECKER (`cameraScan`), not here. Both used to
+ *  derive one — this file with `deriveOffset`, the checker with its own copy — so the app and the
+ *  session held two disconnected trust models: `VERDICT.TRUSTED` was unreachable because nothing
+ *  ever told the checker a camera had looked, and the checker's constancy rule (a correction that
+ *  moves between two scans with an intact stream between them is not a correction) guarded
+ *  nothing (found by audit, 2026-09-04). One derivation now, with the checker's answer as the
+ *  answer, so a scan advances the verdict and a refusal reaches this screen.
  *
  *  @returns {{ok: boolean, text: string}|null} what to tell the user, or null when the scan
  *  changed nothing about tracking (no cube, or it already agreed).
@@ -892,6 +1079,17 @@ function repairTracking(scanned) {
   // against it yields the identity — overwriting a correction the cube still needs.
   const reported = state.reported;
   if (!reported) return null;
+  // A refused cube cannot be repaired by a camera, and this is the door that used to let one be.
+  // The correction is derived FROM the cube's own report; if that report has been proved not to
+  // add up, the correction built on it is arithmetic over a fiction — and adopting the scan
+  // afterwards called the cube trusted again. A refusal is about the cube, and only a fresh
+  // connection can revisit it.
+  if (cubeRefused()) {
+    return {
+      ok: false,
+      text: 'This cube’s own reports have stopped adding up, so a scan cannot put it back in step — what the camera saw would be measured against a reading that means nothing. Disconnect it and pair again; the camera still solves the cube either way.',
+    };
+  }
   // On an UNBROKEN chain the scan and the cube must agree. If they do not, one of them is wrong —
   // a misread, or a camera pointed at a different cube — and deriving a correction from a
   // contradiction would bake the mistake in permanently. Which one is wrong is not knowable;
@@ -904,7 +1102,18 @@ function repairTracking(scanned) {
       text: 'This is not what your cube is reporting, and the cube was tracking. One of the two is wrong, so nothing was changed — check that you scanned the cube that is connected.',
     };
   }
-  const offset = deriveOffset(scanned, reported, Cube);
+  const offset = conn.cameraScan(scanned, reported);
+  // The checker may have REFUSED on this very scan — two scans implying two different corrections
+  // with an unbroken stream between them is the self-consistent-but-wrong decoder it exists to
+  // catch. Asked after the scan, because that is when the answer exists; `offset` still holds the
+  // previous correction in that case, so applying it would silently keep a correction the checker
+  // has just disowned.
+  if (cubeRefused()) {
+    return {
+      ok: false,
+      text: 'This scan and the last one imply two different corrections, with nothing lost in between — so what this cube reports cannot be corrected by any fixed amount. cubus has stopped trusting its reports; the camera still solves it.',
+    };
+  }
   if (!offset) return null;
   state.cube.offset = isIdentity(offset) ? null : offset;
   state.cube.offsetAt = state.cube.offset ? Date.now() : 0;
@@ -995,7 +1204,7 @@ function adoptConnection(mac, name) {
   // remembered arrangement that is already a picture worth showing (dimmed, unconfirmed), and if
   // the cube never answers, the words are already the true ones. The first report re-reads the
   // evidence; with nothing remembered there is no question to ask and today's flow stands.
-  pendingLast = cubes[normaliseMac(mac)]?.last ?? null;
+  pendingLast = cubes[normaliseIdentity(mac)]?.last ?? null;
   awaitingReport = true;
   const opening = classifyReconnect({ report: null, last: pendingLast }, Cube);
   state.reconnect = opening.candidate
@@ -1036,7 +1245,20 @@ function reportSilence() {
 function confirmReconnect() {
   const rc = state.reconnect;
   if (!rc || !rc.candidate || !rc.raw) return false;
-  const offset = deriveOffset(rc.candidate, rc.raw, Cube);
+  // A refused cube's Yes cannot be taken either, for the reason a refused cube's repair scan
+  // cannot: the correction would be derived against a report already proved not to add up.
+  if (cubeRefused()) {
+    markStale('its reports stopped adding up');
+    state.reconnect = { ...rc, raw: null };
+    return false;
+  }
+  // Through the SESSION, exactly as a camera repair goes: the user is answering a question about
+  // the physical cube ("is this it, right now?"), which is the same KIND of evidence a scan is —
+  // an outside observation of the cube, paired with what the cube claimed at that moment. The
+  // checker therefore counts it, its constancy rule covers it, and the app's trust and the
+  // session's verdict stay one model instead of two. With no session there is nothing to confirm
+  // AGAINST, so this refuses rather than deriving privately.
+  const offset = conn ? conn.cameraScan(rc.candidate, rc.raw) : null;
   if (offset === null) {
     // Should be unreachable — both strings were validated by the reading — but a confirmation
     // that cannot do its job must refuse loudly ON SCREEN, never grant trust over a failed
@@ -1047,6 +1269,15 @@ function confirmReconnect() {
     // Yes away (it cannot do its job), leaving the camera as the door — and the caller's
     // re-render is what repaints the block either way.
     markStale('its confirmation could not be checked');
+    state.reconnect = { ...rc, raw: null };
+    return false;
+  }
+  // The answer itself can be what refuses the cube: the checker holds every correction it has
+  // been shown, and one that MOVED with an unbroken stream between the two is not a correction.
+  // `offset` is the previous one in that case, so taking it would keep a correction the checker
+  // has just disowned — and call the cube trusted on the strength of it.
+  if (cubeRefused()) {
+    markStale('its reports stopped adding up');
     state.reconnect = { ...rc, raw: null };
     return false;
   }
@@ -1084,15 +1315,86 @@ function wireReconnectAnswers(root) {
   }
 }
 
-/** "Tuesday 21:40" — the dress a memory wears. A remembered arrangement is a memory with a
- *  timestamp and is shown as one, never as the truth. Empty parts when the stamp is missing. */
-function whenWords(ts) {
+/**
+ * "Tuesday 21:40" — the dress a memory wears. A remembered arrangement is a memory with a
+ * timestamp and is shown as one, never as the truth. Empty parts when the stamp is missing.
+ *
+ * Through `Intl`, in the app's locale, for two separate reasons. The weekday names were a
+ * hard-coded English array and the clock a hard-coded 24-hour pad, so a translated app would have
+ * said "Tuesday" in the middle of a Chinese sentence and shown 21:40 to a reader whose region
+ * writes 9:40 PM — the mechanism was there, this was simply outside it.
+ *
+ * And a weekday ALONE IS A DATE THAT LIES once it is more than a week old. "Tuesday 21:40" for a
+ * cube last seen five weeks ago names this week's Tuesday to every reader. Inside six days a
+ * weekday is the friendliest true form; past that it takes a date (found by audit, 2026-09-04).
+ */
+const SIX_DAYS_MS = 6 * 24 * 60 * 60 * 1000;
+function whenWords(ts, now = Date.now()) {
   if (!ts) return { day: '', full: '' };
   const d = new Date(ts);
-  const day = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][d.getDay()];
-  const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return { day, full: `${day} ${time}` };
+  const fmt = (opts) => {
+    try { return new Intl.DateTimeFormat(locale(), opts).format(d); } catch { return ''; }
+  };
+  const recent = now - ts < SIX_DAYS_MS && ts <= now;
+  const day = recent ? fmt({ weekday: 'long' }) : fmt({ day: 'numeric', month: 'short' });
+  const time = fmt({ hour: 'numeric', minute: '2-digit' });
+  return { day, full: day && time ? `${day} ${time}` : day || time };
 }
+
+/**
+ * Can this host reach a radio at all, and by which route?
+ *
+ * The SAME ladder `installBleBridge` walks, asked without building a bridge: a bridge registers
+ * native event listeners, and one constructed at render time beside a live session would sit
+ * there warning about every packet it could not place. The one line that can drift — which
+ * native platforms are refused until somebody has run the app on a real device — is imported
+ * rather than copied, because that list is deliberately kept in one place ("THE FLIP IS THIS
+ * LINE", ble-bridge.js).
+ *
+ * Answered at RENDER time, never memoised: `?platform=` pins the answer for design review, and a
+ * value cached before boot published `<html data-platform>` would be the wrong one forever.
+ *
+ * @returns {'native'|'browser'|'refused-host'|'none'}
+ */
+function bleReach() {
+  if (isTauri && NATIVE_BLE_UNSUPPORTED.includes(hostPlatform())) return 'refused-host';
+  if (isTauri) return 'native';
+  if (globalThis.navigator?.bluetooth) return 'browser';
+  return 'none';
+}
+
+/** Whether the Pair button is drawn at all. A control that can never work on this platform is
+ *  furniture: it invites a press, fails, and explains afterwards in words written for a
+ *  different host. The row still says what the platform can do — the capability is named
+ *  everywhere, it is only OFFERED where it exists. */
+const canPair = () => bleReach() === 'native' || bleReach() === 'browser';
+
+/** Why, in the user's terms. Host-specific, because "this cannot work here" is useless without
+ *  "and here is what does". Every branch keeps the camera in view: it is the path that works on
+ *  every platform, and a beginner reading a Bluetooth refusal needs to know the app still does
+ *  its job. */
+function bleReachNote() {
+  switch (bleReach()) {
+    case 'native':
+      return 'Pairing scans for a nearby cube — turn it first so its radio is awake.';
+    case 'browser':
+      return 'Pairing opens your browser’s device chooser — turn the cube first so it appears in the list.';
+    case 'refused-host':
+      // Named for the platform, and true: the Rust and Kotlin BLE paths compile and have never
+      // spoken to a radio, so the app refuses rather than offering a connect that would fail in
+      // a way nobody could read (ble-bridge.js says what a device run must show first).
+      return hostPlatform() === 'ios'
+        ? 'Smart cubes are off on iPhone and iPad for now — cubus has not been tried against a real cube on this hardware, and offering it before that would mean guessing. The camera reads your cube here exactly as it does everywhere else.'
+        : 'Smart cubes are off on Android for now — cubus has not been tried against a real cube on an Android phone, and offering it before that would mean guessing. The camera reads your cube here exactly as it does everywhere else.';
+    default:
+      return 'This browser cannot use Bluetooth. Chrome, Edge or the desktop app can — and the camera works either way.';
+  }
+}
+
+/** How a registry KEY reads on screen. An address is shown as itself; a `name:` key is a filing
+ *  detail and is shown as the fact behind it, so no screen ever prints a string a user might
+ *  mistake for something they could type into the address field. */
+const idWords = (id) => (String(id).startsWith(NAME_PREFIX) ? '(no address)' : `at ${id}`);
 
 /** What to call the connected cube. The user's own word wins; the cube's own name is the
  *  fallback. One helper so a nickname cannot appear on one screen and not another. */
@@ -1159,6 +1461,12 @@ function trustChanged() {
 
 /** We now know what the cube looks like, and by what means. */
 function markTrusted(source) {
+  // A refusal is about the CUBE, and only a fresh connection can revisit it. Trust sourced from
+  // 'cube' means "its own reports say so", which is exactly the claim the checker has disproved —
+  // so an anchor or a confirmation must not be able to buy it back. 'camera' and 'generated' are
+  // knowledge from elsewhere and are unaffected; the guard is at this choke point rather than at
+  // each caller for the same reason every other trust change passes through here.
+  if (source === 'cube' && cubeRefused()) return;
   if (state.cube.trusted && state.cube.source === source) return;
   state.cube.trusted = true;
   state.cube.source = source;
@@ -1183,16 +1491,24 @@ function markStale(why) {
  *  question a user needs answered. */
 function paintTrust(el) {
   const on = state.connected;
+  const say = $('#cubeLiveSay');
   el.hidden = !on;
-  if (!on) return;
+  if (!on) {
+    // An absent cube announces nothing rather than announcing an absence: the region is emptied,
+    // so leaving Settings after a disconnect does not read the last state out again.
+    if (say) say.textContent = '';
+    return;
+  }
   const ok = state.cube.trusted;
   el.classList.toggle('stale', !ok);
-  el.setAttribute('role', 'status');
-  el.setAttribute('aria-live', 'polite');
   const who = liveCubeLabel();
-  el.setAttribute('aria-label', ok
+  // The button's NAME says what it is and where it goes — it is a control, and its name has to
+  // survive the state changing under it. The STATE is the status region's, beside it.
+  el.setAttribute('aria-label', `${who} — smart cube settings`);
+  const words = ok
     ? `${who}: tracking`
-    : `${who}: position unverified — ${state.cube.staleWhy || 'read the cube again'}`);
+    : `${who}: position unverified — ${state.cube.staleWhy || 'read the cube again'}`;
+  if (say && say.textContent !== words) say.textContent = words;
   el.title = ok
     ? `${who} connected${Number.isFinite(state.battery) ? ` · ${state.battery}% battery` : ''} · tracking`
     : `${who} connected, but ${state.cube.staleWhy || 'its position is unverified'} — read the cube again`;
@@ -1203,7 +1519,11 @@ function setConnected(on, name = '', mac = '') {
   // setConnected(false) while already disconnected, and the resulting teardown discarded the DOM
   // the caller's catch was about to write its error into.
   const before = `${state.connected}|${state.cubeName}|${state.cubeMac}`;
-  state.connected = on; state.cubeName = name; state.cubeMac = on ? normaliseMac(mac) : '';
+  // normaliseIdentity, not normaliseMac: five of the ten protocols never expose an address, and
+  // stripping their `name:` key here emptied state.cubeMac — which every registry write then
+  // bailed on (`!state.cubeMac`), so those cubes were never remembered and never matched their
+  // own row in Settings.
+  state.connected = on; state.cubeName = name; state.cubeMac = on ? normaliseIdentity(mac) : '';
   state.battery = null;
   // The anchor belongs to a connection, not to the app.
   if (!on) state.anchored = false;
@@ -1233,7 +1553,11 @@ async function connectOnce(macFromUi) {
     // our own start-up ordering. Wait for it instead; it is already loading.
     if (!Cube) await loadSolver().catch(() => {});
     if (!Cube) throw new Error('still starting up — try again in a moment');
-    const typed = (macFromUi || lastCubeMac() || '').trim();
+    // Validated before it is offered as an address. The field accepts whatever was typed and a
+    // remembered key may be a `name:` id, and the protocol layer takes this as a MAC — so
+    // anything that is not one is no answer at all, and letting it through asked the cube to be
+    // found at an address that does not exist.
+    const typed = normaliseMac(String(macFromUi ?? '').trim()) || lastCubeMac();
     // The typed address is a FALLBACK, not the source. Nearly every cube broadcasts its own and
     // the protocol layer reads it per brand; this only answers when the advertisement did not
     // carry one. It used to be mandatory in the browser, which asked a beginner for a hexadecimal
@@ -1263,22 +1587,30 @@ async function connectOnce(macFromUi) {
     // old one fired on a serial jump, this one fires when the cube's own moves and its own
     // reported state stop agreeing — which is what a lost turn actually IS, proved rather than
     // inferred, and available on every brand instead of only those that number their moves.
-    session.onVerdict((verdict, reason) => {
+    session.onVerdict((verdict) => {
       if (conn !== session) return;
-      if (verdict === 'refused') markStale('its reports stopped adding up');
-      // A resync IS the lost-turn signal, and it must reach the screens rather than only the trust
-      // flag: standing follow down, refusing the timer's result, and saying what happened all live
-      // behind onMovesLost. Wiring only markStale here left every one of them dead in production
-      // while the test seam kept them green.
-      else if (reason === 'resynced') onMovesLost();
+      if (verdict === VERDICT.REFUSED) markStale('its reports stopped adding up');
     });
+    // A lost turn is its OWN signal, not a shade of the verdict (2026-09-04). The whole point of
+    // tolerating a loss is that a trusted cube SURVIVES it — so on the cube this matters most for,
+    // the verdict and the reason are identical before and after, and a screen watching the verdict
+    // announces nothing. Standing follow down, refusing the timer's result and saying what
+    // happened all live behind onMovesLost, and this is the door they arrive through.
+    session.onMovesLost(() => { if (conn === session) onMovesLost(); });
 
     conn = session;
     // A cube with no address is remembered under its NAME rather than under an empty string.
     // Only the GAN protocols expose a MAC; the others report '', and keying the registry on that
     // makes every such cube the same cube — one nickname, one shared last-seen record, and a
     // reconnect that greets a stranger with another cube's memory.
-    const identity = session.mac || typed || `name:${session.name || 'cube'}`;
+    //
+    // `name:` is the registry's own prefix (NAME_PREFIX), spelled once there: every path that
+    // stores or looks up a record runs the id through `normaliseIdentity`, which is what makes
+    // this a key rather than a string that merely looks like one. It was a bare template literal
+    // here and `normaliseMac` everywhere else, so these cubes were documented as remembered and
+    // were in fact never written at all.
+    const identity = normaliseIdentity(session.mac || typed)
+      || normaliseIdentity(NAME_PREFIX + (session.name || 'cube'));
     adoptConnection(identity, session.name || 'Smart cube');
     // The reply is NOT fed to onFacelets here. It arrives on the event stream too, and the
     // permanent listener above already handles it — passing it on as well delivered the
@@ -1365,7 +1697,7 @@ function takeDerivation(facelets, setupAlg) {
   // setup alg, so this pass proves our own reverse-and-invert rule and nothing about the search.
   // The independent check — cubejs applying it, no search — is solve()'s, once, on first use.
   c.solution = solution;
-  c.moves = solution.trim() ? solution.trim().split(/\s+/) : [];
+  c.moves = movesOf(solution); // the one tokenizer both solve paths share
   c.stepFacelets = stepStates(facelets, c.moves);
   c.crossChecked = false;
 }
@@ -1390,6 +1722,19 @@ function stepStates(facelets, moves) {
  *  quietly replaced by the real one a second later. */
 function onFacelets(reported, serial) {
   if (!reported) return;
+  // The self-check gates the STATE channel too, and this is the half that was missing: only moves
+  // were gated, so a refused cube's reports went on becoming the app's subject — driving the net
+  // and the 3D cube, being written into the registry as "as we last saw it", and standing as the
+  // raw report a camera scan would derive a correction from. A refusal is a PROOF that this
+  // cube's two channels disagree, which makes its state reports exactly as unusable as its moves
+  // and rather more dangerous, because a state is a claim about where the cube IS.
+  //
+  // Here rather than in the session listener, so the test seam (window.cubusFeed) passes through
+  // the same gate the driver does — a seam that skipped it would be a lookalike, and this
+  // behaviour would have no test that could see it. The checker has already been shown this
+  // report by the time either caller runs, so the report that CAUSED the refusal is dropped too,
+  // which is the point.
+  if (cubeRefused()) return;
   // What the cube literally said, before any correction. A repair derives the offset from the
   // RAW report — deriving it from a corrected one produces the identity.
   state.reported = reported;
@@ -1479,9 +1824,13 @@ function recentSolves() {
   }));
 }
 
+/** Record a solve. RETURNS whether the browser actually kept it: a private window or a full
+ *  quota fails this write, and a time that showed on the clock and then vanished from "last five"
+ *  with nothing said is indistinguishable from a bug in the timer. The caller says so on screen;
+ *  save() already warns to the console. */
 function pushSolve(time, extra = {}) {
   const list = recentSolves();
-  save('cubusSolves', {
+  return save('cubusSolves', {
     list: [
       // Highest n, not the first row's. Corrupt rows keep their place with a placeholder n of 0,
       // so reading position zero could restart numbering at 1 half-way through a session.
@@ -1496,6 +1845,27 @@ function pushSolve(time, extra = {}) {
   });
 }
 
+/** Take the most recent SHOWN solve back off the list.
+ *
+ *  The one destructive edit the app offers, and it exists because the alternative was permanent:
+ *  a fumbled press, or a clock a cube started while the cube was only being tidied, went into
+ *  every average from then on and could be removed only by editing localStorage by hand.
+ *
+ *  The newest row WITH A TIME, not simply the first. `recentSolves()` keeps corrupt records in
+ *  place on purpose — that is what stops an average quietly reaching further back — so the first
+ *  row and the first row a person can SEE are not always the same one. The button is drawn beside
+ *  a time; it has to remove that record and not an unreadable one hiding above it.
+ *
+ *  Returns whether anything was removed AND stored. */
+function dropLastSolve() {
+  const list = recentSolves();
+  const at = list.findIndex((s) => s.time);
+  if (at < 0) return false;
+  return save('cubusSolves', { list: [...list.slice(0, at), ...list.slice(at + 1)] });
+}
+
+/** The scramble a finished solve is recorded against. Written by the caller that PUT one in
+ *  play, never by the roll itself — see randomScramble. */
 let currentScramble = '';
 
 /** The eighteen face turns. Enough to recognise a state that is one turn from solved. */
@@ -1612,7 +1982,15 @@ function schedulePreroll() {
   );
 }
 
-/** The next random cube, and the alg that reaches it — now the scramble in play. */
+/**
+ * The next random cube, and the alg that reaches it.
+ *
+ * PURE with respect to `currentScramble`, which the CALLER puts in play once it knows the roll is
+ * still wanted. It used to be set here, inside the await — so a roll that landed after the user
+ * had already started a solve re-filed that running solve under a scramble it was never about
+ * (found by audit, 2026-09-04). Rolling is a real Kociemba search now, so that window is seconds
+ * wide rather than notional.
+ */
 async function randomScramble() {
   // Taken BEFORE any await: two presses must not be handed the same pre-rolled cube.
   const ready = nextRoll;
@@ -1620,9 +1998,16 @@ async function randomScramble() {
   const rolled = ready ?? await rollScramble();
   schedulePreroll(); // there should always be one waiting
   if (!rolled) return { facelets: '', alg: '' };
-  currentScramble = rolled.alg;
   return rolled;
 }
+
+/** This roll is the one a solve will be recorded against. */
+const putInPlay = (rolled) => { if (rolled?.alg) currentScramble = rolled.alg; };
+
+/** This roll arrived at a moment nothing could use it — hold it for the next press rather than
+ *  throwing away a search somebody has already paid for. Never over a roll already waiting: the
+ *  one in hand is at least as fresh, and a scramble is a scramble. */
+const parkRoll = (rolled) => { if (rolled?.facelets && rolled.alg && !nextRoll) nextRoll = rolled; };
 
 
 export { state };
@@ -1630,7 +2015,10 @@ export { state };
 // ===============================================================================================
 // Screens
 // ===============================================================================================
-const SCREENS = {};
+/** The routable screens. Exported as a TEST SEAM, the way `state` and `window.cubusFeed` are:
+ *  the error boundary in renderScreen answers "a builder threw", and the only honest way to test
+ *  that is to hand it one that does. Not API — nothing in the app reads it from outside. */
+export const SCREENS = {};
 /** The stage's box, in viewport coordinates. Popovers are the stage's absolutely positioned
  *  children (index.html, the popover rule), so this is both the box they are clamped to and the
  *  origin their `top`/`left` are measured from. Not the viewport: under the layout contract
@@ -1767,12 +2155,19 @@ SCREENS.scan = () => {
         <div class="cube-slot" id="scanCube"></div></div>
       <div class="sheet scan-sheet">
         <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
-          <div class="sub scan-say" id="scanHow" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
+          <div class="sub scan-say" id="scanHow" role="status" aria-live="polite" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
           <div class="sub scan-hint" id="scanHint" hidden></div></div>
         <button class="btn primary block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
       </div>
     </div></div>`,
     mount(root) {
+      // Captured at the top of the mount, never read late: by the time anything here awaits, the
+      // module-level controller may already belong to the screen that replaced this one.
+      const signal = screenAbort?.signal;
+      // Both hands are on a cube in front of a camera for the length of a scan, so nothing tells
+      // the platform anybody is still here. The display sleeping mid-scan is the interruption
+      // this audience does not recover from.
+      const releaseScanAwake = keepAwake();
       // Kept, so a finished scan can update the aside in place. Re-rendering the screen would tear
       // down the scanner element and reopen the camera for a scan that has just ended.
       const stateCube = newCube();
@@ -1854,6 +2249,23 @@ SCREENS.scan = () => {
       // tables can be built entirely inside time the user is already spending.
       warmSolver();
       const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root), hint = $('#scanHint', root);
+      // "Loading the scanner…" was INITIAL COPY and nothing else: if the bundle never registers —
+      // a failed fetch, a parse error, a blocked module — the element stays inert forever and the
+      // sentence stays on screen forever, promising a camera that is never opening. A registration
+      // that lands replaces it through the panel's own events; one that does not now has an end
+      // state and a way out (found by audit, 2026-09-04).
+      if (!customElements.get('ai-scan-panel')) {
+        const SCANNER_WAIT_MS = 15000;
+        let landed = false;
+        void customElements.whenDefined('ai-scan-panel').then(() => { landed = true; });
+        setTimeout(() => {
+          // Guarded on the SCREEN, not only on the flag: this outlives its screen by design.
+          if (landed || !root.isConnected || !say.isConnected) return;
+          sayTitle.textContent = t('The scanner did not load');
+          say.textContent = t('The camera part of cubus failed to start, so there is nothing to scan with. Reloading the app usually fixes it. Everything else — the solver, the guide, a smart cube — still works.');
+          say.className = 'sub scan-say err';
+        }, SCANNER_WAIT_MS);
+      }
       // The reconnect confirmation runs INSIDE this screen's own flow, not beside it: the panel's
       // captures are private to it and die with it, so "the repair scan continues from the sides
       // already captured" is true only if the confirmation IS this screen in a confirm mode. Two
@@ -1861,6 +2273,29 @@ SCREENS.scan = () => {
       // simply keeps capturing into the full six-side repair, two sides in.
       let confirming = Boolean(state.reconnect?.candidate);
       const confirmEntry = confirming;
+      /**
+       * What the camera should see NOW if the remembered arrangement is right.
+       *
+       * NOT the frozen candidate, which is what this compared against and is wrong the moment
+       * anybody turns the cube: the question is asked on reconnect, the check happens seconds
+       * later with the cube in a hand, and a single quarter turn in between made every side
+       * mismatch — a false "not what we remembered" that cost the user a full six-side scan
+       * (found by audit, 2026-09-04).
+       *
+       * The candidate carried forward by whatever the cube has reported since. If the candidate
+       * is right then `candidate · raw⁻¹` is the correction, it is constant under later turns
+       * (cube-trust.js), and applying it to the LATEST report says where the cube is now. This is
+       * a PREDICTION to compare a scan against, not a correction being adopted — which is why it
+       * derives here instead of going through the session's checker, whose business is evidence.
+       * With nothing to carry forward it is the candidate, exactly as before.
+       */
+      const expectedNow = () => {
+        const rc = state.reconnect;
+        if (!rc?.candidate) return null;
+        if (!rc.raw || !state.reported || state.reported === rc.raw) return rc.candidate;
+        const off = deriveOffset(rc.candidate, rc.raw, Cube);
+        return (off && applyOffset(off, state.reported, Cube)) || rc.candidate;
+      };
       const CONFIRM_HOW = 'We remember this cube. Show any two sides that meet along an edge — the front, then the top, works well. If both match what we remember, that’s your cube confirmed with no full scan; if either differs, keep going and the camera reads all six.';
       if (confirming) {
         sayTitle.textContent = t('Checking your cube');
@@ -1869,6 +2304,9 @@ SCREENS.scan = () => {
       // "Solve this cube" is a promise about THIS screen's scan, so it is only pressable once a
       // scan stands complete — and a correction that re-opens the verdict takes it away again.
       const solveBtn = $('#scanSolveBtn', root);
+      /** Did this screen refuse the finished scan? Screen-local, and cleared only by a scan that
+       *  is no longer complete — see the scan-progress handler. */
+      let refused = false;
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
       // The six sides are the cube's net, everywhere (decided 2026-08-30). There used to be a
@@ -1971,6 +2409,10 @@ SCREENS.scan = () => {
       const menu = document.createElement('div');
       menu.className = 'menu';
       menu.hidden = true;
+      // A menu, said as one: without a role it is a div of buttons, and a screen reader gives no
+      // hint that Escape closes it or that its items belong together.
+      menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-label', t('Camera and scan'));
       root.appendChild(menu);
       let camOn = false;
       let camsKey = null;
@@ -1989,7 +2431,11 @@ SCREENS.scan = () => {
         // back to the platform default — so mark THAT rather than ticking nothing and leaving the
         // menu mute about which camera is in force.
         const active = items.some((b) => b.dataset.value === settings.cameraId) ? settings.cameraId : '';
-        for (const b of items) b.classList.toggle('now', b.dataset.value === active);
+        for (const b of items) {
+          const now = b.dataset.value === active;
+          b.classList.toggle('now', now);
+          b.setAttribute('aria-checked', String(now)); // the tick is the look; this is the fact
+        }
       };
       const fillCams = async () => {
         let list = [];
@@ -2002,6 +2448,7 @@ SCREENS.scan = () => {
         const add = (value, label) => {
           const b = document.createElement('button');
           b.type = 'button'; b.dataset.value = value; b.textContent = label;
+          b.setAttribute('role', 'menuitemradio');
           b.onclick = () => choose(value);
           menu.appendChild(b);
         };
@@ -2013,7 +2460,7 @@ SCREENS.scan = () => {
       // Cameras come and go — a webcam is plugged in, an iPhone wanders out of Continuity range —
       // and the menu is built once, so without this a newly attached camera would never appear.
       const onDevices = () => { void fillCams(); };
-      navigator.mediaDevices?.addEventListener?.('devicechange', onDevices);
+      navigator.mediaDevices?.addEventListener?.('devicechange', onDevices, { signal });
       let shownDevice = null;
       // Throw the whole scan away — the panel's restart() also turns the camera back on when it
       // is dark, so this one call is the whole contract.
@@ -2028,6 +2475,9 @@ SCREENS.scan = () => {
         void fillCams();
         menu.hidden = false;
         placeMenuUnder(camBtn, menu);
+        // Focus goes IN. A popover that opens behind the focus ring is one a keyboard cannot
+        // reach without tabbing through everything after the button that opened it.
+        (menu.querySelector('.now') ?? menu.firstElementChild)?.focus();
         ev.stopPropagation();
       };
 
@@ -2037,7 +2487,18 @@ SCREENS.scan = () => {
         // that breaks validity must not leave canonically-repainted tiles claiming otherwise, nor
         // a half-finished settle turn hanging over tiles about to be repainted as shown.
         if (p.phase !== 'done') { settled = false; clearTurns(); }
-        solveBtn.disabled = !p.complete;
+        // A scan this screen REFUSED stays refused until there is a new one to judge. The panel
+        // reports `complete` on every state change once it has a finished scan — and `complete`
+        // deliberately SURVIVES a camera reopen, which is what stops a reopened camera
+        // overwriting an accepted scan — so a refusal ("the camera and the cube disagree,
+        // nothing was changed") was undone by the very next tick, handing back an enabled Solve
+        // button over a cube the screen had just said it did not believe (found by audit,
+        // 2026-09-04). The flag is this screen's own, because the panel is right not to carry it:
+        // the panel judged the scan legal, and what was refused is what the APP made of it.
+        // Cleared by a scan that is no longer complete — a restart, or a capture that reopens the
+        // verdict — and by the next accepted scan-complete.
+        if (!p.complete) refused = false;
+        solveBtn.disabled = !p.complete || refused;
         // Two voices, two places: a pinned notice (what the scanner needs and why — it stands
         // until the situation changes) and the transient camera hint. The hint used to overwrite
         // the explanation within one tick, which made every refusal look like a silent crash.
@@ -2120,7 +2581,7 @@ SCREENS.scan = () => {
         // stand over the generic caption — but never over the scanner's own pinned notice.
         if (confirming && state.reconnect?.candidate && !n && p.phase !== 'error') {
           const sides = p.captured.map((c) => ({ face: c.face, stickers: c.colors.map((ci) => NET_FACES[ci] ?? '?').join('') }));
-          const check = confirmCheck(state.reconnect.candidate, sides, Cube);
+          const check = confirmCheck(expectedNow(), sides, Cube);
           if (check.verdict === 'confirmed') {
             confirming = false;
             // The user's Yes, well founded and taken: same derivation, same trust, same words a
@@ -2150,8 +2611,14 @@ SCREENS.scan = () => {
           }
         }
       });
-      // A rejected scan restarts itself and explains why through scan-progress, so there is
-      // nothing to do here; only a validated cube leaves this screen.
+      // A scan the SCANNER refused is a scan this screen must not offer to solve either. It
+      // restarts itself and explains why through scan-progress, so there is nothing to say here —
+      // but `complete` can still be standing from the previous accepted scan, and an enabled
+      // Solve over it would walk that older cube while the screen is telling you this one was not
+      // readable. (The panel's own fields for a refusal are deliberately absent, so nothing here
+      // reads them.)
+      panel.addEventListener('scan-invalid', () => { refused = true; solveBtn.disabled = true; }, { signal });
+      // Only a validated cube leaves this screen.
       panel.addEventListener('scan-complete', (e) => {
         // The panel is torn down on navigation, but an event already in flight still lands. Without
         // this, a scan finishing just after you left could adopt a cube, derive a correction, and
@@ -2160,7 +2627,9 @@ SCREENS.scan = () => {
         settled = true;
         // The 'done' progress report normally lands first and enables this; belt-and-braces here
         // so a delivered cube can always be walked, whatever order the two events arrive in.
-        solveBtn.disabled = false;
+        // Not over a standing refusal, though: that is the one state where a delivered cube is
+        // deliberately not walkable, and this line ran before the refusal below could set it.
+        if (!refused) solveBtn.disabled = false;
         const fl = e.detail.facelets;
         // Faces captured the wrong way up turn to their true orientation; the rest repaint in
         // place (their content is already canonical, so nothing visibly changes). The cell
@@ -2183,8 +2652,10 @@ SCREENS.scan = () => {
           // tell which. Adopting it while saying "nothing was changed" would be untrue — and so
           // would an enabled Solve button over a cube the screen refused to believe.
           markStale('a scan disagreed with what the cube reports, and neither could be confirmed');
+          refused = true;
           solveBtn.disabled = true;
         } else {
+          refused = false;
           // A completed scan answers the reconnect question outright — six sides ESTABLISH what
           // two sides could only spot-check — so the question closes before the adoption that
           // would otherwise mark a cube trusted with its own question still open.
@@ -2294,16 +2765,24 @@ SCREENS.scan = () => {
         if (!swatches.hidden && !swatches.contains(ev.target)) closeSwatches();
         if (!menu.hidden && !menu.contains(ev.target) && ev.target !== camBtn) menu.hidden = true;
       };
-      const onEsc = (ev) => { if (ev.key === 'Escape') closePops(); };
-      document.addEventListener('click', onAway);
-      document.addEventListener('keydown', onEsc);
+      const onEsc = (ev) => {
+        if (ev.key !== 'Escape') return;
+        // Escape returns focus to the control the popover came from, rather than dropping it on
+        // <body> — closeSwatches already does that for the picker; the menu's owner is the button.
+        const hadMenu = !menu.hidden;
+        closePops();
+        if (hadMenu) camBtn.focus();
+      };
+      // `{ signal }` rather than a removal pair in cleanup: the screen's abort is cut on every
+      // navigation, so these cannot outlive their screen — the same mechanism the parked
+      // <cubus-cube>'s listener relies on. The devicechange listener carries it too.
+      document.addEventListener('click', onAway, { signal });
+      document.addEventListener('keydown', onEsc, { signal });
 
 
       cleanup = () => {
         clearTurns();
-        navigator.mediaDevices?.removeEventListener?.('devicechange', onDevices);
-        document.removeEventListener('click', onAway);
-        document.removeEventListener('keydown', onEsc);
+        releaseScanAwake();
         panel.stop?.();
       };
     },
@@ -2442,8 +2921,8 @@ const cubeScreen = (screenMode) => {
           <button class="tbtn primary" id="playBtn" title="Play from here to the end" aria-label="Play from here to the end">${icon('play', 18)}</button>
           <div class="progress" title="How far through the ${walked} you are"><span id="progBar"></span></div>
           <span class="done-mark" id="doneMark" hidden title="Done">${icon('check', 14)}</span>
-          <span class="num" id="stepLbl" style="color:var(--ink-4);min-width:56px;text-align:right">0 / 0</span>
-          ${state.connected ? `<button class="pill${state.cube.trusted ? ' on' : ''}" data-mode="cube" title="Turn your smart cube and the guide keeps up">Cube leads</button>` : ''}
+          <span class="num" id="stepLbl" role="status" aria-live="polite" style="color:var(--ink-4);min-width:56px;text-align:right">0 / 0</span>
+          ${state.connected ? `<button class="pill${state.cube.trusted ? ' on' : ''}" data-mode="cube" aria-pressed="${Boolean(state.cube.trusted)}" title="Turn your smart cube and the guide keeps up">${escHtml(t('Cube leads'))}</button>` : ''}
           ${scrambling ? `<button class="btn sm primary" id="solveItBtn" hidden>Solve this scramble</button>` : ''}
         </div>
       </div>` : ''}
@@ -2468,10 +2947,10 @@ const cubeScreen = (screenMode) => {
              space-between left the number stranded midway between the heading and the pill. The
              count is the heading's ANSWER and belongs at the right edge whether or not anything
              follows it; the buttons then sit beside it, each with a margin of its own. -->
-        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" style="margin-left:auto">—</span><button class="pill" id="proveBtn" hidden style="margin-left:12px">${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
+        <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" role="status" aria-live="polite" style="margin-left:auto">—</span><button class="pill" id="proveBtn" hidden style="margin-left:12px">${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
         <div class="list" id="solList" style="padding:6px 0"></div>
         <div class="follow-note" id="followNote" hidden>
-          <span id="followMsg"></span>
+          <span id="followMsg" role="status" aria-live="polite"></span>
           <div class="acts">
             <button class="btn sm accent-outline" id="resolveBtn">Re-solve</button>
             <button class="btn sm outline" id="turnBackBtn">I'll turn it back</button>
@@ -2488,6 +2967,16 @@ const cubeScreen = (screenMode) => {
       // signal it must hang listeners on is THIS screen's, not whichever one is current when an
       // await comes back.
       const signal = screenAbort?.signal;
+
+      /** The search this screen is currently waiting on, so a superseded one can be stopped.
+       *
+       *  A press of the die, a reconnect answered, a tier change or leaving the screen all make
+       *  the search in flight about a cube nobody is looking at any more — and without this it
+       *  ran to its full budget anyway, on every worker in the pool, with the NEXT search queued
+       *  behind it. The engine already polls a stop word per solve; an AbortSignal is how that
+       *  reaches it, and it cancels without terminating workers or rebuilding their tables. */
+      let walkAbort = null;
+
       // This screen can roll a scramble — start the roller's tables warming now, so the press
       // that asks for one is not the thing that waits for them.
       // Rolling and solving are the same pool now, so one warm-up covers both. This screen
@@ -2546,6 +3035,8 @@ const cubeScreen = (screenMode) => {
       if (speedBtn) {
         speedMenu.className = 'menu';
         speedMenu.hidden = true;
+        speedMenu.setAttribute('role', 'menu');
+        speedMenu.setAttribute('aria-label', t('Animation speed'));
         root.appendChild(speedMenu);
         // localStorage is untrusted input: an id no longer in SPEEDS must not reach setAttribute.
         const saved = load('walkSpeed', { id: DEFAULT_SPEED }).id;
@@ -2562,10 +3053,12 @@ const cubeScreen = (screenMode) => {
           speedMenu.textContent = '';
           for (const o of SPEEDS) {
             const b = document.createElement('button');
-            b.textContent = o.label;
+            b.textContent = t(o.label);
             b.dataset.speed = o.id;
+            b.setAttribute('role', 'menuitemradio');
+            b.setAttribute('aria-checked', String(o.id === speedId));
             if (o.id === speedId) b.className = 'now';
-            b.onclick = () => { speedId = o.id; save('walkSpeed', { id: o.id }); applySpeed(); closeSpeed(); };
+            b.onclick = () => { speedId = o.id; save('walkSpeed', { id: o.id }); applySpeed(); closeSpeed(); speedBtn.focus(); };
             speedMenu.appendChild(b);
           }
         };
@@ -2579,20 +3072,32 @@ const cubeScreen = (screenMode) => {
           speedMenu.hidden = false;
           speedBtn.classList.add('open');
           placeMenuUnder(speedBtn, speedMenu);
+          (speedMenu.querySelector('.now') ?? speedMenu.firstElementChild)?.focus();
           ev.stopPropagation();
         };
         const onAway = (ev) => {
           if (!speedMenu.hidden && !speedMenu.contains(ev.target) && !speedBtn.contains(ev.target)) closeSpeed();
         };
-        const onEsc = (ev) => { if (ev.key === 'Escape') closeSpeed(); };
-        document.addEventListener('click', onAway);
-        document.addEventListener('keydown', onEsc);
-        // Without this the listeners outlive the screen and stack up one pair per visit.
-        cleanup = () => {
-          document.removeEventListener('click', onAway);
-          document.removeEventListener('keydown', onEsc);
+        const onEsc = (ev) => {
+          if (ev.key !== 'Escape' || speedMenu.hidden) return;
+          closeSpeed();
+          speedBtn.focus(); // Escape returns you to the control you opened it from
         };
+        // `{ signal }`, not a hand-written removal pair: this screen's abort is cut by
+        // renderScreen on every navigation, so a listener that carries it cannot outlive its
+        // screen — which is the same mechanism the parked <cubus-cube>'s listener relies on, and
+        // one fewer place for a teardown to be written correctly. The pair it replaces was the
+        // whole of `cleanup` here.
+        document.addEventListener('click', onAway, { signal });
+        document.addEventListener('keydown', onEsc, { signal });
       }
+      // Turning a cube and reading the next move is minutes with no input at all, so the same
+      // reasoning as the scan screen's: taken only where there IS a walk, because a cube being
+      // looked at is not a cube being followed.
+      const releaseWalkAwake = walking ? keepAwake() : () => {};
+      // The screen's own teardown, now that the listeners carry their own: a search this screen
+      // started must not go on burning the pool for a cube nobody is looking at.
+      cleanup = () => { walkAbort?.abort(); releaseWalkAwake(); };
 
       // A new cube is a new SUBJECT, not a new screen. This used to re-enter the screen, because
       // the solution, the move list and the step count were all built at mount and there was no
@@ -2617,15 +3122,21 @@ const cubeScreen = (screenMode) => {
           // accepted the real cube's snapshots as progress through an arrangement it had never
           // been in.
           const rolled = await randomScramble();
-          if (stale()) return;              // rolling is a real search now, and can outlive the screen
+          if (stale()) { parkRoll(rolled); return; } // rolling is a real search; do not waste it
           if (!rolled.facelets) return;
+          putInPlay(rolled);
           adoptCube(rolled.facelets, { physical: false, source: 'generated', setupAlg: rolled.alg });
         }
         // Held while the solver works, so a second press cannot roll a third cube over the one
         // being solved. A failure is not swallowed into silence — it leaves `solution` empty, and
         // the screen says "could not work it out" the way it does for any unsolvable state.
         die.disabled = true;
-        try { if (!scrambling) await solve(); } catch (err) { console.warn('random cube could not be solved', err); }
+        try { if (!scrambling) await solve({ signal }); }
+        catch (err) {
+          // A search the screen's own teardown called off is not a failure worth a line: the
+          // subject is gone and nobody is waiting on it.
+          if (err?.name !== 'AbortError') console.warn('random cube could not be solved', err);
+        }
         finally { die.disabled = false; }
         if (stale()) return; // navigated away while solving — do not drag them back
         refreshScreen();
@@ -2877,6 +3388,7 @@ const cubeScreen = (screenMode) => {
         drawn = cubePos;
         applyTempo();
         followBtn?.classList.toggle('on', on);
+        followBtn?.setAttribute('aria-pressed', String(on));
         if (followBtn) {
           followBtn.title = on
             ? 'Turn your smart cube and the guide keeps up'
@@ -3014,11 +3526,30 @@ const cubeScreen = (screenMode) => {
         setStatus('working…');
       }
 
-      /** And when there turns out to be no walk at all. Re-rendering instead is not an option:
-       *  the mount would load the same unsolvable cube and fail again, forever. */
-      function failWalk(why) {
+      /**
+       * And when there turns out to be no walk at all.
+       *
+       * The reason is the message, and it used to be one sentence for four different failures:
+       * the solver never loaded, no scramble could be rolled, the worker died, the oracle refused
+       * the answer. "Could not work it out" blames the CUBE for every one of them, and offers
+       * re-scanning as the remedy even when the cube is blameless and re-scanning cannot help
+       * (found by audit, 2026-09-04). Each one now says what happened and what to do instead —
+       * and none of them says a move count is impossible, which two-phase cannot know.
+       */
+      const WALK_FAILURES = {
+        'solver unavailable': 'the solver did not load — reload the app',
+        'no scramble': 'a scramble could not be rolled — try again',
+        'cross-check': 'the answer did not check out — read the cube again',
+      };
+      function failWalk(err) {
+        const key = String(err?.message ?? err ?? '');
         refuseFollow('Needs a solve worked out on this screen');
-        setStatus(why);
+        // A cross-check refusal names itself in prose rather than in a code (finishSolve throws
+        // 'solver cross-check failed — re-scan'), so it is matched rather than looked up.
+        const why = WALK_FAILURES[key]
+          ?? (/cross-check/i.test(key) ? WALK_FAILURES['cross-check'] : null)
+          ?? 'could not work it out';
+        setStatus(t(why));
       }
 
       async function loadWalk() {
@@ -3026,6 +3557,10 @@ const cubeScreen = (screenMode) => {
         // Two ways to become obsolete: the screen was replaced (screenGen), or another press
         // started a newer walk on this same screen (walkGen). Both must stop this one writing.
         const fresh = () => !stale() && mine === walkGen;
+        // The previous walk's search is about a cube this one is replacing. Aborted BEFORE the
+        // new one starts, so the pool is free rather than working through a dead search first.
+        walkAbort?.abort();
+        const abort = walkAbort = new AbortController();
         beginWalk();
         // A retarget replaces the SUBJECT, and a native proof about the old subject must not
         // outlive it — same rule as renderScreen's teardown, for the path that never renders.
@@ -3038,7 +3573,7 @@ const cubeScreen = (screenMode) => {
         // "Solve this scramble" — had been handed the other one. Nothing crosses out of here
         // until this load is known to still be the current one, so there is no window in which
         // that disagreement exists at all.
-        let gotSetup = '', gotAlg = '', gotMoves = [], gotSteps = [], gotTarget = null;
+        let gotSetup = '', gotAlg = '', gotMoves = [], gotSteps = [], gotTarget = null, gotRoll = null;
         try {
           if (scrambling) {
             if (!solverReady && !(await loadSolver())) throw new Error('solver unavailable');
@@ -3047,6 +3582,7 @@ const cubeScreen = (screenMode) => {
             // solved. The target outlives this block: it is what "Solve this scramble" hands to
             // Home at the end of the walk.
             const rolled = await randomScramble();
+            gotRoll = rolled;
             gotTarget = rolled.facelets;
             if (!gotTarget || !rolled.alg) throw new Error('no scramble');
             gotAlg = rolled.alg; gotMoves = gotAlg.trim().split(/\s+/);
@@ -3059,15 +3595,42 @@ const cubeScreen = (screenMode) => {
             // Each improvement lands on the heading as it is found, so a tight tier shows 21
             // becoming 20 becoming 19 rather than nothing at all — guarded by fresh(), because
             // a superseded load's improvements describe a cube no longer on screen.
-            await solve({ onImprovement: (step) => { if (fresh()) setStatus(String(step.moves)); } });
+            //
+            // `signal` is what makes a superseded search stop rather than run to its budget on
+            // every worker with the next one queued behind it. `onProgress` is the other half of
+            // the same wait: an escalation is the search doubling its budget and starting again,
+            // which from outside is a count that has stopped moving for seconds — so it says, in
+            // the smallest words available, that it is still going.
+            await solve({
+              signal: abort.signal,
+              onImprovement: (step) => { if (fresh()) setStatus(String(step.moves)); },
+              onProgress: ({ attempt }) => {
+                // `attempt` is 0-BASED (solve-target's contract), and only the first escalating
+                // search reports at all. Nothing is said for attempt 0: that is the ordinary
+                // case and needs no apology. From the first ESCALATION on, the count is shown
+                // one-based, because "attempt 2" is what a person would call it. Never a
+                // percentage or a time — nothing here knows either.
+                if (fresh() && attempt >= 1) setStatus(t('still searching (attempt %1)', attempt + 1));
+              },
+            });
             gotSetup = state.cube.setupAlg; gotAlg = state.cube.solution; gotMoves = state.cube.moves;
             // Snapshotted: setFacelets() clears stepFacelets on every live update, and following a
             // physical cube needs the states to compare against to outlive the next turn.
             gotSteps = state.cube.stepFacelets.slice();
           }
-        } catch { if (fresh()) failWalk('could not work it out'); return false; }
-        if (!fresh()) return false; // navigated away, or a newer load has taken over
+        } catch (err) {
+          // A search this screen itself called off is not a failure to report: the subject it was
+          // about is gone, and the walk that replaced it owns the screen now. Superseded, silent.
+          if (abort.signal.aborted) return false;
+          if (fresh()) failWalk(err);
+          return false;
+        }
+        if (!fresh()) { parkRoll(gotRoll); return false; } // navigated away, or a newer load took over
 
+        // The scramble in play is committed HERE, with everything else, and not inside the search:
+        // a slower load finishing last would otherwise have left the solve history recording
+        // against a scramble that is not the one on screen.
+        putInPlay(gotRoll);
         setup = gotSetup; alg = gotAlg; moves = gotMoves; steps = gotSteps; target = gotTarget;
         total = moves.length;
         if (scrambling) paintNet(target);
@@ -3252,7 +3815,11 @@ const cubeScreen = (screenMode) => {
         // invented structure on the screen a beginner trusts most, and a heading per group is what
         // put the tail of a 20-move solve past the sheet's foot in portrait. The card header already
         // says what the chips are and how many.
-        solList.innerHTML = `<div style="padding:6px 18px 12px"><div class="move-chips">${moves.map((m, k) => `<button class="chip-m" data-i="${k}" title="Jump to this move">${m}</button>`).join('')}</div></div>`;
+        // escHtml on the move text. It comes from the solver or the validated library and
+        // `reaches()` fails closed, so nothing hostile can be in it today — but it is a string
+        // reaching innerHTML, and "this particular source is trusted" is exactly the reasoning
+        // that stops being true when a source is added. Every other template here escapes.
+        solList.innerHTML = `<div style="padding:6px 18px 12px"><div class="move-chips">${moves.map((m, k) => `<button class="chip-m" data-i="${k}" title="${escHtml(t('Jump to this move'))}">${escHtml(m)}</button>`).join('')}</div></div>`;
         chips = [...solList.querySelectorAll('.chip-m')];
 
         // Nothing may survive from the previous walk. Each of these is a position ON a plan, and
@@ -3342,12 +3909,20 @@ SCREENS.scramble = () => cubeScreen('scramble');
 SCREENS.timer = () => {
   // width:100% — the screen centres its child, and a column without a width would shrink to
   // its content. The clock's size and the wrapping rows are classes (index.html).
+  //
+  // The clock is a real <button>, styled to look exactly as it did as a <div onclick>. It is the
+  // screen's primary control — it starts and stops the solve — and a div is not reachable by Tab,
+  // not activated by Enter or Space, and announced as nothing. The look is unchanged: `button`
+  // already inherits font and colour in this stylesheet, and .timer-clock zeroes the padding.
+  // Its accessible NAME is an aria-label that says what pressing it does, because its text is a
+  // number that changes sixty times a second; the RESULT is announced through the hint line,
+  // which is the screen's status region.
   return { html: `<div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px">
-      <div class="num" id="scr" style="font-size:var(--fs-body-l);color:var(--ink-4);text-align:center;max-width:640px">${t('press New scramble')}</div>
-      <div class="num timer-clock" id="clock">0.00</div>
-      <div class="sub" id="timerHint" style="color:var(--ink-4)">${t('Click or hold space to start')}</div>
-      <div class="wrap-row" style="justify-content:center;gap:10px"><button class="btn outline sm" id="newScr">${t('New scramble')}</button>
-        <span class="pill">${t('WCA scrambles')}</span></div>
+      <div class="num" id="scr" role="status" aria-live="polite" style="font-size:var(--fs-body-l);color:var(--ink-4);text-align:center;max-width:640px">${escHtml(t('press New scramble'))}</div>
+      <button type="button" class="num timer-clock" id="clock" aria-label="${escHtml(t('Start the timer'))}">0.00</button>
+      <div class="sub" id="timerHint" role="status" aria-live="polite" style="color:var(--ink-4)">${escHtml(t('Click or hold space to start'))}</div>
+      <div class="wrap-row" style="justify-content:center;gap:10px"><button class="btn outline sm" id="newScr">${escHtml(t('New scramble'))}</button>
+        <span class="pill">${escHtml(t('WCA scrambles'))}</span></div>
       <div class="wrap-row" style="justify-content:center;gap:12px;margin-top:6px" id="lastFive"></div></div>`,
     mount(root) {
       const clock = $('#clock', root); let running = false, t0 = 0, raf = 0;
@@ -3356,6 +3931,9 @@ SCREENS.timer = () => {
       const hint = $('#timerHint', root);
       const MANUAL = t('Click or hold space to start');
       const say = (text) => { if (hint) hint.textContent = text; };
+      /** What pressing the clock will do next. Kept in step with `running` in one place, so the
+       *  name a screen reader announces cannot describe the opposite of what the press does. */
+      const nameClock = () => clock.setAttribute('aria-label', running ? t('Stop the timer') : t('Start the timer'));
 
       // ---- cube-driven timing (PRD phase 4) ------------------------------------------------
       // The arrangement the current scramble produces — what the auto timer arms on: the one
@@ -3364,6 +3942,25 @@ SCREENS.timer = () => {
       // True while the clock was started by the cube, so a manual press can take it back.
       let byCube = false;
       const auto = createSolveTimer({ target: () => scrTarget, trusted: chainTrusted });
+      /**
+       * A cube that numbers nothing cannot be timed truthfully, so this screen does not time it.
+       *
+       * solve-timer's two "moves were dropped" refusals both compare serials; with no serial they
+       * are inert, and the screen would report a span with nothing able to tell it a turn went
+       * missing. That is a measurement resting on an assumption, which is the one thing this app
+       * will not print as a number. Three of the brands it speaks to are in that position
+       * (moyu32, moyu-mhc, qiyi), and `numbersMoves()` existed with no caller — so they were all
+       * being timed (found by audit, 2026-09-04).
+       *
+       * Asked when the timer ARMS, which is the first instant the answer is both needed and
+       * known, and said once: the hand clock still works, and a line repeated on every snapshot
+       * would bury that.
+       */
+      let untimeable = false;
+      // Only a session that SAYS no declines the solve. With no session there is no cube-driven
+      // timing to decline — `conn` and `state.connected` move together — and refusing on a fact
+      // nobody asserted would be inventing the answer rather than asking for it.
+      const cubeCanTime = () => !conn || conn.numbersMoves();
 
       // A lost turn means the span cannot be vouched for, and this is the only path that says so
       // on a cube that does not number its moves — which is three of the brands the app speaks to.
@@ -3379,30 +3976,63 @@ SCREENS.timer = () => {
         // the cube-driven stop. Stop the clock first; then roll.
         if (running) return;
         if (!solverReady) {
-          $('#scr', root).textContent = t('solver loading…');
+          $('#scr', root).textContent = t('working out a scramble…');
           // Retry when it lands. Without this, opening Timer before the solver finished left
           // "solver loading…" on screen permanently — the only way out was pressing New scramble
           // again, which nothing on the screen suggested.
-          void loadSolver().then((ok) => { if (ok && state.screen === 'timer' && root.isConnected) void newScr(); });
+          //
+          // And when the load FAILS, say so about the APP rather than about the cube: the retry
+          // used to be handed `false` and do nothing at all, leaving the screen waiting forever
+          // on something that had already given up (found by audit, 2026-09-04).
+          void loadSolver().then((ok) => {
+            if (!root.isConnected || state.screen !== 'timer') return;
+            if (ok) { void newScr(); return; }
+            $('#scr', root).textContent = t('the solver did not load — reload the app');
+            say(t('Scrambles need the solver, and it did not load. Reloading the app is the fix; the clock below still times by hand.'));
+          });
           return;
         }
         const rolled = await randomScramble();
-        if (!root.isConnected) return;    // rolling is a real search now, and can outlive the screen
+        // RE-CHECKED after the await, not only before it. A roll is a real Kociemba search now,
+        // so seconds can pass inside this call — long enough to press the clock and start a solve.
+        // Landing then would file that solve under a scramble shown after it began, and disarm the
+        // cube-driven stop. The rolled cube is not thrown away: it is parked as the next roll, so
+        // the press after this one is instant rather than paying for the search twice.
+        if (!root.isConnected) { parkRoll(rolled); return; }
+        if (running) { parkRoll(rolled); return; }
+        // The CALLER puts it in play, so a roll that arrives at a bad moment changes nothing the
+        // solve history is recorded against.
+        putInPlay(rolled);
         scrTarget = rolled.facelets || null;
         auto.reset();
+        untimeable = false;
         $('#scr', root).textContent = rolled.alg || '—';
-        if (scrTarget && chainTrusted()) say(t('Scramble your cube — the clock starts itself'));
+        if (!rolled.alg) say(t('A scramble could not be worked out — press New scramble to try again.'));
+        else if (scrTarget && chainTrusted()) say(t('Scramble your cube — the clock starts itself'));
+      };
+      /** Record a finished solve, and say so when the browser refused to keep it.
+       *
+       *  A solve that was not stored still showed on the clock and then vanished from "last five"
+       *  with nothing said — a private window or a full quota looked exactly like a bug in the
+       *  timer. save() already warns to the console; this is the half a person can see. */
+      const record = (time, extra) => {
+        if (pushSolve(time, extra)) return true;
+        say(t('That time is on the clock but was NOT saved — this browser is refusing to store anything, so it will be gone on reload.'));
+        return false;
       };
       const stop = () => {
         running = false;
         cancelAnimationFrame(raf);
-        const t = fmt(performance.now() - t0);
-        clock.textContent = t;
+        // `secs`, not `t`: a local named `t` here shadowed the imported translator for the rest of
+        // this function, so every sentence below it would silently stop being translatable.
+        const secs = fmt(performance.now() - t0);
+        clock.textContent = secs;
         clock.style.color = 'var(--ink)';
+        nameClock();
         say(MANUAL);
         // A hand-stopped solve is hand-timed even if the cube started it: the moment recorded is
         // the click, not a move. Recording it as cube-timed would put a click into a turn rate.
-        pushSolve(t, { source: 'manual' });
+        record(secs, { source: 'manual' });
         byCube = false;
         auto.reset();
         renderLast();
@@ -3411,6 +4041,7 @@ SCREENS.timer = () => {
         running = true;
         t0 = performance.now();
         clock.style.color = 'var(--accent)';
+        nameClock();
         say(t('Running — click or press space to stop'));
         tick();
       };
@@ -3422,6 +4053,7 @@ SCREENS.timer = () => {
         running = true;
         t0 = performance.now();
         clock.style.color = 'var(--accent)';
+        nameClock();
         // The animated figure runs on the host clock because it only has to LOOK live; the number
         // that gets recorded is replaced by the cube's own measurement when the solve ends.
         say(t('Running — solve it, and the cube stops the clock'));
@@ -3433,6 +4065,7 @@ SCREENS.timer = () => {
         running = false;
         cancelAnimationFrame(raf);
         clock.style.color = 'var(--ink)';
+        nameClock();
         byCube = false;
         const r = auto.result();
         if (!r) {
@@ -3448,7 +4081,7 @@ SCREENS.timer = () => {
         clock.textContent = r.seconds;
         // `inspectionMs` is host-clocked at both ends and therefore coarser than the solve; it is
         // stored as-is (or omitted) rather than rounded into looking as precise as `time`.
-        pushSolve(r.seconds, {
+        record(r.seconds, {
           source: 'cube',
           moves: r.moves,
           ...(r.inspectionMs === null ? {} : { inspectionMs: r.inspectionMs }),
@@ -3458,39 +4091,76 @@ SCREENS.timer = () => {
         renderLast();
       };
       clock.onclick = toggle;
+      nameClock();
       $('#newScr', root).onclick = newScr;
       // escHtml: solve times come from localStorage, which is untrusted input, and they were
       // going into innerHTML raw — a stored-XSS hole reachable by anything that can write to the
       // origin's storage.
+      //
+      // The most recent one carries an undo. A mis-recorded solve — a fumbled press, a clock
+      // started by a cube that was only being tidied — used to be permanent, and the alternative
+      // for anyone who cared about their averages was to edit localStorage by hand. Two-step,
+      // the idiom the Forget button uses, because it destroys a record nothing can re-derive.
       const renderLast = () => {
         const l = recentSolves().filter((s) => s.time).slice(0, 5);
-        $('#lastFive', root).innerHTML = l.map((s) =>
-          `<div class="card" style="padding:9px 16px;text-align:center"><div class="num" style="font-size:var(--fs-title);font-weight:600">${escHtml(s.time)}</div></div>`,
+        $('#lastFive', root).innerHTML = l.map((s, i) =>
+          `<div class="card" style="padding:9px 16px;text-align:center"><div class="num" style="font-size:var(--fs-title);font-weight:600">${escHtml(s.time)}</div>${
+            i === 0 ? `<button class="pill" id="undoLast" style="margin-top:6px;padding:2px 10px;font-size:var(--fs-meta)">${escHtml(t('Undo'))}</button>` : ''
+          }</div>`,
         ).join('');
+        const undo = $('#undoLast', root);
+        if (undo) {
+          undo.onclick = () => {
+            if (undo.dataset.armed !== 'yes') {
+              undo.dataset.armed = 'yes';
+              undo.textContent = t('Remove it?');
+              undo.style.color = 'var(--err-ink)';
+              undo.style.borderColor = 'var(--err)';
+              return;
+            }
+            if (dropLastSolve()) say(t('Removed — that solve is no longer counted.'));
+            else say(t('It could not be removed — this browser is refusing to store anything.'));
+            renderLast();
+          };
+        }
       };
       // e.repeat: holding the key down fires keydown continuously, which start/stopped the clock
       // dozens of times a second and wrote a run of nonsense times into the solve history.
       const onKey = (e) => {
         if (e.repeat || e.code !== 'Space' || state.screen !== 'timer') return;
+        // A press of the clock button arrives here as well as through onclick — Space is a
+        // button's own activation key — and toggling twice per press would start and stop in the
+        // same instant. The button's own handler owns that case.
+        if (document.activeElement === clock) return;
         e.preventDefault();
         toggle();
       };
-      document.addEventListener('keydown', onKey);
+      document.addEventListener('keydown', onKey, { signal: screenAbort?.signal });
 
       // The cube's two streams. Moves start the clock; snapshots arm and stop it. Both are the
       // same doors every other screen uses, so the test seam (window.cubusFeed) drives this
       // exactly as the driver does — the reason phase 4's absence went unnoticed is that nothing
       // could exercise it without a physical cube.
       liveMove = (m) => {
+        if (untimeable) return;
         const before = auto.state;
         if (auto.move(m) === 'running' && before === 'armed' && !running) startFromCube();
       };
       liveUpdate = (f, serial) => {
+        if (untimeable) return;
         const before = auto.state;
         const now = auto.facelets(f, serial);
         // "Ready" is a recorded instant, not a mood: the timer captured WHEN the cube reached the
         // scramble, which is what makes the inspection interval a measurement rather than a guess.
-        if (before !== 'armed' && now === 'armed') say(t('Ready — turn to start'));
+        if (before !== 'armed' && now === 'armed') {
+          if (!cubeCanTime()) {
+            untimeable = true;
+            auto.reset();
+            say(t('This cube does not number its turns, so cubus cannot tell a clean solve from one that dropped a turn — it will not time it. Use the clock or the space bar and time it by hand.'));
+            return;
+          }
+          say(t('Ready — turn to start'));
+        }
         if (before === 'armed' && now === 'idle' && !running) say(t('Scramble your cube — the clock starts itself'));
         if (before === 'running' && now === 'stopped' && byCube) stopFromCube();
       };
@@ -3501,7 +4171,6 @@ SCREENS.timer = () => {
         // animates forever on a screen that no longer exists.
         running = false;
         cancelAnimationFrame(raf);
-        document.removeEventListener('keydown', onKey);
         // Release the cube stream with the screen, or a torn-down closure keeps timing.
         liveMove = null;
         liveUpdate = null;
@@ -3528,17 +4197,17 @@ SCREENS.settings = () => {
     <div class="col">
       <div class="card"><div class="eyebrow">APPEARANCE</div>
         <div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Theme</div><div class="sub" style="color:var(--ink-4)">White, cream or night — auto follows the system</div></div>
-          <div class="wrap-row" style="gap:6px">${THEMES.map((t) => `<button class="pill ${settings.theme === t ? 'on' : ''}" data-set-theme="${t}">${t}</button>`).join('')}</div></div>
+          <div class="wrap-row" style="gap:6px">${THEMES.map((name) => `<button class="pill ${settings.theme === name ? 'on' : ''}" data-set-theme="${name}" aria-pressed="${settings.theme === name}">${escHtml(t(name))}</button>`).join('')}</div></div>
         <div style="display:flex;align-items:center;gap:16px;padding:13px 0 0;border-top:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">Rotate the cube by dragging</div><div class="sub" style="color:var(--ink-4)">Off, the 3D cube keeps the angle its ghost faces are set up for</div></div>
           <button class="toggle ${settings.dragRotate ? 'on' : ''}" data-toggle="dragRotate" role="switch" aria-checked="${Boolean(settings.dragRotate)}" aria-label="Rotate the cube by dragging"><i></i></button></div>
         <div class="wrap-row" style="justify-content:space-between;padding:13px 0 0;border-top:1px solid var(--line-faint)"><div><div style="font-weight:600">How short a solution</div><div class="sub" style="color:var(--ink-4)">${TIER_BLURB[settings.solveTier] ?? TIER_BLURB.twenty}</div></div>
-          <div class="wrap-row" style="gap:6px">${TIERS.map((t) => `<button class="pill ${settings.solveTier === t.name ? 'on' : ''}" data-set-tier="${t.name}">${TIER_LABEL[t.name]}</button>`).join('')}</div></div>
+          <div class="wrap-row" style="gap:6px">${TIERS.map((tier) => `<button class="pill ${settings.solveTier === tier.name ? 'on' : ''}" data-set-tier="${tier.name}" aria-pressed="${settings.solveTier === tier.name}">${escHtml(TIER_LABEL[tier.name])}</button>`).join('')}</div></div>
         ${optimalCapability() ? `<div style="display:flex;align-items:center;gap:16px;padding:13px 0 0;border-top:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">${PROVE_COPY.settingLabel}</div><div class="sub" style="color:var(--ink-4)">${PROVE_COPY.settingBlurb}</div></div>
           <button class="toggle ${settings.proveMinimum ? 'on' : ''}" data-toggle="proveMinimum" role="switch" aria-checked="${Boolean(settings.proveMinimum)}" aria-label="${PROVE_COPY.settingLabel}"><i></i></button></div>` : ''}
         ${desktopWindow ? `<div class="wrap-row" style="justify-content:space-between;padding:12px 0"><div><div style="font-weight:600">Window</div><div class="sub" style="color:var(--ink-4)">Landscape or portrait — the window takes the shape and keeps it</div></div>
-          <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}">${o}</button>`).join('')}</div></div>` : ''}</div>
+          <div class="wrap-row" style="gap:6px" id="orientationPills">${['landscape', 'portrait'].map((o) => `<button class="pill" data-set-orientation="${o}" aria-pressed="false">${escHtml(t(o))}</button>`).join('')}</div></div>` : ''}</div>
       ${(() => {
         // ---- smart cube (recovered from v0) --------------------------------------------------
         const on = state.connected;
@@ -3563,7 +4232,7 @@ SCREENS.settings = () => {
               <i style="position:absolute;inset:2px;width:calc(${lv}% - 4px);min-width:1px;background:${tone};border-radius:1px"></i>
             </div>
             <span style="width:8px;height:7px;margin-left:-6px;background:var(--ink-5);border-radius:0 2px 2px 0"></span>
-            <span class="num" style="font-size:var(--fs-body-s);color:${low ? 'var(--err)' : 'var(--ink-3)'};font-weight:${low ? 700 : 400}">${lv}%</span>
+            <span class="num" style="font-size:var(--fs-body-s);color:${low ? 'var(--err-ink)' : 'var(--ink-3)'};font-weight:${low ? 700 : 400}">${lv}%</span>
           </div>`;
         };
         // Step 3 is not decoration: anchorSolved() is what tells the cube which position counts
@@ -3579,24 +4248,42 @@ SCREENS.settings = () => {
         // Step 3 is not done just because the anchor button was once pressed: a cube that has
         // since disconnected, missed a turn or had its correction reset is not "set up and
         // tracking", and a green tick over one is the most misleading thing this card could say.
-        const done = (i) => on && (i < 2 || (state.anchored && state.cube.trusted));
+        // Step 3 is "does cubus know where this cube is", and there are TWO ways to answer it:
+        // anchoring (the cube's own reference is moved to solved) and a camera scan (the cube is
+        // read exactly as it is). The card offers both — "Not solved" sends you to the camera —
+        // and then required the anchor anyway, so a cube set up entirely through the camera sat
+        // on an unfinished checklist for the whole session with nothing left to press (found by
+        // audit, 2026-09-04). The condition is the fact the step is about: trusted, and by a
+        // means that says something about THIS cube.
+        const done = (i) => on && (i < 2 || (state.cube.trusted && (state.anchored || state.cube.source === 'camera')));
         const known = listCubes(cubes);
+        // Both through Intl, in the app's locale, for the reason whenWords is: a 24-hour pad and
+        // an English "2d ago" are the app writing in one language while claiming to be in another.
         const hhmm = (ts) => {
           if (!ts) return '';
-          const d = new Date(ts);
-          return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+          try { return new Intl.DateTimeFormat(locale(), { hour: 'numeric', minute: '2-digit' }).format(new Date(ts)); }
+          catch { return ''; }
         };
         const seenAgo = (ts) => {
-          if (!ts) return 'not used yet';
-          const d = Date.now() - ts;
-          for (const [ms, unit] of [[86400000, 'd'], [3600000, 'h'], [60000, 'min']]) {
-            if (d >= ms) return `${Math.floor(d / ms)}${unit} ago`;
-          }
-          return 'just now';
+          if (!ts) return t('not used yet');
+          const ago = Date.now() - ts;
+          if (ago < 60000) return t('just now');
+          try {
+            const rel = new Intl.RelativeTimeFormat(locale(), { numeric: 'auto' });
+            for (const [ms, unit] of [[86400000, 'day'], [3600000, 'hour'], [60000, 'minute']]) {
+              if (ago >= ms) return rel.format(-Math.floor(ago / ms), unit);
+            }
+          } catch { /* an engine without RelativeTimeFormat falls through to the plain form */ }
+          return t('a while ago');
         };
         // The FULL address in labels, not a tail: neither two octets nor nicknames are unique —
         // nothing stops a user calling two cubes "green".
-        const rowName = (c) => `${c.nickname || c.name || 'cube'} at ${c.mac}`;
+        //
+        // A cube with no address is keyed on its NAME (`name:<label>`), and that key is a storage
+        // detail, not something to print: "green at name:green" reads as a bug, and it is the one
+        // string here a user might try to type into the address field. Such a row says plainly
+        // that there is no address instead — the fact, which is also why the row exists.
+        const rowName = (c) => `${c.nickname || c.name || 'cube'} ${idWords(c.mac)}`;
         // The reading's words, compact: what is remembered, and what the evidence says about it.
         // Words and a picture only — no reading grants trust; the buttons below are how the user
         // does, and the answer is about the STATE, never the identity (design §0).
@@ -3614,7 +4301,7 @@ SCREENS.settings = () => {
             ${rc.candidate ? `<div class="net" id="settingsNet" style="max-width:240px;margin:12px auto"></div>` : ''}
             <div class="sub" style="color:var(--ink-4)">${escHtml(words)}</div>
             <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
-              <span class="pill" id="reconnectBadge" style="color:var(--warn);border-color:var(--warn)">position unverified</span>
+              <span class="pill" id="reconnectBadge" style="color:var(--warn-ink);border-color:var(--warn-ink)">position unverified</span>
               <b style="flex:1;font-size:var(--fs-body-s)">${escHtml(ask)}</b>
             </div>
             <div style="display:flex;gap:8px;margin-top:10px">
@@ -3637,11 +4324,11 @@ SCREENS.settings = () => {
                 <div style="flex:1;min-width:0">
                   <input class="field" data-rename-cube="${escHtml(c.mac)}" value="${escHtml(c.nickname)}"
                     placeholder="${escHtml(c.name || 'Give it a name')}" maxlength="${MAX_LABEL}"
-                    aria-label="Name for the cube at ${escHtml(c.mac)}"
+                    aria-label="Name for the cube ${escHtml(idWords(c.mac))}"
                     style="width:100%;font-weight:600" title="A name of your own. Only a label — nothing depends on it.">
-                  <div class="sub num" style="color:var(--ink-5);font-size:var(--fs-meta);margin-top:3px">${escHtml(c.mac)} · ${live ? 'connected now' : seenAgo(c.lastSeen)}</div>
+                  <div class="sub num" style="color:var(--ink-5);font-size:var(--fs-meta);margin-top:3px">${escHtml(c.mac.startsWith(NAME_PREFIX) ? t('no address — remembered by name') : c.mac)} · ${escHtml(live ? t('connected now') : seenAgo(c.lastSeen))}</div>
                 </div>
-                ${!on && !isTauri ? `<button class="btn sm outline" data-use-cube="${escHtml(c.mac)}" aria-label="Connect to ${escHtml(rowName(c))}" style="flex:none;margin-top:1px">Use</button>` : ''}
+                ${!on && !isTauri && normaliseMac(c.mac) ? `<button class="btn sm outline" data-use-cube="${escHtml(c.mac)}" aria-label="Connect to ${escHtml(rowName(c))}" style="flex:none;margin-top:1px">Use</button>` : ''}
                 <button class="btn sm" data-forget-cube="${escHtml(c.mac)}" aria-label="Forget ${escHtml(rowName(c))}" style="flex:none;margin-top:1px;border:1px solid var(--line);color:var(--ink-4)">Forget</button>
               </div>`;
             }).join('')}
@@ -3655,14 +4342,14 @@ SCREENS.settings = () => {
           <div style="flex:1">
             <div style="font-weight:600">${on ? escHtml(liveCubeLabel()) + ' · live' : 'No cube paired'}</div>
             <div class="sub" id="btNote" style="color:var(--ink-4)">${on ? 'Every turn streams into cubus.' : 'Optional — cubus solves from the camera alone. A cube adds move-by-move following.'}</div>
-            ${on ? '' : `<div class="sub" style="color:var(--ink-5);margin-top:4px">${isTauri ? 'Pairing scans for a nearby cube — turn it first so its radio is awake.' : 'Pairing opens your browser’s device chooser — turn the cube first so it appears in the list.'}</div>`}
+            ${on ? '' : `<div class="sub" id="btReach" style="color:var(--ink-5);margin-top:4px">${escHtml(t(bleReachNote()))}</div>`}
           </div>
           ${on ? battery() : ''}
         </div>
-        ${on && Number.isFinite(state.battery) && state.battery <= 20 ? `<div style="display:flex;gap:8px;padding:0 0 12px;color:var(--err);font-size:var(--fs-body-s)">
+        ${on && Number.isFinite(state.battery) && state.battery <= 20 ? `<div style="display:flex;gap:8px;padding:0 0 12px;color:var(--err-ink);font-size:var(--fs-body-s)">
           <span>Battery low. A cube that dies mid-solve stops counting turns, and what it reports afterwards will not match the cube in your hand until you read it again.</span>
         </div>` : ''}
-        ${registryWriteBad ? `<div id="registryWriteWarn" style="display:flex;gap:8px;padding:0 0 12px;color:var(--err);font-size:var(--fs-body-s)">
+        ${registryWriteBad ? `<div id="registryWriteWarn" style="display:flex;gap:8px;padding:0 0 12px;color:var(--err-ink);font-size:var(--fs-body-s)">
           <span>This browser is refusing to store what cubus learns about this cube — its memory of it will not survive a reload, so the next reconnect will greet it as a stranger.</span>
         </div>` : ''}
         ${on ? `<div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line-faint)">
@@ -3688,23 +4375,23 @@ SCREENS.settings = () => {
           <button class="btn sm outline" id="offsetReset" aria-label="Discard the tracking correction — your cube will need reading again" style="flex:none">Reset</button>
         </div>` : ''}
         ${knownCubesRows()}
-        ${on ? '' : `<div id="macRow" hidden style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-faint)">
+        ${on || !canPair() ? '' : `<div id="macRow" hidden style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">${known.length ? 'Add another cube' : 'Cube Bluetooth address'}</div>
             <div class="sub" style="color:var(--ink-4)">Only needed if your cube does not broadcast its own address. Most do, and most cubes never ask you for this. If yours does, its own app lists it under the cube's details.</div></div>
           <input class="field" id="macIn" placeholder="AB:CD:EF:12:34:56" style="width:180px;flex:none">
         </div>`}
         <div style="display:flex;gap:10px;align-items:center;padding:12px 0">
-          <button class="btn ${on ? 'outline' : 'primary'} sm" id="pairBtn">${on ? 'Disconnect' : 'Pair a cube'}</button>
-          <span class="sub" id="pairMsg" style="flex:1"></span>
+          ${on || canPair() ? `<button class="btn ${on ? 'outline' : 'primary'} sm" id="pairBtn">${escHtml(t(on ? 'Disconnect' : 'Pair a cube'))}</button>` : ''}
+          <span class="sub" id="pairMsg" style="flex:1" role="status" aria-live="polite"></span>
         </div>
         ${rc ? reconnectRow() : steps.every((_, i) => done(i)) ? '' : steps.map(([st, sub], i) => `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line-faint)">
-          <div class="num" style="width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid ${done(i) ? 'var(--ok)' : 'var(--line)'};display:grid;place-items:center;font-size:var(--fs-meta);color:${done(i) ? 'var(--ok)' : 'var(--ink-5)'}">${done(i) ? '✓' : i + 1}</div>
+          <div class="num" style="width:22px;height:22px;flex:none;border-radius:50%;border:1.5px solid ${done(i) ? 'var(--ok)' : 'var(--line)'};display:grid;place-items:center;font-size:var(--fs-meta);color:${done(i) ? 'var(--ok-ink)' : 'var(--ink-5)'}">${done(i) ? '✓' : i + 1}</div>
           <div style="flex:1"><div style="font-weight:600">${st}</div><div class="sub" style="color:var(--ink-4)">${sub}</div></div>
           ${i === 2 && on ? `<button class="btn sm outline" id="anchorNoBtn" style="flex:none" title="The camera reads it exactly as it is — no need to solve it first">Not solved</button>
           <button class="btn sm primary" id="anchorBtn" style="flex:none">${state.anchored ? 'Re-mark solved' : "It's solved"}</button>
-          <button class="btn sm" id="anchorForceBtn" hidden style="flex:none;border:1px solid var(--warn);color:var(--warn)">It is solved — anchor anyway</button>` : ''}
+          <button class="btn sm" id="anchorForceBtn" hidden style="flex:none;border:1px solid var(--warn-ink);color:var(--warn-ink)">It is solved — anchor anyway</button>` : ''}
         </div>`).join('')}
-        ${on && !rc && steps.every((_, i) => done(i)) ? `<div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line-faint);color:var(--ok);font-size:var(--fs-body-s)">
+        ${on && !rc && steps.every((_, i) => done(i)) ? `<div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line-faint);color:var(--ok-ink);font-size:var(--fs-body-s)">
           ${icon('check', 15)}<span style="flex:1">Set up and tracking.</span>
           <button class="btn sm outline" id="anchorBtn" aria-label="Re-mark this cube as solved">Re-mark solved</button>
         </div>` : ''}
@@ -3717,7 +4404,7 @@ SCREENS.settings = () => {
     <div class="aside">
       <div class="card"><div class="eyebrow">CUBE COLOURS</div>
         <div style="display:flex;gap:6px;margin-top:12px" id="palSwatch"></div>
-        <div style="display:flex;gap:6px;margin-top:12px">${pals.map((p) => `<button class="pill ${settings.palette === p ? 'on' : ''}" data-pal="${p}" style="flex:1;justify-content:center">${p}</button>`).join('')}</div></div>
+        <div style="display:flex;gap:6px;margin-top:12px">${pals.map((p) => `<button class="pill ${settings.palette === p ? 'on' : ''}" data-pal="${p}" aria-pressed="${settings.palette === p}" style="flex:1;justify-content:center">${escHtml(t(p))}</button>`).join('')}</div></div>
       ${advancedOpen ? `<div class="card"><div class="eyebrow">ADVANCED</div>
         <div class="sub" style="color:var(--ink-4);margin-top:6px;line-height:1.5">Toolbar tabs. Hiding one only takes it out of the row — its address still works.</div>
         ${HIDEABLE.map(([id, lbl]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
@@ -3726,17 +4413,18 @@ SCREENS.settings = () => {
         <div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
           <div style="flex:1"><div style="font-weight:600">Random-cube die</div><div class="sub" style="color:var(--ink-4)">Shows the die on the solve screen that loads a random scrambled cube — a developer shortcut, since that cube is not the one in anyone's hand. Scramble keeps its own die regardless.</div></div>
           <button class="toggle ${settings.devRandCube ? 'on' : ''}" data-toggle="devRandCube" role="switch" aria-checked="${Boolean(settings.devRandCube)}" aria-label="Random-cube die"><i></i></button></div>
-        <div class="sub" style="color:var(--ink-5);margin-top:12px">⌃⌥⌘D hides this section again.</div></div>` : ''}
+        <div class="sub" style="color:var(--ink-5);margin-top:12px">${escHtml(t('%1 hides this section again.', advancedChordWords()))}</div></div>` : ''}
       <div class="card"><div class="eyebrow">ABOUT</div>
         <div class="about-brand"><img src="./icons/icon.svg" alt="" width="22" height="22" /><b>Cubus</b></div>
         <div class="about-row">${icon('tag', 15)}<span class="k">${t('Version')}</span><span class="num">${VERSION}</span></div>
         ${appUpdater() ? `<div class="about-row">${icon('refresh', 15)}<span class="k">${t('Updates')}</span><button class="pill" id="checkUpdate">${t('Check now')}</button></div>` : ''}
         <div class="about-row">${icon('globe', 15)}<span class="k">${t('Website')}</span><a class="link" href="https://cubus.im" target="_blank" rel="noopener">cubus.im</a></div>
         <div class="about-row">${icon('user', 15)}<span class="k">${t('Author')}</span><a class="link" href="https://lixiaolai.com" target="_blank" rel="noopener">@xiaolai</a></div>
-        <div class="sub" style="color:var(--ink-3);margin-top:10px;line-height:1.55">${t('Solver and vision run locally. Nothing leaves the device.')}</div></div>
+        <div class="about-row">${icon('book', 15)}<span class="k">${t('Credits')}</span><a class="link" href="./THIRD_PARTY_NOTICES.md" rel="noopener">${t('Third-party notices')}</a></div>
+        <div class="sub" style="color:var(--ink-3);margin-top:10px;line-height:1.55">${t(privacySentence())}</div></div>
     </div></div>`,
     mount(root) {
-      const swatch = () => { const p = NET_COLORS[settings.palette]; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
+      const swatch = () => { const p = NET_COLORS[settings.palette] || NET_COLORS.muted; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
       swatch();
       // Drawn only where `updater` exists, which is the desktop gate — so this never looks for a
       // button the browser build does not have. The press ALWAYS checks (it ignores the daily
@@ -3752,6 +4440,11 @@ SCREENS.settings = () => {
           checkBtn.textContent = t('Checking…');
           try {
             await reportUpdateOutcome(await upd.checkNow());
+          } catch (err) {
+            // A press that throws used to leave the button spinning back to normal with nothing
+            // said — the check simply appeared not to happen.
+            console.error('app-update: the check failed', err);
+            await reportUpdateOutcome({ status: 'error' });
           } finally {
             // The button may have gone with a re-render, and an installed update never comes back
             // here at all — the app relaunches out from under it.
@@ -3769,8 +4462,14 @@ SCREENS.settings = () => {
       const orientationPills = $('#orientationPills', root);
       if (orientationPills) {
         const invoke = window.__TAURI__?.core?.invoke;
-        const mark = (current) => { for (const b of orientationPills.querySelectorAll('[data-set-orientation]')) b.classList.toggle('on', b.dataset.setOrientation === current); };
-        const fail = (e) => { orientationPills.title = String(e); orientationPills.style.color = 'var(--err)'; console.error('window orientation', e); };
+        const mark = (current) => {
+          for (const b of orientationPills.querySelectorAll('[data-set-orientation]')) {
+            const on = b.dataset.setOrientation === current;
+            b.classList.toggle('on', on);
+            b.setAttribute('aria-pressed', String(on)); // the class is the look; this is the fact
+          }
+        };
+        const fail = (e) => { orientationPills.title = String(e); orientationPills.style.color = 'var(--err-ink)'; console.error('window orientation', e); };
         if (typeof invoke !== 'function') fail('the Tauri API is not exposed');
         else {
           invoke('get_orientation').then(mark, fail);
@@ -3800,7 +4499,7 @@ SCREENS.settings = () => {
       // message idiom, same error surfacing. Two copies of it had already started to drift.
       const connectFromSettings = async (mac, pending) => {
         say(pending, 'var(--ink-4)');
-        try { await doConnect(mac); } catch (e) { say(String(e.message || e), 'var(--err)'); }
+        try { await doConnect(mac); } catch (e) { say(String(e.message || e), 'var(--err-ink)'); }
       };
 
       // What CAN be detected, and what cannot. A browser has no scan-without-permission by
@@ -3808,13 +4507,18 @@ SCREENS.settings = () => {
       // whether pressing Pair can work at all, which beats a button that fails unexplained. The
       // address field appears ONLY where it is genuinely needed: the native build learns the
       // address from its own scan, a browser must be handed it.
+      //
+      // WHICH HOSTS GET THE BUTTON AT ALL is decided in the template, by canPair(), and not here:
+      // this used to promise "Native Bluetooth — cubus finds the cube itself" under any Tauri
+      // build, including the Android one whose native BLE the bridge refuses outright — so the
+      // affordance was offered, pressed, and answered with a message written for a browser
+      // ("smart cubes need Chrome, Edge, or the desktop app") on a phone where none of those
+      // three is the answer (found by audit, 2026-09-04). bleReachNote() states the platform's
+      // real position before anything is pressed.
       const btNote = $('#btNote', root), macRow = $('#macRow', root);
       if (pairBtn && !state.connected) {
-        if (isTauri) {
-          if (btNote) btNote.textContent = 'Native Bluetooth — cubus finds the cube itself.';
-        } else if (!navigator.bluetooth) {
-          if (btNote) btNote.textContent = 'This browser cannot use Bluetooth. The desktop app can, and the camera works either way.';
-          pairBtn.disabled = true;
+        if (bleReach() === 'native') {
+          if (btNote) btNote.textContent = t('Native Bluetooth — cubus finds the cube itself.');
         } else {
           if (macRow) macRow.hidden = false;
           void navigator.bluetooth.getAvailability?.().then((ok) => {
@@ -3822,7 +4526,7 @@ SCREENS.settings = () => {
             // Resolved now, not captured at mount: a trust change repaints this card, and nodes
             // taken beforehand are detached by the time this promise settles.
             const note = $('#btNote'), pair = $('#pairBtn');
-            if (note) note.textContent = 'No Bluetooth radio available on this machine — turn it on, then reload.';
+            if (note) note.textContent = t('No Bluetooth radio available on this machine — turn it on, then reload.');
             if (pair) pair.disabled = true;
           }).catch(() => {}); // an engine without getAvailability tells us nothing
         }
@@ -3863,10 +4567,10 @@ SCREENS.settings = () => {
       for (const el of root.querySelectorAll('[data-rename-cube]')) {
         el.onchange = () => {
           cubes = renameCube(cubes, el.dataset.renameCube, el.value);
-          const rec = cubes[normaliseMac(el.dataset.renameCube)];
+          const rec = cubes[normaliseIdentity(el.dataset.renameCube)];
           const named = cubeLabel({ ...rec, mac: el.dataset.renameCube });
-          if (save('cubusCubes', cubes)) say(`Saved — this cube is "${named}".`, 'var(--ok)');
-          else say('Could not save that name — this browser is refusing to store anything.', 'var(--err)');
+          if (save('cubusCubes', cubes)) say(`Saved — this cube is "${named}".`, 'var(--ok-ink)');
+          else say('Could not save that name — this browser is refusing to store anything.', 'var(--err-ink)');
         };
       }
       for (const el of root.querySelectorAll('[data-use-cube]')) {
@@ -3884,10 +4588,24 @@ SCREENS.settings = () => {
             el.style.borderColor = 'var(--err)';
             return;
           }
-          cubes = forgetCube(cubes, el.dataset.forgetCube);
+          const id = el.dataset.forgetCube;
+          cubes = forgetCube(cubes, id);
           const stored = save('cubusCubes', cubes);
+          // The app's own registry is not the only place this cube's address is written down. The
+          // protocol layer caches a resolved address under `smartcube-ble-mac:<device id>`, and on
+          // Windows, Linux and Android the device id IS that address — so a "forgotten" cube kept
+          // its MAC on disk and the next connect resolved a key from it without asking anything.
+          // A forget that leaves the identifying value in storage is not a forget.
+          //
+          // Best effort by construction, and honest about it: on macOS the id is a per-host UUID
+          // the app never sees, so there is nothing here to remove and this removes nothing. The
+          // live session's id is tried too, for the case where the row being forgotten is the
+          // cube currently connected.
+          const purged = forgetLibraryMac(normaliseMac(id))
+            + (state.cubeMac === id ? forgetLibraryMac(normaliseMac(conn?.mac ?? '')) : 0);
+          if (purged) console.info(`forget: also removed ${purged} cached address entr${purged === 1 ? 'y' : 'ies'}`);
           renderScreen();
-          if (!stored) say('Forgotten for now, but this browser will not store the change.', 'var(--err)');
+          if (!stored) say('Forgotten for now, but this browser will not store the change.', 'var(--err-ink)');
         };
       }
       $('#battRefresh', root)?.addEventListener('click', () => void refreshBattery());
@@ -3897,10 +4615,29 @@ SCREENS.settings = () => {
       // refusal that reaches nobody is a quiet failure one level above the one it guards against.
       $('#cubeReportBtn', root)?.addEventListener('click', async () => {
         const asked = conn;
-        if (!asked) { say('not connected', 'var(--err)'); return; }
+        if (!asked) { say('not connected', 'var(--err-ink)'); return; }
         try {
-          const { saveReport } = await import('./cube-report.js');
-          const r = await saveReport(asked.report({ scenario: 'saved from Settings' }), { isWebview: isTauri });
+          const { describeReport, saveReport } = await import('./cube-report.js');
+          const fixture = asked.report({ scenario: 'saved from Settings' });
+          // Said BEFORE the file exists, not after — and said at all, which it was not: a GAN or
+          // MoYu capture carries the cube's BLE address, because key derivation needs it, and the
+          // app was writing that into a file it invited people to attach to a public issue
+          // without once mentioning it (`describeReport` existed and had no caller — found by
+          // audit, 2026-09-04). It is a toy's identifier that the toy broadcasts in the clear,
+          // not a phone or a person; the point is that the choice is the user's to make knowing.
+          //
+          // Two-step, the same idiom the Forget button uses, and for a reason of the same weight:
+          // this is the one action here that puts an identifier somewhere the app cannot take it
+          // back from. No modal is invented for it — this design system has none, and the button
+          // itself can carry the question.
+          const about = describeReport(fixture);
+          const btn = $('#cubeReportBtn');
+          if (about.containsMac && btn?.dataset.told !== 'yes') {
+            if (btn) { btn.dataset.told = 'yes'; btn.textContent = t('Save it anyway'); }
+            say(t('This recording includes your cube’s Bluetooth address — cubus needs it to decode the cube, and the cube broadcasts it in the clear, but it will be in the file you attach. Nothing about you or your computer is. Press again to save.'), 'var(--warn-ink)');
+            return;
+          }
+          const r = await saveReport(fixture, { isWebview: isTauri });
           if (conn !== asked) return;
           const kb = Math.max(1, Math.round(r.bytes / 1024));
           // Says which thing happened, never a generic "done": a download and a clipboard copy
@@ -3908,10 +4645,10 @@ SCREENS.settings = () => {
           say(r.how === 'downloaded'
             ? `Saved ${r.name} (${kb} KB) — attach it to an issue at github.com/xiaolai/cubus`
             : `Copied ${kb} KB to your clipboard — paste it into an issue at github.com/xiaolai/cubus`,
-            'var(--ok)');
+            'var(--ok-ink)');
         } catch (e) {
           if (conn !== asked) return;
-          say(String(e.message || e).split('\n')[0], 'var(--err)');
+          say(String(e.message || e).split('\n')[0], 'var(--err-ink)');
         }
       });
 
@@ -3925,7 +4662,15 @@ SCREENS.settings = () => {
       const liveAnchorBtn = () => $('#anchorBtn');
       const liveForceBtn = () => $('#anchorForceBtn');
       const anchor = async (force) => {
-        if (!conn) { say('not connected', 'var(--err)'); return; }
+        if (!conn) { say('not connected', 'var(--err-ink)'); return; }
+        // Anchoring moves the cube's own solved reference. It cannot answer a refusal, which is
+        // about the two channels disagreeing with each other rather than with reality — and
+        // markTrusted would refuse the 'cube' source afterwards anyway, leaving a success message
+        // over a cube that had not become trusted.
+        if (cubeRefused()) {
+          say('This cube’s reports do not add up, so anchoring it would not make them true. Disconnect and pair again — the camera reads the cube either way.', 'var(--err-ink)');
+          return;
+        }
         // Single-flight: dropping trust re-renders this card, which hands back a fresh enabled
         // button while the first call is still awaiting — two concurrent REQUEST_RESETs.
         if (anchoring) { say('already anchoring…', 'var(--ink-4)'); return; }
@@ -3950,17 +4695,17 @@ SCREENS.settings = () => {
           if (conn !== asked) return;
           state.anchored = true;
           markTrusted('cube'); // the cube and reality were just made to agree — and this repaints
-          say('Anchored — the cube agrees it is solved.', 'var(--ok)');
+          say('Anchored — the cube agrees it is solved.', 'var(--ok-ink)');
         } catch (e) {
           if (conn !== asked) return;
           state.anchored = false;
           const msg = String(e.message || e).split('\n')[0];
           if (!force && /refusing to anchor/i.test(msg)) {
-            say('The cube reports it is not solved. If it IS solved in front of you, its own reference has drifted — anchoring will reset it to this position.', 'var(--warn)');
+            say('The cube reports it is not solved. If it IS solved in front of you, its own reference has drifted — anchoring will reset it to this position.', 'var(--warn-ink)');
             const f = liveForceBtn();
             if (f) f.hidden = false;
           } else {
-            say(msg, 'var(--err)');
+            say(msg, 'var(--err-ink)');
           }
         } finally { anchoring = false; disable(false); }
       };
@@ -4041,7 +4786,7 @@ SCREENS.stats = () => {
   return { html: `<div class="cols flow">
     <div class="col">
       <div class="grid3">
-        <div class="card stat"><div class="eyebrow">SINGLE BEST</div><div class="v">${secs(s.best)}</div><div class="d">${s.count} solve${s.count === 1 ? '' : 's'} recorded</div></div>
+        <div class="card stat"><div class="eyebrow">SINGLE BEST</div><div class="v">${secs(s.best)}</div><div class="d">${escHtml(plural(s.count, { one: '%1 solve recorded', other: '%1 solves recorded' }))}</div></div>
         <div class="card stat"><div class="eyebrow">AO5</div><div class="v">${secs(s.ao5)}</div><div class="d">${s.ao5 === null ? (s.count < 5 ? `needs ${5 - s.count} more` : 'a recent solve is unreadable') : 'last five'}</div></div>
         <div class="card stat"><div class="eyebrow">AO12</div><div class="v">${secs(s.ao12)}</div><div class="d">${s.ao12 === null ? `needs ${Math.max(0, 12 - s.count)} more` : 'last twelve'}</div></div>
       </div>
@@ -4050,9 +4795,16 @@ SCREENS.stats = () => {
           <div class="v">${s.turnRate === null ? '—' : `${s.turnRate.tps.toFixed(2)}`}</div>
           <div class="d">${s.turnRate === null
             ? t('a turn rate is a fact about a move stream — pair a smart cube to earn one')
-            : `${t('turns per second, over')} ${s.cubeTimed} ${s.cubeTimed === 1 ? t('cube-timed solve') : t('cube-timed solves')}`}</div></div>
+            : escHtml(plural(s.cubeTimed, {
+              // ONE key, not three. The old form was `t('turns per second, over') + count +
+              // t('cube-timed solve[s]')`, which a translation cannot reorder and cannot inflect:
+              // a language that puts the count last, or that agrees the noun with it, had no way
+              // to express the sentence at all.
+              one: 'turns per second, over %1 cube-timed solve',
+              other: 'turns per second, over %1 cube-timed solves',
+            }))}</div></div>
       </div>
-      <div class="card"><div class="eyebrow">LAST ${chart.length} SOLVE${chart.length === 1 ? '' : 'S'}</div>
+      <div class="card"><div class="eyebrow">${escHtml(plural(chart.length, { one: 'LAST %1 SOLVE', other: 'LAST %1 SOLVES' }))}</div>
         <div style="display:flex;align-items:flex-end;gap:4px;height:130px;margin-top:16px">${chart.map((v) => `<div title="${secs(v)}s" style="flex:1;background:${v === bestT ? 'var(--accent)' : 'var(--ink-6)'};height:${Math.max(4, Math.round((v / worst) * 100))}%;border-radius:2px 2px 0 0"></div>`).join('')}</div>
         <div class="sub" style="color:var(--ink-5);margin-top:10px;font-size:var(--fs-meta)">Taller is slower.${bestT === null ? '' : ' The fastest of these is marked.'}</div></div>
       <div class="card tight" style="flex:1;min-height:0;display:flex;flex-direction:column">
@@ -4065,63 +4817,118 @@ SCREENS.stats = () => {
         <div class="sub" style="color:var(--ink-5);margin-top:10px;font-size:var(--fs-meta)">An average of n needs n solves. Until then it is a dash, not a guess.</div></div>
       <div class="card"><div class="eyebrow">WEEK</div>
         <div style="display:flex;align-items:flex-end;gap:8px;height:110px;margin-top:14px">
-        ${week.map((d, i) => `<div title="${d.count} solve${d.count === 1 ? '' : 's'}${d.best === null ? '' : ` · best ${secs(d.best)}`}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end">
+        ${week.map((d, i) => `<div title="${escHtml(plural(d.count, { one: '%1 solve', other: '%1 solves' }))}${d.best === null ? '' : ` · ${t('best')} ${secs(d.best)}`}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end">
           <div style="width:100%;border-radius:3px 3px 0 0;height:${d.count ? Math.max(6, Math.round((d.count / busiest) * 100)) : 2}%;background:${i === week.length - 1 && d.count ? 'var(--accent)' : 'var(--ink-6)'}"></div>
           <div style="font-size:var(--fs-meta);color:var(--ink-5)">${d.label}</div></div>`).join('')}</div>
         <div class="sub" style="color:var(--ink-5);margin-top:14px;font-size:var(--fs-meta)">Solves per day. Only solves recorded with a date appear here.</div></div>
     </div></div>`, mount() {} };
 };
 
+// ---- Preview screens ---------------------------------------------------------------------
+//
+// Trainer, Drill and Lessons are LAYOUTS, not features: the compositions exist, nothing behind
+// them does. That is a legitimate state for a screen to be in — the design work is real and the
+// rows are how it was reviewed — but until 2026-09-04 they said it by showing invented figures.
+// "82% recall", "2.14 average execution, 9 reps", "4/4 Done", a queue with due dates, five case
+// cards with per-case mastery bars: every one of those numbers described nothing, and they were
+// one Advanced toggle away from a beginner who would read them as their own.
+//
+// The app's own rule is that a statistic that cannot be computed is a dash, never a number, and
+// it is enforced everywhere else — Stats replaced its whole invented dashboard with computed
+// figures or em dashes, and the Timer's "last five" starts empty rather than seeded. These three
+// screens were the exception, and an exception one URL away is not an exception, it is the rule
+// being broken quietly.
+//
+// So: every figure is an em dash, every screen states in words that nothing here is measured,
+// and the controls that would pretend to do something are disabled rather than silently inert.
+// A layout can be reviewed perfectly well with dashes in it. When one of these grows a real
+// engine, the dash is exactly the place the real number goes.
+const PREVIEW_NOTE = 'Preview — nothing here is measured yet';
+const previewBanner = () => `<div class="card" style="padding:12px 16px;display:flex;gap:10px;align-items:center">
+  <span class="ico" style="color:var(--ink-5);flex:none">${icon('book', 16)}</span>
+  <div class="sub" style="color:var(--ink-3);line-height:1.5"><b>${escHtml(t(PREVIEW_NOTE))}</b> — ${escHtml(t('this screen is a design in progress. The layout is real; the figures are placeholders shown as dashes, and the controls do nothing yet.'))}</div>
+</div>`;
+
 SCREENS.trainer = () => {
-  const P2 = NET_COLORS[settings.palette];
-  const oll = [['OLL 21', "R U2 R' U' R U R' U' R U' R'", 'var(--ok)', '82%'], ['OLL 22', "R U2 R2 U' R2 U' R2 U2 R", 'var(--accent)', '64%'], ['OLL 24', "r U R' U' r' F R F'", 'var(--err)', '22%'], ['OLL 27', "R U R' U R U2 R'", 'var(--ok)', '94%'], ['PLL T', "R U R' U' R' F R2 U' R' U' R U R' F'", 'var(--accent)', '71%'], ['PLL Y', "F R U' R' U' R U R' F' R U R' U' R' F R F'", 'var(--err)', '29%']];
+  const P2 = NET_COLORS[settings.palette] || NET_COLORS.muted;
+  // The algs are REAL algorithms and stay — they are facts about a cube, not claims about you.
+  // What went are the per-case percentages and the colour that ranked them.
+  const oll = [
+    ['OLL 21', "R U2 R' U' R U R' U' R U' R'"],
+    ['OLL 22', "R U2 R2 U' R2 U' R2 U2 R"],
+    ['OLL 24', "r U R' U' r' F R F'"],
+    ['OLL 27', "R U R' U R U2 R'"],
+    ['PLL T', "R U R' U' R' F R2 U' R' U' R U R' F'"],
+    ['PLL Y', "F R U' R' U' R U R' F' R U R' U' R' F R F'"],
+  ];
   const grid = (seed) => Array.from({ length: 9 }, (_, i) => ((i * 7 + seed * 3) % 4 === 0 ? P2.D : 'var(--facelet-off)'));
   // width:100% — the screen centres its child (see the timer). The case grid wraps as many
   // 140px cards as fit rather than dividing the width into five.
   return { html: `<div style="width:100%;height:100%;display:flex;flex-direction:column;gap:16px">
-    <div class="wrap-row">${['OLL', 'PLL', 'F2L', 'Weak first'].map((f, i) => `<button class="pill ${i === 0 ? 'on' : ''}">${f}</button>`).join('')}<span class="sub" style="margin-left:auto;color:var(--ink-4)">Sorted by weakest recall</span></div>
+    ${previewBanner()}
+    <div class="wrap-row" role="group" aria-label="${escHtml(t('Case filters'))}">${['OLL', 'PLL', 'F2L', 'Weak first'].map((f, i) => `<button class="pill" aria-pressed="${i === 0}" disabled>${escHtml(f)}</button>`).join('')}<span class="sub" style="margin-left:auto;color:var(--ink-4)">${escHtml(t('Recall is not recorded yet'))}</span></div>
     <div class="case-grid">
-    ${oll.map(([name, alg, color, pct], i) => `<button class="card" data-go="drill" style="text-align:center;cursor:pointer">
+    ${oll.map(([name, alg], i) => `<div class="card" style="text-align:center">
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;width:76px;margin:0 auto">${grid(i).map((g) => `<div style="aspect-ratio:1;border-radius:var(--r-sticker);background:${g}"></div>`).join('')}</div>
-      <div style="font-weight:700;margin-top:10px">${name}</div><div class="num sub" style="color:var(--ink-4);min-height:28px;font-size:var(--fs-caption)">${alg}</div>
-      <div class="bar" style="margin-top:6px"><i style="width:${pct};background:${color}"></i></div></button>`).join('')}</div></div>`, mount() {} };
+      <div style="font-weight:700;margin-top:10px">${escHtml(name)}</div><div class="num sub" style="color:var(--ink-4);min-height:28px;font-size:var(--fs-caption)">${escHtml(alg)}</div>
+      <div class="num sub" style="margin-top:6px;color:var(--ink-5)">—</div></div>`).join('')}</div></div>`, mount() {} };
 };
 
 SCREENS.drill = () => {
-  const P2 = NET_COLORS[settings.palette];
+  const P2 = NET_COLORS[settings.palette] || NET_COLORS.muted;
   const grid = Array.from({ length: 9 }, (_, i) => ((i * 7 + 9) % 4 === 0 ? P2.D : 'var(--facelet-off)'));
   // `flow`: the flashcard is taller than a phone's locked primary region, and its controls
   // (Reveal, Again / Good / Easy) must never sit below a fold — so the box scrolls as one.
-  return { html: `<div class="cols flow"><div class="col"><div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px">
-      <div class="eyebrow">OLL 24 · DOT CASES · 3 OF 12</div>
+  //
+  // Reveal STILL WORKS: it shows a real algorithm, which is a fact rather than a measurement, and
+  // it is the one thing on this screen that does what it says. The spaced-repetition grades are
+  // disabled — pressing "Good" recorded nothing and scheduled nothing.
+  return { html: `<div class="cols flow"><div class="col">${previewBanner()}<div class="card" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px">
+      <div class="eyebrow">OLL 24 · ${escHtml(t('DOT CASES'))}</div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:180px">${grid.map((g) => `<div style="aspect-ratio:1;border-radius:var(--r-sticker);background:${g}"></div>`).join('')}</div>
       <div class="num" id="drillAlg" style="font-size:var(--fs-display-s);font-weight:600;color:var(--ink-6)">· · · · · · · ·</div>
-      <button class="btn accent-outline" id="reveal">Reveal algorithm</button>
-      <div style="display:flex;gap:10px"><button class="btn outline" style="color:var(--err)" data-next>Again</button><button class="btn outline" data-next>Good</button><button class="btn primary" data-next>Easy</button></div>
+      <button class="btn accent-outline" id="reveal">${escHtml(t('Reveal algorithm'))}</button>
+      <div style="display:flex;gap:10px" role="group" aria-label="${escHtml(t('How well did that go'))}"><button class="btn outline" disabled>${escHtml(t('Again'))}</button><button class="btn outline" disabled>${escHtml(t('Good'))}</button><button class="btn primary" disabled>${escHtml(t('Easy'))}</button></div>
     </div></div>
-    <div class="aside"><div class="card"><div class="eyebrow">THIS DRILL</div><div class="num" style="font-size:var(--fs-display);font-weight:600;margin-top:6px">2.14</div><div class="sub" style="color:var(--ink-4)">average execution, 9 reps</div><div class="bar" style="margin-top:14px"><i style="width:25%"></i></div></div>
-      <div class="card" style="flex:1;min-height:0"><div class="eyebrow">QUEUE</div>${[['OLL 24', 'now'], ['OLL 25', 'now'], ['OLL 23', '+2'], ['PLL Y', '+5'], ['OLL 22', 'tomorrow']].map(([n, due], i) => `<div class="row" style="grid-template-columns:1fr auto;border-color:var(--line-faint)"><div style="color:${i === 0 ? 'var(--ink)' : 'var(--ink-3)'};font-weight:${i === 0 ? 700 : 500}">${n}</div><div class="num sub" style="color:var(--ink-5)">${due}</div></div>`).join('')}</div></div></div>`,
+    <div class="aside"><div class="card"><div class="eyebrow">${escHtml(t('THIS DRILL'))}</div><div class="num" style="font-size:var(--fs-display);font-weight:600;margin-top:6px">—</div><div class="sub" style="color:var(--ink-4)">${escHtml(t('average execution — nothing recorded yet'))}</div></div>
+      <div class="card" style="flex:1;min-height:0"><div class="eyebrow">${escHtml(t('QUEUE'))}</div><div class="sub" style="color:var(--ink-4);margin-top:8px;line-height:1.5">${escHtml(t('A queue needs a schedule, and a schedule needs solves this screen does not record yet.'))}</div></div></div></div>`,
     mount(root) {
       let shown = false; const alg = "r U R' U' r' F R F'";
-      $('#reveal', root).onclick = (e) => { shown = !shown; $('#drillAlg', root).textContent = shown ? alg : '· · · · · · · ·'; $('#drillAlg', root).style.color = shown ? 'var(--ink)' : 'var(--ink-6)'; e.target.textContent = shown ? 'Hide algorithm' : 'Reveal algorithm'; };
-      for (const b of root.querySelectorAll('[data-next]')) b.onclick = () => { shown = false; $('#drillAlg', root).textContent = '· · · · · · · ·'; $('#drillAlg', root).style.color = 'var(--ink-6)'; $('#reveal', root).textContent = 'Reveal algorithm'; };
+      $('#reveal', root).onclick = (e) => { shown = !shown; $('#drillAlg', root).textContent = shown ? alg : '· · · · · · · ·'; $('#drillAlg', root).style.color = shown ? 'var(--ink)' : 'var(--ink-6)'; e.target.textContent = shown ? t('Hide algorithm') : t('Reveal algorithm'); };
     },
   };
 };
 
 SCREENS.lessons = () => {
-  const ch = [['CHAPTER 1 · 4 LESSONS', 'Beginner layer method', '4/4', [['White cross', '5 min', 'Done', 'var(--ok)'], ['First layer corners', '7 min', 'Done', 'var(--ok)'], ['Middle layer', '9 min', 'Done', 'var(--ok)'], ['Last layer', '12 min', 'Done', 'var(--ok)']]], ['CHAPTER 2 · 3 LESSONS', 'Getting under a minute', '1/3', [['Efficient cross', '6 min', 'Done', 'var(--ok)'], ['Keyhole F2L', '6 min', 'Next', 'var(--accent)'], ['Look-ahead drills', '8 min', 'Locked', 'var(--ink-5)']]]];
+  // Titles and durations are the SYLLABUS — a plan, and plans are allowed to be written down.
+  // What went are the progress claims: "4/4", "1/3", four lessons marked Done and one Next, on a
+  // course nobody has taken a minute of. A tag that says where you are is a measurement.
+  const ch = [
+    ['CHAPTER 1', 'Beginner layer method', ['White cross', 'First layer corners', 'Middle layer', 'Last layer']],
+    ['CHAPTER 2', 'Getting under a minute', ['Efficient cross', 'Keyhole F2L', 'Look-ahead drills']],
+  ];
   return { html: `<div class="cols flow"><div class="col">
-    ${ch.map(([kick, title, prog, ls]) => `<div class="card tight"><div class="card-h"><div><div class="eyebrow">${kick}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${title}</div></div><div class="num sub" style="color:var(--ink-4)">${prog}</div></div>
-      ${ls.map(([t, len, tag, fg]) => `<div class="row" style="grid-template-columns:8px 1fr auto auto;gap:14px"><div style="width:8px;height:8px;border-radius:50%;background:${fg}"></div><div style="color:${tag === 'Locked' ? 'var(--ink-5)' : 'var(--ink)'};font-weight:${tag === 'Next' ? 700 : 500}">${t}</div><div class="sub" style="color:var(--ink-5)">${len}</div><div style="font-weight:600;color:${fg}">${tag}</div></div>`).join('')}</div>`).join('')}</div>
-    <div class="aside"><div class="card"><div class="eyebrow">UP NEXT</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:8px">Keyhole F2L</div><div style="color:var(--ink-3);margin-top:6px;line-height:1.5">A bridge between the beginner method and full F2L. 6 minutes, then a 10-case drill.</div><button class="btn outline block" data-go="drill" style="margin-top:14px">Start lesson</button></div>
-      <div class="card"><div class="eyebrow">COACH VIEW</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">Share a read-only link so a parent or coach can follow lesson progress and session times.</div><button class="btn accent-outline block" style="margin-top:12px">Create share link</button></div></div></div>`, mount() {} };
+    ${previewBanner()}
+    ${ch.map(([kick, title, ls]) => `<div class="card tight"><div class="card-h"><div><div class="eyebrow">${escHtml(kick)} · ${ls.length} ${escHtml(t('LESSONS'))}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${escHtml(title)}</div></div><div class="num sub" style="color:var(--ink-4)">—</div></div>
+      ${ls.map((name) => `<div class="row" style="grid-template-columns:8px 1fr auto;gap:14px"><div style="width:8px;height:8px;border-radius:50%;background:var(--ink-6)"></div><div style="color:var(--ink)">${escHtml(name)}</div><div class="num sub" style="color:var(--ink-5)">—</div></div>`).join('')}</div>`).join('')}</div>
+    <div class="aside"><div class="card"><div class="eyebrow">${escHtml(t('UP NEXT'))}</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('There is no next lesson until the lessons exist. The chapters above are the plan.'))}</div></div>
+      <div class="card"><div class="eyebrow">${escHtml(t('COACH VIEW'))}</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('The idea: share a read-only link so a parent or coach can follow progress. Nothing to share yet.'))}</div></div></div></div>`, mount() {} };
 };
 
 // ===============================================================================================
 // Router + boot
 // ===============================================================================================
-// ⌃⌥⌘D reveals (and hides) the Advanced section in Settings.
+/** The Advanced chord, spelled the way THIS platform spells it.
+ *
+ *  The handler requires Ctrl + Alt + Meta + D on every platform, and the copy printed the macOS
+ *  glyphs — ⌃⌥⌘D — everywhere. On Windows and Linux the third key is Super/Win, and a person
+ *  reading "⌘" there has been handed a key their keyboard does not have (found by audit,
+ *  2026-09-04). The chord itself is unchanged: `e.code` is layout-independent and all three
+ *  modifiers are required, which is what keeps it from colliding with anything a person types. */
+const advancedChordWords = () =>
+  (hostPlatform() === 'macos' ? '⌃⌥⌘D' : 'Ctrl + Alt + Win + D');
+
+// The Advanced chord reveals (and hides) the Advanced section in Settings.
 //
 // `e.code`, not `e.key`: on macOS Option rewrites the character, so this chord arrives as `∂` and
 // a key-based check would never match. `code` is the physical key and is layout-independent.
@@ -4205,8 +5012,37 @@ function refreshScreen() {
   if (!took) renderScreen();
 }
 
-function renderScreen() {
-  if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
+/** What the stage shows when a screen could not be built at all.
+ *
+ *  On the paper, in the app's own type, and with a way out — because the alternative this
+ *  replaced was the previous screen's DOM sitting under the new screen's title, which is worse
+ *  than an error: it is an app that quietly shows you the wrong thing. Deliberately a plain
+ *  spec with a no-op mount, so nothing about the failing screen is re-entered here. */
+const brokenScreen = (id) => ({
+  html: `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">
+    <div class="card" style="max-width:460px;text-align:center;padding:34px">
+      <div class="eyebrow">${escHtml(t('THIS SCREEN DID NOT OPEN'))}</div>
+      <div style="font-size:var(--fs-title);font-weight:600;margin-top:10px">${escHtml(t('Something went wrong drawing this screen'))}</div>
+      <div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.55">${escHtml(t('Nothing you did caused it, and nothing is lost. The other screens still work; reloading the app usually clears it.'))}</div>
+      <button class="btn accent-outline block" data-go="home" style="margin-top:18px">${escHtml(t('Go to the cube'))}</button>
+    </div></div>`,
+  mount() {},
+  broken: id,
+});
+
+/** The screen id focus was last moved for. A REPAINT of the screen you are on must not steal
+ *  focus — Settings repaints itself on a battery reply, a trust change and every toggle, and
+ *  each one would have taken the caret out of whatever was being typed. */
+let focusedScreen = null;
+
+function renderScreen({ navigated = false } = {}) {
+  // Logged, not swallowed. A teardown that throws half-way leaves the half after it undone — a
+  // camera still open, a wake lock still held, a search still running — and an empty catch made
+  // that indistinguishable from a clean teardown.
+  if (cleanup) {
+    try { cleanup(); } catch (err) { console.error('screen teardown failed part-way', err); }
+    cleanup = null;
+  }
   // A multi-hour native proof must not outlive the screen that asked for it. Cancelling on
   // every switch is a cheap no-op when nothing runs, and the one reliable teardown when it
   // does. Caught, not fire-and-forgotten: a rejection here is a torn IPC channel, worth a
@@ -4225,13 +5061,38 @@ function renderScreen() {
   onTrustLost = null;
   setTitle(t(TITLES[state.screen] ?? 'Cubus'));
   const build = SCREENS[state.screen] || SCREENS.home;
-  const spec = build();
+  // A builder that throws must not leave the PREVIOUS screen's DOM standing under the new
+  // title — which is exactly what happened while this was an unguarded call: the title bar and
+  // the toolbar said Trainer, the paper still showed Home, and nothing anywhere said why (an
+  // unknown stored palette was one way in; found by audit, 2026-09-04). The screen is replaced
+  // either way, and when there is nothing to put there the paper says so in words. Loud on the
+  // console too: a message a user can act on is not a stack trace a developer can.
+  let spec;
+  try {
+    spec = build();
+  } catch (err) {
+    console.error(`screen "${state.screen}" could not be built`, err);
+    spec = brokenScreen(state.screen);
+  }
   liveScreen = spec;
   screenGen += 1; // async mounts compare against this to detect that they are obsolete
   parkCube(); // lift the renderer clear of the wipe on the next line
-  const stage = $('#stage'); stage.innerHTML = `<div class="screen active">${spec.html}</div>`;
+  // The screen is a NAMED, FOCUSABLE region. Focus used to drop to <body> on every navigation:
+  // a keyboard user tabbed from the toolbar into the top of the document again, and a screen
+  // reader announced nothing at all — the title bar changed, the paper changed, and the only
+  // signal either of them had was silence. `tabindex="-1"` makes it programmatically focusable
+  // without adding a tab stop, which is the standard shape for a single-page app's route change.
+  const title = t(TITLES[state.screen] ?? 'Cubus');
+  const stage = $('#stage');
+  stage.innerHTML = `<div class="screen active" tabindex="-1" role="region" aria-label="${escHtml(title)}">${spec.html}</div>`;
   const root = stage.firstElementChild;
   for (const b of root.querySelectorAll('[data-go]')) b.onclick = () => go(b.dataset.go);
+  // Moved only when the SCREEN changed. `preventScroll`, because the stage is a fixed box under
+  // the layout contract and nothing here should ever scroll the window.
+  if (navigated || focusedScreen !== state.screen) {
+    focusedScreen = state.screen;
+    try { root.focus({ preventScroll: true }); } catch { root.focus?.(); }
+  }
   // Two failure modes, and try/catch only covers one: cubeScreen's mount is async, so anything it
   // throws after its first await escapes as an unhandled rejection instead of reaching here.
   try {
@@ -4261,7 +5122,7 @@ function resolveAlias() {
   try { window.history.replaceState(null, '', `#/${target}`); }
   catch { window.location.hash = `#/${target}`; }
 }
-function applyRoute() { state.screen = router.current(); renderNav(); renderScreen(); }
+function applyRoute() { state.screen = router.current(); renderNav(); renderScreen({ navigated: true }); }
 // A hash assignment only fires hashchange when the value actually differs, so navigating onto the
 // screen already showing would do nothing. go() renders directly in that case, preserving the
 // always-re-render behaviour the scan flow depends on (go('home') while on home).
@@ -4325,6 +5186,45 @@ function applyInsetOverride() {
 }
 
 /**
+ * Read the OS insets the Android shell is holding, and write them as --os-inset-*.
+ *
+ * The activity PUSHES these too (MainActivity.kt), by evaluating a script 800 ms after attach —
+ * a number that is right on an emulator and a guess on a slow phone. A push that lands before
+ * this document exists is a first paint with the tab row under the gesture bar for the whole of
+ * that render. So the web side PULLS as well, at the moment it is actually ready, and the two
+ * cannot conflict: they write the same four properties from the same source of truth, and the
+ * later of them simply wins.
+ *
+ * Android only, because that is the only platform where env() cannot see the answer: Chromium
+ * reports `safe-area-inset-*` for the DISPLAY CUTOUT alone, and the gesture navigation bar is a
+ * system-bar inset, so the bottom edge reads 0 (measured on a Pixel 8 emulator, 2026-08-30).
+ * Everywhere else env() is right and this does nothing.
+ *
+ * `"null"` — a string — is the honest answer before the first dispatch, and it is left alone:
+ * with no insets to write, env()'s fallback stands, which is exactly the pre-push behaviour.
+ */
+function pullAndroidInsets() {
+  const bridge = globalThis.window?.cubusInsets;
+  if (typeof bridge?.get !== 'function') return;
+  let raw;
+  try { raw = bridge.get(); } catch (err) { console.warn('android insets: the bridge would not answer', err); return; }
+  if (typeof raw !== 'string' || raw === 'null') return;
+  let px;
+  try { px = JSON.parse(raw); } catch (err) { console.warn('android insets: unreadable payload', raw, err); return; }
+  // Zero trust at the boundary, even though the other side is ours: this crosses a JNI bridge as
+  // text, and a malformed number reaching setProperty is a silently broken layout rather than an
+  // error. Every side must be a finite, non-negative number or the whole answer is refused.
+  const sides = ['t', 'r', 'b', 'l'];
+  if (!px || typeof px !== 'object' || sides.some((k) => !Number.isFinite(px[k]) || px[k] < 0)) {
+    console.warn('android insets: not four non-negative numbers', raw);
+    return;
+  }
+  const app = $('.app');
+  if (!app) return;
+  for (const k of sides) app.style.setProperty(`--os-inset-${k}`, `${px[k]}px`);
+}
+
+/**
  * The self-updater, or null where there is nothing to update.
  *
  * LAZY, and that is the whole point of the function rather than a const.
@@ -4361,14 +5261,17 @@ function appUpdater() {
           // A NATIVE question. The app has no general modal, and one invented for this would be a
           // new component in a design system that does not have it — for a question the OS draws
           // better.
+          // Through t() like every other sentence. This dialog was written after i18n landed and
+          // skipped it, so the one moment the app interrupts a user was the one it could not say
+          // in their language.
           confirm: (update) =>
             window.__TAURI__?.dialog?.ask?.(
-              `Cubus ${update.version} is available. You have ${VERSION}.\n\nInstall it and restart?`,
+              t('Cubus %1 is available. You have %2.\n\nInstall it and restart?', update.version, VERSION),
               {
-                title: 'A newer Cubus',
+                title: t('A newer Cubus'),
                 kind: 'info',
-                okLabel: 'Install and restart',
-                cancelLabel: 'Not now',
+                okLabel: t('Install and restart'),
+                cancelLabel: t('Not now'),
               },
             ) ?? false,
           warn: (msg, err) => console.warn(msg, err ?? ''),
@@ -4377,14 +5280,44 @@ function appUpdater() {
   return updaterInstance;
 }
 
+/**
+ * The privacy claim on the About card, and it has to be TRUE on the build it is drawn on.
+ *
+ * "Nothing leaves the device" sat directly under a "Check now" button that makes an HTTPS request
+ * to github.com, and the desktop build makes the same request once a day on its own (found by
+ * audit, 2026-09-04). Everything else about the sentence was right — no analytics, no crash
+ * reporting, camera frames never leave the machine, the solver and the scanner are local — so the
+ * fix is to say the one exception rather than to drop a true sentence for a vague one.
+ *
+ * Keyed on the updater's own existence, which is the same gate the Check now row uses: where
+ * there is no self-updater there is genuinely no network activity at all, and the browser build
+ * must not apologise for a request it never makes.
+ */
+export const privacyLine = (selfUpdates) => (selfUpdates
+  ? 'Solver and vision run locally, and camera frames never leave this device. The only thing cubus sends anywhere is a daily question to github.com asking whether a newer version exists — nothing about you or your cube goes with it.'
+  : 'Solver and vision run locally. Nothing leaves the device.');
+/** The sentence for THIS build. Split from the wording above so a test can check both halves
+ *  without a Tauri window: the fact is the argument, the claim is the function. */
+const privacySentence = () => privacyLine(Boolean(appUpdater()));
+
 /** Say the outcome of a check the user ASKED for. A launch check stays silent unless it found one. */
 async function reportUpdateOutcome(result) {
   const say = (message, kind = 'info') =>
     window.__TAURI__?.dialog?.message?.(message, { title: 'Cubus', kind });
-  if (result.status === 'current') return say(`Cubus ${VERSION} is the latest version.`);
-  if (result.status === 'error') return say('Could not reach the update server. Check your connection and try again.', 'warning');
-  if (result.status === 'failed') return say('The update could not be installed. Try again, or download it from the website.', 'error');
-  if (result.status === 'installed-needs-restart') return say('The update is installed. Quit and reopen Cubus to use it.');
+  if (result.status === 'current') return say(t('Cubus %1 is the latest version.', VERSION));
+  if (result.status === 'error') return say(t('Could not reach the update server. Check your connection and try again.'), 'warning');
+  if (result.status === 'failed') return say(t('The update could not be installed. Try again, or download it from the website.'), 'error');
+  if (result.status === 'installed-needs-restart') return say(t('The update is installed. Quit and reopen Cubus to use it.'));
+  // 'unavailable' means the updater exists but cannot check here — no signature, no endpoint, a
+  // build that was not packaged for updates. Silence was the old answer, and silence after a
+  // press of "Check now" is indistinguishable from a button that does nothing.
+  if (result.status === 'unavailable') return say(t('Updates are not available for this copy of Cubus. Download the latest version from the website.'), 'warning');
+  // Anything else is a status this function has not been taught. It still answers, because the
+  // user pressed a button: an unrecognised outcome is a fact, not a reason to say nothing.
+  if (result.status !== 'installed' && result.status !== 'declined') {
+    console.warn('app-update: unrecognised outcome', result);
+    return say(t('The update check finished without a clear answer. Try again in a moment.'), 'warning');
+  }
   return undefined;
 }
 
@@ -4394,6 +5327,9 @@ async function boot() {
   const platform = detectPlatform();
   document.documentElement.dataset.host = isTauri ? 'tauri' : 'web';
   document.documentElement.dataset.platform = platform;
+  // Before the first screen renders, so the first paint has the real bottom edge rather than the
+  // one an 800 ms timer will correct afterwards.
+  if (platform === 'android') pullAndroidInsets();
   buildChrome(platform);
   installAdvancedShortcut();
   installExternalLinks();
@@ -4423,7 +5359,11 @@ async function boot() {
     cubes = parseRegistry(cubes, Cube);
     setFacelets(state.cube.facelets);
     schedulePreroll(); // so the first press of the die is as cheap as every one after it
-    if (['home', 'viewer', 'timer'].includes(state.screen)) renderScreen();
+    // NO RE-RENDER. Both screens that could want one already await loadSolver() inside their own
+    // mount — cubeScreen's loadWalk does, the Timer's newScr does — so this rebuilt a screen that
+    // was about to say the same thing, throwing away its DOM, its listeners and (on Home) a walk
+    // that had just been drawn. 'viewer' in that list had not been a screen key since the cube
+    // screen absorbed it, which is how long nobody had looked at this line.
   }
   // LAST, and on a timer. The check is the least important thing happening at startup, and the app
   // measures its own first paint closely enough that a DNS lookup inside that window would change
