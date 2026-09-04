@@ -7,21 +7,21 @@
   "description": "Cubus SPA — camera (YOLO) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",
   "scripts": {
     "copy-ort": "node copy-ort.mjs",
-    "build:cube": "esbuild lib/cubus-cube.js --bundle --format=esm --target=es2022 --outfile=vendor/cubus-cube.js",
+    "build:cube": "esbuild lib/cubus-cube.js --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=vendor/cubus-cube.js",
     "predev": "pnpm vendor:libs",
     "dev": "node serve.mjs",
     "pretest": "pnpm vendor:libs",
     "test": "node --test --test-concurrency=6",
     "check": "pnpm vendor:libs && node --test --test-concurrency=6",
     "build:dist": "node build.mjs",
-    "build:cubejs": "esbuild lib/cubejs-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/cubejs.js",
-    "build:mcp-guest": "esbuild lib/tauri-mcp-guest-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/tauri-mcp-guest.js",
+    "build:cubejs": "esbuild lib/cubejs-entry.js --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=vendor/cubejs.js",
+    "build:mcp-guest": "esbuild lib/tauri-mcp-guest-entry.js --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=vendor/tauri-mcp-guest.js",
     "vendor:libs": "node copy-ort.mjs && pnpm build:cubejs",
-    "build:smartcube": "esbuild lib/smartcube-entry.js --bundle --format=esm --target=es2022 --outfile=vendor/smartcube.js"
+    "build:smartcube": "esbuild lib/smartcube-entry.js --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=vendor/smartcube.js"
   },
   "devDependencies": {
-    "esbuild": "^0.21.5",
-    "happy-dom": "^20.11.6",
+    "esbuild": "^0.28.2",
+    "happy-dom": "^20.14.0",
     "playwright": "1.62.1",
     "smartcube-web-bluetooth": "github:xiaolai/smartcube-web-bluetooth#77df8e9507ac87031c12ad1717d71de98d56784b",
     "tauri-plugin-mcp": "0.3.1",

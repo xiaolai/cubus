@@ -5,8 +5,13 @@
   "private": true,
   "description": "cubus-im — a beginner/kids Rubik's Cube tutor. Web SPA + Tauri app; smart cubes over a linked protocol layer with the transport and the trust model our own.",
   "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=10.33"
+  },
   "scripts": {
     "bump": "node scripts/bump-version.mjs",
+    "notices": "node scripts/make-third-party-notices.mjs",
     "dev": "pnpm --filter cubus-web dev",
     "dev:desktop": "pnpm --filter cubus-desktop dev",
     "build:panel": "pnpm --filter cube-scanner build:panel",
