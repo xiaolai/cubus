@@ -14,7 +14,17 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { existsSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Every (source, bundle) pair the repo builds. Adding one here is what makes it guarded.
 const BUNDLES = [
@@ -233,24 +243,16 @@ test('copy-ort ships only the wasm variant the loader can actually request', () 
   const copyOrt = readFileSync(new URL('../copy-ort.mjs', import.meta.url), 'utf8');
   // Derive-not-glob: the wanted set comes from the loader's own text, and the all-variants glob is
   // gone. A future editor who reintroduces `startsWith('ort-wasm-simd-threaded.')` reinflates dist.
-  assert.match(copyOrt, /matchAll\(\/ort-wasm\[[^)]*\)/, 'must derive the variant from the loader text');
-  assert.doesNotMatch(copyOrt, /startsWith\('ort-wasm-simd-threaded\.'\)[^\n]*\n[^\n]*copyFileSync/,
+  assert.doesNotMatch(copyOrt, /startsWith\('ort-wasm-simd-threaded\.'\)/,
     'must not copy every ort-wasm-simd-threaded.* variant');
 
-  // ONE predicate for "our asset", used by discovery and cleanup alike. They were two spellings:
-  // discovery took any `ort-wasm*` the loader named, cleanup only pruned `ort-wasm-simd-threaded.*`,
-  // so a rename within that family stranded the old multi-MB wasm in vendor/ — which ships.
-  assert.doesNotMatch(copyOrt, /rmSync[\s\S]{0,120}startsWith\('ort-wasm/,
-    'cleanup must not hardcode a naming family that discovery does not');
-
-  // COPY BEFORE PRUNE. Deleting the live assets first left `ort.mjs` pointing at files that no
-  // longer existed, and an interrupted or failed copy made that window permanent.
-  const copyAt = copyOrt.indexOf('copyFileSync(join(src, f)');
-  const pruneAt = copyOrt.indexOf('rmSync(');
-  assert.ok(copyAt > 0 && pruneAt > 0, 'copy-ort must both copy and prune');
-  assert.ok(copyAt < pruneAt,
-    'copy-ort must copy the wanted assets before pruning stale ones, so no window exists in which ' +
-      'the shipped loader references a file that has been deleted');
+  // ONE grammar for "our asset", written once and used by discovery and cleanup alike. They were
+  // two spellings agreeing by hand: discovery took any `ort-wasm*` the loader named, cleanup only
+  // pruned `ort-wasm-simd-threaded.*`, so a rename within that family stranded the old multi-MB
+  // wasm in vendor/ — which ships.
+  const grammars = [...copyOrt.matchAll(/ort-wasm\[a-z0-9/g)];
+  assert.equal(grammars.length, 1,
+    `the owned-asset pattern must be written exactly once (found ${grammars.length})`);
 
   // WHICH entrypoint is read off copy-ort rather than named again here. This test hardcoded
   // `ort.bundle.min.mjs` while copy-ort had already moved to the WebGPU build, so it went on
@@ -274,6 +276,102 @@ test('copy-ort ships only the wasm variant the loader can actually request', () 
   // switch back to a CPU-only runtime into a red test.
   assert.deepEqual(referenced, ['ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm'],
     'the shipped loader references exactly the asyncify variant pair, and nothing else');
+});
+
+// What copy-ort DOES, against real directories — as opposed to what its source text says.
+//
+// The assertions this replaces were `indexOf('copyFileSync(...)') < indexOf('rmSync(')`: green for
+// any arrangement of those two strings including a broken one, red for a correct rewrite that
+// spells them differently, and silent about the thing that actually matters — whether vendor/ is
+// left in a loadable state. It went red on exactly that rewrite, which is the clearest evidence a
+// source-text assertion can give about its own value.
+test('copy-ort publishes atomically and prunes what the loader no longer names', async (t) => {
+  const { publishRuntime } = await import('../copy-ort.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'copy-ort-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const src = join(root, 'src');
+  const dest = join(root, 'vendor');
+  mkdirSync(src, { recursive: true });
+  mkdirSync(dest, { recursive: true });
+
+  // A loader that names one variant pair, exactly as the real one does.
+  const loader = 'loader.mjs';
+  writeFileSync(join(src, loader),
+    'fetch("ort-wasm-simd-threaded.asyncify.wasm"); import("ort-wasm-simd-threaded.asyncify.mjs");');
+  writeFileSync(join(src, 'ort-wasm-simd-threaded.asyncify.wasm'), 'NEW-WASM');
+  writeFileSync(join(src, 'ort-wasm-simd-threaded.asyncify.mjs'), 'NEW-GLUE');
+  // …and a vendor/ still holding the PREVIOUS variant, which is what pruning is for.
+  writeFileSync(join(dest, 'ort-wasm-simd-threaded.jsep.wasm'), 'OLD-WASM');
+  writeFileSync(join(dest, 'cube-yolo.onnx'), 'NOT-OURS');
+
+  const wanted = publishRuntime({ src, dest, ortEsm: loader });
+  assert.deepEqual(wanted.sort(),
+    ['ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm']);
+
+  const present = readdirSync(dest).sort();
+  assert.deepEqual(present, [
+    'cube-yolo.onnx',                        // not ours — never touched
+    'ort-wasm-simd-threaded.asyncify.mjs',
+    'ort-wasm-simd-threaded.asyncify.wasm',
+    'ort.mjs',
+  ], 'the stale variant must be pruned, the loader published as ort.mjs, and foreign files left alone');
+  assert.equal(readFileSync(join(dest, 'ort-wasm-simd-threaded.asyncify.wasm'), 'utf8'), 'NEW-WASM');
+  // NO STAGING LEFTOVERS. The temp files are how the publish is made atomic; one surviving a
+  // successful run would ship in vendor/, which is the cost of that safety being paid for nothing.
+  assert.equal(present.filter((f) => f.startsWith('.tmp-')).length, 0, 'staging files must not survive');
+});
+
+// A publish REFUSED before it starts must not have touched vendor/ — the preflight half.
+test('copy-ort refuses a loader whose assets are not installed, before writing anything', async (t) => {
+  const { publishRuntime } = await import('../copy-ort.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'copy-ort-preflight-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const src = join(root, 'src');
+  const dest = join(root, 'vendor');
+  mkdirSync(src, { recursive: true });
+  mkdirSync(dest, { recursive: true });
+  writeFileSync(join(src, 'loader.mjs'), 'fetch("ort-wasm-simd-threaded.asyncify.wasm");');
+  writeFileSync(join(dest, 'ort.mjs'), 'PREVIOUS-LOADER');
+
+  assert.throws(() => publishRuntime({ src, dest, ortEsm: 'loader.mjs' }), /not installed/);
+  assert.equal(readFileSync(join(dest, 'ort.mjs'), 'utf8'), 'PREVIOUS-LOADER',
+    'a refused publish must not have replaced the runtime that was working');
+});
+
+// A publish that fails MID-COPY must leave the previous runtime loadable. This is the entire
+// argument for staging, and the case the preflight test above does not reach: the first test
+// written for it supplied a missing asset, so it never got past validation and proved nothing
+// about copying at all.
+//
+// The failure is forced with a DIRECTORY where an asset should be — it passes `existsSync`, so
+// preflight admits it, and `copyFileSync` then throws EISDIR. Portable and deterministic, unlike
+// a permissions trick, which does nothing when CI runs as root.
+test('copy-ort leaves the old runtime intact when a copy fails part-way', async (t) => {
+  const { publishRuntime } = await import('../copy-ort.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'copy-ort-fail-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const src = join(root, 'src');
+  const dest = join(root, 'vendor');
+  mkdirSync(src, { recursive: true });
+  mkdirSync(dest, { recursive: true });
+  writeFileSync(join(src, 'loader.mjs'),
+    'fetch("ort-wasm-simd-threaded.asyncify.wasm"); import("ort-wasm-simd-threaded.asyncify.mjs");');
+  writeFileSync(join(src, 'ort-wasm-simd-threaded.asyncify.wasm'), 'NEW-WASM');
+  mkdirSync(join(src, 'ort-wasm-simd-threaded.asyncify.mjs')); // exists, and cannot be copied
+  // vendor/ as a WORKING INSTALL — all three files, seeded, and all three must survive together.
+  writeFileSync(join(dest, 'ort-wasm-simd-threaded.asyncify.wasm'), 'OLD-WASM');
+  writeFileSync(join(dest, 'ort-wasm-simd-threaded.asyncify.mjs'), 'OLD-GLUE');
+  writeFileSync(join(dest, 'ort.mjs'), 'PREVIOUS-LOADER');
+
+  assert.throws(() => publishRuntime({ src, dest, ortEsm: 'loader.mjs' }));
+  // THE WHOLE SET, not just the file that failed. The asset whose copy succeeded must not have been
+  // published either: new wasm beside old glue is a pairing that never shipped and cannot load, and
+  // it is exactly what per-file publishing leaves behind when a later file fails.
+  assert.equal(readFileSync(join(dest, 'ort-wasm-simd-threaded.asyncify.wasm'), 'utf8'), 'OLD-WASM');
+  assert.equal(readFileSync(join(dest, 'ort-wasm-simd-threaded.asyncify.mjs'), 'utf8'), 'OLD-GLUE');
+  assert.equal(readFileSync(join(dest, 'ort.mjs'), 'utf8'), 'PREVIOUS-LOADER');
+  // Nothing half-written left behind for the next run to publish by accident.
+  assert.deepEqual(readdirSync(dest).filter((f) => f.startsWith('.tmp-')), []);
 });
 
 // The test command must PROVISION what the tests read, and this asserts the wiring rather than the
