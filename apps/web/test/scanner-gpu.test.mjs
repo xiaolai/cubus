@@ -137,21 +137,54 @@ async function runUnder(executionProviders) {
   });
 }
 
-test('the vendored runtime can actually reach a GPU', async () => {
-  const gpu = await withBrowser(async (browser) => {
+/**
+ * What kind of adapter this machine has: 'none', 'software' or 'hardware'.
+ *
+ * THREE ANSWERS, because two was the bug. Every GPU assertion in this file used to gate on "is
+ * there an adapter", which was the same question the app asked — and both were wrong in the same
+ * direction, because a browser hands out a CPU rasteriser as an adapter. The CI runner is exactly
+ * that machine: it answers `requestAdapter()`, the app now correctly refuses what it offers, and a
+ * test that reads the refusal as "the GPU was not chosen" fails on the one box whose behaviour the
+ * refusal exists to fix.
+ *
+ * So the test classifies the adapter the same way `softwareAdapter()` does, and each kind gets the
+ * assertion that is TRUE of it. None of them is a skip.
+ */
+async function adapterKind() {
+  return withBrowser(async (browser) => {
     const page = await browser.newPage();
     await page.goto(`${base}/index.html`);
-    const seen = await page.evaluate(async () => ({
-      api: !!navigator.gpu,
-      adapter: navigator.gpu ? !!(await navigator.gpu.requestAdapter()) : false,
-    }));
+    const kind = await page.evaluate(async () => {
+      if (!navigator.gpu) return 'none';
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) return 'none';
+      const info = adapter.info ?? {};
+      const fallback = (adapter.isFallbackAdapter ?? info.isFallbackAdapter ?? false) === true;
+      const named = /swiftshader|llvmpipe|lavapipe|softpipe|warp|basic render|microsoft basic/i.test(
+        `${info.vendor ?? ''} ${info.architecture ?? ''} ${info.description ?? ''}`,
+      );
+      return fallback || named ? 'software' : 'hardware';
+    });
     await page.close();
-    return seen;
+    return kind;
   });
+}
+
+test('the vendored runtime can actually reach a GPU', async () => {
+  const kind = await adapterKind();
   // Reported rather than skipped: on a box with no GPU this is a fact about the box, and the rest
   // of the file still asserts the wasm path. A silent skip is how a gate stops being one.
-  if (!gpu.adapter) {
+  if (kind === 'none') {
     console.log('    no WebGPU adapter here — GPU assertions cannot run on this machine');
+    return;
+  }
+  if (kind === 'software') {
+    // NOT a skip, and not a failure: on this box the correct answer IS wasm, and asserting it is
+    // the strongest thing this test can say here. It is also the case CI actually runs.
+    console.log('    only a software adapter here — asserting the refusal instead');
+    const picked = await runUnder(null);
+    assert.deepEqual(picked.chosen, ['wasm'], 'a software adapter must not be chosen over wasm');
+    assert.equal(picked.anchors, 8400, 'the wasm path is the floor and must always work');
     return;
   }
   const picked = await runUnder(null);
@@ -253,17 +286,14 @@ test('both providers read the same frame the same way', async () => {
   const wasm = await runUnder(['wasm']);
   assert.equal(wasm.anchors, 8400, 'the wasm path is the floor and must always work');
 
-  const hasGpu = await withBrowser(async (browser) => {
-    const page = await browser.newPage();
-    await page.goto(`${base}/index.html`);
-    const seen = await page.evaluate(async () =>
-      navigator.gpu ? !!(await navigator.gpu.requestAdapter()) : false,
-    );
-    await page.close();
-    return seen;
-  });
-  if (!hasGpu) {
-    console.log('    no WebGPU adapter here — cross-provider agreement cannot be checked');
+  // HARDWARE only. Comparing providers on a rasteriser is not a cheap version of this check, it is
+  // a different and much worse one: the same measurement that motivates the refusal says a
+  // SwiftShader run of this model takes 6184 ms after an 86-second load, so forcing `['webgpu']`
+  // there spends minutes to compare a path no user is ever on. (It nearly did — this case ran for
+  // 23 s on the CI runner before the assertion above it failed.)
+  const kind = await adapterKind();
+  if (kind !== 'hardware') {
+    console.log(`    adapter here is '${kind}' — cross-provider agreement needs a real GPU`);
     return;
   }
 
