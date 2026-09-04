@@ -5,9 +5,12 @@
 #
 #   ./scripts/clean-dev.sh            tier 1 — this project only (default)
 #   ./scripts/clean-dev.sh 2          + Cargo's machine-wide registry
-#   ./scripts/clean-dev.sh 3          + pnpm store, and the app's own data
+#   ./scripts/clean-dev.sh 3          + pnpm store, and a report on the app's own data
 #   ./scripts/clean-dev.sh --dry-run  print what each tier would remove
 #   ./scripts/clean-dev.sh -y         do not prompt about local release bundles
+#
+# Tier 3's app-data report is macOS-only: the paths it names live under ~/Library, and on
+# Linux or Windows it prunes the pnpm store and says that the rest was not inspected.
 #
 # WHY THIS IS A SCRIPT AND NOT A LINE IN A DOC. Measured on 2026-09-03: a
 # `target/` of 32 GB, which `cargo clean` reported as 44.2 GiB across 129,042
@@ -95,7 +98,10 @@ sizes() {
   du -sh apps/web/dist 2>/dev/null || true
   du -sh "$HOME/.cargo/registry" "$HOME/.cargo/git" 2>/dev/null || true
   if [ "$TIER" = 3 ]; then
-    du -sh "$HOME/Library/pnpm/store" 2>/dev/null || true
+    # Asked of pnpm, not assumed: the store lives under ~/Library on macOS and ~/.local/share
+    # elsewhere, and a hard-coded macOS path reported nothing on any other OS.
+    store="$(pnpm store path 2>/dev/null || true)"
+    [ -n "$store" ] && du -sh "$store" 2>/dev/null || true
   fi
   df -h / | tail -1 | awk '{print "  " $4 " free on /"}'
 }
@@ -104,11 +110,22 @@ sizes BEFORE
 echo
 
 # ---- the un-uploaded bundle check, before anything is removed ---------------
-BUNDLE="target/release/bundle"
-if [ -d "$BUNDLE" ] && [ -n "$(find "$BUNDLE" -type f \( -name '*.dmg' -o -name '*.app' -o -name '*.tar.gz' \) 2>/dev/null | head -1)" ]; then
+# BOTH places a macOS bundle lands. `tauri build` writes target/release/bundle; the release
+# workflow's `--target universal-apple-darwin` writes target/universal-apple-darwin/release/bundle,
+# which is where a locally reproduced release build sits — and where this check did not look, so
+# a notarized universal dmg could be deleted without the prompt this block exists to give.
+BUNDLES=()
+for b in target/release/bundle target/universal-apple-darwin/release/bundle; do
+  [ -d "$b" ] && BUNDLES+=("$b")
+done
+found=""
+if [ ${#BUNDLES[@]} -gt 0 ]; then
+  found="$(find "${BUNDLES[@]}" -type f \( -name '*.dmg' -o -name '*.app' -o -name '*.tar.gz' \) 2>/dev/null | head -1)"
+fi
+if [ -n "$found" ]; then
   echo "Local release bundles present — these are the only thing here a rebuild"
   echo "cannot fully replace, because notarization is per-build:"
-  find "$BUNDLE" -type f \( -name '*.dmg' -o -name '*.tar.gz' \) -exec ls -lh {} \; 2>/dev/null \
+  find "${BUNDLES[@]}" -type f \( -name '*.dmg' -o -name '*.tar.gz' \) -exec ls -lh {} \; 2>/dev/null \
     | awk '{print "  " $5 "  " $6 " " $7 " " $9}'
   if [ "$ASSUME_YES" != 1 ] && [ "$DRY_RUN" != 1 ]; then
     if [ -t 0 ]; then
@@ -158,14 +175,23 @@ if [ "$TIER" = 3 ]; then
   # build's USER DATA. For this app that is the cube registry, recent solves,
   # settings and the hidden-nav choice — the same localStorage a stray MCP
   # `clear_browsing_data` wiped on 2026-08-27 with no backup. Never implicit.
-  APP_DATA="$HOME/Library/Application Support/im.cubus.app"
-  APP_CACHE="$HOME/Library/Caches/im.cubus.app"
-  if [ -d "$APP_DATA" ] || [ -d "$APP_CACHE" ]; then
+  #
+  # macOS paths only. Tauri keeps the same data under ~/.local/share and
+  # ~/.cache on Linux and %APPDATA% on Windows, but this report has only ever
+  # been checked against a Mac, so elsewhere it says so rather than guessing.
+  if [ "$(uname -s)" = Darwin ]; then
+    APP_DATA="$HOME/Library/Application Support/im.cubus.app"
+    APP_CACHE="$HOME/Library/Caches/im.cubus.app"
+    if [ -d "$APP_DATA" ] || [ -d "$APP_CACHE" ]; then
+      echo
+      echo "The dev app's own data is NOT removed by this script:"
+      [ -d "$APP_DATA" ] && echo "  $APP_DATA  ($(du -sh "$APP_DATA" 2>/dev/null | cut -f1)) — settings, cubes, recent solves"
+      [ -d "$APP_CACHE" ] && echo "  $APP_CACHE  ($(du -sh "$APP_CACHE" 2>/dev/null | cut -f1))"
+      echo "  Remove by hand if you are deliberately resetting onboarding state."
+    fi
+  else
     echo
-    echo "The dev app's own data is NOT removed by this script:"
-    [ -d "$APP_DATA" ] && echo "  $APP_DATA  ($(du -sh "$APP_DATA" 2>/dev/null | cut -f1)) — settings, cubes, recent solves"
-    [ -d "$APP_CACHE" ] && echo "  $APP_CACHE  ($(du -sh "$APP_CACHE" 2>/dev/null | cut -f1))"
-    echo "  Remove by hand if you are deliberately resetting onboarding state."
+    echo "The app-data report is macOS-only; on $(uname -s) the app's own data was not inspected."
   fi
 fi
 
