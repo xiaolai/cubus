@@ -30,6 +30,7 @@ import argparse
 import glob
 import os
 import re
+from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
@@ -39,7 +40,11 @@ from scipy.optimize import linear_sum_assignment
 from color_eval import iou_xyxy, load_gt
 from ood_eval import letterbox, nms
 
-IMG, LBL = "out/heldout/images", "out/heldout/labels"
+# Anchored on this file, not on the cwd: the documented invocation is from the repo root, and
+# cwd-relative "out/heldout" resolved to nothing there (2026-09-04 audit).
+HERE = Path(__file__).resolve().parent
+IMG, LBL = str(HERE / "out" / "heldout" / "images"), str(HERE / "out" / "heldout" / "labels")
+SHIPPED_MODEL = HERE.parent / "apps" / "web" / "vendor" / "cube-yolo.onnx"
 NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
 NC = 6
 PER_COLOUR = 9  # the constraint: a 3x3x3 cube has exactly nine stickers of each colour
@@ -133,7 +138,7 @@ def assign(logp: np.ndarray) -> np.ndarray:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="../apps/web/vendor/cube-yolo.onnx", help="the SHIPPED model")
+    ap.add_argument("--model", default=str(SHIPPED_MODEL), help="the SHIPPED model")
     ap.add_argument("--trials", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=20260830)
     ap.add_argument("--mode", choices=["independent", "clustered"], default="clustered",

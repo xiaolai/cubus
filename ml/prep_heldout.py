@@ -109,7 +109,7 @@ def prep(src: str, out: str) -> dict:
             dst = f"{split}_{stem}"
             shutil.copy2(img, os.path.join(img_out, dst + os.path.splitext(img)[1]))
             with open(os.path.join(lbl_out, dst + ".txt"), "w", encoding="utf-8") as f:
-                f.write("".join(l + "\n" for l in out_lines))
+                f.write("".join(line + "\n" for line in out_lines))
             stats["images"] += 1
 
     with open(os.path.join(out, "data.yaml"), "w", encoding="utf-8") as f:

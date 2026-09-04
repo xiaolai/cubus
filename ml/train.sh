@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Fine-tune YOLOv11n on the synthetic (+ real) cube dataset, inside an NVIDIA NGC arm64
-# PyTorch container on the training host (GB10 Blackwell). NGC is used because a plain `pip install
+# PyTorch container on a GPU box (GB10 Blackwell). NGC is used because a plain `pip install
 # torch` on this arm64 box may lack Blackwell (sm_121) kernels; the NGC image ships them.
 #
-# THE TRAINING HOST IS THE FAR GPU BOX, NOT THE NEAR ONE. Both are the same hardware and the names
-# invite the mistake, so the reasoning is written here rather than left to memory: the far box has
-# the NGC image cached, every cube dataset, and an idle GPU. The near box has none of the three and
-# runs resident AI services holding most of its GPU, so a job started there contends with live work
-# and re-pulls 20 GB. The far box is also high-latency, which is why DETACH=1 below is not optional
-# for a multi-hour run. Which host is which is in the maintainer's ssh config, not in this repo.
+# WHICH BOX (the AGENTS.md ruling, measured 2026-08-29; the hosts are named in the maintainer's ssh
+# config, not here). Render on the many-core desktop, never on the fanless laptop. TRAIN ON THE NEAR
+# GPU BOX: same silicon as the far one, but reachable at 2.4 MB/s — a 2.6 GB dataset moves in
+# ~20 min — and its containers resolve DNS, so cube-train:1 can be built there. The FAR box is
+# identical hardware behind ~109 ms and 0.1 MB/s (7 h for that same dataset), so it is for work
+# whose data is ALREADY on it: it holds every historical dataset and the v3/v4 runs, which makes it
+# the host for baseline evals and parallel jobs, and its container DNS is broken, so build images on
+# the near box or `docker commit` a finished run. This header used to say the opposite — "the far
+# box is the training host" — from before the transfer rate had been measured; the rate decides it.
+# DETACH=1 below is mandatory either way: an SSH drop across either path kills a multi-hour run.
 #
 # The exact NGC tag is filled in from the container-verification result (the image proven
 # to see the GB10). Override with NGC_IMAGE=... if needed.
@@ -37,6 +41,12 @@ EPOCHS="${EPOCHS:-80}"
 IMGSZ="${IMGSZ:-640}"
 BATCH="${BATCH:-64}"           # GB10 has ~113GB unified memory — batch can be large
 MODEL="${MODEL:-yolo11n.pt}"   # nano; use yolo11s.pt for a little more headroom
+# The starting checkpoint, pinned. Every model since v3 began from THIS yolo11n.pt; a different
+# one (a newer ultralytics release re-publishes the file under the same name) is a different
+# experiment. Verified 2026-08-29 (dev-docs/red-orange-fine-tune.md): the copy a GitHub download
+# produced was byte-identical to the local one — md5 261474e91b15f5ef14a63c21ce6c0cbb, 5,613,764
+# bytes — so that is the pin. Only yolo11n.pt has one; another MODEL gets no check, and says so.
+YOLO11N_MD5="261474e91b15f5ef14a63c21ce6c0cbb"
 WORKERS="${WORKERS:-8}"        # dataloader workers; drop to 0-2 if training crashes silently
 AMP="${AMP:-True}"             # mixed precision; set False if the new GPU throws CUDA errors
 
@@ -73,6 +83,21 @@ docker run $DFLAG --gpus all --ipc=host \
     # Seed pretrained weights into CWD so ultralytics finds them locally — the training host's US-proxy
     # egress fails GitHub TLS downloads intermittently (curl 35), so we train fully offline.
     cp -n /ml/*.pt /work/dataset/ 2>/dev/null || true
+    # The starting checkpoint must be present AND the pinned bytes. Absent, ultralytics would
+    # download whatever the current release serves under that name — a different starting point
+    # that nothing downstream could tell apart from a training-code change.
+    if [ \"$MODEL\" = \"yolo11n.pt\" ]; then
+      if [ ! -f /work/dataset/yolo11n.pt ]; then
+        echo 'ERROR: yolo11n.pt is not in the dataset dir or ml/ — put the pinned checkpoint (md5 $YOLO11N_MD5) there before training'; exit 1
+      fi
+      got=\$(md5sum /work/dataset/yolo11n.pt | cut -d' ' -f1)
+      if [ \"\$got\" != \"$YOLO11N_MD5\" ]; then
+        echo \"ERROR: yolo11n.pt md5 \$got is not the pinned $YOLO11N_MD5 — a different starting checkpoint\"; exit 1
+      fi
+      echo \"yolo11n.pt md5 \$got matches the pin\"
+    else
+      echo \"NOTE: no md5 pin for $MODEL; only yolo11n.pt is pinned\"
+    fi
     # Only when running on the raw NGC image. Bounded and NOT silenced: the previous version sent
     # both to /dev/null with no timeout, so a proxy hang was indistinguishable from training.
     if [ \"\$PREBUILT\" != \"1\" ]; then
@@ -94,14 +119,16 @@ docker run $DFLAG --gpus all --ipc=host \
     yolo detect train model=$MODEL data=/work/dataset/data.yaml \
       epochs=$EPOCHS imgsz=$IMGSZ batch=$BATCH device=0 workers=$WORKERS amp=$AMP \
       project=/work/dataset/runs name=cube plots=False
-    # Export the best weights to ONNX for onnxruntime-web in the app.
-    yolo export model=/work/dataset/runs/cube/weights/best.pt format=onnx opset=12 simplify=True
+    # No export here. This used to run a second `yolo export ... format=onnx` on best.pt, which
+    # produced an ONNX with a lineage of its own — a different ultralytics, no manifest, no int8,
+    # no CoreML/TFLite siblings, and nothing to hand the golden gate. ml/export.py is the ONE
+    # exporter: it writes all four artefacts from best.pt and records what produced them.
     chown -R \$HOST_UID:\$HOST_GID /work/dataset/runs   # hand outputs back to the host user (docker runs as root)
-    echo 'ONNX at /work/dataset/runs/cube/weights/best.onnx'
+    echo 'best.pt at /work/dataset/runs/cube/weights/best.pt — export with ml/export.py (see ml/README.md, Regenerating the model)'
   "
 if [ "${DETACH:-0}" = "1" ]; then
   echo "Detached container '$CONTAINER' launched. Follow: docker logs -f $CONTAINER"
-  echo "Artifact when done: $DATASET/runs/cube/weights/best.onnx"
+  echo "Artifact when done: $DATASET/runs/cube/weights/best.pt — then ml/export.py --pt <that> (see ml/README.md, Regenerating the model)"
 else
-  echo "Trained. best.onnx is at \$DATASET/runs/cube/weights/best.onnx — copy into app/renderer/vendor/ (see README)."
+  echo "Trained. best.pt is at \$DATASET/runs/cube/weights/best.pt — export with ml/export.py --pt, then run the golden gate (see ml/README.md, Regenerating the model)."
 fi

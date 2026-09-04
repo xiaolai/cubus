@@ -10,14 +10,27 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import os
 import shutil
 
 
+def shuffle_key(seed: int, name: str) -> int:
+    """A stable pseudo-random rank for a filename: the same in every process, on every machine.
+
+    This was `hash((seed, name)) & 0xFFFFFFFF`, and `str.__hash__` is salted per interpreter
+    process (PYTHONHASHSEED), so the "deterministic" split was different on every run: an image
+    could be in val today and in train tomorrow, and a re-split silently changed which photos a
+    model had trained on — while claiming repeatability in the comment beside it. SHA-1 of the
+    seed and the basename is one integer everywhere. test_pipeline.py pins both the value and the
+    cross-process agreement, so this cannot quietly become process-salted again.
+    """
+    return int.from_bytes(hashlib.sha1(f"{seed}:{name}".encode()).digest()[:4], "big")
+
+
 def split(images: str, labels: str, out: str, val_fraction: float, seed: int = 0) -> tuple[int, int]:
     imgs = sorted(glob.glob(os.path.join(images, "*.jpg")) + glob.glob(os.path.join(images, "*.png")))
-    # Deterministic pseudo-shuffle by hashing the filename (no Random import needed for repeatability).
-    imgs.sort(key=lambda p: hash((seed, os.path.basename(p))) & 0xFFFFFFFF)
+    imgs.sort(key=lambda p: shuffle_key(seed, os.path.basename(p)))
     n_val = int(len(imgs) * val_fraction)
     for sub in ("train", "val"):
         os.makedirs(os.path.join(out, "images", sub), exist_ok=True)

@@ -9,6 +9,12 @@ photos (crop/downsample first, then this).
   python augment.py --images DIR/images/train --labels DIR/labels/train --per 1 --frac 0.5
 
 Writes `<stem>_augN.jpg` + copied `<stem>_augN.txt` next to the originals. PIL + numpy only.
+
+Idempotent: a second run over the same directory skips its own outputs (`*_augN`) rather than
+augmenting an augmentation — without that, every run compounded the effects and doubled the
+count, and `--frac 0.5` twice was not half the set but three quarters of it, some of it blurred
+twice. Existing `<stem>_augN` outputs are overwritten in place, so re-running with the same seed
+reproduces the set instead of growing it.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ import glob
 import io
 import math
 import os
+import re
 import shutil
 
 import numpy as np
@@ -56,13 +63,23 @@ def _apply_one(img: Image.Image, rng: np.random.Generator) -> Image.Image:
     return img
 
 
+AUG_SUFFIX = re.compile(r"_aug\d+$")
+
+
+def is_augmented(stem: str) -> bool:
+    """True for this script's own outputs, which must never be inputs to it."""
+    return AUG_SUFFIX.search(stem) is not None
+
+
 def augment(images: str, labels: str, per: int, frac: float, seed: int = 0) -> int:
     rng = np.random.default_rng(seed)
     made = 0
     for img_path in sorted(glob.glob(os.path.join(images, "*.jpg")) + glob.glob(os.path.join(images, "*.png"))):
+        stem = os.path.splitext(os.path.basename(img_path))[0]
+        if is_augmented(stem):
+            continue  # an output of a previous run — augmenting it would compound the effects
         if rng.random() > frac:
             continue
-        stem = os.path.splitext(os.path.basename(img_path))[0]
         lbl = os.path.join(labels, stem + ".txt")
         if not os.path.exists(lbl):
             continue  # only augment labelled (or intentionally-empty) images we can pair

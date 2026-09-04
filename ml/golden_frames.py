@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """The golden-frame parity harness: every runtime must read every fixture the way it was pinned to.
 
-    ml/venv/bin/python ml/golden_frames.py                       # every leg this machine can run
-    ml/venv/bin/python ml/golden_frames.py --write-expected      # re-pin after a deliberate model change
+    ml/venv/bin/python ml/golden_frames.py                       # every leg this platform has (all five on macOS)
+    ml/venv/bin/python ml/golden_frames.py --write-expected --yes [--repin-checkpoint REASON]   # re-pin, guarded
+    ml/venv/bin/python ml/golden_frames.py --write-expected --yes --fixture NAME.png            # re-pin ONE fixture
     ml/venv/bin/python ml/golden_frames.py --parity --legs onnx onnx-int8 tflite   # Linux CI
     ml/venv/bin/python ml/golden_frames.py --parity --legs onnx coreml native      # macOS CI
 
@@ -26,29 +27,42 @@ and the nine sticker classes — not raw scores: quantisation and fp16 move scor
 that survives that is what the app actually depends on.
 
 The legs:
-  * onnx        — the fp32 reference (Python / onnxruntime).
-  * onnx-int8   — the web / Windows / Linux runtime (dynamic int8), via onnxruntime.
+  * onnx        — the fp32 reference (Python / onnxruntime). This IS the shipped web model: the
+                  browser, Windows, Linux and the Android WebView all serve this graph.
+  * onnx-int8   — the dynamic-int8 ONNX, via onnxruntime. NOT shipped anywhere (the label used to
+                  say "web / Windows / Linux runtime"; those serve fp32); kept as the bounded leg
+                  because it is the export that misreads, and a gate should hold the worst artefact.
   * coreml      — the .mlpackage through coremltools (Python), the Apple runtime's model.
-  * tflite      — the Android runtime's model (static int8), via ai-edge-litert.
+  * tflite      — the weight-only (dynamic-range) int8 TFLite, via ai-edge-litert. Bundled in the
+                  Android APK but gated off (`verifiedOnDevice=false` in VisionPlugin.kt).
   * native      — the PLUGIN's own path: crates/cube-vision's Swift letterbox + CoreML, driven through
                   `cube-vision-probe`. This is the one that proves the shipped native code — not a
                   Python stand-in — reads frames identically, with no Tauri and no camera.
 
 `golden/expected.json` pins, per fixture, the SHA-256 of the letterboxed tensor (tying the Python,
 TypeScript and Swift letterboxes to the same bytes) and EACH runtime's read. A leg passes only if
-every fixture matches its OWN pin, so the gate catches drift in any single runtime over time. Two
-facts are then asserted from the pins, because they are the decision the harness defends:
+every fixture matches its OWN pin, so the gate catches drift in any single runtime over time. It also
+pins WHICH MODEL the reads belong to (`model`: the checkpoint sha256 and the fp32 sha256 from
+MANIFEST.json) — without that, a checkpoint swap made through export.py regenerated the manifest and
+nothing compared the new manifest to the pins. Two facts are then asserted from the pins, because
+they are the decision the harness defends:
 
-  * CoreML and the native plugin (both fp16 on Apple) must read every fixture EXACTLY as fp32 does —
-    the plan's premise that fp16 drifts scores but not discrete classes. Measured: it holds (0/20).
-  * int8 (web / Windows / Linux) may diverge from fp32, but only within the pinned bound recorded
-    here — measured at 5 of 20, and NOT silently: the specific frames are pinned, so a NEW int8
-    disagreement fails the gate even though it stays "int8".
+  * CoreML and the native plugin (both fp16 on Apple) never read a face DIFFERENTLY from fp32, and
+    never commit to a face fp32 refused. They MAY refuse a frame fp32 reads. The rule is directional,
+    not "exact": on this pinning host it is exact (0/20), on a GitHub M1-class runner one fixture
+    abstains where fp32 reads it — see `parity()` for the measurement.
+  * int8 may diverge from fp32, but only within the pinned bound recorded here, and only on frames
+    already pinned as misreads: a NEW misread — a refusal that turned into a face, a face that turned
+    into a different one — fails the gate even when the count stays inside the bound
+    (`new_misreads`). tflite is held to the same rule with a bound of 0.
 
 Exit status is the verdict: 0 when every requested leg matches its pins, 1 otherwise. A requested leg
 that cannot run (no CoreML off macOS, a missing model or probe binary) is a FAILURE, not a skip — a
-gate that quietly skips is not a gate. Runs `os._exit` at the end because coremltools aborts in a
-static destructor at normal interpreter shutdown; the exit code is taken first, so nothing is masked.
+gate that quietly skips is not a gate. The default leg set is everything this PLATFORM has (all
+five on macOS, the three Python legs elsewhere), never "everything that happens to be installed":
+a missing probe or runtime fails, and the legs not run are printed on every run. Runs `os._exit` at
+the end because coremltools aborts in a static destructor at normal interpreter shutdown; the exit
+code is taken first, so nothing is masked.
 """
 
 from __future__ import annotations
@@ -62,6 +76,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -75,6 +90,13 @@ FRAMES = HERE / "golden" / "frames"
 EXPECTED = HERE / "golden" / "expected.json"
 PROBE = HERE.parent / "crates" / "cube-vision" / "swift" / ".build" / "release" / "cube-vision-probe"
 ALL_LEGS = ("onnx", "onnx-int8", "coreml", "tflite", "native")
+FAITHFUL_LEGS = ("onnx", "coreml", "native")
+# The strings expected.json carries for the bounded legs — written from here on every re-pin, so
+# the file cannot describe a shipping state the code no longer believes (it did, for months).
+BOUNDED_LEGS = {
+    "onnx-int8": "NOT shipped (web, Windows, Linux and the Android WebView serve the fp32 graph); onnxruntime dynamic int8 — QInt8 weights, uint8 activations",
+    "tflite": "bundled in the Android APK, gated off (verifiedOnDevice=false); weight-only (dynamic-range) int8, fp32 activations",
+}
 
 
 def read_string(read: cube_infer.FaceRead) -> str:
@@ -225,8 +247,26 @@ def classify_faithful(reads: dict[str, str], ref: dict[str, str]) -> tuple[list[
     return wrong, [n for n in div if n not in wrong]
 
 
+def new_misreads(live: dict[str, str], ref: dict[str, str], pinned_live: dict[str, str], pinned_ref: dict[str, str]) -> list[str]:
+    """Fixtures a bounded leg MISREADS now that it did not misread when it was pinned.
+
+    The count bound in `parity()` is necessary and not sufficient: int8 diverging on five fixtures
+    was pinned as a bound of 5, and a run in which one pinned REFUSAL had become a committed face,
+    or one pinned agreement had become a different cube, still counted five. Same number, new
+    defect. So the divergences are classified with the same rule the faithful legs get
+    (`classify_faithful`: a misread is a committed face that fp32 does not share), and the set of
+    misreads is compared to the set pinned — a bounded leg may stop misreading a frame, and may
+    refuse one it used to read, but it may not misread a frame it did not misread at pin time.
+    Which frames are pinned is the point: the pinned reads are in expected.json, so the rule needs
+    no new field and cannot be satisfied by a count alone.
+    """
+    wrong_now, _ = classify_faithful(live, ref)
+    wrong_then, _ = classify_faithful(pinned_live, pinned_ref)
+    return [n for n in wrong_now if n not in wrong_then]
+
+
 def self_check() -> int:
-    """Exercise the faithfulness rule on synthetic reads. No model, no runtime, no hardware."""
+    """Exercise the faithfulness rule, and the bounded-leg rule, on synthetic reads. No model, no runtime, no hardware."""
     ref = {"a": "OK 012345678", "b": "BAD_GEOMETRY"}
     cases = [
         ("fp16 refuses where fp32 read a face", {"a": "BAD_GEOMETRY", "b": "BAD_GEOMETRY"}, 0, 1),
@@ -242,10 +282,28 @@ def self_check() -> int:
         print(f"[self-check] {'ok  ' if ok else 'XX  '}{label}: wrong={len(wrong)} refused={len(refused)}"
               + ("" if ok else f"  expected wrong={want_wrong} refused={want_refused}"))
         bad += 0 if ok else 1
+
+    # The bounded rule. Pinned: int8 misreads "a" (a different cube) and refuses "c"; agrees on "b".
+    pref = {"a": "OK 012345678", "b": "BAD_GEOMETRY", "c": "OK 111222333"}
+    pint8 = {"a": "OK 087654321", "b": "BAD_GEOMETRY", "c": "PARTIAL_FACE"}
+    bounded = [
+        ("same misread as pinned, inside the bound", {"a": "OK 087654321", "b": "BAD_GEOMETRY", "c": "PARTIAL_FACE"}, []),
+        ("a pinned refusal became a face — same count, new misread", {"a": "OK 087654321", "b": "BAD_GEOMETRY", "c": "OK 999888777"}, ["c"]),
+        ("a pinned agreement became a face fp32 refuses", {"a": "OK 087654321", "b": "OK 000000000", "c": "PARTIAL_FACE"}, ["b"]),
+        ("a pinned misread became a refusal — allowed", {"a": "NO_FACE", "b": "BAD_GEOMETRY", "c": "PARTIAL_FACE"}, []),
+        ("a pinned misread now agrees — allowed", {"a": "OK 012345678", "b": "BAD_GEOMETRY", "c": "PARTIAL_FACE"}, []),
+        ("a pinned misread reads yet another cube — still the pinned frame, allowed", {"a": "OK 000000001", "b": "BAD_GEOMETRY", "c": "PARTIAL_FACE"}, []),
+    ]
+    for label, live, want in bounded:
+        got = new_misreads(live, pref, pint8, pref)
+        ok = got == want
+        print(f"[self-check] {'ok  ' if ok else 'XX  '}bounded: {label}: new misreads={got}" + ("" if ok else f"  expected {want}"))
+        bad += 0 if ok else 1
+
     if bad:
-        print(f"FAIL: the faithfulness rule is not directional — {bad} case(s) wrong")
+        print(f"FAIL: {bad} synthetic case(s) wrong — the rules are not what the docstrings claim")
         return 1
-    print(f"PASS: the faithfulness rule holds on all {len(cases)} synthetic cases")
+    print(f"PASS: the faithfulness rule and the bounded-leg rule hold on all {len(cases) + len(bounded)} synthetic cases")
     return 0
 
 
@@ -256,23 +314,107 @@ def fixtures(frames: Path) -> list[Path]:
     return fx
 
 
-def runnable_legs(models: Path, probe: Path) -> list[str]:
-    legs = ["onnx", "onnx-int8"]
-    if platform.system() == "Darwin":
-        legs.append("coreml")
-    if (models / "cube-yolo.tflite").is_file():
-        legs.append("tflite")
-    if platform.system() == "Darwin" and probe.is_file() and (models / "cube-yolo.mlpackage").exists():
-        legs.append("native")
-    return legs
+def default_legs() -> list[str]:
+    """Every leg this PLATFORM has — not every leg that happens to be installed.
+
+    This used to be `runnable_legs`: tflite only if the .tflite existed, native only if the probe
+    was built. So the mandated pinned run (no --legs) silently dropped legs and printed
+    "PASS: 3 leg(s)", and `--write-expected` pinned only what was runnable at the time. On macOS
+    all five are the default now and a missing artefact or probe FAILS the leg; off macOS the two
+    CoreML legs cannot exist and are reported as not run, every time.
+    """
+    return list(ALL_LEGS) if platform.system() == "Darwin" else ["onnx", "onnx-int8", "tflite"]
+
+
+def announce_legs(legs: list[str]) -> None:
+    """Say which legs run and which do not, on every run — a skipped leg must never be silent."""
+    not_run = [n for n in ALL_LEGS if n not in legs]
+    why = "not requested" if len(not_run) and platform.system() == "Darwin" else "not runnable off macOS (CoreML)"
+    print(f"legs: {', '.join(legs)}" + (f"; NOT run: {', '.join(not_run)} ({why})" if not_run else "; NOT run: none"))
+
+
+def model_identity(models: Path) -> dict[str, str]:
+    """The two hashes that name the model, read from MANIFEST.json: the checkpoint and the fp32 bytes."""
+    manifest = json.loads((models / "MANIFEST.json").read_text())
+    return {"checkpoint_sha256": manifest["checkpoint"]["sha256"], "fp32_sha256": manifest["artefacts"]["cube-yolo.onnx"]["sha256"]}
+
+
+def check_identity(doc: dict, models: Path) -> int:
+    """The pins must belong to the model beside them; returns the number of failures.
+
+    Before 2026-09-04 nothing compared expected.json to MANIFEST.json. A checkpoint swap made
+    through export.py regenerated the manifest, the artefact bytes matched it, every leg moved
+    together, and parity mode passed — the gate's headline purpose ("a model change is not
+    verified until golden_frames.py has run") defeated by the documented way of changing a model.
+    """
+    pinned = doc.get("model")
+    if pinned is None:
+        print("[model] XX expected.json records no model identity — re-pin with --write-expected --yes --repin-checkpoint REASON")
+        return 1
+    manifest_path = models / "MANIFEST.json"
+    if not manifest_path.is_file():
+        print(f"[model] XX {manifest_path} missing — cannot tell which model these pins belong to")
+        return 1
+    live = model_identity(models)
+    bad = 0
+    for key in ("checkpoint_sha256", "fp32_sha256"):
+        if live[key] != pinned.get(key):
+            print(f"[model] XX {key}: manifest {live[key][:12]} vs pinned {str(pinned.get(key))[:12]} — the model changed; if deliberate, re-pin with --write-expected --yes --repin-checkpoint REASON")
+            bad += 1
+    if not bad:
+        print(f"[model] ok — checkpoint {live['checkpoint_sha256'][:12]}, fp32 {live['fp32_sha256'][:12]}: the pinned model")
+    return bad
+
+
+def divergence_table(frames: dict[str, dict]) -> dict[str, int]:
+    """Per leg, how many pinned reads differ from the pinned fp32 read — derived from the frames, never typed in."""
+    legs = [n for n in ALL_LEGS if any(n in fr["legs"] for fr in frames.values())]
+    return {n: sum(1 for fr in frames.values() if fr["legs"].get(n) != fr["legs"]["onnx"]) for n in legs}
+
+
+def guard_write(args, existing: dict | None) -> dict[str, str]:
+    """The three refusals before a re-pin, and the identity the pin will carry.
+
+    `--write-expected` rewrites the ground truth every other gate is judged against, and it used
+    to do so with no question asked — the exact motion the "never --write-expected to make a
+    failure go away" rule in AGENTS.md exists for. So: (1) `--yes`, because a flag typed on purpose
+    is a smaller hazard than one in a shell history; (2) `ml/models` committed, because pins written
+    against bytes that are not in git describe a model nobody can recover; (3) the manifest's
+    checkpoint equals the pinned one, or `--repin-checkpoint REASON` says why not, and the reason
+    is written into expected.json beside the new identity.
+    """
+    if not args.yes:
+        sys.exit("refusing to re-pin: --write-expected rewrites the gate's ground truth; pass --yes to confirm you mean it")
+    try:
+        status = subprocess.run(["git", "status", "--porcelain", "--", str(args.models)], cwd=HERE, capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        sys.exit(f"refusing to re-pin: cannot tell whether {args.models} is committed (git status failed: {e})")
+    if status.strip():
+        sys.exit(f"refusing to re-pin: {args.models} has uncommitted changes — commit the model and MANIFEST.json first, so the pins describe bytes that exist in history:\n{status}")
+    live = model_identity(args.models)
+    pinned = (existing or {}).get("model")
+    if existing is not None and (pinned is None or pinned.get("checkpoint_sha256") != live["checkpoint_sha256"]) and not args.repin_checkpoint:
+        was = "no checkpoint recorded" if pinned is None else f"checkpoint {pinned['checkpoint_sha256'][:12]}"
+        sys.exit(f"refusing to re-pin: the manifest's checkpoint is {live['checkpoint_sha256'][:12]} and expected.json was written for {was} — a re-pin across a model change needs --repin-checkpoint REASON")
+    return live
 
 
 def write_expected(args) -> int:
+    existing = json.loads(args.expected.read_text()) if args.expected.is_file() else None
+    identity = guard_write(args, existing)
     fx = fixtures(args.frames)
-    legs = runnable_legs(args.models, args.probe)
-    print(f"pinning legs: {legs}")
+    if args.fixture:
+        # One fixture, every other entry byte-for-byte as it was: the case for a replaced frame.
+        if existing is None:
+            sys.exit("--fixture needs an existing expected.json to leave the other entries in")
+        if not (args.frames / args.fixture).is_file():
+            sys.exit(f"--fixture {args.fixture}: no such file in {args.frames}")
+        fx = [args.frames / args.fixture]
+    legs = default_legs()
+    announce_legs(legs)
+    print(f"pinning {len(fx)} fixture(s) × {len(legs)} legs — a leg that cannot run is a failure, not a smaller pin")
     instances = {n: Leg(n, args.models, args.compute_units, args.probe) for n in legs}
-    frames: dict[str, dict] = {}
+    frames: dict[str, dict] = dict(existing["frames"]) if args.fixture else {}
     for f in fx:
         reads: dict[str, str] = {}
         sha: str | None = None
@@ -285,18 +427,34 @@ def write_expected(args) -> int:
             elif s != sha:
                 sys.exit(f"letterbox sha disagrees on {f.name}: {n} gave {s[:12]} vs {sha[:12]} — a letterbox drifted")
         frames[f.name] = {"preprocess_sha256": sha, "legs": reads}
-    ref = {name: fr["legs"]["onnx"] for name, fr in frames.items()}
-    divergence = {n: sum(1 for name, fr in frames.items() if fr["legs"].get(n) != ref[name]) for n in legs}
+    if args.fixture:
+        frames = {name: frames[name] for name in sorted(frames)}
+        gone = [n for n in frames if not (args.frames / n).is_file()]
+        if gone:
+            sys.exit(f"expected.json pins fixtures that no longer exist: {gone} — a full --write-expected is the honest fix")
+    divergence = divergence_table(frames)
     doc = {
         "reference": "onnx (fp32)",
         "pinned_on": {"host": platform.platform(), "python": platform.python_version()},
-        "faithful_legs": ["onnx", "coreml", "native"],
-        "bounded_legs": {"onnx-int8": "web / Windows / Linux runtime; int8 dynamic quantisation", "tflite": "Android runtime; static int8"},
+        "model": identity,
+        "faithful_legs": list(FAITHFUL_LEGS),
+        "bounded_legs": dict(BOUNDED_LEGS),
         "divergence_from_fp32": divergence,
         "frames": frames,
     }
+    if args.fixture:
+        # Keep the host the OTHER 19 reads were pinned on: this run re-read one frame, not the set.
+        doc["pinned_on"] = existing.get("pinned_on", doc["pinned_on"])
+    if existing and existing.get("repin") and not args.repin_checkpoint:
+        doc["repin"] = existing["repin"]  # the last model change stays on record until the next one
+    if args.repin_checkpoint:
+        doc["repin"] = {
+            "when": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "reason": args.repin_checkpoint,
+            "previous_checkpoint_sha256": ((existing or {}).get("model") or {}).get("checkpoint_sha256"),
+        }
     args.expected.write_text(json.dumps(doc, indent=2) + "\n")
-    print(f"pinned {len(frames)} fixtures × {len(legs)} legs → {args.expected}")
+    print(f"pinned {len(fx)} fixture(s) × {len(legs)} legs → {args.expected}" + (f" (only {args.fixture}; {len(frames) - 1} entries untouched)" if args.fixture else ""))
     print(f"divergence from fp32: {divergence}")
     return 0
 
@@ -312,8 +470,9 @@ def check(args) -> int:
     if missing or gone:
         sys.exit(f"expected.json and frames/ disagree: unpinned {missing}, pinned-but-gone {gone}")
 
-    legs = args.legs or runnable_legs(args.models, args.probe)
-    failures = 0
+    legs = args.legs or default_legs()
+    announce_legs(legs)
+    failures = check_identity(doc, args.models)
     live: dict[str, dict[str, str]] = {}
 
     for name in legs:
@@ -397,13 +556,18 @@ def parity(args, doc, live: dict, legs: list[str], fx: list[Path]) -> int:
     What is asserted here is hardware-independent by construction, because both sides of every
     comparison are computed in the same run on the same machine:
 
-      * the model BYTES match MANIFEST.json — so a swapped model is still caught in CI, which is the
-        gate's headline purpose ("a model change is not verified until golden_frames.py has run");
+      * the model BYTES match MANIFEST.json, and MANIFEST.json's checkpoint and fp32 hashes match
+        the `model` block in expected.json (`check_identity`, both modes). The first half alone
+        was claimed to catch "a swapped model" and did not: a swap made through export.py
+        regenerates the manifest, so the bytes matched it by construction. The second half is what
+        makes the gate's headline purpose ("a model change is not verified until golden_frames.py
+        has run") hold for the documented way of changing a model;
       * the letterbox sha matches the pin — integer image work, identical everywhere (checked above);
       * faithful legs (coreml, native) never read a face DIFFERENTLY from this host's own fp32 onnx,
         and never commit to one fp32 refused. They may REFUSE where fp32 read — see below;
       * bounded legs (onnx-int8, tflite) diverge from this host's fp32 no more than the bound already
-        recorded in `divergence_from_fp32`.
+        recorded in `divergence_from_fp32`, AND misread only frames they were pinned misreading
+        (`new_misreads`) — the count alone let a pinned refusal turn into a committed face.
 
     The absolute per-fixture pin is not weakened, it is relocated: it remains the gate on the pinning
     host, which is where AGENTS.md already requires it to be run before a model is vendored.
@@ -483,8 +647,15 @@ def parity(args, doc, live: dict, legs: list[str], fx: list[Path]) -> int:
                 print(f"[{name}] ok — exact class parity with this host's fp32 over {len(fx)} fixtures")
             elif not wrong:
                 print(f"[{name}] ok — {len(refused)} refusal(s) where fp32 read a face; no fixture read DIFFERENTLY")
-        else:  # bounded: may diverge, but no more than the recorded bound
+        else:  # bounded: may diverge, but no more than the recorded bound, and on no NEW frame
             allowed = bound.get(name)
+            pins = doc["frames"]
+            fresh = new_misreads(live[name], ref, {n: pins[n]["legs"].get(name, "") for n in pins}, {n: pins[n]["legs"]["onnx"] for n in pins})
+            for n in fresh:
+                print(f"[{name}] XX {n:16s} {live[name].get(n, '<missing>'):14s}  fp32 here reads {ref[n]} — a misread this leg was NOT pinned making")
+            if fresh:
+                print(f"[{name}] {len(fresh)} NEW misread(s) — FAIL, whatever the count")
+                failures += len(fresh)
             if allowed is None:
                 print(f"[{name}] no divergence bound recorded for this leg — re-pin")
                 failures += 1
@@ -493,8 +664,8 @@ def parity(args, doc, live: dict, legs: list[str], fx: list[Path]) -> int:
                     print(f"[{name}] .. {n:16s} {live[name].get(n, '<missing>'):14s}  fp32 here reads {ref[n]}")
                 print(f"[{name}] {len(div)} divergence(s) from fp32, bound is {allowed} — FAIL")
                 failures += 1
-            else:
-                print(f"[{name}] ok — {len(div)} divergence(s) from this host's fp32, within the pinned bound of {allowed}")
+            elif not fresh:
+                print(f"[{name}] ok — {len(div)} divergence(s) from this host's fp32, within the pinned bound of {allowed}, none on a new frame")
 
     if failures:
         print(f"FAIL: {failures} problem(s)")
@@ -512,7 +683,10 @@ def main() -> int:
     ap.add_argument("--compute-units", default="all", choices=["all", "cpu_and_gpu", "cpu_only", "cpu_and_ne"], help="CoreML compute units for the coreml/native legs")
     ap.add_argument("--self-check", action="store_true", help="exercise the faithfulness rule on synthetic reads and exit; needs no model, runtime or hardware")
     ap.add_argument("--parity", action="store_true", help="host-internal mode for CI: assert the RELATIONS between legs on THIS machine, not another host's absolute reads")
-    ap.add_argument("--write-expected", action="store_true", help="re-pin expected.json (every leg this machine can run)")
+    ap.add_argument("--write-expected", action="store_true", help="re-pin expected.json (every leg this platform has); refuses without --yes, a committed ml/models, and the pinned checkpoint")
+    ap.add_argument("--yes", action="store_true", help="confirm --write-expected")
+    ap.add_argument("--fixture", metavar="NAME.png", help="with --write-expected: re-pin this ONE fixture and leave every other entry byte-identical")
+    ap.add_argument("--repin-checkpoint", metavar="REASON", help="with --write-expected: accept that MANIFEST.json's checkpoint differs from the pinned one; REASON is written into expected.json")
     args = ap.parse_args()
     if args.self_check:
         return self_check()

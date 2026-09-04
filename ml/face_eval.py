@@ -24,7 +24,7 @@ import os
 from PIL import Image
 
 from color_eval import iou_xyxy, load_gt
-from ood_eval import CLASS_NAMES, _to_grid, decode, letterbox, nms
+from ood_eval import _to_grid, decode, letterbox, nms
 
 
 def main() -> None:

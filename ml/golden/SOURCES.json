@@ -73,9 +73,9 @@
   },
   {
     "file": "abstain-00.png",
-    "source": "https://upload.wikimedia.org/wikipedia/commons/6/6c/1334579571.4ac18b.jpg",
-    "licence": "CC0",
-    "shape": "photo-720",
+    "source": "ml/out/synth_v3/part_0/coco/images/000008.jpg",
+    "licence": "project-rendered (generate_cube3d.py), CC0",
+    "shape": "landscape-720",
     "reference_verdict": "BAD_GEOMETRY"
   },
   {

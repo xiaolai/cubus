@@ -8,7 +8,10 @@ collides, and converts the boxes to YOLO labels on the way (reusing coco_to_yolo
 
   python3 merge_parts.py --out ~/datasets/cube --parts ~/datasets/cube/part_*
 
-Stdlib only. Idempotent per run (overwrites the two output dirs' contents by filename).
+Stdlib only. Idempotent per run: the two output dirs are CLEARED first, so a part that has been
+removed or re-rendered since the last merge cannot leave its old images behind — before this,
+files were only ever overwritten by filename, and a stale `p3_*.jpg` from a deleted part stayed
+in the set with a label nothing had regenerated.
 """
 
 from __future__ import annotations
@@ -25,8 +28,11 @@ def merge(out: str, parts: list[str]) -> tuple[int, int]:
     """Copy every part's images (prefixed) + write their YOLO labels. Returns (images, labels)."""
     img_dir = os.path.join(out, "images_all")
     lbl_dir = os.path.join(out, "labels_all")
-    os.makedirs(img_dir, exist_ok=True)
-    os.makedirs(lbl_dir, exist_ok=True)
+    # These two directories are this script's own output and nothing else's; clearing them is
+    # what makes the merge a function of the parts rather than of the previous merge.
+    for d in (img_dir, lbl_dir):
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
 
     n_img = n_with_boxes = 0
     for pi, part in enumerate(sorted(parts)):

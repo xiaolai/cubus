@@ -1,14 +1,27 @@
-"""Off-GPU tests for the pure pipeline pieces. Run: `python3 ml/test_pipeline.py`."""
+"""Off-GPU tests for the pure pipeline pieces. Run: `ml/venv/bin/python ml/test_pipeline.py`.
+
+Needs nothing beyond ml/requirements-golden.txt (CI installs exactly that): the geometry, colour
+and label tests are stdlib; the artefact tests read ml/models with onnxruntime and onnx.
+"""
 
 from __future__ import annotations
 
-import math
-
 import colorsys
+import hashlib
+import json
+import math
+import os
 import random
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 
-from coco_to_yolo import DEFAULT_MAP, coco_to_yolo_lines
-from cube_colors import (
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))  # runnable from any cwd: `python ml/test_pipeline.py` (CI) as well as from ml/
+
+from coco_to_yolo import DEFAULT_MAP, coco_to_yolo_lines  # noqa: E402
+from cube_colors import (  # noqa: E402
     MIN_RED_ORANGE_SEPARATION,
     ORANGE,
     RED,
@@ -16,7 +29,8 @@ from cube_colors import (
     hue_of,
     shade_sticker,
 )
-from cube_geometry import FACE_NAMES, HALF, RAISE, stickers
+from cube_geometry import FACE_NAMES, HALF, RAISE, stickers  # noqa: E402
+from split_dataset import shuffle_key  # noqa: E402
 
 
 def test_cube_geometry() -> None:
@@ -122,9 +136,79 @@ def test_coco_to_yolo() -> None:
     print("PASS coco_to_yolo: 1-indexed shift, normalization, area filter, background/body/unknown skip")
 
 
+def test_split_order_is_the_same_in_every_process() -> None:
+    """The train/val split must not depend on which interpreter process computed it.
+
+    `split_dataset` used `hash((seed, name))`, and str hashing is salted per process, so every
+    run laid the same images out differently — a "deterministic" split that was not. Two child
+    interpreters with DIFFERENT hash seeds must rank the same names identically; against the old
+    code this fails by construction, whatever PYTHONHASHSEED the parent happens to have. The
+    pinned value guards the other direction: a well-meaning change of hash function would
+    silently re-split every dataset rendered since, and the pin makes that a red test instead.
+    """
+    names = ["p0_000123.jpg", "p1_000007.jpg", "lazycube_train_img_0.png", "a.jpg", "b.png"]
+    code = "from split_dataset import shuffle_key; import json; print(json.dumps([shuffle_key(3, n) for n in " + repr(names) + "]))"
+    runs = []
+    for hash_seed in ("1", "2"):
+        env = {**os.environ, "PYTHONHASHSEED": hash_seed}
+        out = subprocess.run([sys.executable, "-c", code], cwd=HERE, env=env, capture_output=True, text=True, check=True)
+        runs.append(json.loads(out.stdout))
+    assert runs[0] == runs[1], f"the split order depends on the process: {runs}"
+    assert shuffle_key(0, "a.jpg") == 1586642531, shuffle_key(0, "a.jpg")
+    print("PASS split_dataset: the shuffle key is process-independent and pinned")
+
+
+def test_shipped_int8_is_derived_from_the_shipped_fp32() -> None:
+    """`ml/models/cube-yolo.int8.onnx` must be `quantize_dynamic` of the fp32 file beside it.
+
+    Until 2026-09-04 it was not: export.py quantised the fp32, then handed the same file to onnx2tf,
+    which runs onnx-simplifier and saves the result back OVER its input. The manifest hashed the
+    rewritten fp32 last, so both hashes were "right" while the int8 descended from bytes nobody
+    could produce again. `quantize_dynamic` is deterministic (measured: two runs, identical
+    sha256), so the relation is exact and cheap to assert — ~2 s.
+    """
+    from onnxruntime.quantization import QuantType, quantize_dynamic
+
+    models = HERE / "models"
+    manifest = json.loads((models / "MANIFEST.json").read_text())
+    fp32, int8 = models / "cube-yolo.onnx", models / "cube-yolo.int8.onnx"
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "q.onnx"
+        quantize_dynamic(str(fp32), str(out), weight_type=QuantType.QInt8)
+        derived = hashlib.sha256(out.read_bytes()).hexdigest()
+    committed = hashlib.sha256(int8.read_bytes()).hexdigest()
+    assert derived == committed, f"cube-yolo.int8.onnx ({committed[:12]}) is not quantize_dynamic of cube-yolo.onnx ({derived[:12]}) — run export.py --int8-only"
+    entry = manifest["artefacts"]["cube-yolo.int8.onnx"]
+    assert entry["sha256"] == committed, "MANIFEST.json's int8 sha256 does not describe the file beside it"
+    assert entry.get("derived_from_fp32_sha256") == hashlib.sha256(fp32.read_bytes()).hexdigest(), (
+        "MANIFEST.json does not record which fp32 the int8 was derived from, or records the wrong one"
+    )
+    print("PASS models: cube-yolo.int8.onnx is quantize_dynamic(cube-yolo.onnx), and the manifest says so")
+
+
+def test_manifest_labels_match_export_py() -> None:
+    """The shipping-state labels in MANIFEST.json are export.py's, verbatim.
+
+    They describe what ships where — the one thing a reader of the manifest most wants — and they
+    are the strings that went stale for months ("web / Windows / Linux runtime" on an artefact
+    nothing served). export.py owns them; the committed manifest must carry the same text.
+    """
+    import export
+
+    manifest = json.loads((HERE / "models" / "MANIFEST.json").read_text())
+    for name, labels in export.ARTEFACT_LABELS.items():
+        entry = manifest["artefacts"][name]
+        for key, value in labels.items():
+            assert entry.get(key) == value, f"MANIFEST.json {name}.{key} differs from export.py — regenerate the manifest (export.py) rather than editing one of them by hand"
+    print("PASS models: MANIFEST.json labels are export.py's, verbatim")
+
+
 if __name__ == "__main__":
     test_cube_geometry()
     test_one_cube_has_one_pigment_per_colour()
     test_orange_is_never_redder_than_red()
     test_coco_to_yolo()
+    test_split_order_is_the_same_in_every_process()
+    test_shipped_int8_is_derived_from_the_shipped_fp32()
+    test_manifest_labels_match_export_py()
     print("ALL PASS")

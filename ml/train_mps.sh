@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # Train YOLOv11n on Apple Silicon (MPS) — the reliable path when a CUDA box isn't available.
-# Self-contained + autonomous: it waits for the training venv to be ready, trains, exports ONNX,
-# and prints PIPELINE_DONE so a detached run can be polled by a marker rather than a live process.
+# Self-contained + autonomous: it waits for the training venv to be ready, trains, and prints
+# PIPELINE_DONE so a detached run can be polled by a marker rather than a live process.
 #
-#   EPOCHS=80 BATCH=64 caffeinate -is nohup bash train_mps.sh > mps.log 2>&1 < /dev/null &
+#   DATASET=~/datasets/cube/dataset EPOCHS=80 BATCH=64 caffeinate -is nohup bash train_mps.sh > mps.log 2>&1 < /dev/null &
 #
-# Prereqs: a venv at $VENV with `pip install ultralytics onnx onnxruntime` (torch pulls MPS on
+# Every path is an environment variable with the default stated beside it; DATASET has none,
+# because the two it used to default to (`~/datasets/cube_combined/...`) were one machine's
+# layout, and a script that silently trains on "whatever is at the default path" is how a run
+# ends up measured against the wrong data. Same contract as ml/train.sh.
+#
+# Prereqs: a venv at $VENV with `pip install -r ml/requirements-train.txt` (torch pulls MPS on
 # macOS arm64), and a YOLO dataset dir with data.yaml at $DATASET.
 set -euo pipefail
 
-VENV="${VENV:-$HOME/mps-train-venv/bin}"
-DATASET="${DATASET:-$HOME/datasets/cube_combined/dataset}"
-RUNS="${RUNS:-$HOME/datasets/cube_combined/runs}"
+VENV="${VENV:-$HOME/mps-train-venv/bin}"                                  # the training venv's bin/
+DATASET="${DATASET:?set DATASET to the split dataset dir (contains data.yaml, images/, labels/)}"
+RUNS="${RUNS:-$DATASET/../runs}"                                          # ultralytics project dir; default: beside the dataset
 EPOCHS="${EPOCHS:-80}"
 BATCH="${BATCH:-64}"
 IMGSZ="${IMGSZ:-640}"
@@ -27,5 +32,6 @@ done
   epochs="$EPOCHS" imgsz="$IMGSZ" batch="$BATCH" device=mps workers=8 \
   project="$RUNS" name=cube plots=True
 
-"$VENV/yolo" export model="$RUNS/cube/weights/best.pt" format=onnx opset=12 simplify=True
-echo "PIPELINE_DONE onnx=$RUNS/cube/weights/best.onnx"
+# No `yolo export` here: ml/export.py is the one exporter (all four artefacts + MANIFEST.json from
+# best.pt), and a second ONNX lineage is what it exists to prevent. See ml/README.md.
+echo "PIPELINE_DONE best=$RUNS/cube/weights/best.pt — export with ml/export.py --pt $RUNS/cube/weights/best.pt"

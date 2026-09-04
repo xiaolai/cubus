@@ -1,7 +1,7 @@
 """Run the shipped cube-yolo ONNX over a folder of out-of-distribution (OOD) photos and
 report how it behaves — WITHOUT needing ground-truth labels.
 
-Why this exists: the reported mAP (0.971) is measured on Roboflow test images, i.e. the SAME
+Why this exists: the mAP in MODEL_CARD.md is measured on Roboflow test images, i.e. the SAME
 source the model trained on (in-distribution). That number is optimistic. This script runs the
 model on genuinely unseen photos (e.g. Wikimedia Commons) and surfaces label-free honesty signals:
 
@@ -13,12 +13,13 @@ model on genuinely unseen photos (e.g. Wikimedia Commons) and surfaces label-fre
 It also writes YOLO-format pre-labels (predictions) so a human can spot-correct them into a real
 held-out test set, at which point `mAP` becomes measurable. Predictions alone are NOT ground truth.
 
-Faithful port of cube-scanner's onnx-detect.ts (preprocess) + onnx-postprocess.ts (decode/NMS/
-fitFace), so these numbers match what the app actually runs.
+The letterbox is `cube_infer.letterbox` — the byte-exact port of cube-scanner's onnx-detect.ts
+`preprocess()` that the golden gate pins — and decode/NMS/fitFace mirror onnx-postprocess.ts, so
+these numbers are measured on the pixels the app actually runs.
 
-  python ood_eval.py --model ../app/renderer/vendor/cube-yolo.onnx --images <dir> --out <dir>
+  ml/venv/bin/python ml/ood_eval.py --model ml/models/cube-yolo.onnx --images <dir> --out <dir>
 
-Deps: onnxruntime, pillow, numpy (all in the local venv).
+Deps: onnxruntime, pillow, numpy (ml/requirements-golden.txt).
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ import numpy as np
 import onnxruntime as ort
 from PIL import Image, ImageDraw
 
-IMG_SIZE = 640
-PAD = 114.0 / 255.0
+import cube_infer
+
 CLASS_NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
 CLASS_HEX = ["#f6f7f8", "#d0202a", "#049e4a", "#ffd400", "#ff6a00", "#0057c8"]
 NUM_CLASSES = 6
@@ -41,21 +42,20 @@ IMG_EXT = (".jpg", ".jpeg", ".png", ".webp")
 
 
 def letterbox(img: Image.Image) -> tuple[np.ndarray, float, int, int]:
-    """Aspect-preserving resize to IMG_SIZE with grey-114 pad; CHW RGB float [0,1].
+    """The app's letterbox as a (1, 3, 640, 640) tensor, plus the placement that maps boxes back.
 
-    Mirrors preprocess() in onnx-detect.ts exactly (bilinear, same pad, same rounding)."""
-    w, h = img.size
-    scale = IMG_SIZE / max(w, h)
-    new_w = max(1, round(w * scale))
-    new_h = max(1, round(h * scale))
-    pad_x = (IMG_SIZE - new_w) // 2
-    pad_y = (IMG_SIZE - new_h) // 2
-    resized = img.resize((new_w, new_h), Image.BILINEAR)
-    canvas = Image.new("RGB", (IMG_SIZE, IMG_SIZE), (114, 114, 114))
-    canvas.paste(resized, (pad_x, pad_y))
-    arr = np.asarray(canvas, dtype=np.float32) / 255.0  # HWC
-    chw = np.transpose(arr, (2, 0, 1))[np.newaxis, ...]  # 1CHW
-    return np.ascontiguousarray(chw), scale, pad_x, pad_y
+    A wrapper over `cube_infer.letterbox`, which is byte-identical to `preprocess()` in
+    onnx-detect.ts. Until 2026-09-04 this function was its OWN resampler — PIL `Image.BILINEAR`,
+    which antialiases when shrinking, placed with Python's banker's `round` — and every evaluation
+    script in this directory imported it. On the 20 golden fixtures 17 of its tensors differed
+    from the app's (max |diff| 0.185), so each metric was measured on pixels the app never sees.
+    The placement now comes from the same arithmetic as the tensor (`letterbox_geometry`), so a
+    box mapped back with these numbers lands where the app would put it.
+    """
+    rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    h, w = rgb.shape[:2]
+    scale, _, _, pad_x, pad_y = cube_infer.letterbox_geometry(w, h)
+    return cube_infer.letterbox(rgb)[None], scale, pad_x, pad_y
 
 
 def decode(out: np.ndarray, conf_th: float = 0.25) -> list[dict]:

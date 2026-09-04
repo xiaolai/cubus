@@ -18,25 +18,34 @@
   "artefacts": {
     "cube-yolo.onnx": {
       "sha256": "5be4e55a9bae7d162775b431e09ea71947838dfeca421c1369f5cd6ad89fb472",
-      "runtime": "onnxruntime",
+      "runtime": "onnxruntime \u2014 the reference; byte-identical to apps/web/vendor/cube-yolo.onnx (web, Windows, Linux, and the Android WebView)",
       "precision": "fp32",
       "opset": 12
     },
     "cube-yolo.int8.onnx": {
-      "sha256": "4d1cef8480e3793f48808d7c5f6f9a03a88f1f42a958633e1e9d4818c3badaf9",
+      "sha256": "7a9d985dd98d9a9d6e5c5c385670c5ac1a02a1959cb3f360a866bc34f4f7aa1e",
       "runtime": "onnxruntime-web \u2014 NOT SHIPPED; the web build serves the fp32 graph",
       "precision": "dynamic int8 (QInt8 weights, uint8 activations)",
-      "quantisation_note": "quantises ACTIVATIONS as well as weights, and that is what costs the reads: 4 of 20 golden fixtures come back with a different face, two of them frames the fp32 graph correctly refuses. Contrast cube-yolo.tflite, which takes the same size reduction weight-only and diverges on none. Do not ship this without re-exporting weight-only."
+      "quantisation_note": "quantises ACTIVATIONS as well as weights, and that is what costs the reads: it diverges from fp32 on golden fixtures \u2014 ml/golden/expected.json pins which fixtures and how (a different face, a face where fp32 refuses, a refusal where fp32 reads), and the parity gate fails on any NEW misread. Contrast cube-yolo.tflite, which takes the same size reduction weight-only and diverges on none. Do not ship this without re-exporting weight-only.",
+      "derived_from_fp32_sha256": "5be4e55a9bae7d162775b431e09ea71947838dfeca421c1369f5cd6ad89fb472",
+      "regenerated": {
+        "when": "2026-09-04T15:59:49+00:00",
+        "git": {
+          "commit": "b1030c70309ff3d775886b676c9e088fdfdfff15",
+          "dirty": true
+        },
+        "onnxruntime": "1.29.0"
+      }
     },
     "cube-yolo.mlpackage": {
       "sha256": "f7e76d1bc93674b8d8893be55d94394908383225d8bf09dd527007db98d92737",
-      "runtime": "CoreML",
+      "runtime": "CoreML \u2014 macOS and iOS, via crates/cube-vision",
       "precision": "fp16 compute, fp32 tensor in, fp16 out",
       "min_target": "macOS13 / iOS16"
     },
     "cube-yolo.tflite": {
       "sha256": "d1a2d2cb15249737e3b97783fa67d16a96881040cfe244e95009415441f9c1a3",
-      "runtime": "LiteRT/TFLite (onnx2tf) \u2014 NOT SHIPPED YET; the Android LiteRT backend is device-gated work, so Android runs the WebView fp32 path",
+      "runtime": "LiteRT/TFLite (onnx2tf) \u2014 bundled in the Android APK by gen/android/app/build.gradle.kts, but gated OFF: VisionPlugin.kt answers probe with verifiedOnDevice=false, so Android runs the WebView fp32 path until the native path is verified on a device",
       "precision": "dynamic-range int8: int8 weights, fp32 activations, fp32 I/O",
       "layout": "NHWC input; box coords in 640-space (the read is scale-invariant, so the consumer need not rescale)",
       "quantisation_note": "full-integer int8 (int8 activations) was rejected \u2014 it collapses the detect head's class scores to ~0 (NO_FACE on all golden frames); weight-only int8 reads identical to fp32 (0/20). Verified by ml/golden_frames.py."
