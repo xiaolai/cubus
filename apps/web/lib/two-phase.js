@@ -217,9 +217,18 @@ const applyEo = (eo, m) => {
   return out;
 };
 
-function buildTable(Type, count, moveIdx, unrank, step) {
+/**
+ * @param {object|null} into  a view to fill INSTEAD of allocating — how a build targets memory it
+ *   does not own (a SharedArrayBuffer the whole pool reads; see `shareTables`). Its length is
+ *   CHECKED rather than trusted: a view one entry short would otherwise be filled to its end and
+ *   the table would simply stop, which no search reports and no answer reveals.
+ */
+function buildTable(Type, count, moveIdx, unrank, step, into = null) {
   const width = moveIdx.length;
-  const table = new Type(count * width);
+  const table = into ?? new Type(count * width);
+  if (table.length !== count * width) {
+    throw new Error(`two-phase: a supplied move table holds ${table.length} entries, not ${count * width}`);
+  }
   for (let c = 0; c < count; c++) {
     const st = unrank(c);
     for (let mi = 0; mi < width; mi++) table[c * width + mi] = step(st, MOVES[MOVE_NAMES[moveIdx[mi]]]);
@@ -232,21 +241,30 @@ let tables = null;
 /** All six coordinate move tables, built once and shared. ~1M entries in all — trivial. */
 export function moveTables() {
   if (tables) return tables;
+  tables = Object.freeze(buildMoveTables(null));
+  return tables;
+}
+
+/** The six move tables as fresh allocations, or written into `into`'s views of the same names.
+ *  One builder for both, so a shared table and a private one cannot come to differ. */
+function buildMoveTables(into) {
   const identity4 = [8, 9, 10, 11];
-  tables = Object.freeze({
+  const slot = (name) => into?.[name] ?? null;
+  return {
     // Phase 1: all 18 moves.
-    twistMove: buildTable(Uint16Array, TWIST_COUNT, ALL_MOVES, twistTo, (co, m) => twistOf(applyCo(co, m))),
-    flipMove: buildTable(Uint16Array, FLIP_COUNT, ALL_MOVES, flipTo, (eo, m) => flipOf(applyEo(eo, m))),
-    sliceMove: buildTable(Uint16Array, SLICE_COUNT, ALL_MOVES, sliceTo, (ep, m) => sliceOf(applyPerm(ep, m.ep))),
+    twistMove: buildTable(Uint16Array, TWIST_COUNT, ALL_MOVES, twistTo, (co, m) => twistOf(applyCo(co, m)), slot('twistMove')),
+    flipMove: buildTable(Uint16Array, FLIP_COUNT, ALL_MOVES, flipTo, (eo, m) => flipOf(applyEo(eo, m)), slot('flipMove')),
+    sliceMove: buildTable(Uint16Array, SLICE_COUNT, ALL_MOVES, sliceTo, (ep, m) => sliceOf(applyPerm(ep, m.ep)), slot('sliceMove')),
     // Phase 2: the ten G1 moves, which map U/D slots to U/D slots and slice slots to slice
     // slots — that closure is what makes the two smaller permutation coordinates well-defined.
-    cpermMove: buildTable(Uint16Array, PERM8_COUNT, PHASE2_MOVES, (r) => permUnrank(r, 8), (cp, m) => permRank(applyPerm(cp, m.cp))),
+    cpermMove: buildTable(Uint16Array, PERM8_COUNT, PHASE2_MOVES, (r) => permUnrank(r, 8), (cp, m) => permRank(applyPerm(cp, m.cp)), slot('cpermMove')),
     epermMove: buildTable(
       Uint16Array,
       PERM8_COUNT,
       PHASE2_MOVES,
       (r) => [...permUnrank(r, 8), ...identity4],
       (ep, m) => permRank(applyPerm(ep, m.ep).slice(0, 8)),
+      slot('epermMove'),
     ),
     spermMove: buildTable(
       Uint8Array,
@@ -254,9 +272,9 @@ export function moveTables() {
       PHASE2_MOVES,
       (r) => [0, 1, 2, 3, 4, 5, 6, 7, ...permUnrank(r, 4).map((x) => x + 8)],
       (ep, m) => permRank(applyPerm(ep, m.ep).slice(8).map((x) => x - 8)),
+      slot('spermMove'),
     ),
-  });
-  return tables;
+  };
 }
 
 // ---- pruning tables ---------------------------------------------------------------------------
@@ -264,9 +282,19 @@ export function moveTables() {
 // full cube state it is a lower bound — which is all IDA* needs, and why max() of two tables is
 // a better bound than either alone.
 
-function bfsPrune(countA, countB, tableA, tableB, width) {
+/**
+ * @param {Uint8Array|null} into  a view to fill INSTEAD of allocating, so the BFS can target
+ *   memory the whole pool will read. Filled with 255 here rather than relying on fresh zeros:
+ *   a supplied view has whatever was in it, and 0 means "already home", which would end the
+ *   search at the first entry and leave a table that prunes everything.
+ */
+function bfsPrune(countA, countB, tableA, tableB, width, into = null) {
   const size = countA * countB;
-  const dist = new Uint8Array(size).fill(255);
+  const dist = into ?? new Uint8Array(size);
+  if (dist.length !== size) {
+    throw new Error(`two-phase: a supplied pruning table holds ${dist.length} entries, not ${size}`);
+  }
+  dist.fill(255);
   const queue = new Int32Array(size);
   dist[0] = 0;
   let head = 0;
@@ -310,26 +338,59 @@ let PRUNE1TF = null;
 let PRUNE2C = null;
 let PRUNE2E = null;
 
-/** Build everything the search needs. Idempotent; measured 0.4-2.6 s once, machine- and
- *  load-dependent (dev-docs/solver-move-count.md §7). Everything is built into locals first
- *  and published together at the end — a throw mid-build must leave the module un-initialized,
- *  not half-initialized behind a truthy flag. */
-export function initialize() {
-  if (pruning) return;
-  const t = moveTables();
-  const built = {
-    prune1t: bfsPrune(TWIST_COUNT, SLICE_COUNT, t.twistMove, t.sliceMove, P1_WIDTH),
-    prune1f: bfsPrune(FLIP_COUNT, SLICE_COUNT, t.flipMove, t.sliceMove, P1_WIDTH),
-    prune1tf: bfsPrune(TWIST_COUNT, FLIP_COUNT, t.twistMove, t.flipMove, P1_WIDTH),
-    prune2c: bfsPrune(PERM8_COUNT, PERM4_COUNT, t.cpermMove, t.spermMove, P2_WIDTH),
-    prune2e: bfsPrune(PERM8_COUNT, PERM4_COUNT, t.epermMove, t.spermMove, P2_WIDTH),
+/** The five pruning tables as fresh allocations, or written into `into`'s views of the same
+ *  names. Needs the move tables it prunes over, which is why they are a parameter and not a
+ *  `moveTables()` call: a shared build hands it the shared move tables. */
+function buildPruning(t, into) {
+  const slot = (name) => into?.[name] ?? null;
+  return {
+    prune1t: bfsPrune(TWIST_COUNT, SLICE_COUNT, t.twistMove, t.sliceMove, P1_WIDTH, slot('prune1t')),
+    prune1f: bfsPrune(FLIP_COUNT, SLICE_COUNT, t.flipMove, t.sliceMove, P1_WIDTH, slot('prune1f')),
+    prune1tf: bfsPrune(TWIST_COUNT, FLIP_COUNT, t.twistMove, t.flipMove, P1_WIDTH, slot('prune1tf')),
+    prune2c: bfsPrune(PERM8_COUNT, PERM4_COUNT, t.cpermMove, t.spermMove, P2_WIDTH, slot('prune2c')),
+    prune2e: bfsPrune(PERM8_COUNT, PERM4_COUNT, t.epermMove, t.spermMove, P2_WIDTH, slot('prune2e')),
   };
-  const builtRotations = buildRotations();
+}
+
+/** The publish step, shared by every way of getting tables: point the hoisted views at them and
+ *  set `pruning` LAST. Called only with everything already built and checked. */
+function publish(t, built, builtRotations) {
   ({ twistMove: TWIST_MOVE, flipMove: FLIP_MOVE, sliceMove: SLICE_MOVE } = t);
   ({ cpermMove: CPERM_MOVE, epermMove: EPERM_MOVE, spermMove: SPERM_MOVE } = t);
   ({ prune1t: PRUNE1T, prune1f: PRUNE1F, prune1tf: PRUNE1TF, prune2c: PRUNE2C, prune2e: PRUNE2E } = built);
   rotations = builtRotations;
+  tables = Object.freeze(t);
   pruning = built; // the publish — everything above succeeded
+}
+
+/**
+ * Build everything the search needs. Idempotent; measured 0.4-2.6 s once, machine- and
+ * load-dependent (dev-docs/solver-move-count.md §7). Everything is built into locals first
+ * and published together at the end — a throw mid-build must leave the module un-initialized,
+ * not half-initialized behind a truthy flag.
+ *
+ * @param {object|null} [options.adopt]  a bundle published by `shareTables()` on another thread.
+ *   With one, nothing is built at all: the eleven tables are VIEWS of memory another thread
+ *   already filled, verified byte for byte before a single one is installed (2026-09-05). Not
+ *   guarded by `pruning`, because adopting is worth doing even where a local build already
+ *   happened — it is what frees this thread's 9.8 MiB copy.
+ */
+export function initialize({ adopt = null } = {}) {
+  if (adopt) {
+    // Validate first, commit together — the rule setBounds already follows. A bundle that fails
+    // its checksum must leave this thread exactly as it was, building its own tables on the next
+    // search, rather than half-pointed at memory nobody can vouch for.
+    const shared = viewsOf(adopt);
+    const builtRotations = buildRotations();
+    publish(pick(shared, MOVE_TABLE_NAMES), pick(shared, PRUNE_TABLE_NAMES), builtRotations);
+    adopted = adopt;
+    return;
+  }
+  if (pruning) return;
+  const t = moveTables();
+  const built = buildPruning(t, null);
+  const builtRotations = buildRotations();
+  publish(t, built, builtRotations);
 }
 
 /** For tests: the built pruning tables. */
@@ -337,6 +398,252 @@ export function pruningTables() {
   initialize();
   return pruning;
 }
+
+// ---- one build for the whole pool ---------------------------------------------------------------
+// Added 2026-09-05 (dev-docs/deferred-plans-2026-09-05.md §2). Six pool workers each built these
+// same eleven tables — 9.82 MiB and 0.4-2.6 s apiece, concurrently — so a cold session paid six
+// builds and then HELD six identical copies for the life of the page. One worker builds into a
+// SharedArrayBuffer now and the rest take views of it.
+//
+// Four things this rests on, each of which was a real way to get it wrong:
+//
+//   * **One buffer, eleven regions at eleven byte OFFSETS.** That makes the stop word's recorded
+//     trap structural rather than incidental: every table starts somewhere other than 0, so a
+//     descriptor that dropped its offset addresses the wrong bytes and the checksum says so
+//     immediately. A buffer per table would have hidden the whole class behind offset 0.
+//   * **A seal, stored and loaded atomically**, so the builder's writes are visible to the
+//     adopters by the memory model rather than by luck. See SEALED.
+//   * **A checksum per table, computed at build time and verified before a single view is
+//     installed.** Shared memory is shared damage: one stray write corrupts all six searches at
+//     once, and the symptom — an alg that does not solve — surfaces at the cubejs oracle three
+//     layers away with nothing pointing back here.
+//   * **The verification is at ADOPTION only, and that is a decision with a cost.** Re-checking
+//     all eleven costs 2.3 ms (measured, 32-bit FNV-1a over 9.82 MiB), against a median warm
+//     solve of ~4 ms — a per-solve re-check would more than halve the warm path to catch a class
+//     that cannot happen while the search stays read-only. So the read-only property is what is
+//     asserted instead: `verifyAdopted()` is public, and shared-solver-tables.test.mjs runs a real
+//     solve on adopted tables and re-verifies afterwards. If the search ever starts writing, that
+//     test goes red rather than the app going quietly wrong.
+
+/** The eleven tables, in one place: what each is called, how wide an entry is, and how many.
+ *  A single source for building, for laying out the shared buffer, and for checking a bundle that
+ *  arrives from another thread — a second copy of these lengths is how an adopted table ends up
+ *  the right size and the wrong shape. */
+const TABLE_LAYOUT = Object.freeze([
+  { name: 'twistMove', kind: 'u16', length: TWIST_COUNT * P1_WIDTH },
+  { name: 'flipMove', kind: 'u16', length: FLIP_COUNT * P1_WIDTH },
+  { name: 'sliceMove', kind: 'u16', length: SLICE_COUNT * P1_WIDTH },
+  { name: 'cpermMove', kind: 'u16', length: PERM8_COUNT * P2_WIDTH },
+  { name: 'epermMove', kind: 'u16', length: PERM8_COUNT * P2_WIDTH },
+  { name: 'spermMove', kind: 'u8', length: PERM4_COUNT * P2_WIDTH },
+  { name: 'prune1t', kind: 'u8', length: TWIST_COUNT * SLICE_COUNT },
+  { name: 'prune1f', kind: 'u8', length: FLIP_COUNT * SLICE_COUNT },
+  { name: 'prune1tf', kind: 'u8', length: TWIST_COUNT * FLIP_COUNT },
+  { name: 'prune2c', kind: 'u8', length: PERM8_COUNT * PERM4_COUNT },
+  { name: 'prune2e', kind: 'u8', length: PERM8_COUNT * PERM4_COUNT },
+]);
+
+const VIEW_TYPES = Object.freeze({ u8: Uint8Array, u16: Uint16Array });
+const MOVE_TABLE_NAMES = Object.freeze(['twistMove', 'flipMove', 'sliceMove', 'cpermMove', 'epermMove', 'spermMove']);
+const PRUNE_TABLE_NAMES = Object.freeze(['prune1t', 'prune1f', 'prune1tf', 'prune2c', 'prune2e']);
+
+/** The bundle's tag. Versioned because it crosses a thread boundary as plain data: a page that
+ *  reloaded onto new code while a worker held old tables must be refused, not adopted. */
+export const TABLES_FORMAT = 'cubus-two-phase-tables/1';
+
+const pick = (from, names) => Object.fromEntries(names.map((n) => [n, from[n]]));
+
+/**
+ * The seal, and why one exists at all.
+ *
+ * It is not a second format tag. It is the RELEASE half of a release/acquire pair: the builder
+ * fills nine and a half megabytes with ordinary writes and then stores this word with
+ * `Atomics.store`, and an adopter loads it with `Atomics.load` before reading a single table
+ * byte. That pair is what the memory model actually defines — it is the only thing that makes
+ * the builder's writes guaranteed visible to another agent, rather than visible because every
+ * engine's postMessage happens to take a lock on the way past.
+ *
+ * The checksum would CATCH a stale read, loudly, which is why this is belt as well as braces.
+ * But "detected" is a worse guarantee than "cannot happen", and the difference costs two atomic
+ * operations per session.
+ */
+const SEAL_WORD_BYTES = 4;
+const SEALED = 0x7ab1e5; // arbitrary and non-zero, so a zeroed buffer is never mistaken for one
+
+/**
+ * Where each table sits in the one shared buffer, and how big that buffer has to be.
+ *
+ * The seal takes byte 0..3, so every table starts at a non-zero offset — which is the stop word's
+ * trap made impossible to hide from: there is no table whose descriptor would still address the
+ * right bytes if its offset were dropped in transit.
+ *
+ * Every region starts on a 4-byte boundary — Uint16Array needs 2 and the checksum below reads
+ * 32-bit words, so 4 satisfies both and costs at most three padding bytes per table.
+ */
+export function sharedLayout() {
+  let byteOffset = SEAL_WORD_BYTES;
+  const regions = TABLE_LAYOUT.map((entry) => {
+    const byteLength = entry.length * VIEW_TYPES[entry.kind].BYTES_PER_ELEMENT;
+    const region = Object.freeze({ ...entry, byteOffset, byteLength });
+    byteOffset = (byteOffset + byteLength + 3) & ~3;
+    return region;
+  });
+  return Object.freeze({ regions: Object.freeze(regions), byteLength: byteOffset });
+}
+
+/**
+ * FNV-1a over a table's bytes, read 32 bits at a time.
+ *
+ * Not a cryptographic digest and not trying to be: nothing here is defending against a chosen
+ * collision, only against a table that is not the one that was built — a dropped offset, a
+ * truncated region, a stray write. Word-at-a-time because it is 4x the byte-at-a-time loop
+ * (2.3 ms against 9.4 ms for all eleven, measured), and the tail is folded in per byte so a
+ * region whose length is not a multiple of four is still covered to its last byte.
+ */
+function checksumOf(view) {
+  const { buffer, byteOffset, byteLength } = view;
+  if (byteOffset % 4 !== 0) {
+    throw new Error(`two-phase: a table at byte offset ${byteOffset} is not 4-byte aligned`);
+  }
+  let h = 0x811c9dc5 | 0;
+  const words = byteLength >>> 2;
+  const u32 = new Uint32Array(buffer, byteOffset, words);
+  for (let i = 0; i < words; i++) {
+    h = Math.imul(h ^ u32[i], 0x01000193);
+  }
+  const tail = new Uint8Array(buffer, byteOffset + words * 4, byteLength - words * 4);
+  for (let i = 0; i < tail.length; i++) {
+    h = Math.imul(h ^ tail[i], 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** The bundle this thread adopted, kept so `verifyAdopted()` can re-check the same bytes. */
+let adopted = null;
+
+/**
+ * Build the eleven tables into a fresh SharedArrayBuffer and describe them for other threads.
+ *
+ * This thread ends up on the shared copy too — there is one set of bytes on the page, not a
+ * private set beside a published one, or the builder would be the one worker whose tables nobody
+ * is checking.
+ *
+ * Two paths, because the caller may have solved already: with no tables yet it BUILDS straight
+ * into shared memory and pays nothing extra; with tables already built it COPIES them across
+ * (a 9.82 MiB memcpy, single-digit milliseconds) rather than spending another 0.4-2.6 s
+ * reproducing bytes it already has.
+ *
+ * @returns {{format: string, buffer: SharedArrayBuffer, tables: object[]}} a structured-cloneable
+ *   bundle: the buffer, and per table its name, element kind, BYTE OFFSET, length and checksum.
+ */
+export function shareTables() {
+  if (typeof SharedArrayBuffer === 'undefined') {
+    // Loud, never a quiet private build: the caller asked for a shared table set and would
+    // otherwise hand its pool a bundle it silently could not share.
+    throw new Error('two-phase: this thread has no SharedArrayBuffer, so the tables cannot be shared');
+  }
+  const { regions, byteLength } = sharedLayout();
+  const buffer = new SharedArrayBuffer(byteLength);
+  const views = {};
+  for (const r of regions) views[r.name] = new VIEW_TYPES[r.kind](buffer, r.byteOffset, r.length);
+
+  if (pruning) {
+    for (const r of regions) views[r.name].set(currentTable(r.name));
+    publish(pick(views, MOVE_TABLE_NAMES), pick(views, PRUNE_TABLE_NAMES), rotations);
+  } else {
+    const t = buildMoveTables(views);
+    const built = buildPruning(t, views);
+    publish(t, built, buildRotations());
+  }
+
+  const bundle = {
+    format: TABLES_FORMAT,
+    buffer,
+    tables: regions.map((r) => ({
+      name: r.name,
+      kind: r.kind,
+      byteOffset: r.byteOffset,
+      length: r.length,
+      checksum: checksumOf(views[r.name]),
+    })),
+  };
+  // LAST, and atomic: every table byte above is written before this store, so an agent that
+  // loads SEALED sees all of them. Sealing earlier would publish a buffer that is only partly
+  // filled and perfectly checksummed by whoever wrote it.
+  Atomics.store(new Int32Array(buffer, 0, 1), 0, SEALED);
+  adopted = bundle;
+  return bundle;
+}
+
+/** This thread's live view of one table, whatever built it. */
+function currentTable(name) {
+  return (MOVE_TABLE_NAMES.includes(name) ? tables : pruning)[name];
+}
+
+/**
+ * A bundle from another thread as eleven checked views, or a throw naming what is wrong.
+ *
+ * Everything is checked against TABLE_LAYOUT — this thread's own idea of the tables — and never
+ * against the bundle's own claims about itself, which is the difference between validating input
+ * and believing it.
+ */
+function viewsOf(bundle) {
+  if (bundle?.format !== TABLES_FORMAT) {
+    throw new Error(`two-phase: shared tables are tagged "${bundle?.format}", not "${TABLES_FORMAT}"`);
+  }
+  // A plain ArrayBuffer here means the crossing COPIED rather than shared, which costs the memory
+  // the whole exercise exists to save while looking exactly like success.
+  if (typeof SharedArrayBuffer === 'undefined' || !(bundle.buffer instanceof SharedArrayBuffer)) {
+    throw new Error('two-phase: shared tables must arrive on a SharedArrayBuffer');
+  }
+  // The ACQUIRE half, and it comes before every read below. See SEALED.
+  if (bundle.buffer.byteLength < SEAL_WORD_BYTES || Atomics.load(new Int32Array(bundle.buffer, 0, 1), 0) !== SEALED) {
+    throw new Error('two-phase: the shared table buffer is not sealed — it was never finished, or it is not a table set');
+  }
+  const { regions } = sharedLayout();
+  if (!Array.isArray(bundle.tables) || bundle.tables.length !== regions.length) {
+    throw new Error(`two-phase: shared tables describe ${bundle.tables?.length} of ${regions.length} tables`);
+  }
+  const views = {};
+  for (const r of regions) {
+    const d = bundle.tables.find((x) => x?.name === r.name);
+    if (!d) throw new Error(`two-phase: shared tables are missing ${r.name}`);
+    if (d.kind !== r.kind || d.length !== r.length) {
+      throw new Error(`two-phase: shared ${r.name} is ${d.length} ${d.kind} entries, not ${r.length} ${r.kind}`);
+    }
+    if (!Number.isInteger(d.byteOffset) || d.byteOffset < 0 || d.byteOffset + r.byteLength > bundle.buffer.byteLength) {
+      throw new Error(`two-phase: shared ${r.name} does not fit the buffer at byte offset ${d.byteOffset}`);
+    }
+    const view = new VIEW_TYPES[r.kind](bundle.buffer, d.byteOffset, r.length);
+    const seen = checksumOf(view);
+    if (seen !== d.checksum) {
+      throw new Error(
+        `two-phase: shared ${r.name} checksum ${seen} does not match the published ${d.checksum} — ` +
+          'the table was written to after it was published, or its offset was lost in transit',
+      );
+    }
+    views[r.name] = view;
+  }
+  return views;
+}
+
+/**
+ * Re-check the bundle this thread is running on, byte for byte.
+ *
+ * Public because the freeze is a CLAIM, and a claim needs somewhere to be checked: the test suite
+ * runs a real solve on adopted tables and calls this afterwards, so "the search never writes to
+ * the tables" fails loudly the day it stops being true. 2.3 ms, measured — cheap enough for a
+ * diagnostic, too dear for the warm path (see the section header).
+ */
+export function verifyAdopted() {
+  if (!adopted) throw new Error('two-phase: no shared tables were adopted, so there is nothing to re-verify');
+  viewsOf(adopted);
+  return true;
+}
+
+/** Whether this thread's tables are shared ones. For tests and diagnostics — a pool that silently
+ *  fell back to private builds looks exactly like one that did not. */
+export const usingSharedTables = () => adopted !== null;
 
 // ---- phase 1: into G1 -------------------------------------------------------------------------
 

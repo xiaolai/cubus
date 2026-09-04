@@ -350,6 +350,19 @@ it walks you through solving it.
     terminating a worker**: it is shallower than any depth a winner can publish, so it needs no
     second channel and no table rebuild. `refine` carries `signal` INSIDE the bounds; an adapter
     that destructures them loses cancellation silently.
+  - **One table build for the whole pool (2026-09-05).** The six solver workers each built the
+    engine's eleven tables — 9.82 MiB and 0.4–2.6 s apiece — so a cold session paid six builds
+    and held six copies. Worker 0 now builds into a SharedArrayBuffer and the rest adopt views of
+    it, published through the same descriptor mechanism as the stop word and for the same
+    reason: the byte OFFSET must cross with the buffer, and all eleven in ONE buffer behind a
+    4-byte seal leaves no table where a dropped offset would still be right. Shared memory is
+    shared damage, so every table is checksummed at build and verified before a single view is
+    installed — at ADOPTION only, because a re-check costs 2.3 ms against a ~4 ms warm solve,
+    and the read-only property is asserted instead (`verifyAdopted()` after a real solve). The
+    seal is `Atomics.store`/`Atomics.load`, so the builder's writes are visible by the memory
+    model and not by luck. A page without cross-origin isolation falls back to per-worker
+    builds, loudly and once. Measured: cold session → first pooled answer 720 → 425 ms, pool
+    memory 58.9 → 9.8 MiB. `apps/web/test/shared-solver-tables.test.mjs`.
   - **The scanner keeps ONE detector per page, parked between `<ai-scan-panel>` mounts** — the
     `<cubus-cube>` rule for the same reason: a rebuilt element meant a new `InferenceSession` and
     a 1–5 s model load per visit, the old one unreachable for the life of the page.

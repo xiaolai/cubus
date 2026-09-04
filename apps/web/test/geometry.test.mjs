@@ -382,7 +382,8 @@ for (const fixture of FIXTURES) {
       // The renderer paints on its OWN animation frame, which nothing synchronises with the
       // chips appearing. Reading the canvas straight after them is a race, and it was being won
       // only by luck: the whole suite runs at --test-concurrency=6, and once the cube screen's
-      // mount started warming the solver pool (six workers building pruning tables) the frame
+      // mount started warming the solver pool (six workers each building pruning tables then;
+      // one shared build since 2026-09-05, but a build all the same) the frame
       // began landing after the measurement. A blank read then failed for a reason that says
       // nothing about the composition. So wait for the paint instead of racing it — a canvas
       // that genuinely never paints still fails, one timeout later.

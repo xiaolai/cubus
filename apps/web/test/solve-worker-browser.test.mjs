@@ -219,6 +219,116 @@ test('the real pool, over real workers, answers what one worker answers', GATE, 
   assert.equal(out.pooled, out.single, `pool and lone worker diverged on ${out.facelets}`);
 });
 
+test('the tables cross as shared memory, and a byte written into them is refused', GATE, async () => {
+  // The other thing only a browser has, and the reason table sharing needed this file: a
+  // SharedArrayBuffer that really crosses postMessage TWICE — worker to page, page to worker —
+  // with eleven byte offsets riding along. Everything under it is covered on the main thread in
+  // shared-solver-tables.test.mjs against separate module instances; what no test process can
+  // show is that the second worker ends up looking at the FIRST worker's memory rather than at a
+  // structured-clone copy of it.
+  //
+  // The proof of that is the corruption case at the end. This page writes one byte into the
+  // buffer and a worker that has never seen it before refuses to adopt, naming the table — which
+  // can only happen if the bytes the worker checksums are the bytes this thread wrote. A copy
+  // would have adopted happily.
+  const out = await inBrowser(async (facelets) => {
+    const { ADOPT_TABLES, PREPARE_TABLES, createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
+    if (typeof SharedArrayBuffer === 'undefined' || self.crossOriginIsolated !== true) return { isolated: false };
+
+    const builder = createSolveClient({ spawn: spawnSolveWorker });
+    const taker = createSolveClient({ spawn: spawnSolveWorker });
+    const latecomer = createSolveClient({ spawn: spawnSolveWorker });
+    const bounds = { solLen: 21, probeMax: 50_000_000 };
+    try {
+      const published = await builder.control({ kind: PREPARE_TABLES });
+      const bundle = published.tables;
+      await taker.control({ kind: ADOPT_TABLES, tables: bundle });
+
+      // Identical tables must give an identical algorithm, not merely one of the same length.
+      const [fromBuilder, fromTaker] = await Promise.all([
+        builder.solve(facelets, bounds),
+        taker.solve(facelets, bounds),
+      ]);
+
+      // One byte, in the middle of the biggest pruning table, written from THIS thread.
+      const d = bundle.tables.find((t) => t.name === 'prune1tf');
+      const bytes = new Uint8Array(bundle.buffer, d.byteOffset, d.length);
+      const at = Math.floor(d.length / 2);
+      bytes[at] ^= 0xff;
+      let refusal = null;
+      try {
+        await latecomer.control({ kind: ADOPT_TABLES, tables: bundle });
+      } catch (err) {
+        refusal = String(err.message);
+      }
+      bytes[at] ^= 0xff;
+      const afterRestore = await latecomer.control({ kind: ADOPT_TABLES, tables: bundle });
+
+      return {
+        isolated: true,
+        shared: bundle.buffer instanceof SharedArrayBuffer,
+        bytes: bundle.buffer.byteLength,
+        offsets: bundle.tables.map((t) => t.byteOffset),
+        fromBuilder,
+        fromTaker,
+        refusal,
+        afterRestore: afterRestore.ok === true,
+        facelets,
+      };
+    } finally {
+      builder.cancel();
+      taker.cancel();
+      latecomer.cancel();
+    }
+  }, WORKER_CUBES.pooled);
+
+  assert.equal(out.isolated, true,
+    'the page is not cross-origin isolated — the headers regressed and there is no shared memory at all');
+  assert.equal(out.shared, true, 'the tables arrived on a copy, not on shared memory — the saving is not real');
+  assert.equal(out.bytes, 10_293_988, 'the eleven tables, their seal and their padding, once for the whole pool');
+  assert.equal(out.offsets.filter((o) => o !== 0).length, 11,
+    'every table must start at a non-zero offset, or the crossing never has to carry one');
+  assert.notEqual(out.fromBuilder, null, `no answer for ${out.facelets} at the shipped budget`);
+  assert.equal(out.fromTaker, out.fromBuilder, 'a worker on adopted tables answered differently');
+  assert.match(out.refusal ?? '', /prune1tf/,
+    'a byte written from the page was adopted without complaint — the worker is not reading this memory');
+  assert.match(out.refusal ?? '', /checksum/);
+  assert.equal(out.afterRestore, true, 'and the same bundle is adopted again once the byte is put back');
+});
+
+test('the real pool builds its tables once and still answers what one worker answers', GATE, async () => {
+  // The wiring, end to end: the pool that app.js constructs, over real module workers, with the
+  // handshake in front of the first solve. The equality is the same one the pool test above
+  // asserts — sharing must not change an answer — and `sharingTables` is what stops a quiet
+  // fallback from passing this as if it had measured anything.
+  const out = await inBrowser(async (frozen) => {
+    const { createParallelSolveClient, createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
+    const { VIEW_COUNT } = await import('/lib/solver-engine.js');
+    if (typeof SharedArrayBuffer === 'undefined' || self.crossOriginIsolated !== true) return { isolated: false };
+
+    const pool = createParallelSolveClient({
+      spawn: spawnSolveWorker, workers: 6, viewCount: VIEW_COUNT,
+      makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
+      shareTables: true,
+    });
+    const lone = createSolveClient({ spawn: spawnSolveWorker });
+    const bounds = { solLen: 21, probeMax: 50_000_000 };
+    try {
+      const [pooled, single] = await Promise.all([pool.solve(frozen, bounds), lone.solve(frozen, bounds)]);
+      return { isolated: true, sharing: pool.sharingTables, workers: pool.workers, pooled, single, facelets: frozen };
+    } finally {
+      pool.cancel();
+      lone.cancel();
+    }
+  }, WORKER_CUBES.pooled);
+
+  assert.equal(out.isolated, true, 'the page is not cross-origin isolated');
+  assert.equal(out.sharing, true, 'the pool fell back to per-worker builds — this measured nothing');
+  assert.equal(out.workers, 6, 'six real workers, not a silently collapsed one');
+  assert.notEqual(out.pooled, null, `the pool found nothing for ${out.facelets}`);
+  assert.equal(out.pooled, out.single, `sharing the tables changed the answer on ${out.facelets}`);
+});
+
 test('a malformed request comes back as a rejection, not a hang', async () => {
   // The worker's catch path had no browser coverage: a regression there leaves the caller's
   // promise pending forever, which on screen looks exactly like a search still going.

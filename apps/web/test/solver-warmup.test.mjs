@@ -1,8 +1,11 @@
 // Warming the solver pool, and the two ways it can quietly half-work.
 //
-// Every solver worker builds its own pruning tables — 0.5-2.6 s (dev-docs/solver-move-count.md
-// §7) — and lazily, so without a warm-up the first solve of a session pays for all of them while
-// a user waits. `warmSolver()` spends that cost on screens that know a solve is coming.
+// The solver's pruning tables cost 0.5-2.6 s (dev-docs/solver-move-count.md §7) and are built
+// lazily, so without a warm-up the first solve of a session pays for them while a user waits.
+// `warmSolver()` spends that cost on screens that know a solve is coming. Since 2026-09-05 it is
+// ONE build for the whole pool rather than one per worker — the first worker builds into a
+// SharedArrayBuffer and the rest adopt views of it — which makes the warm-up matter more, not
+// less: the handshake it triggers is what the other five workers are waiting for.
 //
 // Both failures here are silent. A warm budget smaller than the worker count leaves some workers
 // cold, because `shareBudget` drops a zero share — and a partly-warm pool looks exactly like a
@@ -75,6 +78,24 @@ test('every screen that solves warms first', () => {
   const calls = app.match(/^\s*warmSolver\(\);/gm) ?? [];
   assert.equal(calls.length, 3,
     `expected the three solving screens to warm; found ${calls.length} call sites`);
+});
+
+test('the pool that gets a shared word also gets shared TABLES', () => {
+  // Both capabilities need the same thing — a cross-origin isolated page — and app.js proves it
+  // once, in the branch that returns the parallel client. A `shareTables` that drifted out of
+  // that branch would be asking a page with no SharedArrayBuffer to publish 9.82 MiB into one;
+  // one left off entirely would put six table builds back into every cold session with nothing
+  // to say so, because the pool falls back quietly and correctly.
+  const pool = app.match(/return createParallelSolveClient\(\{([\s\S]*?)\n {2}\}\);/)?.[1];
+  assert.ok(pool, 'the parallel client is no longer constructed where this test can read it');
+  assert.match(pool, /shareTables:\s*true/,
+    'the pool must build its tables once and share them, or a cold session pays six builds');
+  assert.match(pool, /makeShared:/, 'and it still needs a stop word — the two ride the same isolation');
+  // The single-worker branch is the fallback for a page that has neither. It must not ask for
+  // tables it cannot share.
+  const lone = app.match(/if \(!isolated \|\| !threaded \|\| SOLVER_WORKERS < 2\) return ([^;]+);/)?.[1];
+  assert.ok(lone, 'the un-isolated fallback is no longer where this test can read it');
+  assert.doesNotMatch(lone, /shareTables/, 'a page without isolation has no shared memory to build into');
 });
 
 test('there is ONE pool, and rolling a scramble goes through it', () => {

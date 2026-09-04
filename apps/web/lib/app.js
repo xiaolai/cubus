@@ -557,7 +557,10 @@ let solveClient = null;
  *
  * Capped by the cores actually present, less two for the camera and the renderer — the same
  * reasoning as the scanner's thread count, and what keeps a four-core phone from starting a
- * worker per view when each builds its own pruning tables.
+ * worker per view when there are no cores to run them on. Until 2026-09-05 the cap was also
+ * about memory, because every worker built its own 9.82 MiB of tables; that half is gone — one
+ * worker builds and the rest adopt views of the same bytes (`shareTables` below) — and the cap
+ * stands on the cores alone.
  */
 const SOLVER_WORKERS = Math.max(1, Math.min(VIEW_COUNT, (globalThis.navigator?.hardwareConcurrency ?? 4) - 2));
 const solverWorker = () => (solveClient ??= (() => {
@@ -574,6 +577,14 @@ const solverWorker = () => (solveClient ??= (() => {
     // A fresh word per solve, not one for the client's lifetime: overlapping solves would
     // otherwise publish each other's depths into the same channel.
     makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
+    // Build once and publish (2026-09-05, dev-docs/deferred-plans-2026-09-05.md §2). Every worker
+    // used to build the engine's eleven tables itself — 9.82 MiB and 0.4-2.6 s each — so a cold
+    // session paid six builds and then carried six identical copies. One worker builds into a
+    // SharedArrayBuffer now and the rest adopt views of it; the pool owns the handshake, and this
+    // thread only says that this page is allowed to have one. It is passed HERE and not to
+    // `createSolveClient` above because it needs the same isolation the stop word does, and this
+    // is the branch that already established the page has it.
+    shareTables: true,
   });
 })());
 
@@ -581,10 +592,13 @@ let solverWarmed = false;
 /**
  * Build the pool's pruning tables before a user is waiting on them.
  *
- * Every worker builds its own — 0.5-2.6 s (dev-docs/solver-move-count.md §7) — and lazily, so
- * without this the FIRST solve of a session is the thing that pays for all of them. They build
- * concurrently, so the cost is roughly one build rather than six; it is still a build standing
- * between a press and an answer, on screens that had seconds of warning.
+ * They are built lazily — 0.5-2.6 s (dev-docs/solver-move-count.md §7) — so without this the
+ * FIRST solve of a session is the thing that pays, on screens that had seconds of warning.
+ * Since 2026-09-05 the first request through the pool also runs the table handshake: one worker
+ * builds into a SharedArrayBuffer and the other five adopt views of it, so a session pays for
+ * ONE build here instead of six concurrent ones. Measured in WebKit on this machine, this call:
+ * 720 ms before, 425 ms after — and the gap is contention rather than five sixths of the work,
+ * because six builds on six threads never cost six times one.
  *
  * The warm request is a SOLVED cube: every view answers it at depth 0, so the table build is
  * the whole of what it costs. Measured on this engine: 652 ms cold, 0 ms warm, 1 ms for six
