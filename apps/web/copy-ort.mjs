@@ -16,18 +16,21 @@
 // `apps/web/test/vendor-bundles.test.mjs` pins that the loader references exactly one variant and
 // that this script copies exactly it.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const src = join(here, '..', '..', 'packages', 'cube-scanner', 'node_modules', 'onnxruntime-web', 'dist');
-const dest = join(here, 'vendor');
-
-if (!existsSync(src)) {
-  console.error(`onnxruntime-web not found at:\n  ${src}\nRun \`pnpm install\` at the repo root first.`);
-  process.exit(1);
-}
+const SRC = join(here, '..', '..', 'packages', 'cube-scanner', 'node_modules', 'onnxruntime-web', 'dist');
+const DEST = join(here, 'vendor');
 
 // The ESM runtime the scanner loads, shipped as its OWN module rather than bundled into the panel.
 //
@@ -56,6 +59,15 @@ if (!existsSync(src)) {
 // The headless row is here as a warning, not a result: it is what a CI box measures, and taking it
 // at face value says WebGPU is 37x SLOWER. Benchmark the GPU path on a real GPU or not at all.
 //
+// It was read as ONLY a benchmarking hazard, and that was the mistake. The software rasteriser a
+// headless box has is the same one a USER gets whenever the real GPU is blocklisted, its driver is
+// broken, or the app runs in a VM or over remote desktop — and `requestAdapter()` hands it out
+// without being asked. Re-measured through the shipped code: 86 s to load the model and 6184 ms a
+// frame, against 57 ms for the wasm path those machines had before this switch. So the provider is
+// now VALIDATED and not merely chosen — `preferredProviders` refuses a software adapter, and
+// `createModelRunner` times the one it kept and hands it back for wasm if it cannot earn its place
+// (view/onnx-runtime.ts; gated by apps/web/test/scanner-gpu.test.mjs, which forces SwiftShader).
+//
 // WINDOWS is confirmed to WORK and is NOT timed. On a Windows laptop running Edge/WebView2 152,
 // the shipped path reaches a real hardware adapter (an Intel Xe2 iGPU, reported by name rather
 // than inferred) and a compute shader returns the right answer. That says the provider is
@@ -66,54 +78,109 @@ if (!existsSync(src)) {
 // 0.4 — so there is no size argument against it either. The same file still serves the wasm path
 // wherever WebGPU is absent (measured 216 ms, within noise of the old build's 198), which is what
 // makes ONE artifact enough for every target.
-const ORT_ESM = 'ort.webgpu.bundle.min.mjs';
-if (!existsSync(join(src, ORT_ESM))) {
-  console.error(`onnxruntime-web is missing ${ORT_ESM} in:\n  ${src}`);
-  process.exit(1);
-}
+export const ORT_ESM = 'ort.webgpu.bundle.min.mjs';
 
-// The exact wasm assets this loader can request, read off its own text. A bundle cannot fetch a
-// filename it does not contain, so the referenced set is the complete set — nothing else is
-// reachable at runtime.
-const loaderText = readFileSync(join(src, ORT_ESM), 'utf8');
-const wanted = [...new Set([...loaderText.matchAll(/ort-wasm[a-z0-9.\-]*\.(?:wasm|mjs)/g)].map((m) => m[0]))];
-if (wanted.length === 0) {
-  console.error(
-    `${ORT_ESM} references no ort-wasm-*.{wasm,mjs} assets by name.\n` +
-      'onnxruntime-web may have changed how it names its runtime — copy-ort can no longer tell which\n' +
-      'variant to ship, and copying nothing would fail at scan time. Inspect the loader and update this.',
-  );
-  process.exit(1);
-}
-
-const missing = wanted.filter((f) => !existsSync(join(src, f)));
-if (missing.length > 0) {
-  console.error(`${ORT_ESM} references assets that are not installed:\n  ${missing.join('\n  ')}`);
-  process.exit(1);
-}
-
-mkdirSync(dest, { recursive: true });
-
-// ONE predicate for what this script owns, used by both discovery and cleanup.
+// ONE grammar for what this script owns, used by discovery, by cleanup, and by nothing else.
 //
-// Cleanup used to hardcode `ort-wasm-simd-threaded.`, while discovery accepted any `ort-wasm*` the
-// loader named. A rename inside that family — which is exactly what happens when onnxruntime
-// changes SIMD or threading variants — therefore stranded the old multi-megabyte .wasm in vendor/,
-// and vendor/ ships, so it reached dist/. Two spellings of "our asset" is how the pruning contract
-// stopped holding without anything failing.
-const isOwnedAsset = (f) => /^ort-wasm[a-z0-9.\-]*\.(?:wasm|mjs)$/.test(f);
+// Written once as a source string because the two uses need different anchoring — a global scan of
+// the loader's text, and an exact test of a filename — and writing the pattern out twice is how the
+// previous version of this contract broke. Cleanup then said `ort-wasm-simd-threaded.` while
+// discovery said any `ort-wasm*` the loader named, so a rename inside that family stranded the old
+// multi-megabyte .wasm in vendor/, and vendor/ ships. The comment below already claimed "ONE
+// predicate"; it was two spellings agreeing by hand, which is the same defect with a note on it.
+const OWNED_ASSET = 'ort-wasm[a-z0-9.\\-]*\\.(?:wasm|mjs)';
+/** Every asset the loader names, anywhere in its text. */
+const ownedAssetsIn = (text) => [...new Set([...text.matchAll(new RegExp(OWNED_ASSET, 'g'))].map((m) => m[0]))];
+/** Is this filename one of ours? Anchored, so it matches a whole name and not a substring. */
+const isOwnedAsset = (f) => new RegExp(`^${OWNED_ASSET}$`).test(f);
+
+/**
+ * Publish the runtime from `src` into `dest`, and return the asset names published.
+ *
+ * A FUNCTION, and one that throws rather than calling `process.exit`, so the contract this script
+ * exists to keep can be tested against temporary directories instead of only read. What was tested
+ * before was the script's SOURCE TEXT — `indexOf('copyFileSync(...)') < indexOf('rmSync(')` — which
+ * is green for any arrangement of those two strings, including a broken one, and goes red for a
+ * correct rewrite that spells them differently. It did: this refactor turned that assertion red
+ * while the behaviour it was guarding got strictly safer.
+ */
+export function publishRuntime({ src, dest, ortEsm = ORT_ESM } = { src: SRC, dest: DEST }) {
+  if (!existsSync(src)) {
+    throw new Error(`onnxruntime-web not found at:\n  ${src}\nRun \`pnpm install\` at the repo root first.`);
+  }
+  if (!existsSync(join(src, ortEsm))) {
+    throw new Error(`onnxruntime-web is missing ${ortEsm} in:\n  ${src}`);
+  }
+
+  // The exact wasm assets this loader can request, read off its own text. A bundle cannot fetch a
+  // filename it does not contain, so the referenced set is the complete set — nothing else is
+  // reachable at runtime.
+  const loaderText = readFileSync(join(src, ortEsm), 'utf8');
+  const wanted = ownedAssetsIn(loaderText);
+  if (wanted.length === 0) {
+    throw new Error(
+      `${ortEsm} references no ort-wasm-*.{wasm,mjs} assets by name.\n` +
+        'onnxruntime-web may have changed how it names its runtime — copy-ort can no longer tell which\n' +
+        'variant to ship, and copying nothing would fail at scan time. Inspect the loader and update this.',
+    );
+  }
+
+  const missing = wanted.filter((f) => !existsSync(join(src, f)));
+  if (missing.length > 0) {
+    throw new Error(`${ortEsm} references assets that are not installed:\n  ${missing.join('\n  ')}`);
+  }
+
+  mkdirSync(dest, { recursive: true });
 
 // COPY FIRST, THEN PRUNE. Deleting the live assets before writing their replacements left a window
 // where `ort.mjs` referenced files that no longer existed — and if the copy then failed, or the run
 // was interrupted, that window never closed and the scanner was broken until someone re-ran this.
-// Copying over them is atomic enough for the purpose: a file is either the old bytes or the new
-// ones, and both are loadable.
-for (const f of wanted) copyFileSync(join(src, f), join(dest, f));
-copyFileSync(join(src, ORT_ESM), join(dest, 'ort.mjs'));
+//
+// STAGE AND RENAME, because copying over them is NOT the "either the old bytes or the new ones"
+// this comment used to promise. `copyFileSync` truncates the destination and then writes it, so a
+// run interrupted at the wrong moment — Ctrl-C, a full disk, a killed CI step — leaves a truncated
+// multi-megabyte .wasm that is neither. `rename` within the same directory is atomic on every
+// filesystem this runs on, so each asset flips from old to new in one step, and a temp file left
+// behind by a failed run is inert (nothing loads it, and `.tmp-` is not an owned asset name).
+  // STAGE THE WHOLE SET, THEN COMMIT IT. Staging each file and renaming it immediately made each
+  // FILE atomic and left the SET able to tear: the wasm renamed into place, the loader's copy then
+  // failing, and vendor/ holding new wasm beside the old glue and the old loader — a pairing that
+  // never shipped and cannot load. Copying is where failures actually happen (a bad source, a full
+  // disk, an interrupted run); renaming a file that is already written, into the directory it is
+  // already in, is the part that does not. So every copy happens first, and nothing in vendor/ is
+  // touched until all of them have succeeded.
+  const staged = [];
+  try {
+    for (const [from, to] of [...wanted.map((f) => [join(src, f), f]), [join(src, ortEsm), 'ort.mjs']]) {
+      const at = join(dest, `.tmp-${process.pid}-${to}`);
+      copyFileSync(from, at);
+      staged.push([at, join(dest, to)]);
+    }
+    for (const [at, to] of staged) renameSync(at, to);
+  } finally {
+    // Whatever happened: no staging file survives. On success they have all been renamed away; on
+    // failure they must not be left for a later run to publish by accident.
+    for (const [at] of staged) rmSync(at, { force: true });
+  }
 
-// Now that the wanted set is present, remove anything this script previously copied that the
-// current loader does not name — nothing reachable is deleted, because `wanted` is on disk above.
-for (const f of readdirSync(dest)) {
-  if (isOwnedAsset(f) && !wanted.includes(f)) rmSync(join(dest, f));
+  // Now that the wanted set is present, remove anything this script previously copied that the
+  // current loader does not name — nothing reachable is deleted, because `wanted` is on disk above.
+  for (const f of readdirSync(dest)) {
+    if (isOwnedAsset(f) && !wanted.includes(f)) rmSync(join(dest, f));
+  }
+  return wanted;
 }
-console.log(`copied ${wanted.length} onnxruntime-web runtime asset(s) (${wanted.join(', ')}) + ort.mjs into web/vendor/`);
+
+// Run only when invoked as a script, so a test can import `publishRuntime` without publishing
+// anything as a side effect of the import.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    const wanted = publishRuntime({ src: SRC, dest: DEST });
+    console.log(
+      `copied ${wanted.length} onnxruntime-web runtime asset(s) (${wanted.join(', ')}) + ort.mjs into web/vendor/`,
+    );
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+}
