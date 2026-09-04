@@ -7,6 +7,8 @@ import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.lifecycle.LifecycleOwner
 import app.tauri.annotation.Command
@@ -24,6 +26,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
+import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -47,6 +50,15 @@ import java.util.concurrent.atomic.AtomicReference
  * model that has become worse rather than a preprocessing that has drifted. It is reproduced below
  * line for line, in DOUBLE as the TypeScript is, and `ml/golden_frames.py` is what proves the model
  * half agrees.
+ *
+ * AND THE FRAME MUST BE UPRIGHT FIRST. A phone's sensor is landscape; held in portrait, CameraX
+ * hands an `ImageAnalysis` its frames un-rotated and says so in `imageInfo.rotationDegrees` — the
+ * clockwise turn that would make them upright. The letterbox is byte-exact against an UPRIGHT
+ * frame, so feeding it the sensor's orientation reads a cube face with every sticker in the wrong
+ * place (audit 2026-09-04, headline 14). [Rotation] maps output coordinates back to sensor
+ * coordinates, so the rotation costs no copy and no allocation; `rotateRgba` is the same mapping
+ * as a byte-for-byte reference the unit test can check on a 3×2 pattern. UNVERIFIED ON A DEVICE:
+ * the mapping is tested, the claim that CameraX's degrees mean what its documentation says is not.
  *
  * The one deliberate difference is LAYOUT: this `.tflite` takes NHWC `[1,640,640,3]` where the ONNX
  * graph takes CHW, so the same samples are written in a different order. `load_model` asserts the
@@ -104,8 +116,15 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
      */
     private val generation = AtomicInteger(0)
 
-    /** The most recent frame, already letterboxed. One slot: a scan wants the newest, not a queue. */
+    /**
+     * The most recent letterboxed frame, OWNED by whoever holds it. One slot: a scan wants the
+     * newest, not a queue. The buffers come from [pool] and go back to it — a frame nobody read
+     * before the next one arrived is returned by the analyzer, a frame the model consumed is
+     * returned by the model thread — so the 4.9 MB tensor is allocated three times per session
+     * rather than thirty times a second.
+     */
     private val latest = AtomicReference<FloatArray?>(null)
+    private val pool = FramePool(count = 3, size = IMG * IMG * 3)
 
     /**
      * Why the last frame did not arrive, if it did not.
@@ -120,8 +139,12 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
     private var interpreter: Interpreter? = null
     private var outputShape: IntArray = intArrayOf(1, 0, 0)
 
-    /** What to run once the camera permission is answered, keyed by the command that asked. */
-    private val pendingPermissionAction = ConcurrentHashMap<String, () -> Unit>()
+    /**
+     * What to run once the camera permission is answered, keyed by the INVOKE — not by its command
+     * name. Two concurrent `open_camera` invokes are two entries here; keyed by name, the second
+     * overwrote the first and one of the two promises never settled.
+     */
+    private val pendingPermissionAction = ConcurrentHashMap<Long, () -> Unit>()
 
     // ---- capability ----------------------------------------------------------------------------
 
@@ -140,11 +163,11 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
      * reached, and this had no equivalent. It does now.
      *
      * THE FLIP IS THIS CONSTANT. Set it true only after running on a device and checking, at
-     * minimum: that a frame is captured at all; that the letterbox agrees with `preprocess()` —
-     * ml/golden_frames.py proves the .tflite matches the other runtimes, not that this code feeds
-     * it the same pixels; and that it is actually FASTER than what it replaces, which on a recent
-     * Android WebView is WebGPU rather than the slow wasm path this plugin was planned against.
-     * Being native is not by itself a reason to win.
+     * minimum: that a frame is captured at all and is UPRIGHT (see [Rotation]); that the letterbox
+     * agrees with `preprocess()` — ml/golden_frames.py proves the .tflite matches the other
+     * runtimes, not that this code feeds it the same pixels; and that it is actually FASTER than
+     * what it replaces, which on a recent Android WebView is WebGPU rather than the slow wasm path
+     * this plugin was planned against. Being native is not by itself a reason to win.
      */
     private val verifiedOnDevice = false
 
@@ -198,17 +221,24 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
             proceed()
             return
         }
-        pendingPermissionAction[invoke.command] = proceed
+        pendingPermissionAction[invoke.id] = proceed
         requestPermissionForAlias(CAMERA_ALIAS, invoke, "onCameraPermissionResult")
     }
 
     @PermissionCallback
     private fun onCameraPermissionResult(invoke: Invoke) {
-        val proceed = pendingPermissionAction.remove(invoke.command)
+        val proceed = pendingPermissionAction.remove(invoke.id)
         if (getPermissionState(CAMERA_ALIAS) != PermissionState.GRANTED) {
             return invoke.reject("camera permission was not granted")
         }
-        proceed?.invoke() ?: invoke.reject("the permission result arrived with nothing waiting on it")
+        if (proceed == null) {
+            return invoke.reject("the permission result arrived with nothing waiting on it")
+        }
+        // Inside Tauri's ActivityResult callback there is no try/catch above this frame: a
+        // throwing first post-grant command crashed the app instead of rejecting one promise.
+        runCatching(proceed).onFailure {
+            invoke.reject("${invoke.command} failed after the permission was granted: ${it.message}")
+        }
     }
 
     @SuppressLint("UnsafeOptInUsageError")
@@ -228,7 +258,7 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
         // Claim this session BEFORE anything async starts, and clear the last camera's frame with
         // it. Whatever was in `latest` belongs to a camera that is about to be unbound.
         val mine = generation.incrementAndGet()
-        latest.set(null)
+        latest.getAndSet(null)?.let(pool::release)
         lastFrameError.set(null)
 
         val future = ProcessCameraProvider.getInstance(activity)
@@ -244,7 +274,19 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
                 provider = p
                 p.unbindAll()
                 val a = ImageAnalysis.Builder()
-                    .setTargetResolution(Size(IMG, IMG))
+                    // The modern selector: `setTargetResolution` is deprecated and, past CameraX
+                    // 1.3, ignored on some devices. Closest-higher-then-lower keeps the frame at or
+                    // just above 640 on the long side, which is all the letterbox can use.
+                    .setResolutionSelector(
+                        ResolutionSelector.Builder()
+                            .setResolutionStrategy(
+                                ResolutionStrategy(
+                                    Size(IMG, IMG),
+                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                                ),
+                            )
+                            .build(),
+                    )
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                     .build()
@@ -254,21 +296,28 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
                     // frames, which looks like a camera that froze.
                     image.use {
                         if (generation.get() != mine) return@use
-                        runCatching { letterbox(it) }
-                            .onSuccess { frame ->
+                        // No free buffer means the model thread and the slot hold all three: the
+                        // model is behind the camera, and the honest thing is to drop this frame
+                        // rather than allocate a fourth.
+                        val buf = pool.acquire() ?: return@use
+                        runCatching { letterbox(it, buf) }
+                            .onSuccess {
                                 // Re-checked after the work: a close can land while a frame is
                                 // being letterboxed, and publishing it then revives a closed
                                 // camera's pixels.
                                 if (generation.get() == mine) {
                                     lastFrameError.set(null)
-                                    latest.set(frame)
+                                    latest.getAndSet(buf)?.let(pool::release)
+                                } else {
+                                    pool.release(buf)
                                 }
                             }
                             .onFailure { e ->
+                                pool.release(buf)
                                 if (generation.get() == mine) {
                                     // Recorded AND the stale frame dropped: answering with older
                                     // pixels would let a broken camera read as a working one.
-                                    latest.set(null)
+                                    latest.getAndSet(null)?.let(pool::release)
                                     lastFrameError.set(e.message ?: e.toString())
                                 }
                             }
@@ -306,7 +355,7 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
         provider?.unbindAll()
         analysis = null
         openedId = null
-        latest.set(null)
+        latest.getAndSet(null)?.let(pool::release)
         lastFrameError.set(null)
     }
 
@@ -364,13 +413,18 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
      *
      * On the model thread, and serialised there: LiteRT's `Interpreter` is not safe to call from
      * two threads, and running it on the command thread froze the UI.
+     *
+     * The frame is TAKEN, not read: this thread owns the buffer until it returns it to the pool,
+     * so the analyzer cannot overwrite pixels mid-copy. A second tick before a new frame lands
+     * sees "no frame yet" and skips, which is also one fewer inference of a picture the model has
+     * already answered.
      */
     @Command
     fun next_detection(invoke: Invoke) {
         modelExecutor.execute {
             val i = interpreter
                 ?: return@execute invoke.reject("the model is not loaded — call load_model first")
-            val input = latest.get()
+            val input = latest.getAndSet(null)
             if (input == null) {
                 // A recorded preprocessing failure is reported, not papered over as "no frame yet".
                 lastFrameError.get()?.let {
@@ -380,10 +434,13 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
             }
             val rows = outputShape.getOrElse(1) { 0 }
             val anchors = outputShape.getOrElse(2) { 0 }
-            if (rows <= 0 || anchors <= 0) return@execute invoke.reject("the model reports no output shape")
+            if (rows <= 0 || anchors <= 0) {
+                pool.release(input)
+                return@execute invoke.reject("the model reports no output shape")
+            }
 
             val out = Array(1) { Array(rows) { FloatArray(anchors) } }
-            runCatching {
+            val ran = runCatching {
                 // A DIRECT ByteBuffer, and `run` rather than `runForMultipleInputsOutputs`.
                 //
                 // This previously nested the frame into `[1,3,640,640]` and wrapped THAT in
@@ -396,7 +453,9 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
                 f.put(input)
                 buf.rewind()
                 i.run(buf, out)
-            }.onFailure { return@execute invoke.reject("inference failed: ${it.message}") }
+            }
+            pool.release(input)
+            ran.onFailure { return@execute invoke.reject("inference failed: ${it.message}") }
 
             val bytes = ByteBuffer.allocate(8 + rows * anchors * 4).order(ByteOrder.LITTLE_ENDIAN)
             bytes.putInt(rows)
@@ -432,7 +491,8 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     /**
-     * `preprocess()` from src/onnx-detect.ts, reproduced exactly — including its arithmetic.
+     * `preprocess()` from src/onnx-detect.ts, reproduced exactly — including its arithmetic —
+     * over the frame ROTATED UPRIGHT.
      *
      * Bilinear at PIXEL CENTRES: the `+ 0.5 … - 0.5` is not decoration, it is the half-pixel
      * convention the model was trained and calibrated against, and dropping it shifts every box by
@@ -453,9 +513,10 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
      * `load_model` so an export that changes it fails loudly instead of quietly misreading.
      *
      * The one thing that legitimately differs from the TS is where the pixels come from: an
-     * ImageProxy row is `rowStride` bytes wide, which is NOT width*4 on most devices.
+     * ImageProxy row is `rowStride` bytes wide, which is NOT width*4 on most devices — and the
+     * frame is the sensor's, so [Rotation] turns upright coordinates back into sensor ones.
      */
-    private fun letterbox(image: ImageProxy): FloatArray {
+    private fun letterbox(image: ImageProxy, into: FloatArray): FloatArray {
         val w = image.width
         val h = image.height
         require(w > 0 && h > 0) { "the camera produced a ${w}x${h} frame" }
@@ -463,62 +524,164 @@ class VisionPlugin(private val activity: Activity) : Plugin(activity) {
         val row = plane.rowStride
         val pixel = plane.pixelStride
         val src = plane.buffer
+        val rotation = Rotation.of(w, h, image.imageInfo.rotationDegrees)
         // The ImageProxy is unwrapped HERE and the arithmetic lives in a pure function, so the
         // letterbox can be tested off a device. It could not be before: the only entry point took
         // an Android type that exists on a phone, which is why the file's strongest claim — that
         // this reproduces `preprocess()` — was never checked by anything.
-        return letterboxFrom(w, h) { x, y, c -> src.get(y * row + x * pixel + c).toInt() and 0xff }
+        return letterboxFrom(rotation.width, rotation.height, into) { x, y, c ->
+            src.get(rotation.srcY(x, y) * row + rotation.srcX(x, y) * pixel + c).toInt() and 0xff
+        }
+    }
+
+    /**
+     * A fixed set of frame buffers, handed out and returned. Whoever holds a buffer owns it; the
+     * pool never hands out one it has not been given back. Pure, so the ownership rule can be
+     * tested without a camera.
+     */
+    class FramePool(count: Int, size: Int) {
+        private val free = ArrayDeque<FloatArray>(count).apply { repeat(count) { add(FloatArray(size)) } }
+
+        /** A buffer nobody else holds, or null when every buffer is out. */
+        fun acquire(): FloatArray? = synchronized(free) { free.poll() }
+
+        fun release(buf: FloatArray) {
+            synchronized(free) { free.add(buf) }
+        }
+
+        /** How many buffers are currently free — a test instrument. */
+        val available: Int get() = synchronized(free) { free.size }
+    }
+
+    /**
+     * The rotation CameraX asks for, as a coordinate map from the UPRIGHT frame back to the sensor
+     * frame — so the letterbox samples rotated pixels without any of them being copied.
+     *
+     * `degrees` is `ImageInfo.rotationDegrees`: the CLOCKWISE turn that makes the sensor's frame
+     * upright. For 90 the upright frame is `srcH` wide and `srcW` tall, and its top-left pixel is
+     * the sensor's bottom-left. Only the four right angles exist; anything else is a contract
+     * change and is refused rather than approximated.
+     */
+    class Rotation private constructor(
+        private val degrees: Int,
+        private val srcW: Int,
+        private val srcH: Int,
+    ) {
+        /** The upright frame's size. */
+        val width: Int get() = if (degrees == 90 || degrees == 270) srcH else srcW
+        val height: Int get() = if (degrees == 90 || degrees == 270) srcW else srcH
+
+        // Derived on the 3×2 picture in `VisionPluginRotationTest`, and the first draft of this
+        // had the wrong dimension in two of the four arms — which that test caught on its first
+        // run. Upright (x, y) for 90° CW: column `y` of the sensor, counted from its LAST row
+        // (the sensor's bottom-left is the upright top-left), so the row index runs over srcH.
+
+        /** Sensor column of the upright pixel (x, y). */
+        fun srcX(x: Int, y: Int): Int = when (degrees) {
+            0 -> x
+            90 -> y
+            180 -> srcW - 1 - x
+            else -> srcW - 1 - y
+        }
+
+        /** Sensor row of the upright pixel (x, y). */
+        fun srcY(x: Int, y: Int): Int = when (degrees) {
+            0 -> y
+            90 -> srcH - 1 - x
+            180 -> srcH - 1 - y
+            else -> x
+        }
+
+        companion object {
+            fun of(srcW: Int, srcH: Int, degrees: Int): Rotation {
+                require(degrees == 0 || degrees == 90 || degrees == 180 || degrees == 270) {
+                    "CameraX reported a rotation of $degrees°; only right angles are defined"
+                }
+                return Rotation(degrees, srcW, srcH)
+            }
+        }
     }
 
     companion object Letterbox {
         /**
-         * The letterbox itself, over any pixel source.
+         * The letterbox itself, over any pixel source, into a caller-owned buffer.
          *
          * `sample(x, y, channel)` returns 0..255. Pulled out of [letterbox] so
-         * `VisionPluginLetterboxTest` can run it against the exact numbers
+         * `LetterboxParityTest` can run it against the exact numbers
          * `packages/cube-scanner/src/onnx-detect.ts` produces for the same fixture — the cross
          * language check that `crates/cube-vision/src/windows.rs` also carries, because there is
          * one preprocessing contract and three implementations of it.
+         *
+         * `inline`, so the sampler is not a boxed lambda call per channel per pixel (~1.2 M calls a
+         * frame at 640×640) but the caller's expression in place; and `out` is the caller's, so a
+         * frame costs no allocation once the [FramePool] is warm.
          */
-        fun letterboxFrom(w: Int, h: Int, sample: (Int, Int, Int) -> Int): FloatArray {
-        val scale = IMG.toDouble() / maxOf(w, h)
-        val newW = maxOf(1, Math.round(w * scale).toInt())
-        val newH = maxOf(1, Math.round(h * scale).toInt())
-        val padX = (IMG - newW) / 2
-        val padY = (IMG - newH) / 2
-        val out = FloatArray(IMG * IMG * 3) { PAD }
+        inline fun letterboxFrom(
+            w: Int,
+            h: Int,
+            out: FloatArray = FloatArray(IMG * IMG * 3),
+            sample: (Int, Int, Int) -> Int,
+        ): FloatArray {
+            require(out.size == IMG * IMG * 3) { "the output buffer is ${out.size} floats, not ${IMG * IMG * 3}" }
+            out.fill(PAD)
+            val scale = IMG.toDouble() / maxOf(w, h)
+            val newW = maxOf(1, Math.round(w * scale).toInt())
+            val newH = maxOf(1, Math.round(h * scale).toInt())
+            val padX = (IMG - newW) / 2
+            val padY = (IMG - newH) / 2
 
-        for (y in 0 until newH) {
-            val sy = minOf(h - 1.0, maxOf(0.0, (y + 0.5) / scale - 0.5))
-            val y0 = sy.toInt()
-            val y1 = minOf(h - 1, y0 + 1)
-            val fy = sy - y0
-            val oy = y + padY
-            for (x in 0 until newW) {
-                val sx = minOf(w - 1.0, maxOf(0.0, (x + 0.5) / scale - 0.5))
-                val x0 = sx.toInt()
-                val x1 = minOf(w - 1, x0 + 1)
-                val fx = sx - x0
-                // NHWC: three contiguous channels per pixel, rather than three 640x640 planes.
-                val o = (oy * IMG + (x + padX)) * 3
-                for (c in 0 until 3) {
-                    val p00 = sample(x0, y0, c).toDouble()
-                    val p01 = sample(x1, y0, c).toDouble()
-                    val p10 = sample(x0, y1, c).toDouble()
-                    val p11 = sample(x1, y1, c).toDouble()
-                    val top = p00 + (p01 - p00) * fx
-                    val bot = p10 + (p11 - p10) * fx
-                    out[o + c] = ((top + (bot - top) * fy) / 255.0).toFloat()
+            for (y in 0 until newH) {
+                val sy = minOf(h - 1.0, maxOf(0.0, (y + 0.5) / scale - 0.5))
+                val y0 = sy.toInt()
+                val y1 = minOf(h - 1, y0 + 1)
+                val fy = sy - y0
+                val oy = y + padY
+                for (x in 0 until newW) {
+                    val sx = minOf(w - 1.0, maxOf(0.0, (x + 0.5) / scale - 0.5))
+                    val x0 = sx.toInt()
+                    val x1 = minOf(w - 1, x0 + 1)
+                    val fx = sx - x0
+                    // NHWC: three contiguous channels per pixel, rather than three 640x640 planes.
+                    val o = (oy * IMG + (x + padX)) * 3
+                    for (c in 0 until 3) {
+                        val p00 = sample(x0, y0, c).toDouble()
+                        val p01 = sample(x1, y0, c).toDouble()
+                        val p10 = sample(x0, y1, c).toDouble()
+                        val p11 = sample(x1, y1, c).toDouble()
+                        val top = p00 + (p01 - p00) * fx
+                        val bot = p10 + (p11 - p10) * fx
+                        out[o + c] = ((top + (bot - top) * fy) / 255.0).toFloat()
+                    }
                 }
             }
+            return out
         }
-        return out
+
+        /**
+         * Rotate a packed RGBA frame clockwise by `degrees` — the SAME mapping [Rotation] applies
+         * on the fly, materialised so a unit test can look at the bytes. Not used on the frame
+         * path (that would be a copy per frame); it exists so the mapping the letterbox samples
+         * through is checked against the plainest possible statement of what "rotate clockwise"
+         * means, on a pattern small enough to read.
+         */
+        fun rotateRgba(width: Int, height: Int, degrees: Int, rgba: ByteArray): ByteArray {
+            require(rgba.size == width * height * 4) { "rgba is ${rgba.size} bytes, not ${width * height * 4}" }
+            val r = Rotation.of(width, height, degrees)
+            val out = ByteArray(rgba.size)
+            for (y in 0 until r.height) {
+                for (x in 0 until r.width) {
+                    val src = (r.srcY(x, y) * width + r.srcX(x, y)) * 4
+                    val dst = (y * r.width + x) * 4
+                    for (c in 0 until 4) out[dst + c] = rgba[src + c]
+                }
+            }
+            return out
         }
 
         const val CAMERA_ALIAS = "camera"
         const val IMG = 640
         /** Ultralytics letterbox pad colour (grey 114), normalised — same constant as the TS. */
-        private const val PAD = 114f / 255f
+        const val PAD = 114f / 255f
         private const val MODEL = "cube-yolo.tflite"
         private const val BACK = "back"
         private const val FRONT = "front"

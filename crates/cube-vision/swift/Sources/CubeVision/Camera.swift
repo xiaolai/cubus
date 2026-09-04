@@ -25,6 +25,11 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     /// looks identical to the built-in from the outside).
     public private(set) var current: CameraInfo?
 
+    /// How long `open` waits for the permission prompt to be answered. A person reading the sheet
+    /// takes seconds; a prompt nobody answers (a test runner, a locked screen) must not hold the
+    /// command forever, so the wait is bounded and the timeout is named in the error.
+    private static let permissionWait: TimeInterval = 60
+
     // Types the webview cannot enumerate are exactly why this exists — list them explicitly.
     //
     // Two DIFFERENT gates, and conflating them broke the iOS build (2026-08-30). `#available` is a
@@ -56,6 +61,45 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             .devices.map { CameraInfo(deviceId: $0.uniqueID, label: $0.localizedName) }
     }
 
+    /// Ask for the camera, and say WHICH answer stood in the way when one did.
+    ///
+    /// This class never asked. `AVCaptureDeviceInput(device:)` fails for an unauthorised app and
+    /// the failure was caught by `try?`, so a denial surfaced as "cannot open X — in use, or
+    /// asleep?", which sends a person to check a cable when the fix is a switch in System
+    /// Settings. The three refusals are named apart because their remedies differ: `.denied` is
+    /// the user's own earlier answer, `.restricted` is a device policy nobody at the keyboard can
+    /// change, and `.notDetermined` is the prompt that has not been shown yet — which this shows,
+    /// and waits for, off the main thread (every caller is an async Tauri command).
+    private static func ensureAuthorized() throws {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            return
+        case .denied:
+            throw CubeVisionError.capture(
+                "camera access was denied for this app — allow it under Privacy & Security › Camera and try again")
+        case .restricted:
+            throw CubeVisionError.capture(
+                "camera access is restricted on this device by a policy (parental controls or a device profile)")
+        case .notDetermined:
+            let answered = DispatchSemaphore(value: 0)
+            var granted = false
+            AVCaptureDevice.requestAccess(for: .video) { ok in
+                granted = ok
+                answered.signal()
+            }
+            if answered.wait(timeout: .now() + permissionWait) == .timedOut {
+                throw CubeVisionError.capture(
+                    "the camera permission prompt was not answered within \(Int(permissionWait))s")
+            }
+            if !granted {
+                throw CubeVisionError.capture(
+                    "camera access was declined — allow it under Privacy & Security › Camera and try again")
+            }
+        @unknown default:
+            throw CubeVisionError.capture("camera authorization is in a state this build does not know")
+        }
+    }
+
     /// Open a camera by uniqueID, or the default video device when `deviceId` is nil/empty.
     public func open(deviceId: String?) throws {
         close()
@@ -70,11 +114,26 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         } else {
             throw CubeVisionError.capture("no default video device")
         }
-        guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else {
-            throw CubeVisionError.capture("cannot open \(device.localizedName) — in use, or asleep?")
+        // Authorization BEFORE the input: a refused app fails here with the reason, not below
+        // with AVFoundation's opaque code wearing a hardware problem's face.
+        try Camera.ensureAuthorized()
+        let input: AVCaptureDeviceInput
+        do {
+            input = try AVCaptureDeviceInput(device: device)
+        } catch {
+            // The real AVFoundation error, kept. `try?` used to flatten every cause into one guess.
+            throw CubeVisionError.capture("cannot open \(device.localizedName): \(error.localizedDescription)")
         }
+        // Inputs are removed INSIDE the configuration, before `canAddInput` is asked. It used to be
+        // asked first, with the previous input still attached: macOS tolerates that, iOS refuses a
+        // second video input outright, so the second scan on an iPhone failed until a restart.
         session.beginConfiguration()
         session.inputs.forEach(session.removeInput)
+        session.outputs.forEach(session.removeOutput)
+        guard session.canAddInput(input) else {
+            session.commitConfiguration()
+            throw CubeVisionError.capture("the capture session refuses \(device.localizedName) as an input")
+        }
         session.addInput(input)
         let output = AVCaptureVideoDataOutput()
         // BGRA is what AVFoundation delivers cheapest; the delegate swaps to RGBA to match the
@@ -82,15 +141,60 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: queue)
-        session.outputs.forEach(session.removeOutput)
-        if session.canAddOutput(output) { session.addOutput(output) }
+        guard session.canAddOutput(output) else {
+            session.commitConfiguration()
+            throw CubeVisionError.capture("the capture session refuses a video data output")
+        }
+        session.addOutput(output)
+        try Camera.orientConnection(output)
         session.commitConfiguration()
         session.startRunning()
         current = CameraInfo(deviceId: device.uniqueID, label: device.localizedName)
     }
 
+    /// Make the frames upright and unmirrored, where the platform would hand them over otherwise.
+    ///
+    /// A phone's sensor is landscape; held in portrait it delivers every frame rotated a quarter
+    /// turn, and the letterbox is byte-exact against an UPRIGHT frame — the model reads a cube
+    /// face whose stickers are in the wrong places. `fitFace` may or may not survive that
+    /// (dev-docs/mobile-shell-plan.md §7 has carried the question since the shells landed); the
+    /// capture connection is where it is answered, in the OS's own rotation path, before a byte is
+    /// copied. iOS 17 replaced the orientation enum with an angle; both spellings are here because
+    /// the deployment target is 16. macOS is untouched: a Mac's camera is upright already, and the
+    /// rotation APIs are not available to it.
+    ///
+    /// Mirroring is asserted off rather than set off. A data output's connection is not mirrored
+    /// unless something asked, and if a future front-camera path did ask, a mirrored frame reads
+    /// the cube backwards — that is worth a hard stop, not a silent flip.
+    ///
+    /// UNVERIFIED ON A DEVICE (2026-09-05): this is the documented API for the documented problem,
+    /// and no iPhone has yet delivered a frame through it. The plan's §7 records the check owed.
+    private static func orientConnection(_ output: AVCaptureVideoDataOutput) throws {
+        guard let connection = output.connection(with: .video) else { return }
+        #if os(iOS)
+        if #available(iOS 17.0, *) {
+            if connection.isVideoRotationAngleSupported(90) {
+                connection.videoRotationAngle = 90
+            }
+        } else {
+            if connection.isVideoOrientationSupported {
+                connection.videoOrientation = .portrait
+            }
+        }
+        #endif
+        if connection.isVideoMirrored {
+            throw CubeVisionError.capture("the capture connection is mirrored; the scanner needs unmirrored frames")
+        }
+    }
+
     public func close() {
         if session.isRunning { session.stopRunning() }
+        // Released, not merely stopped: an input left attached is what made the next `open` on iOS
+        // fail its `canAddInput`, and a stopped session still holds the device it was given.
+        session.beginConfiguration()
+        session.inputs.forEach(session.removeInput)
+        session.outputs.forEach(session.removeOutput)
+        session.commitConfiguration()
         lock.lock(); latest = nil; lock.unlock()
         current = nil
     }

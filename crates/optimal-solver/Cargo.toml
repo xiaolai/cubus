@@ -7,7 +7,10 @@ version = "0.1.0"
 license = "AGPL-3.0-only"
 description = "Prove a 3x3 solution minimal: three pattern databases and IDA*, per Korf 1997"
 edition = "2021"
-rust-version = "1.77.2"
+# The floor the dependency tree actually needs (measured 2026-09-05 by the build agent over every
+# target: 80 crates above 1.77, the highest at 1.88 — darling, icu_*, ort, time, plist — and 39
+# edition-2024 crates). "1.77.2" was a claim nothing checked; the MSRV CI job now reads this value.
+rust-version = "1.88"
 
 [dependencies]
 # Root-parallel IDA* and parallel Bellman validation over 88M-entry tables. The plan's own

@@ -7,11 +7,10 @@
     "frontendDist": "../../web/dist",
     "devUrl": "http://localhost:15173",
     "beforeDevCommand": "pnpm --filter cubus-web dev",
-    "beforeBuildCommand": "pnpm --filter cube-scanner build:panel && pnpm --filter cubus-web build:cube && pnpm --filter cubus-web copy-ort && pnpm --filter cubus-web vendor:libs && pnpm --filter cubus-web build:smartcube && pnpm --filter cubus-web build:dist"
+    "beforeBuildCommand": "pnpm --filter cube-scanner build:panel && pnpm --filter cubus-web build:cube && pnpm --filter cubus-web vendor:libs && pnpm --filter cubus-web build:smartcube && pnpm --filter cubus-web build:dist"
   },
   "app": {
     "withGlobalTauri": true,
-    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Cubus",
@@ -30,7 +29,11 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ],
       "headers": {
         "Cross-Origin-Opener-Policy": "same-origin",
         "Cross-Origin-Embedder-Policy": "require-corp",

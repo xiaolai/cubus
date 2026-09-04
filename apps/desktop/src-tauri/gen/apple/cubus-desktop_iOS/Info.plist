@@ -43,7 +43,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Cubus reads your cube&apos;s six sides through the camera. Everything happens on this device — no image is stored or sent anywhere.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Cubus talks to your GAN smart cube over Bluetooth, so it can follow the moves you make. It connects only to a cube you choose.</string>
+	<string>Cubus talks to your smart cube over Bluetooth, so it can follow the moves you make. It connects only to a cube you choose.</string>
 	<key>UISupportedInterfaceOrientations~iphone</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

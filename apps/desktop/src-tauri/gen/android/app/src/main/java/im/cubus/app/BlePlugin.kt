@@ -14,9 +14,11 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import app.tauri.PermissionState
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -179,7 +181,7 @@ class BlePlugin(private val activity: Activity) : Plugin(activity) {
     private val connecting = ConcurrentHashMap.newKeySet<String>()
 
     /** One in-flight GATT operation per connection, and everything else waiting behind it. */
-    private inner class Conn(val gatt: BluetoothGatt) {
+    private inner class Conn(val id: String, val gatt: BluetoothGatt) {
         val queue = ArrayDeque<Op>()
 
         /**
@@ -270,17 +272,29 @@ class BlePlugin(private val activity: Activity) : Plugin(activity) {
      * works for a few seconds and then stops responding, with nothing logged. Ten seconds is far
      * longer than any real GATT round trip and short enough that a user notices an error instead of
      * a hang.
+     *
+     * AND A TIMEOUT ENDS THE CONNECTION, not just the operation. A stack that lost one callback does
+     * not recover: the late callback, if it ever comes, lands on whatever operation is active THEN
+     * and settles it with the wrong result (audit 2026-09-04, mobile B5) — and a stack that stays
+     * silent leaves every following operation to time out in turn, ten seconds each. Tearing the
+     * connection down fails the queue at once with a sentence, tells the web side the cube is gone
+     * (the same `ble-disconnect` a remote drop sends), and lets its reconnect flow do what it is
+     * built for. The GATT object is closed, so the late callback has nowhere to land.
      */
     private fun arm(c: Conn, op: Op) {
         val fire = Runnable {
-            finish(
-                c,
-                op.kind,
-                op.characteristic,
-                Result.failure(
-                    RuntimeException("the ${op.label} timed out after $OP_TIMEOUT_MS ms — no GATT callback arrived"),
-                ),
-            )
+            val reason = "the ${op.label} timed out after $OP_TIMEOUT_MS ms — no GATT callback arrived"
+            finish(c, op.kind, op.characteristic, Result.failure(RuntimeException(reason)))
+            if (connections[c.id] === c) {
+                runCatching { c.gatt.disconnect() }
+                teardown(c.id, "$reason; the connection was closed because a stack that lost a callback does not recover")
+                events?.send(
+                    JSObject().apply {
+                        put("event", "ble-disconnect")
+                        put("device", c.id)
+                    },
+                )
+            }
         }
         op.timeout = fire
         main.postDelayed(fire, OP_TIMEOUT_MS)
@@ -300,8 +314,8 @@ class BlePlugin(private val activity: Activity) : Plugin(activity) {
      * side awaited a promise that could not resolve, and their closures stayed reachable from the
      * process-wide pending maps for as long as the app ran.
      */
-    private fun teardown(id: String, reason: String) {
-        val c = connections.remove(id) ?: return
+    private fun teardown(id: String, reason: String): Boolean {
+        val c = connections.remove(id) ?: return false
         val pending = synchronized(c) {
             c.closed = true
             val all = ArrayList<Op>(c.queue.size + 1)
@@ -316,6 +330,7 @@ class BlePlugin(private val activity: Activity) : Plugin(activity) {
         }
         for (op in pending) op.settle(Result.failure(RuntimeException(reason)))
         runCatching { c.gatt.close() }
+        return true
     }
 
     // ---- helpers -------------------------------------------------------------------------------
@@ -345,21 +360,51 @@ class BlePlugin(private val activity: Activity) : Plugin(activity) {
             proceed()
             return
         }
-        pendingPermissionAction[invoke.command] = proceed
+        pendingPermissionAction[invoke.id] = proceed
         requestPermissionForAlias(alias, invoke, "onPermissionResult")
     }
 
-    /** What to run once the user has answered, keyed by the command that asked. */
-    private val pendingPermissionAction = ConcurrentHashMap<String, () -> Unit>()
+    /**
+     * What to run once the user has answered, keyed by the INVOKE — not by its command name. Two
+     * concurrent invokes of one command are two entries; keyed by name, the second overwrote the
+     * first and one of the two promises never settled.
+     */
+    private val pendingPermissionAction = ConcurrentHashMap<Long, () -> Unit>()
 
     @PermissionCallback
     private fun onPermissionResult(invoke: Invoke) {
-        val proceed = pendingPermissionAction.remove(invoke.command)
+        val proceed = pendingPermissionAction.remove(invoke.id)
         val alias = neededAlias()
         if (alias != null) {
             return invoke.reject("Bluetooth permission was not granted")
         }
-        proceed?.invoke() ?: invoke.reject("the permission result arrived with nothing waiting on it")
+        if (proceed == null) {
+            return invoke.reject("the permission result arrived with nothing waiting on it")
+        }
+        // Inside Tauri's ActivityResult callback there is no try/catch above this frame: a
+        // throwing first post-grant command — `startScan` with Bluetooth toggled off meanwhile —
+        // crashed the app instead of rejecting one promise.
+        runCatching(proceed).onFailure {
+            invoke.reject("${invoke.command} failed after the permission was granted: ${it.message}")
+        }
+    }
+
+    /**
+     * Below API 31 a BLE scan is a LOCATION capability, and having the permission is not enough:
+     * with Location Services switched off the scan does not fail, it returns nothing, which reads
+     * as a cube that will not advertise. Named as the cause instead. API 28 grew the direct
+     * question; before it the answer is the secure setting's mode.
+     */
+    private fun locationServicesOff(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val lm = activity.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            lm?.isLocationEnabled == false
+        } else {
+            @Suppress("DEPRECATION")
+            Settings.Secure.getInt(activity.contentResolver, Settings.Secure.LOCATION_MODE, Settings.Secure.LOCATION_MODE_OFF) ==
+                Settings.Secure.LOCATION_MODE_OFF
+        }
     }
 
     private fun characteristic(c: Conn, service: String, ch: String): BluetoothGattCharacteristic? =
@@ -389,6 +434,12 @@ class BlePlugin(private val activity: Activity) : Plugin(activity) {
     private fun scanFor(invoke: Invoke) {
         val args = invoke.parseArgs(RequestArgs::class.java)
         val scanner = adapter?.bluetoothLeScanner ?: return invoke.reject("Bluetooth is off or absent")
+        if (locationServicesOff()) {
+            return invoke.reject(
+                "Location Services are off — before Android 12 the system will not scan for Bluetooth " +
+                    "devices without them; turn Location on and try again",
+            )
+        }
         seen.clear()
 
         var settled = false
@@ -468,9 +519,12 @@ class BlePlugin(private val activity: Activity) : Plugin(activity) {
     @SuppressLint("MissingPermission")
     private fun connectTo(invoke: Invoke) {
         val args = invoke.parseArgs(DeviceArgs::class.java)
+        // From the last scan ONLY — the same rule the desktop keeps ("was not returned by the last
+        // scan"). `getRemoteDevice` accepted any well-formed MAC and would connect to whatever
+        // answered at it, which made this command a looser surface on one platform than on the
+        // others; and a device that was never seen advertising is not one the user chose.
         val device = seen[args.id]
-            ?: adapter?.getRemoteDevice(args.id)
-            ?: return invoke.reject("no device with id ${args.id}")
+            ?: return invoke.reject("device ${args.id} was not returned by the last scan")
 
         if (connections.containsKey(args.id)) return invoke.reject("device ${args.id} is already connected")
         // Refused, not serialised: a second attempt while the first is in flight would leave one of
@@ -505,11 +559,13 @@ class BlePlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 } else if (newState == BluetoothAdapter.STATE_DISCONNECTED) {
                     // Everything waiting on this connection fails here, rather than being dropped.
-                    teardown(args.id, "the device disconnected")
+                    // `had` is false when a timeout already tore this connection down (and already
+                    // sent the disconnect event) — the late callback must not send a second one.
+                    val had = teardown(args.id, "the device disconnected")
                     runCatching { g.close() }
                     if (!settled) {
                         settle(false, "the device disconnected during connect (status $status)")
-                    } else {
+                    } else if (had) {
                         events?.send(
                             JSObject().apply {
                                 put("event", "ble-disconnect")
@@ -533,7 +589,7 @@ class BlePlugin(private val activity: Activity) : Plugin(activity) {
                     settle(false, "service discovery failed with status $status")
                     return
                 }
-                val c = Conn(g)
+                val c = Conn(args.id, g)
                 c.services = g.services ?: emptyList()
                 connections[args.id] = c
                 settle(true)
@@ -909,11 +965,22 @@ class BlePlugin(private val activity: Activity) : Plugin(activity) {
             return sb.toString()
         }
 
-        fun hex(s: String): ByteArray? =
-            runCatching {
-                check(s.length % 2 == 0)
-                ByteArray(s.length / 2) { s.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
-            }.getOrNull()
+        /**
+         * Hex → bytes, or null. DIGITS ONLY: `String.toInt(16)` accepts a sign, so `"+f"` and
+         * `"-1"` parsed as bytes nobody sent. Every character is checked against the sixteen hex
+         * digits before any parsing, which is also what `hex::decode` on the Rust side does.
+         */
+        fun hex(s: String): ByteArray? {
+            if (s.length % 2 != 0) return null
+            val out = ByteArray(s.length / 2)
+            for (i in out.indices) {
+                val hi = Character.digit(s[i * 2], 16)
+                val lo = Character.digit(s[i * 2 + 1], 16)
+                if (hi < 0 || lo < 0) return null
+                out[i] = ((hi shl 4) or lo).toByte()
+            }
+            return out
+        }
 
         /**
          * A port of `cube_ble::matches_request`, clause for clause.

@@ -45,16 +45,32 @@ const GODS_NUMBER: u8 = 20;
 /// Progress heartbeat cadence: the webview needs a pulse, not a firehose.
 const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(200);
 
-#[derive(Default)]
 pub struct OptimalState {
     /// Behind an Arc so the generation worker can publish without the command future — the
     /// future may be gone by the time the tables exist.
     tables: Arc<OnceLock<Arc<Tables>>>,
     preparing: Arc<AtomicBool>,
+    /// Whether the last successful preparation persisted its tables (surfaced per proof). A
+    /// field of the state rather than a process global: the state is the one thing every
+    /// command shares, and a global beside it was a second place for the same fact.
+    tables_persisted: Arc<AtomicBool>,
     /// The ONE record of a running proof: Some(cancel-flag) while one runs. Claiming,
     /// cancelling and settling all pass through its mutex, so no window exists where a proof
     /// is accepted but invisible to cancel, or cancelled but reported as if untouched.
     proof: Arc<ProofSlot>,
+}
+
+impl Default for OptimalState {
+    fn default() -> Self {
+        Self {
+            tables: Arc::default(),
+            preparing: Arc::default(),
+            // True until a preparation says otherwise: before any prepare there is nothing to
+            // have failed to persist, and a proof cannot run before one anyway.
+            tables_persisted: Arc::new(AtomicBool::new(true)),
+            proof: Arc::default(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -188,8 +204,43 @@ fn tables_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .join("optimal-pdb"))
 }
 
-/// Whether the last successful preparation persisted its tables (surfaced per proof).
-static TABLES_PERSISTED: AtomicBool = AtomicBool::new(true);
+/// The load-or-generate decision, with every I/O injected so it can be tested without minutes
+/// of BFS (the real `Tables` cannot be built in a unit test in any useful time).
+///
+/// `Ok` from the loader is the tables and `persisted = true`. Missing or invalid artifacts are
+/// the regeneration cases: the reason is logged first — so a permission problem does not
+/// masquerade as corruption — then the fresh tables are saved, and a save that fails is
+/// reported as `persisted = false`, never as an error: the tables exist and every proof works,
+/// the next launch just pays the generation again, and the proof says so out loud. An `Io`
+/// refusal from the loader is different in kind: the filesystem itself would not read, minutes
+/// of regeneration cannot fix that, and the save would hit the same wall — so it is surfaced
+/// instead of spent.
+fn resolve_tables<T>(
+    loaded: Result<T, optimal_solver::LoadError>,
+    generate: impl FnOnce() -> Result<T, String>,
+    save: impl FnOnce(&T) -> Result<(), String>,
+) -> Result<(T, bool), String> {
+    match loaded {
+        Ok(tables) => Ok((tables, true)),
+        Err(
+            e @ (optimal_solver::LoadError::Missing(_) | optimal_solver::LoadError::Invalid(_)),
+        ) => {
+            log::info!("optimal: not loading saved tables ({e}); generating");
+            let tables = generate()?;
+            let persisted = match save(&tables) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("optimal: tables generated but not saved: {e}");
+                    false
+                }
+            };
+            Ok((tables, persisted))
+        }
+        Err(e @ optimal_solver::LoadError::Io(_)) => {
+            Err(format!("cannot read the tables directory: {e}"))
+        }
+    }
+}
 
 /// Load-or-generate, once. Loading refuses any corrupt artifact (checksum, move-set hash,
 /// metric, payload histogram, truncation); the refusal REASON is logged before regeneration,
@@ -222,61 +273,44 @@ pub async fn optimal_prepare(
     }
     let emitter = app.clone();
     let cell = state.tables.clone();
+    let persisted_flag = state.tables_persisted.clone();
     // Everything after this point happens in the worker, guard included: if this command's
     // future is dropped mid-await, the generation still completes, publishes, and resets the
     // flag — the drop only costs the caller the report, never the state.
     let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
         let _guard = guard;
-        let (tables, persisted) = match Tables::load(&dir) {
-            Ok(tables) => (tables, true),
-            // Missing or invalid artifacts: regeneration is the cure, and says why.
-            Err(
-                e @ (optimal_solver::LoadError::Missing(_) | optimal_solver::LoadError::Invalid(_)),
-            ) => {
-                log::info!("optimal: not loading saved tables ({e}); generating");
-                let mut last = std::time::Instant::now();
-                let mut emit_failed = false;
-                let tables = Tables::generate(&mut |stage, done, total| {
-                    if last.elapsed() >= PROGRESS_EVERY || done == total {
-                        last = std::time::Instant::now();
-                        if let Err(e) = emitter.emit(
-                            "optimal-progress",
-                            OptimalProgress {
-                                stage: stage.to_string(),
-                                done,
-                                total,
-                            },
-                        ) {
-                            // Log once: a silent heartbeat failure makes minutes of generation
-                            // look like a hang, and a log per beat would be its own flood.
-                            if !emit_failed {
-                                emit_failed = true;
-                                log::warn!(
-                                    "optimal: progress events are not reaching the webview: {e}"
-                                );
-                            }
+        let generate = || {
+            let mut last = std::time::Instant::now();
+            let mut emit_failed = false;
+            Tables::generate(&mut |stage, done, total| {
+                if last.elapsed() >= PROGRESS_EVERY || done == total {
+                    last = std::time::Instant::now();
+                    if let Err(e) = emitter.emit(
+                        "optimal-progress",
+                        OptimalProgress {
+                            stage: stage.to_string(),
+                            done,
+                            total,
+                        },
+                    ) {
+                        // Log once: a silent heartbeat failure makes minutes of generation
+                        // look like a hang, and a log per beat would be its own flood.
+                        if !emit_failed {
+                            emit_failed = true;
+                            log::warn!(
+                                "optimal: progress events are not reaching the webview: {e}"
+                            );
                         }
                     }
-                })?;
-                let persisted = match tables.save(&dir) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        log::warn!("optimal: tables generated but not saved: {e}");
-                        false
-                    }
-                };
-                (tables, persisted)
-            }
-            // The filesystem itself refused: minutes of regeneration cannot fix
-            // permissions, and the save would hit the same wall — surface it instead.
-            Err(e @ optimal_solver::LoadError::Io(_)) => {
-                return Err(format!("cannot read the tables directory: {e}"));
-            }
+                }
+            })
         };
+        let (tables, persisted) =
+            resolve_tables(Tables::load(&dir), generate, |tables| tables.save(&dir))?;
         // Persisted-flag first, then publish: a prove that sees the tables must also see the
         // right persistence answer. Losing the set race would mean another prepare slipped
         // the flag — possible only through a bug, so it is logged, never shrugged off.
-        TABLES_PERSISTED.store(persisted, Ordering::Relaxed);
+        persisted_flag.store(persisted, Ordering::Relaxed);
         if cell.set(Arc::new(tables)).is_err() {
             log::warn!(
                 "optimal: tables were already published — a concurrent prepare slipped the flag"
@@ -324,6 +358,7 @@ pub async fn optimal_prove(
     };
     let started = std::time::Instant::now();
     let emitter = app.clone();
+    let persisted_flag = state.tables_persisted.clone();
     // The lease rides in the worker: settled there under the slot mutex, released by drop if
     // the search panics — a dropped command future cannot wedge the slot.
     tauri::async_runtime::spawn_blocking(move || {
@@ -351,7 +386,7 @@ pub async fn optimal_prove(
                 solution: search::solution_string(&proof.solution),
                 nodes: proof.nodes,
                 millis: started.elapsed().as_millis(),
-                tables_persisted: TABLES_PERSISTED.load(Ordering::Relaxed),
+                tables_persisted: persisted_flag.load(Ordering::Relaxed),
             }),
             Err(SearchEnd::Cancelled) => Err("cancelled".to_string()),
             // Unreachable with the cap at God's number on a legal cube, and said loudly
@@ -468,6 +503,85 @@ mod tests {
             ProofLease::claim(&slot).is_some(),
             "slot still claimable after the storm"
         );
+    }
+
+    /// `optimal_prepare`'s three branches, with the minutes of BFS replaced by closures that
+    /// count. The `Io`-versus-`Invalid` distinction and the `tables_persisted=false` path were
+    /// the two things in this file no test reached.
+    #[test]
+    fn prepare_regenerates_on_missing_or_invalid_and_refuses_on_io() {
+        use optimal_solver::LoadError;
+        // Loaded: no generation, no save, persisted.
+        let mut generated = 0;
+        let out = resolve_tables::<u8>(
+            Ok(1),
+            || {
+                generated += 1;
+                Ok(2)
+            },
+            |_| panic!("a loaded table is not saved again"),
+        );
+        assert_eq!(out, Ok((1, true)));
+        assert_eq!(generated, 0);
+
+        // Missing and Invalid: regenerate, save, persisted.
+        for e in [
+            LoadError::Missing("corner.pdb".into()),
+            LoadError::Invalid("corner.pdb: checksum".into()),
+        ] {
+            let mut saved = 0;
+            let out = resolve_tables::<u8>(
+                Err(e),
+                || Ok(2),
+                |t| {
+                    assert_eq!(*t, 2);
+                    saved += 1;
+                    Ok(())
+                },
+            );
+            assert_eq!(out, Ok((2, true)));
+            assert_eq!(saved, 1, "fresh tables are saved once");
+        }
+
+        // A save that fails is NOT an error: the tables are good, the answer says so.
+        let out = resolve_tables::<u8>(
+            Err(LoadError::Missing("edge-a.pdb".into())),
+            || Ok(3),
+            |_| Err("read-only volume".into()),
+        );
+        assert_eq!(
+            out,
+            Ok((3, false)),
+            "tables_persisted=false, tables still returned"
+        );
+
+        // Io: surfaced, and NOTHING is generated — minutes of work the save would waste.
+        let mut generated = 0;
+        let out = resolve_tables::<u8>(
+            Err(LoadError::Io("corner.pdb: permission denied".into())),
+            || {
+                generated += 1;
+                Ok(4)
+            },
+            |_| Ok(()),
+        );
+        assert_eq!(
+            generated, 0,
+            "an unreadable directory is not regenerated over"
+        );
+        let e = out.unwrap_err();
+        assert!(
+            e.contains("cannot read the tables directory") && e.contains("permission denied"),
+            "{e}"
+        );
+
+        // A generation that refuses is the caller's error, verbatim.
+        let out = resolve_tables::<u8>(
+            Err(LoadError::Missing("edge-b.pdb".into())),
+            || Err("a move table is wrong".into()),
+            |_| Ok(()),
+        );
+        assert_eq!(out, Err("a move table is wrong".into()));
     }
 
     #[test]

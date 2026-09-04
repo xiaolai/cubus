@@ -4,7 +4,10 @@ version = "0.2.6"
 license = "AGPL-3.0-only"
 description = "Cubus desktop app"
 edition = "2021"
-rust-version = "1.77.2"
+# The floor the dependency tree actually needs (measured 2026-09-05 by the build agent over every
+# target: 80 crates above 1.77, the highest at 1.88 — darling, icu_*, ort, time, plist — and 39
+# edition-2024 crates). "1.77.2" was a claim nothing checked; the MSRV CI job now reads this value.
+rust-version = "1.88"
 
 [lib]
 name = "cubus_desktop_lib"
@@ -22,7 +25,10 @@ mcp = ["dep:tauri-plugin-mcp"]
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
-tauri = { version = "2.11.3", features = ["macos-private-api"] }
+# No `macos-private-api`: nothing here needs it. The traffic-light placement is plain AppKit through
+# objc2 (`standardWindowButton:`/`setFrameOrigin:`), the window is opaque, and the feature is an
+# App Store rejection (`macOSPrivateApi` went from tauri.conf.json with it, 2026-09-05).
+tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 # External links (the About card's website/author). A webview gives `target="_blank"` nothing, so
 # anchors hand the URL to this plugin when its API is present; in the browser build the same

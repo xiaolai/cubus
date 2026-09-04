@@ -44,7 +44,13 @@ android {
     signingConfigs {
         if (hasReleaseKeystore) {
             create("release") {
-                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                // Relative to gen/android — where keystore.properties itself lives and where the
+                // release workflow writes `storeFile=upload.jks` beside it. `file()` here resolves
+                // against THIS module's directory (gen/android/app), so that path could never
+                // resolve and every "signed" release build would have failed at the signing step
+                // — or, worse, been configured against a file that did not exist (audit
+                // 2026-09-04, mobile A2). An absolute path in the properties file still works.
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
                 storePassword = keystoreProperties.getProperty("storePassword")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
@@ -136,8 +142,6 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
     testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.4")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
 }
 
 apply(from = "tauri.build.gradle.kts")

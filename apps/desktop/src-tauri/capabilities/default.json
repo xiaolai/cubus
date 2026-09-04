@@ -1,13 +1,29 @@
 {
   "$schema": "../gen/schemas/capabilities.json",
   "identifier": "default",
-  "description": "Permissions every platform has. Window control is desktop-only and lives in desktop.json.",
+  "description": "Permissions every platform has: the core API, native capture and inference, external links, and the smart-cube BLE bridge — the nine `ble_*` commands are the app's own and are named here because the app manifest (build.rs) puts every app command under the ACL, so an unlisted one is unreachable from the webview. Window control and the optimal solver are desktop-only and live in desktop.json. The opener is granted `allow-open-url` on `https://*` alone rather than `opener:default`, which also allows `http://`, `mailto:`, `tel:` and revealing files in the file manager — none of which the About card's two anchors need.",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
     "cube-vision:default",
-    "opener:default"
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://*"
+        }
+      ]
+    },
+    "allow-ble-request-device",
+    "allow-ble-connect",
+    "allow-ble-discover-services",
+    "allow-ble-discover-characteristics",
+    "allow-ble-subscribe",
+    "allow-ble-unsubscribe",
+    "allow-ble-read",
+    "allow-ble-write",
+    "allow-ble-disconnect"
   ]
 }

@@ -32,6 +32,16 @@ mod apple;
 #[cfg(target_os = "windows")]
 mod windows;
 
+/// The ONE `infer_frame` wire shape (`rgba_base64`, `width: usize`, `height: usize`) and every
+/// check that must run before a frame reaches an FFI or a letterbox. Shared by the Apple and
+/// Windows arms, and compiled under test everywhere so the checks are exercised on any host.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows", test))]
+mod frame;
+
+/// A capture thread with a bounded join — Windows' reopen safety, tested on every host.
+#[cfg(any(target_os = "windows", test))]
+mod worker;
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use apple::init;
 

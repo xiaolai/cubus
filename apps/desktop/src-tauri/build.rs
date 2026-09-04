@@ -1,3 +1,32 @@
+use tauri_build::{AppManifest, Attributes};
+
+/// Every `#[tauri::command]` the app itself defines (the plugins declare their own). Declaring
+/// them here is what puts them under the ACL: once an app manifest exists, Tauri denies any app
+/// command no capability allows (`webview/mod.rs`: `has_app_acl_manifest && resolved_acl.is_none()`),
+/// where before it allowed every app command from any origin. The capability files then say
+/// which build gets which — `desktop.json` carries the window and the optimal solver, which a
+/// phone must not be able to reach even though it injects the identical command surface
+/// (`optimal_prepare` refuses on mobile too; a lock that depends on the UI agreeing is one lock).
+/// A command added to `generate_handler!` and not here is unreachable from the webview, which is
+/// the loud default: `apps/web/test/app-acl.test.mjs` reads both lists and fails on a difference.
+const COMMANDS: &[&str] = &[
+    "set_orientation",
+    "get_orientation",
+    "ble_request_device",
+    "ble_connect",
+    "ble_discover_services",
+    "ble_discover_characteristics",
+    "ble_subscribe",
+    "ble_unsubscribe",
+    "ble_read",
+    "ble_write",
+    "ble_disconnect",
+    "optimal_prepare",
+    "optimal_status",
+    "optimal_prove",
+    "optimal_cancel",
+];
+
 fn main() {
     // tauri-build does not add icons/** to Cargo's input set, so without these
     // the binary keeps embedding the previous icons after they are
@@ -16,8 +45,22 @@ fn main() {
     // the same failure mode as a stale .icns.
     println!("cargo:rerun-if-changed=icons/Assets.car");
     println!("cargo:rerun-if-changed=icons/Cubus.icon");
-    println!("cargo:rerun-if-changed=Info.plist");
+    // The property lists, the entitlements and the capabilities, by their REAL names. This used to
+    // name `Info.plist`, a file that had been renamed to `Info.macos.plist` on the day the iOS
+    // shell landed — and Cargo treats a rerun-if-changed path that does not exist as always
+    // changed, so every `cargo check` re-ran this script and re-linked the app ("Dirty
+    // cubus-desktop: the file `Info.plist` is missing", visible with `-v`). A plist edit, meanwhile,
+    // was only picked up because of that accident. Both halves are fixed by naming what exists.
+    println!("cargo:rerun-if-changed=Info.macos.plist");
+    println!("cargo:rerun-if-changed=Info.ios.plist");
+    println!("cargo:rerun-if-changed=Entitlements.plist");
+    println!("cargo:rerun-if-changed=capabilities");
     println!("cargo:rerun-if-changed=tauri.conf.json");
+    println!("cargo:rerun-if-changed=tauri.macos.conf.json");
+    println!("cargo:rerun-if-changed=tauri.ios.conf.json");
+    println!("cargo:rerun-if-changed=tauri.windows.conf.json");
+    println!("cargo:rerun-if-changed=tauri.linux.conf.json");
 
-    tauri_build::build()
+    tauri_build::try_build(Attributes::new().app_manifest(AppManifest::new().commands(COMMANDS)))
+        .expect("failed to run tauri-build");
 }

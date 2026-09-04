@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop",
-  "description": "Window control: dragging the title bar, minimising and closing. On Windows and Linux the window is created undecorated, so the app's own caption buttons are the only ones the user has \u2014 see buildChrome in apps/web/lib/app.js. A phone has no window to drive, so this capability is not granted there. Self-update lives in update.json instead, because it is granted on a NARROWER set than this: macOS updates through its Homebrew cask.",
+  "description": "What only a desktop can answer. Window control: dragging the title bar, minimising and closing — on Windows and Linux the window is created undecorated, so the app's own caption buttons are the only ones the user has (see buildChrome in apps/web/lib/app.js) — and the window's orientation toggle (`set_orientation`/`get_orientation`), which re-sizes a fixed window a phone does not have. The optimal solver (`optimal_*`): proving a minimum is minutes of every core and ~500 MB of pattern-database generation, and `optimal_prepare` refuses on mobile besides — this capability is the other lock, so a phone's webview cannot even reach the command. A phone injects the identical command surface, which is why the platform list matters. Self-update lives in update.json; it is granted on the same three platforms (macOS self-updates too, since 2026-09-03, alongside its Homebrew cask) and is kept separate because it is a different concern with its own plugins.",
   "platforms": [
     "macOS",
     "windows",
@@ -14,6 +14,12 @@
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",
     "core:window:allow-close",
-    "core:window:allow-set-title"
+    "core:window:allow-set-title",
+    "allow-set-orientation",
+    "allow-get-orientation",
+    "allow-optimal-prepare",
+    "allow-optimal-status",
+    "allow-optimal-prove",
+    "allow-optimal-cancel"
   ]
 }

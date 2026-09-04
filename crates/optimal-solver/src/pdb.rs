@@ -155,7 +155,7 @@ pub fn generate(
     while head < queue.len() {
         let idx = queue[head] as usize;
         head += 1;
-        if head % 4_000_000 == 0 {
+        if head.is_multiple_of(4_000_000) {
             progress(head as u64, n as u64);
         }
         let d = dist[idx] + 1;
