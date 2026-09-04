@@ -23,6 +23,16 @@
 // probe budget (~tens of thousands per tier) affordable — measured in solver-move-count.md.
 
 import { CORNERS, EDGES, MOVES, MOVE_NAMES, SOLVED, applyMove } from './cube-pieces.js';
+// One parity, not two. It was computed identically here and in random-state.js, and a cycle
+// decomposition that drifted in one copy would make a legal cube unparseable or an illegal one
+// parseable — silently, in the file that decides which states exist at all.
+//
+// This direction and not the other: random-state.js imports nothing, so the worker pays nothing
+// for it, while app.js imports random-state.js for scrambles and does NOT import this module.
+// Exporting the parity from here would have pulled the whole engine — tables, rotations, the DFS
+// — into the main bundle to read one function, which is the duplication solver-engine.js's
+// VIEW_COUNT comment already refuses for one integer.
+import { permutationParity } from './random-state.js';
 
 // ---- the move set -----------------------------------------------------------------------------
 
@@ -353,9 +363,19 @@ const IS_PHASE2 = (() => {
  * order. `onSolution(path)` is called for each; returning true from it aborts the enumeration
  * (found what we wanted, or out of budget).
  *
- * Maneuvers ending with a G1 move are skipped: the same total solution is found from the
- * shorter phase-1 maneuver with that move opening phase 2, so keeping them would only spend
- * probes on duplicates. The empty maneuver (a state already in G1) is the one exception.
+ * Maneuvers ending with a G1 move are skipped: that move can open phase 2 instead, so keeping
+ * them would only spend probes on duplicates. The empty maneuver (a state already in G1) is the
+ * one exception.
+ *
+ * What that skip costs, stated exactly, because the completeness argument upstream rests on it:
+ * a solution S of length L is reachable at ONE split only — before its maximal trailing run of
+ * G1 moves. (The prefix really does land in G1: the state after all L moves is solved, which is
+ * in G1, and the trailing moves are all in G1, so the state before them is too. Its last move is
+ * not a G1 move, by maximality, so it survives this skip.) Every longer prefix ends in a G1 move
+ * and is rejected here; every shorter one need not be in G1 at all. So S is found only if that
+ * trailing run fits under the phase-2 cap, MAX_PHASE2 = 12. See solve-target.js's GODS_NUMBER
+ * for what that leaves the promise resting on, and `two-phase.test.mjs`'s "the phase-2 cap is
+ * what makes the trailing-G1 split reachable" for the mechanism at cap 1.
  */
 function phase1DFS(t, f, s, depthLeft, prevMove, path, onSolution) {
   if (exhausted) return true; // the abort channel — nothing below spends what is not there
@@ -527,22 +547,6 @@ function parseEdgeSlots(facelets) {
   return { ep, eo };
 }
 
-/** Even or odd, by cycle decomposition — the same computation random-state.js makes. */
-function permutationParity(perm) {
-  const seen = new Array(perm.length).fill(false);
-  let swaps = 0;
-  for (let start = 0; start < perm.length; start++) {
-    if (seen[start]) continue;
-    let length = 0;
-    for (let at = start; !seen[at]; at = perm[at]) {
-      seen[at] = true;
-      length++;
-    }
-    swaps += length - 1;
-  }
-  return swaps % 2;
-}
-
 /** The inverse of parseFacelets, for tests: a cubie state as its facelet string. */
 export function toFacelets(state) {
   const out = new Array(54);
@@ -684,10 +688,16 @@ function buildRotations() {
  * nanoseconds wherever it falls, so the budget is proportional to time as well as
  * deterministic.
  */
-// solLen matches LOOSEST_BOUND in solver-engine.js — the wrapper always sets both bounds
-// explicitly, so these defaults exist for direct module use and must not quietly disagree
-// with it.
-const BOUNDS = { solLen: 23, probeMax: 100_000_000 };
+/** What the bounds are before anyone sets them.
+ *
+ *  `solLen` matches LOOSEST_BOUND and `probeMax` matches DEFAULT_NODE_BUDGET, both in
+ *  solver-engine.js — the wrapper always sets both bounds explicitly, so these exist for direct
+ *  module use and must not quietly disagree with it. Exported as a frozen constant rather than
+ *  left as two literals so the agreement is a runtime fact a test can hold the two files to;
+ *  reading the live BOUNDS instead would only report whatever the last setBounds left behind. */
+export const DEFAULT_BOUNDS = Object.freeze({ solLen: 23, probeMax: 100_000_000 });
+
+const BOUNDS = { ...DEFAULT_BOUNDS };
 
 /** Diagnostics for the last search — what it cost, in the same units the budget is spent in,
  *  and `view` = which of the six views produced the answer (-1 while none has). TREAT AS

@@ -18,7 +18,20 @@ import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
 import { pace } from './browser-wait.mjs';
+import { WORKER_CUBES } from './fixtures/solver-cubes.mjs';
 import { freePort } from './free-port.mjs';
+
+/**
+ * A ceiling on the searching tests, in wall time, because nothing else here has one.
+ *
+ * Every search below is bounded in NODES, which bounds the work but not the wait — and the tests
+ * that escalate can ask for 12.75e9 of them, which is minutes inside a headless browser. The CI
+ * job has no `timeout-minutes` either, so until 2026-09-04 a single unlucky state could hang a
+ * release run with nothing to read afterwards. Two minutes is roughly 40x the measured cost of
+ * the slowest of these on a loaded laptop: it cannot fire on work that is going normally, and a
+ * run that reaches it has met something worth failing on rather than waiting out.
+ */
+const GATE = { timeout: 120_000 };
 
 // From the OS. The hand-allocated scheme this replaces — "geometry owns 5197, serve.test.mjs
 // 5199" — is a list that has to be maintained, cannot survive two checkouts running at once, and
@@ -64,16 +77,14 @@ async function inBrowser(fn, arg) {
   return result;
 }
 
-test('a real module worker solves a real cube, at the tier it was asked for', async () => {
-  const out = await inBrowser(async () => {
+test('a real module worker solves a real cube, at the tier it was asked for', GATE, async () => {
+  const out = await inBrowser(async (facelets) => {
     const { createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
     const { refine } = await import('/lib/solve-target.js');
     const Cube = (await import('/vendor/cubejs.js')).default;
     Cube.initSolver();
 
     const client = createSolveClient({ spawn: spawnSolveWorker });
-    const cube = Cube.random();
-    const facelets = cube.asString();
     const steps = [];
     for await (const step of refine(facelets, {
       solve: (f, bounds) => client.solve(f, bounds),
@@ -86,7 +97,7 @@ test('a real module worker solves a real cube, at the tier it was asked for', as
     oracle.move(final.alg);
     client.cancel();
     return { steps, solved: oracle.isSolved(), facelets };
-  });
+  }, WORKER_CUBES.tiered);
 
   assert.ok(out.steps.length >= 1, 'the worker produced no answer at all');
   assert.ok(out.solved, `the worker's solution does not solve ${out.facelets}`);
@@ -102,28 +113,29 @@ test('a real module worker solves a real cube, at the tier it was asked for', as
   }
 });
 
-test('a tighter tier is honoured, not silently ignored', async () => {
+test('a tighter tier is honoured, not silently ignored', GATE, async () => {
   // The failure this guards: the length bound not reaching the engine inside the worker. The
   // solver still works, so nothing looks wrong — it just ignores what it was asked for, every
   // time. solLen 21 is the tightest bound the engine meets reliably within this budget
   // (dev-docs/solver-move-count.md, the two-phase ladder).
   //
-  // ESCALATION on null, for the same reason two-phase.test.mjs escalates: `probeMax` is a budget
-  // in search NODES, so it is deterministic per cube and identical on every machine — which means
-  // a fixed budget against a RANDOM cube asserts a probabilistic property as if it were a
-  // deterministic one. It duly failed in CI on a cube this machine never drew. null is a statement
-  // about the search, never about the cube (AGENTS.md: a search that ran out of budget is not a
-  // cube that cannot be solved), and doubling is what lib/solve-target.js does for the app.
+  // A FIXED state, and escalation kept on top of it. `probeMax` is a budget in search NODES, so a
+  // search is deterministic per cube and identical on every machine — which means a fixed budget
+  // against a RANDOM cube asserts a probabilistic property as if it were a deterministic one, and
+  // it duly failed in CI on a cube this machine never drew. Escalating was the first half of the
+  // fix and it was not enough: it turned a rare red into a rare four-minute wait inside a headless
+  // browser, on a state nobody could name afterwards. The state is frozen and measured now
+  // (test/fixtures/solver-cubes.mjs — 10.8M nodes on one worker, so the first attempt answers),
+  // and the escalation stays because null is a statement about the search, never about the cube.
   //
   // The assertion does not weaken. What is under test is that solLen REACHES the engine, and that
   // is still checked exactly as before — on the answer's length. God's number is 20 and 21 is an
   // exclusive bound above it, so after escalation an answer must exist.
-  const out = await inBrowser(async () => {
+  const out = await inBrowser(async (facelets) => {
     const { createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
     const Cube = (await import('/vendor/cubejs.js')).default;
     Cube.initSolver();
     const client = createSolveClient({ spawn: spawnSolveWorker });
-    const facelets = Cube.random().asString();
     let alg = null;
     let budget = 50_000_000;
     let spent = 0;
@@ -141,25 +153,26 @@ test('a tighter tier is honoured, not silently ignored', async () => {
       moves: alg === null ? null : alg.trim().split(/\s+/).length,
       solved: alg === null ? null : oracle.isSolved(),
     };
-  });
+  }, WORKER_CUBES.tighter);
   assert.notEqual(
     out.moves,
     null,
     `no solution under 21 for ${out.facelets} after 8 escalations (${out.spent} nodes) — ` +
-      'the engine is complete, so this is a real defect rather than an expensive cube',
+      'a measured fixture that answers in 10.8M nodes, so this is a real defect and not an ' +
+      'expensive cube',
   );
   assert.ok(out.moves <= 20, `asked for fewer than 21 and got ${out.moves} — the length bound is not live`);
   assert.equal(out.solved, true);
 });
 
-test('the real pool, over real workers, answers what one worker answers', async () => {
+test('the real pool, over real workers, answers what one worker answers', GATE, async () => {
   // The pool's own missing link. Everything below it is covered against fakes — slicing, budget
   // sharing, the sort key, sibling cancellation — and none of that touches the two things only a
   // browser has: several real module workers alive at once, and a SharedArrayBuffer that really
   // crosses postMessage. The stop word in particular can be wrong in a way no fake can show: if
   // the offset is dropped in transit, both sides hold a valid view of the same memory and poll
   // different words, so the stop silently never fires.
-  const out = await inBrowser(async () => {
+  const out = await inBrowser(async (frozen) => {
     const { createParallelSolveClient, createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
     const { VIEW_COUNT } = await import('/lib/solver-engine.js');
     const Cube = (await import('/vendor/cubejs.js')).default;
@@ -170,7 +183,11 @@ test('the real pool, over real workers, answers what one worker answers', async 
     const isolated = typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated === true;
     if (!isolated) return { isolated };
 
-    const facelets = Cube.random().asString();
+    // A FROZEN state, measured before it was frozen: one worker answers it in 108k nodes at this
+    // budget, and the three-way split answers identically. Both halves matter — the assertion
+    // below is a not-null one, and the equality is NOT true at every budget (see
+    // parallel-divergence.test.mjs for where it stops holding), so neither may be left to a draw.
+    const facelets = frozen;
     const bounds = { solLen: 21, probeMax: 50_000_000 };
     const pool = createParallelSolveClient({
       spawn: spawnSolveWorker, workers: 3, viewCount: VIEW_COUNT,
@@ -190,7 +207,7 @@ test('the real pool, over real workers, answers what one worker answers', async 
       pool.cancel();
       lone.cancel();
     }
-  });
+  }, WORKER_CUBES.pooled);
 
   assert.equal(out.isolated, true,
     'the page is not cross-origin isolated — the pool has no shared word and Phase 1 regressed');
