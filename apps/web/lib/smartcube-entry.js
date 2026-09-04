@@ -36,4 +36,13 @@
  *  without rebuilding, or rebuild without bumping, and one of them goes red. */
 export const SMARTCUBE_REV = '77df8e9507ac87031c12ad1717d71de98d56784b';
 
+/** The fork branch that revision is expected to live on.
+ *
+ *  Declared rather than assumed, because `scripts/smartcube-status.mjs` has to name a branch to
+ *  measure the pin against and had `integration` hard-coded — a branch that exists only on one of
+ *  the maintainer's two clones. It therefore reported UNKNOWN for a pin that was exactly current,
+ *  which is the one answer a drift report must never give wrongly (found 2026-09-04). One
+ *  declaration, next to the rev it belongs with; the script reads it from here. */
+export const SMARTCUBE_BRANCH = 'main';
+
 export { connectSmartCube, getRegisteredProtocols } from 'smartcube-web-bluetooth';

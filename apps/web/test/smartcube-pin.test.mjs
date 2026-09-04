@@ -14,12 +14,23 @@
 // constant: (2) disagrees with (1). Hand-edit the bundle: (3) disagrees with both. There is no
 // ordering of those mistakes that stays green, which is the property a pinned git dep needs and
 // a semver range does not — an npm tarball is integrity-hashed in the lockfile, a branch is not.
+//
+// **Two of those three are about OUR files, and that was the hole (found 2026-09-04.)**
+// `SMARTCUBE_REV` is exported from `smartcube-entry.js`, which is ours, so it lands in the bundle
+// whichever revision of the LIBRARY was installed when the build ran. Bump the spec and the
+// constant, rebuild without `pnpm install`, and all three "agreed" over a bundle built from the
+// old library. Only CI's rebuild-diff caught it, on a machine that had installed. So two more
+// places now have to agree, and both describe what is actually on this disk:
+//   4. the lockfile resolution                        (what `pnpm install` would put there)
+//   5. the library's own messages, inside the bundle  (what the build actually consumed)
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
+const INSTALLED = fileURLToPath(new URL('../node_modules/smartcube-web-bluetooth/', import.meta.url));
 
 /** A full 40-hex-character git commit sha, and nothing shorter. An abbreviated rev is not a pin:
  *  it can become ambiguous as the upstream history grows. */
@@ -96,4 +107,105 @@ test('no runtime fetch: the bundle is self-contained', () => {
   const bundle = read('../vendor/smartcube.js');
   assert.doesNotMatch(bundle, /from\s+["']https?:\/\//, 'a remote import survived into the bundle');
   assert.doesNotMatch(bundle, /import\(\s*["']https?:\/\//, 'a dynamic remote import is in the bundle');
+});
+
+test('the lockfile resolves the revision the manifest asks for', () => {
+  // The mistake this catches: bumping the spec and the constant, then rebuilding WITHOUT running
+  // `pnpm install`. Every check above stays green — they read our own files — while the bundle is
+  // built from the library that is still on disk. `pnpm install` is what writes the lockfile, so a
+  // lockfile that still names the old revision is proof the install did not happen.
+  const lock = readFileSync(new URL('../../../pnpm-lock.yaml', import.meta.url), 'utf8');
+  const pinned = /#([0-9a-f]{40})$/.exec(spec)[1];
+
+  // Both importers, because a git dep with no integrity hash is only pinned by what the lockfile
+  // says it resolved to.
+  const importers = [...lock.matchAll(/^\s{6}smartcube-web-bluetooth:\n\s+specifier: (.+)\n\s+version: (.+)$/gm)];
+  assert.equal(importers.length, 2, 'apps/web and packages/gan-driver both depend on it');
+  for (const [, specifier, version] of importers) {
+    assert.equal(specifier.trim(), spec, 'the lockfile specifier disagrees with package.json — run `pnpm install`');
+    assert.ok(
+      version.trim().endsWith(`/${pinned}`),
+      `the lockfile resolved ${version.trim()}, not ${pinned} — run \`pnpm install\``,
+    );
+  }
+});
+
+test('the installed package is the one the pin names', () => {
+  // Not skippable into passing: this file's whole subject is a dependency with no integrity hash,
+  // and a check that goes quiet when the dependency is missing reads green on the machine that
+  // needed it most.
+  assert.ok(existsSync(INSTALLED), `${INSTALLED} is missing — run \`pnpm install\``);
+  const installed = JSON.parse(readFileSync(`${INSTALLED}package.json`, 'utf8'));
+  const owner = /^github:([\w.-]+)\//.exec(spec)[1];
+  assert.match(
+    installed.repository?.url ?? '',
+    new RegExp(`github\\.com/${owner}/smartcube-web-bluetooth`),
+    `installed package comes from ${installed.repository?.url}, but the pin names ${owner}`,
+  );
+});
+
+/**
+ * Messages the entry cannot reach, so their absence from the bundle is correct rather than stale.
+ *
+ * Named individually with the reason, the same contract as `treeShaken` in vendor-bundles.test.mjs:
+ * an unexplained absence is indistinguishable from a stale bundle, and the next person deletes the
+ * wrong one. All three belong to code paths `connectSmartCube`/`getRegisteredProtocols` never
+ * reach — the standalone GAN cube entry, and the GAN Smart TIMER, which is not a cube.
+ */
+const UNREACHABLE_FROM_ENTRY = [
+  'This device does not support GATT connections', // the library's standalone GAN cube entry
+  'Invalid time characteristic value received from Timer', // the GAN Smart Timer, not a cube
+  'Invalid time components:', // the same timer module
+];
+
+test('the bundle carries the messages the INSTALLED library contains', () => {
+  // The only check here that compares the bundle against the dependency rather than against our
+  // own re-export. Message literals are copied through by esbuild verbatim, so a message the
+  // installed library has and the bundle does not means the bundle was built from something else —
+  // an older install, or a different revision entirely.
+  const source = readFileSync(`${INSTALLED}dist/esm/index.mjs`, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+  const bundle = read('../vendor/smartcube.js');
+
+  const literals = new Set([
+    ...[...source.matchAll(/'([^'\\\n]{20,})'/g)].map((m) => m[1]),
+    ...[...source.matchAll(/"([^"\\\n]{20,})"/g)].map((m) => m[1]),
+    ...[...source.matchAll(/`([^`\\]*)`/g)]
+      .flatMap((m) => m[1].split(/\$\{[^}]*\}/))
+      .map((c) => c.trim())
+      .filter((c) => c.length >= 20),
+  ]);
+
+  const missing = [];
+  let checked = 0;
+  for (const lit of literals) {
+    // A message, not an identifier or a type union: it has to read like a sentence. Plain ASCII
+    // only, because esbuild emits non-ASCII as escapes and such a literal is never found verbatim.
+    if (!/ [a-z]/.test(lit) || lit.includes('${') || lit.includes('|')) continue;
+    if (!/^[ -~]+$/.test(lit)) continue;
+    if (/[(){}]|=>|\?\?/.test(lit)) continue;
+    if (UNREACHABLE_FROM_ENTRY.some((s) => lit.includes(s))) continue;
+    checked++;
+    if (!bundle.includes(lit)) missing.push(lit.slice(0, 70));
+  }
+
+  assert.ok(checked > 40, `only ${checked} messages compared — the extractor is broken, not the bundle`);
+  assert.deepEqual(
+    missing.sort(),
+    [],
+    'the bundle was built from a different install of the library — run `pnpm install` and then ' +
+      '`pnpm --filter cubus-web build:smartcube`',
+  );
+});
+
+test('every message listed as unreachable really is absent, so the list cannot hide a stale one', () => {
+  // Without this, an entry here could quietly cover a message that HAS gone missing for a real
+  // reason — which is how a "known exception" list turns into a place to bury failures.
+  const bundle = read('../vendor/smartcube.js');
+  const source = readFileSync(`${INSTALLED}dist/esm/index.mjs`, 'utf8');
+  for (const lit of UNREACHABLE_FROM_ENTRY) {
+    assert.ok(source.includes(lit), `${lit} is no longer in the library — delete it from the list`);
+    assert.ok(!bundle.includes(lit), `${lit} IS in the bundle — it is reachable, so stop excusing it`);
+  }
 });
