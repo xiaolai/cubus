@@ -24,10 +24,19 @@ itself AGPL-3.0. Ultralytics' stated position is that the licence reaches models
 their software and applications that use those models. A permissive licence here would not be
 honest about that.
 
-Everything else the application ships is MIT: cubejs, three.js, onnxruntime-web, and
-smartcube-web-bluetooth. `packages/gan-driver` is likewise MIT and stays that way — it is a
-standalone Bluetooth driver that touches none of the model code, and part of it derives from
-MIT-licensed upstream work (`packages/gan-driver/THIRD_PARTY.md`).
+Everything else the application ships is permissively licensed, and
+`apps/web/THIRD_PARTY_NOTICES.md` lists all of it with each licence's text: the bundled npm
+packages (cubejs, three.js, onnxruntime-web and smartcube-web-bluetooth — all MIT); the Rust
+crates that make up the native shells, Tauri included (MIT/Apache-2.0 and a handful of other
+permissive licences, every one named there), and the Rust runtime (MIT/Apache-2.0); on Windows
+the onnxruntime build from pyke (MIT) and, where bundled, Microsoft's DirectML redistributable
+under Microsoft's own software licence terms; on Apple platforms the project's Swift package (ours,
+AGPL) and the Swift runtime (Apache-2.0 with the runtime exception); on Android the AndroidX,
+Material and TensorFlow Lite libraries (Apache-2.0). The model's real training photographs are
+Roboflow Universe datasets under CC BY 4.0, credited in the same file. `packages/gan-driver` is
+likewise MIT and stays that way — it is a standalone Bluetooth driver that touches none of the
+model code, and part of it derives from MIT-licensed upstream work
+(`packages/gan-driver/THIRD_PARTY.md`).
 
 A commercial licence for cubus covers cubus. It does not, and cannot, grant rights to
 Ultralytics' work: a closed-source product built on this detector needs an Ultralytics

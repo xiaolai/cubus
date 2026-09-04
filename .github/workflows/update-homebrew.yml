@@ -28,10 +28,21 @@ on:
 permissions:
   contents: read
 
+# ONE AT A TIME, never cancelled. Two runs writing the tap concurrently is the last-writer-wins
+# race the downgrade guard below exists for; queueing them makes the guard's comparison mean
+# something, and a queued run that turns out to be older is refused by that guard, not by a
+# cancellation nobody sees.
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
+
 jobs:
   update-tap:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write   # the failure step below opens or updates an issue
     env:
       REPO: xiaolai/cubus
     steps:
@@ -55,20 +66,25 @@ jobs:
         run: |
           set -eu
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # Single quotes: the second line used to carry `brew upgrade` in backticks inside
+            # double quotes, which the shell RAN — a command substitution in an error message,
+            # the same class of defect AGENTS.md records for commit messages.
             echo "::error::'$VERSION' is not a bare X.Y.Z. A prerelease in the tap reaches every"
-            echo "::error::stable `brew upgrade` user. release.yml gates this too; a manual"
-            echo "::error::dispatch bypasses that gate, which is why the check is repeated here."
+            # shellcheck disable=SC2016  # the backticks are prose, and single quotes keep them prose
+            echo '::error::stable `brew upgrade` user. release.yml gates this too; a manual'
+            echo '::error::dispatch bypasses that gate, which is why the check is repeated here.'
             exit 1
           fi
 
       - name: Check out the tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: xiaolai/homebrew-tap
           # A deploy key, not a PAT: it can write to this one repository and nothing else, and it
-          # does not expire. An expired token would fail SILENTLY here, because the dispatch in
-          # release.yml is continue-on-error — releases would stay green while the tap quietly
-          # stopped tracking them.
+          # does not expire. An expired token would fail this checkout — and until 2026-09-05
+          # nothing watched this workflow fail: it runs once per release, separately from the
+          # release, and a red run here left the release green and the tap quietly behind. The
+          # failure step at the end is what now says so.
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: tap
 
@@ -108,7 +124,11 @@ jobs:
         id: sha
         run: |
           set -eu
-          curl -sL -o asset.dmg "https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
+          # `-f`: an HTTP error is a FAILURE, not a body. Without it a 404 page — or the HTML of a
+          # login wall, if the release were somehow not public — would be written to asset.dmg,
+          # hashed, and published as the cask's sha256, which every `brew install` then fails
+          # against with a checksum mismatch pointing at the user's download.
+          curl -fsSL -o asset.dmg "https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
           echo "sha256=$(sha256sum asset.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Generate the cask
@@ -172,3 +192,35 @@ jobs:
           git add Casks/cubus.rb
           git commit -m "cubus ${VERSION}"
           git push
+
+      # A FAILED TAP RUN IS NOT SILENT. The app on macOS updates itself within a day of a release
+      # being published; if this job fails, the cask stays behind, and the next `brew upgrade`
+      # DOWNGRADES every Mac that took the in-app update. Nobody watches the Actions tab for a
+      # workflow that runs once per release, so a failure opens an issue in the app's repository —
+      # or comments on the open one — where it will be seen.
+      - name: Open an issue when the tap update fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          v="${VERSION:-unknown}"
+          title="Homebrew tap update failed for $v"
+          # The body is written through a QUOTED heredoc, never interpolated into a command line:
+          # nothing in it is executed by the shell, whatever characters it carries.
+          cat > body.md <<'BODY'
+          The Homebrew tap did not update for this release, so the cask is now BEHIND the app.
+
+          Every Mac that took the in-app update will be downgraded by its next `brew upgrade`
+          until this is fixed. Once the cause is fixed, re-run the workflow by hand: Actions →
+          Update Homebrew Tap → Run workflow, with the version below.
+          BODY
+          # shellcheck disable=SC2016  # the backticks are Markdown, and single quotes keep them Markdown
+          printf '\nVersion: `%s`\nRun: %s\n' "$v" "$RUN_URL" >> body.md
+          existing=$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file body.md
+          else
+            gh issue create --repo "$REPO" --title "$title" --body-file body.md
+          fi
