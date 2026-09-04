@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn shard_tuples_are_validated_before_any_work() {
         // No tables needed: validation happens first, which is the point — the CLI feeds this
-        // user input after minutes of generation.
+        // user input after a full table generation.
         assert_eq!(two_ply_openings().len(), 243);
     }
 }

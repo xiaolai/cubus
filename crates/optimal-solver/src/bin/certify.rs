@@ -35,7 +35,7 @@ fn usage() -> ! {
     std::process::exit(1);
 }
 
-/// Parse everything BEFORE generating tables: an argv typo must not cost minutes first.
+/// Parse everything BEFORE generating tables: an argv typo must not cost a generation first.
 fn parse(args: &[String]) -> Vec<Command> {
     if args.is_empty() {
         usage();
@@ -76,7 +76,7 @@ fn parse(args: &[String]) -> Vec<Command> {
 fn main() {
     let commands = parse(&std::env::args().skip(1).collect::<Vec<_>>());
     let hash = hex_prefix(&move_set_hash());
-    // Collecting checks text against the move-set hash — minutes of table generation would be
+    // Collecting checks text against the move-set hash — a whole table generation would be
     // pure ceremony, so it only happens when a command actually searches.
     let searches = commands
         .iter()

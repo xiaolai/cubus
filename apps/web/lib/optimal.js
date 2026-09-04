@@ -8,7 +8,8 @@
 //
 // "On a desktop" is not decoration. The iOS and Android shells inject exactly the same command
 // surface, and the first press of the affordance generates 86 MB of pattern databases with a
-// rayon fan-out over every core — minutes of work and ~500 MB peak. That is a desktop's job.
+// rayon fan-out over every core — measured 2026-09-05 at ~3.6 s and a 281 MB peak on a laptop
+// (804 MB before the level-synchronous generator). That is still a desktop's job.
 // A phone gets the browser's answer, which is the same answer it would get with no native side
 // at all, so nothing on any screen depends on which build is running.
 //

@@ -14,7 +14,7 @@
 //!
 //! Three commands, one long-running preparation:
 //!   - `optimal_prepare` — load the validated tables from disk or generate them (minutes,
-//!     ~500 MB peak; progress goes up as `optimal-progress` events). Returns "ready" when
+//!     ~281 MB peak, measured 2026-09-05; progress goes up as `optimal-progress` events). Returns "ready" when
 //!     tables exist, "preparing" when another call is mid-generation — callers poll
 //!     `optimal_status` to "ready" before proving; that polling contract is what makes
 //!     concurrent prepare calls safe rather than merely tolerated.
@@ -252,7 +252,7 @@ pub async fn optimal_prepare(
     state: tauri::State<'_, OptimalState>,
 ) -> Result<String, String> {
     // Not this machine's work. Generating the tables is a rayon fan-out over every core,
-    // ~500 MB peak and 86 MB written; the mobile shells inject this command anyway, so the
+    // ~281 MB peak (2026-09-05) and 86 MB written; the mobile shells inject this command anyway, so the
     // refusal lives here as well as in the webview that never draws the button. Loud, not
     // silent: a caller that reached this learns why instead of waiting on a preparation that
     // is never coming.
@@ -267,7 +267,7 @@ pub async fn optimal_prepare(
         return Ok("preparing".into());
     };
     // Recheck under the claim: another prepare may have published between the look above and
-    // the flag — regenerating over existing tables would burn minutes and ~500 MB for nothing.
+    // the flag — regenerating over existing tables would burn seconds and ~281 MB for nothing.
     if state.tables.get().is_some() {
         return Ok("ready".into());
     }
@@ -505,7 +505,7 @@ mod tests {
         );
     }
 
-    /// `optimal_prepare`'s three branches, with the minutes of BFS replaced by closures that
+    /// `optimal_prepare`'s three branches, with the seconds of BFS replaced by closures that
     /// count. The `Io`-versus-`Invalid` distinction and the `tables_persisted=false` path were
     /// the two things in this file no test reached.
     #[test]

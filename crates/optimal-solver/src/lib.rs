@@ -73,8 +73,8 @@ pub struct Tables {
 /// Write-then-rename is the shape, and two details make it hold. The temp name carries the
 /// process id and a random word: a FIXED `name.tmp` meant two instances of the app preparing
 /// tables at once wrote into one file, and the loser's rename published the winner's half-written
-/// bytes under a valid-looking name (the loader's checksum refuses those, at the cost of minutes
-/// of regeneration on the next launch — a wasted night, not a wrong proof). And the file is
+/// bytes under a valid-looking name (the loader's checksum refuses those, at the cost of a
+/// regeneration on the next launch — a wasted few seconds, not a wrong proof). And the file is
 /// `sync_all`ed before the rename: without it a power loss after the rename can leave a
 /// zero-length or partially-written file under the FINAL name on filesystems that reorder the
 /// data behind the metadata, which is the one outcome a rename was supposed to rule out.
@@ -121,14 +121,22 @@ impl Tables {
         &self.edge_b
     }
 
-    /// Generate all three databases from nothing, validating each exhaustively. Minutes of
-    /// work and ~500 MB peak (measured in the plan's refute pass); `progress` hears
-    /// (stage, done, total), and each table's Bellman pass is its own "validate" stage — 100%
-    /// of a BFS no longer displays while minutes of certification still stand before ready.
+    /// Generate all three databases from nothing, validating each exhaustively. `progress`
+    /// hears (stage, done, total), and each table's Bellman pass is its own "validate" stage —
+    /// 100% of a BFS no longer displays while a whole certification pass still stands between
+    /// it and ready.
+    ///
+    /// Cost, measured 2026-09-05 through `src/bin/measure-generate.rs prepare` — the same
+    /// three generations, the same three Bellman passes, the same save — under
+    /// `/usr/bin/time -l` on a 10-core Apple Silicon laptop: **281 MB peak, ~4 s**, of which
+    /// the save is 0.2 s for 86 MB. Before plan §8's level-synchronous rewrite the same path
+    /// measured **804 MB and ~23 s**. The plan's older "~500 MB" was the corner table's own
+    /// BFS (548 MB measured) and understated the whole: the first table is still held while
+    /// the other two generate.
     pub fn generate(progress: &mut dyn FnMut(&str, u64, u64)) -> Result<Tables, String> {
         let moves = MoveTables::build();
         let mut one = |kind: Kind, name: &'static str| -> Result<Pdb, String> {
-            let table = pdb::generate(kind, &moves, &mut |d, t| progress(name, d, t))?;
+            let table = pdb::generate_levels(kind, &moves, &mut |d, t| progress(name, d, t))?;
             progress("validate", 0, 1);
             pdb::bellman_validate(&table, &moves)?;
             progress("validate", 1, 1);
@@ -154,8 +162,11 @@ impl Tables {
     /// histogram recount) catch corruption, but a deliberately RESEALED file — two nibbles of
     /// different depths swapped, every hash recomputed — preserves both. Only the recurrence
     /// itself (`h(goal)=0`, one zero, `|Δh|≤1` per move, a closer neighbour for every `h>0`)
-    /// pins the entries to their places, and it is seconds of parallel work against minutes
-    /// of regeneration.
+    /// pins the entries to their places. It is 1–2 s of parallel work against ~4 s to regenerate
+    /// (measured 2026-09-05, after plan §8; the margin used to be seconds against minutes). The
+    /// reason survives that shrinking, because it was never about the margin: a load whose
+    /// recurrence does not hold has to regenerate anyway, and one that skipped the check would
+    /// publish a resealed table as a certified one.
     pub fn load(dir: &std::path::Path) -> Result<Tables, LoadError> {
         let read = |(name, kind): (&str, Kind)| -> Result<Pdb, LoadError> {
             let bytes = std::fs::read(dir.join(name)).map_err(|e| match e.kind() {

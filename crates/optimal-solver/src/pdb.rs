@@ -9,6 +9,7 @@
 use crate::coords::{Coords, MoveTables, CORNER_N, EDGE_N, N_FLIP6, N_MOVES, N_TWIST};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Exhaustively measured depth histograms, asserted exactly by the generator — the strongest
 /// single check this crate has. The corner and first-edge-set histograms are §7's own numbers
@@ -136,60 +137,141 @@ fn solved_index(kind: Kind) -> usize {
     }
 }
 
-/// Exhaustive BFS from solved over the whole coordinate space. Byte distances during the
-/// search (255 = unvisited), packed to nibbles only after every certification has held.
+/// How much of a level's scan runs before `progress` is offered a number — the same 4M-entry
+/// beat the queue form reported at, so what the desktop's bar means does not change across the
+/// rewrite. Splitting a level's scan into segments is safe because the frontier test is `== d`
+/// and the only value ever written is `d + 1`: an entry marked by an earlier segment of the
+/// same level is never mistaken for a member of the level being scanned.
+const SCAN_SEGMENT: usize = 4_000_000;
+
+/// Exhaustive level-synchronous BFS from solved over the whole coordinate space (plan §8).
+///
+/// At depth `d` every entry is scanned and each one holding `d` marks its unmarked neighbours
+/// `d + 1`; the pass that marks nothing is the one past the diameter. That visits exactly the
+/// states the queue form visits at exactly the depths it assigns them — the frontier at level
+/// `d` IS the set of entries holding `d` — so this is a scheduling change, and the checks
+/// below (which do not know how the array was filled) certify it unchanged.
+///
+/// The point is memory. A `Vec<u32>` queue sized to the space is 352 MB for the corner table,
+/// live beside the distances and the packed output; the level form has no queue, so the
+/// distance array is the only large allocation. Byte distances during the search
+/// (255 = unvisited), packed to nibbles only after every certification has held.
 /// Certification failures are errors, not panics: the caller (a CLI, or the desktop's prepare
 /// command) refuses cleanly instead of unwinding a worker thread.
-pub fn generate(
+pub fn generate_levels(
     kind: Kind,
     tables: &MoveTables,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<Pdb, String> {
     let n = kind.entries();
-    let mut dist = vec![255u8; n];
-    let mut queue: Vec<u32> = Vec::with_capacity(n);
-    let start = solved_index(kind);
-    dist[start] = 0;
-    queue.push(start as u32);
-    let mut head = 0usize;
-    while head < queue.len() {
-        let idx = queue[head] as usize;
-        head += 1;
-        if head.is_multiple_of(4_000_000) {
-            progress(head as u64, n as u64);
+    // `AtomicU8` is one byte with no padding, so this is n bytes and not a byte more — the
+    // atomics buy safe concurrent marking, not space. Relaxed throughout: the only ordering
+    // that matters is the barrier between levels, and that is the join at the end of each
+    // parallel pass, not anything a load or store here could express.
+    //
+    // Reserved once at the exact size, then filled. `collect()` measured identical on
+    // 2026-09-05 — its length is known, so it reserves rather than doubling — but that is a
+    // specialization, and this is the one function whose whole reason for existing is its
+    // peak: a growth by doubling would hold the half-size buffer beside the full one, which
+    // is 44 MB of surplus nobody would see in a test.
+    let mut dist: Vec<AtomicU8> = Vec::with_capacity(n);
+    dist.resize_with(n, || AtomicU8::new(255));
+    dist[solved_index(kind)].store(0, Ordering::Relaxed);
+    let mut reached: u64 = 1;
+    // Reported only when it MOVES. Every level after the last one that marks anything still
+    // scans the whole array, and reporting per segment regardless would hand the desktop
+    // thirty consecutive "done == total" events — the queue form sent exactly one, and its
+    // listener treats that as the cue to switch stages (measured 2026-09-05: the first
+    // level-form run printed the corner stage's completion twenty-plus times).
+    let mut reported: u64 = 0;
+    let mut d: u8 = 0;
+    loop {
+        // A level past the certified diameter cannot be real. Bail before scanning it rather
+        // than after packing: depth 15 is the reserved "uninitialised" nibble, and a runaway
+        // search that reached it would write a value the loader is entitled to read as absent.
+        if d > kind.diameter() {
+            return Err(format!("{kind:?}: depth {d} beyond the known diameter"));
         }
-        let d = dist[idx] + 1;
-        for m in 0..N_MOVES {
-            let nb = neighbor(kind, tables, idx, m);
-            if dist[nb] == 255 {
-                dist[nb] = d;
-                queue.push(nb as u32);
+        let mut marked_this_level: u64 = 0;
+        for base in (0..n).step_by(SCAN_SEGMENT) {
+            let end = (base + SCAN_SEGMENT).min(n);
+            let marked: u64 = dist[base..end]
+                .par_iter()
+                .enumerate()
+                .with_min_len(1 << 16)
+                .map(|(offset, cell)| {
+                    if cell.load(Ordering::Relaxed) != d {
+                        return 0;
+                    }
+                    let idx = base + offset;
+                    let mut marked = 0u64;
+                    for m in 0..N_MOVES {
+                        let nb = &dist[neighbor(kind, tables, idx, m)];
+                        // Claim with a compare-exchange, not a load-then-store: two threads
+                        // expanding different frontier entries reach common neighbours, and a
+                        // plain store would let both count the same one. The exchange succeeds
+                        // exactly once per entry, so `reached` is a count, not an estimate —
+                        // which is what makes the "reached every entry" check below mean
+                        // something. The load in front of it keeps the uncontended common case
+                        // (an already-marked neighbour) a plain read.
+                        if nb.load(Ordering::Relaxed) == 255
+                            && nb
+                                .compare_exchange(255, d + 1, Ordering::Relaxed, Ordering::Relaxed)
+                                .is_ok()
+                        {
+                            marked += 1;
+                        }
+                    }
+                    marked
+                })
+                .sum();
+            marked_this_level += marked;
+            reached += marked;
+            if reached != reported {
+                reported = reached;
+                progress(reached, n as u64);
             }
         }
+        if marked_this_level == 0 {
+            break;
+        }
+        d += 1;
     }
-    progress(n as u64, n as u64);
+    certify_and_pack(kind, reached, |i| dist[i].load(Ordering::Relaxed))
+}
 
+/// Certify a finished distance array and pack it into nibbles. Every generator ends here, so
+/// the certification and the packing cannot drift from one another: the only thing a generator
+/// gets to choose is the ORDER it reaches states in, and the checks below are indifferent to
+/// that by construction (plan §8 — this is what makes the rewrite a scheduling change).
+fn certify_and_pack<F>(kind: Kind, reached: u64, dist: F) -> Result<Pdb, String>
+where
+    F: Fn(usize) -> u8,
+{
+    let n = kind.entries();
     // Every reachable-space claim, certified rather than trusted.
-    if queue.len() != n {
+    if reached != n as u64 {
         return Err(format!(
-            "{kind:?}: BFS reached {} of {n} — a move table is wrong",
-            queue.len()
+            "{kind:?}: BFS reached {reached} of {n} — a move table is wrong"
         ));
     }
     let expected = kind.expected_histogram();
     let mut histogram = vec![0u64; expected.len()];
-    for &d in dist.iter() {
+    let mut deepest = 0u8;
+    for i in 0..n {
+        let d = dist(i);
         if d as usize >= expected.len() {
             return Err(format!("{kind:?}: depth {d} beyond the known diameter"));
         }
         histogram[d as usize] += 1;
+        deepest = deepest.max(d);
     }
     if histogram != expected {
         return Err(format!(
             "{kind:?}: depth histogram differs from the exhaustively measured one — a table is wrong\n  got      {histogram:?}\n  expected {expected:?}"
         ));
     }
-    if *dist.iter().max().unwrap() != kind.diameter() {
+    if deepest != kind.diameter() {
         return Err(format!("{kind:?}: diameter moved"));
     }
 
@@ -197,7 +279,8 @@ pub fn generate(
     // — so an unwritten nibble reads as "uninitialised", never as a plausible goal-distance
     // zero. (A zero-initialised buffer once made that claim false while looking identical.)
     let mut nibbles = vec![0xffu8; n.div_ceil(2)];
-    for (i, &d) in dist.iter().enumerate() {
+    for i in 0..n {
+        let d = dist(i);
         debug_assert!(d < 15);
         if i & 1 == 0 {
             nibbles[i >> 1] = (nibbles[i >> 1] & 0xf0) | d;
@@ -314,7 +397,7 @@ pub fn serialize(pdb: &Pdb) -> Vec<u8> {
 /// covers header and payload alike) — and, because a checksum only proves the file matches
 /// ITSELF, the payload's recomputed depth histogram must equal the exhaustively measured one.
 /// A resealed file with a doctored payload fails that check; full Bellman certification stays
-/// at generation time (minutes, not the 100 ms this costs). Every read is bounds-checked: a
+/// at generation time (a second per table since plan §8, not the 100 ms this costs). Every read is bounds-checked: a
 /// crafted length field returns Err, never a panic.
 pub fn deserialize(bytes: &[u8], expect: Kind) -> Result<Pdb, String> {
     if bytes.len() < 8 + 4 + 4 + 32 + 8 + 1 + 32 {

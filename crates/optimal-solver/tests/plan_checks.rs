@@ -1,5 +1,6 @@
 //! The verification bar from optimal-solver-plan.md §7, as runnable checks. One binary on
-//! purpose: table generation is minutes of BFS, so every check here shares one generation —
+//! purpose: table generation is seconds of BFS and a certification pass, so every check here
+//! shares one generation —
 //! and generation itself asserts the exhaustive histograms and diameters before returning.
 //!
 //! Tiers: plain `cargo test --release` runs everything below a few seconds per proof;
@@ -820,5 +821,48 @@ fn a_proof_reports_each_length_it_rules_out_as_it_goes() {
     assert!(
         nodes_seen.windows(2).all(|w| w[1] >= w[0]) && nodes_seen[0] > 0,
         "the node count is cumulative and non-zero: {nodes_seen:?}"
+    );
+}
+
+/// The generator's progress contract, which the level-synchronous rewrite could break silently
+/// (plan §8, 2026-09-05). A level-form pass scans the whole array whether or not it marks
+/// anything, so a report per segment would send `done == total` once for every segment of every
+/// remaining level — and the desktop's listener emits on exactly that condition, treating it as
+/// the cue that a stage finished. The first run of the rewrite did precisely this, printing one
+/// stage's completion twenty-plus times. So: strictly increasing, and the total announced once.
+#[test]
+fn generation_reports_a_rising_count_and_announces_the_total_exactly_once() {
+    use optimal_solver::coords::MoveTables;
+    use optimal_solver::pdb::Kind;
+
+    // The smaller kind, generated on its own: this asserts the callback's shape, and the
+    // shared `tables()` generation already asserts every table's contents.
+    let kind = Kind::EdgeA;
+    let n = kind.entries() as u64;
+    let mut seen: Vec<u64> = Vec::new();
+    pdb::generate_levels(kind, &MoveTables::build(), &mut |done, total| {
+        assert_eq!(total, n, "the total must be the entry count, every call");
+        seen.push(done);
+    })
+    .expect("generation must certify or refuse");
+
+    assert!(
+        seen.windows(2).all(|w| w[1] > w[0]),
+        "the count must rise on every report, never repeat: {seen:?}"
+    );
+    assert_eq!(
+        seen.iter().filter(|&&d| d == n).count(),
+        1,
+        "the total is announced exactly once — the desktop switches stage on it"
+    );
+    assert_eq!(
+        seen.last().copied(),
+        Some(n),
+        "the last report is the total, so a stage never stops short of 100%"
+    );
+    assert!(
+        seen.len() > 2,
+        "a generator that reported only its endpoints would pass everything above while \
+         showing a waiting person nothing: {seen:?}"
     );
 }
