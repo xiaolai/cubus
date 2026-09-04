@@ -398,3 +398,31 @@ describe('decodeMisread', () => {
     ).toEqual({ kind: 'unknown' });
   });
 });
+
+describe('the lower bound presumes the centres were read right', () => {
+  it('two swapped centres are reported as far more damage than the two they are', () => {
+    // THE LIMIT OF THE GUARANTEE, pinned so the docstring cannot quietly become false.
+    //
+    // "The distance is never an OVERSTATEMENT" is proved against the colouring the CENTRES define:
+    // `centreOwner` turns a colour into the face that owns it, so a centre read as another face's
+    // colour does not add one wrong sticker — it RENAMES every sticker of that colour, on all six
+    // sides, and the "true cube" the proof leans on is a cube nobody held. The true damage here is
+    // two stickers; what comes back is a number several times larger, and the app would put it in
+    // "at least N stickers were misread".
+    //
+    // Nothing in a reading can see this: the six centres are still six distinct colours, which is
+    // the only property a reading lets us check. So it is a stated limit, and this test is what
+    // keeps the statement honest — if a future decoder learns to detect it, this goes red and the
+    // docstring is updated with it rather than after it.
+    const f = faces(DEEP);
+    const u = f.U.colors[4]!;
+    const r = f.R.colors[4]!;
+    f.U.colors[4] = r;
+    f.R.colors[4] = u;
+    const owner = centreOwner(f);
+    expect(owner.size).toBe(6); // still six distinct centres — nothing looks wrong
+    const got = decodeMisread(f, owner);
+    const reported = got.kind === 'unknown' ? Number.POSITIVE_INFINITY : got.distance;
+    expect(reported).toBeGreaterThan(2);
+  });
+});

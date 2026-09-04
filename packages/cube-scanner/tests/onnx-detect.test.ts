@@ -44,7 +44,7 @@ describe('detectFace (injected run)', () => {
       set(3, a, 30);
       set(4 + colors[a]!, a, 0.9);
     }
-    const run = async () => ({ data: out, anchors });
+    const run = async () => ({ data: out, anchors, rows: 4 + nc });
     const res = await detectFace(solidFrame(200, 200, [128, 128, 128]), run);
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.face.colors).toEqual(colors);

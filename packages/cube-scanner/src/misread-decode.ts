@@ -32,6 +32,17 @@
 //   * The distance is never an OVERSTATEMENT — the true cube is always a legal repair at exactly
 //     the true number of misreads, so the minimum can never exceed it. That is what makes
 //     "at least N stickers were misread" an honest sentence at every N.
+//     PRESUMING THE SIX CENTRES WERE READ RIGHT, and that presumption is load-bearing rather than
+//     pedantic. Everything above is proved against the colouring the CENTRES define: `centreOwner`
+//     turns a colour into the face that owns it, so a centre read as the wrong colour is not one
+//     wrong sticker — it renames every sticker of that colour on all six sides, and the "true
+//     cube" the argument leans on is then a cube the user never held. The reachable case is two
+//     centres swapped: the true damage is 2 and the reported count is much larger (measured, and
+//     pinned in tests/misread-decode.test.ts). Nothing here can see it — the six centres are still
+//     six distinct colours, which is the only thing a reading lets us check — so it is a stated
+//     limit of the guarantee and not a defect in the search. Detecting it would need a second
+//     search over centre permutations, which is 15 more full decodes for a case the camera makes
+//     rare; dev-docs/misread-decoding.md carries the argument and the measurement.
 //
 // The method. For a fixed rotation combo the 54 facelets partition into 8 corner triples, 12 edge
 // pairs and 6 centres. A legal cube needs the 8 observed triples to BE the 8 real corner cubies
@@ -337,6 +348,10 @@ function flatten(faces: Record<Face, ColorFaces>, rotations: number[]): number[]
  * `centreOwner` maps a centre colour to the face it names; the caller has already established the
  * six are distinct, because a reading whose centres collide is a different failure with a
  * different answer (name the two sides) and no amount of decoding improves it.
+ *
+ * DISTINCT is not the same as CORRECT, and the distance this returns is a bound on the reading as
+ * labelled by those centres. See the header's fourth bullet for what that costs when a centre is
+ * itself a misread.
  */
 export function decodeMisread(
   faces: Record<Face, ColorFaces>,

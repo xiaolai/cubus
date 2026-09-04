@@ -20,7 +20,20 @@ import { FACES, type Face } from '../src/types.js';
 import { AiScanPanel, type ScanProgress } from '../view/ai-scan-panel.js';
 
 const LETTER_CLASS: Record<Face, number> = { U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 };
-const TICK = 200; // TICK_MS_WEB — the fake detector registers as the 'web' runtime
+// TICK_FLOOR_MS. The cadence follows the runtime now — `max(60, last inference ms)` — and the fake
+// detector answers instantly under fake timers, so every tick here lands on the floor.
+const TICK = 60;
+/**
+ * Ticks a face must be held for before it is captured, at the floor cadence.
+ *
+ * Both halves of the stillness gate, worked out rather than guessed: reads land at 60, 120, … so
+ * on tick k the run is k reads old and (k-1)*60 ms old. STABLE=3 is satisfied at k=3; STABLE_MS=500
+ * needs (k-1)*60 >= 500, i.e. k >= 9.34, so k=10 is the first tick that satisfies both. Advancing
+ * EXACTLY this far is what lets `show()` stop feeding the face on the tick it is captured — a
+ * generous over-advance leaves further ticks re-reading a side that is already filed, and the last
+ * message is then "hold still" rather than the capture.
+ */
+const SETTLE_TICKS = 10;
 const CHECK = 400; // > CHECK_BEAT_MS, enough to fire the deferred assembly
 
 /** A facelet string → per-face 9 colour classes, canonical rotation. */
@@ -43,11 +56,15 @@ function tensorFor(colors: number[]): ModelOutput {
     data[3 * anchors + a] = 30; // h
     data[(4 + colors[a]!) * anchors + a] = 0.9;
   }
-  return { data, anchors };
+  return { data, anchors, rows: 4 + 6 };
 }
 
 /** A frame with nothing on it — decodes to zero detections, i.e. a NO_FACE abstention. */
-const emptyTensor = (): ModelOutput => ({ data: new Float32Array((4 + 6) * 9), anchors: 9 });
+const emptyTensor = (): ModelOutput => ({
+  data: new Float32Array((4 + 6) * 9),
+  anchors: 9,
+  rows: 4 + 6,
+});
 
 class FakeDetector implements Detector {
   device: CameraDevice | null = null;
@@ -66,11 +83,18 @@ class FakeDetector implements Detector {
     this.uses.push(opts);
     const gate = this.hold;
     if (gate) await gate;
+    if (this.openError) throw this.openError;
     if (this.openFails === 'always') throw new Error('camera denied');
     if (this.openFails === 'pinned' && opts?.deviceId) throw new Error('that camera is gone');
     this.device = { deviceId: opts?.deviceId ?? 'fake', label: 'Fake Camera' };
   }
-  async load(): Promise<void> {}
+  /** A specific rejection from `use()` — the four DOMExceptions getUserMedia actually throws. */
+  openError: Error | null = null;
+  /** Set to a never-settling promise to model a model download that stalls. */
+  loadHold: Promise<void> | null = null;
+  async load(): Promise<void> {
+    if (this.loadHold) await this.loadHold;
+  }
   /** Set to make every `next()` throw — a model that failed to load, or a malformed tensor. */
   failWith: Error | null = null;
   /** Every `use()` call, so a test can see whether the pinned deviceId was dropped on retry. */
@@ -100,12 +124,10 @@ const last = (): ScanProgress => {
   return p;
 };
 
-/** Hold one face in front of the fake camera until it is captured (4 stable ticks), then remove it. */
+/** Hold one face in front of the fake camera until it settles, then remove it. See SETTLE_TICKS. */
 async function show(colors: number[]): Promise<void> {
   fake.output = tensorFor(colors);
-  // STABLE=3 identical reads plus STABLE_MS=500 of stillness: reads land at t+200/400/600/800,
-  // and the 800 ms read is the first that is both 3-stable and 500 ms old — the 4th tick.
-  await vi.advanceTimersByTimeAsync(TICK * 4);
+  await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
   fake.output = null;
 }
 
@@ -206,7 +228,10 @@ describe('ai-scan-panel — capture and settle', () => {
 
   it('a face is not captured until it has been still for both 3 reads and 500 ms', async () => {
     fake.output = tensorFor(facesOf(DEEP).U);
-    await vi.advanceTimersByTimeAsync(TICK * 3); // 3 reads, but the streak is only 400 ms old
+    // Nine reads at the floor cadence: the count is long satisfied and the clock is 480 ms — which
+    // is the half that decides. With the tick following the runtime rather than pinned at 200 ms,
+    // it is the CLOCK that gates on every machine and the count is only a floor.
+    await vi.advanceTimersByTimeAsync(TICK * (SETTLE_TICKS - 1));
     expect(last().captured).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(TICK);
     expect(last().captured).toHaveLength(1);
@@ -543,13 +568,13 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     // the duration half of the gate exists to refuse.
     const shown = facesOf(DEEP);
     fake.output = tensorFor(shown.U);
-    await vi.advanceTimersByTimeAsync(TICK * 3); // 3 reads, only 400 ms of stillness — not yet
+    await vi.advanceTimersByTimeAsync(TICK * (SETTLE_TICKS - 1)); // one tick short of settling
     expect(last().captured).toHaveLength(0);
     fake.output = null; // the camera stalls
     await vi.advanceTimersByTimeAsync(TICK);
     fake.output = tensorFor(shown.U); // the same read comes back
-    await vi.advanceTimersByTimeAsync(TICK * 3);
-    // The run restarted at the first read AFTER the stall, so this is 400 ms old, not 1200.
+    await vi.advanceTimersByTimeAsync(TICK * (SETTLE_TICKS - 1));
+    // The run restarted at the first read AFTER the stall, so it is 480 ms old, not 1140.
     expect(last().captured).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(TICK); // and one more tick does settle it
     expect(last().captured).toHaveLength(1);
@@ -652,15 +677,35 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     solo.remove();
   });
 
-  it('toggling painting off and on keeps the sides already captured', async () => {
+  it('painting drops the captures whose rotation was never settled, and names them', async () => {
+    // THE MODE BOUNDARY. This test used to assert the opposite — that a toggle keeps every capture
+    // — and that was the bug rather than the contract. Painting edits stickers BY INDEX, and a
+    // camera capture is at whatever rotation the side was held at, so index i of what is stored is
+    // not the sticker the user is looking at. `assemblePainted` searches no rotations by design,
+    // so it then judged a 90°-off capture as authored-in-place and invented a misread count for a
+    // cube with nothing wrong with it.
     const shown = facesOf(DEEP);
     await show(shown.U);
     await show(shown.R);
+    expect(last().captured).toHaveLength(2);
     panel.setPainting(true);
     expect(last().device).toBeNull();
-    panel.setPainting(false);
-    await vi.advanceTimersByTimeAsync(TICK);
-    expect(last().captured).toHaveLength(2);
+    expect(last().captured).toHaveLength(0);
+    // Named, not silently discarded: the user showed those sides and is owed the reason.
+    expect(last().notice?.body ?? '').toMatch(/which way up/i);
+    expect(last().notice?.params?.[0]).toMatch(/WHITE/);
+    expect(last().notice?.params?.[0]).toMatch(/RED/);
+  });
+
+  it('a finished scan is settled, so painting over it keeps every side', async () => {
+    // The other half, and the common path: scan, then hand-fix one sticker. `finishAccepted` turns
+    // every capture into canonical rotation, so there is nothing unsettled left to drop and the
+    // rule above costs the user nothing here.
+    await showAll(DEEP, [1, 2, 3, 0, 1, 2]);
+    expect(last().complete).toBe(true);
+    panel.setPainting(true);
+    expect(last().captured).toHaveLength(6);
+    expect(last().notice).toBeNull();
   });
 
   it('a start superseded while opening does not close the camera the newer one opened', async () => {
@@ -768,5 +813,275 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     expect(last().phase).toBe('painting');
     expect(logged).not.toHaveBeenCalled();
     logged.mockRestore();
+  });
+});
+
+describe('ai-scan-panel — a camera that answers but never delivers', () => {
+  it('gives up on a camera that is open and frameless, instead of idling forever', async () => {
+    // `next()` resolving to `null` means "open, no frame yet" — genuinely transient for a tick or
+    // two while a video element gets its dimensions. A camera that never delivers answers `null`
+    // for as long as the screen is open, and `null` was treated as proof that the scanner works:
+    // it CLEARED the failure clock. So the one failure that needs no exception to happen was the
+    // one failure nothing watched, and the panel sat on "Show any side" with the lens on.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fake.output = null; // open, and frameless, for good
+    await vi.advanceTimersByTimeAsync(TICK * 10);
+    expect(last().phase).not.toBe('error'); // under TICK_FAIL_MS: still patient
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(last().phase).toBe('error');
+    // The existing copy, which was already describing this case while being unreachable from it.
+    expect(last().notice?.body ?? '').toMatch(/opened but no frame could be read/i);
+    expect(last().device).toBeNull(); // and the lens is off, not left on under a dead loop
+    logged.mockRestore();
+  });
+
+  it('a frameless run that ends is forgotten, so one stall never kills a later scan', async () => {
+    // The other half: the clock must be a claim about a RUN of frameless ticks, not a total. Its
+    // neighbour clock had exactly this bug — cleared in only one branch — and a healthy minute of
+    // scanning followed by one hiccup then read as three seconds of solid failure.
+    const shown = facesOf(new Cube().move('R U').asString());
+    fake.output = null;
+    await vi.advanceTimersByTimeAsync(2900);
+    fake.output = tensorFor(shown.U); // a frame arrives
+    await vi.advanceTimersByTimeAsync(TICK);
+    fake.output = null;
+    await vi.advanceTimersByTimeAsync(2900);
+    expect(last().phase).not.toBe('error');
+  });
+});
+
+describe('ai-scan-panel — what it says when things go wrong', () => {
+  /** A camera rejection with the name getUserMedia actually uses. */
+  const refuse = async (name: string): Promise<ScanProgress> => {
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    det.openError = new DOMException('Permission denied', name);
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    await solo.start();
+    solo.remove();
+    const end = seen.at(-1);
+    if (!end) throw new Error('no report');
+    return end;
+  };
+
+  it('turns each way a camera refuses into something a child can do', async () => {
+    // "Cannot start: The request is not allowed by the user agent or the platform in the current
+    // context" is the browser's own sentence, and it was shown verbatim. It names no action, and
+    // the four causes need four different ones — which is exactly what the raw string hides. The
+    // NAME is the specified part, so the name is what is mapped.
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect((await refuse('NotAllowedError')).message).toMatch(/Allow the camera/i);
+    expect((await refuse('NotFoundError')).message).toMatch(/No camera was found/i);
+    expect((await refuse('NotReadableError')).message).toMatch(/Another app is using the camera/i);
+    expect((await refuse('OverconstrainedError')).message).toMatch(/default one/i);
+    for (const name of ['NotAllowedError', 'NotFoundError'] as const) {
+      const end = await refuse(name);
+      expect(end.phase).toBe('error');
+      expect(end.notice?.title ?? '').toMatch(/camera did not open/i);
+      expect(end.message).not.toMatch(/Cannot start:/);
+    }
+    // The browser's own words are not thrown away — they are the only record of which cause it
+    // was, and they go where whoever has to fix it will look.
+    expect(warned).toHaveBeenCalled();
+    warned.mockRestore();
+  });
+
+  it('keeps the raw message for a rejection it does not recognise', async () => {
+    // Deliberately narrow: a wording nobody predicted must reach a person intact rather than be
+    // flattened into a guess about which of four things happened.
+    const end = await refuse('SomeFutureError');
+    expect(end.message).toMatch(/Cannot start: Permission denied/);
+  });
+
+  it('says the model is slow, then stops waiting for one that never arrives', async () => {
+    // A multi-megabyte fetch is allowed to take a while; it is not allowed to take forever with
+    // nothing said and nothing to press. There was no notice and no bound at all.
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    det.loadHold = new Promise<void>(() => {}); // a download that stalls for good
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    const starting = solo.start();
+
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(seen.at(-1)?.phase).toBe('loading');
+    expect(seen.at(-1)?.notice?.title ?? '').toMatch(/taking a while/i);
+    // …and the camera is already open behind it, which is the whole point of camera-first.
+    expect(det.device).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await starting;
+    expect(seen.at(-1)?.phase).toBe('error');
+    expect(seen.at(-1)?.message).toMatch(/did not load within/i);
+    // A remedy, and one of them needs no model at all.
+    expect(seen.at(-1)?.notice?.title).toMatch(/did not load/i);
+    expect(seen.at(-1)?.notice?.body ?? '').toMatch(/paint the cube by hand/i);
+    solo.remove();
+  });
+
+  it('takes the slow-load notice down once the model arrives', async () => {
+    // A notice stands until the situation changes, and a finished load IS the situation changing.
+    // Leaving it up means a working scanner explaining that it is still downloading.
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    let arrive = (): void => {};
+    det.loadHold = new Promise<void>((res) => {
+      arrive = () => res();
+    });
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    const starting = solo.start();
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(seen.at(-1)?.notice?.title ?? '').toMatch(/taking a while/i);
+    arrive();
+    await starting;
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(seen.at(-1)?.notice).toBeNull();
+    expect(seen.at(-1)?.phase).toBe('scanning');
+    solo.remove();
+  });
+});
+
+describe('ai-scan-panel — an instruction survives the camera reopening', () => {
+  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+
+  it('names the side it wants after a finished scan released the camera', async () => {
+    // `rescanFace` is what a tap on a CENTRE sticker does — a centre cannot be recoloured, so the
+    // side is read again. After a finished scan the camera is off, and `loop()` handled that by
+    // reopening and DROPPING the words it was given. So the one instruction the user needed was
+    // replaced by "Opening the camera…" and then by the generic idle line: the app asked for
+    // nothing, and the tap looked like it had done nothing.
+    await showAll(DEEP, [0, 0, 0, 0, 0, 0]);
+    expect(last().phase).toBe('done');
+    expect(last().device).toBeNull();
+
+    panel.rescanFace('L');
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(last().message).toMatch(/Show the ORANGE side again/);
+    expect(last().device).not.toBeNull(); // and the camera really did come back
+  });
+
+  it('drops the pending instruction when the scan is thrown away', async () => {
+    await showAll(DEEP, [0, 0, 0, 0, 0, 0]);
+    panel.rescanFace('L');
+    panel.restart();
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(last().message).not.toMatch(/Show the ORANGE side again/);
+  });
+});
+
+describe('ai-scan-panel — a settled scan is not re-solved', () => {
+  // One turn from solved: the case six unoriented photos cannot determine, so the first pass costs
+  // confirmations. Once they are spent the rotations are KNOWN, and a later correction must not
+  // spend them again.
+  const ONE_TURN = new Cube().move('U').asString();
+
+  it('a correction after a settle never re-asks for looks', async () => {
+    await showAll(ONE_TURN, [0, 0, 0, 0, 0, 0]);
+    await answerConfirms(ONE_TURN);
+    expect(completions).toEqual([ONE_TURN]);
+
+    const truth = facesOf(ONE_TURN);
+    const was = truth.F[1]!;
+    panel.setSticker('F', 1, (was + 1) % 6); // break it…
+    await vi.advanceTimersByTimeAsync(CHECK);
+    const askedWhileBroken = events.some((e) => e.phase === 'confirm' && e.confirm !== null);
+    panel.setSticker('F', 1, was); // …and put it back
+    await vi.advanceTimersByTimeAsync(CHECK);
+
+    expect(completions).toEqual([ONE_TURN, ONE_TURN]);
+    expect(last().phase).toBe('done');
+    // The searches that used to happen: the rotations were solved once and thrown away, so every
+    // re-check re-ran the 4^6 search over captures it had already settled and asked to be shown a
+    // side again — for an orientation nobody had lost.
+    const asksAfterSettle = events
+      .slice(events.findIndex((e) => e.phase === 'done'))
+      .filter((e) => e.confirm !== null);
+    expect(asksAfterSettle).toEqual([]);
+    expect(askedWhileBroken).toBe(true); // the first pass really did need looks
+  });
+});
+
+describe('ai-scan-panel — a sticker that will not settle is named', () => {
+  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+
+  it('says which sticker keeps changing instead of repeating "hold still"', async () => {
+    // The gate keys on all nine colours, so ONE sticker flickering between red and orange — the
+    // detector's known weak pair — means no run ever completes and the side is never captured.
+    // That was a dead end with no message: "hold still" for as long as the user was willing.
+    const face = [...facesOf(DEEP).U];
+    const other = (face[2]! + 1) % 6;
+    for (let i = 0; i < 12; i++) {
+      face[2] = i % 2 === 0 ? facesOf(DEEP).U[2]! : other;
+      fake.output = tensorFor(face);
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+    expect(last().captured).toHaveLength(0); // it genuinely never settles
+    expect(last().message).toMatch(/top right sticker keeps changing colour/i);
+    fake.output = null;
+  });
+
+  it('stays quiet when the whole face changes — that is a cube being turned', async () => {
+    const a = facesOf(DEEP).U;
+    const b = facesOf(DEEP).R;
+    for (let i = 0; i < 12; i++) {
+      fake.output = tensorFor(i % 2 === 0 ? a : b);
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+    expect(last().message).toMatch(/hold still/i);
+    expect(last().message).not.toMatch(/keeps changing colour/i);
+    fake.output = null;
+  });
+});
+
+describe('ai-scan-panel — the two voices agree about the same refusal', () => {
+  // A cube whose readings no further look can split: the confirmations run out before the
+  // ambiguity does, and `assembleColors` says so instead of promising a deciding look.
+  const TOO_SYMMETRIC = new Cube().move('U D R L F B').asString();
+
+  it('an ambiguous cube is not called unsolvable', async () => {
+    // The pinned notice said "This cube reads the same several ways… turn any one face"; the
+    // transient line under it said "That isn't a solvable cube yet — fix a sticker, or show a side
+    // again" — for a cube that IS solvable, every reading of which is solvable, three lines below
+    // the sentence saying so. One sentence for every branch is how that happened.
+    await showAll(TOO_SYMMETRIC, [0, 0, 0, 0, 0, 0]);
+    await answerConfirms(TOO_SYMMETRIC);
+    expect(completions).toEqual([]);
+    expect(last().notice?.title).toBe('Too symmetric to tell');
+    expect(last().message).toMatch(/reads the same several ways/i);
+    expect(last().message).toMatch(/turn any one face/i);
+    expect(last().message).not.toMatch(/isn't a solvable cube/i);
+    expect(last().captured).toHaveLength(6); // and the work survives, as every refusal must
+  });
+
+  it('a genuine misread still says so', async () => {
+    // The other branch, unchanged: the wording is per-refusal, not one line dressed differently.
+    const truth = facesOf(new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString());
+    const badF = [...truth.F];
+    badF[0] = (badF[0]! + 1) % 6;
+    const badR = [...truth.R];
+    badR[2] = (badR[2]! + 2) % 6;
+    for (const face of FACES) {
+      await show(face === 'F' ? badF : face === 'R' ? badR : truth[face]);
+    }
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(last().message).toMatch(/isn't a solvable cube yet/i);
+    expect(last().message).not.toMatch(/reads the same several ways/i);
   });
 });

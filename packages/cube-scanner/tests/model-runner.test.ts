@@ -9,13 +9,17 @@
 // at a file:// URL exercises the whole function with no wasm and no GPU. Module identity is the
 // subject of half of these, which is why the fake is a module and not an injected object.
 
-import { fileURLToPath } from 'node:url';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   GPU_BUDGET_MS,
   GPU_PROBE_RUNS,
   createModelRunner,
+  proxiedSiblingUrl,
   runtimeUrl,
 } from '../view/onnx-runtime.js';
 
@@ -273,5 +277,58 @@ describe('createModelRunner — output validation', () => {
     const runner = await runWithDims([1, 10, 8400]);
     const out = await runner(new Float32Array(3 * 640 * 640), 640);
     expect(out.anchors).toBe(8400);
+  });
+});
+
+describe('the proxied runtime module, and the fallback behind it', () => {
+  it('derives a sibling FILE for the proxied mode, keeping query and fragment', () => {
+    // The second way to get a distinct module instance. The first — a query string — is the one
+    // that ships, and it is verified against apps/web/serve.mjs; it is NOT verified against the
+    // Tauri asset protocol on Windows, Linux and Android, which are exactly the three targets where
+    // wasm is the only inference path and the proxied module is therefore the only module loaded.
+    // A protocol handler that resolves by path alone answers 404 for a name it has never seen, and
+    // that is not a slow scanner, it is a model that never loads.
+    expect(proxiedSiblingUrl('./vendor/ort.mjs')).toBe('./vendor/ort.proxied.mjs');
+    expect(proxiedSiblingUrl('https://x/y/ort.mjs?v=2')).toBe('https://x/y/ort.proxied.mjs?v=2');
+    expect(proxiedSiblingUrl('./ort.mjs#z')).toBe('./ort.proxied.mjs#z');
+    // …and it is a DIFFERENT identity from the query form, or it would buy nothing.
+    expect(proxiedSiblingUrl('./ort.mjs')).not.toBe(runtimeUrl('./ort.mjs', true));
+  });
+
+  it('falls back to the sibling file when the query form will not load', async () => {
+    // The whole fallback, end to end: a runtime whose primary URL does not exist, with the sibling
+    // beside it. The runner must still come back, on the PROXIED module — a wasm run left unproxied
+    // on the page's thread is the one arrangement the proxy exists to prevent.
+    const noted = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const dir = mkdtempSync(join(tmpdir(), 'ort-sibling-'));
+    try {
+      const absent = join(dir, `absent-${++caseId}.mjs`);
+      copyFileSync(FAKE_ORT, `${absent.slice(0, -4)}.proxied.mjs`);
+      const runner = await createModelRunner('model.onnx', {
+        ortUrl: pathToFileURL(absent).href,
+        numThreads: 1,
+      });
+      expect(runner.providers).toEqual(['wasm']);
+      expect(instances().at(-1)?.proxy).toBe(true);
+      expect(noted).toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      noted.mockRestore();
+    }
+  });
+
+  it('reports the ORIGINAL failure when neither form loads', async () => {
+    // A caller told "ort.proxied.mjs not found" would go looking for a file the app has never
+    // depended on. What actually happened is that the primary URL did not load, and that is what
+    // has to escape.
+    const dir = mkdtempSync(join(tmpdir(), 'ort-neither-'));
+    try {
+      const absent = pathToFileURL(join(dir, `gone-${++caseId}.mjs`)).href;
+      await expect(
+        createModelRunner('model.onnx', { ortUrl: absent, numThreads: 1 }),
+      ).rejects.toThrow(/gone-\d+\.mjs/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

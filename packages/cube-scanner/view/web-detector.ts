@@ -5,14 +5,24 @@
 // It is the implementation every build has — the Tauri shells on Windows and Linux run it too, and
 // the browser build is the dev and test surface for everything downstream of `next()`.
 
-import { type CameraOptions, type FrameSource, listCameras, openCamera } from '../src/camera.js';
-import type { Detector, ModelOutput } from '../src/detector.js';
+import {
+  type CameraOptions,
+  FrameNotReadyError,
+  type FrameSource,
+  listCameras,
+  openCamera,
+} from '../src/camera.js';
+import type { Detector, DetectorSource, ModelOutput } from '../src/detector.js';
 import { preprocess } from '../src/onnx-detect.js';
 import { type ModelRunner, createModelRunner } from './onnx-runtime.js';
 
 export class WebDetector implements Detector {
   private source: FrameSource | null = null;
   private run: ModelRunner | null = null;
+  /** The model URL `run` was built for — see `load`. */
+  private loadedUrl: string | null = null;
+  /** A `load()` still in flight, so a second caller waits on it rather than building a rival. */
+  private loading: Promise<void> | null = null;
   private opening: AbortController | null = null;
 
   /**
@@ -24,12 +34,39 @@ export class WebDetector implements Detector {
    * @param modelUrl read at `load()` time, so a host may set it after construction.
    */
   constructor(
-    private readonly video: () => HTMLVideoElement,
-    private readonly modelUrl: () => string,
+    private video: () => HTMLVideoElement,
+    private modelUrl: () => string,
   ) {}
 
   get device() {
     return this.source?.device ?? null;
+  }
+
+  /**
+   * The provider list the loaded runner was created with, or null before the model has loaded.
+   *
+   * What was ASKED FOR, which is what the timing fallback changes — never a claim about which
+   * provider executed each node. `ModelRunner.providers` documents the distinction at length.
+   * A provider may be given as an object with a name, so it is reduced to names here.
+   */
+  get providers(): readonly string[] | null {
+    const run = this.run;
+    if (!run) return null;
+    return run.providers.map((p) => (typeof p === 'string' ? p : p.name));
+  }
+
+  /**
+   * Point this detector at a different owner's `<video>` and model URL.
+   *
+   * The park (see `pickDetector`) hands one detector to a second `<ai-scan-panel>` so the page
+   * keeps ONE InferenceSession across screen visits — and the getters this was built with close
+   * over the FIRST panel's shadow root. Without this the reused detector would open a camera into
+   * a detached video element nobody can see, which is a scan that works everywhere except on
+   * screen. `load()` notices the model URL changing on its own.
+   */
+  retarget(source: DetectorSource): void {
+    this.video = source.video;
+    this.modelUrl = source.modelUrl;
   }
 
   async use(opts: CameraOptions = {}): Promise<void> {
@@ -45,9 +82,31 @@ export class WebDetector implements Detector {
     }
   }
 
+  /**
+   * Load the model, ONCE per model URL.
+   *
+   * Two guards, and both are the same lesson from different directions — a session is the most
+   * expensive thing this class owns, so nothing may build a second one by accident:
+   *
+   *   - IN FLIGHT. `if (this.run) return` only catches a load that has FINISHED. Two overlapping
+   *     calls — the panel's slow-load timeout abandoning the wait and the user pressing Start —
+   *     both saw a null `run` and both created a session, and the first one to finish was then
+   *     unreachable for the life of the page.
+   *   - PER URL. A parked detector can be handed to an owner with a different `modelUrl`, and
+   *     returning early there would silently keep serving the previous owner's model. The old
+   *     runner is released before the new one is built.
+   */
   async load(): Promise<void> {
-    if (this.run) return;
     const modelUrl = this.modelUrl();
+    if (this.run && this.loadedUrl === modelUrl) return;
+    if (this.loading) return this.loading;
+    this.loading = this.loadModel(modelUrl).finally(() => {
+      this.loading = null;
+    });
+    return this.loading;
+  }
+
+  private async loadModel(modelUrl: string): Promise<void> {
     // onnxruntime-web resolves wasmPaths inconsistently: the .wasm relative to the document, but the
     // dynamically-imported .mjs glue relative to THIS bundle (…/vendor/) — so a relative "./vendor/"
     // doubles into "/vendor/vendor/…mjs" and a relative "./" puts the .wasm at the page root (404).
@@ -59,7 +118,11 @@ export class WebDetector implements Detector {
     // make that worker load the panel — which registers a custom element and dies in a worker,
     // taking inference back onto the main thread with it.
     const ortUrl = `${wasmPaths}ort.mjs`;
-    this.run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+    const run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+    const previous = this.run;
+    this.run = run;
+    this.loadedUrl = modelUrl;
+    if (previous) void previous.dispose().catch(() => {});
   }
 
   async next(): Promise<ModelOutput | null> {
@@ -68,8 +131,14 @@ export class WebDetector implements Detector {
     let frame: ReturnType<FrameSource['grab']>;
     try {
       frame = this.source.grab();
-    } catch {
-      return null; // the camera has opened but has no dimensions yet — a frame will come
+    } catch (err) {
+      // EXACTLY the "no frame yet" case, and nothing else. A bare `catch { return null }` turned
+      // every failure here into "try again next tick": a canvas that could not be allocated, a
+      // `getImageData` refused by a tainted or oversized surface, a video element the owner
+      // detached. The scanner then idled forever on "Show any side" with a camera that was never
+      // going to deliver — the fail-loud rule suspended for the app's most important surface.
+      if (err instanceof FrameNotReadyError) return null;
+      throw err;
     }
     const pre = preprocess(frame);
     return this.run(pre.data, pre.imgsz);
@@ -97,6 +166,7 @@ export class WebDetector implements Detector {
     // longer hold.
     const run = this.run;
     this.run = null;
+    this.loadedUrl = null;
     void run?.dispose().catch(() => {});
   }
 }

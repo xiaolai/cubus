@@ -5,7 +5,11 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __commonJS = (cb, mod) => function __require() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -32,7 +36,7 @@ var require_cube = __commonJS({
       [U, R, F, D, L, B] = [0, 1, 2, 3, 4, 5];
       [URF, UFL, ULB, UBR, DFR, DLF, DBL, DRB] = [0, 1, 2, 3, 4, 5, 6, 7];
       [UR, UF, UL, UB, DR, DF, DL, DB, FR, FL, BL, BR] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-      [centerFacelet, cornerFacelet, edgeFacelet] = function() {
+      [centerFacelet, cornerFacelet, edgeFacelet] = (function() {
         var _B, _D, _F, _L, _R, _U;
         _U = function(x) {
           return x - 1;
@@ -157,11 +161,11 @@ var require_cube = __commonJS({
             ]
           ]
         ];
-      }();
+      })();
       centerColor = ["U", "R", "F", "D", "L", "B"];
       cornerColor = [["U", "R", "F"], ["U", "F", "L"], ["U", "L", "B"], ["U", "B", "R"], ["D", "F", "R"], ["D", "L", "F"], ["D", "B", "L"], ["D", "R", "B"]];
       edgeColor = [["U", "R"], ["U", "F"], ["U", "L"], ["U", "B"], ["D", "R"], ["D", "F"], ["D", "L"], ["D", "B"], ["F", "R"], ["F", "L"], ["B", "L"], ["B", "R"]];
-      Cube3 = function() {
+      Cube3 = (function() {
         var faceNames, faceNums, parseAlg;
         class Cube4 {
           constructor(other) {
@@ -171,46 +175,46 @@ var require_cube = __commonJS({
             } else {
               this.identity();
             }
-            this.newCenter = function() {
+            this.newCenter = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 5; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
-            this.newCp = function() {
+            })();
+            this.newCp = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 7; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
-            this.newEp = function() {
+            })();
+            this.newEp = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 11; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
-            this.newCo = function() {
+            })();
+            this.newCo = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 7; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
-            this.newEo = function() {
+            })();
+            this.newEo = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 11; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
+            })();
           }
           init(state) {
             this.center = state.center.slice(0);
@@ -223,23 +227,23 @@ var require_cube = __commonJS({
             var x;
             this.center = [0, 1, 2, 3, 4, 5];
             this.cp = [0, 1, 2, 3, 4, 5, 6, 7];
-            this.co = function() {
+            this.co = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 7; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
+            })();
             this.ep = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-            return this.eo = function() {
+            return this.eo = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 11; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
+            })();
           }
           toJSON() {
             return {
@@ -448,7 +452,7 @@ var require_cube = __commonJS({
           }
           static inverse(arg) {
             var face, k, len, move, power, result, str;
-            result = function() {
+            result = (function() {
               var k2, len2, ref, results;
               ref = parseAlg(arg);
               results = [];
@@ -459,7 +463,7 @@ var require_cube = __commonJS({
                 results.push(face * 3 + -(power - 1) + 1);
               }
               return results;
-            }();
+            })();
             result.reverse();
             if (typeof arg === "string") {
               str = "";
@@ -484,7 +488,7 @@ var require_cube = __commonJS({
           }
         }
         ;
-        Cube4.prototype.randomize = function() {
+        Cube4.prototype.randomize = (function() {
           var arePermutationsValid, generateValidRandomOrientation, generateValidRandomPermutation, getNumSwaps, isOrientationValid, randint, randomizeOrientation, result, shuffle;
           randint = function(min, max) {
             return min + Math.floor(Math.random() * (max - min + 1));
@@ -502,14 +506,14 @@ var require_cube = __commonJS({
           getNumSwaps = function(arr) {
             var cur, cycleLength, i, k, numSwaps, ref, seen, x;
             numSwaps = 0;
-            seen = function() {
+            seen = (function() {
               var k2, ref2, results;
               results = [];
               for (x = k2 = 0, ref2 = arr.length - 1; 0 <= ref2 ? k2 <= ref2 : k2 >= ref2; x = 0 <= ref2 ? ++k2 : --k2) {
                 results.push(false);
               }
               return results;
-            }();
+            })();
             while (true) {
               cur = -1;
               for (i = k = 0, ref = arr.length - 1; 0 <= ref ? k <= ref : k >= ref; i = 0 <= ref ? ++k : --k) {
@@ -572,7 +576,7 @@ var require_cube = __commonJS({
             return this;
           };
           return result;
-        }();
+        })();
         Cube4.moves = [
           {
             // U
@@ -1151,7 +1155,7 @@ var require_cube = __commonJS({
         Cube4.moves.push(new Cube4().move("L M").toJSON());
         Cube4.moves.push(new Cube4().move("B S'").toJSON());
         return Cube4;
-      }.call(this);
+      }).call(this);
       if (typeof module !== "undefined" && module !== null) {
         module.exports = Cube3;
       } else {
@@ -1231,14 +1235,14 @@ var require_solve = __commonJS({
           maxAll = 11;
           permName = "ep";
         }
-        our = function() {
+        our = (function() {
           var m, ref, results;
           results = [];
           for (i = m = 0, ref = maxOur; 0 <= ref ? m <= ref : m >= ref; i = 0 <= ref ? ++m : --m) {
             results.push(0);
           }
           return results;
-        }();
+        })();
         return function(index) {
           var a, b, c, j, k, m, o, p, perm, q, ref, ref1, ref10, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9, t, u, w, x, y, z;
           if (index != null) {
@@ -1423,7 +1427,7 @@ var require_solve = __commonJS({
         }
         return results;
       };
-      mergeURtoDF = function() {
+      mergeURtoDF = (function() {
         var a, b;
         a = new Cube3();
         b = new Cube3();
@@ -1442,7 +1446,7 @@ var require_solve = __commonJS({
           }
           return b.URtoDF();
         };
-      }();
+      })();
       N_TWIST = 2187;
       N_FLIP = 2048;
       N_PARITY = 2;
@@ -1478,14 +1482,14 @@ var require_solve = __commonJS({
       Cube3.computeMoveTables = function(...tables) {
         var len, m, name, scope, size, tableName;
         if (tables.length === 0) {
-          tables = function() {
+          tables = (function() {
             var results;
             results = [];
             for (name in moveTableParams) {
               results.push(name);
             }
             return results;
-          }();
+          })();
         }
         for (m = 0, len = tables.length; m < len; m++) {
           tableName = tables[m];
@@ -1493,21 +1497,21 @@ var require_solve = __commonJS({
             continue;
           }
           if (tableName === "mergeURtoDF") {
-            this.moveTables.mergeURtoDF = function() {
+            this.moveTables.mergeURtoDF = (function() {
               var UBtoDF, URtoUL, o, results;
               results = [];
               for (URtoUL = o = 0; o <= 335; URtoUL = ++o) {
-                results.push(function() {
+                results.push((function() {
                   var p, results1;
                   results1 = [];
                   for (UBtoDF = p = 0; p <= 335; UBtoDF = ++p) {
                     results1.push(mergeURtoDF(URtoUL, UBtoDF));
                   }
                   return results1;
-                }());
+                })());
               }
               return results;
-            }();
+            })();
           } else {
             [scope, size] = moveTableParams[tableName];
             this.moveTables[tableName] = computeMoveTable(scope, tableName, size);
@@ -1516,7 +1520,7 @@ var require_solve = __commonJS({
         return this;
       };
       allMoves1 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
-      nextMoves1 = function() {
+      nextMoves1 = (function() {
         var face, lastFace, m, next, o, p, power, results;
         results = [];
         for (lastFace = m = 0; m <= 5; lastFace = ++m) {
@@ -1531,9 +1535,9 @@ var require_solve = __commonJS({
           results.push(next);
         }
         return results;
-      }();
+      })();
       allMoves2 = [0, 1, 2, 4, 7, 9, 10, 11, 13, 16];
-      nextMoves2 = function() {
+      nextMoves2 = (function() {
         var face, lastFace, len, m, next, o, p, power, powers, results;
         results = [];
         for (lastFace = m = 0; m <= 5; lastFace = ++m) {
@@ -1551,7 +1555,7 @@ var require_solve = __commonJS({
           results.push(next);
         }
         return results;
-      }();
+      })();
       pruning = function(table, index, value2) {
         var pos, shift, slot;
         pos = index % 8;
@@ -1567,14 +1571,14 @@ var require_solve = __commonJS({
       };
       computePruningTable = function(phase, size, currentCoords, nextIndex) {
         var current, depth, done, index, len, m, move, moves, next, o, ref, table, x;
-        table = function() {
+        table = (function() {
           var m2, ref2, results;
           results = [];
           for (x = m2 = 0, ref2 = Math.ceil(size / 8) - 1; 0 <= ref2 ? m2 <= ref2 : m2 >= ref2; x = 0 <= ref2 ? ++m2 : --m2) {
             results.push(4294967295);
           }
           return results;
-        }();
+        })();
         if (phase === 1) {
           moves = allMoves1;
         } else {
@@ -1700,14 +1704,14 @@ var require_solve = __commonJS({
       Cube3.computePruningTables = function(...tables) {
         var len, m, name, params, tableName;
         if (tables.length === 0) {
-          tables = function() {
+          tables = (function() {
             var results;
             results = [];
             for (name in pruningTableParams) {
               results.push(name);
             }
             return results;
-          }();
+          })();
         }
         for (m = 0, len = tables.length; m < len; m++) {
           tableName = tables[m];
@@ -1725,7 +1729,7 @@ var require_solve = __commonJS({
       };
       Cube3.prototype.solveUpright = function(maxDepth = 22) {
         var State, freeStates, moveNames, phase1, phase1search, phase2, phase2search, solution, state, x;
-        moveNames = function() {
+        moveNames = (function() {
           var face, faceName, m, o, power, powerName, result;
           faceName = ["U", "R", "F", "D", "L", "B"];
           powerName = ["", "2", "'"];
@@ -1736,7 +1740,7 @@ var require_solve = __commonJS({
             }
           }
           return result;
-        }();
+        })();
         State = class State {
           constructor(cube) {
             this.parent = null;
@@ -1925,14 +1929,14 @@ var require_solve = __commonJS({
             }
           }
         };
-        freeStates = function() {
+        freeStates = (function() {
           var m, ref, results;
           results = [];
           for (x = m = 0, ref = maxDepth + 1; 0 <= ref ? m <= ref : m >= ref; x = 0 <= ref ? ++m : --m) {
             results.push(new State());
           }
           return results;
-        }();
+        })();
         state = freeStates.pop().init(this);
         phase1search(state);
         freeStates.push(state);
@@ -2361,6 +2365,7 @@ var TOP_NEIGHBOUR = {
   B: "U"
 };
 var CONFIRM_TOLERANCE = 2;
+var LOW_CONFIDENCE_THRESHOLD = 0.15;
 function cubejsRoundTrips(facelets) {
   try {
     return import_cubejs2.default.fromString(facelets).asString() === facelets;
@@ -2369,14 +2374,7 @@ function cubejsRoundTrips(facelets) {
   }
 }
 function reject(reason, extra = {}) {
-  return {
-    facelets: "",
-    valid: false,
-    confidence: 0,
-    lowConfidence: [...Array(54).keys()],
-    reason,
-    ...extra
-  };
+  return { facelets: "", valid: false, reason, ...extra };
 }
 function matchingRotations(original, confirmed) {
   if (original.colors[4] !== confirmed.colors[4]) return /* @__PURE__ */ new Set();
@@ -2478,7 +2476,7 @@ function summariseConfidence(conf, threshold) {
   });
   return { confidence: min, lowConfidence };
 }
-function assemblePainted(faces, threshold = 0.15) {
+function assemblePainted(faces, threshold = LOW_CONFIDENCE_THRESHOLD) {
   const centreOwner = buildCentreOwner(faces);
   if (!(centreOwner instanceof Map)) return centreOwner;
   const letters = [];
@@ -2496,7 +2494,7 @@ function assemblePainted(faces, threshold = 0.15) {
   const conf = FACES.flatMap((f) => faces[f].confidence);
   return { facelets, valid: true, ...summariseConfidence(conf, threshold) };
 }
-function assembleColors(faces, threshold = 0.15, confirmed = {}) {
+function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}) {
   const centreOwner = buildCentreOwner(faces);
   if (!(centreOwner instanceof Map)) return centreOwner;
   const all = solvableReadings(faces, centreOwner);
@@ -2576,6 +2574,7 @@ function assembleColors(faces, threshold = 0.15, confirmed = {}) {
 }
 
 // src/onnx-postprocess.ts
+var MIN_STICKER_CONFIDENCE = 0.25;
 function decodeDetections(data, numClasses, numAnchors, confThreshold = 0.25) {
   const rows = 4 + numClasses;
   if (data.length < rows * numAnchors) {
@@ -2629,22 +2628,38 @@ function nms(dets, iouThreshold = 0.45) {
   }
   return kept;
 }
+var MAX_STEP = 2.5;
+var MAX_COLUMN_SPREAD = 3;
+var MAX_AREA_RATIO = 5;
 function toGrid(nine) {
   const byY = [...nine].sort((a, b) => a.cy - b.cy);
   const rows = [byY.slice(0, 3), byY.slice(3, 6), byY.slice(6, 9)].map(
     (r) => r.sort((a, b) => a.cx - b.cx)
   );
   const size = nine.reduce((s, d) => s + (d.w + d.h) / 2, 0) / 9;
+  const areas = nine.map((d) => d.w * d.h);
+  if (Math.max(...areas) > Math.min(...areas) * MAX_AREA_RATIO) return null;
   for (const row of rows) {
     if (Math.max(...row.map((d) => d.cy)) - Math.min(...row.map((d) => d.cy)) > size) return null;
   }
+  for (const c of [0, 1, 2]) {
+    const xs = rows.map((r) => r[c].cx);
+    if (Math.max(...xs) - Math.min(...xs) > size * MAX_COLUMN_SPREAD) return null;
+  }
   const rowY = rows.map((r) => r.reduce((s, d) => s + d.cy, 0) / 3);
   const colX = [0, 1, 2].map((c) => rows.reduce((s, r) => s + r[c].cx, 0) / 3);
-  if (rowY[1] - rowY[0] < size * 0.4 || rowY[2] - rowY[1] < size * 0.4) return null;
-  if (colX[1] - colX[0] < size * 0.4 || colX[2] - colX[1] < size * 0.4) return null;
+  const steps = [
+    rowY[1] - rowY[0],
+    rowY[2] - rowY[1],
+    colX[1] - colX[0],
+    colX[2] - colX[1]
+  ];
+  for (const step of steps) {
+    if (step < size * 0.4 || step > size * MAX_STEP) return null;
+  }
   return rows.flat();
 }
-function fitFace(dets, minConf = 0.25) {
+function fitFace(dets, minConf = MIN_STICKER_CONFIDENCE) {
   const good = dets.filter((d) => d.confidence >= minConf && d.classId >= 0 && d.classId < 6);
   if (good.length === 0) return { ok: false, reason: "NO_FACE" };
   if (good.length < 9) return { ok: false, reason: "PARTIAL_FACE" };
@@ -2699,10 +2714,17 @@ var DETECT_ROWS = 4 + NUM_CLASSES;
 function fitFromOutput(output, opts = {}) {
   const {
     numClasses = NUM_CLASSES,
-    confThreshold = 0.25,
+    confThreshold = MIN_STICKER_CONFIDENCE,
     iouThreshold = 0.45,
-    minConf = 0.25
+    minConf = MIN_STICKER_CONFIDENCE
   } = opts;
+  const expected = 4 + numClasses;
+  if (output.rows !== expected) {
+    const why = output.rows >= output.anchors ? ` \u2014 ${output.rows} rows against ${output.anchors} anchors is the transpose of a detect head` : "";
+    throw new Error(
+      `model output has ${output.rows} rows, not the ${expected} a ${numClasses}-class detect head produces${why}`
+    );
+  }
   const dets = nms(
     decodeDetections(output.data, numClasses, output.anchors, confThreshold),
     iouThreshold
@@ -2727,6 +2749,8 @@ var NativeDetector = class {
     this.invoke = invoke;
     this.computeUnits = computeUnits;
   }
+  invoke;
+  computeUnits;
   dev = null;
   loaded = false;
   /** Bumped by `stop()`, so an open still crossing the bridge knows it has been cancelled. */
@@ -2762,10 +2786,25 @@ var NativeDetector = class {
     if (cancelled()) abort();
     this.dev = info ?? { deviceId: opts.deviceId ?? "", label: "Camera" };
   }
+  /**
+   * Compile the model, ONCE.
+   *
+   * Two guards for one rule. `loaded` covers a second call after the first finished — which the
+   * page-level detector park makes ordinary, since a re-mounted panel asks its parked detector to
+   * load again and must not pay for a second CoreML/LiteRT compile. `loading` covers two calls
+   * that OVERLAP, which the panel's slow-load timeout can produce: without it both crossed the
+   * bridge and the plugin compiled twice.
+   */
+  loading = null;
   async load() {
     if (this.loaded) return;
-    await this.invoke(`${P}load_model`, { computeUnits: this.computeUnits });
-    this.loaded = true;
+    if (this.loading) return this.loading;
+    this.loading = this.invoke(`${P}load_model`, { computeUnits: this.computeUnits }).then(() => {
+      this.loaded = true;
+    }).finally(() => {
+      this.loading = null;
+    });
+    return this.loading;
   }
   async next() {
     const reply = await this.invoke(`${P}next_detection`);
@@ -2802,10 +2841,18 @@ function decodeTensorResponse(input) {
     );
   }
   const data = new Float32Array(buf, 8, count);
-  return { data, anchors };
+  return { data, anchors, rows };
 }
 
 // src/camera.ts
+var FrameNotReadyError = class extends Error {
+  constructor() {
+    super("camera not ready: video has no dimensions yet");
+    this.name = "FrameNotReadyError";
+  }
+};
+var IDEAL_WIDTH = 1280;
+var IDEAL_HEIGHT = 720;
 async function listCameras() {
   const devices = await navigator.mediaDevices.enumerateDevices();
   return devices.filter((d) => d.kind === "videoinput").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
@@ -2837,8 +2884,8 @@ async function openCamera(video, opts = {}, signal) {
   const videoConstraints = {};
   if (opts.deviceId) videoConstraints.deviceId = { exact: opts.deviceId };
   else if (opts.facingMode) videoConstraints.facingMode = opts.facingMode;
-  if (opts.width) videoConstraints.width = { ideal: opts.width };
-  if (opts.height) videoConstraints.height = { ideal: opts.height };
+  videoConstraints.width = { ideal: opts.width ?? IDEAL_WIDTH };
+  videoConstraints.height = { ideal: opts.height ?? IDEAL_HEIGHT };
   const stream = await navigator.mediaDevices.getUserMedia({
     video: videoConstraints,
     audio: false
@@ -2868,9 +2915,9 @@ async function openCamera(video, opts = {}, signal) {
       grab() {
         const w = video.videoWidth;
         const h = video.videoHeight;
-        if (w === 0 || h === 0) throw new Error("camera not ready: video has no dimensions yet");
-        canvas.width = w;
-        canvas.height = h;
+        if (w === 0 || h === 0) throw new FrameNotReadyError();
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
         ctx.drawImage(video, 0, 0, w, h);
         const img = ctx.getImageData(0, 0, w, h);
         return { data: img.data, width: img.width, height: img.height };
@@ -2914,6 +2961,32 @@ var runtimeUrl = (url, proxied) => {
   const [addr = "", hash = ""] = url.split(/(?=#)/, 2);
   return `${addr}${addr.includes("?") ? "&" : "?"}cubus-runtime=proxied${hash}`;
 };
+var proxiedSiblingUrl = (url) => {
+  const match = /^([^?#]*?)([^/?#]+)(\?[^#]*)?(#.*)?$/.exec(url);
+  if (!match) return url;
+  const [, dir = "", file = "", query = "", hash = ""] = match;
+  const dot = file.lastIndexOf(".");
+  const named = dot > 0 ? `${file.slice(0, dot)}.proxied${file.slice(dot)}` : `${file}.proxied`;
+  return `${dir}${named}${query}${hash}`;
+};
+async function loadRuntime(ortUrl, proxied) {
+  if (!proxied) return loadOrt(ortUrl);
+  try {
+    return await loadOrt(runtimeUrl(ortUrl, true));
+  } catch (err) {
+    const sibling = proxiedSiblingUrl(ortUrl);
+    if (sibling === ortUrl) throw err;
+    try {
+      const ort = await loadOrt(sibling);
+      console.info(
+        `[cubus] the runtime's query-string identity did not load here \u2014 using ${sibling} instead`
+      );
+      return ort;
+    } catch {
+      throw err;
+    }
+  }
+}
 var GPU_BUDGET_MS = 400;
 var GPU_PROBE_RUNS = 2;
 var SOFTWARE_RENDERERS = [
@@ -3010,7 +3083,7 @@ function validatedRun(ort, session, inputName, outputName) {
         `model output '${outputName}' holds ${out.data.length} floats, not the ${rows * anchors} its dims ${shape} promise`
       );
     }
-    return { data: out.data, anchors };
+    return { data: out.data, anchors, rows };
   };
 }
 async function createModelRunner(modelUrl, opts = {}) {
@@ -3018,7 +3091,7 @@ async function createModelRunner(modelUrl, opts = {}) {
   const executionProviders = opts.executionProviders ?? await preferredProviders();
   const gpu = usesGpu(executionProviders);
   const ortUrl = opts.ortUrl ?? "./ort.mjs";
-  const ort = await loadOrt(runtimeUrl(ortUrl, !gpu));
+  const ort = await loadRuntime(ortUrl, !gpu);
   const session = await serialise(ort, async () => {
     ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
     ort.env.wasm.proxy = !gpu;
@@ -3087,11 +3160,42 @@ var WebDetector = class {
     this.video = video;
     this.modelUrl = modelUrl;
   }
+  video;
+  modelUrl;
   source = null;
   run = null;
+  /** The model URL `run` was built for — see `load`. */
+  loadedUrl = null;
+  /** A `load()` still in flight, so a second caller waits on it rather than building a rival. */
+  loading = null;
   opening = null;
   get device() {
     return this.source?.device ?? null;
+  }
+  /**
+   * The provider list the loaded runner was created with, or null before the model has loaded.
+   *
+   * What was ASKED FOR, which is what the timing fallback changes — never a claim about which
+   * provider executed each node. `ModelRunner.providers` documents the distinction at length.
+   * A provider may be given as an object with a name, so it is reduced to names here.
+   */
+  get providers() {
+    const run = this.run;
+    if (!run) return null;
+    return run.providers.map((p) => typeof p === "string" ? p : p.name);
+  }
+  /**
+   * Point this detector at a different owner's `<video>` and model URL.
+   *
+   * The park (see `pickDetector`) hands one detector to a second `<ai-scan-panel>` so the page
+   * keeps ONE InferenceSession across screen visits — and the getters this was built with close
+   * over the FIRST panel's shadow root. Without this the reused detector would open a camera into
+   * a detached video element nobody can see, which is a scan that works everywhere except on
+   * screen. `load()` notices the model URL changing on its own.
+   */
+  retarget(source) {
+    this.video = source.video;
+    this.modelUrl = source.modelUrl;
   }
   async use(opts = {}) {
     this.stop();
@@ -3104,12 +3208,38 @@ var WebDetector = class {
       if (this.opening === opening) this.opening = null;
     }
   }
+  /**
+   * Load the model, ONCE per model URL.
+   *
+   * Two guards, and both are the same lesson from different directions — a session is the most
+   * expensive thing this class owns, so nothing may build a second one by accident:
+   *
+   *   - IN FLIGHT. `if (this.run) return` only catches a load that has FINISHED. Two overlapping
+   *     calls — the panel's slow-load timeout abandoning the wait and the user pressing Start —
+   *     both saw a null `run` and both created a session, and the first one to finish was then
+   *     unreachable for the life of the page.
+   *   - PER URL. A parked detector can be handed to an owner with a different `modelUrl`, and
+   *     returning early there would silently keep serving the previous owner's model. The old
+   *     runner is released before the new one is built.
+   */
   async load() {
-    if (this.run) return;
     const modelUrl = this.modelUrl();
+    if (this.run && this.loadedUrl === modelUrl) return;
+    if (this.loading) return this.loading;
+    this.loading = this.loadModel(modelUrl).finally(() => {
+      this.loading = null;
+    });
+    return this.loading;
+  }
+  async loadModel(modelUrl) {
     const wasmPaths = new URL(modelUrl.replace(/[^/]+$/, "") || "./", document.baseURI).href;
     const ortUrl = `${wasmPaths}ort.mjs`;
-    this.run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+    const run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+    const previous = this.run;
+    this.run = run;
+    this.loadedUrl = modelUrl;
+    if (previous) void previous.dispose().catch(() => {
+    });
   }
   async next() {
     if (!this.source) throw new Error("no camera open \u2014 call use() first");
@@ -3117,8 +3247,9 @@ var WebDetector = class {
     let frame;
     try {
       frame = this.source.grab();
-    } catch {
-      return null;
+    } catch (err) {
+      if (err instanceof FrameNotReadyError) return null;
+      throw err;
     }
     const pre = preprocess(frame);
     return this.run(pre.data, pre.imgsz);
@@ -3136,22 +3267,47 @@ var WebDetector = class {
     this.stop();
     const run = this.run;
     this.run = null;
+    this.loadedUrl = null;
     void run?.dispose().catch(() => {
     });
   }
 };
 
 // view/pick-detector.ts
+var parked = null;
+function parkDetector(choice) {
+  choice.detector.stop();
+  if (parked && parked.detector !== choice.detector) {
+    choice.detector.dispose?.();
+    return;
+  }
+  parked = choice;
+}
+function parkedDetector() {
+  return parked;
+}
+function disposeParkedDetector() {
+  const kept = parked;
+  parked = null;
+  kept?.detector.dispose?.();
+  kept?.detector.stop();
+}
 function absentCommand(err) {
   const text = typeof err === "string" ? err : err?.message ?? "";
   return /not found|unknown command/i.test(text);
 }
 async function pickDetector(opts) {
+  const kept = parked;
+  if (kept) {
+    parked = null;
+    kept.detector.retarget?.(opts);
+    return kept;
+  }
   const invoke = globalThis.__TAURI__?.core?.invoke;
   if (invoke) {
     try {
       if (await invoke(`${CUBE_VISION}probe`) === true) {
-        return { detector: new NativeDetector(invoke), runtime: "native" };
+        return { detector: new NativeDetector(invoke), runtime: "native", modelLoaded: false };
       }
     } catch (err) {
       (absentCommand(err) ? console.info : console.warn)(
@@ -3160,13 +3316,25 @@ async function pickDetector(opts) {
       );
     }
   }
-  return { detector: new WebDetector(opts.video, opts.modelUrl), runtime: "web" };
+  return {
+    detector: new WebDetector(opts.video, opts.modelUrl),
+    runtime: "web",
+    modelLoaded: false
+  };
 }
 
 // view/camera-session.ts
 var CameraSession = class {
   detectorPromise = null;
   detector = null;
+  /**
+   * Did this session's detector come from `pickDetector`, i.e. may it go back to the page's park?
+   *
+   * An INJECTED one may not. `use()` is the test seam and the native host's, and a fake handed in
+   * by one case must never reach a page-wide slot where the next case would be given it — the
+   * failure mode is a suite that passes alone and fails in a file.
+   */
+  parkable = false;
   timer = null;
   generation = 0;
   epoch = 0;
@@ -3227,10 +3395,34 @@ var CameraSession = class {
     this.stopLoop();
     this.detectorChoice++;
     this.detector = detector;
+    this.parkable = false;
     this.detectorPromise = Promise.resolve(detector);
     this.runtime = runtime;
     this.modelLoaded = false;
     this.device = null;
+  }
+  /**
+   * Hand the detector back to the page, so the next mount reuses its session and its model.
+   *
+   * Called when the OWNER goes away — `<ai-scan-panel>`'s disconnectedCallback — and not from
+   * `close()`, which runs on every `stop()` and would give the detector away while the same panel
+   * still intends to scan with it. `parkDetector` stops the camera; the model survives.
+   *
+   * The session forgets it either way: a parked detector is no longer this session's to drive, and
+   * a later `ensureDetector()` must ask the page for one afresh rather than resolve a promise
+   * holding the one it gave back.
+   */
+  park() {
+    this.close();
+    const detector = this.detector;
+    const parkable = this.parkable;
+    this.detector = null;
+    this.detectorPromise = null;
+    this.parkable = false;
+    const runtime = this.runtime;
+    const modelLoaded = this.modelLoaded;
+    this.modelLoaded = false;
+    if (detector && parkable && runtime) parkDetector({ detector, runtime, modelLoaded });
   }
   /**
    * The detector, chosen once and kept for the session's life, so the model survives a stop()/
@@ -3239,16 +3431,20 @@ var CameraSession = class {
   ensureDetector(video, modelUrl) {
     if (this.detectorPromise === null) {
       const choice = this.detectorChoice;
-      this.detectorPromise = pickDetector({ video, modelUrl }).then(({ detector, runtime }) => {
-        if (choice !== this.detectorChoice) {
-          detector.dispose?.();
-          detector.stop();
-          return this.detector ?? detector;
+      this.detectorPromise = pickDetector({ video, modelUrl }).then(
+        ({ detector, runtime, modelLoaded }) => {
+          if (choice !== this.detectorChoice) {
+            detector.dispose?.();
+            detector.stop();
+            return this.detector ?? detector;
+          }
+          this.detector = detector;
+          this.parkable = true;
+          this.runtime = runtime;
+          this.modelLoaded = modelLoaded;
+          return detector;
         }
-        this.detector = detector;
-        this.runtime = runtime;
-        return detector;
-      });
+      );
     }
     return this.detectorPromise;
   }
@@ -3260,7 +3456,7 @@ var CameraSession = class {
   /** Stop ticking. Does not touch the camera — `restart` keeps the lens alive on purpose. */
   stopLoop() {
     if (this.timer !== null) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
   }
@@ -3272,11 +3468,30 @@ var CameraSession = class {
    * `dropFramesInFlight()` the one caller had to remember alongside this, which is a two-call
    * protocol enforced by nothing: a second caller restarting the loop directly would make an
    * inference from the previous loop pass `freshFrame` again the instant the new timer existed.
+   *
+   * A RE-ARMED TIMEOUT, not an interval, because the cadence is a function rather than a constant:
+   * the panel ticks as fast as the runtime it actually got can answer, and that is known only
+   * after the first inference. `setInterval` fixes its period when it is created, so following a
+   * measurement would have meant tearing the loop down and rebuilding it on every change — which
+   * bumps the epoch, and an epoch bump mid-scan discards the inference in flight.
+   *
+   * Re-armed BEFORE the tick runs, so a `stopLoop()` from inside the tick — `scheduleCheck` does
+   * exactly that — clears the timer that was just set instead of being overwritten by it.
    */
-  beginLoop(ms, tick) {
+  beginLoop(delay, tick) {
     this.stopLoop();
     this.epoch++;
-    this.timer = setInterval(tick, ms);
+    const next = typeof delay === "function" ? delay : () => delay;
+    const arm = () => {
+      this.timer = setTimeout(
+        () => {
+          arm();
+          tick();
+        },
+        Math.max(1, next())
+      );
+    };
+    arm();
   }
   /** Supersede everything in flight, stop ticking, and release the camera. */
   close() {
@@ -3346,6 +3561,8 @@ var Stillness = class {
     this.reads = reads;
     this.ms = ms;
   }
+  reads;
+  ms;
   /**
    * The read the current run is made of, or null when there is no run.
    *
@@ -3357,6 +3574,10 @@ var Stillness = class {
   key = null;
   count = 0;
   since = 0;
+  /** The colours of the run's read, kept so a broken run can be told WHERE it broke. */
+  colors = null;
+  /** Per position, how many times a run has been broken by that position alone. */
+  breaks = /* @__PURE__ */ new Map();
   /**
    * Offer the latest read. True once it has been identical `reads` times AND still for `ms`.
    *
@@ -3373,17 +3594,47 @@ var Stillness = class {
     if (key === this.key) {
       this.count += 1;
     } else {
+      const previous = this.colors;
+      if (previous && previous.length === colors.length) {
+        const differing = [];
+        for (let i = 0; i < colors.length && differing.length < 2; i++) {
+          if (colors[i] !== previous[i]) differing.push(i);
+        }
+        const only = differing.length === 1 ? differing[0] : void 0;
+        if (only !== void 0) this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
+      }
       this.key = key;
+      this.colors = [...colors];
       this.count = 1;
       this.since = now;
     }
     return this.count >= this.reads && now - this.since >= this.ms;
   }
+  /**
+   * The one position that keeps breaking the run on its own, or null.
+   *
+   * `atLeast` breaks before it is reported, so a single unlucky frame is not narrated at the user.
+   * When several positions qualify the noisiest wins — naming one sticker is the whole value, and
+   * a list of three is the same "hold still" with more words.
+   */
+  flickering(atLeast = 3) {
+    let best = null;
+    let most = atLeast - 1;
+    for (const [index, count] of this.breaks) {
+      if (count > most) {
+        most = count;
+        best = index;
+      }
+    }
+    return best;
+  }
   /** Forget the current run — the cube left the frame, or the scan was restarted. */
   reset() {
     this.key = null;
+    this.colors = null;
     this.count = 0;
     this.since = 0;
+    this.breaks.clear();
   }
 };
 
@@ -3402,8 +3653,7 @@ var FRAME_HINT = {
   PARTIAL_FACE: " Get the whole side in the frame.",
   BAD_GEOMETRY: " Hold it flatter and steadier."
 };
-var TICK_MS_WEB = 200;
-var TICK_MS_NATIVE = 60;
+var TICK_FLOOR_MS = 60;
 var STABLE = 3;
 var STABLE_MS = 500;
 var TICK_FAIL_MS = 3e3;
@@ -3413,6 +3663,37 @@ var PAINTING = "Painting by hand \u2014 tap any sticker and pick its colour.";
 var SLOW_OPEN_MS = 8e3;
 var SLOW_OPEN = "The camera has not opened. Allow camera access for this app, then try again.";
 var PINNED_GONE = "The camera you chose is unavailable \u2014 using the default one.";
+var SLOW_LOAD_MS = 8e3;
+var LOAD_TIMEOUT_MS = 6e4;
+var CELL_NAMES = [
+  "top left",
+  "top middle",
+  "top right",
+  "middle left",
+  "centre",
+  "middle right",
+  "bottom left",
+  "bottom middle",
+  "bottom right"
+];
+function cameraRefusalWords(name) {
+  switch (name) {
+    case "NotAllowedError":
+    case "SecurityError":
+      return "The camera is blocked for this app. Allow the camera in your browser or system settings, then press Start.";
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+      return "No camera was found. Plug one in or connect one, then press Start. You can also paint the cube by hand.";
+    case "NotReadableError":
+    case "TrackStartError":
+      return "Another app is using the camera. Close it \u2014 a video call is the usual one \u2014 then press Start.";
+    case "OverconstrainedError":
+    case "ConstraintNotSatisfiedError":
+      return "That camera cannot be used for scanning. Press Start to try the default one instead.";
+    default:
+      return null;
+  }
+}
 var TEMPLATE = `
 <style>
   :host { display: block; font: 14px/1.5 -apple-system, system-ui, sans-serif; color: #e6edf3; }
@@ -3456,6 +3737,7 @@ var HEADLESS_TEMPLATE = `
 </style>
 <video id="video" playsinline muted></video>
 `;
+var announced = /* @__PURE__ */ new WeakSet();
 var AiScanPanel = class extends HTMLElement {
   root;
   /** Model URL; the app can override before the element renders. */
@@ -3485,6 +3767,39 @@ var AiScanPanel = class extends HTMLElement {
   cam = new CameraSession();
   /** When the current run of failing ticks began, or null when the last tick completed. */
   tickFailingSince = null;
+  /**
+   * When the current run of frameless ticks began, or null when a frame last arrived.
+   *
+   * A SECOND clock, because "the tick threw" and "the tick answered, with no frame" are different
+   * facts and only one of them was watched. A camera that opens and never delivers answers every
+   * tick with `null` — which cleared the failure clock above, on the reasoning that a tick which
+   * got an answer at all is a working scanner. It is not: the panel idled on "Show any side" for
+   * as long as the screen was open, with a live lens and nothing to say. Both clocks route to the
+   * same `tickFail`, whose wording ("the camera opened but no frame could be read") was already
+   * describing this case while being unreachable from it.
+   */
+  noFrameSince = null;
+  /** How long the last inference took, so the tick can follow the runtime — see TICK_FLOOR_MS. */
+  lastInferenceMs = 0;
+  /**
+   * Faces whose rotation is KNOWN to be the canonical one — painted in place, or settled by an
+   * accepted scan (`finishAccepted` rotates the captures and then says so here).
+   *
+   * A camera capture is at whatever rotation the user held the side, and nothing about the capture
+   * itself says which. Two places need that distinction and both were getting it wrong:
+   * hand-painting, which edits stickers by index and therefore cannot edit a face whose index
+   * mapping is unknown; and a re-check after a settle, which was searching 4^6 rotations it had
+   * already solved and asking for confirmations all over again.
+   */
+  settled = /* @__PURE__ */ new Set();
+  /**
+   * What `loop()` was about to say when it found the camera dark, so `start()` can say it once the
+   * lens answers. Without this the instruction was simply lost: `rescanFace` says "Show the ORANGE
+   * side again", a finished scan has released the camera, and the reopen replaced that sentence
+   * with "Opening the camera…" and then the generic idle line — so the one side the scanner was
+   * waiting for was never named.
+   */
+  pendingOpening = null;
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   confirmed = {};
   awaiting = null;
@@ -3523,6 +3838,7 @@ var AiScanPanel = class extends HTMLElement {
   }
   disconnectedCallback() {
     this.stop();
+    this.cam.park();
   }
   /**
    * Why the camera must not open right now — one answer, consulted by every entry point.
@@ -3610,18 +3926,79 @@ var AiScanPanel = class extends HTMLElement {
       if (startBtn) startBtn.hidden = true;
       if (!this.cam.modelLoaded) {
         this.report("loading", "Camera ready \u2014 loading the model\u2026");
-        await detector.load();
+        await this.loadModel(detector, gen);
         this.cam.modelLoaded = true;
         if (!this.cam.current(gen)) return;
+        this.announceRuntime(detector);
       }
-      const phase = this.awaiting ? "confirm" : "scanning";
-      const opening = this.awaiting ? this.confirmWords(this.awaiting) : [OPENING];
+      const pending = this.pendingOpening;
+      this.pendingOpening = null;
+      const phase = pending?.phase ?? (this.awaiting ? "confirm" : "scanning");
+      const opening = pending?.words ?? (this.awaiting ? this.confirmWords(this.awaiting) : [OPENING]);
       if (fellBack) this.loop(phase, this.tinted("err", PINNED_GONE), " ", ...opening);
       else this.loop(phase, ...opening);
     } catch (err) {
       this.startFailed(err, gen, startBtn);
     } finally {
       clearTimeout(slowOpen);
+    }
+  }
+  /**
+   * Wait for the model, but not forever, and say so while waiting.
+   *
+   * The load is a multi-megabyte fetch plus a compile, so several seconds is normal and a minute
+   * on a bad connection is not a fault. What was wrong is that there was no upper bound at all: a
+   * stalled fetch left "Camera ready — loading the model…" standing for the life of the screen,
+   * with the lens on and no control to press, which is the shape of a hung app rather than of a
+   * slow one.
+   *
+   * The timeout ABANDONS THE WAIT, not the load — `Detector.load` is idempotent and now guards its
+   * own in-flight promise, so a load that eventually finishes is still there for the next Start
+   * rather than being started a second time.
+   */
+  async loadModel(detector, gen) {
+    let waiting = false;
+    const slow = setTimeout(() => {
+      if (!this.cam.current(gen) || this.cam.modelLoaded) return;
+      waiting = true;
+      this.notice = {
+        title: "The model is taking a while",
+        tone: "info",
+        body: "The scanner downloads its model once, and this connection is slow. It will start on its own when the download finishes \u2014 or paint the cube by hand instead."
+      };
+      this.report("loading", "Still loading the model\u2026");
+    }, SLOW_LOAD_MS);
+    let timer;
+    let timedOut = false;
+    try {
+      await Promise.race([
+        detector.load(),
+        new Promise((_resolve, reject2) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            reject2(
+              new Error(
+                `the model did not load within ${Math.round(LOAD_TIMEOUT_MS / 1e3)} seconds`
+              )
+            );
+          }, LOAD_TIMEOUT_MS);
+        })
+      ]);
+      if (waiting) this.notice = null;
+    } catch (err) {
+      if (timedOut) {
+        this.notice = {
+          title: "The model did not load",
+          tone: "err",
+          body: "The scanner could not finish downloading its model. Check the connection and press Start to try again \u2014 or paint the cube by hand, which needs no model."
+        };
+      } else if (waiting) {
+        this.notice = null;
+      }
+      throw err;
+    } finally {
+      clearTimeout(slow);
+      clearTimeout(timer);
     }
   }
   /**
@@ -3638,10 +4015,15 @@ var AiScanPanel = class extends HTMLElement {
       startBtn.hidden = false;
       startBtn.disabled = false;
     }
-    this.report(
-      "error",
-      this.tinted("err", `Cannot start: ${String(err?.message ?? err)}`)
-    );
+    const raw = String(err?.message ?? err);
+    const said = cameraRefusalWords(err?.name);
+    if (said) {
+      console.warn("[ai-scan-panel] the camera would not open", err);
+      this.notice = { title: "The camera did not open", tone: "err", body: said };
+      this.report("error", this.tinted("err", said));
+      return;
+    }
+    this.report("error", this.tinted("err", `Cannot start: ${raw}`));
   }
   /**
    * The detector, chosen once and kept for the element's life (so the model survives a stop()/
@@ -3661,12 +4043,32 @@ var AiScanPanel = class extends HTMLElement {
    */
   useDetector(detector, runtime) {
     this.cam.use(detector, runtime);
-    this.announceRuntime();
   }
-  /** Say which runtime won, once, on the console — so "is it on the fast native path?" has an
-   *  answer without a debugger. The same fact rides on every 'scan-progress' event as `runtime`. */
-  announceRuntime() {
-    const where = this.cam.runtime === "native" ? "native (CoreML on the ANE, ~1.5 ms/frame)" : "web (wasm model, ~400 ms/frame)";
+  /**
+   * Say which runtime won, and what it is running on — once per detector, on the console.
+   *
+   * TWO defects in one line. It was called only from `useDetector`, the test seam, so the question
+   * it exists to answer ("is this build on the fast native path, or has it silently demoted itself
+   * to wasm?") had no answer in any production build — the only place it ever printed was a test.
+   * And its text carried three stale numbers: "~400 ms/frame" for a wasm run measured at 57 ms,
+   * and a per-frame figure for the native path that is a claim about one machine's ANE.
+   *
+   * So it prints what is actually KNOWN here: the runtime that was chosen, and the provider list
+   * the loaded runner was created with. No timings — a number that was true on the machine the
+   * comment was written on is worse than no number, because it reads as a measurement of THIS
+   * machine. `ModelRunner.providers` documents the one thing the list does not say: which provider
+   * executed each node, which onnxruntime exposes no way to ask.
+   *
+   * Once per DETECTOR, not per panel: the detector is parked and reused across screen visits, so
+   * per-panel would print the same line on every visit to the scan screen, and per-page would miss
+   * a runner rebuilt on wasm after the GPU was judged too slow.
+   */
+  announceRuntime(detector) {
+    if (announced.has(detector)) return;
+    announced.add(detector);
+    const providers = detector.providers;
+    const on = providers && providers.length > 0 ? ` \u2014 providers: ${providers.join(", ")}` : "";
+    const where = this.cam.runtime === "native" ? "native (the cube-vision plugin \u2014 CoreML on Apple, LiteRT on Android)" : `web (the browser runtime${on})`;
     console.info(`[cubus] scanner runtime: ${where}`);
   }
   reset() {
@@ -3678,6 +4080,8 @@ var AiScanPanel = class extends HTMLElement {
     this.finished = false;
     this.notice = null;
     this.suspects = [];
+    this.settled.clear();
+    this.pendingOpening = null;
     for (const f of FACES) delete this.faces[f];
     this.buildDots();
   }
@@ -3690,15 +4094,19 @@ var AiScanPanel = class extends HTMLElement {
     this.showPreview(null);
     this.still.reset();
     this.tickFailingSince = null;
+    this.noFrameSince = null;
     const restart = this.maybe("restart");
     if (restart) restart.hidden = false;
     if (this.cam.device === null) {
+      if (opening.length > 0) this.pendingOpening = { phase, words: opening };
       void this.start();
       return;
     }
     this.report(phase, ...opening.length > 0 ? opening : [OPENING]);
-    const tick = this.cam.runtime === "native" ? TICK_MS_NATIVE : TICK_MS_WEB;
-    this.cam.beginLoop(tick, () => void this.onTick());
+    this.cam.beginLoop(
+      () => Math.max(TICK_FLOOR_MS, Math.round(this.lastInferenceMs)),
+      () => void this.onTick()
+    );
   }
   stopLoop() {
     this.cam.stopLoop();
@@ -3707,14 +4115,26 @@ var AiScanPanel = class extends HTMLElement {
     if (this.busy || this.cam.device === null || !this.cam.chosen || !this.cam.modelLoaded) return;
     this.busy = true;
     const epoch = this.cam.frameEpoch();
+    const started = performance.now();
     try {
       const output = await this.cam.chosen.next();
       if (!this.cam.freshFrame(epoch)) return;
+      this.lastInferenceMs = performance.now() - started;
       this.tickFailingSince = null;
       if (output === null) {
         this.still.reset();
+        const now = performance.now();
+        this.noFrameSince ??= now;
+        if (now - this.noFrameSince >= TICK_FAIL_MS) {
+          this.tickFail(
+            new Error(
+              `the camera has been open for ${Math.round(now - this.noFrameSince)} ms without delivering a frame`
+            )
+          );
+        }
         return;
       }
+      this.noFrameSince = null;
       const fit = fitFromOutput(output);
       if (!fit.ok) {
         this.still.reset();
@@ -3728,13 +4148,17 @@ var AiScanPanel = class extends HTMLElement {
       const settled = this.still.offer(fit.face.colors);
       this.showPreview(fit.face.colors);
       if (!settled) {
-        this.report(this.awaiting ? "confirm" : "scanning", "Reading a side \u2014 hold still\u2026");
+        const flicker = this.still.flickering();
+        this.report(
+          this.awaiting ? "confirm" : "scanning",
+          flicker === null ? "Reading a side \u2014 hold still\u2026" : `Reading a side \u2014 the ${CELL_NAMES[flicker] ?? "marked"} sticker keeps changing colour. More light on it, or a steadier hold, will settle it.`
+        );
         return;
       }
       this.fileSettledRead(fit.face);
     } catch (err) {
       if (!this.cam.freshFrame(epoch)) return;
-      const now = Date.now();
+      const now = performance.now();
       this.tickFailingSince ??= now;
       if (now - this.tickFailingSince >= TICK_FAIL_MS) {
         this.tickFail(err);
@@ -3754,6 +4178,8 @@ var AiScanPanel = class extends HTMLElement {
   tickFail(err) {
     this.cam.close();
     this.showPreview(null);
+    this.tickFailingSince = null;
+    this.noFrameSince = null;
     const start = this.maybe("start");
     if (start) {
       start.hidden = false;
@@ -3811,6 +4237,7 @@ var AiScanPanel = class extends HTMLElement {
           return;
         }
         this.faces[face] = read;
+        this.settled.delete(face);
         this.confirmed = {};
         this.mismatches = 0;
         this.buildDots();
@@ -3832,6 +4259,7 @@ var AiScanPanel = class extends HTMLElement {
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
   capture(face, read) {
     this.faces[face] = read;
+    this.settled.delete(face);
     this.still.reset();
     this.buildDots();
     this.flash();
@@ -3901,6 +4329,7 @@ var AiScanPanel = class extends HTMLElement {
         confidence: Array(9).fill(1)
       };
       this.faces[face] = read;
+      this.settled.add(face);
       this.buildDots();
     } else if (read.colors[index] === colour) {
       return;
@@ -3967,11 +4396,47 @@ var AiScanPanel = class extends HTMLElement {
     this.notice = null;
     this.suspects = [];
     if (on) {
+      const dropped = this.dropUnsettledCaptures();
       this.stop();
+      if (dropped.length > 0) {
+        this.notice = {
+          title: "Those sides need painting too",
+          tone: "info",
+          body: "The camera cannot see which way up a side was held, so a side it had not finished checking cannot be edited sticker by sticker. %1 was cleared \u2014 paint it the way it sits on your cube.",
+          params: [dropped.map((f) => GUIDE[f].color).join(", ")]
+        };
+      }
       this.report("painting", PAINTING);
       return;
     }
     void this.start();
+  }
+  /**
+   * Entering painting: forget every capture whose rotation is still unknown, and say which.
+   *
+   * THE MODE BOUNDARY, stated rather than implied. Painting edits stickers BY INDEX, and
+   * `finishAccepted` already spells out why that needs a settled rotation: "a click on sticker i
+   * must mean index i of what is stored — without this, correcting a side captured 90° off edited
+   * the wrong sticker and turned a good scan invalid." An unsettled camera capture is exactly that
+   * side. Carrying it into painting broke two things at once: the tiles a user taps did not match
+   * the cube in their hand, and `assemblePainted` — which searches no rotations, by design —
+   * judged a 90°-off capture as authored-in-place and reported an INVENTED count. Measured: a
+   * correct cube with one side captured a quarter turn off came back as "At least 5 stickers were
+   * misread", about a cube with nothing wrong with it.
+   *
+   * Only the UNSETTLED ones go. A finished scan settles all six into canonical rotation, so the
+   * common path — scan, then hand-fix one sticker — loses nothing at all.
+   */
+  dropUnsettledCaptures() {
+    const dropped = FACES.filter((f) => this.faces[f] && !this.settled.has(f));
+    if (dropped.length === 0) return dropped;
+    for (const f of dropped) delete this.faces[f];
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
+    this.finished = false;
+    this.buildDots();
+    return dropped;
   }
   /**
    * Forget one side's reading so the camera can read it again — the sensible thing for a centre
@@ -3984,6 +4449,7 @@ var AiScanPanel = class extends HTMLElement {
   rescanFace(face) {
     if (!this.faces[face]) return;
     delete this.faces[face];
+    this.settled.delete(face);
     this.confirmed = {};
     this.awaiting = null;
     this.mismatches = 0;
@@ -4059,6 +4525,10 @@ var AiScanPanel = class extends HTMLElement {
   /** Read the six faces (plus any confirmations) into a cube, and act on what comes back. */
   assemble() {
     let result;
+    if (this.capturedFaces().length === FACES.length && FACES.every((f) => this.settled.has(f))) {
+      this.finish(assemblePainted(this.faces));
+      return;
+    }
     for (let round = 0; ; round++) {
       try {
         result = assembleColors(this.faces, void 0, this.confirmed);
@@ -4136,8 +4606,12 @@ var AiScanPanel = class extends HTMLElement {
     this.stopLoop();
     this.showPreview(null);
     this.suspects = result.suspects ?? [];
-    if (result.valid && result.lowConfidence.length === 0) {
-      this.finishAccepted(result);
+    if (result.valid) {
+      if ((result.lowConfidence?.length ?? 0) === 0) {
+        this.finishAccepted(result);
+        return;
+      }
+      this.finishUnsure();
       return;
     }
     if (result.confirm && result.reread === void 0) {
@@ -4145,6 +4619,15 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     this.finishRefused(result);
+  }
+  /** Solvable but too faint to trust: no public verdict, a pinned explanation, keep scanning. */
+  finishUnsure() {
+    this.notice = {
+      title: "Some stickers were unclear",
+      tone: "err",
+      body: "The cube reads as solvable, but some stickers were too faint to trust. Show those sides again, or tap stickers to confirm them."
+    };
+    this.loop("scanning", this.tinted("err", "Some stickers were too faint to trust."));
   }
   /** Accepted: settle the captures into canonical rotation, release the camera, announce it. */
   finishAccepted(result) {
@@ -4165,6 +4648,7 @@ var AiScanPanel = class extends HTMLElement {
     this.awaiting = null;
     this.mismatches = 0;
     this.finished = true;
+    for (const f of FACES) this.settled.add(f);
     this.notice = null;
     this.stop();
     this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
@@ -4213,20 +4697,16 @@ var AiScanPanel = class extends HTMLElement {
       many: result.misreadFace ? `Show the %2 side to the camera again \u2014 it will be read fresh.${hold}` : `Show those sides to the camera again \u2014 each one is read fresh.${hold}`,
       params: result.misreadFace ? [GUIDE[result.misreadFace].color] : []
     });
+    let line = "That isn't a solvable cube yet \u2014 fix a sticker, or show a side again.";
     if (camera) {
       this.notice = camera;
-    } else if (result.valid) {
-      this.notice = {
-        title: "Some stickers were unclear",
-        tone: "err",
-        body: "The cube reads as solvable, but some stickers were too faint to trust. Show those sides again, or tap stickers to confirm them."
-      };
     } else if (result.ambiguous) {
       this.notice = {
         title: "Too symmetric to tell",
         tone: "err",
         body: "This cube reads the same several ways, and no extra look can split them. Turn any one face a quarter turn, then start the scan over to read the changed cube."
       };
+      line = "This cube reads the same several ways \u2014 turn any one face a quarter turn, then start over.";
     } else {
       this.notice = {
         title: "That doesn't read as a solvable cube",
@@ -4234,10 +4714,7 @@ var AiScanPanel = class extends HTMLElement {
         body: `Too much of the cube was read wrong to say where. Show the sides to the camera again \u2014 each one is read fresh \u2014 or start the scan over.${hold}`
       };
     }
-    this.loop(
-      "scanning",
-      this.tinted("err", "That isn't a solvable cube yet \u2014 fix a sticker, or show a side again.")
-    );
+    this.loop("scanning", this.tinted("err", line));
   }
   buildDots() {
     const dots = this.maybe("dots");
@@ -4320,8 +4797,10 @@ export {
   createModelRunner,
   decodeDetections,
   defaultThreadCount,
+  disposeParkedDetector,
   fitFace,
   nms,
+  parkedDetector,
   preferredProviders,
   preprocess
 };
