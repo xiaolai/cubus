@@ -57,7 +57,7 @@ def jitter_color(rgb: tuple[float, float, float], rng: random.Random) -> list[fl
     """Perturb a base colour: brightness + a small hue/sat drift (brand + white-balance)."""
     scale = rng.uniform(0.75, 1.15)
     drift = [rng.uniform(-0.06, 0.06) for _ in range(3)]
-    return [min(max(c * scale + d, 0.0), 1.0) for c, d in zip(rgb, drift)] + [1.0]
+    return [min(max(c * scale + d, 0.0), 1.0) for c, d in zip(rgb, drift, strict=True)] + [1.0]
 
 
 def main() -> None:

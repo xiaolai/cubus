@@ -34,6 +34,20 @@ def _js_round(x: np.ndarray | float) -> np.ndarray | float:
     return np.floor(x + 0.5)
 
 
+def letterbox_geometry(w: int, h: int, imgsz: int = IMG_SIZE) -> tuple[float, int, int, int, int]:
+    """Where a w×h frame lands on the canvas: (scale, new_w, new_h, pad_x, pad_y).
+
+    Split out of `letterbox` for the evaluation scripts, which have to map the model's boxes BACK
+    onto the frame: they take the placement from the arithmetic that produced the tensor rather
+    than recomputing it, because Python's `round` is banker's rounding and `Math.round` is not —
+    they part company on exact halves, which a 4:3 frame produces.
+    """
+    scale = imgsz / max(w, h)
+    new_w = int(max(1, _js_round(w * scale)))
+    new_h = int(max(1, _js_round(h * scale)))
+    return scale, new_w, new_h, (imgsz - new_w) // 2, (imgsz - new_h) // 2
+
+
 def letterbox(rgb: np.ndarray, imgsz: int = IMG_SIZE) -> np.ndarray:
     """Aspect-preserving bilinear resize onto a grey-114 imgsz×imgsz canvas, as CHW float32 in [0,1].
 
@@ -43,11 +57,7 @@ def letterbox(rgb: np.ndarray, imgsz: int = IMG_SIZE) -> np.ndarray:
     if rgb.dtype != np.uint8 or rgb.ndim != 3 or rgb.shape[2] not in (3, 4):
         raise ValueError(f"expected H×W×3|4 uint8, got {rgb.dtype} {rgb.shape}")
     h, w = rgb.shape[:2]
-    scale = imgsz / max(w, h)
-    new_w = int(max(1, _js_round(w * scale)))
-    new_h = int(max(1, _js_round(h * scale)))
-    pad_x = (imgsz - new_w) // 2
-    pad_y = (imgsz - new_h) // 2
+    scale, new_w, new_h, pad_x, pad_y = letterbox_geometry(w, h, imgsz)
 
     # Source coordinates, exactly as the TypeScript computes them: (i + 0.5) / scale - 0.5, clamped.
     xs = np.arange(new_w, dtype=np.float64)
@@ -130,19 +140,38 @@ def nms(dets: list[Detection], iou_threshold: float = 0.45) -> list[Detection]:
     return kept
 
 
+# The three bounds `toGrid` in packages/cube-scanner/src/onnx-postprocess.ts applies, with the
+# same values and in the same order. That file carries the derivation; the short version is that
+# every one was measured over all 20 fixtures in ml/golden/frames/ and set high enough that no
+# golden read changes. MAX_COLUMN_SPREAD is 3 and not 1 because a column's x-spread reaches 1.95
+# on a legitimate render while a row's y-spread is bounded at 1; MAX_AREA_RATIO is in AREA and not
+# in mean side length because that is where a foreshortened neighbour-face sliver separates from
+# an angled front face (7.2x against 3.42x, versus 2.0x against 1.81x).
+MAX_STEP = 2.5
+MAX_COLUMN_SPREAD = 3.0
+MAX_AREA_RATIO = 5.0
+
+
 def _to_grid(nine: list[Detection]) -> list[Detection] | None:
     by_y = sorted(nine, key=lambda d: d.cy)
     rows = [sorted(by_y[i : i + 3], key=lambda d: d.cx) for i in (0, 3, 6)]
     size = sum((d.w + d.h) / 2 for d in nine) / 9
+    areas = [d.w * d.h for d in nine]
+    if max(areas) > min(areas) * MAX_AREA_RATIO:
+        return None
     for row in rows:
         if max(d.cy for d in row) - min(d.cy for d in row) > size:
             return None
+    for c in range(3):
+        xs = [rows[r][c].cx for r in range(3)]
+        if max(xs) - min(xs) > size * MAX_COLUMN_SPREAD:
+            return None
     row_y = [sum(d.cy for d in r) / 3 for r in rows]
     col_x = [sum(rows[r][c].cx for r in range(3)) / 3 for c in range(3)]
-    if row_y[1] - row_y[0] < size * 0.4 or row_y[2] - row_y[1] < size * 0.4:
-        return None
-    if col_x[1] - col_x[0] < size * 0.4 or col_x[2] - col_x[1] < size * 0.4:
-        return None
+    steps = (row_y[1] - row_y[0], row_y[2] - row_y[1], col_x[1] - col_x[0], col_x[2] - col_x[1])
+    for step in steps:
+        if step < size * 0.4 or step > size * MAX_STEP:
+            return None
     return [d for r in rows for d in r]
 
 
