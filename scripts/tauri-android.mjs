@@ -17,6 +17,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 /** Gradle 8.14.3 + AGP 8.11.0 run on these, inclusive. Raise them together with the wrapper. */
 export const JDK_MIN = 17;
@@ -122,5 +123,21 @@ function main() {
   process.exit(r.status ?? 1);
 }
 
+/**
+ * Is this module the program being run, rather than an import?
+ *
+ * `import.meta.url` is a file URL, PERCENT-ENCODED — a space in the path is `%20` — while
+ * `process.argv[1]` is the raw path. The old guard compared `file://${argv[1]}` against the URL,
+ * so from any checkout whose path contained a space the two never matched, `main()` never ran,
+ * and the wrapper exited 0 having built nothing (audit 2026-09-04, mobile A6). `pathToFileURL`
+ * produces the same encoding the loader does, so the comparison is URL to URL.
+ * @param {string | undefined} argv1
+ * @param {string} metaUrl
+ */
+export function isMain(argv1, metaUrl) {
+  if (!argv1) return false;
+  return pathToFileURL(argv1).href === metaUrl;
+}
+
 // Importable for tests without running the build.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) main();
+if (isMain(process.argv[1], import.meta.url)) main();
