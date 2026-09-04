@@ -108,6 +108,16 @@ it walks you through solving it.
   was reported as the page jittering. Measured in WebKit, nothing moves: the boxes are identical
   before and after, and the best-matching pixel shift between consecutive frames is (0,0)
   everywhere. It was four other things, and each needed its own fix.
+  **The last UI-thread search left on 2026-09-05**: `Cube.initSolver()` is gone from
+  `loadSolver()` (it built cubejs's tables for `deriveCube`'s `cube.solve()`, a 723 ms block right
+  after first paint, measured in WebKit; 40 ms after, all of it the renderer's first WebGL
+  build). The setup alg is now `invertAlg(solution)` of the pool's answer, checked with
+  `reaches()` in `finishSolve`; legality is arithmetic from cubejs's parser (`isCubeState`),
+  never the engine's null, because that null cannot tell "out of budget" from "not a cube" and
+  so must never become a verdict. A screen may say an ARRANGEMENT is unreachable (parity proves
+  it, `.unsolvable-card`); it still may never say a MOVE COUNT is. Pinned by
+  `initsolver-off-main-thread.test.mjs` (a spy appended to the cubejs bundle itself, and the
+  tables asserted null) and a screen-swap case that records what the renderer was ASKED to draw.
   **Two Kociemba searches for one cube**: `randomScramble()` searched a random state for its
   scramble alg, then `deriveCube()` searched the same state for the same answer. Fixed by
   carrying the alg with the cube and CHECKING it rather than trusting it (`reaches` /

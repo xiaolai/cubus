@@ -271,8 +271,9 @@ test('a state in the proven library is answered from data — no search, no proo
   // The point of shipping the library. `Cube.prototype.solve` is the only Kociemba search this
   // thread can run (the engine's own lives in the worker, behind its own module instance), so
   // counting calls to it is counting exactly the work a user would have waited for. A proved
-  // state must cost zero of them: deriveCube takes its setup alg from the entry and solve()
-  // takes the solution, both already checked against the oracle at load.
+  // state must cost zero of them: the setup alg is the inverse of the entry's solution, checked
+  // with `reaches()` in finishSolve (since 2026-09-05 nothing derives one by searching), and
+  // solve() takes the solution, both already checked against the oracle at load.
   const entry = JSON.parse(
     readFileSync(new URL('../lib/data/optimal-challenges.json', import.meta.url), 'utf8'),
   )[0];
