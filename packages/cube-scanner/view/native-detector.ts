@@ -89,11 +89,29 @@ export class NativeDetector implements Detector {
     this.dev = info ?? { deviceId: opts.deviceId ?? '', label: 'Camera' };
   }
 
+  /**
+   * Compile the model, ONCE.
+   *
+   * Two guards for one rule. `loaded` covers a second call after the first finished — which the
+   * page-level detector park makes ordinary, since a re-mounted panel asks its parked detector to
+   * load again and must not pay for a second CoreML/LiteRT compile. `loading` covers two calls
+   * that OVERLAP, which the panel's slow-load timeout can produce: without it both crossed the
+   * bridge and the plugin compiled twice.
+   */
+  private loading: Promise<void> | null = null;
+
   async load(): Promise<void> {
     if (this.loaded) return;
+    if (this.loading) return this.loading;
     // The plugin finds and compiles the bundled model itself; the panel only waits and reports.
-    await this.invoke(`${P}load_model`, { computeUnits: this.computeUnits });
-    this.loaded = true;
+    this.loading = this.invoke(`${P}load_model`, { computeUnits: this.computeUnits })
+      .then(() => {
+        this.loaded = true;
+      })
+      .finally(() => {
+        this.loading = null;
+      });
+    return this.loading;
   }
 
   async next(): Promise<ModelOutput | null> {
@@ -160,5 +178,10 @@ export function decodeTensorResponse(input: ArrayBuffer | string): ModelOutput |
     );
   }
   const data = new Float32Array(buf, 8, count);
-  return { data, anchors };
+  // `rows` is CARRIED, not discarded. It was read off the header, used for one length check and
+  // thrown away, so the one runtime that crosses a bridge was the one with no assertion that the
+  // tensor is this model's detect head: a re-exported or transposed model reached
+  // `decodeDetections` and was read off stale offsets. `fitFromOutput` is where that is now
+  // refused, for every runtime at once.
+  return { data, anchors, rows };
 }

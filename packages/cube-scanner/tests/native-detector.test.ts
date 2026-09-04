@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { fitFromOutput } from '../src/onnx-detect.js';
 import { NativeDetector, decodeTensorResponse } from '../view/native-detector.js';
 
 // The wire format the cube-vision plugin returns over the Tauri bridge — int32 rows, int32 anchors
@@ -121,5 +122,35 @@ describe('NativeDetector — stop() cancels a pending use()', () => {
     b.finishOpen();
     await opening;
     expect(det.device).toEqual({ deviceId: 'native-1', label: 'Native' });
+  });
+});
+
+describe('the row count reaches the shared seam, so the native path is checked too', () => {
+  // WHAT WAS MISSING. `validatedRun` has refused a head that is not `[1, 10, anchors]` since
+  // 515002d — but that lives in the BROWSER runtime, and the native plugin never passes through it.
+  // The plugin's own decode read `rows` out of the header, used it for one length check and threw
+  // it away, so the one runtime that crosses a bridge was the one runtime with no assertion that
+  // the tensor is this model's detect head. A re-exported or transposed model would have been
+  // decoded off stale offsets: not an error anywhere, just a cube nobody held.
+  it('carries rows through the decode', () => {
+    expect(decodeTensorResponse(encode(10, 2, new Array(20).fill(0)))?.rows).toBe(10);
+  });
+
+  it('refuses a transposed header at fitFromOutput', () => {
+    // `[8400, 10]` instead of `[10, 8400]` — a positive anchor count, a buffer of exactly the right
+    // length, and every value in the wrong place.
+    const out = decodeTensorResponse(encode(20, 10, new Array(200).fill(0)));
+    expect(out).not.toBeNull();
+    expect(() => fitFromOutput(out!)).toThrow(/transpose of a detect head/);
+  });
+
+  it('refuses a head with the wrong number of classes, facing the right way', () => {
+    const out = decodeTensorResponse(encode(9, 40, new Array(360).fill(0)));
+    expect(() => fitFromOutput(out!)).toThrow(/9 rows, not the 10/);
+  });
+
+  it('accepts the shape the plugin really produces', () => {
+    const out = decodeTensorResponse(encode(10, 40, new Array(400).fill(0)));
+    expect(fitFromOutput(out!)).toEqual({ ok: false, reason: 'NO_FACE' });
   });
 });

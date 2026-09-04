@@ -106,6 +106,58 @@ export const runtimeUrl = (url: string, proxied: boolean): string => {
   return `${addr}${addr.includes('?') ? '&' : '?'}cubus-runtime=proxied${hash}`;
 };
 
+/**
+ * The SECOND way to get a distinct module instance: a sibling FILE, `ort.mjs` → `ort.proxied.mjs`.
+ *
+ * `runtimeUrl`'s query string is verified against `apps/web/serve.mjs`, which serves any path with
+ * a query. It is NOT verified against the Tauri asset protocol on Windows, Linux and Android — the
+ * three targets where wasm is the only path, so the proxied module is the ONLY module they load —
+ * and a protocol handler that resolves a request by its path alone answers 404 for a name it has
+ * never seen. That would not be a slow scanner, it would be no scanner: `createModelRunner`
+ * rejects, `load()` rejects, and the panel reports a model that will not load.
+ *
+ * A different FILE cannot be misread by any protocol, and it is a byte-identical copy of the same
+ * loader — `apps/web/copy-ort.mjs` publishes both from one source, so they cannot drift. The query
+ * form is still tried FIRST, because it is the arrangement measured to work in both engines and it
+ * costs no extra file; this is the fallback for the hosts where it does not.
+ *
+ * Query and fragment are carried across, since a caller may cache-bust with either.
+ */
+export const proxiedSiblingUrl = (url: string): string => {
+  const match = /^([^?#]*?)([^/?#]+)(\?[^#]*)?(#.*)?$/.exec(url);
+  if (!match) return url;
+  const [, dir = '', file = '', query = '', hash = ''] = match;
+  const dot = file.lastIndexOf('.');
+  const named = dot > 0 ? `${file.slice(0, dot)}.proxied${file.slice(dot)}` : `${file}.proxied`;
+  return `${dir}${named}${query}${hash}`;
+};
+
+/**
+ * Load the runtime module for a proxy mode, with the sibling-file fallback behind it.
+ *
+ * The original rejection is what escapes when BOTH fail: a caller told "ort.proxied.mjs not found"
+ * would go looking for a file the app has never depended on, when what actually happened is that
+ * the primary URL did not load.
+ */
+async function loadRuntime(ortUrl: string, proxied: boolean): Promise<Ort> {
+  if (!proxied) return loadOrt(ortUrl);
+  try {
+    return await loadOrt(runtimeUrl(ortUrl, true));
+  } catch (err) {
+    const sibling = proxiedSiblingUrl(ortUrl);
+    if (sibling === ortUrl) throw err;
+    try {
+      const ort = await loadOrt(sibling);
+      console.info(
+        `[cubus] the runtime's query-string identity did not load here — using ${sibling} instead`,
+      );
+      return ort;
+    } catch {
+      throw err;
+    }
+  }
+}
+
 export interface ModelRunnerOptions {
   /**
    * onnxruntime-web execution providers, in preference order. Defaults to {@link preferredProviders},
@@ -493,7 +545,10 @@ function validatedRun(
         `model output '${outputName}' holds ${out.data.length} floats, not the ${rows * anchors} its dims ${shape} promise`,
       );
     }
-    return { data: out.data, anchors };
+    // `rows` rides along so `fitFromOutput` can make the SAME assertion for the native plugin,
+    // which has no `validatedRun` of its own. Checked twice, deliberately: this one names the
+    // model and the tensor that produced it, which is what a person debugging an export needs.
+    return { data: out.data, anchors, rows };
   };
 }
 
@@ -522,8 +577,9 @@ export async function createModelRunner(
   // fetch-capable origin: under a plain file:// page pass an https CDN, since file:// can't fetch
   // a local .wasm.
   const ortUrl = opts.ortUrl ?? './ort.mjs';
-  // The proxy mode picks the module, because it cannot be changed on one — see `runtimeUrl`.
-  const ort = await loadOrt(runtimeUrl(ortUrl, !gpu));
+  // The proxy mode picks the module, because it cannot be changed on one — see `runtimeUrl`, and
+  // `proxiedSiblingUrl` for the fallback when a host cannot serve the query form.
+  const ort = await loadRuntime(ortUrl, !gpu);
 
   const session = await serialise(ort, async () => {
     // This was a hard 1, with the note "so no SharedArrayBuffer / cross-origin-isolation headers

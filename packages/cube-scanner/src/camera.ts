@@ -18,6 +18,32 @@ export interface FrameSource {
   readonly device: CameraDevice;
 }
 
+/**
+ * "The camera is open but has not produced a frame yet" — the ONE transient `grab()` failure.
+ *
+ * A named class rather than a message to match on, because `WebDetector.next()` has to swallow
+ * exactly this and rethrow everything else. It used to `catch {}` every throw into `null` with a
+ * comment saying it was this case, so a camera that opened and never delivered looked identical
+ * to one that was still warming up, and the scanner idled forever on "Show any side".
+ */
+export class FrameNotReadyError extends Error {
+  constructor() {
+    super('camera not ready: video has no dimensions yet');
+    this.name = 'FrameNotReadyError';
+  }
+}
+
+/**
+ * The frame size asked for when a caller expresses no preference.
+ *
+ * `ideal`, not `exact`: a camera that cannot do 720p gives what it has rather than failing. The
+ * reason there is a default at all is that `grab()` copies the whole frame through
+ * `getImageData` on EVERY tick, and an unconstrained 4K stream makes that a 33 MB copy per frame
+ * — for a picture that is then letterboxed down to 640x640 before the model sees any of it.
+ */
+export const IDEAL_WIDTH = 1280;
+export const IDEAL_HEIGHT = 720;
+
 export interface CameraOptions {
   /**
    * Ask for a front ('user') or rear ('environment') camera. Deliberately UNSET by default.
@@ -95,8 +121,8 @@ export async function openCamera(
   const videoConstraints: MediaTrackConstraints = {};
   if (opts.deviceId) videoConstraints.deviceId = { exact: opts.deviceId };
   else if (opts.facingMode) videoConstraints.facingMode = opts.facingMode;
-  if (opts.width) videoConstraints.width = { ideal: opts.width };
-  if (opts.height) videoConstraints.height = { ideal: opts.height };
+  videoConstraints.width = { ideal: opts.width ?? IDEAL_WIDTH };
+  videoConstraints.height = { ideal: opts.height ?? IDEAL_HEIGHT };
 
   const stream = await navigator.mediaDevices.getUserMedia({
     video: videoConstraints,
@@ -142,9 +168,14 @@ export async function openCamera(
       grab(): Frame {
         const w = video.videoWidth;
         const h = video.videoHeight;
-        if (w === 0 || h === 0) throw new Error('camera not ready: video has no dimensions yet');
-        canvas.width = w;
-        canvas.height = h;
+        if (w === 0 || h === 0) throw new FrameNotReadyError();
+        // ONLY ON CHANGE. Assigning either dimension resets the whole canvas — it drops the
+        // backing store and re-allocates it — so writing the same numbers back on every tick paid
+        // for a full reallocation per frame in exchange for nothing. The stream's size does change
+        // (a camera renegotiating, a track constraint applied), so it is re-read rather than
+        // captured once.
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
         ctx.drawImage(video, 0, 0, w, h);
         const img = ctx.getImageData(0, 0, w, h);
         return { data: img.data, width: img.width, height: img.height };
