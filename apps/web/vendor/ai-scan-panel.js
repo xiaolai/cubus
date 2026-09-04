@@ -2694,8 +2694,15 @@ function preprocess(frame, imgsz = IMG_SIZE) {
   }
   return { data: out, imgsz };
 }
+var NUM_CLASSES = 6;
+var DETECT_ROWS = 4 + NUM_CLASSES;
 function fitFromOutput(output, opts = {}) {
-  const { numClasses = 6, confThreshold = 0.25, iouThreshold = 0.45, minConf = 0.25 } = opts;
+  const {
+    numClasses = NUM_CLASSES,
+    confThreshold = 0.25,
+    iouThreshold = 0.45,
+    minConf = 0.25
+  } = opts;
   const dets = nms(
     decodeDetections(output.data, numClasses, output.anchors, confThreshold),
     iouThreshold
@@ -2902,11 +2909,43 @@ var loadOrt = (url) => {
   }
   return pending;
 };
+var runtimeUrl = (url, proxied) => {
+  if (!proxied) return url;
+  const [addr = "", hash = ""] = url.split(/(?=#)/, 2);
+  return `${addr}${addr.includes("?") ? "&" : "?"}cubus-runtime=proxied${hash}`;
+};
+var GPU_BUDGET_MS = 400;
+var GPU_PROBE_RUNS = 2;
+var SOFTWARE_RENDERERS = [
+  "swiftshader",
+  "llvmpipe",
+  "lavapipe",
+  "softpipe",
+  "warp",
+  "basic render",
+  "microsoft basic"
+];
+function softwareAdapter(adapter) {
+  if (adapter.isFallbackAdapter === true || adapter.info?.isFallbackAdapter === true) return true;
+  const info = adapter.info;
+  if (!info) return false;
+  const text = `${info.vendor ?? ""} ${info.architecture ?? ""} ${info.description ?? ""}`.toLowerCase().trim();
+  if (text.length === 0) return false;
+  return SOFTWARE_RENDERERS.some((name) => text.includes(name));
+}
 async function preferredProviders() {
   const gpu = globalThis.navigator?.gpu;
   if (!gpu) return ["wasm"];
   try {
-    return await gpu.requestAdapter() ? ["webgpu", "wasm"] : ["wasm"];
+    const adapter = await gpu.requestAdapter();
+    if (!adapter) return ["wasm"];
+    if (softwareAdapter(adapter)) {
+      console.info(
+        "[cubus] WebGPU offers only a software adapter \u2014 using the wasm runtime instead"
+      );
+      return ["wasm"];
+    }
+    return ["webgpu", "wasm"];
   } catch {
     return ["wasm"];
   }
@@ -2920,10 +2959,66 @@ function defaultThreadCount(isolated = typeof globalThis.crossOriginIsolated ===
   if (!isolated) return 1;
   return Math.max(1, Math.min(cores - 2, 6));
 }
+function gpuTookTheWork(ort) {
+  const webgpu = ort.env.webgpu;
+  if (typeof webgpu !== "object" || webgpu === null) return true;
+  return Boolean(webgpu.device);
+}
+async function owning(session, work) {
+  try {
+    return await work();
+  } catch (err) {
+    await session.release().catch(() => {
+    });
+    throw err;
+  }
+}
+function inputSide(session) {
+  const meta = session.inputMetadata?.[0];
+  const dims = meta?.isTensor ? meta.shape : void 0;
+  const h = dims?.[2];
+  return typeof h === "number" && h > 0 ? h : IMG_SIZE;
+}
+function validatedRun(ort, session, inputName, outputName) {
+  return async (input, imgsz) => {
+    const tensor = new ort.Tensor("float32", input, [1, 3, imgsz, imgsz]);
+    const result = await session.run({ [inputName]: tensor });
+    const out = result[outputName];
+    if (!out) throw new Error(`model produced no '${outputName}' output`);
+    if (out.type !== "float32" || !(out.data instanceof Float32Array)) {
+      throw new Error(`model output '${outputName}' is ${out.type}, not float32`);
+    }
+    const shape = `[${out.dims.join(", ")}]`;
+    if (out.dims.length !== 3 || out.dims[0] !== 1) {
+      throw new Error(
+        `model output '${outputName}' has dims ${shape}, not the [1, rows, anchors] a detect head produces`
+      );
+    }
+    const rows = out.dims[1] ?? 0;
+    const anchors = out.dims[2] ?? 0;
+    if (!Number.isInteger(rows) || !Number.isInteger(anchors) || rows <= 0 || anchors <= 0) {
+      throw new Error(`model output '${outputName}' has dims ${shape}, which has no anchor axis`);
+    }
+    if (rows !== DETECT_ROWS) {
+      const why = rows >= anchors ? ` \u2014 ${rows} rows against ${anchors} anchors is the transpose of a detect head` : "";
+      throw new Error(
+        `model output '${outputName}' has dims ${shape}: ${rows} rows, not the ${DETECT_ROWS} a ${DETECT_ROWS - 4}-class detect head produces${why}`
+      );
+    }
+    if (out.data.length !== rows * anchors) {
+      throw new Error(
+        `model output '${outputName}' holds ${out.data.length} floats, not the ${rows * anchors} its dims ${shape} promise`
+      );
+    }
+    return { data: out.data, anchors };
+  };
+}
 async function createModelRunner(modelUrl, opts = {}) {
-  const ort = await loadOrt(opts.ortUrl ?? "./ort.mjs");
+  const chosenHere = opts.executionProviders === void 0;
   const executionProviders = opts.executionProviders ?? await preferredProviders();
   const gpu = usesGpu(executionProviders);
+  const ortUrl = opts.ortUrl ?? "./ort.mjs";
+  const ort = await loadOrt(runtimeUrl(ortUrl, !gpu));
   const session = await serialise(ort, async () => {
     ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
     ort.env.wasm.proxy = !gpu;
@@ -2933,46 +3028,48 @@ async function createModelRunner(modelUrl, opts = {}) {
       graphOptimizationLevel: "all"
     });
   });
-  const inputName = session.inputNames[0];
-  const outputName = session.outputNames[0];
-  if (!inputName || !outputName) throw new Error("model has no input/output tensor");
-  const run = async (input, imgsz) => {
-    const tensor = new ort.Tensor("float32", input, [1, 3, imgsz, imgsz]);
-    const result = await session.run({ [inputName]: tensor });
-    const out = result[outputName];
-    if (!out) throw new Error(`model produced no '${outputName}' output`);
-    if (out.type !== "float32" || !(out.data instanceof Float32Array)) {
-      throw new Error(`model output '${outputName}' is ${out.type}, not float32`);
-    }
-    const anchors = out.dims[out.dims.length - 1] ?? 0;
-    if (out.dims.length < 2 || !Number.isInteger(anchors) || anchors <= 0) {
-      throw new Error(
-        `model output '${outputName}' has dims [${out.dims.join(", ")}], which has no anchor axis`
+  return owning(session, async () => {
+    if (gpu && chosenHere && !gpuTookTheWork(ort)) {
+      console.info(
+        "[cubus] WebGPU did not take this model \u2014 using the wasm runtime, off the page thread"
       );
-    }
-    const rows = out.data.length / anchors;
-    if (!Number.isInteger(rows)) {
-      throw new Error(
-        `model output '${outputName}' holds ${out.data.length} floats, which is not a whole number of ${anchors}-anchor rows`
-      );
-    }
-    return { data: out.data, anchors };
-  };
-  if (opts.warmUp ?? true) {
-    const meta = session.inputMetadata?.[0];
-    const dims = meta?.isTensor ? meta.shape : void 0;
-    const h = dims?.[2];
-    const side = typeof h === "number" && h > 0 ? h : IMG_SIZE;
-    try {
-      await run(new Float32Array(3 * side * side), side);
-    } catch (err) {
       await session.release().catch(() => {
       });
-      throw err;
+      return createModelRunner(modelUrl, { ...opts, executionProviders: ["wasm"] });
     }
-  }
-  return Object.assign(run, {
-    dispose: () => session.release()
+    const inputName = session.inputNames[0];
+    const outputName = session.outputNames[0];
+    if (!inputName || !outputName) throw new Error("model has no input/output tensor");
+    const run = validatedRun(ort, session, inputName, outputName);
+    const side = inputSide(session);
+    const probe = () => run(new Float32Array(3 * side * side), side);
+    if (opts.warmUp ?? true) {
+      await probe();
+      const hidden = () => globalThis.document?.visibilityState === "hidden";
+      if (gpu && chosenHere && !hidden()) {
+        let best = Number.POSITIVE_INFINITY;
+        let watched = true;
+        for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
+          const started = performance.now();
+          await probe();
+          if (hidden()) watched = false;
+          else best = Math.min(best, performance.now() - started);
+        }
+        const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
+        if (watched && !hidden() && best > budget) {
+          console.info(
+            `[cubus] the GPU ran this model in ${Math.round(best)} ms \u2014 slower than the wasm runtime, so using that instead`
+          );
+          await session.release().catch(() => {
+          });
+          return createModelRunner(modelUrl, { ...opts, executionProviders: ["wasm"] });
+        }
+      }
+    }
+    return Object.assign(run, {
+      dispose: () => session.release(),
+      providers: executionProviders
+    });
   });
 }
 
@@ -3039,7 +3136,7 @@ var WebDetector = class {
     this.stop();
     const run = this.run;
     this.run = null;
-    void run?.dispose?.().catch(() => {
+    void run?.dispose().catch(() => {
     });
   }
 };

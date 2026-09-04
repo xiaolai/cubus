@@ -7,12 +7,12 @@
 
 import { type CameraOptions, type FrameSource, listCameras, openCamera } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
-import { type RunModel, preprocess } from '../src/onnx-detect.js';
-import { createModelRunner } from './onnx-runtime.js';
+import { preprocess } from '../src/onnx-detect.js';
+import { type ModelRunner, createModelRunner } from './onnx-runtime.js';
 
 export class WebDetector implements Detector {
   private source: FrameSource | null = null;
-  private run: RunModel | null = null;
+  private run: ModelRunner | null = null;
   private opening: AbortController | null = null;
 
   /**
@@ -88,11 +88,15 @@ export class WebDetector implements Detector {
 
   dispose(): void {
     this.stop();
-    // `createModelRunner` attaches the handle; a runner built before it did, or injected by a test,
-    // simply has nothing to release. Fire-and-forget because disposal happens on teardown paths
-    // that are synchronous, and a failed release is not something a caller can act on.
-    const run = this.run as (RunModel & { dispose?: () => Promise<void> }) | null;
+    // Fire-and-forget because disposal happens on teardown paths that are synchronous, and a
+    // failed release is not something a caller can act on.
+    //
+    // No cast here any more: `createModelRunner` DECLARES what it returns (`ModelRunner`), so the
+    // handle is part of the type rather than something this file asserts into existence. The cast
+    // it replaces also carried an optional `dispose?`, which described a runner this field can no
+    // longer hold.
+    const run = this.run;
     this.run = null;
-    void run?.dispose?.().catch(() => {});
+    void run?.dispose().catch(() => {});
   }
 }

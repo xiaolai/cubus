@@ -64,7 +64,7 @@ after(() => {
  * The same lesson the WebGPU benchmark learned earlier the same day, where one hung GPU process
  * poisoned every case after it in the same browser. Carrying it here rather than re-learning it.
  */
-async function withBrowser(fn) {
+async function withBrowser(fn, args) {
   // ONE retry, and only for the browser dying on the way up.
   //
   // A browser per use fixed the first version of this (a shared instance dying poisoned every
@@ -78,11 +78,17 @@ async function withBrowser(fn) {
   // memory does not. That distinction is the whole reason this is bounded at one attempt: the
   // point is to stop reporting a fact about the machine as a fact about the GPU, not to keep
   // trying until something passes.
-  const crashed = (e) => /Target crashed|Target page, context or browser has been closed|browserType\.launch/.test(String(e?.message ?? e));
+  // `net::ERR_ABORTED` on the FIRST navigation belongs here for the same reason `Target crashed`
+  // does, and was seen once: a headed Chromium forced onto SwiftShader (`--disable-gpu`) aborts its
+  // first `goto` under load, and passes on the next attempt. That is a fact about a browser coming
+  // up on a loaded machine, not about the software-adapter rule the case is asserting — and a gate
+  // that reports it as the latter is a lottery, which is the failure this whole helper exists to
+  // avoid. Still bounded at one attempt: a navigation that genuinely cannot complete reproduces.
+  const crashed = (e) => /Target crashed|Target page, context or browser has been closed|browserType\.launch|net::ERR_ABORTED/.test(String(e?.message ?? e));
   for (let attempt = 0; ; attempt++) {
     const browser = await chromium.launch({
       headless: false,
-      args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'],
+      args: args ?? ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'],
     });
     try {
       return await fn(browser);
@@ -151,6 +157,96 @@ test('the vendored runtime can actually reach a GPU', async () => {
   const picked = await runUnder(null);
   assert.deepEqual(picked.chosen, ['webgpu', 'wasm'], 'preferredProviders did not choose the GPU');
   assert.equal(picked.anchors, 8400);
+});
+
+// A SOFTWARE adapter is not a slow GPU, it is the wrong path — and the browser hands one out
+// without being asked. Measured here, on this model, one page:
+//
+//     webgpu, real GPU              0.4-2.0 s to load       20 ms a frame
+//     wasm, 6 threads, proxy        0.8 s to load           57 ms a frame
+//     webgpu, SwiftShader          86.3 s to load         6184 ms a frame
+//
+// So a machine whose real GPU is blocklisted, whose driver is broken, or which is running in a VM
+// or over remote desktop went from the middle row to the bottom one — a hundredfold regression,
+// arriving with the WebGPU switch and invisible to every test here, because the whole suite
+// launches with `--ignore-gpu-blocklist` and therefore never meets the case a user does.
+//
+// This is the same claim `onnx-threads.test.ts` pins against a stubbed adapter. It is worth having
+// twice: the unit test proves the RULE, and this proves the browser really does answer this way
+// and that the rule reads the fields it actually populates.
+test('a software adapter is refused, however real it says it is', async () => {
+  const seen = await withBrowser(
+    async (browser) => {
+      const page = await browser.newPage();
+      await page.goto(`${base}/index.html`);
+      const out = await page.evaluate(async () => {
+        const { preferredProviders } = await import('./vendor/ai-scan-panel.js');
+        if (!navigator.gpu) return { api: false };
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) return { api: true, adapter: false };
+        const info = adapter.info ?? {};
+        return {
+          api: true,
+          adapter: true,
+          software:
+            (adapter.isFallbackAdapter ?? info.isFallbackAdapter ?? false) === true ||
+            /swiftshader|llvmpipe|lavapipe|warp|basic render/i.test(
+              `${info.vendor ?? ''} ${info.architecture ?? ''} ${info.description ?? ''}`,
+            ),
+          providers: await preferredProviders(),
+        };
+      });
+      await page.close();
+      return out;
+    },
+    // Forced onto Chromium's CPU rasteriser — the same thing a blocklisted GPU produces.
+    ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--use-gl=swiftshader', '--disable-gpu'],
+  );
+  // Reported rather than skipped, as everywhere else in this file: a Chromium that cannot be
+  // forced onto SwiftShader is a fact about the box, and it must not read as a pass.
+  if (!seen.adapter) {
+    console.log('    no adapter under swiftshader here — the software case cannot be checked');
+    return;
+  }
+  assert.equal(seen.software, true, 'the forced-software browser did not report a software adapter');
+  assert.deepEqual(seen.providers, ['wasm'], 'a software adapter was chosen over the wasm runtime');
+});
+
+// The class behind the name list above: whatever a rasteriser calls itself, a provider that cannot
+// run this model inside the budget loses to wasm. Driven through `gpuBudgetMs` rather than by
+// finding hardware slow enough — the seam exists for exactly this, the same way
+// `executionProviders` does — so the branch is exercised on the machine that has a working GPU.
+test('a GPU that runs slower than the budget is handed back for wasm', async () => {
+  const out = await withBrowser(async (browser) => {
+    const page = await browser.newPage();
+    await page.goto(`${base}/index.html`);
+    const r = await page.evaluate(async () => {
+      const { createModelRunner, preferredProviders } = await import('./vendor/ai-scan-panel.js');
+      const chosen = await preferredProviders();
+      if (chosen[0] !== 'webgpu') return { gpu: false };
+      const run = await createModelRunner(new URL('./vendor/cube-yolo.onnx', document.baseURI).href, {
+        wasmPaths: new URL('./vendor/', document.baseURI).href,
+        ortUrl: new URL('./vendor/ort.mjs', document.baseURI).href,
+        // 0 ms: no run can meet it, so the GPU is always judged unviable. The point is the
+        // BRANCH — session released, runner rebuilt on wasm — not the threshold's value.
+        gpuBudgetMs: 0,
+      });
+      const side = 640;
+      const outTensor = await run(new Float32Array(3 * side * side), side);
+      return { gpu: true, providers: run.providers, anchors: outTensor.anchors };
+    });
+    await page.close();
+    return r;
+  });
+  if (!out.gpu) {
+    console.log('    no GPU chosen here — the fallback path needs one to fall back FROM');
+    return;
+  }
+  assert.deepEqual(out.providers, ['wasm'], 'the slow GPU was kept instead of falling back');
+  // The rebuilt runner has to WORK, not merely exist: the failure this guards is a released
+  // session whose replacement was never usable, which looks like a fallback right up to the
+  // first frame.
+  assert.equal(out.anchors, 8400, 'the runner rebuilt on wasm does not produce the tensor');
 });
 
 test('both providers read the same frame the same way', async () => {

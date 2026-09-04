@@ -56,6 +56,20 @@ export function preprocess(frame: Frame, imgsz: number = IMG_SIZE): Preprocessed
   return { data: out, imgsz };
 }
 
+/**
+ * How many colour classes the detector distinguishes — one per cube face, 0 white … 5 blue, matching
+ * `ml/data.yaml`. Named here because it was a bare `6` default below, which meant the ONE number
+ * that decides how the output tensor is indexed had no name to be checked against anywhere else.
+ */
+export const NUM_CLASSES = 6;
+
+/**
+ * Rows in a YOLO detect head: four box coordinates, then one score per class. This is the exact
+ * height the output tensor must have, and `createModelRunner` refuses anything else — a tensor with
+ * a different row count is a different model, and decoding it would read the cube off stale offsets.
+ */
+export const DETECT_ROWS = 4 + NUM_CLASSES;
+
 /** The injected model call: input CHW tensor → flat output tensor + its anchor count. */
 export type RunModel = (input: Float32Array, imgsz: number) => Promise<ModelOutput>;
 
@@ -73,7 +87,12 @@ export interface DetectOptions {
  * NO_FACE / PARTIAL_FACE / BAD_GEOMETRY) by this one implementation, which the invariant tests cover.
  */
 export function fitFromOutput(output: ModelOutput, opts: DetectOptions = {}): FitResult {
-  const { numClasses = 6, confThreshold = 0.25, iouThreshold = 0.45, minConf = 0.25 } = opts;
+  const {
+    numClasses = NUM_CLASSES,
+    confThreshold = 0.25,
+    iouThreshold = 0.45,
+    minConf = 0.25,
+  } = opts;
   const dets = nms(
     decodeDetections(output.data, numClasses, output.anchors, confThreshold),
     iouThreshold,
