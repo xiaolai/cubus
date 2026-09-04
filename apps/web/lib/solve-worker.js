@@ -8,7 +8,7 @@
 // run on the main thread under `node --test`. This file is the postMessage plumbing, the view
 // slice each request carries, and the one shared word that lets a search be called off.
 
-import { handleSolveRequest, shouldStop, stopWord } from './solve-client.js';
+import { ADOPT_TABLES, PREPARE_TABLES, handleSolveRequest, handleTableRequest, shouldStop, stopWord } from './solve-client.js';
 import { createSolver } from './solver-engine.js';
 import * as twoPhase from './two-phase.js';
 
@@ -40,6 +40,14 @@ twoPhase.setStopSignal((depth) => shouldStop(best, depth));
 
 self.addEventListener('message', (event) => {
   const data = event.data ?? {};
+  // The table handshake, which is not a search: one worker builds the eleven tables into a
+  // SharedArrayBuffer and the rest take views of the same bytes (2026-09-05). It can only arrive
+  // between searches — a search is synchronous, so this thread is never inside one when a message
+  // is delivered, which is what makes re-pointing the engine's tables here safe with no locking.
+  if (data.kind === PREPARE_TABLES || data.kind === ADOPT_TABLES) {
+    self.postMessage(handleTableRequest(twoPhase, data));
+    return;
+  }
   // `shared` is this request's word, or null when the page cannot make one. Cleared in the
   // finally so a request that arrives without one cannot inherit its predecessor's.
   best = stopWord(data.shared);

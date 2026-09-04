@@ -72,6 +72,34 @@ export function handleSolveRequest(solve, request, readStats = () => ({})) {
   }
 }
 
+/**
+ * The other half of the worker protocol: build the engine's tables, or take another thread's.
+ *
+ * Here rather than in solve-worker.js for the same reason `handleSolveRequest` is — that file runs
+ * only on a thread no test process has, so anything with a decision in it lives on this side of
+ * the boundary where `node --test` can drive it against the real engine.
+ *
+ * `PREPARE_TABLES` builds once into a SharedArrayBuffer and returns descriptors; `ADOPT_TABLES`
+ * takes them. Both answer in the same tagged `{ok}` shape as a solve, so one listener and one
+ * error rule cover every reply the worker can send.
+ */
+export const PREPARE_TABLES = 'prepare-tables';
+export const ADOPT_TABLES = 'adopt-tables';
+
+export function handleTableRequest(engine, request) {
+  const { id, kind } = request ?? {};
+  try {
+    if (kind === PREPARE_TABLES) return { id, ok: true, kind: 'tables', tables: engine.shareTables() };
+    if (kind === ADOPT_TABLES) {
+      engine.initialize({ adopt: request.tables });
+      return { id, ok: true, kind: 'adopted' };
+    }
+    return { id, ok: false, error: `solver worker was sent an unknown control request "${String(kind)}"` };
+  } catch (err) {
+    return { id, ok: false, error: errorText(err) };
+  }
+}
+
 /** A reply's sort-key field, or -1. Not trusted: a malformed or missing value must not become
  *  a key that sorts ahead of a real one. */
 const key = (v) => (Number.isInteger(v) && v >= 0 ? v : -1);
@@ -146,6 +174,15 @@ export function createSolveClient({ spawn } = {}) {
       const waiting = pending.get(data.id);
       if (!waiting) return; // a reply to a search that was already abandoned
       pending.delete(data.id);
+      // A control reply — table sharing — carries no algorithm, so it is settled on its own tag
+      // and never through the search validator below. Same `ok` rule either way: an empty error
+      // string must not read as success.
+      if (waiting.control) {
+        if (data.ok === true) waiting.resolve(data);
+        else if (data.ok === false && typeof data.error === 'string') waiting.reject(new Error(data.error));
+        else waiting.reject(new Error('solver worker sent a malformed reply'));
+        return;
+      }
       // The reply is validated, not trusted: `ok` is the tag (an empty error string must not
       // read as success), and a success carries an algorithm string or null, nothing else.
       if (data.ok === true && (typeof data.alg === 'string' || data.alg === null)) {
@@ -262,6 +299,29 @@ export function createSolveClient({ spawn } = {}) {
     });
   }
 
+  /**
+   * A control request on this client's worker — table sharing, and nothing else so far.
+   *
+   * It rides the SAME id space, the same pending map and the same listener as a search, so a
+   * control reply cannot be mistaken for a search's and a worker that dies mid-handshake rejects
+   * it exactly as it rejects a search. It carries no signal and no stop word: preparing tables is
+   * neither long enough to want stopping nor safe to abandon halfway — the reply is what the
+   * other five workers are waiting for.
+   */
+  function control(message) {
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+      const active = attach();
+      pending.set(id, { resolve, reject, control: true });
+      try {
+        active.postMessage({ id, ...message });
+      } catch (err) {
+        pending.delete(id);
+        reject(err);
+      }
+    });
+  }
+
   /** Abandon everything in flight. The next `solve` starts a fresh worker. */
   function cancel() {
     for (const [, waiting] of pending) waiting.reject(new Error(CANCELLED));
@@ -273,6 +333,7 @@ export function createSolveClient({ spawn } = {}) {
   return {
     solve,
     cancel,
+    control,
     /** Make the worker now, and hand it back, so a caller can see WHAT it got before committing
      *  work to it. The pool needs exactly that: `spawnSolveWorker` answers with a main-thread
      *  worker where it cannot build a real one, and dividing a budget between several of those
@@ -352,7 +413,7 @@ export function pickWinner(replies) {
  * allows overlapping solves, and a single shared word let one cube's answer stop another cube's
  * search.
  */
-export function createParallelSolveClient({ spawn, workers, viewCount, makeShared = null } = {}) {
+export function createParallelSolveClient({ spawn, workers, viewCount, makeShared = null, shareTables = false } = {}) {
   if (typeof spawn !== 'function') throw new TypeError('createParallelSolveClient needs a spawn function');
   const slices = sliceViews(workers ?? 1, viewCount);
   const clients = slices.map(() => createSolveClient({ spawn }));
@@ -361,6 +422,11 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
   // not give us six threads once will not give us six the next time either, and re-learning
   // that on every solve would cost a spawn attempt and a table build each time.
   let lone = null;
+  // Off unless the caller asks. The pool is constructed in tests against fake workers that know
+  // nothing of tables, and on a page without SharedArrayBuffer there is nothing to share — so the
+  // capability is INJECTED like `makeShared`, never inferred here.
+  let sharing = shareTables === true;
+  let handshake = null;
 
   async function solve(facelets, { solLen, probeMax = DEFAULT_NODE_BUDGET, signal = null } = {}) {
     if (lone) return lone.solve(facelets, { solLen, probeMax, signal });
@@ -406,6 +472,10 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
         'there is no real worker here, so a pool would be main-thread searches with a share of the budget each',
       );
     }
+    // One build for the whole pool, before anything is asked to search. Awaited, and that is the
+    // point: the first solve used to wait for six concurrent table builds anyway, and now it
+    // waits for one uncontended build plus a handful of milliseconds of adoption.
+    if (sharing) await shareTablesAcrossPool();
     // A fresh word per solve. `makeShared` is injected so a page without SharedArrayBuffer — or
     // a test — gets a correct client that simply never stops early.
     const stop = makeShared?.() ?? null;
@@ -464,6 +534,78 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
     return pickWinner(settled.map((r) => r.value));
   }
 
+  /**
+   * Build the engine's eleven tables ONCE, on the first worker, and give the rest a view of them.
+   *
+   * 9.82 MiB and 0.4-2.6 s per worker, six times over, was the pool paying six times for one
+   * thing — and then holding six identical copies for the life of the page. The first worker
+   * builds into a SharedArrayBuffer and hands back descriptors; this thread relays them and never
+   * looks inside, which is what keeps the engine out of the main bundle (app.js imports this file
+   * and must not import two-phase.js — the rule the VIEW_COUNT comment in solver-engine.js states
+   * for one integer, and the tables are 9.82 MiB of it).
+   *
+   * Idempotent through `handshake`, because overlapping solves are allowed and two of them
+   * arriving cold must not build twice.
+   *
+   * Three ways it does not happen, and each leaves a pool that still answers:
+   *   * every "worker" is this thread — then there is ONE module instance and one set of tables
+   *     already, so there is nothing to share and nothing lost by not sharing;
+   *   * the worker cannot make a SharedArrayBuffer (no cross-origin isolation) — sharing is given
+   *     up for the session, loudly and once, and every worker builds its own exactly as before;
+   *   * a worker refuses the bundle — a checksum mismatch is a corrupted table set, so it is said
+   *     out loud and that worker simply builds its own on its next search.
+   */
+  async function shareTablesAcrossPool() {
+    // A main-thread "worker" is one realm: the module instance, and therefore the tables, are
+    // already shared by construction. Checked before the handshake rather than after, or the
+    // control message would reach `handleSolveRequest` and come back as a solver error.
+    if (clients.some((c) => c.ensureWorker()?.inline === true)) {
+      sharing = false;
+      return;
+    }
+    handshake ??= (async () => {
+      const published = await clients[0].control({ kind: PREPARE_TABLES });
+      const bundle = published?.tables ?? null;
+      if (!bundle) throw new Error('the solver worker published no tables');
+      const refusals = await Promise.all(clients.slice(1).map((c) =>
+        c.control({ kind: ADOPT_TABLES, tables: bundle }).then(() => null, (err) => err)));
+      // Both outcomes are said out loud, and they are not the same thing. A REFUSAL is a table
+      // set that failed its checksum — a defect, and the loudest thing here. A thread that DIED
+      // says nothing about the tables; what it costs is that its replacement will never be
+      // offered them, so it builds its own for the rest of the session — a slower pool, and
+      // silent unless it is reported.
+      for (const err of refusals) {
+        if (!err) continue;
+        if (isWorkerFailure(err)) {
+          console.warn(
+            `solve-client: a solver worker died during the table handshake (${err.message}) — ` +
+            'its replacement will build its own tables. Answers are unaffected.',
+          );
+        } else {
+          console.error(
+            `solve-client: a solver worker refused the shared tables (${err.message}) — ` +
+            'it will build its own. This is a corrupted or mismatched table set, not a slow one.',
+          );
+        }
+      }
+      return bundle;
+    })();
+    try {
+      await handshake;
+    } catch (err) {
+      handshake = null;
+      // A thread that died says nothing about tables; it goes down the one fallback path the pool
+      // already has, which ends with a single worker searching every view.
+      if (isWorkerFailure(err)) throw err;
+      sharing = false;
+      console.warn(
+        `solve-client: the solver tables could not be shared (${err.message}) — ` +
+        'each worker will build its own for the rest of this session. Answers are unaffected; ' +
+        'a cold session costs one table build per worker instead of one in all.',
+      );
+    }
+  }
+
   function cancel() {
     for (const c of clients) c.cancel();
     lone?.cancel();
@@ -476,6 +618,10 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
     // fallen back reports the one worker it actually has rather than the six it wanted.
     get idle() { return clients.every((c) => c.idle) && (lone?.idle ?? true); },
     get workers() { return lone ? 1 : clients.length; },
+    /** Whether the pool is still on one shared table set. False the moment it gave up on one,
+     *  so a test — or a measurement — cannot mistake a quiet fallback for the thing it meant to
+     *  measure. */
+    get sharingTables() { return sharing; },
   };
 }
 
