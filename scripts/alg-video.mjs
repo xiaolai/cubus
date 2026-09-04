@@ -47,6 +47,16 @@ export const DEFAULTS = Object.freeze({
   cameraLongitude: 45,
   fps: 60,
   size: 512,
+  // SUPERSAMPLING, and it is the difference between the video and the app rather than a luxury.
+  // `<cubus-cube>` calls `setPixelRatio(Math.min(devicePixelRatio, 2))`, and headless Chromium
+  // reports a devicePixelRatio of 1 — so a capture draws into HALF the backing store the same
+  // element uses on any Retina screen, and every sticker edge and rounded corner comes back
+  // stair-stepped. Capturing at 2x and scaling down with lanczos puts the edges back, and does it
+  // better than the app's own MSAA because the downsample is a real box of samples per pixel.
+  //
+  // 2 rather than more because the element caps its own pixel ratio at 2: asking for 3 raises the
+  // cost and changes nothing.
+  supersample: 2,
   // A beat before and after. A hard cut into the first turn reads as a glitch, and a loop with no
   // rest is unwatchable — 0.4 s is long enough to see the start state and short enough not to drag.
   hold: 0.4,
@@ -128,9 +138,20 @@ export async function capture(o) {
   // success — six files, right codecs, right frame count, nothing inside.
   const browser = await chromium.launch();
   try {
+    // A TRUE linear factor, split across the two knobs that can deliver it.
+    //
+    // deviceScaleFactor alone cannot: the element calls `setPixelRatio(Math.min(dpr, 2))`, so
+    // anything above 2 is silently discarded and `--supersample 4` would cost nothing and change
+    // nothing — the exact shape of the ignored flags this tool has already been bitten by twice.
+    // So the ratio takes what it can (up to 2) and the CSS box takes the rest. The composition is
+    // unaffected because the capture is square and the element frames on aspect.
+    //
+    // Backing store ends up at `size * supersample` either way, and encode() scales it down.
+    const ratio = Math.min(opts.supersample, 2);
+    const css = Math.round((opts.size * opts.supersample) / ratio);
     const page = await browser.newPage({
-      viewport: { width: opts.size, height: opts.size },
-      deviceScaleFactor: 1,
+      viewport: { width: css, height: css },
+      deviceScaleFactor: ratio,
     });
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
@@ -144,8 +165,10 @@ export async function capture(o) {
 
     const moves = await page.evaluate((o) => {
       const c = document.createElement('cubus-cube');
-      c.style.width = `${o.size}px`;
-      c.style.height = `${o.size}px`;
+      // The CSS box is the (possibly enlarged) capture box, not the output size — see the ratio
+      // split above. `encode()` brings it back down to `size`.
+      c.style.width = `${o.css}px`;
+      c.style.height = `${o.css}px`;
       if (o.facelets) c.setAttribute('facelets', o.facelets);
       else if (o.scramble) c.setAttribute('scramble', o.scramble);
       c.setAttribute('alg', o.alg);
@@ -166,7 +189,7 @@ export async function capture(o) {
         if (e.detail.index >= e.detail.total) window.__done = true;
       });
       return o.alg.trim().split(/\s+/).filter(Boolean).length;
-    }, opts);
+    }, { ...opts, css });
 
     const shoot = () =>
       page.evaluate(() => {
@@ -255,7 +278,7 @@ function ffmpeg(args, what) {
  * to discover: an un-flattened transparent frame encodes onto BLACK, which is not a choice, just
  * what yuv420p does with an empty alpha channel.
  */
-export function encode(frames, { outDir, name, fps, background, formats }) {
+export function encode(frames, { outDir, name, fps, background, formats, size }) {
   mkdirSync(outDir, { recursive: true });
   const dir = mkdtempSync(join(tmpdir(), 'cubus-alg-'));
   try {
@@ -273,13 +296,18 @@ export function encode(frames, { outDir, name, fps, background, formats }) {
     // brown. Dropping to rgb24 makes the flatten mean what it says everywhere.
     const flattened = (bg) =>
       `split[a][b];[a]drawbox=x=0:y=0:w=iw:h=ih:color=${bg}:t=fill[bg];[bg][b]overlay=format=auto,format=rgb24`;
+    // The supersampled frames come down to the requested size here, and lanczos is the point of
+    // the exercise: a box filter would give back most of the aliasing this was rendered at 2x to
+    // avoid. `-1` on nothing — both axes are explicit, because the capture is square by
+    // construction and a guessed axis is a silent letterbox.
+    const down = size ? `scale=${size}:${size}:flags=lanczos` : 'null';
     const written = [];
 
     if (formats.includes('mp4')) {
       // yuv420p and even dimensions, or half the world cannot play it.
       ffmpeg([
         '-framerate', String(fps), '-i', pattern,
-        '-vf', `${flattened(background)},scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p`,
+        '-vf', `${flattened(background)},${down},scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p`,
         '-c:v', 'libx264', '-crf', '18', '-movflags', '+faststart', out('mp4'),
       ], 'mp4');
       written.push(out('mp4'));
@@ -292,13 +320,13 @@ export function encode(frames, { outDir, name, fps, background, formats }) {
       // the same background as the mp4 and APNG is the transparent one.
       ffmpeg([
         '-framerate', String(fps), '-i', pattern,
-        '-vf', `${flattened(background)},format=yuv420p`,
+        '-vf', `${flattened(background)},${down},format=yuv420p`,
         '-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', '30', out('webm'),
       ], 'webm');
       written.push(out('webm'));
     }
     if (formats.includes('apng')) {
-      ffmpeg(['-framerate', String(fps), '-i', pattern, '-plays', '0', '-f', 'apng', out('apng')], 'apng');
+      ffmpeg(['-framerate', String(fps), '-i', pattern, '-vf', down, '-plays', '0', '-f', 'apng', out('apng')], 'apng');
       written.push(out('apng'));
     }
     if (formats.includes('gif')) {
@@ -313,7 +341,7 @@ export function encode(frames, { outDir, name, fps, background, formats }) {
       const flat = join(dir, 'flat');
       mkdirSync(flat, { recursive: true });
       const flatPattern = join(flat, '%06d.png');
-      ffmpeg(['-i', pattern, '-vf', flattened(background), flatPattern], 'the flattened gif frames');
+      ffmpeg(['-i', pattern, '-vf', `${flattened(background)},${down}`, flatPattern], 'the flattened gif frames');
       const palette = join(dir, 'palette.png');
       // `reserve_transparent=0`, or the flatten is undone anyway: palettegen keeps a transparent
       // entry by DEFAULT and paletteuse spends it on inter-frame differencing, so a gif explicitly
@@ -326,9 +354,15 @@ export function encode(frames, { outDir, name, fps, background, formats }) {
       written.push(out('gif'));
     }
     if (formats.includes('png')) {
-      // The teaching stills: where it starts and where it ends.
-      writeFileSync(out('start.png'), frames[0]);
-      writeFileSync(out('end.png'), frames[frames.length - 1]);
+      // The teaching stills. Through ffmpeg rather than a straight copy, because the captured
+      // frames are supersampled — writing them raw would hand back a 2x image from a `--size 512`
+      // run, which is the kind of quiet mismatch that turns up later as a layout that does not fit.
+      // These keep their alpha; only the video formats are flattened.
+      for (const [i, ext] of [[0, 'start.png'], [frames.length - 1, 'end.png']]) {
+        const one = join(dir, `still-${ext}`);
+        writeFileSync(one, frames[i]);
+        ffmpeg(['-i', one, '-vf', down, out(ext)], ext);
+      }
       written.push(out('start.png'), out('end.png'));
     }
     return written;
@@ -363,6 +397,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (!alg) {
     console.error(`usage: alg-video.mjs --alg "R U R' U'" [--out-dir DIR --name NAME | --out FILE]
        [--formats mp4,webm,apng,gif,png] [--fps ${DEFAULTS.fps}] [--size ${DEFAULTS.size}]
+       [--supersample ${DEFAULTS.supersample}]
        [--hold ${DEFAULTS.hold}] [--tempo ${DEFAULTS.tempo}] [--background '${DEFAULTS.background}']
        [--scramble ALG | --facelets STR] [--palette NAME] [--back-view none|ghost]
        [--ghosts floating|none (${DEFAULTS.ghosts})] [--ghost-elevation ${DEFAULTS.ghostElevation}]
@@ -388,6 +423,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     facelets: arg('facelets'),
     fps: Number(arg('fps', DEFAULTS.fps)),
     size: Number(arg('size', DEFAULTS.size)),
+    supersample: Number(arg('supersample', DEFAULTS.supersample)),
     hold: Number(arg('hold', DEFAULTS.hold)),
     tempo: Number(arg('tempo', DEFAULTS.tempo)),
     background: arg('background', DEFAULTS.background),
@@ -404,7 +440,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   };
   const t0 = Date.now();
   const { frames, moves } = await capture(opts);
-  const written = encode(frames, { outDir, name, fps: opts.fps, background: opts.background, formats });
+  const written = encode(frames, {
+    outDir, name, fps: opts.fps, background: opts.background, formats, size: opts.size,
+  });
   console.log(
     `${moves} moves, ${frames.length} frames at ${opts.fps}fps ` +
       `(${(frames.length / opts.fps).toFixed(2)}s) in ${((Date.now() - t0) / 1000).toFixed(1)}s`,

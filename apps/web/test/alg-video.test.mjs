@@ -76,6 +76,33 @@ describe('capture', () => {
   });
 });
 
+// EVERY FLAG THE HELP ADVERTISES IS ACTUALLY READ.
+//
+// This has now gone wrong twice, in the same shape both times: `--ghost-elevation`,
+// `--facelet-scale` and `--back-view` were printed in the usage and never parsed, and so was
+// `--supersample`. The symptom is the worst kind — the command is accepted, the run succeeds, the
+// file is written, and the picture is simply not what was asked for. The first suspect is always
+// the renderer, because the command line looks right.
+//
+// A source sweep rather than a run, because the failure is an option that does nothing: there is
+// no output to assert on.
+test('every option in the usage text is parsed', () => {
+  const src = readFileSync(new URL('../../../scripts/alg-video.mjs', import.meta.url), 'utf8');
+  const usage = /console\.error\(`usage:([\s\S]*?)`\);/.exec(src);
+  assert.ok(usage, 'the usage text moved — this sweep cannot find the flags to check');
+  const advertised = [...new Set([...usage[1].matchAll(/--([a-z][a-z-]*)/g)].map((m) => m[1]))];
+  assert.ok(advertised.length > 8, `only found ${advertised.length} flags in the usage text`);
+  for (const flag of advertised) {
+    assert.match(
+      src,
+      new RegExp(`arg\\('${flag}'`),
+      `--${flag} is advertised in the usage text and never read with arg('${flag}', …). An option ` +
+        'that is documented and silently ignored is worse than one that does not exist: the ' +
+        'picture comes back wrong and the command line looks right.',
+    );
+  }
+});
+
 describe('encode', () => {
   // ffmpeg-dependent, so it SKIPS rather than passes when absent — a check that silently succeeds
   // without its tool is the shape AGENTS.md warns about. The capture tests above still gate.
