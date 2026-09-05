@@ -65,7 +65,7 @@ function solves(facelets, alg) {
  * with a slice's share, must fail to reach the sequential answer. Returns whether they differed.
  */
 function assertAgreeOrQuota(name, facelets, sequential, seqView, parallel) {
-  assert.ok(sequential, `${name} must be solvable at the shipped budget`);
+  assert.ok(sequential, `${name}: the sequential answer is missing — this helper is for answered states`);
   assert.ok(solves(facelets, sequential), `${name}: the sequential answer does not solve the cube`);
   if (parallel !== null) {
     assert.ok(solves(facelets, parallel.alg), `${name}: the pooled answer does not solve the cube`);
@@ -90,6 +90,7 @@ test('at the shipped budget every difference between the pool and one worker is 
     const sequential = engine.solvePattern(facelets);
     const seqView = engine.searchStats.view;
     const parallel = pooled(facelets, ONE_PER_VIEW, SHIPPED);
+    assert.ok(sequential, `${name} must be solvable at the shipped budget — its cost is measured in the fixture`);
     if (assertAgreeOrQuota(name, facelets, sequential, seqView, parallel)) differed.push(name);
   }
   // The measured boundary, recorded so a change in it is a finding rather than a surprise: on
@@ -103,15 +104,26 @@ test('on fresh draws the two never DISAGREE — a difference is the quota, and o
   // that a drawn state is answered by the pool, only that whatever the pool says is a solution of
   // the sequential length and that a miss or a different answer is the quota, proven each time.
   let differed = 0;
+  let unanswered = 0;
   for (let i = 0; i < 6; i++) {
     const facelets = randomCube(Cube).asString();
     engine.setBounds({ solLen: 21, probeMax: SHIPPED });
     const sequential = engine.solvePattern(facelets);
     const seqView = engine.searchStats.view;
+    if (sequential === null) {
+      // A state the sequential search itself does not answer at 50M — the rare hard state the app
+      // escalates for (AGENTS.md: a >200M state exists). Nothing is asserted about it here, only
+      // counted: asserting that a DRAW is answered under a budget is the lottery this file was
+      // taken out of on 2026-09-05, and it went red on a runner the same day it was reintroduced.
+      unanswered++;
+      continue;
+    }
     const parallel = pooled(facelets, ONE_PER_VIEW, SHIPPED);
     if (assertAgreeOrQuota(`draw ${i} (${facelets})`, facelets, sequential, seqView, parallel)) differed++;
   }
-  if (differed) console.log(`parallel-divergence: ${differed} of 6 fresh draws differed under the per-view quota (the documented mechanism)`);
+  if (differed || unanswered) {
+    console.log(`parallel-divergence: of 6 fresh draws, ${differed} differed under the per-view quota and ${unanswered} went unanswered at the shipped budget (both documented)`);
+  }
 });
 
 test('under budget pressure it diverges — a valid answer, not the same one', () => {
