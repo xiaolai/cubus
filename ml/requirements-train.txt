@@ -8,7 +8,7 @@
 # newer exporter changes the artefact bytes under a golden pin.
 #
 #   python3.11 -m venv ml/venv && ml/venv/bin/pip install -r ml/requirements-train.txt
-ultralytics==8.4.126
+ultralytics==8.4.138
 torch==2.13.0
 onnx==1.22.0
 onnxruntime==1.29.0
