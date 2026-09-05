@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# The fast tier before every push: typecheck, lint and vitest for the TypeScript packages, and
+# the web app's node-only suites. No browser is launched and no coverage is measured — those are
+# the full tier, which CI runs on `main`, nightly, and on a pull request labelled `e2e`
+# (.github/workflows/ci.yml). `pnpm check` is still the full tier, on purpose; this hook exists
+# so a push does not have to wait for it.
+#
+# HOW IT RUNS. This repository does not set core.hooksPath — a repo that does switches off the
+# global hooks in ~/.git-hooks (the commit-message and secret guards), which is worse than
+# having no local hook at all. Instead the global pre-push delegates to `.githooks/pre-push`
+# when the repository tracks one. On a machine with no global hooks, `git config core.hooksPath
+# .githooks` makes this one run directly.
+#
+# Bypass, narrowly: CUBUS_SKIP_CHECK=1 git push. `git push --no-verify` also works but skips the
+# secret scan with it, so prefer the variable.
+set -eu
+
+if [ "${CUBUS_SKIP_CHECK:-0}" = "1" ]; then
+  echo "pre-push: fast tier skipped (CUBUS_SKIP_CHECK=1)" >&2
+  exit 0
+fi
+
+# Nothing to check when the push only deletes refs.
+pushes=0
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  [ -z "${local_sha:-}" ] && continue
+  case "$local_sha" in *[!0]*) pushes=$((pushes + 1)) ;; esac
+done
+if [ "$pushes" -eq 0 ]; then
+  exit 0
+fi
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+echo "pre-push: running the fast tier (pnpm check:fast) — CUBUS_SKIP_CHECK=1 to skip" >&2
+exec pnpm check:fast

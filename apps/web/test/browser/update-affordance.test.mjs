@@ -18,10 +18,10 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
-import { pace } from './browser-wait.mjs';
-import { freePort } from './free-port.mjs';
+import { pace } from '../browser-wait.mjs';
+import { freePort } from '../free-port.mjs';
 
-const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
+const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 let BASE;
 let proc;
 let browser;

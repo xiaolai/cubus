@@ -15,6 +15,7 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "check": "npm run typecheck && npm run lint && npm run coverage",
+    "check:fast": "npm run typecheck && npm run lint && npm run test",
     "spike:refresh": "tsx scripts/spike-refresh.ts",
     "spike:serve": "tsx scripts/spike-server.ts"
   },

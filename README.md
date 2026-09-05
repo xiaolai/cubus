@@ -26,6 +26,7 @@ pnpm install
 pnpm dev          # the web app, on http://localhost:15173 (loopback only; CUBUS_DEV_HOST=0.0.0.0 for a phone on the LAN)
 pnpm dev:desktop  # the desktop app — needs Rust and the platform packages above
 pnpm check        # the quality gate
+pnpm check:fast   # the same without coverage or the browser suites — what runs before a push and on a pull request
 ```
 
 `pnpm dev` works on a clean clone with Node and pnpm alone. `pnpm dev:desktop` does not: it
