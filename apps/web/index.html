@@ -323,6 +323,15 @@
       /* A grid of one cell, so the composition box centres on the stage when the fit rule leaves
          paper — an iPad portrait stage is a little wider than 3:4 of its height. */
       .screen.active { display: grid; place-items: center; }
+      /* The screen is what every navigation focuses (renderScreen: a screen reader then announces
+         the route and a keyboard user starts inside it). It is a region with tabindex -1 — reached
+         by script, never by Tab — so a focus ring on it informs nobody, and WebKit drew one
+         anyway: at launch no pointer has been touched, its focus-visible heuristic counts a
+         script focus as keyboard-driven, and the default `outline: auto` boxed the whole stage in
+         blue (2026-09-05, from the day the focus landed). Scoped to the screen alone; every
+         control keeps its ring, and design-discipline.test.mjs refuses a wider selector. The
+         engine's own answer is measured in test/browser/focus-ring.test.mjs. */
+      .screen:focus { outline: none; }
 
       /* ---- the composition: primary · twin · aux · sheet ------------------------------------ */
       /* The two compositions of the layout contract (dev-docs/stage-contract.md), one DOM. A
