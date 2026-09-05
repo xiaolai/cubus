@@ -17,7 +17,9 @@
     "build:panel": "pnpm --filter cube-scanner build:panel",
     "build:cube": "pnpm --filter cubus-web build:cube",
     "build:desktop": "pnpm --filter cubus-desktop build",
-    "check": "pnpm -r run check"
+    "check": "pnpm -r --workspace-concurrency=1 run check",
+    "check:fast": "pnpm -r --workspace-concurrency=1 run check:fast",
+    "test:browser": "pnpm --filter cubus-web test:browser"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
