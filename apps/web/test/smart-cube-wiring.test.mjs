@@ -50,6 +50,14 @@ const fakeConn = (over = {}) => {
     mayFollow: () => check.verdict !== 'refused',
     numbersMoves: () => true,
     get verdict() { return check.verdict; },
+    /** The checker's counts, published exactly as the real session publishes them. `moveReports`
+     *  is what the app asks when it decides whether a scan held for a first report can still be
+     *  reconciled by it. */
+    get evidence() { return check.evidence; },
+    /** A turn the CUBE reported, counted by the checker and delivered to nobody. The real session
+     *  shows every MOVE to the checker before any listener of ours sees it, so this is the half of
+     *  a turn that can reach the app through no door of its own. */
+    countTurn(notation) { check.onMove(notation); },
     cameraScan(scanned, reported) {
       scans.push({ scanned, reported });
       check.onCameraScan(scanned, reported);
@@ -243,6 +251,93 @@ test('a scan taken before the first report is reconciled by it, never overwritte
   assert.ok(state.cube.offset, 'a correction was derived — trust now rests on a reconciled chain');
   assert.equal(state.cube.trusted, true);
   assert.equal(state.reconnect, null, 'six sides answer the question a two-sided memory check only spot-checks');
+
+  feed().useConnection(null);
+  await tick();
+});
+
+// The hold above is only good while the cube holds STILL. A turn between the scan and the first
+// report leaves the camera describing the cube before that turn and the report describing it
+// after: reconciling the pair derives a correction between two arrangements nobody ever saw
+// together — an invented offset — and the camera's trust rides on into a position the cube has
+// already left. Reproduced by the audit's second pass, 2026-09-05. The order is the whole test:
+// connect, scan, TURN, then the first report.
+test('a turn between the scan and the first report leaves the held scan stale, and nothing is derived from it', async () => {
+  const state = await appState();
+  const conn = fakeConn();
+  feed().useConnection(conn, '99:88:77:66:55:44'); // an address with nothing remembered
+  await tick();
+  assert.equal(state.reported, null, 'precondition: the cube has reported nothing yet');
+
+  const scanned = move(SOLVED, "R U R' F");
+  await go('scan');
+  $('#stage ai-scan-panel').dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: scanned, valid: true },
+  }));
+  await tick();
+  assert.equal(state.cube.trusted, true, 'precondition: the camera saw the cube, so the subject is trusted');
+  assert.equal(conn.scans.length, 0, 'precondition: there was no report to derive a correction against');
+
+  // One turn, through the door the driver uses. Nothing is following on the scan screen — which is
+  // exactly why invalidating the hold cannot be the follow hook's business.
+  feed().move({ notation: 'D', serial: 1, timestamp: Date.now() });
+  await tick();
+  assert.equal(state.cube.trusted, false,
+    'the cube turned after the camera saw it — that arrangement is no longer where the cube is');
+  const said = $('#cubeLiveSay').textContent;
+  assert.match(said, /position unverified/, 'and it is said where trust is shown, not left to be noticed');
+  assert.match(said, /turned after the camera saw it/, 'in the terms of what actually happened');
+
+  // The first report lands late, as it always does. It is now an ordinary first report.
+  const reported = move(SOLVED, 'F2 D');
+  feed().facelets(reported);
+  await tick();
+
+  assert.deepEqual(conn.scans, [],
+    'a stale scan was reconciled: the camera reading was of a cube that has since turned');
+  assert.equal(state.cube.offset, null,
+    'and a correction was derived between two arrangements nobody ever saw together');
+  assert.equal(state.cube.trusted, false,
+    'trust must not be granted on the strength of a reconciliation that could not honestly run');
+  assert.equal(state.cube.facelets, reported,
+    'the ordinary path takes over: the cube’s own report is the subject, and it is unverified');
+
+  feed().useConnection(null);
+  await tick();
+});
+
+// The same rule, asked of the cube's own record rather than of what reached us. A MOVE the session
+// counted while nothing here delivered it would leave the hold looking untouched, and "nothing
+// turned in between" would be a fact about our attention instead of about the cube.
+test('a turn the session counted but no handler delivered also leaves the held scan stale', async () => {
+  const state = await appState();
+  const conn = fakeConn();
+  feed().useConnection(conn, 'AB:CD:EF:12:34:56'); // another address with nothing remembered
+  await tick();
+
+  const scanned = move(SOLVED, "R U R' F");
+  await go('scan');
+  $('#stage ai-scan-panel').dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: scanned, valid: true },
+  }));
+  await tick();
+  assert.equal(state.cube.trusted, true, 'precondition: the camera saw the cube, so the subject is trusted');
+
+  // The checker is shown the turn; no listener is. The app's own door never fires.
+  conn.countTurn('D');
+  assert.equal(conn.evidence.moveReports, 1, 'precondition: the cube counted a turn');
+  assert.equal(state.cube.trusted, true, 'precondition: nothing has told the app about it yet');
+
+  const reported = move(SOLVED, 'F2 D');
+  feed().facelets(reported);
+  await tick();
+
+  assert.deepEqual(conn.scans, [],
+    'the session’s own count said a turn had happened, and the scan was reconciled anyway');
+  assert.equal(state.cube.offset, null, 'so nothing may be derived from the pair');
+  assert.equal(state.cube.trusted, false, 'and nothing may be trusted on the strength of it');
+  assert.match($('#cubeLiveSay').textContent, /turned after the camera saw it/,
+    'said in the same words, because it is the same fact');
 
   feed().useConnection(null);
   await tick();
