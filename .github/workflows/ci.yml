@@ -229,7 +229,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev libdbus-1-dev pkg-config
+            librsvg2-dev libdbus-1-dev pkg-config \
+            libpipewire-0.3-dev libclang-dev
 
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09-04
         with:
@@ -326,8 +327,18 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           TAURI_ANDROID_PROJECT_PATH: ${{ github.workspace }}/apps/desktop/src-tauri/gen/android
+          # What `tauri android build` exports before its cargo build, and what tauri's and wry's
+          # build scripts demand once TAURI_ANDROID_PROJECT_PATH turns the Android codegen on:
+          # the package the Kotlin files belong to, the Rust library they load, and the directory
+          # the generated Kotlin is written to (which must already exist — wry canonicalises it).
+          # The first run of this job on a real runner panicked on exactly the first of these
+          # (2026-09-05), which a `cargo check` without the project path never asks for.
+          WRY_ANDROID_PACKAGE: im.cubus.app
+          WRY_ANDROID_LIBRARY: cubus_desktop_lib
+          WRY_ANDROID_KOTLIN_FILES_OUT_DIR: ${{ github.workspace }}/apps/desktop/src-tauri/gen/android/app/src/main/java/im/cubus/app/generated
         run: |
           set -eu
+          mkdir -p "$WRY_ANDROID_KOTLIN_FILES_OUT_DIR"
           cargo check -p cubus-desktop --target aarch64-linux-android
           for f in tauri.settings.gradle app/tauri.build.gradle.kts; do
             test -f "apps/desktop/src-tauri/gen/android/$f" \
