@@ -47,6 +47,34 @@ test('an engine that cannot continue a search refuses one, before the bounds mov
   assert.equal(boundsSet, 1);
 });
 
+test('a carrier that cannot take the point back is refused, before the bounds move', () => {
+  // The other half of the rule above, and it was missing (2026-09-05 audit). `resume` was checked
+  // against the ENGINE's capability and never against its own: `false`, `7` and a frozen `{state}`
+  // all read fine — `resume.state ?? null` is undefined, then null — so the bounds moved, the
+  // search RAN, and the TypeError arrived on the write-back afterwards. Bounds are persistent
+  // engine state and the search is the expensive part; both had already happened.
+  for (const carrier of [false, 7, 'nope', Object.freeze({ state: null }),
+    Object.defineProperty({}, 'state', { value: null, writable: false })]) {
+    let boundsSet = 0;
+    let opened = 0;
+    const solve = createSolver({
+      initialize() {},
+      setBounds() { boundsSet += 1; },
+      solvePattern: () => '',
+      openSearch: () => { opened += 1; return { continueTo: () => '', state: {} }; },
+      VIEW_COUNT: 6,
+    });
+    const facelets = new Cube().asString();
+    assert.throws(() => solve(facelets, { resume: carrier }), TypeError, String(carrier));
+    assert.equal(boundsSet, 0, `${String(carrier)}: a refused carrier must not have moved the bounds`);
+    assert.equal(opened, 0, `${String(carrier)}: nor have searched`);
+    // And a carrier that CAN take it still works, on the same engine.
+    const good = { state: null };
+    assert.equal(solve(facelets, { resume: good }), '');
+    assert.deepEqual(good.state, {});
+  }
+});
+
 test('a carrier takes the resumable path and comes back holding the search', () => {
   // The seam itself: with a carrier the wrapper drives `openSearch`, and the state it writes back
   // is what makes the NEXT attempt a continuation. Dropping that write would leave every escalation

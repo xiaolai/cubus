@@ -492,6 +492,44 @@ test('one solve failing abandons ITS OWN siblings, not an overlapping solve', as
   assert.equal(client.idle, true);
 });
 
+test('the FALLBACK does not cancel an overlapping solve either', async () => {
+  // The same defect as above, one level out, and the half the fix missed (2026-09-05 audit). The
+  // per-request controller stopped `abandonAll` from touching a bystander — and then the fallback
+  // path, reached when a WORKER failure collapses the pool, called `c.cancel()` on every client
+  // anyway. cancel() rejects every entry on a client, so the bystander was rejected with "solve
+  // cancelled" by a failure that was not its own and that its own workers never saw.
+  //
+  // The shape that isolates it: a one-node budget uses exactly one client, so the bystander
+  // occupies worker 0 and nothing else, and the spawn of worker 1 — which only the second solve
+  // ever asks for — throws. The bystander's own worker is untouched throughout.
+  const made = [];
+  let spawns = 0;
+  const spawn = () => {
+    spawns += 1;
+    if (spawns === 2) throw new Error('Worker refused to start');
+    // The bystander's worker stays silent, so it is still searching when the fallback happens;
+    // the fallback's own worker answers, so the failing solve completes.
+    const w = fakeWorker({ autoReply: spawns > 2 }); made.push(w); return w;
+  };
+  const client = createParallelSolveClient({ spawn, workers: 3, viewCount: 6 });
+  let bystanderFailed = null;
+  const bystander = client.solve('F'.repeat(54), { solLen: 21, probeMax: 1 })
+    .catch((err) => { bystanderFailed = err; });
+  await Promise.resolve();
+  assert.equal(made.length, 1, 'a one-node budget must use exactly one client');
+
+  const { value } = await withWarnings(() => client.solve('U'.repeat(54), { solLen: 21, probeMax: 300 }));
+  assert.equal(value, 'R U', 'the fallback still answers the solve that failed');
+  // A turn of the event loop, so a rejection that IS coming has arrived before it is denied.
+  await new Promise((r) => { setTimeout(r, 0); });
+  assert.equal(bystanderFailed, null, 'the bystander was rejected by someone else\'s failure');
+  assert.equal(made[0].terminated, 0, 'and its worker — which never failed — was ended under it');
+
+  // It is still in flight, on the thread it started on, and answers from there.
+  made[0].emit({ id: made[0].sent[0].id, ok: true, alg: 'R U', depth: 9, view: 0 });
+  assert.equal(await bystander, 'R U');
+});
+
 test('an omitted budget is the engine default, divided — not one node each', async () => {
   const made = [];
   const client = createParallelSolveClient({ spawn: () => { const w = fakeWorker(); made.push(w); return w; }, workers: 3, viewCount: 6 });

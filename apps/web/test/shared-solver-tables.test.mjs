@@ -476,3 +476,99 @@ test('the worker answers a control request in the same tagged shape as a search'
   const unknown = handleTableRequest(taker, { id: 10, kind: 'demolish' });
   assert.deepEqual(unknown, { id: 10, ok: false, error: 'solver worker was sent an unknown control request "demolish"' });
 });
+
+// ---- the handshake and a teardown ---------------------------------------------------------------
+//
+// Both of these are about `cancel()` — the app calls it when a solve is superseded and when a screen
+// goes away — and both were found by the 2026-09-05 audit. A pool torn down is six threads ended,
+// and the handshake is the one place this client AWAITS something long enough for that to happen
+// underneath it.
+
+/** A worker that holds its PREPARE reply until `gate` settles. That window is the whole test: it is
+ *  where a cancel lands while the pool is waiting on the handshake. */
+function gatedWorker(index, gate) {
+  const listeners = new Map();
+  const w = {
+    index,
+    sent: [],
+    control: [],
+    terminated: 0,
+    addEventListener: (type, fn) => { listeners.set(type, fn); },
+    postMessage(msg) {
+      w.sent.push(msg);
+      if (msg.kind) w.control.push(msg.kind);
+      const reply = () => {
+        if (msg.kind === PREPARE_TABLES) return { id: msg.id, ok: true, kind: 'tables', tables: BUNDLE };
+        if (msg.kind === ADOPT_TABLES) return { id: msg.id, ok: true, kind: 'adopted' };
+        return { id: msg.id, ok: true, alg: 'R U', depth: 9, view: msg.views?.[0] ?? 0 };
+      };
+      const deliver = () => listeners.get('message')?.({ data: reply() });
+      if (msg.kind === PREPARE_TABLES) void gate.then(deliver);
+      else queueMicrotask(deliver);
+    },
+    terminate() { w.terminated += 1; },
+  };
+  return w;
+}
+
+test('a cancel during the handshake stops the solve, rather than being read as unshareable tables', async () => {
+  // What used to happen, reproduced: `cancel()` terminated all six workers, the awaiting solve read
+  // the rejected control request as "the tables could not be shared", spawned six REPLACEMENTS,
+  // searched on them and RESOLVED — a torn-down pool answering a question nobody was waiting for.
+  // And it gave up sharing for the session over a teardown, which says nothing about whether this
+  // page can share memory.
+  const made = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const said = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => said.push(a.join(' '));
+  let pool;
+  let outcome;
+  try {
+    pool = createParallelSolveClient({
+      spawn: () => { const w = gatedWorker(made.length, gate); made.push(w); return w; },
+      workers: 6,
+      viewCount: 6,
+      shareTables: true,
+    });
+    const inFlight = pool.solve('F'.repeat(54), { solLen: 21, probeMax: 600 })
+      .then((v) => ({ resolved: v }), (e) => ({ rejected: e.message }));
+    await Promise.resolve();
+    assert.deepEqual(made[0].control, [PREPARE_TABLES], 'the handshake must be in flight to be cancelled');
+    pool.cancel();
+    release();
+    outcome = await inFlight;
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.deepEqual(outcome, { rejected: 'solve cancelled' }, 'a cancelled pool must not answer');
+  assert.equal(made.length, 6, 'a cancelled solve spawned replacement threads and carried on');
+  assert.ok(made.every((w) => w.sent.every((m) => m.kind !== undefined)),
+    'not one search may be posted after the pool was cancelled');
+  assert.equal(pool.sharingTables, true, 'a teardown is not evidence that tables cannot be shared');
+  assert.deepEqual(said, [], 'and nothing was downgraded, so nothing should have been announced');
+});
+
+test('a cancel drops the handshake, so replacement workers adopt instead of building privately', async () => {
+  // `cancel()` ends the threads the handshake was ABOUT, and the resolved promise was kept — so
+  // every solve after a cancel skipped prepare and adopt entirely, each replacement worker built
+  // its own 9.82 MiB of private tables, and `sharingTables` went on reporting true. Six invisible
+  // table builds, and a diagnostic that could not see them.
+  const made = [];
+  const pool = poolOf(made);
+  const bounds = { solLen: 21, probeMax: 600 };
+  assert.equal(await pool.solve('F'.repeat(54), bounds), 'R U');
+  assert.deepEqual(made.map((w) => w.control), [
+    [PREPARE_TABLES], [ADOPT_TABLES], [ADOPT_TABLES], [ADOPT_TABLES], [ADOPT_TABLES], [ADOPT_TABLES],
+  ]);
+
+  pool.cancel();
+  const replaced = made.length;
+  assert.equal(await pool.solve('U'.repeat(54), bounds), 'R U');
+  assert.equal(made.length, replaced + 6, 'the next solve must be on six fresh threads');
+  assert.deepEqual(made.slice(replaced).map((w) => w.control), [
+    [PREPARE_TABLES], [ADOPT_TABLES], [ADOPT_TABLES], [ADOPT_TABLES], [ADOPT_TABLES], [ADOPT_TABLES],
+  ], 'the replacements were never offered the tables, so all six built their own');
+  assert.equal(pool.sharingTables, true);
+});

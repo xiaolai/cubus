@@ -19,10 +19,12 @@
 //   * **Twenty is a floor under EVERY tier, because it is a fact about the cube.** God's number
 //     is 20, so a <= 20 solution always exists — for every position, whatever the person asked
 //     for. This module keeps that rather than aiming at it: while the answer in hand is longer
-//     than 20, running out of budget means the budget was too small (the engine is complete;
-//     see GODS_NUMBER below), so it asks again with more. Tying this to the TIER instead of the
-//     cube was a real bug — the 19, 18 and "shortest" rungs then had no floor, and each of them
-//     could end at 21. Asking for something shorter must never yield something longer.
+//     than 20, running out of budget is read as a budget that was too small (what the ENGINE
+//     guarantees is narrower than completeness — see GODS_NUMBER below — but a refusal is a
+//     statement about the SEARCH either way, never about the cube), so it asks again with more.
+//     Tying this to the TIER instead of the cube was a real bug — the 19, 18 and "shortest" rungs
+//     then had no floor, and each of them could end at 21. Asking for something shorter must never
+//     yield something longer.
 //   * **Below the floor the tiers are not the same kind of promise.** <= 18 is a different kind
 //     of thing: roughly 3.5% of positions are optimally 19 or 20, and for those 18 moves is
 //     impossible rather than expensive. A tier that cannot always be met must say so rather
@@ -161,6 +163,26 @@ export const BONUS_BUDGET = 2_000_000;
  *  false claim this whole mechanism exists to make unreachable. */
 export const MAX_PROMISE_ESCALATIONS = 8;
 
+/**
+ * The two things both entry points here require of a caller, checked in one place.
+ *
+ * `refine` and `solveWithinGodsNumber` had a copy each — the same two checks, the same wording
+ * behind a different prefix — and they are one contract, not two: `refine` hands its `solve` and
+ * its `probeBudget` straight to `solveWithinGodsNumber`. Two maintenance sites for one rule is how
+ * a NaN budget ends up refused on one path and forwarded on the other.
+ *
+ * `who` keeps each caller's own message, because the name in it is the function a caller actually
+ * wrote down, and validation must still happen BEFORE the abort check in both — a malformed call
+ * is malformed whether or not somebody has stopped caring about the answer.
+ */
+function requireSolveInputs(who, solve, probeBudget) {
+  if (typeof solve !== 'function') throw new TypeError(`${who} needs a solve function`);
+  if (!Number.isSafeInteger(probeBudget) || probeBudget < 1) {
+    // NaN or Infinity would pass straight through to the engine's termination check.
+    throw new TypeError(`${who}: probeBudget ${probeBudget} is not a positive integer`);
+  }
+}
+
 export function tierByName(name) {
   const tier = TIERS.find((t) => t.name === name);
   if (!tier) throw new Error(`unknown tier: ${name}`);
@@ -201,10 +223,7 @@ export async function solveWithinGodsNumber(
   facelets,
   { solve, probeBudget = DEFAULT_PROBE_BUDGET, signal = null, onProgress = null } = {},
 ) {
-  if (typeof solve !== 'function') throw new TypeError('solveWithinGodsNumber needs a solve function');
-  if (!Number.isSafeInteger(probeBudget) || probeBudget < 1) {
-    throw new TypeError(`solveWithinGodsNumber: probeBudget ${probeBudget} is not a positive integer`);
-  }
+  requireSolveInputs('solveWithinGodsNumber', solve, probeBudget);
   if (onProgress !== null && typeof onProgress !== 'function') {
     // Refused rather than ignored: a caller that passed something else meant to watch this
     // search, and silently not calling it is the failure that looks exactly like a search that
@@ -264,9 +283,12 @@ export async function solveWithinGodsNumber(
     // is yielded, exactly as an abort before any search at all.
     if (signal?.aborted) return undefined;
     if (escalations >= MAX_PROMISE_ESCALATIONS) {
-      // Says what happened, not what it means. The engine IS complete, so on the shipped budget
-      // this can only be a bug — but a caller may pass any budget it likes, and `probeBudget: 1`
-      // exhausting after 256 nodes accuses the engine of something the caller did.
+      // Says what happened, not what it means. The engine is not COMPLETE — its guarantee is the
+      // qualified one stated at GODS_NUMBER, and this comment used to claim otherwise (corrected
+      // 2026-09-05) — but nothing has ever been observed to fall outside it, so on the shipped
+      // budget getting here is a bug rather than a cube. That is still not a thing to assert in
+      // the message: a caller may pass any budget it likes, and `probeBudget: 1` exhausting after
+      // 256 nodes accuses the engine of something the caller did.
       // Ordered so the claim never outruns what is known. God's number guarantees a <= 20
       // solution for every LEGAL cube, and this module never establishes legality — the engine
       // answers null both for "out of budget" and for "not a solvable state", and cannot be
@@ -329,11 +351,7 @@ export async function* refine(facelets, {
     // meaningful, quietly.
     throw new TypeError(`refine: tier target ${target} is neither null nor a positive integer`);
   }
-  if (typeof solve !== 'function') throw new TypeError('refine needs a solve function');
-  if (!Number.isSafeInteger(probeBudget) || probeBudget < 1) {
-    // NaN or Infinity would pass straight through to the engine's termination check.
-    throw new TypeError(`refine: probeBudget ${probeBudget} is not a positive integer`);
-  }
+  requireSolveInputs('refine', solve, probeBudget);
   if (!Number.isSafeInteger(bonusBudget) || bonusBudget < 1) {
     throw new TypeError(`refine: bonusBudget ${bonusBudget} is not a positive integer`);
   }
@@ -355,10 +373,14 @@ export async function* refine(facelets, {
     stopped,
   });
 
-  // A zero-move answer is a solved cube: any numeric target is met, and "shortest" cannot
-  // improve on nothing. Either way the search is over before it starts.
+  /** Why a SOLVED cube ends the descent: any numeric target is met, and "shortest" cannot improve
+   *  on nothing. One constant, because zero moves can arrive at two different moments and the
+   *  answer is the same at both — see the loop below. */
+  const solvedEnd = target === null ? STOPPED.EXHAUSTED : STOPPED.MET;
+
+  // The first answer is already the whole cube: over before it starts.
   if (moves === 0) {
-    yield snapshot(target === null ? STOPPED.EXHAUSTED : STOPPED.MET);
+    yield snapshot(solvedEnd);
     return;
   }
 
@@ -410,6 +432,16 @@ export async function* refine(facelets, {
     const nextMoves = movesIn(nextAlg);
     alg = nextAlg;
     moves = nextMoves;
+    // A cube solved by an IMPROVEMENT ends the descent exactly as one solved by the first answer
+    // does. The terminal handling above used to apply only to the first, so a descent that reached
+    // zero yielded it as still improving and then asked for `solLen: 0` — "shorter than nothing" —
+    // which the engine boundary refuses as out of range. Reproduced with the answers "R R'" then
+    // "" (2026-09-05 audit): a learner one turn from done got a RangeError instead of a solved
+    // cube. Checked before the abort below on purpose: there is no further ask to cancel.
+    if (moves === 0) {
+      yield snapshot(solvedEnd);
+      return;
+    }
     // An improvement that arrived alongside an abort is kept — it is real — but it ends the
     // progression rather than pretending the search is still going.
     if (signal?.aborted) {
