@@ -36,8 +36,8 @@ importers:
         specifier: 0.3.1
         version: 0.3.1
       three:
-        specifier: ^0.169.0
-        version: 0.169.0
+        specifier: ^0.185.1
+        version: 0.185.1
 
   packages/cube-scanner:
     dependencies:
@@ -1341,8 +1341,8 @@ packages:
   tauri-plugin-mcp@0.3.1:
     resolution: {integrity: sha512-mfzKiDQHR7ZK8coQevazmIOKHP2/jfPk/utZKJFubFSq6W/q7GL7H4cRU0va140OIKEhWEsWrniHfOtVJd0Xtw==}
 
-  three@0.169.0:
-    resolution: {integrity: sha512-Ed906MA3dR4TS5riErd4QBsRGPcx+HBDX2O5yYE5GqJeFQTPU+M56Va/f/Oph9X7uZo3W3o4l2ZhBZ6f6qUv0w==}
+  three@0.185.1:
+    resolution: {integrity: sha512-5aojFCXKwnjBRZvUnt3WFfEcvUJgkN5LlijRFN95hMy8WVkG4I0QNcJE+OuWvuJ0bOdStrbfXn0pkd6/QyiAlg==}
 
   tinybench@6.1.4:
     resolution: {integrity: sha512-9APumHG7r4yOk4X4WlkmE71aZcv1gvin1czO3OQ1U9iJcFA5Ja/ygyb0vPOVHTthFozUYs8CLoLUlM8grb2lTQ==}
@@ -2445,7 +2445,7 @@ snapshots:
     dependencies:
       '@tauri-apps/api': 2.11.1
 
-  three@0.169.0: {}
+  three@0.185.1: {}
 
   tinybench@6.1.4: {}
 
