@@ -156,13 +156,26 @@ fn segments(tables: &Tables, cancel: &AtomicBool, hash: &str, moves_str: &[&str]
 /// refusal verbatim, and the caller turns it into the nonzero exit.
 fn collect_report(lines: &[&str], hash: &str) -> Result<(String, Vec<String>), String> {
     let (proof, warnings) = check_superflip_shards(lines, hash)?;
+    // A complete set at bound 20 or above is a CONTRADICTION, not a smaller claim, and the
+    // contradiction is with a maneuver this binary itself applies twenty lines up:
+    // SUPERFLIP_GEODESIC solves the superflip in 20, so "no solution within 20" is refuted
+    // without leaving the crate. Whatever produced such a log — a broken table, a stale binary,
+    // a log for a different state, an edited line — the one thing it is not is evidence, and the
+    // else branch below used to report it as merely insufficient (the audit's finding,
+    // 2026-09-05). The refusal comes FIRST, so no PROOF-COMPLETE line is ever built over it.
+    if proof.bound >= 20 {
+        return Err(format!(
+            "{} shards agree there is no solution within {} for a state with a known 20-move maneuver — a table, a binary or the log is wrong",
+            proof.shard_count, proof.bound
+        ));
+    }
     let mut line = format!(
         "PROOF-COMPLETE state=superflip bound={} shards={} — no solution within {}",
         proof.bound, proof.shard_count, proof.bound
     );
     // The exact-20 conclusion needs precisely bound 19: the known 20-move maneuver is the upper
-    // half, no-solution-within-19 the lower. Any other bound proves less, and saying more would
-    // be inventing.
+    // half, no-solution-within-19 the lower. A lower bound proves less, and saying more would be
+    // inventing.
     if proof.bound == 19 {
         line.push_str("; with the known 20-move maneuver, the superflip is EXACTLY 20");
     } else {
@@ -254,6 +267,33 @@ mod tests {
         let (line, _) = collect_report(&refs, HASH).expect("a complete set at 18");
         assert!(line.contains("NOT an exact-20 proof"), "{line}");
         assert!(!line.contains("EXACTLY 20"), "{line}");
+    }
+
+    /// A complete set at bound 20 or above is a CONTRADICTION, not a smaller result.
+    ///
+    /// The superflip has a known 20-move maneuver — this crate ships it as `SUPERFLIP_GEODESIC`
+    /// and applies it a few lines up — so a log saying "no solution within 20" is refuted by the
+    /// binary's own constant. Printing PROOF-COMPLETE over it and exiting 0 would launder a broken
+    /// table, a stale binary or a mixed-up log into a certificate (the audit's finding,
+    /// 2026-09-05); the else branch read the contradiction as merely insufficient evidence.
+    #[test]
+    fn a_complete_set_that_contradicts_the_known_twenty_is_refused() {
+        for bound in [20u8, 21, 255] {
+            let lines = [shard(0, 2, bound), shard(1, 2, bound)];
+            let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+            let Err(e) = collect_report(&refs, HASH) else {
+                panic!("bound {bound} contradicts the known 20-move maneuver and must be refused")
+            };
+            assert!(
+                e.contains(&format!("no solution within {bound}"))
+                    && e.contains("known 20-move maneuver"),
+                "bound {bound}: {e}"
+            );
+        }
+        // The bound one below is the whole point of the check and must still be the proof.
+        let lines = [shard(0, 2, 19), shard(1, 2, 19)];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert!(collect_report(&refs, HASH).is_ok(), "bound 19 still proves");
     }
 
     /// A refusal is carried out verbatim, so the CLI's message and its exit status come from one

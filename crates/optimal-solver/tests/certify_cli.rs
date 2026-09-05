@@ -122,7 +122,7 @@ fn a_complete_log_at_a_lower_bound_refuses_to_claim_the_exact_20() {
 #[test]
 fn every_log_that_is_not_a_proof_exits_nonzero_and_says_why() {
     let hash = local_hash();
-    let cases: [(&str, Vec<String>, &str); 4] = [
+    let cases: [(&str, Vec<String>, &str); 6] = [
         // A missing shard: the commonest real failure, and the one a shrug would hide.
         (
             "incomplete",
@@ -149,6 +149,22 @@ fn every_log_that_is_not_a_proof_exits_nonzero_and_says_why() {
             "empty",
             vec!["  contour 17 exhausted".into()],
             "no superflip shard",
+        ),
+        // A COMPLETE set that contradicts the known 20-move maneuver. This is the one refusal
+        // that used to print PROOF-COMPLETE and exit 0: the shards are all present and mutually
+        // consistent, and what they agree on is false. A certificate collector that reports a
+        // contradiction as a smaller proof is worse than one that reports nothing.
+        (
+            "contradiction20",
+            vec![shard_line(0, 2, 20, &hash), shard_line(1, 2, 20, &hash)],
+            "known 20-move maneuver",
+        ),
+        // And the same at a bound no search would ever produce — u8's ceiling parses fine, so
+        // the rule is "20 and above", never "exactly 20".
+        (
+            "contradiction255",
+            vec![shard_line(0, 1, 255, &hash)],
+            "known 20-move maneuver",
         ),
     ];
     for (tag, lines, because) in cases {
