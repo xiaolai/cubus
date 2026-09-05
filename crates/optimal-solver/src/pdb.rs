@@ -79,10 +79,19 @@ impl Kind {
     }
 }
 
-/// A generated, validated database: packed nibbles plus the histogram that certified it.
-/// Fields are PRIVATE on purpose — the only ways to hold a Pdb are generation (which
-/// certifies exhaustively) and deserialization (which refuses corruption), and nothing may
-/// mutate one afterwards: a "validated" struct anyone can edit is a claim, not a property.
+/// A database: packed nibbles plus the histogram that goes with them. Fields are PRIVATE on
+/// purpose — the only ways to hold one are generation and deserialization, and nothing may
+/// mutate one afterwards: an invariant anyone can edit is a claim, not a property.
+///
+/// **What holding one does and does not prove** (corrected 2026-09-05; the older wording said
+/// "validated" for both doors and overstated the weaker one). Both doors establish that the
+/// depths present are the exhaustively measured MULTISET — every entry initialised, the
+/// histogram exact, the diameter unmoved. Neither establishes that each depth is at its right
+/// INDEX: a swap of two entries of different depths leaves the multiset untouched, so it walks
+/// through the file checks (`a_resealed_nibble_swap_passes_the_file_checks_and_bellman_on_load_refuses_it`).
+/// Only [`bellman_validate`] pins entries to places, and it is what both `Tables::generate` and
+/// `Tables::load` run before a `Tables` exists — so a *certified* table is a `Tables`, and a
+/// `Pdb` on its own is a structurally sound one.
 pub struct Pdb {
     kind: Kind,
     nibbles: Vec<u8>,
@@ -368,11 +377,22 @@ pub fn move_set_hash() -> [u8; 32] {
     h.finalize().into()
 }
 
+/// Everything before the histogram: magic + version + kind/metric/reserved + move-set hash +
+/// entry count + the histogram's own length byte.
+const HEADER_FIXED: usize = 8 + 4 + 4 + 32 + 8 + 1;
+
+/// The exact byte length of a well-formed artifact of this kind — fixed header, histogram,
+/// nibble payload, trailing hash. One derivation, read by `serialize` for its capacity and by
+/// the loader for its read bound: a size a reader guesses at is a size that can disagree with
+/// what a writer produces.
+pub fn serialized_len(kind: Kind) -> usize {
+    HEADER_FIXED + kind.expected_histogram().len() * 8 + kind.entries().div_ceil(2) + 32
+}
+
 pub fn serialize(pdb: &Pdb) -> Vec<u8> {
-    // Exact capacity, computed not guessed: magic + version + kind/metric/reserved + move-set
-    // hash + count + histogram length byte + histogram + payload + trailing hash. A wrong
-    // guess here silently reallocates tens of megabytes mid-append.
-    let exact = 8 + 4 + 4 + 32 + 8 + 1 + pdb.histogram.len() * 8 + pdb.nibbles.len() + 32;
+    // Exact capacity, computed not guessed. A wrong guess here silently reallocates tens of
+    // megabytes mid-append — and the assertion at the end is what keeps the number honest.
+    let exact = serialized_len(pdb.kind);
     let mut out = Vec::with_capacity(exact);
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
@@ -392,22 +412,21 @@ pub fn serialize(pdb: &Pdb) -> Vec<u8> {
     out
 }
 
-/// Refuses everything §7's packed-layout row lists: wrong magic/version/kind/metric, nonzero
-/// reserved bytes, a foreign move set, a truncated payload, any bit flip (the trailing SHA
-/// covers header and payload alike) — and, because a checksum only proves the file matches
-/// ITSELF, the payload's recomputed depth histogram must equal the exhaustively measured one.
-/// A resealed file with a doctored payload fails that check; full Bellman certification stays
-/// at generation time (a second per table since plan §8, not the 100 ms this costs). Every read is bounds-checked: a
-/// crafted length field returns Err, never a panic.
-pub fn deserialize(bytes: &[u8], expect: Kind) -> Result<Pdb, String> {
-    if bytes.len() < 8 + 4 + 4 + 32 + 8 + 1 + 32 {
-        return Err("file too short to be a pattern database".into());
-    }
-    let (body, tail) = bytes.split_at(bytes.len() - 32);
-    let hash: [u8; 32] = Sha256::digest(body).into();
-    if hash != tail {
-        return Err("checksum mismatch — the file is corrupt or truncated".into());
-    }
+/// Everything the header claims, checked — and the cursor position the payload starts at.
+///
+/// Split from [`deserialize`] so the two halves of a file check read as the two claims they are:
+/// "this header describes the table we asked for" here, "this payload is the one that header
+/// describes" there. The ORDER is the load-bearing part and is unchanged — the checksum is
+/// verified by the caller before a single field is read, and every field is read through the
+/// bounds-checked cursor below, so a crafted length returns Err and never a panic.
+struct Header {
+    kind: Kind,
+    entries: usize,
+    histogram: Vec<u64>,
+    payload_at: usize,
+}
+
+fn parse_header(body: &[u8], expect: Kind) -> Result<Header, String> {
     let mut at = 0usize;
     let mut take = |n: usize| -> Result<&[u8], String> {
         let end = at.checked_add(n).ok_or("length overflow")?;
@@ -456,18 +475,21 @@ pub fn deserialize(bytes: &[u8], expect: Kind) -> Result<Pdb, String> {
     if histogram != expected_hist {
         return Err("stored histogram differs from the exhaustively measured one".into());
     }
-    let payload = &body[at..];
-    if payload.len() != n.div_ceil(2) {
-        return Err(format!(
-            "payload {} bytes, expected {}",
-            payload.len(),
-            n.div_ceil(2)
-        ));
-    }
-    // The payload must actually HAVE the histogram it claims — this is what catches a
-    // doctored-and-resealed payload, and any serializer bug, at ~100 ms for the corner table.
-    let mut recomputed = vec![0u64; expected_hist.len()];
-    for i in 0..n {
+    Ok(Header {
+        kind,
+        entries: n,
+        histogram,
+        payload_at: at,
+    })
+}
+
+/// The payload must actually HAVE the histogram the header claims — this is what catches a
+/// doctored-and-resealed payload, and any serializer bug, at ~100 ms for the corner table. It
+/// is a recount of a MULTISET, so it is blind to two entries of different depths trading
+/// places; see the `Pdb` docs for what that costs and what covers it.
+fn recount_depths(payload: &[u8], entries: usize, buckets: usize) -> Result<Vec<u64>, String> {
+    let mut recomputed = vec![0u64; buckets];
+    for i in 0..entries {
         let b = payload[i >> 1];
         let d = if i & 1 == 0 { b & 0x0f } else { b >> 4 } as usize;
         if d >= recomputed.len() {
@@ -477,15 +499,54 @@ pub fn deserialize(bytes: &[u8], expect: Kind) -> Result<Pdb, String> {
         }
         recomputed[d] += 1;
     }
-    if recomputed != expected_hist {
+    Ok(recomputed)
+}
+
+/// Refuses everything §7's packed-layout row lists: wrong magic/version/kind/metric, nonzero
+/// reserved bytes, a foreign move set, a truncated payload, any bit flip (the trailing SHA
+/// covers header and payload alike) — and, because a checksum only proves the file matches
+/// ITSELF, the payload's recomputed depth histogram must equal the exhaustively measured one.
+/// Every read is bounds-checked: a crafted length field returns Err, never a panic.
+///
+/// **What this does NOT establish** (corrected 2026-09-05 — the old wording claimed a resealed
+/// doctored payload fails here, full stop, and that Bellman certification happens only at
+/// generation): the recount compares MULTISETS, so a reseal that swaps two entries of different
+/// depths passes every check in this function. The returned `Pdb` is therefore structurally
+/// sound and uncertified; `Tables::load` runs a full [`bellman_validate`] pass afterwards, which
+/// is the check that pins entries to their places, and
+/// `a_resealed_nibble_swap_passes_the_file_checks_and_bellman_on_load_refuses_it` is that
+/// division of labour as a test.
+pub fn deserialize(bytes: &[u8], expect: Kind) -> Result<Pdb, String> {
+    if bytes.len() < HEADER_FIXED + 32 {
+        return Err("file too short to be a pattern database".into());
+    }
+    let (body, tail) = bytes.split_at(bytes.len() - 32);
+    let hash: [u8; 32] = Sha256::digest(body).into();
+    if hash != tail {
+        return Err("checksum mismatch — the file is corrupt or truncated".into());
+    }
+    let header = parse_header(body, expect)?;
+    let payload = &body[header.payload_at..];
+    if payload.len() != header.entries.div_ceil(2) {
+        return Err(format!(
+            "payload {} bytes, expected {}",
+            payload.len(),
+            header.entries.div_ceil(2)
+        ));
+    }
+    // Against the exhaustively measured CONSTANT, not against the file's own stored histogram —
+    // the header check has already proved those equal, and anchoring to the constant is what
+    // keeps this a check on the file rather than a check of the file against itself.
+    let expected_hist = header.kind.expected_histogram();
+    if recount_depths(payload, header.entries, expected_hist.len())? != expected_hist {
         return Err(
             "payload depth histogram differs from the certified one — the payload was altered"
                 .into(),
         );
     }
     Ok(Pdb {
-        kind,
+        kind: header.kind,
         nibbles: payload.to_vec(),
-        histogram,
+        histogram: header.histogram,
     })
 }

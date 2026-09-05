@@ -242,6 +242,45 @@ fn resolve_tables<T>(
     }
 }
 
+/// Publish a finished preparation: the persistence answer FIRST, then the tables.
+///
+/// The order is the contract, not the order the lines happen to be in. `optimal_prove` reads
+/// the flag only once it has the tables, so a publish that set the cell first would let a proof
+/// answer with the previous persistence verdict. `OnceLock::set` releases and `get` acquires, so
+/// the store in front of it is visible to anyone who sees the tables at all.
+///
+/// Generic in the payload so the ordering can be tested without minutes of BFS — the real
+/// `Tables` cannot be built in a unit test in any useful time, and an ordering nothing can
+/// exercise is a comment rather than a property. Losing the `set` race means another prepare
+/// slipped the flag, which is only possible through a bug: logged, never shrugged off.
+fn publish<T>(cell: &OnceLock<Arc<T>>, persisted_flag: &AtomicBool, value: T, persisted: bool) {
+    persisted_flag.store(persisted, Ordering::Relaxed);
+    if cell.set(Arc::new(value)).is_err() {
+        log::warn!(
+            "optimal: tables were already published — a concurrent prepare slipped the flag"
+        );
+    }
+}
+
+/// The status word, from the two facts a poll can observe.
+///
+/// `ready` is asked TWICE on purpose. The worker publishes its tables BEFORE its guard drops, so
+/// a poll whose first read lands just before the publication and whose `preparing` read lands
+/// just after the guard drop would otherwise report "cold" over ready tables — and the webview
+/// treats "cold" mid-wait as a failed generation. The second read closes exactly that window,
+/// and is a function argument so a test can land a publication inside it.
+fn status_word(ready: impl Fn() -> bool, preparing: &AtomicBool) -> &'static str {
+    if ready() {
+        "ready"
+    } else if preparing.load(Ordering::SeqCst) {
+        "preparing"
+    } else if ready() {
+        "ready"
+    } else {
+        "cold"
+    }
+}
+
 /// Load-or-generate, once. Loading refuses any corrupt artifact (checksum, move-set hash,
 /// metric, payload histogram, truncation); the refusal REASON is logged before regeneration,
 /// so a permission problem does not masquerade as corruption. Regeneration rebuilds from
@@ -307,15 +346,7 @@ pub async fn optimal_prepare(
         };
         let (tables, persisted) =
             resolve_tables(Tables::load(&dir), generate, |tables| tables.save(&dir))?;
-        // Persisted-flag first, then publish: a prove that sees the tables must also see the
-        // right persistence answer. Losing the set race would mean another prepare slipped
-        // the flag — possible only through a bug, so it is logged, never shrugged off.
-        persisted_flag.store(persisted, Ordering::Relaxed);
-        if cell.set(Arc::new(tables)).is_err() {
-            log::warn!(
-                "optimal: tables were already published — a concurrent prepare slipped the flag"
-            );
-        }
+        publish(&cell, &persisted_flag, tables, persisted);
         Ok("ready".into())
     })
     .await
@@ -325,19 +356,7 @@ pub async fn optimal_prepare(
 
 #[tauri::command]
 pub fn optimal_status(state: tauri::State<'_, OptimalState>) -> String {
-    if state.tables.get().is_some() {
-        "ready".into()
-    } else if state.preparing.load(Ordering::SeqCst) {
-        "preparing".into()
-    } else if state.tables.get().is_some() {
-        // Publication landed between the two reads above (the worker publishes BEFORE its
-        // guard drops, so preparing=false means any publish is already visible). Without
-        // this recheck a poll at exactly that instant would say "cold" over ready tables —
-        // and the webview treats "cold" mid-wait as a failed generation.
-        "ready".into()
-    } else {
-        "cold".into()
-    }
+    status_word(|| state.tables.get().is_some(), &state.preparing).into()
 }
 
 #[tauri::command]
@@ -481,28 +500,272 @@ mod tests {
             !flag.load(Ordering::SeqCst),
             "flag released after the scope"
         );
-        // A cancel racing claims and finishes never poisons the next claim: one mutex
-        // serializes all three, so the storm must end with a claimable slot.
+    }
+
+    /// The cancel/finish pair, with the OUTCOMES recorded rather than discarded.
+    ///
+    /// The storm this replaces threw away every `finish` result and every `cancel` answer and
+    /// asserted only that the slot stayed claimable (the audit's finding, 2026-09-05) — so a
+    /// cancelled proof returning a cheerful success would have passed it, which is the single
+    /// worst thing this pair can do. The promise is per proof and pairwise: a cancel that
+    /// returns true turns THAT proof's outcome into cancelled, and a proof that reports success
+    /// was never cancelled. Both directions are scripted first, then hunted for.
+    #[test]
+    fn a_cancel_that_lands_is_the_outcome_and_one_that_misses_is_not() {
+        let slot = Arc::new(ProofSlot::default());
+
+        // Scripted, in both orders — nothing here depends on scheduling.
+        let lease = ProofLease::claim(&slot).expect("claims");
+        assert!(slot.cancel(), "cancel lands on the running proof");
+        assert_eq!(
+            lease.finish(Ok::<_, String>(1)),
+            Err("cancelled".into()),
+            "cancel-then-finish: the answer the caller was promised"
+        );
+        let lease = ProofLease::claim(&slot).expect("claims again");
+        assert_eq!(
+            lease.finish(Ok::<_, String>(2)),
+            Ok(2),
+            "finish-then-cancel: the proof completed before anyone asked it to stop"
+        );
+        assert!(!slot.cancel(), "and the cancel finds nothing to stop");
+
+        // The same two orders again, ACROSS THREADS, where the mutex is doing real work rather
+        // than being uncontended. A barrier places the cancel: on odd rounds between the claim
+        // and the finish, on even rounds after the finish. Both directions therefore happen,
+        // hundreds of times each, and neither depends on how the scheduler feels — a race test
+        // that only ever goes one way proves one direction twice.
+        const SCRIPTED: usize = 500;
+        let step = std::sync::Barrier::new(2);
+        let outcomes: Mutex<Vec<Result<usize, String>>> = Mutex::new(Vec::with_capacity(SCRIPTED));
+        let landings: Mutex<Vec<(bool, bool)>> = Mutex::new(Vec::with_capacity(SCRIPTED));
         std::thread::scope(|scope| {
-            let a = scope.spawn(|| {
-                for i in 0..1000 {
-                    if let Some(lease) = ProofLease::claim(&slot) {
-                        let _ = lease.finish(Ok::<_, String>(i));
-                    }
+            scope.spawn(|| {
+                for r in 0..SCRIPTED {
+                    let lease = ProofLease::claim(&slot).expect("one lease per round");
+                    step.wait(); // 1: claimed
+                    step.wait(); // 2: the other thread's pre-finish cancel is done
+                    let out = lease.finish(Ok::<_, String>(r));
+                    step.wait(); // 3: finished
+                    step.wait(); // 4: the other thread's post-finish cancel is done
+                    outcomes.lock().unwrap().push(out);
                 }
             });
-            let b = scope.spawn(|| {
-                for _ in 0..1000 {
-                    slot.cancel();
-                }
-            });
-            a.join().unwrap();
-            b.join().unwrap();
+            for r in 0..SCRIPTED {
+                step.wait(); // 1
+                let before_finish = r % 2 == 1 && slot.cancel();
+                step.wait(); // 2
+                step.wait(); // 3
+                let after_finish = r % 2 == 0 && slot.cancel();
+                step.wait(); // 4
+                landings.lock().unwrap().push((before_finish, after_finish));
+            }
         });
+        let (landings, outcomes) = (
+            landings.into_inner().unwrap(),
+            outcomes.into_inner().unwrap(),
+        );
+        assert_eq!((landings.len(), outcomes.len()), (SCRIPTED, SCRIPTED));
+        for (r, ((before, after), out)) in landings.iter().zip(&outcomes).enumerate() {
+            assert!(!after, "round {r}: a finished proof was still cancellable");
+            if r % 2 == 1 {
+                assert!(before, "round {r}: a running proof refused to be cancelled");
+                assert_eq!(
+                    out,
+                    &Err("cancelled".to_string()),
+                    "round {r}: cancelled mid-proof, then reported success"
+                );
+            } else {
+                assert_eq!(
+                    out,
+                    &Ok(r),
+                    "round {r}: nothing cancelled it, so its own answer stands"
+                );
+            }
+        }
+
+        // And the interleavings no script chooses. One lease and one cancel per round, so the
+        // two are attributable to each other — which the storm this replaces could not do,
+        // having thrown both away. Whichever way each round happens to go, the pair must agree.
+        const RACED: usize = 2000;
+        let round = std::sync::Barrier::new(2);
+        let raced: Mutex<Vec<Result<usize, String>>> = Mutex::new(Vec::with_capacity(RACED));
+        let landed: Mutex<Vec<bool>> = Mutex::new(Vec::with_capacity(RACED));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for r in 0..RACED {
+                    round.wait();
+                    let lease = ProofLease::claim(&slot).expect("one lease per round");
+                    let out = lease.finish(Ok::<_, String>(r));
+                    raced.lock().unwrap().push(out);
+                    round.wait();
+                }
+            });
+            for _ in 0..RACED {
+                round.wait();
+                let hit = slot.cancel();
+                landed.lock().unwrap().push(hit);
+                round.wait();
+            }
+        });
+        let (landed, raced) = (landed.into_inner().unwrap(), raced.into_inner().unwrap());
+        for (r, (hit, out)) in landed.iter().zip(&raced).enumerate() {
+            if *hit {
+                assert_eq!(
+                    out,
+                    &Err("cancelled".to_string()),
+                    "round {r}: a cancel returned true and the proof still reported success"
+                );
+            } else {
+                assert_eq!(
+                    out,
+                    &Ok(r),
+                    "round {r}: no cancel landed, so the proof's own answer is the answer"
+                );
+            }
+        }
         assert!(
             ProofLease::claim(&slot).is_some(),
             "slot still claimable after the storm"
         );
+    }
+
+    /// The panic path, which every "released by drop" comment in this file rests on and which no
+    /// test entered: a worker that dies mid-preparation must leave neither the preparing flag on
+    /// nor the proof slot occupied, or the app needs a restart to prove anything again.
+    #[test]
+    fn a_worker_that_panics_releases_the_flag_and_the_slot() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let slot = Arc::new(ProofSlot::default());
+        let (f, s) = (flag.clone(), slot.clone());
+        let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = FlagGuard::claim(&f).expect("the worker claims the flag");
+            let _lease = ProofLease::claim(&s).expect("the worker claims the slot");
+            panic!("deliberate, and expected: a worker dying mid-proof");
+        }));
+        assert!(died.is_err(), "the panic really happened");
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "preparing is not stuck on after a panicking worker"
+        );
+        assert!(
+            ProofLease::claim(&slot).is_some(),
+            "the proof slot is not wedged by a panicking worker"
+        );
+        assert!(!slot.cancel(), "and nothing is left claiming to be running");
+    }
+
+    /// A poll that straddles the publication.
+    ///
+    /// The worker publishes its tables and THEN drops its guard, so there is an instant where a
+    /// status call that already read "not ready" would read "not preparing" — and the webview
+    /// reads "cold" mid-wait as a failed generation. The second read is what closes it, and this
+    /// lands the whole publication inside the window rather than hoping a thread schedules there:
+    /// with the recheck removed the answer is "cold".
+    #[test]
+    fn a_poll_that_straddles_publication_answers_ready_not_cold() {
+        let preparing = AtomicBool::new(true);
+        let published = AtomicBool::new(false);
+        let asked = std::cell::Cell::new(0u32);
+        let word = status_word(
+            || {
+                let seen = published.load(Ordering::SeqCst);
+                if asked.get() == 0 {
+                    // The worker finishes AFTER this first read and BEFORE the `preparing` one:
+                    // publish the tables, then release the guard, which is the worker's order.
+                    published.store(true, Ordering::SeqCst);
+                    preparing.store(false, Ordering::SeqCst);
+                }
+                asked.set(asked.get() + 1);
+                seen
+            },
+            &preparing,
+        );
+        assert_eq!(word, "ready", "ready tables must never be reported cold");
+        assert_eq!(asked.get(), 2, "and it was the SECOND read that saw them");
+
+        // The plain answers, so the window fix cannot have swallowed them.
+        let idle = AtomicBool::new(false);
+        assert_eq!(status_word(|| false, &idle), "cold");
+        assert_eq!(status_word(|| true, &idle), "ready");
+        let busy = AtomicBool::new(true);
+        assert_eq!(status_word(|| false, &busy), "preparing");
+    }
+
+    /// Publication order: the persistence answer is visible to anyone who can see the tables.
+    ///
+    /// `optimal_prove` reads the flag only after it has the tables, so a publish that set the
+    /// cell first would let a proof report the PREVIOUS verdict — "these tables were saved" over
+    /// a save that failed. A reader spinning on the cell is what makes the order observable, and
+    /// the window a reversed order would open is a couple of instructions wide — so the race is
+    /// run a hundred times per verdict rather than once, where a single run could pass by luck.
+    #[test]
+    fn a_reader_that_sees_the_tables_sees_the_persistence_answer_with_them() {
+        for persisted in [false, true] {
+            for _ in 0..100 {
+                let cell: Arc<OnceLock<Arc<u8>>> = Arc::default();
+                // Seeded with the OPPOSITE, so reading the stale value is a visible failure
+                // rather than an accidental pass.
+                let flag = Arc::new(AtomicBool::new(!persisted));
+                let (c, f) = (cell.clone(), flag.clone());
+                let reader = std::thread::spawn(move || {
+                    while c.get().is_none() {
+                        std::hint::spin_loop();
+                    }
+                    f.load(Ordering::Relaxed)
+                });
+                publish(&cell, &flag, 9u8, persisted);
+                assert_eq!(
+                    reader.join().unwrap(),
+                    persisted,
+                    "a reader saw the tables before their persistence answer"
+                );
+                assert_eq!(**cell.get().unwrap(), 9);
+                // A second publish cannot overwrite the first — it is logged and dropped, never
+                // a silent swap of the tables a running proof is reading.
+                publish(&cell, &flag, 11u8, persisted);
+                assert_eq!(**cell.get().unwrap(), 9, "tables are published once");
+            }
+        }
+    }
+
+    /// A dropped command future, through the real runtime the command uses.
+    ///
+    /// A Tauri command future can be dropped mid-`await` — a webview reload, a navigation — and
+    /// anything scheduled after that await simply never runs. That is why the guard rides INSIDE
+    /// the blocking worker, and this is the claim tested rather than asserted: drop the handle
+    /// the command was awaiting, and the work still completes and still releases the flag. The
+    /// drop costs the caller their report, never the state.
+    #[test]
+    fn a_dropped_command_future_still_finishes_the_worker_and_clears_the_flag() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let guard = FlagGuard::claim(&flag).expect("the command claims before spawning");
+        let finished = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let done = finished.clone();
+        let handle = tauri::async_runtime::spawn_blocking(move || {
+            let _guard = guard;
+            rx.recv()
+                .expect("the test holds the sender until it drops the future");
+            done.store(true, Ordering::SeqCst);
+        });
+        // The webview goes away: the future being awaited is dropped.
+        drop(handle);
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "the worker still holds the preparing flag"
+        );
+        tx.send(()).expect("the worker is still there to hear this");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !(finished.load(Ordering::SeqCst) && !flag.load(Ordering::SeqCst)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a dropped future left the worker unfinished ({}) or the flag stuck ({})",
+                finished.load(Ordering::SeqCst),
+                flag.load(Ordering::SeqCst)
+            );
+            std::thread::yield_now();
+        }
     }
 
     /// `optimal_prepare`'s three branches, with the seconds of BFS replaced by closures that

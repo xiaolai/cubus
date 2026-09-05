@@ -367,15 +367,17 @@ fn sharded_certification_cannot_falsely_certify_shallow_states() {
             "shard {i}: a one-move cube is found at one"
         );
     }
-    // Invalid shard tuples are refused before any expensive work.
-    assert_eq!(
-        certify_no_solution_within(tables(), &one, 5, (3, 3), &cancel, &mut |_, _| {}),
-        Err(SearchEnd::InvalidShard)
-    );
-    assert_eq!(
-        certify_no_solution_within(tables(), &one, 5, (0, 0), &cancel, &mut |_, _| {}),
-        Err(SearchEnd::InvalidShard)
-    );
+    // Invalid shard tuples are refused before any expensive work — including a count above the
+    // 243 canonical openings, which the collector in certificate.rs refuses too: a producer that
+    // accepted one would mint certificates guaranteed to be rejected, from empty shards whose
+    // "no solution" says nothing.
+    for bad in [(3u32, 3u32), (0, 0), (0, 244), (0, u32::MAX)] {
+        assert_eq!(
+            certify_no_solution_within(tables(), &one, 5, bad, &cancel, &mut |_, _| {}),
+            Err(SearchEnd::InvalidShard),
+            "shard {bad:?} is not a shard"
+        );
+    }
 }
 
 #[test]
@@ -397,9 +399,29 @@ fn tables_survive_a_save_load_round_trip_and_refuse_a_damaged_directory() {
         .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
         .collect();
     assert!(strays.is_empty(), "a temporary file survived the save");
-    // Truncate one artifact: the load must refuse, naming the file.
+    // One byte too long: refused by the READ BOUND, before the file is in memory. A whole
+    // artifact's length is known from its kind, so anything longer cannot be one — and an
+    // oversized corrupt file must not be an allocation before it is a verdict.
     let victim = dir.join("edge-a.pdb");
     let bytes = std::fs::read(&victim).unwrap();
+    let mut too_long = bytes.clone();
+    too_long.push(0);
+    std::fs::write(&victim, &too_long).unwrap();
+    let err = match Tables::load(&dir) {
+        Err(e) => e,
+        Ok(_) => panic!("an oversized artifact loaded"),
+    };
+    let text = err.to_string();
+    assert!(
+        text.contains("edge-a.pdb") && text.contains("longer than"),
+        "the refusal names the oversized file and why: {text}"
+    );
+    assert!(
+        matches!(err, optimal_solver::LoadError::Invalid(_)),
+        "an oversized artifact is Invalid — the kind regeneration cures"
+    );
+
+    // Truncate one artifact: the load must refuse, naming the file.
     std::fs::write(&victim, &bytes[..bytes.len() / 2]).unwrap();
     let err = match Tables::load(&dir) {
         Err(e) => e,
