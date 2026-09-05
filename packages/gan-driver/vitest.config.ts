@@ -16,6 +16,13 @@ export default defineConfig({
     ],
   },
   test: {
+    // Some tests here do real work: the recorder's overflow case writes past a 10,000-line queue
+    // and the transport's respawn loop spawns twelve children, ~3–4 s each under v8 coverage and
+    // 5–8 s when the package shares the machine with the WebKit suite (measured 2026-09-05, the
+    // day the release gate timed both out). vitest's 5 s default is a hang detector, and it was
+    // firing on legitimate work — the same class cube-scanner's config already names. One budget
+    // for the class, sized so a genuine hang still fails.
+    testTimeout: 60_000,
     coverage: {
       provider: 'v8',
       // Only the pure, hardware-free code is meaningfully unit-testable; transport/driver/CLI
