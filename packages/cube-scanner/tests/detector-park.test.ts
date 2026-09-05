@@ -133,6 +133,26 @@ describe('the page-level detector park', () => {
     expect(second.modelLoaded).toBe(true);
   });
 
+  it('does not hand model A’s "already loaded" to an owner that asked for model B', async () => {
+    // `pickDetector` re-points the parked detector at the new owner (`retarget`) and then handed
+    // the whole choice across unchanged — so the flag said "loaded" while what is compiled belongs
+    // to the PREVIOUS owner. The panel skips `load()` on that flag, so the scan ran on the wrong
+    // model, and a wrong model is readings rather than errors. This is the model-switch path, and
+    // nothing covered it.
+    const first = new CameraSession();
+    const a = await first.ensureDetector(videoFor('a'), () => MODEL_URL);
+    await a.load();
+    first.modelLoaded = true;
+    first.park();
+
+    const other = `${MODEL_URL}?other-model`;
+    const second = new CameraSession();
+    const same = await second.ensureDetector(videoFor('b'), () => other);
+    expect(same).toBe(a); // still the page's one detector…
+    expect(second.modelLoaded).toBe(false); // …but its model is not this owner's
+    second.park();
+  });
+
   it('parking releases the CAMERA and keeps the model', async () => {
     // The whole distinction `stop()` and `dispose()` exist to draw. Parking may cost a lens left
     // on if it gets this wrong, and may never cost the compiled model — that is the point of it.
@@ -232,6 +252,52 @@ describe('the page-level detector park', () => {
     await second.open(same, {}, next);
     await flush();
     expect(same.device).not.toBeNull();
+    second.park();
+  });
+
+  it('a re-mount inside the deferred park does not have its camera closed by the old owner', async () => {
+    // WHAT THE DEFERRAL ABOVE LEFT BEHIND. While the hand-over waits for the open in flight, the
+    // page's slot is EMPTY — so a panel re-mounting in that window builds a SECOND NativeDetector,
+    // and two of those are two JavaScript objects over one plugin-owned camera. The abandoned
+    // open's cleanup then issued `close_camera` and took the lens out from under the new owner,
+    // which reports a live camera over a dead one. The previous fix moved the race from one object
+    // to one device; this is the device half of it.
+    const gates: (() => void)[] = [];
+    const plugin = fakePlugin();
+    const invoke = async (cmd: string): Promise<unknown> => {
+      if (cmd === `${CUBE_VISION}open_camera` && gates.length === 0) {
+        await new Promise<void>((release) => gates.push(release));
+      }
+      return plugin.invoke(cmd);
+    };
+    (globalThis as TauriGlobal).__TAURI__ = { core: { invoke } };
+
+    const first = new CameraSession();
+    const abandoned = await first.ensureDetector(videoFor('a'), () => MODEL_URL);
+    const token = first.beginAttempt();
+    const opening = first.open(abandoned, {}, token);
+    await Promise.resolve();
+    expect(gates).toHaveLength(1);
+
+    first.park(); // the panel disconnected mid-open, so the hand-over is deferred…
+    expect(parkedDetector()).toBeNull(); // …and the page has nothing to lend
+
+    // The re-mount therefore builds its OWN detector and opens the same native camera with it.
+    const second = new CameraSession();
+    const fresh = await second.ensureDetector(videoFor('b'), () => MODEL_URL);
+    expect(fresh).not.toBe(abandoned);
+    const next = second.beginAttempt();
+    await second.open(fresh, {}, next);
+    expect(fresh.device).not.toBeNull();
+
+    const closesBefore = plugin.calls.filter((c) => c === 'close_camera').length;
+    gates[0]!(); // …and only now does the abandoned open land, and try to clean up
+    await opening.catch(() => {});
+    await flush();
+
+    // The new owner still has its camera, and nothing was closed on its behalf.
+    expect(fresh.device).not.toBeNull();
+    expect(plugin.calls.filter((c) => c === 'close_camera').length).toBe(closesBefore);
     second.park();
   });
 

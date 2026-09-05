@@ -47,9 +47,28 @@ const instance = {
 };
 registry.instances.push(instance);
 
+/**
+ * The ONE WebGPU device this module ever publishes, and the queue a GPU run submits on.
+ *
+ * ONE, not one per session, because that is what the shipped runtime does: `env.webgpu.device` is
+ * assigned inside the EP initialiser, which the backend registry runs at most once per module and
+ * marks aborted forever on failure. A fake that handed out a fresh object per session made a
+ * device TRANSITION look like per-session evidence — which is how a check that downgrades every
+ * GPU session after the first on a page passed here while failing on real hardware.
+ *
+ * The queue is the per-session evidence in its place: a GPU-EP run submits command buffers on it
+ * (17 per inference, measured in Chromium on an Apple GPU) and a run the CPU EP took submits none.
+ */
+class FakeGpuQueue {
+  // On the PROTOTYPE, as `GPUQueue.prototype.submit` is — so an observer that replaces it has to
+  // put the object back the way a real one is (no own property), not merely restore a value.
+  submit() {}
+}
+const gpuDevice = { queue: new FakeGpuQueue() };
+
 export const env = {
-  /** Populated with a `device` when a webgpu session is created — see `gpuTookTheWork`. A test sets
-   *  `registry.model.webgpuDeclines` to model onnxruntime silently assigning the graph to wasm. */
+  /** Populated with `gpuDevice` once a webgpu session comes up. A test sets
+   *  `registry.model.webgpuDeclines` to model onnxruntime running the graph on wasm instead. */
   webgpu: {},
   wasm: {
     set proxy(v) {
@@ -92,13 +111,18 @@ export const InferenceSession = {
     instance.providers = options.executionProviders;
     const first = options.executionProviders?.[0];
     const asked = typeof first === 'string' ? first : first?.name;
-    if (asked === 'webgpu' && !cfg().webgpuDeclines) env.webgpu.device = { fake: true };
+    // Whether the GPU takes THIS session's graph — decided per session, and remembered by it.
+    const onGpu = asked === 'webgpu' && !cfg().webgpuDeclines;
+    // The device is published once and then stays, whatever later sessions do. See `gpuDevice`.
+    if (onGpu) env.webgpu.device = gpuDevice;
     const session = {
       inputNames: cfg().noInputNames ? [] : ['images'],
       outputNames: ['output0'],
       inputMetadata: [{ isTensor: true, shape: [1, 3, 640, 640] }],
       async run(feeds) {
         instance.runs++;
+        // Through the queue OBJECT, so an observer that has replaced `submit` on it counts these.
+        if (onGpu) for (let i = 0; i < 17; i++) gpuDevice.queue.submit([]);
         const fed = Object.values(feeds ?? {})[0];
         if (fed) {
           instance.inputBuffers.push(fed.data.buffer);

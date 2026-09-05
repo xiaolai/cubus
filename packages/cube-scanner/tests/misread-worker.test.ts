@@ -255,6 +255,67 @@ describe('MisreadDecoder — where the decode runs', () => {
     expect(FakeWorker.built).toHaveLength(1);
   });
 
+  it('answers only the LATEST when a worker with both a running and a waiting ask fails', () => {
+    // THE FAILURE PATH NOTHING COVERED. The stranded-request case above has ONE ask outstanding;
+    // the branch that decides between two — `this.queued ?? this.running` — is the interesting
+    // half and was never exercised. Answering both would spend seconds of the page's thread on a
+    // diagnosis whose caller drops it on arrival for its epoch; answering the RUNNING one would
+    // resolve the wrong reading, since a waiting ask exists precisely because the cube changed.
+    withWorker();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const answers: MisreadReply[] = [];
+    const decoder = new MisreadDecoder();
+    decoder.request({ epoch: 1, faces: misread(DEEP, 1), fixedRotation: false }, (r) =>
+      answers.push(r),
+    );
+    decoder.request({ epoch: 2, faces: misread(DEEP, 2), fixedRotation: false }, (r) =>
+      answers.push(r),
+    );
+    const worker = FakeWorker.last();
+    expect(worker.posted.map((p) => p.epoch)).toEqual([1]); // 1 running, 2 waiting
+
+    worker.fail();
+
+    // Exactly one answer, and it is the reading that is still on screen.
+    expect(answers.map((a) => a.epoch)).toEqual([2]);
+    expect(answers[0]?.diagnosis.misreadCount).toBe(2);
+    // Nothing is left pending, so a later ask is taken rather than being blocked behind a ghost.
+    const next = decoder.request({ epoch: 3, faces: misread(DEEP, 1), fixedRotation: false }, (r) =>
+      answers.push(r),
+    );
+    // The worker never spoke, so it was written off and this one runs here — synchronously.
+    expect(next?.diagnosis.misreadCount).toBe(1);
+    expect(answers.map((a) => a.epoch)).toEqual([2]);
+  });
+
+  it('decodes the reading as it was ASKED about, not as it is by the time it runs', () => {
+    // A caller hands its live reading in — the panel passes `this.faces` itself — and a queued ask
+    // does not leave at once. Hand-painting mutates those arrays between the ask and the post, so
+    // the decode ran over a cube the epoch it carries does not describe: an answer about the cube
+    // as it is NOW, filed under the serial number of the cube as it WAS. `postMessage` snapshots
+    // on the way to a worker, which is exactly why only the queued and stranded paths showed it.
+    withWorker();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const answers: MisreadReply[] = [];
+    const decoder = new MisreadDecoder();
+    decoder.request({ epoch: 1, faces: misread(DEEP, 1), fixedRotation: false }, (r) =>
+      answers.push(r),
+    );
+    // Epoch 2 is asked about a TWO-sticker misread, and then the caller keeps painting on the very
+    // object it handed over.
+    const live = misread(DEEP, 2);
+    decoder.request({ epoch: 2, faces: live, fixedRotation: false }, (r) => answers.push(r));
+    for (const face of FACES) live[face]!.colors = misread(DEEP, 4)[face]!.colors;
+
+    const worker = FakeWorker.last();
+    worker.answer(0); // epoch 1 comes back, so epoch 2 is posted
+    expect(worker.posted.map((p) => p.epoch)).toEqual([1, 2]);
+    worker.answer(1);
+    expect(answers.map((a) => a.epoch)).toEqual([1, 2]);
+    // TWO, the reading epoch 2 was asked about — not four, which is what it became afterwards.
+    expect(answers[1]?.diagnosis.misreadCount).toBe(2);
+  });
+
   it('does not write off a worker that had been answering', () => {
     // The distinction that makes remembering safe: a thread that answered once and then died is
     // not a reason to move every future decode onto the page's thread for the whole session.

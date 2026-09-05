@@ -54,6 +54,29 @@ const ortByUrl = new Map<string, Promise<Ort>>();
  */
 const configuring = new WeakMap<Ort, Promise<unknown>>();
 
+/**
+ * What each runtime module was FIRST initialised with — and what a later runner may not change.
+ *
+ * `numThreads` and `wasmPaths` are read when the wasm backend initialises, which the shipped
+ * runtime does exactly once per module (`initWasm` guards on its own flag; the proxied path posts
+ * `init-wasm` once). Writing them again for a second session on the same module is therefore a
+ * no-op the caller cannot see: the session comes up on the FIRST runner's thread count, from the
+ * FIRST runner's wasm directory, while `ModelRunnerOptions` said otherwise and nothing said a
+ * word. `serialise` prevented two settings being half-applied at once; it never made them
+ * reconfigurable, and the note above it did not claim to.
+ *
+ * So the second runner is refused rather than silently given the first one's configuration. It is
+ * the loud half of a choice — a runner that quietly runs on six threads when it asked for one is a
+ * measurement that lies, and this app's benchmarks are the reason the option exists at all. In
+ * practice the app never hits it: `wasmPaths` decides `ortUrl`, so a different directory is a
+ * different module with its own record, and `defaultThreadCount()` is constant for a page.
+ */
+interface RuntimeConfig {
+  numThreads: number;
+  wasmPaths: string;
+}
+const configured = new WeakMap<Ort, RuntimeConfig>();
+
 function serialise<T>(ort: Ort, work: () => Promise<T>): Promise<T> {
   const next = (configuring.get(ort) ?? Promise.resolve()).then(work, work);
   // Kept whatever the outcome, so one failed creation does not wedge the queue behind a rejection.
@@ -428,11 +451,11 @@ export function defaultThreadCount(
 }
 
 /**
- * Did the WebGPU backend actually take the work, after a session that asked for it?
+ * Is the WebGPU backend LIVE on this runtime module?
  *
  * The question `usesGpu` cannot answer. That one reads the REQUESTED list before any session
- * exists, because the proxy decision has to be made then — so if onnxruntime quietly assigns the
- * graph to wasm instead, wasm runs UNPROXIED on the page's thread, which is the one arrangement the
+ * exists, because the proxy decision has to be made then — so if onnxruntime never brings the
+ * WebGPU backend up, wasm runs UNPROXIED on the page's thread, which is the one arrangement the
  * proxy exists to prevent, and the app reports a GPU while the UI stutters.
  *
  * `ort.env.webgpu.device` is the signal, and it is MEASURED rather than assumed, because it is not
@@ -444,41 +467,152 @@ export function defaultThreadCount(
  *
  * Both engines, same answer, and the key does not exist at all until a WebGPU session is created.
  *
+ * IT IS A MODULE-LEVEL FACT, and permanent in both directions. Read out of the shipped
+ * `vendor/ort.mjs`: the device is assigned inside the EP initialiser, which the backend registry
+ * runs at most ONCE per module (`if (r.initialized) return r.backend`) and marks aborted forever
+ * on failure. So a module whose WebGPU came up has a device from then on, and one whose WebGPU
+ * failed never gets one however many sessions ask. That makes this a good answer to "could the GPU
+ * have taken it" and no answer at all to "did it".
+ *
  * A missing `env.webgpu` OBJECT means no signal rather than a negative one — a different
- * onnxruntime build, or one of the wasm-only entrypoints — and this returns true there, because
- * acting on the absence of a signal would downgrade every machine on a runtime that simply does not
- * publish it. The check can only ever cost a false GPU, never a false wasm.
- *
- * IT IS A TRANSITION, NOT A READING (2026-09-05). `ort.env` is global to the runtime MODULE, and
- * `ortByUrl` hands the same module to every runner on the page — so a device left there by an
- * EARLIER GPU session answers for a later one that onnxruntime quietly assigned to wasm, which is
- * the exact arrangement this check exists to refuse, now running unproxied on the page's thread.
- * Reproduced against the fixture in `tests/model-runner.test.ts`. So the caller reads the device
- * immediately before `InferenceSession.create` and passes it here, and the evidence is that THIS
- * creation changed it: the measured case (nothing there, then a device) reads exactly as before.
- *
- * A device that is present and unchanged is NOT evidence, and it is the one case that costs
- * something: onnxruntime documents no per-session handle, and whether a second GPU session on one
- * module gets a new device object is unmeasured here. So a genuine second GPU session may be
- * rebuilt on proxied wasm — a slower scanner that still works — while the alternative is an
- * unproxied wasm run blocking the page for as long as the camera is open. Where a reading cannot
- * be validated this project refuses rather than guesses, and this is that refusal.
+ * onnxruntime build, or one of the wasm-only entrypoints — hence `null`, which callers read as
+ * "keep the GPU". Acting on the absence of a signal would downgrade every machine on a runtime
+ * that simply does not publish it.
  *
  * (`ort.env.webgpu.profiling.ondata` was the other candidate and does not work: assignable on this
  * build, and zero events fire during a genuine 87 ms GPU run in both engines. Believing it would
  * have downgraded every healthy GPU there is.)
  */
-function gpuTookTheWork(ort: Ort, before: unknown): boolean {
+function webgpuBackendLive(ort: Ort): boolean | null {
   const webgpu = (ort.env as { webgpu?: { device?: unknown } }).webgpu;
-  if (typeof webgpu !== 'object' || webgpu === null) return true;
-  const device = webgpu.device;
-  if (!device) return false;
-  return device !== before;
+  if (typeof webgpu !== 'object' || webgpu === null) return null;
+  return Boolean(webgpu.device);
 }
 
-/** What `env.webgpu.device` holds right now — the before/after pair `gpuTookTheWork` compares. */
-function webgpuDevice(ort: Ort): unknown {
-  return (ort.env as { webgpu?: { device?: unknown } }).webgpu?.device;
+/** The `GPUQueue` a WebGPU session's work is submitted on, when there is one to watch. */
+interface QueueLike {
+  submit(...args: unknown[]): unknown;
+}
+
+/** `env.webgpu.device.queue`, if it is an object with a callable `submit`. */
+function webgpuQueue(ort: Ort): QueueLike | null {
+  const device = (ort.env as { webgpu?: { device?: { queue?: unknown } } }).webgpu?.device;
+  const queue = device?.queue;
+  if (typeof queue !== 'object' || queue === null) return null;
+  return typeof (queue as { submit?: unknown }).submit === 'function' ? (queue as QueueLike) : null;
+}
+
+/**
+ * Did the GPU run THIS SESSION's graph? Counted, by running `probe` and watching the device queue.
+ *
+ * PER SESSION, WHICH THE DEVICE READING IS NOT (2026-09-05). The check here was a device
+ * TRANSITION — "this create put a device where there was none" — and that is false on the runtime
+ * this app ships. Measured, headed Chromium on an Apple GPU, two `createModelRunner` calls on one
+ * page: the first got `['webgpu', 'wasm']`, the second was DOWNGRADED to wasm with "WebGPU did not
+ * take this model", and `env.webgpu.device` was the same object throughout. The backend registry
+ * caches its EP initialisation, so there is no second transition to see; every session after the
+ * first on a page was quietly rebuilt on proxied wasm. The park makes that ordinary — a second
+ * panel, a rebuilt detector, a model URL change all reach it.
+ *
+ * So the evidence is the session's own EXECUTION. A WebGPU-EP run submits command buffers on
+ * `env.webgpu.device.queue`; a run the CPU EP took submits none. Measured on the same machine,
+ * one inference of this model:
+ *
+ *     session on the direct module          queue.submit calls   wall clock
+ *     ['webgpu', 'wasm'], first (cold)              17             190 ms
+ *     ['webgpu', 'wasm'], warm                      17              28 ms
+ *     ['wasm'], with a device already present        0             541 ms
+ *
+ * The cold run counts too, which is what lets this ride on the warm-up rather than needing a run of
+ * its own. `null` is "could not observe" — no queue to watch, or an engine that refuses the
+ * observation — and callers read it as "keep the GPU", the same way they read a runtime that
+ * publishes no device at all. The observation is removed again whatever happens, and restores an
+ * own `submit` rather than assuming there was none.
+ */
+async function gpuRanTheGraph(ort: Ort, probe: () => Promise<unknown>): Promise<boolean | null> {
+  const queue = webgpuQueue(ort);
+  if (!queue) {
+    await probe();
+    return null;
+  }
+  const original = Object.getOwnPropertyDescriptor(queue, 'submit');
+  const submit = queue.submit;
+  let submissions = 0;
+  let watching = false;
+  try {
+    Object.defineProperty(queue, 'submit', {
+      configurable: true,
+      writable: true,
+      enumerable: original?.enumerable ?? false,
+      value: function (this: unknown, ...args: unknown[]): unknown {
+        submissions++;
+        return submit.apply(this, args);
+      },
+    });
+    watching = true;
+  } catch {
+    // An engine that will not let its queue be observed. Not evidence either way.
+  }
+  try {
+    await probe();
+  } finally {
+    if (watching) {
+      if (original) Object.defineProperty(queue, 'submit', original);
+      else delete (queue as unknown as Record<string, unknown>).submit;
+    }
+  }
+  return watching ? submissions > 0 : null;
+}
+
+/**
+ * The best of {@link GPU_PROBE_RUNS} timed runs, or null where the timing cannot be trusted.
+ *
+ * THE BEST OF TWO SAMPLES, not one. A single sample is a claim about a moment: a page that is
+ * backgrounded, a GC pause, or another tab taking the GPU can make one run arbitrarily slow, and
+ * the penalty the caller applies is permanent for the runner's life. Taking the minimum asks "can
+ * this provider do it at all", which is the actual question — a rasteriser's best run is still
+ * thousands of milliseconds, so the margin survives it intact.
+ *
+ * A HIDDEN PAGE IS NOT EVIDENCE, and that is what `null` means. Both samples can land inside one
+ * throttled stretch — a backgrounded tab, a locked screen — so the honest move is to decline to
+ * judge rather than to judge on bad data.
+ *
+ * Checked AROUND EACH SAMPLE and again at the end, not once on the way in: a check before the loop
+ * only rules out a page that was ALREADY hidden, and the page can go hidden during the first
+ * awaited probe, which is precisely when a tab is likely to be backgrounded.
+ *
+ * SAMPLED IS NOT ENOUGH, which is why the event is subscribed to as well (2026-09-05):
+ * `visibilityState` is a snapshot, so a tab that goes hidden DURING an awaited probe and is back by
+ * the time the sample is checked reads as visible at every point this code looks, while the run it
+ * just timed was throttled the whole way. `visibilitychange` fires on both edges, so a listener
+ * held across the sampling sees the interval the polls cannot.
+ *
+ * Its own function since 2026-09-05: it is a measurement, and `createModelRunner` had it inline
+ * among session ownership, fallback and validation, three levels deep.
+ */
+async function bestTimedRun(probe: () => Promise<unknown>): Promise<number | null> {
+  const hidden = (): boolean => globalThis.document?.visibilityState === 'hidden';
+  if (hidden()) return null;
+  let wentHidden = false;
+  const noteHidden = (): void => {
+    if (hidden()) wentHidden = true;
+  };
+  // Optional-called: a host without a real document (a DOM test, a worker) may have neither
+  // method, and losing the listener costs the extra evidence rather than the verdict.
+  globalThis.document?.addEventListener?.('visibilitychange', noteHidden);
+  let best = Number.POSITIVE_INFINITY;
+  let watched = true;
+  try {
+    for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
+      const started = performance.now();
+      await probe();
+      if (hidden() || wentHidden) watched = false;
+      else best = Math.min(best, performance.now() - started);
+    }
+  } finally {
+    globalThis.document?.removeEventListener?.('visibilitychange', noteHidden);
+  }
+  return watched && !hidden() && !wentHidden ? best : null;
 }
 
 /**
@@ -624,16 +758,23 @@ export async function createModelRunner(
   // `proxiedSiblingUrl` for the fallback when a host cannot serve the query form.
   const ort = await loadRuntime(ortUrl, !gpu);
 
-  // Read INSIDE the serialised block, immediately before the create, so it is this session's
-  // before-picture and not some concurrent runner's. See `gpuTookTheWork`.
-  let deviceBefore: unknown;
+  // This was a hard 1, with the note "so no SharedArrayBuffer / cross-origin-isolation headers
+  // are needed" — true when written, and it meant every non-Apple build ran a THREADED runtime
+  // on one core: measured at 297 ms per inference in WebKit and 234 ms in Chromium, 3-4 fps.
+  // apps/web/serve.mjs and tauri.conf.json now send COOP/COEP, so the page can be isolated and
+  // the threads asked for here are real. It still falls back to 1 wherever it is not.
+  const numThreads = opts.numThreads ?? defaultThreadCount();
+  const wasmDir = opts.wasmPaths ?? './';
   const session = await serialise(ort, async () => {
-    // This was a hard 1, with the note "so no SharedArrayBuffer / cross-origin-isolation headers
-    // are needed" — true when written, and it meant every non-Apple build ran a THREADED runtime
-    // on one core: measured at 297 ms per inference in WebKit and 234 ms in Chromium, 3-4 fps.
-    // apps/web/serve.mjs and tauri.conf.json now send COOP/COEP, so the page can be isolated and
-    // the threads asked for here are real. It still falls back to 1 wherever it is not.
-    ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
+    // A MODULE IS CONFIGURED ONCE — see `configured`. Refused rather than silently inherited.
+    const first = configured.get(ort);
+    if (first && (first.numThreads !== numThreads || first.wasmPaths !== wasmDir)) {
+      throw new Error(
+        `the runtime at ${ortUrl} is already initialised with numThreads ${first.numThreads} and wasmPaths ${first.wasmPaths}; ` +
+          `this runner asked for ${numThreads} and ${wasmDir}, which onnxruntime cannot change on a live module`,
+      );
+    }
+    ort.env.wasm.numThreads = numThreads;
     // Off the main thread. A single run of this model is ~400ms of straight-line wasm and the scan
     // loop fires one every 200ms, so on the page's own thread the UI is blocked essentially all the
     // time the camera is open — a click on the sidebar is not handled until the run finishes.
@@ -648,13 +789,16 @@ export async function createModelRunner(
     // worker that onnxruntime spawns for its own purposes. The cheaper arrangement is also the
     // simpler one here.
     ort.env.wasm.proxy = !gpu;
-    ort.env.wasm.wasmPaths = opts.wasmPaths ?? './';
+    ort.env.wasm.wasmPaths = wasmDir;
 
-    deviceBefore = webgpuDevice(ort);
-    return ort.InferenceSession.create(modelUrl, {
+    const created = await ort.InferenceSession.create(modelUrl, {
       executionProviders,
       graphOptimizationLevel: 'all',
     });
+    // Recorded only once a session has actually come up on it: a create that failed may have left
+    // the backend uninitialised, and the next runner is then free to configure it.
+    configured.set(ort, { numThreads, wasmPaths: wasmDir });
+    return created;
   });
 
   return owning(session, async (relinquish): Promise<ModelRunner> => {
@@ -679,15 +823,18 @@ export async function createModelRunner(
     };
 
     // THE GPU HAS TO HAVE TAKEN IT. Asking for `webgpu` turned the proxy off; if onnxruntime then
-    // assigned the graph to wasm anyway, that wasm is running on the page's own thread — worse than
+    // runs the graph on wasm anyway, that wasm is running on the page's own thread — worse than
     // either honest path, and invisible to the timing probe below, which sees a perfectly ordinary
-    // sub-budget wasm run and keeps it. Checked before the warm-up, so the shader compilation this
-    // would otherwise pay for is never started.
-    if (gpu && chosenHere && !gpuTookTheWork(ort, deviceBefore)) {
-      return rebuildOnWasm(
-        '[cubus] WebGPU did not take this model — using the wasm runtime, off the page thread',
-      );
-    }
+    // sub-budget wasm run and keeps it.
+    //
+    // TWO QUESTIONS, ASKED IN COST ORDER. Whether the backend came up at all is a free reading and
+    // is settled here, before the warm-up, so a module with no WebGPU never pays for the run
+    // (`webgpuBackendLive`). Whether THIS session's graph went to it needs the session to execute,
+    // and rides on the warm-up below rather than adding a run of its own (`gpuRanTheGraph`).
+    const gpuVerdict = gpu && chosenHere ? webgpuBackendLive(ort) : null;
+    const notTheGpu =
+      '[cubus] WebGPU did not take this model — using the wasm runtime, off the page thread';
+    if (gpuVerdict === false) return rebuildOnWasm(notTheGpu);
     const inputName = session.inputNames[0];
     const outputName = session.outputNames[0];
     if (!inputName || !outputName) throw new Error('model has no input/output tensor');
@@ -707,7 +854,14 @@ export async function createModelRunner(
     // different resolution warms the shape it will actually be asked for — warming the wrong one
     // would compile a set of shaders nothing then uses, which is the failure that still looks fine.
     if (opts.warmUp ?? true) {
-      await probe();
+      // THE WARM-UP IS ALSO THE EVIDENCE. `gpuRanTheGraph` runs this same probe with the WebGPU
+      // device's command queue watched, so the second question costs no extra inference — and a
+      // session the GPU did not take pays one wasm run to find out, never a shader compilation,
+      // because there is no GPU compiling anything in exactly that case.
+      let ranOnGpu: boolean | null = null;
+      if (gpuVerdict === true) ranOnGpu = await gpuRanTheGraph(ort, probe);
+      else await probe();
+      if (ranOnGpu === false) return rebuildOnWasm(notTheGpu);
 
       // A GPU WE CHOSE IS TIMED, and dropped if it is not one.
       //
@@ -721,55 +875,17 @@ export async function createModelRunner(
       // warm-up actually ran (`warmUp: false` would leave the first run carrying that cost and read
       // as a catastrophe on healthy hardware).
       //
-      // The BEST of two samples, not one. A single sample is a claim about a moment: a page that is
-      // backgrounded, a GC pause, or another tab taking the GPU can make one run arbitrarily slow,
-      // and the penalty here is permanent for the runner's life. Taking the minimum asks "can this
-      // provider do it at all", which is the actual question — a rasteriser's best run is still
-      // thousands of milliseconds, so the margin below survives it intact.
-      //
-      // That margin is enormous on purpose — see the ladder above `softwareAdapter`, which is where
-      // those numbers are measured and dated: ~15 ms on a real GPU, ~59 ms for 6-thread wasm,
-      // 6184 ms on SwiftShader. Anything between 400 ms and those extremes is a machine where
-      // neither path is good, and rebuilding there costs more than it saves.
-      // A HIDDEN PAGE IS NOT EVIDENCE. Both samples can land inside one throttled stretch — a
-      // backgrounded tab, a locked screen — and the penalty here is permanent for the runner's
-      // life, so the honest move is to decline to judge rather than to judge on bad data. Keeping
-      // the GPU is the right default when declining: it was chosen because the adapter is real and
-      // not a rasteriser, which is a fact this timing cannot improve on.
-      //
-      // Checked AROUND EACH SAMPLE and again before the verdict, not once on the way in. A single
-      // check before the loop only rules out a page that was already hidden — the page can go
-      // hidden during the first awaited probe, which is precisely when a tab is likely to be
-      // backgrounded, and then both samples are throttled and the downgrade is permanent anyway.
-      //
-      // SAMPLED IS NOT ENOUGH, and that is why the event is subscribed to as well (2026-09-05):
-      // `visibilityState` is a snapshot, so a tab that goes hidden DURING an awaited probe and is
-      // back by the time the sample is checked reads as visible at every point this code looks,
-      // while the run it just timed was throttled the whole way. `visibilitychange` fires on both
-      // edges, so a listener held across the sampling sees the interval the polls cannot.
-      const hidden = (): boolean => globalThis.document?.visibilityState === 'hidden';
-      if (gpu && chosenHere && !hidden()) {
-        let wentHidden = false;
-        const noteHidden = (): void => {
-          if (hidden()) wentHidden = true;
-        };
-        // Optional-called: a host without a real document (a DOM test, a worker) may have neither
-        // method, and losing the listener costs the extra evidence rather than the verdict.
-        globalThis.document?.addEventListener?.('visibilitychange', noteHidden);
-        let best = Number.POSITIVE_INFINITY;
-        let watched = true;
-        try {
-          for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
-            const started = performance.now();
-            await probe();
-            if (hidden() || wentHidden) watched = false;
-            else best = Math.min(best, performance.now() - started);
-          }
-        } finally {
-          globalThis.document?.removeEventListener?.('visibilitychange', noteHidden);
-        }
+      // The budget's margin is enormous on purpose — see the ladder above `softwareAdapter`, which
+      // is where those numbers are measured and dated: ~15 ms on a real GPU, ~59 ms for 6-thread
+      // wasm, 6184 ms on SwiftShader. Anything between 400 ms and those extremes is a machine where
+      // neither path is good, and rebuilding there costs more than it saves. `bestTimedRun` owns
+      // the sampling and answers null where the page could not be trusted to be watching; keeping
+      // the GPU is the right default when declining, since it was chosen because the adapter is
+      // real and not a rasteriser, which is a fact this timing cannot improve on.
+      if (gpu && chosenHere) {
+        const best = await bestTimedRun(probe);
         const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
-        if (watched && !hidden() && !wentHidden && best > budget) {
+        if (best !== null && best > budget) {
           return rebuildOnWasm(
             `[cubus] the GPU ran this model in ${Math.round(best)} ms — slower than the wasm runtime, so using that instead`,
           );

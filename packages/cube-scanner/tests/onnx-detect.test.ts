@@ -24,6 +24,37 @@ describe('preprocess', () => {
     expect(pre.data[0 * plane + c]).toBeCloseTo(1, 1); // R ≈ 1
     expect(pre.data[1 * plane + c]).toBeCloseTo(0, 1); // G ≈ 0
   });
+
+  // EVERY MALFORMED FRAME USED TO PRODUCE A TENSOR, and each of the three looked like an answer.
+  // A camera that opens and delivers nothing is the case that matters most here: it fed 640x640 of
+  // flat grey — the exact input the model is trained to abstain on — so the scanner sat on "Show
+  // any side" with a live lens, and no layer downstream could tell it from a wall.
+  it('refuses a frame with no pixels rather than making one out of grey', () => {
+    expect(() => preprocess({ data: new Uint8ClampedArray(0), width: 0, height: 0 })).toThrow(
+      /0x0 is not an image/,
+    );
+    expect(() => preprocess({ data: new Uint8ClampedArray(0), width: 4, height: 0 })).toThrow(
+      /not an image/,
+    );
+    expect(() =>
+      preprocess({ data: new Uint8ClampedArray(4 * 4 * 4), width: 4.5, height: 4 }),
+    ).toThrow(/not an image/);
+  });
+
+  it('refuses a truncated buffer rather than reading NaNs off the end of it', () => {
+    // Past the end an RGBA read is `undefined`, which normalises to NaN — and NaN compares false
+    // against every confidence threshold downstream, so the stickers were dropped in silence.
+    const short = solidFrame(8, 8, [10, 20, 30]);
+    expect(() =>
+      preprocess({ data: short.data.slice(0, 8 * 8 * 4 - 4), width: 8, height: 8 }),
+    ).toThrow(/256 bytes, but this one holds 252/);
+  });
+
+  it('refuses an imgsz that is not a whole number of pixels', () => {
+    const frame = solidFrame(8, 8, [10, 20, 30]);
+    expect(() => preprocess(frame, 0)).toThrow(/not a positive whole number/);
+    expect(() => preprocess(frame, 63.5)).toThrow(/not a positive whole number/);
+  });
 });
 
 describe('detectFace (injected run)', () => {
