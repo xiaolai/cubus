@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { eyeDirection, fitDistance, silhouette } from './cube-frame.js';
+import { parseHighlight, pieceKey, resolveHighlight } from './cube-highlight.js';
 
 const PALETTES = {
   muted:    { U:'#E8E3D6', D:'#D8B84A', F:'#4E8C6A', B:'#3C6E9E', R:'#B8503F', L:'#C87A3C' },
@@ -44,11 +45,24 @@ const FACELET_INDEX = {
 const EASE = (t) => (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2);
 const AXES = { x: new THREE.Vector3(1,0,0), y: new THREE.Vector3(0,1,0), z: new THREE.Vector3(0,0,1) };
 
+// The highlight pulse — the channel a lesson uses to say "these pieces" while it narrates.
+// Subtle by intent: it points, it does not shout, and it has to stay legible under a turn playing
+// over the top of it.
+const HL_PEAK = 0.38;        // emissiveIntensity at the top of the breath
+const HL_PERIOD = 1200;      // ms for one full breath
+const GHOST_OPACITY = 0.45;  // a ghost at rest — single-sourced with its construction below
+const GHOST_HL_PEAK = 0.80;  // ghosts are unlit and have no emissive, so they breathe in opacity
+
+// Reduced motion FREEZES the highlight at full strength rather than removing it. Same reasoning
+// _next() applies to the turn itself: the pulse is decoration, but the indicator carries meaning —
+// it is how the narration says which piece it means — and dropping it loses the sentence.
+const reducedMotion = () => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+
 class CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
 // on the DOM-lowercased spelling, so both are observed and normalized in _set().
   static observedAttributes = [
-    'facelets', 'scramble', 'alg', 'palette', 'autorotate',
+    'facelets', 'scramble', 'alg', 'palette', 'autorotate', 'highlight',
     'ghosts', 'ghost-elevation', 'ghostelevation',
     'camera-latitude', 'cameralatitude',
     'camera-longitude', 'cameralongitude',
@@ -79,6 +93,8 @@ class CubusCube extends HTMLElement {
   set faceletScale(v) { this._set('facelet-scale', v); }
   set tempoScale(v) { this._set('tempo-scale', v); }
   set backView(v) { this._set('back-view', v); }
+  set highlight(v) { this._set('highlight', v); }
+  get highlight() { return this._attrs.highlight; }
 
   constructor() {
     super();
@@ -88,7 +104,7 @@ class CubusCube extends HTMLElement {
   }
   /** Attribute defaults. Also what a REMOVED attribute falls back to — see _set(). */
   static DEFAULTS = {
-    palette: 'muted', ghosts: 'none', 'ghost-elevation': '4',
+    palette: 'muted', ghosts: 'none', 'ghost-elevation': '4', highlight: 'none',
     // No camera distance: it is computed from what the view draws and the slot it draws into
     // (lib/cube-frame.js), so nothing is clipped at any slot shape.
     'camera-latitude': '35', 'camera-longitude': '45',
@@ -121,6 +137,7 @@ class CubusCube extends HTMLElement {
     else if (name === 'orbit') this._applyOrbit();
     else if (name === 'facelets' || name === 'scramble') this.reset();
     else if (name === 'alg') { this._sol = this._parse(this._attrs.alg || ''); this._cursor = 0; this._applied = 0; this._playing = false; }
+    else if (name === 'highlight') { this._readHighlight(); this._syncHighlight(); }
   }
 
   connectedCallback() {
@@ -216,7 +233,7 @@ class CubusCube extends HTMLElement {
           // One floating twin per sticker, offset along the same normal. Unlit and
           // depth-write-free so overlapping ghosts stay legible from any angle.
           const g = new THREE.Mesh(ghostGeo, new THREE.MeshBasicMaterial({
-            transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide,
+            transparent: true, opacity: GHOST_OPACITY, depthWrite: false, side: THREE.DoubleSide,
           }));
           g.rotation.copy(m.rotation); // carries the X-face quarter turn set on the sticker above
           g.userData = { face: f.key, home: [x, y, z], n };
@@ -238,6 +255,10 @@ class CubusCube extends HTMLElement {
     this._playing = false; // play() intent — lets pause() stop cleanly between moves
     this._applied = 0; // solution moves animated since the last reset (drives 'cubus-step')
     this._sol = this._parse(this._attrs.alg || '');
+    // _set() returns early until the meshes exist, so an attribute present at parse time has not
+    // been read yet. reset() below paints, and painting re-resolves the highlight.
+    this._hlSet = null;
+    this._readHighlight();
     this._ghostVisible();
     this.reset();
 
@@ -285,6 +306,23 @@ class CubusCube extends HTMLElement {
           this._next();
         }
         this._dirty = true;
+      }
+      // The highlight breathes on its own clock, independent of the move animation: a piece can be
+      // named while the cube is still, and it must keep pulsing while a turn plays over it.
+      //
+      // The phase is evaluated every frame and never branched around, because the reduced-motion
+      // preference can flip WHILE a pulse is in flight. Skipping the update in that case froze the
+      // highlight at whatever intensity it happened to hold — and at the trough of the breath that
+      // is invisible, so the indicator silently vanished for exactly the users who asked for less
+      // motion. Writing only on change keeps the static case free: under reduced motion the phase
+      // is a constant, so this settles after one frame and stops marking the scene dirty.
+      if (this._hlSet?.size) {
+        const k = this._hlPhase();
+        if (k !== this._hlK) {
+          this._applyHighlight(k);
+          this._hlK = k;
+          this._dirty = true;
+        }
       }
       if (this._attrs.autorotate != null) { root.rotation.y += 0.0035; this._dirty = true; }
       const moving = this.controls.update();
@@ -550,20 +588,132 @@ class CubusCube extends HTMLElement {
   _paint(fl = this._facelets()) {
     if (!this.stickers) return;
     const pal = PALETTES[this._attrs.palette] || PALETTES.muted;
+    // The colour letter a sticker carries under `fl`, or null for one the scanner could not read.
+    // Factored out because _stampPieces needs the same answer, and asking the facelet string twice
+    // in two spellings is how the two come to disagree.
+    const letterOf = (m) => {
+      if (!fl) return m.userData.face;
+      const [x, y, z] = m.userData.home;
+      const ch = fl[FACELET_INDEX[m.userData.face](x, y, z)];
+      return ch === '?' ? null : ch;
+    };
     // Stickers and ghosts carry the same userData and take the same colour — one loop.
     for (const m of [...this.stickers, ...this._ghostMeshes]) {
-      const [x, y, z] = m.userData.home;
-      let letter = m.userData.face;
-      if (fl) {
-        const ch = fl[FACELET_INDEX[m.userData.face](x, y, z)];
-        if (ch === '?') { m.material.color.set(UNKNOWN_STICKER); continue; }
-        letter = ch;
-      }
-      m.material.color.set(pal[letter]);
+      const letter = letterOf(m);
+      m.material.color.set(letter === null ? UNKNOWN_STICKER : pal[letter]);
     }
+    this._stampPieces(letterOf);
     this._ghostPlace();
     this._applyScale();
+    // Which cubies a selector names depends on what the cube now holds, so the set is re-resolved
+    // here rather than cached from whenever the attribute was last set.
+    this._syncHighlight();
     this._dirty = true;
+  }
+
+  /**
+   * Record which piece each cubie carries, while the cube is still at home.
+   *
+   * This is the ONE moment the answer is readable: reset() paints BEFORE it applies `scramble`, so
+   * at this instant a cubie's letters are exactly its facelet letters. Afterwards the group travels
+   * — _bake() moves it — and the stamp travels with it. That is what makes `piece:UF` mean "the UF
+   * piece, wherever it went" rather than "whatever is in the UF slot", which is a different
+   * sentence and the one a scrambled cube gets wrong.
+   */
+  _stampPieces(letterOf) {
+    const carried = new Map();
+    for (const m of this.stickers) {
+      if (carried.get(m.parent) === null) continue; // already unreadable; one bad sticker is enough
+      const letter = letterOf(m);
+      carried.set(m.parent, letter === null ? null : (carried.get(m.parent) || '') + letter);
+    }
+    // pieceKey refuses letters that name no real cubie, so a facelet string claiming two U stickers
+    // on one piece reads as unknown rather than as whichever piece it happens to resemble.
+    for (const [c, letters] of carried) c.userData.piece = letters === null ? null : pieceKey(letters);
+  }
+
+  /** Re-read the highlight attribute into selectors, naming a bad token rather than dropping it. */
+  _readHighlight() {
+    const { selectors, invalid } = parseHighlight(this._attrs.highlight);
+    if (invalid !== null) console.warn(`<cubus-cube> refusing highlight — invalid selector "${invalid}"`);
+    this._hlSels = selectors;
+    // Start at the top of the breath, so a highlight is visible the instant it is set rather than
+    // fading in from nothing over half a period.
+    this._hlT0 = performance.now() - HL_PERIOD / 2;
+  }
+
+  /** Where in the breath we are, 0..1. One expression, so the tick and the first paint agree. */
+  _hlPhase() {
+    if (reducedMotion()) return 1;
+    return 0.5 - 0.5 * Math.cos(((performance.now() - this._hlT0) / HL_PERIOD) * 2 * Math.PI);
+  }
+
+  /** Re-resolve the highlight against the cube as it stands now, and paint one frame of it. */
+  _syncHighlight() {
+    if (!this.stickers) return;
+    this._clearHighlight();
+    const sels = this._hlSels || [];
+    // _dirty even on the empty path: _clearHighlight() above just reset 108 materials, and on a
+    // stationary cube nothing else will ask for a redraw — so the glow this call removed would
+    // stay on screen until the user happened to orbit.
+    if (!sels.length) { this._hlSet = null; this._hlK = null; this._dirty = true; return; }
+    const cubies = this.cubies.map((c) => ({
+      // Rounded because that is what a baked position IS: _bake() writes integers, so the parity
+      // test needs no epsilon, and a cubie riding a temp group mid-turn still answers for the slot
+      // it is travelling between rather than for a fractional position nobody can name.
+      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
+      piece: c.userData.piece ?? null,
+    }));
+    const { indices, empty } = resolveHighlight(sels, cubies);
+    if (empty.length) {
+      console.warn(`<cubus-cube> highlight matched nothing for ${empty.join(', ')} — this cube has no known identity for it (unread stickers?)`);
+    }
+    this._hlSet = new Set(indices.map((i) => this.cubies[i]));
+    this._hlK = this._hlPhase();
+    this._applyHighlight(this._hlK);
+    this._dirty = true;
+  }
+
+  /** Return every sticker and ghost to its resting look.
+   *
+   *  All 54 of each, not just the previous set: clearing by bookkeeping leaves a stale glow on a
+   *  piece that dropped out of the selection, and nothing else ever repaints emissive — so the
+   *  wrong piece would keep pointing at itself for the rest of the lesson. 108 assignments on a
+   *  move boundary is not a cost worth being clever about. */
+  _clearHighlight() {
+    for (const m of this.stickers) m.material.emissiveIntensity = 0;
+    for (const g of this._ghostMeshes) g.material.opacity = GHOST_OPACITY;
+  }
+
+  /**
+   * Paint the pulse at `k` in 0..1.
+   *
+   * Emissive rather than colour: on a cube the sticker colour IS the thing being taught, so a
+   * highlight that changes it is lying about the puzzle. Lighting a sticker with its OWN colour
+   * reads as "this one" and a white centre stays white.
+   *
+   * It lives on the cubie's materials, not on an overlay mesh, and that is what makes it survive a
+   * turn: _grab() re-parents cubies into a temporary group on every move, so anything positioned in
+   * world space would tear loose the moment the layer rotated.
+   */
+  _applyHighlight(k) {
+    if (!this._hlSet?.size) return;
+    for (const c of this._hlSet) {
+      for (const m of c.children) {
+        if (m.userData?.n) {
+          // A ghost. MeshBasicMaterial is unlit and has no emissive at all, so it breathes in
+          // opacity. Its outline is a CHILD carrying a material shared by all 54 ghosts and is
+          // deliberately left alone — a steady frame around a breathing fill is the better read,
+          // and touching it would light every ghost on the cube at once.
+          m.material.opacity = GHOST_OPACITY + k * (GHOST_HL_PEAK - GHOST_OPACITY);
+        } else if (m.userData?.face) {
+          m.material.emissive.copy(m.material.color);
+          m.material.emissiveIntensity = k * HL_PEAK;
+        }
+        // The rounded body is skipped on purpose: bodyMat is ONE material shared by all 26 cubies,
+        // so lighting it here would light the entire cube instead of the piece being named.
+      }
+    }
   }
 
   // Elevation is how far the twin floats past its sticker, in cubie units.
@@ -592,6 +742,9 @@ class CubusCube extends HTMLElement {
    *  counts up. Host apps sync a move list / 2D net / scrubber to the event. */
   _completeMove(a) {
     this._bake(a.temp);
+    // Positions have just changed, so a positional selector (`layer:`, `slot:`) now names a
+    // different set. Re-resolved here rather than only on repaint, because a move repaints nothing.
+    this._syncHighlight();
     this._anim = null;
     this._applied += a.m.delta ?? 1;
     this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: this._applied, total: this._sol.length } }));
@@ -631,7 +784,7 @@ class CubusCube extends HTMLElement {
     // solve guide with no turn is a slideshow of positions, and the turn is the thing being
     // taught. 120ms per quarter is quick enough not to be a sweep and long enough to see which
     // layer moved; at the Slow setting this is a 32x cut, which is the point.
-    const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+    const reduced = reducedMotion();
     const dur = (190 / tempo) * m.turns;
     this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
   }
@@ -661,6 +814,12 @@ class CubusCube extends HTMLElement {
         this._bake(t);
       }
     }
+    // AFTER the scramble, not only inside _paint(). _paint() resolves the highlight while every
+    // cubie is still at home, and the loop above then moves them — so a positional selector set
+    // before reset() named the pre-scramble occupant of the slot. Unconditional rather than tucked
+    // inside the `if`: the invariant is "when reset() returns, the highlight matches the final
+    // positions", and stating it here survives someone adding a second transform later.
+    this._syncHighlight();
     this._dirty = true;
     if (!this._quiet) {
       this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: 0, total: this._sol.length } }));
@@ -697,6 +856,9 @@ class CubusCube extends HTMLElement {
       t.rotateOnAxis(AXES[m.axis], m.angle);
       this._bake(t);
     }
+    // Same reason as reset(): the moves above land after reset() painted, so a highlight set
+    // before the seek would still be pointing at wherever those pieces used to be.
+    this._syncHighlight();
     this._cursor = target; this._applied = target;
     this._dirty = true;
     this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: target, total: this._sol.length } }));
