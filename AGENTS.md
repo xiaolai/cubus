@@ -248,7 +248,15 @@ it walks you through solving it.
 - **A search that ran out of budget is not a cube that cannot be solved** (2026-08-30). God's
   number is 20, so `<= 20` is a PROMISE the app keeps rather than a target it aims at: a refusal
   above a promised target doubles the budget and asks again (`GODS_NUMBER`,
-  `MAX_PROMISE_ESCALATIONS` in `lib/solve-target.js`), because `solvePattern` deepens phase-1 to
+  `MAX_PROMISE_ESCALATIONS` in `lib/solve-target.js`) — and since 2026-09-05 the doubled attempt
+  CONTINUES the same search rather than restarting it: `openSearch` returns a resumable object
+  whose key (facelets, `solLen`, view filter, table format) is asserted against the bounds AS
+  THEY ARE NOW on every continuation (a key checked only at open time once answered a
+  21-bounded ask with 22 moves), `probeMax` on a continuation is a FRONTIER, not an increment,
+  so the answer is character-for-character the from-scratch answer at that frontier, and a
+  pooled resume point is six points that must never reach the lone fallback. Measured on the
+  costliest frozen state: 35 % of the nodes and wall time of a restart, same answer
+  (`escalation-resume.test.mjs`; `dev-docs/solver-move-count.md` §7) — because `solvePattern` deepens phase-1 to
   `solLen - 1` and canonical pruning is proved to delete no optimal path. What that does NOT
   make the engine is *complete* (corrected 2026-09-05): phase 1 refuses a maneuver whose last
   move is a G1 move, and phase 2 is capped at `MAX_PHASE2 = 12`, so a length-L solution is

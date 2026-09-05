@@ -1182,6 +1182,162 @@ function probeView(view, path, d2max) {
   return null;
 }
 
+// ---- a search that is continued rather than started again ---------------------------------------
+// Added 2026-09-05 (dev-docs/deferred-plans-2026-09-05.md §3). When a promised target refuses,
+// `solveWithinGodsNumber` doubles the budget and asks again, and until now the new search began at
+// d1 = 0 and re-walked every node the last one had already walked. Measured over five exhausted
+// runs, the work BELOW the depth the search died in — a lower bound on what a resume skips, since
+// this one banks per (depth, VIEW) pair and so also keeps the views that finished at that depth —
+// was 32/48/50/52/88 % of the budget (dev-docs/solver-move-count.md §7).
+//
+// It was deferred for one reason, and that reason is what the code below is shaped by: the plan
+// named the hazard as "a resumed search whose key mismatches would skip depths and MISS a solution
+// while reporting a search that ran out". So:
+//
+//   * **The resume point is an OBJECT with a key, never module state.** Nothing here is picked up
+//     implicitly by the next call. A continuation states which search it is continuing, and the key
+//     is CHECKED — a mismatch throws where it happens rather than searching the wrong enumeration.
+//   * **The key is everything that decides which nodes are visited and in what order**: the
+//     facelets, `solLen` (which fixes the maximum phase-1 depth), `MAX_PHASE2` (which is a settable
+//     knob and changes which probes succeed), the view filter, and a format tag that names both the
+//     search's own shape and the table set it walks.
+//   * **`probeMax` is a FRONTIER, not an increment.** A continuation to `probeMax: P` leaves the
+//     search having visited exactly the first P nodes of the enumeration — the same nodes, in the
+//     same order, that a from-scratch `solvePattern` at `probeMax: P` visits. It costs P minus what
+//     earlier attempts banked, which is the whole saving; the ANSWER is bit-for-bit the from-scratch
+//     answer at P, which is what makes the resume provably equivalent rather than merely plausible.
+//     `escalation-resume.test.mjs` is that equality, over the frozen states.
+//   * **A (depth, view) pair is banked only when it walked to its END.** The pair the budget died
+//     inside is re-walked from its first node, because the DFS keeps no stack across calls — that
+//     re-walk is the price of a resume point that is a position in the enumeration rather than a
+//     snapshot of a recursion.
+
+/**
+ * The tag a resume point is only valid under.
+ *
+ * Two versions in one string, because a resume point is a claim about an ENUMERATION and both
+ * halves of the engine decide it: the search's own shape (the move order, the trailing-G1 skip, the
+ * pruning), and the tables it walks. A page that reloaded onto new code while something still held
+ * a resume point from the old one must be refused rather than continued.
+ */
+export const SEARCH_FORMAT = `cubus-two-phase-search/1 over ${TABLES_FORMAT}`;
+
+/** A view filter as the engine will actually use it: null for all six, or a sorted, de-duplicated,
+ *  range-checked array. Sorted because it goes into a key that is compared field by field — two
+ *  filters naming the same slice in a different order are the same search and must compare equal.
+ *
+ *  Checked HERE rather than after the state is parsed, which is a deliberate change from the old
+ *  `solvePattern`: this module's own rule everywhere else is validate first, commit together, and a
+ *  filter that is rejected must be rejected whether or not the facelets happen to be a cube. */
+function normaliseViewFilter(viewFilter) {
+  if (viewFilter === null || viewFilter === undefined) return null;
+  const wanted = new Set(viewFilter);
+  if (wanted.size === 0) throw new RangeError('two-phase: an empty view filter searches nothing');
+  for (const i of wanted) {
+    if (!Number.isInteger(i) || i < 0 || i >= VIEW_COUNT) {
+      throw new RangeError(`two-phase: view ${i} is not one of the ${VIEW_COUNT} views`);
+    }
+  }
+  return Object.freeze([...wanted].sort((a, b) => a - b));
+}
+
+/** Everything that decides which nodes the enumeration visits, and in what order. Read from the
+ *  live bounds at OPEN time, so a continuation that arrives under different bounds is a different
+ *  key and is refused rather than silently searching a different tree. */
+function searchKeyOf(facelets, views) {
+  return Object.freeze({
+    format: SEARCH_FORMAT,
+    facelets,
+    solLen: BOUNDS.solLen,
+    maxPhase2: MAX_PHASE2,
+    views,
+  });
+}
+
+const sameViews = (a, b) =>
+  (a === null || b === null
+    ? a === b
+    : Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]));
+
+/** The hazard guard, in one place: a carried key that is not THIS key throws, naming the field that
+ *  differs. Never a silent fresh search — a caller that asked to continue and got a restart has
+ *  been told nothing, and a caller that asked to continue and got the wrong enumeration would be
+ *  handed a miss dressed as a search that ran out. */
+function assertSameKey(carried, here) {
+  if (carried === null || typeof carried !== 'object') {
+    throw new TypeError(
+      'two-phase: this resume point carries no key, so nothing says which search it belongs to',
+    );
+  }
+  const differs = ['format', 'facelets', 'solLen', 'maxPhase2'].find((f) => carried[f] !== here[f])
+    ?? (sameViews(carried.views ?? null, here.views) ? null : 'views');
+  if (differs !== null) {
+    throw new Error(
+      `two-phase: this resume point is for ${differs} ${JSON.stringify(carried[differs] ?? null)}, ` +
+        `not ${JSON.stringify(here[differs])} — continuing it would skip depths of a DIFFERENT ` +
+        'search and report a solution it never looked for as a search that ran out',
+    );
+  }
+}
+
+/** A search that has visited nothing. `frontier` is how many nodes it has been GIVEN in all;
+ *  `covered` is how many of those are banked in (depth, view) pairs that walked to their end. */
+function freshPoint(key) {
+  return { key, depth: 0, cursor: 0, covered: 0, frontier: 0, done: false, alg: null, foundDepth: -1, foundView: -1 };
+}
+
+/** A resume point that arrived from somewhere else — another thread, in the app — as this thread's
+ *  own record, or a throw. Every field is checked rather than believed: this crosses a structured
+ *  clone, and a `cursor` past the last view or a `covered` larger than the budget that produced it
+ *  would both SKIP nodes, which is the one failure this whole mechanism exists to make impossible. */
+function adoptPoint(resume, key) {
+  assertSameKey(resume?.key ?? null, key);
+  const point = freshPoint(key);
+  for (const field of ['depth', 'cursor', 'covered', 'frontier']) {
+    const value = resume[field];
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new TypeError(`two-phase: a resume point's ${field} is ${value}, which is not a count`);
+    }
+    point[field] = value;
+  }
+  if (point.covered > point.frontier) {
+    throw new RangeError(
+      `two-phase: a resume point banks ${point.covered} nodes out of the ${point.frontier} it was ever given`,
+    );
+  }
+  point.done = resume.done === true;
+  point.alg = typeof resume.alg === 'string' ? resume.alg : null;
+  point.foundDepth = Number.isInteger(resume.foundDepth) ? resume.foundDepth : -1;
+  point.foundView = Number.isInteger(resume.foundView) ? resume.foundView : -1;
+  return point;
+}
+
+/**
+ * Open a search — a new one, or the one `resume` left off in.
+ *
+ * @param {string} facelets
+ * @param {number[]|null} [options.viewFilter]  a slice of the six views, or null for all of them
+ * @param {object|null} [options.resume]  a `state` record from an earlier search of the SAME key.
+ *   Its key is asserted here, before anything is searched.
+ * @returns {{key: object, done: boolean, frontier: number, state: object, continueTo: () => string|null}}
+ *   `continueTo()` searches out to `BOUNDS.probeMax` — the frontier, not an increment — and returns
+ *   the algorithm or null. `state` is the structured-cloneable record to carry to the next one.
+ */
+export function openSearch(facelets, { viewFilter = null, resume = null } = {}) {
+  initialize();
+  const views = normaliseViewFilter(viewFilter);
+  const key = searchKeyOf(facelets, views);
+  const point = resume === null || resume === undefined ? freshPoint(key) : adoptPoint(resume, key);
+  return {
+    key,
+    get done() { return point.done; },
+    get frontier() { return point.frontier; },
+    /** A copy, so a caller that holds one cannot move this search's resume point under it. */
+    get state() { return { ...point }; },
+    continueTo: () => runSearch(facelets, views, point),
+  };
+}
+
 /**
  * Solve a facelet string within the current bounds: an alg strictly shorter than `solLen`
  * ('' for an already-solved cube), or null — out of budget, or not a solvable cube. Never an
@@ -1190,32 +1346,69 @@ function probeView(view, path, d2max) {
  * One probe is one phase-1 maneuver handed to phase 2. The first solution that satisfies the
  * bound is returned as found — the caller asks again with a tighter bound to improve it, which
  * is exactly how lib/solve-target.js's tiered descent drives this.
+ *
+ * A from-scratch search IS a resumable one that has never been continued, so there is one loop
+ * and not two: the day they were two, they would start to disagree about the enumeration and the
+ * equality the resume rests on would quietly stop being checkable.
  */
 export function solvePattern(facelets, viewFilter = null) {
-  initialize();
-  resetStats();
-  const state = parseFacelets(facelets);
-  if (state === null) return null;
+  return openSearch(facelets, { viewFilter }).continueTo();
+}
 
-  const { solLen, probeMax } = BOUNDS;
-  const maxTotal = solLen - 1;
-  nodesLeft = probeMax;
+/**
+ * The loop, from wherever `point` says the last attempt stopped, out to the frontier `BOUNDS`
+ * currently names.
+ */
+function runSearch(facelets, wanted, point) {
+  resetStats();
+  // The key is asserted on EVERY continuation, against the bounds as they are NOW — not only when
+  // the point arrives from another thread. The bounds are module state and a partial update, so an
+  // object opened under `solLen: 21` and continued under `solLen: 23` would otherwise keep quietly
+  // searching to the first bound while its caller believed the second. That is not hypothetical: it
+  // is what the first draft of this code did, and it answered a 21-bounded ask with 22 moves.
+  assertSameKey(point.key, searchKeyOf(facelets, wanted));
+  if (point.done) {
+    // Finished searches stay finished: an answer found, an enumeration walked to its end, or a
+    // state that is not a cube. Re-reporting the winner's key matters — a pooled caller sorts on
+    // (depth, view) and a -1 there is a reply that cannot win.
+    searchStats.depth = point.foundDepth;
+    searchStats.view = point.foundView;
+    return point.alg;
+  }
+  const frontier = BOUNDS.probeMax;
+  if (frontier <= point.frontier) {
+    // A continuation that asks for no more than the last one would search nothing and report it as
+    // a search that ran out, which is the exact shape of the failure this mechanism guards against.
+    throw new RangeError(
+      `two-phase: a continuation must ask for more nodes than the ${point.frontier} this search ` +
+        `has already been given, not ${frontier}`,
+    );
+  }
+  const state = parseFacelets(facelets);
+  if (state === null) {
+    point.frontier = frontier;
+    point.done = true; // no budget makes a non-cube solvable
+    return null;
+  }
+
+  const maxTotal = point.key.solLen - 1;
+  // The frontier minus what is banked. This is the whole mechanism: the nodes an earlier attempt
+  // walked in (depth, view) pairs that FINISHED are not walked again, so reaching frontier P costs
+  // P - covered rather than P — and the set of nodes visited is still exactly the first P.
+  nodesLeft = frontier - point.covered;
   exhausted = false;
-  let views = buildViews(facelets, state);
   // A slice of the six, for a caller searching the rest elsewhere. Filtering rather than
   // rebuilding keeps `view.index` the index within ALL views, which is what makes the answers
   // from separate slices comparable: the sequential engine returns the lowest view index at the
   // lowest depth, and a parallel caller can only reproduce that if the indices still mean the
   // same thing. Null is every view, which is every caller but the parallel client.
-  if (viewFilter !== null) {
-    const wanted = new Set(viewFilter);
-    if (wanted.size === 0) throw new RangeError('two-phase: an empty view filter searches nothing');
-    for (const i of wanted) {
-      if (!Number.isInteger(i) || i < 0 || i >= views.length) {
-        throw new RangeError(`two-phase: view ${i} is not one of the ${views.length} views`);
-      }
-    }
-    views = views.filter((v) => wanted.has(v.index));
+  const all = buildViews(facelets, state);
+  const views = wanted === null ? all : all.filter((v) => wanted.includes(v.index));
+  if (point.depth > maxTotal || point.cursor >= views.length) {
+    throw new RangeError(
+      `two-phase: this resume point sits at depth ${point.depth}, view ${point.cursor} of ` +
+        `${views.length} under a bound of ${maxTotal} — outside the search it claims to continue`,
+    );
   }
 
   let answer = null;
@@ -1223,13 +1416,20 @@ export function solvePattern(facelets, viewFilter = null) {
   // be a LONGER phase-1 maneuver with a short phase-2 tail, and at the limit the whole solution
   // is phase 1 alone. The node budget is what bounds the work, and it is shared across all six
   // views — deterministic however the search's luck falls.
-  outer: for (let d1 = 0; d1 <= maxTotal && !exhausted; d1++) {
+  let d1 = point.depth;
+  let cursor = point.cursor;
+  outer: for (; d1 <= maxTotal && !exhausted; d1++, cursor = 0) {
     currentDepth = d1;
     // Asked once per depth as well as every 65536 nodes: a slice whose remaining depths cannot
     // beat an answer someone else already holds should not start the next one at all.
     if (stopRequested(d1)) break;
     const d2max = maxTotal - d1;
-    for (const view of views) {
+    for (; cursor < views.length; cursor++) {
+      const view = views[cursor];
+      // Each of the six views keeps its own resume point, because they die at different depths:
+      // `cursor` is a position WITHIN this slice's view list, and it is what stops a continuation
+      // re-walking the views that already finished at this depth.
+      const before = nodesLeft;
       const aborted = phase1DFS(view.t, view.f, view.s, d1, -1, [], (path) => {
         answer = probeView(view, path, d2max);
         if (answer !== null) {
@@ -1244,8 +1444,26 @@ export function solvePattern(facelets, viewFilter = null) {
         return exhausted; // a probe that ran out of budget stops the enumeration too
       });
       if (answer !== null || aborted) break outer;
+      // This pair walked to its END, so its nodes are banked and a continuation starts after it.
+      // Banked only here: the pair a budget died inside is worth nothing, because the DFS keeps no
+      // stack across calls and the next attempt starts it again from its first node.
+      point.covered += before - nodesLeft;
     }
   }
   currentDepth = -1; // no depth applies once the loop is done; a stale one is a stop about nothing
-  return answer;
+
+  point.frontier = frontier;
+  if (answer !== null) {
+    point.done = true;
+    point.alg = answer;
+    point.foundDepth = searchStats.depth;
+    point.foundView = searchStats.view;
+    return answer;
+  }
+  point.depth = d1;
+  point.cursor = cursor;
+  // Out of DEPTHS rather than out of nodes: every maneuver the bound allows has been enumerated,
+  // so no budget can change the answer and there is nothing left to continue.
+  if (d1 > maxTotal) point.done = true;
+  return null;
 }
