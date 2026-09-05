@@ -68,7 +68,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### onnxruntime-web 1.27.0 — MIT
+### onnxruntime-web 1.29.0 — MIT
 
 Bundled into `vendor/ai-scan-panel.js` (the scanner), plus `vendor/ort.mjs` and `vendor/ort-wasm-simd-threaded.*.wasm`, the same package's runtime files copied unmodified. Author: fs-eire. Source: <https://github.com/Microsoft/onnxruntime>.
 Licence text from <https://github.com/microsoft/onnxruntime/blob/main/LICENSE>:
