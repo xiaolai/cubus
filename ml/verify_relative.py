@@ -7,12 +7,20 @@ For each held-out sticker we compare two ways to name its colour:
 Both are scored on the SAME stickers (detector matched AND a reference buildable) vs ground truth.
 
 This isolates the colour decision (samples taken from GT boxes; localization is measured elsewhere).
+
+  ml/venv/bin/python ml/verify_relative.py [--model ml/models/cube-yolo.onnx]
+
+The measurement recorded in OOD_EVAL.md ("Rejected experiment 2") was taken against
+`out/cube_v3_int8.onnx`, which was the shipped artefact at the time; the default is now the fp32
+the app serves, and the path is a flag rather than a constant nothing else in the repo produces.
 """
 
 from __future__ import annotations
 
+import argparse
 import glob
 import os
+from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
@@ -22,7 +30,9 @@ from skimage.color import deltaE_ciede2000, rgb2lab
 from color_eval import iou_xyxy, load_gt
 from ood_eval import decode, letterbox, nms
 
-IMG, LBL = "out/heldout/images", "out/heldout/labels"
+HERE = Path(__file__).resolve().parent
+IMG, LBL = str(HERE / "out" / "heldout" / "images"), str(HERE / "out" / "heldout" / "labels")
+SHIPPED_MODEL = HERE / "models" / "cube-yolo.onnx"
 NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
 
 
@@ -41,7 +51,10 @@ def sample_rgb(arr: np.ndarray, g: dict, w: int, h: int):
 
 
 def main() -> None:
-    sess = ort.InferenceSession("out/cube_v3_int8.onnx", providers=["CPUExecutionProvider"])
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default=str(SHIPPED_MODEL), help="ONNX detector (default: the shipped fp32)")
+    args = ap.parse_args()
+    sess = ort.InferenceSession(args.model, providers=["CPUExecutionProvider"])
     inn, outn = sess.get_inputs()[0].name, sess.get_outputs()[0].name
 
     abs_ok = {c: 0 for c in range(6)}

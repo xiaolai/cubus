@@ -8,6 +8,17 @@
 // so this must pick the nine that form the front-facing grid and REFUSE a frame that
 // isn't a clean single face — the abstention the verifier design depends on.
 
+/**
+ * The lowest per-sticker score `fitFace` will build a face out of.
+ *
+ * Named rather than left as a bare default because it is one half of an invariant that spans two
+ * files: it sits ABOVE `LOW_CONFIDENCE_THRESHOLD` in ai-assemble, which is what makes "a valid
+ * cube with low-confidence stickers" unreachable. A change to either number that crossed them
+ * would bring that state back silently, so `onnx-postprocess.test.ts` pins the ordering with the
+ * mechanism written beside it.
+ */
+export const MIN_STICKER_CONFIDENCE = 0.25;
+
 /** One detected sticker. Box coords are in the model's input space; only relative geometry is used. */
 export interface Detection {
   cx: number;
@@ -93,6 +104,44 @@ export function nms(dets: Detection[], iouThreshold = 0.45): Detection[] {
   return kept;
 }
 
+/**
+ * The largest step between adjacent rows or columns, as a multiple of the mean sticker size.
+ *
+ * There was a MINIMUM step and no maximum, so nine boxes scattered across the frame — a column
+ * 200 px away from its neighbours — stepped apart happily and read as a face. A real 3x3 face
+ * steps by roughly one sticker plus its gap; the widest a golden fixture reaches is 1.54, on a
+ * photo held at an angle. See MAX_AREA_RATIO for why every bound here is set by the fixtures.
+ */
+const MAX_STEP = 2.5;
+/**
+ * How far apart, in mean sticker sizes, the three stickers of one COLUMN may sit in x.
+ *
+ * The mirror of the row rule above it — and deliberately NOT the same number. A row's y-spread is
+ * bounded at one sticker and the goldens sit right on it (render-07: 1.00); a column's x-spread
+ * reaches 1.95 on the same set (render-01), because the hold that shears a face horizontally is
+ * the common one and the renders are deliberately extreme. So 1.0 here — the obvious symmetric
+ * choice, and the one first tried — would REFUSE seven of the twenty golden fixtures. This is the
+ * value the fixtures permit, and it still refuses three rows sheared past each other, which is
+ * what the check is for.
+ */
+const MAX_COLUMN_SPREAD = 3;
+/**
+ * Largest allowed ratio between the biggest and smallest box AREA among the nine.
+ *
+ * AREA, not mean side length, and that is the whole point of the bound. The case it exists to
+ * refuse is eight front stickers plus one sliver of a NEIGHBOURING face: foreshortening squashes
+ * such a box along one axis only, so its mean side is about half a front sticker's (a ratio of
+ * 2.0) while a legitimately angled render already reaches 1.81 — five percent of separation,
+ * which is not a bound, it is a coin toss. In AREA the same sliver is 7.2x and the worst
+ * legitimate golden is 3.42x, so the two populations are actually apart.
+ *
+ * Every number in this file was chosen the same way: measured over all 20 fixtures in
+ * `ml/golden/frames/`, and set high enough that not one of their reads changes. They are sanity
+ * bounds, not tight ones — the goldens set the ceiling, and a heuristic that refuses a frame the
+ * gate says is readable is worse than one that admits a frame it should not.
+ */
+const MAX_AREA_RATIO = 5;
+
 /** Split 9 detections into 3 rows of 3 (reading order) iff they form a plausible 3x3 grid. */
 function toGrid(nine: Detection[]): Detection[] | null {
   const byY = [...nine].sort((a, b) => a.cy - b.cy);
@@ -100,16 +149,33 @@ function toGrid(nine: Detection[]): Detection[] | null {
     r.sort((a, b) => a.cx - b.cx),
   );
   const size = nine.reduce((s, d) => s + (d.w + d.h) / 2, 0) / 9; // mean sticker size
+  // Nine boxes of wildly different areas are not nine stickers of one face. A degenerate box
+  // (w or h at zero) makes this infinite, which refuses rather than dividing by zero downstream.
+  const areas = nine.map((d) => d.w * d.h);
+  if (Math.max(...areas) > Math.min(...areas) * MAX_AREA_RATIO) return null;
   // Each row's 3 stickers must share a y-band (spread < ~1 sticker), and the 3 rows must
   // step apart in y; likewise columns in x. A non-grid arrangement (partial face, junk)
   // fails this and we abstain rather than emit a garbage face.
   for (const row of rows) {
     if (Math.max(...row.map((d) => d.cy)) - Math.min(...row.map((d) => d.cy)) > size) return null;
   }
+  // …and each column's 3 stickers must share an x-band. Without this, three rows sheared past
+  // each other — row 0 at x 100, row 2 at x 400 — satisfied every rule above and read as a face.
+  for (const c of [0, 1, 2]) {
+    const xs = rows.map((r) => r[c]!.cx);
+    if (Math.max(...xs) - Math.min(...xs) > size * MAX_COLUMN_SPREAD) return null;
+  }
   const rowY = rows.map((r) => r.reduce((s, d) => s + d.cy, 0) / 3);
   const colX = [0, 1, 2].map((c) => rows.reduce((s, r) => s + r[c]!.cx, 0) / 3);
-  if (rowY[1]! - rowY[0]! < size * 0.4 || rowY[2]! - rowY[1]! < size * 0.4) return null;
-  if (colX[1]! - colX[0]! < size * 0.4 || colX[2]! - colX[1]! < size * 0.4) return null;
+  const steps = [
+    rowY[1]! - rowY[0]!,
+    rowY[2]! - rowY[1]!,
+    colX[1]! - colX[0]!,
+    colX[2]! - colX[1]!,
+  ];
+  for (const step of steps) {
+    if (step < size * 0.4 || step > size * MAX_STEP) return null;
+  }
   return rows.flat();
 }
 
@@ -118,7 +184,7 @@ function toGrid(nine: Detection[]): Detection[] | null {
  * abstain. The front face's stickers are the largest (adjacent faces foreshorten to
  * slivers), so we take the 9 biggest and require them to form a real 3x3 grid.
  */
-export function fitFace(dets: Detection[], minConf = 0.25): FitResult {
+export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): FitResult {
   const good = dets.filter((d) => d.confidence >= minConf && d.classId >= 0 && d.classId < 6);
   if (good.length === 0) return { ok: false, reason: 'NO_FACE' };
   if (good.length < 9) return { ok: false, reason: 'PARTIAL_FACE' };

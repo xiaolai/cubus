@@ -30,10 +30,13 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+from pathlib import Path
 
 import numpy as np
 
-from assign_sim import NAMES, NC, PER_COLOUR, assign, collect
+from assign_sim import NC, SHIPPED_MODEL, assign, collect
+
+HERE = Path(__file__).resolve().parent
 
 # cubejs facelet strings are URFDLB; the detector's classes are white, red, green, yellow, orange,
 # blue. The Western colour scheme puts those in exactly that order, which is why this is a plain
@@ -43,17 +46,20 @@ LETTER_TO_CLASS = {ch: i for i, ch in enumerate(FACE_LETTERS)}
 
 
 def oracle(cmd: list[str], payload: object | None = None) -> object:
+    # cwd is this directory, not the caller's: cube_oracle.mjs imports the app's cubejs and
+    # cube-trust.js by a path relative to ITSELF, and `node cube_oracle.mjs` from the repo root
+    # found no such file (2026-09-04 audit).
     out = subprocess.run(
         ["node", "cube_oracle.mjs", *cmd],
         input=None if payload is None else json.dumps(payload),
-        capture_output=True, text=True, cwd=".", check=True,
+        capture_output=True, text=True, cwd=str(HERE), check=True,
     )
     return json.loads(out.stdout)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="../apps/web/vendor/cube-yolo.onnx")
+    ap.add_argument("--model", default=str(SHIPPED_MODEL), help="the SHIPPED model")
     ap.add_argument("--trials", type=int, default=20000)
     ap.add_argument("--seed", type=int, default=20260830)
     args = ap.parse_args()
@@ -94,7 +100,7 @@ def main() -> None:
 
     def tally(reads: list[str], legal: list[bool]) -> dict[str, int]:
         t = {"correct": 0, "refused": 0, "quiet": 0}
-        for truth, read, ok in zip(truths, reads, legal):
+        for truth, read, ok in zip(truths, reads, legal, strict=True):
             if read == truth:
                 t["correct"] += 1
             elif ok:
@@ -111,7 +117,7 @@ def main() -> None:
     for k, label in (("correct", "read correctly"), ("refused", "refused — re-scan"), ("quiet", "QUIET FAILURE")):
         print(f"  {label:<14}{a[k]:>9} ({100*a[k]/n:5.2f}%){b[k]:>9} ({100*b[k]/n:5.2f}%)")
     print()
-    print(f"  a wrong reading is refused rather than accepted:")
+    print("  a wrong reading is refused rather than accepted:")
     for name, t in (("argmax", a), ("assign", b)):
         wrong = t["refused"] + t["quiet"]
         share = f"{100 * t['refused'] / wrong:.1f}%" if wrong else "—"

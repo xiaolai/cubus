@@ -30,21 +30,21 @@ import { deriveOffset, isCubeState } from './cube-trust.js';
  *   `unknown`  nothing yet. The starting state, and the state after a reconnect.
  *   `reduced`  the cube reports moves but never a full state, so nothing can be reconciled. It may
  *              drive move-following; it may never source the trust offset. A camera scan is its
- *              only path to truth. (§5)
+ *              only path to truth. (§5) A DECLARED capability, so a cube that then reports a state
+ *              has contradicted it and leaves this verdict — see `onFacelets`.
  *   `stream`   the move and state channels agree with each other. Strong evidence the decoder is
  *              right, and still not proof it matches the PHYSICAL cube — a uniformly mislabelled
  *              decoder is self-consistent.
  *   `trusted`  the camera agreed too. Everything above plus contact with reality.
  *   `refused`  something was provably wrong. Terminal for this connection; nothing downgrades a
  *              refusal back into a maybe.
- */
-/** How many un-reconciled moves are worth holding.
  *
- *  Generous on purpose: a cube reporting state at ~1 Hz produces a handful of moves between
- *  snapshots, so this is only reached when snapshots have stopped entirely — at which point the
- *  backlog is already unreconcilable and holding more of it buys nothing. */
-const MAX_PENDING_MOVES = 512;
-
+ * The order the evidence arrives in does not matter. A camera scan before the stream check has
+ * passed leaves the offset in hand and the verdict where it was; the reconciliation that lands
+ * afterwards reaches `trusted` just as a scan after a reconciliation does. Requiring one order was
+ * a hole rather than a rule: the app's own repair flow scans FIRST, so a camera-first cube could
+ * never become trusted at all (found 2026-09-04).
+ */
 export const VERDICT = Object.freeze({
   UNKNOWN: 'unknown',
   REDUCED: 'reduced',
@@ -52,6 +52,13 @@ export const VERDICT = Object.freeze({
   TRUSTED: 'trusted',
   REFUSED: 'refused',
 });
+
+/** How many un-reconciled moves are worth holding.
+ *
+ *  Generous on purpose: a cube reporting state at ~1 Hz produces a handful of moves between
+ *  snapshots, so this is only reached when snapshots have stopped entirely — at which point the
+ *  backlog is already unreconcilable and holding more of it buys nothing. */
+const MAX_PENDING_MOVES = 512;
 
 /** Why a verdict is what it is. Surfaced to the report (§7), so it is a fact, never a sentence. */
 export const REASON = Object.freeze({
@@ -62,7 +69,12 @@ export const REASON = Object.freeze({
   RESYNCED: 'resynced',
   RECONCILE_FAILED: 'reconcile-failed',
   NO_STATE_REPORTS: 'no-state-reports',
+  /** A cube that DECLARED it reports no state reported one. The declaration was wrong, and which
+   *  half is wrong is not knowable — that they disagree is, and that is the reportable half. */
+  CAPABILITY_CONTRADICTED: 'capability-contradicted',
   CAMERA_AGREED: 'camera-agreed',
+  /** A scan re-established the correction after a lost turn. A repair, not a contradiction. */
+  OFFSET_RESYNCED: 'offset-resynced',
   CAMERA_DISAGREED: 'camera-disagreed',
   NO_CUBE_MODEL: 'no-cube-model',
 });
@@ -123,10 +135,20 @@ export function createSelfCheck({ Cube, needed = 1, tolerated = 3 } = {}) {
   let failed = 0;
   let consecutiveFailures = 0;
   let resyncs = 0;
+  let offsetResyncs = 0;
+  let contradictions = 0;
   let stateReports = 0;
   let moveReports = 0;
   let cameraScans = 0;
   let offset = null;
+  /** Has a turn gone missing since the last camera scan?
+   *
+   *  The constancy rule below rests on "the physical cube and the cube's own tracking differ by a
+   *  CONSTANT permutation" — which holds only while nothing new goes untracked. A reconciliation
+   *  failure is exactly the event that breaks it: turns happened that the cube did not record, so
+   *  the correction legitimately moves. Without this flag the next scan looked like a decoder
+   *  contradicting itself and the cube was refused for repairing itself. */
+  let lostSinceScan = false;
 
   /** Terminal by construction: once something is provably wrong, nothing argues it back. */
   function refuse(why) {
@@ -165,6 +187,8 @@ export function createSelfCheck({ Cube, needed = 1, tolerated = 3 } = {}) {
         reconciled,
         failed,
         resyncs,
+        offsetResyncs,
+        contradictions,
         consecutiveFailures,
         stateReports,
         moveReports,
@@ -172,6 +196,19 @@ export function createSelfCheck({ Cube, needed = 1, tolerated = 3 } = {}) {
         needed,
         tolerated,
       };
+    },
+
+    /**
+     * How many turns are known to have gone missing on this connection.
+     *
+     * Deliberately NOT derivable from the verdict: a cube the camera has confirmed stays trusted
+     * through a lost packet — that is the whole point of the tolerance — so the verdict is exactly
+     * the same before and after, and a caller watching only the verdict announces nothing. The
+     * count is what rises, so the count is what a caller watches. (Found 2026-09-04: a lost turn
+     * on a TRUSTED cube changed neither verdict nor reason, so nothing reached the screen.)
+     */
+    get losses() {
+      return resyncs;
     },
 
     /** A full state the cube reported. */
@@ -183,6 +220,21 @@ export function createSelfCheck({ Cube, needed = 1, tolerated = 3 } = {}) {
       // Legality first. A decoder producing an unreachable arrangement is wrong, and no amount of
       // later agreement makes it right.
       if (!isCubeState(facelets, Cube)) return refuse(REASON.ILLEGAL_STATE);
+
+      // A cube that DECLARED it never reports a full state has just reported one. The declaration
+      // and the stream disagree, and this is the only place that can notice.
+      //
+      // Not a refusal: reporting MORE than was declared is no evidence the decoder is wrong. But
+      // leaving it in `reduced` would be worse than either — the verdict would go on saying
+      // "nothing can be reconciled" about a stream that is arriving, so the reconciliation check
+      // would never run, the offset could never be sourced, and no screen would ever say why. It
+      // returns to `unknown` and takes the ordinary path from here; the contradiction is counted
+      // and named, so it is reported rather than absorbed.
+      if (verdict === VERDICT.REDUCED) {
+        contradictions++;
+        verdict = VERDICT.UNKNOWN;
+        reason = REASON.CAPABILITY_CONTRADICTED;
+      }
 
       const answer = reconciles(lastState, pending, facelets, Cube);
       lastState = facelets;
@@ -199,16 +251,35 @@ export function createSelfCheck({ Cube, needed = 1, tolerated = 3 } = {}) {
         // measuring against a snapshot we already know is stale. A cube that has been trusted
         // stays trusted through a lost packet; one that has not, waits.
         resyncs++;
-        if (verdict !== VERDICT.TRUSTED) reason = REASON.RESYNCED;
+        // Two things a lost turn does, and both of them matter whatever the verdict is.
+        //
+        // The reason moves even on a TRUSTED cube — it used to be suppressed there, which meant a
+        // trusted cube losing a turn changed nothing at all and the app announced nothing. The
+        // whole point of tolerating a loss is that the VERDICT survives it, so the verdict cannot
+        // also be the channel that reports it.
+        //
+        // And the correction is now stale: turns happened off the record, so the next scan must be
+        // allowed to re-baseline rather than being read as a decoder contradicting itself.
+        reason = REASON.RESYNCED;
+        lostSinceScan = true;
         return verdict;
       }
       if (answer === true) {
         consecutiveFailures = 0;
         reconciled++;
-        // Never demote a cube the camera has already confirmed — but do keep checking it.
-        if (reconciled >= needed && verdict !== VERDICT.TRUSTED) {
-          verdict = VERDICT.STREAM;
-          reason = REASON.RECONCILED;
+        if (reconciled >= needed) {
+          // Order-free. A camera check that already passed is standing evidence, so the
+          // reconciliation that completes the pair reaches TRUSTED whichever arrived first —
+          // and a cube already TRUSTED lands here too, which is how the reason comes back from
+          // `resynced` after a recovered link. Never a demotion: the checks keep running on a
+          // trusted cube, but only a refusal moves it down.
+          if (cameraScans > 0) {
+            verdict = VERDICT.TRUSTED;
+            reason = REASON.CAMERA_AGREED;
+          } else if (verdict !== VERDICT.TRUSTED) {
+            verdict = VERDICT.STREAM;
+            reason = REASON.RECONCILED;
+          }
         }
       }
       return verdict;
@@ -238,6 +309,9 @@ export function createSelfCheck({ Cube, needed = 1, tolerated = 3 } = {}) {
      * Not inferred from silence: "no facelets yet" and "no facelets ever" are different, and
      * guessing between them is how a cube gets quietly demoted a second before its first report
      * arrives. The caller knows, from the connection's declared capabilities.
+     *
+     * A declaration, therefore, and not a fact — so a state report afterwards overrules it rather
+     * than being ignored. `onFacelets` is where that happens.
      */
     declareNoStateReports() {
       if (settled()) return verdict;
@@ -250,8 +324,18 @@ export function createSelfCheck({ Cube, needed = 1, tolerated = 3 } = {}) {
      * The camera scanned the physical cube while it reported `reported`.
      *
      * This is the check that catches a decoder wrong the same way on both channels, and it is also
-     * the repair: the offset absorbs a uniform colour-scheme or orientation permutation, so a
-     * consistently rotated decoder is not broken, it is offset.
+     * the repair — but only for the drift it was designed for: turns nobody counted while the link
+     * was down. With `H` the turns before the break, `D` the untracked ones and `M` anything since,
+     * the cube is at `H·D·M` and reports `H·M`, so the correction is `H·D·H⁻¹` — fixed the moment
+     * H and D are, and unmoved by every later turn.
+     *
+     * **A uniformly relabelled decoder is NOT absorbed, and the comment here used to say it was**
+     * (corrected 2026-09-04). A decoder reading the cube in a rotated frame reports `Y⁻¹·P·Y` for
+     * a physical `P`, so the correction is `P·Y⁻¹·P⁻¹·Y` — a commutator, which moves with the
+     * cube. Measured over all eighteen turns from a fixed scrambled state: it stays constant for
+     * exactly the six U and D turns (the ones that commute with a y rotation) and moves for the
+     * other twelve. So the constancy rule below refuses such a decoder on the second scan, which
+     * is the correct outcome: a rotated decoder is broken, because no fixed correction repairs it.
      */
     onCameraScan(scanned, reported) {
       if (settled()) return verdict;
@@ -272,18 +356,31 @@ export function createSelfCheck({ Cube, needed = 1, tolerated = 3 } = {}) {
       //
       // What IS checkable is the word "constant" in "the constant correction between what the cube
       // reports and what it physically is". A correction that changes between two observations is
-      // not a correction; it means the cube's reports and the physical cube are not related by a
-      // fixed relabelling, which is exactly the self-consistent-but-wrong decoder this check
+      // not a correction; it means the cube's reports and the physical cube are not related by any
+      // fixed permutation, which is exactly the self-consistent-but-wrong decoder this check
       // exists to catch.
-      if (offset !== null && derived !== offset) return refuse(REASON.CAMERA_DISAGREED);
+      //
+      // And the one case where a moved correction is innocent, which the rule used to accuse: a
+      // turn went missing in between. Then D grew, so H·D·H⁻¹ genuinely changed, and the scan is
+      // the repair rather than the contradiction. The window is exact — it opens on a
+      // reconciliation failure and closes on the next scan — so the rule still holds over every
+      // pair of scans with an intact stream between them, which is the pair that can prove
+      // anything.
+      const rebaselined = offset !== null && derived !== offset;
+      if (rebaselined) {
+        if (!lostSinceScan) return refuse(REASON.CAMERA_DISAGREED);
+        offsetResyncs++;
+      }
       offset = derived;
+      lostSinceScan = false;
       cameraScans++;
       // Reaching the camera without the stream check having passed leaves the move channel
       // unproven, so a reduced cube stays reduced: it has an offset now, but still may not source
-      // one from its own reports.
-      if (verdict === VERDICT.STREAM) {
-        verdict = VERDICT.TRUSTED;
-        reason = REASON.CAMERA_AGREED;
+      // one from its own reports. An UNKNOWN cube keeps its verdict too — and keeps the scan as
+      // standing evidence, which is what lets `onFacelets` finish the pair in either order.
+      if (verdict === VERDICT.STREAM) verdict = VERDICT.TRUSTED;
+      if (verdict === VERDICT.TRUSTED) {
+        reason = rebaselined ? REASON.OFFSET_RESYNCED : REASON.CAMERA_AGREED;
       }
       return verdict;
     },

@@ -146,8 +146,13 @@ def setup_light(rng: random.Random, hdri_dir: str) -> None:
     if hdris:
         bproc.world.set_world_background_hdr_img(rng.choice(hdris), strength=rng.uniform(0.15, 2.6))
     else:
-        print(f"WARNING: no .hdr/.exr in '{hdri_dir}'; using sun fallback", file=sys.stderr)
-        bproc.world.set_world_background_hdr_img  # noqa: B018 — keep import path referenced
+        # No environment map: the key light below is forced on and is the ONLY illumination, so
+        # the render is lit but has no background. Fine for a smoke test; shouted about so a
+        # mistyped or unexpanded --hdri_dir cannot quietly produce a background-less production
+        # set (render.sh refuses an empty HDRI_DIR for the same reason). The line that used to
+        # follow this print was a bare attribute expression — a no-op that named "sun fallback"
+        # without doing anything; the fallback is the block below, whose light type is random.
+        print(f"WARNING: no .hdr/.exr in '{hdri_dir}'; no environment map — key light only", file=sys.stderr)
     if not hdris or rng.random() < 0.6:
         # coloured cast: warm (>1 R), cool (>1 B), or neutral-bright
         temp = rng.choice(["warm", "cool", "neutral"])

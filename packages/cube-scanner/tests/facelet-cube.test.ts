@@ -5,14 +5,14 @@
 import Cube from 'cubejs';
 import { describe, expect, it } from 'vitest';
 import {
-  FACE_NEIGHBOURS,
-  SOLVED_FACELETS,
-  type Side,
   centersOk,
   decodeFacelets,
   encodeFacelets,
+  FACE_NEIGHBOURS,
   isSolvable,
   isStructurallyValid,
+  type Side,
+  SOLVED_FACELETS,
 } from '../src/facelet-cube.js';
 import type { Face } from '../src/types.js';
 import { scrambleFacelets } from './helpers.js';

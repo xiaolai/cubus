@@ -4,28 +4,32 @@
     "host": "macOS-26.6.2-arm64-arm-64bit",
     "python": "3.11.16"
   },
+  "model": {
+    "checkpoint_sha256": "22c654125163ed8185fb7b6f026d17bae256c025172c50cba5342d8eba0c531b",
+    "fp32_sha256": "5be4e55a9bae7d162775b431e09ea71947838dfeca421c1369f5cd6ad89fb472"
+  },
   "faithful_legs": [
     "onnx",
     "coreml",
     "native"
   ],
   "bounded_legs": {
-    "onnx-int8": "web / Windows / Linux runtime; int8 dynamic quantisation",
-    "tflite": "Android runtime; static int8"
+    "onnx-int8": "NOT shipped (web, Windows, Linux and the Android WebView serve the fp32 graph); onnxruntime dynamic int8 \u2014 QInt8 weights, uint8 activations",
+    "tflite": "bundled in the Android APK, gated off (verifiedOnDevice=false); weight-only (dynamic-range) int8, fp32 activations"
   },
   "divergence_from_fp32": {
     "onnx": 0,
-    "onnx-int8": 5,
+    "onnx-int8": 4,
     "coreml": 0,
     "tflite": 0,
     "native": 0
   },
   "frames": {
     "abstain-00.png": {
-      "preprocess_sha256": "615815335891537dce9920b96a41c4ba8de0af277a1fc3ad0d70d31160ecbc81",
+      "preprocess_sha256": "e282a8f725dcfed3a7d5a64fa4047053ee5ce358825379699e13e9feba187ea4",
       "legs": {
         "onnx": "BAD_GEOMETRY",
-        "onnx-int8": "OK 000100100",
+        "onnx-int8": "BAD_GEOMETRY",
         "coreml": "BAD_GEOMETRY",
         "tflite": "BAD_GEOMETRY",
         "native": "BAD_GEOMETRY"

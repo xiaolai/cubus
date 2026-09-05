@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import Cube from '../vendor/cubejs.js';
 
 import {
-  MAX_CUBES, MAX_LABEL, SERIAL_MOD, cubeLabel, forgetCube, listCubes, normaliseMac, parseRegistry, rememberCube, rememberLast, renameCube,
+  MAX_CUBES, MAX_LABEL, SERIAL_MOD, cubeLabel, forgetCube, listCubes, normaliseIdentity, normaliseMac, parseRegistry, rememberCube, rememberLast, renameCube,
 } from '../lib/cube-registry.js';
 
 const A = 'AA:BB:CC:DD:EE:FF';
@@ -307,7 +307,10 @@ test('a forged state that merely LOOKS like facelets is dropped by the full pars
 });
 
 test('the serial is cleaned per field: 16-bit or absent, never a lie', () => {
-  assert.equal(SERIAL_MOD, 0x10000, 'the FACELETS serial is 16-bit; the 8-bit gap counter is the same value masked');
+  // The bound is the width of the counter the CUBE keeps (the gen3/gen4 drivers read 16 bits from
+  // the FACELETS frame). What reaches the app is that counter masked to 8, so every serial stored
+  // in practice is under 256; the wider bound is deliberate headroom, not a claim about the wire.
+  assert.equal(SERIAL_MOD, 0x10000);
   for (const [serial, want] of [[0, 0], [65535, 65535], [7, 7]]) {
     const reg = parseRegistry({ [A]: { name: 'x', nickname: '', lastSeen: t(1), last: { ...LAST, serial } } }, Cube);
     assert.equal(reg[A].last.serial, want);
@@ -345,4 +348,78 @@ test('an address is a string, never a coercion', () => {
   assert.equal(normaliseMac([A]), '', 'an array wrapping an address is not an address');
   assert.equal(normaliseMac({ toString() { throw new Error('boom'); } }), '', 'a throwing toString cannot escape');
   assert.equal(normaliseMac(112233445566), '', 'a number is not an address');
+});
+
+// ---- cubes with no address ---------------------------------------------------------------------
+//
+// Five of the ten implemented protocols — Giiker, GoCube, MoYu v1, MoYu MHC, GAN gen1 — connect
+// without ever exposing a Bluetooth address. The app documented them as "remembered under their
+// NAME" and in fact remembered nothing at all: every registry path keyed on `normaliseMac`, which
+// answers '' for `name:…`, so the write was a no-op. No nickname, no history, no remembered
+// arrangement, no row in Settings — for half the brands the app supports.
+
+const N = 'name:GoCube_A1B2';
+
+test('a cube with no address is remembered under its name, listed, and forgotten', () => {
+  let reg = rememberCube({}, { mac: N, name: 'GoCube_A1B2', at: t(1) });
+  assert.deepEqual(Object.keys(reg), [N], 'the write must actually land');
+
+  reg = renameCube(reg, N, 'The blue one');
+  assert.equal(reg[N].nickname, 'The blue one');
+
+  const listed = listCubes(reg);
+  assert.deepEqual(listed.map((c) => c.mac), [N]);
+  assert.equal(cubeLabel(listed[0]), 'The blue one');
+
+  reg = forgetCube(reg, N);
+  assert.deepEqual(Object.keys(reg), [], 'and Forget must reach it too');
+});
+
+test('a name-keyed cube keeps a remembered arrangement, like any other', () => {
+  // The one that matters most: without a record there is nothing for the reconnect readings to
+  // compare against, so every reconnect of these five brands fell through to a full repair scan.
+  let reg = rememberCube({}, { mac: N, name: 'GoCube_A1B2', at: t(1) }, Cube);
+  reg = rememberLast(reg, N, LAST, Cube);
+  assert.equal(reg[N].last.facelets, LAST.facelets);
+  assert.equal(parseRegistry(reg, Cube)[N].last.how, LAST.how, 'and survives a round trip');
+});
+
+test('a hostile device name is sanitised into the key, not carried into it', () => {
+  // A device name is chosen by whatever is advertising. It becomes part of the KEY here, so the
+  // same cleaner the rendered label goes through has to run before the key exists — otherwise a
+  // bidi override or a run of control characters is stored, re-read, and rendered from storage.
+  //
+  // Escape sequences, not literal bytes, for the reason the registry's own regex gives: a raw
+  // control character is invisible in a diff and one careless copy-paste from being wrong.
+  const evil = `name:Go\u202eCube\u0000\u00ad${'x'.repeat(80)}`;
+  const id = normaliseIdentity(evil);
+  assert.ok(!/[\u0000-\u001F\u00AD\u202E]/.test(id), `control characters survived into ${JSON.stringify(id)}`);
+  assert.equal([...id.slice('name:'.length)].length, MAX_LABEL, 'and it is clamped by code point');
+
+  const reg = rememberCube({}, { mac: evil, name: 'x', at: t(1) });
+  assert.deepEqual(Object.keys(reg), [id], 'stored under the cleaned key, never the raw one');
+  assert.deepEqual(Object.keys(parseRegistry(reg)), [id], 'and it round-trips unchanged');
+});
+
+test('an identity is an address, a prefixed name, or nothing', () => {
+  assert.equal(normaliseIdentity('aa:bb:cc:dd:ee:ff'), A, 'an address canonicalises as before');
+  assert.equal(normaliseIdentity(N), N);
+  assert.equal(normaliseIdentity('name:   '), '', 'a name that cleans to nothing is not an identity');
+  assert.equal(normaliseIdentity('name:'), '');
+  // The prefix is REQUIRED rather than inferred. Treating any non-address string as a name would
+  // file a mistyped address as a cube called "AA:BB", so a caller with a broken address would
+  // silently get a record instead of the '' that tells it something is wrong.
+  assert.equal(normaliseIdentity('AA:BB'), '', 'a broken address is not a name');
+  assert.equal(normaliseIdentity('GoCube_A1B2'), '', 'a bare name is not an identity either');
+  assert.equal(normaliseIdentity(['name:x']), '', 'and no coercion, same as normaliseMac');
+  assert.equal(normaliseIdentity(null), '');
+  assert.equal(normaliseMac(N), '', 'normaliseMac stays MAC-only — it answers a different question');
+});
+
+test('an address-keyed cube and a name-keyed one coexist and stay distinct', () => {
+  let reg = rememberCube({}, { mac: A, name: 'GAN-A', at: t(1) });
+  reg = rememberCube(reg, { mac: N, name: 'GoCube_A1B2', at: t(2) });
+  assert.deepEqual(listCubes(reg).map((c) => c.mac), [N, A], 'most recent first, as ever');
+  reg = forgetCube(reg, N);
+  assert.deepEqual(Object.keys(reg), [A], 'forgetting one leaves the other');
 });

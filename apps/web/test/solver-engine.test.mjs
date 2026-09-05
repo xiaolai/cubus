@@ -8,21 +8,146 @@ import { test } from 'node:test';
 import { existsSync } from 'node:fs';
 
 import {
-  LOOSEST_BOUND, VIEW_COUNT, createSolver,
+  DEFAULT_NODE_BUDGET, LOOSEST_BOUND, VIEW_COUNT, createSolver, moveTokens, movesIn, validateAnswer,
 } from '../lib/solver-engine.js';
+import { htmMoves } from '../lib/optimal.js';
 import { refine } from '../lib/solve-target.js';
 import * as engine from '../lib/two-phase.js';
+import { CONTRACT_CUBES } from './fixtures/solver-cubes.mjs';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
 Cube.initSolver();
 
 const solve = createSolver(engine);
-const movesIn = (alg) => alg.trim().split(/\s+/).length;
 
 test('the engine exposes the bounds surface the wrapper drives', () => {
-  for (const fn of ['initialize', 'solvePattern', 'setBounds']) {
+  // `openSearch` is on the list since 2026-09-05: the wrapper drives it for any caller that passes
+  // a resume carrier, and an engine without it must be refused THERE rather than quietly restarting
+  // a search someone asked to continue (dev-docs/deferred-plans-2026-09-05.md §3).
+  for (const fn of ['initialize', 'solvePattern', 'setBounds', 'openSearch']) {
     assert.equal(typeof engine[fn], 'function', `lib/two-phase.js has no ${fn}()`);
   }
+});
+
+test('an engine that cannot continue a search refuses one, before the bounds move', () => {
+  // Ignoring the carrier would be the worst of both: the caller pays the re-walk it asked to avoid
+  // and is told nothing about it. Refused BEFORE setBounds, like the view filter above and for the
+  // same reason — this wrapper's rule is validate first, commit together.
+  let boundsSet = 0;
+  const solve = createSolver({
+    initialize() {},
+    setBounds() { boundsSet += 1; },
+    solvePattern: () => '',
+    VIEW_COUNT: 6,
+  });
+  const facelets = new Cube().asString();
+  assert.throws(() => solve(facelets, { resume: { state: null } }), /has no openSearch\(\)/);
+  assert.equal(boundsSet, 0, 'a refused carrier must not have moved the bounds');
+  assert.doesNotThrow(() => solve(facelets, { resume: null }), 'and no carrier is the ordinary case');
+  assert.equal(boundsSet, 1);
+});
+
+test('a carrier that cannot take the point back is refused, before the bounds move', () => {
+  // The other half of the rule above, and it was missing (2026-09-05 audit). `resume` was checked
+  // against the ENGINE's capability and never against its own: `false`, `7` and a frozen `{state}`
+  // all read fine — `resume.state ?? null` is undefined, then null — so the bounds moved, the
+  // search RAN, and the TypeError arrived on the write-back afterwards. Bounds are persistent
+  // engine state and the search is the expensive part; both had already happened.
+  //
+  // Round 2 added the two shapes that read-only descriptor check let through, both reproduced by
+  // the audit. They are the reason the check is a probe WRITE now: the first has no own descriptor
+  // to inspect, and the second has one that says it takes writes and then does not.
+  const shapes = [
+    ['false', false],
+    ['7', 7],
+    ["'nope'", 'nope'],
+    ['a frozen carrier', Object.freeze({ state: null })],
+    ['an own read-only state', Object.defineProperty({}, 'state', { value: null, writable: false })],
+    ['an INHERITED read-only state', Object.create(Object.freeze({ state: null }))],
+    ['a setter that DISCARDS the write', { get state() { return null; }, set state(_v) {} }],
+    ['a setter that throws', { get state() { return null; }, set state(_v) { throw new Error('no'); } }],
+    // Round 3, and the one shape a write-then-read probe still let through: a setter that takes
+    // objects and ignores null. The sentinel goes in, reads back, and then CANNOT BE UNDONE — so a
+    // carrier that started at null (which every first attempt does) keeps it, and the wrapper hands
+    // `openSearch` a resume point it invented itself. The undo is read back for exactly this.
+    ['a setter that will not take the undo', (() => {
+      let held = null;
+      return { get state() { return held; }, set state(v) { if (v !== null) held = v; } };
+    })()],
+  ];
+  for (const [what, carrier] of shapes) {
+    let boundsSet = 0;
+    let opened = 0;
+    const solve = createSolver({
+      initialize() {},
+      setBounds() { boundsSet += 1; },
+      solvePattern: () => '',
+      openSearch: () => { opened += 1; return { continueTo: () => '', state: {} }; },
+      VIEW_COUNT: 6,
+    });
+    const facelets = new Cube().asString();
+    assert.throws(() => solve(facelets, { resume: carrier }), TypeError, what);
+    assert.equal(boundsSet, 0, `${what}: a refused carrier must not have moved the bounds`);
+    assert.equal(opened, 0, `${what}: nor have searched`);
+    // And a carrier that CAN take it still works, on the same engine.
+    const good = { state: null };
+    assert.equal(solve(facelets, { resume: good }), '');
+    assert.deepEqual(good.state, {});
+  }
+});
+
+test('the writability probe puts the carrier back before the search ever sees it', () => {
+  // Writability is asked by WRITING (2026-09-05), which is only sound because the write is undone
+  // in the same breath: the probe is a sentinel, and a resume point is the one thing this wrapper
+  // must not invent. A carrier whose sentinel leaked would hand the engine a key it cannot match
+  // and turn a continuation into a loud refusal over a cube nothing is wrong with.
+  const seen = [];
+  const solve = createSolver({
+    initialize() {},
+    setBounds() {},
+    solvePattern: () => { throw new Error('a carrier must not take the from-scratch path'); },
+    openSearch: (_f, { resume }) => { seen.push(resume); return { continueTo: () => '', state: { after: true } }; },
+    VIEW_COUNT: 6,
+  });
+  const point = { carried: 'the search so far' };
+  // An accessor pair that really stores, so every value the probe passes through is recorded.
+  const written = [];
+  const carrier = {
+    held: point,
+    get state() { return this.held; },
+    set state(v) { written.push(v); this.held = v; },
+  };
+  assert.equal(solve(new Cube().asString(), { resume: carrier }), '');
+  assert.deepEqual(seen, [point], 'the engine was handed the probe instead of the resume point');
+  assert.deepEqual(carrier.state, { after: true }, 'and the search still wrote its point back');
+  assert.equal(written.length, 3, 'probe, restore, and the search — no more, no fewer');
+  assert.equal(written[1], point, 'the restore must put back the value that was there');
+});
+
+test('a carrier takes the resumable path and comes back holding the search', () => {
+  // The seam itself: with a carrier the wrapper drives `openSearch`, and the state it writes back
+  // is what makes the NEXT attempt a continuation. Dropping that write would leave every escalation
+  // starting from scratch with every test still green — the failure this asserts against.
+  const answers = ['', 'R U'];
+  let opened = 0;
+  const solve = createSolver({
+    initialize() {},
+    setBounds() {},
+    solvePattern: () => { throw new Error('a carrier must not take the from-scratch path'); },
+    openSearch: (facelets, { viewFilter, resume }) => {
+      opened += 1;
+      return { continueTo: () => answers.shift(), state: { seen: resume, viewFilter } };
+    },
+    VIEW_COUNT: 6,
+  });
+  const facelets = new Cube().asString();
+  const carrier = { state: null };
+  assert.equal(solve(facelets, { resume: carrier, views: [1, 4] }), '');
+  assert.deepEqual(carrier.state, { seen: null, viewFilter: [1, 4] });
+  assert.equal(solve(facelets, { resume: carrier, views: [1, 4] }), 'R U');
+  assert.deepEqual(carrier.state.seen, { seen: null, viewFilter: [1, 4] },
+    'the second call must have been handed the point the first one left');
+  assert.equal(opened, 2);
 });
 
 test('a module without setBounds is refused rather than silently unbounded', () => {
@@ -53,8 +178,11 @@ function solveOrEscalate(facelets, solLen) {
 }
 
 test('asking for a length actually bounds the answer', () => {
-  for (let i = 0; i < 8; i++) {
-    const facelets = Cube.random().asString();
+  // Fixed states, not `Cube.random()` (2026-09-04). Escalating made a hard draw expensive rather
+  // than red, but it still asserted a not-null answer under a budget with a ceiling — 12.75e9
+  // nodes, minutes, on a cube that would be gone by the time anyone read the failure. The rule
+  // and the provenance: test/fixtures/solver-cubes.mjs.
+  for (const facelets of CONTRACT_CUBES) {
     for (const solLen of [LOOSEST_BOUND, 21]) {
       const { alg } = solveOrEscalate(facelets, solLen);
       assert.ok(alg, `no solution under ${solLen} for ${facelets}, even at 256x the budget`);
@@ -94,7 +222,8 @@ test('a budget that is not a positive integer is refused, never searched with', 
 test('an omitted budget is the named default, never a previous call leftover', () => {
   // The engine's setBounds is a partial update whose values persist — this is the regression
   // that once made an omitted-budget solve inherit a one-node budget and return null.
-  const facelets = Cube.random().asString();
+  // A fixed state for the same reason as above: the second assertion here is a not-null one.
+  const facelets = CONTRACT_CUBES[0];
   assert.equal(solve(facelets, { solLen: 16, probeMax: 1 }), null, 'one node cannot find 15 moves');
   const answer = solve(facelets, { solLen: LOOSEST_BOUND });
   assert.ok(answer, 'the default budget must solve at the loosest bound');
@@ -145,43 +274,31 @@ test('an answer that is not made of face turns is refused, not passed to a scree
 });
 
 /**
- * FIXED cubes, not `Cube.random()`, because this runs in a release gate.
+ * FIXED cubes, not `Cube.random()`, because this runs in a release gate. The set, its
+ * provenance, its measured cost and the rule behind all three: test/fixtures/solver-cubes.mjs.
  *
- * It drew four fresh states per run, and on 2026-09-03 one of them exhausted eight escalations —
- * 12.8 BILLION nodes, 285 s — and failed the v0.2.3 release. The same commit had passed the push
- * CI minutes earlier on a different draw. A gate that is a lottery is not a gate: it fails
- * releases for reasons unrelated to the release, and the failure it reported could not be
- * reproduced because the state was never printed.
- *
- * Measured here first, so the cost of the gate is known rather than hoped: 4.9-6.8 s each on a
- * developer Mac, 18-19 moves. Two-phase is deterministic on a fixed state, so those numbers hold
- * on any machine (the budget is counted in search NODES, not seconds).
- *
- * WHAT THIS NO LONGER COVERS, said plainly rather than left to be assumed: the engine's TAIL. A
- * state needing more than 12.8e9 nodes demonstrably exists — CI found one — and a fixed set of
- * four will never meet it again. Establishing how rare that is, and whether it is a pathological
- * state or an engine defect, is soak work on a machine nobody is waiting for; 190 random states
- * were run by hand while investigating and none exceeded 13 s, so it is rarer than 1 in 190 and
- * that is the whole of what is currently known. It is NOT known to be harmless.
+ * Their cost moved on 2026-09-04, in both directions, and the second half is the interesting
+ * one. It fell 73x — 841,366,511 nodes to 11,424,278 over the four — because the fixtures had
+ * been paying the 200M headroom on every BONUS rung as well as on the first search. The move
+ * counts ROSE, 18-19 to 19-20, for exactly the same reason, and that is not a regression: the
+ * free descent below the target now costs 2,000,000 nodes, which is what it costs in the app.
+ * The old counts were bought with a 100x budget nobody ships.
  */
-const CONTRACT_CUBES = Object.freeze([
-  // 18 moves, 5799 ms
-  'RFBDULDFURBLURUBDFLUFDFBRBRDDDBDLLUUUFFFLRBRFURBRBLLLD',
-  // 19 moves, 5897 ms
-  'UUBFUFLRBDUULRBBRUBDRDFUFDDRBLUDBFRLRDULLLLRDRBFLBFFFD',
-  // 18 moves, 6845 ms
-  'DFBBUFUUFLULFRDDBRRBULFDLULFRBFDRRLFRDFULBBLDURBRBLDDU',
-  // 18 moves, 4918 ms
-  'RUDRULLFFDBLDRBUDUBLLDFLDULFLFDDBBUFBUURLFURRBFDRBFRBR',
-]);
-
 test('the real solver honours the contract solve-target.js assumes', async () => {
   // The unit tests for solve-target.js use a scripted fake, which can only prove the module
   // handles a contract. This proves the real engine actually has it: every improvement is
   // strictly shorter, the target is met when reachable, and the answers solve the cube.
-  // 200M nodes, not the app's 50M default: the met assertion needs reachability headroom —
-  // a rare hard state can exhaust a single 50M attempt at the 21 -> 20 rung.
-  const asyncSolve = async (facelets, options) => solve(facelets, { ...options, probeMax: 200_000_000 });
+  //
+  // The headroom goes in as `probeBudget` — the BASE budget refine escalates FROM — and not as a
+  // `probeMax` spread over whatever refine asked for (fixed 2026-09-04). Overriding the bounds
+  // did two things it did not mean to. It flattened the escalation ladder: solveWithinGodsNumber
+  // doubles its budget on a refusal, and every doubled figure was thrown away on the way through,
+  // so the one place the ladder is exercised against the real engine exercised nothing — and the
+  // raise it would have reached would have named a budget nobody spent. And it replaced the BONUS
+  // budget too: every free-descent rung below the target, which is meant to cost 2M nodes and
+  // stop, was handed 200M and spent all of it on the way to refusing. Measured over the four
+  // fixtures: 841,366,511 nodes before, 11,424,278 after — 73x, and the wall time with it.
+  const asyncSolve = async (facelets, options) => solve(facelets, options);
   for (const facelets of CONTRACT_CUBES) {
     // THE STATE GOES IN EVERY MESSAGE. It is fixed now, so this is belt rather than brace — but
     // when this failed a release gate the report said only that the budget ran out, not on which
@@ -191,7 +308,11 @@ test('the real solver honours the contract solve-target.js assumes', async () =>
     let previous = Infinity;
     let last = null;
     try {
-      for await (const step of refine(facelets, { solve: asyncSolve, tier: 'twenty' })) {
+      // 200M rather than the app's 50M default: the met assertion needs reachability headroom —
+      // a rare hard state can exhaust a single 50M attempt at the 21 -> 20 rung. BONUS_BUDGET is
+      // deliberately left at its shipped value, so the descent below the target costs what it
+      // costs in the app.
+      for await (const step of refine(facelets, { solve: asyncSolve, tier: 'twenty', probeBudget: 200_000_000 })) {
         const improved = step.moves < previous || (step.moves === previous && step.stopped !== null);
         assert.ok(improved, `${previous} -> ${step.moves} (stopped=${step.stopped})${on}`);
         previous = step.moves;
@@ -229,6 +350,42 @@ test('an easy cube gets its real answer, not the tier ceiling', async () => {
   const oracle = Cube.fromString(easy.asString());
   oracle.move(last.alg);
   assert.ok(oracle.isSolved());
+});
+
+test('the engine\'s own default bounds are this module\'s bounds', async () => {
+  // The second copy in the same shape as VIEW_COUNT below, and it had no test at all. two-phase.js
+  // carries its own default bounds for direct module use, with a comment saying they "must not
+  // quietly disagree" with the wrapper's — and nothing held them to it. A drift here is silent by
+  // construction: every call through createSolver passes both bounds explicitly, so the defaults
+  // only ever surface where the wrapper is bypassed, which is exactly where nobody is looking.
+  //
+  // It is checked against the exported DEFAULT_BOUNDS and not against the live bounds: setBounds
+  // mutates persistent state, so reading BOUNDS after any other test in this file would report
+  // whatever that test left behind rather than what a fresh module starts with.
+  const engine = await import('../lib/two-phase.js');
+  assert.equal(LOOSEST_BOUND, engine.DEFAULT_BOUNDS.solLen,
+    'the engine would accept a longer answer by default than this module\'s ceiling allows');
+  assert.equal(DEFAULT_NODE_BUDGET, engine.DEFAULT_BOUNDS.probeMax,
+    'and would spend a different budget for an omitted one');
+});
+
+test('one tokenizer counts every move list in the pipeline', () => {
+  // There were three: movesIn here, htmMoves in optimal.js, movesOf in app.js — all
+  // `trim().split(/\s+/)` with the same empty-string special case, and three chances to
+  // disagree about the same alg. A screen that prints "N moves" beside N chips cannot survive
+  // two answers to "how many", and the inputs that would split them are exactly the ones a
+  // hand-written split gets wrong: an empty alg (the solved cube's real answer), padding, and a
+  // tab or newline between moves.
+  for (const [alg, expected] of [['', []], ['   ', []], ["R U2 F'", ['R', 'U2', "F'"]],
+    ['  R   U  ', ['R', 'U']], ['R\tU\nF', ['R', 'U', 'F']]]) {
+    assert.deepEqual(moveTokens(alg), expected, JSON.stringify(alg));
+    assert.equal(movesIn(alg), expected.length, `movesIn disagrees on ${JSON.stringify(alg)}`);
+    assert.deepEqual(htmMoves(alg, 'test'), expected, `htmMoves disagrees on ${JSON.stringify(alg)}`);
+  }
+  // And the same tokens the length check counts, so "fewer than N moves" and "N moves" cannot
+  // be answered by two different splits.
+  assert.equal(validateAnswer("  R U2   F'  ", 4), "R U2   F'");
+  assert.throws(() => validateAnswer("R U2 F'", 3), /returned 3 moves/);
 });
 
 test('the view count the callers read is the one the engine actually has', async () => {

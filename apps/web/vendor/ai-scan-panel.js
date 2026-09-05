@@ -5,7 +5,11 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __commonJS = (cb, mod) => function __require() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -32,7 +36,7 @@ var require_cube = __commonJS({
       [U, R, F, D, L, B] = [0, 1, 2, 3, 4, 5];
       [URF, UFL, ULB, UBR, DFR, DLF, DBL, DRB] = [0, 1, 2, 3, 4, 5, 6, 7];
       [UR, UF, UL, UB, DR, DF, DL, DB, FR, FL, BL, BR] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-      [centerFacelet, cornerFacelet, edgeFacelet] = function() {
+      [centerFacelet, cornerFacelet, edgeFacelet] = (function() {
         var _B, _D, _F, _L, _R, _U;
         _U = function(x) {
           return x - 1;
@@ -157,11 +161,11 @@ var require_cube = __commonJS({
             ]
           ]
         ];
-      }();
+      })();
       centerColor = ["U", "R", "F", "D", "L", "B"];
       cornerColor = [["U", "R", "F"], ["U", "F", "L"], ["U", "L", "B"], ["U", "B", "R"], ["D", "F", "R"], ["D", "L", "F"], ["D", "B", "L"], ["D", "R", "B"]];
       edgeColor = [["U", "R"], ["U", "F"], ["U", "L"], ["U", "B"], ["D", "R"], ["D", "F"], ["D", "L"], ["D", "B"], ["F", "R"], ["F", "L"], ["B", "L"], ["B", "R"]];
-      Cube3 = function() {
+      Cube3 = (function() {
         var faceNames, faceNums, parseAlg;
         class Cube4 {
           constructor(other) {
@@ -171,46 +175,46 @@ var require_cube = __commonJS({
             } else {
               this.identity();
             }
-            this.newCenter = function() {
+            this.newCenter = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 5; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
-            this.newCp = function() {
+            })();
+            this.newCp = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 7; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
-            this.newEp = function() {
+            })();
+            this.newEp = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 11; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
-            this.newCo = function() {
+            })();
+            this.newCo = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 7; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
-            this.newEo = function() {
+            })();
+            this.newEo = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 11; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
+            })();
           }
           init(state) {
             this.center = state.center.slice(0);
@@ -223,23 +227,23 @@ var require_cube = __commonJS({
             var x;
             this.center = [0, 1, 2, 3, 4, 5];
             this.cp = [0, 1, 2, 3, 4, 5, 6, 7];
-            this.co = function() {
+            this.co = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 7; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
+            })();
             this.ep = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-            return this.eo = function() {
+            return this.eo = (function() {
               var k, results;
               results = [];
               for (x = k = 0; k <= 11; x = ++k) {
                 results.push(0);
               }
               return results;
-            }();
+            })();
           }
           toJSON() {
             return {
@@ -448,7 +452,7 @@ var require_cube = __commonJS({
           }
           static inverse(arg) {
             var face, k, len, move, power, result, str;
-            result = function() {
+            result = (function() {
               var k2, len2, ref, results;
               ref = parseAlg(arg);
               results = [];
@@ -459,7 +463,7 @@ var require_cube = __commonJS({
                 results.push(face * 3 + -(power - 1) + 1);
               }
               return results;
-            }();
+            })();
             result.reverse();
             if (typeof arg === "string") {
               str = "";
@@ -484,7 +488,7 @@ var require_cube = __commonJS({
           }
         }
         ;
-        Cube4.prototype.randomize = function() {
+        Cube4.prototype.randomize = (function() {
           var arePermutationsValid, generateValidRandomOrientation, generateValidRandomPermutation, getNumSwaps, isOrientationValid, randint, randomizeOrientation, result, shuffle;
           randint = function(min, max) {
             return min + Math.floor(Math.random() * (max - min + 1));
@@ -502,14 +506,14 @@ var require_cube = __commonJS({
           getNumSwaps = function(arr) {
             var cur, cycleLength, i, k, numSwaps, ref, seen, x;
             numSwaps = 0;
-            seen = function() {
+            seen = (function() {
               var k2, ref2, results;
               results = [];
               for (x = k2 = 0, ref2 = arr.length - 1; 0 <= ref2 ? k2 <= ref2 : k2 >= ref2; x = 0 <= ref2 ? ++k2 : --k2) {
                 results.push(false);
               }
               return results;
-            }();
+            })();
             while (true) {
               cur = -1;
               for (i = k = 0, ref = arr.length - 1; 0 <= ref ? k <= ref : k >= ref; i = 0 <= ref ? ++k : --k) {
@@ -572,7 +576,7 @@ var require_cube = __commonJS({
             return this;
           };
           return result;
-        }();
+        })();
         Cube4.moves = [
           {
             // U
@@ -1151,7 +1155,7 @@ var require_cube = __commonJS({
         Cube4.moves.push(new Cube4().move("L M").toJSON());
         Cube4.moves.push(new Cube4().move("B S'").toJSON());
         return Cube4;
-      }.call(this);
+      }).call(this);
       if (typeof module !== "undefined" && module !== null) {
         module.exports = Cube3;
       } else {
@@ -1231,14 +1235,14 @@ var require_solve = __commonJS({
           maxAll = 11;
           permName = "ep";
         }
-        our = function() {
+        our = (function() {
           var m, ref, results;
           results = [];
           for (i = m = 0, ref = maxOur; 0 <= ref ? m <= ref : m >= ref; i = 0 <= ref ? ++m : --m) {
             results.push(0);
           }
           return results;
-        }();
+        })();
         return function(index) {
           var a, b, c, j, k, m, o, p, perm, q, ref, ref1, ref10, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9, t, u, w, x, y, z;
           if (index != null) {
@@ -1423,7 +1427,7 @@ var require_solve = __commonJS({
         }
         return results;
       };
-      mergeURtoDF = function() {
+      mergeURtoDF = (function() {
         var a, b;
         a = new Cube3();
         b = new Cube3();
@@ -1442,7 +1446,7 @@ var require_solve = __commonJS({
           }
           return b.URtoDF();
         };
-      }();
+      })();
       N_TWIST = 2187;
       N_FLIP = 2048;
       N_PARITY = 2;
@@ -1478,14 +1482,14 @@ var require_solve = __commonJS({
       Cube3.computeMoveTables = function(...tables) {
         var len, m, name, scope, size, tableName;
         if (tables.length === 0) {
-          tables = function() {
+          tables = (function() {
             var results;
             results = [];
             for (name in moveTableParams) {
               results.push(name);
             }
             return results;
-          }();
+          })();
         }
         for (m = 0, len = tables.length; m < len; m++) {
           tableName = tables[m];
@@ -1493,21 +1497,21 @@ var require_solve = __commonJS({
             continue;
           }
           if (tableName === "mergeURtoDF") {
-            this.moveTables.mergeURtoDF = function() {
+            this.moveTables.mergeURtoDF = (function() {
               var UBtoDF, URtoUL, o, results;
               results = [];
               for (URtoUL = o = 0; o <= 335; URtoUL = ++o) {
-                results.push(function() {
+                results.push((function() {
                   var p, results1;
                   results1 = [];
                   for (UBtoDF = p = 0; p <= 335; UBtoDF = ++p) {
                     results1.push(mergeURtoDF(URtoUL, UBtoDF));
                   }
                   return results1;
-                }());
+                })());
               }
               return results;
-            }();
+            })();
           } else {
             [scope, size] = moveTableParams[tableName];
             this.moveTables[tableName] = computeMoveTable(scope, tableName, size);
@@ -1516,7 +1520,7 @@ var require_solve = __commonJS({
         return this;
       };
       allMoves1 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
-      nextMoves1 = function() {
+      nextMoves1 = (function() {
         var face, lastFace, m, next, o, p, power, results;
         results = [];
         for (lastFace = m = 0; m <= 5; lastFace = ++m) {
@@ -1531,9 +1535,9 @@ var require_solve = __commonJS({
           results.push(next);
         }
         return results;
-      }();
+      })();
       allMoves2 = [0, 1, 2, 4, 7, 9, 10, 11, 13, 16];
-      nextMoves2 = function() {
+      nextMoves2 = (function() {
         var face, lastFace, len, m, next, o, p, power, powers, results;
         results = [];
         for (lastFace = m = 0; m <= 5; lastFace = ++m) {
@@ -1551,7 +1555,7 @@ var require_solve = __commonJS({
           results.push(next);
         }
         return results;
-      }();
+      })();
       pruning = function(table, index, value2) {
         var pos, shift, slot;
         pos = index % 8;
@@ -1567,14 +1571,14 @@ var require_solve = __commonJS({
       };
       computePruningTable = function(phase, size, currentCoords, nextIndex) {
         var current, depth, done, index, len, m, move, moves, next, o, ref, table, x;
-        table = function() {
+        table = (function() {
           var m2, ref2, results;
           results = [];
           for (x = m2 = 0, ref2 = Math.ceil(size / 8) - 1; 0 <= ref2 ? m2 <= ref2 : m2 >= ref2; x = 0 <= ref2 ? ++m2 : --m2) {
             results.push(4294967295);
           }
           return results;
-        }();
+        })();
         if (phase === 1) {
           moves = allMoves1;
         } else {
@@ -1700,14 +1704,14 @@ var require_solve = __commonJS({
       Cube3.computePruningTables = function(...tables) {
         var len, m, name, params, tableName;
         if (tables.length === 0) {
-          tables = function() {
+          tables = (function() {
             var results;
             results = [];
             for (name in pruningTableParams) {
               results.push(name);
             }
             return results;
-          }();
+          })();
         }
         for (m = 0, len = tables.length; m < len; m++) {
           tableName = tables[m];
@@ -1725,7 +1729,7 @@ var require_solve = __commonJS({
       };
       Cube3.prototype.solveUpright = function(maxDepth = 22) {
         var State, freeStates, moveNames, phase1, phase1search, phase2, phase2search, solution, state, x;
-        moveNames = function() {
+        moveNames = (function() {
           var face, faceName, m, o, power, powerName, result;
           faceName = ["U", "R", "F", "D", "L", "B"];
           powerName = ["", "2", "'"];
@@ -1736,7 +1740,7 @@ var require_solve = __commonJS({
             }
           }
           return result;
-        }();
+        })();
         State = class State {
           constructor(cube) {
             this.parent = null;
@@ -1925,14 +1929,14 @@ var require_solve = __commonJS({
             }
           }
         };
-        freeStates = function() {
+        freeStates = (function() {
           var m, ref, results;
           results = [];
           for (x = m = 0, ref = maxDepth + 1; 0 <= ref ? m <= ref : m >= ref; x = 0 <= ref ? ++m : --m) {
             results.push(new State());
           }
           return results;
-        }();
+        })();
         state = freeStates.pop().init(this);
         phase1search(state);
         freeStates.push(state);
@@ -2208,27 +2212,21 @@ function buildTensors(colors54, canon) {
     edgeColors: canon.edge
   };
 }
+function slotMinima(tensor) {
+  return tensor.map((slot) => {
+    let best = Number.POSITIVE_INFINITY;
+    for (const ori of slot) for (const d of ori) if (d < best) best = d;
+    return best;
+  });
+}
 function lowerBound(t) {
   let lb = 0;
-  for (const slot of t.corner) {
-    let best = 3;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    lb += best;
-  }
-  for (const slot of t.edge) {
-    let best = 2;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    lb += best;
-  }
+  for (const best of slotMinima(t.corner)) lb += best;
+  for (const best of slotMinima(t.edge)) lb += best;
   return lb;
 }
 function assignments(tensor, n, budget, counter) {
-  const rowMin = [];
-  for (const slot of tensor) {
-    let best = Number.POSITIVE_INFINITY;
-    for (const ori2 of slot) for (const d of ori2) if (d < best) best = d;
-    rowMin.push(best);
-  }
+  const rowMin = slotMinima(tensor);
   const suffix = new Array(n + 1).fill(0);
   for (let i = n - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + rowMin[i];
   const out = [];
@@ -2265,16 +2263,17 @@ function assignments(tensor, n, budget, counter) {
   walk(0, 0);
   return exhausted ? null : out;
 }
+function writeCubies(out, slots, colours, a) {
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    const cubie = colours[a.cubie[i]];
+    for (let p = 0; p < slot.length; p++) out[slot[p]] = cubie[(p + a.ori[i]) % slot.length];
+  }
+}
 function realise(t, corners, edges, base) {
   const out = [...base];
-  for (let i = 0; i < 8; i++) {
-    const colours = t.cornerColors[corners.cubie[i]];
-    for (let p = 0; p < 3; p++) out[CORNER_FACELET[i][p]] = colours[(p + corners.ori[i]) % 3];
-  }
-  for (let i = 0; i < 12; i++) {
-    const colours = t.edgeColors[edges.cubie[i]];
-    for (let p = 0; p < 2; p++) out[EDGE_FACELET[i][p]] = colours[(p + edges.ori[i]) % 2];
-  }
+  writeCubies(out, CORNER_FACELET, t.cornerColors, corners);
+  writeCubies(out, EDGE_FACELET, t.edgeColors, edges);
   return out;
 }
 function isLegal(colors54, centreOwner) {
@@ -2298,69 +2297,99 @@ function flatten(faces, rotations) {
   }
   return out;
 }
-function decodeMisread(faces, centreOwner, options = {}) {
-  const maxDistance = whole("maxDistance", options.maxDistance, DEFAULT_MAX_DISTANCE);
-  const counter = { nodes: 0, limit: whole("nodeBudget", options.nodeBudget, DEFAULT_NODE_BUDGET) };
-  const faceCentre = FACES.map((f) => faces[f].colors[4]);
-  const canon = canonicalColors(faceCentre);
+function priceRotations(faces, canon, maxDistance, fixedRotation) {
   const candidates = [];
-  const combos = options.fixedRotation ? 1 : 4096;
+  const combos = fixedRotation ? 1 : 4096;
   for (let combo = 0; combo < combos; combo++) {
     const rotations = [0, 1, 2, 3, 4, 5].map((i) => combo >> 2 * i & 3);
     const bound = lowerBound(buildTensors(flatten(faces, rotations), canon));
     if (bound <= maxDistance) candidates.push({ rotations, bound });
   }
+  return candidates;
+}
+function repairsAt(budget, candidates, faces, canon, centreOwner, counter) {
+  const found = [];
+  for (const { rotations, bound } of candidates) {
+    if (bound > budget) continue;
+    const observed = flatten(faces, rotations);
+    const tensors = buildTensors(observed, canon);
+    const corners = assignments(tensors.corner, 8, budget, counter);
+    if (corners === null) return null;
+    const edges = assignments(tensors.edge, 12, budget, counter);
+    if (edges === null) return null;
+    for (const c of corners) {
+      for (const e of edges) {
+        if (++counter.nodes > counter.limit) return null;
+        if (c.total + e.total !== budget) continue;
+        const repaired = realise(tensors, c, e, observed);
+        if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
+      }
+    }
+  }
+  return found;
+}
+function aggregate(found, budget) {
+  const stickers = /* @__PURE__ */ new Map();
+  const shapes = /* @__PURE__ */ new Set();
+  for (const { rotations, observed, repaired } of found) {
+    shapes.add(repaired.join(","));
+    for (let p = 0; p < 54; p++) {
+      if (repaired[p] === observed[p]) continue;
+      const fi = Math.floor(p / 9);
+      const index = SHOWN_INDEX[rotations[fi]][p % 9];
+      stickers.set(`${fi}:${index}`, { face: FACES[fi], index, to: repaired[p] });
+    }
+  }
+  return {
+    kind: "repair",
+    distance: budget,
+    stickers: [...stickers.values()],
+    unique: shapes.size === 1
+  };
+}
+function decodeMisread(faces, centreOwner, options = {}) {
+  const maxDistance = whole("maxDistance", options.maxDistance, DEFAULT_MAX_DISTANCE);
+  const counter = { nodes: 0, limit: whole("nodeBudget", options.nodeBudget, DEFAULT_NODE_BUDGET) };
+  const faceCentre = FACES.map((f) => faces[f].colors[4]);
+  const canon = canonicalColors(faceCentre);
+  const candidates = priceRotations(faces, canon, maxDistance, options.fixedRotation === true);
   for (let budget = 0; budget <= maxDistance; budget++) {
-    const found = [];
-    for (const { rotations, bound } of candidates) {
-      if (bound > budget) continue;
-      const observed = flatten(faces, rotations);
-      const tensors = buildTensors(observed, canon);
-      const corners = assignments(tensors.corner, 8, budget, counter);
-      if (corners === null) return { kind: "unknown" };
-      const edges = assignments(tensors.edge, 12, budget, counter);
-      if (edges === null) return { kind: "unknown" };
-      for (const c of corners) {
-        for (const e of edges) {
-          if (++counter.nodes > counter.limit) return { kind: "unknown" };
-          if (c.total + e.total !== budget) continue;
-          const repaired = realise(tensors, c, e, observed);
-          if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
-        }
-      }
-    }
+    const found = repairsAt(budget, candidates, faces, canon, centreOwner, counter);
+    if (found === null) return { kind: "unknown" };
     if (found.length === 0) continue;
-    const stickers = /* @__PURE__ */ new Map();
-    const shapes = /* @__PURE__ */ new Set();
-    for (const { rotations, observed, repaired } of found) {
-      shapes.add(repaired.join(","));
-      for (let p = 0; p < 54; p++) {
-        if (repaired[p] === observed[p]) continue;
-        const fi = Math.floor(p / 9);
-        const index = SHOWN_INDEX[rotations[fi]][p % 9];
-        stickers.set(`${fi}:${index}`, { face: FACES[fi], index, to: repaired[p] });
-      }
-    }
-    return {
-      kind: "repair",
-      distance: budget,
-      stickers: [...stickers.values()],
-      unique: shapes.size === 1
-    };
+    return aggregate(found, budget);
   }
   return { kind: "beyond", distance: maxDistance };
 }
+function diagnoseMisread(faces, options = {}) {
+  let decoded;
+  try {
+    const centreOwner = /* @__PURE__ */ new Map();
+    for (const face of FACES) centreOwner.set(faces[face].colors[4], face);
+    if (centreOwner.size !== FACES.length) return {};
+    decoded = decodeMisread(faces, centreOwner, options);
+  } catch (err) {
+    console.error("[cubus] misread diagnosis failed, so nothing is claimed about the scan", err);
+    return {};
+  }
+  if (decoded.kind === "unknown") return {};
+  if (decoded.kind === "beyond") return { misreadCount: decoded.distance + 1 };
+  const pointable = decoded.distance === 1 && decoded.unique && decoded.stickers.length === 1;
+  const suspects = pointable ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to })) : [];
+  const blamed = new Set(decoded.stickers.map((s) => s.face));
+  return {
+    misreadCount: decoded.distance,
+    ...suspects.length > 0 ? { suspects } : {},
+    ...blamed.size === 1 ? { misreadFace: [...blamed][0] } : {}
+  };
+}
 
 // src/ai-assemble.ts
-var TOP_NEIGHBOUR = {
-  U: "B",
-  R: "U",
-  F: "U",
-  D: "F",
-  L: "U",
-  B: "U"
-};
+var TOP_NEIGHBOUR = Object.freeze(
+  Object.fromEntries(FACES.map((face) => [face, FACE_NEIGHBOURS[face].top]))
+);
 var CONFIRM_TOLERANCE = 2;
+var LOW_CONFIDENCE_THRESHOLD = 0.15;
 function cubejsRoundTrips(facelets) {
   try {
     return import_cubejs2.default.fromString(facelets).asString() === facelets;
@@ -2369,14 +2398,7 @@ function cubejsRoundTrips(facelets) {
   }
 }
 function reject(reason, extra = {}) {
-  return {
-    facelets: "",
-    valid: false,
-    confidence: 0,
-    lowConfidence: [...Array(54).keys()],
-    reason,
-    ...extra
-  };
+  return { facelets: "", valid: false, reason, ...extra };
 }
 function matchingRotations(original, confirmed) {
   if (original.colors[4] !== confirmed.colors[4]) return /* @__PURE__ */ new Set();
@@ -2438,32 +2460,29 @@ function solvableReadings(faces, centreOwner) {
   }
   return [...seen].filter((e) => e[1] !== null);
 }
-function diagnose(faces, centreOwner, options = {}) {
-  const decoded = decodeMisread(faces, centreOwner, options);
-  if (decoded.kind === "unknown") return {};
-  if (decoded.kind === "beyond") return { misreadCount: decoded.distance + 1 };
-  const pointable = decoded.distance === 1 && decoded.unique && decoded.stickers.length === 1;
-  const suspects = pointable ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to })) : [];
-  const blamed = new Set(decoded.stickers.map((s) => s.face));
-  return {
-    misreadCount: decoded.distance,
-    ...suspects.length > 0 ? { suspects } : {},
-    ...blamed.size === 1 ? { misreadFace: [...blamed][0] } : {}
-  };
+function refusalDiagnosis(faces, options) {
+  if (options.diagnose === false) return { misreadCount: null };
+  return diagnoseMisread(faces, { fixedRotation: options.fixedRotation });
+}
+function checkedCapture(label, f) {
+  if (f?.colors.length !== 9 || f.confidence.length !== 9) {
+    throw new Error(`${label}: expected 9 colours + 9 confidences`);
+  }
+  for (const c of f.confidence) {
+    if (!Number.isFinite(c) || c < 0 || c > 1) {
+      throw new Error(`${label}: confidence ${c} is not a number in [0, 1]`);
+    }
+  }
+  return f;
 }
 function buildCentreOwner(faces) {
   const centreOwner = /* @__PURE__ */ new Map();
   for (const face of FACES) {
-    const f = faces[face];
-    if (!f || f.colors.length !== 9 || f.confidence.length !== 9) {
-      throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
-    }
-    for (const c of f.confidence) {
-      if (!Number.isFinite(c) || c < 0 || c > 1) {
-        throw new Error(`face ${face}: confidence ${c} is not a number in [0, 1]`);
-      }
-    }
+    const f = checkedCapture(`face ${face}`, faces[face]);
     const centre = f.colors[4];
+    if (!Number.isInteger(centre) || centre < 0 || centre >= FACES.length) {
+      return reject(`face ${face} has centre colour ${centre}, which is not one of the six`);
+    }
     if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
     centreOwner.set(centre, face);
   }
@@ -2478,7 +2497,7 @@ function summariseConfidence(conf, threshold) {
   });
   return { confidence: min, lowConfidence };
 }
-function assemblePainted(faces, threshold = 0.15) {
+function assemblePainted(faces, threshold = LOW_CONFIDENCE_THRESHOLD, options = {}) {
   const centreOwner = buildCentreOwner(faces);
   if (!(centreOwner instanceof Map)) return centreOwner;
   const letters = [];
@@ -2491,46 +2510,86 @@ function assemblePainted(faces, threshold = 0.15) {
   }
   const facelets = letters.join("");
   if (!isStructurallyValid(facelets) || !cubejsRoundTrips(facelets)) {
-    return reject("not a solvable cube yet", diagnose(faces, centreOwner, { fixedRotation: true }));
+    return reject(
+      "not a solvable cube yet",
+      refusalDiagnosis(faces, { ...options, fixedRotation: true })
+    );
   }
   const conf = FACES.flatMap((f) => faces[f].confidence);
   return { facelets, valid: true, ...summariseConfidence(conf, threshold) };
 }
-function assembleColors(faces, threshold = 0.15, confirmed = {}) {
+function narrowByConfirmations(faces, all, confirmed) {
+  const confirmedFaces = FACES.filter((f) => confirmed[f]);
+  const allowed = /* @__PURE__ */ new Map();
+  for (const face of confirmedFaces) {
+    const capture = checkedCapture(`confirmation of ${face}`, confirmed[face]);
+    const rots = matchingRotations(faces[face], capture);
+    if (rots.size === 0) {
+      return {
+        ok: false,
+        refusal: reject(
+          "that side read differently this time \u2014 checking again with the fresh read",
+          {
+            reread: face,
+            confirm: { face, up: TOP_NEIGHBOUR[face] }
+          }
+        )
+      };
+    }
+    allowed.set(face, rots);
+  }
+  const candidates = all.map(([fl, combos]) => [
+    fl,
+    combos.filter(
+      (c) => confirmedFaces.every((face) => allowed.get(face).has(c[FACES.indexOf(face)]))
+    )
+  ]).filter(([, combos]) => combos.length > 0);
+  if (candidates.length === 0) {
+    const last = confirmedFaces[confirmedFaces.length - 1];
+    return {
+      ok: false,
+      refusal: reject("those two looks disagree \u2014 one was held the wrong way up; try again", {
+        mismatch: true,
+        confirm: { face: last, up: TOP_NEIGHBOUR[last] }
+      })
+    };
+  }
+  return { ok: true, confirmedFaces, allowed, candidates };
+}
+function verifySurvivor(all, facelets, narrowed, confirmed) {
+  const { confirmedFaces, allowed } = narrowed;
+  const contradictions = (candidate) => confirmedFaces.filter((face) => {
+    const fi = FACES.indexOf(face);
+    return candidate.every((c) => !allowed.get(face).has(c[fi]));
+  }).length;
+  const weak = all.filter(([fl, c]) => fl !== facelets && contradictions(c) < 2);
+  if (weak.length === 0) return null;
+  const check = pickVerification(all.find(([fl]) => fl === facelets)[1], weak, confirmed);
+  if (check) {
+    return reject("one more look to be sure \u2014 a single look could be held wrong", {
+      confirm: check
+    });
+  }
+  return reject(
+    "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
+    {
+      ambiguous: true
+    }
+  );
+}
+function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
   const centreOwner = buildCentreOwner(faces);
   if (!(centreOwner instanceof Map)) return centreOwner;
   const all = solvableReadings(faces, centreOwner);
   if (all.length === 0) {
     return reject(
       "no orientation of the faces is solvable \u2014 a colour was misread",
-      diagnose(faces, centreOwner)
+      refusalDiagnosis(faces, options)
     );
   }
-  const confirmedFaces = FACES.filter((f) => confirmed[f]);
-  const allowed = /* @__PURE__ */ new Map();
-  for (const face of confirmedFaces) {
-    const rots = matchingRotations(faces[face], confirmed[face]);
-    if (rots.size === 0) {
-      return reject("that side read differently this time \u2014 checking again with the fresh read", {
-        reread: face,
-        confirm: { face, up: TOP_NEIGHBOUR[face] }
-      });
-    }
-    allowed.set(face, rots);
-  }
-  const candidates = all.map(([fl, combos2]) => [
-    fl,
-    combos2.filter(
-      (c) => confirmedFaces.every((face) => allowed.get(face).has(c[FACES.indexOf(face)]))
-    )
-  ]).filter(([, combos2]) => combos2.length > 0);
-  if (candidates.length === 0) {
-    const last = confirmedFaces[confirmedFaces.length - 1];
-    return reject("those two looks disagree \u2014 one was held the wrong way up; try again", {
-      mismatch: true,
-      confirm: { face: last, up: TOP_NEIGHBOUR[last] }
-    });
-  }
+  const narrowed = narrowByConfirmations(faces, all, confirmed);
+  if (!narrowed.ok) return narrowed.refusal;
+  const candidates = narrowed.candidates;
   if (candidates.length > 1) {
     const confirm = pickConfirm(candidates, confirmed);
     if (confirm) {
@@ -2545,23 +2604,8 @@ function assembleColors(faces, threshold = 0.15, confirmed = {}) {
     );
   }
   const [facelets, combos] = candidates[0];
-  const contradictions = (candidate) => confirmedFaces.filter((face) => {
-    const fi = FACES.indexOf(face);
-    return candidate.every((c) => !allowed.get(face).has(c[fi]));
-  }).length;
-  const weak = all.filter(([fl, c]) => fl !== facelets && contradictions(c) < 2);
-  if (weak.length > 0) {
-    const check = pickVerification(all.find(([fl]) => fl === facelets)[1], weak, confirmed);
-    if (check) {
-      return reject("one more look to be sure \u2014 a single look could be held wrong", {
-        confirm: check
-      });
-    }
-    return reject(
-      "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
-      { ambiguous: true }
-    );
-  }
+  const unverified = verifySurvivor(all, facelets, narrowed, confirmed);
+  if (unverified) return unverified;
   const chosen = combos[0];
   const conf = [];
   for (let fi = 0; fi < 6; fi++) {
@@ -2576,6 +2620,7 @@ function assembleColors(faces, threshold = 0.15, confirmed = {}) {
 }
 
 // src/onnx-postprocess.ts
+var MIN_STICKER_CONFIDENCE = 0.25;
 function decodeDetections(data, numClasses, numAnchors, confThreshold = 0.25) {
   const rows = 4 + numClasses;
   if (data.length < rows * numAnchors) {
@@ -2629,22 +2674,38 @@ function nms(dets, iouThreshold = 0.45) {
   }
   return kept;
 }
+var MAX_STEP = 2.5;
+var MAX_COLUMN_SPREAD = 3;
+var MAX_AREA_RATIO = 5;
 function toGrid(nine) {
   const byY = [...nine].sort((a, b) => a.cy - b.cy);
   const rows = [byY.slice(0, 3), byY.slice(3, 6), byY.slice(6, 9)].map(
     (r) => r.sort((a, b) => a.cx - b.cx)
   );
   const size = nine.reduce((s, d) => s + (d.w + d.h) / 2, 0) / 9;
+  const areas = nine.map((d) => d.w * d.h);
+  if (Math.max(...areas) > Math.min(...areas) * MAX_AREA_RATIO) return null;
   for (const row of rows) {
     if (Math.max(...row.map((d) => d.cy)) - Math.min(...row.map((d) => d.cy)) > size) return null;
   }
+  for (const c of [0, 1, 2]) {
+    const xs = rows.map((r) => r[c].cx);
+    if (Math.max(...xs) - Math.min(...xs) > size * MAX_COLUMN_SPREAD) return null;
+  }
   const rowY = rows.map((r) => r.reduce((s, d) => s + d.cy, 0) / 3);
   const colX = [0, 1, 2].map((c) => rows.reduce((s, r) => s + r[c].cx, 0) / 3);
-  if (rowY[1] - rowY[0] < size * 0.4 || rowY[2] - rowY[1] < size * 0.4) return null;
-  if (colX[1] - colX[0] < size * 0.4 || colX[2] - colX[1] < size * 0.4) return null;
+  const steps = [
+    rowY[1] - rowY[0],
+    rowY[2] - rowY[1],
+    colX[1] - colX[0],
+    colX[2] - colX[1]
+  ];
+  for (const step of steps) {
+    if (step < size * 0.4 || step > size * MAX_STEP) return null;
+  }
   return rows.flat();
 }
-function fitFace(dets, minConf = 0.25) {
+function fitFace(dets, minConf = MIN_STICKER_CONFIDENCE) {
   const good = dets.filter((d) => d.confidence >= minConf && d.classId >= 0 && d.classId < 6);
   if (good.length === 0) return { ok: false, reason: "NO_FACE" };
   if (good.length < 9) return { ok: false, reason: "PARTIAL_FACE" };
@@ -2662,6 +2723,17 @@ var IMG_SIZE = 640;
 var PAD = 114 / 255;
 function preprocess(frame, imgsz = IMG_SIZE) {
   const { data: src, width: w, height: h } = frame;
+  if (!Number.isInteger(imgsz) || imgsz <= 0) {
+    throw new Error(`preprocess: imgsz ${imgsz} is not a positive whole number of pixels`);
+  }
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
+    throw new Error(`preprocess: a frame of ${w}x${h} is not an image`);
+  }
+  if (src.length !== w * h * 4) {
+    throw new Error(
+      `preprocess: a ${w}x${h} RGBA frame is ${w * h * 4} bytes, but this one holds ${src.length}`
+    );
+  }
   const scale = imgsz / Math.max(w, h);
   const newW = Math.max(1, Math.round(w * scale));
   const newH = Math.max(1, Math.round(h * scale));
@@ -2699,10 +2771,17 @@ var DETECT_ROWS = 4 + NUM_CLASSES;
 function fitFromOutput(output, opts = {}) {
   const {
     numClasses = NUM_CLASSES,
-    confThreshold = 0.25,
+    confThreshold = MIN_STICKER_CONFIDENCE,
     iouThreshold = 0.45,
-    minConf = 0.25
+    minConf = MIN_STICKER_CONFIDENCE
   } = opts;
+  const expected = 4 + numClasses;
+  if (output.rows !== expected) {
+    const why = output.rows >= output.anchors ? ` \u2014 ${output.rows} rows against ${output.anchors} anchors is the transpose of a detect head` : "";
+    throw new Error(
+      `model output has ${output.rows} rows, not the ${expected} a ${numClasses}-class detect head produces${why}`
+    );
+  }
   const dets = nms(
     decodeDetections(output.data, numClasses, output.anchors, confThreshold),
     iouThreshold
@@ -2713,6 +2792,21 @@ function fitFromOutput(output, opts = {}) {
 // view/native-detector.ts
 var CUBE_VISION = "plugin:cube-vision|";
 var P = CUBE_VISION;
+var cameraClaim = 0;
+var claims = 0;
+var mayClose = (claim) => cameraClaim === 0 || cameraClaim === claim;
+var closing = Promise.resolve();
+var closesOut = 0;
+var opening = Promise.resolve();
+var opensOut = 0;
+function trackOpen(sent) {
+  opensOut++;
+  const settled = () => {
+    opensOut--;
+    if (opensOut === 0) opening = Promise.resolve();
+  };
+  opening = Promise.all([opening, sent.then(settled, settled)]);
+}
 var NativeDetector = class {
   /**
    * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`). This is the ONLY thing
@@ -2727,10 +2821,14 @@ var NativeDetector = class {
     this.invoke = invoke;
     this.computeUnits = computeUnits;
   }
+  invoke;
+  computeUnits;
   dev = null;
   loaded = false;
   /** Bumped by `stop()`, so an open still crossing the bridge knows it has been cancelled. */
   opening = 0;
+  /** This detector's most recent claim on the one native camera — see `cameraClaim`. */
+  claim = 0;
   get device() {
     return this.dev;
   }
@@ -2751,21 +2849,57 @@ var NativeDetector = class {
   async use(opts = {}) {
     const attempt = ++this.opening;
     const cancelled = () => attempt !== this.opening;
+    const claim = ++claims;
+    this.claim = claim;
+    cameraClaim = claim;
     const abort = () => {
-      void this.invoke(`${P}close_camera`).catch(() => {
-      });
+      this.closeCamera(claim);
       throw new DOMException("camera open superseded", "AbortError");
     };
-    await this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+    while (closesOut > 0) {
+      await closing;
+      if (cancelled()) abort();
+    }
+    cameraClaim = claim;
+    try {
+      const sent = this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+      trackOpen(sent);
+      await sent;
+    } catch (err) {
+      if (cameraClaim === claim) cameraClaim = 0;
+      throw err;
+    }
     if (cancelled()) abort();
-    const info = await this.invoke(`${P}current_camera`);
+    let info;
+    try {
+      info = await this.invoke(`${P}current_camera`);
+    } catch (err) {
+      this.dev = null;
+      this.closeCamera(claim);
+      throw err;
+    }
     if (cancelled()) abort();
     this.dev = info ?? { deviceId: opts.deviceId ?? "", label: "Camera" };
   }
+  /**
+   * Compile the model, ONCE.
+   *
+   * Two guards for one rule. `loaded` covers a second call after the first finished — which the
+   * page-level detector park makes ordinary, since a re-mounted panel asks its parked detector to
+   * load again and must not pay for a second CoreML/LiteRT compile. `loading` covers two calls
+   * that OVERLAP, which the panel's slow-load timeout can produce: without it both crossed the
+   * bridge and the plugin compiled twice.
+   */
+  loading = null;
   async load() {
     if (this.loaded) return;
-    await this.invoke(`${P}load_model`, { computeUnits: this.computeUnits });
-    this.loaded = true;
+    if (this.loading) return this.loading;
+    this.loading = this.invoke(`${P}load_model`, { computeUnits: this.computeUnits }).then(() => {
+      this.loaded = true;
+    }).finally(() => {
+      this.loading = null;
+    });
+    return this.loading;
   }
   async next() {
     const reply = await this.invoke(`${P}next_detection`);
@@ -2777,8 +2911,66 @@ var NativeDetector = class {
   stop() {
     this.opening++;
     this.dev = null;
-    void this.invoke(`${P}close_camera`).catch(() => {
-    });
+    this.closeCamera(this.claim);
+  }
+  /**
+   * Close the one native camera, if this claim is entitled to. See `cameraClaim`.
+   *
+   * Fire-and-forget, because releasing the camera must not make `stop()` async — the panel calls it
+   * from synchronous teardown, and there is nothing a caller could do with the answer. Not
+   * fire-and-FORGET, though, which is what it was: the close joins `closing`, so the next open
+   * waits for it rather than overtaking it.
+   */
+  closeCamera(claim) {
+    if (!mayClose(claim)) return;
+    cameraClaim = 0;
+    if (opensOut > 0) {
+      void opening.then(() => {
+        this.sendClose(claim);
+      });
+      return;
+    }
+    this.sendClose(claim);
+  }
+  /**
+   * Issue `close_camera` for `claim` — unless the claim has moved on while this close was held.
+   *
+   * A close that WAITED is a close whose reason may have expired: an attempt that claimed the
+   * camera meanwhile is about to own the lens, and sending this one now would be the very
+   * overtaking the wait exists to prevent, arriving one step later. Dropping it is safe because
+   * the claim was given back on the way in — the new owner's own `stop()` closes what it opened.
+   *
+   * The count and the call go out together, in one synchronous block, because that is what leaves
+   * no window for an open to check the count and be issued in between.
+   *
+   * A FAILURE IS SAID OUT LOUD (2026-09-05). This used to swallow it under the note that "the
+   * camera closes a tick later", which nothing implemented — nothing retries, so a rejected
+   * `close_camera` is a lens left on for the life of the process with no error anywhere. What IS
+   * true is that the claim is given back first, so the plugin is left closable: `mayClose` admits
+   * anyone once `cameraClaim` is 0, and the next `stop()` or `use()` issues a close that can
+   * succeed. That is the recovery, and it is worth nothing unless somebody knows to look, hence
+   * the warning.
+   */
+  sendClose(claim) {
+    if (!mayClose(claim)) return;
+    closesOut++;
+    const sent = this.invoke(`${P}close_camera`).then(
+      () => {
+      },
+      (err) => {
+        console.warn(
+          "[cubus] the native camera did not close \u2014 the lens may still be on until something opens or closes it again",
+          err
+        );
+      }
+    );
+    closing = Promise.all([
+      closing,
+      sent.then(() => {
+        closesOut--;
+        if (closesOut === 0) closing = Promise.resolve();
+      })
+    ]);
   }
 };
 function base64ToBuffer(b64) {
@@ -2802,10 +2994,18 @@ function decodeTensorResponse(input) {
     );
   }
   const data = new Float32Array(buf, 8, count);
-  return { data, anchors };
+  return { data, anchors, rows };
 }
 
 // src/camera.ts
+var FrameNotReadyError = class extends Error {
+  constructor() {
+    super("camera not ready: video has no dimensions yet");
+    this.name = "FrameNotReadyError";
+  }
+};
+var IDEAL_WIDTH = 1280;
+var IDEAL_HEIGHT = 720;
 async function listCameras() {
   const devices = await navigator.mediaDevices.enumerateDevices();
   return devices.filter((d) => d.kind === "videoinput").map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
@@ -2837,8 +3037,8 @@ async function openCamera(video, opts = {}, signal) {
   const videoConstraints = {};
   if (opts.deviceId) videoConstraints.deviceId = { exact: opts.deviceId };
   else if (opts.facingMode) videoConstraints.facingMode = opts.facingMode;
-  if (opts.width) videoConstraints.width = { ideal: opts.width };
-  if (opts.height) videoConstraints.height = { ideal: opts.height };
+  videoConstraints.width = { ideal: opts.width ?? IDEAL_WIDTH };
+  videoConstraints.height = { ideal: opts.height ?? IDEAL_HEIGHT };
   const stream = await navigator.mediaDevices.getUserMedia({
     video: videoConstraints,
     audio: false
@@ -2868,9 +3068,9 @@ async function openCamera(video, opts = {}, signal) {
       grab() {
         const w = video.videoWidth;
         const h = video.videoHeight;
-        if (w === 0 || h === 0) throw new Error("camera not ready: video has no dimensions yet");
-        canvas.width = w;
-        canvas.height = h;
+        if (w === 0 || h === 0) throw new FrameNotReadyError();
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
         ctx.drawImage(video, 0, 0, w, h);
         const img = ctx.getImageData(0, 0, w, h);
         return { data: img.data, width: img.width, height: img.height };
@@ -2886,6 +3086,7 @@ async function openCamera(video, opts = {}, signal) {
 // view/onnx-runtime.ts
 var ortByUrl = /* @__PURE__ */ new Map();
 var configuring = /* @__PURE__ */ new WeakMap();
+var configured = /* @__PURE__ */ new WeakMap();
 function serialise(ort, work) {
   const next = (configuring.get(ort) ?? Promise.resolve()).then(work, work);
   configuring.set(
@@ -2914,6 +3115,32 @@ var runtimeUrl = (url, proxied) => {
   const [addr = "", hash = ""] = url.split(/(?=#)/, 2);
   return `${addr}${addr.includes("?") ? "&" : "?"}cubus-runtime=proxied${hash}`;
 };
+var proxiedSiblingUrl = (url) => {
+  const match = /^([^?#]*?)([^/?#]+)(\?[^#]*)?(#.*)?$/.exec(url);
+  if (!match) return url;
+  const [, dir = "", file = "", query = "", hash = ""] = match;
+  const dot = file.lastIndexOf(".");
+  const named = dot > 0 ? `${file.slice(0, dot)}.proxied${file.slice(dot)}` : `${file}.proxied`;
+  return `${dir}${named}${query}${hash}`;
+};
+async function loadRuntime(ortUrl, proxied) {
+  if (!proxied) return loadOrt(ortUrl);
+  try {
+    return await loadOrt(runtimeUrl(ortUrl, true));
+  } catch (err) {
+    const sibling = proxiedSiblingUrl(ortUrl);
+    if (sibling === ortUrl) throw err;
+    try {
+      const ort = await loadOrt(sibling);
+      console.info(
+        `[cubus] the runtime's query-string identity did not load here \u2014 using ${sibling} instead`
+      );
+      return ort;
+    } catch {
+      throw err;
+    }
+  }
+}
 var GPU_BUDGET_MS = 400;
 var GPU_PROBE_RUNS = 2;
 var SOFTWARE_RENDERERS = [
@@ -2959,16 +3186,103 @@ function defaultThreadCount(isolated = typeof globalThis.crossOriginIsolated ===
   if (!isolated) return 1;
   return Math.max(1, Math.min(cores - 2, 6));
 }
-function gpuTookTheWork(ort) {
+function webgpuBackendLive(ort) {
   const webgpu = ort.env.webgpu;
-  if (typeof webgpu !== "object" || webgpu === null) return true;
+  if (typeof webgpu !== "object" || webgpu === null) return null;
   return Boolean(webgpu.device);
 }
-async function owning(session, work) {
+function webgpuQueue(ort) {
+  const device = ort.env.webgpu?.device;
+  const queue = device?.queue;
+  if (typeof queue !== "object" || queue === null) return null;
+  return typeof queue.submit === "function" ? queue : null;
+}
+var queueWatches = /* @__PURE__ */ new WeakMap();
+function watchQueue(queue) {
+  let watch = queueWatches.get(queue);
+  if (!watch) {
+    const original = Object.getOwnPropertyDescriptor(queue, "submit");
+    const submit = queue.submit;
+    const counters = /* @__PURE__ */ new Set();
+    const wrapper = function(...args) {
+      for (const counter2 of counters) counter2.n++;
+      return submit.apply(this, args);
+    };
+    try {
+      Object.defineProperty(queue, "submit", {
+        configurable: true,
+        writable: true,
+        enumerable: original?.enumerable ?? false,
+        value: wrapper
+      });
+    } catch {
+      return null;
+    }
+    watch = { wrapper, original, counters };
+    queueWatches.set(queue, watch);
+  }
+  const live = watch;
+  const counter = { n: 0 };
+  live.counters.add(counter);
+  let released = false;
+  return {
+    counter,
+    release() {
+      if (released) return;
+      released = true;
+      live.counters.delete(counter);
+      if (live.counters.size > 0) return;
+      queueWatches.delete(queue);
+      if (queue.submit !== live.wrapper) return;
+      if (live.original) Object.defineProperty(queue, "submit", live.original);
+      else delete queue.submit;
+    }
+  };
+}
+async function gpuRanTheGraph(ort, probe) {
+  const queue = webgpuQueue(ort);
+  const watch = queue ? watchQueue(queue) : null;
+  if (!watch) {
+    await probe();
+    return null;
+  }
   try {
-    return await work();
+    await probe();
+  } finally {
+    watch.release();
+  }
+  return watch.counter.n > 0;
+}
+async function bestTimedRun(probe) {
+  const hidden = () => globalThis.document?.visibilityState === "hidden";
+  if (hidden()) return null;
+  let wentHidden = false;
+  const noteHidden = () => {
+    if (hidden()) wentHidden = true;
+  };
+  globalThis.document?.addEventListener?.("visibilitychange", noteHidden);
+  let best = Number.POSITIVE_INFINITY;
+  let watched = true;
+  try {
+    for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
+      const started = performance.now();
+      await probe();
+      if (hidden() || wentHidden) watched = false;
+      else best = Math.min(best, performance.now() - started);
+    }
+  } finally {
+    globalThis.document?.removeEventListener?.("visibilitychange", noteHidden);
+  }
+  return watched && !hidden() && !wentHidden ? best : null;
+}
+async function owning(session, work) {
+  let owned = true;
+  try {
+    return await work(() => {
+      owned = false;
+    });
   } catch (err) {
-    await session.release().catch(() => {
+    if (owned) await session.release().catch(() => {
     });
     throw err;
   }
@@ -3010,33 +3324,56 @@ function validatedRun(ort, session, inputName, outputName) {
         `model output '${outputName}' holds ${out.data.length} floats, not the ${rows * anchors} its dims ${shape} promise`
       );
     }
-    return { data: out.data, anchors };
+    return { data: out.data, anchors, rows };
   };
+}
+async function createSession(ort, cfg) {
+  const { modelUrl, ortUrl, numThreads, wasmDir, gpu, executionProviders } = cfg;
+  return serialise(ort, async () => {
+    const first = configured.get(ort);
+    if (first && (first.numThreads !== numThreads || first.wasmPaths !== wasmDir)) {
+      throw new Error(
+        `the runtime at ${ortUrl} is already initialised with numThreads ${first.numThreads} and wasmPaths ${first.wasmPaths}; this runner asked for ${numThreads} and ${wasmDir}, which onnxruntime cannot change on a live module`
+      );
+    }
+    ort.env.wasm.numThreads = numThreads;
+    ort.env.wasm.proxy = !gpu;
+    ort.env.wasm.wasmPaths = wasmDir;
+    configured.set(ort, { numThreads, wasmPaths: wasmDir });
+    return ort.InferenceSession.create(modelUrl, {
+      executionProviders,
+      graphOptimizationLevel: "all"
+    });
+  });
 }
 async function createModelRunner(modelUrl, opts = {}) {
   const chosenHere = opts.executionProviders === void 0;
   const executionProviders = opts.executionProviders ?? await preferredProviders();
   const gpu = usesGpu(executionProviders);
   const ortUrl = opts.ortUrl ?? "./ort.mjs";
-  const ort = await loadOrt(runtimeUrl(ortUrl, !gpu));
-  const session = await serialise(ort, async () => {
-    ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
-    ort.env.wasm.proxy = !gpu;
-    ort.env.wasm.wasmPaths = opts.wasmPaths ?? "./";
-    return ort.InferenceSession.create(modelUrl, {
-      executionProviders,
-      graphOptimizationLevel: "all"
-    });
+  const ort = await loadRuntime(ortUrl, !gpu);
+  const numThreads = opts.numThreads ?? defaultThreadCount();
+  const wasmDir = opts.wasmPaths ?? "./";
+  const session = await createSession(ort, {
+    modelUrl,
+    ortUrl,
+    numThreads,
+    wasmDir,
+    // The proxy is OFF for the GPU path — see `createSession` for why that is not a compromise.
+    gpu,
+    executionProviders
   });
-  return owning(session, async () => {
-    if (gpu && chosenHere && !gpuTookTheWork(ort)) {
-      console.info(
-        "[cubus] WebGPU did not take this model \u2014 using the wasm runtime, off the page thread"
-      );
+  return owning(session, async (relinquish) => {
+    const rebuildOnWasm = async (why) => {
+      console.info(why);
+      relinquish();
       await session.release().catch(() => {
       });
       return createModelRunner(modelUrl, { ...opts, executionProviders: ["wasm"] });
-    }
+    };
+    const gpuVerdict = gpu && chosenHere ? webgpuBackendLive(ort) : null;
+    const notTheGpu = "[cubus] WebGPU did not take this model \u2014 using the wasm runtime, off the page thread";
+    if (gpuVerdict === false) return rebuildOnWasm(notTheGpu);
     const inputName = session.inputNames[0];
     const outputName = session.outputNames[0];
     if (!inputName || !outputName) throw new Error("model has no input/output tensor");
@@ -3044,29 +3381,24 @@ async function createModelRunner(modelUrl, opts = {}) {
     const side = inputSide(session);
     const probe = () => run(new Float32Array(3 * side * side), side);
     if (opts.warmUp ?? true) {
-      await probe();
-      const hidden = () => globalThis.document?.visibilityState === "hidden";
-      if (gpu && chosenHere && !hidden()) {
-        let best = Number.POSITIVE_INFINITY;
-        let watched = true;
-        for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
-          const started = performance.now();
-          await probe();
-          if (hidden()) watched = false;
-          else best = Math.min(best, performance.now() - started);
-        }
-        const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
-        if (watched && !hidden() && best > budget) {
-          console.info(
-            `[cubus] the GPU ran this model in ${Math.round(best)} ms \u2014 slower than the wasm runtime, so using that instead`
-          );
-          await session.release().catch(() => {
-          });
-          return createModelRunner(modelUrl, { ...opts, executionProviders: ["wasm"] });
-        }
+      const measured = await serialise(ort, async () => {
+        let ranOnGpu = null;
+        if (gpuVerdict === true) ranOnGpu = await gpuRanTheGraph(ort, probe);
+        else await probe();
+        if (ranOnGpu === false) return { ranOnGpu, best: null };
+        const best = gpu && chosenHere ? await bestTimedRun(probe) : null;
+        return { ranOnGpu, best };
+      });
+      if (measured.ranOnGpu === false) return rebuildOnWasm(notTheGpu);
+      const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
+      if (measured.best !== null && measured.best > budget) {
+        return rebuildOnWasm(
+          `[cubus] the GPU ran this model in ${Math.round(measured.best)} ms \u2014 slower than the wasm runtime, so using that instead`
+        );
       }
     }
-    return Object.assign(run, {
+    const serialised = (input, imgsz) => serialise(ort, () => run(input, imgsz));
+    return Object.assign(serialised, {
       dispose: () => session.release(),
       providers: executionProviders
     });
@@ -3087,29 +3419,176 @@ var WebDetector = class {
     this.video = video;
     this.modelUrl = modelUrl;
   }
+  video;
+  modelUrl;
   source = null;
   run = null;
+  /** The model URL `run` was built for — see `load`. */
+  loadedUrl = null;
+  /** A `load()` still in flight, so a second caller waits on it rather than building a rival. */
+  loading = null;
+  /** Which model URL that in-flight load is building — see `load`. */
+  loadingUrl = null;
+  /**
+   * Bumped by `dispose()`, so a load still in flight cannot install its runner afterwards.
+   *
+   * A discarded detector that adopts a late runner holds an InferenceSession — a wasm heap or a GPU
+   * device — that nothing can reach to release, which is the leak the whole park exists to close.
+   * It is reachable exactly where the park is: a panel that disconnects during the 1-5 s model load
+   * and a detector that loses the park race are both disposed with a load out.
+   */
+  loadGeneration = 0;
   opening = null;
   get device() {
     return this.source?.device ?? null;
   }
+  /**
+   * The model URL the installed runner was built for, or null when nothing is installed.
+   *
+   * Read off `run` and not off `loadedUrl` alone, so the answer cannot outlive the session it is
+   * about: `dispose()` clears both, but a future path that released the runner without clearing
+   * the URL would otherwise keep claiming a model this detector no longer holds — and this value
+   * is what `CameraSession.park()` hands to the next owner as permission to skip `load()`.
+   */
+  get loadedModel() {
+    return this.run ? this.loadedUrl : null;
+  }
+  /**
+   * The provider list the loaded runner was created with, or null before the model has loaded.
+   *
+   * What was ASKED FOR, which is what the timing fallback changes — never a claim about which
+   * provider executed each node. `ModelRunner.providers` documents the distinction at length.
+   * A provider may be given as an object with a name, so it is reduced to names here.
+   */
+  get providers() {
+    const run = this.run;
+    if (!run) return null;
+    return run.providers.map((p) => typeof p === "string" ? p : p.name);
+  }
+  /**
+   * Point this detector at a different owner's `<video>` and model URL.
+   *
+   * The park (see `pickDetector`) hands one detector to a second `<ai-scan-panel>` so the page
+   * keeps ONE InferenceSession across screen visits — and the getters this was built with close
+   * over the FIRST panel's shadow root. Without this the reused detector would open a camera into
+   * a detached video element nobody can see, which is a scan that works everywhere except on
+   * screen. `load()` notices the model URL changing on its own.
+   */
+  retarget(source) {
+    this.video = source.video;
+    this.modelUrl = source.modelUrl;
+  }
+  /**
+   * Open a camera, and install it only if this attempt is still the current one.
+   *
+   * THE COMPLETION BOUNDARY IS ITS OWN RACE (2026-09-05). `openCamera` releases the stream itself
+   * while it is still opening, so a `stop()` during the await was always safe — but once it has
+   * RESOLVED it has removed its abort listener, and the window between that resolution and this
+   * function resuming is a plain microtask nothing guarded. A `stop()` landing there aborted a
+   * controller nobody was listening to any more, found `source` still null, and returned; this then
+   * assigned the live stream onto a detector the caller had just stopped. The lens stayed on, the
+   * `Detector.use` contract ("a stop() while it is pending releases the camera and rejects") was
+   * broken in exactly the case it was written for, and nothing said so.
+   *
+   * `this.opening` is the identity to check, not merely the signal: every way to supersede this
+   * attempt — `stop()`, `dispose()`, a newer `use()` — goes through `stop()`, which both aborts
+   * this controller and clears the field. The signal is checked too because it costs nothing and
+   * the two are independent statements.
+   */
   async use(opts = {}) {
     this.stop();
-    const opening = new AbortController();
-    this.opening = opening;
+    const opening2 = new AbortController();
+    this.opening = opening2;
     try {
-      const source = await openCamera(this.video(), opts, opening.signal);
+      const source = await openCamera(this.video(), opts, opening2.signal);
+      if (this.opening !== opening2 || opening2.signal.aborted) {
+        source.stop();
+        throw new DOMException("camera open superseded", "AbortError");
+      }
       this.source = source;
     } finally {
-      if (this.opening === opening) this.opening = null;
+      if (this.opening === opening2) this.opening = null;
     }
   }
+  /**
+   * Load the model, ONCE per model URL.
+   *
+   * Two guards, and both are the same lesson from different directions — a session is the most
+   * expensive thing this class owns, so nothing may build a second one by accident:
+   *
+   *   - IN FLIGHT. `if (this.run) return` only catches a load that has FINISHED. Two overlapping
+   *     calls — the panel's slow-load timeout abandoning the wait and the user pressing Start —
+   *     both saw a null `run` and both created a session, and the first one to finish was then
+   *     unreachable for the life of the page.
+   *   - PER URL. A parked detector can be handed to an owner with a different `modelUrl`, and
+   *     returning early there would silently keep serving the previous owner's model. The old
+   *     runner is released before the new one is built.
+   *
+   * AND THE TWO HAVE TO BE ASKED TOGETHER (2026-09-05). The in-flight guard answered every caller
+   * with the pending promise whatever URL they had asked for, so the per-URL rule held only when
+   * nothing overlapped: `retarget()` to model B while A was still loading resolved SUCCESSFULLY
+   * with A installed, and `loadedUrl` then said A while the owner believed B. Reachable through the
+   * park, which is where a detector changes owner and model URL at once. A different URL waits for
+   * the load in flight and then starts its own — and re-asks, since by then the answer may have
+   * arrived or the target may have moved again.
+   *
+   * AND THE WAIT IS A PLACE A DETECTOR CAN DIE (2026-09-05). That queue re-enters this method after
+   * the await, at which point `loadModel` reads the generation AS IT IS THEN — so a `dispose()`
+   * while a load for B sat behind a load for A started B's session on a discarded detector and
+   * installed it, which is the very leak `loadGeneration` exists to close, arriving through the
+   * door the URL guard had just opened. The generation is therefore captured BEFORE the wait and
+   * re-checked after it, so a queued load is invalidated exactly as an in-flight one is. A `load()`
+   * called AFTER the dispose still starts a real one — that is a new caller, not a stale queue.
+   *
+   * AND THE IN-FLIGHT QUESTION IS ASKED FIRST (2026-09-05). The installed-model shortcut used to
+   * run before it, which reads as an obvious cheap-test-first ordering and is wrong in exactly the
+   * case the two guards were combined for: with A INSTALLED and B loading, a caller asking for A
+   * was told "already loaded" and returned — and B then replaced A underneath it, so the last
+   * caller to ask ended up on a model nobody had asked it for. What is installed is only an answer
+   * while nothing is about to change it, so the pending load is settled first and the shortcut is
+   * re-asked afterwards.
+   */
   async load() {
-    if (this.run) return;
     const modelUrl = this.modelUrl();
-    const wasmPaths = new URL(modelUrl.replace(/[^/]+$/, "") || "./", document.baseURI).href;
+    if (this.loading) {
+      if (this.loadingUrl === modelUrl) return this.loading;
+      const generation = this.loadGeneration;
+      await this.loading.catch(() => {
+      });
+      if (generation !== this.loadGeneration) return;
+      return this.load();
+    }
+    if (this.run && this.loadedUrl === modelUrl) return;
+    const pending = this.loadModel(modelUrl).finally(() => {
+      if (this.loading === pending) {
+        this.loading = null;
+        this.loadingUrl = null;
+      }
+    });
+    this.loading = pending;
+    this.loadingUrl = modelUrl;
+    return pending;
+  }
+  async loadModel(modelUrl) {
+    const generation = this.loadGeneration;
+    const outgoing = this.run;
+    if (outgoing) {
+      this.run = null;
+      this.loadedUrl = null;
+      await outgoing.dispose().catch(() => {
+      });
+      if (generation !== this.loadGeneration) return;
+    }
+    const wasmPaths = new URL(".", new URL(modelUrl, document.baseURI)).href;
     const ortUrl = `${wasmPaths}ort.mjs`;
-    this.run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+    const run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+    if (generation !== this.loadGeneration) {
+      void run.dispose().catch(() => {
+      });
+      return;
+    }
+    this.run = run;
+    this.loadedUrl = modelUrl;
   }
   async next() {
     if (!this.source) throw new Error("no camera open \u2014 call use() first");
@@ -3117,8 +3596,9 @@ var WebDetector = class {
     let frame;
     try {
       frame = this.source.grab();
-    } catch {
-      return null;
+    } catch (err) {
+      if (err instanceof FrameNotReadyError) return null;
+      throw err;
     }
     const pre = preprocess(frame);
     return this.run(pre.data, pre.imgsz);
@@ -3134,24 +3614,68 @@ var WebDetector = class {
   }
   dispose() {
     this.stop();
+    this.loadGeneration++;
+    this.loading = null;
+    this.loadingUrl = null;
     const run = this.run;
     this.run = null;
+    this.loadedUrl = null;
     void run?.dispose().catch(() => {
     });
   }
 };
 
 // view/pick-detector.ts
+var parked = null;
+function parkDetector(choice) {
+  choice.detector.stop();
+  if (parked && parked.detector !== choice.detector) {
+    choice.detector.dispose?.();
+    return;
+  }
+  parked = choice;
+}
+function parkedDetector() {
+  return parked;
+}
+function disposeParkedDetector() {
+  const kept = parked;
+  parked = null;
+  kept?.detector.dispose?.();
+  kept?.detector.stop();
+}
+var PROBE = `${CUBE_VISION}probe`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+var NOT_REGISTERED = [
+  // `Command plugin:cube-vision|probe not found`
+  new RegExp(`(?:^|\\s)(?:command\\s+)?${PROBE}\\s+not found\\b`, "i"),
+  // `unknown command: plugin:cube-vision|probe`
+  new RegExp(`unknown command:?\\s+${PROBE}\\b`, "i")
+];
 function absentCommand(err) {
   const text = typeof err === "string" ? err : err?.message ?? "";
-  return /not found|unknown command/i.test(text);
+  return NOT_REGISTERED.some((shape) => shape.test(text));
 }
 async function pickDetector(opts) {
+  const kept = parked;
+  if (kept) {
+    parked = null;
+    kept.detector.retarget?.(opts);
+    const wanted = opts.modelUrl();
+    if (kept.modelLoaded && kept.modelUrl !== wanted) {
+      return { detector: kept.detector, runtime: kept.runtime, modelLoaded: false, modelUrl: null };
+    }
+    return kept;
+  }
   const invoke = globalThis.__TAURI__?.core?.invoke;
   if (invoke) {
     try {
       if (await invoke(`${CUBE_VISION}probe`) === true) {
-        return { detector: new NativeDetector(invoke), runtime: "native" };
+        return {
+          detector: new NativeDetector(invoke),
+          runtime: "native",
+          modelLoaded: false,
+          modelUrl: null
+        };
       }
     } catch (err) {
       (absentCommand(err) ? console.info : console.warn)(
@@ -3160,20 +3684,59 @@ async function pickDetector(opts) {
       );
     }
   }
-  return { detector: new WebDetector(opts.video, opts.modelUrl), runtime: "web" };
+  return {
+    detector: new WebDetector(opts.video, opts.modelUrl),
+    runtime: "web",
+    modelLoaded: false,
+    modelUrl: null
+  };
 }
 
 // view/camera-session.ts
 var CameraSession = class {
   detectorPromise = null;
   detector = null;
+  /**
+   * Did this session's detector come from `pickDetector`, i.e. may it go back to the page's park?
+   *
+   * An INJECTED one may not. `use()` is the test seam and the native host's, and a fake handed in
+   * by one case must never reach a page-wide slot where the next case would be given it — the
+   * failure mode is a suite that passes alone and fails in a file.
+   */
+  parkable = false;
   timer = null;
   generation = 0;
   epoch = 0;
   /** Bumped by `use()`, so an injection beats a probe that is still in flight. See `use`. */
   detectorChoice = 0;
-  /** The `detector.use()` still in flight, so the next one queues behind it. See `open`. */
-  opening = null;
+  /**
+   * The open chain, and WHOSE it is.
+   *
+   * `tail` is the `detector.use()` still in flight, so the next one queues behind it (see `open`);
+   * `count` is how many `open()` calls are queued or inside the detector right now — a count and
+   * not a boolean, because the chain serialises opens rather than rejecting them and three can be
+   * waiting at once. `park()` is the only reader of the count; see there for why handing the
+   * detector to the page while one is still out makes a cross-owner camera kill possible.
+   *
+   * KEYED ON THE DETECTOR, because an ordering constraint between two DIFFERENT detectors is not
+   * one (2026-09-05). The chain outlived the object it was about, so a `use()` that replaced the
+   * detector — the test seam, and the native host's — left the new one queued behind the old one's
+   * pending permission prompt, which a user who never answers leaves pending forever. The
+   * replacement is discarded and stopped by then, so there is nothing left for its queue to order:
+   * a new detector starts a new chain, and the old links still decrement the record they were
+   * registered on rather than an unrelated counter.
+   */
+  opens = null;
+  /**
+   * The owner's model-URL getter, kept as the FALLBACK label for a runtime that has no URL.
+   *
+   * `modelLoaded` on its own is a claim with no subject, and the park is where the subject changes
+   * — see `DetectorChoice.modelUrl`. This used to BE the subject, read at park time, and that was
+   * the defect: it is the URL the owner is asking for NOW, which is not the one that was compiled.
+   * See `modelHeldBy`, which asks the detector instead and falls back to this only where the
+   * detector answers to no URL at all.
+   */
+  modelUrlOf = null;
   /** Which backend was chosen. Read by the panel purely to report it. */
   runtime = null;
   /** The open camera, or null. Null is also how the panel knows to stop showing a lens. */
@@ -3227,28 +3790,113 @@ var CameraSession = class {
     this.stopLoop();
     this.detectorChoice++;
     this.detector = detector;
+    this.parkable = false;
     this.detectorPromise = Promise.resolve(detector);
     this.runtime = runtime;
     this.modelLoaded = false;
     this.device = null;
   }
   /**
+   * Hand the detector back to the page, so the next mount reuses its session and its model.
+   *
+   * Called when the OWNER goes away — `<ai-scan-panel>`'s disconnectedCallback — and not from
+   * `close()`, which runs on every `stop()` and would give the detector away while the same panel
+   * still intends to scan with it. `parkDetector` stops the camera; the model survives.
+   *
+   * The session forgets it either way: a parked detector is no longer this session's to drive, and
+   * a later `ensureDetector()` must ask the page for one afresh rather than resolve a promise
+   * holding the one it gave back. Forgetting includes BUMPING `detectorChoice`: clearing
+   * `detectorPromise` alone left a `pickDetector` probe still in flight free to land afterwards and
+   * install its detector on a session that has already given its one away — and `chosen` and the
+   * cached promise then pointed at different objects, with the loser's camera and model held by
+   * nothing that could release them. (2026-09-05.)
+   *
+   * THE HANDOVER WAITS FOR THE OPEN. `close()` above supersedes this session's attempts, so a
+   * `detector.use()` still inside the detector will call `detector.stop()` on its way out — see
+   * `open`'s finally, which is right while this session owns the detector and catastrophic once it
+   * does not. Hand it to the page immediately and the next `<ai-scan-panel>` can take it, open its
+   * camera, and have the old link's cleanup close the lens under it. Nothing in the chain is a
+   * cross-session ordering constraint — each session has its own — so the wait is the only thing
+   * that can express one. The cost when it fires is a park that lands late, so a re-mount inside
+   * that window builds its own detector rather than reusing this one; a rebuilt session is a cost,
+   * a camera killed by its predecessor is a fault.
+   */
+  park() {
+    this.close();
+    const detector = this.detector;
+    const parkable = this.parkable;
+    this.detector = null;
+    this.detectorPromise = null;
+    this.detectorChoice++;
+    this.parkable = false;
+    const runtime = this.runtime;
+    const modelLoaded = this.modelLoaded;
+    const modelUrl = modelLoaded && detector ? this.modelHeldBy(detector) : null;
+    this.modelLoaded = false;
+    this.modelUrlOf = null;
+    if (!(detector && parkable && runtime)) return;
+    const queue = detector && this.opens?.detector === detector ? this.opens : null;
+    this.opens = null;
+    const handOver = () => parkDetector({ detector, runtime, modelLoaded, modelUrl });
+    if (!queue || queue.count === 0) handOver();
+    else void queue.tail.then(handOver, handOver);
+  }
+  /**
+   * WHICH model the detector actually holds — asked of the DETECTOR, which is the only thing that
+   * knows (2026-09-05).
+   *
+   * `park()` used to read the owner's `modelUrl` getter here, and that is a different fact wearing
+   * the same name: it is the URL this panel is asking for at the moment it disconnects, not the one
+   * that was compiled into the session. The two come apart in exactly the place the park matters —
+   * a host that changes its `model-url` attribute after the load — and the failure is silent:
+   * model A was parked under B's name, `pickDetector` compared B against B, and the next mount was
+   * told its model was ready while what is compiled is A. A wrong model produces readings, not
+   * errors. Reproduced.
+   *
+   * `undefined` from the detector is "I do not answer to a URL", and only there does the owner's
+   * getter stand in: the native plugin resolves and compiles the bundled model itself, so its
+   * identity cannot disagree with itself and the URL is a label rather than a claim. `null` is the
+   * detector saying it holds nothing, and is passed through as that.
+   */
+  modelHeldBy(detector) {
+    const stated = detector.loadedModel;
+    return stated === void 0 ? this.modelUrlOf?.() ?? null : stated;
+  }
+  /**
    * The detector, chosen once and kept for the session's life, so the model survives a stop()/
    * start() and the native probe runs only once. Cached as a promise because the choice is async.
+   *
+   * AND `modelLoaded` IS RE-ASKED EVERY TIME, because it is a claim about a MODEL and this is
+   * where the model can change (2026-09-05). The park had this covered — `pickDetector` compares
+   * the parked URL against the new owner's — but the cached path had nothing: the same owner
+   * re-pointing its `model-url` between a stop and a start kept a flag that was about the previous
+   * URL, so the panel skipped `load()` and scanned model A while every screen said B. A wrong
+   * model produces readings, not errors. Same comparison as the park's, for the same reasons: the
+   * detector is asked (`modelHeldBy`), the strings are compared as the owners' getters produce
+   * them, and a false mismatch costs one call to an idempotent `load()` while a false match costs
+   * the scan.
    */
   ensureDetector(video, modelUrl) {
+    this.modelUrlOf = modelUrl;
+    if (this.modelLoaded && this.detector && this.modelHeldBy(this.detector) !== modelUrl()) {
+      this.modelLoaded = false;
+    }
     if (this.detectorPromise === null) {
       const choice = this.detectorChoice;
-      this.detectorPromise = pickDetector({ video, modelUrl }).then(({ detector, runtime }) => {
-        if (choice !== this.detectorChoice) {
-          detector.dispose?.();
-          detector.stop();
-          return this.detector ?? detector;
+      this.detectorPromise = pickDetector({ video, modelUrl }).then(
+        ({ detector, runtime, modelLoaded }) => {
+          if (choice !== this.detectorChoice) {
+            detector.dispose?.();
+            detector.stop();
+            return this.detector ?? detector;
+          }
+          this.detector = detector;
+          this.parkable = true;
+          this.runtime = runtime;
+          this.modelLoaded = modelLoaded;
+          return detector;
         }
-        this.detector = detector;
-        this.runtime = runtime;
-        return detector;
-      });
+      );
     }
     return this.detectorPromise;
   }
@@ -3260,7 +3908,7 @@ var CameraSession = class {
   /** Stop ticking. Does not touch the camera — `restart` keeps the lens alive on purpose. */
   stopLoop() {
     if (this.timer !== null) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
   }
@@ -3272,11 +3920,30 @@ var CameraSession = class {
    * `dropFramesInFlight()` the one caller had to remember alongside this, which is a two-call
    * protocol enforced by nothing: a second caller restarting the loop directly would make an
    * inference from the previous loop pass `freshFrame` again the instant the new timer existed.
+   *
+   * A RE-ARMED TIMEOUT, not an interval, because the cadence is a function rather than a constant:
+   * the panel ticks as fast as the runtime it actually got can answer, and that is known only
+   * after the first inference. `setInterval` fixes its period when it is created, so following a
+   * measurement would have meant tearing the loop down and rebuilding it on every change — which
+   * bumps the epoch, and an epoch bump mid-scan discards the inference in flight.
+   *
+   * Re-armed BEFORE the tick runs, so a `stopLoop()` from inside the tick — `scheduleCheck` does
+   * exactly that — clears the timer that was just set instead of being overwritten by it.
    */
-  beginLoop(ms, tick) {
+  beginLoop(delay, tick) {
     this.stopLoop();
     this.epoch++;
-    this.timer = setInterval(tick, ms);
+    const next = typeof delay === "function" ? delay : () => delay;
+    const arm = () => {
+      this.timer = setTimeout(
+        () => {
+          arm();
+          tick();
+        },
+        Math.max(1, next())
+      );
+    };
+    arm();
   }
   /** Supersede everything in flight, stop ticking, and release the camera. */
   close() {
@@ -3314,7 +3981,13 @@ var CameraSession = class {
    * with the lens on and the app reporting no device.
    */
   async open(detector, opts, token) {
+    if (this.opens?.detector !== detector) {
+      this.opens = { detector, tail: Promise.resolve(), count: 0 };
+    }
+    const queue = this.opens;
+    queue.count++;
     const run = async () => {
+      if (!this.current(token)) return { fellBack: false };
       try {
         await detector.use(opts);
         return { fellBack: false };
@@ -3327,12 +4000,140 @@ var CameraSession = class {
         if (!this.current(token)) detector.stop();
       }
     };
-    const chained = (this.opening ?? Promise.resolve()).then(run, run);
-    this.opening = chained.then(
+    const chained = queue.tail.then(run, run);
+    queue.tail = chained.then(
       () => void 0,
       () => void 0
     );
+    const done = () => {
+      queue.count--;
+    };
+    void chained.then(done, done);
     return chained;
+  }
+};
+
+// view/misread-protocol.ts
+function handleMisreadRequest(request) {
+  return {
+    epoch: request.epoch,
+    diagnosis: diagnoseMisread(request.faces, { fixedRotation: request.fixedRotation })
+  };
+}
+
+// view/misread-client.ts
+function snapshot(request) {
+  const faces = {};
+  for (const face of FACES) faces[face] = { colors: [...request.faces[face].colors] };
+  return { epoch: request.epoch, faces, fixedRotation: request.fixedRotation };
+}
+var MisreadDecoder = class {
+  worker = null;
+  /** Set once a worker has proved it cannot be had at all, so no later request builds another. */
+  broken = false;
+  /** Whether the current worker has ever answered — the test that makes `broken` safe to set. */
+  spoke = false;
+  /** The request the worker is actually decoding, or null when it is idle. See `request`. */
+  running = null;
+  /** The one request waiting for it to come free. A newer ask REPLACES this. See `request`. */
+  queued = null;
+  /**
+   * Ask for `request`'s diagnosis.
+   *
+   * Returns the answer outright when this page has nowhere else to run it — in which case
+   * `answer` is never called and the caller already has everything. Returns null when a worker
+   * took the request, and `answer` runs AT MOST once, later, with the reply for this epoch.
+   *
+   * AT MOST, not exactly (corrected 2026-09-05, having been the stronger claim since this class
+   * was written). Three things drop a callback, and all three are deliberate: a newer ask replaces
+   * one that has not been posted yet (see below); `dispose()` gives the worker back and forgets
+   * what it was holding; and a worker failure answers only the LATEST of the two it was carrying,
+   * because the other is already about a cube that is gone. Every one of them means the answer
+   * would have been discarded on arrival for its epoch anyway — so a caller must not treat this
+   * callback as the thing that CLEARS a "checking…" marker on its own. `ai-scan-panel` does not:
+   * every site that supersedes a reading bumps `diagnosisEpoch` and republishes.
+   *
+   * The request is SNAPSHOT here, not held by reference — see `snapshot`.
+   */
+  request(request, answer) {
+    const worker = this.spawn();
+    if (!worker) return handleMisreadRequest(request);
+    this.queued = { request: snapshot(request), answer };
+    this.dispatch();
+    return null;
+  }
+  /** Give the worker back. A decoder is usable again afterwards; it simply spawns a new one. */
+  dispose() {
+    this.worker?.terminate();
+    this.worker = null;
+    this.spoke = false;
+    this.running = null;
+    this.queued = null;
+  }
+  /**
+   * Post the waiting ask, if the worker is free to take it.
+   *
+   * Guarded on `running` rather than called only from the idle path, because `answer` may ask for
+   * another decode re-entrantly — the panel republishes on a reply, and a host may correct a
+   * sticker from that — and two posts in flight is exactly the backlog this class exists to avoid.
+   */
+  dispatch() {
+    if (this.running !== null || this.queued === null || this.worker === null) return;
+    const next = this.queued;
+    this.queued = null;
+    this.running = next;
+    this.worker.postMessage(next.request);
+  }
+  spawn() {
+    if (this.worker) return this.worker;
+    if (this.broken || typeof Worker === "undefined") return null;
+    try {
+      const spawned = new Worker(new URL("./misread-worker.js", import.meta.url), {
+        type: "module"
+      });
+      spawned.addEventListener("message", (ev) => {
+        if (this.worker !== spawned) return;
+        this.spoke = true;
+        this.deliver(ev.data);
+      });
+      spawned.addEventListener("error", (ev) => {
+        if (this.worker !== spawned) return;
+        this.failed(ev);
+      });
+      this.worker = spawned;
+      return spawned;
+    } catch (cause) {
+      console.warn(
+        "misread-client: the decoder worker could not be built, so it runs on this thread",
+        cause
+      );
+      this.broken = true;
+      return null;
+    }
+  }
+  deliver(reply) {
+    const waiting = this.running;
+    if (!waiting || waiting.request.epoch !== reply.epoch) return;
+    this.running = null;
+    try {
+      waiting.answer(reply);
+    } finally {
+      this.dispatch();
+    }
+  }
+  failed(cause) {
+    if (!this.spoke) this.broken = true;
+    console.warn(
+      "misread-client: the decoder worker failed, so the reading is checked on this thread",
+      cause
+    );
+    this.worker?.terminate();
+    this.worker = null;
+    this.spoke = false;
+    const stranded = this.queued ?? this.running;
+    this.running = null;
+    this.queued = null;
+    if (stranded) stranded.answer(handleMisreadRequest(stranded.request));
   }
 };
 
@@ -3346,6 +4147,8 @@ var Stillness = class {
     this.reads = reads;
     this.ms = ms;
   }
+  reads;
+  ms;
   /**
    * The read the current run is made of, or null when there is no run.
    *
@@ -3357,6 +4160,10 @@ var Stillness = class {
   key = null;
   count = 0;
   since = 0;
+  /** The colours of the run's read, kept so a broken run can be told WHERE it broke. */
+  colors = null;
+  /** Per position, how many times a run has been broken by that position alone. */
+  breaks = /* @__PURE__ */ new Map();
   /**
    * Offer the latest read. True once it has been identical `reads` times AND still for `ms`.
    *
@@ -3373,17 +4180,47 @@ var Stillness = class {
     if (key === this.key) {
       this.count += 1;
     } else {
+      const previous = this.colors;
+      if (previous && previous.length === colors.length) {
+        const differing = [];
+        for (let i = 0; i < colors.length && differing.length < 2; i++) {
+          if (colors[i] !== previous[i]) differing.push(i);
+        }
+        const only = differing.length === 1 ? differing[0] : void 0;
+        if (only !== void 0) this.breaks.set(only, (this.breaks.get(only) ?? 0) + 1);
+      }
       this.key = key;
+      this.colors = [...colors];
       this.count = 1;
       this.since = now;
     }
     return this.count >= this.reads && now - this.since >= this.ms;
   }
+  /**
+   * The one position that keeps breaking the run on its own, or null.
+   *
+   * `atLeast` breaks before it is reported, so a single unlucky frame is not narrated at the user.
+   * When several positions qualify the noisiest wins — naming one sticker is the whole value, and
+   * a list of three is the same "hold still" with more words.
+   */
+  flickering(atLeast = 3) {
+    let best = null;
+    let most = atLeast - 1;
+    for (const [index, count] of this.breaks) {
+      if (count > most) {
+        most = count;
+        best = index;
+      }
+    }
+    return best;
+  }
   /** Forget the current run — the cube left the frame, or the scan was restarted. */
   reset() {
     this.key = null;
+    this.colors = null;
     this.count = 0;
     this.since = 0;
+    this.breaks.clear();
   }
 };
 
@@ -3402,17 +4239,48 @@ var FRAME_HINT = {
   PARTIAL_FACE: " Get the whole side in the frame.",
   BAD_GEOMETRY: " Hold it flatter and steadier."
 };
-var TICK_MS_WEB = 200;
-var TICK_MS_NATIVE = 60;
+var TICK_FLOOR_MS = 60;
 var STABLE = 3;
 var STABLE_MS = 500;
 var TICK_FAIL_MS = 3e3;
+var INFERENCE_TIMEOUT_MS = 15e3;
 var CHECK_BEAT_MS = 350;
 var OPENING = "Show any side to the camera \u2014 held flat and centred.";
 var PAINTING = "Painting by hand \u2014 tap any sticker and pick its colour.";
 var SLOW_OPEN_MS = 8e3;
 var SLOW_OPEN = "The camera has not opened. Allow camera access for this app, then try again.";
 var PINNED_GONE = "The camera you chose is unavailable \u2014 using the default one.";
+var SLOW_LOAD_MS = 8e3;
+var LOAD_TIMEOUT_MS = 6e4;
+var CELL_NAMES = [
+  "top left",
+  "top middle",
+  "top right",
+  "middle left",
+  "centre",
+  "middle right",
+  "bottom left",
+  "bottom middle",
+  "bottom right"
+];
+function cameraRefusalWords(name) {
+  switch (name) {
+    case "NotAllowedError":
+    case "SecurityError":
+      return "The camera is blocked for this app. Allow the camera in your browser or system settings, then press Start.";
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+      return "No camera was found. Plug one in or connect one, then press Start. You can also paint the cube by hand.";
+    case "NotReadableError":
+    case "TrackStartError":
+      return "Another app is using the camera. Close it \u2014 a video call is the usual one \u2014 then press Start.";
+    case "OverconstrainedError":
+    case "ConstraintNotSatisfiedError":
+      return "That camera cannot be used for scanning. Press Start to try the default one instead.";
+    default:
+      return null;
+  }
+}
 var TEMPLATE = `
 <style>
   :host { display: block; font: 14px/1.5 -apple-system, system-ui, sans-serif; color: #e6edf3; }
@@ -3456,12 +4324,23 @@ var HEADLESS_TEMPLATE = `
 </style>
 <video id="video" playsinline muted></video>
 `;
+var announced = /* @__PURE__ */ new WeakSet();
 var AiScanPanel = class extends HTMLElement {
   root;
   /** Model URL; the app can override before the element renders. */
   modelUrl = "./vendor/cube-yolo.onnx";
-  /** A tick is mid-inference; the next one returns rather than running two at once. */
-  busy = false;
+  /**
+   * The frame EPOCH of the tick that is mid-inference, or null when none is.
+   *
+   * A number rather than a flag, because the flag outlived the thing it was guarding. An inference
+   * that never settles left it set for the life of the page: `stop()` and `start()` bump the epoch
+   * and rebuild the loop, but the flag survived both, so every tick of the new scan returned at the
+   * first line and the scanner could not be recovered by anything short of a reload. Scoped to the
+   * epoch, a stale inference blocks only the scan it belongs to — and the `finally` below clears
+   * the guard only when it is still the one it set, so an abandoned tick landing late cannot let a
+   * second inference into the current epoch.
+   */
+  busy = null;
   /** `headless`: draw nothing, and let the host draw from 'scan-progress'. */
   headless = false;
   faces = {};
@@ -3485,6 +4364,39 @@ var AiScanPanel = class extends HTMLElement {
   cam = new CameraSession();
   /** When the current run of failing ticks began, or null when the last tick completed. */
   tickFailingSince = null;
+  /**
+   * When the current run of frameless ticks began, or null when a frame last arrived.
+   *
+   * A SECOND clock, because "the tick threw" and "the tick answered, with no frame" are different
+   * facts and only one of them was watched. A camera that opens and never delivers answers every
+   * tick with `null` — which cleared the failure clock above, on the reasoning that a tick which
+   * got an answer at all is a working scanner. It is not: the panel idled on "Show any side" for
+   * as long as the screen was open, with a live lens and nothing to say. Both clocks route to the
+   * same `tickFail`, whose wording ("the camera opened but no frame could be read") was already
+   * describing this case while being unreachable from it.
+   */
+  noFrameSince = null;
+  /** How long the last inference took, so the tick can follow the runtime — see TICK_FLOOR_MS. */
+  lastInferenceMs = 0;
+  /**
+   * Faces whose rotation is KNOWN to be the canonical one — painted in place, or settled by an
+   * accepted scan (`finishAccepted` rotates the captures and then says so here).
+   *
+   * A camera capture is at whatever rotation the user held the side, and nothing about the capture
+   * itself says which. Two places need that distinction and both were getting it wrong:
+   * hand-painting, which edits stickers by index and therefore cannot edit a face whose index
+   * mapping is unknown; and a re-check after a settle, which was searching 4^6 rotations it had
+   * already solved and asking for confirmations all over again.
+   */
+  settled = /* @__PURE__ */ new Set();
+  /**
+   * What `loop()` was about to say when it found the camera dark, so `start()` can say it once the
+   * lens answers. Without this the instruction was simply lost: `rescanFace` says "Show the ORANGE
+   * side again", a finished scan has released the camera, and the reopen replaced that sentence
+   * with "Opening the camera…" and then the generic idle line — so the one side the scanner was
+   * waiting for was never named.
+   */
+  pendingOpening = null;
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
   confirmed = {};
   awaiting = null;
@@ -3502,10 +4414,36 @@ var AiScanPanel = class extends HTMLElement {
   finished = false;
   /** The pinned explanation riding on every report; null when nothing needs saying. */
   notice = null;
+  /**
+   * The notice a CAMERA OR STARTUP FAILURE pinned, so a start that works can take exactly it down.
+   *
+   * A notice stands until the situation changes, and a working scanner IS the situation changing —
+   * but nothing cleared these three ("The camera did not open", "The model did not load", "The
+   * scanner stopped"), so a user who pressed Start again and got a live camera and a running scan
+   * kept reading that the scanner had stopped. The transient status line said one thing and the
+   * pinned sentence the opposite, which is the state this field exists to make impossible.
+   *
+   * Held BY IDENTITY rather than as a flag: the clear only fires if the notice on screen is still
+   * the very object the failure pinned, so a refusal, a confirm request, or any other guidance
+   * raised in between is left exactly where it is. Capture guidance is not a camera fault and must
+   * survive a restart.
+   */
+  cameraFault = null;
   /** Where a colour misread most plausibly is; rides on every report so a host can mark them. */
   suspects = [];
   /** The pending deferred assembly (see CHECK_BEAT_MS); epoch-guarded and cleared on stop(). */
   checkTimer = null;
+  /** The misread decode, off this thread where the page has one to spare. */
+  misread = new MisreadDecoder();
+  /**
+   * Serial number of the READING a diagnosis is about.
+   *
+   * Bumped by everything that re-decides the verdict — a capture, a correction, a paint stroke, a
+   * mode change, a restart — so an answer that arrives seconds later can be recognised as being
+   * about a cube that is no longer on screen. Not the camera's `frameEpoch`: that moves when the
+   * camera does, and a tap on a sticker changes the reading without touching the camera at all.
+   */
+  diagnosisEpoch = 0;
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
@@ -3523,6 +4461,44 @@ var AiScanPanel = class extends HTMLElement {
   }
   disconnectedCallback() {
     this.stop();
+    this.cam.park();
+    this.dropDiagnosis();
+    this.misread.dispose();
+  }
+  /**
+   * Everything decided about the current reading is stale from here on.
+   *
+   * A diagnosis in flight is about the six faces AS THEY WERE when it was posted, and the decode
+   * that produces it can take seconds; bumping the epoch is what stops that answer landing on top
+   * of a cube the user has since corrected, re-shown or thrown away. Called from every site that
+   * clears `suspects` — those are exactly the moments the verdict is re-opened.
+   */
+  dropDiagnosis() {
+    this.diagnosisEpoch++;
+  }
+  /**
+   * The reading has changed: everything decided ABOUT it is void.
+   *
+   * One operation, because it always was one and was written out three times — `rescanFace`,
+   * `setSticker` and `reset` each carried the same seven lines, and the panel's state is coupled
+   * enough that a caller which remembers six of them leaves a real defect: a confirmation that
+   * answers a question about a reading that no longer exists, a suspect list pointing at stickers
+   * that have moved, a `finished` that keeps the Solve button lit over a cube the panel is about
+   * to refuse. Every one of those has been a bug here.
+   *
+   * What is NOT here is deliberate: the captures themselves, the rotations, and the dots. Which
+   * sides survive an invalidation is exactly what distinguishes its three callers — a rescan drops
+   * one face, a reset drops all six, a correction drops none — so folding that in would make this
+   * a switch on its caller rather than an operation.
+   */
+  invalidateReading() {
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
+    this.finished = false;
+    this.notice = null;
+    this.suspects = [];
+    this.dropDiagnosis();
   }
   /**
    * Why the camera must not open right now — one answer, consulted by every entry point.
@@ -3610,19 +4586,96 @@ var AiScanPanel = class extends HTMLElement {
       if (startBtn) startBtn.hidden = true;
       if (!this.cam.modelLoaded) {
         this.report("loading", "Camera ready \u2014 loading the model\u2026");
-        await detector.load();
-        this.cam.modelLoaded = true;
+        await this.loadModel(detector, gen);
         if (!this.cam.current(gen)) return;
+        this.cam.modelLoaded = true;
+        this.announceRuntime(detector);
       }
-      const phase = this.awaiting ? "confirm" : "scanning";
-      const opening = this.awaiting ? this.confirmWords(this.awaiting) : [OPENING];
-      if (fellBack) this.loop(phase, this.tinted("err", PINNED_GONE), " ", ...opening);
-      else this.loop(phase, ...opening);
+      this.clearCameraFault();
+      const pending = this.pendingOpening;
+      this.pendingOpening = null;
+      const phase = pending?.phase ?? (this.awaiting ? "confirm" : "scanning");
+      const opening2 = pending?.words ?? (this.awaiting ? this.confirmWords(this.awaiting) : [OPENING]);
+      if (fellBack) this.loop(phase, this.tinted("err", PINNED_GONE), " ", ...opening2);
+      else this.loop(phase, ...opening2);
     } catch (err) {
       this.startFailed(err, gen, startBtn);
     } finally {
       clearTimeout(slowOpen);
     }
+  }
+  /**
+   * Wait for the model, but not forever, and say so while waiting.
+   *
+   * The load is a multi-megabyte fetch plus a compile, so several seconds is normal and a minute
+   * on a bad connection is not a fault. What was wrong is that there was no upper bound at all: a
+   * stalled fetch left "Camera ready — loading the model…" standing for the life of the screen,
+   * with the lens on and no control to press, which is the shape of a hung app rather than of a
+   * slow one.
+   *
+   * The timeout ABANDONS THE WAIT, not the load — `Detector.load` is idempotent and now guards its
+   * own in-flight promise, so a load that eventually finishes is still there for the next Start
+   * rather than being started a second time.
+   *
+   * EVERY WRITE TO `notice` HERE IS GENERATION-GUARDED (2026-09-05). This attempt's load can settle
+   * long after a stop() or a newer start() — a minute later, in the timeout's case — and the notice
+   * is the panel's one pinned sentence, so a superseded attempt writing to it replaces whatever the
+   * CURRENT state is saying: "the model did not load" over a scanner that is running, or a cleared
+   * notice over a camera refusal the user still needs to read. It is the same rule the rest of
+   * start() follows, and this method was the one place that did not.
+   */
+  async loadModel(detector, gen) {
+    let waiting = false;
+    const slow = setTimeout(() => {
+      if (!this.cam.current(gen) || this.cam.modelLoaded) return;
+      waiting = true;
+      this.notice = {
+        title: "The model is taking a while",
+        tone: "info",
+        body: "The scanner downloads its model once, and this connection is slow. It will start on its own when the download finishes \u2014 or paint the cube by hand instead."
+      };
+      this.report("loading", "Still loading the model\u2026");
+    }, SLOW_LOAD_MS);
+    let timer;
+    let timedOut = false;
+    try {
+      await Promise.race([
+        detector.load(),
+        new Promise((_resolve, reject2) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            reject2(
+              new Error(
+                `the model did not load within ${Math.round(LOAD_TIMEOUT_MS / 1e3)} seconds`
+              )
+            );
+          }, LOAD_TIMEOUT_MS);
+        })
+      ]);
+      if (waiting && this.cam.current(gen)) this.notice = null;
+    } catch (err) {
+      if (!this.cam.current(gen)) throw err;
+      if (timedOut) {
+        this.cameraFault = {
+          title: "The model did not load",
+          tone: "err",
+          body: "The scanner could not finish downloading its model. Check the connection and press Start to try again \u2014 or paint the cube by hand, which needs no model."
+        };
+        this.notice = this.cameraFault;
+      } else if (waiting) {
+        this.notice = null;
+      }
+      throw err;
+    } finally {
+      clearTimeout(slow);
+      clearTimeout(timer);
+    }
+  }
+  /** Take down the notice a camera/startup failure pinned, if it is still the one showing. */
+  clearCameraFault() {
+    if (this.cameraFault === null) return;
+    if (this.notice === this.cameraFault) this.notice = null;
+    this.cameraFault = null;
   }
   /**
    * A camera that would not open: re-offer Start, and say which of the several causes it was.
@@ -3638,10 +4691,16 @@ var AiScanPanel = class extends HTMLElement {
       startBtn.hidden = false;
       startBtn.disabled = false;
     }
-    this.report(
-      "error",
-      this.tinted("err", `Cannot start: ${String(err?.message ?? err)}`)
-    );
+    const raw = String(err?.message ?? err);
+    const said = cameraRefusalWords(err?.name);
+    if (said) {
+      console.warn("[ai-scan-panel] the camera would not open", err);
+      this.cameraFault = { title: "The camera did not open", tone: "err", body: said };
+      this.notice = this.cameraFault;
+      this.report("error", this.tinted("err", said));
+      return;
+    }
+    this.report("error", this.tinted("err", `Cannot start: ${raw}`));
   }
   /**
    * The detector, chosen once and kept for the element's life (so the model survives a stop()/
@@ -3661,23 +4720,40 @@ var AiScanPanel = class extends HTMLElement {
    */
   useDetector(detector, runtime) {
     this.cam.use(detector, runtime);
-    this.announceRuntime();
   }
-  /** Say which runtime won, once, on the console — so "is it on the fast native path?" has an
-   *  answer without a debugger. The same fact rides on every 'scan-progress' event as `runtime`. */
-  announceRuntime() {
-    const where = this.cam.runtime === "native" ? "native (CoreML on the ANE, ~1.5 ms/frame)" : "web (wasm model, ~400 ms/frame)";
+  /**
+   * Say which runtime won, and what it is running on — once per detector, on the console.
+   *
+   * TWO defects in one line. It was called only from `useDetector`, the test seam, so the question
+   * it exists to answer ("is this build on the fast native path, or has it silently demoted itself
+   * to wasm?") had no answer in any production build — the only place it ever printed was a test.
+   * And its text carried three stale numbers: "~400 ms/frame" for a wasm run measured at 57 ms,
+   * and a per-frame figure for the native path that is a claim about one machine's ANE.
+   *
+   * So it prints what is actually KNOWN here: the runtime that was chosen, and the provider list
+   * the loaded runner was created with. No timings — a number that was true on the machine the
+   * comment was written on is worse than no number, because it reads as a measurement of THIS
+   * machine. `ModelRunner.providers` documents the one thing the list does not say: which provider
+   * executed each node, which onnxruntime exposes no way to ask.
+   *
+   * Once per DETECTOR, not per panel: the detector is parked and reused across screen visits, so
+   * per-panel would print the same line on every visit to the scan screen, and per-page would miss
+   * a runner rebuilt on wasm after the GPU was judged too slow.
+   */
+  announceRuntime(detector) {
+    if (announced.has(detector)) return;
+    announced.add(detector);
+    const providers = detector.providers;
+    const on = providers && providers.length > 0 ? ` \u2014 providers: ${providers.join(", ")}` : "";
+    const where = this.cam.runtime === "native" ? "native (the cube-vision plugin \u2014 CoreML on Apple, LiteRT on Android)" : `web (the browser runtime${on})`;
     console.info(`[cubus] scanner runtime: ${where}`);
   }
   reset() {
     this.still.reset();
     this.live = null;
-    this.confirmed = {};
-    this.awaiting = null;
-    this.mismatches = 0;
-    this.finished = false;
-    this.notice = null;
-    this.suspects = [];
+    this.invalidateReading();
+    this.settled.clear();
+    this.pendingOpening = null;
     for (const f of FACES) delete this.faces[f];
     this.buildDots();
   }
@@ -3685,62 +4761,140 @@ var AiScanPanel = class extends HTMLElement {
    * (Re)start the capture loop. `opening` replaces the standard prompt, so a message explaining
    * why we are starting over survives instead of being overwritten within one tick.
    */
-  loop(phase, ...opening) {
+  loop(phase, ...opening2) {
     this.cam.stopLoop();
     this.showPreview(null);
     this.still.reset();
     this.tickFailingSince = null;
+    this.noFrameSince = null;
     const restart = this.maybe("restart");
     if (restart) restart.hidden = false;
     if (this.cam.device === null) {
+      if (opening2.length > 0) this.pendingOpening = { phase, words: opening2 };
       void this.start();
       return;
     }
-    this.report(phase, ...opening.length > 0 ? opening : [OPENING]);
-    const tick = this.cam.runtime === "native" ? TICK_MS_NATIVE : TICK_MS_WEB;
-    this.cam.beginLoop(tick, () => void this.onTick());
+    this.report(phase, ...opening2.length > 0 ? opening2 : [OPENING]);
+    this.cam.beginLoop(
+      () => Math.max(TICK_FLOOR_MS, Math.round(this.lastInferenceMs)),
+      () => void this.onTick()
+    );
   }
   stopLoop() {
     this.cam.stopLoop();
   }
+  /**
+   * One frame: ask the detector, then hand the answer to whichever of the three outcomes it is.
+   *
+   * What is left here is the INFERENCE's lifetime — its guard, its deadline, its freshness and the
+   * cadence measurement — and nothing about cubes. Three outcomes moved out with the branching
+   * they carried (`noFrameTick`, `readFrame`, `failingTick`), which is the same split
+   * `fileSettledRead` was made by and for the same reason: whether a frame arrived is a question
+   * about the camera, what it shows is a question about the cube.
+   */
   async onTick() {
-    if (this.busy || this.cam.device === null || !this.cam.chosen || !this.cam.modelLoaded) return;
-    this.busy = true;
+    if (this.cam.device === null || !this.cam.chosen || !this.cam.modelLoaded) return;
     const epoch = this.cam.frameEpoch();
+    if (this.busy === epoch) return;
+    this.busy = epoch;
+    const started = performance.now();
+    let deadline;
     try {
-      const output = await this.cam.chosen.next();
+      const output = await Promise.race([
+        this.cam.chosen.next(),
+        new Promise((_resolve, reject2) => {
+          deadline = setTimeout(() => {
+            reject2(
+              new Error(
+                `the detector did not answer within ${Math.round(INFERENCE_TIMEOUT_MS / 1e3)} seconds`
+              )
+            );
+          }, INFERENCE_TIMEOUT_MS);
+        })
+      ]);
       if (!this.cam.freshFrame(epoch)) return;
-      this.tickFailingSince = null;
+      this.lastInferenceMs = performance.now() - started;
       if (output === null) {
-        this.still.reset();
+        this.tickFailingSince = null;
+        this.noFrameTick();
         return;
       }
-      const fit = fitFromOutput(output);
-      if (!fit.ok) {
-        this.still.reset();
-        this.showPreview(null);
-        this.report(
-          this.awaiting ? "confirm" : "scanning",
-          this.idleLine() + FRAME_HINT[fit.reason]
-        );
-        return;
-      }
-      const settled = this.still.offer(fit.face.colors);
-      this.showPreview(fit.face.colors);
-      if (!settled) {
-        this.report(this.awaiting ? "confirm" : "scanning", "Reading a side \u2014 hold still\u2026");
-        return;
-      }
-      this.fileSettledRead(fit.face);
+      this.noFrameSince = null;
+      this.readFrame(output);
+      this.tickFailingSince = null;
     } catch (err) {
       if (!this.cam.freshFrame(epoch)) return;
-      const now = Date.now();
-      this.tickFailingSince ??= now;
-      if (now - this.tickFailingSince >= TICK_FAIL_MS) {
-        this.tickFail(err);
-      }
+      this.failingTick(err);
     } finally {
-      this.busy = false;
+      clearTimeout(deadline);
+      if (this.busy === epoch) this.busy = null;
+    }
+  }
+  /**
+   * The tick answered, with no frame.
+   *
+   * No frame is not a still cube — it is no observation at all. An abstaining frame already reset
+   * the streak; leaving a missing one alone meant identical reads either side of a stall could
+   * satisfy both the count and the duration without the cube having been watched in between.
+   *
+   * And it is not a working scanner either, which is the half that was missing. A camera that opens
+   * and never delivers answers `null` on every tick, and `null` clears the failure clock in
+   * `onTick` — so the one failure that needs no exception to happen was the one failure nothing
+   * watched. Its own clock, same limit, same fail-loud exit.
+   */
+  noFrameTick() {
+    this.still.reset();
+    const now = performance.now();
+    this.noFrameSince ??= now;
+    if (now - this.noFrameSince >= TICK_FAIL_MS) {
+      this.tickFail(
+        new Error(
+          `the camera has been open for ${Math.round(now - this.noFrameSince)} ms without delivering a frame`
+        )
+      );
+    }
+  }
+  /** A frame arrived: decide whether there is a read worth acting on, and hand it on if so. */
+  readFrame(output) {
+    const fit = fitFromOutput(output);
+    if (!fit.ok) {
+      this.still.reset();
+      this.showPreview(null);
+      this.report(this.awaiting ? "confirm" : "scanning", this.idleLine() + FRAME_HINT[fit.reason]);
+      return;
+    }
+    const settled = this.still.offer(fit.face.colors);
+    this.showPreview(fit.face.colors);
+    if (!settled) {
+      const flicker = this.still.flickering();
+      this.report(
+        this.awaiting ? "confirm" : "scanning",
+        flicker === null ? "Reading a side \u2014 hold still\u2026" : `Reading a side \u2014 the ${CELL_NAMES[flicker] ?? "marked"} sticker keeps changing colour. More light on it, or a steadier hold, will settle it.`
+      );
+      return;
+    }
+    this.fileSettledRead(fit.face);
+  }
+  /**
+   * The tick failed: transient at first, an error if it persists.
+   *
+   * The distinction is duration, not type: the camera-not-ready case clears in a tick or two, and
+   * nothing else does. `performance.now()`, because this is a claim about ELAPSED time — see
+   * TICK_FAIL_MS.
+   *
+   * A FAILED FRAME BREAKS THE STILLNESS RUN, and that was missing. Every other way a tick can end
+   * without a usable read resets it — a frameless tick, an abstain, a bad geometry — but a frame
+   * that THREW left the run standing, so two matching reads, a failure, and a third matching read
+   * half a second later satisfied both halves of the capture gate over an observation that had a
+   * hole in it. Stillness is a claim about what was watched continuously; a frame nobody could read
+   * is not a frame that showed the cube unmoved.
+   */
+  failingTick(err) {
+    this.still.reset();
+    const now = performance.now();
+    this.tickFailingSince ??= now;
+    if (now - this.tickFailingSince >= TICK_FAIL_MS) {
+      this.tickFail(err);
     }
   }
   /**
@@ -3754,16 +4908,20 @@ var AiScanPanel = class extends HTMLElement {
   tickFail(err) {
     this.cam.close();
     this.showPreview(null);
+    this.tickFailingSince = null;
+    this.noFrameSince = null;
+    this.dropDiagnosis();
     const start = this.maybe("start");
     if (start) {
       start.hidden = false;
       start.disabled = false;
     }
-    this.notice = {
+    this.cameraFault = {
       title: "The scanner stopped",
       tone: "err",
       body: "The camera opened but no frame could be read for several seconds. Try Start again, and if it keeps happening the model or the camera driver is at fault rather than the cube."
     };
+    this.notice = this.cameraFault;
     this.report("error", "Could not read from the camera.");
     console.error("[ai-scan-panel] scan loop stopped after repeated failures", err);
   }
@@ -3811,6 +4969,7 @@ var AiScanPanel = class extends HTMLElement {
           return;
         }
         this.faces[face] = read;
+        this.settled.delete(face);
         this.confirmed = {};
         this.mismatches = 0;
         this.buildDots();
@@ -3832,6 +4991,7 @@ var AiScanPanel = class extends HTMLElement {
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
   capture(face, read) {
     this.faces[face] = read;
+    this.settled.delete(face);
     this.still.reset();
     this.buildDots();
     this.flash();
@@ -3851,21 +5011,34 @@ var AiScanPanel = class extends HTMLElement {
   /**
    * Stop the loop, report 'checking', and run the assembly one beat later (CHECK_BEAT_MS), so the
    * capture or correction that triggered the check paints before any verdict replaces it. Clears
-   * the pinned notice: whatever it explained is being re-decided right now. Epoch-guarded, so a
-   * restart or navigation during the beat cancels the stale check.
+   * the pinned notice: whatever it explained is being re-decided right now.
+   *
+   * GUARDED ON THE READING, NOT ON THE CAMERA (2026-09-05). A check is a computation over the six
+   * faces; the camera has already said everything it is going to say about them. Guarding it with
+   * `frameEpoch` meant anything that touched the camera during the 350 ms beat cancelled the
+   * verdict and put NOTHING in its place — and switching cameras is exactly that: six captures on
+   * screen, `complete` never set, and no way back, because re-showing a side that reads the same
+   * as the one on file is answered with "that side reads the same as before". Measured: six
+   * captures, no check, and identical re-reads unable to recover it.
+   *
+   * `diagnosisEpoch` is the serial number of the READING, bumped by everything that re-decides it
+   * — a capture, a correction, a paint stroke, a mode change, `reset()` — so a restart during the
+   * beat still cancels the check, and `stop()` clears the timer outright for a navigation. What is
+   * left running is the case that should always have run.
    */
-  scheduleCheck(...opening) {
+  scheduleCheck(...opening2) {
     this.stopLoop();
     this.showPreview(null);
     this.finished = false;
     this.notice = null;
     this.suspects = [];
-    this.report("checking", ...opening);
-    const epoch = this.cam.frameEpoch();
+    this.dropDiagnosis();
+    this.report("checking", ...opening2);
+    const epoch = this.diagnosisEpoch;
     if (this.checkTimer !== null) clearTimeout(this.checkTimer);
     this.checkTimer = setTimeout(() => {
       this.checkTimer = null;
-      if (epoch === this.cam.frameEpoch()) this.assemble();
+      if (epoch === this.diagnosisEpoch) this.assemble();
     }, CHECK_BEAT_MS);
   }
   /** The sides captured so far, in URFDLB order — the shape hosts draw progress from. */
@@ -3901,18 +5074,14 @@ var AiScanPanel = class extends HTMLElement {
         confidence: Array(9).fill(1)
       };
       this.faces[face] = read;
+      this.settled.add(face);
       this.buildDots();
     } else if (read.colors[index] === colour) {
       return;
     }
     read.colors[index] = colour;
     read.confidence[index] = 1;
-    this.confirmed = {};
-    this.awaiting = null;
-    this.mismatches = 0;
-    this.finished = false;
-    this.notice = null;
-    this.suspects = [];
+    this.invalidateReading();
     const done = this.capturedFaces().length;
     if (this.painting) {
       this.afterPaintStroke(face, done);
@@ -3935,26 +5104,38 @@ var AiScanPanel = class extends HTMLElement {
    */
   afterPaintStroke(face, done) {
     if (done === FACES.length) {
-      const result = assemblePainted(this.faces);
+      const result = assemblePainted(this.faces, void 0, { diagnose: false });
       if (result.valid) {
         this.finish(result);
         return;
       }
-      this.suspects = result.suspects ?? [];
-      this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
-      this.notice = this.misreadNotice(result, {
-        one: "If it is wrong, tap it and pick the colour you see.",
-        many: "Check those sides against the cube in your hand and repaint what does not match."
-      }) ?? {
-        title: "Not solvable yet",
-        tone: "info",
-        body: `${result.reason ?? "Not a legal cube yet"} \u2014 check the sides against your cube.`
-      };
+      this.diagnose(result, (r, first) => {
+        this.publishPaintRefusal(r);
+        if (!first) {
+          this.report(
+            "painting",
+            `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
+          );
+        }
+      });
     }
     this.report(
       "painting",
       `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
     );
+  }
+  /** A refused painting, said out loud. Called again for each diagnosis that lands for it. */
+  publishPaintRefusal(result) {
+    this.suspects = result.suspects ?? [];
+    this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
+    this.notice = this.misreadNotice(result, {
+      one: "If it is wrong, tap it and pick the colour you see.",
+      many: "Check those sides against the cube in your hand and repaint what does not match."
+    }) ?? {
+      title: "Not solvable yet",
+      tone: "info",
+      body: `${result.reason ?? "Not a legal cube yet"} \u2014 check the sides against your cube.`
+    };
   }
   /**
    * Turn hand-painting on or off. The two are exclusive by nature, not by policy: painting means
@@ -3966,12 +5147,49 @@ var AiScanPanel = class extends HTMLElement {
     this.painting = on;
     this.notice = null;
     this.suspects = [];
+    this.dropDiagnosis();
     if (on) {
+      const dropped = this.dropUnsettledCaptures();
       this.stop();
+      if (dropped.length > 0) {
+        this.notice = {
+          title: "Those sides need painting too",
+          tone: "info",
+          body: "The camera cannot see which way up a side was held, so a side it had not finished checking cannot be edited sticker by sticker. %1 was cleared \u2014 paint it the way it sits on your cube.",
+          params: [dropped.map((f) => GUIDE[f].color).join(", ")]
+        };
+      }
       this.report("painting", PAINTING);
       return;
     }
     void this.start();
+  }
+  /**
+   * Entering painting: forget every capture whose rotation is still unknown, and say which.
+   *
+   * THE MODE BOUNDARY, stated rather than implied. Painting edits stickers BY INDEX, and
+   * `finishAccepted` already spells out why that needs a settled rotation: "a click on sticker i
+   * must mean index i of what is stored — without this, correcting a side captured 90° off edited
+   * the wrong sticker and turned a good scan invalid." An unsettled camera capture is exactly that
+   * side. Carrying it into painting broke two things at once: the tiles a user taps did not match
+   * the cube in their hand, and `assemblePainted` — which searches no rotations, by design —
+   * judged a 90°-off capture as authored-in-place and reported an INVENTED count. Measured: a
+   * correct cube with one side captured a quarter turn off came back as "At least 5 stickers were
+   * misread", about a cube with nothing wrong with it.
+   *
+   * Only the UNSETTLED ones go. A finished scan settles all six into canonical rotation, so the
+   * common path — scan, then hand-fix one sticker — loses nothing at all.
+   */
+  dropUnsettledCaptures() {
+    const dropped = FACES.filter((f) => this.faces[f] && !this.settled.has(f));
+    if (dropped.length === 0) return dropped;
+    for (const f of dropped) delete this.faces[f];
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
+    this.finished = false;
+    this.buildDots();
+    return dropped;
   }
   /**
    * Forget one side's reading so the camera can read it again — the sensible thing for a centre
@@ -3984,12 +5202,8 @@ var AiScanPanel = class extends HTMLElement {
   rescanFace(face) {
     if (!this.faces[face]) return;
     delete this.faces[face];
-    this.confirmed = {};
-    this.awaiting = null;
-    this.mismatches = 0;
-    this.finished = false;
-    this.notice = null;
-    this.suspects = [];
+    this.settled.delete(face);
+    this.invalidateReading();
     this.buildDots();
     this.loop("scanning", `Show the ${GUIDE[face].color} side again \u2014 it will be read fresh.`);
   }
@@ -4056,12 +5270,27 @@ var AiScanPanel = class extends HTMLElement {
     if (missing.length === 0 || missing.length > 2) return null;
     return missing.map((f) => GUIDE[f].color).join(" and ");
   }
+  /**
+   * The reading's rotations are already known — painted in place, or settled by an accepted scan.
+   *
+   * Read in ONE place because two things now depend on it and they must not disagree: which
+   * validator runs (`assemblePainted`, no rotation search), and how the deferred misread decode is
+   * asked the same question. A decode allowed to rotate a face back reports "0 misreads" about a
+   * cube the validator has just refused — measured on nine scrambles with one side turned 90°.
+   */
+  inPlace() {
+    return this.capturedFaces().length === FACES.length && FACES.every((f) => this.settled.has(f));
+  }
   /** Read the six faces (plus any confirmations) into a cube, and act on what comes back. */
   assemble() {
     let result;
+    if (this.inPlace()) {
+      this.finish(assemblePainted(this.faces, void 0, { diagnose: false }));
+      return;
+    }
     for (let round = 0; ; round++) {
       try {
-        result = assembleColors(this.faces, void 0, this.confirmed);
+        result = assembleColors(this.faces, void 0, this.confirmed, { diagnose: false });
       } catch (err) {
         const why = String(err?.message ?? err);
         this.notice = {
@@ -4099,6 +5328,13 @@ var AiScanPanel = class extends HTMLElement {
    */
   misreadNotice(result, recovery) {
     const misread = result.misreadCount ?? 0;
+    if (result.misreadCount === null) {
+      return {
+        title: "Not a solvable cube",
+        tone: "err",
+        body: "Working out how many stickers are wrong \u2014 that takes a moment on a badly-read cube."
+      };
+    }
     if (this.suspects.length > 0) {
       return {
         title: "Check the marked sticker",
@@ -4136,8 +5372,12 @@ var AiScanPanel = class extends HTMLElement {
     this.stopLoop();
     this.showPreview(null);
     this.suspects = result.suspects ?? [];
-    if (result.valid && result.lowConfidence.length === 0) {
-      this.finishAccepted(result);
+    if (result.valid) {
+      if ((result.lowConfidence?.length ?? 0) === 0) {
+        this.finishAccepted(result);
+        return;
+      }
+      this.finishUnsure();
       return;
     }
     if (result.confirm && result.reread === void 0) {
@@ -4145,6 +5385,15 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     this.finishRefused(result);
+  }
+  /** Solvable but too faint to trust: no public verdict, a pinned explanation, keep scanning. */
+  finishUnsure() {
+    this.notice = {
+      title: "Some stickers were unclear",
+      tone: "err",
+      body: "The cube reads as solvable, but some stickers were too faint to trust. Show those sides again, or tap stickers to confirm them."
+    };
+    this.loop("scanning", this.tinted("err", "Some stickers were too faint to trust."));
   }
   /** Accepted: settle the captures into canonical rotation, release the camera, announce it. */
   finishAccepted(result) {
@@ -4165,6 +5414,7 @@ var AiScanPanel = class extends HTMLElement {
     this.awaiting = null;
     this.mismatches = 0;
     this.finished = true;
+    for (const f of FACES) this.settled.add(f);
     this.notice = null;
     this.stop();
     this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
@@ -4202,31 +5452,74 @@ var AiScanPanel = class extends HTMLElement {
     };
     this.loop("confirm", ...this.confirmWords(confirm));
   }
+  /**
+   * Explain a refusal now, and explain it better when the misread count arrives.
+   *
+   * `publish` is called at least once, synchronously, with `first` true — so the refusal is on
+   * screen within the same tick however long the decode turns out to take. It is called a second
+   * time, with `first` false, only for the answer to THIS reading: the epoch is captured here and
+   * re-read when the answer lands, so a correction, a re-shown side or a restart in between drops
+   * the answer rather than describing a cube that is no longer there.
+   *
+   * Where the page has no worker the whole thing collapses back to one call carrying the count —
+   * the behaviour that shipped before the decode moved off this thread.
+   *
+   * AND THE EPOCH IS NOT THE ONLY WAY TO BE STALE (2026-09-05). It tracks the READING, which is
+   * what the answer is about — and a camera that failed in the meantime changes nothing about the
+   * reading while changing everything about what the panel should be saying. So a refinement
+   * landing after "The camera did not open" replaced that sentence with a misread notice and
+   * reported 'scanning' over a null device: the user was told to show a side again by a scanner
+   * with no camera. A failure notice outranks a better explanation of a refusal, and the test is
+   * `clearCameraFault`'s — is the sentence a failure pinned still the one on screen.
+   */
+  diagnose(result, publish) {
+    if (result.misreadCount !== null) {
+      publish(result, true);
+      return;
+    }
+    const epoch = ++this.diagnosisEpoch;
+    const reply = this.misread.request(
+      { epoch, faces: this.faces, fixedRotation: this.inPlace() },
+      (r) => {
+        if (r.epoch !== this.diagnosisEpoch) return;
+        if (this.cameraFault !== null && this.notice === this.cameraFault) return;
+        publish(decided(result, r.diagnosis), false);
+      }
+    );
+    publish(reply ? decided(result, reply.diagnosis) : result, true);
+  }
   /** Refused: keep every capture, and say what would make it a cube. */
   finishRefused(result) {
-    this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
     this.confirmed = {};
     this.awaiting = null;
+    this.diagnose(result, (r, first) => this.publishRefusal(r, first));
+  }
+  /**
+   * Say a refusal out loud: the public event, the pinned notice, the transient line.
+   *
+   * Run once per refusal and once more per diagnosis that lands for it, so `scan-invalid` carries
+   * the same null-then-value shape `misreadCount` has — a host sees the refusal immediately and
+   * the count when there is one, rather than waiting seconds for either.
+   */
+  publishRefusal(result, first) {
+    this.suspects = result.suspects ?? [];
+    this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
     const hold = " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
     const camera = this.misreadNotice(result, {
       one: `If it is wrong, tap it and pick the colour you see; if it is right, show that side again to re-read it.${hold}`,
       many: result.misreadFace ? `Show the %2 side to the camera again \u2014 it will be read fresh.${hold}` : `Show those sides to the camera again \u2014 each one is read fresh.${hold}`,
       params: result.misreadFace ? [GUIDE[result.misreadFace].color] : []
     });
+    let line = "That isn't a solvable cube yet \u2014 fix a sticker, or show a side again.";
     if (camera) {
       this.notice = camera;
-    } else if (result.valid) {
-      this.notice = {
-        title: "Some stickers were unclear",
-        tone: "err",
-        body: "The cube reads as solvable, but some stickers were too faint to trust. Show those sides again, or tap stickers to confirm them."
-      };
     } else if (result.ambiguous) {
       this.notice = {
         title: "Too symmetric to tell",
         tone: "err",
         body: "This cube reads the same several ways, and no extra look can split them. Turn any one face a quarter turn, then start the scan over to read the changed cube."
       };
+      line = "This cube reads the same several ways \u2014 turn any one face a quarter turn, then start over.";
     } else {
       this.notice = {
         title: "That doesn't read as a solvable cube",
@@ -4234,10 +5527,8 @@ var AiScanPanel = class extends HTMLElement {
         body: `Too much of the cube was read wrong to say where. Show the sides to the camera again \u2014 each one is read fresh \u2014 or start the scan over.${hold}`
       };
     }
-    this.loop(
-      "scanning",
-      this.tinted("err", "That isn't a solvable cube yet \u2014 fix a sticker, or show a side again.")
-    );
+    if (first) this.loop("scanning", this.tinted("err", line));
+    else this.report("scanning", this.tinted("err", line));
   }
   buildDots() {
     const dots = this.maybe("dots");
@@ -4312,6 +5603,10 @@ var AiScanPanel = class extends HTMLElement {
     return span;
   }
 };
+function decided(result, diagnosis) {
+  const { misreadCount: _checking, ...settled } = result;
+  return { ...settled, ...diagnosis };
+}
 if (!customElements.get("ai-scan-panel")) {
   customElements.define("ai-scan-panel", AiScanPanel);
 }
@@ -4320,8 +5615,10 @@ export {
   createModelRunner,
   decodeDetections,
   defaultThreadCount,
+  disposeParkedDetector,
   fitFace,
   nms,
+  parkedDetector,
   preferredProviders,
   preprocess
 };

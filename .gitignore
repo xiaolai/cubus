@@ -10,6 +10,11 @@ runs/
 # Rust workspace build output
 /target
 
+# Logs. `error.log` in the root is an unrelated tool's, written here by treating the repo as its
+# working directory; it carries that tool's account identifier and was kept out only by the
+# maintainer's global gitignore, which a clone does not have.
+*.log
+
 # >>> cc-suite >>>
 # cc-suite-schema: 7
 # AI assistant local state

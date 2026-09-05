@@ -18,7 +18,20 @@ import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
 import { pace } from './browser-wait.mjs';
+import { WORKER_CUBES } from './fixtures/solver-cubes.mjs';
 import { freePort } from './free-port.mjs';
+
+/**
+ * A ceiling on the searching tests, in wall time, because nothing else here has one.
+ *
+ * Every search below is bounded in NODES, which bounds the work but not the wait — and the tests
+ * that escalate can ask for 12.75e9 of them, which is minutes inside a headless browser. The CI
+ * job has no `timeout-minutes` either, so until 2026-09-04 a single unlucky state could hang a
+ * release run with nothing to read afterwards. Two minutes is roughly 40x the measured cost of
+ * the slowest of these on a loaded laptop: it cannot fire on work that is going normally, and a
+ * run that reaches it has met something worth failing on rather than waiting out.
+ */
+const GATE = { timeout: 120_000 };
 
 // From the OS. The hand-allocated scheme this replaces — "geometry owns 5197, serve.test.mjs
 // 5199" — is a list that has to be maintained, cannot survive two checkouts running at once, and
@@ -64,16 +77,14 @@ async function inBrowser(fn, arg) {
   return result;
 }
 
-test('a real module worker solves a real cube, at the tier it was asked for', async () => {
-  const out = await inBrowser(async () => {
+test('a real module worker solves a real cube, at the tier it was asked for', GATE, async () => {
+  const out = await inBrowser(async (facelets) => {
     const { createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
     const { refine } = await import('/lib/solve-target.js');
     const Cube = (await import('/vendor/cubejs.js')).default;
     Cube.initSolver();
 
     const client = createSolveClient({ spawn: spawnSolveWorker });
-    const cube = Cube.random();
-    const facelets = cube.asString();
     const steps = [];
     for await (const step of refine(facelets, {
       solve: (f, bounds) => client.solve(f, bounds),
@@ -86,7 +97,7 @@ test('a real module worker solves a real cube, at the tier it was asked for', as
     oracle.move(final.alg);
     client.cancel();
     return { steps, solved: oracle.isSolved(), facelets };
-  });
+  }, WORKER_CUBES.tiered);
 
   assert.ok(out.steps.length >= 1, 'the worker produced no answer at all');
   assert.ok(out.solved, `the worker's solution does not solve ${out.facelets}`);
@@ -102,28 +113,29 @@ test('a real module worker solves a real cube, at the tier it was asked for', as
   }
 });
 
-test('a tighter tier is honoured, not silently ignored', async () => {
+test('a tighter tier is honoured, not silently ignored', GATE, async () => {
   // The failure this guards: the length bound not reaching the engine inside the worker. The
   // solver still works, so nothing looks wrong — it just ignores what it was asked for, every
   // time. solLen 21 is the tightest bound the engine meets reliably within this budget
   // (dev-docs/solver-move-count.md, the two-phase ladder).
   //
-  // ESCALATION on null, for the same reason two-phase.test.mjs escalates: `probeMax` is a budget
-  // in search NODES, so it is deterministic per cube and identical on every machine — which means
-  // a fixed budget against a RANDOM cube asserts a probabilistic property as if it were a
-  // deterministic one. It duly failed in CI on a cube this machine never drew. null is a statement
-  // about the search, never about the cube (AGENTS.md: a search that ran out of budget is not a
-  // cube that cannot be solved), and doubling is what lib/solve-target.js does for the app.
+  // A FIXED state, and escalation kept on top of it. `probeMax` is a budget in search NODES, so a
+  // search is deterministic per cube and identical on every machine — which means a fixed budget
+  // against a RANDOM cube asserts a probabilistic property as if it were a deterministic one, and
+  // it duly failed in CI on a cube this machine never drew. Escalating was the first half of the
+  // fix and it was not enough: it turned a rare red into a rare four-minute wait inside a headless
+  // browser, on a state nobody could name afterwards. The state is frozen and measured now
+  // (test/fixtures/solver-cubes.mjs — 10.8M nodes on one worker, so the first attempt answers),
+  // and the escalation stays because null is a statement about the search, never about the cube.
   //
   // The assertion does not weaken. What is under test is that solLen REACHES the engine, and that
   // is still checked exactly as before — on the answer's length. God's number is 20 and 21 is an
   // exclusive bound above it, so after escalation an answer must exist.
-  const out = await inBrowser(async () => {
+  const out = await inBrowser(async (facelets) => {
     const { createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
     const Cube = (await import('/vendor/cubejs.js')).default;
     Cube.initSolver();
     const client = createSolveClient({ spawn: spawnSolveWorker });
-    const facelets = Cube.random().asString();
     let alg = null;
     let budget = 50_000_000;
     let spent = 0;
@@ -141,25 +153,26 @@ test('a tighter tier is honoured, not silently ignored', async () => {
       moves: alg === null ? null : alg.trim().split(/\s+/).length,
       solved: alg === null ? null : oracle.isSolved(),
     };
-  });
+  }, WORKER_CUBES.tighter);
   assert.notEqual(
     out.moves,
     null,
     `no solution under 21 for ${out.facelets} after 8 escalations (${out.spent} nodes) — ` +
-      'the engine is complete, so this is a real defect rather than an expensive cube',
+      'a measured fixture that answers in 10.8M nodes, so this is a real defect and not an ' +
+      'expensive cube',
   );
   assert.ok(out.moves <= 20, `asked for fewer than 21 and got ${out.moves} — the length bound is not live`);
   assert.equal(out.solved, true);
 });
 
-test('the real pool, over real workers, answers what one worker answers', async () => {
+test('the real pool, over real workers, answers what one worker answers', GATE, async () => {
   // The pool's own missing link. Everything below it is covered against fakes — slicing, budget
   // sharing, the sort key, sibling cancellation — and none of that touches the two things only a
   // browser has: several real module workers alive at once, and a SharedArrayBuffer that really
   // crosses postMessage. The stop word in particular can be wrong in a way no fake can show: if
   // the offset is dropped in transit, both sides hold a valid view of the same memory and poll
   // different words, so the stop silently never fires.
-  const out = await inBrowser(async () => {
+  const out = await inBrowser(async (frozen) => {
     const { createParallelSolveClient, createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
     const { VIEW_COUNT } = await import('/lib/solver-engine.js');
     const Cube = (await import('/vendor/cubejs.js')).default;
@@ -170,7 +183,11 @@ test('the real pool, over real workers, answers what one worker answers', async 
     const isolated = typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated === true;
     if (!isolated) return { isolated };
 
-    const facelets = Cube.random().asString();
+    // A FROZEN state, measured before it was frozen: one worker answers it in 108k nodes at this
+    // budget, and the three-way split answers identically. Both halves matter — the assertion
+    // below is a not-null one, and the equality is NOT true at every budget (see
+    // parallel-divergence.test.mjs for where it stops holding), so neither may be left to a draw.
+    const facelets = frozen;
     const bounds = { solLen: 21, probeMax: 50_000_000 };
     const pool = createParallelSolveClient({
       spawn: spawnSolveWorker, workers: 3, viewCount: VIEW_COUNT,
@@ -190,7 +207,7 @@ test('the real pool, over real workers, answers what one worker answers', async 
       pool.cancel();
       lone.cancel();
     }
-  });
+  }, WORKER_CUBES.pooled);
 
   assert.equal(out.isolated, true,
     'the page is not cross-origin isolated — the pool has no shared word and Phase 1 regressed');
@@ -200,6 +217,116 @@ test('the real pool, over real workers, answers what one worker answers', async 
   // The determinism claim, over the real boundary: at the shipped budget the pooled answer IS
   // the single-worker answer. Where that stops holding is pinned in parallel-divergence.test.mjs.
   assert.equal(out.pooled, out.single, `pool and lone worker diverged on ${out.facelets}`);
+});
+
+test('the tables cross as shared memory, and a byte written into them is refused', GATE, async () => {
+  // The other thing only a browser has, and the reason table sharing needed this file: a
+  // SharedArrayBuffer that really crosses postMessage TWICE — worker to page, page to worker —
+  // with eleven byte offsets riding along. Everything under it is covered on the main thread in
+  // shared-solver-tables.test.mjs against separate module instances; what no test process can
+  // show is that the second worker ends up looking at the FIRST worker's memory rather than at a
+  // structured-clone copy of it.
+  //
+  // The proof of that is the corruption case at the end. This page writes one byte into the
+  // buffer and a worker that has never seen it before refuses to adopt, naming the table — which
+  // can only happen if the bytes the worker checksums are the bytes this thread wrote. A copy
+  // would have adopted happily.
+  const out = await inBrowser(async (facelets) => {
+    const { ADOPT_TABLES, PREPARE_TABLES, createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
+    if (typeof SharedArrayBuffer === 'undefined' || self.crossOriginIsolated !== true) return { isolated: false };
+
+    const builder = createSolveClient({ spawn: spawnSolveWorker });
+    const taker = createSolveClient({ spawn: spawnSolveWorker });
+    const latecomer = createSolveClient({ spawn: spawnSolveWorker });
+    const bounds = { solLen: 21, probeMax: 50_000_000 };
+    try {
+      const published = await builder.control({ kind: PREPARE_TABLES });
+      const bundle = published.tables;
+      await taker.control({ kind: ADOPT_TABLES, tables: bundle });
+
+      // Identical tables must give an identical algorithm, not merely one of the same length.
+      const [fromBuilder, fromTaker] = await Promise.all([
+        builder.solve(facelets, bounds),
+        taker.solve(facelets, bounds),
+      ]);
+
+      // One byte, in the middle of the biggest pruning table, written from THIS thread.
+      const d = bundle.tables.find((t) => t.name === 'prune1tf');
+      const bytes = new Uint8Array(bundle.buffer, d.byteOffset, d.length);
+      const at = Math.floor(d.length / 2);
+      bytes[at] ^= 0xff;
+      let refusal = null;
+      try {
+        await latecomer.control({ kind: ADOPT_TABLES, tables: bundle });
+      } catch (err) {
+        refusal = String(err.message);
+      }
+      bytes[at] ^= 0xff;
+      const afterRestore = await latecomer.control({ kind: ADOPT_TABLES, tables: bundle });
+
+      return {
+        isolated: true,
+        shared: bundle.buffer instanceof SharedArrayBuffer,
+        bytes: bundle.buffer.byteLength,
+        offsets: bundle.tables.map((t) => t.byteOffset),
+        fromBuilder,
+        fromTaker,
+        refusal,
+        afterRestore: afterRestore.ok === true,
+        facelets,
+      };
+    } finally {
+      builder.cancel();
+      taker.cancel();
+      latecomer.cancel();
+    }
+  }, WORKER_CUBES.pooled);
+
+  assert.equal(out.isolated, true,
+    'the page is not cross-origin isolated — the headers regressed and there is no shared memory at all');
+  assert.equal(out.shared, true, 'the tables arrived on a copy, not on shared memory — the saving is not real');
+  assert.equal(out.bytes, 10_293_988, 'the eleven tables, their seal and their padding, once for the whole pool');
+  assert.equal(out.offsets.filter((o) => o !== 0).length, 11,
+    'every table must start at a non-zero offset, or the crossing never has to carry one');
+  assert.notEqual(out.fromBuilder, null, `no answer for ${out.facelets} at the shipped budget`);
+  assert.equal(out.fromTaker, out.fromBuilder, 'a worker on adopted tables answered differently');
+  assert.match(out.refusal ?? '', /prune1tf/,
+    'a byte written from the page was adopted without complaint — the worker is not reading this memory');
+  assert.match(out.refusal ?? '', /checksum/);
+  assert.equal(out.afterRestore, true, 'and the same bundle is adopted again once the byte is put back');
+});
+
+test('the real pool builds its tables once and still answers what one worker answers', GATE, async () => {
+  // The wiring, end to end: the pool that app.js constructs, over real module workers, with the
+  // handshake in front of the first solve. The equality is the same one the pool test above
+  // asserts — sharing must not change an answer — and `sharingTables` is what stops a quiet
+  // fallback from passing this as if it had measured anything.
+  const out = await inBrowser(async (frozen) => {
+    const { createParallelSolveClient, createSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
+    const { VIEW_COUNT } = await import('/lib/solver-engine.js');
+    if (typeof SharedArrayBuffer === 'undefined' || self.crossOriginIsolated !== true) return { isolated: false };
+
+    const pool = createParallelSolveClient({
+      spawn: spawnSolveWorker, workers: 6, viewCount: VIEW_COUNT,
+      makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
+      shareTables: true,
+    });
+    const lone = createSolveClient({ spawn: spawnSolveWorker });
+    const bounds = { solLen: 21, probeMax: 50_000_000 };
+    try {
+      const [pooled, single] = await Promise.all([pool.solve(frozen, bounds), lone.solve(frozen, bounds)]);
+      return { isolated: true, sharing: pool.sharingTables, workers: pool.workers, pooled, single, facelets: frozen };
+    } finally {
+      pool.cancel();
+      lone.cancel();
+    }
+  }, WORKER_CUBES.pooled);
+
+  assert.equal(out.isolated, true, 'the page is not cross-origin isolated');
+  assert.equal(out.sharing, true, 'the pool fell back to per-worker builds — this measured nothing');
+  assert.equal(out.workers, 6, 'six real workers, not a silently collapsed one');
+  assert.notEqual(out.pooled, null, `the pool found nothing for ${out.facelets}`);
+  assert.equal(out.pooled, out.single, `sharing the tables changed the answer on ${out.facelets}`);
 });
 
 test('a malformed request comes back as a rejection, not a hang', async () => {
@@ -254,8 +381,9 @@ test('a state in the proven library is answered from data — no search, no proo
   // The point of shipping the library. `Cube.prototype.solve` is the only Kociemba search this
   // thread can run (the engine's own lives in the worker, behind its own module instance), so
   // counting calls to it is counting exactly the work a user would have waited for. A proved
-  // state must cost zero of them: deriveCube takes its setup alg from the entry and solve()
-  // takes the solution, both already checked against the oracle at load.
+  // state must cost zero of them: the setup alg is the inverse of the entry's solution, checked
+  // with `reaches()` in finishSolve (since 2026-09-05 nothing derives one by searching), and
+  // solve() takes the solution, both already checked against the oracle at load.
   const entry = JSON.parse(
     readFileSync(new URL('../lib/data/optimal-challenges.json', import.meta.url), 'utf8'),
   )[0];

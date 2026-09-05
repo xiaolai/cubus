@@ -12,8 +12,9 @@ removed (see git history if you need them).
 
 | Layer | Files | Notes |
 |---|---|---|
-| Pure core (Node-testable, no DOM) | `types`, `facelet-cube`, `onnx-postprocess`, `onnx-detect`, `ai-assemble` | Operates on a plain `Frame = { data; width; height }`, never DOM `ImageData`. The model run is *injected*, so the core imports no wasm runtime. |
-| Browser shell | `camera` (getUserMedia), `view/onnx-runtime` (onnxruntime-web), `view/ai-scan-panel` (`<ai-scan-panel>`) | Only these touch the webcam / wasm. |
+| Pure core (Node-testable, no DOM) | `types`, `facelet-cube`, `onnx-postprocess`, `onnx-detect`, `ai-assemble`, `misread-decode` | Operates on a plain `Frame = { data; width; height }`, never DOM `ImageData`. The model run is *injected*, so the core imports no wasm runtime. |
+| The capture seam | `detector` (the interface), `view/web-detector`, `view/native-detector`, `view/pick-detector` | One question — "the model's output for a fresh frame" — behind which either the browser (getUserMedia + `preprocess` + onnxruntime-web) or the native `cube-vision` plugin answers. `pickDetector` also **parks one detector per page**, so a re-mounted panel reuses its InferenceSession instead of building another. |
+| Browser shell | `camera` (getUserMedia), `view/onnx-runtime` (onnxruntime-web), `view/camera-session`, `view/stillness`, `view/ai-scan-panel` (`<ai-scan-panel>`) | Only `camera` and `onnx-runtime` touch the webcam / wasm. |
 
 ## How a scan works
 
@@ -75,8 +76,9 @@ const result = assembleColors(faces);            // { facelets, valid, confidenc
 
 | Command | Does |
 |---|---|
-| `npm run check` | Strict `tsc` + Biome + type-aware ESLint + vitest (the gate). |
-| `npm run coverage` | Coverage over the pure core. |
+| `npm run check` | Strict `tsc` + Biome + type-aware ESLint + vitest **with coverage** (the gate). The 85% thresholds are part of the gate rather than a number a separate script would have to be remembered. |
+| `npm run test` | The same suite without the coverage pass — the fast inner loop. |
+| `npm run coverage` | Coverage over the pure core and the hardware-free half of `view/`. |
 | `npm run build:panel` | Bundle `view/ai-scan-panel.ts` (+ cubejs) into `apps/web/vendor/ai-scan-panel.js`, a self-contained ESM the bundler-less SPA loads. The bundle is committed, so re-run **and commit it** after editing the component. |
 
 ## The `<ai-scan-panel>` element
@@ -91,9 +93,25 @@ much UI it owns on top of that:
 
 | Event | Detail | When |
 |---|---|---|
-| `scan-progress` | `{ phase, message, captured, live, device, confirm }` — `phase` is `starting`/`loading`/`scanning`/`confirm`/`checking`/`done`/`error`, `message` is a finished sentence, `captured` is `{ face, colors }[]` in URFDLB order, `live` is the 9 colour classes in view or `null`, `confirm` names the side being asked for | Every state change. The built-in status line and this event always agree — they go through one code path. |
-| `scan-complete` | `ScanResult` | A validated, solvable six-face read. The element stops itself. |
-| `scan-invalid` | `ScanResult` | The read did not validate. The element resets and keeps scanning; the reason arrives as the next `scan-progress`. |
+| `scan-progress` | `ScanProgress` — see below | Every state change. The built-in status line and this event always agree — they go through one code path. |
+| `scan-complete` | `AiScanResult` | A validated, solvable six-face read. The element releases the camera and reports `complete: true`. |
+| `scan-invalid` | `AiScanResult` | The read did not validate. **The captures are kept** — `restart()` is the only thing that wipes a scan — and the loop keeps running, so re-showing a side replaces its reading. The explanation arrives as the `notice` on the next `scan-progress`. |
+
+`ScanProgress` carries `{ phase, message, captured, live, device, confirm, runtime, notice, suspects,
+complete }`:
+
+| Field | Meaning |
+|---|---|
+| `phase` | `starting` / `loading` / `scanning` / `painting` / `confirm` / `checking` / `done` / `error` |
+| `message` | The transient per-tick line — a finished sentence, safe to show verbatim |
+| `captured` | `{ face, colors }[]` in URFDLB order |
+| `live` | The 9 colour classes in view right now, or `null` |
+| `device` | The camera actually in use, or `null` — a host showing no preview needs it |
+| `confirm` | The one side being asked for, and the way up to hold it, or `null` |
+| `runtime` | `native` (the cube-vision plugin) or `web` (onnxruntime-web), or `null` before one is chosen |
+| `notice` | The **pinned** explanation: `{ title, body, params?, tone }`, standing until the situation changes. Distinct from `message`, which the next tick overwrites — that is how a refused scan used to look like a crash. `body` may carry `%1..%9` placeholders that `params` fills, so a host translates the sentence *first* and substitutes after |
+| `suspects` | Stickers a colour misread most plausibly landed on — tap targets. Populated **only** when exactly one sticker is wrong, because that is the only distance at which the repair is provably unique (`dev-docs/misread-decoding.md`) |
+| `complete` | The scan has delivered a valid cube and stands finished — a state, not the `done` moment |
 
 Methods: `start()` (open the camera / retry after an error), `restart()` (drop the captured sides,
 keep the camera), `stop()` (release the camera; also runs on disconnect), `cameras()` (the

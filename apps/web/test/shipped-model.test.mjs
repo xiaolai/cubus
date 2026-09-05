@@ -7,11 +7,14 @@
 // identical to the fp32 graph, and the int8 file is referenced nowhere outside CI job names.
 //
 // That label was not a harmless inaccuracy. int8 is the one export that MISREADS — measured on the
-// golden fixtures, 4 of 20 come back with a different face, and two of those are frames the fp32
-// graph correctly refuses (abstain-00, abstain-02). A misread is the failure this app cannot
-// tolerate: a wrong sticker becomes a wrong cube, and a beginner is walked through solving
-// something that is not in their hands. So the question "which file does the browser get" deserves
-// an assertion and not a sentence in a document.
+// golden fixtures and recorded in ml/golden/expected.json, 4 of 20 read differently from the fp32
+// graph: a different face on photo-00 and render-02, a commit to a face on abstain-02 that fp32
+// correctly refuses, and a refusal on render-07 that fp32 reads. Every one of those is the failure
+// this app cannot tolerate — a wrong sticker becomes a wrong cube, and a beginner is walked
+// through solving something that is not in their hands; a refusal is merely annoying, and a false
+// commit is the dangerous half. So the question "which file does the browser get" deserves an
+// assertion and not a sentence in a document. (The counts and frame names here are read off
+// expected.json rather than remembered — see the test at the bottom, which asserts they agree.)
 //
 // It pins the FILE, by content, not the filename. Swapping the vendored bundle for the int8 export
 // keeps the name `cube-yolo.onnx` and changes nothing else a test would notice.
@@ -35,8 +38,8 @@ test('the browser is served the fp32 reference graph, byte for byte', () => {
   }
   assert.equal(sha256(SHIPPED), sha256(REFERENCE),
     'the vendored model is not the fp32 reference. If this was deliberate, the golden-frame pins ' +
-      'and MANIFEST.json must move with it — and if it is now int8, read that export\'s ' +
-      'quantisation_note first: it misreads 4 of 20 golden fixtures.');
+      'and MANIFEST.json must move with it — and if it is now int8, read ml/golden/expected.json ' +
+      'first: it reads 4 of 20 golden fixtures differently from the graph being replaced.');
 });
 
 test('and specifically not the int8 export, which misreads', () => {
@@ -45,8 +48,8 @@ test('and specifically not the int8 export, which misreads', () => {
   // size, and it fails only on inputs no smoke test uses.
   if (!existsSync(INT8)) return; // nothing to confuse it with on this machine
   assert.notEqual(sha256(SHIPPED), sha256(INT8),
-    'the int8 export is being served to the browser. It commits to a face on frames the fp32 graph ' +
-      'refuses (abstain-00.png, abstain-02.png) and reads two stickers wrong on photo-00.png.');
+    'the int8 export is being served to the browser. It commits to a face on abstain-02.png, which ' +
+      'the fp32 graph refuses, and reads photo-00.png and render-02.png differently.');
 });
 
 // A model the plugin resolves but the bundler never ships is a native path that cannot run.
@@ -88,3 +91,64 @@ for (const { rust, confs } of NATIVE_MODEL_PLUGINS) {
     });
   }
 }
+
+// THE COMMITTED iOS COPY, byte for byte against ml/models/.
+//
+// `gen/apple/assets/models/cube-yolo.mlpackage` is a copy of `ml/models/cube-yolo.mlpackage` that
+// lives in the repository — the Android side deliberately refuses to do this, and iOS does it
+// because Xcode stages what the project declares rather than what a build script fetches. A
+// committed copy of a generated artefact is only safe while something checks it is still the same
+// artefact, and nothing did: a re-export could update ml/models/ and leave the iPhone shipping the
+// previous detector, which reads as a model that has quietly got worse rather than as a stale file.
+//
+// Every file, not the manifest alone: `weight.bin` is where a re-export actually shows up, and it
+// is the one file a diff of the .mlpackage's metadata would not notice.
+const IOS_MODEL = '../../desktop/src-tauri/gen/apple/assets/models/cube-yolo.mlpackage';
+const ML_MODEL = '../../../ml/models/cube-yolo.mlpackage';
+const MLPACKAGE_FILES = [
+  'Manifest.json',
+  'Data/com.apple.CoreML/model.mlmodel',
+  'Data/com.apple.CoreML/weights/weight.bin',
+];
+
+test('the committed iOS model is the one in ml/models, file for file', () => {
+  const source = new URL(`${ML_MODEL}/`, import.meta.url);
+  const shipped = new URL(`${IOS_MODEL}/`, import.meta.url);
+  assert.ok(existsSync(source), 'ml/models/cube-yolo.mlpackage is missing');
+  assert.ok(existsSync(shipped), `${IOS_MODEL} is missing — the iOS build has no model to stage`);
+  const drifted = MLPACKAGE_FILES.filter((f) => {
+    const a = new URL(f, source);
+    const b = new URL(f, shipped);
+    assert.ok(existsSync(a), `ml/models/cube-yolo.mlpackage/${f} is missing`);
+    assert.ok(existsSync(b), `the committed iOS copy is missing ${f}`);
+    return sha256(a) !== sha256(b);
+  });
+  assert.deepEqual(drifted, [],
+    'the committed iOS copy of the model has drifted from ml/models/. Re-copy the .mlpackage: an ' +
+      'iPhone shipping a different detector from every other platform is a difference nothing else ' +
+      'in this repository would notice.');
+});
+
+// The comments above quote how many golden fixtures the int8 export reads differently. That number
+// is the reason the fp32 graph is the one that ships, and it was written down once and then went
+// stale twice — a re-export changes it, and nothing pointed the prose at the data.
+test('the int8 divergence this file talks about is the one expected.json records', () => {
+  const url = new URL('../../../ml/golden/expected.json', import.meta.url);
+  if (!existsSync(url)) return; // ml/ is present in a clone; skip rather than fail if it is not
+  const pinned = JSON.parse(readFileSync(url, 'utf8'));
+  const differing = Object.entries(pinned.frames)
+    .filter(([, v]) => v.legs['onnx-int8'] !== undefined && v.legs['onnx-int8'] !== v.legs.onnx)
+    .map(([name]) => name.replace(/\.png$/, ''))
+    .sort();
+  const source = readFileSync(new URL(import.meta.url), 'utf8');
+  const claimed = source.match(/(\d+) of (\d+) read differently from the fp32/);
+  assert.ok(claimed, 'this file no longer states the divergence — update this test with it');
+  assert.equal(Number(claimed[1]), differing.length,
+    `this file says ${claimed[1]} fixtures diverge; expected.json records ${differing.length} ` +
+      `(${differing.join(', ')})`);
+  assert.equal(Number(claimed[2]), Object.keys(pinned.frames).length);
+  for (const name of differing) {
+    assert.ok(source.includes(name),
+      `${name} reads differently under int8 and this file does not mention it`);
+  }
+});

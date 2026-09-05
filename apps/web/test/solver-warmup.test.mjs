@@ -1,8 +1,11 @@
 // Warming the solver pool, and the two ways it can quietly half-work.
 //
-// Every solver worker builds its own pruning tables — 0.5-2.6 s (dev-docs/solver-move-count.md
-// §7) — and lazily, so without a warm-up the first solve of a session pays for all of them while
-// a user waits. `warmSolver()` spends that cost on screens that know a solve is coming.
+// The solver's pruning tables cost 0.5-2.6 s (dev-docs/solver-move-count.md §7) and are built
+// lazily, so without a warm-up the first solve of a session pays for them while a user waits.
+// `warmSolver()` spends that cost on screens that know a solve is coming. Since 2026-09-05 it is
+// ONE build for the whole pool rather than one per worker — the first worker builds into a
+// SharedArrayBuffer and the rest adopt views of it — which makes the warm-up matter more, not
+// less: the handshake it triggers is what the other five workers are waiting for.
 //
 // Both failures here are silent. A warm budget smaller than the worker count leaves some workers
 // cold, because `shareBudget` drops a zero share — and a partly-warm pool looks exactly like a
@@ -20,8 +23,15 @@ import Cube from '../vendor/cubejs.js';
 const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
 
 test('the warm cube is actually solved, so warming costs only the tables', () => {
-  const facelets = app.match(/const SOLVED_FACELETS = '([A-Z]{54})'/)?.[1];
-  assert.ok(facelets, 'SOLVED_FACELETS is gone or no longer a 54-character literal');
+  // Matched by VALUE and not by name: this looked for `SOLVED_FACELETS` until 2026-09-04, when
+  // app.js merged its two identical 54-character literals into one named `SOLVED` — and the test
+  // then failed for the naming rather than for the fact, which is the wrong thing to notice. The
+  // fact is that the string warmSolver hands the pool is a solved cube; whatever it is called,
+  // it must be the one the warm request actually sends.
+  const name = app.match(/warmSolver\(\) \{[\s\S]*?\.solve\(\s*([A-Za-z_$][\w$]*)\s*,/)?.[1];
+  assert.ok(name, 'warmSolver no longer solves a named constant');
+  const facelets = app.match(new RegExp(`const ${name} = '([A-Z]{54})'`))?.[1];
+  assert.ok(facelets, `${name} is gone or no longer a 54-character literal`);
   assert.equal(Cube.fromString(facelets).isSolved(), true,
     'the warm request must be a solved cube — anything else makes the warm-up a real search');
 });
@@ -68,6 +78,24 @@ test('every screen that solves warms first', () => {
   const calls = app.match(/^\s*warmSolver\(\);/gm) ?? [];
   assert.equal(calls.length, 3,
     `expected the three solving screens to warm; found ${calls.length} call sites`);
+});
+
+test('the pool that gets a shared word also gets shared TABLES', () => {
+  // Both capabilities need the same thing — a cross-origin isolated page — and app.js proves it
+  // once, in the branch that returns the parallel client. A `shareTables` that drifted out of
+  // that branch would be asking a page with no SharedArrayBuffer to publish 9.82 MiB into one;
+  // one left off entirely would put six table builds back into every cold session with nothing
+  // to say so, because the pool falls back quietly and correctly.
+  const pool = app.match(/return createParallelSolveClient\(\{([\s\S]*?)\n {2}\}\);/)?.[1];
+  assert.ok(pool, 'the parallel client is no longer constructed where this test can read it');
+  assert.match(pool, /shareTables:\s*true/,
+    'the pool must build its tables once and share them, or a cold session pays six builds');
+  assert.match(pool, /makeShared:/, 'and it still needs a stop word — the two ride the same isolation');
+  // The single-worker branch is the fallback for a page that has neither. It must not ask for
+  // tables it cannot share.
+  const lone = app.match(/if \(!isolated \|\| !threaded \|\| SOLVER_WORKERS < 2\) return ([^;]+);/)?.[1];
+  assert.ok(lone, 'the un-isolated fallback is no longer where this test can read it');
+  assert.doesNotMatch(lone, /shareTables/, 'a page without isolation has no shared memory to build into');
 });
 
 test('there is ONE pool, and rolling a scramble goes through it', () => {

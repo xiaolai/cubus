@@ -10,9 +10,11 @@
 # run builds every platform and publishes nothing, with no flag to get wrong.
 #
 # What this workflow cannot do, and does not pretend to:
-#   * iOS and Android release artifacts need signing material that only the owner has. Each mobile
-#     job is skipped unless its secrets are present, and when it runs it ASSERTS the artifact is
-#     signed rather than trusting a build that warns and carries on.
+#   * iOS and Android release artifacts need signing material that only the owner has. Without it
+#     each mobile job still BUILDS what it can — Android an unsigned APK and AAB, which proves the
+#     leg compiles and is what its Kotlin tests and asset checks run against; iOS the Rust side
+#     for aarch64-apple-ios — and uploads nothing. When the material is present, each ASSERTS the
+#     artifact is signed rather than trusting a build that warns and carries on.
 #   * dev-docs/mobile-shell-plan.md M3/M4 (device verification, the golden-frames native leg on a
 #     real phone) are manual gates that no runner can perform. They are release-blocking for the
 #     stores, not for producing a build, and dev-docs/release-runbook.md is where they are tracked.
@@ -32,30 +34,146 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# Read-only for every job, and `contents: write` only where a release is actually created (the
+# draft job). Every build job used to run with write access to the repository it was building
+# from, for nothing — the widest grant a compromised action or dependency could have asked for.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # The gate runs FIRST and everything else needs it. Shipping a build of a red tree is the one
   # failure a release pipeline exists to prevent, and `pnpm check` is this repo's definition of
   # green (AGENTS.md). It is not re-implemented here — it is called.
+  #
+  # And it asks CI, because `pnpm check` is not all of CI: cargo fmt/clippy/check, the golden
+  # frames, the icons and the vendored-bundle diff run only there. v0.2.6 was tagged three times
+  # on three commits, once straight after a red CI run, and every one of those tags drafted a
+  # release — the gate here was narrower than the gate on main. Since 2026-09-05 a tag whose
+  # commit has no successful CI run does not build.
   gate:
     name: Quality gate
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read   # `gh run list`, to read CI's conclusion for this commit
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The whole history and every tag, so the check below can ask git what KIND of tag
+          # fired this run — a shallow checkout of a tag ref cannot tell an annotated tag from a
+          # lightweight one.
+          fetch-depth: 0
+          fetch-tags: true
+
+      # WHAT A RELEASE TAG HAS TO BE, checked before a single dependency is installed.
+      #
+      # ANNOTATED. `git tag vX.Y.Z` makes a lightweight tag: a bare pointer with no author, no
+      # date and no message, which is also the kind that gets quietly re-pointed — v0.2.6 was
+      # moved twice after it was pushed, and three Release runs drafted from three commits. An
+      # annotated tag (`git tag -a`) is an object with a tagger and a date, and the runbook's rule
+      # is that a pushed one is never moved; the next step is what holds that rule when a tag is
+      # moved anyway.
+      #
+      # NOT A PRERELEASE. `pnpm bump 0.3.0-beta.1` is accepted by the bump tool, the build runs
+      # for forty minutes, and then make-updater-manifest.mjs refuses the version (Tauri parses
+      # it with semver, and the manifest would read as "no update" to every client), the updater
+      # endpoint is releases/latest/download — which a prerelease never becomes — and
+      # update-homebrew.yml refuses the tap write. Prereleases are not supported end to end;
+      # refusing the tag here costs seconds instead of the whole matrix.
+      #
+      # AND THE VERSION THE APP WILL SHOW. A release named v0.2.0 whose About card says 0.1.9 is
+      # a support problem that outlives the release, and it is one grep to prevent.
+      - name: the tag is annotated, stable, and matches the version in the app
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -eu
+          kind=$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")
+          if [ "$kind" != "tag" ]; then
+            echo "::error::$GITHUB_REF_NAME is a lightweight tag (git object: $kind). Cut releases from ANNOTATED tags: git tag -a $GITHUB_REF_NAME -m 'release: ${GITHUB_REF_NAME#v}' — dev-docs/release-runbook.md §3."
+            exit 1
+          fi
+          case "$GITHUB_REF_NAME" in
+            *-*)
+              echo "::error::$GITHUB_REF_NAME is shaped like a prerelease, which nothing downstream supports: the updater manifest refuses it, releases/latest never points at it, and the tap refuses it. Tag a bare vX.Y.Z."
+              exit 1 ;;
+          esac
+          tag="${GITHUB_REF_NAME#v}"
+          app=$(sed -n "s/^export const VERSION = '\(.*\)';$/\1/p" apps/web/lib/app.js)
+          echo "tag=$tag  app=$app"
+          if [ "$tag" != "$app" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION $app — run 'pnpm bump $tag'"
+            exit 1
+          fi
+
+      # A PUSHED TAG IS NEVER MOVED. If a release — draft or published — already exists for this
+      # tag, it was built from some commit, and this run must be at that same commit: a re-run of
+      # the same build is fine, a tag re-pointed at a newer commit is not. The draft job records
+      # the build commit in the release's target_commitish for exactly this comparison (GitHub
+      # stores the value verbatim and ignores it when the tag already exists, which is what makes
+      # it free to carry our own record). Releases made before that record was kept say `main`,
+      # so a re-run of one of those is refused too — correctly: they are published.
+      - name: no release for this tag exists on another commit
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if out=$(gh release view "$GITHUB_REF_NAME" --json targetCommitish,isDraft 2>&1); then
+            built=$(printf '%s' "$out" | jq -r .targetCommitish)
+            draft=$(printf '%s' "$out" | jq -r .isDraft)
+            if [ "$built" != "$GITHUB_SHA" ]; then
+              echo "::error::a release for $GITHUB_REF_NAME already exists (draft: $draft), built from $built; this run is at $GITHUB_SHA. The tag was moved after it was pushed. Never move a pushed tag: cut the next version instead, and delete the stale draft by hand if that is what it is."
+              exit 1
+            fi
+            echo "a release for $GITHUB_REF_NAME exists at this same commit (draft: $draft) — a re-run, which is allowed"
+          else
+            case "$out" in
+              *"release not found"*) echo "no release for $GITHUB_REF_NAME yet" ;;
+              *) echo "::error::could not ask GitHub about $GITHUB_REF_NAME: $out"; exit 1 ;;
+            esac
+          fi
+
+      # CI'S VERDICT FOR THIS COMMIT, not this workflow's opinion of it. CI runs on the push to
+      # main; the tag usually arrives seconds later, so this waits for a run that is still going
+      # rather than failing on "not finished". What it will not do is proceed without one: a
+      # commit that was never pushed to main has no CI run, and a commit whose runs all failed or
+      # were cancelled is a red tree with a tag on it.
+      - name: CI succeeded for this commit
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          deadline=$((SECONDS + 1800))
+          while :; do
+            runs=$(gh run list --workflow CI --commit "$GITHUB_SHA" --json status,conclusion,url)
+            if [ "$(printf '%s' "$runs" | jq length)" -eq 0 ]; then
+              state="no CI run exists for $GITHUB_SHA — was it pushed to main?"
+            elif printf '%s' "$runs" | jq -e 'any(.status == "completed" and .conclusion == "success")' >/dev/null; then
+              echo "CI succeeded for $GITHUB_SHA"
+              exit 0
+            elif printf '%s' "$runs" | jq -e 'all(.status == "completed")' >/dev/null; then
+              echo "::error::CI for $GITHUB_SHA finished without a success: $(printf '%s' "$runs" | jq -c 'map({conclusion, url})'). Fix main, then tag the green commit."
+              exit 1
+            else
+              state="CI for $GITHUB_SHA is still running"
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::gave up after 30 minutes: $state"
+              exit 1
+            fi
+            echo "$state — waiting 30s"
+            sleep 30
+          done
+
+      # No system packages here: this job runs no cargo, so the webkit2gtk/gtk set it used to
+      # install (~40 s) was a dependency of nothing it did.
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
-
-      - name: Install Linux system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev libdbus-1-dev pkg-config
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -75,22 +193,10 @@ jobs:
       - name: pnpm check
         run: xvfb-run -a pnpm check
 
-      # The tag must be the version the app will SHOW. A release named v0.2.0 whose About card
-      # says 0.1.9 is a support problem that outlives the release, and it is one grep to prevent.
-      - name: the tag matches the version in the app
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          app=$(sed -n "s/^export const VERSION = '\(.*\)';$/\1/p" apps/web/lib/app.js)
-          echo "tag=$tag  app=$app"
-          if [ "$tag" != "$app" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match VERSION $app — run 'pnpm bump $tag'"
-            exit 1
-          fi
-
   desktop:
     name: Desktop (${{ matrix.name }})
     needs: gate
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -109,9 +215,9 @@ jobs:
             rust-targets: ''
     runs-on: ${{ matrix.runs-on }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -126,11 +232,12 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libdbus-1-dev patchelf pkg-config
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09-04
         with:
+          toolchain: stable
           targets: ${{ matrix.rust-targets }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: '. -> target'
 
@@ -143,7 +250,7 @@ jobs:
       # half that decides whether the app opens on a Mac that is not the build machine.
       # Windows and Linux take no signing material, so they take no signing branch either.
       - name: Build
-        if: runner.os != 'macOS'
+        if: runner.os == 'Linux'
         env:
           # Signs the updater artifacts. Without these the build still succeeds and simply produces
           # no .sig files — which `make-updater-manifest.mjs` then refuses, loudly, rather than
@@ -151,6 +258,68 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm --filter cubus-desktop exec tauri build ${{ matrix.args }}
+
+      # WINDOWS BUILDS TWICE, because DirectML.dll exists only after the first build.
+      #
+      # The native scanner's DirectML execution provider loads `DirectML.dll` from beside the
+      # executable at runtime. `ort-sys` (crates/cube-vision, feature `copy-dylibs`, 2026-09-05)
+      # copies that DLL into target/release/ as a side effect of COMPILING — too late for a static
+      # `bundle.resources` entry: tauri-build copies resources during the same cargo build, fails
+      # on a file that is not there yet, and cargo does not order the desktop crate's build script
+      # after ort-sys's extraction. So the first build compiles without bundling and leaves the
+      # DLL in target/release/; the second bundles with a config overlay naming it as a resource,
+      # which Windows installs into the application directory — beside the executable, where the
+      # provider looks. Every Windows release before this shipped without the DLL, and the scanner
+      # fell back to the CPU provider with a log line nobody read.
+      - name: Build (Windows, twice — the second time with DirectML.dll)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pnpm --filter cubus-desktop exec tauri build --no-bundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = Join-Path $PWD 'target\release\DirectML.dll'
+          if (-not (Test-Path $dll)) {
+            Write-Output "::error::target/release/DirectML.dll is missing after the build — ort-sys's copy-dylibs did not run, or pyke's directml distribution no longer carries the DLL"
+            exit 1
+          }
+          Write-Output "DirectML.dll: $((Get-Item $dll).Length) bytes"
+          # Resource paths are relative to apps/desktop/src-tauri; the value is where the file lands
+          # in the installed application directory.
+          $overlay = Join-Path $env:RUNNER_TEMP 'directml.conf.json'
+          '{"bundle":{"resources":{"../../../target/release/DirectML.dll":"DirectML.dll"}}}' | Set-Content -Path $overlay -Encoding ascii
+          pnpm --filter cubus-desktop exec tauri build --config $overlay
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # ASSERTED ON THE INSTALLERS, not on the overlay that was supposed to put it there. The MSI is
+      # unpacked with an administrative install (extracts, installs nothing) and the NSIS installer
+      # with 7-Zip, which reads NSIS archives; each must contain the DLL, or the release is refused.
+      - name: the Windows installers carry DirectML.dll
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = Get-ChildItem -Recurse -Path target -Filter *.msi | Where-Object { $_.FullName -match '\\bundle\\' } | Select-Object -First 1
+          $exe = Get-ChildItem -Recurse -Path target -Filter *-setup.exe | Where-Object { $_.FullName -match '\\bundle\\' } | Select-Object -First 1
+          if (-not $msi) { Write-Output '::error::no .msi was produced'; exit 1 }
+          if (-not $exe) { Write-Output '::error::no -setup.exe was produced'; exit 1 }
+          $msiDir = Join-Path $env:RUNNER_TEMP 'msi-contents'
+          $exeDir = Join-Path $env:RUNNER_TEMP 'nsis-contents'
+          $p = Start-Process msiexec.exe -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$msiDir`"") -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { Write-Output "::error::msiexec /a failed with $($p.ExitCode) — the MSI could not be unpacked"; exit 1 }
+          7z x "$($exe.FullName)" "-o$exeDir" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { Write-Output '::error::7-Zip could not unpack the NSIS installer, so its contents could not be checked'; exit 1 }
+          foreach ($pair in @(@('MSI', $msiDir), @('NSIS', $exeDir))) {
+            $found = Get-ChildItem -Recurse -Path $pair[1] -Filter DirectML.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $found) {
+              Write-Output "::error::the $($pair[0]) installer carries no DirectML.dll — the native scanner's DirectML path would fail at load on every install"
+              exit 1
+            }
+            Write-Output "$($pair[0]): $($found.FullName) ($([math]::Round($found.Length / 1MB, 1)) MB)"
+          }
 
       # macOS, where the certificate has to be CHECKED before it is handed over.
       #
@@ -187,6 +356,14 @@ jobs:
                 echo "::warning::APPLE_CERTIFICATE_BASE64 is not set — this macOS build is UNSIGNED. That is fine for a dispatch run; a v-tag fails here instead." ;;
             esac
           else
+            # The identity is the certificate's exact "Developer ID Application: …" name, and it
+            # is checked here because the alternative is a build that imports the certificate,
+            # signs with nothing that matches an empty name, and fails in the notarize step on a
+            # keychain lookup for a string that was never set.
+            if [ -z "$IDENTITY" ]; then
+              echo "::error::APPLE_SIGNING_IDENTITY is not set — it must name the certificate in APPLE_CERTIFICATE_BASE64 exactly ('Developer ID Application: …')"
+              exit 1
+            fi
             export APPLE_CERTIFICATE="$CERT_B64"
             export APPLE_CERTIFICATE_PASSWORD="$CERT_PASSWORD"
             export APPLE_SIGNING_IDENTITY="$IDENTITY"
@@ -212,6 +389,29 @@ jobs:
           CERT_B64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
+          # No certificate means the build above is UNSIGNED, and sign-macos.sh — even in its
+          # verify-only mode — begins by asserting the signing identity is in the keychain. So
+          # running it here failed a dispatch that had already said, correctly, that it was
+          # building unsigned. On a tag the build step has already refused; this branch is the
+          # dispatch's, and it has nothing to verify.
+          if [ -z "$CERT_B64" ]; then
+            case "$GITHUB_REF" in
+              refs/tags/v*)
+                echo "::error::unreachable — a tagged build without a certificate fails at Build (macOS)"
+                exit 1 ;;
+              *)
+                echo "::warning::no APPLE_CERTIFICATE_BASE64 — the build is unsigned, so there is nothing to verify or notarize on this dispatch run"
+                exit 0 ;;
+            esac
+          fi
+          # sign-macos.sh reads the identity from the environment and refuses without one (since
+          # 2026-09-05; it used to default to the owner's Developer ID string, which is not a
+          # value a checked-out script should carry).
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "::error::APPLE_SIGNING_IDENTITY is not set — it must name the certificate in APPLE_CERTIFICATE_BASE64 exactly ('Developer ID Application: …')"
+            exit 1
+          fi
+
           # Re-import the certificate, because the previous step's keychain is GONE.
           #
           # tauri-bundler signs by creating a TEMPORARY keychain, importing APPLE_CERTIFICATE into
@@ -220,35 +420,43 @@ jobs:
           # stapling the .app it rebuilds the .dmg around it and re-signs that dmg, so it needs a
           # signing identity of its own. Without this the run reached `== preflight` and stopped at
           # "signing identity not in keychain", with the build itself perfectly signed.
-          if [ -n "$CERT_B64" ]; then
-            kc="$RUNNER_TEMP/notarize.keychain"
-            security create-keychain -p "" "$kc"
-            security set-keychain-settings -lut 21600 "$kc"
-            security unlock-keychain -p "" "$kc"
-            printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/notarize.p12"
-            security import "$RUNNER_TEMP/notarize.p12" -k "$kc" -P "$CERT_PASSWORD" -T /usr/bin/codesign -A
-            rm -f "$RUNNER_TEMP/notarize.p12"
-            # Prepend to the SEARCH LIST rather than replace it: codesign resolves the identity by
-            # searching, and dropping the login keychain has broken signing on runners before.
-            security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
-            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$kc" >/dev/null
-            echo "identities available to this step:"
-            security find-identity -v -p codesigning | sed 's/^/  /'
-          fi
+          kc="$RUNNER_TEMP/notarize.keychain"
+          security create-keychain -p "" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "" "$kc"
+          printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/notarize.p12"
+          security import "$RUNNER_TEMP/notarize.p12" -k "$kc" -P "$CERT_PASSWORD" -T /usr/bin/codesign -A
+          rm -f "$RUNNER_TEMP/notarize.p12"
+          # Prepend to the SEARCH LIST rather than replace it: codesign resolves the identity by
+          # searching, and dropping the login keychain has broken signing on runners before. The
+          # current list is read into an array — `security` prints one quoted path per line — so
+          # a path with a space survives, which word-splitting its output would not.
+          existing=()
+          while IFS= read -r line; do existing+=("$line"); done \
+            < <(security list-keychains -d user | sed 's/^[[:space:]]*"//; s/"$//')
+          security list-keychains -d user -s "$kc" "${existing[@]}"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$kc" >/dev/null
+          echo "identities available to this step:"
+          security find-identity -v -p codesigning | sed 's/^/  /'
 
           if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
             echo "::warning::no notarization credentials — the macOS build is signed but NOT notarized"
             ./scripts/sign-macos.sh   # verify-only: reports the verdict, changes nothing
             exit 0
           fi
-          # A keychain profile, so the app-specific password never reaches argv or a build log.
+          # A keychain profile, so the app-specific password never reaches a build log. It does
+          # pass through argv here, once, on an ephemeral runner: `notarytool` has no `@env:` or
+          # `@keychain:` form for --password (the binary carries neither string — checked
+          # 2026-09-05 against Xcode's notarytool; that syntax was altool's), and its only other
+          # input is an interactive prompt. An App Store Connect API key (--key/--key-id/--issuer)
+          # would remove the password entirely; it needs material only the owner can create.
           xcrun notarytool store-credentials cubus-ci \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_PASSWORD"
           ./scripts/sign-macos.sh --profile cubus-ci
 
       # Never `if-no-files-found: warn`. A release that silently ships nothing for a platform is
       # the exact defect AGENTS.md records from verify-icons.py: a gate nothing runs is not a gate.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: desktop-${{ runner.os }}
           if-no-files-found: error
@@ -271,10 +479,11 @@ jobs:
     name: Android (AAB + APK)
     needs: gate
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -282,30 +491,33 @@ jobs:
       # 21, not the runner default. Gradle 8.14.3 + AGP 8.11.0 run on 17-21, and a newer JDK dies
       # with "Unsupported class file major version NN", which names neither Java nor the fix.
       # scripts/tauri-android.mjs enforces the same range locally; this is the CI half of it.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '21'
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
 
       - name: NDK
         run: |
           sdkmanager --install "ndk;27.2.12479018"
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09-04
         with:
+          toolchain: stable
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      # Absent secrets are a SKIP that says so, never a quiet unsigned build. An unsigned AAB
-      # cannot be uploaded to Play, so producing one and calling the job green is worse than not
-      # running it: it is twenty minutes spent to reach a false conclusion.
+      # Absent secrets are not a quiet unsigned RELEASE. The build below still runs, unsigned,
+      # because it proves the Android leg compiles and it is what the Kotlin tests and the asset
+      # check run against — but nothing is uploaded and the signature assertion is skipped, with
+      # a warning that says so. An unsigned AAB cannot be uploaded to Play, so publishing one and
+      # calling the job green would be twenty minutes spent to reach a false conclusion.
       - name: Keystore
         id: keystore
         # Every secret arrives as an environment variable and none is spliced into the script
@@ -338,29 +550,67 @@ jobs:
         run: pnpm --filter cubus-desktop exec tauri android build --aab --apk
 
       # The Kotlin unit tests, AFTER the build and not before it — `gen/android/tauri.settings.gradle`
-      # is generated by `tauri android init`, which is what `tauri android build` does on its way
-      # past, so before this point the Gradle project cannot be configured at all. Running them
-      # later than one would like is the price of that, and they still gate the upload below.
+      # and `app/tauri.build.gradle.kts` are gitignored and written by tauri-build (the desktop
+      # crate's build script, when TAURI_ANDROID_PROJECT_PATH is set) during the Rust build inside
+      # `tauri android build`, so before this point Gradle cannot even configure the project.
+      # Running them later than one would like is the price of that, and they still gate the
+      # upload below.
       #
-      # This is the only place they run, for the same reason: the push CI never goes through init.
       # They need no device and no NDK — they cover the pure halves (`letterboxFrom`, `uuid`, `hex`,
       # `matches`), which is exactly the part that had no verification at all and where the defects
       # were: a twelve-digit UUID group, an empty filter matching every advertiser, and a letterbox
-      # computed in Float where the TypeScript uses double.
+      # computed in Float where the TypeScript uses double. Until 2026-09-05 this was the only place
+      # they ran, i.e. only on a tag; ci.yml's Android shell job now runs them on every push,
+      # generating the two Gradle files with a bare `cargo check` instead of a full build.
       - name: Android — Kotlin unit tests
         working-directory: apps/desktop/src-tauri/gen/android
         run: ./gradlew testArm64DebugUnitTest
 
+      # WHAT IS IN THE APK, asserted rather than assumed, on the unsigned build too. The model
+      # rides in as an asset copied by :app:copyCubeModel from ml/models, and the runbook believed
+      # for a week that the APK also carried the CoreML package — it did, until c45d01d scoped the
+      # bundle resources per platform, and nothing checked either way. Exactly one model, the
+      # tflite, and no `assets/models/` directory from another platform's config.
+      - name: the APK carries the tflite model, and no other platform's
+        run: |
+          set -eu
+          apk=$(find apps/desktop/src-tauri/gen/android/app/build/outputs/apk -name '*-release*.apk' | head -1)
+          test -n "$apk" || { echo "::error::no release APK was produced"; exit 1; }
+          listing=$(unzip -l "$apk")
+          printf '%s\n' "$listing" | grep -E ' assets/cube-yolo\.tflite$' \
+            || { echo "::error::$apk carries no assets/cube-yolo.tflite — the native scanner would silently never start (VisionPlugin.probe answers false forever)"; exit 1; }
+          if printf '%s\n' "$listing" | grep -qE ' assets/models/'; then
+            echo "::error::$apk carries assets/models/ — a bundle.resources entry meant for another platform has leaked into the Android build"
+            exit 1
+          fi
+          echo "ok: assets/cube-yolo.tflite present, no foreign model resources"
+
       # The build only WARNS when it is unsigned. This is the assertion, because a warning inside
-      # a twenty-minute log is not a gate. `apksigner verify` fails loudly on an unsigned APK.
-      - name: the artifact is actually signed
+      # a twenty-minute log is not a gate. `apksigner verify` fails loudly on an unsigned APK, and
+      # the AAB — the artifact Play actually takes, which apksigner does not read — is checked as
+      # the signed jar it is.
+      - name: the artifacts are actually signed
         if: steps.keystore.outputs.signed == 'true'
         run: |
-          apk=$(find apps/desktop/src-tauri/gen/android -name '*-release*.apk' | head -1)
+          set -eu
+          apk=$(find apps/desktop/src-tauri/gen/android/app/build/outputs/apk -name '*-release*.apk' | head -1)
+          aab=$(find apps/desktop/src-tauri/gen/android/app/build/outputs/bundle -name '*-release*.aab' | head -1)
           test -n "$apk" || { echo "::error::no release APK was produced"; exit 1; }
-          "$ANDROID_HOME"/build-tools/*/apksigner verify --verbose "$apk"
+          test -n "$aab" || { echo "::error::no release AAB was produced"; exit 1; }
+          # The NEWEST build-tools, chosen explicitly. An unquoted `build-tools/*/apksigner` glob
+          # expands to every installed version and runs the first as the command with the rest as
+          # its arguments — fine with one version on the image, broken the day it carries two.
+          build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          echo "apksigner from $build_tools"
+          "$build_tools/apksigner" verify --verbose "$apk"
+          # jarsigner prints "jar verified" only for a bundle that carries a signature; an unsigned
+          # one prints "jar is unsigned" and, without -strict, still exits 0 — so the verdict is
+          # read from the output, not the exit code.
+          verdict=$(jarsigner -verify -strict "$aab" 2>&1) || true
+          printf '%s\n' "$verdict"
+          printf '%s\n' "$verdict" | grep -q '^jar verified' || { echo "::error::$aab is not signed"; exit 1; }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: steps.keystore.outputs.signed == 'true'
         with:
           name: android
@@ -373,25 +623,49 @@ jobs:
     name: iOS (IPA)
     needs: gate
     runs-on: macos-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09-04
         with:
+          toolchain: stable
           targets: aarch64-apple-ios
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # The Rust side compiles for the phone on EVERY run, signed or not. Until 2026-09-05 nothing
+      # anywhere compiled aarch64-apple-ios: the Build step below was skipped for want of a
+      # certificate, and its message claimed an unsigned IPA had still been produced, which was
+      # never true — a tag would have been the first time the iOS build script ever ran. ci.yml's
+      # macOS job checks the same target on every push; this is the release copy.
+      - name: the Rust side builds for iOS
+        run: cargo check -p cubus-desktop --target aarch64-apple-ios
+
       # Same rule as Android: no signing material, no pretend release. An unsigned .ipa installs
       # nowhere, so a green job that produced one would be a green job that produced nothing.
+      #
+      # THE MATERIAL GOES TO TAURI, NOT TO `security`. tauri-cli 2.11.4 reads IOS_CERTIFICATE,
+      # IOS_CERTIFICATE_PASSWORD and IOS_MOBILE_PROVISION itself (mobile/ios/mod.rs,
+      # `signing_from_env`): it imports the certificate into a temporary keychain of its own,
+      # installs the profile, derives the signing identity and the team from the certificate, and
+      # writes CODE_SIGN_STYLE=Manual, CODE_SIGN_IDENTITY, DEVELOPMENT_TEAM and the profile UUID
+      # into the pbxproj — plus the matching signingCertificate, provisioningProfiles and teamID
+      # into the ExportOptions it generates from `--export-method` (`synchronize_project_config`).
+      # This step used to do all of that by hand: create a keychain, import, `security
+      # list-keychain -s "$keychain"` (which REPLACES the search list — the exact mistake the
+      # macOS job's comment warns against), and hope automatic signing would find the profile.
+      # None of it was ever exercised, because no distribution certificate has existed. Handing
+      # the secrets to the tool that already implements the sequence deletes the hand-rolled copy
+      # instead of patching it; what stays here is the check the tool does not make.
       - name: Signing
         id: signing
         env:
@@ -416,39 +690,46 @@ jobs:
             missing=""
             [ -z "$CERT_B64" ] && missing="APPLE_IOS_CERTIFICATE_BASE64"
             [ -z "$PROFILE_B64" ] && missing="${missing:+$missing and }APPLE_PROVISIONING_PROFILE_BASE64"
-            echo "::warning::$missing not set — iOS release build skipped (unsigned IPA still produced)"
+            echo "::warning::$missing not set — the signed iOS build is skipped and no IPA is produced; the Rust side compiled for aarch64-apple-ios above"
             echo "signed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          keychain=$RUNNER_TEMP/build.keychain
-          security create-keychain -p "" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "" "$keychain"
-          printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
-          security list-keychain -d user -s "$keychain"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$keychain" >/dev/null
           # A Developer ID certificate cannot sign for the App Store, and xcodebuild does not say
           # so — it reports "No profiles for 'im.cubus.app' were found", which sends you looking
-          # for a missing profile you may well have. Name the real cause here instead.
-          if ! security find-identity -v -p codesigning "$keychain" | grep -qE "Apple Distribution|iPhone Distribution"; then
-            echo "::error::the imported certificate cannot sign for iOS distribution. Found:"
-            security find-identity -v -p codesigning "$keychain" | sed 's/^/::error::  /'
-            echo "::error::iOS needs an Apple Distribution certificate; Developer ID is macOS-only."
-            exit 1
-          fi
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          printf '%s' "$PROFILE_B64" | base64 -d \
-            > ~/Library/MobileDevice/Provisioning\ Profiles/cubus.mobileprovision
+          # for a missing profile you may well have. Name the real cause here instead, read off
+          # the certificate itself before anything is imported anywhere. Untried against a real
+          # distribution certificate, because none exists yet (runbook §2).
+          printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/ios.p12"
+          subject=$(openssl pkcs12 -in "$RUNNER_TEMP/ios.p12" -nokeys -passin env:CERT_PASSWORD 2>/dev/null | openssl x509 -noout -subject) \
+            || { rm -f "$RUNNER_TEMP/ios.p12"; echo "::error::could not read the certificate in APPLE_IOS_CERTIFICATE_BASE64 — wrong password, or not a .p12"; exit 1; }
+          rm -f "$RUNNER_TEMP/ios.p12"
+          echo "certificate: $subject"
+          case "$subject" in
+            *"Apple Distribution"*|*"iPhone Distribution"*) ;;
+            *)
+              echo "::error::the certificate in APPLE_IOS_CERTIFICATE_BASE64 cannot sign for iOS distribution: $subject"
+              echo "::error::iOS needs an Apple Distribution certificate; Developer ID is macOS-only."
+              exit 1 ;;
+          esac
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
+      # `--export-method` is what sets the export's `method`: tauri generates ExportOptions from
+      # it and merges that OVER the committed gen/apple/ExportOptions.plist (mobile/ios/build.rs,
+      # `merge_plist`, generated values winning), so that file's `method: debugging` is a local
+      # default left behind by a `tauri ios build` on a Mac, not what this exports.
       - name: Build
         if: steps.signing.outputs.signed == 'true'
         env:
+          IOS_CERTIFICATE: ${{ secrets.APPLE_IOS_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          # tauri derives the team from the certificate; this is the belt that also fills the
+          # pbxproj's DEVELOPMENT_TEAM, which the committed gen/apple/project.yml does not carry
+          # (`bundle > iOS > developmentTeam` in tauri.conf.json is the config-file alternative).
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm --filter cubus-desktop exec tauri ios build --export-method app-store-connect
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: steps.signing.outputs.signed == 'true'
         with:
           name: ios
@@ -463,18 +744,19 @@ jobs:
     # is publish — a human presses that, having looked at what is actually in the draft.
     if: always() && needs.desktop.result == 'success' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
-      # `contents: write` alone now. `actions: write` was here only so this job could dispatch the
-      # tap update; that dispatch is gone (see below), so the grant goes with it rather than
-      # outliving its reason.
+      # `contents: write` alone now, and only here. `actions: write` was here only so this job
+      # could dispatch the tap update; that dispatch is gone (see below), so the grant goes with
+      # it rather than outliving its reason.
       contents: write
     steps:
       # CHECKED OUT, because this job runs a script from the repo. It did not, and the first tagged
       # release to reach the manifest step died on `Cannot find module` — the one job that had never
       # needed the source now does.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
 
@@ -525,9 +807,38 @@ jobs:
       #
       # update-homebrew.yml now triggers on `release: published` instead, which is the moment those
       # assets actually become public. Publishing the draft below is what updates the tap.
-      - uses: softprops/action-gh-release@v2
+      #
+      # A PUBLISHED RELEASE IS NEVER TOUCHED. softprops/action-gh-release applies `draft: true` on
+      # update as well as on create, so re-running this job after a human has pressed publish
+      # would flip the release back to a draft — and a draft's assets are served to nobody
+      # unauthenticated, so releases/latest/download/latest.json 404s for every installed copy,
+      # and the cask's URL with it, until someone notices and re-publishes. Refuse instead: a
+      # published release that needs different assets is a new version.
+      - name: the release is not already published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if out=$(gh release view "$GITHUB_REF_NAME" --json isDraft 2>&1); then
+            if [ "$(printf '%s' "$out" | jq -r .isDraft)" != "true" ]; then
+              echo "::error::$GITHUB_REF_NAME is already published; re-drafting it would take its assets offline. Nothing to do here — cut the next version instead."
+              exit 1
+            fi
+            echo "a draft for $GITHUB_REF_NAME exists — its assets will be replaced"
+          else
+            case "$out" in
+              *"release not found"*) echo "no release for $GITHUB_REF_NAME yet — the draft will be created" ;;
+              *) echo "::error::could not ask GitHub about $GITHUB_REF_NAME: $out"; exit 1 ;;
+            esac
+          fi
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           draft: true
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: dist/**/*
+          # The commit this draft was BUILT from, recorded on the release. GitHub ignores the value
+          # when the tag already exists (it only decides where a tag gets created) but stores it
+          # verbatim, which is what the gate's "no release on another commit" check reads back.
+          target_commitish: ${{ github.sha }}

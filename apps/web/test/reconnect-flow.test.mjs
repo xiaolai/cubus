@@ -23,6 +23,7 @@ import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
+import { createSelfCheck } from '../lib/cube-selfcheck.js';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -56,7 +57,24 @@ const go = async (id) => { win.cubusGo(id); await tick(); };
 // Session-shaped (lib/cube-session.js), not driver-shaped: requestBattery answers a NUMBER or
 // null, because a level the cube would not give is an absence rather than an object with an
 // undefined field inside it.
-const fakeConn = () => ({ requestBattery: async () => 80, disconnect: async () => {} });
+//
+// The SELF-CHECK IS THE REAL ONE. app.js hands every camera reading — a repair scan, and the
+// user's Yes — to `session.cameraScan()`, which is what derives the correction and moves the
+// verdict; a fake that stubbed that out would be testing a private derivation the app no longer
+// has. `createSelfCheck` is a pure module, so using it here costs nothing and keeps the fake a
+// stand-in for the session rather than a lookalike.
+const fakeConn = (over = {}) => {
+  const check = createSelfCheck({ Cube });
+  return {
+    requestBattery: async () => 80,
+    disconnect: async () => {},
+    mayFollow: () => check.verdict !== 'refused',
+    numbersMoves: () => true,
+    get verdict() { return check.verdict; },
+    cameraScan: (scanned, reported) => { check.onCameraScan(scanned, reported); return check.offset; },
+    ...over,
+  };
+};
 
 before(async () => {
   win = new Window({
@@ -98,7 +116,7 @@ before(async () => {
   const t0 = Date.now();
   while (Date.now() - t0 < 60000) {
     const scr = $('#scr')?.textContent ?? '';
-    if (scr && scr !== 'press New scramble' && scr !== 'solver loading…') break;
+    if (scr && scr !== 'press New scramble' && scr !== 'working out a scramble…') break;
     await new Promise((r) => setTimeout(r, 50));
   }
 });
@@ -378,4 +396,53 @@ test('one mismatched side continues into the full repair scan, sides kept — an
   assert.equal(storedLast().facelets, W);
   assert.equal(win.location.hash, '#/home', 'then back to the question\'s screen');
   feed().useConnection(null);
+});
+
+// A cube TURNED between the question and the check is still the same cube, and the check has to
+// say so. The two-side comparison used to run against the frozen candidate — the arrangement as
+// it was remembered — so a single quarter turn while the user walked to the camera made every
+// side mismatch, and a returning user was sent through a full six-side scan for having handled
+// their own cube (found by audit, 2026-09-04).
+//
+// What it compares now is the candidate CARRIED FORWARD: if the candidate is right then
+// `candidate · raw⁻¹` is the correction, that correction is constant under later turns, and
+// applying it to the LATEST report says where the cube is now. This is the exact reasoning the
+// Yes on Home already used to correct the latest report; the scanner simply had not been told.
+test('a cube turned between the question and the check still confirms', async () => {
+  const state = await appState();
+  feed().useConnection(null);
+  await tick();
+  feed().useConnection(fakeConn());
+  const memory = storedLast();
+  feed().facelets(memory.reported, 0);
+  await tick();
+  assert.equal(state.reconnect?.reading, 'unchanged', 'precondition: the question is open');
+  const candidate = state.reconnect.candidate;
+
+  // The user picks the cube up and turns it once on the way to the camera. The cube reports it;
+  // the candidate is FROZEN by design, so the picture on screen does not move.
+  const turned = move(memory.reported, 'U');
+  feed().facelets(turned, 1);
+  await tick();
+  assert.equal(state.reconnect?.candidate, candidate, 'the picture being confirmed must hold still');
+
+  // What the camera now sees is the candidate turned the same way — the same cube, one turn on.
+  const nowLooks = move(candidate, 'U');
+  assert.notEqual(nowLooks, candidate, 'precondition: the turn actually changed the sides');
+
+  await go('scan');
+  const panel = $('#stage ai-scan-panel');
+  const progress = (captured) => panel.dispatchEvent(new win.CustomEvent('scan-progress', {
+    detail: { phase: 'scanning', complete: false, captured, suspects: [], message: '' },
+  }));
+  progress([{ face: 'F', colors: colorsOf(sideOf(nowLooks, 'F')) }]);
+  assert.notEqual($('#scanHowTitle').textContent, 'Not what we remembered',
+    'the first side of a turned cube was called a mismatch — the user is shown their own cube and told it is not theirs');
+  progress([
+    { face: 'F', colors: colorsOf(sideOf(nowLooks, 'F')) },
+    { face: 'U', colors: colorsOf(sideOf(nowLooks, 'U')) },
+  ]);
+  await tick();
+  assert.equal(state.reconnect, null, 'two adjacent sides of the turned cube are still the Yes');
+  assert.equal(state.cube.trusted, true);
 });

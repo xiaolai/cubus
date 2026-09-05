@@ -48,8 +48,18 @@ export interface ScanResult {
   facelets: string;
   /** cubejs + parity invariants agree the state is a solvable, well-formed cube. */
   valid: boolean;
-  /** 0..1, the minimum per-sticker confidence across all 54 stickers. */
-  confidence: number;
-  /** Sticker indices (0..53) whose classification was ambiguous — re-check. */
-  lowConfidence: number[];
+  /**
+   * 0..1, the minimum per-sticker confidence across all 54 stickers.
+   *
+   * ABSENT on a refusal, and that is the point. A rejection used to report `confidence: 0` and
+   * all 54 indices as low-confidence, which is a MEASUREMENT nobody took: the detector's scores
+   * are whatever they were, and a scan refused for a colour misread or an ambiguous rotation says
+   * nothing at all about them. "Never invent data" — a statistic that cannot be computed is a
+   * dash, not a number — so the field is simply not there rather than being filled with a
+   * plausible one.
+   */
+  confidence?: number;
+  /** Sticker indices (0..53) whose classification was ambiguous — re-check. Absent on a refusal,
+   *  for the reason `confidence` gives. */
+  lowConfidence?: number[];
 }
