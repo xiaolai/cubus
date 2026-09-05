@@ -54,6 +54,18 @@ export class WebDetector implements Detector {
   }
 
   /**
+   * The model URL the installed runner was built for, or null when nothing is installed.
+   *
+   * Read off `run` and not off `loadedUrl` alone, so the answer cannot outlive the session it is
+   * about: `dispose()` clears both, but a future path that released the runner without clearing
+   * the URL would otherwise keep claiming a model this detector no longer holds — and this value
+   * is what `CameraSession.park()` hands to the next owner as permission to skip `load()`.
+   */
+  get loadedModel(): string | null {
+    return this.run ? this.loadedUrl : null;
+  }
+
+  /**
    * The provider list the loaded runner was created with, or null before the model has loaded.
    *
    * What was ASKED FOR, which is what the timing fallback changes — never a claim about which

@@ -51,6 +51,13 @@ const ortByUrl = new Map<string, Promise<Ort>>();
  * when the backend initialises, not per session, so the two proxy modes are separate module
  * instances — see `runtimeUrl`. What is left for this chain to protect is `numThreads` and
  * `wasmPaths`, which two concurrent runners in the SAME mode can still half-apply to each other.
+ *
+ * IT CARRIES THE PROBE SECTION TOO (2026-09-05), which is a second global on the same module: the
+ * WebGPU device and its command queue. `env.webgpu.device` is per module, so every session on one
+ * submits on ONE queue — and `gpuRanTheGraph` reads that queue as this session's evidence. Two
+ * probes overlapping there count each other, so the chain is what makes the count per-session at
+ * all. Same chain rather than a second one, because the two critical sections both want the module
+ * to itself and a runner never holds one while waiting for the other.
  */
 const configuring = new WeakMap<Ort, Promise<unknown>>();
 
@@ -503,6 +510,82 @@ function webgpuQueue(ort: Ort): QueueLike | null {
 }
 
 /**
+ * ONE `submit` wrapper per queue, however many probes are watching it.
+ *
+ * INSTALLED ONCE AND REMOVED ONCE (2026-09-05). Each probe used to install a wrapper over whatever
+ * it found and put THAT descriptor back on the way out, which is correct only while the installs
+ * and the restores are perfectly nested. They are not: two `createModelRunner` calls on one page
+ * interleave by construction — a panel re-mounting while another is still coming up reaches it —
+ * and the ordering measured on the fake device, A installs, B installs, A restores, B restores,
+ * left B REINSTATING A's wrapper as an own property of a queue the whole page shares. A counter
+ * that outlives its probe counts a later session's work and holds a dead module's closure alive on
+ * a live object, which is the leak the park exists to close arriving through the evidence meant to
+ * protect it.
+ *
+ * So the wrapper belongs to the QUEUE and the counters belong to the probes. The last one out
+ * restores what was there before the first one in, and only if `submit` is still the function it
+ * installed: an engine or another library that has replaced it since owns it now, and clobbering
+ * that would be the same fault pointing the other way.
+ *
+ * It does NOT make two overlapping probes tell each other's submissions apart — nothing can, since
+ * one device queue carries both, and each counter would see the union. That is what serialising
+ * the probe section is for; see `createModelRunner`.
+ */
+interface QueueWatch {
+  /** What was installed, so a restore can tell whether it is still the current `submit`. */
+  wrapper: (this: unknown, ...args: unknown[]) => unknown;
+  /** The own descriptor that was there first, or undefined when `submit` was inherited. */
+  original: PropertyDescriptor | undefined;
+  /** One counter per probe watching right now. */
+  counters: Set<{ n: number }>;
+}
+const queueWatches = new WeakMap<QueueLike, QueueWatch>();
+
+/** Count submissions on `queue`, or null where the engine will not allow the observation. */
+function watchQueue(queue: QueueLike): { counter: { n: number }; release: () => void } | null {
+  let watch = queueWatches.get(queue);
+  if (!watch) {
+    const original = Object.getOwnPropertyDescriptor(queue, 'submit');
+    const submit = queue.submit;
+    const counters = new Set<{ n: number }>();
+    const wrapper = function (this: unknown, ...args: unknown[]): unknown {
+      for (const counter of counters) counter.n++;
+      return submit.apply(this, args);
+    };
+    try {
+      Object.defineProperty(queue, 'submit', {
+        configurable: true,
+        writable: true,
+        enumerable: original?.enumerable ?? false,
+        value: wrapper,
+      });
+    } catch {
+      // An engine that will not let its queue be observed. Not evidence either way.
+      return null;
+    }
+    watch = { wrapper, original, counters };
+    queueWatches.set(queue, watch);
+  }
+  const live = watch;
+  const counter = { n: 0 };
+  live.counters.add(counter);
+  let released = false;
+  return {
+    counter,
+    release(): void {
+      if (released) return; // idempotent: a release is cleanup, and cleanup runs on every path
+      released = true;
+      live.counters.delete(counter);
+      if (live.counters.size > 0) return;
+      queueWatches.delete(queue);
+      if (queue.submit !== live.wrapper) return;
+      if (live.original) Object.defineProperty(queue, 'submit', live.original);
+      else delete (queue as unknown as Record<string, unknown>).submit;
+    },
+  };
+}
+
+/**
  * Did the GPU run THIS SESSION's graph? Counted, by running `probe` and watching the device queue.
  *
  * PER SESSION, WHICH THE DEVICE READING IS NOT (2026-09-05). The check here was a device
@@ -526,42 +609,29 @@ function webgpuQueue(ort: Ort): QueueLike | null {
  * The cold run counts too, which is what lets this ride on the warm-up rather than needing a run of
  * its own. `null` is "could not observe" — no queue to watch, or an engine that refuses the
  * observation — and callers read it as "keep the GPU", the same way they read a runtime that
- * publishes no device at all. The observation is removed again whatever happens, and restores an
- * own `submit` rather than assuming there was none.
+ * publishes no device at all.
+ *
+ * A COUNT IS ONLY THIS SESSION'S IF NOTHING ELSE IS RUNNING (2026-09-05). The queue belongs to the
+ * MODULE, not to the session, so a second runner's warm-up submitting on it while this one watches
+ * is counted here — and a session the CPU EP took was told the GPU had run its graph, which is
+ * exactly the false evidence this function exists to rule out. The caller therefore runs the whole
+ * probe section on the `serialise` chain, so two probes never overlap on one module;
+ * `watchQueue` owns the other half, which is that the observation is removed once and by whoever
+ * put it there.
  */
 async function gpuRanTheGraph(ort: Ort, probe: () => Promise<unknown>): Promise<boolean | null> {
   const queue = webgpuQueue(ort);
-  if (!queue) {
+  const watch = queue ? watchQueue(queue) : null;
+  if (!watch) {
     await probe();
     return null;
-  }
-  const original = Object.getOwnPropertyDescriptor(queue, 'submit');
-  const submit = queue.submit;
-  let submissions = 0;
-  let watching = false;
-  try {
-    Object.defineProperty(queue, 'submit', {
-      configurable: true,
-      writable: true,
-      enumerable: original?.enumerable ?? false,
-      value: function (this: unknown, ...args: unknown[]): unknown {
-        submissions++;
-        return submit.apply(this, args);
-      },
-    });
-    watching = true;
-  } catch {
-    // An engine that will not let its queue be observed. Not evidence either way.
   }
   try {
     await probe();
   } finally {
-    if (watching) {
-      if (original) Object.defineProperty(queue, 'submit', original);
-      else delete (queue as unknown as Record<string, unknown>).submit;
-    }
+    watch.release();
   }
-  return watching ? submissions > 0 : null;
+  return watch.counter.n > 0;
 }
 
 /**
@@ -791,14 +861,25 @@ export async function createModelRunner(
     ort.env.wasm.proxy = !gpu;
     ort.env.wasm.wasmPaths = wasmDir;
 
-    const created = await ort.InferenceSession.create(modelUrl, {
+    // PINNED WHERE INITIALISATION IS ATTEMPTED, not where it succeeds (2026-09-05). Recording it
+    // after a successful create read as caution and was the hole: `InferenceSession.create` brings
+    // the wasm backend up from `ort.env` FIRST and fetches the model second, so a create that
+    // rejects — a 404 model, a graph the runtime will not take — has already burnt `numThreads`
+    // and `wasmPaths` into the module. With the pin withheld there, the next runner asked for a
+    // different configuration, was allowed, and silently got the failed runner's.
+    //
+    // AND IT IS KEPT WHEN THE CREATE FAILS, deliberately, because whether the backend initialised
+    // before the failure is not something onnxruntime reports and nothing here can find out: "the
+    // backend came up and then the model 404'd" and "the worker never started" arrive as the same
+    // rejection. Clearing on the guess would put back the exact hole this closes. So the pin
+    // stands, and the cost of being wrong is one loud refusal a caller can read and retry with the
+    // first configuration — against a session that quietly runs on somebody else's thread count,
+    // which is a measurement that lies.
+    configured.set(ort, { numThreads, wasmPaths: wasmDir });
+    return ort.InferenceSession.create(modelUrl, {
       executionProviders,
       graphOptimizationLevel: 'all',
     });
-    // Recorded only once a session has actually come up on it: a create that failed may have left
-    // the backend uninitialised, and the next runner is then free to configure it.
-    configured.set(ort, { numThreads, wasmPaths: wasmDir });
-    return created;
   });
 
   return owning(session, async (relinquish): Promise<ModelRunner> => {
@@ -854,42 +935,59 @@ export async function createModelRunner(
     // different resolution warms the shape it will actually be asked for — warming the wrong one
     // would compile a set of shaders nothing then uses, which is the failure that still looks fine.
     if (opts.warmUp ?? true) {
-      // THE WARM-UP IS ALSO THE EVIDENCE. `gpuRanTheGraph` runs this same probe with the WebGPU
-      // device's command queue watched, so the second question costs no extra inference — and a
-      // session the GPU did not take pays one wasm run to find out, never a shader compilation,
-      // because there is no GPU compiling anything in exactly that case.
-      let ranOnGpu: boolean | null = null;
-      if (gpuVerdict === true) ranOnGpu = await gpuRanTheGraph(ort, probe);
-      else await probe();
-      if (ranOnGpu === false) return rebuildOnWasm(notTheGpu);
+      // THE PROBES RUN ON THE SAME CHAIN SESSION CREATION DOES (2026-09-05), and for a second
+      // reason. Creation is serialised because `ort.env` is global to the module; the probes are
+      // serialised because the DEVICE QUEUE is too. `gpuRanTheGraph` counts submissions on
+      // `env.webgpu.device.queue`, which every session on this module shares, so a second runner
+      // warming up inside this window has its command buffers counted here — and a session the CPU
+      // EP took is then told the GPU ran its graph, which is the one conclusion this evidence
+      // exists to make impossible. Reproduced on the fake device: two `createModelRunner` calls,
+      // the second declined by WebGPU, and it kept the GPU on the first one's submissions.
+      //
+      // The timing rides inside the same section, which it wants anyway: a run measured against a
+      // budget while another session is competing for the same GPU is a measurement of the
+      // contention. What is deliberately OUTSIDE is the rebuild — it creates a session of its own
+      // (on the proxied module, so a different chain) and holding this one's lock across it would
+      // be a lock held across an unbounded amount of work for no reason.
+      const measured = await serialise(ort, async () => {
+        // THE WARM-UP IS ALSO THE EVIDENCE. `gpuRanTheGraph` runs this same probe with the WebGPU
+        // device's command queue watched, so the second question costs no extra inference — and a
+        // session the GPU did not take pays one wasm run to find out, never a shader compilation,
+        // because there is no GPU compiling anything in exactly that case.
+        let ranOnGpu: boolean | null = null;
+        if (gpuVerdict === true) ranOnGpu = await gpuRanTheGraph(ort, probe);
+        else await probe();
+        if (ranOnGpu === false) return { ranOnGpu, best: null };
 
-      // A GPU WE CHOSE IS TIMED, and dropped if it is not one.
-      //
-      // `softwareAdapter` reads what the browser SAYS the adapter is; this reads what it does, and
-      // the second is what the app actually cares about. It is the class fix behind that name list:
-      // whatever a rasteriser calls itself, and however new it is, a provider that cannot run this
-      // model inside the budget is one the wasm path beats — so the same measurement that exposed
-      // SwiftShader covers the next one without knowing its name.
-      //
-      // AFTER the warm-up, so it times a run and not a shader compilation, and only when the
-      // warm-up actually ran (`warmUp: false` would leave the first run carrying that cost and read
-      // as a catastrophe on healthy hardware).
-      //
-      // The budget's margin is enormous on purpose — see the ladder above `softwareAdapter`, which
-      // is where those numbers are measured and dated: ~15 ms on a real GPU, ~59 ms for 6-thread
-      // wasm, 6184 ms on SwiftShader. Anything between 400 ms and those extremes is a machine where
-      // neither path is good, and rebuilding there costs more than it saves. `bestTimedRun` owns
-      // the sampling and answers null where the page could not be trusted to be watching; keeping
-      // the GPU is the right default when declining, since it was chosen because the adapter is
-      // real and not a rasteriser, which is a fact this timing cannot improve on.
-      if (gpu && chosenHere) {
-        const best = await bestTimedRun(probe);
-        const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
-        if (best !== null && best > budget) {
-          return rebuildOnWasm(
-            `[cubus] the GPU ran this model in ${Math.round(best)} ms — slower than the wasm runtime, so using that instead`,
-          );
-        }
+        // A GPU WE CHOSE IS TIMED, and dropped if it is not one.
+        //
+        // `softwareAdapter` reads what the browser SAYS the adapter is; this reads what it does,
+        // and the second is what the app actually cares about. It is the class fix behind that name
+        // list: whatever a rasteriser calls itself, and however new it is, a provider that cannot
+        // run this model inside the budget is one the wasm path beats — so the same measurement
+        // that exposed SwiftShader covers the next one without knowing its name.
+        //
+        // AFTER the warm-up, so it times a run and not a shader compilation, and only when the
+        // warm-up actually ran (`warmUp: false` would leave the first run carrying that cost and
+        // read as a catastrophe on healthy hardware).
+        //
+        // The budget's margin is enormous on purpose — see the ladder above `softwareAdapter`,
+        // which is where those numbers are measured and dated: ~15 ms on a real GPU, ~59 ms for
+        // 6-thread wasm, 6184 ms on SwiftShader. Anything between 400 ms and those extremes is a
+        // machine where neither path is good, and rebuilding there costs more than it saves.
+        // `bestTimedRun` owns the sampling and answers null where the page could not be trusted to
+        // be watching; keeping the GPU is the right default when declining, since it was chosen
+        // because the adapter is real and not a rasteriser, which is a fact this timing cannot
+        // improve on.
+        const best = gpu && chosenHere ? await bestTimedRun(probe) : null;
+        return { ranOnGpu, best };
+      });
+      if (measured.ranOnGpu === false) return rebuildOnWasm(notTheGpu);
+      const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
+      if (measured.best !== null && measured.best > budget) {
+        return rebuildOnWasm(
+          `[cubus] the GPU ran this model in ${Math.round(measured.best)} ms — slower than the wasm runtime, so using that instead`,
+        );
       }
     }
 
