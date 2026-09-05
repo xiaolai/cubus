@@ -127,6 +127,48 @@ impl Dfs<'_> {
     }
 }
 
+/// One opening's subtree at this contour: replay the prefix, then depth-first from there.
+///
+/// Returns the outcome together with the path the DFS ended holding — the found maneuver when the
+/// outcome is `Found`, and meaningless otherwise, which is why the caller reads it in exactly that
+/// arm. `None` means the prefix is longer than the bound, so this opening has nothing in this
+/// contour at all.
+fn search_prefix(
+    tables: &Tables,
+    start: &Coords,
+    bound: u8,
+    prefix: &[u8],
+    cancel: &AtomicBool,
+    stop: &AtomicBool,
+    total_nodes: &AtomicU64,
+) -> Option<(DfsOut, Vec<u8>)> {
+    let g = prefix.len() as u8;
+    if g > bound {
+        return None;
+    }
+    let mut at = *start;
+    for &m in prefix {
+        at = at.step(&tables.moves, m as usize);
+    }
+    let mut dfs = Dfs {
+        tables,
+        cancel,
+        stop,
+        total_nodes,
+        nodes: 0,
+        since_check: 0,
+        path: prefix.to_vec(),
+    };
+    let prev = *prefix.last().expect("openings are non-empty") as i8;
+    // A prefix sitting exactly AT the bound is not a special case: `run`'s own `g == bound`
+    // arm counts the node and evaluates the terminal, which is what the branch that used to
+    // stand here did by hand — a second copy of the terminal rule, and the copy is what
+    // drifts. The `g > bound` guard above is what keeps this call inside the contour.
+    let out = dfs.run(at, g, bound, prev);
+    dfs.flush();
+    Some((out, dfs.path))
+}
+
 /// One contour, run root-parallel over the given openings (each a canonical move prefix).
 /// Returns the found path if any thread found a solution at exactly this bound, whether a
 /// cancel landed, and the nodes spent. A contour with no find and no cancel was FULLY
@@ -142,55 +184,39 @@ fn run_contour(
     let found: Mutex<Option<Vec<u8>>> = Mutex::new(None);
     let stop = AtomicBool::new(false);
     let cancelled = AtomicBool::new(false);
+    // "This contour is decided, and here is whether a cancel is why" — the two places that observe
+    // it (an opening that never starts, and a subtree that unwound) recorded it with two copies of
+    // the same pair of stores, which is how a cancel comes to be remembered at one and forgotten
+    // at the other (the audit's finding, 2026-09-05). Storing `stop` again where it was already
+    // set is idempotent and is what lets both callers say the same thing.
+    let decided = || {
+        if cancel.load(Ordering::Relaxed) {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        stop.store(true, Ordering::Relaxed);
+    };
     openings.par_iter().for_each(|prefix| {
         // The cancel flag as well as the contour's stop: without it a cancel that lands between
         // openings started every remaining root, each of which then spent a full stride
         // discovering it — thousands of roots at four-move depth.
         if stop.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed) {
-            if cancel.load(Ordering::Relaxed) {
-                cancelled.store(true, Ordering::Relaxed);
-                stop.store(true, Ordering::Relaxed);
-            }
+            decided();
             return;
         }
-        let mut at = *start;
-        for &m in prefix {
-            at = at.step(&tables.moves, m as usize);
-        }
-        let g = prefix.len() as u8;
-        if g > bound {
+        let Some((out, path)) =
+            search_prefix(tables, start, bound, prefix, cancel, &stop, total_nodes)
+        else {
             return;
-        }
-        let mut dfs = Dfs {
-            tables,
-            cancel,
-            stop: &stop,
-            total_nodes,
-            nodes: 0,
-            since_check: 0,
-            path: prefix.clone(),
         };
-        let prev = *prefix.last().expect("openings are non-empty") as i8;
-        // A prefix sitting exactly AT the bound is not a special case: `run`'s own `g == bound`
-        // arm counts the node and evaluates the terminal, which is what the branch that used to
-        // stand here did by hand — a second copy of the terminal rule, and the copy is what
-        // drifts. The `g > bound` guard above is what keeps this call inside the contour.
-        let out = dfs.run(at, g, bound, prev);
-        dfs.flush();
         match out {
             DfsOut::Found => {
                 let mut slot = found.lock().unwrap();
                 if slot.is_none() {
-                    *slot = Some(dfs.path.clone());
+                    *slot = Some(path);
                 }
                 stop.store(true, Ordering::Relaxed);
             }
-            DfsOut::Aborted => {
-                if cancel.load(Ordering::Relaxed) {
-                    cancelled.store(true, Ordering::Relaxed);
-                }
-                stop.store(true, Ordering::Relaxed);
-            }
+            DfsOut::Aborted => decided(),
             DfsOut::Exhausted => {}
         }
     });
@@ -245,15 +271,15 @@ fn root_ply(bound: u8) -> usize {
 const SHARD_OPENINGS: u32 = 243;
 
 /// The 243 canonical two-move openings, in a fixed order every shard agrees on.
+///
+/// One enumeration, not two: this used to run its own nested loop over the same `move_allowed`
+/// rule that `expand_openings` already applies, so the SHARD PARTITION — which is defined as
+/// "opening k goes to shard k mod n", and therefore depends on the exact sequence — had two
+/// implementations that had to stay byte-identical across machines and across time, with nothing
+/// checking that they did (the audit's finding, 2026-09-05). They agreed when the duplicate was
+/// removed, which was verified before removing it; now there is nothing left to disagree.
 fn two_ply_openings() -> Vec<Vec<u8>> {
-    let mut out = Vec::with_capacity(SHARD_OPENINGS as usize);
-    for m1 in 0..18u8 {
-        for m2 in 0..18u8 {
-            if move_allowed(m1 as i8, m2 as usize) {
-                out.push(vec![m1, m2]);
-            }
-        }
-    }
+    let out = expand_openings(root_openings(), 2);
     debug_assert_eq!(out.len() as u32, SHARD_OPENINGS);
     out
 }
@@ -465,6 +491,33 @@ mod tests {
         assert!(!move_allowed(0, 1));
         // Different axes always.
         assert!(move_allowed(0, 3));
+    }
+
+    /// The shard partition is an ORDER, not a set: "opening k belongs to shard k mod n" only
+    /// coordinates machines that enumerate the openings identically. So the sequence is pinned
+    /// here by its properties rather than by a second copy of the loop that produces it — the
+    /// copy is what was just deleted, and re-typing it into a test would put it straight back.
+    #[test]
+    fn the_shard_openings_are_one_fixed_canonical_sequence() {
+        let out = two_ply_openings();
+        assert_eq!(out.len() as u32, SHARD_OPENINGS);
+        assert!(
+            out.iter().all(|o| o.len() == 2),
+            "every shard opening is two moves — depths 0 and 1 are checked directly"
+        );
+        assert!(
+            out.iter().all(|o| move_allowed(o[0] as i8, o[1] as usize)),
+            "and every one is canonical"
+        );
+        // Strictly ascending as pairs: sorted AND without repeats, which together are what make
+        // `k mod n` a partition rather than an overlap with a gap somewhere else.
+        assert!(
+            out.windows(2).all(|w| w[0] < w[1]),
+            "the openings are in ascending (m1, m2) order, no duplicates"
+        );
+        // The ends, so a silent reordering cannot pass the properties above.
+        assert_eq!(out.first(), Some(&vec![0u8, 3]), "U then the first legal F");
+        assert_eq!(out.last(), Some(&vec![17u8, 14]));
     }
 
     #[test]

@@ -146,6 +146,66 @@ impl Drop for ProofLease {
     }
 }
 
+/// The preparation worker: the guard rides INSIDE it, so a dropped command future costs the
+/// caller their report and never the flag.
+///
+/// A function rather than an inline `spawn_blocking` so the claim is tested through the code that
+/// makes it — the test that stood for this built a worker of its own out of the same parts, which
+/// is a test of the parts (the audit's finding, 2026-09-05).
+async fn prepare_in_worker(
+    guard: FlagGuard,
+    work: impl FnOnce() -> Result<String, String> + Send + 'static,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        work()
+    })
+    .await
+    .map_err(|e| format!("preparation worker failed: {e}"))?
+}
+
+/// The proof worker: the ONE place a proof's cancellation, its outcome and its slot release are
+/// wired together, and the function `optimal_prove` calls to get all three.
+///
+/// It exists as a function because that is what makes those three testable through PRODUCTION
+/// code. Until 2026-09-05 the lease was exercised on its own and the dropped-future case
+/// reconstructed a worker out of the same parts, so an `optimal_prove` that stopped forwarding the
+/// cancel flag, or stopped settling through `finish`, would have passed every test in this file
+/// while letting a cancelled proof report success (the audit's finding). What it guarantees:
+///
+///   - the search runs with the LEASE's cancel flag, so `optimal_cancel` reaches it;
+///   - the outcome settles through `lease.finish`, so a cancel that landed wins over a search
+///     that answered anyway — the search does not get to decide that;
+///   - a `SearchEnd` becomes the caller's message here, not at each call site;
+///   - the lease rides inside the blocking worker, so a dropped command future or a panicking
+///     search releases the slot rather than wedging it.
+///
+/// The SEARCH is what is injected, because it is the one part a test cannot have: the real one
+/// needs the 86 MB of pattern databases, whose generation is minutes in a debug build and ~281 MB
+/// of resident memory, which is not a unit test. Everything around it is the shipped code.
+async fn prove_in_worker<T, S>(lease: ProofLease, search: S) -> Result<T, String>
+where
+    T: Send + 'static,
+    S: FnOnce(&AtomicBool) -> Result<T, SearchEnd> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let cancel = lease.cancel_flag();
+        let out = match search(&cancel) {
+            Ok(answer) => Ok(answer),
+            Err(SearchEnd::Cancelled) => Err("cancelled".to_string()),
+            // Unreachable with the cap at God's number on a legal cube, and said loudly
+            // rather than absorbed if a table regression ever makes it reachable.
+            Err(SearchEnd::BeyondCap) => Err(format!(
+                "no solution within {GODS_NUMBER} — the tables are wrong"
+            )),
+            Err(SearchEnd::InvalidShard) => unreachable!("prove takes no shard"),
+        };
+        lease.finish(out)
+    })
+    .await
+    .map_err(|e| format!("proof worker failed: {e}"))?
+}
+
 /// Clears a flag on drop — the one honest way to promise "reset on every exit path".
 struct FlagGuard(Arc<AtomicBool>);
 impl FlagGuard {
@@ -316,8 +376,7 @@ pub async fn optimal_prepare(
     // Everything after this point happens in the worker, guard included: if this command's
     // future is dropped mid-await, the generation still completes, publishes, and resets the
     // flag — the drop only costs the caller the report, never the state.
-    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        let _guard = guard;
+    prepare_in_worker(guard, move || {
         let generate = || {
             let mut last = std::time::Instant::now();
             let mut emit_failed = false;
@@ -350,8 +409,6 @@ pub async fn optimal_prepare(
         Ok("ready".into())
     })
     .await
-    .map_err(|e| format!("preparation worker failed: {e}"))?;
-    outcome
 }
 
 #[tauri::command]
@@ -379,9 +436,10 @@ pub async fn optimal_prove(
     let emitter = app.clone();
     let persisted_flag = state.tables_persisted.clone();
     // The lease rides in the worker: settled there under the slot mutex, released by drop if
-    // the search panics — a dropped command future cannot wedge the slot.
-    tauri::async_runtime::spawn_blocking(move || {
-        let cancel = lease.cancel_flag();
+    // the search panics — a dropped command future cannot wedge the slot. Everything about that
+    // lives in `prove_in_worker`; what is left here is the search itself and the shape of its
+    // answer, which is the one part a test cannot run without the native tables.
+    prove_in_worker(lease, move |cancel| {
         let coords = Coords::from_cubie(&cube);
         // Report each exhausted contour. At most twenty of these exist for any cube (the cap is
         // God's number), so there is no firehose to throttle — unlike table generation, whose
@@ -399,26 +457,17 @@ pub async fn optimal_prove(
                 }
             }
         };
-        let out = match search::prove(&tables, &coords, GODS_NUMBER, &cancel, &mut on_progress) {
-            Ok(proof) => Ok(OptimalProof {
+        search::prove(&tables, &coords, GODS_NUMBER, cancel, &mut on_progress).map(|proof| {
+            OptimalProof {
                 length: proof.length,
                 solution: search::solution_string(&proof.solution),
                 nodes: proof.nodes,
                 millis: started.elapsed().as_millis(),
                 tables_persisted: persisted_flag.load(Ordering::Relaxed),
-            }),
-            Err(SearchEnd::Cancelled) => Err("cancelled".to_string()),
-            // Unreachable with the cap at God's number on a legal cube, and said loudly
-            // rather than absorbed if a table regression ever makes it reachable.
-            Err(SearchEnd::BeyondCap) => Err(format!(
-                "no solution within {GODS_NUMBER} — the tables are wrong"
-            )),
-            Err(SearchEnd::InvalidShard) => unreachable!("prove takes no shard"),
-        };
-        lease.finish(out)
+            }
+        })
     })
     .await
-    .map_err(|e| format!("proof worker failed: {e}"))?
 }
 
 #[tauri::command]
@@ -729,43 +778,199 @@ mod tests {
         }
     }
 
-    /// A dropped command future, through the real runtime the command uses.
+    /// Spin until `ready` holds, or fail saying what was still true. Every wait here is on a
+    /// blocking worker that is genuinely running, so a deadline is the honest form: a test that
+    /// waits forever reports nothing.
+    fn within(secs: u64, what: &str, ready: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        while !ready() {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            std::thread::yield_now();
+        }
+    }
+
+    /// A dropped command future, through the PRODUCTION worker `optimal_prepare` uses.
     ///
     /// A Tauri command future can be dropped mid-`await` — a webview reload, a navigation — and
     /// anything scheduled after that await simply never runs. That is why the guard rides INSIDE
-    /// the blocking worker, and this is the claim tested rather than asserted: drop the handle
-    /// the command was awaiting, and the work still completes and still releases the flag. The
-    /// drop costs the caller their report, never the state.
+    /// the blocking worker, and this is the claim tested rather than asserted. It goes through
+    /// `prepare_in_worker` rather than through a `spawn_blocking` of its own, because a worker
+    /// rebuilt in the test out of the same parts asserts nothing about the one that ships (the
+    /// audit's finding, 2026-09-05). The drop costs the caller their report, never the state.
     #[test]
     fn a_dropped_command_future_still_finishes_the_worker_and_clears_the_flag() {
         let flag = Arc::new(AtomicBool::new(false));
         let guard = FlagGuard::claim(&flag).expect("the command claims before spawning");
         let finished = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let done = finished.clone();
-        let handle = tauri::async_runtime::spawn_blocking(move || {
-            let _guard = guard;
-            rx.recv()
+        let task = tauri::async_runtime::spawn(prepare_in_worker(guard, move || {
+            started_tx.send(()).expect("the test is waiting for this");
+            release_rx
+                .recv()
                 .expect("the test holds the sender until it drops the future");
             done.store(true, Ordering::SeqCst);
-        });
-        // The webview goes away: the future being awaited is dropped.
-        drop(handle);
+            Ok("ready".into())
+        }));
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the preparation worker started");
+        // The webview goes away: the command's future is dropped mid-await.
+        task.abort();
+        drop(task);
         assert!(
             flag.load(Ordering::SeqCst),
             "the worker still holds the preparing flag"
         );
-        tx.send(()).expect("the worker is still there to hear this");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !(finished.load(Ordering::SeqCst) && !flag.load(Ordering::SeqCst)) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "a dropped future left the worker unfinished ({}) or the flag stuck ({})",
-                finished.load(Ordering::SeqCst),
-                flag.load(Ordering::SeqCst)
-            );
-            std::thread::yield_now();
-        }
+        release_tx
+            .send(())
+            .expect("the worker is still there to hear this");
+        within(10, "a dropped future left the worker unfinished", || {
+            finished.load(Ordering::SeqCst)
+        });
+        within(10, "a dropped future left the preparing flag stuck", || {
+            !flag.load(Ordering::SeqCst)
+        });
+    }
+
+    /// Cancellation, end to end, through the worker `optimal_prove` actually calls.
+    ///
+    /// Two wires are being checked and each has been the whole bug elsewhere in this app. The
+    /// LEASE'S flag must reach the search — a worker that handed it a fresh `AtomicBool` would
+    /// leave `optimal_cancel` returning true over a proof that never hears it. And the outcome
+    /// must settle through `finish` — the search here deliberately answers `Ok` AFTER seeing the
+    /// cancel, which is exactly what the real search can do when a cancel lands in its last
+    /// stride, and the caller must still be told "cancelled" rather than handed an answer they
+    /// asked to stop paying for.
+    #[test]
+    fn a_cancelled_proof_reports_cancelled_through_the_production_worker() {
+        let slot = Arc::new(ProofSlot::default());
+        let lease = ProofLease::claim(&slot).expect("the command claims before spawning");
+        let saw_the_flag = Arc::new(AtomicBool::new(false));
+        let observed = saw_the_flag.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let task = tauri::async_runtime::spawn(prove_in_worker(
+            lease,
+            move |cancel: &AtomicBool| -> Result<u8, SearchEnd> {
+                started_tx.send(()).expect("the test is waiting for this");
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while !cancel.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+                observed.store(cancel.load(Ordering::Relaxed), Ordering::SeqCst);
+                // A cheerful answer anyway: turning it into "cancelled" is the WORKER's job.
+                Ok(9)
+            },
+        ));
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the search started");
+        assert!(slot.cancel(), "a running proof is cancellable");
+        let out = tauri::async_runtime::block_on(task).expect("the task joined");
+        assert!(
+            saw_the_flag.load(Ordering::SeqCst),
+            "the search never saw the lease's cancel flag — cancellation is not being forwarded"
+        );
+        assert_eq!(
+            out,
+            Err("cancelled".into()),
+            "a cancelled proof reported success"
+        );
+        assert!(
+            ProofLease::claim(&slot).is_some(),
+            "and the slot was settled, not wedged"
+        );
+    }
+
+    /// The other three ways the proof worker can end, through the same production function: an
+    /// uncancelled answer, a search that refuses, and a search that dies.
+    ///
+    /// The `BeyondCap` wording is proof-critical — the cap is God's number, so on a legal cube a
+    /// refusal means a TABLE is wrong, and the message says so instead of implying the cube is
+    /// unsolvable. A panicking search must free the slot: a wedged slot means the app can never
+    /// prove anything again without a restart.
+    #[test]
+    fn the_proof_worker_reports_every_outcome_and_frees_the_slot_after_each() {
+        let slot = Arc::new(ProofSlot::default());
+
+        let lease = ProofLease::claim(&slot).expect("claims");
+        let out = tauri::async_runtime::block_on(prove_in_worker(lease, |_| Ok(17u8)));
+        assert_eq!(
+            out,
+            Ok(17),
+            "nothing cancelled it, so its own answer stands"
+        );
+
+        let lease = ProofLease::claim(&slot).expect("claims again");
+        let out = tauri::async_runtime::block_on(prove_in_worker::<u8, _>(lease, |_| {
+            Err(SearchEnd::BeyondCap)
+        }));
+        assert_eq!(
+            out,
+            Err(format!(
+                "no solution within {GODS_NUMBER} — the tables are wrong"
+            )),
+            "a refusal at God's number is a statement about the TABLES, never about the cube"
+        );
+
+        let lease = ProofLease::claim(&slot).expect("claims again");
+        let out = tauri::async_runtime::block_on(prove_in_worker::<u8, _>(lease, |_| {
+            Err(SearchEnd::Cancelled)
+        }));
+        assert_eq!(out, Err("cancelled".into()));
+
+        // A search that dies. The panic is expected, so the hook is silenced for it — a backtrace
+        // in a passing suite is how a real one stops being noticed.
+        let lease = ProofLease::claim(&slot).expect("claims again");
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let out = tauri::async_runtime::block_on(prove_in_worker::<u8, _>(lease, |_| {
+            panic!("deliberate, and expected: a search dying mid-proof")
+        }));
+        std::panic::set_hook(hook);
+        let e = out.expect_err("a dead worker is not an answer");
+        assert!(e.contains("proof worker failed"), "{e}");
+        assert!(
+            ProofLease::claim(&slot).is_some(),
+            "a panicking search must not wedge the slot"
+        );
+    }
+
+    /// A dropped PROOF future, through the production worker.
+    ///
+    /// The webview goes away mid-proof. The search cannot be interrupted — it is on a blocking
+    /// thread — so what matters is that its lease still settles: the slot must come free without
+    /// anyone awaiting the answer, or a reload during a proof costs the user every later proof of
+    /// the session.
+    #[test]
+    fn a_dropped_proof_future_still_settles_the_slot() {
+        let slot = Arc::new(ProofSlot::default());
+        let lease = ProofLease::claim(&slot).expect("claims");
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let task = tauri::async_runtime::spawn(prove_in_worker(
+            lease,
+            move |_: &AtomicBool| -> Result<u8, SearchEnd> {
+                started_tx.send(()).expect("the test is waiting for this");
+                release_rx.recv().expect("the test holds the sender");
+                Ok(3)
+            },
+        ));
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the search started");
+        task.abort();
+        drop(task);
+        assert!(
+            ProofLease::claim(&slot).is_none(),
+            "the search is still running, so the slot is still its own"
+        );
+        release_tx.send(()).expect("the worker is still there");
+        // Read the slot rather than claim it: claiming would take the very state being observed.
+        within(10, "a dropped proof future left the slot wedged", || {
+            slot.0.lock().unwrap().is_none()
+        });
     }
 
     /// `optimal_prepare`'s three branches, with the seconds of BFS replaced by closures that
