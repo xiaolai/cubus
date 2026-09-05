@@ -522,6 +522,31 @@ export class AiScanPanel extends HTMLElement {
   }
 
   /**
+   * The reading has changed: everything decided ABOUT it is void.
+   *
+   * One operation, because it always was one and was written out three times — `rescanFace`,
+   * `setSticker` and `reset` each carried the same seven lines, and the panel's state is coupled
+   * enough that a caller which remembers six of them leaves a real defect: a confirmation that
+   * answers a question about a reading that no longer exists, a suspect list pointing at stickers
+   * that have moved, a `finished` that keeps the Solve button lit over a cube the panel is about
+   * to refuse. Every one of those has been a bug here.
+   *
+   * What is NOT here is deliberate: the captures themselves, the rotations, and the dots. Which
+   * sides survive an invalidation is exactly what distinguishes its three callers — a rescan drops
+   * one face, a reset drops all six, a correction drops none — so folding that in would make this
+   * a switch on its caller rather than an operation.
+   */
+  private invalidateReading(): void {
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
+    this.finished = false;
+    this.notice = null;
+    this.suspects = [];
+    this.dropDiagnosis();
+  }
+
+  /**
    * Why the camera must not open right now — one answer, consulted by every entry point.
    *
    * This replaces three half-guards that each protected one caller and left the others. `start()`
@@ -848,13 +873,7 @@ export class AiScanPanel extends HTMLElement {
   private reset(): void {
     this.still.reset();
     this.live = null;
-    this.confirmed = {};
-    this.awaiting = null;
-    this.mismatches = 0;
-    this.finished = false;
-    this.notice = null;
-    this.suspects = [];
-    this.dropDiagnosis();
+    this.invalidateReading();
     this.settled.clear();
     this.pendingOpening = null;
     for (const f of FACES) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
@@ -1202,8 +1221,20 @@ export class AiScanPanel extends HTMLElement {
   /**
    * Stop the loop, report 'checking', and run the assembly one beat later (CHECK_BEAT_MS), so the
    * capture or correction that triggered the check paints before any verdict replaces it. Clears
-   * the pinned notice: whatever it explained is being re-decided right now. Epoch-guarded, so a
-   * restart or navigation during the beat cancels the stale check.
+   * the pinned notice: whatever it explained is being re-decided right now.
+   *
+   * GUARDED ON THE READING, NOT ON THE CAMERA (2026-09-05). A check is a computation over the six
+   * faces; the camera has already said everything it is going to say about them. Guarding it with
+   * `frameEpoch` meant anything that touched the camera during the 350 ms beat cancelled the
+   * verdict and put NOTHING in its place — and switching cameras is exactly that: six captures on
+   * screen, `complete` never set, and no way back, because re-showing a side that reads the same
+   * as the one on file is answered with "that side reads the same as before". Measured: six
+   * captures, no check, and identical re-reads unable to recover it.
+   *
+   * `diagnosisEpoch` is the serial number of the READING, bumped by everything that re-decides it
+   * — a capture, a correction, a paint stroke, a mode change, `reset()` — so a restart during the
+   * beat still cancels the check, and `stop()` clears the timer outright for a navigation. What is
+   * left running is the case that should always have run.
    */
   private scheduleCheck(...opening: (string | Node)[]): void {
     this.stopLoop();
@@ -1213,11 +1244,11 @@ export class AiScanPanel extends HTMLElement {
     this.suspects = [];
     this.dropDiagnosis();
     this.report('checking', ...opening);
-    const epoch = this.cam.frameEpoch();
+    const epoch = this.diagnosisEpoch;
     if (this.checkTimer !== null) clearTimeout(this.checkTimer);
     this.checkTimer = setTimeout(() => {
       this.checkTimer = null;
-      if (epoch === this.cam.frameEpoch()) this.assemble();
+      if (epoch === this.diagnosisEpoch) this.assemble();
     }, CHECK_BEAT_MS);
   }
 
@@ -1270,17 +1301,11 @@ export class AiScanPanel extends HTMLElement {
     }
     read.colors[index] = colour;
     read.confidence[index] = 1; // a person looked at it, which beats the detector's guess
-    this.confirmed = {};
-    this.awaiting = null;
-    this.mismatches = 0;
     // Whatever was settled is being re-decided — the same sentence `scheduleCheck` says on the
     // camera path, and the same reason. Painting had no equivalent, so editing an ACCEPTED cube
     // into an invalid one emitted 'scan-invalid' while still reporting complete: true, and the
     // host's Solve button stayed lit over a cube the panel had just refused.
-    this.finished = false;
-    this.notice = null;
-    this.suspects = [];
-    this.dropDiagnosis();
+    this.invalidateReading();
     const done = this.capturedFaces().length;
     if (this.painting) {
       this.afterPaintStroke(face, done);
@@ -1420,13 +1445,7 @@ export class AiScanPanel extends HTMLElement {
     if (!this.faces[face]) return;
     delete (this.faces as Partial<Record<Face, ColorFace>>)[face];
     this.settled.delete(face);
-    this.confirmed = {};
-    this.awaiting = null;
-    this.mismatches = 0;
-    this.finished = false;
-    this.notice = null;
-    this.suspects = [];
-    this.dropDiagnosis();
+    this.invalidateReading();
     this.buildDots();
     // loop() reopens the camera itself when it is dark, keeping the other five sides.
     this.loop('scanning', `Show the ${GUIDE[face].color} side again — it will be read fresh.`);
@@ -1777,6 +1796,14 @@ export class AiScanPanel extends HTMLElement {
    *
    * Where the page has no worker the whole thing collapses back to one call carrying the count —
    * the behaviour that shipped before the decode moved off this thread.
+   *
+   * AND THE EPOCH IS NOT THE ONLY WAY TO BE STALE (2026-09-05). It tracks the READING, which is
+   * what the answer is about — and a camera that failed in the meantime changes nothing about the
+   * reading while changing everything about what the panel should be saying. So a refinement
+   * landing after "The camera did not open" replaced that sentence with a misread notice and
+   * reported 'scanning' over a null device: the user was told to show a side again by a scanner
+   * with no camera. A failure notice outranks a better explanation of a refusal, and the test is
+   * `clearCameraFault`'s — is the sentence a failure pinned still the one on screen.
    */
   private diagnose(result: AiScanResult, publish: (r: AiScanResult, first: boolean) => void): void {
     // Nothing was deferred: an ambiguous reading (which has legal readings and so nothing to
@@ -1791,6 +1818,7 @@ export class AiScanPanel extends HTMLElement {
       { epoch, faces: this.faces, fixedRotation: this.inPlace() },
       (r) => {
         if (r.epoch !== this.diagnosisEpoch) return;
+        if (this.cameraFault !== null && this.notice === this.cameraFault) return;
         publish(decided(result, r.diagnosis), false);
       },
     );

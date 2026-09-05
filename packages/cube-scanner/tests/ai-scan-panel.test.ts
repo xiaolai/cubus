@@ -524,6 +524,27 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     expect(last().captured).toHaveLength(2);
   });
 
+  it('a camera switch during the checking beat does not swallow the check', async () => {
+    // THE SCAN THAT CANNOT BE FINISHED OR RECOVERED. The sixth capture stops the loop and schedules
+    // the assembly one beat later; the check was guarded on the CAMERA's epoch, so anything that
+    // touched the camera inside those 350 ms cancelled it and put nothing in its place. Switching
+    // cameras is exactly that — and the state it leaves is a trap: six sides on screen, `complete`
+    // never set, and no way back, because re-showing a side whose reading is unchanged is answered
+    // with "that side reads the same as before". A check is a computation over the six faces; the
+    // camera has already said everything it has to say about them.
+    const shown = facesOf(DEEP);
+    for (const face of FACES) await show(shown[face]);
+    expect(last().captured).toHaveLength(6);
+    expect(last().phase).toBe('checking');
+
+    panel.setAttribute('device-id', 'the-other-camera');
+    await panel.start(); // the host switches cameras inside the beat
+    await vi.advanceTimersByTimeAsync(CHECK);
+
+    expect(completions).toHaveLength(1);
+    expect(last().complete).toBe(true);
+  });
+
   it('a painted cube one sticker from legal marks it, and offers the colour', async () => {
     // The claim: decodeMisread's guarantee is about the COLOURING, not about who produced it, so a
     // painted cube gets the same pointing a scanned one does. Before this, painting threw the
@@ -1526,6 +1547,31 @@ describe('ai-scan-panel — the misread count arrives after the refusal, not bef
     expect(last().notice?.title ?? '').toMatch(/stopped/i);
     expect(last().phase).toBe('error');
     logged.mockRestore();
+  });
+
+  it('says nothing over a camera that would not REOPEN while the decode was out', async () => {
+    // THE SIBLING SITE, left out when the case above was fixed. `tickFail` drops the diagnosis
+    // because it closes the camera; `startFailed` pins its own sentence and does not — and the
+    // reading has not changed, so the epoch cannot tell. The answer therefore republished at phase
+    // 'scanning' with a notice about stickers, replacing "The camera did not open" over a device
+    // that is null: the user is told to show a side again by a scanner with no camera at all.
+    withWorker();
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await scanMisreading(1);
+    expect(last().notice?.body ?? '').toMatch(/working out how many/i);
+    const worker = FakeWorker.last();
+
+    // The user switches camera, or presses Start again, and this time it is refused.
+    fake.openError = new DOMException('Permission denied', 'NotAllowedError');
+    await panel.start();
+    expect(last().phase).toBe('error');
+    expect(last().notice?.title ?? '').toMatch(/camera did not open/i);
+
+    const failed = last();
+    worker.answer(0); // …and only now does the count arrive
+    expect(last()).toBe(failed); // nothing was said at all
+    expect(last().notice?.title ?? '').toMatch(/camera did not open/i);
+    warned.mockRestore();
   });
 
   it('answers with the count in one go where the page has no worker', async () => {

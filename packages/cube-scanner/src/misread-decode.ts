@@ -113,7 +113,12 @@ export type MisreadDecode =
  * argument above licenses, and nothing else.
  *
  * - `misreadCount` — the proven lower bound, so "at least N stickers were misread" is honest at
- *   every N. `null` means a caller deferred the decode and is still waiting for it (see
+ *   every N — ON THE READING AS ITS CENTRES LABEL IT, which is the header's fourth bullet and is
+ *   repeated here because this is the sentence a caller reads before putting the number on screen.
+ *   A misread CENTRE is not one wrong sticker, it renames a face; two swapped centres are two
+ *   misreads reported as several times that, and no property of a reading can detect it
+ *   (`tests/misread-decode.test.ts` pins the measurement and goes red if that ever stops being
+ *   true). `null` means a caller deferred the decode and is still waiting for it (see
  *   `assembleColors`'s `diagnose` option); ABSENT means the decode ran and could claim nothing.
  *   Those are opposite states and a caller that cannot tell them apart says "too much of the cube
  *   was read wrong" over a cube nothing has looked at yet, which is why `null` is a value here.

@@ -45,16 +45,24 @@ export class CameraSession {
   private epoch = 0;
   /** Bumped by `use()`, so an injection beats a probe that is still in flight. See `use`. */
   private detectorChoice = 0;
-  /** The `detector.use()` still in flight, so the next one queues behind it. See `open`. */
-  private opening: Promise<unknown> | null = null;
   /**
-   * How many `open()` calls are queued or inside the detector right now.
+   * The open chain, and WHOSE it is.
    *
-   * A COUNT and not a boolean, because the chain serialises opens rather than rejecting them: three
-   * can be waiting at once. `park()` is the only reader — see there for why handing the detector to
-   * the page while one of these is still out is what makes a cross-owner camera kill possible.
+   * `tail` is the `detector.use()` still in flight, so the next one queues behind it (see `open`);
+   * `count` is how many `open()` calls are queued or inside the detector right now — a count and
+   * not a boolean, because the chain serialises opens rather than rejecting them and three can be
+   * waiting at once. `park()` is the only reader of the count; see there for why handing the
+   * detector to the page while one is still out makes a cross-owner camera kill possible.
+   *
+   * KEYED ON THE DETECTOR, because an ordering constraint between two DIFFERENT detectors is not
+   * one (2026-09-05). The chain outlived the object it was about, so a `use()` that replaced the
+   * detector — the test seam, and the native host's — left the new one queued behind the old one's
+   * pending permission prompt, which a user who never answers leaves pending forever. The
+   * replacement is discarded and stopped by then, so there is nothing left for its queue to order:
+   * a new detector starts a new chain, and the old links still decrement the record they were
+   * registered on rather than an unrelated counter.
    */
-  private openCount = 0;
+  private opens: { detector: Detector; tail: Promise<void>; count: number } | null = null;
   /**
    * The owner's model-URL getter, kept as the FALLBACK label for a runtime that has no URL.
    *
@@ -185,10 +193,14 @@ export class CameraSession {
     this.modelLoaded = false;
     this.modelUrlOf = null;
     if (!(detector && parkable && runtime)) return;
+    // The chain to wait on is THIS detector's, and only while it still holds it: a record left by
+    // a detector this session no longer has says nothing about the one being handed over.
+    const queue = detector && this.opens?.detector === detector ? this.opens : null;
+    this.opens = null;
     const handOver = (): void => parkDetector({ detector, runtime, modelLoaded, modelUrl });
     // Synchronous when nothing is out, which is every ordinary disconnect.
-    if (this.openCount === 0 || !this.opening) handOver();
-    else void this.opening.then(handOver, handOver);
+    if (!queue || queue.count === 0) handOver();
+    else void queue.tail.then(handOver, handOver);
   }
 
   /**
@@ -216,9 +228,22 @@ export class CameraSession {
   /**
    * The detector, chosen once and kept for the session's life, so the model survives a stop()/
    * start() and the native probe runs only once. Cached as a promise because the choice is async.
+   *
+   * AND `modelLoaded` IS RE-ASKED EVERY TIME, because it is a claim about a MODEL and this is
+   * where the model can change (2026-09-05). The park had this covered — `pickDetector` compares
+   * the parked URL against the new owner's — but the cached path had nothing: the same owner
+   * re-pointing its `model-url` between a stop and a start kept a flag that was about the previous
+   * URL, so the panel skipped `load()` and scanned model A while every screen said B. A wrong
+   * model produces readings, not errors. Same comparison as the park's, for the same reasons: the
+   * detector is asked (`modelHeldBy`), the strings are compared as the owners' getters produce
+   * them, and a false mismatch costs one call to an idempotent `load()` while a false match costs
+   * the scan.
    */
   ensureDetector(video: () => HTMLVideoElement, modelUrl: () => string): Promise<Detector> {
     this.modelUrlOf = modelUrl;
+    if (this.modelLoaded && this.detector && this.modelHeldBy(this.detector) !== modelUrl()) {
+      this.modelLoaded = false;
+    }
     if (this.detectorPromise === null) {
       const choice = this.detectorChoice;
       this.detectorPromise = pickDetector({ video, modelUrl }).then(
@@ -334,7 +359,14 @@ export class CameraSession {
     opts: CameraOptions,
     token: number,
   ): Promise<{ fellBack: boolean }> {
-    this.openCount++;
+    // This detector's chain, or a new one for a detector that has not opened anything yet — see
+    // `opens`. The record is captured here so the links below decrement the one they joined, not
+    // whichever record happens to be current when they finish.
+    if (this.opens?.detector !== detector) {
+      this.opens = { detector, tail: Promise.resolve(), count: 0 };
+    }
+    const queue = this.opens;
+    queue.count++;
     const run = async (): Promise<{ fellBack: boolean }> => {
       // CANCELLED WHILE IT QUEUED — so it opens nothing at all, and there is nothing to clean up.
       //
@@ -370,15 +402,15 @@ export class CameraSession {
     // Whatever the previous link did, and whether it threw: this is an ordering constraint, not a
     // dependency. The tail is published BEFORE it is awaited, so the link after this one queues
     // behind this one rather than behind the same predecessor.
-    const chained = (this.opening ?? Promise.resolve()).then(run, run);
-    this.opening = chained.then(
+    const chained = queue.tail.then(run, run);
+    queue.tail = chained.then(
       () => undefined,
       () => undefined,
     );
-    // Registered AFTER `this.opening`, so a `park()` waiting on that tail runs once this link is
-    // no longer counted as in flight.
+    // Registered AFTER the tail, so a `park()` waiting on it runs once this link is no longer
+    // counted as in flight.
     const done = (): void => {
-      this.openCount--;
+      queue.count--;
     };
     void chained.then(done, done);
     return chained;
