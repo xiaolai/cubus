@@ -359,6 +359,12 @@ it walks you through solving it.
     provenance and their measured cost in NODES live in `apps/web/test/fixtures/solver-cubes.mjs`.
     The contract tests once spread a fixed `probeMax` AFTER the options, so escalation never
     reached the engine and the raise reported a budget nobody spent — 73× the nodes for nothing.
+    The last draw of that kind went red on 2026-09-05 (`parallel-divergence.test.mjs`), and it
+    exposed a second false claim: "the pool answers exactly what one worker answers at the
+    shipped budget" is not a property — `WORKER_CUBES.tighter`'s winning view costs 10.8M nodes,
+    more than a sixth of 50M, so another view's slice answers with a DIFFERENT 20-mover. The
+    property is: both solve the cube in the same number of moves, and every difference is the
+    quota, proven per case by running the sequential winner's view alone with a slice's share.
   - **A superseded search is stopped through the stop word (`STOP_NOW`, -1), never by
     terminating a worker**: it is shallower than any depth a winner can publish, so it needs no
     second channel and no table rebuild. `refine` carries `signal` INSIDE the bounds; an adapter
