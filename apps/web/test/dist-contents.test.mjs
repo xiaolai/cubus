@@ -9,10 +9,11 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { FILES, NEVER_SHIPPED, assembleDist } from '../build.mjs';
+import { FILES, NEVER_SHIPPED, assembleDist, bundleInputs } from '../build.mjs';
 
 const WEB = new URL('../', import.meta.url);
 
@@ -72,8 +73,8 @@ const ORT_GLUE = 'ort-wasm-simd-threaded.asyncify.mjs';
 
 /** The smallest tree assembleDist() accepts: every required file, with the runtime named by the
  *  loader exactly as onnxruntime-web names it (measured against the shipped vendor/ort.mjs). */
-function makeRoot() {
-  const root = mkdtempSync(join(tmpdir(), 'cubus-root-'));
+function makeRoot(parent = tmpdir()) {
+  const root = mkdtempSync(join(parent, 'cubus-root-'));
   const put = (rel, body = rel) => {
     mkdirSync(dirname(join(root, rel)), { recursive: true });
     writeFileSync(join(root, rel), body);
@@ -232,6 +233,95 @@ test('an import of a file that does not exist still fails the build, loudly', ()
     utimesSync(join(root, 'lib', 'cubus-cube.js'), old, old);
     assert.throws(build, (err) => err.message.includes('removed.js'),
       'a specifier that resolves to nothing must stop the build, not shrink the input set');
+  });
+});
+
+// ---- what a DESTRUCTIVE call must refuse ---------------------------------------------------
+//
+// The first line of assembleDist is `rmSync(dist, { recursive: true, force: true })`, and until
+// 2026-09-05 nothing above it asked what it was about to delete. Every case here erased real
+// source before a single check ran, and the function is exported precisely so it can be called
+// with arguments (found by audit). The assertions are about a directory that must SURVIVE.
+test('an assembly into the source tree is refused before anything is deleted', () => {
+  withRoot(({ root }) => {
+    assert.throws(() => assembleDist({ root, dist: root, freshness: false }),
+      (err) => /source tree/.test(err.message),
+      'dist === root deletes apps/web — sources, tests, node_modules — and then reports a missing index.html');
+    assert.ok(existsSync(join(root, 'index.html')), 'the source tree was deleted');
+    assert.ok(existsSync(join(root, 'lib', 'cubus-cube.js')), 'the source tree was deleted');
+  });
+});
+
+test('an assembly into a parent of the source tree is refused too', () => {
+  // The same delete, one level wider: everything root's parent holds, not only root. The nesting
+  // is the point of writing this one by hand — the root sits inside a throwaway of its own, so a
+  // regression in the guard destroys a directory this test made. Pointed at the tmpdir every
+  // other fixture here lives in, it would have taken the system temp directory with it, which is
+  // not a thing a test suite may be one edit away from doing.
+  const base = mkdtempSync(join(tmpdir(), 'cubus-base-'));
+  try {
+    const root = makeRoot(base);
+    assert.equal(dirname(root), base, 'precondition: the fixture root is nested inside a throwaway');
+    assert.throws(() => assembleDist({ root, dist: base, freshness: false }),
+      (err) => /source tree/.test(err.message));
+    assert.ok(existsSync(join(root, 'index.html')), 'the source tree was deleted');
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('an assembly into a directory the copy reads FROM is refused', () => {
+  withRoot(({ root }) => {
+    for (const inside of ['lib', join('vendor', 'nested'), 'index.html']) {
+      assert.throws(() => assembleDist({ root, dist: join(root, inside), freshness: false }),
+        (err) => /copies FROM/.test(err.message), `dist: ${inside}`);
+    }
+    assert.ok(existsSync(join(root, 'lib', 'cube-frame.js')), 'lib/ was deleted');
+    assert.ok(existsSync(join(root, 'vendor', 'cubejs.js')), 'vendor/ was deleted');
+    assert.ok(existsSync(join(root, 'index.html')), 'index.html was deleted');
+  });
+});
+
+test('the ordinary destination — a dist inside root — is still assembled', () => {
+  // The positive control for the three refusals above: the guard must reject the destination
+  // that eats its source and nothing else. `root/dist` is inside root, which is exactly why the
+  // check is asymmetric rather than "do these two paths overlap".
+  withRoot(({ root }) => {
+    const { dist } = assembleDist({ root, dist: join(root, 'dist'), freshness: false });
+    assert.ok(existsSync(join(dist, 'index.html')), 'the ordinary assembly stopped working');
+    assert.ok(existsSync(join(root, 'lib', 'cubus-cube.js')), 'and it must not have eaten its own source');
+    // Not `dist2` either: the guard compares whole path components, or a sibling directory whose
+    // name merely starts with a copied one would be refused for no reason.
+    assert.ok(assembleDist({ root, dist: join(root, 'libx'), freshness: false }).referenced > 0);
+  });
+});
+
+// A path spelled from the repo root is the ordinary way a person and a CI step name a file, and
+// it reached esbuild as `absWorkingDir` — which refuses anything relative, so this threw before
+// it could look at one import (found by audit, 2026-09-05).
+test('a relative entry is scanned for its imports, not refused for being relative', () => {
+  const rel = relative(process.cwd(), fileURLToPath(new URL('lib/cubus-cube.js', WEB)));
+  assert.ok(!rel.startsWith('/'), 'precondition: the entry under test is a relative path');
+  const inputs = bundleInputs(rel);
+  assert.ok(inputs.length > 1, 'a relative entry yielded no module graph');
+  assert.ok(inputs.every((f) => f.startsWith('/')), 'inputs must come back absolute, whatever went in');
+  assert.deepEqual(
+    new Set(inputs),
+    new Set(bundleInputs(fileURLToPath(new URL('lib/cubus-cube.js', WEB)))),
+    'the same entry named two ways must yield the same inputs',
+  );
+});
+
+test('a relative root reaches the freshness check the same way an absolute one does', () => {
+  // assembleDist builds the freshness check's entry out of `root`, so a relative root made that
+  // check throw on its own argument — a build that cannot say whether the bundle is stale.
+  withRoot(({ root, dist }) => {
+    const rel = relative(process.cwd(), root);
+    const soon = Date.now() / 1000 + 600;
+    utimesSync(join(root, 'lib', 'cube-frame.js'), soon, soon);
+    assert.throws(() => assembleDist({ root: rel, dist, freshness: true }),
+      (err) => err.message.includes('cube-frame.js'),
+      'the freshness check must fail over the STALE BUNDLE, not over how its root was spelled');
   });
 });
 

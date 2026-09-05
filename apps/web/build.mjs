@@ -86,12 +86,18 @@ const isOrtAsset = (f) => new RegExp(`^${ORT_ASSET}$`).test(f);
  * cannot be built, and reading past it here would silently shrink the set being compared.
  */
 export function bundleInputs(entry) {
-  if (!existsSync(entry)) throw new Error(`build: missing bundle entry ${entry}`);
-  const cwd = dirname(entry);
+  // RESOLVED FIRST. esbuild's `absWorkingDir` means what it says and refuses anything else
+  // ("The working directory ... is not an absolute path"), so a relative entry made this throw
+  // before it could look at a single import — and the entry is relative whenever the caller
+  // spelled a path from the repo root, `assembleDist({ root: 'apps/web' })` included, since its
+  // freshness check builds this argument out of `root` (found by audit, 2026-09-05).
+  const file = resolve(entry);
+  if (!existsSync(file)) throw new Error(`build: missing bundle entry ${entry}`);
+  const cwd = dirname(file);
   let meta;
   try {
     ({ metafile: meta } = buildSync({
-      entryPoints: [entry],
+      entryPoints: [file],
       absWorkingDir: cwd,
       bundle: true,
       packages: 'external',
@@ -111,6 +117,41 @@ export function bundleInputs(entry) {
 /** A path as dist/ names it: relative to `root`, with forward slashes on every platform — the
  *  spelling NEVER_SHIPPED is written in. */
 const posix = (root, p) => relative(root, p).split(sep).join('/');
+
+/** Is `inner` the same path as `outer`, or somewhere beneath it? Both already absolute. A whole
+ *  path component is required, so `.../dist2` is not beneath `.../dist`. */
+const beneath = (inner, outer) => {
+  const rel = relative(outer, inner);
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !path.isAbsolute(rel));
+};
+
+/**
+ * Refuse a destination the assembly would destroy on its way in.
+ *
+ * assembleDist's first act is an unconditional recursive delete, and nothing above it asked what
+ * it was deleting: `assembleDist({ dist: root })` erased apps/web — sources, tests, node_modules —
+ * before a single check ran, and the same for any ancestor of root or any of the trees the copy
+ * reads (found by audit, 2026-09-05). The ordinary `root/dist` is untouched by this: it lives
+ * inside root, but root does not live inside IT and it is none of the copied paths.
+ *
+ * Named and thrown from here rather than inlined, because the order is the contract — this must
+ * be the thing that happens before the delete, not beside it.
+ */
+function assertDistIsDisposable(src, out) {
+  if (beneath(src, out)) {
+    throw new Error(
+      `build: refusing to assemble into ${out} — it is the source tree ${src} (or holds it), and the first thing an assembly does is delete its destination`,
+    );
+  }
+  for (const p of [...DIRS, ...FILES]) {
+    const copied = join(src, p);
+    if (beneath(out, copied)) {
+      throw new Error(
+        `build: refusing to assemble into ${out} — it is ${posix(src, copied)}, which the assembly copies FROM, and the destination is deleted first`,
+      );
+    }
+  }
+}
 
 /** Everything the browser loads, and nothing else. Whole directories on purpose (a new import is
  *  never silently missed), with the never-ship list applied on the way in AND asserted on what
@@ -277,14 +318,19 @@ function assertBundleFresh(root) {
  * @returns {{ dist: string, referenced: number }}
  */
 export function assembleDist({ root = here, dist = join(root, 'dist'), freshness = true } = {}) {
-  rmSync(dist, { recursive: true, force: true });
-  mkdirSync(dist, { recursive: true });
-  copyWebAssets(root, dist);
-  const referenced = assertReferencedAssets(dist);
-  assertSolverAssets(dist);
-  assertScannerAssets(root, dist);
-  if (freshness) assertBundleFresh(root);
-  return { dist, referenced };
+  // Absolute from here down, so "is the destination inside the source" is a question about paths
+  // rather than about whoever's cwd this ran under.
+  const src = resolve(root);
+  const out = resolve(dist);
+  assertDistIsDisposable(src, out);
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out, { recursive: true });
+  copyWebAssets(src, out);
+  const referenced = assertReferencedAssets(out);
+  assertSolverAssets(out);
+  assertScannerAssets(src, out);
+  if (freshness) assertBundleFresh(src);
+  return { dist: out, referenced };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
