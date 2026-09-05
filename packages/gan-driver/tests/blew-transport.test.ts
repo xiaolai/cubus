@@ -260,6 +260,33 @@ describe('the respawn loop stops, and says why', () => {
     await realSleep(50);
     expect(respawns).toBe(after);
   });
+
+  // Cancelling the timers that exist is only half of it, and the other half is the ordinary way a
+  // caller disconnects: from the 'reconnecting' handler, because that is the event that says the
+  // link is unhealthy. That listener runs SYNCHRONOUSLY inside the close handler, before the
+  // respawn is scheduled — so disconnect() cleared the timers there were and the handler then
+  // created one it could never have cleared. Same defect as the test above, reached from the one
+  // direction clearing cannot cover.
+  it('schedules nothing when disconnect() is called from inside the reconnecting handler', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const t = transport(dead);
+    const sub = t.subscribe('FFF6');
+    let respawns = 0;
+    sub.on('reconnecting', () => {
+      respawns++;
+      t.disconnect();
+    });
+
+    await untilReal(() => respawns > 0, 'the first respawn');
+    expect(vi.getTimerCount()).toBe(0);
+
+    // And no child comes back either — the flag is read again at spawn time, not only at schedule
+    // time, so a respawn cannot slip through on a clock that keeps running.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await realSleep(50);
+    expect(respawns).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe('a read is a reading, or it is a failure', () => {

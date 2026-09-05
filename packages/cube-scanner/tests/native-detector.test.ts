@@ -109,6 +109,9 @@ describe('NativeDetector — stop() cancels a pending use()', () => {
     b.finishOpen();
     await expect(opening).rejects.toMatchObject({ name: 'AbortError' });
     expect(det.device).toBeNull();
+    // Drained, because a close issued while this open was still crossing is ordered BEHIND it and
+    // therefore lands a few microtasks after the rejection the caller sees. See `closeCamera`.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     // And it closes what it abandoned rather than leaving the plugin holding a camera nobody has.
     expect(b.calls.filter((c) => c === 'close_camera').length).toBeGreaterThanOrEqual(2);
     // It never asked which camera opened — the attempt was over before that mattered.
@@ -282,6 +285,139 @@ describe('NativeDetector — the one camera, and the order the plugin sees', () 
     } finally {
       warned.mockRestore();
     }
+  });
+
+  it('keeps the camera it opened when a second close is added while it is still waiting', async () => {
+    // WHAT WAITING ON A SNAPSHOT MISSED. `closing` READ ONCE names the closes outstanding at that
+    // instant, so a `stop()` during the wait adds one the waiting open is not waiting for: the open
+    // went out with a close still crossing, and the plugin then shut the camera it had just
+    // established — the same failure the wait was added to prevent, one layer in. Two overlapping
+    // attempts is exactly what the detector park produces, so the second close has an ordinary
+    // source: a panel that mounted and left again while the first close was still in the platform.
+    const trace: string[] = [];
+    let cameraOn = false;
+    const gates: (() => void)[] = [];
+    const invoke = async (cmd: string): Promise<unknown> => {
+      const name = short(cmd);
+      trace.push(`${name}:start`);
+      // Only the first two closes are held; anything later must not hang the file.
+      if (name === 'close_camera' && gates.length < 2) {
+        await new Promise<void>((release) => gates.push(release));
+      }
+      // The lens, as the plugin sees it: whoever finishes last decides whether it is on.
+      if (name === 'open_camera') cameraOn = true;
+      if (name === 'close_camera') cameraOn = false;
+      trace.push(`${name}:end`);
+      return name === 'current_camera' ? { deviceId: 'native-1', label: 'Native' } : null;
+    };
+
+    const outgoing = new NativeDetector(invoke);
+    await outgoing.use({});
+    expect(cameraOn).toBe(true);
+    outgoing.stop(); // close #1 goes out, and the plugin is slow to run it
+    await Promise.resolve();
+    expect(gates).toHaveLength(1);
+
+    const incoming = new NativeDetector(invoke);
+    const opening = incoming.use({}); // parks on the wait, with close #1 outstanding
+    await flush();
+
+    const brief = new NativeDetector(invoke);
+    // Caught on the spot rather than at the assertion: this attempt is superseded several turns
+    // before the test looks at it, and an unattached rejection in between is an unhandled one.
+    const abandoned = brief.use({}).catch((err: unknown) => err); // a second panel mounts…
+    brief.stop(); // …and leaves again: close #2 is added while `incoming` is still waiting
+    expect(gates).toHaveLength(2);
+
+    gates[0]?.(); // close #1 lands
+    await flush();
+    // The count is re-asked, so nothing was opened while close #2 was still crossing. Before this
+    // the open went out here, and close #2 came down on top of it.
+    expect(trace.filter((t) => t === 'open_camera:start')).toHaveLength(1);
+
+    gates[1]?.(); // close #2 lands
+    await opening;
+    await expect(abandoned).resolves.toMatchObject({ name: 'AbortError' });
+    expect(incoming.device).toEqual({ deviceId: 'native-1', label: 'Native' });
+    expect(cameraOn).toBe(true); // the camera it established is still on
+    incoming.stop();
+    await flush();
+  });
+
+  it('holds a close behind the open it would otherwise overtake', async () => {
+    // The other direction, and the one no count can express: a `stop()` while this detector's own
+    // `open_camera` is still inside the platform. Issued now, it is two independent Tauri tasks
+    // with no order between them — the plugin may run the close first and leave the lens on for the
+    // life of the process, with `device` null and no handle anywhere able to release it.
+    const trace: string[] = [];
+    let release = (): void => {};
+    const invoke = async (cmd: string): Promise<unknown> => {
+      const name = short(cmd);
+      trace.push(`${name}:start`);
+      if (name === 'open_camera') {
+        await new Promise<void>((r) => {
+          release = r;
+        });
+      }
+      trace.push(`${name}:end`);
+      return name === 'current_camera' ? { deviceId: 'native-1', label: 'Native' } : null;
+    };
+
+    const det = new NativeDetector(invoke);
+    const opening = det.use({});
+    await flush();
+    det.stop(); // the panel disconnected while the camera was still opening
+    await flush();
+    expect(trace).not.toContain('close_camera:start'); // nothing crosses under the open
+
+    release();
+    await expect(opening).rejects.toMatchObject({ name: 'AbortError' });
+    await flush();
+    // …and once the open has landed the close does go out, behind it. The camera is released, just
+    // in an order the plugin can honour.
+    expect(trace.indexOf('open_camera:end')).toBeLessThan(trace.indexOf('close_camera:start'));
+    expect(det.device).toBeNull();
+  });
+
+  it('drops a held close whose claim moved on while it waited', async () => {
+    // A close that WAITED is a close whose reason may have expired. A newer attempt claimed the
+    // camera while this one sat behind an open, so sending it now is the overtaking the wait exists
+    // to prevent, arriving one step later. It is dropped instead — safely, because the claim was
+    // given back on the way in, so the new owner's own `stop()` closes what it opened.
+    const trace: string[] = [];
+    let release = (): void => {};
+    let held = true;
+    const invoke = async (cmd: string): Promise<unknown> => {
+      const name = short(cmd);
+      trace.push(name);
+      if (name === 'open_camera' && held) {
+        held = false;
+        await new Promise<void>((r) => {
+          release = r;
+        });
+      }
+      return name === 'current_camera' ? { deviceId: 'native-1', label: 'Native' } : null;
+    };
+
+    const outgoing = new NativeDetector(invoke);
+    const abandoned = outgoing.use({});
+    await flush();
+    outgoing.stop(); // held behind its own open
+
+    const incoming = new NativeDetector(invoke);
+    const opening = incoming.use({}); // and the camera is claimed while that close is still held
+    release();
+    await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+    await opening;
+    await flush();
+
+    expect(incoming.device).toEqual({ deviceId: 'native-1', label: 'Native' });
+    expect(trace.filter((c) => c === 'close_camera')).toHaveLength(0);
+
+    // …and the new owner can still close what it holds, so nothing is wedged on.
+    incoming.stop();
+    await flush();
+    expect(trace.filter((c) => c === 'close_camera')).toHaveLength(1);
   });
 });
 

@@ -175,6 +175,13 @@ export class BlewTransport implements Transport {
           return;
         }
         emitter.emit('reconnecting');
+        // Read again on the far side of the emit, because a listener may disconnect FROM this
+        // event — it is the one that says the link is unhealthy — and it runs synchronously, while
+        // the timer below does not exist yet. disconnect() cleared the timers there were, and this
+        // handler then made one it could not have cleared: a stopped transport still holding a
+        // live handle, which is the whole defect the clearing was for. The flag is checked at both
+        // ends: here before scheduling, and again in spawnOne() when the timer fires.
+        if (this.stopped) return;
         const backoff = gotPacket ? 500 : Math.min(500 * 2 ** deadAttempts, 8000);
         // Held, because a timer is a live handle: an unreferenced respawn kept Node awake for up
         // to eight seconds after disconnect() had declared the transport stopped, and then woke to

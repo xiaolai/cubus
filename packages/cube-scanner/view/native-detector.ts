@@ -72,19 +72,57 @@ const mayClose = (claim: number): boolean => cameraClaim === 0 || cameraClaim ==
  * goes out under an owner whose panel reports a live camera — the exact failure `cameraClaim` was
  * written to prevent, arriving underneath it. Reproduced with a delayed bridge.
  *
- * So an open waits for whatever close is in flight. Only that direction: a close is a fast,
- * unconditional call, while an open can sit on a permission prompt for as long as the user takes,
- * and queueing opens behind opens would let one unanswered prompt block every later attempt —
- * which is the same fault the session's per-detector open chain exists to avoid.
+ * So the two directions are ordered against each other, and BOTH halves are needed — the first
+ * attempt at this put only one in. An open waits for every close already crossing, and a close
+ * issued while an open is in flight waits for that open. Waiting on the closes alone left the
+ * other overtaking untouched; and waiting on a SNAPSHOT of `closing` left the first one alive too,
+ * because a close added while an open sat in that wait was not in the promise being waited on — so
+ * the open went out with a close still crossing, and that close came down on the camera the open
+ * had just established. The COUNT, re-asked after every await, is what closes the hole; the
+ * promise only says when to look again.
  *
- * It never rejects, so an awaiting open cannot inherit a close's failure; `closeCamera` reports
- * that failure where it happens. A close that never SETTLES does hold later opens up — which is
- * the same shape of failure a hung `open_camera` already produces, is visible as a camera that
- * will not start rather than as one that dies mid-scan, and is the price of the ordering.
+ * WHAT AN OPEN WAITS FOR IS CLOSES THAT ARE CROSSING, never one that is merely HELD — and that
+ * distinction is load-bearing rather than an optimisation. Waiting for held ones too builds
+ * open → close → open, which is queueing opens behind opens with a step in between: a camera stuck
+ * on an unanswered permission prompt held a close, and the close then held every later attempt, so
+ * a re-mounted panel could not start its camera at all until the prompt was answered. That is the
+ * exact fault the session's per-detector open chain exists to avoid, arriving transitively (the
+ * park's own tests caught it). A held close needs no wait, because the CLAIM settles it: it re-asks
+ * `mayClose` at the moment it is finally issued, and a newer attempt has taken the claim by then —
+ * at ENTRY to `use()`, before any waiting — so it is dropped. The two rules meet with no gap
+ * because incrementing the count and issuing the call happen in one synchronous block, and so do an
+ * open's last count check and its own issue: a held close either goes out first and is counted, or
+ * the open goes out first and the close is refused.
+ *
+ * Neither accumulator ever rejects, so a waiter cannot inherit the other side's failure:
+ * `sendClose` reports a close's failure where it happens, `use()` reports an open's. A call that
+ * never SETTLES does hold the other side up — the same shape of failure a hung `open_camera`
+ * already produces, visible as a camera that will not start rather than one that dies mid-scan,
+ * and the price of the ordering.
  */
 let closing: Promise<unknown> = Promise.resolve();
-/** How many closes are crossing the bridge right now, so an open with nothing to wait for waits. */
+/** How many closes are crossing the bridge right now — the question an open re-asks after each await. */
 let closesOut = 0;
+/** Every open still crossing the bridge, so a close cannot be issued underneath one. */
+let opening: Promise<unknown> = Promise.resolve();
+/** How many opens are in flight; `opening` is only worth reading while this is above zero. */
+let opensOut = 0;
+
+/** Record an open crossing the bridge, so a close issued meanwhile is ordered behind it. */
+function trackOpen(sent: Promise<unknown>): void {
+  opensOut++;
+  const settled = (): void => {
+    opensOut--;
+    // Collapsed once the bridge is quiet, so a session does not accumulate one retained promise
+    // per camera start. Safe because every waiter re-reads the accumulator only after re-asking
+    // the count, and a settled promise is what it would have awaited anyway.
+    if (opensOut === 0) opening = Promise.resolve();
+  };
+  // Both outcomes, in the SAME turn the call settles: `use()`'s abort path closes the camera the
+  // instant its open lands, and a decrement one microtask later would send that close down the
+  // deferred path to wait for an open that is already over.
+  opening = Promise.all([opening, sent.then(settled, settled)]);
+}
 
 export class NativeDetector implements Detector {
   private dev: CameraDevice | null = null;
@@ -141,17 +179,29 @@ export class NativeDetector implements Detector {
       throw new DOMException('camera open superseded', 'AbortError');
     };
     // A close still crossing the bridge lands FIRST, or it lands on this open's camera (see
-    // `closing`). Asked as a COUNT first so an open with nothing to wait for is issued in the same
-    // turn it always was: the ordinary path's timing is not this fix's to change, and a
-    // `stop()` racing its own `open_camera` is a case the tests stage synchronously.
-    if (closesOut > 0) {
+    // `closing`). Asked as a COUNT, and asked AGAIN after every await: `closing` names only the
+    // closes outstanding at the moment it was read, so one added during the wait is not in it, and
+    // an open that waited on that single snapshot went out with a close still crossing. The loop
+    // ends only with the bridge carrying no close at all — and runs zero times for an open with
+    // nothing to wait for, which is therefore issued in the same turn it always was. It terminates
+    // because a close can only be ADDED by a `stop()` or an abandoned attempt, and one that cancels
+    // THIS attempt takes it out through `abort()` on the very next check.
+    while (closesOut > 0) {
       await closing;
       if (cancelled()) abort();
     }
+    // The claim belongs to the open being ISSUED, and after a wait of unknown length THIS is the
+    // issue. It was taken at entry so that a close arriving mid-wait cannot claim the camera this
+    // attempt is already committed to opening; it is re-asserted here because a close that DID
+    // land in between gave `cameraClaim` back to nobody, which would leave the camera about to be
+    // opened closable by any stale handle.
+    cameraClaim = claim;
     // `facingMode` is meaningless natively (the plugin selects by deviceId or the platform default);
     // a pinned deviceId is honoured, everything else opens the default camera.
     try {
-      await this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+      const sent = this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+      trackOpen(sent);
+      await sent;
     } catch (err) {
       // Nothing was opened, so nothing is closed — but the claim was taken on the way in and a
       // claim held by an attempt that failed would refuse every later `stop()` the right to close
@@ -228,6 +278,39 @@ export class NativeDetector implements Detector {
    * from synchronous teardown, and there is nothing a caller could do with the answer. Not
    * fire-and-FORGET, though, which is what it was: the close joins `closing`, so the next open
    * waits for it rather than overtaking it.
+   */
+  private closeCamera(claim: number): void {
+    if (!mayClose(claim)) return;
+    // The claim is given back FIRST, before this close can fail or be held back: `mayClose` admits
+    // anyone once `cameraClaim` is 0, so whatever becomes of it the plugin is left closable by the
+    // next `stop()` or `use()`.
+    cameraClaim = 0;
+    // ISSUED IN THIS TURN while the bridge carries no open, exactly as it always was — the panel
+    // tears down synchronously and a close deferred by even a microtask is a close that has not
+    // happened yet when the element is gone. While an open IS in flight it is the overtaking in the
+    // other direction: each Tauri command is its own task, so a close issued now could execute
+    // after that open and take the lens out from under it, and `stop()` racing its own
+    // `open_camera` is the ordinary way to reach that. One snapshot of `opening` is enough, because
+    // an open issued after this point is one the claim rule refuses this close on (see `closing`).
+    if (opensOut > 0) {
+      void opening.then(() => {
+        this.sendClose(claim);
+      });
+      return;
+    }
+    this.sendClose(claim);
+  }
+
+  /**
+   * Issue `close_camera` for `claim` — unless the claim has moved on while this close was held.
+   *
+   * A close that WAITED is a close whose reason may have expired: an attempt that claimed the
+   * camera meanwhile is about to own the lens, and sending this one now would be the very
+   * overtaking the wait exists to prevent, arriving one step later. Dropping it is safe because
+   * the claim was given back on the way in — the new owner's own `stop()` closes what it opened.
+   *
+   * The count and the call go out together, in one synchronous block, because that is what leaves
+   * no window for an open to check the count and be issued in between.
    *
    * A FAILURE IS SAID OUT LOUD (2026-09-05). This used to swallow it under the note that "the
    * camera closes a tick later", which nothing implemented — nothing retries, so a rejected
@@ -237,26 +320,25 @@ export class NativeDetector implements Detector {
    * succeed. That is the recovery, and it is worth nothing unless somebody knows to look, hence
    * the warning.
    */
-  private closeCamera(claim: number): void {
+  private sendClose(claim: number): void {
     if (!mayClose(claim)) return;
-    cameraClaim = 0;
     closesOut++;
-    // ISSUED IN THIS TURN, exactly as it always was — the panel tears down synchronously and a
-    // close deferred by even a microtask is a close that has not happened yet when the element is
-    // gone. What is new is that it is REMEMBERED: `closing` is every close still outstanding, and
-    // the next open waits for all of them. Two closes overlapping is harmless (they close the same
-    // one camera); a close overtaking an open is not.
-    const sent = this.invoke(`${P}close_camera`)
-      .catch((err: unknown) => {
+    const sent = this.invoke(`${P}close_camera`).then(
+      () => {},
+      (err: unknown) => {
         console.warn(
           '[cubus] the native camera did not close — the lens may still be on until something opens or closes it again',
           err,
         );
-      })
-      .finally(() => {
+      },
+    );
+    closing = Promise.all([
+      closing,
+      sent.then(() => {
         closesOut--;
-      });
-    closing = Promise.all([closing, sent]);
+        if (closesOut === 0) closing = Promise.resolve(); // collapsed as in `trackOpen`
+      }),
+    ]);
   }
 }
 

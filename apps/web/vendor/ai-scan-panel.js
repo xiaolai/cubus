@@ -2797,6 +2797,16 @@ var claims = 0;
 var mayClose = (claim) => cameraClaim === 0 || cameraClaim === claim;
 var closing = Promise.resolve();
 var closesOut = 0;
+var opening = Promise.resolve();
+var opensOut = 0;
+function trackOpen(sent) {
+  opensOut++;
+  const settled = () => {
+    opensOut--;
+    if (opensOut === 0) opening = Promise.resolve();
+  };
+  opening = Promise.all([opening, sent.then(settled, settled)]);
+}
 var NativeDetector = class {
   /**
    * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`). This is the ONLY thing
@@ -2846,12 +2856,15 @@ var NativeDetector = class {
       this.closeCamera(claim);
       throw new DOMException("camera open superseded", "AbortError");
     };
-    if (closesOut > 0) {
+    while (closesOut > 0) {
       await closing;
       if (cancelled()) abort();
     }
+    cameraClaim = claim;
     try {
-      await this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+      const sent = this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+      trackOpen(sent);
+      await sent;
     } catch (err) {
       if (cameraClaim === claim) cameraClaim = 0;
       throw err;
@@ -2907,6 +2920,28 @@ var NativeDetector = class {
    * from synchronous teardown, and there is nothing a caller could do with the answer. Not
    * fire-and-FORGET, though, which is what it was: the close joins `closing`, so the next open
    * waits for it rather than overtaking it.
+   */
+  closeCamera(claim) {
+    if (!mayClose(claim)) return;
+    cameraClaim = 0;
+    if (opensOut > 0) {
+      void opening.then(() => {
+        this.sendClose(claim);
+      });
+      return;
+    }
+    this.sendClose(claim);
+  }
+  /**
+   * Issue `close_camera` for `claim` — unless the claim has moved on while this close was held.
+   *
+   * A close that WAITED is a close whose reason may have expired: an attempt that claimed the
+   * camera meanwhile is about to own the lens, and sending this one now would be the very
+   * overtaking the wait exists to prevent, arriving one step later. Dropping it is safe because
+   * the claim was given back on the way in — the new owner's own `stop()` closes what it opened.
+   *
+   * The count and the call go out together, in one synchronous block, because that is what leaves
+   * no window for an open to check the count and be issued in between.
    *
    * A FAILURE IS SAID OUT LOUD (2026-09-05). This used to swallow it under the note that "the
    * camera closes a tick later", which nothing implemented — nothing retries, so a rejected
@@ -2916,19 +2951,26 @@ var NativeDetector = class {
    * succeed. That is the recovery, and it is worth nothing unless somebody knows to look, hence
    * the warning.
    */
-  closeCamera(claim) {
+  sendClose(claim) {
     if (!mayClose(claim)) return;
-    cameraClaim = 0;
     closesOut++;
-    const sent = this.invoke(`${P}close_camera`).catch((err) => {
-      console.warn(
-        "[cubus] the native camera did not close \u2014 the lens may still be on until something opens or closes it again",
-        err
-      );
-    }).finally(() => {
-      closesOut--;
-    });
-    closing = Promise.all([closing, sent]);
+    const sent = this.invoke(`${P}close_camera`).then(
+      () => {
+      },
+      (err) => {
+        console.warn(
+          "[cubus] the native camera did not close \u2014 the lens may still be on until something opens or closes it again",
+          err
+        );
+      }
+    );
+    closing = Promise.all([
+      closing,
+      sent.then(() => {
+        closesOut--;
+        if (closesOut === 0) closing = Promise.resolve();
+      })
+    ]);
   }
 };
 function base64ToBuffer(b64) {
@@ -3455,17 +3497,17 @@ var WebDetector = class {
    */
   async use(opts = {}) {
     this.stop();
-    const opening = new AbortController();
-    this.opening = opening;
+    const opening2 = new AbortController();
+    this.opening = opening2;
     try {
-      const source = await openCamera(this.video(), opts, opening.signal);
-      if (this.opening !== opening || opening.signal.aborted) {
+      const source = await openCamera(this.video(), opts, opening2.signal);
+      if (this.opening !== opening2 || opening2.signal.aborted) {
         source.stop();
         throw new DOMException("camera open superseded", "AbortError");
       }
       this.source = source;
     } finally {
-      if (this.opening === opening) this.opening = null;
+      if (this.opening === opening2) this.opening = null;
     }
   }
   /**
@@ -4553,9 +4595,9 @@ var AiScanPanel = class extends HTMLElement {
       const pending = this.pendingOpening;
       this.pendingOpening = null;
       const phase = pending?.phase ?? (this.awaiting ? "confirm" : "scanning");
-      const opening = pending?.words ?? (this.awaiting ? this.confirmWords(this.awaiting) : [OPENING]);
-      if (fellBack) this.loop(phase, this.tinted("err", PINNED_GONE), " ", ...opening);
-      else this.loop(phase, ...opening);
+      const opening2 = pending?.words ?? (this.awaiting ? this.confirmWords(this.awaiting) : [OPENING]);
+      if (fellBack) this.loop(phase, this.tinted("err", PINNED_GONE), " ", ...opening2);
+      else this.loop(phase, ...opening2);
     } catch (err) {
       this.startFailed(err, gen, startBtn);
     } finally {
@@ -4719,7 +4761,7 @@ var AiScanPanel = class extends HTMLElement {
    * (Re)start the capture loop. `opening` replaces the standard prompt, so a message explaining
    * why we are starting over survives instead of being overwritten within one tick.
    */
-  loop(phase, ...opening) {
+  loop(phase, ...opening2) {
     this.cam.stopLoop();
     this.showPreview(null);
     this.still.reset();
@@ -4728,11 +4770,11 @@ var AiScanPanel = class extends HTMLElement {
     const restart = this.maybe("restart");
     if (restart) restart.hidden = false;
     if (this.cam.device === null) {
-      if (opening.length > 0) this.pendingOpening = { phase, words: opening };
+      if (opening2.length > 0) this.pendingOpening = { phase, words: opening2 };
       void this.start();
       return;
     }
-    this.report(phase, ...opening.length > 0 ? opening : [OPENING]);
+    this.report(phase, ...opening2.length > 0 ? opening2 : [OPENING]);
     this.cam.beginLoop(
       () => Math.max(TICK_FLOOR_MS, Math.round(this.lastInferenceMs)),
       () => void this.onTick()
@@ -4984,14 +5026,14 @@ var AiScanPanel = class extends HTMLElement {
    * beat still cancels the check, and `stop()` clears the timer outright for a navigation. What is
    * left running is the case that should always have run.
    */
-  scheduleCheck(...opening) {
+  scheduleCheck(...opening2) {
     this.stopLoop();
     this.showPreview(null);
     this.finished = false;
     this.notice = null;
     this.suspects = [];
     this.dropDiagnosis();
-    this.report("checking", ...opening);
+    this.report("checking", ...opening2);
     const epoch = this.diagnosisEpoch;
     if (this.checkTimer !== null) clearTimeout(this.checkTimer);
     this.checkTimer = setTimeout(() => {

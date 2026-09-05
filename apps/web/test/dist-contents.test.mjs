@@ -7,7 +7,10 @@
 // into a throwaway directory and looks at what came out.
 
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
+  symlinkSync, utimesSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
@@ -293,6 +296,74 @@ test('the ordinary destination — a dist inside root — is still assembled', (
     // Not `dist2` either: the guard compares whole path components, or a sibling directory whose
     // name merely starts with a copied one would be refused for no reason.
     assert.ok(assembleDist({ root, dist: join(root, 'libx'), freshness: false }).referenced > 0);
+  });
+});
+
+// ---- and the same delete, spelled differently ------------------------------------------------
+//
+// The three refusals above all compared STRINGS, which answers a question about spelling rather
+// than about directories — and a filesystem hands out more than one name for the same directory.
+// An audit walked through the guard with one on 2026-09-05 and reached the deletion call. Both
+// shapes below are the identical delete, arriving under a name the lexical check saw as unrelated.
+
+test('an assembly into a symlinked twin of the source tree is refused', (t) => {
+  withRoot(({ root }) => {
+    const twin = join(mkdtempSync(join(tmpdir(), 'cubus-twin-')), 'ln');
+    try {
+      symlinkSync(root, twin, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      // Never a pass: a platform that will not make the link cannot be asked the question here.
+      t.skip(`this platform refused a directory symlink (${err.code})`);
+      return;
+    }
+    try {
+      assert.throws(() => assembleDist({ root, dist: twin, freshness: false }),
+        (err) => /source tree/.test(err.message),
+        'a second name for root is still root, and an assembly deletes its destination first');
+      assert.throws(() => assembleDist({ root, dist: join(twin, 'lib'), freshness: false }),
+        (err) => /copies FROM/.test(err.message));
+      assert.ok(existsSync(join(root, 'index.html')), 'the source tree was deleted through its other name');
+      assert.ok(existsSync(join(root, 'lib', 'cube-frame.js')), 'lib/ was deleted through its other name');
+    } finally {
+      // The link goes first and by name, so the recursive delete of its parent never has to
+      // decide whether to follow one — and recursively, because a regression in the guard leaves
+      // a real directory of build output where the link used to be.
+      rmSync(twin, { recursive: true, force: true });
+      rmSync(dirname(twin), { recursive: true, force: true });
+    }
+  });
+});
+
+test('an assembly into a macOS firmlink twin of the source tree is refused', (t) => {
+  // The shape that was actually measured, and the reason the guard compares device/inode rather
+  // than realpath. macOS stitches its read-only system volume to the data volume with FIRMLINKS,
+  // so `/Users/x` and `/System/Volumes/Data/Users/x` are one directory — and a firmlink is a
+  // mount, not a symlink, so realpath leaves the second spelling exactly as it found it. The two
+  // preconditions below assert both halves of that, because a comment in build.mjs claims them.
+  //
+  // A THROWAWAY root, never the repo's own apps/web: every assertion here is that a directory
+  // SURVIVED, so a regression in the guard deletes whatever this test pointed at.
+  if (process.platform !== 'darwin') {
+    t.skip('firmlinks are a macOS filesystem feature');
+    return;
+  }
+  withRoot(({ root }) => {
+    const twin = join('/System/Volumes/Data', realpathSync.native(root));
+    if (!existsSync(twin)) {
+      t.skip('this Mac does not expose its data volume at /System/Volumes/Data');
+      return;
+    }
+    const [a, b] = [statSync(root), statSync(twin)];
+    assert.equal(`${a.dev}:${a.ino}`, `${b.dev}:${b.ino}`, 'precondition: the twin is the same directory');
+    assert.equal(realpathSync.native(twin), twin,
+      'precondition: realpath does not collapse a firmlink — if it now does, build.mjs says otherwise and must be re-read');
+    assert.throws(() => assembleDist({ root, dist: twin, freshness: false }),
+      (err) => /source tree/.test(err.message),
+      'the firmlink twin of root IS root, and an assembly deletes its destination first');
+    assert.throws(() => assembleDist({ root, dist: join(twin, 'vendor'), freshness: false }),
+      (err) => /copies FROM/.test(err.message));
+    assert.ok(existsSync(join(root, 'index.html')), 'the source tree was deleted through its firmlink twin');
+    assert.ok(existsSync(join(root, 'vendor', 'cubejs.js')), 'vendor/ was deleted through its firmlink twin');
   });
 });
 

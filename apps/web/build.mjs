@@ -118,11 +118,54 @@ export function bundleInputs(entry) {
  *  spelling NEVER_SHIPPED is written in. */
 const posix = (root, p) => relative(root, p).split(sep).join('/');
 
-/** Is `inner` the same path as `outer`, or somewhere beneath it? Both already absolute. A whole
- *  path component is required, so `.../dist2` is not beneath `.../dist`. */
+/**
+ * Filesystem identity — the (device, inode) pair a path names, or null when nothing is there.
+ *
+ * ASKED OF THE FILESYSTEM, not of two strings (2026-09-05). The guard below used to compare paths
+ * lexically, which answers a question about SPELLING when the delete is about a DIRECTORY, and a
+ * filesystem hands out more than one name for the same one. An audit walked straight through it
+ * with an equivalent path and reached the deletion call.
+ *
+ * Realpath does not close that door, which is why this is dev/ino and not a canonical string:
+ * macOS stitches its read-only system volume to the data volume with FIRMLINKS, so `/Users/x` and
+ * `/System/Volumes/Data/Users/x` are one directory — and a firmlink is a mount, not a symlink, so
+ * `realpathSync.native` returns the second spelling exactly as it was given (measured; pinned by
+ * dist-contents.test.mjs, which asserts both halves). The dev/ino pair is what the two spellings
+ * actually share, and taking it closes the symlink and case-insensitive-volume doors in the same
+ * move rather than one door at a time.
+ *
+ * ENOENT and ENOTDIR are the filesystem answering "nothing there". Anything else is an UNANSWERED
+ * question about a path we are about to delete into, so it raises rather than reading as absent.
+ */
+const identity = (p) => {
+  try {
+    const s = statSync(p);
+    return `${s.dev}:${s.ino}`;
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
+    throw err;
+  }
+};
+
+/** Every directory that holds `p`, and `p` itself, as identities. A destination that does not
+ *  exist yet contributes its nearest existing ancestor and everything above it — the parts that
+ *  could already BE something; the missing leading components cannot be, and a delete does not
+ *  touch them. */
+const ancestry = (p) => {
+  const ids = new Set();
+  for (let at = p; ; at = dirname(at)) {
+    const id = identity(at);
+    if (id) ids.add(id);
+    if (dirname(at) === at) return ids;
+  }
+};
+
+/** Is `inner` the same directory as `outer`, or somewhere beneath it — however either is SPELLED?
+ *  `outer` has to exist to be either: an identity is a thing that is there. A whole path component
+ *  is still required and now by construction, so `.../dist2` is not beneath `.../dist`. */
 const beneath = (inner, outer) => {
-  const rel = relative(outer, inner);
-  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !path.isAbsolute(rel));
+  const id = identity(outer);
+  return id !== null && ancestry(inner).has(id);
 };
 
 /**
@@ -133,6 +176,11 @@ const beneath = (inner, outer) => {
  * before a single check ran, and the same for any ancestor of root or any of the trees the copy
  * reads (found by audit, 2026-09-05). The ordinary `root/dist` is untouched by this: it lives
  * inside root, but root does not live inside IT and it is none of the copied paths.
+ *
+ * The first version of this guard compared the paths as text, and a second audit walked through it
+ * the same day by spelling the destination another way — the same directory reached through a
+ * firmlink. `beneath` asks the filesystem now, so a destination is refused for BEING one of these
+ * trees rather than for being written like one.
  *
  * Named and thrown from here rather than inlined, because the order is the contract — this must
  * be the thing that happens before the delete, not beside it.
@@ -318,8 +366,10 @@ function assertBundleFresh(root) {
  * @returns {{ dist: string, referenced: number }}
  */
 export function assembleDist({ root = here, dist = join(root, 'dist'), freshness = true } = {}) {
-  // Absolute from here down, so "is the destination inside the source" is a question about paths
-  // rather than about whoever's cwd this ran under.
+  // Absolute from here down, so "is the destination inside the source" is a question about
+  // directories rather than about whoever's cwd this ran under — and so the walk up to the
+  // filesystem root that answers it has a root to reach: `dirname` on a relative path stops at
+  // '.', which would hide every real ancestor from the guard.
   const src = resolve(root);
   const out = resolve(dist);
   assertDistIsDisposable(src, out);
