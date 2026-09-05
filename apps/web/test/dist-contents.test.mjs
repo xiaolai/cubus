@@ -195,6 +195,46 @@ test('the freshness check is what `freshness: false` turns off, and nothing else
   });
 });
 
+// Which files the bundle is MADE of is a question about a module graph, and it used to be
+// answered by a regular expression over the source text — which cannot tell code from what
+// merely looks like it. Both directions were wrong, and both fail the build in ways nothing on
+// screen could explain (found by audit, 2026-09-05).
+test('a commented-out import is not an input — text that looks like code is not code', () => {
+  withRoot(({ root, build }) => {
+    writeFileSync(join(root, 'lib', 'cubus-cube.js'),
+      "// import './removed.js';\nconst dead = \"import './gone.js'\";\nimport { fitDistance } from './cube-frame.js';\nexport { fitDistance, dead };\n");
+    const old = Date.now() / 1000 - 600;
+    utimesSync(join(root, 'lib', 'cubus-cube.js'), old, old);
+    build(); // must not throw: nothing here imports removed.js, so nothing is missing
+  });
+});
+
+test('an import behind a comment is still an input — the freshness check must not lose it', () => {
+  withRoot(({ root, build }) => {
+    writeFileSync(join(root, 'lib', 'cubus-cube.js'),
+      "import { fitDistance } from /* the silhouette lives here */ './cube-frame.js';\nexport { fitDistance };\n");
+    const old = Date.now() / 1000 - 600;
+    utimesSync(join(root, 'lib', 'cubus-cube.js'), old, old);
+    const soon = Date.now() / 1000 + 600;
+    utimesSync(join(root, 'lib', 'cube-frame.js'), soon, soon);
+    assert.throws(build, (err) => err.message.includes('cube-frame.js'),
+      'a comment between `from` and its specifier hid a bundled module from the freshness check');
+  });
+});
+
+// An import that points at nothing is a bundle that cannot be built, and reading past it would
+// silently shrink the set being compared. The message changed with the mechanism; the refusal
+// must not have.
+test('an import of a file that does not exist still fails the build, loudly', () => {
+  withRoot(({ root, build }) => {
+    writeFileSync(join(root, 'lib', 'cubus-cube.js'), "import './removed.js';\nexport const fitDistance = () => 1;\n");
+    const old = Date.now() / 1000 - 600;
+    utimesSync(join(root, 'lib', 'cubus-cube.js'), old, old);
+    assert.throws(build, (err) => err.message.includes('removed.js'),
+      'a specifier that resolves to nothing must stop the build, not shrink the input set');
+  });
+});
+
 test('app.js tolerates the guest\'s absence — the import is caught, not awaited bare', () => {
   const app = readFileSync(new URL('lib/app.js', WEB), 'utf8');
   const site = app.indexOf("import('../vendor/tauri-mcp-guest.js')");

@@ -20,8 +20,13 @@
 // and look at what came out; `node build.mjs` runs it into dist/.
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import path, { join, dirname, relative, sep } from 'node:path';
+import path, { join, dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// The same bundler that BUILDS vendor/cubus-cube.js, asked which files went into it. It is
+// already required here: tauri.conf.json's beforeBuildCommand runs `build:cube` (esbuild) two
+// steps before this file, so a tree that can reach build.mjs can reach esbuild.
+import { buildSync } from 'esbuild';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -66,55 +71,60 @@ const isOrtAsset = (f) => new RegExp(`^${ORT_ASSET}$`).test(f);
  *
  * Bare specifiers (`three`) are deliberately not followed: those are node_modules, re-stamped by
  * every install and asked for by name, so they are not what a freshness check is about.
+ * `packages: 'external'` is exactly that rule, spelled in esbuild's own terms.
+ *
+ * ASKED OF THE BUNDLER, not of a regular expression (2026-09-05). A regex over the source text
+ * cannot tell code from what merely looks like it, and it was wrong in both directions: a
+ * commented-out `import './removed.js'` broke the build over a file nothing imports, while a
+ * block comment sitting between `from` and its specifier was no match at all, so that module
+ * silently left the set the freshness check compares. Both are questions
+ * about a JavaScript module graph, and esbuild is the thing in this repo that already answers
+ * them: it is what BUILT the bundle two steps earlier in the same command chain, so the inputs it
+ * reports are the inputs, by construction rather than by agreement.
  *
  * Throws when a specifier does not resolve: an import that points at nothing is a bundle that
  * cannot be built, and reading past it here would silently shrink the set being compared.
  */
 export function bundleInputs(entry) {
-  const seen = new Set();
-  const walk = (file) => {
-    if (seen.has(file)) return;
-    seen.add(file);
-    const text = readFileSync(file, 'utf8');
-    // `from './x.js'`, `import './x.js'` and `import('./x.js')` — the three shapes this source
-    // tree uses. A specifier that is not relative is a package, and skipped above.
-    for (const m of text.matchAll(/(?:from|import)\s*\(?\s*['"](\.[^'"]+)['"]/g)) {
-      const next = join(dirname(file), m[1]);
-      if (!existsSync(next)) throw new Error(`build: ${file} imports ${m[1]}, which does not exist`);
-      walk(next);
-    }
-  };
   if (!existsSync(entry)) throw new Error(`build: missing bundle entry ${entry}`);
-  walk(entry);
-  return [...seen];
+  const cwd = dirname(entry);
+  let meta;
+  try {
+    ({ metafile: meta } = buildSync({
+      entryPoints: [entry],
+      absWorkingDir: cwd,
+      bundle: true,
+      packages: 'external',
+      format: 'esm',
+      write: false,      // nothing is being produced here; the input list is the whole point
+      metafile: true,
+      logLevel: 'silent', // a failure is raised below, in this file's words
+    }));
+  } catch (err) {
+    const why = (err?.errors ?? []).map((e) => e.text).join('; ') || String(err?.message ?? err);
+    throw new Error(`build: ${entry} cannot be scanned for its imports — ${why}`);
+  }
+  // Keys are relative to absWorkingDir, in posix form; a mtime comparison needs real paths.
+  return Object.keys(meta.inputs).map((f) => resolve(cwd, f));
 }
 
-/**
- * Assemble a dist directory from `root` (apps/web). Throws on anything missing
- * or stale, so a bad assembly is a failed build and never a blank window.
- *
- * @param {{ root?: string, dist?: string, freshness?: boolean }} [o]
- *   `freshness` (default on) is the bundle-newer-than-source check at the end: the CLI's
- *   guarantee that beforeBuildCommand ran its steps in order. A test of what dist CONTAINS
- *   turns it off, because a working tree with an edited source and a not-yet-rebuilt bundle is
- *   the ordinary state mid-change, and vendor-bundles.test.mjs already fails that state by
- *   comparing content — which is the better message for it.
- * @returns {{ dist: string, referenced: number }}
- */
-export function assembleDist({ root = here, dist = join(root, 'dist'), freshness = true } = {}) {
-  rmSync(dist, { recursive: true, force: true });
-  mkdirSync(dist, { recursive: true });
+/** A path as dist/ names it: relative to `root`, with forward slashes on every platform — the
+ *  spelling NEVER_SHIPPED is written in. */
+const posix = (root, p) => relative(root, p).split(sep).join('/');
 
+/** Everything the browser loads, and nothing else. Whole directories on purpose (a new import is
+ *  never silently missed), with the never-ship list applied on the way in AND asserted on what
+ *  came out. */
+function copyWebAssets(root, dist) {
   for (const f of FILES) {
     const src = join(root, f);
     if (!existsSync(src)) throw new Error(`build: missing required file ${f}`);
     cpSync(src, join(dist, f));
   }
-  const posix = (p) => relative(root, p).split(sep).join('/');
   for (const d of DIRS) {
     const src = join(root, d);
     if (!existsSync(src)) throw new Error(`build: missing required directory ${d}/`);
-    cpSync(src, join(dist, d), { recursive: true, filter: (from) => !NEVER_SHIPPED.includes(posix(from)) });
+    cpSync(src, join(dist, d), { recursive: true, filter: (from) => !NEVER_SHIPPED.includes(posix(root, from)) });
   }
   // The exclusion is asserted on the OUTPUT as well as applied on the way in: a
   // filter that stopped matching — a rename, a path spelt differently — would
@@ -123,7 +133,11 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
   if (leaked.length) {
     throw new Error(`build: dist/ carries files that must never ship:\n  ${leaked.join('\n  ')}`);
   }
+}
 
+/** Every asset index.html and the manifest NAME must resolve inside dist/. Returns how many were
+ *  checked, which is what the CLI prints. */
+function assertReferencedAssets(dist) {
   // Assert every asset the app actually references resolves inside dist. A copy
   // step that quietly drops a file looks exactly like one that worked, and the
   // failure would surface only as a blank window in a packaged app.
@@ -139,7 +153,11 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
   if (missing.length) {
     throw new Error(`build: dist/ is missing referenced assets:\n  ${missing.join('\n  ')}`);
   }
+  return referenced.size;
+}
 
+/** The solving chain, which no HTML names. */
+function assertSolverAssets(dist) {
   // The solving path is reached by dynamic import from app.js, so none of it appears in
   // index.html and the scan above cannot see it. cubejs is also gitignored and regenerated, so a
   // fresh checkout that skips `pnpm vendor:libs` would produce a dist/ that looks complete and
@@ -161,7 +179,11 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
         '  Run `pnpm vendor:libs` first — without it the app loads but cannot solve.',
     );
   }
+}
 
+/** The scanner's runtime, which no HTML names either — and whose set is derived from the SHIPPED
+ *  loader rather than from a filename shape. */
+function assertScannerAssets(root, dist) {
   // Same problem, the scanner's half. ort.mjs is reached by a COMPUTED url (`${wasmPaths}ort.mjs`),
   // the .wasm by onnxruntime from its own import.meta.url, and the model by an attribute the panel
   // reads — so none of them appears in index.html and the scan above is blind to all three. They are
@@ -210,7 +232,10 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
         '  Run `pnpm --filter cubus-web copy-ort` first — without these the app loads but cannot scan.',
     );
   }
+}
 
+/** The bundle must be newer than every source that went into it. */
+function assertBundleFresh(root) {
   // The esbuild bundle must be newer than its source, or beforeBuildCommand ran
   // out of order and we would ship a stale renderer that still looks fine.
   //
@@ -223,19 +248,43 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
   // is where the silhouette and the camera fit live — so editing it and shipping without a
   // rebuild passed this check while dist/ carried a renderer that behaves differently from its
   // source. That is the same defect the check exists for, one import away from where it looked.
-  if (freshness) {
-    const built = statSync(join(root, 'vendor', 'cubus-cube.js')).mtimeMs;
-    const newer = bundleInputs(join(root, 'lib', 'cubus-cube.js'))
-      .filter((f) => statSync(f).mtimeMs > built)
-      .map((f) => posix(f));
-    if (newer.length) {
-      throw new Error(
-        `build: vendor/cubus-cube.js is older than ${newer.join(', ')} — run build:cube first`,
-      );
-    }
+  const built = statSync(join(root, 'vendor', 'cubus-cube.js')).mtimeMs;
+  const newer = bundleInputs(join(root, 'lib', 'cubus-cube.js'))
+    .filter((f) => statSync(f).mtimeMs > built)
+    .map((f) => posix(root, f));
+  if (newer.length) {
+    throw new Error(
+      `build: vendor/cubus-cube.js is older than ${newer.join(', ')} — run build:cube first`,
+    );
   }
+}
 
-  return { dist, referenced: referenced.size };
+/**
+ * Assemble a dist directory from `root` (apps/web). Throws on anything missing
+ * or stale, so a bad assembly is a failed build and never a blank window.
+ *
+ * A SEQUENCE of named stages since 2026-09-05, each of which owns one question and its reasons:
+ * the copy, the assets the page names, the two chains no page names, and the freshness of the
+ * bundle. They ran here as one body, which made the order look like a detail rather than the
+ * contract it is — nothing may be checked before the copy that produces it.
+ *
+ * @param {{ root?: string, dist?: string, freshness?: boolean }} [o]
+ *   `freshness` (default on) is the bundle-newer-than-source check at the end: the CLI's
+ *   guarantee that beforeBuildCommand ran its steps in order. A test of what dist CONTAINS
+ *   turns it off, because a working tree with an edited source and a not-yet-rebuilt bundle is
+ *   the ordinary state mid-change, and vendor-bundles.test.mjs already fails that state by
+ *   comparing content — which is the better message for it.
+ * @returns {{ dist: string, referenced: number }}
+ */
+export function assembleDist({ root = here, dist = join(root, 'dist'), freshness = true } = {}) {
+  rmSync(dist, { recursive: true, force: true });
+  mkdirSync(dist, { recursive: true });
+  copyWebAssets(root, dist);
+  const referenced = assertReferencedAssets(dist);
+  assertSolverAssets(dist);
+  assertScannerAssets(root, dist);
+  if (freshness) assertBundleFresh(root);
+  return { dist, referenced };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

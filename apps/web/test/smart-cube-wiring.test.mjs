@@ -208,6 +208,46 @@ test('a repair scan is handed to the session, not derived privately', async () =
   await tick();
 });
 
+// A scan can land before the cube has said anything — pairing is a second or two, and pointing a
+// camera at the cube in your hand is what a beginner does next. The repair could not run then (a
+// correction is derived FROM a report, and there was none), so the scan granted camera trust with
+// nothing put back in step, and the first report replaced the arrangement that trust had been
+// granted over. The order is the whole test: connect, scan, THEN the first report.
+test('a scan taken before the first report is reconciled by it, never overwritten by it', async () => {
+  const state = await appState();
+  const conn = fakeConn();
+  feed().useConnection(conn, '33:44:55:66:77:88'); // an address with nothing remembered
+  await tick();
+  assert.equal(state.reported, null, 'precondition: the cube has reported nothing yet');
+
+  const scanned = move(SOLVED, "R U R' F");
+  await go('scan');
+  $('#stage ai-scan-panel').dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: scanned, valid: true },
+  }));
+  await tick();
+  assert.equal(state.cube.facelets, scanned, 'precondition: the camera reading is the subject');
+  assert.equal(state.cube.trusted, true, 'precondition: the camera saw the cube, so the subject is trusted');
+  assert.equal(conn.scans.length, 0, 'precondition: there was no report to derive a correction against');
+
+  // The cube's first report: its own frame, and not what the camera saw.
+  const reported = move(SOLVED, 'F2 D');
+  feed().facelets(reported);
+  await tick();
+
+  assert.deepEqual(conn.scans, [{ scanned, reported }],
+    'the repair that could not run at scan time must run against the report it was waiting for');
+  assert.equal(state.cube.facelets, scanned,
+    'the raw report replaced the arrangement the camera actually saw, while keeping the trust that scan earned');
+  assert.equal(state.live, scanned, 'and the corrected stream must agree with the scan, which is what the correction makes true');
+  assert.ok(state.cube.offset, 'a correction was derived — trust now rests on a reconciled chain');
+  assert.equal(state.cube.trusted, true);
+  assert.equal(state.reconnect, null, 'six sides answer the question a two-sided memory check only spot-checks');
+
+  feed().useConnection(null);
+  await tick();
+});
+
 // ---- Timing a cube that cannot be timed ---------------------------------------------------------
 
 test('a cube that numbers no turns is not timed, and the screen says why', async () => {

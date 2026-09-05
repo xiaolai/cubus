@@ -916,10 +916,18 @@ async function takeWakeLock() {
   if (document.visibilityState !== 'visible') return;
   wakeAsking = true;
   try {
-    wakeLock = await navigator.wakeLock.request('screen');
+    const taken = wakeLock = await navigator.wakeLock.request('screen');
     // Released by the platform as well as by us; clearing the handle is what lets the
     // visibility listener take a fresh one rather than believing it still holds this.
-    wakeLock.addEventListener?.('release', () => { wakeLock = null; });
+    //
+    // CLEARED BY IDENTITY, never unconditionally (fixed 2026-09-05). The event is delivered a
+    // task or more after `release()` resolves, and one navigation is enough to have replaced this
+    // sentinel by then: the scan screen's holder leaves (holders hit 0, we release), the walk's
+    // holder arrives (holders back to 1, a fresh lock is taken), and only then does the OLD
+    // sentinel's release land. Clearing on it dropped the NEW handle on the floor with the
+    // platform still holding it — so the next visibility change took a second lock, and the
+    // screen that took the real one had nothing left to release when it went away.
+    taken.addEventListener?.('release', () => { if (wakeLock === taken) wakeLock = null; });
     if (wakeHolders === 0) releaseWakeLock(); // the last holder left while this was in flight
   } catch (err) {
     // A refusal is normal — a battery-saver mode declines these — and is not worth a word to a
@@ -1104,6 +1112,12 @@ const lastCubeMac = () => listCubes(cubes).map((c) => normaliseMac(c.mac)).find(
 let pendingLast = null;
 /** True until the connection's FIRST report arrives; that report is the reconnect evidence. */
 let awaitingReport = false;
+/** A camera reading taken while this connection had reported NOTHING yet, held until its first
+ *  report. A repair is derived FROM what the cube claims — the camera says where the cube is, the
+ *  report says where the cube thinks it is — so with no report there is nothing to derive against
+ *  and the scan cannot put tracking back in step. Cleared with the connection: a scan is evidence
+ *  about the cube that was in front of the camera, and the next connection may be another one. */
+let scanAwaitingReport = null;
 /** The 16-bit serial that came with the latest report, or null when it carried none. Stored
  *  beside the memory as information for wording, never proof: the GAN16's counter is
  *  per-connection and says nothing across a break. */
@@ -1177,12 +1191,8 @@ const cubeRefused = () => conn?.verdict === VERDICT.REFUSED;
  *  @returns {{ok: boolean, text: string}|null} what to tell the user, or null when the scan
  *  changed nothing about tracking (no cube, or it already agreed).
  */
-function repairTracking(scanned) {
+function repairTracking(scanned, { reconciling = false } = {}) {
   if (!state.connected || !conn) return null;
-  // The RAW report, not state.live: live has already had the current offset applied, so deriving
-  // against it yields the identity — overwriting a correction the cube still needs.
-  const reported = state.reported;
-  if (!reported) return null;
   // A refused cube cannot be repaired by a camera, and this is the door that used to let one be.
   // The correction is derived FROM the cube's own report; if that report has been proved not to
   // add up, the correction built on it is arithmetic over a fiction — and adopting the scan
@@ -1194,13 +1204,31 @@ function repairTracking(scanned) {
       text: 'This cube’s own reports have stopped adding up, so a scan cannot put it back in step — what the camera saw would be measured against a reading that means nothing. Disconnect it and pair again; the camera still solves the cube either way.',
     };
   }
+  // The RAW report, not state.live: live has already had the current offset applied, so deriving
+  // against it yields the identity — overwriting a correction the cube still needs.
+  const reported = state.reported;
+  if (!reported) {
+    // The cube is here and has said nothing yet, so there is nothing to derive a correction
+    // AGAINST and this scan cannot put its tracking back in step. Held for the FIRST report,
+    // which is the first moment the repair can run at all (onFacelets reconciles it there).
+    // Without this the scan granted camera trust with the repair silently skipped, and that first
+    // report then replaced the scanned arrangement while keeping the trust the scan had earned —
+    // a trusted subject nobody had looked at (found by audit, 2026-09-05).
+    scanAwaitingReport = scanned;
+    return null;
+  }
   // On an UNBROKEN chain the scan and the cube must agree. If they do not, one of them is wrong —
   // a misread, or a camera pointed at a different cube — and deriving a correction from a
   // contradiction would bake the mistake in permanently. Which one is wrong is not knowable;
   // that there is a problem is. (Compared against state.live, NOT the raw report: once a
   // correction is active, comparing with the raw report made every later good scan look like a
   // contradiction — repairing a cube once made every later scan of it fail.)
-  if (state.cube.trusted && scanned !== state.live) {
+  //
+  // Never on a RECONCILIATION, which is this same repair run late — the deferred half of a scan
+  // taken before the connection had reported anything. There the trust being read here is the
+  // scan's OWN, granted moments ago, and `live` is null precisely because no report had arrived
+  // to establish one: the pair being compared would be the scan against nothing.
+  if (state.cube.trusted && !reconciling && scanned !== state.live) {
     return {
       ok: false,
       text: 'This is not what your cube is reporting, and the cube was tracking. One of the two is wrong, so nothing was changed — check that you scanned the cube that is connected.',
@@ -1249,6 +1277,9 @@ function onDisconnect() {
   state.reconnect = null;
   pendingLast = null;
   awaitingReport = false;
+  // A scan waiting for a report it will never get. It stays the SUBJECT — the camera did see that
+  // cube — but the chain it was to be reconciled with has ended, and markStale below says so.
+  scanAwaitingReport = null;
   lastSerialSeen = null;
   // Order matters: mark stale BEFORE setConnected, so the indicator repaints once, already
   // knowing the truth, rather than flashing "connected and fine" on its way out.
@@ -1303,6 +1334,9 @@ function adoptConnection(mac, name) {
   state.live = null;
   state.reported = null;
   lastSerialSeen = null;
+  // Including a scan that was waiting to be reconciled: it is evidence about the cube that was in
+  // front of the camera, and this may be another one.
+  scanAwaitingReport = null;
   clearOffset();
   // The reconnect reading. Until the first report arrives the evidence is "no report" — with a
   // remembered arrangement that is already a picture worth showing (dimmed, unconfirmed), and if
@@ -1877,6 +1911,31 @@ function onFacelets(reported, serial) {
   // RAW report — deriving it from a corrected one produces the identity.
   state.reported = reported;
   lastSerialSeen = Number.isInteger(serial) ? serial & 0xffff : null;
+  // A camera reading taken before this connection had said anything is RECONCILED here, against
+  // the report it was waiting for. Two things this is, in order:
+  //
+  //   * the repair that could not run at scan time. A correction is derived from what the cube
+  //     CLAIMS, and the cube had claimed nothing — so the scan granted camera trust with the
+  //     repair skipped, and this very report then replaced the scanned arrangement while keeping
+  //     that trust. Reconciling first means the report AGREES with the scan (that is what the
+  //     correction makes true) instead of overwriting it.
+  //   * the answer to the reconnect question. Six sides establish what a two-sided memory
+  //     comparison can only spot-check, so the question closes rather than being asked over a
+  //     cube the camera has just read in full.
+  if (scanAwaitingReport) {
+    const scanned = scanAwaitingReport;
+    scanAwaitingReport = null;
+    awaitingReport = false;
+    state.reconnect = null;
+    const repaired = repairTracking(scanned, { reconciling: true });
+    if (repaired && !repaired.ok) {
+      // The camera and this cube cannot be related by any fixed correction. The scan was good
+      // knowledge of the cube in the hand; it is not knowledge of what this stream means, and a
+      // stream nothing could reconcile must not go on being read as the trusted subject.
+      markStale('a scan and the cube’s first report could not be reconciled');
+      return;
+    }
+  }
   // The connection's FIRST report is the reconnect evidence: raw against the remembered raw,
   // and the reading chooses the picture and the words — never the trust.
   if (awaitingReport) {
@@ -2641,31 +2700,18 @@ SCREENS.scan = () => {
         ev.stopPropagation();
       };
 
-      panel.addEventListener('scan-progress', (e) => {
-        const p = e.detail;
-        // Anything other than a finished scan means the orientation is open again — a correction
-        // that breaks validity must not leave canonically-repainted tiles claiming otherwise, nor
-        // a half-finished settle turn hanging over tiles about to be repainted as shown.
-        if (p.phase !== 'done') { settled = false; clearTurns(); }
-        // A scan this screen REFUSED stays refused until there is a new one to judge. The panel
-        // reports `complete` on every state change once it has a finished scan — and `complete`
-        // deliberately SURVIVES a camera reopen, which is what stops a reopened camera
-        // overwriting an accepted scan — so a refusal ("the camera and the cube disagree,
-        // nothing was changed") was undone by the very next tick, handing back an enabled Solve
-        // button over a cube the screen had just said it did not believe (found by audit,
-        // 2026-09-04). The flag is this screen's own, because the panel is right not to carry it:
-        // the panel judged the scan legal, and what was refused is what the APP made of it.
-        // Cleared by a scan that is no longer complete — a restart, or a capture that reopens the
-        // verdict — and by the next accepted scan-complete.
-        if (!p.complete) refused = false;
-        solveBtn.disabled = !p.complete || refused;
-        // Two voices, two places: a pinned notice (what the scanner needs and why — it stands
-        // until the situation changes) and the transient camera hint. The hint used to overwrite
-        // the explanation within one tick, which made every refusal look like a silent crash.
-        // The scanner's prose passes through t(): its sentences are exact English strings, so a
-        // catalog can translate them here without the scanner package knowing languages exist.
-        // Sentences with colour words baked in pass through untranslated until their call sites
-        // move to placeholder form — the seam dev-docs/i18n.md tracks.
+      /** The two voices of the scan, and the only thing this writes: a pinned notice (what the
+       *  scanner needs and why — it stands until the situation changes) and the transient camera
+       *  hint. Lifted out of the scan-progress handler (2026-09-05), which had grown to hold four
+       *  unrelated jobs; this one is the words, and it touches nothing but the three elements
+       *  that carry them.
+       *
+       *  The hint used to overwrite the explanation within one tick, which made every refusal
+       *  look like a silent crash. The scanner's prose passes through t(): its sentences are
+       *  exact English strings, so a catalog can translate them here without the scanner package
+       *  knowing languages exist. Sentences with colour words baked in pass through untranslated
+       *  until their call sites move to placeholder form — the seam dev-docs/i18n.md tracks. */
+      const paintSay = (p) => {
         const n = p.notice;
         if (n) {
           sayTitle.textContent = t(n.title);
@@ -2696,50 +2742,20 @@ SCREENS.scan = () => {
           hint.textContent = '';
           hint.hidden = true;
         }
-        suspects = p.suspects ?? [];
-        for (const tile of tiles) {
-          const f = tile.dataset.face;
-          // The centre carries the rescan affordance, revealed on hover over a captured side.
-          const centreCell = tile.querySelectorAll('.cell')[4];
-          if (!centreCell.firstChild) centreCell.innerHTML = icon('refresh', 15);
-          centreCell.title = `Scan the ${SCAN_FACE_NAME[f]} side again`;
-          const got = p.captured.find((c) => c.face === f);
-          const cells = [...tile.querySelectorAll('.cell')];
-          tile.classList.toggle('done', Boolean(got));
-          // A nearly-solved cube can read as several different cubes; the scanner then names one
-          // side to show again, held a stated way up. Point at it — the sentence alone makes a
-          // child hunt through six tiles for the colour it named.
-          tile.classList.toggle('asked', p.confirm?.face === f);
-          // Same pointing for a suspected misread: the sticker whose fix would make the cube
-          // legal pulses, so "one sticker looks wrong" never sends anyone hunting either.
-          const sus = suspects.filter((s) => s.face === f);
-          cells.forEach((c, i) => c.classList.toggle('suspect', sus.some((s) => s.index === i)));
-          // On 'done' the captures are already canonical and the settle turn owns the repaint —
-          // painting them here would snap the tiles canonical before the turn starts.
-          if (got && p.phase !== 'done') paint(cells, got.colors);
-          else if (!got) cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? pal[f] : 'var(--facelet-off)'; });
-        }
-        lastCaptured = p.captured;
-        refreshCellNames();
-        // The twin follows the scan side by side rather than waiting for all six.
-        if (!settled) stateCube.setAttribute('facelets', partialFacelets(p.captured));
-        camOn = Boolean(p.device);
-        camRow.classList.toggle('on', camOn);
-        camBtn.title = camOn ? `${p.device.label} — camera and scan` : 'Camera off — click to turn it on';
-        camBtn.setAttribute('aria-label', camBtn.title);
-        // Labels are only readable once permission is granted, so the list is worth rebuilding the
-        // first time a camera actually answers.
-        if (p.device && p.device.deviceId !== shownDevice) {
-          shownDevice = p.device.deviceId;
-          void fillCams();
-        }
+      };
+
+      /** The two-side reconnect check, folded into a running scan. Its own job, lifted out of the
+       *  scan-progress handler along with the words (2026-09-05): the handler was writing status
+       *  messages, painting stickers, discovering cameras and answering a question about the
+       *  user's cube, all in one body. Called LAST, for the reason its own comment gives. */
+      const answerFromSides = (p) => {
         // ---- reconnect confirmation ----------------------------------------------------------
         // Each captured side is compared with the candidate — by its centre colour (the scanner
         // names a side by its centre, the one sticker a turn cannot move), up to rotation, and
         // EXACTLY: the scanner's own two-sticker tolerance is one short of a quarter turn's
         // three, so here a misread costs a full scan and never a false yes. Last, so its words
         // stand over the generic caption — but never over the scanner's own pinned notice.
-        if (confirming && state.reconnect?.candidate && !n && p.phase !== 'error') {
+        if (confirming && state.reconnect?.candidate && !p.notice && p.phase !== 'error') {
           const sides = p.captured.map((c) => ({ face: c.face, stickers: c.colors.map((ci) => NET_FACES[ci] ?? '?').join('') }));
           const check = confirmCheck(expectedNow(), sides, Cube);
           if (check.verdict === 'confirmed') {
@@ -2770,6 +2786,73 @@ SCREENS.scan = () => {
             say.className = 'sub scan-say';
           }
         }
+      };
+
+      /** The camera row: which device is on, and what it is called. Cameras come and go, and the
+       *  menu is built once — so a device answering for the first time is also the moment its
+       *  LABEL becomes readable (permission), which is why the list is rebuilt here rather than
+       *  only on `devicechange`. Lifted out of the scan-progress handler, 2026-09-05. */
+      const paintCameraRow = (p) => {
+        camOn = Boolean(p.device);
+        camRow.classList.toggle('on', camOn);
+        camBtn.title = camOn ? `${p.device.label} — camera and scan` : 'Camera off — click to turn it on';
+        camBtn.setAttribute('aria-label', camBtn.title);
+        // Labels are only readable once permission is granted, so the list is worth rebuilding the
+        // first time a camera actually answers.
+        if (p.device && p.device.deviceId !== shownDevice) {
+          shownDevice = p.device.deviceId;
+          void fillCams();
+        }
+      };
+
+      panel.addEventListener('scan-progress', (e) => {
+        const p = e.detail;
+        // Anything other than a finished scan means the orientation is open again — a correction
+        // that breaks validity must not leave canonically-repainted tiles claiming otherwise, nor
+        // a half-finished settle turn hanging over tiles about to be repainted as shown.
+        if (p.phase !== 'done') { settled = false; clearTurns(); }
+        // A scan this screen REFUSED stays refused until there is a new one to judge. The panel
+        // reports `complete` on every state change once it has a finished scan — and `complete`
+        // deliberately SURVIVES a camera reopen, which is what stops a reopened camera
+        // overwriting an accepted scan — so a refusal ("the camera and the cube disagree,
+        // nothing was changed") was undone by the very next tick, handing back an enabled Solve
+        // button over a cube the screen had just said it did not believe (found by audit,
+        // 2026-09-04). The flag is this screen's own, because the panel is right not to carry it:
+        // the panel judged the scan legal, and what was refused is what the APP made of it.
+        // Cleared by a scan that is no longer complete — a restart, or a capture that reopens the
+        // verdict — and by the next accepted scan-complete.
+        if (!p.complete) refused = false;
+        solveBtn.disabled = !p.complete || refused;
+        paintSay(p);
+        suspects = p.suspects ?? [];
+        for (const tile of tiles) {
+          const f = tile.dataset.face;
+          // The centre carries the rescan affordance, revealed on hover over a captured side.
+          const centreCell = tile.querySelectorAll('.cell')[4];
+          if (!centreCell.firstChild) centreCell.innerHTML = icon('refresh', 15);
+          centreCell.title = `Scan the ${SCAN_FACE_NAME[f]} side again`;
+          const got = p.captured.find((c) => c.face === f);
+          const cells = [...tile.querySelectorAll('.cell')];
+          tile.classList.toggle('done', Boolean(got));
+          // A nearly-solved cube can read as several different cubes; the scanner then names one
+          // side to show again, held a stated way up. Point at it — the sentence alone makes a
+          // child hunt through six tiles for the colour it named.
+          tile.classList.toggle('asked', p.confirm?.face === f);
+          // Same pointing for a suspected misread: the sticker whose fix would make the cube
+          // legal pulses, so "one sticker looks wrong" never sends anyone hunting either.
+          const sus = suspects.filter((s) => s.face === f);
+          cells.forEach((c, i) => c.classList.toggle('suspect', sus.some((s) => s.index === i)));
+          // On 'done' the captures are already canonical and the settle turn owns the repaint —
+          // painting them here would snap the tiles canonical before the turn starts.
+          if (got && p.phase !== 'done') paint(cells, got.colors);
+          else if (!got) cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? pal[f] : 'var(--facelet-off)'; });
+        }
+        lastCaptured = p.captured;
+        refreshCellNames();
+        // The twin follows the scan side by side rather than waiting for all six.
+        if (!settled) stateCube.setAttribute('facelets', partialFacelets(p.captured));
+        paintCameraRow(p);
+        answerFromSides(p);
       });
       // A scan the SCANNER refused is a scan this screen must not offer to solve either. It
       // restarts itself and explains why through scan-progress, so there is nothing to say here —
@@ -3006,6 +3089,144 @@ const WALK_FAILURES = {
   'cross-check': 'the answer did not check out — read the cube again',
 };
 
+/**
+ * Run one native minimality proof, from the press to the state it leaves the button in.
+ *
+ * Lifted out of `loadWalk` (2026-09-05), which had grown to hold a whole second lifecycle inside
+ * a walk load: two waits with different shapes, an optional table generation with a percentage, a
+ * readiness poll, two event subscriptions, a stop, and exactly one cleanup path. Everything it
+ * needs is an argument, and `fresh()` is the one thing that ties it back to the screen — the walk
+ * it was wired for must still be the walk on show, or it writes nothing at all.
+ *
+ * `sayProved` comes IN rather than being written here; the reason is at the line that passes it.
+ *
+ * @param {{proveBtn: HTMLElement, cancelBtn: HTMLElement|null, startFacelets: string,
+ *          shown: number, fresh: () => boolean, sayProved: (proof: object) => void}} o
+ */
+async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sayProved }) {
+  // Two waits with different shapes, and they must not be dressed the same. Table
+  // GENERATION is known-slow and has a denominator, so it announces itself and shows
+  // a percentage. The PROOF has neither: it is milliseconds on a shallow cube and
+  // hours on a deep one, and no fraction of it is knowable — so it stays silent until
+  // it has actually taken time, and then reports the only honest number it has.
+  let unlisten = null;
+  let unlistenProof = null;
+  let ticking = null;
+  let reveal = null;
+  let ruledOut = null;
+  const startedAt = Date.now();
+
+  const clock = () => {
+    const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  };
+  // "at least N" is a fact, not a spinner: every contour the native side reports has
+  // been exhausted, so the answer really is longer than it. Before the first one
+  // lands there is nothing true to say beyond the clock.
+  const paintWait = () => {
+    if (!fresh()) { clearInterval(ticking); ticking = null; return; }
+    proveBtn.textContent = ruledOut === null
+      ? `proving… ${clock()}`
+      : `at least ${ruledOut + 1} · ${clock()}`;
+  };
+  const showWaiting = () => {
+    if (!fresh()) return;
+    proveBtn.title = 'A deep cube can take hours to prove. Stop whenever you like — nothing is lost.';
+    if (cancelBtn) { cancelBtn.hidden = false; cancelBtn.disabled = false; cancelBtn.textContent = 'stop'; }
+    paintWait();
+    ticking ??= setInterval(paintWait, 1000);
+  };
+  const endWaiting = () => {
+    clearTimeout(reveal); clearInterval(ticking); ticking = null;
+    proveBtn.title = '';
+    if (cancelBtn) { cancelBtn.hidden = true; cancelBtn.onclick = null; }
+  };
+
+  proveBtn.disabled = true;
+  try {
+    // Ask before announcing. Preparation is minutes, so a run that needs it says so at
+    // once; a run that does not must never flash the word at a person for whom it is
+    // already done.
+    let readiness = await optimalStatus();
+    if (!fresh()) return;
+    if (readiness !== 'ready') {
+      proveBtn.textContent = 'preparing…';
+      try {
+        unlisten = await window.__TAURI__?.event?.listen?.('optimal-progress', (ev) => {
+          const p = ev?.payload;
+          if (fresh() && p?.total) proveBtn.textContent = `${p.stage} ${Math.round((p.done / p.total) * 100)}%`;
+        });
+      } catch (err) {
+        // Preparation still works without the heartbeat — but a silent subscribe
+        // failure would make minutes of generation look like a hang, so say it once.
+        console.warn('optimal: no progress events; preparation will look quiet', err);
+      }
+      if (!fresh()) return; // the listen await is an await like any other
+      // prepare() answers "preparing" when another call started the generation — the
+      // readiness contract is polling status to "ready", not trusting the first resolve.
+      await optimalPrepare();
+      if (!fresh()) return; // left during generation — the finally still frees the listener
+      for (;;) {
+        readiness = await optimalStatus();
+        if (!fresh()) return; // walked away during generation — start no proof at all
+        if (readiness === 'ready') break;
+        if (readiness !== 'preparing') {
+          // 'cold' here means the generation this call was waiting on DIED in another
+          // call — polling a corpse forever was the bug this loop once had.
+          throw new Error(`optimal: preparation ended ${readiness}, not ready`);
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
+    try {
+      unlistenProof = await window.__TAURI__?.event?.listen?.('optimal-proof-progress', (ev) => {
+        const depth = ev?.payload?.ruled_out;
+        if (!fresh() || !Number.isInteger(depth)) return;
+        ruledOut = depth;
+        if (ticking) paintWait(); // only once the wait is on screen; before that, nothing to repaint
+      });
+    } catch (err) {
+      console.warn('optimal: no proof progress; a long proof will show only its clock', err);
+    }
+    if (!fresh()) return;
+
+    // The stop is wired BEFORE the proof starts, so there is no window in which a
+    // proof is running and cannot be called off.
+    if (cancelBtn) {
+      cancelBtn.onclick = () => {
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = 'stopping…';
+        void optimalCancel().catch((err) => console.warn('optimal cancel failed', err));
+      };
+    }
+    reveal = setTimeout(showWaiting, PROOF_WAIT_VISIBLE_MS);
+    const proof = await optimalProve(startFacelets, { Cube, upperBound: shown });
+    if (!fresh()) return; // the finally below is the ONE cleanup path
+
+    // The sentence is the CALLER's to write, and it is written inside the capability-gated
+    // block this controller was lifted out of. A minimality claim may originate in exactly two
+    // places (AGENTS.md, fourth seam), and optimal.test.mjs sanctions those two BY REGION — so a
+    // controller that worded its own result would be a third. This runs the proof; it never says
+    // what the proof means.
+    sayProved(proof);
+    proveBtn.hidden = true;
+  } catch (err) {
+    if (!fresh()) return;
+    // Stopping is a choice, not a failure: the affordance comes back saying what it
+    // said before, so a person who changes their mind can simply press it again.
+    const stopped = /cancelled/i.test(String(err?.message ?? err));
+    proveBtn.textContent = stopped ? PROVE_COPY.button : 'could not prove';
+    proveBtn.disabled = false;
+    if (stopped) console.info('optimal: the proof was stopped');
+    else console.error('optimal proof failed', err);
+  } finally {
+    endWaiting();
+    unlisten?.();
+    unlistenProof?.();
+  }
+}
+
 /** Solve and Scramble are the same screen walked from opposite ends.
  *
  * Solve starts at YOUR cube and ends solved; Scramble starts SOLVED and ends at a random state.
@@ -3131,7 +3352,13 @@ const cubeScreen = (screenMode) => {
             // On Scramble the die IS the screen's re-roll and always shows. On the solve side it
             // loads a random cube that is NOT the one in anyone's hand — a developer shortcut,
             // hidden unless the Advanced toggle asks for it.
-            ? `<button id="randCube" title="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}" aria-label="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}">${icon('dice', 18)}</button>`
+            //
+            // The die's own status line, beside the button that was pressed. The count in the
+            // solution card is where a failed roll is reported when there IS a walk — but a
+            // solved cube draws no solution card at all, and there the press used to fail into
+            // the console alone: nothing moved, nothing was said (found by audit, 2026-09-05).
+            ? `<span class="sub" id="rollSay" role="status" aria-live="polite" style="margin-left:auto;padding-right:8px;color:var(--err-ink)"></span>
+              <button id="randCube" title="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}" aria-label="${scrambling ? 'Roll a different scramble' : 'Load a random scrambled cube'}">${icon('dice', 18)}</button>`
             : ''}</div>
         <!-- 30px above AND ~30px below the net in landscape (bottom = grid row gap 18 + the
              Solution header's 14px pad, with this card's own bottom padding zeroed) — the two
@@ -3315,58 +3542,76 @@ const cubeScreen = (screenMode) => {
       // until the solver answered — one whole presented frame, measured, and the blink this
       // button was reported for. Solving first spends the same milliseconds with the screen still
       // complete, and every await in loadWalk then resolves as a microtask.
-      /** A roll produced nothing — say so where this screen has a sentence to spare.
+      /** A roll produced nothing — said WHERE THE PRESS WAS, always.
        *
-       *  The count beside the solution heading is this screen's status line: it is where
-       *  failWalk reports the identical failure on the Scramble side, so the same press gets the
-       *  same words wherever it is made. A screen with no walk has no such line (a solved cube
-       *  draws no solution card), and there the console is the only channel — but the die stays
-       *  enabled either way, so the answer to a failed roll is the same one it prints: try again.
+       *  The count beside the solution heading is this screen's status line while there is a
+       *  walk: it is where failWalk reports the identical failure on the Scramble side, so the
+       *  same press gets the same words wherever it is made. A screen with no walk has no such
+       *  line — a solved cube draws no solution card — and there this reported to the console
+       *  alone, which for the person pressing the button is indistinguishable from a button that
+       *  does nothing (found by audit, 2026-09-05). `#rollSay` is the die's own line, drawn
+       *  wherever the die is, so there is no composition in which the press can fail in silence.
+       *  The die stays enabled either way, so the answer is the one it prints: try again.
        *  Silence was what both branches did before: an empty roll returned, and a rejected one
        *  escaped this handler entirely as an unhandled promise. */
       const sayRollFailed = (err) => {
         console.error('a random cube could not be rolled', err ?? 'the roller produced no cube');
-        const status = $('#moveCount', root);
+        const status = $('#moveCount', root) ?? $('#rollSay', root);
         if (status) status.textContent = t(WALK_FAILURES['no scramble']);
       };
+      /** Which press of the die owns the screen. Neither of the two generations already here can
+       *  answer that: `stale()` counts SCREENS and this one is not being replaced, and `walkGen`
+       *  counts walks, which a press has not started yet while it is still rolling. Rolling is a
+       *  real Kociemba search — seconds, in the pool, alongside whatever else is queued — so two
+       *  presses can be in flight at once and land in either order, and the OLDER one adopting
+       *  its cube afterwards replaces the newer one on a screen already showing it (found by
+       *  audit, 2026-09-05). */
+      let rollGen = 0;
       const die = $('#randCube', root);
       if (die) die.onclick = async () => {
         if (!solverReady || die.disabled) return;
-        // Scramble rolls its own inside loadWalk — the walk IS the scramble there, so there is no
-        // subject to adopt first.
-        if (!scrambling) {
-          // Known by construction, and NOT the cube in your hand. Marking this 'camera' was the
-          // bug behind a solved physical cube instantly completing a random solve: the guide
-          // accepted the real cube's snapshots as progress through an arrangement it had never
-          // been in.
-          let rolled;
-          try {
-            rolled = await randomScramble();
-          } catch (err) {
-            // Rolling IS a solve (2026-08-31), so it fails the way a solve fails — eight budget
-            // escalations, or a pool that could not spawn a worker. The press must not end in
-            // silence and an unhandled rejection.
-            if (!stale()) sayRollFailed(err);
-            return;
-          }
-          if (stale()) { parkRoll(rolled); return; } // rolling is a real search; do not waste it
-          if (!rolled.facelets) { sayRollFailed(null); return; }
-          putInPlay(rolled);
-          adoptCube(rolled.facelets, { physical: false, source: 'generated', setupAlg: rolled.alg });
-        }
-        // Held while the solver works, so a second press cannot roll a third cube over the one
-        // being solved. A failure is not swallowed into silence — it leaves `solution` empty, and
-        // the screen says "could not work it out" the way it does for any walk it cannot build.
+        const mine = ++rollGen;
+        // Held from BEFORE the first await, not from after the roll: the press used to stay live
+        // for the length of the search it started, so a second press could roll a second cube
+        // over the first. Released in the `finally` at the end, because a roll that fails must
+        // leave behind the button that retries it.
         die.disabled = true;
-        try { if (!scrambling) await deriveCube({ signal }); }
-        catch (err) {
-          // A search the screen's own teardown called off is not a failure worth a line: the
-          // subject is gone and nobody is waiting on it.
-          if (err?.name !== 'AbortError') console.warn('random cube could not be solved', err);
-        }
-        finally { die.disabled = false; }
-        if (stale()) return; // navigated away while solving — do not drag them back
-        refreshScreen();
+        try {
+          // Scramble rolls its own inside loadWalk — the walk IS the scramble there, so there is
+          // no subject to adopt first.
+          if (!scrambling) {
+            // Known by construction, and NOT the cube in your hand. Marking this 'camera' was the
+            // bug behind a solved physical cube instantly completing a random solve: the guide
+            // accepted the real cube's snapshots as progress through an arrangement it had never
+            // been in.
+            let rolled;
+            try {
+              rolled = await randomScramble();
+            } catch (err) {
+              // Rolling IS a solve (2026-08-31), so it fails the way a solve fails — eight budget
+              // escalations, or a pool that could not spawn a worker. The press must not end in
+              // silence and an unhandled rejection.
+              if (!stale() && mine === rollGen) sayRollFailed(err);
+              return;
+            }
+            // Superseded, by the screen or by a later press. Either way this cube is nobody's
+            // subject — and rolling is a real search, so it is parked rather than wasted.
+            if (stale() || mine !== rollGen) { parkRoll(rolled); return; }
+            if (!rolled.facelets) { sayRollFailed(null); return; }
+            putInPlay(rolled);
+            adoptCube(rolled.facelets, { physical: false, source: 'generated', setupAlg: rolled.alg });
+          }
+          // A failure is not swallowed into silence — it leaves `solution` empty, and the screen
+          // says "could not work it out" the way it does for any walk it cannot build.
+          try { if (!scrambling) await deriveCube({ signal }); }
+          catch (err) {
+            // A search the screen's own teardown called off is not a failure worth a line: the
+            // subject is gone and nobody is waiting on it.
+            if (err?.name !== 'AbortError') console.warn('random cube could not be solved', err);
+          }
+          if (stale() || mine !== rollGen) return; // navigated away, or overtaken, while solving
+          refreshScreen();
+        } finally { die.disabled = false; }
       };
 
       liveUpdate = (f) => {
@@ -3923,130 +4168,23 @@ const cubeScreen = (screenMode) => {
           const startFacelets = steps[0] ?? state.cube.facelets;
           const shown = total;
           const cancelBtn = $('#proveCancel', root);
-          proveBtn.onclick = async () => {
-            // Two waits with different shapes, and they must not be dressed the same. Table
-            // GENERATION is known-slow and has a denominator, so it announces itself and shows
-            // a percentage. The PROOF has neither: it is milliseconds on a shallow cube and
-            // hours on a deep one, and no fraction of it is knowable — so it stays silent until
-            // it has actually taken time, and then reports the only honest number it has.
-            let unlisten = null;
-            let unlistenProof = null;
-            let ticking = null;
-            let reveal = null;
-            let ruledOut = null;
-            const startedAt = Date.now();
-
-            const clock = () => {
-              const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-              return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-            };
-            // "at least N" is a fact, not a spinner: every contour the native side reports has
-            // been exhausted, so the answer really is longer than it. Before the first one
-            // lands there is nothing true to say beyond the clock.
-            const paintWait = () => {
-              if (!fresh()) { clearInterval(ticking); ticking = null; return; }
-              proveBtn.textContent = ruledOut === null
-                ? `proving… ${clock()}`
-                : `at least ${ruledOut + 1} · ${clock()}`;
-            };
-            const showWaiting = () => {
-              if (!fresh()) return;
-              proveBtn.title = 'A deep cube can take hours to prove. Stop whenever you like — nothing is lost.';
-              if (cancelBtn) { cancelBtn.hidden = false; cancelBtn.disabled = false; cancelBtn.textContent = 'stop'; }
-              paintWait();
-              ticking ??= setInterval(paintWait, 1000);
-            };
-            const endWaiting = () => {
-              clearTimeout(reveal); clearInterval(ticking); ticking = null;
-              proveBtn.title = '';
-              if (cancelBtn) { cancelBtn.hidden = true; cancelBtn.onclick = null; }
-            };
-
-            proveBtn.disabled = true;
-            try {
-              // Ask before announcing. Preparation is minutes, so a run that needs it says so at
-              // once; a run that does not must never flash the word at a person for whom it is
-              // already done.
-              let readiness = await optimalStatus();
-              if (!fresh()) return;
-              if (readiness !== 'ready') {
-                proveBtn.textContent = 'preparing…';
-                try {
-                  unlisten = await window.__TAURI__?.event?.listen?.('optimal-progress', (ev) => {
-                    const p = ev?.payload;
-                    if (fresh() && p?.total) proveBtn.textContent = `${p.stage} ${Math.round((p.done / p.total) * 100)}%`;
-                  });
-                } catch (err) {
-                  // Preparation still works without the heartbeat — but a silent subscribe
-                  // failure would make minutes of generation look like a hang, so say it once.
-                  console.warn('optimal: no progress events; preparation will look quiet', err);
-                }
-                if (!fresh()) return; // the listen await is an await like any other
-                // prepare() answers "preparing" when another call started the generation — the
-                // readiness contract is polling status to "ready", not trusting the first resolve.
-                await optimalPrepare();
-                if (!fresh()) return; // left during generation — the finally still frees the listener
-                for (;;) {
-                  readiness = await optimalStatus();
-                  if (!fresh()) return; // walked away during generation — start no proof at all
-                  if (readiness === 'ready') break;
-                  if (readiness !== 'preparing') {
-                    // 'cold' here means the generation this call was waiting on DIED in another
-                    // call — polling a corpse forever was the bug this loop once had.
-                    throw new Error(`optimal: preparation ended ${readiness}, not ready`);
-                  }
-                  await new Promise((r) => setTimeout(r, 500));
-                }
-              }
-
-              try {
-                unlistenProof = await window.__TAURI__?.event?.listen?.('optimal-proof-progress', (ev) => {
-                  const depth = ev?.payload?.ruled_out;
-                  if (!fresh() || !Number.isInteger(depth)) return;
-                  ruledOut = depth;
-                  if (ticking) paintWait(); // only once the wait is on screen; before that, nothing to repaint
-                });
-              } catch (err) {
-                console.warn('optimal: no proof progress; a long proof will show only its clock', err);
-              }
-              if (!fresh()) return;
-
-              // The stop is wired BEFORE the proof starts, so there is no window in which a
-              // proof is running and cannot be called off.
-              if (cancelBtn) {
-                cancelBtn.onclick = () => {
-                  cancelBtn.disabled = true;
-                  cancelBtn.textContent = 'stopping…';
-                  void optimalCancel().catch((err) => console.warn('optimal cancel failed', err));
-                };
-              }
-              reveal = setTimeout(showWaiting, PROOF_WAIT_VISIBLE_MS);
-              const proof = await optimalProve(startFacelets, { Cube, upperBound: shown });
-              if (!fresh()) return; // the finally below is the ONE cleanup path
-
-              // The sentence this seam exists for — and the honest split when the shown
-              // solution is longer than the proved minimum. A failed table save rides along:
-              // the proof stands, the next launch regenerates, and nobody wonders why.
+          // The press hands off to the controller: the proof's lifecycle is its own, and a walk
+          // load is not the place to keep one. What stays here is the pair being proved and the
+          // SENTENCE, which may only be said from a region the wording invariant sanctions.
+          proveBtn.onclick = () => void runProof({
+            proveBtn, cancelBtn, startFacelets, shown, fresh,
+            // The sentence this seam exists for — and the honest split when the shown solution
+            // is longer than the proved minimum. A failed table save rides along: the proof
+            // stands, the next launch regenerates, and nobody wonders why.
+            sayProved: (proof) => {
               const saved = proof.tablesPersisted ? '' : ' · tables not saved';
               setStatus((proof.moves === shown
                 ? `${shown} — proved the minimum`
                 : `${shown} shown — the minimum is ${proof.moves}, proved`) + saved);
-              proveBtn.hidden = true;
-            } catch (err) {
-              if (!fresh()) return;
-              // Stopping is a choice, not a failure: the affordance comes back saying what it
-              // said before, so a person who changes their mind can simply press it again.
-              const stopped = /cancelled/i.test(String(err?.message ?? err));
-              proveBtn.textContent = stopped ? PROVE_COPY.button : 'could not prove';
-              proveBtn.disabled = false;
-              if (stopped) console.info('optimal: the proof was stopped');
-              else console.error('optimal proof failed', err);
-            } finally {
-              endWaiting();
-              unlisten?.();
-              unlistenProof?.();
-            }
-          };
+            },
+          // The controller reports every failure a proof can have; this catches the one thing it
+          // cannot — itself — rather than leaving a press to end in an unhandled rejection.
+          }).catch((err) => console.error('optimal: the proof controller failed', err));
         }
         // One grid, no group headings, on both sides of the walk. The solve side used to cut its
         // list at fixed 16 / 62 / 82% and head the pieces CROSS / F2L / OLL / PLL — proportional
@@ -4291,27 +4429,29 @@ SCREENS.timer = () => {
         auto.reset();
         renderLast();
       };
-      const start = () => {
+      /** Start the clock. ONE body, because the two ways it starts differ in exactly two things:
+       *  the sentence on the hint line, and who is credited for the number at the end (`byCube`,
+       *  set by the caller that earns it). Everything else — the flag the frame loop reads, the
+       *  instant it measures from, the accent colour, the name the button announces, the loop
+       *  itself — is the same start, and it was written out twice. Two copies of a five-line
+       *  sequence is two places for the next change to land in one of. */
+      const runClock = (message) => {
         running = true;
         t0 = performance.now();
         clock.style.color = 'var(--accent)';
         nameClock();
-        say(t('Running — click or press space to stop'));
+        say(message);
         tick();
       };
+      const start = () => runClock(t('Running — click or press space to stop'));
       const toggle = () => { if (running) stop(); else start(); };
 
       /** The cube reached the scramble and the solver made the first turn. */
       const startFromCube = () => {
         byCube = true;
-        running = true;
-        t0 = performance.now();
-        clock.style.color = 'var(--accent)';
-        nameClock();
         // The animated figure runs on the host clock because it only has to LOOK live; the number
         // that gets recorded is replaced by the cube's own measurement when the solve ends.
-        say(t('Running — solve it, and the cube stops the clock'));
-        tick();
+        runClock(t('Running — solve it, and the cube stops the clock'));
       };
 
       /** The cube reached solved. The cube's clock decides the number, not this screen's. */
@@ -5005,7 +5145,6 @@ SCREENS.stats = () => {
   // anything. A statistics screen is the one place a person comes specifically to learn what is
   // true, so it is the worst possible place to invent.
   const secs = (v, digits = 2) => (v === null || v === undefined ? '—' : Number(v).toFixed(digits));
-  const rate = (v) => (v === null || v === undefined ? '—' : Number(v).toFixed(1));
 
   // Nothing USABLE, not nothing stored. Corrupt rows are now kept in place so the averages stay
   // honest, so a history of three unreadable records has a length of three and a count of zero —
