@@ -28740,6 +28740,78 @@ function fitDistance({ points, vfovDeg, aspect: aspect2, eye, margin = 0.06 }) {
   return d;
 }
 
+// lib/cube-highlight.js
+var FACE_AXIS = { R: [0, 1], L: [0, -1], U: [1, 1], D: [1, -1], F: [2, 1], B: [2, -1] };
+var KIND = Object.freeze({ centers: 1, edges: 2, corners: 3 });
+function slotVector(letters) {
+  const s = String(letters ?? "").toUpperCase();
+  if (!/^[URFDLB]{1,3}$/.test(s)) return null;
+  const pos = [0, 0, 0];
+  const used = /* @__PURE__ */ new Set();
+  for (const ch of s) {
+    const [axis, sign] = FACE_AXIS[ch];
+    if (used.has(axis)) return null;
+    used.add(axis);
+    pos[axis] = sign;
+  }
+  return pos;
+}
+function pieceKey(letters) {
+  if (slotVector(letters) === null) return null;
+  return [...String(letters).toUpperCase()].sort().join("");
+}
+function parseToken(tok) {
+  if (Object.hasOwn(KIND, tok)) return { kind: KIND[tok], token: tok };
+  const m = /^(layer|slot|piece):([URFDLB]{1,3})$/i.exec(tok);
+  if (!m) return null;
+  const what = m[1].toLowerCase();
+  const arg = m[2].toUpperCase();
+  if (what === "layer") {
+    if (arg.length !== 1) return null;
+    return { layer: [...FACE_AXIS[arg]], token: tok };
+  }
+  if (what === "slot") {
+    const pos = slotVector(arg);
+    return pos && { slot: pos, token: tok };
+  }
+  const key = pieceKey(arg);
+  return key && { piece: key, token: tok };
+}
+function parseHighlight(spec) {
+  const raw = String(spec ?? "").trim();
+  if (!raw || raw === "none") return { selectors: [], invalid: null };
+  const selectors = [];
+  for (const tok of raw.split(",").map((t) => t.trim()).filter(Boolean)) {
+    const sel = parseToken(tok);
+    if (!sel) return { selectors: [], invalid: tok };
+    selectors.push(sel);
+  }
+  return { selectors, invalid: null };
+}
+function selects(sel, cubie) {
+  const [x, y, z] = cubie.pos;
+  if (sel.kind !== void 0) return Math.abs(x) + Math.abs(y) + Math.abs(z) === sel.kind;
+  if (sel.layer) return cubie.pos[sel.layer[0]] === sel.layer[1];
+  if (sel.slot) return sel.slot[0] === x && sel.slot[1] === y && sel.slot[2] === z;
+  return cubie.piece != null && cubie.piece === sel.piece;
+}
+function resolveHighlight(selectors, cubies) {
+  const indices = [];
+  const hit = new Array(selectors.length).fill(false);
+  for (let i = 0; i < cubies.length; i++) {
+    let on = false;
+    for (let s = 0; s < selectors.length; s++) {
+      if (selects(selectors[s], cubies[i])) {
+        on = true;
+        hit[s] = true;
+      }
+    }
+    if (on) indices.push(i);
+  }
+  const empty = selectors.filter((_, s) => !hit[s]).map((sel) => sel.token);
+  return { indices, empty };
+}
+
 // lib/cubus-cube.js
 var PALETTES = {
   muted: { U: "#E8E3D6", D: "#D8B84A", F: "#4E8C6A", B: "#3C6E9E", R: "#B8503F", L: "#C87A3C" },
@@ -28765,6 +28837,11 @@ var FACELET_INDEX = {
 };
 var EASE = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 var AXES = { x: new Vector3(1, 0, 0), y: new Vector3(0, 1, 0), z: new Vector3(0, 0, 1) };
+var HL_PEAK = 0.38;
+var HL_PERIOD = 1200;
+var GHOST_OPACITY = 0.45;
+var GHOST_HL_PEAK = 0.8;
+var reducedMotion = () => globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 var CubusCube = class _CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
   // on the DOM-lowercased spelling, so both are observed and normalized in _set().
@@ -28774,6 +28851,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "alg",
     "palette",
     "autorotate",
+    "highlight",
     "ghosts",
     "ghost-elevation",
     "ghostelevation",
@@ -28833,6 +28911,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
   set backView(v) {
     this._set("back-view", v);
   }
+  set highlight(v) {
+    this._set("highlight", v);
+  }
+  get highlight() {
+    return this._attrs.highlight;
+  }
   constructor() {
     super();
     this._attrs = { ..._CubusCube.DEFAULTS };
@@ -28842,6 +28926,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     palette: "muted",
     ghosts: "none",
     "ghost-elevation": "4",
+    highlight: "none",
     // No camera distance: it is computed from what the view draws and the slot it draws into
     // (lib/cube-frame.js), so nothing is clipped at any slot shape.
     "camera-latitude": "35",
@@ -28885,6 +28970,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._cursor = 0;
       this._applied = 0;
       this._playing = false;
+    } else if (name === "highlight") {
+      this._readHighlight();
+      this._syncHighlight();
     }
   }
   connectedCallback() {
@@ -28953,7 +29041,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
           this.stickers.push(m);
           const g = new Mesh(ghostGeo, new MeshBasicMaterial({
             transparent: true,
-            opacity: 0.45,
+            opacity: GHOST_OPACITY,
             depthWrite: false,
             side: DoubleSide
           }));
@@ -28976,6 +29064,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._playing = false;
     this._applied = 0;
     this._sol = this._parse(this._attrs.alg || "");
+    this._hlSet = null;
+    this._readHighlight();
     this._ghostVisible();
     this.reset();
     this._resize = () => {
@@ -29011,6 +29101,14 @@ var CubusCube = class _CubusCube extends HTMLElement {
           this._next();
         }
         this._dirty = true;
+      }
+      if (this._hlSet?.size) {
+        const k = this._hlPhase();
+        if (k !== this._hlK) {
+          this._applyHighlight(k);
+          this._hlK = k;
+          this._dirty = true;
+        }
       }
       if (this._attrs.autorotate != null) {
         root.rotation.y += 35e-4;
@@ -29247,22 +29345,112 @@ var CubusCube = class _CubusCube extends HTMLElement {
   _paint(fl = this._facelets()) {
     if (!this.stickers) return;
     const pal = PALETTES[this._attrs.palette] || PALETTES.muted;
-    for (const m of [...this.stickers, ...this._ghostMeshes]) {
+    const letterOf = (m) => {
+      if (!fl) return m.userData.face;
       const [x, y, z] = m.userData.home;
-      let letter = m.userData.face;
-      if (fl) {
-        const ch = fl[FACELET_INDEX[m.userData.face](x, y, z)];
-        if (ch === "?") {
-          m.material.color.set(UNKNOWN_STICKER);
-          continue;
-        }
-        letter = ch;
-      }
-      m.material.color.set(pal[letter]);
+      const ch = fl[FACELET_INDEX[m.userData.face](x, y, z)];
+      return ch === "?" ? null : ch;
+    };
+    for (const m of [...this.stickers, ...this._ghostMeshes]) {
+      const letter = letterOf(m);
+      m.material.color.set(letter === null ? UNKNOWN_STICKER : pal[letter]);
     }
+    this._stampPieces(letterOf);
     this._ghostPlace();
     this._applyScale();
+    this._syncHighlight();
     this._dirty = true;
+  }
+  /**
+   * Record which piece each cubie carries, while the cube is still at home.
+   *
+   * This is the ONE moment the answer is readable: reset() paints BEFORE it applies `scramble`, so
+   * at this instant a cubie's letters are exactly its facelet letters. Afterwards the group travels
+   * — _bake() moves it — and the stamp travels with it. That is what makes `piece:UF` mean "the UF
+   * piece, wherever it went" rather than "whatever is in the UF slot", which is a different
+   * sentence and the one a scrambled cube gets wrong.
+   */
+  _stampPieces(letterOf) {
+    const carried = /* @__PURE__ */ new Map();
+    for (const m of this.stickers) {
+      if (carried.get(m.parent) === null) continue;
+      const letter = letterOf(m);
+      carried.set(m.parent, letter === null ? null : (carried.get(m.parent) || "") + letter);
+    }
+    for (const [c, letters] of carried) c.userData.piece = letters === null ? null : pieceKey(letters);
+  }
+  /** Re-read the highlight attribute into selectors, naming a bad token rather than dropping it. */
+  _readHighlight() {
+    const { selectors, invalid } = parseHighlight(this._attrs.highlight);
+    if (invalid !== null) console.warn(`<cubus-cube> refusing highlight \u2014 invalid selector "${invalid}"`);
+    this._hlSels = selectors;
+    this._hlT0 = performance.now() - HL_PERIOD / 2;
+  }
+  /** Where in the breath we are, 0..1. One expression, so the tick and the first paint agree. */
+  _hlPhase() {
+    if (reducedMotion()) return 1;
+    return 0.5 - 0.5 * Math.cos((performance.now() - this._hlT0) / HL_PERIOD * 2 * Math.PI);
+  }
+  /** Re-resolve the highlight against the cube as it stands now, and paint one frame of it. */
+  _syncHighlight() {
+    if (!this.stickers) return;
+    this._clearHighlight();
+    const sels = this._hlSels || [];
+    if (!sels.length) {
+      this._hlSet = null;
+      this._hlK = null;
+      this._dirty = true;
+      return;
+    }
+    const cubies = this.cubies.map((c) => ({
+      // Rounded because that is what a baked position IS: _bake() writes integers, so the parity
+      // test needs no epsilon, and a cubie riding a temp group mid-turn still answers for the slot
+      // it is travelling between rather than for a fractional position nobody can name.
+      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
+      piece: c.userData.piece ?? null
+    }));
+    const { indices, empty } = resolveHighlight(sels, cubies);
+    if (empty.length) {
+      console.warn(`<cubus-cube> highlight matched nothing for ${empty.join(", ")} \u2014 this cube has no known identity for it (unread stickers?)`);
+    }
+    this._hlSet = new Set(indices.map((i) => this.cubies[i]));
+    this._hlK = this._hlPhase();
+    this._applyHighlight(this._hlK);
+    this._dirty = true;
+  }
+  /** Return every sticker and ghost to its resting look.
+   *
+   *  All 54 of each, not just the previous set: clearing by bookkeeping leaves a stale glow on a
+   *  piece that dropped out of the selection, and nothing else ever repaints emissive — so the
+   *  wrong piece would keep pointing at itself for the rest of the lesson. 108 assignments on a
+   *  move boundary is not a cost worth being clever about. */
+  _clearHighlight() {
+    for (const m of this.stickers) m.material.emissiveIntensity = 0;
+    for (const g of this._ghostMeshes) g.material.opacity = GHOST_OPACITY;
+  }
+  /**
+   * Paint the pulse at `k` in 0..1.
+   *
+   * Emissive rather than colour: on a cube the sticker colour IS the thing being taught, so a
+   * highlight that changes it is lying about the puzzle. Lighting a sticker with its OWN colour
+   * reads as "this one" and a white centre stays white.
+   *
+   * It lives on the cubie's materials, not on an overlay mesh, and that is what makes it survive a
+   * turn: _grab() re-parents cubies into a temporary group on every move, so anything positioned in
+   * world space would tear loose the moment the layer rotated.
+   */
+  _applyHighlight(k) {
+    if (!this._hlSet?.size) return;
+    for (const c of this._hlSet) {
+      for (const m of c.children) {
+        if (m.userData?.n) {
+          m.material.opacity = GHOST_OPACITY + k * (GHOST_HL_PEAK - GHOST_OPACITY);
+        } else if (m.userData?.face) {
+          m.material.emissive.copy(m.material.color);
+          m.material.emissiveIntensity = k * HL_PEAK;
+        }
+      }
+    }
   }
   // Elevation is how far the twin floats past its sticker, in cubie units.
   // Matches the codebase player's experimentalHintFaceletsElevation (default 4).
@@ -29288,6 +29476,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
    *  counts up. Host apps sync a move list / 2D net / scrubber to the event. */
   _completeMove(a) {
     this._bake(a.temp);
+    this._syncHighlight();
     this._anim = null;
     this._applied += a.m.delta ?? 1;
     this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: this._applied, total: this._sol.length } }));
@@ -29317,7 +29506,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       return;
     }
     const tempo = Math.max(0.05, this._num("tempo-scale", 1));
-    const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+    const reduced = reducedMotion();
     const dur = 190 / tempo * m.turns;
     this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
   }
@@ -29345,6 +29534,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
         this._bake(t);
       }
     }
+    this._syncHighlight();
     this._dirty = true;
     if (!this._quiet) {
       this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: 0, total: this._sol.length } }));
@@ -29390,6 +29580,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       t.rotateOnAxis(AXES[m.axis], m.angle);
       this._bake(t);
     }
+    this._syncHighlight();
     this._cursor = target;
     this._applied = target;
     this._dirty = true;
