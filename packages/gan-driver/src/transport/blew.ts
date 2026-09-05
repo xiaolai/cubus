@@ -30,6 +30,32 @@ export interface Transport {
   disconnect(): void;
 }
 
+/**
+ * Run one `blew` subcommand to completion with its output inherited, rejecting on anything that is
+ * not a clean exit.
+ *
+ * It lived in the CLI and resolved on 'close' whatever had happened, so a read that failed printed
+ * its error to the inherited stderr and was then reported as part of a successful dump — and with
+ * no 'error' listener, a missing or unexecutable binary threw asynchronously, past the caller's
+ * own catch, as an uncaught exception. Both are the same defect: the exit status of the thing that
+ * mattered was never looked at.
+ */
+export function runBlew(args: string[], bin = 'blew'): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const p = spawn(bin, args, { stdio: 'inherit' });
+    p.on('error', (e) =>
+      reject(
+        new Error(`could not run ${bin}: ${e.message} — install it: brew install stass/tap/blew`),
+      ),
+    );
+    p.on('close', (code, signal) => {
+      if (signal) reject(new Error(`${bin} ${args.join(' ')} was killed by ${signal}`));
+      else if (code !== 0) reject(new Error(`${bin} ${args.join(' ')} exited ${code}`));
+      else resolve();
+    });
+  });
+}
+
 /** One-shot advertisement scan via the compiled scan-adv helper (full mfg data). */
 export async function scanForCube(scanAdvPath: string, seconds = 12): Promise<AdvDevice[]> {
   const { stdout } = await execFileP(scanAdvPath, [String(seconds), 'gan'], {
