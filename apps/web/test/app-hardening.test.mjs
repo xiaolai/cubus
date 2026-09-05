@@ -278,6 +278,58 @@ test('a CUBE-timed solve the browser refused to store says so as well', async ()
   }
 });
 
+// One clock, two ways to start it: a press, and the cube's first turn after it reaches the
+// scramble. They differ in exactly two things — the sentence on the hint line and who is credited
+// for the number at the end — and everything else about the start was written out twice. Both
+// paths are asserted here because a shared body is only worth having if both still say their own
+// sentence and both actually run.
+test('both ways of starting the clock run it, and each says its own words', async () => {
+  const { state } = await import('../lib/app.js');
+  const before = { connected: state.connected, trusted: state.cube.trusted, source: state.cube.source };
+  await go('timer');
+  const hint = $('#timerHint');
+  const clock = $('#clock');
+
+  clock.click(); // by hand
+  await tick();
+  assert.equal(hint.textContent, 'Running — click or press space to stop', 'the hand-started clock says how to stop it');
+  assert.equal(clock.getAttribute('aria-label'), 'Stop the timer', 'and the button names what the next press does');
+  clock.click(); // stop, so the screen is left idle
+  await tick();
+  assert.equal(clock.getAttribute('aria-label'), 'Start the timer');
+
+  try {
+    // The cube's path: connected, a trusted chain, the scramble reached, then one turn.
+    state.connected = true;
+    state.cube.trusted = true;
+    state.cube.source = 'cube';
+    state.cube.staleWhy = '';
+    await go('home');
+    await go('timer');
+    const scr = $('#scr');
+    for (let i = 0; i < 200 && !/^[URFDLB]/.test(scr.textContent || ''); i++) await settle(50);
+    assert.match(scr.textContent, /^[URFDLB]/, 'precondition: a scramble is on screen');
+    const c = Cube.fromString(SOLVED_FACELETS);
+    for (const m of scr.textContent.trim().split(/\s+/)) c.move(m);
+    win.cubusFeed.facelets(c.asString(), 2);
+    await tick();
+    assert.equal($('#timerHint').textContent, 'Ready — turn to start', 'precondition: the cube armed the clock');
+
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await tick();
+    assert.equal($('#timerHint').textContent, 'Running — solve it, and the cube stops the clock',
+      'the cube-started clock says its own sentence — the cube, not a press, ends this one');
+    assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'and it is running, by the same start');
+    $('#clock').click(); // hand it back, so the screen is left idle
+    await tick();
+  } finally {
+    state.connected = before.connected;
+    state.cube.trusted = before.trusted;
+    state.cube.source = before.source;
+    await go('home');
+  }
+});
+
 test('a roll that lands while the clock is running is parked, never put in play', async () => {
   await go('timer');
   const scr = $('#scr');
@@ -488,4 +540,63 @@ test('app.js adds exactly two globals, both of them named test seams', () => {
     ['disconnect', 'facelets', 'move', 'movesLost', 'silence', 'useConnection'],
     'the feed seam is the driver\'s surface, and only that',
   );
+});
+
+// ---- The screen that stays awake ---------------------------------------------------------------
+
+// A wake lock is reference-counted here because two screens can want it across one navigation.
+// The platform's `release` event is the other half of that bookkeeping, and it used to clear the
+// handle whatever it was for: the event lands a task or more after `release()` resolves, by which
+// time a navigation has replaced the sentinel — so the app forgot a lock the platform was still
+// holding. The symptoms are both invisible from the outside: a duplicate lock on the next
+// visibility change, and a screen that never releases the one it took (found by audit, 2026-09-05).
+test('an old lock\'s release event does not clear the lock that replaced it', async () => {
+  const sentinels = [];
+  /** The shape of a WakeLockSentinel that matters here: it is released, and it says so LATER. */
+  const sentinel = () => {
+    const listeners = [];
+    const s = {
+      released: 0,
+      addEventListener: (type, fn) => { if (type === 'release') listeners.push(fn); },
+      release: async () => { s.released += 1; },
+      // What the platform does after release(), or when it revokes the lock itself.
+      announce: () => { for (const fn of listeners) fn(); },
+    };
+    sentinels.push(s);
+    return s;
+  };
+  Object.defineProperty(win.navigator, 'wakeLock', {
+    value: { request: async () => sentinel() }, configurable: true,
+  });
+  try {
+    await go('scan');
+    await settle(20);
+    assert.equal(sentinels.length, 1, 'precondition: the scan screen holds the screen awake');
+
+    await go('settings'); // the holder leaves, so the lock is let go
+    await settle(20);
+    assert.equal(sentinels[0].released, 1, 'precondition: leaving released it');
+
+    await go('scan');     // a new holder arrives and takes a fresh one
+    await settle(20);
+    assert.equal(sentinels.length, 2, 'precondition: the second visit took its own lock');
+
+    // The FIRST lock's release event, arriving now — after the second one exists.
+    sentinels[0].announce();
+    await settle(10);
+
+    // Nothing may take a second lock while one is held: the app must still know it holds one.
+    win.document.dispatchEvent(new win.Event('visibilitychange'));
+    await settle(20);
+    assert.equal(sentinels.length, 2, 'a stale release event let the app take a duplicate lock');
+
+    await go('settings');
+    await settle(20);
+    assert.equal(sentinels[1].released, 1,
+      'the replacement lock was never released — the display stays awake for the rest of the session');
+  } finally {
+    delete win.navigator.wakeLock;
+    await go('home');
+    await settle(20);
+  }
 });
