@@ -49,12 +49,14 @@ test('a search is forwarded with its bounds and answered', async () => {
   // `views: null` is on every request, not only a parallel one: the field is the protocol's,
   // and a single-worker client sending a DIFFERENT shape from a pooled one is how the two
   // drift apart. Null means "all six views", which is what one worker always searches.
-  // `views: null` and `shared: null` ride on EVERY request, not only a pooled one: the fields
-  // are the protocol's, and a single-worker client sending a different shape from a pooled one
-  // is how the two drift apart. Null views means all of them; null shared means nothing can
-  // call this search off, which is exactly a lone worker's situation.
+  // `views: null`, `shared: null` and `resume: null` ride on EVERY request, not only a pooled or
+  // an escalating one: the fields are the protocol's, and a single-worker client sending a
+  // different shape from a pooled one is how the two drift apart. Null views means all of them;
+  // null shared means nothing can call this search off, which is exactly a lone worker's
+  // situation; null resume means this search is not one anybody intends to continue — which is
+  // NOT the same as `{state: null}`, a continuable search that has not started yet.
   assert.deepEqual(w.sent[0], {
-    id: 1, facelets: 'F'.repeat(54), solLen: 21, probeMax: 100, views: null, shared: null,
+    id: 1, facelets: 'F'.repeat(54), solLen: 21, probeMax: 100, views: null, shared: null, resume: null,
   });
 });
 

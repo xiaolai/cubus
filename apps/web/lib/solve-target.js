@@ -189,8 +189,10 @@ export const STOPPED = Object.freeze({
  * @param {AbortSignal|null} [opts.signal]
  * @param {((p: {attempt: number, budget: number, spent: number}) => void)|null} [opts.onProgress]
  *        called BEFORE each attempt: which attempt it is (0-based), the budget about to be
- *        spent, and the total already spent on the attempts before it. The only window a caller
- *        has into a wait that can reach 511x the base budget with nothing on screen.
+ *        spent, and the budget the attempts before it were given — an upper bound on what they
+ *        walked, since a continuation does not re-walk the depths its predecessor finished. The
+ *        only window a caller has into a wait that can reach 511x the base budget with nothing
+ *        on screen.
  * @returns {Promise<string|undefined>} the validated algorithm, or undefined if aborted
  * @throws if every sanctioned escalation is spent. The message names the unsolvable case first
  *         because this module never establishes legality — see the comment inside.
@@ -232,10 +234,27 @@ export async function solveWithinGodsNumber(
   // "12.8 billion nodes" for a run whose eight earlier attempts had already spent 12.75 billion
   // between them. Both numbers are stated now, and this is the one that answers "how long was
   // I waiting".
+  //
+  // Since 2026-09-05 it is an UPPER bound rather than the exact figure, and the wording that
+  // reports it says "up to" for that reason: a doubled attempt CONTINUES the search below rather
+  // than restarting it, so it spends its budget minus whatever depths the attempt before it
+  // finished. Every attempt still spends at most the budget it was given, so the sum over the
+  // continuations is still true — it is simply no longer tight (see `carry`).
   let spent = 0;
+  // The resume point, carried across the escalations and owned here.
+  //
+  // This is the whole of §3 of dev-docs/deferred-plans-2026-09-05.md at this level: a refusal used
+  // to throw away everything the attempt had walked, and the doubled ask began again at phase-1
+  // depth 0. Over n attempts that is B(2ⁿ⁺¹ − 1) nodes to reach a frontier of 2ⁿB, about half of it
+  // repetition. With the carrier, `probeMax` is the FRONTIER the search should reach rather than an
+  // increment, and the answer at that frontier is bit-for-bit the answer a from-scratch search at
+  // the same `probeMax` gives — which is what made the resume worth shipping at all
+  // (escalation-resume.test.mjs). A `solve` that ignores the carrier — every fake in the tests —
+  // simply searches from the start, exactly as before.
+  const carry = { state: null };
   const attempt = async () => {
     onProgress?.({ attempt: escalations, budget, spent });
-    const answer = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget, signal });
+    const answer = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget, signal, resume: carry });
     spent += budget;
     return answer;
   };

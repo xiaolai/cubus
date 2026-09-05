@@ -84,16 +84,29 @@ export function validateAnswer(answer, requestedBound) {
 }
 
 /**
- * Wrap an engine module into `solve(facelets, { solLen, probeMax, views })`.
+ * Wrap an engine module into `solve(facelets, { solLen, probeMax, views, resume })`.
  *
  * `views` is null for every caller but the parallel client: a non-empty array of distinct view
  * indices in 0..VIEW_COUNT-1, restricting the search to that slice of the engine's views. Null
  * searches all of them, which is what a single worker always does.
  *
+ * `resume` is null for every caller but an ESCALATING one (2026-09-05,
+ * dev-docs/deferred-plans-2026-09-05.md §3). With one it is a mutable carrier, `{ state }`, which
+ * this wrapper reads and writes: the state is the engine's resume point, and handing back the one
+ * a previous call left is what makes the doubled attempt continue that search rather than walk it
+ * again from d1 = 0. `probeMax` is then a FRONTIER — the same number a from-scratch search would
+ * have been given, and the answer is bit-for-bit that search's answer.
+ *
+ * A carrier is a REQUEST, never a shortcut this wrapper takes on its own: with `resume: null` the
+ * engine is driven exactly as it always was, through `solvePattern`, so nothing that never asked
+ * for a continuation can be handed one.
+ *
  * The module must expose `initialize`, `solvePattern` and `setBounds` — the shape
  * lib/two-phase.js exports. Anything else is an engine with no way to bound it, which is worth
  * failing on immediately: the app would otherwise keep solving while every solution-length
- * target was silently ignored.
+ * target was silently ignored. `openSearch` is checked only where it is USED, because an engine
+ * without it is still a correct engine — every attempt simply starts over, which is what the app
+ * did until this was added.
  */
 export function createSolver(engine) {
   // Only what this wrapper actually drives: solvePattern self-initializes its tables, so
@@ -107,7 +120,7 @@ export function createSolver(engine) {
     }
   }
 
-  return function solve(facelets, { solLen = LOOSEST_BOUND, probeMax = DEFAULT_NODE_BUDGET, views = null } = {}) {
+  return function solve(facelets, { solLen = LOOSEST_BOUND, probeMax = DEFAULT_NODE_BUDGET, views = null, resume = null } = {}) {
     if (typeof facelets !== 'string' || facelets.length !== 54) {
       throw new TypeError('solver-engine: expected a 54-character facelet string');
     }
@@ -141,13 +154,36 @@ export function createSolver(engine) {
         seen.add(v);
       }
     }
+    // Same rule as the filter above, and for the same reason: a carrier that this engine cannot
+    // honour must be refused BEFORE setBounds moves anything. Refused rather than ignored — a
+    // caller that asked to continue a search and was quietly given a fresh one has been told
+    // nothing, and would go on paying for the re-walk it asked to avoid.
+    if (resume !== null && typeof engine.openSearch !== 'function') {
+      throw new TypeError(
+        'solver-engine: this engine has no openSearch(), so a search cannot be continued. ' +
+          'Pass resume: null to search from the start.',
+      );
+    }
     engine.setBounds({ solLen, probeMax });
 
     // solvePattern initializes its own tables on first use — one owner for that lifecycle,
     // not a second ready-flag here that can disagree with it.
     // `views` is null for every caller but the parallel client: a slice of the engine's six
     // search views, so several workers can divide them and still be comparing like with like.
-    const answer = engine.solvePattern(facelets, views);
+    let answer;
+    if (resume === null) {
+      answer = engine.solvePattern(facelets, views);
+    } else {
+      // The carried state is UNTRUSTED — it crossed a thread boundary as plain data — and the
+      // engine's own key assertion is what checks it. A mismatch throws there, which is the whole
+      // point: a continuation of the wrong search would skip depths and report a solution it never
+      // looked for as a search that ran out.
+      const search = engine.openSearch(facelets, { viewFilter: views, resume: resume.state ?? null });
+      answer = search.continueTo();
+      // Written back before the answer is validated: a broken answer is still a real resume point,
+      // and dropping it would silently turn the next attempt into a full re-walk.
+      resume.state = search.state;
+    }
     // No answer within the budget, or not a solvable state.
     if (answer === null) return null;
     return validateAnswer(answer, solLen);
