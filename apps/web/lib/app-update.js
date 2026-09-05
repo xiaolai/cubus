@@ -85,6 +85,45 @@ export function readLastCheck(storage) {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** The manifest is a few kilobytes; a check that has not answered in this long is a stalled
+ *  connection, not a slow one. The plugin's own default is NO timeout. */
+export const CHECK_TIMEOUT_MS = 15_000;
+
+/**
+ * The whole download request, which is what the plugin's `timeout` means (reqwest's total
+ * request time, body included). The archive is ~47 MB, so this is a floor of ~80 KB/s: a slow
+ * link finishes and a dead connection fails, instead of waiting forever.
+ *
+ * Measured 2026-09-06, through a local proxy tunnel: one download sat at 1454 bytes for five
+ * minutes and then completed. With no timeout and nothing on screen that was indistinguishable
+ * from a hang, and the person watching quit it.
+ */
+export const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** After this long without a byte the progress line says so. A stall is visible, never silent. */
+export const STALL_NOTICE_MS = 15_000;
+
+const substitute = (s, ...args) => args.reduce((acc, a, i) => acc.replaceAll(`%${i + 1}`, String(a)), s);
+
+/**
+ * One line for a progress report, through the caller's t().
+ *
+ * Pure, so the wording in each phase, with and without a known size, and under a stall is a
+ * test rather than a screenshot. `now` is passed in because a stalled download sends no events:
+ * the caller re-renders on a tick and the silence is measured from the last report's `at`.
+ */
+export function progressLabel(p, now, t = substitute) {
+  if (!p) return '';
+  if (p.phase === 'install') return t('Installing…');
+  if (p.phase === 'restart') return t('Restarting…');
+  const mb = (n) => Math.round((n ?? 0) / 1e6);
+  const line = p.total
+    ? t('Downloading %1 of %2 MB…', mb(p.received), mb(p.total))
+    : t('Downloading… %1 MB', mb(p.received));
+  const quiet = now - p.at;
+  return quiet >= STALL_NOTICE_MS ? `${line} ${t('(no data for %1 s)', Math.round(quiet / 1000))}` : line;
+}
+
 /**
  * The updater, with every dependency injected.
  *
@@ -99,9 +138,22 @@ export function makeUpdater({ api, storage, now = Date.now, confirm, warn = () =
   // SINGLE FLIGHT. A launch check and a Settings press can land together, and two concurrent
   // `check()` calls against the same endpoint produce two prompts for one update — which is worse
   // than either alone, because dismissing one leaves the other on screen looking like a bug.
-  let inFlight = null;
+  // The flight carries its progress listeners as a set, so a press that joins a launch check's
+  // download sees that download too.
+  let flight = null;
 
-  async function run({ announceNoUpdate }) {
+  async function run(sinks) {
+    const report = (p) => {
+      for (const sink of sinks) {
+        try {
+          sink(p);
+        } catch (err) {
+          // A listener is a piece of UI that may have gone away. It never costs the install.
+          warn('app-update: a progress listener threw', err);
+        }
+      }
+    };
+
     const updater = api?.updater;
     if (!updater?.check) {
       // Not an error: this is every non-desktop build, and the caller has already decided not to
@@ -113,7 +165,7 @@ export function makeUpdater({ api, storage, now = Date.now, confirm, warn = () =
 
     let update;
     try {
-      update = await updater.check();
+      update = await updater.check({ timeout: CHECK_TIMEOUT_MS });
     } catch (err) {
       // A failed check is a fact about the network, not about the app, and the user did not ask
       // for it on launch. It is recorded and swallowed there; a Settings press reports it, because
@@ -130,17 +182,31 @@ export function makeUpdater({ api, storage, now = Date.now, confirm, warn = () =
       }
     }
 
-    if (!update?.available) {
-      return { status: announceNoUpdate ? 'current' : 'silent-current', version: update?.version };
-    }
+    // Neutral: whether "nothing new" is SAID is each caller's decision, applied in `check`.
+    if (!update?.available) return { status: 'current', version: update?.version };
 
     const wanted = await confirm(update);
     if (!wanted) return { status: 'declined', version: update.version };
 
+    // Progress is the plugin's channel events folded into one running figure: Started carries
+    // the size (when the server says), each Progress a chunk, Finished the end of the bytes —
+    // after which the install runs inside the same call. `at` is the time of the last event, and
+    // it is what a stall notice is measured from.
+    const progress = { phase: 'download', received: 0, total: null, at: now() };
+    report({ ...progress });
     try {
       // Downloads AND applies. The signature is checked against the app's compiled-in public key
       // inside this call, before anything is unpacked.
-      await update.downloadAndInstall();
+      await update.downloadAndInstall(
+        (ev) => {
+          if (ev?.event === 'Started') progress.total = ev.data?.contentLength ?? null;
+          else if (ev?.event === 'Progress') progress.received += ev.data?.chunkLength ?? 0;
+          else if (ev?.event === 'Finished') progress.phase = 'install';
+          progress.at = now();
+          report({ ...progress });
+        },
+        { timeout: DOWNLOAD_TIMEOUT_MS },
+      );
     } catch (err) {
       warn('app-update: the update did not install', err);
       return { status: 'failed', error: err };
@@ -148,6 +214,7 @@ export function makeUpdater({ api, storage, now = Date.now, confirm, warn = () =
 
     // The install is staged; the running process is still the old one. Without the relaunch the
     // user sees nothing change and reasonably concludes it did not work.
+    report({ phase: 'restart', at: now() });
     try {
       await api?.process?.relaunch?.();
     } catch (err) {
@@ -157,24 +224,35 @@ export function makeUpdater({ api, storage, now = Date.now, confirm, warn = () =
     return { status: 'installed' };
   }
 
-  async function check({ announceNoUpdate = false } = {}) {
-    if (inFlight) return inFlight;
-    inFlight = run({ announceNoUpdate }).finally(() => {
-      inFlight = null;
-    });
-    return inFlight;
+  function check({ announceNoUpdate = false, onProgress = null } = {}) {
+    if (!flight) {
+      const sinks = new Set();
+      flight = {
+        sinks,
+        promise: run(sinks).finally(() => {
+          flight = null;
+        }),
+      };
+    }
+    if (onProgress) flight.sinks.add(onProgress);
+    // The answer is shared by everyone in the flight; what each says about "nothing new" is its
+    // own. A Settings press that joined a launch check used to inherit the launch check's silence
+    // and then announce "finished without a clear answer" for a check that had succeeded.
+    return flight.promise.then((r) =>
+      r.status === 'current' && !announceNoUpdate ? { ...r, status: 'silent-current' } : r,
+    );
   }
 
   return {
     check,
     /** The launch path: only when one is due, and never announcing "you are up to date". */
-    async checkOnLaunch() {
+    async checkOnLaunch({ onProgress = null } = {}) {
       if (!dueForCheck(now(), readLastCheck(storage))) return { status: 'not-due' };
-      return check({ announceNoUpdate: false });
+      return check({ announceNoUpdate: false, onProgress });
     },
     /** The Settings path: always checks, and always says something back. */
-    checkNow() {
-      return check({ announceNoUpdate: true });
+    checkNow({ onProgress = null } = {}) {
+      return check({ announceNoUpdate: true, onProgress });
     },
   };
 }

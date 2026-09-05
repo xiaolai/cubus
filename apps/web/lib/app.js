@@ -16,7 +16,7 @@ import {
   status as optimalStatus,
 } from './optimal.js';
 import { NO_CHALLENGES, loadIndex, provenAnswer } from './optimal-challenges.js';
-import { STARTUP_DELAY_MS, makeUpdater, selfUpdateSupported } from './app-update.js';
+import { STARTUP_DELAY_MS, makeUpdater, progressLabel, selfUpdateSupported } from './app-update.js';
 import { hostPlatform, isDesktopHost } from './host.js';
 import { randomCube } from './random-state.js';
 import { makeRouter } from './router.js';
@@ -4951,13 +4951,21 @@ SCREENS.settings = () => {
           checkBtn.disabled = true;
           checkBtn.textContent = t('Checking…');
           try {
-            await reportUpdateOutcome(await upd.checkNow());
+            await reportUpdateOutcome(await upd.checkNow({
+              onProgress: (p) => {
+                // The press has become a download: the button says so, and the status chip
+                // carries the numbers wherever the user looks next.
+                if (checkBtn.isConnected) checkBtn.textContent = t('Updating…');
+                showUpdateProgress(p);
+              },
+            }));
           } catch (err) {
             // A press that throws used to leave the button spinning back to normal with nothing
             // said — the check simply appeared not to happen.
             console.error('app-update: the check failed', err);
             await reportUpdateOutcome({ status: 'error' });
           } finally {
+            hideUpdateProgress();
             // The button may have gone with a re-render, and an installed update never comes back
             // here at all — the app relaunches out from under it.
             if (checkBtn.isConnected) { checkBtn.disabled = false; checkBtn.textContent = was; }
@@ -5817,6 +5825,40 @@ export const privacyLine = (selfUpdates) => (selfUpdates
  *  without a Tauri window: the fact is the argument, the claim is the function. */
 const privacySentence = () => privacyLine(Boolean(appUpdater()));
 
+/**
+ * The download and the install, made visible.
+ *
+ * After "Install and restart" the app showed nothing until it relaunched: the Settings button
+ * kept saying "Checking…", and a launch-path install had no surface at all. Measured 2026-09-06,
+ * through a proxy tunnel: one download sat at 1454 bytes for five minutes before completing, and
+ * with nothing on screen that was a hang to the person watching, who quit it. A fixed chip
+ * carries the numbers wherever the user is (the launch path can arrive on any screen), and a
+ * one-second tick keeps the stall notice honest between events — a stalled download sends none.
+ * Only ever drawn where the updater exists, which is the desktop.
+ */
+let updateProgress = null; // the last report, or null when nothing is in flight
+let updateTicker = 0;
+function showUpdateProgress(p) {
+  updateProgress = p;
+  let chip = document.getElementById('updateStatus');
+  if (!chip) {
+    chip = document.createElement('div');
+    chip.id = 'updateStatus';
+    chip.className = 'update-status';
+    chip.setAttribute('role', 'status');
+    chip.setAttribute('aria-live', 'polite');
+    document.body.appendChild(chip);
+  }
+  const paint = () => { chip.textContent = progressLabel(updateProgress, Date.now(), t); };
+  paint();
+  if (!updateTicker) updateTicker = setInterval(paint, 1000);
+}
+function hideUpdateProgress() {
+  updateProgress = null;
+  if (updateTicker) { clearInterval(updateTicker); updateTicker = 0; }
+  document.getElementById('updateStatus')?.remove();
+}
+
 /** Say the outcome of a check the user ASKED for. A launch check stays silent unless it found one. */
 async function reportUpdateOutcome(result) {
   const say = (message, kind = 'info') =>
@@ -5888,7 +5930,13 @@ async function boot() {
   // when there is genuinely something to install.
   if (appUpdater()) {
     setTimeout(() => {
-      appUpdater().checkOnLaunch().catch((e) => console.warn('app-update: launch check failed', e));
+      // A launch-path install can be confirmed from any screen, so its progress goes to the
+      // status chip — the same one the Settings press uses — rather than to a button that may
+      // not exist.
+      appUpdater()
+        .checkOnLaunch({ onProgress: showUpdateProgress })
+        .catch((e) => console.warn('app-update: launch check failed', e))
+        .finally(hideUpdateProgress);
     }, STARTUP_DELAY_MS);
   }
 }
