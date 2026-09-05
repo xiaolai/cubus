@@ -18,6 +18,73 @@ import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { FACES, type Face } from '../src/types.js';
 import { AiScanPanel, type ScanProgress } from '../view/ai-scan-panel.js';
+import {
+  type MisreadReply,
+  type MisreadRequest,
+  handleMisreadRequest,
+} from '../view/misread-protocol.js';
+
+// A SEAM ON THE ONE CALL THAT COSTS SECONDS, and a pass-through in every other respect.
+//
+// "The misread decode does not run on the calling thread" is otherwise unfalsifiable from outside
+// the element: a refusal that decoded and threw the answer away paints exactly like one that never
+// decoded at all — it just takes up to three seconds longer, which no assertion about the DOM can
+// see. Counting the calls is the only way to state it, so the count is what is asserted.
+const seam = vi.hoisted(() => ({ decodes: 0 }));
+vi.mock('../src/misread-decode.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/misread-decode.js')>();
+  return {
+    ...actual,
+    diagnoseMisread: (...args: Parameters<typeof actual.diagnoseMisread>) => {
+      seam.decodes++;
+      return actual.diagnoseMisread(...args);
+    },
+  };
+});
+
+/**
+ * A `Worker` that stays on this thread but answers with the code the real one runs.
+ *
+ * happy-dom has no `Worker`, so every other test in this file exercises the synchronous fallback —
+ * which is the right default here and is why nothing else had to change. These install this to
+ * take the other branch.
+ */
+class FakeWorker {
+  static built: FakeWorker[] = [];
+  static last(): FakeWorker {
+    const w = FakeWorker.built[FakeWorker.built.length - 1];
+    if (!w) throw new Error('the panel never built a worker');
+    return w;
+  }
+  posted: MisreadRequest[] = [];
+  private listeners: ((ev: unknown) => void)[] = [];
+  constructor(readonly url: URL) {
+    FakeWorker.built.push(this);
+  }
+  addEventListener(type: string, fn: (ev: unknown) => void): void {
+    if (type === 'message') this.listeners.push(fn);
+  }
+  postMessage(message: MisreadRequest): void {
+    this.posted.push(structuredClone(message));
+  }
+  terminate(): void {}
+  /** Deliver the answer to a posted request, whenever the test decides it lands. */
+  answer(index = 0): void {
+    const request = this.posted[index];
+    if (!request) throw new Error(`nothing posted at ${index}`);
+    this.deliver(structuredClone(handleMisreadRequest(request)));
+  }
+  /** Deliver a reply the test wrote itself — for the answers a real decode gives rarely. */
+  deliver(reply: MisreadReply): void {
+    for (const fn of this.listeners) fn({ data: reply });
+  }
+}
+
+/** Put a worker on this page for the duration of one test. */
+function withWorker(): void {
+  FakeWorker.built = [];
+  (globalThis as { Worker?: unknown }).Worker = FakeWorker;
+}
 
 const LETTER_CLASS: Record<Face, number> = { U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 };
 // TICK_FLOOR_MS. The cadence follows the runtime now — `max(60, last inference ms)` — and the fake
@@ -204,6 +271,8 @@ beforeEach(async () => {
 afterEach(() => {
   panel.remove(); // disconnectedCallback stops the loop and the fake camera
   vi.useRealTimers();
+  (globalThis as { Worker?: unknown }).Worker = undefined;
+  FakeWorker.built = [];
 });
 
 describe('ai-scan-panel — capture and settle', () => {
@@ -1083,5 +1152,162 @@ describe('ai-scan-panel — the two voices agree about the same refusal', () => 
     await vi.advanceTimersByTimeAsync(CHECK);
     expect(last().message).toMatch(/isn't a solvable cube yet/i);
     expect(last().message).not.toMatch(/reads the same several ways/i);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+describe('ai-scan-panel — the misread count arrives after the refusal, not before it', () => {
+  const TRUTH = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+  const F_TRUE = facesOf(TRUTH).F[0]!;
+
+  /** Show all six sides with `n` stickers of the Front side read as a colour they are not. */
+  async function scanMisreading(n: number): Promise<void> {
+    const shown = facesOf(TRUTH);
+    const bad = [...shown.F];
+    for (let i = 0; i < n; i++) bad[i] = (bad[i]! + 1) % 6;
+    for (const face of FACES) await show(face === 'F' ? bad : shown[face]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+  }
+
+  it('publishes the refusal without decoding anything on this thread', async () => {
+    // THE POINT OF THE WHOLE CHANGE. Before this, `decodeMisread` ran between the sixth capture and
+    // the frame that explains the refusal — 52-125 ms on an easy scramble and up to 3.0 s when its
+    // node budget is exhausted, all of it on the page's thread, with the board frozen.
+    withWorker();
+    const invalid: AiScanResult[] = [];
+    panel.addEventListener('scan-invalid', (e) =>
+      invalid.push((e as CustomEvent<AiScanResult>).detail),
+    );
+    const before = seam.decodes;
+    await scanMisreading(1);
+
+    // Not "few decodes", none: a decode that ran and was discarded blocks exactly as long.
+    expect(seam.decodes).toBe(before);
+    // The refusal is out, and says what it can — which is that it is checking, and NOT a count.
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0]!.misreadCount).toBeNull();
+    expect(invalid[0]!.suspects).toBeUndefined();
+    expect(last().suspects).toEqual([]);
+    expect(last().notice?.body ?? '').toMatch(/working out how many stickers are wrong/i);
+    // `null` must never be read as zero or as "nothing can be said": both of those are sentences
+    // this panel has, and neither is true here.
+    expect(last().notice?.body ?? '').not.toMatch(/too much of the cube/i);
+    expect(last().notice?.params).toBeUndefined();
+    // And the work went somewhere: one request, carrying this reading and its rotation status.
+    const worker = FakeWorker.last();
+    expect(worker.posted).toHaveLength(1);
+    expect(worker.posted[0]!.fixedRotation).toBe(false);
+    expect(worker.posted[0]!.faces.F!.colors[0]).toBe((F_TRUE + 1) % 6);
+  });
+
+  it('refines the notice, and re-announces the refusal, when the count lands', async () => {
+    withWorker();
+    const invalid: AiScanResult[] = [];
+    panel.addEventListener('scan-invalid', (e) =>
+      invalid.push((e as CustomEvent<AiScanResult>).detail),
+    );
+    await scanMisreading(1);
+    FakeWorker.last().answer();
+
+    // The public event carries the same null-then-value shape the field does, so a host learns the
+    // count on the channel it learned the refusal on rather than having to watch two.
+    expect(invalid).toHaveLength(2);
+    expect(invalid[1]!.misreadCount).toBe(1);
+    expect(invalid[1]!.suspects).toContainEqual({ face: 'F', index: 0, to: F_TRUE });
+    // And the words are the ones a decided count earns — the proven wording, unchanged.
+    expect(last().notice?.title).toMatch(/check the marked sticker/i);
+    expect(last().suspects).toContainEqual({ face: 'F', index: 0, to: F_TRUE });
+  });
+
+  it('states the count and accuses nothing when the answer is more than one', async () => {
+    withWorker();
+    await scanMisreading(2);
+    expect(last().notice?.body ?? '').toMatch(/working out how many/i);
+    FakeWorker.last().answer();
+    expect(last().notice?.title).toBe('More than one sticker looks wrong');
+    expect(last().notice?.params?.[0]).toBeGreaterThanOrEqual(2);
+    expect(last().suspects).toEqual([]);
+  });
+
+  it('stops saying it is checking when the decode answers that it cannot say', async () => {
+    // THE TRAP `null` EXISTS TO CREATE, and the one this was found failing on while measuring.
+    // A decode that exhausts its 20M-node backstop answers with nothing at all — which is a real
+    // answer ("the search could not tell") and NOT the deferred state. Spreading an empty
+    // diagnosis over a result still carrying `misreadCount: null` leaves the marker standing, so
+    // the panel says "working out how many stickers are wrong" for the rest of the session about
+    // a question that will never be answered any further.
+    withWorker();
+    await scanMisreading(1);
+    const worker = FakeWorker.last();
+    // Reply as an exhausted search does: the epoch, and no claim.
+    const epoch = worker.posted[0]!.epoch;
+    worker.deliver({ epoch, diagnosis: {} });
+
+    expect(last().notice?.body ?? '').not.toMatch(/working out how many/i);
+    expect(last().notice?.title).toMatch(/doesn.t read as a solvable cube/i);
+    expect(last().notice?.body ?? '').toMatch(/too much of the cube was read wrong/i);
+    expect(last().suspects).toEqual([]);
+  });
+
+  it('drops an answer about a reading that is no longer on screen', async () => {
+    // The decode can take seconds, and the scan does not stop while it runs. An answer that lands
+    // after a correction describes a cube nobody is looking at — and it would land as a COUNT,
+    // over a reading the user may have just fixed.
+    withWorker();
+    await scanMisreading(1);
+    const stale = FakeWorker.last();
+    // The user fixes the sticker: the reading changes, and the verdict is re-opened.
+    panel.setSticker('F', 0, F_TRUE);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    const settled = last();
+
+    stale.answer(0); // the old decode finally finishes
+    expect(last()).toBe(settled); // …and nothing at all was said about it
+  });
+
+  it('answers with the count in one go where the page has no worker', async () => {
+    // No `Worker` at all — a webview that forbids one, or this very test environment. The panel
+    // must still get the whole diagnosis, in the same tick, exactly as it did before the decode
+    // moved: one refusal event carrying the count, and no second one.
+    expect(typeof (globalThis as { Worker?: unknown }).Worker).toBe('undefined');
+    const invalid: AiScanResult[] = [];
+    panel.addEventListener('scan-invalid', (e) =>
+      invalid.push((e as CustomEvent<AiScanResult>).detail),
+    );
+    const before = seam.decodes;
+    await scanMisreading(1);
+    expect(seam.decodes).toBe(before + 1);
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0]!.misreadCount).toBe(1);
+    expect(last().notice?.title).toMatch(/check the marked sticker/i);
+    expect(last().notice?.body ?? '').not.toMatch(/working out how many/i);
+  });
+
+  it('defers a refused PAINTING the same way, and asks about it as painted', async () => {
+    // Painting refuses through its own path and had the same block — worse, since it lands between
+    // a tap and the tile changing colour, and since once the sixth side exists EVERY stroke
+    // re-checks the whole cube. And its decode must be told the rotations are known, or it answers
+    // "0 misreads" about a cube the painted validator has just refused.
+    withWorker();
+    panel.setPainting(true);
+    const truth = facesOf(TRUTH);
+    for (const f of FACES)
+      for (let i = 0; i < 9; i++) if (i !== 4) panel.setSticker(f, i, truth[f]![i]!);
+    const before = seam.decodes;
+    const asked = FakeWorker.last().posted.length; // the half-painted strokes asked too
+    panel.setSticker('U', 0, (truth.U![0]! + 1) % 6);
+
+    expect(seam.decodes).toBe(before);
+    expect(last().notice?.body ?? '').toMatch(/working out how many/i);
+    const worker = FakeWorker.last();
+    expect(worker.posted).toHaveLength(asked + 1);
+    const mine = worker.posted.length - 1;
+    expect(worker.posted[mine]!.fixedRotation).toBe(true);
+    // An earlier stroke's answer, arriving late, must say nothing about this reading.
+    const settled = last();
+    worker.answer(0);
+    expect(last()).toBe(settled);
+    worker.answer(mine);
+    expect(last().suspects).toContainEqual({ face: 'U', index: 0, to: truth.U![0]! });
   });
 });

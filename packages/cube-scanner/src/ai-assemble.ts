@@ -62,7 +62,7 @@
 
 import Cube from 'cubejs';
 import { isStructurallyValid, rotateFace } from './facelet-cube.js';
-import { type MisreadDecode, decodeMisread } from './misread-decode.js';
+import { type DecodedSticker, type MisreadDiagnosis, diagnoseMisread } from './misread-decode.js';
 import { FACES, type Face, type ScanResult } from './types.js';
 
 export { rotateFace };
@@ -86,11 +86,28 @@ export interface ConfirmRequest {
  * A sticker a colour misread most plausibly landed on: flipping it to `to` makes the scan a legal
  * cube. `index` is into the capture AS SHOWN — what a host's tile displays — so a suspect maps
  * straight onto the sticker a user can tap.
+ *
+ * An ALIAS of the decoder's own `DecodedSticker`, not a second declaration of the same shape: this
+ * is the name the app's hosts import, and the sticker they receive is the one the search named.
  */
-export interface StickerSuspect {
-  face: Face;
-  index: number;
-  to: number;
+export type StickerSuspect = DecodedSticker;
+
+/** How a caller wants a refusal explained. */
+export interface AssembleOptions {
+  /**
+   * Run the misread diagnosis on THIS thread (the default), or defer it.
+   *
+   * `false` returns the refusal with `misreadCount: null` — "checking", never "nothing is wrong" —
+   * and no `suspects` or `misreadFace`, so a caller can paint the refusal within a tick and put
+   * `diagnoseMisread` somewhere that is not the page's thread. Deferring is not a nicety: the
+   * decode is 52-125 ms at distance 3 on an easy scramble, 2.7 s for a distance-3 answer on a
+   * 20-move scramble, and 2.1-3.0 s when its 20M-node backstop is exhausted — seconds spent to
+   * claim nothing, all of it blocking whatever called it (measured 2026-09-05).
+   *
+   * The default is deliberately the synchronous one. A caller with nowhere to run the decode still
+   * gets the count, in one call, exactly as before.
+   */
+  diagnose?: boolean;
 }
 
 /** ScanResult plus AI-path extras: a human reason, and how to make progress when it failed. */
@@ -119,6 +136,11 @@ export type AiScanResult = ScanResult & {
    * How many stickers are wrong, as a proven LOWER BOUND — never an overstatement, so "at least N
    * stickers were misread" is always honest. At 1 it is exact, and only then may `suspects` point.
    *
+   * `null` is the DEFERRED state and not a count: the caller passed `{ diagnose: false }` and the
+   * decode is running somewhere else (see AssembleOptions). ABSENT means the decode ran and could
+   * claim nothing. A host must not collapse the two — "checking…" and "too much of the cube was
+   * read wrong to say where" are opposite sentences about the same field.
+   *
    * PRESUMING THE SIX CENTRES WERE READ RIGHT. The bound is proved against the colouring implied
    * by the centres, because the centres are what name the faces — so a misread CENTRE is not one
    * wrong sticker, it is a relabelling of every sticker of that colour, and the count reported is
@@ -127,7 +149,7 @@ export type AiScanResult = ScanResult & {
    * cannot detect it, so this is a limit of the guarantee rather than a bug in it —
    * dev-docs/misread-decoding.md has the argument.
    */
-  misreadCount?: number;
+  misreadCount?: number | null;
   /** The one side every minimal repair blames, when they agree on one — a hint for what to re-show. */
   misreadFace?: Face;
   /**
@@ -317,55 +339,21 @@ function solvableReadings(
 }
 
 /**
- * Turn a failed scan into what can honestly be said about it.
+ * The diagnosis a refusal carries: run it here, or hand the caller the "checking" marker.
  *
- * This replaced a colour-COUNTING diagnosis, which could only ever speak when exactly one sticker
- * was wrong — and was blind in two ways that mattered for this detector, whose weak pair is
- * red/orange: a balanced swap (one red read as orange AND one orange read as red) leaves every
- * colour count at nine, and partial cancellation makes the counts UNDERSTATE the damage, sending
- * the search after a single-sticker repair that does not exist.
- *
- * The decoder answers both, and reports a count that is a proven lower bound. What it does NOT
- * license is pointing: above one misread the nearest legal cube is not necessarily the user's
- * cube, so only `distance === 1` becomes a suspect. dev-docs/misread-decoding.md has the whole
- * argument and the measurements.
+ * The decode itself moved to `misread-decode.ts` (2026-09-05), beside the search whose guarantees
+ * it spends and where the misread worker can reach it without the assembler. What stays here is
+ * the one decision this module owns — WHETHER to spend seconds of the calling thread on it.
  */
-function diagnose(
+function refusalDiagnosis(
   faces: Record<Face, ColorFace>,
-  centreOwner: Map<number, Face>,
-  options: { fixedRotation?: boolean } = {},
-): Partial<AiScanResult> {
-  const decoded: MisreadDecode = decodeMisread(faces, centreOwner, options);
-  if (decoded.kind === 'unknown') return {};
-  // No repair within the cap means strictly more than the cap are wrong, which is still a floor.
-  if (decoded.kind === 'beyond') return { misreadCount: decoded.distance + 1 };
-  // Pointing takes THREE facts, not one, and this used to check only the first.
-  //
-  //   * `distance === 1` — the reading is one sticker from legal.
-  //   * `unique` — there is only ONE such legal cube. The decoder already computes this and
-  //     nothing consumed it, which is exactly how the gap got in: the guarantee was assumed from
-  //     the minimum-distance argument instead of read off the search that had just measured it.
-  //   * exactly one sticker — a repair can be one CHANGE and still name several stickers, because
-  //     the search runs over 4^6 rotations and a rotationally symmetric face maps the same
-  //     canonical position to a different as-shown index under each of its four turns.
-  //
-  // Measured: a solved cube read with two of the U-layer 3-cycle's three stickers comes back at
-  // distance 1, `unique: false`, naming FOUR stickers — and the app said "One sticker looks
-  // wrong" over all four, three of which had been read correctly. `misread-decode.test.ts` pins
-  // that reading. Above one misread the nearest legal cube need not be the user's cube, so the
-  // decoder may report a COUNT and nothing more.
-  const pointable = decoded.distance === 1 && decoded.unique && decoded.stickers.length === 1;
-  const suspects: StickerSuspect[] = pointable
-    ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to }))
-    : [];
-  // A side to re-show, but only when every minimal repair blames that one side. Otherwise the
-  // honest instruction is "show the sides again", not a guess dressed as a lead.
-  const blamed = new Set(decoded.stickers.map((s) => s.face));
-  return {
-    misreadCount: decoded.distance,
-    ...(suspects.length > 0 ? { suspects } : {}),
-    ...(blamed.size === 1 ? { misreadFace: [...blamed][0]! } : {}),
-  };
+  options: AssembleOptions & { fixedRotation?: boolean },
+): MisreadDiagnosis {
+  // `null`, never an absent field: absent already means "the decode ran and could claim nothing",
+  // and a caller that reads the two the same way says "too much of the cube was read wrong to say
+  // where" about a cube nothing has looked at yet. See AiScanResult.misreadCount.
+  if (options.diagnose === false) return { misreadCount: null };
+  return diagnoseMisread(faces, { fixedRotation: options.fixedRotation });
 }
 
 /**
@@ -440,6 +428,7 @@ function summariseConfidence(
 export function assemblePainted(
   faces: Record<Face, ColorFace>,
   threshold = LOW_CONFIDENCE_THRESHOLD,
+  options: AssembleOptions = {},
 ): AiScanResult {
   const centreOwner = buildCentreOwner(faces);
   if (!(centreOwner instanceof Map)) return centreOwner;
@@ -468,7 +457,10 @@ export function assemblePainted(
     // fixedRotation, because a painted face is authored in place. Without it the decoder is free
     // to rotate a face back and report "0 misreads" about a cube this function has just refused —
     // measured on nine scrambles with one face turned 90°, all nine. See DecodeOptions.
-    return reject('not a solvable cube yet', diagnose(faces, centreOwner, { fixedRotation: true }));
+    return reject(
+      'not a solvable cube yet',
+      refusalDiagnosis(faces, { ...options, fixedRotation: true }),
+    );
   }
 
   const conf = FACES.flatMap((f) => faces[f]!.confidence);
@@ -488,6 +480,7 @@ export function assembleColors(
   faces: Record<Face, ColorFace>,
   threshold = LOW_CONFIDENCE_THRESHOLD,
   confirmed: Partial<Record<Face, ColorFace>> = {},
+  options: AssembleOptions = {},
 ): AiScanResult {
   // Centre colour → face letter. Centres don't move under rotation, so this is fixed. Two faces
   // sharing a centre colour is impossible on a real cube, so bail out loudly.
@@ -501,7 +494,7 @@ export function assembleColors(
     // always answerable, and when it is exactly one, WHICH one is answerable too.
     return reject(
       'no orientation of the faces is solvable — a colour was misread',
-      diagnose(faces, centreOwner),
+      refusalDiagnosis(faces, options),
     );
   }
 

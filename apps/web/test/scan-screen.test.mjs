@@ -744,6 +744,47 @@ test('a scan the scanner rejects takes Solve away too', async () => {
   assert.equal($('#scanSolveBtn').disabled, true, 'a rejected reading left Solve standing over the previous cube');
 });
 
+// ONE REFUSAL, TWO EVENTS — the shape `scan-invalid` gained on 2026-09-05, when the misread decode
+// moved to a worker. The refusal is announced at once with `misreadCount: null` ("checking"), and
+// announced again with the count when the decode lands, so a host never waits seconds for either.
+// This screen only has to be indifferent to that, which is what makes the change safe here — but
+// "indifferent" is a claim, and a listener that counted events or read the count as a number would
+// break silently under exactly this sequence.
+test('a refusal announced twice — checking, then counted — leaves Solve exactly as disabled', async () => {
+  win.location.hash = '#/scan';
+  await tick();
+  // A capture re-opens the verdict, which is what clears the previous test's standing refusal.
+  progress({ phase: 'capturing', complete: false, captured: [], device: null, message: '' });
+  progress({ phase: 'done', complete: true, captured: FACES.map(face), device: null, message: '' });
+  assert.equal($('#scanSolveBtn').disabled, false, 'precondition: a complete scan is solvable');
+  const refuse = (detail) => panel().dispatchEvent(new win.CustomEvent('scan-invalid', { detail }));
+  refuse({ reason: 'a colour was misread', valid: false, misreadCount: null });
+  assert.equal($('#scanSolveBtn').disabled, true, 'the refusal must land before the count does');
+  refuse({ reason: 'a colour was misread', valid: false, misreadCount: 2 });
+  assert.equal($('#scanSolveBtn').disabled, true, 'the second announcement must not undo the first');
+});
+
+// The words the user actually sees while the decode runs, and after it answers. The panel owns
+// both sentences; what is pinned here is that this screen renders the deferred one AS A SENTENCE
+// (no count, no placeholder to substitute) and then replaces it with the counted one — the
+// "at least N" wording rule intact, still arriving as a param rather than baked in.
+test('the notice says it is checking, then says the count when it lands', () => {
+  const report = (notice) => progress({ phase: 'scanning', message: 'Show any side to the camera.',
+    captured: FACES.map(face), live: null, confirm: null, notice });
+  report({ title: 'Not a solvable cube', tone: 'err',
+    body: 'Working out how many stickers are wrong — that takes a moment on a badly-read cube.' });
+  assert.equal($('#scanHowTitle').textContent, 'Not a solvable cube');
+  assert.match($('#scanHow').textContent, /Working out how many stickers are wrong/);
+  assert.doesNotMatch($('#scanHow').textContent, /%/, 'a checking sentence has no count to substitute');
+  assert.doesNotMatch($('#scanHow').textContent, /at least/i, 'and claims no number while it has none');
+
+  report({ title: 'More than one sticker looks wrong', tone: 'err',
+    body: 'At least %1 stickers were misread, so there is no single sticker to point at.',
+    params: [2] });
+  assert.equal($('#scanHow').textContent,
+    'At least 2 stickers were misread, so there is no single sticker to point at.');
+});
+
 // Auto-solve is a promise about a scan that was BELIEVED. Firing it on a refused reading walked
 // the PREVIOUS cube behind a disabled Solve button — the navigation quietly overrode the refusal.
 test('auto-solve fires only for a believed scan — a refused one stays put', async () => {

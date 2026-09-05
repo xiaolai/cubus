@@ -371,6 +371,16 @@ it walks you through solving it.
     model and not by luck. A page without cross-origin isolation falls back to per-worker
     builds, loudly and once. Measured: cold session → first pooled answer 720 → 425 ms, pool
     memory 58.9 → 9.8 MiB. `apps/web/test/shared-solver-tables.test.mjs`.
+  - **The misread decoder runs in a worker (2026-09-05), and `null` is not absent.** A refusal
+    used to block the main thread for up to 3 s while `decodeMisread` spent its 20M-node backstop
+    on the thread that draws; `assembleColors(faces, { diagnose: false })` answers at once with
+    `misreadCount: null` ("checking") and `misread-worker.js` refines it for the CURRENT scan
+    epoch only (5 ms per refusal now). Two things that were bugs before they were rules: `null`
+    means "still checking" and ABSENT means "the decode ran and could claim nothing", so an
+    empty answer merged over the marker left "working out how many" standing forever; and a
+    worker that builds and then fails to LOAD must answer its stranded requests on this thread,
+    not merely be remembered as broken, or the notice it was going to refine never resolves.
+    A page with no `Worker` gets the synchronous answer. `packages/cube-scanner/tests/misread-worker.test.ts`.
   - **The scanner keeps ONE detector per page, parked between `<ai-scan-panel>` mounts** — the
     `<cubus-cube>` rule for the same reason: a rebuilt element meant a new `InferenceSession` and
     a 1–5 s model load per visit, the old one unreachable for the life of the page.

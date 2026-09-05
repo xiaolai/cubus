@@ -61,6 +61,7 @@ jobs:
       - name: vendored bundles are built from the current sources
         run: |
           pnpm build:panel
+          pnpm --filter cube-scanner build:misread-worker
           pnpm --filter cubus-web build:mcp-guest
           pnpm --filter cubus-web build:cube
           pnpm --filter cubus-web build:cubejs
