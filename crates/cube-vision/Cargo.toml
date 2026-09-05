@@ -22,7 +22,7 @@ serde_json = "1"
 log = "0.4"
 # `infer_frame` carries its still frame as base64 on EVERY platform (src/frame.rs): a `Vec<u8>`
 # crosses Tauri's bridge as a JSON array of numbers, ~4 bytes of text per pixel byte.
-base64 = "0.22"
+base64 = "0.23"
 
 # Windows gets its own native path: Media Foundation for frames (nokhwa), onnxruntime with the
 # DirectML execution provider for the model (ort). Windows-only on purpose — every dependency here
