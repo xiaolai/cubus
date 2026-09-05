@@ -66,7 +66,7 @@ const DEST = join(here, 'vendor');
 // frame, against 57 ms for the wasm path those machines had before this switch. So the provider is
 // now VALIDATED and not merely chosen — `preferredProviders` refuses a software adapter, and
 // `createModelRunner` times the one it kept and hands it back for wasm if it cannot earn its place
-// (view/onnx-runtime.ts; gated by apps/web/test/scanner-gpu.test.mjs, which forces SwiftShader).
+// (view/onnx-runtime.ts; gated by apps/web/test/browser/scanner-gpu.test.mjs, which forces SwiftShader).
 //
 // WINDOWS is confirmed to WORK and is NOT timed. On a Windows laptop running Edge/WebView2 152,
 // the shipped path reaches a real hardware adapter (an Intel Xe2 iGPU, reported by name rather

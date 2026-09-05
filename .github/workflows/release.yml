@@ -149,6 +149,11 @@ jobs:
       # rather than failing on "not finished". What it will not do is proceed without one: a
       # commit that was never pushed to main has no CI run, and a commit whose runs all failed or
       # were cancelled is a red tree with a tag on it.
+      #
+      # `--event push`, because CI has tiers (2026-09-05): a pull-request run is the fast tier and
+      # skips the platform jobs its diff did not touch, and it can exist for this same commit if
+      # the branch was fast-forwarded. The push-event run is the full tier every time, and it is
+      # the only run this gate accepts.
       - name: CI succeeded for this commit
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -157,7 +162,7 @@ jobs:
           set -eu
           deadline=$((SECONDS + 1800))
           while :; do
-            runs=$(gh run list --workflow CI --commit "$GITHUB_SHA" --json status,conclusion,url)
+            runs=$(gh run list --workflow CI --event push --commit "$GITHUB_SHA" --json status,conclusion,url)
             if [ "$(printf '%s' "$runs" | jq length)" -eq 0 ]; then
               state="no CI run exists for $GITHUB_SHA — was it pushed to main?"
             elif printf '%s' "$runs" | jq -e 'any(.status == "completed" and .conclusion == "success")' >/dev/null; then
