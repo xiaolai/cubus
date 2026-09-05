@@ -322,7 +322,13 @@ describe('decodeMisread', () => {
     // returned it every time would pass the loop above without ever being examined. Require that
     // the runs mostly produced a claim.
     expect(claimed).toBeGreaterThan(checked / 2);
-  });
+    // AN EXPLICIT BUDGET, for the reason its neighbour above already carries one: vitest's 5 s
+    // default is a HANG DETECTOR, not a budget for twenty-four full decodes at up to distance 5.
+    // Measured 2026-09-05: 2.8-3.0 s alone under v8 coverage instrumentation, either side of that
+    // day's decoder refactor — and 6.8 s inside the full coverage run, where sixteen test files
+    // compete for four cores. The neighbour's comment predicted this exactly ("adding a sibling
+    // test file was enough to tip it over"), and adding `web-detector.test.ts` is what did.
+  }, 60_000);
 
   it('a balanced red/orange swap — invisible to colour counting — is found', () => {
     // One red read as orange AND one orange read as red leaves all six counts at exactly 9, so

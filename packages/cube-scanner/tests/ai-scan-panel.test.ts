@@ -164,11 +164,20 @@ class FakeDetector implements Detector {
   }
   /** Set to make every `next()` throw — a model that failed to load, or a malformed tensor. */
   failWith: Error | null = null;
+  /**
+   * Set to a never-settling promise to model an inference that is LOST rather than slow.
+   *
+   * Not the same fake as `failWith`, and the difference is the point: a rejection is something the
+   * loop can see, and a promise that never settles is not. It is what a native plugin call dropped
+   * on the bridge, or a runtime worker that died mid-run, looks like from here.
+   */
+  nextHold: Promise<void> | null = null;
   /** Every `use()` call, so a test can see whether the pinned deviceId was dropped on retry. */
   uses: (CameraOptions | undefined)[] = [];
   /** Make `use()` throw — always, or only when a deviceId is pinned (an unplugged webcam). */
   openFails: 'never' | 'always' | 'pinned' = 'never';
   async next(): Promise<ModelOutput | null> {
+    if (this.nextHold) await this.nextHold;
     if (this.failWith) throw this.failWith;
     return this.output;
   }
@@ -919,6 +928,70 @@ describe('ai-scan-panel — a camera that answers but never delivers', () => {
   });
 });
 
+describe('ai-scan-panel — an inference that is lost rather than slow', () => {
+  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+  // INFERENCE_TIMEOUT_MS and TICK_FAIL_MS, written out because neither is exported and both are
+  // load-bearing for the arithmetic below: the deadline abandons a wait, and two abandoned waits
+  // in a row are what the failure clock then reports on.
+  const DEADLINE = 15_000;
+
+  it('a hung next() does not wedge every later tick, and a restart recovers', async () => {
+    // The busy guard used to be a bare flag, so an inference that never settles left it set for the
+    // life of the page: every later tick returned at the first line, both failure clocks stopped
+    // advancing because only a tick that gets somewhere touches them, and stop() + start() could
+    // not recover — the flag outlived the scan it belonged to. The panel sat on its last message
+    // with the lens on, which is a hung app rather than a slow one.
+    fake.nextHold = new Promise<void>(() => {}); // lost on the bridge, not merely slow
+    fake.output = tensorFor(facesOf(DEEP).U);
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
+    expect(last().captured).toHaveLength(0); // nothing can be read while it hangs
+
+    // The user's move, and it has to work.
+    fake.nextHold = null;
+    panel.stop();
+    await panel.start();
+    await show(facesOf(DEEP).U);
+    expect(last().captured).toHaveLength(1);
+  });
+
+  it('reports a runtime that has gone silent, rather than waiting on it forever', async () => {
+    // Fail loud. The deadline ABANDONS THE WAIT, not the inference, and its rejection joins the
+    // same failure clock every other tick error does — so a wedged runtime ends in the notice that
+    // was written for exactly this and offers a way back on, instead of in silence.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fake.nextHold = new Promise<void>(() => {});
+    // One deadline is patience, not a verdict: the first abandoned wait only starts the clock.
+    await vi.advanceTimersByTimeAsync(DEADLINE + TICK);
+    expect(last().phase).not.toBe('error');
+    // The second lands more than TICK_FAIL_MS later, and that is the report.
+    await vi.advanceTimersByTimeAsync(DEADLINE + TICK);
+    expect(last().phase).toBe('error');
+    expect(last().notice?.title).toMatch(/scanner stopped/i);
+    expect(last().device).toBeNull(); // and the lens is off, not left on under a dead loop
+    logged.mockRestore();
+  });
+
+  it('a frame that could not be read breaks the stillness run', async () => {
+    // Stillness is a claim about what was watched CONTINUOUSLY. Every other way a tick ends with no
+    // usable read resets the run — a frameless tick, an abstain, a bad geometry — but a frame that
+    // THREW left it standing, so two matching reads, a failure, and more matching reads satisfied
+    // both halves of the capture gate over an observation with a hole in it.
+    const U = facesOf(DEEP).U;
+    fake.output = tensorFor(U);
+    await vi.advanceTimersByTimeAsync(TICK * 2); // two matching reads
+    fake.failWith = new Error('the frame could not be read');
+    await vi.advanceTimersByTimeAsync(TICK); // …and one that threw
+    fake.failWith = null;
+    // Far enough that an UNBROKEN hold would have captured: SETTLE_TICKS reads from the first one.
+    await vi.advanceTimersByTimeAsync(TICK * (SETTLE_TICKS - 3));
+    expect(last().captured).toHaveLength(0);
+    // Recovery takes a fresh continuous hold — 500 ms measured from the first read AFTER the gap.
+    await vi.advanceTimersByTimeAsync(TICK * 3);
+    expect(last().captured).toHaveLength(1);
+    fake.output = null;
+  });
+});
+
 describe('ai-scan-panel — what it says when things go wrong', () => {
   /** A camera rejection with the name getUserMedia actually uses. */
   const refuse = async (name: string): Promise<ScanProgress> => {
@@ -1023,6 +1096,89 @@ describe('ai-scan-panel — what it says when things go wrong', () => {
     await vi.advanceTimersByTimeAsync(TICK);
     expect(seen.at(-1)?.notice).toBeNull();
     expect(seen.at(-1)?.phase).toBe('scanning');
+    solo.remove();
+  });
+
+  it('a load abandoned by a restart says nothing over the scan that replaced it', async () => {
+    // The notice is the panel's ONE pinned sentence, and `loadModel` wrote to it with no
+    // generation check at all — the only place in start() that did. An abandoned load settles up
+    // to a minute later, so "The model did not load" landed on top of whatever the CURRENT state
+    // was saying: here, a scanner that is running.
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const stalled = new FakeDetector();
+    stalled.loadHold = new Promise<void>(() => {}); // never arrives
+    solo.useDetector(stalled, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    const abandoned = solo.start();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seen.at(-1)?.phase).toBe('loading');
+
+    // The user gives up and starts again on a detector whose model is there. Frames arrive with no
+    // readable side in them, so the scan simply runs.
+    const working = new FakeDetector();
+    working.output = emptyTensor();
+    solo.useDetector(working, 'web');
+    await solo.start();
+    expect(seen.at(-1)?.phase).toBe('scanning');
+    expect(seen.at(-1)?.notice).toBeNull();
+
+    // …and a minute later the abandoned load gives up. Its verdict is about a scan that is over.
+    await vi.advanceTimersByTimeAsync(61_000);
+    await abandoned;
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(seen.at(-1)?.notice).toBeNull();
+    expect(seen.at(-1)?.phase).toBe('scanning');
+    solo.remove();
+  });
+
+  it('a load abandoned mid-flight does not mark the REPLACEMENT detector’s model loaded', async () => {
+    // `modelLoaded` was set before the generation was checked, so a superseded attempt could mark
+    // the session's model loaded — and `useDetector` may have put a DIFFERENT detector there in
+    // the meantime, whose model has never been compiled. The next start then skipped the load
+    // entirely and the tick loop asked an unloaded runtime for frames.
+    const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const first = new FakeDetector();
+    let arrive = (): void => {};
+    first.loadHold = new Promise<void>((res) => {
+      arrive = () => res();
+    });
+    solo.useDetector(first, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    const abandoned = solo.start();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seen.at(-1)?.phase).toBe('loading');
+
+    // A different detector is injected — the native host's path, and the test seam's — and ITS
+    // model is still compiling. It would answer `next()` perfectly happily if anything asked.
+    const replacement = new FakeDetector();
+    replacement.loadHold = new Promise<void>(() => {});
+    replacement.output = tensorFor(facesOf(DEEP).U);
+    solo.useDetector(replacement, 'web');
+
+    // The abandoned load finishes. Nothing it says is about the session that replaced it.
+    arrive();
+    await abandoned;
+
+    const starting = solo.start();
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
+    // Still waiting on the replacement's own model — not scanning, and certainly not capturing a
+    // side read through a runtime that has never loaded one.
+    expect(seen.at(-1)?.phase).toBe('loading');
+    expect(seen.at(-1)?.captured ?? []).toHaveLength(0);
+    // Leave nothing pending: the load times out on its own and re-offers Start.
+    await vi.advanceTimersByTimeAsync(61_000);
+    await starting;
     solo.remove();
   });
 });
@@ -1294,19 +1450,24 @@ describe('ai-scan-panel — the misread count arrives after the refusal, not bef
     for (const f of FACES)
       for (let i = 0; i < 9; i++) if (i !== 4) panel.setSticker(f, i, truth[f]![i]!);
     const before = seam.decodes;
-    const asked = FakeWorker.last().posted.length; // the half-painted strokes asked too
     panel.setSticker('U', 0, (truth.U![0]! + 1) % 6);
 
     expect(seam.decodes).toBe(before);
     expect(last().notice?.body ?? '').toMatch(/working out how many/i);
     const worker = FakeWorker.last();
-    expect(worker.posted).toHaveLength(asked + 1);
-    const mine = worker.posted.length - 1;
-    expect(worker.posted[mine]!.fixedRotation).toBe(true);
-    // An earlier stroke's answer, arriving late, must say nothing about this reading.
+    // ONE decode is out and the rest of the strokes collapsed into the latest ask — a queue of
+    // obsolete decodes is what `MisreadDecoder` refuses to build (see misread-worker.test.ts), and
+    // it is this path that reaches it: once the sixth side exists every stroke re-checks the cube.
+    const running = worker.posted.length - 1;
+    // An earlier stroke's answer, arriving late, must say nothing about this reading…
     const settled = last();
-    worker.answer(0);
+    worker.answer(running);
     expect(last()).toBe(settled);
+    // …and answering it is what sends this stroke's own ask, which must be told the rotations are
+    // known or the decode answers "0 misreads" about a cube the painted validator has refused.
+    const mine = worker.posted.length - 1;
+    expect(mine).toBeGreaterThan(running);
+    expect(worker.posted[mine]!.fixedRotation).toBe(true);
     worker.answer(mine);
     expect(last().suspects).toContainEqual({ face: 'U', index: 0, to: truth.U![0]! });
   });

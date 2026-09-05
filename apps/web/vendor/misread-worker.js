@@ -2211,27 +2211,21 @@ function buildTensors(colors54, canon) {
     edgeColors: canon.edge
   };
 }
+function slotMinima(tensor) {
+  return tensor.map((slot) => {
+    let best = Number.POSITIVE_INFINITY;
+    for (const ori of slot) for (const d of ori) if (d < best) best = d;
+    return best;
+  });
+}
 function lowerBound(t) {
   let lb = 0;
-  for (const slot of t.corner) {
-    let best = 3;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    lb += best;
-  }
-  for (const slot of t.edge) {
-    let best = 2;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    lb += best;
-  }
+  for (const best of slotMinima(t.corner)) lb += best;
+  for (const best of slotMinima(t.edge)) lb += best;
   return lb;
 }
 function assignments(tensor, n, budget, counter) {
-  const rowMin = [];
-  for (const slot of tensor) {
-    let best = Number.POSITIVE_INFINITY;
-    for (const ori2 of slot) for (const d of ori2) if (d < best) best = d;
-    rowMin.push(best);
-  }
+  const rowMin = slotMinima(tensor);
   const suffix = new Array(n + 1).fill(0);
   for (let i = n - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + rowMin[i];
   const out = [];
@@ -2301,55 +2295,67 @@ function flatten(faces, rotations) {
   }
   return out;
 }
-function decodeMisread(faces, centreOwner, options = {}) {
-  const maxDistance = whole("maxDistance", options.maxDistance, DEFAULT_MAX_DISTANCE);
-  const counter = { nodes: 0, limit: whole("nodeBudget", options.nodeBudget, DEFAULT_NODE_BUDGET) };
-  const faceCentre = FACES.map((f) => faces[f].colors[4]);
-  const canon = canonicalColors(faceCentre);
+function priceRotations(faces, canon, maxDistance, fixedRotation) {
   const candidates = [];
-  const combos = options.fixedRotation ? 1 : 4096;
+  const combos = fixedRotation ? 1 : 4096;
   for (let combo = 0; combo < combos; combo++) {
     const rotations = [0, 1, 2, 3, 4, 5].map((i) => combo >> 2 * i & 3);
     const bound = lowerBound(buildTensors(flatten(faces, rotations), canon));
     if (bound <= maxDistance) candidates.push({ rotations, bound });
   }
+  return candidates;
+}
+function repairsAt(budget, candidates, faces, canon, centreOwner, counter) {
+  const found = [];
+  for (const { rotations, bound } of candidates) {
+    if (bound > budget) continue;
+    const observed = flatten(faces, rotations);
+    const tensors = buildTensors(observed, canon);
+    const corners = assignments(tensors.corner, 8, budget, counter);
+    if (corners === null) return null;
+    const edges = assignments(tensors.edge, 12, budget, counter);
+    if (edges === null) return null;
+    for (const c of corners) {
+      for (const e of edges) {
+        if (++counter.nodes > counter.limit) return null;
+        if (c.total + e.total !== budget) continue;
+        const repaired = realise(tensors, c, e, observed);
+        if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
+      }
+    }
+  }
+  return found;
+}
+function aggregate(found, budget) {
+  const stickers = /* @__PURE__ */ new Map();
+  const shapes = /* @__PURE__ */ new Set();
+  for (const { rotations, observed, repaired } of found) {
+    shapes.add(repaired.join(","));
+    for (let p = 0; p < 54; p++) {
+      if (repaired[p] === observed[p]) continue;
+      const fi = Math.floor(p / 9);
+      const index = SHOWN_INDEX[rotations[fi]][p % 9];
+      stickers.set(`${fi}:${index}`, { face: FACES[fi], index, to: repaired[p] });
+    }
+  }
+  return {
+    kind: "repair",
+    distance: budget,
+    stickers: [...stickers.values()],
+    unique: shapes.size === 1
+  };
+}
+function decodeMisread(faces, centreOwner, options = {}) {
+  const maxDistance = whole("maxDistance", options.maxDistance, DEFAULT_MAX_DISTANCE);
+  const counter = { nodes: 0, limit: whole("nodeBudget", options.nodeBudget, DEFAULT_NODE_BUDGET) };
+  const faceCentre = FACES.map((f) => faces[f].colors[4]);
+  const canon = canonicalColors(faceCentre);
+  const candidates = priceRotations(faces, canon, maxDistance, options.fixedRotation === true);
   for (let budget = 0; budget <= maxDistance; budget++) {
-    const found = [];
-    for (const { rotations, bound } of candidates) {
-      if (bound > budget) continue;
-      const observed = flatten(faces, rotations);
-      const tensors = buildTensors(observed, canon);
-      const corners = assignments(tensors.corner, 8, budget, counter);
-      if (corners === null) return { kind: "unknown" };
-      const edges = assignments(tensors.edge, 12, budget, counter);
-      if (edges === null) return { kind: "unknown" };
-      for (const c of corners) {
-        for (const e of edges) {
-          if (++counter.nodes > counter.limit) return { kind: "unknown" };
-          if (c.total + e.total !== budget) continue;
-          const repaired = realise(tensors, c, e, observed);
-          if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
-        }
-      }
-    }
+    const found = repairsAt(budget, candidates, faces, canon, centreOwner, counter);
+    if (found === null) return { kind: "unknown" };
     if (found.length === 0) continue;
-    const stickers = /* @__PURE__ */ new Map();
-    const shapes = /* @__PURE__ */ new Set();
-    for (const { rotations, observed, repaired } of found) {
-      shapes.add(repaired.join(","));
-      for (let p = 0; p < 54; p++) {
-        if (repaired[p] === observed[p]) continue;
-        const fi = Math.floor(p / 9);
-        const index = SHOWN_INDEX[rotations[fi]][p % 9];
-        stickers.set(`${fi}:${index}`, { face: FACES[fi], index, to: repaired[p] });
-      }
-    }
-    return {
-      kind: "repair",
-      distance: budget,
-      stickers: [...stickers.values()],
-      unique: shapes.size === 1
-    };
+    return aggregate(found, budget);
   }
   return { kind: "beyond", distance: maxDistance };
 }

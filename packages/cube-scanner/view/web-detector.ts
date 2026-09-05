@@ -23,6 +23,17 @@ export class WebDetector implements Detector {
   private loadedUrl: string | null = null;
   /** A `load()` still in flight, so a second caller waits on it rather than building a rival. */
   private loading: Promise<void> | null = null;
+  /** Which model URL that in-flight load is building — see `load`. */
+  private loadingUrl: string | null = null;
+  /**
+   * Bumped by `dispose()`, so a load still in flight cannot install its runner afterwards.
+   *
+   * A discarded detector that adopts a late runner holds an InferenceSession — a wasm heap or a GPU
+   * device — that nothing can reach to release, which is the leak the whole park exists to close.
+   * It is reachable exactly where the park is: a panel that disconnects during the 1-5 s model load
+   * and a detector that loses the park race are both disposed with a load out.
+   */
+  private loadGeneration = 0;
   private opening: AbortController | null = null;
 
   /**
@@ -95,18 +106,39 @@ export class WebDetector implements Detector {
    *   - PER URL. A parked detector can be handed to an owner with a different `modelUrl`, and
    *     returning early there would silently keep serving the previous owner's model. The old
    *     runner is released before the new one is built.
+   *
+   * AND THE TWO HAVE TO BE ASKED TOGETHER (2026-09-05). The in-flight guard answered every caller
+   * with the pending promise whatever URL they had asked for, so the per-URL rule held only when
+   * nothing overlapped: `retarget()` to model B while A was still loading resolved SUCCESSFULLY
+   * with A installed, and `loadedUrl` then said A while the owner believed B. Reachable through the
+   * park, which is where a detector changes owner and model URL at once. A different URL waits for
+   * the load in flight and then starts its own — and re-asks, since by then the answer may have
+   * arrived or the target may have moved again.
    */
   async load(): Promise<void> {
     const modelUrl = this.modelUrl();
     if (this.run && this.loadedUrl === modelUrl) return;
-    if (this.loading) return this.loading;
-    this.loading = this.loadModel(modelUrl).finally(() => {
-      this.loading = null;
+    if (this.loading) {
+      if (this.loadingUrl === modelUrl) return this.loading;
+      // Someone else's model is loading. Wait it out rather than racing it — two sessions being
+      // created at once is the thing both guards exist to prevent — and its failure is not ours.
+      await this.loading.catch(() => {});
+      return this.load();
+    }
+    const pending = this.loadModel(modelUrl).finally(() => {
+      // Only if it is still OURS: a later load may already have replaced it.
+      if (this.loading === pending) {
+        this.loading = null;
+        this.loadingUrl = null;
+      }
     });
-    return this.loading;
+    this.loading = pending;
+    this.loadingUrl = modelUrl;
+    return pending;
   }
 
   private async loadModel(modelUrl: string): Promise<void> {
+    const generation = this.loadGeneration;
     // onnxruntime-web resolves wasmPaths inconsistently: the .wasm relative to the document, but the
     // dynamically-imported .mjs glue relative to THIS bundle (…/vendor/) — so a relative "./vendor/"
     // doubles into "/vendor/vendor/…mjs" and a relative "./" puts the .wasm at the page root (404).
@@ -119,6 +151,15 @@ export class WebDetector implements Detector {
     // taking inference back onto the main thread with it.
     const ortUrl = `${wasmPaths}ort.mjs`;
     const run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+    if (generation !== this.loadGeneration) {
+      // Disposed while this was out. Installing the runner now would put a live InferenceSession on
+      // a detector nobody holds, which is the leak with no way back — so it is released here and
+      // the caller is told the load "finished" with nothing installed, exactly as `dispose()` left
+      // it. Fire-and-forget for the reason `dispose` is: teardown is synchronous and a failed
+      // release is not something a caller can act on.
+      void run.dispose().catch(() => {});
+      return;
+    }
     const previous = this.run;
     this.run = run;
     this.loadedUrl = modelUrl;
@@ -164,6 +205,12 @@ export class WebDetector implements Detector {
     // handle is part of the type rather than something this file asserts into existence. The cast
     // it replaces also carried an optional `dispose?`, which described a runner this field can no
     // longer hold.
+    // Everything a load in flight was about to install is stale from here — see `loadGeneration`.
+    // The pending promise is forgotten too, so a `load()` after a `dispose()` starts a real one
+    // rather than being answered by a load that will install nothing.
+    this.loadGeneration++;
+    this.loading = null;
+    this.loadingUrl = null;
     const run = this.run;
     this.run = null;
     this.loadedUrl = null;

@@ -236,22 +236,34 @@ function buildTensors(
 }
 
 /**
+ * Per slot, the cheapest (cubie, orientation) choice — ignoring the requirement that every cubie be
+ * used once, which is exactly what makes it a bound rather than an answer.
+ *
+ * ONE implementation, for the two places that need it (2026-09-05). It was written three times —
+ * corners and edges in `lowerBound`, and again as `rowMin` inside `assignments` — and every pruning
+ * decision this module makes rests on the three agreeing: `lowerBound` prices the 4096 rotations
+ * and `assignments` prunes its DFS suffix, so a drift between them would silently discard the true
+ * repair and report a distance that is too large. Identical output to the three it replaces: the
+ * copies seeded `best` at 3, 2 and +Infinity, and a slot always has at least one cubie (8 corners
+ * with 3 orientations, 12 edges with 2), so the minimum is at most 3 or 2 in any case.
+ */
+function slotMinima(tensor: readonly number[][][]): number[] {
+  return tensor.map((slot) => {
+    let best = Number.POSITIVE_INFINITY;
+    for (const ori of slot) for (const d of ori) if (d < best) best = d;
+    return best;
+  });
+}
+
+/**
  * An admissible lower bound on the edits this rotation needs: each slot's cheapest cubie, ignoring
  * the requirement that every cubie be used once. Cheap enough to run on all 4096 rotations, and
  * never an overestimate, so pruning on it cannot discard the true answer.
  */
 function lowerBound(t: Tensors): number {
   let lb = 0;
-  for (const slot of t.corner) {
-    let best = 3;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    lb += best;
-  }
-  for (const slot of t.edge) {
-    let best = 2;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    lb += best;
-  }
+  for (const best of slotMinima(t.corner)) lb += best;
+  for (const best of slotMinima(t.edge)) lb += best;
   return lb;
 }
 
@@ -273,12 +285,7 @@ function assignments(
   budget: number,
   counter: { nodes: number; limit: number },
 ): Assignment[] | null {
-  const rowMin: number[] = [];
-  for (const slot of tensor) {
-    let best = Number.POSITIVE_INFINITY;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    rowMin.push(best);
-  }
+  const rowMin = slotMinima(tensor);
   const suffix = new Array<number>(n + 1).fill(0);
   for (let i = n - 1; i >= 0; i--) suffix[i] = suffix[i + 1]! + rowMin[i]!;
 
@@ -360,6 +367,126 @@ function flatten(faces: Record<Face, ColorFaces>, rotations: number[]): number[]
   return out;
 }
 
+/** One rotation combo worth searching, with the price that let it through pass 1. */
+interface PricedRotation {
+  rotations: number[];
+  bound: number;
+}
+
+/** One repair that came back legal: the rotation it was found under, and both colourings. */
+interface Repair {
+  rotations: number[];
+  observed: number[];
+  repaired: number[];
+}
+
+/**
+ * PASS 1 — price every rotation cheaply, and keep only those that could still win.
+ *
+ * With `fixedRotation` there is exactly one candidate: the faces as the caller supplied them.
+ * Extracted from `decodeMisread` (2026-09-05) with `repairsAt` and `aggregate` below, which between
+ * them took that function from four nested loop levels to one. Nothing decides differently: this is
+ * the same loop over the same 4096 combos with the same admissible bound.
+ */
+function priceRotations(
+  faces: Record<Face, ColorFaces>,
+  canon: { corner: number[][]; edge: number[][] },
+  maxDistance: number,
+  fixedRotation: boolean,
+): PricedRotation[] {
+  const candidates: PricedRotation[] = [];
+  const combos = fixedRotation ? 1 : 4096;
+  for (let combo = 0; combo < combos; combo++) {
+    const rotations = [0, 1, 2, 3, 4, 5].map((i) => (combo >> (2 * i)) & 3);
+    const bound = lowerBound(buildTensors(flatten(faces, rotations), canon));
+    if (bound <= maxDistance) candidates.push({ rotations, bound });
+  }
+  return candidates;
+}
+
+/**
+ * PASS 2, at ONE budget — every solvable repair costing exactly `budget` edits, or null when the
+ * work budget ran out.
+ *
+ * `null` is the caller's `unknown`, and it is the whole reason this returns a union rather than a
+ * list: an exhausted search that answered with the repairs it happened to find would be a distance
+ * bought with work the caller refused to lend. The counter is passed IN and shared across every
+ * budget and every rotation, because `nodeBudget` is documented as a backstop on the WORK the whole
+ * decode does, not on one pass of it.
+ */
+function repairsAt(
+  budget: number,
+  candidates: readonly PricedRotation[],
+  faces: Record<Face, ColorFaces>,
+  canon: { corner: number[][]; edge: number[][] },
+  centreOwner: Map<number, Face>,
+  counter: { nodes: number; limit: number },
+): Repair[] | null {
+  const found: Repair[] = [];
+  for (const { rotations, bound } of candidates) {
+    if (bound > budget) continue;
+    const observed = flatten(faces, rotations);
+    const tensors = buildTensors(observed, canon);
+    const corners = assignments(tensors.corner, 8, budget, counter);
+    if (corners === null) return null;
+    const edges = assignments(tensors.edge, 12, budget, counter);
+    if (edges === null) return null;
+    for (const c of corners) {
+      for (const e of edges) {
+        // Charged to the SAME counter as the search that produced these lists. `nodeBudget` is
+        // documented as a hard backstop on the WORK, and it used to cover only the two DFS
+        // walks — leaving |corners| x |edges| pairings, each with a `realise` and a cubejs
+        // `isLegal`, outside it and on the main thread.
+        //
+        // Every assignment returned costs at least one DFS node, so |corners| and |edges| are
+        // each at most `nodes` and the product is at most `nodes^2` — quadratic in the very
+        // quantity the budget is supposed to bound. It is not theoretical: on the reading
+        // `misread-decode.test.ts` pins, the DFS spends 3,404 nodes and the pairing loop then
+        // wants 3,968 more, so at a budget of 3,500 removing this line turns an honest
+        // `unknown` into a distance-4 answer bought with work the caller refused to lend.
+        // (Three misreads on a scrambled cube do NOT show it — the DFS dominates there, which
+        // is why the first search for a witness came back empty and the comment that went with
+        // it claimed more than the search had established.)
+        if (++counter.nodes > counter.limit) return null;
+        if (c.total + e.total !== budget) continue;
+        const repaired = realise(tensors, c, e, observed);
+        if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * The answer, from the repairs one budget produced: every sticker some minimum repair changes, in
+ * the coordinates the user actually taps.
+ *
+ * Keyed by POSITION, so where two tied repairs disagree about the colour to write, the last one
+ * wins. That is safe only because the one caller allowed to act on `to` — `diagnoseMisread`, for an
+ * accusation — requires `unique` and a single sticker, i.e. exactly the case where no disagreement
+ * can exist. Everywhere else `stickers` is read for its FACES, which the merge preserves. Widening
+ * who may read `to` means giving this a set, not a winner.
+ */
+function aggregate(found: readonly Repair[], budget: number): MisreadDecode {
+  const stickers = new Map<string, DecodedSticker>();
+  const shapes = new Set<string>();
+  for (const { rotations, observed, repaired } of found) {
+    shapes.add(repaired.join(','));
+    for (let p = 0; p < 54; p++) {
+      if (repaired[p] === observed[p]) continue;
+      const fi = Math.floor(p / 9);
+      const index = SHOWN_INDEX[rotations[fi]!]![p % 9]!;
+      stickers.set(`${fi}:${index}`, { face: FACES[fi]!, index, to: repaired[p]! });
+    }
+  }
+  return {
+    kind: 'repair',
+    distance: budget,
+    stickers: [...stickers.values()],
+    unique: shapes.size === 1,
+  };
+}
+
 /**
  * Find the fewest sticker changes that turn this reading into a legal cube.
  *
@@ -385,76 +512,14 @@ export function decodeMisread(
   const faceCentre = FACES.map((f) => faces[f]!.colors[4]!);
   const canon = canonicalColors(faceCentre);
 
-  // Pass 1 — price every rotation cheaply, and keep only those that could still win. With
-  // `fixedRotation` there is exactly one candidate: the faces as the caller supplied them.
-  const candidates: { rotations: number[]; bound: number }[] = [];
-  const combos = options.fixedRotation ? 1 : 4096;
-  for (let combo = 0; combo < combos; combo++) {
-    const rotations = [0, 1, 2, 3, 4, 5].map((i) => (combo >> (2 * i)) & 3);
-    const bound = lowerBound(buildTensors(flatten(faces, rotations), canon));
-    if (bound <= maxDistance) candidates.push({ rotations, bound });
-  }
+  const candidates = priceRotations(faces, canon, maxDistance, options.fixedRotation === true);
 
   // Pass 2 — widen the budget until some rotation yields a repair that is actually solvable.
   for (let budget = 0; budget <= maxDistance; budget++) {
-    const found: { rotations: number[]; observed: number[]; repaired: number[] }[] = [];
-    for (const { rotations, bound } of candidates) {
-      if (bound > budget) continue;
-      const observed = flatten(faces, rotations);
-      const tensors = buildTensors(observed, canon);
-      const corners = assignments(tensors.corner, 8, budget, counter);
-      if (corners === null) return { kind: 'unknown' };
-      const edges = assignments(tensors.edge, 12, budget, counter);
-      if (edges === null) return { kind: 'unknown' };
-      for (const c of corners) {
-        for (const e of edges) {
-          // Charged to the SAME counter as the search that produced these lists. `nodeBudget` is
-          // documented as a hard backstop on the WORK, and it used to cover only the two DFS
-          // walks — leaving |corners| x |edges| pairings, each with a `realise` and a cubejs
-          // `isLegal`, outside it and on the main thread.
-          //
-          // Every assignment returned costs at least one DFS node, so |corners| and |edges| are
-          // each at most `nodes` and the product is at most `nodes^2` — quadratic in the very
-          // quantity the budget is supposed to bound. It is not theoretical: on the reading
-          // `misread-decode.test.ts` pins, the DFS spends 3,404 nodes and the pairing loop then
-          // wants 3,968 more, so at a budget of 3,500 removing this line turns an honest
-          // `unknown` into a distance-4 answer bought with work the caller refused to lend.
-          // (Three misreads on a scrambled cube do NOT show it — the DFS dominates there, which
-          // is why the first search for a witness came back empty and the comment that went with
-          // it claimed more than the search had established.)
-          if (++counter.nodes > counter.limit) return { kind: 'unknown' };
-          if (c.total + e.total !== budget) continue;
-          const repaired = realise(tensors, c, e, observed);
-          if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
-        }
-      }
-    }
+    const found = repairsAt(budget, candidates, faces, canon, centreOwner, counter);
+    if (found === null) return { kind: 'unknown' };
     if (found.length === 0) continue;
-
-    // Every sticker some minimum repair changes, in the coordinates the user taps.
-    //
-    // Keyed by POSITION, so where two tied repairs disagree about the colour to write, the last
-    // one wins. That is safe only because the one caller allowed to act on `to` — `diagnose`, for
-    // an accusation — requires `unique` and a single sticker, i.e. exactly the case where no
-    // disagreement can exist. Everywhere else `stickers` is read for its FACES, which the merge
-    // preserves. Widening who may read `to` means giving this a set, not a winner.
-    const stickers = new Map<string, DecodedSticker>();
-    const shapes = new Set<string>();
-    for (const { rotations, observed, repaired } of found) {
-      shapes.add(repaired.join(','));
-      for (let p = 0; p < 54; p++) {
-        if (repaired[p] === observed[p]) continue;
-        const fi = Math.floor(p / 9);
-        const index = SHOWN_INDEX[rotations[fi]!]![p % 9]!;
-        stickers.set(`${fi}:${index}`, { face: FACES[fi]!, index, to: repaired[p]! });
-      }
-    }
-    return {
-      kind: 'repair',
-      distance: budget,
-      stickers: [...stickers.values()],
-      unique: shapes.size === 1,
-    };
+    return aggregate(found, budget);
   }
   return { kind: 'beyond', distance: maxDistance };
 }

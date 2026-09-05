@@ -39,6 +39,10 @@ class GatedDetector extends StubDetector {
     await new Promise<void>((res) => this.gates.set(id, res));
     // Deliberately no abort-on-stop: `WebDetector` has one, `NativeDetector` had to be given one,
     // and a fake kinder than the weakest implementation cannot catch an ordering bug.
+    // `failPinned` is honoured AFTER the gate, so a test can supersede an attempt that is already
+    // inside the detector — the only way left to reach the fallback's superseded branch now that a
+    // queued attempt whose token was cancelled never enters at all.
+    if (this.failPinned && opts.deviceId !== undefined) throw new Error('that camera is gone');
     this.device = { deviceId: id, label: id };
   }
   /** Let the most recently entered pending open finish, and only that one. */
@@ -164,6 +168,36 @@ describe('CameraSession — who owns the detector', () => {
     expect(s.chosen).toBe(injected);
     expect(s.runtime).toBe('native');
   });
+
+  it('a probe that lands after park() is not installed on the session that left it', async () => {
+    // `park()` cleared the cached PROMISE and left the CHOICE alone, so a `pickDetector` probe
+    // still in flight could land afterwards and install its detector on a session that had already
+    // given its one away — and `chosen` and `detectorPromise` then pointed at different objects,
+    // with the loser holding a camera and a model nothing could reach to release.
+    //
+    // Reachable exactly as it reads: `<ai-scan-panel>` disconnects during the first probe (the
+    // scan screen left before the native plugin answered) and the next mount asks again.
+    const answer: ((v: unknown) => void)[] = [];
+    (globalThis as TauriGlobal).__TAURI__ = {
+      core: { invoke: () => new Promise<unknown>((res) => answer.push(res)) },
+    };
+    const s = new CameraSession();
+    const first = s.ensureDetector(video, modelUrl);
+    s.park(); // disconnectedCallback, with the probe still out
+    const second = s.ensureDetector(video, modelUrl);
+    answer[1]!(false); // the re-mount's probe lands first and wins
+    const live = await second;
+    expect(s.chosen).toBe(live);
+
+    answer[0]!(false); // …and the abandoned one lands afterwards
+    // The loser hands back the live detector rather than installing itself, so nothing that asks
+    // this session for a detector can be given the one it gave away.
+    await expect(first).resolves.toBe(live);
+    expect(s.chosen).toBe(live);
+    await expect(s.ensureDetector(video, modelUrl)).resolves.toBe(live);
+    // Deliberately NOT parked on the way out: `parkDetector` is a page-wide slot, and a detector
+    // left in it would be handed to whatever ran next in this file.
+  });
 });
 
 describe('CameraSession.open', () => {
@@ -191,40 +225,76 @@ describe('CameraSession.open', () => {
     expect(det.device?.deviceId).toBe('good');
   });
 
-  it('a superseded attempt rethrows rather than opening some other camera', async () => {
+  it('an attempt superseded MID-open rethrows rather than opening some other camera', async () => {
     // The attempt that superseded this one is opening its own camera. Falling back here would
     // open a THIRD one behind its back.
+    //
+    // MID-open since 2026-09-05: an attempt superseded before it even reaches the detector now
+    // asks for no camera at all (the case below), so the supersession has to land while `use()` is
+    // out — which is also the only way it happens in the app, a permission prompt answered after a
+    // stop().
     const s = new CameraSession();
-    const det = new StubDetector();
+    const det = new GatedDetector();
     det.failPinned = true;
     const token = s.beginAttempt();
-    s.beginAttempt(); // superseded before the open returns
-    await expect(s.open(det, { deviceId: 'gone' }, token)).rejects.toThrow(/that camera is gone/);
+    const opening = s.open(det, { deviceId: 'gone' }, token);
+    await Promise.resolve();
+    expect(det.entered).toEqual(['gone']); // inside the detector before it was superseded
+    s.beginAttempt();
+    det.release('gone');
+    await expect(opening).rejects.toThrow(/that camera is gone/);
+    // No fallback open behind the newer attempt's back…
+    expect(det.entered).toEqual(['gone']);
     // …and it DOES release on the way out. That is the opposite of what this asserted while opens
     // ran concurrently, and it flipped for a reason: inside the chain nothing else is running, so
     // a release here can only release what this attempt opened.
     expect(det.stops).toBe(1);
   });
 
-  it('opens queue behind the ACTUAL latest, not behind a snapshot of one', async () => {
-    // Three attempts, settling out of order. Awaiting a SNAPSHOT of the pending open serialises
-    // two and not three: with A pending, B and C both snapshot A and both start the moment A
-    // settles, racing each other exactly as before. Measured on that version — arriving A, B, C
-    // and settling A, C, B — the detector ended on B while C was the current attempt.
+  it('an open cancelled while it QUEUED asks the platform for no camera at all', async () => {
+    // A queued open used to run regardless of whether its token was still current, so pressing
+    // stop while one attempt sat behind another asked for a camera AFTER the user stopped the
+    // scanner — a lens that flicks on and straight back off through the finally — and made the
+    // attempt that IS current queue behind a permission wait nobody was waiting for.
     const s = new CameraSession();
     const det = new GatedDetector();
-    const tA = s.beginAttempt();
-    const a = s.open(det, { deviceId: 'A' }, tA);
+    const first = s.beginAttempt();
+    const a = s.open(det, { deviceId: 'A' }, first);
     await Promise.resolve();
-    const tB = s.beginAttempt();
-    const b = s.open(det, { deviceId: 'B' }, tB);
-    const tC = s.beginAttempt();
-    const c = s.open(det, { deviceId: 'C' }, tC);
+    const second = s.beginAttempt();
+    const b = s.open(det, { deviceId: 'B' }, second);
+    s.close(); // the user pressed stop, or the panel went away, while A's prompt was still up
+    det.release('A');
+    await Promise.allSettled([a, b]);
+    // B never touched the platform. Before this, `entered` was ['A', 'B'].
+    expect(det.entered).toEqual(['A']);
+    expect(det.device).toBeNull();
+    expect(s.device).toBeNull();
+  });
+
+  it('opens queue behind the ACTUAL latest, not behind a snapshot of one', async () => {
+    // Three overlapping opens, settling out of order. Awaiting a SNAPSHOT of the pending open
+    // serialises two and not three: with A pending, B and C both snapshot A and both start the
+    // moment A settles, racing each other exactly as before. Measured on that version — arriving
+    // A, B, C and settling A, C, B — the detector ended on B while C was the last one queued.
+    //
+    // ONE attempt token for all three, since 2026-09-05. Three `beginAttempt()`s would supersede
+    // each other, and a queued open whose token is superseded now enters nothing at all — leaving
+    // only A and C to order, which a snapshot barrier passes just as happily. The claim here is
+    // about the CHAIN, so the tokens are held current and `device` is what discriminates: under a
+    // barrier, C is released first and B lands last, so the camera ends on B.
+    const s = new CameraSession();
+    const det = new GatedDetector();
+    const token = s.beginAttempt();
+    const a = s.open(det, { deviceId: 'A' }, token);
+    await Promise.resolve();
+    const b = s.open(det, { deviceId: 'B' }, token);
+    const c = s.open(det, { deviceId: 'C' }, token);
     await Promise.resolve();
     // Release NEWEST-first, repeatedly. Under a real chain only one open is ever inside the
     // detector, so this degenerates to arrival order and nothing can overtake. Under a snapshot
     // barrier, B and C are both inside once A settles — and this releases C before B, so the
-    // detector ends on B while C is current, which is the measured failure.
+    // detector ends on B, which is the measured failure.
     for (let i = 0; i < 6; i++) {
       det.releaseNewestFirst();
       await new Promise((r) => setTimeout(r, 1));
@@ -232,8 +302,8 @@ describe('CameraSession.open', () => {
     await Promise.allSettled([a, b, c]);
     // Only one open ran at a time, in arrival order…
     expect(det.entered).toEqual(['A', 'B', 'C']);
-    // …so the last one to touch the camera is the current attempt's, whatever settled when.
-    expect(s.current(tC)).toBe(true);
+    // …so the last one to touch the camera is the last one queued, whatever settled when.
+    expect(s.current(token)).toBe(true);
     expect(det.device?.deviceId).toBe('C');
   });
 

@@ -42,7 +42,47 @@ interface FakeRegistry {
     outLength?: number | null;
     noInputNames?: boolean;
     webgpuDeclines?: boolean;
+    proxiedCreateFails?: boolean;
   };
+}
+
+/**
+ * A `document` that can be watched as well as polled.
+ *
+ * The existing hidden-page case assigns a bare `{ visibilityState }`, which is enough to model a
+ * tab that is hidden the whole time. It cannot model the one this file needed next: a tab that
+ * goes hidden and comes BACK inside a single awaited probe, where every poll reads "visible" and
+ * only the event says otherwise.
+ */
+function watchableDocument(): {
+  visibilityState: string;
+  listeners: Set<() => void>;
+  addEventListener(type: string, fn: () => void): void;
+  removeEventListener(type: string, fn: () => void): void;
+  blink(): void;
+} {
+  const listeners = new Set<() => void>();
+  const fire = (): void => {
+    for (const fn of [...listeners]) fn();
+  };
+  const doc = {
+    visibilityState: 'visible',
+    listeners,
+    addEventListener(_type: string, fn: () => void): void {
+      listeners.add(fn);
+    },
+    removeEventListener(_type: string, fn: () => void): void {
+      listeners.delete(fn);
+    },
+    /** Hidden and back again, as a tab that is briefly backgrounded really is. */
+    blink(): void {
+      doc.visibilityState = 'hidden';
+      fire();
+      doc.visibilityState = 'visible';
+      fire();
+    },
+  };
+  return doc;
 }
 
 const registry = (): FakeRegistry => (globalThis as { __fakeOrt?: FakeRegistry }).__fakeOrt!;
@@ -134,6 +174,90 @@ describe('createModelRunner — the GPU verdict', () => {
     expect(instances()[1]?.proxy).toBe(true);
     // Detected BEFORE the warm-up: the abandoned session must not have paid for shader compilation.
     expect(instances()[0]?.runs).toBe(0);
+  });
+
+  it('does not read a PREVIOUS session’s GPU device as this one’s', async () => {
+    // `ort.env` is global to the runtime MODULE and `createModelRunner` caches modules by URL, so
+    // a device left behind by an earlier GPU session answers for a later runner on the same page.
+    // A second runner whose WebGPU quietly declines then passed the check on the first one's
+    // evidence — and ran wasm UNPROXIED on the page's thread, which is the one arrangement this
+    // check exists to prevent. Two panels alive at once, or a rebuilt one, is how a page gets here.
+    withAdapter(true);
+    const ortUrl = freshOrtUrl();
+    const first = await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+    expect(first.providers).toEqual(['webgpu', 'wasm']); // a genuine GPU session: device now set
+    expect(instances()).toHaveLength(1);
+
+    registry().model = { webgpuDeclines: true };
+    const second = await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+    expect(second.providers).toEqual(['wasm']);
+    const [direct, proxied] = instances();
+    expect(direct?.sessions).toBe(2); // both GPU asks went to the same, direct module…
+    expect(direct?.released).toBe(1); // …and the second one was released, not kept unproxied
+    expect(proxied?.proxy).toBe(true);
+  });
+
+  it('releases the abandoned session exactly once when the rebuild itself fails', async () => {
+    // Both fallback branches released the session and then rebuilt INSIDE `owning`, so a rebuild
+    // that rejects fell into its catch and released the same session a second time. Measured
+    // release counts on the abandoned module before this: [2, 1].
+    withAdapter(true);
+    const noted = vi.spyOn(console, 'info').mockImplementation(() => {});
+    registry().nextRunMs = 5;
+    registry().model = { proxiedCreateFails: true };
+    try {
+      await expect(
+        createModelRunner('model.onnx', {
+          ortUrl: freshOrtUrl(),
+          gpuBudgetMs: 1,
+          numThreads: 1,
+        }),
+      ).rejects.toThrow(/wasm backend would not start/);
+      const [gpuModule, wasmModule] = instances();
+      expect(gpuModule?.released).toBe(1);
+      // The rebuild really was attempted, on the proxied module, and left nothing of its own.
+      expect(wasmModule?.proxy).toBe(true);
+      expect(wasmModule?.sessions).toBe(0);
+      expect(wasmModule?.released).toBe(0);
+    } finally {
+      noted.mockRestore();
+    }
+  });
+
+  it('discards the verdict when the page blinked hidden inside one sample', async () => {
+    // `visibilityState` is a SNAPSHOT. A tab that goes hidden during an awaited probe and is back
+    // before the sample is checked reads as visible at every point the polls look, while the run
+    // they just timed was throttled the whole way — and the downgrade is permanent for the
+    // runner's life. The event fires on both edges, which is the evidence the polls cannot have.
+    withAdapter(true);
+    const g = globalThis as { document?: unknown };
+    const prior = g.document;
+    const doc = watchableDocument();
+    g.document = doc;
+    // Blink during the FIRST TIMED sample: run 1 is the warm-up, which is not timed and runs
+    // before the listener exists.
+    let runs = 0;
+    Object.defineProperty(registry(), 'nextRunMs', {
+      configurable: true,
+      get: () => {
+        runs++;
+        if (runs === 2) doc.blink();
+        return 5;
+      },
+    });
+    try {
+      const runner = await createModelRunner('model.onnx', {
+        ortUrl: freshOrtUrl(),
+        gpuBudgetMs: 1, // a budget every run misses — and which must not be consulted here
+        numThreads: 1,
+      });
+      expect(runner.providers).toEqual(['webgpu', 'wasm']);
+      expect(instances()).toHaveLength(1);
+      expect(runs).toBeGreaterThan(1); // the blink really happened inside a timed run
+      expect(doc.listeners.size).toBe(0); // …and the listener does not outlive the sampling
+    } finally {
+      g.document = prior;
+    }
   });
 
   it('declines to judge a GPU while the page is hidden', async () => {

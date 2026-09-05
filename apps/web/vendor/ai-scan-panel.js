@@ -2212,27 +2212,21 @@ function buildTensors(colors54, canon) {
     edgeColors: canon.edge
   };
 }
+function slotMinima(tensor) {
+  return tensor.map((slot) => {
+    let best = Number.POSITIVE_INFINITY;
+    for (const ori of slot) for (const d of ori) if (d < best) best = d;
+    return best;
+  });
+}
 function lowerBound(t) {
   let lb = 0;
-  for (const slot of t.corner) {
-    let best = 3;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    lb += best;
-  }
-  for (const slot of t.edge) {
-    let best = 2;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    lb += best;
-  }
+  for (const best of slotMinima(t.corner)) lb += best;
+  for (const best of slotMinima(t.edge)) lb += best;
   return lb;
 }
 function assignments(tensor, n, budget, counter) {
-  const rowMin = [];
-  for (const slot of tensor) {
-    let best = Number.POSITIVE_INFINITY;
-    for (const ori2 of slot) for (const d of ori2) if (d < best) best = d;
-    rowMin.push(best);
-  }
+  const rowMin = slotMinima(tensor);
   const suffix = new Array(n + 1).fill(0);
   for (let i = n - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + rowMin[i];
   const out = [];
@@ -2302,55 +2296,67 @@ function flatten(faces, rotations) {
   }
   return out;
 }
-function decodeMisread(faces, centreOwner, options = {}) {
-  const maxDistance = whole("maxDistance", options.maxDistance, DEFAULT_MAX_DISTANCE);
-  const counter = { nodes: 0, limit: whole("nodeBudget", options.nodeBudget, DEFAULT_NODE_BUDGET) };
-  const faceCentre = FACES.map((f) => faces[f].colors[4]);
-  const canon = canonicalColors(faceCentre);
+function priceRotations(faces, canon, maxDistance, fixedRotation) {
   const candidates = [];
-  const combos = options.fixedRotation ? 1 : 4096;
+  const combos = fixedRotation ? 1 : 4096;
   for (let combo = 0; combo < combos; combo++) {
     const rotations = [0, 1, 2, 3, 4, 5].map((i) => combo >> 2 * i & 3);
     const bound = lowerBound(buildTensors(flatten(faces, rotations), canon));
     if (bound <= maxDistance) candidates.push({ rotations, bound });
   }
+  return candidates;
+}
+function repairsAt(budget, candidates, faces, canon, centreOwner, counter) {
+  const found = [];
+  for (const { rotations, bound } of candidates) {
+    if (bound > budget) continue;
+    const observed = flatten(faces, rotations);
+    const tensors = buildTensors(observed, canon);
+    const corners = assignments(tensors.corner, 8, budget, counter);
+    if (corners === null) return null;
+    const edges = assignments(tensors.edge, 12, budget, counter);
+    if (edges === null) return null;
+    for (const c of corners) {
+      for (const e of edges) {
+        if (++counter.nodes > counter.limit) return null;
+        if (c.total + e.total !== budget) continue;
+        const repaired = realise(tensors, c, e, observed);
+        if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
+      }
+    }
+  }
+  return found;
+}
+function aggregate(found, budget) {
+  const stickers = /* @__PURE__ */ new Map();
+  const shapes = /* @__PURE__ */ new Set();
+  for (const { rotations, observed, repaired } of found) {
+    shapes.add(repaired.join(","));
+    for (let p = 0; p < 54; p++) {
+      if (repaired[p] === observed[p]) continue;
+      const fi = Math.floor(p / 9);
+      const index = SHOWN_INDEX[rotations[fi]][p % 9];
+      stickers.set(`${fi}:${index}`, { face: FACES[fi], index, to: repaired[p] });
+    }
+  }
+  return {
+    kind: "repair",
+    distance: budget,
+    stickers: [...stickers.values()],
+    unique: shapes.size === 1
+  };
+}
+function decodeMisread(faces, centreOwner, options = {}) {
+  const maxDistance = whole("maxDistance", options.maxDistance, DEFAULT_MAX_DISTANCE);
+  const counter = { nodes: 0, limit: whole("nodeBudget", options.nodeBudget, DEFAULT_NODE_BUDGET) };
+  const faceCentre = FACES.map((f) => faces[f].colors[4]);
+  const canon = canonicalColors(faceCentre);
+  const candidates = priceRotations(faces, canon, maxDistance, options.fixedRotation === true);
   for (let budget = 0; budget <= maxDistance; budget++) {
-    const found = [];
-    for (const { rotations, bound } of candidates) {
-      if (bound > budget) continue;
-      const observed = flatten(faces, rotations);
-      const tensors = buildTensors(observed, canon);
-      const corners = assignments(tensors.corner, 8, budget, counter);
-      if (corners === null) return { kind: "unknown" };
-      const edges = assignments(tensors.edge, 12, budget, counter);
-      if (edges === null) return { kind: "unknown" };
-      for (const c of corners) {
-        for (const e of edges) {
-          if (++counter.nodes > counter.limit) return { kind: "unknown" };
-          if (c.total + e.total !== budget) continue;
-          const repaired = realise(tensors, c, e, observed);
-          if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
-        }
-      }
-    }
+    const found = repairsAt(budget, candidates, faces, canon, centreOwner, counter);
+    if (found === null) return { kind: "unknown" };
     if (found.length === 0) continue;
-    const stickers = /* @__PURE__ */ new Map();
-    const shapes = /* @__PURE__ */ new Set();
-    for (const { rotations, observed, repaired } of found) {
-      shapes.add(repaired.join(","));
-      for (let p = 0; p < 54; p++) {
-        if (repaired[p] === observed[p]) continue;
-        const fi = Math.floor(p / 9);
-        const index = SHOWN_INDEX[rotations[fi]][p % 9];
-        stickers.set(`${fi}:${index}`, { face: FACES[fi], index, to: repaired[p] });
-      }
-    }
-    return {
-      kind: "repair",
-      distance: budget,
-      stickers: [...stickers.values()],
-      unique: shapes.size === 1
-    };
+    return aggregate(found, budget);
   }
   return { kind: "beyond", distance: maxDistance };
 }
@@ -2462,18 +2468,21 @@ function refusalDiagnosis(faces, options) {
   if (options.diagnose === false) return { misreadCount: null };
   return diagnoseMisread(faces, { fixedRotation: options.fixedRotation });
 }
+function checkedCapture(label, f) {
+  if (f?.colors.length !== 9 || f.confidence.length !== 9) {
+    throw new Error(`${label}: expected 9 colours + 9 confidences`);
+  }
+  for (const c of f.confidence) {
+    if (!Number.isFinite(c) || c < 0 || c > 1) {
+      throw new Error(`${label}: confidence ${c} is not a number in [0, 1]`);
+    }
+  }
+  return f;
+}
 function buildCentreOwner(faces) {
   const centreOwner = /* @__PURE__ */ new Map();
   for (const face of FACES) {
-    const f = faces[face];
-    if (f?.colors.length !== 9 || f.confidence.length !== 9) {
-      throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
-    }
-    for (const c of f.confidence) {
-      if (!Number.isFinite(c) || c < 0 || c > 1) {
-        throw new Error(`face ${face}: confidence ${c} is not a number in [0, 1]`);
-      }
-    }
+    const f = checkedCapture(`face ${face}`, faces[face]);
     const centre = f.colors[4];
     if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
     centreOwner.set(centre, face);
@@ -2510,6 +2519,65 @@ function assemblePainted(faces, threshold = LOW_CONFIDENCE_THRESHOLD, options = 
   const conf = FACES.flatMap((f) => faces[f].confidence);
   return { facelets, valid: true, ...summariseConfidence(conf, threshold) };
 }
+function narrowByConfirmations(faces, all, confirmed) {
+  const confirmedFaces = FACES.filter((f) => confirmed[f]);
+  const allowed = /* @__PURE__ */ new Map();
+  for (const face of confirmedFaces) {
+    const capture = checkedCapture(`confirmation of ${face}`, confirmed[face]);
+    const rots = matchingRotations(faces[face], capture);
+    if (rots.size === 0) {
+      return {
+        ok: false,
+        refusal: reject(
+          "that side read differently this time \u2014 checking again with the fresh read",
+          {
+            reread: face,
+            confirm: { face, up: TOP_NEIGHBOUR[face] }
+          }
+        )
+      };
+    }
+    allowed.set(face, rots);
+  }
+  const candidates = all.map(([fl, combos]) => [
+    fl,
+    combos.filter(
+      (c) => confirmedFaces.every((face) => allowed.get(face).has(c[FACES.indexOf(face)]))
+    )
+  ]).filter(([, combos]) => combos.length > 0);
+  if (candidates.length === 0) {
+    const last = confirmedFaces[confirmedFaces.length - 1];
+    return {
+      ok: false,
+      refusal: reject("those two looks disagree \u2014 one was held the wrong way up; try again", {
+        mismatch: true,
+        confirm: { face: last, up: TOP_NEIGHBOUR[last] }
+      })
+    };
+  }
+  return { ok: true, confirmedFaces, allowed, candidates };
+}
+function verifySurvivor(all, facelets, narrowed, confirmed) {
+  const { confirmedFaces, allowed } = narrowed;
+  const contradictions = (candidate) => confirmedFaces.filter((face) => {
+    const fi = FACES.indexOf(face);
+    return candidate.every((c) => !allowed.get(face).has(c[fi]));
+  }).length;
+  const weak = all.filter(([fl, c]) => fl !== facelets && contradictions(c) < 2);
+  if (weak.length === 0) return null;
+  const check = pickVerification(all.find(([fl]) => fl === facelets)[1], weak, confirmed);
+  if (check) {
+    return reject("one more look to be sure \u2014 a single look could be held wrong", {
+      confirm: check
+    });
+  }
+  return reject(
+    "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
+    {
+      ambiguous: true
+    }
+  );
+}
 function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
   const centreOwner = buildCentreOwner(faces);
   if (!(centreOwner instanceof Map)) return centreOwner;
@@ -2520,31 +2588,9 @@ function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed =
       refusalDiagnosis(faces, options)
     );
   }
-  const confirmedFaces = FACES.filter((f) => confirmed[f]);
-  const allowed = /* @__PURE__ */ new Map();
-  for (const face of confirmedFaces) {
-    const rots = matchingRotations(faces[face], confirmed[face]);
-    if (rots.size === 0) {
-      return reject("that side read differently this time \u2014 checking again with the fresh read", {
-        reread: face,
-        confirm: { face, up: TOP_NEIGHBOUR[face] }
-      });
-    }
-    allowed.set(face, rots);
-  }
-  const candidates = all.map(([fl, combos2]) => [
-    fl,
-    combos2.filter(
-      (c) => confirmedFaces.every((face) => allowed.get(face).has(c[FACES.indexOf(face)]))
-    )
-  ]).filter(([, combos2]) => combos2.length > 0);
-  if (candidates.length === 0) {
-    const last = confirmedFaces[confirmedFaces.length - 1];
-    return reject("those two looks disagree \u2014 one was held the wrong way up; try again", {
-      mismatch: true,
-      confirm: { face: last, up: TOP_NEIGHBOUR[last] }
-    });
-  }
+  const narrowed = narrowByConfirmations(faces, all, confirmed);
+  if (!narrowed.ok) return narrowed.refusal;
+  const candidates = narrowed.candidates;
   if (candidates.length > 1) {
     const confirm = pickConfirm(candidates, confirmed);
     if (confirm) {
@@ -2559,23 +2605,8 @@ function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed =
     );
   }
   const [facelets, combos] = candidates[0];
-  const contradictions = (candidate) => confirmedFaces.filter((face) => {
-    const fi = FACES.indexOf(face);
-    return candidate.every((c) => !allowed.get(face).has(c[fi]));
-  }).length;
-  const weak = all.filter(([fl, c]) => fl !== facelets && contradictions(c) < 2);
-  if (weak.length > 0) {
-    const check = pickVerification(all.find(([fl]) => fl === facelets)[1], weak, confirmed);
-    if (check) {
-      return reject("one more look to be sure \u2014 a single look could be held wrong", {
-        confirm: check
-      });
-    }
-    return reject(
-      "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
-      { ambiguous: true }
-    );
-  }
+  const unverified = verifySurvivor(all, facelets, narrowed, confirmed);
+  if (unverified) return unverified;
   const chosen = combos[0];
   const conf = [];
   for (let fi = 0; fi < 6; fi++) {
@@ -3048,16 +3079,24 @@ function defaultThreadCount(isolated = typeof globalThis.crossOriginIsolated ===
   if (!isolated) return 1;
   return Math.max(1, Math.min(cores - 2, 6));
 }
-function gpuTookTheWork(ort) {
+function gpuTookTheWork(ort, before) {
   const webgpu = ort.env.webgpu;
   if (typeof webgpu !== "object" || webgpu === null) return true;
-  return Boolean(webgpu.device);
+  const device = webgpu.device;
+  if (!device) return false;
+  return device !== before;
+}
+function webgpuDevice(ort) {
+  return ort.env.webgpu?.device;
 }
 async function owning(session, work) {
+  let owned = true;
   try {
-    return await work();
+    return await work(() => {
+      owned = false;
+    });
   } catch (err) {
-    await session.release().catch(() => {
+    if (owned) await session.release().catch(() => {
     });
     throw err;
   }
@@ -3108,23 +3147,29 @@ async function createModelRunner(modelUrl, opts = {}) {
   const gpu = usesGpu(executionProviders);
   const ortUrl = opts.ortUrl ?? "./ort.mjs";
   const ort = await loadRuntime(ortUrl, !gpu);
+  let deviceBefore;
   const session = await serialise(ort, async () => {
     ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
     ort.env.wasm.proxy = !gpu;
     ort.env.wasm.wasmPaths = opts.wasmPaths ?? "./";
+    deviceBefore = webgpuDevice(ort);
     return ort.InferenceSession.create(modelUrl, {
       executionProviders,
       graphOptimizationLevel: "all"
     });
   });
-  return owning(session, async () => {
-    if (gpu && chosenHere && !gpuTookTheWork(ort)) {
-      console.info(
-        "[cubus] WebGPU did not take this model \u2014 using the wasm runtime, off the page thread"
-      );
+  return owning(session, async (relinquish) => {
+    const rebuildOnWasm = async (why) => {
+      console.info(why);
+      relinquish();
       await session.release().catch(() => {
       });
       return createModelRunner(modelUrl, { ...opts, executionProviders: ["wasm"] });
+    };
+    if (gpu && chosenHere && !gpuTookTheWork(ort, deviceBefore)) {
+      return rebuildOnWasm(
+        "[cubus] WebGPU did not take this model \u2014 using the wasm runtime, off the page thread"
+      );
     }
     const inputName = session.inputNames[0];
     const outputName = session.outputNames[0];
@@ -3136,22 +3181,28 @@ async function createModelRunner(modelUrl, opts = {}) {
       await probe();
       const hidden = () => globalThis.document?.visibilityState === "hidden";
       if (gpu && chosenHere && !hidden()) {
+        let wentHidden = false;
+        const noteHidden = () => {
+          if (hidden()) wentHidden = true;
+        };
+        globalThis.document?.addEventListener?.("visibilitychange", noteHidden);
         let best = Number.POSITIVE_INFINITY;
         let watched = true;
-        for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
-          const started = performance.now();
-          await probe();
-          if (hidden()) watched = false;
-          else best = Math.min(best, performance.now() - started);
+        try {
+          for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
+            const started = performance.now();
+            await probe();
+            if (hidden() || wentHidden) watched = false;
+            else best = Math.min(best, performance.now() - started);
+          }
+        } finally {
+          globalThis.document?.removeEventListener?.("visibilitychange", noteHidden);
         }
         const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
-        if (watched && !hidden() && best > budget) {
-          console.info(
+        if (watched && !hidden() && !wentHidden && best > budget) {
+          return rebuildOnWasm(
             `[cubus] the GPU ran this model in ${Math.round(best)} ms \u2014 slower than the wasm runtime, so using that instead`
           );
-          await session.release().catch(() => {
-          });
-          return createModelRunner(modelUrl, { ...opts, executionProviders: ["wasm"] });
         }
       }
     }
@@ -3184,6 +3235,17 @@ var WebDetector = class {
   loadedUrl = null;
   /** A `load()` still in flight, so a second caller waits on it rather than building a rival. */
   loading = null;
+  /** Which model URL that in-flight load is building — see `load`. */
+  loadingUrl = null;
+  /**
+   * Bumped by `dispose()`, so a load still in flight cannot install its runner afterwards.
+   *
+   * A discarded detector that adopts a late runner holds an InferenceSession — a wasm heap or a GPU
+   * device — that nothing can reach to release, which is the leak the whole park exists to close.
+   * It is reachable exactly where the park is: a panel that disconnects during the 1-5 s model load
+   * and a detector that loses the park race are both disposed with a load out.
+   */
+  loadGeneration = 0;
   opening = null;
   get device() {
     return this.source?.device ?? null;
@@ -3237,20 +3299,44 @@ var WebDetector = class {
    *   - PER URL. A parked detector can be handed to an owner with a different `modelUrl`, and
    *     returning early there would silently keep serving the previous owner's model. The old
    *     runner is released before the new one is built.
+   *
+   * AND THE TWO HAVE TO BE ASKED TOGETHER (2026-09-05). The in-flight guard answered every caller
+   * with the pending promise whatever URL they had asked for, so the per-URL rule held only when
+   * nothing overlapped: `retarget()` to model B while A was still loading resolved SUCCESSFULLY
+   * with A installed, and `loadedUrl` then said A while the owner believed B. Reachable through the
+   * park, which is where a detector changes owner and model URL at once. A different URL waits for
+   * the load in flight and then starts its own — and re-asks, since by then the answer may have
+   * arrived or the target may have moved again.
    */
   async load() {
     const modelUrl = this.modelUrl();
     if (this.run && this.loadedUrl === modelUrl) return;
-    if (this.loading) return this.loading;
-    this.loading = this.loadModel(modelUrl).finally(() => {
-      this.loading = null;
+    if (this.loading) {
+      if (this.loadingUrl === modelUrl) return this.loading;
+      await this.loading.catch(() => {
+      });
+      return this.load();
+    }
+    const pending = this.loadModel(modelUrl).finally(() => {
+      if (this.loading === pending) {
+        this.loading = null;
+        this.loadingUrl = null;
+      }
     });
-    return this.loading;
+    this.loading = pending;
+    this.loadingUrl = modelUrl;
+    return pending;
   }
   async loadModel(modelUrl) {
+    const generation = this.loadGeneration;
     const wasmPaths = new URL(modelUrl.replace(/[^/]+$/, "") || "./", document.baseURI).href;
     const ortUrl = `${wasmPaths}ort.mjs`;
     const run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
+    if (generation !== this.loadGeneration) {
+      void run.dispose().catch(() => {
+      });
+      return;
+    }
     const previous = this.run;
     this.run = run;
     this.loadedUrl = modelUrl;
@@ -3281,6 +3367,9 @@ var WebDetector = class {
   }
   dispose() {
     this.stop();
+    this.loadGeneration++;
+    this.loading = null;
+    this.loadingUrl = null;
     const run = this.run;
     this.run = null;
     this.loadedUrl = null;
@@ -3358,6 +3447,14 @@ var CameraSession = class {
   detectorChoice = 0;
   /** The `detector.use()` still in flight, so the next one queues behind it. See `open`. */
   opening = null;
+  /**
+   * How many `open()` calls are queued or inside the detector right now.
+   *
+   * A COUNT and not a boolean, because the chain serialises opens rather than rejecting them: three
+   * can be waiting at once. `park()` is the only reader — see there for why handing the detector to
+   * the page while one of these is still out is what makes a cross-owner camera kill possible.
+   */
+  openCount = 0;
   /** Which backend was chosen. Read by the panel purely to report it. */
   runtime = null;
   /** The open camera, or null. Null is also how the panel knows to stop showing a lens. */
@@ -3426,7 +3523,21 @@ var CameraSession = class {
    *
    * The session forgets it either way: a parked detector is no longer this session's to drive, and
    * a later `ensureDetector()` must ask the page for one afresh rather than resolve a promise
-   * holding the one it gave back.
+   * holding the one it gave back. Forgetting includes BUMPING `detectorChoice`: clearing
+   * `detectorPromise` alone left a `pickDetector` probe still in flight free to land afterwards and
+   * install its detector on a session that has already given its one away — and `chosen` and the
+   * cached promise then pointed at different objects, with the loser's camera and model held by
+   * nothing that could release them. (2026-09-05.)
+   *
+   * THE HANDOVER WAITS FOR THE OPEN. `close()` above supersedes this session's attempts, so a
+   * `detector.use()` still inside the detector will call `detector.stop()` on its way out — see
+   * `open`'s finally, which is right while this session owns the detector and catastrophic once it
+   * does not. Hand it to the page immediately and the next `<ai-scan-panel>` can take it, open its
+   * camera, and have the old link's cleanup close the lens under it. Nothing in the chain is a
+   * cross-session ordering constraint — each session has its own — so the wait is the only thing
+   * that can express one. The cost when it fires is a park that lands late, so a re-mount inside
+   * that window builds its own detector rather than reusing this one; a rebuilt session is a cost,
+   * a camera killed by its predecessor is a fault.
    */
   park() {
     this.close();
@@ -3434,11 +3545,15 @@ var CameraSession = class {
     const parkable = this.parkable;
     this.detector = null;
     this.detectorPromise = null;
+    this.detectorChoice++;
     this.parkable = false;
     const runtime = this.runtime;
     const modelLoaded = this.modelLoaded;
     this.modelLoaded = false;
-    if (detector && parkable && runtime) parkDetector({ detector, runtime, modelLoaded });
+    if (!(detector && parkable && runtime)) return;
+    const handOver = () => parkDetector({ detector, runtime, modelLoaded });
+    if (this.openCount === 0 || !this.opening) handOver();
+    else void this.opening.then(handOver, handOver);
   }
   /**
    * The detector, chosen once and kept for the session's life, so the model survives a stop()/
@@ -3545,7 +3660,9 @@ var CameraSession = class {
    * with the lens on and the app reporting no device.
    */
   async open(detector, opts, token) {
+    this.openCount++;
     const run = async () => {
+      if (!this.current(token)) return { fellBack: false };
       try {
         await detector.use(opts);
         return { fellBack: false };
@@ -3563,6 +3680,10 @@ var CameraSession = class {
       () => void 0,
       () => void 0
     );
+    const done = () => {
+      this.openCount--;
+    };
+    void chained.then(done, done);
     return chained;
   }
 };
@@ -3582,8 +3703,10 @@ var MisreadDecoder = class {
   broken = false;
   /** Whether the current worker has ever answered — the test that makes `broken` safe to set. */
   spoke = false;
-  /** The request this decoder is still waiting on — at most one; see `request`. */
-  pending = /* @__PURE__ */ new Map();
+  /** The request the worker is actually decoding, or null when it is idle. See `request`. */
+  running = null;
+  /** The one request waiting for it to come free. A newer ask REPLACES this. See `request`. */
+  queued = null;
   /**
    * Ask for `request`'s diagnosis.
    *
@@ -3594,9 +3717,8 @@ var MisreadDecoder = class {
   request(request, answer) {
     const worker = this.spawn();
     if (!worker) return handleMisreadRequest(request);
-    this.pending.clear();
-    this.pending.set(request.epoch, { request, answer });
-    worker.postMessage(request);
+    this.queued = { request, answer };
+    this.dispatch();
     return null;
   }
   /** Give the worker back. A decoder is usable again afterwards; it simply spawns a new one. */
@@ -3604,7 +3726,22 @@ var MisreadDecoder = class {
     this.worker?.terminate();
     this.worker = null;
     this.spoke = false;
-    this.pending.clear();
+    this.running = null;
+    this.queued = null;
+  }
+  /**
+   * Post the waiting ask, if the worker is free to take it.
+   *
+   * Guarded on `running` rather than called only from the idle path, because `answer` may ask for
+   * another decode re-entrantly — the panel republishes on a reply, and a host may correct a
+   * sticker from that — and two posts in flight is exactly the backlog this class exists to avoid.
+   */
+  dispatch() {
+    if (this.running !== null || this.queued === null || this.worker === null) return;
+    const next = this.queued;
+    this.queued = null;
+    this.running = next;
+    this.worker.postMessage(next.request);
   }
   spawn() {
     if (this.worker) return this.worker;
@@ -3630,10 +3767,14 @@ var MisreadDecoder = class {
     }
   }
   deliver(reply) {
-    const waiting = this.pending.get(reply.epoch);
-    if (!waiting) return;
-    this.pending.delete(reply.epoch);
-    waiting.answer(reply);
+    const waiting = this.running;
+    if (!waiting || waiting.request.epoch !== reply.epoch) return;
+    this.running = null;
+    try {
+      waiting.answer(reply);
+    } finally {
+      this.dispatch();
+    }
   }
   failed(cause) {
     if (!this.spoke) this.broken = true;
@@ -3644,9 +3785,10 @@ var MisreadDecoder = class {
     this.worker?.terminate();
     this.worker = null;
     this.spoke = false;
-    const stranded = [...this.pending.values()];
-    this.pending.clear();
-    for (const { request, answer } of stranded) answer(handleMisreadRequest(request));
+    const stranded = this.queued ?? this.running;
+    this.running = null;
+    this.queued = null;
+    if (stranded) stranded.answer(handleMisreadRequest(stranded.request));
   }
 };
 
@@ -3756,6 +3898,7 @@ var TICK_FLOOR_MS = 60;
 var STABLE = 3;
 var STABLE_MS = 500;
 var TICK_FAIL_MS = 3e3;
+var INFERENCE_TIMEOUT_MS = 15e3;
 var CHECK_BEAT_MS = 350;
 var OPENING = "Show any side to the camera \u2014 held flat and centred.";
 var PAINTING = "Painting by hand \u2014 tap any sticker and pick its colour.";
@@ -3841,8 +3984,18 @@ var AiScanPanel = class extends HTMLElement {
   root;
   /** Model URL; the app can override before the element renders. */
   modelUrl = "./vendor/cube-yolo.onnx";
-  /** A tick is mid-inference; the next one returns rather than running two at once. */
-  busy = false;
+  /**
+   * The frame EPOCH of the tick that is mid-inference, or null when none is.
+   *
+   * A number rather than a flag, because the flag outlived the thing it was guarding. An inference
+   * that never settles left it set for the life of the page: `stop()` and `start()` bump the epoch
+   * and rebuild the loop, but the flag survived both, so every tick of the new scan returned at the
+   * first line and the scanner could not be recovered by anything short of a reload. Scoped to the
+   * epoch, a stale inference blocks only the scan it belongs to — and the `finally` below clears
+   * the guard only when it is still the one it set, so an abandoned tick landing late cannot let a
+   * second inference into the current epoch.
+   */
+  busy = null;
   /** `headless`: draw nothing, and let the host draw from 'scan-progress'. */
   headless = false;
   faces = {};
@@ -4050,8 +4203,8 @@ var AiScanPanel = class extends HTMLElement {
       if (!this.cam.modelLoaded) {
         this.report("loading", "Camera ready \u2014 loading the model\u2026");
         await this.loadModel(detector, gen);
-        this.cam.modelLoaded = true;
         if (!this.cam.current(gen)) return;
+        this.cam.modelLoaded = true;
         this.announceRuntime(detector);
       }
       const pending = this.pendingOpening;
@@ -4078,6 +4231,13 @@ var AiScanPanel = class extends HTMLElement {
    * The timeout ABANDONS THE WAIT, not the load — `Detector.load` is idempotent and now guards its
    * own in-flight promise, so a load that eventually finishes is still there for the next Start
    * rather than being started a second time.
+   *
+   * EVERY WRITE TO `notice` HERE IS GENERATION-GUARDED (2026-09-05). This attempt's load can settle
+   * long after a stop() or a newer start() — a minute later, in the timeout's case — and the notice
+   * is the panel's one pinned sentence, so a superseded attempt writing to it replaces whatever the
+   * CURRENT state is saying: "the model did not load" over a scanner that is running, or a cleared
+   * notice over a camera refusal the user still needs to read. It is the same rule the rest of
+   * start() follows, and this method was the one place that did not.
    */
   async loadModel(detector, gen) {
     let waiting = false;
@@ -4107,8 +4267,9 @@ var AiScanPanel = class extends HTMLElement {
           }, LOAD_TIMEOUT_MS);
         })
       ]);
-      if (waiting) this.notice = null;
+      if (waiting && this.cam.current(gen)) this.notice = null;
     } catch (err) {
+      if (!this.cam.current(gen)) throw err;
       if (timedOut) {
         this.notice = {
           title: "The model did not load",
@@ -4235,60 +4396,117 @@ var AiScanPanel = class extends HTMLElement {
   stopLoop() {
     this.cam.stopLoop();
   }
+  /**
+   * One frame: ask the detector, then hand the answer to whichever of the three outcomes it is.
+   *
+   * What is left here is the INFERENCE's lifetime — its guard, its deadline, its freshness and the
+   * cadence measurement — and nothing about cubes. Three outcomes moved out with the branching
+   * they carried (`noFrameTick`, `readFrame`, `failingTick`), which is the same split
+   * `fileSettledRead` was made by and for the same reason: whether a frame arrived is a question
+   * about the camera, what it shows is a question about the cube.
+   */
   async onTick() {
-    if (this.busy || this.cam.device === null || !this.cam.chosen || !this.cam.modelLoaded) return;
-    this.busy = true;
+    if (this.cam.device === null || !this.cam.chosen || !this.cam.modelLoaded) return;
     const epoch = this.cam.frameEpoch();
+    if (this.busy === epoch) return;
+    this.busy = epoch;
     const started = performance.now();
+    let deadline;
     try {
-      const output = await this.cam.chosen.next();
+      const output = await Promise.race([
+        this.cam.chosen.next(),
+        new Promise((_resolve, reject2) => {
+          deadline = setTimeout(() => {
+            reject2(
+              new Error(
+                `the detector did not answer within ${Math.round(INFERENCE_TIMEOUT_MS / 1e3)} seconds`
+              )
+            );
+          }, INFERENCE_TIMEOUT_MS);
+        })
+      ]);
       if (!this.cam.freshFrame(epoch)) return;
       this.lastInferenceMs = performance.now() - started;
       this.tickFailingSince = null;
       if (output === null) {
-        this.still.reset();
-        const now = performance.now();
-        this.noFrameSince ??= now;
-        if (now - this.noFrameSince >= TICK_FAIL_MS) {
-          this.tickFail(
-            new Error(
-              `the camera has been open for ${Math.round(now - this.noFrameSince)} ms without delivering a frame`
-            )
-          );
-        }
+        this.noFrameTick();
         return;
       }
       this.noFrameSince = null;
-      const fit = fitFromOutput(output);
-      if (!fit.ok) {
-        this.still.reset();
-        this.showPreview(null);
-        this.report(
-          this.awaiting ? "confirm" : "scanning",
-          this.idleLine() + FRAME_HINT[fit.reason]
-        );
-        return;
-      }
-      const settled = this.still.offer(fit.face.colors);
-      this.showPreview(fit.face.colors);
-      if (!settled) {
-        const flicker = this.still.flickering();
-        this.report(
-          this.awaiting ? "confirm" : "scanning",
-          flicker === null ? "Reading a side \u2014 hold still\u2026" : `Reading a side \u2014 the ${CELL_NAMES[flicker] ?? "marked"} sticker keeps changing colour. More light on it, or a steadier hold, will settle it.`
-        );
-        return;
-      }
-      this.fileSettledRead(fit.face);
+      this.readFrame(output);
     } catch (err) {
       if (!this.cam.freshFrame(epoch)) return;
-      const now = performance.now();
-      this.tickFailingSince ??= now;
-      if (now - this.tickFailingSince >= TICK_FAIL_MS) {
-        this.tickFail(err);
-      }
+      this.failingTick(err);
     } finally {
-      this.busy = false;
+      clearTimeout(deadline);
+      if (this.busy === epoch) this.busy = null;
+    }
+  }
+  /**
+   * The tick answered, with no frame.
+   *
+   * No frame is not a still cube — it is no observation at all. An abstaining frame already reset
+   * the streak; leaving a missing one alone meant identical reads either side of a stall could
+   * satisfy both the count and the duration without the cube having been watched in between.
+   *
+   * And it is not a working scanner either, which is the half that was missing. A camera that opens
+   * and never delivers answers `null` on every tick, and `null` clears the failure clock in
+   * `onTick` — so the one failure that needs no exception to happen was the one failure nothing
+   * watched. Its own clock, same limit, same fail-loud exit.
+   */
+  noFrameTick() {
+    this.still.reset();
+    const now = performance.now();
+    this.noFrameSince ??= now;
+    if (now - this.noFrameSince >= TICK_FAIL_MS) {
+      this.tickFail(
+        new Error(
+          `the camera has been open for ${Math.round(now - this.noFrameSince)} ms without delivering a frame`
+        )
+      );
+    }
+  }
+  /** A frame arrived: decide whether there is a read worth acting on, and hand it on if so. */
+  readFrame(output) {
+    const fit = fitFromOutput(output);
+    if (!fit.ok) {
+      this.still.reset();
+      this.showPreview(null);
+      this.report(this.awaiting ? "confirm" : "scanning", this.idleLine() + FRAME_HINT[fit.reason]);
+      return;
+    }
+    const settled = this.still.offer(fit.face.colors);
+    this.showPreview(fit.face.colors);
+    if (!settled) {
+      const flicker = this.still.flickering();
+      this.report(
+        this.awaiting ? "confirm" : "scanning",
+        flicker === null ? "Reading a side \u2014 hold still\u2026" : `Reading a side \u2014 the ${CELL_NAMES[flicker] ?? "marked"} sticker keeps changing colour. More light on it, or a steadier hold, will settle it.`
+      );
+      return;
+    }
+    this.fileSettledRead(fit.face);
+  }
+  /**
+   * The tick failed: transient at first, an error if it persists.
+   *
+   * The distinction is duration, not type: the camera-not-ready case clears in a tick or two, and
+   * nothing else does. `performance.now()`, because this is a claim about ELAPSED time — see
+   * TICK_FAIL_MS.
+   *
+   * A FAILED FRAME BREAKS THE STILLNESS RUN, and that was missing. Every other way a tick can end
+   * without a usable read resets it — a frameless tick, an abstain, a bad geometry — but a frame
+   * that THREW left the run standing, so two matching reads, a failure, and a third matching read
+   * half a second later satisfied both halves of the capture gate over an observation that had a
+   * hole in it. Stillness is a claim about what was watched continuously; a frame nobody could read
+   * is not a frame that showed the cube unmoved.
+   */
+  failingTick(err) {
+    this.still.reset();
+    const now = performance.now();
+    this.tickFailingSince ??= now;
+    if (now - this.tickFailingSince >= TICK_FAIL_MS) {
+      this.tickFail(err);
     }
   }
   /**

@@ -151,9 +151,47 @@ describe('MisreadDecoder — where the decode runs', () => {
     withWorker();
     const decoder = new MisreadDecoder();
     decoder.request({ epoch: 1, faces: misread(DEEP, 1), fixedRotation: false }, () => {});
+    // ANSWERED before the second is asked, since 2026-09-05: only one decode is posted at a time
+    // (see the supersession case below), so back-to-back requests would no longer show reuse —
+    // the second would still be waiting. Reuse is the claim here, and it is about the WORKER.
+    FakeWorker.last().answer();
     decoder.request({ epoch: 2, faces: misread(DEEP, 1), fixedRotation: false }, () => {});
     expect(FakeWorker.built).toHaveLength(1);
     expect(FakeWorker.last().posted.map((p) => p.epoch)).toEqual([1, 2]);
+  });
+
+  it('keeps one decode running and one waiting — never a queue of obsolete work', () => {
+    // THE BACKLOG. Clearing the pending callbacks was only half of a supersession: every request
+    // was still POSTED, so the worker built a queue and the answer that is actually wanted arrived
+    // behind every obsolete decode ahead of it. On a nearly-legal reading each of those is
+    // seconds — the readings this file's own note says are "the ones nothing supersedes", which
+    // was an assumption rather than something the code enforced.
+    //
+    // Hand-painting is the case that reaches it: with the sixth side in, every stroke re-checks
+    // the cube, so five quick corrections used to enqueue five decodes.
+    withWorker();
+    const answers: MisreadReply[] = [];
+    const decoder = new MisreadDecoder();
+    for (const epoch of [1, 2, 3, 4, 5]) {
+      decoder.request({ epoch, faces: misread(DEEP, 1), fixedRotation: false }, (r) =>
+        answers.push(r),
+      );
+    }
+    const worker = FakeWorker.last();
+    // One in flight; the other four collapsed into the one that is still worth asking.
+    expect(worker.posted.map((p) => p.epoch)).toEqual([1]);
+
+    worker.answer(0);
+    // …and the LATEST goes out next, not the second-oldest.
+    expect(worker.posted.map((p) => p.epoch)).toEqual([1, 5]);
+    worker.answer(1);
+    // Every superseded callback is dropped rather than queued: nobody is waiting on epoch 2-4.
+    expect(answers.map((a) => a.epoch)).toEqual([1, 5]);
+    // Nothing is left holding the worker, so the next refusal is answered rather than stranded.
+    decoder.request({ epoch: 6, faces: misread(DEEP, 1), fixedRotation: false }, (r) =>
+      answers.push(r),
+    );
+    expect(worker.posted.map((p) => p.epoch)).toEqual([1, 5, 6]);
   });
 
   it('drops a reply nothing is waiting for rather than guessing whose it is', () => {
