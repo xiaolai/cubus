@@ -145,8 +145,18 @@ function checkViews(views, engine) {
  * Walking the prototype chain by hand would answer the first and not the second, so the probe is a
  * real write of a sentinel followed by a read-back, and the original value is put straight back —
  * the carrier is left exactly as it was found, which is what the old comment here was protecting
- * and the reason this is a probe rather than a one-way write. It costs two property accesses on a
+ * and the reason this is a probe rather than a one-way write. It costs four property accesses on a
  * path that runs once per attempt.
+ *
+ * The RESTORE is read back too (2026-09-05 round 3), because "the write landed" does not imply "the
+ * undo did": a setter that stores objects and ignores null — a caching carrier, or a defensive one —
+ * takes the sentinel and then keeps it, and a carrier whose state was null to begin with is exactly
+ * where that lands. The audit reproduced it: the probe passed, and `openSearch` was then handed
+ * `{probe: 'solver-engine'}` as a resume point, which is this wrapper INVENTING one — the single
+ * thing it must never do. So the carrier is checked to be as it was found, and a carrier that
+ * cannot be put back is refused like one that cannot be written at all. Such a carrier keeps the
+ * sentinel — no write exists that would remove it — which is the other half of why the answer has
+ * to be a loud refusal rather than a shrug and a fresh search.
  */
 function carrierTakesWrites(resume) {
   const before = resume.state;
@@ -156,7 +166,7 @@ function carrierTakesWrites(resume) {
     resume.state = probe;
     const took = resume.state === probe;
     resume.state = before;
-    return took;
+    return took && Object.is(resume.state, before);
   } catch {
     // A frozen carrier, an own or inherited read-only `state`, or a setter that throws.
     return false;

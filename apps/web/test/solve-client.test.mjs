@@ -686,6 +686,69 @@ test('the stop word is published only by a shallower ANSWER, and atomically', ()
   assert.equal(word[0], NO_BEST);
 });
 
+test('a reply that cannot WIN cannot stop the siblings that can', async () => {
+  // The publication used to ask only "is there an algorithm" while the pick asks for the whole sort
+  // key, so the two disagreed about exactly one shape: a real depth with a malformed view. That
+  // reply stopped every sibling at its depth — the stop word is how a slice is told to give up —
+  // and was then discarded by `pickWinner`, so the pool answered null for a cube the sibling it
+  // stopped was about to solve (2026-09-05 audit). Both sides ask one predicate now.
+  //
+  // Asserted on the word itself, because that is where the damage is done: by the time a screen
+  // sees the null, nothing says which reply caused it.
+  const word = new Int32Array(new SharedArrayBuffer(4));
+  const made = [];
+  const spawn = () => { const w = fakeWorker({ autoReply: false }); made.push(w); return w; };
+  const client = createParallelSolveClient({
+    spawn, workers: 2, viewCount: 6, makeShared: () => word,
+  });
+  const solving = client.solve('F'.repeat(54), { solLen: 21, probeMax: 200 });
+  await Promise.resolve();
+  assert.deepEqual(made.map((w) => w.sent.length), [1, 1], 'both slices must be in flight');
+
+  // Slice 0: an answer at a shallow depth, from a view index that is not one — the shape a garbled
+  // reply takes, and the only one where the two questions differ.
+  made[0].emit({ id: made[0].sent[0].id, ok: true, alg: 'U', depth: 3, view: -1 });
+  await Promise.resolve();
+  assert.equal(Atomics.load(word, 0), 0x7fffffff,
+    'a reply the pick will throw away published a depth that stops every sibling');
+
+  // And the sibling that CAN win still answers, and is the pool's answer.
+  made[1].emit({ id: made[1].sent[0].id, ok: true, alg: 'R U', depth: 9, view: 1 });
+  assert.equal(await solving, 'R U', 'the pool discarded the only reply that could win');
+  assert.equal(Atomics.load(word, 0), 9, 'and the winner did publish its own depth');
+});
+
+test('a pooled solve abandoned before it starts staffs nothing and shares nothing', async () => {
+  // The single-worker client refuses this before `attach()` — "an abandoned solve must not be the
+  // thing that pays for a table build" — and the pool did not (2026-09-05 audit). Six threads, six
+  // spawns and the whole 9.82 MiB handshake, for a solve whose every request then answered null.
+  // The app aborts a superseded solve the moment the cube changes, so this is the ordinary case.
+  let spawns = 0;
+  const made = [];
+  const client = createParallelSolveClient({
+    spawn: () => { spawns += 1; const w = fakeWorker(); made.push(w); return w; },
+    workers: 6,
+    viewCount: 6,
+    shareTables: true,
+    makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
+  });
+  const controller = new AbortController();
+  controller.abort();
+  assert.equal(
+    await client.solve('F'.repeat(54), { solLen: 21, probeMax: 600, signal: controller.signal }),
+    null,
+    'an abandoned solve answers null, exactly as one that was stopped',
+  );
+  assert.equal(spawns, 0, 'six threads were spawned for a solve nobody was waiting for');
+  assert.deepEqual(made.map((w) => w.sent), [], 'and not one message may be sent — search or handshake');
+  // The pool is untouched by it: the next solve is a pool, not a fallback. That solve DOES run the
+  // handshake, and this fake worker answers a control request as if it were a search — so sharing
+  // is given up, loudly and harmlessly. Captured rather than left in the test's output.
+  const { value } = await withWarnings(() => client.solve('F'.repeat(54), { solLen: 21, probeMax: 600 }));
+  assert.equal(value, 'R U');
+  assert.equal(client.workers, 6);
+});
+
 test('a pool of main-thread workers COLLAPSES to one, and still answers', async () => {
   // Two defects, one test, because the second was hidden behind the first.
   //
