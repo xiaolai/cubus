@@ -2466,7 +2466,7 @@ function buildCentreOwner(faces) {
   const centreOwner = /* @__PURE__ */ new Map();
   for (const face of FACES) {
     const f = faces[face];
-    if (!f || f.colors.length !== 9 || f.confidence.length !== 9) {
+    if (f?.colors.length !== 9 || f.confidence.length !== 9) {
       throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
     }
     for (const c of f.confidence) {

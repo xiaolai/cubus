@@ -29,9 +29,9 @@
 // session).
 
 import {
+  handleMisreadRequest,
   type MisreadReply,
   type MisreadRequest,
-  handleMisreadRequest,
 } from './misread-protocol.js';
 
 /**

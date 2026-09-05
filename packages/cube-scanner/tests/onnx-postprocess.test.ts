@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { LOW_CONFIDENCE_THRESHOLD } from '../src/ai-assemble.js';
 import {
   type Detection,
-  MIN_STICKER_CONFIDENCE,
   decodeDetections,
   fitFace,
+  MIN_STICKER_CONFIDENCE,
   nms,
 } from '../src/onnx-postprocess.js';
 

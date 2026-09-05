@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  type ColorFace,
   assembleColors,
   assemblePainted,
+  type ColorFace,
   matchingRotations,
 } from '../src/ai-assemble.js';
 import { SOLVED_FACELETS } from '../src/facelet-cube.js';
@@ -495,7 +495,7 @@ describe('assemblePainted', () => {
       const was = broken.U!.colors[k]!;
       broken.U!.colors[k] = (was + 1) % 6;
       const r = assemblePainted(broken);
-      if (!r.suspects || r.suspects.length !== 1) continue;
+      if (r.suspects?.length !== 1) continue;
       pointed += 1;
       const s = r.suspects[0]!;
       const repaired = faces(truth);

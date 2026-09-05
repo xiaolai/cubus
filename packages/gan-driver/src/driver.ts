@@ -3,10 +3,10 @@
 
 import { TinyEmitter } from './emitter.js';
 import {
-  type SafeCommand,
-  type UnsafeCommand,
   buildCommand,
   buildUnsafeCommand,
+  type SafeCommand,
+  type UnsafeCommand,
 } from './gen4/commands.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
 import { decodeGen4 } from './gen4/decode.js';

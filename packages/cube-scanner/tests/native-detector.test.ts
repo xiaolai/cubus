@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fitFromOutput } from '../src/onnx-detect.js';
-import { NativeDetector, decodeTensorResponse } from '../view/native-detector.js';
+import { decodeTensorResponse, NativeDetector } from '../view/native-detector.js';
 
 // The wire format the cube-vision plugin returns over the Tauri bridge — int32 rows, int32 anchors
 // (little-endian), then rows*anchors f32. This is the TS half of the contract; the Rust half is
