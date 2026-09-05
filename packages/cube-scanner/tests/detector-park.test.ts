@@ -182,6 +182,59 @@ describe('the page-level detector park', () => {
     expect(released()).toBe(1);
   });
 
+  it('hands the detector over only once the open in flight has finished', async () => {
+    // THE CROSS-OWNER RACE, and the only one in this file that needs two owners to show.
+    //
+    // `park()` gives the detector to the page and the page hands it to the next panel — while a
+    // `detector.use()` this session started is still inside the platform. `close()` superseded that
+    // attempt, so its cleanup calls `detector.stop()`, which is right while this session owns the
+    // detector and catastrophic the moment it does not: the NEXT owner's camera goes out under it,
+    // with its panel reporting a live lens over a dead one. The chain that serialises opens is
+    // per-session, so nothing but the wait can express an ordering across the handover.
+    //
+    // Driven through the native plugin because it makes the damage observable in one field: a
+    // `stop()` sets `dev` to null and issues `close_camera`.
+    const gates: (() => void)[] = [];
+    const plugin = fakePlugin();
+    const invoke = async (cmd: string): Promise<unknown> => {
+      // Only the FIRST open is held; the next owner's opens freely.
+      if (cmd === `${CUBE_VISION}open_camera` && gates.length === 0) {
+        await new Promise<void>((release) => gates.push(release));
+      }
+      return plugin.invoke(cmd);
+    };
+    (globalThis as TauriGlobal).__TAURI__ = { core: { invoke } };
+
+    const first = new CameraSession();
+    const detector = await first.ensureDetector(videoFor('a'), () => MODEL_URL);
+    const token = first.beginAttempt();
+    const opening = first.open(detector, {}, token);
+    await Promise.resolve();
+    expect(gates).toHaveLength(1); // inside the platform's camera call
+
+    first.park(); // the panel disconnected while the camera was still opening
+    // NOT the page's yet. A detector handed over now can be opened by the next panel and then shut
+    // off by this one's cleanup.
+    expect(parkedDetector()).toBeNull();
+
+    gates[0]!(); // the abandoned open finally lands…
+    await opening.catch(() => {});
+    await flush();
+    expect(parkedDetector()?.detector).toBe(detector); // …and only then is it parked
+
+    // And the wait costs nothing once the open lands: the next owner still gets the SAME detector,
+    // opens its camera, and keeps it. (The kill itself cannot be staged from here — under the fix
+    // there is no window in which two owners hold one detector, which is the fix.)
+    const second = new CameraSession();
+    const same = await second.ensureDetector(videoFor('b'), () => MODEL_URL);
+    expect(same).toBe(detector);
+    const next = second.beginAttempt();
+    await second.open(same, {}, next);
+    await flush();
+    expect(same.device).not.toBeNull();
+    second.park();
+  });
+
   it('never parks an injected detector', async () => {
     // `useDetector` is the test seam and the native host's. A fake reaching a page-wide slot would
     // be handed to the next mount — a suite that passes alone and fails in a file, and a host whose

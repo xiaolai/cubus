@@ -29,6 +29,7 @@ const cfg = () => ({
   outLength: null,
   noInputNames: false,
   webgpuDeclines: false,
+  proxiedCreateFails: false,
   ...registry.model,
 });
 
@@ -80,6 +81,13 @@ export class Tensor {
 
 export const InferenceSession = {
   async create(_modelUrl, options) {
+    // A wasm backend that will not start — no SharedArrayBuffer, a blocked worker. It is how a
+    // test drives the GPU fallback's own REBUILD failing, which is the path where the abandoned
+    // GPU session used to be released twice. Keyed on the proxy mode, because only the rebuild
+    // runs on the proxied module.
+    if (cfg().proxiedCreateFails && instance.proxy === true) {
+      throw new Error('the wasm backend would not start');
+    }
     instance.sessions++;
     instance.providers = options.executionProviders;
     const first = options.executionProviders?.[0];

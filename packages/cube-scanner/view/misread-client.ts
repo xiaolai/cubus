@@ -42,17 +42,22 @@ import {
  * and is spawned only by a refusal, which most sessions never reach. The park would cost more
  * bookkeeping than it saves.
  */
+/** One asked-for decode: what to send, and who to tell. */
+interface Job {
+  request: MisreadRequest;
+  answer: (reply: MisreadReply) => void;
+}
+
 export class MisreadDecoder {
   private worker: Worker | null = null;
   /** Set once a worker has proved it cannot be had at all, so no later request builds another. */
   private broken = false;
   /** Whether the current worker has ever answered — the test that makes `broken` safe to set. */
   private spoke = false;
-  /** The request this decoder is still waiting on — at most one; see `request`. */
-  private pending = new Map<
-    number,
-    { request: MisreadRequest; answer: (r: MisreadReply) => void }
-  >();
+  /** The request the worker is actually decoding, or null when it is idle. See `request`. */
+  private running: Job | null = null;
+  /** The one request waiting for it to come free. A newer ask REPLACES this. See `request`. */
+  private queued: Job | null = null;
 
   /**
    * Ask for `request`'s diagnosis.
@@ -64,22 +69,23 @@ export class MisreadDecoder {
   request(request: MisreadRequest, answer: (reply: MisreadReply) => void): MisreadReply | null {
     const worker = this.spawn();
     if (!worker) return handleMisreadRequest(request);
-    // ONE LIVE QUESTION per decoder. A second request means the reading changed — that is the only
-    // reason there is a second one — so every earlier answer is already about a cube that is gone.
-    // Holding those callbacks would queue answers nobody reads, and would make a worker failure
-    // below replay every one of them on this thread, one after another. Hand-painting is where it
-    // shows: once the sixth side exists, EVERY stroke re-checks the cube, so a cube painted
-    // sticker by sticker asks seven questions before the one whose answer is shown.
+    // ONE LIVE QUESTION per decoder, AND ONE WAITING ONE — never a queue (2026-09-05).
     //
-    // The worker still finishes what it started. `decodeMisread` is one DFS under a node budget
-    // with no yield point, so there is nothing to interrupt short of terminating the thread — and
-    // its answer is dropped on arrival instead, by `deliver`. The wait that costs is bounded by
-    // which readings are actually slow: a half-painted cube is nowhere near legal, every rotation
-    // fails the lower-bound prune, and it comes back in microseconds. It is the nearly-legal
-    // readings that take seconds, and those are the ones nothing supersedes.
-    this.pending.clear();
-    this.pending.set(request.epoch, { request, answer });
-    worker.postMessage(request);
+    // Clearing the pending CALLBACKS was only half of it: every request was still posted, so the
+    // worker built a backlog and the answer that is actually wanted arrived behind every obsolete
+    // decode ahead of it. A second request means the reading changed — that is the only reason
+    // there is a second one — so an ask that has not been posted yet is simply replaced here, and
+    // the file's own note that "the readings that take seconds are the ones nothing supersedes"
+    // stops being an assumption and becomes something this method enforces. Hand-painting is where
+    // it shows: once the sixth side exists EVERY stroke re-checks the cube, so a cube painted
+    // sticker by sticker used to enqueue seven decodes before the one whose answer is shown.
+    //
+    // The worker still finishes what it STARTED. `decodeMisread` is one DFS under a node budget
+    // with no yield point, so there is nothing to interrupt short of terminating the thread; its
+    // answer is delivered and the caller drops it on the epoch it carries (`ai-scan-panel` checks
+    // `diagnosisEpoch` before it publishes anything).
+    this.queued = { request, answer };
+    this.dispatch();
     return null;
   }
 
@@ -88,7 +94,23 @@ export class MisreadDecoder {
     this.worker?.terminate();
     this.worker = null;
     this.spoke = false;
-    this.pending.clear();
+    this.running = null;
+    this.queued = null;
+  }
+
+  /**
+   * Post the waiting ask, if the worker is free to take it.
+   *
+   * Guarded on `running` rather than called only from the idle path, because `answer` may ask for
+   * another decode re-entrantly — the panel republishes on a reply, and a host may correct a
+   * sticker from that — and two posts in flight is exactly the backlog this class exists to avoid.
+   */
+  private dispatch(): void {
+    if (this.running !== null || this.queued === null || this.worker === null) return;
+    const next = this.queued;
+    this.queued = null;
+    this.running = next;
+    this.worker.postMessage(next.request);
   }
 
   private spawn(): Worker | null {
@@ -118,12 +140,20 @@ export class MisreadDecoder {
   }
 
   private deliver(reply: MisreadReply): void {
-    const waiting = this.pending.get(reply.epoch);
+    const waiting = this.running;
     // An epoch nothing is waiting for is dropped here rather than guessed at. It happens when a
-    // dispose() cleared the queue while a decode was still running.
-    if (!waiting) return;
-    this.pending.delete(reply.epoch);
-    waiting.answer(reply);
+    // dispose() cleared the decode that was running, and when a worker answers something nobody
+    // asked for.
+    if (!waiting || waiting.request.epoch !== reply.epoch) return;
+    this.running = null;
+    // The waiting ask goes out even if `answer` throws: a stalled queue would leave the notice it
+    // was going to refine sitting on "working out how many" for the rest of the session, which is
+    // the quiet failure this whole file is arranged around.
+    try {
+      waiting.answer(reply);
+    } finally {
+      this.dispatch();
+    }
   }
 
   private failed(cause: Event): void {
@@ -138,11 +168,18 @@ export class MisreadDecoder {
     this.worker?.terminate();
     this.worker = null;
     this.spoke = false;
-    // The requests it was holding are answered here rather than abandoned. This blocks the page
-    // for as long as the decode takes, which is the cost the worker existed to avoid — but the
-    // refusal has already been painted, and a notice that never resolves is worse than a stall.
-    const stranded = [...this.pending.values()];
-    this.pending.clear();
-    for (const { request, answer } of stranded) answer(handleMisreadRequest(request));
+    // The request it was holding is answered here rather than abandoned. This blocks the page for
+    // as long as the decode takes, which is the cost the worker existed to avoid — but the refusal
+    // has already been painted, and a notice that never resolves is worse than a stall.
+    //
+    // The LATEST of the two, and only that one. A waiting ask exists precisely because the reading
+    // changed, so the running one is already about a cube that is gone — answering both would
+    // spend seconds of the page's thread on a diagnosis whose caller drops it on arrival for its
+    // epoch. Dropping the superseded callback is the same rule `request` applies when it replaces
+    // a waiting ask.
+    const stranded = this.queued ?? this.running;
+    this.running = null;
+    this.queued = null;
+    if (stranded) stranded.answer(handleMisreadRequest(stranded.request));
   }
 }

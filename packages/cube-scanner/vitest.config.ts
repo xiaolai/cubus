@@ -2,6 +2,13 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // The decoder tests do real work: a misread decode on a solved cube with one wrong sticker is
+    // ~1 s alone, ~2.7 s under v8 coverage instrumentation, and 7 s when the package's parallel
+    // workers share the machine with the WebKit suite (measured 2026-09-05, load average 12 on 10
+    // cores). vitest's 5 s default is a hang detector, and it was firing on legitimate work: two
+    // tests had already grown explicit 60 s budgets one at a time before the gate found two more.
+    // One budget for the class, sized so a genuine hang still fails.
+    testTimeout: 60_000,
     coverage: {
       provider: 'v8',
       // Everything that can be driven without a webcam. camera.ts (getUserMedia) and the two files

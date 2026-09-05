@@ -125,16 +125,31 @@ export type AiScanResult = ScanResult & {
    */
   reread?: Face;
   /**
-   * The sticker to point at. Populated ONLY when exactly one sticker is wrong, because that is the
-   * only case where the answer is provable: two legal cubes are never closer than three stickers,
-   * so a one-sticker repair is unique and correct. Above one, accusing a specific sticker would
-   * sometimes accuse a correctly-read one, so this stays empty and `misreadCount` speaks instead.
-   * See dev-docs/misread-decoding.md.
+   * The sticker to point at: changing it to `to` makes the reading a legal cube. Populated ONLY
+   * where the search itself says the repair is unambiguous — the READING is one change from legal,
+   * that legal cube is unique, and exactly one sticker is named — because that is the only case
+   * where a single sticker can be MEANT at all. Above one change the nearest legal cube need not
+   * be the user's, so this stays empty and `misreadCount` speaks instead.
+   *
+   * IT IS NOT A PROOF THAT THIS STICKER WAS MISREAD, though this docstring claimed exactly that
+   * until 2026-09-05 ("populated ONLY when exactly one sticker is wrong … so a one-sticker repair
+   * is unique and correct"). "One sticker is wrong" is a claim about the TRUE count, which nothing
+   * observable carries; uniqueness is a property of the READING. A reading
+   * two stickers from the cube in the user's hand can sit one sticker from a legal cube they never
+   * held, and the search then names — uniquely — a sticker the camera read correctly. Pinned by
+   * `tests/ai-assemble.test.ts` ("a lone suspect is a sticker to CHECK"), which builds two legal
+   * cubes three apart and reads two of the three differences from the wrong one. So a host may say
+   * "changing this makes the cube solvable" and may never say "this one is wrong".
+   * See dev-docs/misread-decoding.md §1.
    */
   suspects?: StickerSuspect[];
   /**
    * How many stickers are wrong, as a proven LOWER BOUND — never an overstatement, so "at least N
-   * stickers were misread" is always honest. At 1 it is exact, and only then may `suspects` point.
+   * stickers were misread" is always honest. It is a floor at EVERY N including 1, and the
+   * sentence this used to carry — "at 1 it is exact" — was false (corrected 2026-09-05): it
+   * contradicted both `misread-decode.ts`'s header and dev-docs/misread-decoding.md §1, which
+   * construct the counterexample by hand. The same two tests that pin `suspects` above pin this:
+   * a genuinely two-sticker misread comes back as 1.
    *
    * `null` is the DEFERRED state and not a count: the caller passed `{ diagnose: false }` and the
    * decode is running somewhere else (see AssembleOptions). ABSENT means the decode ran and could
@@ -357,39 +372,54 @@ function refusalDiagnosis(
 }
 
 /**
+ * One capture, checked to be a capture at all, and handed back so the caller may stop asking.
+ *
+ * Malformed input THROWS rather than rejecting, because a reject is a sentence shown to a child
+ * about their cube and none of these is about the cube. What is checked is what the rest of this
+ * module then assumes without asking again: nine colours and nine confidences, and every
+ * confidence a real number in [0, 1]. That last one is not pedantry — `NaN` compares false against
+ * every threshold, so 54 of them used to sail through as `confidence: 1` with no low-confidence
+ * stickers, which is a number this module invented.
+ *
+ * It takes the LABEL rather than a face letter because two different kinds of capture arrive here:
+ * one of the six sides, and a confirmation of one. The second was never checked at all until
+ * 2026-09-05 — `matchingRotations` compares nine positions against whatever array it is given, and
+ * a short one simply reads `undefined` at the missing indices, which counts as at most two
+ * differences and so passes CONFIRM_TOLERANCE. Measured: seven colours and no confidences at all,
+ * fed as every answer, narrowed a once-turned cube to `valid: true` on six of six algs — a
+ * rotation measured from a capture that does not exist.
+ *
+ * `f?.colors.length !== 9` carries a missing capture as well as a short one: a `confirmed` entry
+ * that is `undefined` fails the first comparison, so the second access is only reached once the
+ * first has proved `f` present.
+ */
+function checkedCapture(label: string, f: ColorFace | undefined): ColorFace {
+  if (f?.colors.length !== 9 || f.confidence.length !== 9) {
+    throw new Error(`${label}: expected 9 colours + 9 confidences`);
+  }
+  // Colours are deliberately NOT range-checked here. A sticker that is not one of the six centre
+  // colours is a statement about the CUBE — `assemblePainted` already refuses it with a sentence
+  // a child can act on — so making it throw would replace an answer with a crash.
+  for (const c of f.confidence) {
+    if (!Number.isFinite(c) || c < 0 || c > 1) {
+      throw new Error(`${label}: confidence ${c} is not a number in [0, 1]`);
+    }
+  }
+  return f;
+}
+
+/**
  * Validate six faces and build the centre-colour → face map, for both entry points.
  *
  * Returns the map, or the rejection to hand straight back — the caller discriminates on
  * `instanceof Map`. It was written twice, comment included, once in each of the two public
  * functions; two lifetimes of one validation rule is how a caller comes to be trusted on one path
  * and not the other.
- *
- * Malformed input THROWS rather than rejecting, because a reject is a sentence shown to a child
- * about their cube and none of these is about the cube. What is checked is what the rest of this
- * module then assumes without asking again: nine colours and nine confidences per face, and every
- * confidence a real number in [0, 1]. That last one is not pedantry — `NaN` compares false against
- * every threshold, so 54 of them used to sail through as `confidence: 1` with no low-confidence
- * stickers, which is a number this module invented.
  */
 function buildCentreOwner(faces: Record<Face, ColorFace>): Map<number, Face> | AiScanResult {
   const centreOwner = new Map<number, Face>();
   for (const face of FACES) {
-    const f = faces[face];
-    // `faces[face]` is `| undefined` under noUncheckedIndexedAccess, and a face that is not there
-    // fails the same sentence as a face of the wrong length. The optional chain carries both: a
-    // missing face makes the first comparison true, so the second access is only ever reached once
-    // the first has proved `f` present.
-    if (f?.colors.length !== 9 || f.confidence.length !== 9) {
-      throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
-    }
-    // Colours are deliberately NOT range-checked here. A sticker that is not one of the six centre
-    // colours is a statement about the CUBE — `assemblePainted` already refuses it with a sentence
-    // a child can act on — so making it throw would replace an answer with a crash.
-    for (const c of f.confidence) {
-      if (!Number.isFinite(c) || c < 0 || c > 1) {
-        throw new Error(`face ${face}: confidence ${c} is not a number in [0, 1]`);
-      }
-    }
+    const f = checkedCapture(`face ${face}`, faces[face]);
     const centre = f.colors[4]!;
     // Unreachable from either host path, and kept as a guard on the public API rather than a
     // case with a UI: the camera files every capture under FACES[centre] (so a second face with
@@ -471,6 +501,134 @@ export function assemblePainted(
   return { facelets, valid: true, ...summariseConfidence(conf, threshold) };
 }
 
+/** The confirmations applied: what each one measures, and which readings are left standing. */
+interface Narrowed {
+  ok: true;
+  confirmedFaces: Face[];
+  /** Per confirmed face, the rotations of the original capture that confirmation is consistent with. */
+  allowed: Map<Face, Set<number>>;
+  candidates: [string, number[][]][];
+}
+/** …or the refusal to hand straight back, which is a sentence about a hold rather than a cube. */
+type Narrowing = Narrowed | { ok: false; refusal: AiScanResult };
+
+/**
+ * Apply the confirmations: keep a reading only if at least one of ITS combos rotates the original
+ * capture into what the confirmation saw, at tolerance match (see matchingRotations).
+ *
+ * This is a FILTER over strings the solvability gate has already passed, so no confirmation —
+ * however badly held or read — can introduce a cube that was not already verified.
+ *
+ * Lifted out of `assembleColors` (2026-09-05), which had grown to cover validation, the rotation
+ * search, this narrowing, the ambiguity branches, the redundancy check and the result — six
+ * decisions sharing one scope, where the middle two are the ones a mis-held look can corrupt.
+ * Nothing here decides differently from the code it replaces; the tests in
+ * `tests/ai-assemble.test.ts` that pin `reread`, `mismatch` and the never-a-wrong-cube property
+ * are the ones that say so.
+ */
+function narrowByConfirmations(
+  faces: Record<Face, ColorFace>,
+  all: [string, number[][]][],
+  confirmed: Partial<Record<Face, ColorFace>>,
+): Narrowing {
+  const confirmedFaces = FACES.filter((f) => confirmed[f]);
+  const allowed = new Map<Face, Set<number>>();
+  for (const face of confirmedFaces) {
+    // CHECKED FIRST, like every other capture this module reads. A confirmation is user input that
+    // arrives through the same public argument as the six sides and was the one capture nobody
+    // validated — see `checkedCapture` for what a short one does to the tolerance match.
+    const capture = checkedCapture(`confirmation of ${face}`, confirmed[face]);
+    const rots = matchingRotations(faces[face]!, capture);
+    // No rotation comes close: the two looks disagree about COLOURS, so this capture measures
+    // nothing about the hold. Hand it back as `reread` — the caller adopts the fresh look (taken
+    // under instruction, held a known way up) as the side's reading and re-assembles, instead of
+    // telling a user who did everything right that they held it wrong.
+    if (rots.size === 0) {
+      return {
+        ok: false,
+        refusal: reject(
+          'that side read differently this time — checking again with the fresh read',
+          {
+            reread: face,
+            confirm: { face, up: TOP_NEIGHBOUR[face] },
+          },
+        ),
+      };
+    }
+    allowed.set(face, rots);
+  }
+  const candidates = all
+    .map(([fl, combos]): [string, number[][]] => [
+      fl,
+      combos.filter((c) =>
+        confirmedFaces.every((face) => allowed.get(face)!.has(c[FACES.indexOf(face)]!)),
+      ),
+    ])
+    .filter(([, combos]) => combos.length > 0);
+
+  if (candidates.length === 0) {
+    // The scan itself was fine; the confirmation is what ruled everything out, so it was held the
+    // wrong way up (or a sticker read differently the second time). Ask for the same side again
+    // rather than throwing away five good faces.
+    // Which confirmation was mis-held is not knowable from here, so re-asking only the last one
+    // would loop forever when it was an earlier one. The caller drops them all and starts over.
+    const last = confirmedFaces[confirmedFaces.length - 1]!;
+    return {
+      ok: false,
+      refusal: reject('those two looks disagree — one was held the wrong way up; try again', {
+        mismatch: true,
+        confirm: { face: last, up: TOP_NEIGHBOUR[last] },
+      }),
+    };
+  }
+  return { ok: true, confirmedFaces, allowed, candidates };
+}
+
+/**
+ * The lone survivor, put to a further test — or null when it needs none and may be accepted.
+ *
+ * If a confirmation is what removed the other readings, that confirmation is load-bearing and a
+ * mis-held one would have removed the TRUTH and kept an impostor. So demand redundancy: every
+ * eliminated reading must be contradicted by at least TWO separate looks. A truthful look can never
+ * contradict the real cube, so under that rule a single mis-hold can no longer eliminate the truth
+ * on its own — the worst it can do is leave the scan ambiguous, which is safe, instead of
+ * confidently wrong.
+ *
+ * Counting looks instead of contradictions is NOT enough and was the first thing tried: when a
+ * scan needs two looks just to narrow down, both get spent narrowing and nothing checks anything.
+ * Measured, that returned a wrong cube in 5% of scans where the user mis-held one look.
+ */
+function verifySurvivor(
+  all: [string, number[][]][],
+  facelets: string,
+  narrowed: Narrowed,
+  confirmed: Partial<Record<Face, ColorFace>>,
+): AiScanResult | null {
+  const { confirmedFaces, allowed } = narrowed;
+  const contradictions = (candidate: number[][]): number =>
+    confirmedFaces.filter((face) => {
+      const fi = FACES.indexOf(face);
+      return candidate.every((c) => !allowed.get(face)!.has(c[fi]!));
+    }).length;
+  const weak = all.filter(([fl, c]) => fl !== facelets && contradictions(c) < 2);
+  if (weak.length === 0) return null;
+  const check = pickVerification(all.find(([fl]) => fl === facelets)![1], weak, confirmed);
+  if (check) {
+    return reject('one more look to be sure — a single look could be held wrong', {
+      confirm: check,
+    });
+  }
+  // No remaining side can tell the readings apart, so the answer would rest on one look that
+  // nothing can check. Accepting here was measured leaking wrong cubes, so say so instead: a
+  // single turn of any face breaks the symmetry and makes the next scan readable.
+  return reject(
+    'this cube is too symmetric to read for certain — turn any one face, then scan again',
+    {
+      ambiguous: true,
+    },
+  );
+}
+
 /**
  * Turn 6 detected faces (colour classes, any rotation) into a validated ScanResult by solving each
  * face's rotation. Rejects a scan whose 6 centres are not 6 distinct colours (not a real cube) and
@@ -502,47 +660,9 @@ export function assembleColors(
     );
   }
 
-  // Narrow by any confirmed capture: keep a reading only if at least one of ITS combos rotates the
-  // original capture into what the confirmation saw, at best-rotation match (see matchingRotations).
-  // This is a filter over strings the solvability gate already passed, so no confirmation —
-  // however badly held or read — can introduce a cube that was not already verified.
-  const confirmedFaces = FACES.filter((f) => confirmed[f]);
-  const allowed = new Map<Face, Set<number>>();
-  for (const face of confirmedFaces) {
-    const rots = matchingRotations(faces[face]!, confirmed[face]!);
-    // No rotation comes close: the two looks disagree about COLOURS, so this capture measures
-    // nothing about the hold. Hand it back as `reread` — the caller adopts the fresh look (taken
-    // under instruction, held a known way up) as the side's reading and re-assembles, instead of
-    // telling a user who did everything right that they held it wrong.
-    if (rots.size === 0) {
-      return reject('that side read differently this time — checking again with the fresh read', {
-        reread: face,
-        confirm: { face, up: TOP_NEIGHBOUR[face] },
-      });
-    }
-    allowed.set(face, rots);
-  }
-  const candidates = all
-    .map(([fl, combos]): [string, number[][]] => [
-      fl,
-      combos.filter((c) =>
-        confirmedFaces.every((face) => allowed.get(face)!.has(c[FACES.indexOf(face)]!)),
-      ),
-    ])
-    .filter(([, combos]) => combos.length > 0);
-
-  if (candidates.length === 0) {
-    // The scan itself was fine; the confirmation is what ruled everything out, so it was held the
-    // wrong way up (or a sticker read differently the second time). Ask for the same side again
-    // rather than throwing away five good faces.
-    // Which confirmation was mis-held is not knowable from here, so re-asking only the last one
-    // would loop forever when it was an earlier one. The caller drops them all and starts over.
-    const last = confirmedFaces[confirmedFaces.length - 1]!;
-    return reject('those two looks disagree — one was held the wrong way up; try again', {
-      mismatch: true,
-      confirm: { face: last, up: TOP_NEIGHBOUR[last] },
-    });
-  }
+  const narrowed = narrowByConfirmations(faces, all, confirmed);
+  if (!narrowed.ok) return narrowed.refusal;
+  const candidates = narrowed.candidates;
 
   if (candidates.length > 1) {
     const confirm = pickConfirm(candidates, confirmed);
@@ -553,8 +673,9 @@ export function assembleColors(
       });
     }
     // No unconfirmed side can tell the surviving readings apart (their rotation sets agree on
-    // every face we could still ask about) — the same dead end as the too-symmetric case below,
-    // so say the same thing rather than promising a deciding look that cannot be asked for.
+    // every face we could still ask about) — the same dead end as the too-symmetric case in
+    // `verifySurvivor`, so say the same thing rather than promising a deciding look that cannot
+    // be asked for.
     return reject(
       'this cube is too symmetric to read for certain — turn any one face, then scan again',
       { ambiguous: true },
@@ -563,37 +684,10 @@ export function assembleColors(
 
   const [facelets, combos] = candidates[0]!;
 
-  // Exactly one reading survives — but if a confirmation is what removed the others, that
-  // confirmation is load-bearing and a mis-held one would have removed the TRUTH and kept an
-  // impostor. So demand redundancy: every eliminated reading must be contradicted by at least TWO
-  // separate looks. A truthful look can never contradict the real cube, so under that rule a
-  // single mis-hold can no longer eliminate the truth on its own — the worst it can do is leave
-  // the scan ambiguous, which is safe, instead of confidently wrong.
-  //
-  // Counting looks instead of contradictions is NOT enough and was the first thing tried: when a
-  // scan needs two looks just to narrow down, both get spent narrowing and nothing checks anything.
-  // Measured, that returned a wrong cube in 5% of scans where the user mis-held one look.
-  const contradictions = (candidate: number[][]): number =>
-    confirmedFaces.filter((face) => {
-      const fi = FACES.indexOf(face);
-      return candidate.every((c) => !allowed.get(face)!.has(c[fi]!));
-    }).length;
-  const weak = all.filter(([fl, c]) => fl !== facelets && contradictions(c) < 2);
-  if (weak.length > 0) {
-    const check = pickVerification(all.find(([fl]) => fl === facelets)![1], weak, confirmed);
-    if (check) {
-      return reject('one more look to be sure — a single look could be held wrong', {
-        confirm: check,
-      });
-    }
-    // No remaining side can tell the readings apart, so the answer would rest on one look that
-    // nothing can check. Accepting here was measured leaking wrong cubes, so say so instead: a
-    // single turn of any face breaks the symmetry and makes the next scan readable.
-    return reject(
-      'this cube is too symmetric to read for certain — turn any one face, then scan again',
-      { ambiguous: true },
-    );
-  }
+  // Exactly one reading survives — but a confirmation that removed the others is load-bearing, and
+  // a look nothing checks can be a mis-hold. See `verifySurvivor`.
+  const unverified = verifySurvivor(all, facelets, narrowed, confirmed);
+  if (unverified) return unverified;
 
   // Rotate the confidences the same way for the report, using a combo that satisfies every
   // confirmation. The combo itself rides along as `rotations`, so a host can turn each tile the

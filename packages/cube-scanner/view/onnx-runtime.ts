@@ -449,14 +449,36 @@ export function defaultThreadCount(
  * acting on the absence of a signal would downgrade every machine on a runtime that simply does not
  * publish it. The check can only ever cost a false GPU, never a false wasm.
  *
+ * IT IS A TRANSITION, NOT A READING (2026-09-05). `ort.env` is global to the runtime MODULE, and
+ * `ortByUrl` hands the same module to every runner on the page — so a device left there by an
+ * EARLIER GPU session answers for a later one that onnxruntime quietly assigned to wasm, which is
+ * the exact arrangement this check exists to refuse, now running unproxied on the page's thread.
+ * Reproduced against the fixture in `tests/model-runner.test.ts`. So the caller reads the device
+ * immediately before `InferenceSession.create` and passes it here, and the evidence is that THIS
+ * creation changed it: the measured case (nothing there, then a device) reads exactly as before.
+ *
+ * A device that is present and unchanged is NOT evidence, and it is the one case that costs
+ * something: onnxruntime documents no per-session handle, and whether a second GPU session on one
+ * module gets a new device object is unmeasured here. So a genuine second GPU session may be
+ * rebuilt on proxied wasm — a slower scanner that still works — while the alternative is an
+ * unproxied wasm run blocking the page for as long as the camera is open. Where a reading cannot
+ * be validated this project refuses rather than guesses, and this is that refusal.
+ *
  * (`ort.env.webgpu.profiling.ondata` was the other candidate and does not work: assignable on this
  * build, and zero events fire during a genuine 87 ms GPU run in both engines. Believing it would
  * have downgraded every healthy GPU there is.)
  */
-function gpuTookTheWork(ort: Ort): boolean {
+function gpuTookTheWork(ort: Ort, before: unknown): boolean {
   const webgpu = (ort.env as { webgpu?: { device?: unknown } }).webgpu;
   if (typeof webgpu !== 'object' || webgpu === null) return true;
-  return Boolean(webgpu.device);
+  const device = webgpu.device;
+  if (!device) return false;
+  return device !== before;
+}
+
+/** What `env.webgpu.device` holds right now — the before/after pair `gpuTookTheWork` compares. */
+function webgpuDevice(ort: Ort): unknown {
+  return (ort.env as { webgpu?: { device?: unknown } }).webgpu?.device;
 }
 
 /**
@@ -468,12 +490,24 @@ function gpuTookTheWork(ort: Ort): boolean {
  * warm-up released, the timing probe released, and the input/output-name check between them —
  * added first and never revisited — threw over a live session. One boundary cannot be
  * inconsistent with itself, which is the whole reason this is a function.
+ *
+ * `relinquish` is how work that releases the session ITSELF says so (2026-09-05). The two GPU
+ * fallbacks both released and then rebuilt inside here, and a rebuild that REJECTS took the
+ * catch — which released the same session a second time. Measured release counts on the abandoned
+ * module: [2, 1] where it should be [1, 1]. Ownership is a fact one place has to hold, so the
+ * boundary that releases is the boundary that is told it no longer owns.
  */
-async function owning<T>(session: ortNs.InferenceSession, work: () => Promise<T> | T): Promise<T> {
+async function owning<T>(
+  session: ortNs.InferenceSession,
+  work: (relinquish: () => void) => Promise<T> | T,
+): Promise<T> {
+  let owned = true;
   try {
-    return await work();
+    return await work(() => {
+      owned = false;
+    });
   } catch (err) {
-    await session.release().catch(() => {});
+    if (owned) await session.release().catch(() => {});
     throw err;
   }
 }
@@ -590,6 +624,9 @@ export async function createModelRunner(
   // `proxiedSiblingUrl` for the fallback when a host cannot serve the query form.
   const ort = await loadRuntime(ortUrl, !gpu);
 
+  // Read INSIDE the serialised block, immediately before the create, so it is this session's
+  // before-picture and not some concurrent runner's. See `gpuTookTheWork`.
+  let deviceBefore: unknown;
   const session = await serialise(ort, async () => {
     // This was a hard 1, with the note "so no SharedArrayBuffer / cross-origin-isolation headers
     // are needed" — true when written, and it meant every non-Apple build ran a THREADED runtime
@@ -613,24 +650,43 @@ export async function createModelRunner(
     ort.env.wasm.proxy = !gpu;
     ort.env.wasm.wasmPaths = opts.wasmPaths ?? './';
 
+    deviceBefore = webgpuDevice(ort);
     return ort.InferenceSession.create(modelUrl, {
       executionProviders,
       graphOptimizationLevel: 'all',
     });
   });
 
-  return owning(session, async (): Promise<ModelRunner> => {
+  return owning(session, async (relinquish): Promise<ModelRunner> => {
+    /**
+     * Drop this session and build the wasm one instead — the ONE implementation of the fallback.
+     *
+     * It was written twice, and the second copy is where the double release came from: both
+     * released and then rebuilt inside `owning`, so a rebuild that rejected fell into the catch
+     * and released the same session again. Ownership is handed back FIRST, before the release, so
+     * there is no window in which two places believe they must release it.
+     *
+     * Released BEFORE the rebuild, not after: two live sessions is the one arrangement that can
+     * fail for want of memory on the machine least able to spare it. The SAME ortUrl, too — asking
+     * for wasm changes the proxy mode, and `runtimeUrl` turns that into a different module by
+     * itself. Nothing here needs to know that it did.
+     */
+    const rebuildOnWasm = async (why: string): Promise<ModelRunner> => {
+      console.info(why);
+      relinquish();
+      await session.release().catch(() => {});
+      return createModelRunner(modelUrl, { ...opts, executionProviders: ['wasm'] });
+    };
+
     // THE GPU HAS TO HAVE TAKEN IT. Asking for `webgpu` turned the proxy off; if onnxruntime then
     // assigned the graph to wasm anyway, that wasm is running on the page's own thread — worse than
     // either honest path, and invisible to the timing probe below, which sees a perfectly ordinary
     // sub-budget wasm run and keeps it. Checked before the warm-up, so the shader compilation this
     // would otherwise pay for is never started.
-    if (gpu && chosenHere && !gpuTookTheWork(ort)) {
-      console.info(
+    if (gpu && chosenHere && !gpuTookTheWork(ort, deviceBefore)) {
+      return rebuildOnWasm(
         '[cubus] WebGPU did not take this model — using the wasm runtime, off the page thread',
       );
-      await session.release().catch(() => {});
-      return createModelRunner(modelUrl, { ...opts, executionProviders: ['wasm'] });
     }
     const inputName = session.inputNames[0];
     const outputName = session.outputNames[0];
@@ -685,27 +741,38 @@ export async function createModelRunner(
       // check before the loop only rules out a page that was already hidden — the page can go
       // hidden during the first awaited probe, which is precisely when a tab is likely to be
       // backgrounded, and then both samples are throttled and the downgrade is permanent anyway.
+      //
+      // SAMPLED IS NOT ENOUGH, and that is why the event is subscribed to as well (2026-09-05):
+      // `visibilityState` is a snapshot, so a tab that goes hidden DURING an awaited probe and is
+      // back by the time the sample is checked reads as visible at every point this code looks,
+      // while the run it just timed was throttled the whole way. `visibilitychange` fires on both
+      // edges, so a listener held across the sampling sees the interval the polls cannot.
       const hidden = (): boolean => globalThis.document?.visibilityState === 'hidden';
       if (gpu && chosenHere && !hidden()) {
+        let wentHidden = false;
+        const noteHidden = (): void => {
+          if (hidden()) wentHidden = true;
+        };
+        // Optional-called: a host without a real document (a DOM test, a worker) may have neither
+        // method, and losing the listener costs the extra evidence rather than the verdict.
+        globalThis.document?.addEventListener?.('visibilitychange', noteHidden);
         let best = Number.POSITIVE_INFINITY;
         let watched = true;
-        for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
-          const started = performance.now();
-          await probe();
-          if (hidden()) watched = false;
-          else best = Math.min(best, performance.now() - started);
+        try {
+          for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
+            const started = performance.now();
+            await probe();
+            if (hidden() || wentHidden) watched = false;
+            else best = Math.min(best, performance.now() - started);
+          }
+        } finally {
+          globalThis.document?.removeEventListener?.('visibilitychange', noteHidden);
         }
         const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
-        if (watched && !hidden() && best > budget) {
-          console.info(
+        if (watched && !hidden() && !wentHidden && best > budget) {
+          return rebuildOnWasm(
             `[cubus] the GPU ran this model in ${Math.round(best)} ms — slower than the wasm runtime, so using that instead`,
           );
-          // Released BEFORE the rebuild, not after: two live sessions is the one arrangement that
-          // can fail for want of memory on the machine least able to spare it.
-          await session.release().catch(() => {});
-          // The SAME ortUrl: asking for wasm changes the proxy mode, and `runtimeUrl` turns that
-          // into a different module by itself. Nothing here needs to know that it did.
-          return createModelRunner(modelUrl, { ...opts, executionProviders: ['wasm'] });
         }
       }
     }
