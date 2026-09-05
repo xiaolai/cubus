@@ -74,10 +74,23 @@ function run(root, { signal = null } = {}) {
   // `set -m` puts the script in its own process group, and the signal goes to the GROUP — which
   // is what a terminal does on Ctrl-C, and the only way the blocking child dies too. Signalling
   // the script alone just queues the trap behind a `sleep` that bash will not interrupt.
+  //
+  // Sent when the first check has STARTED — the stub's marker file is the proof — and not after a
+  // fixed second. A fixed delay stood in for that state and was a load meter: under the full gate
+  // (2026-09-05) the script had not printed its first header within the second, the signal
+  // landed before any check, and a run that restored and stopped exactly as it should was
+  // reported as having printed zero headers instead of one. Bounded, so a script that never
+  // reaches its first check fails here by name rather than by the 60 s timeout.
+  const marker = join(root, '.slept');
   return spawnSync(
     'bash',
-    ['-c', `set -m; "$1" & pid=$!; sleep 1; kill -${signal} -"$pid"; wait "$pid"; echo "exit=$?"`,
-     'sh', join(root, 'scripts/check-on-clone.sh')],
+    ['-c',
+     'set -m; "$1" & pid=$!; i=0; ' +
+       'until [ -e "$2" ]; do i=$((i + 1)); ' +
+       'if [ "$i" -gt 600 ]; then echo "first check never started"; kill -TERM -"$pid"; wait "$pid"; exit 99; fi; ' +
+       'sleep 0.05; done; ' +
+       `kill -${signal} -"$pid"; wait "$pid"; echo "exit=$?"`,
+     'sh', join(root, 'scripts/check-on-clone.sh'), marker],
     { cwd: root, env, encoding: 'utf8', timeout: 60_000 },
   );
 }
