@@ -1,6 +1,6 @@
 {
   "name": "cubus-desktop",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "license": "AGPL-3.0-only",
   "private": true,
   "description": "Cubus \u2014 Tauri desktop app. Reuses apps/web as the frontend; native BLE via crates/cube-ble.",
