@@ -132,6 +132,11 @@ async function cmdMonitor() {
   cube.on('gap', (g) =>
     console.log(`⚠ GAP   missed ${g.missing} move(s) between serial ${g.from}->${g.to}`),
   );
+  // A move the counter refused. Printed because a packet dropped on purpose still happened, and
+  // a run where these appear is the evidence that the link is repeating or re-ordering packets.
+  cube.on('stale', (s) =>
+    console.log(`↩ STALE ${s.reason} serial=${s.serial} (counter at ${s.lastSerial})`),
+  );
   cube.on('unknown', (u) =>
     console.log(`? UNKNOWN evt=0x${(u.eventType ?? 0).toString(16)} ${u.rawHex ?? ''}`),
   );

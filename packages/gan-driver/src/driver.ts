@@ -18,6 +18,11 @@ import type { Transport } from './transport/blew.js';
 const STATE_CHAR = 'FFF6'; // notify: state/events
 const CMD_CHAR = 'FFF5'; // write: commands
 
+// The decoder delivers a 16-bit move serial (docs/protocol.md: "16-bit serial @bit48"), so every
+// comparison of one against another is modulo that width, and "behind" is the far half of the ring.
+const SERIAL_MASK = 0xffff;
+const SERIAL_HALF = 0x8000;
+
 export type Unsubscribe = () => void;
 
 export interface GanCubeOptions {
@@ -34,6 +39,10 @@ export class GanCube extends TinyEmitter {
   private live = false;
   private hwFields: Record<string, string> = {};
   private hwExtras: { eventType: number; value: string }[] = [];
+  /** Removes this driver's listeners from the current subscription. Null when not connected. */
+  private releaseSub: (() => void) | null = null;
+  /** Everything waiting on the link: failed together the moment the link is gone. */
+  private readonly pending = new Set<(reason: Error) => void>();
 
   constructor(opts: GanCubeOptions) {
     super();
@@ -41,37 +50,89 @@ export class GanCube extends TinyEmitter {
     this.transport = opts.transport;
   }
 
-  /** Subscribe to state notifications and start decoding. */
+  /**
+   * Subscribe to state notifications and start decoding.
+   *
+   * Idempotent, and that is a fix rather than a nicety: a second connect() used to add a second
+   * set of listeners to the SAME subscription — a cube has one FFF6 characteristic — so every
+   * packet decoded twice and every move was delivered twice, and nothing ever removed either set.
+   * The subscription is owned here now, and released by disconnect().
+   */
   connect(): void {
+    if (this.releaseSub) return;
     const sub = this.transport.subscribe(STATE_CHAR);
-    sub.on('packet', (hex: string, ts: number) => this.onPacket(hex, ts));
-    sub.on('error', (e) => this.emit('error', e));
-    sub.on('reconnecting', () => {
+    const onPacket = (hex: string, ts: number) => this.onPacket(hex, ts);
+    const onError = (e: unknown) => this.emit('error', e);
+    const onReconnecting = () => {
+      // Readiness only. A reconnect is the link coming BACK, so anything waiting on a packet may
+      // still be answered once it does — failing those here would turn a recoverable respawn into
+      // an error the caller has to handle.
       this.live = false;
       this.emit('reconnecting');
-    });
-    sub.on('giveup', (e) => this.emit('giveup', e));
-    sub.on('close', (code) => this.emit('disconnect', code));
+    };
+    const onGiveup = (e: unknown) => this.emit('giveup', e);
+    const onClose = (code: unknown) => {
+      // Readiness dies with the link, and so does everything waiting on it. The listeners stay:
+      // a transport that reconnects does it on this same emitter, and dropping them here would
+      // silence the driver permanently.
+      this.goDark('the subscription closed');
+      this.emit('disconnect', code);
+    };
+    sub.on('packet', onPacket);
+    sub.on('error', onError);
+    sub.on('reconnecting', onReconnecting);
+    sub.on('giveup', onGiveup);
+    sub.on('close', onClose);
+    this.releaseSub = () => {
+      sub.off('packet', onPacket);
+      sub.off('error', onError);
+      sub.off('reconnecting', onReconnecting);
+      sub.off('giveup', onGiveup);
+      sub.off('close', onClose);
+    };
   }
 
   /** Resolves once at least one notification has arrived (subscription is live). */
   private waitLive(timeoutMs = 5000): Promise<void> {
     if (this.live) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      const onLive = () => {
+      const stop = () => {
         clearTimeout(timer);
+        this.off('live', onLive); // don't leak the listener on the timeout path
+        this.pending.delete(abort);
+      };
+      const onLive = () => {
+        stop();
         resolve();
       };
-      const timer = setTimeout(() => {
-        this.off('live', onLive); // don't leak the listener on the timeout path
-        reject(new Error('subscription did not go live'));
-      }, timeoutMs);
+      // A link that goes away while this is waiting fails it now rather than at the timeout: the
+      // answer is already known, and the caller's next step would be a write into nothing.
+      const abort = (reason: Error) => {
+        stop();
+        reject(reason);
+      };
+      const timer = setTimeout(() => abort(new Error('subscription did not go live')), timeoutMs);
+      this.pending.add(abort);
       this.once('live', onLive);
     });
   }
 
   disconnect(): void {
+    const release = this.releaseSub;
+    this.releaseSub = null;
+    release?.(); // before the transport goes, so a synchronous 'close' is not reported twice
+    // Readiness belongs to the link, not to the driver. Leaving it set let the next active request
+    // skip waitLive() entirely and write a command into a transport that was already torn down.
+    this.goDark('disconnected');
     this.transport.disconnect();
+  }
+
+  /** Drop readiness and fail everything that was waiting on the link, with the reason. */
+  private goDark(reason: string): void {
+    this.live = false;
+    const waiting = [...this.pending];
+    this.pending.clear();
+    for (const abort of waiting) abort(new Error(reason));
   }
 
   private onPacket(hex: string, ts: number): void {
@@ -100,17 +161,16 @@ export class GanCube extends TinyEmitter {
       this.onHardwareField(ev, ts);
       return;
     }
-    if (ev.type === 'MOVE') {
-      this.detectGap(ev);
-    }
+    // A move the counter refuses is not delivered at all — see acceptMove.
+    if (ev.type === 'MOVE' && !this.acceptMove(ev)) return;
     if (ev.type === 'FACELETS') {
       this.lastFacelets = ev;
-      if (this.lastSerial === -1) this.lastSerial = ev.serial & 0xff;
-    }
-    if (ev.type === 'UNKNOWN') {
-      this.emit('unknown', ev);
+      if (this.lastSerial === -1) this.lastSerial = ev.serial & SERIAL_MASK;
     }
     this.emit('event', ev);
+    // Also under its own name, lowercased — 'move', 'facelets', 'gyro', 'battery', 'unknown'.
+    // UNKNOWN used to be emitted here AND explicitly just above, so every unrecognised packet
+    // called an 'unknown' listener twice.
     this.emit(ev.type.toLowerCase(), ev);
   }
 
@@ -143,16 +203,41 @@ export class GanCube extends TinyEmitter {
     }
   }
 
-  /** Emit a 'gap' event when the move serial skips — never lose moves silently. */
-  private detectGap(move: CubeMove): void {
-    const serial = move.serial & 0xff;
+  /**
+   * Decide whether a MOVE packet is the next one, and report what is missing before it.
+   *
+   * The serial counts moves modulo 2^16, so ahead and behind are the two halves of that ring:
+   * 1..0x7FFF ahead (a skip means moves were lost — 'gap', so they are never lost silently), 0 the
+   * same move again, anything else a packet from behind. The last two are refused, which keeps
+   * them out of the move stream AND out of the counter — the part that used to be wrong.
+   *
+   * Advancing the counter for a stale packet made the NEXT move look like a skip: 10, 9, 11
+   * delivered 9 after 10 and then reported move 10 as missing, a move already delivered. A gap is
+   * the signal the app uses to decide its tracking is broken and to ask for a camera scan, so
+   * inventing one is worse than missing one.
+   *
+   * A refusal is announced ('stale'), never silent — the rule that keeps bad framing and unmapped
+   * event types visible applies to a packet dropped on purpose too.
+   */
+  private acceptMove(move: CubeMove): boolean {
+    const serial = move.serial & SERIAL_MASK;
     if (this.lastSerial !== -1) {
-      const diff = (serial - this.lastSerial) & 0xff;
-      if (diff > 1 && diff < 128) {
+      const diff = (serial - this.lastSerial) & SERIAL_MASK;
+      if (diff === 0 || diff >= SERIAL_HALF) {
+        this.emit('stale', {
+          serial,
+          lastSerial: this.lastSerial,
+          reason: diff === 0 ? 'duplicate' : 'behind',
+          move,
+        });
+        return false;
+      }
+      if (diff > 1) {
         this.emit('gap', { missing: diff - 1, from: this.lastSerial, to: serial });
       }
     }
     this.lastSerial = serial;
+    return true;
   }
 
   // ---- Typed convenience subscriptions -------------------------------------
@@ -313,6 +398,17 @@ export class GanCube extends TinyEmitter {
    * Wait for the next `event`, optionally after sending a query command.
    * The command is sent only after the subscription is confirmed live, so the
    * cube's response is never missed to a subscribe/write race.
+   *
+   * With a command, TWO things must happen before this resolves: the write has to complete, and a
+   * matching notification has to arrive. It used to be one — the notification — and the cube emits
+   * FACELETS about once a second on its own, so a write that failed outright still produced a
+   * successful getState(). anchorSolved() takes exactly this call as its barrier before
+   * REQUEST_RESET, the one command that can permanently desync the driver from the cube, and it
+   * takes it precisely to establish that the channel works.
+   *
+   * A notification arriving while the write is still in flight is HELD, not dropped: a transport
+   * can deliver the cube's reply before its own write promise settles, and refusing it would
+   * trade one race for another. The write is still what unblocks the answer.
    */
   private request<T = CubeEvent>(
     event: string,
@@ -320,26 +416,61 @@ export class GanCube extends TinyEmitter {
     timeoutMs: number,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.off(event, onEvt);
-        reject(new Error(`timeout waiting for ${event}${cmd ? ` after ${cmd}` : ''}`));
-      }, timeoutMs);
-      const onEvt = (e: T) => {
+      let settled = false;
+      let live = cmd === null; // a passive read waits on nothing but the cube
+      let written = cmd === null; // ...and has no write to wait on either
+      let answer: T | null = null;
+
+      const stop = () => {
+        settled = true;
         clearTimeout(timer);
         this.off(event, onEvt);
-        resolve(e);
+        this.pending.delete(abort);
       };
-      this.once(event, onEvt);
+      const fail = (reason: unknown) => {
+        if (settled) return;
+        stop();
+        reject(reason);
+      };
+      const settleIfComplete = () => {
+        if (settled || !written || answer === null) return;
+        stop();
+        resolve(answer);
+      };
+      // Kept listening rather than once(): an answer that arrives before the write completes is
+      // held, and a fresher one replaces it.
+      const onEvt = (e: T) => {
+        answer = e;
+        settleIfComplete();
+      };
+      const abort = (reason: Error) => fail(reason);
+      // Name what was actually outstanding. All three are timeouts and only the message tells
+      // them apart, so "waiting for facelets" on a link that never came up would send the reader
+      // looking at the cube instead of at the connection.
+      const timer = setTimeout(() => {
+        const outstanding = !live
+          ? `the subscription to go live before ${cmd}`
+          : answer !== null && !written
+            ? `the ${cmd} write to complete`
+            : `${event}${cmd ? ` after ${cmd}` : ''}`;
+        fail(new Error(`timeout waiting for ${outstanding}`));
+      }, timeoutMs);
+
+      this.pending.add(abort);
+      this.on(event, onEvt);
       if (cmd) {
         // Wait for the subscription within the caller's own budget, not a
         // shorter hardcoded one — a slow BLE connect must not cap the timeout.
         this.waitLive(timeoutMs)
-          .then(() => this.send(cmd!))
-          .catch((e) => {
-            clearTimeout(timer);
-            this.off(event, onEvt);
-            reject(e);
-          });
+          .then(() => {
+            live = true;
+            return settled ? undefined : this.send(cmd!);
+          })
+          .then(() => {
+            written = true;
+            settleIfComplete();
+          })
+          .catch(fail);
       }
     });
   }
