@@ -346,6 +346,11 @@ it walks you through solving it.
   `cargo fmt`/`clippy`/`check` for the desktop shell, and a step that rebuilds every vendored
   bundle and fails on any diff — those bundles are committed and have drifted from their sources
   four times.
+  **TypeScript stays at 6.0.x until typescript-eslint admits 7** (2026-09-05): its peer range is
+  `typescript >=4.8.4 <6.1.0`, and the type-aware ESLint pass is half of what `check` means here,
+  so a 7.x bump would leave that half running unsupported rather than running. And a trap in the
+  runner itself: `node --test <missing-file>` prints "Could not find" and exits 0, so a hand-written
+  test list can go green by naming nothing — pass directories, or assert the file exists first.
 - **The 2026-09-04 audit, and what it changed (2026-09-05).** Nine read-only reviewers over
   every slice, then one fix pass; the full record is `dev-docs/audit-2026-09-04.md`. The
   class-level lessons, each now pinned by a test or a gate:
