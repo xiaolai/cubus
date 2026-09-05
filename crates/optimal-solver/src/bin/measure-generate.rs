@@ -50,13 +50,21 @@ impl Scratch {
         getrandom::getrandom(&mut nonce).map_err(|e| {
             std::io::Error::other(format!("no random source for a scratch name: {e}"))
         })?;
-        let dir = std::env::temp_dir().join(format!(
+        Scratch::at(std::env::temp_dir().join(format!(
             "cubus-measure-{}-{:016x}",
             std::process::id(),
             u64::from_le_bytes(nonce)
-        ));
-        // Not create_dir_all: this must FAIL on an existing directory, or the guard would take
-        // ownership of something it did not make and delete it on the way out.
+        )))
+    }
+
+    /// Take ownership of `dir` by CREATING it. Split out from `create` so the refusal can be
+    /// asked of this constructor rather than of `std::fs::create_dir` — the test that stood for
+    /// this called the std function directly and so asserted a property of std, leaving the
+    /// guard's own path unexercised (the audit's finding, 2026-09-05).
+    ///
+    /// Not `create_dir_all`: this must FAIL on an existing directory, or the guard would take
+    /// ownership of something it did not make and delete it, contents and all, on the way out.
+    fn at(dir: std::path::PathBuf) -> std::io::Result<Scratch> {
         std::fs::create_dir(&dir)?;
         Ok(Scratch(dir))
     }
@@ -144,23 +152,16 @@ fn main() {
 mod tests {
     use super::Scratch;
 
-    /// The two properties the guard exists for: the directory is one this run made (so cleanup
-    /// can never reach anything it did not), and it goes away with its contents on every exit —
-    /// including the panicking one, which is the same `Drop` this test observes.
+    /// The guard's happy path: it makes its own directory, no two guards name the same one, and
+    /// the directory goes away with its contents when the value does.
     #[test]
     fn a_scratch_directory_is_this_runs_own_and_leaves_nothing_behind() {
         let path = {
             let scratch = Scratch::create().expect("a fresh scratch directory");
             let path = scratch.path().to_path_buf();
             assert!(path.is_dir());
-            // The mechanism the ownership claim rests on: `create_dir` refuses a name that
-            // already exists, so no guard can ever adopt a directory it did not make.
-            assert!(
-                std::fs::create_dir(&path).is_err(),
-                "create_dir must refuse an existing directory"
-            );
-            // And two guards alive at once never name the same one — the bare pid did, across a
-            // pid reuse, which is what made cleanup a hazard rather than a courtesy.
+            // Two guards alive at once never name the same one — the bare pid did, across a pid
+            // reuse, which is what made cleanup a hazard rather than a courtesy.
             let other = Scratch::create().expect("a second scratch directory");
             assert_ne!(other.path(), path);
             std::fs::write(path.join("corner.pdb"), b"an artifact").unwrap();
@@ -169,6 +170,56 @@ mod tests {
         assert!(
             !path.exists(),
             "the guard removed its directory, contents and all"
+        );
+    }
+
+    /// The refusal itself, asked of the GUARD. A directory that already exists is one this run did
+    /// not make, so the guard must not take it — and the check has to go through `Scratch::at`,
+    /// because a test that calls `std::fs::create_dir` proves a property of std and would pass
+    /// with the guard's own `create_dir` swapped for `create_dir_all` (the audit's finding,
+    /// 2026-09-05). Adoption is the dangerous outcome: `Drop` deletes recursively, so a guard over
+    /// a directory it did not make deletes someone else's files.
+    #[test]
+    fn a_directory_that_already_exists_is_refused_with_its_contents_untouched() {
+        let host = Scratch::create().expect("a directory this test owns");
+        let occupied = host.path().join("someone-elses");
+        std::fs::create_dir(&occupied).unwrap();
+        std::fs::write(occupied.join("precious.pdb"), b"not ours").unwrap();
+
+        let refused = Scratch::at(occupied.clone());
+        assert!(
+            refused.is_err(),
+            "the guard adopted a directory it did not create"
+        );
+        drop(refused);
+        assert!(
+            occupied.is_dir()
+                && std::fs::read(occupied.join("precious.pdb")).unwrap() == b"not ours",
+            "a refused claim left the directory and its contents exactly as they were"
+        );
+    }
+
+    /// Cleanup DURING UNWINDING, which is the case the guard was written for and the one the
+    /// scope-exit test could not reach: `prepare` panics on a failed save, and a failed save is
+    /// precisely when 86 MB of half-written tables are sitting in the temp directory. The panic is
+    /// raised inside the guard's scope and caught here, so the observation is made after the stack
+    /// has unwound past the guard rather than after a normal return.
+    #[test]
+    fn a_panic_inside_the_scope_still_removes_the_directory() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+        let recorded = seen.clone();
+        let died = std::panic::catch_unwind(move || {
+            let scratch = Scratch::create().expect("a fresh scratch directory");
+            *recorded.lock().unwrap() = Some(scratch.path().to_path_buf());
+            std::fs::write(scratch.path().join("corner.pdb"), vec![0u8; 4096]).unwrap();
+            panic!("deliberate, and expected: the save that refuses");
+        });
+        assert!(died.is_err(), "the panic really happened");
+        let path = seen.lock().unwrap().clone().expect("the guard was created");
+        assert!(
+            !path.exists(),
+            "unwinding past the guard left {} behind",
+            path.display()
         );
     }
 }

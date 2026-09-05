@@ -67,8 +67,8 @@ pub struct Tables {
     pub(crate) edge_b: Pdb,
 }
 
-/// Write `bytes` to `path` so that the file is either absent, or whole and durable — never a
-/// plausible-looking fragment.
+/// Write `bytes` to `path` so that a reader never sees a plausible-looking fragment, and — on
+/// Unix — so that a `path` this returned `Ok` for survives a crash.
 ///
 /// Write-then-rename is the shape, and two details make it hold. The temp name carries the
 /// process id and a random word: a FIXED `name.tmp` meant two instances of the app preparing
@@ -84,7 +84,26 @@ pub struct Tables {
 /// name is separate metadata, so a crash between the rename and the directory's own writeback
 /// could leave the file back under its temp name or gone entirely — a save that returned Ok and
 /// did not happen, which is exactly what this function exists to rule out.
+///
+/// **What is guaranteed, per platform.** On Unix, all three: whole bytes, an atomic name, and a
+/// name that survives a crash. On Windows only the first two — `sync_dir` is a no-op there (see
+/// its own note), so a crash immediately after this returns `Ok` may leave the file under its temp
+/// name or absent. That is a stated limit, not a hidden one, and it is survivable rather than
+/// silent: the next launch finds the artifact missing and regenerates, which is the same path a
+/// corrupt artifact already takes. A wrong proof is never among the outcomes.
+///
+/// The directory sync is INJECTED because an `fsync` leaves nothing behind for a test to look at:
+/// handing the function the call is the only way to assert that it happens, and the claim above
+/// needs a test that fails when it stops being true.
 fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    write_atomic_with(path, bytes, &mut sync_dir)
+}
+
+fn write_atomic_with(
+    path: &std::path::Path,
+    bytes: &[u8],
+    sync: &mut dyn FnMut(&std::path::Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     use std::io::Write as _;
     let dir = path.parent().ok_or("artifact path has no directory")?;
     let name = path
@@ -104,7 +123,7 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
         f.write_all(bytes)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)?;
-        sync_dir(dir)
+        sync(dir)
     })();
     if let Err(e) = result {
         // Leave nothing behind: a stray temp file is a plausible-looking fragment by another name.
@@ -124,12 +143,75 @@ fn sync_dir(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::File::open(dir)?.sync_all()
 }
 
-/// Windows has no directory handle to sync: opening one needs backup semantics and
-/// `FlushFileBuffers` refuses it regardless, so there is nothing to call. A documented no-op
-/// rather than a silent one — the durability of `MoveFileEx` is the platform's answer here, and
-/// stating that is the difference between a known limit and an unnoticed gap.
+/// Windows has no directory handle to sync: opening one needs `FILE_FLAG_BACKUP_SEMANTICS` and
+/// `FlushFileBuffers` refuses a directory handle regardless, so there is nothing to call.
+///
+/// This is a no-op, and it does NOT deliver what its Unix twin does. Being precise about that is
+/// the whole point of the note (the audit's finding, 2026-09-05: the previous wording said "the
+/// durability of `MoveFileEx` is the platform's answer here", which reads as a promise the
+/// platform does not make — `MoveFileEx` is atomic with respect to READERS, and atomicity is not
+/// durability). What Windows gives: a reader never observes a half-written artifact, and the
+/// rename is all-or-nothing. What it does not give: a guarantee that a rename this crate returned
+/// `Ok` for has reached the disk. A crash in that window loses the entry, the next launch reports
+/// the artifact missing, and it is regenerated — the same path a corrupt artifact takes. The
+/// outcome that is excluded on every platform, which is the one that matters here, is a table that
+/// loads and is wrong.
 #[cfg(not(unix))]
 fn sync_dir(_dir: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The directory a path is created IN. An empty parent means a relative single-component path,
+/// which is created in the current directory.
+fn parent_of(path: &std::path::Path) -> &std::path::Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => std::path::Path::new("."),
+    }
+}
+
+/// Create `dir` and every missing ancestor, publishing each newly created directory as durably as
+/// the files that will go inside it.
+///
+/// A directory's own bytes are nothing; its ENTRY is metadata in its PARENT. So `create_dir_all`
+/// left the artifact directory in exactly the position `write_atomic`'s rename used to be in (the
+/// audit's finding, 2026-09-05): three tables written with synced bytes and synced names, inside a
+/// directory the kernel had not been asked to write back — a crash after `save` returned `Ok`
+/// could take all of it, and the care one level down would have bought nothing. Creation is
+/// top-down and one level at a time, because a parent must exist before its child can be made in
+/// it, and each new entry is published before the next is created inside it.
+///
+/// Losing the race to another process is not a failure: its entry, its sync. A path that already
+/// exists and is NOT a directory is a failure, and is reported rather than adopted.
+///
+/// Windows: see `sync_dir` — the creations happen, the entries are not forced to disk, and a lost
+/// directory reads as missing artifacts and regenerates.
+fn create_dirs(dir: &std::path::Path) -> std::io::Result<()> {
+    create_dirs_with(dir, &mut sync_dir)
+}
+
+/// [`create_dirs`], with the sync injected — an `fsync` leaves no trace a test can look at, so
+/// handing the function the call is the only way to assert it happens.
+fn create_dirs_with(
+    dir: &std::path::Path,
+    sync: &mut dyn FnMut(&std::path::Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let mut missing: Vec<&std::path::Path> = Vec::new();
+    let mut at = Some(dir);
+    while let Some(path) = at {
+        if path.as_os_str().is_empty() || path.is_dir() {
+            break;
+        }
+        missing.push(path);
+        at = path.parent();
+    }
+    for path in missing.iter().rev() {
+        match std::fs::create_dir(path) {
+            Ok(()) => sync(parent_of(path))?,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => {}
+            Err(e) => return Err(e),
+        }
+    }
     Ok(())
 }
 
@@ -242,8 +324,11 @@ impl Tables {
         })
     }
 
+    /// Write the three artifacts into `dir`, creating it if it is not there. Every file is
+    /// published atomically and — on Unix — durably, and so is the directory itself: see
+    /// `create_dirs` for why a synced file inside an unsynced directory is not a saved file.
     pub fn save(&self, dir: &std::path::Path) -> Result<(), String> {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        create_dirs(dir).map_err(|e| e.to_string())?;
         for ((name, _), table) in ARTIFACTS
             .iter()
             .zip([&self.corner, &self.edge_a, &self.edge_b])
@@ -352,10 +437,22 @@ mod write_atomic_tests {
                 .collect();
             // Joined here rather than at the end of the scope, because the reader spins until it
             // is told to stop and only the writers finishing is that signal.
-            for w in writers {
-                w.join().unwrap();
-            }
+            //
+            // COLLECT, then signal, then propagate — never `join().unwrap()` in the loop. `unwrap`
+            // unwinds on the FIRST failed writer, which skips the `done` store below; the reader
+            // then spins forever inside the scope's own join, so a writer failure hangs the suite
+            // instead of reporting it (the audit's finding, 2026-09-05, demonstrated on a
+            // reduction of exactly this shape: the old form ran past a four-second watchdog, this
+            // one exits with the writer's panic). `join` itself returns the panic rather than
+            // raising it, so nothing unwinds before the reader has been told to stop.
+            let outcomes: Vec<std::thread::Result<()>> =
+                writers.into_iter().map(|w| w.join()).collect();
             done.store(true, Ordering::Relaxed);
+            for outcome in outcomes {
+                if let Err(panic) = outcome {
+                    std::panic::resume_unwind(panic);
+                }
+            }
         });
         assert!(
             reads.load(Ordering::Relaxed) > 0,
@@ -400,6 +497,110 @@ mod write_atomic_tests {
             read_bounded(&at, "corner.pdb", 64),
             Err(LoadError::Missing(_))
         ));
+    }
+
+    /// A published file's DIRECTORY is synced, after the rename and exactly once.
+    ///
+    /// `write_atomic`'s doc comment has claimed this since 2026-09-05 and nothing checked it: an
+    /// `fsync` leaves no trace on the filesystem, so a version that dropped the call passed every
+    /// test here (the audit's finding — the round-1 fix was the call, this is the assertion that
+    /// keeps it). The sync is injected precisely so the call itself is observable.
+    #[test]
+    fn a_published_file_has_its_directory_entry_synced_too() {
+        use super::write_atomic_with;
+        let d = scratch("dirsync");
+        let target = d.join("corner.pdb");
+        let mut synced: Vec<std::path::PathBuf> = Vec::new();
+        write_atomic_with(&target, b"tables", &mut |at| {
+            // The rename has already happened when this runs — the entry being made durable is
+            // the one that exists.
+            assert_eq!(std::fs::read(&target).unwrap(), b"tables");
+            synced.push(at.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            synced,
+            vec![d.clone()],
+            "the directory the rename published into, once"
+        );
+
+        // And a sync that refuses is a save that has not finished. The bytes and the name are both
+        // there — what is not established is that the name survives a crash, and a save reporting
+        // success over an unanswerable question is the failure mode this whole function exists to
+        // exclude.
+        let e = write_atomic_with(&d.join("edge-a.pdb"), b"tables", &mut |_| {
+            Err(std::io::Error::other(
+                "this volume cannot fsync a directory",
+            ))
+        })
+        .expect_err("an unsyncable directory is not a completed save");
+        assert!(e.contains("cannot fsync a directory"), "{e}");
+    }
+
+    /// A directory this crate CREATES is published the same way the files inside it are.
+    ///
+    /// A directory's entry is metadata in its parent, so `create_dir_all` alone left three
+    /// carefully-synced artifacts inside something a crash could take whole (the audit's finding,
+    /// 2026-09-05). Every intermediate ancestor counts: they are created top-down, and each one's
+    /// entry is published before the next is made inside it.
+    #[test]
+    fn every_directory_created_for_a_save_is_published_by_syncing_its_parent() {
+        use super::create_dirs_with;
+        let d = scratch("mkdir");
+        let deep = d.join("cubus").join("optimal-pdb").join("v1");
+        let mut synced: Vec<std::path::PathBuf> = Vec::new();
+        create_dirs_with(&deep, &mut |at| {
+            synced.push(at.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert!(deep.is_dir());
+        assert_eq!(
+            synced,
+            vec![
+                d.clone(),
+                d.join("cubus"),
+                d.join("cubus").join("optimal-pdb")
+            ],
+            "each new directory's entry lives in its parent, so each parent is synced in turn"
+        );
+
+        // Idempotent, and a directory that was already there publishes nothing: no entry was made,
+        // so there is nothing to make durable.
+        let mut again: Vec<std::path::PathBuf> = Vec::new();
+        create_dirs_with(&deep, &mut |at| {
+            again.push(at.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert!(again.is_empty(), "nothing created, nothing published");
+
+        // A sync that refuses stops the creation there, rather than carrying on into a tree whose
+        // upper levels may not survive a crash.
+        let mut calls = 0;
+        let e = create_dirs_with(&d.join("a").join("b"), &mut |_| {
+            calls += 1;
+            Err(std::io::Error::other(
+                "this volume cannot fsync a directory",
+            ))
+        })
+        .expect_err("a refusal is propagated, never swallowed");
+        assert_eq!(e.to_string(), "this volume cannot fsync a directory");
+        assert_eq!(
+            calls, 1,
+            "and it stopped at the first level, not after all of them"
+        );
+
+        // A name that exists and is not a directory is reported, never adopted.
+        let file = d.join("corner.pdb");
+        std::fs::write(&file, b"an artifact").unwrap();
+        assert!(create_dirs_with(&file, &mut |_| Ok(())).is_err());
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            b"an artifact",
+            "and it is left exactly as it was"
+        );
     }
 
     /// The directory sync reports its failures rather than swallowing them: a save that could not
