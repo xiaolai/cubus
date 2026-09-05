@@ -778,6 +778,31 @@ mod tests {
         }
     }
 
+    /// Abort a spawned command future and WAIT until it is actually gone.
+    ///
+    /// `abort()` only REQUESTS cancellation: the runtime drops the future on one of its own
+    /// threads some time afterwards, so `abort(); drop(handle);` leaves the assertions that
+    /// follow racing the destruction they are about (the audit's finding, 2026-09-05). A
+    /// regression that moved a guard or a lease back OUT of the blocking worker and into the
+    /// future would then be read off a future that had not been dropped yet — the flag still set,
+    /// the slot still claimed, the test green over the exact ownership bug it exists to catch. A
+    /// `JoinHandle` resolves only once its task has finished, and a cancelled task finishes by
+    /// being dropped, so joining is what turns "the future is destroyed" into a fact.
+    ///
+    /// The cancellation is asserted rather than assumed: a task that had already run to
+    /// completion would join with `Ok`, and every claim below would then be about a worker that
+    /// was never interrupted at all.
+    fn abort_and_wait<T: std::fmt::Debug>(task: tauri::async_runtime::JoinHandle<T>) {
+        task.abort();
+        match tauri::async_runtime::block_on(task) {
+            Err(tauri::Error::JoinError(e)) => assert!(
+                e.is_cancelled(),
+                "the command future ended some other way than cancellation: {e}"
+            ),
+            other => panic!("the command future was not cancelled: {other:?}"),
+        }
+    }
+
     /// Spin until `ready` holds, or fail saying what was still true. Every wait here is on a
     /// blocking worker that is genuinely running, so a deadline is the honest form: a test that
     /// waits forever reports nothing.
@@ -816,9 +841,10 @@ mod tests {
         started_rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the preparation worker started");
-        // The webview goes away: the command's future is dropped mid-await.
-        task.abort();
-        drop(task);
+        // The webview goes away: the command's future is dropped mid-await — and the drop is
+        // WAITED FOR, so what follows describes a future that is gone rather than one the
+        // runtime has merely been asked about.
+        abort_and_wait(task);
         assert!(
             flag.load(Ordering::SeqCst),
             "the worker still holds the preparing flag"
@@ -883,6 +909,75 @@ mod tests {
         );
     }
 
+    /// The exact message the deliberate panic below carries, named so the hook that silences it
+    /// can match that message and nothing else.
+    const DYING_SEARCH: &str = "deliberate, and expected: a search dying mid-proof";
+
+    /// Whether a panic payload is the one message this file raises on purpose.
+    ///
+    /// A free function because a panic hook's own behaviour is otherwise unobservable — stderr is
+    /// the only thing it produces — and "everything else is forwarded" is exactly `!deliberate`,
+    /// which is the half worth a test.
+    fn deliberate(payload: &(dyn std::any::Any + Send)) -> bool {
+        payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            == Some(DYING_SEARCH)
+    }
+
+    /// Silence that one panic without taking the process's hook away from anybody.
+    ///
+    /// `cargo test` runs a binary's tests as threads of ONE process, so the panic hook is shared
+    /// with every test running beside this one: swapping it for a no-op hides a REAL panic that
+    /// happens to land in the same window, and a `take_hook`/`set_hook` pair written around an
+    /// assertion is skipped entirely if that assertion unwinds first — leaving the suite mute for
+    /// the rest of the run (the audit's finding, 2026-09-05). So the hook is installed once, stays
+    /// quiet for the one message raised on purpose, and hands everything else to the hook it
+    /// replaced. Nothing is restored, so no unwind can skip the restoring.
+    fn silence_the_dying_search_panic() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                if deliberate(info.payload()) {
+                    return;
+                }
+                previous(info);
+            }));
+        });
+    }
+
+    /// The quiet hook is quiet for one message and loud for everything else.
+    ///
+    /// This is the assertion that keeps the fix from sliding back to a no-op hook: a predicate
+    /// that answered true for anything would silence the panics of every test running beside it,
+    /// which is the whole defect. The near-miss cases are deliberate — the OTHER deliberate panic
+    /// in this file, which shares a prefix and is not this one, and a non-string payload, which is
+    /// always somebody's real panic.
+    #[test]
+    fn only_the_one_expected_panic_is_silenced() {
+        assert!(
+            deliberate(&DYING_SEARCH),
+            "the &str payload of a bare panic!"
+        );
+        assert!(
+            deliberate(&DYING_SEARCH.to_string()),
+            "and the String payload of a formatted one"
+        );
+        assert!(!deliberate(
+            &"a real panic in a test running beside this one"
+        ));
+        assert!(
+            !deliberate(&"deliberate, and expected: a worker dying mid-proof"),
+            "a different deliberate panic is still not THIS one"
+        );
+        assert!(
+            !deliberate(&7u8),
+            "a payload that is not a message is somebody's real panic"
+        );
+    }
+
     /// The other three ways the proof worker can end, through the same production function: an
     /// uncancelled answer, a search that refuses, and a search that dies.
     ///
@@ -920,15 +1015,14 @@ mod tests {
         }));
         assert_eq!(out, Err("cancelled".into()));
 
-        // A search that dies. The panic is expected, so the hook is silenced for it — a backtrace
-        // in a passing suite is how a real one stops being noticed.
+        // A search that dies. The panic is expected, so it is silenced — a backtrace in a passing
+        // suite is how a real one stops being noticed — and silenced BY NAME, leaving the hook
+        // every other test in this process depends on exactly where it was.
         let lease = ProofLease::claim(&slot).expect("claims again");
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
+        silence_the_dying_search_panic();
         let out = tauri::async_runtime::block_on(prove_in_worker::<u8, _>(lease, |_| {
-            panic!("deliberate, and expected: a search dying mid-proof")
+            panic!("{DYING_SEARCH}")
         }));
-        std::panic::set_hook(hook);
         let e = out.expect_err("a dead worker is not an answer");
         assert!(e.contains("proof worker failed"), "{e}");
         assert!(
@@ -960,8 +1054,7 @@ mod tests {
         started_rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the search started");
-        task.abort();
-        drop(task);
+        abort_and_wait(task);
         assert!(
             ProofLease::claim(&slot).is_none(),
             "the search is still running, so the slot is still its own"
