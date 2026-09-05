@@ -16,9 +16,9 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { webkit } from 'playwright';
 
-import { freePort } from './free-port.mjs';
+import { freePort } from '../free-port.mjs';
 
-const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
+const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 let proc;
 let browser;
 let base;
@@ -85,7 +85,7 @@ test('the packaged builds ask for the same headers as the dev server', async () 
   // that depend on this, because they have no native detector and fall back to the wasm path.
   // A dev server that isolates while the shipped app does not is the worst of both: fast where
   // nobody ships and slow where everybody does.
-  const conf = JSON.parse(readFileSync(new URL('../../desktop/src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+  const conf = JSON.parse(readFileSync(new URL('../../../desktop/src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
   const headers = conf.app?.security?.headers ?? {};
   assert.equal(headers['Cross-Origin-Opener-Policy'], 'same-origin');
   assert.equal(headers['Cross-Origin-Embedder-Policy'], 'require-corp');

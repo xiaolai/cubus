@@ -1,10 +1,27 @@
 name: CI
 
+# TWO TIERS, decided by the `plan` job (scripts/ci-plan.mjs; apps/web/test/ci-plan.test.mjs pins
+# every decision below):
+#
+#   fast   a pull request: the TypeScript packages' typecheck, lint and tests without coverage,
+#          the web app's node-only suites, the vendored-bundle diff, gitleaks — and any platform
+#          job whose inputs the pull request touched.
+#   full   everything, including the browser suites under xvfb, coverage, the icons, every
+#          platform, the golden gate and the supply-chain checks. A push to `main`, the nightly
+#          schedule, a manual dispatch, and a pull request labelled `e2e`.
+#
+# `main` is never thinned: release.yml reads the push-event run for the tagged commit, so that
+# run has to be the full tier every time. `labeled` is in the pull-request types so that ADDING
+# the label starts the full run rather than waiting for the next push.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
 
 # Read-only tokens for every job: nothing here writes to the repository, so nothing here can be
 # made to. Every third-party action is pinned to a full commit SHA (the version is the trailing
@@ -12,19 +29,66 @@ on:
 permissions:
   contents: read
 
-# One run per ref at a time, and a newer push cancels the run its commit has already superseded —
-# the verdict on an outdated commit is not something anyone acts on. release.yml keeps its own
-# group with cancel-in-progress off, because a release build is not superseded by anything.
+# One run per ref AND event at a time, and a newer push cancels the run its commit has already
+# superseded — the verdict on an outdated commit is not something anyone acts on. The event is in
+# the group because the nightly run and a push run both sit on refs/heads/main, and a push
+# arriving mid-nightly must not cancel the full-tier verdict the nightly exists to give (or the
+# other way round). release.yml keeps its own group with cancel-in-progress off, because a
+# release build is not superseded by anything.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # WHICH TIER, AND WHICH PLATFORMS. A few seconds of node, and every other job reads its
+  # outputs: `full` is the tier; `rust`, `ml`, `android`, `icons` and `deps` say whether a pull
+  # request touched that job's inputs (always true off a pull request). The inputs are listed in
+  # scripts/ci-plan.mjs, next to the reasoning; a change to any workflow or to the plan runs
+  # everything, because the plan is then the thing under test.
+  plan:
+    name: Plan (tier · touched platforms)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
+      rust: ${{ steps.plan.outputs.rust }}
+      ml: ${{ steps.plan.outputs.ml }}
+      android: ${{ steps.plan.outputs.android }}
+      icons: ${{ steps.plan.outputs.icons }}
+      deps: ${{ steps.plan.outputs.deps }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      # The checkout is the pull request's merge commit at depth 1. Fetching the base commit,
+      # also at depth 1, gives git the two trees a diff needs and nothing else — no history, no
+      # API call, no third-party action. Off a pull request the list is empty and unread.
+      - name: changed files
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          : > changed.txt
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            git fetch --no-tags --depth=1 origin "$BASE"
+            git diff --name-only "$BASE" HEAD > changed.txt
+          fi
+          echo "$(wc -l < changed.txt | tr -d ' ') changed files"
+
+      - name: plan
+        id: plan
+        run: node scripts/ci-plan.mjs < changed.txt
+
   ts:
-    # "coverage" is in the title because it is enforced: both packages' `check` scripts run
-    # `vitest run --coverage` (2026-09-05), and vitest fails the run when the thresholds in their
-    # vitest configs are not met. Until then the thresholds were configured and run by nothing.
-    name: TS packages (typecheck · lint · test · coverage)
+    # On the full tier both packages' `check` scripts run `vitest run --coverage` (2026-09-05),
+    # and vitest fails the run when the thresholds in their vitest configs are not met — until
+    # then the thresholds were configured and run by nothing. The fast tier runs `check:fast`:
+    # the same typecheck, lint and tests, without the instrumentation.
+    name: TS packages + web app (fast tier on a pull request · full tier on main)
+    needs: [plan]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -47,11 +111,21 @@ jobs:
       - name: pnpm audit (runtime dependencies)
         run: pnpm audit --prod --audit-level=high
 
-      - name: cube-scanner — check
+      - name: cube-scanner — check (typecheck · lint · coverage)
+        if: needs.plan.outputs.full == 'true'
         run: pnpm --filter cube-scanner run check
 
-      - name: gan-driver — check
+      - name: cube-scanner — check:fast (typecheck · lint · test)
+        if: needs.plan.outputs.full != 'true'
+        run: pnpm --filter cube-scanner run check:fast
+
+      - name: gan-driver — check (typecheck · lint · coverage)
+        if: needs.plan.outputs.full == 'true'
         run: pnpm --filter gan-driver run check
+
+      - name: gan-driver — check:fast (typecheck · lint · test)
+        if: needs.plan.outputs.full != 'true'
+        run: pnpm --filter gan-driver run check:fast
 
       # The vendored bundles are COMMITTED build artifacts, and the app imports them rather than
       # the sources. They have drifted four times, most recently shipping a driver two safety fixes
@@ -69,19 +143,28 @@ jobs:
           git diff --exit-code -- apps/web/vendor/ \
             || { echo "::error::a vendored bundle is behind its source — rebuild and commit it"; exit 1; }
 
+      # THE FAST TIER'S WEB TESTS: every suite under apps/web/test/ except test/browser/, run by
+      # apps/web/run-tests.mjs, which refuses a pattern that matches nothing and a test file that
+      # belongs to no tier — so this cannot become a green step that ran nothing.
+      - name: cubus-web — test:fast (the node-only suites)
+        if: needs.plan.outputs.full != 'true'
+        run: pnpm --filter cubus-web test:fast
+
       # TWO ENGINES, because two suites need different things from a browser.
       #
-      # WebKit for the geometry test (apps/web/test/geometry.test.mjs): it measures the layout
-      # contract in the engine every shipped build actually is, because the CSS is the runtime and
-      # no text test can tell whether a container unit resolved.
+      # WebKit for the geometry test (apps/web/test/browser/geometry.test.mjs): it measures the
+      # layout contract in the engine every shipped build actually is, because the CSS is the
+      # runtime and no text test can tell whether a container unit resolved.
       #
-      # Chromium for the scanner test (apps/web/test/scanner-gpu.test.mjs): WebKit has no WebGPU to
-      # test at all. That suite was written and merged without ever running here, and its first CI
-      # run failed on a missing executable — a test that cannot start is not a test that passed.
+      # Chromium for the scanner test (apps/web/test/browser/scanner-gpu.test.mjs): WebKit has no
+      # WebGPU to test at all. That suite was written and merged without ever running here, and its
+      # first CI run failed on a missing executable — a test that cannot start is not a test that
+      # passed.
       #
       # Playwright is an exact-pinned dev dep of apps/web; this fetches the matching builds. Missing
       # either fails the tests, loudly.
       - name: cubus-web — browser engines for the geometry and scanner suites
+        if: needs.plan.outputs.full == 'true'
         run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
 
       # UNDER XVFB, because the scanner suite launches Chromium HEADED and a runner has no display.
@@ -93,7 +176,8 @@ jobs:
       # suite reports that and asserts the wasm floor instead — which is the half CI can honestly
       # gate. `--enable-unsafe-swiftshader` is deliberately not passed anywhere, so a software
       # adapter can never masquerade as hardware and turn this into a green that means nothing.
-      - name: cubus-web — test
+      - name: cubus-web — test (every suite, the node-only ones and the browser ones)
+        if: needs.plan.outputs.full == 'true'
         run: xvfb-run -a pnpm --filter cubus-web test
 
       # The icons had no gate at all, which is why the iOS and Android projects carried Tauri's
@@ -103,9 +187,11 @@ jobs:
       # every rung the iOS catalogue declares, at its declared size, with no alpha channel, and
       # the Android layers plus the anydpi wiring that makes them reachable at all.
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: needs.plan.outputs.full == 'true' || needs.plan.outputs.icons == 'true'
         with:
           python-version: "3.11"
       - name: icons — the shipped rasters are the ones the sources produce
+        if: needs.plan.outputs.full == 'true' || needs.plan.outputs.icons == 'true'
         run: |
           # librsvg, not just Pillow: the .ico round-trip decodes every member back and
           # compares it against a fresh render of the same source, which needs a renderer.
@@ -133,6 +219,8 @@ jobs:
   # strictly more than zero.
   rust-platforms:
     name: Rust (windows · android compile)
+    needs: [plan]
+    if: needs.plan.outputs.rust == 'true'
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -187,6 +275,8 @@ jobs:
   # -D warnings across every target, and the unit tests that can run on a runner with no camera.
   rust-macos:
     name: Rust (macOS · iOS compile)
+    needs: [plan]
+    if: needs.plan.outputs.rust == 'true'
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -217,6 +307,8 @@ jobs:
 
   rust:
     name: Rust (fmt · clippy · check · tests)
+    needs: [plan]
+    if: needs.plan.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -283,6 +375,8 @@ jobs:
   # Until 2026-09-05 they ran only in release.yml, i.e. only on a tag.
   android-shell:
     name: Android shell (Kotlin unit tests)
+    needs: [plan]
+    if: needs.plan.outputs.android == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -359,6 +453,8 @@ jobs:
   # Linux here, CoreML + the native plugin path on macOS below.
   golden-linux:
     name: Golden frames (onnx · int8 · tflite)
+    needs: [plan]
+    if: needs.plan.outputs.ml == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -382,6 +478,8 @@ jobs:
 
   golden-macos:
     name: Golden frames (coreml · native plugin)
+    needs: [plan]
+    if: needs.plan.outputs.ml == 'true'
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -419,6 +517,8 @@ jobs:
   # WHAT THE TREE PULLS IN, and what the scripts say. Neither ran anywhere until 2026-09-05.
   supply-chain:
     name: Supply chain (cargo audit · shellcheck)
+    needs: [plan]
+    if: needs.plan.outputs.deps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -467,7 +567,7 @@ jobs:
       # -s` replacing a keychain search list and an unquoted `build-tools/*/apksigner` glob, had
       # it existed when those were written.
       - name: shellcheck
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh .githooks/*
 
       # The licence notices are generated from the lockfiles and the packages themselves
       # (scripts/make-third-party-notices.mjs) and committed, like the vendored bundles — and like

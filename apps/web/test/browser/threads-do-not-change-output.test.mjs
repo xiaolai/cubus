@@ -21,10 +21,10 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
-import { freePort } from './free-port.mjs';
+import { freePort } from '../free-port.mjs';
 
-const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
-const FRAMES = new URL('../../../ml/golden/frames/', import.meta.url);
+const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
+const FRAMES = new URL('../../../../ml/golden/frames/', import.meta.url);
 let proc;
 let browser;
 let base;
@@ -155,7 +155,7 @@ test('the web runtime reads the golden fixtures the way the pinned reference doe
   // reference. Both are fp32, so they should agree exactly; a disagreement is a real finding
   // about the shipped runtime rather than a tolerance to widen.
   const names = readdirSync(FRAMES).filter((f) => f.endsWith('.png')).sort();
-  const pinned = JSON.parse(readFileSync(new URL('../../../ml/golden/expected.json', import.meta.url), 'utf8'));
+  const pinned = JSON.parse(readFileSync(new URL('../../../../ml/golden/expected.json', import.meta.url), 'utf8'));
   const frames = names.map((name) => ({ name, b64: readFileSync(new URL(name, FRAMES)).toString('base64') }));
 
   const page = await browser.newPage();
