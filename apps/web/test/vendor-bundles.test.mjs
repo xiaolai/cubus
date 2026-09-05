@@ -76,6 +76,10 @@ const BUNDLES = [
       '../../../packages/cube-scanner/src/onnx-detect.ts',
       '../../../packages/cube-scanner/src/onnx-postprocess.ts',
       '../../../packages/cube-scanner/src/types.ts',
+      // The misread decode's client half: the panel spawns the worker below and falls back to
+      // running the decode here when a page has no `Worker`, so both halves ship in this bundle.
+      '../../../packages/cube-scanner/view/misread-client.ts',
+      '../../../packages/cube-scanner/view/misread-protocol.ts',
     ],
     // Exported from the package entry and used by its tests, but never by the panel — so esbuild
     // drops them and their absence is correct, not stale. Listed rather than silently ignored: if
@@ -83,6 +87,30 @@ const BUNDLES = [
     // `detectFace` is the composed preprocess→run→fit convenience the package entry offers and the
     // tests exercise; the panel drives the two halves through a `Detector`, so esbuild drops it.
     treeShaken: ['SOLVED_FACELETS', 'encodeFacelets', 'detectFace'],
+  },
+  {
+    // The misread decoder, on its own thread (2026-09-05). A refusal used to spend up to 3.0 s of
+    // the page's thread proving how much of a scan was misread; the panel now publishes the
+    // refusal at once and this answers the count afterwards. Its own entry because a worker is a
+    // separate script by definition, and the panel reaches it by a same-origin URL beside itself
+    // (`new URL('./misread-worker.js', import.meta.url)`), which nothing in index.html mentions —
+    // so a stale or missing bundle here is invisible outside this guard and build.mjs's set.
+    name: 'misread-worker',
+    build: 'pnpm --filter cube-scanner build:misread-worker',
+    bundle: '../vendor/misread-worker.js',
+    // Every file esbuild puts in it, plus cubejs. Deliberately NOT misread-client.ts: the client's
+    // spawn half is dropped here, and listing a source whose declarations are legitimately absent
+    // is how a guard acquires an exception list that then goes off for every private method added.
+    sources: [
+      '../../../packages/cube-scanner/view/misread-worker.ts',
+      '../../../packages/cube-scanner/view/misread-protocol.ts',
+      '../../../packages/cube-scanner/src/misread-decode.ts',
+      '../../../packages/cube-scanner/src/facelet-cube.ts',
+      '../../../packages/cube-scanner/src/types.ts',
+    ],
+    // The two facelet-cube exports the decoder never calls; same delete-when-used contract as the
+    // panel's list above.
+    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets'],
   },
   {
     // The protocol layer for every smart cube: an unpublished git dependency, pinned by commit
