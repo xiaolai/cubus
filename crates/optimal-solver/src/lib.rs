@@ -161,12 +161,14 @@ fn sync_dir(_dir: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The directory a path is created IN. An empty parent means a relative single-component path,
-/// which is created in the current directory.
-fn parent_of(path: &std::path::Path) -> &std::path::Path {
+/// The directory whose entry list holds `path` — the one an `fsync` has to reach to make `path`'s
+/// own NAME durable. `None` for a filesystem root, whose name lives in no directory and so has
+/// nothing to publish it. An empty parent means a relative single-component path, whose entry is
+/// in the current directory.
+fn parent_of(path: &std::path::Path) -> Option<&std::path::Path> {
     match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => std::path::Path::new("."),
+        Some(parent) if parent.as_os_str().is_empty() => Some(std::path::Path::new(".")),
+        other => other,
     }
 }
 
@@ -181,8 +183,33 @@ fn parent_of(path: &std::path::Path) -> &std::path::Path {
 /// top-down and one level at a time, because a parent must exist before its child can be made in
 /// it, and each new entry is published before the next is created inside it.
 ///
-/// Losing the race to another process is not a failure: its entry, its sync. A path that already
-/// exists and is NOT a directory is a failure, and is reported rather than adopted.
+/// **Publishing only what THIS call created is not enough** (the same audit's verification pass,
+/// 2026-09-05). An unsynced entry outlives the process that made it, so "I did not create it" and
+/// "it is durable" are different facts — and two ordinary sequences separate them. A save whose
+/// sync FAILED leaves the directory on disk anyway, so the next save finds it already there and,
+/// under the old rule, synced nothing: two saves, one of them `Ok`, and an entry nobody ever
+/// forced to disk. And two savers racing means one of them loses `create_dir` and gets
+/// `AlreadyExists`, which says the entry exists — never that anyone has flushed it.
+///
+/// So the parent of every directory in the chain is synced by whoever needs the chain, not by
+/// whoever happened to create it: first the deepest directory that was ALREADY there, before
+/// anything is made inside it, then each one this call creates, whether the create succeeded or
+/// found it already made. An `fsync` of a directory with nothing dirty is a cheap no-op; a save
+/// that skipped one is a save that returned `Ok` for a directory that can vanish.
+///
+/// That makes the chain durable by induction: an attempt stops at its first sync failure, so it
+/// can leave at most one directory — its deepest — unpublished, and the next attempt down that
+/// path finds exactly that directory as the one already there and publishes it before going
+/// deeper. Concurrency lands in the same place, because the loser of a `create_dir` syncs the
+/// parent it would have synced had it won.
+///
+/// The walk stops at the first existing directory rather than climbing to the root. Ancestors
+/// above it are not this crate's to publish, and fsyncing a filesystem root — read-only on macOS,
+/// and not necessarily openable for reading at all — would trade a durability gap this crate
+/// cannot close for a save that fails where it used to work.
+///
+/// Losing the race to another process is not a failure: its entry, our sync as well. A path that
+/// already exists and is NOT a directory is a failure, and is reported rather than adopted.
 ///
 /// Windows: see `sync_dir` — the creations happen, the entries are not forced to disk, and a lost
 /// directory reads as missing artifacts and regenerates.
@@ -197,19 +224,34 @@ fn create_dirs_with(
     sync: &mut dyn FnMut(&std::path::Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let mut missing: Vec<&std::path::Path> = Vec::new();
+    let mut found: Option<&std::path::Path> = None;
     let mut at = Some(dir);
     while let Some(path) = at {
-        if path.as_os_str().is_empty() || path.is_dir() {
+        if path.as_os_str().is_empty() {
+            break;
+        }
+        if path.is_dir() {
+            found = Some(path);
             break;
         }
         missing.push(path);
         at = path.parent();
     }
+    // The directory this save FOUND is published first, before anything is made inside it: it may
+    // be what a previous save created and then could not sync, and there is no way to tell.
+    if let Some(parent) = found.and_then(parent_of) {
+        sync(parent)?;
+    }
     for path in missing.iter().rev() {
         match std::fs::create_dir(path) {
-            Ok(()) => sync(parent_of(path))?,
+            Ok(()) => {}
+            // Someone else made it between the walk and here. Their entry, our sync too — winning
+            // the call is what publishes a directory, and we did not win it.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => {}
             Err(e) => return Err(e),
+        }
+        if let Some(parent) = parent_of(path) {
+            sync(parent)?;
         }
     }
     Ok(())
@@ -353,7 +395,21 @@ impl Tables {
 mod write_atomic_tests {
     use super::write_atomic;
 
-    fn scratch(tag: &str) -> std::path::PathBuf {
+    /// A private directory for one test, emptied on the way in so a rerun starts clean.
+    ///
+    /// The tag must be unique across the module, and that is asserted rather than assumed: tests
+    /// run in parallel, so two tests sharing a tag delete each other's tree mid-run — and the
+    /// failure surfaces in whichever one happened to be slower, which is a defect that reads as
+    /// the wrong test being broken.
+    fn scratch(tag: &'static str) -> std::path::PathBuf {
+        static TAGS: std::sync::Mutex<std::collections::BTreeSet<&'static str>> =
+            std::sync::Mutex::new(std::collections::BTreeSet::new());
+        assert!(
+            TAGS.lock()
+                .expect("the tag lock is never poisoned")
+                .insert(tag),
+            "scratch tag {tag:?} is used by more than one test, and they would erase each other"
+        );
         let d =
             std::env::temp_dir().join(format!("cubus-write-atomic-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -538,12 +594,13 @@ mod write_atomic_tests {
         assert!(e.contains("cannot fsync a directory"), "{e}");
     }
 
-    /// A directory this crate CREATES is published the same way the files inside it are.
+    /// Every directory a save depends on is published the same way the files inside it are.
     ///
     /// A directory's entry is metadata in its parent, so `create_dir_all` alone left three
     /// carefully-synced artifacts inside something a crash could take whole (the audit's finding,
     /// 2026-09-05). Every intermediate ancestor counts: they are created top-down, and each one's
-    /// entry is published before the next is made inside it.
+    /// entry is published before the next is made inside it. The directory the walk FINDS is
+    /// published too, ahead of them all — see the two tests below for the saves that prove why.
     #[test]
     fn every_directory_created_for_a_save_is_published_by_syncing_its_parent() {
         use super::create_dirs_with;
@@ -559,37 +616,67 @@ mod write_atomic_tests {
         assert_eq!(
             synced,
             vec![
+                d.parent()
+                    .expect("the scratch directory has a parent")
+                    .into(),
                 d.clone(),
                 d.join("cubus"),
                 d.join("cubus").join("optimal-pdb")
             ],
-            "each new directory's entry lives in its parent, so each parent is synced in turn"
+            "the directory it found, then each new entry's parent in turn"
         );
 
-        // Idempotent, and a directory that was already there publishes nothing: no entry was made,
-        // so there is nothing to make durable.
+        // Idempotent — and a directory that was already there is published once, rather than
+        // taken on trust. Nothing was created, so there is exactly one entry whose durability is
+        // in question: the target's own.
         let mut again: Vec<std::path::PathBuf> = Vec::new();
         create_dirs_with(&deep, &mut |at| {
             again.push(at.to_path_buf());
             Ok(())
         })
         .unwrap();
-        assert!(again.is_empty(), "nothing created, nothing published");
+        assert_eq!(
+            again,
+            vec![d.join("cubus").join("optimal-pdb")],
+            "publishing the directory it is about to write into is the whole of the second call"
+        );
 
         // A sync that refuses stops the creation there, rather than carrying on into a tree whose
-        // upper levels may not survive a crash.
+        // upper levels may not survive a crash. The refusal here is the one that would publish
+        // `a`, so `b` is never made.
         let mut calls = 0;
-        let e = create_dirs_with(&d.join("a").join("b"), &mut |_| {
+        let e = create_dirs_with(&d.join("a").join("b"), &mut |at| {
             calls += 1;
+            if at == d {
+                return Err(std::io::Error::other(
+                    "this volume cannot fsync a directory",
+                ));
+            }
+            Ok(())
+        })
+        .expect_err("a refusal is propagated, never swallowed");
+        assert_eq!(e.to_string(), "this volume cannot fsync a directory");
+        assert_eq!(calls, 2, "the directory it found, then the refusal");
+        assert!(d.join("a").is_dir(), "`a` was created");
+        assert!(
+            !d.join("a").join("b").exists(),
+            "and it stopped at that level, not after all of them"
+        );
+
+        // A refusal on the FIRST sync — the one for the directory that was already there — stops
+        // the call before anything is created at all.
+        let mut before = 0;
+        assert!(create_dirs_with(&d.join("c").join("e"), &mut |_| {
+            before += 1;
             Err(std::io::Error::other(
                 "this volume cannot fsync a directory",
             ))
         })
-        .expect_err("a refusal is propagated, never swallowed");
-        assert_eq!(e.to_string(), "this volume cannot fsync a directory");
-        assert_eq!(
-            calls, 1,
-            "and it stopped at the first level, not after all of them"
+        .is_err());
+        assert_eq!(before, 1);
+        assert!(
+            !d.join("c").exists(),
+            "nothing is made inside a directory whose own entry could not be published"
         );
 
         // A name that exists and is not a directory is reported, never adopted.
@@ -601,6 +688,116 @@ mod write_atomic_tests {
             b"an artifact",
             "and it is left exactly as it was"
         );
+
+        // A filesystem root's name lives in no directory, so there is nothing to publish it —
+        // and nothing to fail on a volume whose root cannot be opened or fsynced.
+        #[cfg(unix)]
+        {
+            let mut root: Vec<std::path::PathBuf> = Vec::new();
+            create_dirs_with(std::path::Path::new("/"), &mut |at| {
+                root.push(at.to_path_buf());
+                Ok(())
+            })
+            .unwrap();
+            assert!(root.is_empty(), "a root has no parent to sync");
+        }
+    }
+
+    /// A save retried after a FAILED sync publishes the directory the failed save left behind.
+    ///
+    /// The first attempt creates the directory and then cannot sync its parent, so it reports
+    /// failure — but the directory is on disk, and the old rule ("publish what THIS call created")
+    /// had the retry find it already there and sync nothing. Two saves, the second returning `Ok`,
+    /// and an entry nobody ever forced to disk. Found by the audit's verification pass,
+    /// 2026-09-05.
+    #[test]
+    fn a_save_after_a_failed_sync_publishes_the_directory_it_finds() {
+        use super::create_dirs_with;
+        let d = scratch("retry");
+        let deep = d.join("cubus").join("optimal-pdb");
+
+        let mut first: Vec<std::path::PathBuf> = Vec::new();
+        let e = create_dirs_with(&deep, &mut |at| {
+            first.push(at.to_path_buf());
+            if at == d {
+                return Err(std::io::Error::other(
+                    "this volume cannot fsync a directory",
+                ));
+            }
+            Ok(())
+        })
+        .expect_err("a save that cannot publish what it created has not finished");
+        assert_eq!(e.to_string(), "this volume cannot fsync a directory");
+        assert_eq!(first.last(), Some(&d), "the refusal was `cubus`'s parent");
+        assert!(
+            d.join("cubus").is_dir(),
+            "the directory is on disk regardless — that is the whole problem"
+        );
+        assert!(
+            !deep.exists(),
+            "and the save stopped rather than going deeper"
+        );
+
+        let mut second: Vec<std::path::PathBuf> = Vec::new();
+        create_dirs_with(&deep, &mut |at| {
+            second.push(at.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert!(deep.is_dir());
+        assert_eq!(
+            second,
+            vec![d.clone(), d.join("cubus")],
+            "the unpublished directory is published first, before anything is made inside it"
+        );
+    }
+
+    /// Two savers creating one directory: the one that LOSES `create_dir` publishes it too.
+    ///
+    /// `AlreadyExists` says the entry exists, never that anyone flushed it — the winner may not
+    /// have reached its own sync yet, or may die before it does. A saver that returns `Ok` on the
+    /// strength of another process's unfinished work has published nothing. Found by the audit's
+    /// verification pass, 2026-09-05.
+    #[test]
+    fn two_savers_racing_to_create_one_directory_both_publish_it() {
+        use super::create_dirs_with;
+        let d = scratch("mkdir-race");
+        let target = d.join("cubus");
+        let seen: std::sync::Mutex<Vec<(usize, std::path::PathBuf, bool)>> =
+            std::sync::Mutex::new(Vec::new());
+        let start = std::sync::Barrier::new(2);
+        let (seen, start, target) = (&seen, &start, &target);
+
+        std::thread::scope(|s| {
+            for who in 0..2 {
+                s.spawn(move || {
+                    start.wait();
+                    create_dirs_with(target, &mut |at| {
+                        // Recorded WITH the fact that decides the question: whether the directory
+                        // existed at the moment of the sync. A sync before it is created cannot
+                        // have published it.
+                        seen.lock()
+                            .expect("the recording lock is never poisoned")
+                            .push((who, at.to_path_buf(), target.is_dir()));
+                        Ok(())
+                    })
+                    .expect("losing the race is not a failure");
+                });
+            }
+        });
+
+        assert!(target.is_dir(), "one of them created it");
+        let seen = seen.lock().expect("the recording lock is never poisoned");
+        let parent = d.clone();
+        for who in 0..2 {
+            assert!(
+                seen.iter()
+                    .any(|(w, at, existed)| *w == who && *at == parent && *existed),
+                "saver {who} returned Ok, so it synced {} itself with the directory already \
+                 there — waiting on the other one's fsync is not publishing: {seen:?}",
+                parent.display()
+            );
+        }
     }
 
     /// The directory sync reports its failures rather than swallowing them: a save that could not
