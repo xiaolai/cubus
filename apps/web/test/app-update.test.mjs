@@ -11,10 +11,14 @@ import { describe, test } from 'node:test';
 
 import {
   CHECK_INTERVAL_MS,
+  CHECK_TIMEOUT_MS,
+  DOWNLOAD_TIMEOUT_MS,
   LAST_CHECK_KEY,
   SELF_UPDATE_PLATFORMS,
+  STALL_NOTICE_MS,
   dueForCheck,
   makeUpdater,
+  progressLabel,
   readLastCheck,
   selfUpdateSupported,
 } from '../lib/app-update.js';
@@ -83,15 +87,16 @@ describe('readLastCheck', () => {
   });
 });
 
-/** A Tauri stub whose updater returns whatever the test wants. */
-function fakeApi({ update, checkThrows, installThrows, relaunchThrows } = {}) {
-  const calls = { check: 0, install: 0, relaunch: 0 };
+/** A Tauri stub whose updater returns whatever the test wants, and records what it was asked. */
+function fakeApi({ update, checkThrows, installThrows, relaunchThrows, events = [] } = {}) {
+  const calls = { check: 0, install: 0, relaunch: 0, checkArgs: undefined, installArgs: undefined };
   return {
     calls,
     api: {
       updater: {
-        check: async () => {
+        check: async (opts) => {
           calls.check++;
+          calls.checkArgs = opts;
           if (checkThrows) throw checkThrows;
           return update ?? null;
         },
@@ -107,8 +112,13 @@ function fakeApi({ update, checkThrows, installThrows, relaunchThrows } = {}) {
       return {
         available: true,
         version,
-        downloadAndInstall: async () => {
+        // The plugin's shape: a channel callback, then options. The scripted events are what the
+        // Rust side sends — Started with the size, a Progress per chunk, Finished — delivered
+        // before the call settles, exactly as the real channel does.
+        downloadAndInstall: async (onEvent, opts) => {
           calls.install++;
+          calls.installArgs = opts;
+          for (const ev of events) onEvent?.(ev);
           if (installThrows) throw installThrows;
         },
       };
@@ -249,6 +259,121 @@ describe('makeUpdater', () => {
     const u = makeUpdater({ api: f.api, storage, now: () => 1, confirm: async () => true });
     assert.equal((await u.checkNow()).status, 'current');
   });
+
+  // The plugin's default for both requests is NO timeout, so a stalled connection was waited on
+  // forever (measured 2026-09-06: five minutes at 1454 bytes through a proxy tunnel). Bounded now,
+  // and the bounds are the module's constants so the wording that quotes them cannot drift.
+  test('the check and the download are bounded, not open-ended', async () => {
+    const f = fakeApi();
+    const f2 = fakeApi({ update: f.available() });
+    const u = makeUpdater({ api: f2.api, storage: fakeStorage(), now: () => 1, confirm: async () => true });
+    await u.checkNow();
+    assert.deepEqual(f2.calls.checkArgs, { timeout: CHECK_TIMEOUT_MS });
+    assert.deepEqual(f.calls.installArgs, { timeout: DOWNLOAD_TIMEOUT_MS });
+    assert.ok(CHECK_TIMEOUT_MS >= 5_000 && CHECK_TIMEOUT_MS <= 60_000, 'a manifest is kilobytes');
+    assert.ok(DOWNLOAD_TIMEOUT_MS >= 5 * 60_000, 'a 47 MB archive on a slow link must still finish');
+  });
+
+  test('a download that gives up is reported as failed, with the reason, and nothing relaunches', async () => {
+    const f = fakeApi({ installThrows: new Error('request timed out') });
+    const f2 = fakeApi({ update: f.available() });
+    const u = makeUpdater({ api: f2.api, storage: fakeStorage(), now: () => 1, confirm: async () => true });
+    const r = await u.checkNow();
+    assert.equal(r.status, 'failed');
+    assert.match(String(r.error), /timed out/);
+    assert.equal(f2.calls.relaunch, 0);
+  });
+
+  test('progress is folded per event, stamped with the time, and reaches every listener in order', async () => {
+    const events = [
+      { event: 'Started', data: { contentLength: 46_818_769 } },
+      { event: 'Progress', data: { chunkLength: 1_000_000 } },
+      { event: 'Progress', data: { chunkLength: 2_000_000 } },
+      { event: 'Finished' },
+    ];
+    const f = fakeApi({ events });
+    const f2 = fakeApi({ update: f.available() });
+    let clock = 100;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const u = makeUpdater({
+      api: f2.api,
+      storage: fakeStorage(),
+      now: () => clock++,
+      // Held until the second caller has joined, so the join is proven to see the download.
+      confirm: async () => { await gate; return true; },
+    });
+    const launchSaw = [];
+    const pressSaw = [];
+    const launch = u.checkOnLaunch({ onProgress: (p) => launchSaw.push(p) });
+    const press = u.checkNow({ onProgress: (p) => pressSaw.push(p) });
+    release();
+    assert.equal((await launch).status, 'installed');
+    assert.equal((await press).status, 'installed');
+    const shape = (p) => [p.phase, p.received, p.total];
+    assert.deepEqual(launchSaw.map(shape), [
+      ['download', 0, null],
+      ['download', 0, 46_818_769],
+      ['download', 1_000_000, 46_818_769],
+      ['download', 3_000_000, 46_818_769],
+      ['install', 3_000_000, 46_818_769],
+      ['restart', undefined, undefined],
+    ]);
+    assert.deepEqual(pressSaw.map(shape), launchSaw.map(shape), 'the press that joined the flight sees the same download');
+    assert.ok(launchSaw.every((p) => Number.isFinite(p.at)), 'every report carries when it was made — the stall notice is measured from it');
+    assert.ok(launchSaw.every((p, i) => i === 0 || p.at > launchSaw[i - 1].at), 'later reports carry later times');
+  });
+
+  test('a progress listener that throws costs a warning, never the install', async () => {
+    const f = fakeApi({ events: [{ event: 'Finished' }] });
+    const f2 = fakeApi({ update: f.available() });
+    const warned = [];
+    const u = makeUpdater({
+      api: f2.api, storage: fakeStorage(), now: () => 1, confirm: async () => true,
+      warn: (m) => warned.push(m),
+    });
+    const r = await u.checkNow({ onProgress: () => { throw new Error('the UI is gone'); } });
+    assert.equal(r.status, 'installed');
+    assert.equal(f2.calls.relaunch, 1);
+    assert.ok(warned.some((m) => /progress listener/.test(m)));
+  });
+
+  // The launch check runs three seconds after boot; a press inside that window joins it. It used
+  // to inherit the launch check's silent status and then say "finished without a clear answer"
+  // for a check that had succeeded.
+  test('a Settings press that joins the launch flight still gets its answer announced', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const api = { updater: { check: async () => { await gate; return { available: false, version: '0.3.3' }; } } };
+    const u = makeUpdater({ api, storage: fakeStorage(), now: () => 1, confirm: async () => true });
+    const launch = u.checkOnLaunch();
+    const press = u.checkNow();
+    release();
+    assert.equal((await launch).status, 'silent-current', 'the launch path stays quiet');
+    assert.equal((await press).status, 'current', 'the press must not inherit that silence');
+  });
+});
+
+describe('progressLabel', () => {
+  test('says how much of how many, and names a stall only once the silence is long enough', () => {
+    const p = { phase: 'download', received: 3_000_000, total: 46_818_769, at: 1_000 };
+    assert.equal(progressLabel(p, 1_000), 'Downloading 3 of 47 MB…');
+    assert.equal(progressLabel(p, 1_000 + STALL_NOTICE_MS - 1), 'Downloading 3 of 47 MB…');
+    assert.equal(progressLabel(p, 1_000 + STALL_NOTICE_MS), 'Downloading 3 of 47 MB… (no data for 15 s)');
+    assert.equal(progressLabel(p, 1_000 + 5 * 60_000), 'Downloading 3 of 47 MB… (no data for 300 s)');
+    // No Content-Length from the server: count what has arrived, and a first packet rounds to 0.
+    assert.equal(progressLabel({ phase: 'download', received: 1454, total: null, at: 0 }, 0), 'Downloading… 0 MB');
+    // The install and the restart have no bytes to count and no stall to notice.
+    assert.equal(progressLabel({ phase: 'install', at: 0 }, 99_999_999), 'Installing…');
+    assert.equal(progressLabel({ phase: 'restart', at: 0 }, 0), 'Restarting…');
+    assert.equal(progressLabel(null, 0), '');
+  });
+
+  test("goes through the caller's t(), parameters and all", () => {
+    const t = (s, ...a) => `[${s}|${a.join(',')}]`;
+    assert.equal(progressLabel({ phase: 'download', received: 2e6, total: 4e6, at: 0 }, 0, t), '[Downloading %1 of %2 MB…|2,4]');
+    assert.equal(progressLabel({ phase: 'install', at: 0 }, 0, t), '[Installing…|]');
+  });
 });
 
 // ---- the wiring the client cannot check for itself -------------------------------------------
@@ -280,6 +405,15 @@ describe('the updater is actually wired to a key', () => {
 
   test('updater artifacts are actually produced, or there is nothing to sign', () => {
     assert.equal(conf?.bundle?.createUpdaterArtifacts, true);
+  });
+
+  test('the app hands progress to both paths and draws it in a live region', () => {
+    const appJs = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+    assert.match(appJs, /checkNow\(\{\s*onProgress/, 'the Settings press reports no progress');
+    assert.match(appJs, /checkOnLaunch\(\{\s*onProgress/, 'a launch-path install would be invisible');
+    assert.match(appJs, /setAttribute\('aria-live', 'polite'\)/, 'the chip is not announced');
+    const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+    assert.match(html, /\.update-status\s*\{[^}]*position:\s*fixed/, 'the chip is not fixed, so a launch-path install on another screen would not see it');
   });
 
   test('the endpoint is HTTPS', () => {

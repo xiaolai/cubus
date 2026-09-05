@@ -530,6 +530,10 @@
       .about-brand { display: flex; align-items: center; gap: 8px; margin: 10px 0 6px; font-family: var(--font-num); font-size: var(--fs-title-s); }
       .about-brand img { display: block; }
       .about-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: var(--fs-body-s); }
+      /* The self-update's progress, fixed so it is seen from any screen: after "Install and
+         restart" the only sign of life used to be the relaunch, and a download that stalled for
+         minutes read as a hang (2026-09-06). Tabular numerals so the count does not jitter. */
+      .update-status { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; background: var(--panel); color: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r-pill); box-shadow: var(--shadow-raise); padding: 8px 16px; font-size: var(--fs-body-s); font-variant-numeric: tabular-nums; white-space: nowrap; }
       .about-row .ic { color: var(--ink-5); flex: none; }
       .about-row .k { color: var(--ink-4); width: 62px; flex: none; }
       .about-row a.link { text-decoration: none; }
