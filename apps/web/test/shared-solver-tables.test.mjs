@@ -550,6 +550,51 @@ test('a cancel during the handshake stops the solve, rather than being read as u
   assert.deepEqual(said, [], 'and nothing was downgraded, so nothing should have been announced');
 });
 
+test('a cancel between the tables ARRIVING and the pool adopting them spawns nothing', async () => {
+  // The window the era check inside the handshake exists for (2026-09-05 round 3), and it is not
+  // the one above: there, the cancel rejects a control request that is still in flight, which the
+  // catch already handles. Here the PREPARE reply has already RESOLVED and the cancel lands in the
+  // microtask before the continuation that adopts — so nothing is rejected, nothing looks wrong,
+  // and the continuation asks five clients for a control request each. Their threads were just
+  // terminated, so `attach()` builds five REPLACEMENTS and pushes 9.82 MiB into them on behalf of a
+  // pool nobody is waiting for.
+  //
+  // The cancel rides the SAME gate as the reply, registered after the worker's delivery, which is
+  // what puts it in that window deterministically rather than by timer.
+  const made = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const said = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => said.push(a.join(' '));
+  let pool;
+  let outcome;
+  try {
+    pool = createParallelSolveClient({
+      spawn: () => { const w = gatedWorker(made.length, gate); made.push(w); return w; },
+      workers: 6,
+      viewCount: 6,
+      shareTables: true,
+    });
+    const inFlight = pool.solve('F'.repeat(54), { solLen: 21, probeMax: 600 })
+      .then((v) => ({ resolved: v }), (e) => ({ rejected: e.message }));
+    await Promise.resolve();
+    assert.deepEqual(made[0].control, [PREPARE_TABLES], 'the handshake must be in flight to be cancelled');
+    void gate.then(() => pool.cancel());
+    release();
+    outcome = await inFlight;
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.deepEqual(outcome, { rejected: 'solve cancelled' }, 'a cancelled pool must not answer');
+  assert.equal(made.length, 6,
+    'replacement threads were spawned to adopt tables for a pool that had already been torn down');
+  assert.ok(made.every((w) => !w.control.includes(ADOPT_TABLES)),
+    'not one adoption may be issued after the pool was cancelled');
+  assert.equal(pool.sharingTables, true, 'a teardown is not evidence that tables cannot be shared');
+  assert.deepEqual(said, [], 'and nothing was downgraded, so nothing should have been announced');
+});
+
 test('a cancel drops the handshake, so replacement workers adopt instead of building privately', async () => {
   // `cancel()` ends the threads the handshake was ABOUT, and the resolved promise was kept — so
   // every solve after a cancel skipped prepare and adopt entirely, each replacement worker built

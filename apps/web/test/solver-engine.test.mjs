@@ -66,6 +66,14 @@ test('a carrier that cannot take the point back is refused, before the bounds mo
     ['an INHERITED read-only state', Object.create(Object.freeze({ state: null }))],
     ['a setter that DISCARDS the write', { get state() { return null; }, set state(_v) {} }],
     ['a setter that throws', { get state() { return null; }, set state(_v) { throw new Error('no'); } }],
+    // Round 3, and the one shape a write-then-read probe still let through: a setter that takes
+    // objects and ignores null. The sentinel goes in, reads back, and then CANNOT BE UNDONE — so a
+    // carrier that started at null (which every first attempt does) keeps it, and the wrapper hands
+    // `openSearch` a resume point it invented itself. The undo is read back for exactly this.
+    ['a setter that will not take the undo', (() => {
+      let held = null;
+      return { get state() { return held; }, set state(v) { if (v !== null) held = v; } };
+    })()],
   ];
   for (const [what, carrier] of shapes) {
     let boundsSet = 0;

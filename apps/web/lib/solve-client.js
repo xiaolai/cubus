@@ -463,12 +463,24 @@ export function shareBudget(probeMax, n) {
   return Array.from({ length: n }, (_, i) => base + (i < extra ? 1 : 0)).filter((b) => b > 0);
 }
 
+/**
+ * Could this reply WIN — an algorithm, and a complete sort key to place it by?
+ *
+ * One predicate, because two places ask it and they must not answer differently (2026-09-05 audit).
+ * The stop word used to be published on `typeof alg === 'string'` alone, so a reply whose VIEW was
+ * malformed — a garbled `-1` where `pickWinner` requires a real index — stopped every sibling at
+ * its depth and was then discarded, and the pool answered null for a cube its siblings were about
+ * to solve. A reply that cannot win may not cut short the ones that can.
+ */
+const canWin = (r) =>
+  Boolean(r) && typeof r.alg === 'string'
+  && Number.isInteger(r.depth) && r.depth >= 0
+  && Number.isInteger(r.view) && r.view >= 0;
+
 /** Lowest phase-1 depth first, then lowest view index — the order the sequential engine searches
  *  in. A reply with no answer, or without a usable key, cannot win. */
 export function pickWinner(replies) {
-  const found = replies.filter(
-    (r) => r && typeof r.alg === 'string' && Number.isInteger(r.depth) && r.depth >= 0 && Number.isInteger(r.view) && r.view >= 0,
-  );
+  const found = replies.filter(canWin);
   if (found.length === 0) return null;
   found.sort((a, b) => (a.depth - b.depth) || (a.view - b.view));
   return found[0].alg;
@@ -595,6 +607,12 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
   }
 
   async function pooled(facelets, { solLen, probeMax, signal, resume = null }) {
+    // Nothing to staff if nobody is waiting. The single-worker client has always refused this
+    // before `attach()` — the pool did not, and an abandoned solve therefore spawned six threads
+    // and ran the whole 9.82 MiB table handshake before every one of its requests answered null
+    // (2026-09-05 audit). A superseded solve is the ordinary case here, not the exotic one: the app
+    // aborts one the moment the cube changes.
+    if (signal?.aborted) return null;
     const mine = era;
     const shares = shareBudget(probeMax, clients.length);
     const used = clients.slice(0, shares.length);
@@ -658,9 +676,11 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
         signal: abandon.signal,
         resume: carriers?.[i] ?? null,
       }).catch((err) => { abandonAll(err); throw err; }).then((reply) => {
-        // Publish only a real ANSWER's depth: a null reply's -1 means "no depth applies", and
-        // publishing it would read as the shallowest possible and stop every sibling.
-        if (typeof reply.alg === 'string') publishBest(stop, reply.depth);
+        // Publish only the depth of a reply that could WIN — the same question `pickWinner` asks,
+        // through the same predicate. A null reply's -1 means "no depth applies" and would read as
+        // the shallowest possible; a reply with a real depth and a malformed view is worse, because
+        // it stops the siblings at that depth and is then thrown away by the pick.
+        if (canWin(reply)) publishBest(stop, reply.depth);
         return reply;
       }))).finally(release);
 
@@ -708,7 +728,17 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
     // state that a `cancel()` clears and the next solve refills, so the failing attempt's catch
     // below must be able to tell "mine" from "somebody else's" — see there.
     const attempt = (handshake ??= (async () => {
+      // The era THIS attempt opened in, asked again the moment the build comes back (2026-09-05
+      // round 3). A cancel that lands while PREPARE_TABLES is in flight rejects it, which the catch
+      // below already handles — but a cancel landing in the window between that reply RESOLVING and
+      // this continuation running leaves nothing rejected at all: `cancel()` ends the six threads,
+      // and the adoption below then asks five clients for a control request each, so `attach()`
+      // spawns five REPLACEMENT workers and pushes 9.82 MiB into them for a pool nobody is waiting
+      // on. Reproduced by the audit. Checked before a single adoption is issued, for the same reason
+      // `pooled` checks before a single search is.
+      const opened = era;
       const published = await clients[0].control({ kind: PREPARE_TABLES });
+      if (era !== opened) throw new Error(CANCELLED);
       const bundle = published?.tables ?? null;
       if (!bundle) throw new Error('the solver worker published no tables');
       const refusals = await Promise.all(clients.slice(1).map((c) =>

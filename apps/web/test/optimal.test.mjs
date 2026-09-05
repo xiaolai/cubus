@@ -626,3 +626,95 @@ test('a cancel issued BEFORE a proof was asked for does not call it off', async 
   assert.deepEqual(calls.map((c) => c.cmd), ['optimal_cancel', 'optimal_prove']);
   noNative();
 });
+
+test('a second proof waits out the FIRST — the fence has two halves and only one was tested', async () => {
+  // The prove half of the fence, untested until 2026-09-05 round 3: swapping `predecessor` for an
+  // already-resolved promise passed every other case in this file, because all of them fence on a
+  // CANCEL. What `lastProve` holds back is two proofs on the native side at once — the Rust side
+  // answers the second with "a proof is already running", which is a loud refusal over a cube
+  // nothing is wrong with, and a cancelled proof releases its slot only when its worker exits, so
+  // the window is a whole worker teardown wide rather than an instant.
+  //
+  // Asserted where overlap is a FACT rather than an inference: the native handler counts what is
+  // inside it. A test that only checked the answers would pass with no fence at all.
+  const scrambled = new Cube();
+  scrambled.move('R2');
+  const facelets = scrambled.asString();
+  let release;
+  const held = new Promise((r) => {
+    release = r;
+  });
+  let inside = 0;
+  let peak = 0;
+  const calls = fakeNative({
+    optimal_prove: async () => {
+      inside += 1;
+      peak = Math.max(peak, inside);
+      if (calls.length === 1) await held; // the first proof keeps the slot until this test says so
+      inside -= 1;
+      return { length: 1, solution: 'R2', nodes: 1, millis: 1, tables_persisted: true };
+    },
+  });
+  const first = prove(facelets, { Cube });
+  const second = prove(facelets, { Cube });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(
+    calls.map((c) => c.cmd),
+    ['optimal_prove'],
+    'the second proof reached the native side while the first was still holding the slot',
+  );
+  release();
+  assert.equal((await first).moves, 1);
+  assert.equal((await second).moves, 1);
+  assert.deepEqual(calls.map((c) => c.cmd), ['optimal_prove', 'optimal_prove'], 'and both were proved, in order');
+  assert.equal(peak, 1, 'two proofs were inside the native side at once');
+  noNative();
+});
+
+test('EVERY outstanding cancel fences the next proof, not just the newest', async () => {
+  // Why `pendingCancels` aggregates instead of being replaced, tested at last (2026-09-05 round 3):
+  // keeping only the newest cancellation passed every other case in this file, because each of them
+  // has exactly one round trip in flight. Two is the ordinary case, not the exotic one — teardown
+  // fires cancel() without awaiting, and the app tears a proof down and starts another from the same
+  // press. The OLDER cancel is the slow one whenever it has a running proof to interrupt, so
+  // replacing rather than aggregating lets exactly the dangerous one slip past the fence and land on
+  // a proof it was never aimed at.
+  const scrambled = new Cube();
+  scrambled.move('R2');
+  let release;
+  const held = new Promise((r) => {
+    release = r;
+  });
+  let older = 0;
+  let olderSettled = false;
+  const calls = fakeNative({
+    optimal_cancel: () => {
+      older += 1;
+      if (older > 1) return Promise.resolve(true); // the newer one answers at once
+      return held.then(() => {
+        olderSettled = true;
+        return true;
+      });
+    },
+    optimal_prove: () => {
+      // Deterministic and timing-free, like the single-cancel fence above: an unfenced proof
+      // reaches here before the older cancel settles however the event loop is scheduled.
+      assert.ok(olderSettled, 'the proof started while an older cancel was still in flight');
+      return { length: 1, solution: 'R2', nodes: 1, millis: 1, tables_persisted: true };
+    },
+  });
+  const stale = cancel(); // slow, and still in flight below
+  await cancel(); // fast, and the only one a "keep the newest" fence would wait for
+  const proving = prove(scrambled.asString(), { Cube });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(
+    calls.map((c) => c.cmd),
+    ['optimal_cancel', 'optimal_cancel'],
+    'the proof must not start while ANY cancel is still in flight',
+  );
+  release();
+  assert.equal(await stale, true);
+  assert.equal((await proving).moves, 1);
+  assert.deepEqual(calls.map((c) => c.cmd), ['optimal_cancel', 'optimal_cancel', 'optimal_prove']);
+  noNative();
+});

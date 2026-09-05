@@ -309,6 +309,69 @@ test('a point that says it finished with NOTHING must show where it ran out', ()
   }
 });
 
+test('a point that finished with nothing must have DONE the work, not merely sit where it ends', async () => {
+  // Round 3 of the same audit, and the half a position check cannot see. `{...a fresh point,
+  // done: true, depth: solLen}` sits EXACTLY where an exhausted enumeration sits, so the check above
+  // passes it — and it has walked nothing at all: covered 0 out of a frontier of 0. `runSearch`
+  // returns a finished point's null before it reads anything else, so that cube is answered null
+  // FOREVER, and `solveWithinGodsNumber` reads the null as a budget too small and raises after eight
+  // doublings about a state one turn from solved. Reproduced on exactly that cube.
+  //
+  // The evidence is arithmetic rather than a threshold: every (depth, view) pair costs at least one
+  // node, so an enumeration that walked all of them banked at least as many as there are pairs.
+  try {
+    const oneTurn = new Cube();
+    oneTurn.move('U');
+    const facelets = oneTurn.asString();
+    engine.setBounds({ solLen: 2, probeMax: 50_000_000, maxPhase2: 12 });
+    assert.equal(engine.openSearch(facelets, {}).continueTo(), "U'", 'the cube must really be one turn from solved');
+    const unstarted = engine.openSearch(facelets, {}).state;
+    assert.deepEqual([unstarted.covered, unstarted.frontier], [0, 0], 'a fresh point has walked nothing');
+    assert.throws(
+      () => engine.openSearch(facelets, { resume: { ...unstarted, done: true, depth: 2 } }).continueTo(),
+      /banks 0 nodes/,
+      'a record at the end of an enumeration it never walked must not answer null for this cube',
+    );
+
+    // And the bound is TIGHT, which is the only reason it can refuse a zero without refusing a real
+    // finish: a cube whose root is pruned at every depth banks exactly one node per pair, so the
+    // cheapest honest record in existence sits ON the bound. Measured 2026-09-05: 12 nodes for
+    // solLen 2 over six views.
+    const walked = engine.openSearch(WORKER_CUBES.pooled, {});
+    assert.equal(walked.continueTo(), null);
+    const out = walked.state;
+    assert.deepEqual([out.done, out.depth, out.cursor, out.covered], [true, 2, 0, 12],
+      'the shape AND the cost the check is derived from');
+    engine.setBounds({ probeMax: 60_000_000 });
+    assert.equal(engine.openSearch(WORKER_CUBES.pooled, { resume: out }).continueTo(), null,
+      'the cheapest real finish must still adopt');
+    assert.equal(spent(), 0, 'a finished enumeration must not be walked again');
+    assert.throws(
+      () => engine.openSearch(WORKER_CUBES.pooled, { resume: { ...out, covered: out.covered - 1 } }).continueTo(),
+      /banks 11 nodes/,
+      'one node short of every pair is a search that did not walk them all',
+    );
+
+    // A SLICE costs proportionally less, and the check counts the views its key names rather than
+    // all six — asking six views' worth of work of a two-view slice would refuse a real record.
+    engine.setBounds({ probeMax: 50_000_000 });
+    const sliced = engine.openSearch(WORKER_CUBES.pooled, { viewFilter: [0, 1] });
+    assert.equal(sliced.continueTo(), null);
+    assert.equal(sliced.state.covered, 4, 'two views over two depths is four pairs');
+    engine.setBounds({ probeMax: 60_000_000 });
+    assert.equal(
+      engine.openSearch(WORKER_CUBES.pooled, { viewFilter: [0, 1], resume: sliced.state }).continueTo(),
+      null, 'a slice\'s own finish must not be measured against the whole search',
+    );
+    assert.throws(
+      () => engine.openSearch(WORKER_CUBES.pooled, { viewFilter: [0, 1], resume: { ...sliced.state, covered: 3 } }).continueTo(),
+      /banks 3 nodes/,
+    );
+  } finally {
+    restore();
+  }
+});
+
 // ---- the equality the resume rests on ------------------------------------------------------------
 
 test('escalate-then-resume gives the from-scratch answer at every frontier, on every frozen state', () => {
