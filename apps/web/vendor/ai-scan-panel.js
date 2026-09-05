@@ -2263,16 +2263,17 @@ function assignments(tensor, n, budget, counter) {
   walk(0, 0);
   return exhausted ? null : out;
 }
+function writeCubies(out, slots, colours, a) {
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    const cubie = colours[a.cubie[i]];
+    for (let p = 0; p < slot.length; p++) out[slot[p]] = cubie[(p + a.ori[i]) % slot.length];
+  }
+}
 function realise(t, corners, edges, base) {
   const out = [...base];
-  for (let i = 0; i < 8; i++) {
-    const colours = t.cornerColors[corners.cubie[i]];
-    for (let p = 0; p < 3; p++) out[CORNER_FACELET[i][p]] = colours[(p + corners.ori[i]) % 3];
-  }
-  for (let i = 0; i < 12; i++) {
-    const colours = t.edgeColors[edges.cubie[i]];
-    for (let p = 0; p < 2; p++) out[EDGE_FACELET[i][p]] = colours[(p + edges.ori[i]) % 2];
-  }
+  writeCubies(out, CORNER_FACELET, t.cornerColors, corners);
+  writeCubies(out, EDGE_FACELET, t.edgeColors, edges);
   return out;
 }
 function isLegal(colors54, centreOwner) {
@@ -2384,14 +2385,9 @@ function diagnoseMisread(faces, options = {}) {
 }
 
 // src/ai-assemble.ts
-var TOP_NEIGHBOUR = {
-  U: "B",
-  R: "U",
-  F: "U",
-  D: "F",
-  L: "U",
-  B: "U"
-};
+var TOP_NEIGHBOUR = Object.freeze(
+  Object.fromEntries(FACES.map((face) => [face, FACE_NEIGHBOURS[face].top]))
+);
 var CONFIRM_TOLERANCE = 2;
 var LOW_CONFIDENCE_THRESHOLD = 0.15;
 function cubejsRoundTrips(facelets) {
@@ -2484,6 +2480,9 @@ function buildCentreOwner(faces) {
   for (const face of FACES) {
     const f = checkedCapture(`face ${face}`, faces[face]);
     const centre = f.colors[4];
+    if (!Number.isInteger(centre) || centre < 0 || centre >= FACES.length) {
+      return reject(`face ${face} has centre colour ${centre}, which is not one of the six`);
+    }
     if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
     centreOwner.set(centre, face);
   }
@@ -2724,6 +2723,17 @@ var IMG_SIZE = 640;
 var PAD = 114 / 255;
 function preprocess(frame, imgsz = IMG_SIZE) {
   const { data: src, width: w, height: h } = frame;
+  if (!Number.isInteger(imgsz) || imgsz <= 0) {
+    throw new Error(`preprocess: imgsz ${imgsz} is not a positive whole number of pixels`);
+  }
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
+    throw new Error(`preprocess: a frame of ${w}x${h} is not an image`);
+  }
+  if (src.length !== w * h * 4) {
+    throw new Error(
+      `preprocess: a ${w}x${h} RGBA frame is ${w * h * 4} bytes, but this one holds ${src.length}`
+    );
+  }
   const scale = imgsz / Math.max(w, h);
   const newW = Math.max(1, Math.round(w * scale));
   const newH = Math.max(1, Math.round(h * scale));
@@ -2782,6 +2792,9 @@ function fitFromOutput(output, opts = {}) {
 // view/native-detector.ts
 var CUBE_VISION = "plugin:cube-vision|";
 var P = CUBE_VISION;
+var cameraClaim = 0;
+var claims = 0;
+var mayClose = (claim) => cameraClaim === 0 || cameraClaim === claim;
 var NativeDetector = class {
   /**
    * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`). This is the ONLY thing
@@ -2802,6 +2815,8 @@ var NativeDetector = class {
   loaded = false;
   /** Bumped by `stop()`, so an open still crossing the bridge knows it has been cancelled. */
   opening = 0;
+  /** This detector's most recent claim on the one native camera — see `cameraClaim`. */
+  claim = 0;
   get device() {
     return this.dev;
   }
@@ -2822,9 +2837,11 @@ var NativeDetector = class {
   async use(opts = {}) {
     const attempt = ++this.opening;
     const cancelled = () => attempt !== this.opening;
+    const claim = ++claims;
+    this.claim = claim;
+    cameraClaim = claim;
     const abort = () => {
-      void this.invoke(`${P}close_camera`).catch(() => {
-      });
+      this.closeCamera(claim);
       throw new DOMException("camera open superseded", "AbortError");
     };
     await this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
@@ -2863,6 +2880,17 @@ var NativeDetector = class {
   stop() {
     this.opening++;
     this.dev = null;
+    this.closeCamera(this.claim);
+  }
+  /**
+   * Close the one native camera, if this claim is entitled to. See `cameraClaim`.
+   *
+   * Fire-and-forget: releasing the camera must not make `stop()` async (the panel calls it from
+   * synchronous teardown). A failure here only means the camera closes a tick later.
+   */
+  closeCamera(claim) {
+    if (!mayClose(claim)) return;
+    cameraClaim = 0;
     void this.invoke(`${P}close_camera`).catch(() => {
     });
   }
@@ -2980,6 +3008,7 @@ async function openCamera(video, opts = {}, signal) {
 // view/onnx-runtime.ts
 var ortByUrl = /* @__PURE__ */ new Map();
 var configuring = /* @__PURE__ */ new WeakMap();
+var configured = /* @__PURE__ */ new WeakMap();
 function serialise(ort, work) {
   const next = (configuring.get(ort) ?? Promise.resolve()).then(work, work);
   configuring.set(
@@ -3079,15 +3108,71 @@ function defaultThreadCount(isolated = typeof globalThis.crossOriginIsolated ===
   if (!isolated) return 1;
   return Math.max(1, Math.min(cores - 2, 6));
 }
-function gpuTookTheWork(ort, before) {
+function webgpuBackendLive(ort) {
   const webgpu = ort.env.webgpu;
-  if (typeof webgpu !== "object" || webgpu === null) return true;
-  const device = webgpu.device;
-  if (!device) return false;
-  return device !== before;
+  if (typeof webgpu !== "object" || webgpu === null) return null;
+  return Boolean(webgpu.device);
 }
-function webgpuDevice(ort) {
-  return ort.env.webgpu?.device;
+function webgpuQueue(ort) {
+  const device = ort.env.webgpu?.device;
+  const queue = device?.queue;
+  if (typeof queue !== "object" || queue === null) return null;
+  return typeof queue.submit === "function" ? queue : null;
+}
+async function gpuRanTheGraph(ort, probe) {
+  const queue = webgpuQueue(ort);
+  if (!queue) {
+    await probe();
+    return null;
+  }
+  const original = Object.getOwnPropertyDescriptor(queue, "submit");
+  const submit = queue.submit;
+  let submissions = 0;
+  let watching = false;
+  try {
+    Object.defineProperty(queue, "submit", {
+      configurable: true,
+      writable: true,
+      enumerable: original?.enumerable ?? false,
+      value: function(...args) {
+        submissions++;
+        return submit.apply(this, args);
+      }
+    });
+    watching = true;
+  } catch {
+  }
+  try {
+    await probe();
+  } finally {
+    if (watching) {
+      if (original) Object.defineProperty(queue, "submit", original);
+      else delete queue.submit;
+    }
+  }
+  return watching ? submissions > 0 : null;
+}
+async function bestTimedRun(probe) {
+  const hidden = () => globalThis.document?.visibilityState === "hidden";
+  if (hidden()) return null;
+  let wentHidden = false;
+  const noteHidden = () => {
+    if (hidden()) wentHidden = true;
+  };
+  globalThis.document?.addEventListener?.("visibilitychange", noteHidden);
+  let best = Number.POSITIVE_INFINITY;
+  let watched = true;
+  try {
+    for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
+      const started = performance.now();
+      await probe();
+      if (hidden() || wentHidden) watched = false;
+      else best = Math.min(best, performance.now() - started);
+    }
+  } finally {
+    globalThis.document?.removeEventListener?.("visibilitychange", noteHidden);
+  }
+  return watched && !hidden() && !wentHidden ? best : null;
 }
 async function owning(session, work) {
   let owned = true;
@@ -3147,16 +3232,24 @@ async function createModelRunner(modelUrl, opts = {}) {
   const gpu = usesGpu(executionProviders);
   const ortUrl = opts.ortUrl ?? "./ort.mjs";
   const ort = await loadRuntime(ortUrl, !gpu);
-  let deviceBefore;
+  const numThreads = opts.numThreads ?? defaultThreadCount();
+  const wasmDir = opts.wasmPaths ?? "./";
   const session = await serialise(ort, async () => {
-    ort.env.wasm.numThreads = opts.numThreads ?? defaultThreadCount();
+    const first = configured.get(ort);
+    if (first && (first.numThreads !== numThreads || first.wasmPaths !== wasmDir)) {
+      throw new Error(
+        `the runtime at ${ortUrl} is already initialised with numThreads ${first.numThreads} and wasmPaths ${first.wasmPaths}; this runner asked for ${numThreads} and ${wasmDir}, which onnxruntime cannot change on a live module`
+      );
+    }
+    ort.env.wasm.numThreads = numThreads;
     ort.env.wasm.proxy = !gpu;
-    ort.env.wasm.wasmPaths = opts.wasmPaths ?? "./";
-    deviceBefore = webgpuDevice(ort);
-    return ort.InferenceSession.create(modelUrl, {
+    ort.env.wasm.wasmPaths = wasmDir;
+    const created = await ort.InferenceSession.create(modelUrl, {
       executionProviders,
       graphOptimizationLevel: "all"
     });
+    configured.set(ort, { numThreads, wasmPaths: wasmDir });
+    return created;
   });
   return owning(session, async (relinquish) => {
     const rebuildOnWasm = async (why) => {
@@ -3166,11 +3259,9 @@ async function createModelRunner(modelUrl, opts = {}) {
       });
       return createModelRunner(modelUrl, { ...opts, executionProviders: ["wasm"] });
     };
-    if (gpu && chosenHere && !gpuTookTheWork(ort, deviceBefore)) {
-      return rebuildOnWasm(
-        "[cubus] WebGPU did not take this model \u2014 using the wasm runtime, off the page thread"
-      );
-    }
+    const gpuVerdict = gpu && chosenHere ? webgpuBackendLive(ort) : null;
+    const notTheGpu = "[cubus] WebGPU did not take this model \u2014 using the wasm runtime, off the page thread";
+    if (gpuVerdict === false) return rebuildOnWasm(notTheGpu);
     const inputName = session.inputNames[0];
     const outputName = session.outputNames[0];
     if (!inputName || !outputName) throw new Error("model has no input/output tensor");
@@ -3178,28 +3269,14 @@ async function createModelRunner(modelUrl, opts = {}) {
     const side = inputSide(session);
     const probe = () => run(new Float32Array(3 * side * side), side);
     if (opts.warmUp ?? true) {
-      await probe();
-      const hidden = () => globalThis.document?.visibilityState === "hidden";
-      if (gpu && chosenHere && !hidden()) {
-        let wentHidden = false;
-        const noteHidden = () => {
-          if (hidden()) wentHidden = true;
-        };
-        globalThis.document?.addEventListener?.("visibilitychange", noteHidden);
-        let best = Number.POSITIVE_INFINITY;
-        let watched = true;
-        try {
-          for (let i = 0; i < GPU_PROBE_RUNS && watched; i++) {
-            const started = performance.now();
-            await probe();
-            if (hidden() || wentHidden) watched = false;
-            else best = Math.min(best, performance.now() - started);
-          }
-        } finally {
-          globalThis.document?.removeEventListener?.("visibilitychange", noteHidden);
-        }
+      let ranOnGpu = null;
+      if (gpuVerdict === true) ranOnGpu = await gpuRanTheGraph(ort, probe);
+      else await probe();
+      if (ranOnGpu === false) return rebuildOnWasm(notTheGpu);
+      if (gpu && chosenHere) {
+        const best = await bestTimedRun(probe);
         const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
-        if (watched && !hidden() && !wentHidden && best > budget) {
+        if (best !== null && best > budget) {
           return rebuildOnWasm(
             `[cubus] the GPU ran this model in ${Math.round(best)} ms \u2014 slower than the wasm runtime, so using that instead`
           );
@@ -3275,12 +3352,33 @@ var WebDetector = class {
     this.video = source.video;
     this.modelUrl = source.modelUrl;
   }
+  /**
+   * Open a camera, and install it only if this attempt is still the current one.
+   *
+   * THE COMPLETION BOUNDARY IS ITS OWN RACE (2026-09-05). `openCamera` releases the stream itself
+   * while it is still opening, so a `stop()` during the await was always safe — but once it has
+   * RESOLVED it has removed its abort listener, and the window between that resolution and this
+   * function resuming is a plain microtask nothing guarded. A `stop()` landing there aborted a
+   * controller nobody was listening to any more, found `source` still null, and returned; this then
+   * assigned the live stream onto a detector the caller had just stopped. The lens stayed on, the
+   * `Detector.use` contract ("a stop() while it is pending releases the camera and rejects") was
+   * broken in exactly the case it was written for, and nothing said so.
+   *
+   * `this.opening` is the identity to check, not merely the signal: every way to supersede this
+   * attempt — `stop()`, `dispose()`, a newer `use()` — goes through `stop()`, which both aborts
+   * this controller and clears the field. The signal is checked too because it costs nothing and
+   * the two are independent statements.
+   */
   async use(opts = {}) {
     this.stop();
     const opening = new AbortController();
     this.opening = opening;
     try {
       const source = await openCamera(this.video(), opts, opening.signal);
+      if (this.opening !== opening || opening.signal.aborted) {
+        source.stop();
+        throw new DOMException("camera open superseded", "AbortError");
+      }
       this.source = source;
     } finally {
       if (this.opening === opening) this.opening = null;
@@ -3307,14 +3405,24 @@ var WebDetector = class {
    * park, which is where a detector changes owner and model URL at once. A different URL waits for
    * the load in flight and then starts its own — and re-asks, since by then the answer may have
    * arrived or the target may have moved again.
+   *
+   * AND THE WAIT IS A PLACE A DETECTOR CAN DIE (2026-09-05). That queue re-enters this method after
+   * the await, at which point `loadModel` reads the generation AS IT IS THEN — so a `dispose()`
+   * while a load for B sat behind a load for A started B's session on a discarded detector and
+   * installed it, which is the very leak `loadGeneration` exists to close, arriving through the
+   * door the URL guard had just opened. The generation is therefore captured BEFORE the wait and
+   * re-checked after it, so a queued load is invalidated exactly as an in-flight one is. A `load()`
+   * called AFTER the dispose still starts a real one — that is a new caller, not a stale queue.
    */
   async load() {
     const modelUrl = this.modelUrl();
     if (this.run && this.loadedUrl === modelUrl) return;
     if (this.loading) {
       if (this.loadingUrl === modelUrl) return this.loading;
+      const generation = this.loadGeneration;
       await this.loading.catch(() => {
       });
+      if (generation !== this.loadGeneration) return;
       return this.load();
     }
     const pending = this.loadModel(modelUrl).finally(() => {
@@ -3329,7 +3437,7 @@ var WebDetector = class {
   }
   async loadModel(modelUrl) {
     const generation = this.loadGeneration;
-    const wasmPaths = new URL(modelUrl.replace(/[^/]+$/, "") || "./", document.baseURI).href;
+    const wasmPaths = new URL(".", new URL(modelUrl, document.baseURI)).href;
     const ortUrl = `${wasmPaths}ort.mjs`;
     const run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
     if (generation !== this.loadGeneration) {
@@ -3406,13 +3514,22 @@ async function pickDetector(opts) {
   if (kept) {
     parked = null;
     kept.detector.retarget?.(opts);
+    const wanted = opts.modelUrl();
+    if (kept.modelLoaded && kept.modelUrl !== wanted) {
+      return { detector: kept.detector, runtime: kept.runtime, modelLoaded: false, modelUrl: null };
+    }
     return kept;
   }
   const invoke = globalThis.__TAURI__?.core?.invoke;
   if (invoke) {
     try {
       if (await invoke(`${CUBE_VISION}probe`) === true) {
-        return { detector: new NativeDetector(invoke), runtime: "native", modelLoaded: false };
+        return {
+          detector: new NativeDetector(invoke),
+          runtime: "native",
+          modelLoaded: false,
+          modelUrl: null
+        };
       }
     } catch (err) {
       (absentCommand(err) ? console.info : console.warn)(
@@ -3424,7 +3541,8 @@ async function pickDetector(opts) {
   return {
     detector: new WebDetector(opts.video, opts.modelUrl),
     runtime: "web",
-    modelLoaded: false
+    modelLoaded: false,
+    modelUrl: null
   };
 }
 
@@ -3455,6 +3573,15 @@ var CameraSession = class {
    * the page while one of these is still out is what makes a cross-owner camera kill possible.
    */
   openCount = 0;
+  /**
+   * The owner's model-URL getter, kept so `park()` can say WHICH model the detector holds.
+   *
+   * `modelLoaded` on its own is a claim with no subject, and the park is where the subject changes
+   * — see `DetectorChoice.modelUrl`. Read at park time rather than captured at choice time,
+   * because the URL is an attribute a host may set after the element mounts, exactly as
+   * `ensureDetector` takes it lazily for the same reason.
+   */
+  modelUrlOf = null;
   /** Which backend was chosen. Read by the panel purely to report it. */
   runtime = null;
   /** The open camera, or null. Null is also how the panel knows to stop showing a lens. */
@@ -3549,9 +3676,11 @@ var CameraSession = class {
     this.parkable = false;
     const runtime = this.runtime;
     const modelLoaded = this.modelLoaded;
+    const modelUrl = modelLoaded ? this.modelUrlOf?.() ?? null : null;
     this.modelLoaded = false;
+    this.modelUrlOf = null;
     if (!(detector && parkable && runtime)) return;
-    const handOver = () => parkDetector({ detector, runtime, modelLoaded });
+    const handOver = () => parkDetector({ detector, runtime, modelLoaded, modelUrl });
     if (this.openCount === 0 || !this.opening) handOver();
     else void this.opening.then(handOver, handOver);
   }
@@ -3560,6 +3689,7 @@ var CameraSession = class {
    * start() and the native probe runs only once. Cached as a promise because the choice is async.
    */
   ensureDetector(video, modelUrl) {
+    this.modelUrlOf = modelUrl;
     if (this.detectorPromise === null) {
       const choice = this.detectorChoice;
       this.detectorPromise = pickDetector({ video, modelUrl }).then(
@@ -3697,6 +3827,11 @@ function handleMisreadRequest(request) {
 }
 
 // view/misread-client.ts
+function snapshot(request) {
+  const faces = {};
+  for (const face of FACES) faces[face] = { colors: [...request.faces[face].colors] };
+  return { epoch: request.epoch, faces, fixedRotation: request.fixedRotation };
+}
 var MisreadDecoder = class {
   worker = null;
   /** Set once a worker has proved it cannot be had at all, so no later request builds another. */
@@ -3712,12 +3847,23 @@ var MisreadDecoder = class {
    *
    * Returns the answer outright when this page has nowhere else to run it — in which case
    * `answer` is never called and the caller already has everything. Returns null when a worker
-   * took the request, and `answer` runs exactly once, later, with the reply for this epoch.
+   * took the request, and `answer` runs AT MOST once, later, with the reply for this epoch.
+   *
+   * AT MOST, not exactly (corrected 2026-09-05, having been the stronger claim since this class
+   * was written). Three things drop a callback, and all three are deliberate: a newer ask replaces
+   * one that has not been posted yet (see below); `dispose()` gives the worker back and forgets
+   * what it was holding; and a worker failure answers only the LATEST of the two it was carrying,
+   * because the other is already about a cube that is gone. Every one of them means the answer
+   * would have been discarded on arrival for its epoch anyway — so a caller must not treat this
+   * callback as the thing that CLEARS a "checking…" marker on its own. `ai-scan-panel` does not:
+   * every site that supersedes a reading bumps `diagnosisEpoch` and republishes.
+   *
+   * The request is SNAPSHOT here, not held by reference — see `snapshot`.
    */
   request(request, answer) {
     const worker = this.spawn();
     if (!worker) return handleMisreadRequest(request);
-    this.queued = { request, answer };
+    this.queued = { request: snapshot(request), answer };
     this.dispatch();
     return null;
   }
@@ -4069,6 +4215,21 @@ var AiScanPanel = class extends HTMLElement {
   finished = false;
   /** The pinned explanation riding on every report; null when nothing needs saying. */
   notice = null;
+  /**
+   * The notice a CAMERA OR STARTUP FAILURE pinned, so a start that works can take exactly it down.
+   *
+   * A notice stands until the situation changes, and a working scanner IS the situation changing —
+   * but nothing cleared these three ("The camera did not open", "The model did not load", "The
+   * scanner stopped"), so a user who pressed Start again and got a live camera and a running scan
+   * kept reading that the scanner had stopped. The transient status line said one thing and the
+   * pinned sentence the opposite, which is the state this field exists to make impossible.
+   *
+   * Held BY IDENTITY rather than as a flag: the clear only fires if the notice on screen is still
+   * the very object the failure pinned, so a refusal, a confirm request, or any other guidance
+   * raised in between is left exactly where it is. Capture guidance is not a camera fault and must
+   * survive a restart.
+   */
+  cameraFault = null;
   /** Where a colour misread most plausibly is; rides on every report so a host can mark them. */
   suspects = [];
   /** The pending deferred assembly (see CHECK_BEAT_MS); epoch-guarded and cleared on stop(). */
@@ -4207,6 +4368,7 @@ var AiScanPanel = class extends HTMLElement {
         this.cam.modelLoaded = true;
         this.announceRuntime(detector);
       }
+      this.clearCameraFault();
       const pending = this.pendingOpening;
       this.pendingOpening = null;
       const phase = pending?.phase ?? (this.awaiting ? "confirm" : "scanning");
@@ -4271,11 +4433,12 @@ var AiScanPanel = class extends HTMLElement {
     } catch (err) {
       if (!this.cam.current(gen)) throw err;
       if (timedOut) {
-        this.notice = {
+        this.cameraFault = {
           title: "The model did not load",
           tone: "err",
           body: "The scanner could not finish downloading its model. Check the connection and press Start to try again \u2014 or paint the cube by hand, which needs no model."
         };
+        this.notice = this.cameraFault;
       } else if (waiting) {
         this.notice = null;
       }
@@ -4284,6 +4447,12 @@ var AiScanPanel = class extends HTMLElement {
       clearTimeout(slow);
       clearTimeout(timer);
     }
+  }
+  /** Take down the notice a camera/startup failure pinned, if it is still the one showing. */
+  clearCameraFault() {
+    if (this.cameraFault === null) return;
+    if (this.notice === this.cameraFault) this.notice = null;
+    this.cameraFault = null;
   }
   /**
    * A camera that would not open: re-offer Start, and say which of the several causes it was.
@@ -4303,7 +4472,8 @@ var AiScanPanel = class extends HTMLElement {
     const said = cameraRefusalWords(err?.name);
     if (said) {
       console.warn("[ai-scan-panel] the camera would not open", err);
-      this.notice = { title: "The camera did not open", tone: "err", body: said };
+      this.cameraFault = { title: "The camera did not open", tone: "err", body: said };
+      this.notice = this.cameraFault;
       this.report("error", this.tinted("err", said));
       return;
     }
@@ -4427,13 +4597,14 @@ var AiScanPanel = class extends HTMLElement {
       ]);
       if (!this.cam.freshFrame(epoch)) return;
       this.lastInferenceMs = performance.now() - started;
-      this.tickFailingSince = null;
       if (output === null) {
+        this.tickFailingSince = null;
         this.noFrameTick();
         return;
       }
       this.noFrameSince = null;
       this.readFrame(output);
+      this.tickFailingSince = null;
     } catch (err) {
       if (!this.cam.freshFrame(epoch)) return;
       this.failingTick(err);
@@ -4522,16 +4693,18 @@ var AiScanPanel = class extends HTMLElement {
     this.showPreview(null);
     this.tickFailingSince = null;
     this.noFrameSince = null;
+    this.dropDiagnosis();
     const start = this.maybe("start");
     if (start) {
       start.hidden = false;
       start.disabled = false;
     }
-    this.notice = {
+    this.cameraFault = {
       title: "The scanner stopped",
       tone: "err",
       body: "The camera opened but no frame could be read for several seconds. Try Start again, and if it keeps happening the model or the camera driver is at fault rather than the cube."
     };
+    this.notice = this.cameraFault;
     this.report("error", "Could not read from the camera.");
     console.error("[ai-scan-panel] scan loop stopped after repeated failures", err);
   }

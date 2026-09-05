@@ -11,6 +11,16 @@ export interface DetectorChoice {
   runtime: ScanRuntime;
   /** True once this detector's model is loaded — carried with it, so a re-mount does not reload. */
   modelLoaded: boolean;
+  /**
+   * WHICH model `modelLoaded` is about, or null when nothing is loaded.
+   *
+   * The flag alone is a claim with no subject, and a parked detector is precisely where the
+   * subject can change: `pickDetector` re-points it at the NEW owner's `modelUrl`, so a panel
+   * asking for model B was handed a detector whose flag said "loaded" about model A — and the
+   * panel then skipped `load()` and scanned with the previous owner's model, reporting nothing
+   * unusual. The URL travels with the flag so the claim can be checked.
+   */
+  modelUrl: string | null;
 }
 
 /**
@@ -121,6 +131,19 @@ export async function pickDetector(opts: DetectorSource): Promise<DetectorChoice
   if (kept) {
     parked = null;
     kept.detector.retarget?.(opts);
+    // THE MODEL IS ONLY LOADED IF IT IS THIS OWNER'S MODEL. `retarget` has just changed which URL
+    // the detector answers for, so carrying the flag across unchecked told the new panel its model
+    // was ready when what is compiled is the PREVIOUS owner's. `load()` was then skipped and the
+    // scan ran on the wrong model, which produces readings rather than errors.
+    //
+    // Compared as the STRINGS the two owners' `modelUrl` getters produce, not as resolved URLs:
+    // this module runs where there may be no document to resolve against, and the two failures are
+    // not symmetrical. A false MISMATCH costs one call to an idempotent `load()` that returns at
+    // once; a false MATCH is the wrong model, silently. String equality can only produce the first.
+    const wanted = opts.modelUrl();
+    if (kept.modelLoaded && kept.modelUrl !== wanted) {
+      return { detector: kept.detector, runtime: kept.runtime, modelLoaded: false, modelUrl: null };
+    }
     return kept;
   }
   const invoke = (globalThis as TauriGlobal).__TAURI__?.core?.invoke;
@@ -132,7 +155,12 @@ export async function pickDetector(opts: DetectorSource): Promise<DetectorChoice
       // on a native path whose commands then fail one frame at a time. Only the one answer the
       // plugin promises counts as yes.
       if ((await invoke(`${CUBE_VISION}probe`)) === true) {
-        return { detector: new NativeDetector(invoke), runtime: 'native', modelLoaded: false };
+        return {
+          detector: new NativeDetector(invoke),
+          runtime: 'native',
+          modelLoaded: false,
+          modelUrl: null,
+        };
       }
     } catch (err) {
       // The browser path is what every build has, so falling through is always right. But
@@ -157,5 +185,6 @@ export async function pickDetector(opts: DetectorSource): Promise<DetectorChoice
     detector: new WebDetector(opts.video, opts.modelUrl),
     runtime: 'web',
     modelLoaded: false,
+    modelUrl: null,
   };
 }

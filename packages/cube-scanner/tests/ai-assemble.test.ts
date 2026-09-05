@@ -38,6 +38,35 @@ describe('assembleColors', () => {
     expect(r.valid).toBe(true);
   });
 
+  it('refuses a centre colour class the detector cannot produce, in both assemblers', () => {
+    // A CENTRE NAMES A FACE, so an out-of-range one is silently accepted as the name of one.
+    // Replacing all nine U stickers with class 17 built the map `17 -> U`, every one of them then
+    // resolved through it, and BOTH entry points returned `valid: true` for a facelet string
+    // assembled out of a colour class no model emits. NaN is the worse half: `Map` matches it to
+    // itself, so it works exactly as well as a real class. This is "Never invent data" at the one
+    // seam where the detector's output stops being checked — the ordinary stickers are deliberately
+    // left alone, because an unknown colour THERE is a statement about the cube.
+    for (const bad of [17, Number.NaN, -1, 2.5]) {
+      const f = faces(SOLVED_FACELETS);
+      f.U.colors = Array(9).fill(bad) as number[];
+      for (const assemble of [assembleColors, assemblePainted]) {
+        const r = assemble(f);
+        expect(r.valid, `${assemble.name} accepted centre class ${bad}`).toBe(false);
+        expect(r.reason).toMatch(/centre colour/);
+      }
+    }
+  });
+
+  it('still lets an unreadable ORDINARY sticker say what it says about the cube', () => {
+    // The other side of the rule above: a non-centre sticker that is not one of the six centre
+    // colours is refused in words a child can act on, not as malformed input.
+    const f = faces(SOLVED_FACELETS);
+    f.U.colors[0] = 9;
+    const r = assemblePainted(f);
+    expect(r.valid).toBe(false);
+    expect(r.reason).toMatch(/not one of the six centre colours/);
+  });
+
   it('rejects (with a reason) when two faces share a centre colour', () => {
     const f = faces(SOLVED_FACELETS);
     f.R.colors[4] = f.U.colors[4]!; // R centre now equals U centre — impossible cube

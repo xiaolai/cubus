@@ -80,6 +80,23 @@ export class WebDetector implements Detector {
     this.modelUrl = source.modelUrl;
   }
 
+  /**
+   * Open a camera, and install it only if this attempt is still the current one.
+   *
+   * THE COMPLETION BOUNDARY IS ITS OWN RACE (2026-09-05). `openCamera` releases the stream itself
+   * while it is still opening, so a `stop()` during the await was always safe — but once it has
+   * RESOLVED it has removed its abort listener, and the window between that resolution and this
+   * function resuming is a plain microtask nothing guarded. A `stop()` landing there aborted a
+   * controller nobody was listening to any more, found `source` still null, and returned; this then
+   * assigned the live stream onto a detector the caller had just stopped. The lens stayed on, the
+   * `Detector.use` contract ("a stop() while it is pending releases the camera and rejects") was
+   * broken in exactly the case it was written for, and nothing said so.
+   *
+   * `this.opening` is the identity to check, not merely the signal: every way to supersede this
+   * attempt — `stop()`, `dispose()`, a newer `use()` — goes through `stop()`, which both aborts
+   * this controller and clears the field. The signal is checked too because it costs nothing and
+   * the two are independent statements.
+   */
   async use(opts: CameraOptions = {}): Promise<void> {
     this.stop();
     const opening = new AbortController();
@@ -87,6 +104,12 @@ export class WebDetector implements Detector {
     try {
       // openCamera releases the stream itself when the signal fires, even if it arrives afterwards.
       const source = await openCamera(this.video(), opts, opening.signal);
+      if (this.opening !== opening || opening.signal.aborted) {
+        // Stopped while this was settling. Release what was opened — the caller has no handle to
+        // it — and reject, which is what `Detector.use` promises a cancelled open does.
+        source.stop();
+        throw new DOMException('camera open superseded', 'AbortError');
+      }
       this.source = source;
     } finally {
       if (this.opening === opening) this.opening = null;
@@ -114,6 +137,14 @@ export class WebDetector implements Detector {
    * park, which is where a detector changes owner and model URL at once. A different URL waits for
    * the load in flight and then starts its own — and re-asks, since by then the answer may have
    * arrived or the target may have moved again.
+   *
+   * AND THE WAIT IS A PLACE A DETECTOR CAN DIE (2026-09-05). That queue re-enters this method after
+   * the await, at which point `loadModel` reads the generation AS IT IS THEN — so a `dispose()`
+   * while a load for B sat behind a load for A started B's session on a discarded detector and
+   * installed it, which is the very leak `loadGeneration` exists to close, arriving through the
+   * door the URL guard had just opened. The generation is therefore captured BEFORE the wait and
+   * re-checked after it, so a queued load is invalidated exactly as an in-flight one is. A `load()`
+   * called AFTER the dispose still starts a real one — that is a new caller, not a stale queue.
    */
   async load(): Promise<void> {
     const modelUrl = this.modelUrl();
@@ -122,7 +153,11 @@ export class WebDetector implements Detector {
       if (this.loadingUrl === modelUrl) return this.loading;
       // Someone else's model is loading. Wait it out rather than racing it — two sessions being
       // created at once is the thing both guards exist to prevent — and its failure is not ours.
+      const generation = this.loadGeneration;
       await this.loading.catch(() => {});
+      // Disposed while this sat in the queue: build nothing. Returning leaves the detector exactly
+      // as `dispose()` left it, which is what the caller of a disposed detector is owed.
+      if (generation !== this.loadGeneration) return;
       return this.load();
     }
     const pending = this.loadModel(modelUrl).finally(() => {
@@ -144,7 +179,14 @@ export class WebDetector implements Detector {
     // doubles into "/vendor/vendor/…mjs" and a relative "./" puts the .wasm at the page root (404).
     // An ABSOLUTE URL sidesteps both, being used as-is whatever the base. Point it at the model's
     // own directory (both the model and runtime live there).
-    const wasmPaths = new URL(modelUrl.replace(/[^/]+$/, '') || './', document.baseURI).href;
+    //
+    // RESOLVED FIRST, THEN ITS DIRECTORY TAKEN. Stripping the filename with `/[^/]+$/` is a parse
+    // of a URL by hand, and it reads a query or a fragment as though it were path: a model at
+    // `model.onnx?path=a/b` kept `model.onnx?path=a/` as its "directory", and the runtime was then
+    // fetched from a URL no server has. `new URL('.', resolved)` is the same operation done by the
+    // one thing that actually knows URL grammar — and it drops the query and fragment, which
+    // belong to the model and never to its siblings.
+    const wasmPaths = new URL('.', new URL(modelUrl, document.baseURI)).href;
     // The runtime itself lives beside the wasm, as its own module. It must NOT be bundled in here:
     // onnxruntime spawns its inference worker from its own import.meta.url, so a bundled copy would
     // make that worker load the panel — which registers a custom element and dies in a worker,

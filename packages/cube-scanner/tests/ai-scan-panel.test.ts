@@ -619,6 +619,28 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     expect(events.length).toBe(after);
   });
 
+  it('a tick that ANSWERS and then cannot be read still reaches the fatal threshold', async () => {
+    // THE CLOCK WAS CLEARED BEFORE THE FRAME WAS PROCESSED. `next()` resolving was treated as the
+    // whole of a healthy tick, so the failure clock was reset and only THEN was the frame decoded
+    // — and `readFrame` is where the post-processing tail lives, which throws on a head with the
+    // wrong row count and on a native tensor that disagrees with its own header. Every such frame
+    // therefore started a FRESH failure run, so a scanner throwing on every single frame never
+    // reached TICK_FAIL_MS: it reported a transient error forever, over a working camera. The one
+    // failure with no way out was the one the fatal threshold exists for. Existing coverage only
+    // ever rejected `next()`, which never reaches the reset at all.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // A tensor the detector HANDS BACK happily, and that post-processing refuses: nine rows, not
+    // the ten a six-class detect head produces.
+    fake.output = { data: new Float32Array(9 * 9), anchors: 9, rows: 9 };
+    await vi.advanceTimersByTimeAsync(TICK * 3);
+    expect(last().phase).not.toBe('error'); // still patient, as for any other transient
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(last().phase).toBe('error');
+    expect(last().notice?.title ?? '').toMatch(/stopped/i);
+    expect(String(logged.mock.calls[0]?.[1] ?? '')).toMatch(/9 rows/);
+    logged.mockRestore();
+  });
+
   it('a brief camera hiccup is still forgiven, and forgotten once a tick succeeds', async () => {
     // The other half of the same claim: if this were a plain counter the transient case would
     // eventually trip it too, and the fix would have traded a silent failure for a false alarm.
@@ -1034,6 +1056,63 @@ describe('ai-scan-panel — what it says when things go wrong', () => {
     warned.mockRestore();
   });
 
+  it('takes a camera-failure notice down once a retry actually works', async () => {
+    // A notice stands until the situation changes, and a working scanner IS the situation
+    // changing — but nothing cleared these. A user who pressed Start again, got their camera and
+    // watched the scan run was still reading "The camera did not open" under a live preview: the
+    // transient line said one thing and the pinned sentence the opposite.
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    det.openError = new DOMException('Permission denied', 'NotAllowedError');
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    await solo.start();
+    expect(seen.at(-1)?.notice?.title ?? '').toMatch(/camera did not open/i);
+
+    det.openError = null; // the user allowed it, and pressed Start again
+    await solo.start();
+    expect(seen.at(-1)?.notice).toBeNull();
+    expect(seen.at(-1)?.phase).toBe('scanning');
+    solo.remove();
+    warned.mockRestore();
+  });
+
+  it('takes "The scanner stopped" down when Start brings the scanner back', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fake.failWith = new Error('malformed tensor');
+    await vi.advanceTimersByTimeAsync(3500);
+    expect(last().notice?.title ?? '').toMatch(/stopped/i);
+
+    fake.failWith = null;
+    await panel.start();
+    expect(last().notice).toBeNull();
+    expect(last().phase).not.toBe('error');
+    logged.mockRestore();
+  });
+
+  it('a restart does NOT take capture guidance down — only a camera failure', async () => {
+    // The other half, and the reason the clear is by identity rather than by a flag: a refusal's
+    // explanation and a confirm request are about the CUBE, and reopening the camera (a camera
+    // switch, a correction after a finished scan) must not wipe what the user still has to act on.
+    const TRUTH = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+    const shown = facesOf(TRUTH);
+    const bad = [...shown.F];
+    bad[0] = (bad[0]! + 1) % 6;
+    for (const face of FACES) await show(face === 'F' ? bad : shown[face]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    const pinned = last().notice?.title ?? '';
+    expect(pinned).toMatch(/sticker/i);
+
+    await panel.start();
+    expect(last().notice?.title).toBe(pinned);
+  });
+
   it('keeps the raw message for a rejection it does not recognise', async () => {
     // Deliberately narrow: a wording nobody predicted must reach a person intact rather than be
     // flattened into a guess about which of four things happened.
@@ -1419,6 +1498,34 @@ describe('ai-scan-panel — the misread count arrives after the refusal, not bef
 
     stale.answer(0); // the old decode finally finishes
     expect(last()).toBe(settled); // …and nothing at all was said about it
+  });
+
+  it('says nothing over a camera failure that landed while the decode was out', async () => {
+    // The diagnosis outlives its subject by design, and every site that re-decides a reading bumps
+    // the epoch so a late answer is dropped. A FATAL CAMERA FAILURE was not one of those sites —
+    // and it is the one that hurts most, because the answer republishes at phase 'scanning' with a
+    // notice about stickers. Landing after `tickFail` it replaced "The scanner stopped" with an
+    // instruction to show a side again, over a camera this panel had just closed and a loop that
+    // is no longer running: the user is told to do something the scanner cannot receive.
+    withWorker();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await scanMisreading(1);
+    expect(last().notice?.body ?? '').toMatch(/working out how many/i);
+    const worker = FakeWorker.last();
+    expect(worker.posted).toHaveLength(1);
+
+    // The camera dies while the decode is out.
+    fake.failWith = new Error('malformed tensor');
+    await vi.advanceTimersByTimeAsync(3500);
+    expect(last().phase).toBe('error');
+    expect(last().notice?.title ?? '').toMatch(/stopped/i);
+
+    const stopped = last();
+    worker.answer(0); // …and only now does the count arrive
+    expect(last()).toBe(stopped); // nothing was said at all
+    expect(last().notice?.title ?? '').toMatch(/stopped/i);
+    expect(last().phase).toBe('error');
+    logged.mockRestore();
   });
 
   it('answers with the count in one go where the page has no worker', async () => {

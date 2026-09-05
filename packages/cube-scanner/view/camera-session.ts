@@ -55,6 +55,15 @@ export class CameraSession {
    * the page while one of these is still out is what makes a cross-owner camera kill possible.
    */
   private openCount = 0;
+  /**
+   * The owner's model-URL getter, kept so `park()` can say WHICH model the detector holds.
+   *
+   * `modelLoaded` on its own is a claim with no subject, and the park is where the subject changes
+   * — see `DetectorChoice.modelUrl`. Read at park time rather than captured at choice time,
+   * because the URL is an attribute a host may set after the element mounts, exactly as
+   * `ensureDetector` takes it lazily for the same reason.
+   */
+  private modelUrlOf: (() => string) | null = null;
 
   /** Which backend was chosen. Read by the panel purely to report it. */
   runtime: ScanRuntime | null = null;
@@ -170,9 +179,12 @@ export class CameraSession {
     this.parkable = false;
     const runtime = this.runtime;
     const modelLoaded = this.modelLoaded;
+    // Read BEFORE the getter is forgotten, and only when there is a claim for it to be about.
+    const modelUrl = modelLoaded ? (this.modelUrlOf?.() ?? null) : null;
     this.modelLoaded = false;
+    this.modelUrlOf = null;
     if (!(detector && parkable && runtime)) return;
-    const handOver = (): void => parkDetector({ detector, runtime, modelLoaded });
+    const handOver = (): void => parkDetector({ detector, runtime, modelLoaded, modelUrl });
     // Synchronous when nothing is out, which is every ordinary disconnect.
     if (this.openCount === 0 || !this.opening) handOver();
     else void this.opening.then(handOver, handOver);
@@ -183,6 +195,7 @@ export class CameraSession {
    * start() and the native probe runs only once. Cached as a promise because the choice is async.
    */
   ensureDetector(video: () => HTMLVideoElement, modelUrl: () => string): Promise<Detector> {
+    this.modelUrlOf = modelUrl;
     if (this.detectorPromise === null) {
       const choice = this.detectorChoice;
       this.detectorPromise = pickDetector({ video, modelUrl }).then(

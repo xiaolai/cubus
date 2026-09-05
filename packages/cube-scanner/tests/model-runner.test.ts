@@ -176,12 +176,35 @@ describe('createModelRunner — the GPU verdict', () => {
     expect(instances()[0]?.runs).toBe(0);
   });
 
+  it('keeps the GPU for a SECOND healthy session sharing the runtime’s one device', async () => {
+    // THE REGRESSION A DEVICE TRANSITION CAUSED. The check was "this create put a device where
+    // there was none", and the shipped runtime publishes `env.webgpu.device` from its EP
+    // initialiser, which the backend registry runs at most ONCE per module. So there is no second
+    // transition to see, and every GPU session after the first on a page was rebuilt on proxied
+    // wasm — slower, and for nothing. Measured on real hardware before it was fixed: two
+    // `createModelRunner` calls in one headed Chromium page on an Apple GPU, the first
+    // `['webgpu','wasm']`, the second downgraded with "WebGPU did not take this model", one device
+    // object throughout. The park reaches this: a second panel, a rebuilt detector, a model swap.
+    withAdapter(true);
+    const ortUrl = freshOrtUrl();
+    const first = await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+    expect(first.providers).toEqual(['webgpu', 'wasm']);
+
+    const second = await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+    expect(second.providers).toEqual(['webgpu', 'wasm']);
+    // One module, two sessions, no rebuild and nothing thrown away.
+    expect(instances()).toHaveLength(1);
+    expect(instances()[0]?.sessions).toBe(2);
+    expect(instances()[0]?.released).toBe(0);
+  });
+
   it('does not read a PREVIOUS session’s GPU device as this one’s', async () => {
-    // `ort.env` is global to the runtime MODULE and `createModelRunner` caches modules by URL, so
-    // a device left behind by an earlier GPU session answers for a later runner on the same page.
-    // A second runner whose WebGPU quietly declines then passed the check on the first one's
-    // evidence — and ran wasm UNPROXIED on the page's thread, which is the one arrangement this
-    // check exists to prevent. Two panels alive at once, or a rebuilt one, is how a page gets here.
+    // The other side of the same fact. `ort.env` is global to the runtime MODULE and
+    // `createModelRunner` caches modules by URL, so a device left behind by an earlier GPU session
+    // is still there for a later runner whose graph onnxruntime runs on wasm instead — which then
+    // runs UNPROXIED on the page's thread, the one arrangement this check exists to prevent.
+    // Reading the device cannot tell the two apart; the session's own EXECUTION can, so the
+    // warm-up is run with the device's command queue watched.
     withAdapter(true);
     const ortUrl = freshOrtUrl();
     const first = await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
@@ -195,6 +218,52 @@ describe('createModelRunner — the GPU verdict', () => {
     expect(direct?.sessions).toBe(2); // both GPU asks went to the same, direct module…
     expect(direct?.released).toBe(1); // …and the second one was released, not kept unproxied
     expect(proxied?.proxy).toBe(true);
+  });
+
+  it('leaves the runtime’s queue exactly as it found it', async () => {
+    // The observation replaces `submit` on the device's queue for the length of one run. A copy
+    // left behind would count a later session's work as this one's, and — worse — hold this
+    // module's closure alive on an object the whole page shares.
+    withAdapter(true);
+    const ortUrl = freshOrtUrl();
+    const fixture = (await import(ortUrl)) as {
+      env: { webgpu: { device?: { queue: { submit: unknown } } } };
+    };
+    await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+    const queue = fixture.env.webgpu.device?.queue;
+    expect(queue).toBeDefined();
+    // `GPUQueue.prototype.submit` is a prototype method, so putting it back means leaving no own
+    // property behind — not restoring a value onto the instance.
+    expect(Object.hasOwn(queue!, 'submit')).toBe(false);
+    const inherited = queue!.submit;
+    await createModelRunner('model.onnx', { ortUrl, numThreads: 1 });
+    expect(queue!.submit).toBe(inherited);
+  });
+
+  it('refuses a second runner that asks the same module for a different configuration', async () => {
+    // `numThreads` and `wasmPaths` are read when the wasm backend initialises, which the runtime
+    // does ONCE per module. A second runner asking for different values used to get the first
+    // one's silently: its options said one thing and the session it got was another, which makes
+    // every measurement taken through that option a measurement of something else. Serialising
+    // creation never made these reconfigurable — it stopped two being half-applied at once.
+    const ortUrl = freshOrtUrl();
+    await createModelRunner('model.onnx', { ortUrl, numThreads: 1, wasmPaths: '/a/' });
+    // The same configuration is fine, and is what the app actually does on every re-mount.
+    await createModelRunner('model.onnx', { ortUrl, numThreads: 1, wasmPaths: '/a/' });
+    expect(instances()[0]?.sessions).toBe(2);
+
+    await expect(
+      createModelRunner('model.onnx', { ortUrl, numThreads: 6, wasmPaths: '/a/' }),
+    ).rejects.toThrow(/already initialised with numThreads 1/);
+    await expect(
+      createModelRunner('model.onnx', { ortUrl, numThreads: 1, wasmPaths: '/b/' }),
+    ).rejects.toThrow(/wasmPaths \/a\//);
+    // Refused BEFORE a session was created, so nothing was built and nothing needs releasing.
+    expect(instances()[0]?.sessions).toBe(2);
+    expect(instances()[0]?.released).toBe(0);
+    // And the refusal does not wedge the queue behind it.
+    await createModelRunner('model.onnx', { ortUrl, numThreads: 1, wasmPaths: '/a/' });
+    expect(instances()[0]?.sessions).toBe(3);
   });
 
   it('releases the abandoned session exactly once when the rebuild itself fails', async () => {
