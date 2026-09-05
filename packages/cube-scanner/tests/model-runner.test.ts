@@ -41,8 +41,13 @@ interface FakeRegistry {
     dims?: number[];
     outLength?: number | null;
     noInputNames?: boolean;
-    webgpuDeclines?: boolean;
+    /** `true` for every session, or the model URLs WebGPU refuses — two sessions, one device. */
+    webgpuDeclines?: boolean | string[];
     proxiedCreateFails?: boolean;
+    /** Every create rejects, whatever the proxy mode — a failed INITIALISATION, not a fallback. */
+    createFails?: boolean;
+    /** Macrotask ticks a run waits before submitting, per model URL. The overlap seam. */
+    runTicks?: Record<string, number>;
   };
 }
 
@@ -240,6 +245,64 @@ describe('createModelRunner — the GPU verdict', () => {
     expect(queue!.submit).toBe(inherited);
   });
 
+  it('gives each of two CONCURRENT runners its own GPU evidence, and puts the queue back', async () => {
+    // TWO PROBES ON ONE DEVICE, which is the arrangement the queue count could not survive.
+    //
+    // `env.webgpu.device` belongs to the MODULE, so every session on it submits on one queue —
+    // and the observation was per-probe, installed over whatever it found and restored to whatever
+    // it had found. Two `createModelRunner` calls overlapping (a panel re-mounting while another is
+    // still coming up) therefore produced two failures at once: the session WebGPU declined counted
+    // the other one's 17 command buffers and kept a GPU that never ran its graph, and the restores
+    // landed out of order — A installs, B installs, A restores, B restores — leaving A's wrapper
+    // reinstated as an own property of a queue the whole page shares, counting later sessions and
+    // holding a dead module's closure alive.
+    //
+    // The fix is both halves: the probe section runs on the same `serialise` chain creation does,
+    // so two probes never overlap on one module; and the wrapper belongs to the queue, installed
+    // once and removed by whoever put it there. `runTicks` is what makes the overlap real here —
+    // the rest of the fake is synchronous, so without a yield inside a run the two probes take
+    // turns and the bug cannot be staged.
+    withAdapter(true);
+    const noted = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const ortUrl = freshOrtUrl();
+      const fixture = (await import(ortUrl)) as {
+        env: { webgpu: { device?: { queue: { submit: unknown } } } };
+      };
+      registry().model = {
+        // The GPU takes the first model's graph and refuses the second's — the two sessions this
+        // evidence has to tell apart, on one device.
+        webgpuDeclines: ['decliner.onnx'],
+        // The decliner's probe is the WIDER window, so it is watching while the other submits.
+        runTicks: { 'gpu.onnx': 1, 'decliner.onnx': 3 },
+      };
+      const [onGpu, declined] = await Promise.all([
+        createModelRunner('gpu.onnx', { ortUrl, numThreads: 1 }),
+        createModelRunner('decliner.onnx', { ortUrl, numThreads: 1 }),
+      ]);
+
+      // The session the GPU DID take keeps it…
+      expect(onGpu.providers).toEqual(['webgpu', 'wasm']);
+      // …and the one it did not is rebuilt on proxied wasm, on its own submissions and nobody
+      // else's. Without the serialisation this reads ['webgpu', 'wasm']: 17 command buffers were
+      // submitted while it watched, none of them its own.
+      expect(declined.providers).toEqual(['wasm']);
+      const [direct, proxied] = instances();
+      expect(direct?.sessions).toBe(2); // both GPU asks went to the one direct module…
+      expect(direct?.released).toBe(1); // …and only the declined one was released
+      expect(proxied?.proxy).toBe(true);
+
+      // And the page's queue is exactly as it was found: `GPUQueue.prototype.submit` is a
+      // prototype method, so putting it back means leaving NO own property behind. A wrapper left
+      // here is a counter with no probe, on an object nothing will ever clean up.
+      const queue = fixture.env.webgpu.device?.queue;
+      expect(queue).toBeDefined();
+      expect(Object.hasOwn(queue!, 'submit')).toBe(false);
+    } finally {
+      noted.mockRestore();
+    }
+  });
+
   it('refuses a second runner that asks the same module for a different configuration', async () => {
     // `numThreads` and `wasmPaths` are read when the wasm backend initialises, which the runtime
     // does ONCE per module. A second runner asking for different values used to get the first
@@ -264,6 +327,36 @@ describe('createModelRunner — the GPU verdict', () => {
     // And the refusal does not wedge the queue behind it.
     await createModelRunner('model.onnx', { ortUrl, numThreads: 1, wasmPaths: '/a/' });
     expect(instances()[0]?.sessions).toBe(3);
+  });
+
+  it('refuses a different configuration after a create that FAILED on the same module', async () => {
+    // A CREATE THAT REJECTED STILL INITIALISED THE BACKEND. `InferenceSession.create` brings the
+    // wasm backend up from `ort.env` first and fetches the model second, so a 404 model — or a
+    // graph the runtime will not take — burns `numThreads` and `wasmPaths` into the module on its
+    // way to failing. Pinning only after a SUCCESSFUL create read as caution and left exactly the
+    // hole the pin exists to close: the next runner asked for a different thread count, was
+    // allowed, and silently got the failed runner's.
+    //
+    // Whether the backend really did initialise before any given failure is not something
+    // onnxruntime reports, so the pin is kept rather than guessed at — a loud refusal a caller can
+    // read and retry, against a session that quietly runs on somebody else's thread count.
+    const ortUrl = freshOrtUrl();
+    registry().model = { createFails: true };
+    await expect(createModelRunner('model.onnx', { ortUrl, numThreads: 4 })).rejects.toThrow(
+      /would not load/,
+    );
+    expect(instances()[0]?.sessions).toBe(0); // nothing came up, and nothing needs releasing
+    expect(instances()[0]?.released).toBe(0);
+
+    registry().model = { createFails: false };
+    await expect(createModelRunner('model.onnx', { ortUrl, numThreads: 1 })).rejects.toThrow(
+      /already initialised with numThreads 4/,
+    );
+    // …and the configuration that WAS initialised still works, so this is a refusal and not a
+    // wedge: a caller retrying the failed load gets its session.
+    const runner = await createModelRunner('model.onnx', { ortUrl, numThreads: 4 });
+    expect(runner.providers).toEqual(['wasm']);
+    expect(instances()[0]?.sessions).toBe(1);
   });
 
   it('releases the abandoned session exactly once when the rebuild itself fails', async () => {

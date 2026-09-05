@@ -3119,38 +3119,61 @@ function webgpuQueue(ort) {
   if (typeof queue !== "object" || queue === null) return null;
   return typeof queue.submit === "function" ? queue : null;
 }
+var queueWatches = /* @__PURE__ */ new WeakMap();
+function watchQueue(queue) {
+  let watch = queueWatches.get(queue);
+  if (!watch) {
+    const original = Object.getOwnPropertyDescriptor(queue, "submit");
+    const submit = queue.submit;
+    const counters = /* @__PURE__ */ new Set();
+    const wrapper = function(...args) {
+      for (const counter2 of counters) counter2.n++;
+      return submit.apply(this, args);
+    };
+    try {
+      Object.defineProperty(queue, "submit", {
+        configurable: true,
+        writable: true,
+        enumerable: original?.enumerable ?? false,
+        value: wrapper
+      });
+    } catch {
+      return null;
+    }
+    watch = { wrapper, original, counters };
+    queueWatches.set(queue, watch);
+  }
+  const live = watch;
+  const counter = { n: 0 };
+  live.counters.add(counter);
+  let released = false;
+  return {
+    counter,
+    release() {
+      if (released) return;
+      released = true;
+      live.counters.delete(counter);
+      if (live.counters.size > 0) return;
+      queueWatches.delete(queue);
+      if (queue.submit !== live.wrapper) return;
+      if (live.original) Object.defineProperty(queue, "submit", live.original);
+      else delete queue.submit;
+    }
+  };
+}
 async function gpuRanTheGraph(ort, probe) {
   const queue = webgpuQueue(ort);
-  if (!queue) {
+  const watch = queue ? watchQueue(queue) : null;
+  if (!watch) {
     await probe();
     return null;
-  }
-  const original = Object.getOwnPropertyDescriptor(queue, "submit");
-  const submit = queue.submit;
-  let submissions = 0;
-  let watching = false;
-  try {
-    Object.defineProperty(queue, "submit", {
-      configurable: true,
-      writable: true,
-      enumerable: original?.enumerable ?? false,
-      value: function(...args) {
-        submissions++;
-        return submit.apply(this, args);
-      }
-    });
-    watching = true;
-  } catch {
   }
   try {
     await probe();
   } finally {
-    if (watching) {
-      if (original) Object.defineProperty(queue, "submit", original);
-      else delete queue.submit;
-    }
+    watch.release();
   }
-  return watching ? submissions > 0 : null;
+  return watch.counter.n > 0;
 }
 async function bestTimedRun(probe) {
   const hidden = () => globalThis.document?.visibilityState === "hidden";
@@ -3244,12 +3267,11 @@ async function createModelRunner(modelUrl, opts = {}) {
     ort.env.wasm.numThreads = numThreads;
     ort.env.wasm.proxy = !gpu;
     ort.env.wasm.wasmPaths = wasmDir;
-    const created = await ort.InferenceSession.create(modelUrl, {
+    configured.set(ort, { numThreads, wasmPaths: wasmDir });
+    return ort.InferenceSession.create(modelUrl, {
       executionProviders,
       graphOptimizationLevel: "all"
     });
-    configured.set(ort, { numThreads, wasmPaths: wasmDir });
-    return created;
   });
   return owning(session, async (relinquish) => {
     const rebuildOnWasm = async (why) => {
@@ -3269,18 +3291,20 @@ async function createModelRunner(modelUrl, opts = {}) {
     const side = inputSide(session);
     const probe = () => run(new Float32Array(3 * side * side), side);
     if (opts.warmUp ?? true) {
-      let ranOnGpu = null;
-      if (gpuVerdict === true) ranOnGpu = await gpuRanTheGraph(ort, probe);
-      else await probe();
-      if (ranOnGpu === false) return rebuildOnWasm(notTheGpu);
-      if (gpu && chosenHere) {
-        const best = await bestTimedRun(probe);
-        const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
-        if (best !== null && best > budget) {
-          return rebuildOnWasm(
-            `[cubus] the GPU ran this model in ${Math.round(best)} ms \u2014 slower than the wasm runtime, so using that instead`
-          );
-        }
+      const measured = await serialise(ort, async () => {
+        let ranOnGpu = null;
+        if (gpuVerdict === true) ranOnGpu = await gpuRanTheGraph(ort, probe);
+        else await probe();
+        if (ranOnGpu === false) return { ranOnGpu, best: null };
+        const best = gpu && chosenHere ? await bestTimedRun(probe) : null;
+        return { ranOnGpu, best };
+      });
+      if (measured.ranOnGpu === false) return rebuildOnWasm(notTheGpu);
+      const budget = opts.gpuBudgetMs ?? GPU_BUDGET_MS;
+      if (measured.best !== null && measured.best > budget) {
+        return rebuildOnWasm(
+          `[cubus] the GPU ran this model in ${Math.round(measured.best)} ms \u2014 slower than the wasm runtime, so using that instead`
+        );
       }
     }
     return Object.assign(run, {
@@ -3326,6 +3350,17 @@ var WebDetector = class {
   opening = null;
   get device() {
     return this.source?.device ?? null;
+  }
+  /**
+   * The model URL the installed runner was built for, or null when nothing is installed.
+   *
+   * Read off `run` and not off `loadedUrl` alone, so the answer cannot outlive the session it is
+   * about: `dispose()` clears both, but a future path that released the runner without clearing
+   * the URL would otherwise keep claiming a model this detector no longer holds — and this value
+   * is what `CameraSession.park()` hands to the next owner as permission to skip `load()`.
+   */
+  get loadedModel() {
+    return this.run ? this.loadedUrl : null;
   }
   /**
    * The provider list the loaded runner was created with, or null before the model has loaded.
@@ -3574,12 +3609,13 @@ var CameraSession = class {
    */
   openCount = 0;
   /**
-   * The owner's model-URL getter, kept so `park()` can say WHICH model the detector holds.
+   * The owner's model-URL getter, kept as the FALLBACK label for a runtime that has no URL.
    *
    * `modelLoaded` on its own is a claim with no subject, and the park is where the subject changes
-   * — see `DetectorChoice.modelUrl`. Read at park time rather than captured at choice time,
-   * because the URL is an attribute a host may set after the element mounts, exactly as
-   * `ensureDetector` takes it lazily for the same reason.
+   * — see `DetectorChoice.modelUrl`. This used to BE the subject, read at park time, and that was
+   * the defect: it is the URL the owner is asking for NOW, which is not the one that was compiled.
+   * See `modelHeldBy`, which asks the detector instead and falls back to this only where the
+   * detector answers to no URL at all.
    */
   modelUrlOf = null;
   /** Which backend was chosen. Read by the panel purely to report it. */
@@ -3676,13 +3712,34 @@ var CameraSession = class {
     this.parkable = false;
     const runtime = this.runtime;
     const modelLoaded = this.modelLoaded;
-    const modelUrl = modelLoaded ? this.modelUrlOf?.() ?? null : null;
+    const modelUrl = modelLoaded && detector ? this.modelHeldBy(detector) : null;
     this.modelLoaded = false;
     this.modelUrlOf = null;
     if (!(detector && parkable && runtime)) return;
     const handOver = () => parkDetector({ detector, runtime, modelLoaded, modelUrl });
     if (this.openCount === 0 || !this.opening) handOver();
     else void this.opening.then(handOver, handOver);
+  }
+  /**
+   * WHICH model the detector actually holds — asked of the DETECTOR, which is the only thing that
+   * knows (2026-09-05).
+   *
+   * `park()` used to read the owner's `modelUrl` getter here, and that is a different fact wearing
+   * the same name: it is the URL this panel is asking for at the moment it disconnects, not the one
+   * that was compiled into the session. The two come apart in exactly the place the park matters —
+   * a host that changes its `model-url` attribute after the load — and the failure is silent:
+   * model A was parked under B's name, `pickDetector` compared B against B, and the next mount was
+   * told its model was ready while what is compiled is A. A wrong model produces readings, not
+   * errors. Reproduced.
+   *
+   * `undefined` from the detector is "I do not answer to a URL", and only there does the owner's
+   * getter stand in: the native plugin resolves and compiles the bundled model itself, so its
+   * identity cannot disagree with itself and the URL is a label rather than a claim. `null` is the
+   * detector saying it holds nothing, and is passed through as that.
+   */
+  modelHeldBy(detector) {
+    const stated = detector.loadedModel;
+    return stated === void 0 ? this.modelUrlOf?.() ?? null : stated;
   }
   /**
    * The detector, chosen once and kept for the session's life, so the model survives a stop()/
