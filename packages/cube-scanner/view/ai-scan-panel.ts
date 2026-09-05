@@ -40,7 +40,7 @@ import {
   type StickerSuspect,
 } from '../src/ai-assemble.js';
 import type { CameraDevice } from '../src/camera.js';
-import type { Detector } from '../src/detector.js';
+import type { Detector, ModelOutput } from '../src/detector.js';
 import type { MisreadDiagnosis } from '../src/misread-decode.js';
 import { fitFromOutput } from '../src/onnx-detect.js';
 import type { FitReason } from '../src/onnx-postprocess.js';
@@ -136,6 +136,27 @@ const STABLE_MS = 500;
  * says why; this is the same claim about elapsed time.
  */
 const TICK_FAIL_MS = 3000;
+/**
+ * How long one `detector.next()` may take before the tick stops waiting for it.
+ *
+ * The failure this exists for is an inference that never settles AT ALL — a native plugin call
+ * lost on the bridge, a runtime worker that died mid-run. Nothing in the loop could see it: the
+ * busy guard stayed set forever, so every later tick returned immediately, BOTH failure clocks
+ * stopped advancing (they are only touched by a tick that gets somewhere), and even stop() then
+ * start() could not recover, because the flag outlived the scan it belonged to. The panel sat on
+ * its last message with a live lens — the shape of a hung app rather than of a slow one.
+ *
+ * It ABANDONS THE WAIT, not the inference, exactly as `loadModel` does for the model download: the
+ * abandoned promise is dropped on arrival by the epoch check, and this rejection joins the same
+ * failure clock as every other tick error, so a wedged runtime is reported through `tickFail`
+ * rather than in silence.
+ *
+ * Generous against any real runtime, and deliberately not a budget for slowness — TICK_FLOOR_MS
+ * already lets a slow machine pace itself. The ladder in `view/onnx-runtime.ts` measures 15 ms on
+ * a GPU and 59 ms on six-thread wasm, and even a software rasteriser answers in ~6 s. This is a
+ * limit on SILENCE.
+ */
+const INFERENCE_TIMEOUT_MS = 15_000;
 // The beat between "captured/corrected" and the verdict. Assembly itself is ~5 ms; this exists so
 // the capture that triggered the check — the sixth tile going green, a corrected sticker — paints
 // before any refusal lands. Everything used to run in one task, so the browser painted once,
@@ -336,8 +357,18 @@ export class AiScanPanel extends HTMLElement {
   /** Model URL; the app can override before the element renders. */
   modelUrl = './vendor/cube-yolo.onnx';
 
-  /** A tick is mid-inference; the next one returns rather than running two at once. */
-  private busy = false;
+  /**
+   * The frame EPOCH of the tick that is mid-inference, or null when none is.
+   *
+   * A number rather than a flag, because the flag outlived the thing it was guarding. An inference
+   * that never settles left it set for the life of the page: `stop()` and `start()` bump the epoch
+   * and rebuild the loop, but the flag survived both, so every tick of the new scan returned at the
+   * first line and the scanner could not be recovered by anything short of a reload. Scoped to the
+   * epoch, a stale inference blocks only the scan it belongs to — and the `finally` below clears
+   * the guard only when it is still the one it set, so an abandoned tick landing late cannot let a
+   * second inference into the current epoch.
+   */
+  private busy: number | null = null;
   /** `headless`: draw nothing, and let the host draw from 'scan-progress'. */
   private headless = false;
 
@@ -601,8 +632,12 @@ export class AiScanPanel extends HTMLElement {
         // panel only waits for load() and reports progress — the wasm-path and worker subtleties
         // live in WebDetector, behind the seam.
         await this.loadModel(detector, gen);
-        this.cam.modelLoaded = true;
+        // The GENERATION FIRST, then the flag. Setting it before the check let a superseded
+        // attempt mark the session's model loaded — and `use()` may have replaced the detector in
+        // the meantime, in which case the flag was about a different model entirely and the next
+        // tick called `next()` on a runtime that had never loaded one.
         if (!this.cam.current(gen)) return; // stop() already released the camera
+        this.cam.modelLoaded = true;
         this.announceRuntime(detector);
       }
       // The instruction `loop()` could not give because the camera was dark, given now. A camera
@@ -634,6 +669,13 @@ export class AiScanPanel extends HTMLElement {
    * The timeout ABANDONS THE WAIT, not the load — `Detector.load` is idempotent and now guards its
    * own in-flight promise, so a load that eventually finishes is still there for the next Start
    * rather than being started a second time.
+   *
+   * EVERY WRITE TO `notice` HERE IS GENERATION-GUARDED (2026-09-05). This attempt's load can settle
+   * long after a stop() or a newer start() — a minute later, in the timeout's case — and the notice
+   * is the panel's one pinned sentence, so a superseded attempt writing to it replaces whatever the
+   * CURRENT state is saying: "the model did not load" over a scanner that is running, or a cleared
+   * notice over a camera refusal the user still needs to read. It is the same rule the rest of
+   * start() follows, and this method was the one place that did not.
    */
   private async loadModel(detector: Detector, gen: number): Promise<void> {
     // Whether the "taking a while" notice was pinned, so it can be TAKEN DOWN again. A notice
@@ -666,8 +708,9 @@ export class AiScanPanel extends HTMLElement {
           }, LOAD_TIMEOUT_MS);
         }),
       ]);
-      if (waiting) this.notice = null; // it arrived after all
+      if (waiting && this.cam.current(gen)) this.notice = null; // it arrived after all
     } catch (err) {
+      if (!this.cam.current(gen)) throw err; // superseded: not ours to say anything about
       if (timedOut) {
         // A REMEDY, not just a diagnosis. `startFailed` puts the underlying message on the status
         // line and re-offers Start; this is the part that says what to do about it, including the
@@ -832,13 +875,38 @@ export class AiScanPanel extends HTMLElement {
     this.cam.stopLoop();
   }
 
+  /**
+   * One frame: ask the detector, then hand the answer to whichever of the three outcomes it is.
+   *
+   * What is left here is the INFERENCE's lifetime — its guard, its deadline, its freshness and the
+   * cadence measurement — and nothing about cubes. Three outcomes moved out with the branching
+   * they carried (`noFrameTick`, `readFrame`, `failingTick`), which is the same split
+   * `fileSettledRead` was made by and for the same reason: whether a frame arrived is a question
+   * about the camera, what it shows is a question about the cube.
+   */
   private async onTick(): Promise<void> {
-    if (this.busy || this.cam.device === null || !this.cam.chosen || !this.cam.modelLoaded) return;
-    this.busy = true;
+    if (this.cam.device === null || !this.cam.chosen || !this.cam.modelLoaded) return;
     const epoch = this.cam.frameEpoch();
+    // Only a tick of THIS epoch holds the guard — see `busy`.
+    if (this.busy === epoch) return;
+    this.busy = epoch;
     const started = performance.now();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      const output = await this.cam.chosen.next();
+      // Raced against a clock, because an inference that never settles is invisible to every other
+      // check here — see INFERENCE_TIMEOUT_MS.
+      const output = await Promise.race([
+        this.cam.chosen.next(),
+        new Promise<never>((_resolve, reject) => {
+          deadline = setTimeout(() => {
+            reject(
+              new Error(
+                `the detector did not answer within ${Math.round(INFERENCE_TIMEOUT_MS / 1000)} seconds`,
+              ),
+            );
+          }, INFERENCE_TIMEOUT_MS);
+        }),
+      ]);
       // Reject a stale result: stop()/restart() between grab and here bumps the session epoch, so an
       // in-flight inference can't bleed into a new scan (or land after the loop was stopped).
       if (!this.cam.freshFrame(epoch)) return;
@@ -851,80 +919,109 @@ export class AiScanPanel extends HTMLElement {
       // against that, cleared TICK_FAIL_MS on its first tick, and killed a scanner that was fine.
       this.tickFailingSince = null;
       if (output === null) {
-        // No frame is not a still cube — it is no observation at all. An abstaining frame already
-        // reset the streak; leaving a missing one alone meant identical reads either side of a
-        // stall could satisfy both the count and the duration without the cube having been
-        // watched in between.
-        this.still.reset();
-        // …and it is not a working scanner either, which is the half that was missing. A camera
-        // that opens and never delivers answers `null` on every tick, and `null` cleared the
-        // failure clock above — so the one failure that needs no exception to happen was the one
-        // failure nothing watched. Its own clock, same limit, same fail-loud exit.
-        const now = performance.now();
-        this.noFrameSince ??= now;
-        if (now - this.noFrameSince >= TICK_FAIL_MS) {
-          this.tickFail(
-            new Error(
-              `the camera has been open for ${Math.round(now - this.noFrameSince)} ms without delivering a frame`,
-            ),
-          );
-        }
-        return; // camera opened but no frame yet — try again next tick
+        this.noFrameTick(); // camera opened but no frame yet — try again next tick
+        return;
       }
       this.noFrameSince = null;
-      const fit = fitFromOutput(output);
-      if (!fit.ok) {
-        this.still.reset();
-        this.showPreview(null);
-        // Keep the confirm phase while a confirm is pending: reporting 'scanning' here used to
-        // flip the host back to its idle heading the moment the cube left the frame — which it
-        // always does, because the user is turning it to find the side that was asked for.
-        this.report(
-          this.awaiting ? 'confirm' : 'scanning',
-          this.idleLine() + FRAME_HINT[fit.reason],
-        );
-        return;
-      }
-      // Both a count and a duration; see Stillness for why either alone is wrong.
-      const settled = this.still.offer(fit.face.colors);
-      this.showPreview(fit.face.colors);
-      if (!settled) {
-        // WHY it is not settling, when the answer is one sticker. The gate keys on all nine
-        // colours, so a single sticker flickering between red and orange — the detector's known
-        // weak pair — means no run ever completes and this line repeats forever with nothing to
-        // act on. The settle rule is unchanged (a majority vote would let a cube still being
-        // turned settle); what is added is the missing sentence.
-        const flicker = this.still.flickering();
-        this.report(
-          this.awaiting ? 'confirm' : 'scanning',
-          flicker === null
-            ? 'Reading a side — hold still…'
-            : `Reading a side — the ${CELL_NAMES[flicker] ?? 'marked'} sticker keeps changing colour. More light on it, or a steadier hold, will settle it.`,
-        );
-        return;
-      }
-      // A face's CENTRE colour is its identity (centres never move): colour class i ↔ FACES[i].
-      // So sides can be shown in any order — file each stable read under the face it belongs to.
-      // Everything above decides whether there is a read worth acting on; this decides what
-      // the read MEANS and where it goes. Separated because the first half is about the
-      // camera and the second is about the cube, and only the second can capture anything.
-      this.fileSettledRead(fit.face);
+      this.readFrame(output);
     } catch (err) {
       // A rejection can land after the scan it belonged to is over — a stop(), a restart, painting
       // switched on — exactly as a successful result can, and the success path has always said so.
       // Without the same guard, a late rejection restarted the failure clock and could report an
       // error into a scan that had already moved on, or over a panel that is now painting.
       if (!this.cam.freshFrame(epoch)) return;
-      // Transient at first, an error if it persists. The distinction is duration, not type: the
-      // camera-not-ready case clears in a tick or two, and nothing else does. `performance.now()`,
-      // because this is a claim about ELAPSED time — see TICK_FAIL_MS.
-      const now = performance.now();
-      this.tickFailingSince ??= now;
-      if (now - this.tickFailingSince >= TICK_FAIL_MS) {
-        this.tickFail(err);
-      }
+      this.failingTick(err);
     } finally {
-      this.busy = false;
+      clearTimeout(deadline);
+      // Only if it is still ours: an abandoned inference landing late must not open the current
+      // epoch to a second one.
+      if (this.busy === epoch) this.busy = null;
+    }
+  }
+
+  /**
+   * The tick answered, with no frame.
+   *
+   * No frame is not a still cube — it is no observation at all. An abstaining frame already reset
+   * the streak; leaving a missing one alone meant identical reads either side of a stall could
+   * satisfy both the count and the duration without the cube having been watched in between.
+   *
+   * And it is not a working scanner either, which is the half that was missing. A camera that opens
+   * and never delivers answers `null` on every tick, and `null` clears the failure clock in
+   * `onTick` — so the one failure that needs no exception to happen was the one failure nothing
+   * watched. Its own clock, same limit, same fail-loud exit.
+   */
+  private noFrameTick(): void {
+    this.still.reset();
+    const now = performance.now();
+    this.noFrameSince ??= now;
+    if (now - this.noFrameSince >= TICK_FAIL_MS) {
+      this.tickFail(
+        new Error(
+          `the camera has been open for ${Math.round(now - this.noFrameSince)} ms without delivering a frame`,
+        ),
+      );
+    }
+  }
+
+  /** A frame arrived: decide whether there is a read worth acting on, and hand it on if so. */
+  private readFrame(output: ModelOutput): void {
+    const fit = fitFromOutput(output);
+    if (!fit.ok) {
+      this.still.reset();
+      this.showPreview(null);
+      // Keep the confirm phase while a confirm is pending: reporting 'scanning' here used to
+      // flip the host back to its idle heading the moment the cube left the frame — which it
+      // always does, because the user is turning it to find the side that was asked for.
+      this.report(this.awaiting ? 'confirm' : 'scanning', this.idleLine() + FRAME_HINT[fit.reason]);
+      return;
+    }
+    // Both a count and a duration; see Stillness for why either alone is wrong.
+    const settled = this.still.offer(fit.face.colors);
+    this.showPreview(fit.face.colors);
+    if (!settled) {
+      // WHY it is not settling, when the answer is one sticker. The gate keys on all nine
+      // colours, so a single sticker flickering between red and orange — the detector's known
+      // weak pair — means no run ever completes and this line repeats forever with nothing to
+      // act on. The settle rule is unchanged (a majority vote would let a cube still being
+      // turned settle); what is added is the missing sentence.
+      const flicker = this.still.flickering();
+      this.report(
+        this.awaiting ? 'confirm' : 'scanning',
+        flicker === null
+          ? 'Reading a side — hold still…'
+          : `Reading a side — the ${CELL_NAMES[flicker] ?? 'marked'} sticker keeps changing colour. More light on it, or a steadier hold, will settle it.`,
+      );
+      return;
+    }
+    // A face's CENTRE colour is its identity (centres never move): colour class i ↔ FACES[i].
+    // So sides can be shown in any order — file each stable read under the face it belongs to.
+    // Everything above decides whether there is a read worth acting on; this decides what
+    // the read MEANS and where it goes. Separated because the first half is about the
+    // camera and the second is about the cube, and only the second can capture anything.
+    this.fileSettledRead(fit.face);
+  }
+
+  /**
+   * The tick failed: transient at first, an error if it persists.
+   *
+   * The distinction is duration, not type: the camera-not-ready case clears in a tick or two, and
+   * nothing else does. `performance.now()`, because this is a claim about ELAPSED time — see
+   * TICK_FAIL_MS.
+   *
+   * A FAILED FRAME BREAKS THE STILLNESS RUN, and that was missing. Every other way a tick can end
+   * without a usable read resets it — a frameless tick, an abstain, a bad geometry — but a frame
+   * that THREW left the run standing, so two matching reads, a failure, and a third matching read
+   * half a second later satisfied both halves of the capture gate over an observation that had a
+   * hole in it. Stillness is a claim about what was watched continuously; a frame nobody could read
+   * is not a frame that showed the cube unmoved.
+   */
+  private failingTick(err: unknown): void {
+    this.still.reset();
+    const now = performance.now();
+    this.tickFailingSince ??= now;
+    if (now - this.tickFailingSince >= TICK_FAIL_MS) {
+      this.tickFail(err);
     }
   }
 

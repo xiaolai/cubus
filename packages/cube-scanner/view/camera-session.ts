@@ -47,6 +47,14 @@ export class CameraSession {
   private detectorChoice = 0;
   /** The `detector.use()` still in flight, so the next one queues behind it. See `open`. */
   private opening: Promise<unknown> | null = null;
+  /**
+   * How many `open()` calls are queued or inside the detector right now.
+   *
+   * A COUNT and not a boolean, because the chain serialises opens rather than rejecting them: three
+   * can be waiting at once. `park()` is the only reader — see there for why handing the detector to
+   * the page while one of these is still out is what makes a cross-owner camera kill possible.
+   */
+  private openCount = 0;
 
   /** Which backend was chosen. Read by the panel purely to report it. */
   runtime: ScanRuntime | null = null;
@@ -136,7 +144,21 @@ export class CameraSession {
    *
    * The session forgets it either way: a parked detector is no longer this session's to drive, and
    * a later `ensureDetector()` must ask the page for one afresh rather than resolve a promise
-   * holding the one it gave back.
+   * holding the one it gave back. Forgetting includes BUMPING `detectorChoice`: clearing
+   * `detectorPromise` alone left a `pickDetector` probe still in flight free to land afterwards and
+   * install its detector on a session that has already given its one away — and `chosen` and the
+   * cached promise then pointed at different objects, with the loser's camera and model held by
+   * nothing that could release them. (2026-09-05.)
+   *
+   * THE HANDOVER WAITS FOR THE OPEN. `close()` above supersedes this session's attempts, so a
+   * `detector.use()` still inside the detector will call `detector.stop()` on its way out — see
+   * `open`'s finally, which is right while this session owns the detector and catastrophic once it
+   * does not. Hand it to the page immediately and the next `<ai-scan-panel>` can take it, open its
+   * camera, and have the old link's cleanup close the lens under it. Nothing in the chain is a
+   * cross-session ordering constraint — each session has its own — so the wait is the only thing
+   * that can express one. The cost when it fires is a park that lands late, so a re-mount inside
+   * that window builds its own detector rather than reusing this one; a rebuilt session is a cost,
+   * a camera killed by its predecessor is a fault.
    */
   park(): void {
     this.close();
@@ -144,11 +166,16 @@ export class CameraSession {
     const parkable = this.parkable;
     this.detector = null;
     this.detectorPromise = null;
+    this.detectorChoice++;
     this.parkable = false;
     const runtime = this.runtime;
     const modelLoaded = this.modelLoaded;
     this.modelLoaded = false;
-    if (detector && parkable && runtime) parkDetector({ detector, runtime, modelLoaded });
+    if (!(detector && parkable && runtime)) return;
+    const handOver = (): void => parkDetector({ detector, runtime, modelLoaded });
+    // Synchronous when nothing is out, which is every ordinary disconnect.
+    if (this.openCount === 0 || !this.opening) handOver();
+    else void this.opening.then(handOver, handOver);
   }
 
   /**
@@ -271,7 +298,18 @@ export class CameraSession {
     opts: CameraOptions,
     token: number,
   ): Promise<{ fellBack: boolean }> {
+    this.openCount++;
     const run = async (): Promise<{ fellBack: boolean }> => {
+      // CANCELLED WHILE IT QUEUED — so it opens nothing at all, and there is nothing to clean up.
+      //
+      // The chain makes this reachable by design: an attempt can sit behind another for as long as
+      // a permission prompt goes unanswered, and `stop()`, `restart` or a newer `start()` in that
+      // window supersedes it. It used to call `detector.use()` anyway, which asks the platform for
+      // a camera AFTER the user stopped the scanner — a lens that flicks on and straight back off
+      // via the finally below — and, worse, made the current attempt queue behind a permission wait
+      // nobody was waiting for. Returning before the try is deliberate: `fellBack` is a fact about
+      // an open that happened, and the caller's own generation check is what reads it. (2026-09-05)
+      if (!this.current(token)) return { fellBack: false };
       try {
         await detector.use(opts);
         return { fellBack: false };
@@ -301,6 +339,12 @@ export class CameraSession {
       () => undefined,
       () => undefined,
     );
+    // Registered AFTER `this.opening`, so a `park()` waiting on that tail runs once this link is
+    // no longer counted as in flight.
+    const done = (): void => {
+      this.openCount--;
+    };
+    void chained.then(done, done);
     return chained;
   }
 }
