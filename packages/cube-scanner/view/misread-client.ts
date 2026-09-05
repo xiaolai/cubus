@@ -154,11 +154,23 @@ export class MisreadDecoder {
       const spawned = new Worker(new URL('./misread-worker.js', import.meta.url), {
         type: 'module',
       });
+      // BOTH LISTENERS NAME THE WORKER THEY ARE ABOUT (2026-09-05). A terminated worker is not a
+      // silenced one — `terminate()` stops the thread and does not retract an event already on its
+      // way — so a `dispose()` or a `failed()` followed by a fresh spawn left the OLD worker's
+      // listeners live and pointing at `this`. A late error from the dead one then terminated its
+      // replacement and, because `spoke` had been reset with it, wrote the decoder off as
+      // unbuildable: every refusal for the rest of the session decoded on the page's thread, which
+      // is the three-second freeze this whole file exists to remove. A late message was the same
+      // fault in the quieter direction, answering the current request from a worker that is gone.
       spawned.addEventListener('message', (ev: MessageEvent) => {
+        if (this.worker !== spawned) return;
         this.spoke = true;
         this.deliver(ev.data as MisreadReply);
       });
-      spawned.addEventListener('error', (ev: Event) => this.failed(ev));
+      spawned.addEventListener('error', (ev: Event) => {
+        if (this.worker !== spawned) return;
+        this.failed(ev);
+      });
       this.worker = spawned;
       return spawned;
     } catch (cause) {

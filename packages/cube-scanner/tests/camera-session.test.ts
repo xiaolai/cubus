@@ -65,6 +65,19 @@ class GatedDetector extends StubDetector {
   }
 }
 
+/** A detector that answers to a model URL, as `WebDetector` does — see `Detector.loadedModel`. */
+class ModelDetector extends StubDetector {
+  loadedModel: string | null = null;
+  loads = 0;
+  constructor(private readonly url: () => string) {
+    super();
+  }
+  override async load(): Promise<void> {
+    this.loads++;
+    this.loadedModel = this.url();
+  }
+}
+
 type TauriGlobal = { __TAURI__?: { core?: { invoke?: (cmd: string) => Promise<unknown> } } };
 const video = () => ({}) as HTMLVideoElement;
 const modelUrl = () => './m.onnx';
@@ -200,6 +213,61 @@ describe('CameraSession — who owns the detector', () => {
   });
 });
 
+describe('CameraSession — which model the flag is about', () => {
+  it('drops `modelLoaded` when the owner asks for a model the detector does not hold', async () => {
+    // THE PARK'S DEFECT, ON THE PATH WITH NO PARK. `pickDetector` compares the parked URL against
+    // the new owner's, so a detector handed between panels cannot carry a stale claim. The CACHED
+    // path had no such check: one panel, one detector, a `model-url` re-pointed between a stop and
+    // a start — and `ensureDetector` handed back the cached promise with `modelLoaded` still true
+    // about the PREVIOUS URL. The panel then skipped `load()` and scanned model A while every
+    // screen said B, which produces readings rather than errors.
+    const s = new CameraSession();
+    let url = './model-a.onnx';
+    const det = new ModelDetector(() => url);
+    s.use(det, 'web');
+    await s.ensureDetector(video, () => url);
+    await det.load();
+    s.modelLoaded = true; // what the panel sets after a load it waited for
+    s.releaseCamera(); // …and the user stops the scanner
+
+    url = './model-b.onnx'; // the host re-points its attribute
+    await s.ensureDetector(video, () => url);
+    expect(s.modelLoaded).toBe(false);
+  });
+
+  it('keeps `modelLoaded` when the model has not changed', async () => {
+    // The other half: a stop/start on the same model must not pay for a second load, which is the
+    // whole reason the flag outlives the camera.
+    const s = new CameraSession();
+    const url = (): string => './model-a.onnx';
+    const det = new ModelDetector(url);
+    s.use(det, 'web');
+    await s.ensureDetector(video, url);
+    await det.load();
+    s.modelLoaded = true;
+    s.releaseCamera();
+    await s.ensureDetector(video, url);
+    expect(s.modelLoaded).toBe(true);
+    expect(det.loads).toBe(1);
+  });
+
+  it('leaves a runtime that answers to no URL alone', async () => {
+    // `undefined` from the detector is "I do not answer to a URL" and not "nothing is loaded": the
+    // native plugin resolves and compiles the bundled model itself, so its identity cannot
+    // disagree with itself and the owner's getter is a label rather than a claim. Downgrading it
+    // here would make every native re-mount cross the bridge for a load the plugin short-circuits.
+    const s = new CameraSession();
+    let url = './model-a.onnx';
+    const det = new StubDetector(); // no `loadedModel` at all
+    s.use(det, 'native');
+    await s.ensureDetector(video, () => url);
+    s.modelLoaded = true;
+    url = './model-b.onnx';
+    await s.ensureDetector(video, () => url);
+    expect(s.modelLoaded).toBe(true);
+  });
+});
+
 describe('CameraSession.open', () => {
   it('falls back off a pinned camera that has gone away, keeping every other option', async () => {
     // Rebuilding the options from facingMode alone silently dropped a caller's width and height,
@@ -305,6 +373,37 @@ describe('CameraSession.open', () => {
     // …so the last one to touch the camera is the last one queued, whatever settled when.
     expect(s.current(token)).toBe(true);
     expect(det.device?.deviceId).toBe('C');
+  });
+
+  it('a REPLACED detector does not make its successor wait for its permission prompt', async () => {
+    // The chain is an ordering constraint between opens on ONE camera, and it outlived the object
+    // it was about. `use()` replaces the detector — the test seam, and the native host's — and the
+    // replacement's first open then queued behind the discarded one's `use()`, which is sitting on
+    // a permission prompt a user may never answer. The old detector is stopped and disposed by
+    // then, so there is nothing left for its queue to order.
+    const s = new CameraSession();
+    const abandoned = new GatedDetector();
+    const first = s.beginAttempt();
+    const stuck = s.open(abandoned, { deviceId: 'A' }, first);
+    await Promise.resolve();
+    expect(abandoned.entered).toEqual(['A']); // inside the platform, prompt up
+
+    const fresh = new GatedDetector();
+    s.use(fresh, 'web');
+    const second = s.beginAttempt();
+    const opening = s.open(fresh, { deviceId: 'B' }, second);
+    await Promise.resolve();
+    // It asked for its camera at once. Before this, `entered` was empty until A was answered.
+    expect(fresh.entered).toEqual(['B']);
+    fresh.release('B');
+    await opening;
+    expect(fresh.device?.deviceId).toBe('B');
+    expect(s.current(second)).toBe(true);
+
+    // …and the abandoned one still cleans up after itself when it finally lands.
+    abandoned.release('A');
+    await stuck.catch(() => {});
+    expect(abandoned.device).toBeNull();
   });
 
   it('a camera released mid-open stays released once the open lands', async () => {

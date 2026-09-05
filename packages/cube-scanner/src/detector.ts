@@ -102,7 +102,7 @@ export interface Detector {
   /** Release the camera. The model stays loaded; a later `use()` reopens. Safe to call repeatedly. */
   stop(): void;
   /**
-   * Release EVERYTHING, including the model. The detector is unusable afterwards.
+   * Release EVERYTHING, including the model, and invalidate every load still in flight.
    *
    * Distinct from `stop()` on purpose, and the distinction is the whole point: `stop()` runs at the
    * start of every `use()`, so releasing the session there would recompile the model on every
@@ -110,6 +110,17 @@ export interface Detector {
    * injection, or built by a probe that lost its race. Those sites called `stop()`, which left the
    * old detector's inference session holding its wasm heap or its GPU device for the life of the
    * page.
+   *
+   * IT IS NOT A TOMBSTONE (corrected 2026-09-05; this said "the detector is unusable afterwards",
+   * which `WebDetector` has never implemented and a test forbids). What it invalidates is
+   * everything the detector was holding or about to install — the session, and the loads that were
+   * out when it ran, which release themselves rather than landing on a detector nobody holds. A
+   * call made AFTER it is a NEW caller, not a stale queue: `load()` starts a real load and `use()`
+   * opens a camera, exactly as on a fresh instance. The distinction is load-bearing rather than
+   * permissive — the disposal paths and the re-use paths overlap by construction at the park, so a
+   * `dispose()` that refused afterwards would turn "the panel came back" into "the scanner is
+   * dead". Pinned by `tests/web-detector.test.ts` ("still starts a load asked for AFTER a
+   * dispose").
    *
    * Optional because not every detector owns anything a `stop()` does not already release.
    */

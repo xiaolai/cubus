@@ -2795,6 +2795,8 @@ var P = CUBE_VISION;
 var cameraClaim = 0;
 var claims = 0;
 var mayClose = (claim) => cameraClaim === 0 || cameraClaim === claim;
+var closing = Promise.resolve();
+var closesOut = 0;
 var NativeDetector = class {
   /**
    * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`). This is the ONLY thing
@@ -2844,9 +2846,25 @@ var NativeDetector = class {
       this.closeCamera(claim);
       throw new DOMException("camera open superseded", "AbortError");
     };
-    await this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+    if (closesOut > 0) {
+      await closing;
+      if (cancelled()) abort();
+    }
+    try {
+      await this.invoke(`${P}open_camera`, { deviceId: opts.deviceId ?? null });
+    } catch (err) {
+      if (cameraClaim === claim) cameraClaim = 0;
+      throw err;
+    }
     if (cancelled()) abort();
-    const info = await this.invoke(`${P}current_camera`);
+    let info;
+    try {
+      info = await this.invoke(`${P}current_camera`);
+    } catch (err) {
+      this.dev = null;
+      this.closeCamera(claim);
+      throw err;
+    }
     if (cancelled()) abort();
     this.dev = info ?? { deviceId: opts.deviceId ?? "", label: "Camera" };
   }
@@ -2885,14 +2903,32 @@ var NativeDetector = class {
   /**
    * Close the one native camera, if this claim is entitled to. See `cameraClaim`.
    *
-   * Fire-and-forget: releasing the camera must not make `stop()` async (the panel calls it from
-   * synchronous teardown). A failure here only means the camera closes a tick later.
+   * Fire-and-forget, because releasing the camera must not make `stop()` async — the panel calls it
+   * from synchronous teardown, and there is nothing a caller could do with the answer. Not
+   * fire-and-FORGET, though, which is what it was: the close joins `closing`, so the next open
+   * waits for it rather than overtaking it.
+   *
+   * A FAILURE IS SAID OUT LOUD (2026-09-05). This used to swallow it under the note that "the
+   * camera closes a tick later", which nothing implemented — nothing retries, so a rejected
+   * `close_camera` is a lens left on for the life of the process with no error anywhere. What IS
+   * true is that the claim is given back first, so the plugin is left closable: `mayClose` admits
+   * anyone once `cameraClaim` is 0, and the next `stop()` or `use()` issues a close that can
+   * succeed. That is the recovery, and it is worth nothing unless somebody knows to look, hence
+   * the warning.
    */
   closeCamera(claim) {
     if (!mayClose(claim)) return;
     cameraClaim = 0;
-    void this.invoke(`${P}close_camera`).catch(() => {
+    closesOut++;
+    const sent = this.invoke(`${P}close_camera`).catch((err) => {
+      console.warn(
+        "[cubus] the native camera did not close \u2014 the lens may still be on until something opens or closes it again",
+        err
+      );
+    }).finally(() => {
+      closesOut--;
     });
+    closing = Promise.all([closing, sent]);
   }
 };
 function base64ToBuffer(b64) {
@@ -3249,15 +3285,9 @@ function validatedRun(ort, session, inputName, outputName) {
     return { data: out.data, anchors, rows };
   };
 }
-async function createModelRunner(modelUrl, opts = {}) {
-  const chosenHere = opts.executionProviders === void 0;
-  const executionProviders = opts.executionProviders ?? await preferredProviders();
-  const gpu = usesGpu(executionProviders);
-  const ortUrl = opts.ortUrl ?? "./ort.mjs";
-  const ort = await loadRuntime(ortUrl, !gpu);
-  const numThreads = opts.numThreads ?? defaultThreadCount();
-  const wasmDir = opts.wasmPaths ?? "./";
-  const session = await serialise(ort, async () => {
+async function createSession(ort, cfg) {
+  const { modelUrl, ortUrl, numThreads, wasmDir, gpu, executionProviders } = cfg;
+  return serialise(ort, async () => {
     const first = configured.get(ort);
     if (first && (first.numThreads !== numThreads || first.wasmPaths !== wasmDir)) {
       throw new Error(
@@ -3272,6 +3302,24 @@ async function createModelRunner(modelUrl, opts = {}) {
       executionProviders,
       graphOptimizationLevel: "all"
     });
+  });
+}
+async function createModelRunner(modelUrl, opts = {}) {
+  const chosenHere = opts.executionProviders === void 0;
+  const executionProviders = opts.executionProviders ?? await preferredProviders();
+  const gpu = usesGpu(executionProviders);
+  const ortUrl = opts.ortUrl ?? "./ort.mjs";
+  const ort = await loadRuntime(ortUrl, !gpu);
+  const numThreads = opts.numThreads ?? defaultThreadCount();
+  const wasmDir = opts.wasmPaths ?? "./";
+  const session = await createSession(ort, {
+    modelUrl,
+    ortUrl,
+    numThreads,
+    wasmDir,
+    // The proxy is OFF for the GPU path — see `createSession` for why that is not a compromise.
+    gpu,
+    executionProviders
   });
   return owning(session, async (relinquish) => {
     const rebuildOnWasm = async (why) => {
@@ -3307,7 +3355,8 @@ async function createModelRunner(modelUrl, opts = {}) {
         );
       }
     }
-    return Object.assign(run, {
+    const serialised = (input, imgsz) => serialise(ort, () => run(input, imgsz));
+    return Object.assign(serialised, {
       dispose: () => session.release(),
       providers: executionProviders
     });
@@ -3448,10 +3497,17 @@ var WebDetector = class {
    * door the URL guard had just opened. The generation is therefore captured BEFORE the wait and
    * re-checked after it, so a queued load is invalidated exactly as an in-flight one is. A `load()`
    * called AFTER the dispose still starts a real one — that is a new caller, not a stale queue.
+   *
+   * AND THE IN-FLIGHT QUESTION IS ASKED FIRST (2026-09-05). The installed-model shortcut used to
+   * run before it, which reads as an obvious cheap-test-first ordering and is wrong in exactly the
+   * case the two guards were combined for: with A INSTALLED and B loading, a caller asking for A
+   * was told "already loaded" and returned — and B then replaced A underneath it, so the last
+   * caller to ask ended up on a model nobody had asked it for. What is installed is only an answer
+   * while nothing is about to change it, so the pending load is settled first and the shortcut is
+   * re-asked afterwards.
    */
   async load() {
     const modelUrl = this.modelUrl();
-    if (this.run && this.loadedUrl === modelUrl) return;
     if (this.loading) {
       if (this.loadingUrl === modelUrl) return this.loading;
       const generation = this.loadGeneration;
@@ -3460,6 +3516,7 @@ var WebDetector = class {
       if (generation !== this.loadGeneration) return;
       return this.load();
     }
+    if (this.run && this.loadedUrl === modelUrl) return;
     const pending = this.loadModel(modelUrl).finally(() => {
       if (this.loading === pending) {
         this.loading = null;
@@ -3472,6 +3529,14 @@ var WebDetector = class {
   }
   async loadModel(modelUrl) {
     const generation = this.loadGeneration;
+    const outgoing = this.run;
+    if (outgoing) {
+      this.run = null;
+      this.loadedUrl = null;
+      await outgoing.dispose().catch(() => {
+      });
+      if (generation !== this.loadGeneration) return;
+    }
     const wasmPaths = new URL(".", new URL(modelUrl, document.baseURI)).href;
     const ortUrl = `${wasmPaths}ort.mjs`;
     const run = await createModelRunner(modelUrl, { wasmPaths, ortUrl });
@@ -3480,11 +3545,8 @@ var WebDetector = class {
       });
       return;
     }
-    const previous = this.run;
     this.run = run;
     this.loadedUrl = modelUrl;
-    if (previous) void previous.dispose().catch(() => {
-    });
   }
   async next() {
     if (!this.source) throw new Error("no camera open \u2014 call use() first");
@@ -3540,9 +3602,16 @@ function disposeParkedDetector() {
   kept?.detector.dispose?.();
   kept?.detector.stop();
 }
+var PROBE = `${CUBE_VISION}probe`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+var NOT_REGISTERED = [
+  // `Command plugin:cube-vision|probe not found`
+  new RegExp(`(?:^|\\s)(?:command\\s+)?${PROBE}\\s+not found\\b`, "i"),
+  // `unknown command: plugin:cube-vision|probe`
+  new RegExp(`unknown command:?\\s+${PROBE}\\b`, "i")
+];
 function absentCommand(err) {
   const text = typeof err === "string" ? err : err?.message ?? "";
-  return /not found|unknown command/i.test(text);
+  return NOT_REGISTERED.some((shape) => shape.test(text));
 }
 async function pickDetector(opts) {
   const kept = parked;
@@ -3598,16 +3667,24 @@ var CameraSession = class {
   epoch = 0;
   /** Bumped by `use()`, so an injection beats a probe that is still in flight. See `use`. */
   detectorChoice = 0;
-  /** The `detector.use()` still in flight, so the next one queues behind it. See `open`. */
-  opening = null;
   /**
-   * How many `open()` calls are queued or inside the detector right now.
+   * The open chain, and WHOSE it is.
    *
-   * A COUNT and not a boolean, because the chain serialises opens rather than rejecting them: three
-   * can be waiting at once. `park()` is the only reader — see there for why handing the detector to
-   * the page while one of these is still out is what makes a cross-owner camera kill possible.
+   * `tail` is the `detector.use()` still in flight, so the next one queues behind it (see `open`);
+   * `count` is how many `open()` calls are queued or inside the detector right now — a count and
+   * not a boolean, because the chain serialises opens rather than rejecting them and three can be
+   * waiting at once. `park()` is the only reader of the count; see there for why handing the
+   * detector to the page while one is still out makes a cross-owner camera kill possible.
+   *
+   * KEYED ON THE DETECTOR, because an ordering constraint between two DIFFERENT detectors is not
+   * one (2026-09-05). The chain outlived the object it was about, so a `use()` that replaced the
+   * detector — the test seam, and the native host's — left the new one queued behind the old one's
+   * pending permission prompt, which a user who never answers leaves pending forever. The
+   * replacement is discarded and stopped by then, so there is nothing left for its queue to order:
+   * a new detector starts a new chain, and the old links still decrement the record they were
+   * registered on rather than an unrelated counter.
    */
-  openCount = 0;
+  opens = null;
   /**
    * The owner's model-URL getter, kept as the FALLBACK label for a runtime that has no URL.
    *
@@ -3716,9 +3793,11 @@ var CameraSession = class {
     this.modelLoaded = false;
     this.modelUrlOf = null;
     if (!(detector && parkable && runtime)) return;
+    const queue = detector && this.opens?.detector === detector ? this.opens : null;
+    this.opens = null;
     const handOver = () => parkDetector({ detector, runtime, modelLoaded, modelUrl });
-    if (this.openCount === 0 || !this.opening) handOver();
-    else void this.opening.then(handOver, handOver);
+    if (!queue || queue.count === 0) handOver();
+    else void queue.tail.then(handOver, handOver);
   }
   /**
    * WHICH model the detector actually holds — asked of the DETECTOR, which is the only thing that
@@ -3744,9 +3823,22 @@ var CameraSession = class {
   /**
    * The detector, chosen once and kept for the session's life, so the model survives a stop()/
    * start() and the native probe runs only once. Cached as a promise because the choice is async.
+   *
+   * AND `modelLoaded` IS RE-ASKED EVERY TIME, because it is a claim about a MODEL and this is
+   * where the model can change (2026-09-05). The park had this covered — `pickDetector` compares
+   * the parked URL against the new owner's — but the cached path had nothing: the same owner
+   * re-pointing its `model-url` between a stop and a start kept a flag that was about the previous
+   * URL, so the panel skipped `load()` and scanned model A while every screen said B. A wrong
+   * model produces readings, not errors. Same comparison as the park's, for the same reasons: the
+   * detector is asked (`modelHeldBy`), the strings are compared as the owners' getters produce
+   * them, and a false mismatch costs one call to an idempotent `load()` while a false match costs
+   * the scan.
    */
   ensureDetector(video, modelUrl) {
     this.modelUrlOf = modelUrl;
+    if (this.modelLoaded && this.detector && this.modelHeldBy(this.detector) !== modelUrl()) {
+      this.modelLoaded = false;
+    }
     if (this.detectorPromise === null) {
       const choice = this.detectorChoice;
       this.detectorPromise = pickDetector({ video, modelUrl }).then(
@@ -3847,7 +3939,11 @@ var CameraSession = class {
    * with the lens on and the app reporting no device.
    */
   async open(detector, opts, token) {
-    this.openCount++;
+    if (this.opens?.detector !== detector) {
+      this.opens = { detector, tail: Promise.resolve(), count: 0 };
+    }
+    const queue = this.opens;
+    queue.count++;
     const run = async () => {
       if (!this.current(token)) return { fellBack: false };
       try {
@@ -3862,13 +3958,13 @@ var CameraSession = class {
         if (!this.current(token)) detector.stop();
       }
     };
-    const chained = (this.opening ?? Promise.resolve()).then(run, run);
-    this.opening = chained.then(
+    const chained = queue.tail.then(run, run);
+    queue.tail = chained.then(
       () => void 0,
       () => void 0
     );
     const done = () => {
-      this.openCount--;
+      queue.count--;
     };
     void chained.then(done, done);
     return chained;
@@ -3954,10 +4050,14 @@ var MisreadDecoder = class {
         type: "module"
       });
       spawned.addEventListener("message", (ev) => {
+        if (this.worker !== spawned) return;
         this.spoke = true;
         this.deliver(ev.data);
       });
-      spawned.addEventListener("error", (ev) => this.failed(ev));
+      spawned.addEventListener("error", (ev) => {
+        if (this.worker !== spawned) return;
+        this.failed(ev);
+      });
       this.worker = spawned;
       return spawned;
     } catch (cause) {
@@ -4335,6 +4435,30 @@ var AiScanPanel = class extends HTMLElement {
     this.diagnosisEpoch++;
   }
   /**
+   * The reading has changed: everything decided ABOUT it is void.
+   *
+   * One operation, because it always was one and was written out three times — `rescanFace`,
+   * `setSticker` and `reset` each carried the same seven lines, and the panel's state is coupled
+   * enough that a caller which remembers six of them leaves a real defect: a confirmation that
+   * answers a question about a reading that no longer exists, a suspect list pointing at stickers
+   * that have moved, a `finished` that keeps the Solve button lit over a cube the panel is about
+   * to refuse. Every one of those has been a bug here.
+   *
+   * What is NOT here is deliberate: the captures themselves, the rotations, and the dots. Which
+   * sides survive an invalidation is exactly what distinguishes its three callers — a rescan drops
+   * one face, a reset drops all six, a correction drops none — so folding that in would make this
+   * a switch on its caller rather than an operation.
+   */
+  invalidateReading() {
+    this.confirmed = {};
+    this.awaiting = null;
+    this.mismatches = 0;
+    this.finished = false;
+    this.notice = null;
+    this.suspects = [];
+    this.dropDiagnosis();
+  }
+  /**
    * Why the camera must not open right now — one answer, consulted by every entry point.
    *
    * This replaces three half-guards that each protected one caller and left the others. `start()`
@@ -4585,13 +4709,7 @@ var AiScanPanel = class extends HTMLElement {
   reset() {
     this.still.reset();
     this.live = null;
-    this.confirmed = {};
-    this.awaiting = null;
-    this.mismatches = 0;
-    this.finished = false;
-    this.notice = null;
-    this.suspects = [];
-    this.dropDiagnosis();
+    this.invalidateReading();
     this.settled.clear();
     this.pendingOpening = null;
     for (const f of FACES) delete this.faces[f];
@@ -4851,8 +4969,20 @@ var AiScanPanel = class extends HTMLElement {
   /**
    * Stop the loop, report 'checking', and run the assembly one beat later (CHECK_BEAT_MS), so the
    * capture or correction that triggered the check paints before any verdict replaces it. Clears
-   * the pinned notice: whatever it explained is being re-decided right now. Epoch-guarded, so a
-   * restart or navigation during the beat cancels the stale check.
+   * the pinned notice: whatever it explained is being re-decided right now.
+   *
+   * GUARDED ON THE READING, NOT ON THE CAMERA (2026-09-05). A check is a computation over the six
+   * faces; the camera has already said everything it is going to say about them. Guarding it with
+   * `frameEpoch` meant anything that touched the camera during the 350 ms beat cancelled the
+   * verdict and put NOTHING in its place — and switching cameras is exactly that: six captures on
+   * screen, `complete` never set, and no way back, because re-showing a side that reads the same
+   * as the one on file is answered with "that side reads the same as before". Measured: six
+   * captures, no check, and identical re-reads unable to recover it.
+   *
+   * `diagnosisEpoch` is the serial number of the READING, bumped by everything that re-decides it
+   * — a capture, a correction, a paint stroke, a mode change, `reset()` — so a restart during the
+   * beat still cancels the check, and `stop()` clears the timer outright for a navigation. What is
+   * left running is the case that should always have run.
    */
   scheduleCheck(...opening) {
     this.stopLoop();
@@ -4862,11 +4992,11 @@ var AiScanPanel = class extends HTMLElement {
     this.suspects = [];
     this.dropDiagnosis();
     this.report("checking", ...opening);
-    const epoch = this.cam.frameEpoch();
+    const epoch = this.diagnosisEpoch;
     if (this.checkTimer !== null) clearTimeout(this.checkTimer);
     this.checkTimer = setTimeout(() => {
       this.checkTimer = null;
-      if (epoch === this.cam.frameEpoch()) this.assemble();
+      if (epoch === this.diagnosisEpoch) this.assemble();
     }, CHECK_BEAT_MS);
   }
   /** The sides captured so far, in URFDLB order — the shape hosts draw progress from. */
@@ -4909,13 +5039,7 @@ var AiScanPanel = class extends HTMLElement {
     }
     read.colors[index] = colour;
     read.confidence[index] = 1;
-    this.confirmed = {};
-    this.awaiting = null;
-    this.mismatches = 0;
-    this.finished = false;
-    this.notice = null;
-    this.suspects = [];
-    this.dropDiagnosis();
+    this.invalidateReading();
     const done = this.capturedFaces().length;
     if (this.painting) {
       this.afterPaintStroke(face, done);
@@ -5037,13 +5161,7 @@ var AiScanPanel = class extends HTMLElement {
     if (!this.faces[face]) return;
     delete this.faces[face];
     this.settled.delete(face);
-    this.confirmed = {};
-    this.awaiting = null;
-    this.mismatches = 0;
-    this.finished = false;
-    this.notice = null;
-    this.suspects = [];
-    this.dropDiagnosis();
+    this.invalidateReading();
     this.buildDots();
     this.loop("scanning", `Show the ${GUIDE[face].color} side again \u2014 it will be read fresh.`);
   }
@@ -5303,6 +5421,14 @@ var AiScanPanel = class extends HTMLElement {
    *
    * Where the page has no worker the whole thing collapses back to one call carrying the count —
    * the behaviour that shipped before the decode moved off this thread.
+   *
+   * AND THE EPOCH IS NOT THE ONLY WAY TO BE STALE (2026-09-05). It tracks the READING, which is
+   * what the answer is about — and a camera that failed in the meantime changes nothing about the
+   * reading while changing everything about what the panel should be saying. So a refinement
+   * landing after "The camera did not open" replaced that sentence with a misread notice and
+   * reported 'scanning' over a null device: the user was told to show a side again by a scanner
+   * with no camera. A failure notice outranks a better explanation of a refusal, and the test is
+   * `clearCameraFault`'s — is the sentence a failure pinned still the one on screen.
    */
   diagnose(result, publish) {
     if (result.misreadCount !== null) {
@@ -5314,6 +5440,7 @@ var AiScanPanel = class extends HTMLElement {
       { epoch, faces: this.faces, fixedRotation: this.inPlace() },
       (r) => {
         if (r.epoch !== this.diagnosisEpoch) return;
+        if (this.cameraFault !== null && this.notice === this.cameraFault) return;
         publish(decided(result, r.diagnosis), false);
       }
     );
