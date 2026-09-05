@@ -333,6 +333,103 @@ describe('MisreadDecoder — where the decode runs', () => {
     expect(FakeWorker.built).toHaveLength(2);
   });
 
+  it('a dead worker’s error does not take down the one that replaced it', () => {
+    // `terminate()` stops a thread; it does not retract an event already on its way. So the
+    // listeners of a worker this decoder has finished with are still live and still pointing at
+    // `this` — and a late `error` from the dead one ran the whole failure path against its
+    // REPLACEMENT: terminated it, and (since `spoke` was reset with the worker) wrote the decoder
+    // off as unbuildable, moving every refusal for the rest of the session back onto the page's
+    // thread. That is the three-second freeze this file exists to remove, restored by an event
+    // about a thread that no longer exists.
+    withWorker();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const decoder = new MisreadDecoder();
+    decoder.request({ epoch: 1, faces: misread(DEEP, 1), fixedRotation: false }, () => {});
+    const dead = FakeWorker.last();
+    decoder.dispose(); // the panel disconnected, and the decoder is reused on the next mount
+
+    const answers: MisreadReply[] = [];
+    expect(
+      decoder.request({ epoch: 2, faces: misread(DEEP, 1), fixedRotation: false }, (r) =>
+        answers.push(r),
+      ),
+    ).toBeNull();
+    const live = FakeWorker.last();
+    expect(FakeWorker.built).toHaveLength(2);
+
+    dead.fail(); // …and only now does the old thread's 404 arrive
+
+    expect(live.terminated).toBe(false);
+    // The live worker still owns the question, and the decoder was not written off.
+    live.answer();
+    expect(answers.map((a) => a.epoch)).toEqual([2]);
+    expect(
+      decoder.request({ epoch: 3, faces: misread(DEEP, 1), fixedRotation: false }, () => {}),
+    ).toBeNull();
+  });
+
+  it('takes a request made from INSIDE an answer, and keeps one decode in flight', () => {
+    // The panel republishes on a reply and a host may correct a sticker from that, so `answer` can
+    // ask for another decode re-entrantly. `dispatch` is guarded on `running` rather than being
+    // called only from the idle path precisely for this: two posts in flight is the backlog the
+    // one-running-one-waiting rule exists to prevent.
+    withWorker();
+    const answers: MisreadReply[] = [];
+    const decoder = new MisreadDecoder();
+    const again = (r: MisreadReply): void => {
+      answers.push(r);
+      if (r.epoch === 1) {
+        decoder.request({ epoch: 2, faces: misread(DEEP, 2), fixedRotation: false }, again);
+      }
+    };
+    decoder.request({ epoch: 1, faces: misread(DEEP, 1), fixedRotation: false }, again);
+    const worker = FakeWorker.last();
+    worker.answer(0);
+    // The re-entrant ask went out — once — and nothing was built to carry it.
+    expect(worker.posted.map((p) => p.epoch)).toEqual([1, 2]);
+    expect(FakeWorker.built).toHaveLength(1);
+    worker.answer(1);
+    expect(answers.map((a) => a.epoch)).toEqual([1, 2]);
+  });
+
+  it('sends the waiting ask even when the answer before it threw', () => {
+    // A host that throws in its callback must not cost the NEXT reading its answer: a stalled
+    // queue leaves the notice it was going to refine sitting on "working out how many stickers are
+    // wrong" for the rest of the session, which is the quiet failure this file is arranged around.
+    withWorker();
+    const answers: MisreadReply[] = [];
+    const decoder = new MisreadDecoder();
+    decoder.request({ epoch: 1, faces: misread(DEEP, 1), fixedRotation: false }, () => {
+      throw new Error('the host blew up');
+    });
+    decoder.request({ epoch: 2, faces: misread(DEEP, 2), fixedRotation: false }, (r) =>
+      answers.push(r),
+    );
+    const worker = FakeWorker.last();
+    // The throw is not swallowed either — it belongs to whoever called back into the host.
+    expect(() => worker.answer(0)).toThrow(/blew up/);
+    expect(worker.posted.map((p) => p.epoch)).toEqual([1, 2]);
+    worker.answer(1);
+    expect(answers.map((a) => a.epoch)).toEqual([2]);
+  });
+
+  it('posts nothing more when the answer disposed the decoder', () => {
+    // `disconnectedCallback` inside a reply — the scan screen left while a diagnosis landed. The
+    // waiting ask is about a cube nobody is looking at, and the worker it would go to has been
+    // terminated.
+    withWorker();
+    const decoder = new MisreadDecoder();
+    decoder.request({ epoch: 1, faces: misread(DEEP, 1), fixedRotation: false }, () => {
+      decoder.dispose();
+    });
+    decoder.request({ epoch: 2, faces: misread(DEEP, 2), fixedRotation: false }, () => {});
+    const worker = FakeWorker.last();
+    worker.answer(0);
+    expect(worker.posted.map((p) => p.epoch)).toEqual([1]);
+    expect(worker.terminated).toBe(true);
+    expect(FakeWorker.built).toHaveLength(1);
+  });
+
   it('dispose() gives the thread back and forgets what it was holding', () => {
     withWorker();
     const answers: MisreadReply[] = [];

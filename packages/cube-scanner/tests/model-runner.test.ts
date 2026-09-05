@@ -303,6 +303,49 @@ describe('createModelRunner — the GPU verdict', () => {
     }
   });
 
+  it('does not read a LIVE runner’s inference as a starting session’s evidence', async () => {
+    // THE CASE SERIALISING THE PROBES AGAINST EACH OTHER LEFT BEHIND, and the one that actually
+    // happens. Two `createModelRunner` calls overlapping needs two panels coming up at once; a
+    // runner that was handed back minutes ago and is SCANNING — five inferences a second, on the
+    // module's one device queue — is the ordinary state of the app while a second panel mounts.
+    // Its command buffers were counted as the new session's evidence, so a session WebGPU declined
+    // kept `['webgpu', 'wasm']`: the proxy off, and a ~200 ms wasm run left on the page's own
+    // thread, which is the single arrangement all of this exists to prevent.
+    withAdapter(true);
+    const noted = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const ortUrl = freshOrtUrl();
+      registry().model = {
+        // The GPU took the scanning session's graph and refuses the newcomer's.
+        webgpuDeclines: ['decliner.onnx'],
+        // The live run yields before it submits, and the newcomer's probe is the wider window — so
+        // without the serialisation the 17 command buffers land inside it.
+        runTicks: { 'gpu.onnx': 1, 'decliner.onnx': 4 },
+      };
+      const scanning = await createModelRunner('gpu.onnx', { ortUrl, numThreads: 1 });
+      expect(scanning.providers).toEqual(['webgpu', 'wasm']);
+
+      // A frame in flight, exactly as the scan loop leaves one…
+      const frame = scanning(new Float32Array(3 * 640 * 640), 640);
+      // …while the next panel's session comes up on the same module.
+      const declined = await createModelRunner('decliner.onnx', { ortUrl, numThreads: 1 });
+      await frame;
+
+      // Judged on its own submissions and nobody else's. Before this it read ['webgpu', 'wasm'].
+      expect(declined.providers).toEqual(['wasm']);
+      const [direct, proxied] = instances();
+      expect(direct?.released).toBe(1); // the declined session was released, not kept unproxied
+      expect(proxied?.proxy).toBe(true);
+      // And the observation is off the page's queue again.
+      const fixture = (await import(ortUrl)) as {
+        env: { webgpu: { device?: { queue: { submit: unknown } } } };
+      };
+      expect(Object.hasOwn(fixture.env.webgpu.device!.queue, 'submit')).toBe(false);
+    } finally {
+      noted.mockRestore();
+    }
+  });
+
   it('refuses a second runner that asks the same module for a different configuration', async () => {
     // `numThreads` and `wasmPaths` are read when the wasm backend initialises, which the runtime
     // does ONCE per module. A second runner asking for different values used to get the first

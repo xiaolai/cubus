@@ -58,6 +58,21 @@ const ortByUrl = new Map<string, Promise<Ort>>();
  * probes overlapping there count each other, so the chain is what makes the count per-session at
  * all. Same chain rather than a second one, because the two critical sections both want the module
  * to itself and a runner never holds one while waiting for the other.
+ *
+ * AND IT CARRIES EVERY ORDINARY RUN (2026-09-05, the same day and the same defect one step wider).
+ * Serialising the probes against each other left the case that actually happens: a runner that has
+ * already been handed back is SCANNING, five inferences a second, on the very queue a starting
+ * session is watching. Its command buffers were counted as the new session's evidence, so a
+ * session the CPU EP took kept `['webgpu', 'wasm']` — which turns the proxy OFF and leaves a
+ * ~200 ms wasm run on the page's own thread, the one arrangement all of this exists to prevent.
+ * Reproduced on the fake runtime. A live runner cannot be asked to stop, so the runs join the
+ * queue instead: `createModelRunner` hands back a run that takes this chain, and the probe section
+ * uses the RAW one — it is already inside the chain and the chain is not re-entrant.
+ *
+ * What that costs is two runners on ONE module never inferring at once. That is already true of
+ * the proxied module (one worker executes them in turn) and the app holds one detector per page by
+ * construction, so the price is paid only in the window where a second panel is coming up — which
+ * is the window this exists for.
  */
 const configuring = new WeakMap<Ort, Promise<unknown>>();
 
@@ -618,6 +633,12 @@ function watchQueue(queue: QueueLike): { counter: { n: number }; release: () => 
  * probe section on the `serialise` chain, so two probes never overlap on one module;
  * `watchQueue` owns the other half, which is that the observation is removed once and by whoever
  * put it there.
+ *
+ * NOTHING ELSE INCLUDES A RUNNER THAT IS ALREADY WORKING. The probes were serialised against each
+ * OTHER first, which is the rarer half: the ordinary case is a runner handed back long ago and
+ * scanning at five frames a second while a second panel comes up. Every run therefore takes the
+ * same chain — see `serialise` — so "nothing else is running" is a fact about this module rather
+ * than a hope about timing.
  */
 async function gpuRanTheGraph(ort: Ort, probe: () => Promise<unknown>): Promise<boolean | null> {
   const queue = webgpuQueue(ort);
@@ -800,42 +821,31 @@ function validatedRun(
 }
 
 /**
- * Load the YOLOv11 model once and return a reusable runner. The detect output tensor is
- * [1, 4+numClasses, anchors]; we hand back its flat data + the anchor count for `decodeDetections`.
- * Create one runner and reuse it across every frame — session creation is the expensive part.
+ * Configure the runtime module and create one session on it — the whole of the CONFIGURATION step.
+ *
+ * Its own function since 2026-09-05, on the audit's reading that `createModelRunner` combined
+ * runtime configuration with session ownership, validation, GPU probing, timing and the recursive
+ * fallback. This is the one of those six that depends on nothing the others decide: give it a
+ * module and the settings, and it either hands back a session or refuses. Everything about the
+ * session's LIFETIME stays with the caller, which owns it from the moment it exists.
+ *
+ * A pure move, and the two rules it carries are the ones the comments state: a module is
+ * configured once, and the pin goes on where initialisation is ATTEMPTED.
  */
-export async function createModelRunner(
-  modelUrl: string,
-  opts: ModelRunnerOptions = {},
-): Promise<ModelRunner> {
-  // Whether the provider list is OURS or the caller's decides one thing below: a list we chose may
-  // be revised when it turns out slow, and a list we were handed may not. An explicit
-  // `executionProviders` is a request to run on that provider — the cross-provider agreement test
-  // passes `['webgpu']` precisely to measure it — and silently answering with a different one would
-  // make that test assert nothing on a slow machine.
-  const chosenHere = opts.executionProviders === undefined;
-  const executionProviders = opts.executionProviders ?? (await preferredProviders());
-  const gpu = usesGpu(executionProviders);
-
-  // wasmPaths resolves INCONSISTENTLY across onnxruntime-web — the .wasm against the document but
-  // the dynamically-imported .mjs glue against this bundle — so callers should pass an ABSOLUTE
-  // directory URL (see the option's JSDoc). The default './' below is a bare fallback and is
-  // unreliable when the bundle and page live in different folders. Whatever URL is used must be a
-  // fetch-capable origin: under a plain file:// page pass an https CDN, since file:// can't fetch
-  // a local .wasm.
-  const ortUrl = opts.ortUrl ?? './ort.mjs';
-  // The proxy mode picks the module, because it cannot be changed on one — see `runtimeUrl`, and
-  // `proxiedSiblingUrl` for the fallback when a host cannot serve the query form.
-  const ort = await loadRuntime(ortUrl, !gpu);
-
-  // This was a hard 1, with the note "so no SharedArrayBuffer / cross-origin-isolation headers
-  // are needed" — true when written, and it meant every non-Apple build ran a THREADED runtime
-  // on one core: measured at 297 ms per inference in WebKit and 234 ms in Chromium, 3-4 fps.
-  // apps/web/serve.mjs and tauri.conf.json now send COOP/COEP, so the page can be isolated and
-  // the threads asked for here are real. It still falls back to 1 wherever it is not.
-  const numThreads = opts.numThreads ?? defaultThreadCount();
-  const wasmDir = opts.wasmPaths ?? './';
-  const session = await serialise(ort, async () => {
+async function createSession(
+  ort: Ort,
+  cfg: {
+    modelUrl: string;
+    ortUrl: string;
+    numThreads: number;
+    wasmDir: string;
+    /** Whether the GPU is what was asked for — the proxy is the inverse of it, see below. */
+    gpu: boolean;
+    executionProviders: readonly ortNs.InferenceSession.ExecutionProviderConfig[];
+  },
+): Promise<ortNs.InferenceSession> {
+  const { modelUrl, ortUrl, numThreads, wasmDir, gpu, executionProviders } = cfg;
+  return serialise(ort, async () => {
     // A MODULE IS CONFIGURED ONCE — see `configured`. Refused rather than silently inherited.
     const first = configured.get(ort);
     if (first && (first.numThreads !== numThreads || first.wasmPaths !== wasmDir)) {
@@ -877,9 +887,56 @@ export async function createModelRunner(
     // which is a measurement that lies.
     configured.set(ort, { numThreads, wasmPaths: wasmDir });
     return ort.InferenceSession.create(modelUrl, {
-      executionProviders,
+      executionProviders: executionProviders as ortNs.InferenceSession.ExecutionProviderConfig[],
       graphOptimizationLevel: 'all',
     });
+  });
+}
+
+/**
+ * Load the YOLOv11 model once and return a reusable runner. The detect output tensor is
+ * [1, 4+numClasses, anchors]; we hand back its flat data + the anchor count for `decodeDetections`.
+ * Create one runner and reuse it across every frame — session creation is the expensive part.
+ */
+export async function createModelRunner(
+  modelUrl: string,
+  opts: ModelRunnerOptions = {},
+): Promise<ModelRunner> {
+  // Whether the provider list is OURS or the caller's decides one thing below: a list we chose may
+  // be revised when it turns out slow, and a list we were handed may not. An explicit
+  // `executionProviders` is a request to run on that provider — the cross-provider agreement test
+  // passes `['webgpu']` precisely to measure it — and silently answering with a different one would
+  // make that test assert nothing on a slow machine.
+  const chosenHere = opts.executionProviders === undefined;
+  const executionProviders = opts.executionProviders ?? (await preferredProviders());
+  const gpu = usesGpu(executionProviders);
+
+  // wasmPaths resolves INCONSISTENTLY across onnxruntime-web — the .wasm against the document but
+  // the dynamically-imported .mjs glue against this bundle — so callers should pass an ABSOLUTE
+  // directory URL (see the option's JSDoc). The default './' below is a bare fallback and is
+  // unreliable when the bundle and page live in different folders. Whatever URL is used must be a
+  // fetch-capable origin: under a plain file:// page pass an https CDN, since file:// can't fetch
+  // a local .wasm.
+  const ortUrl = opts.ortUrl ?? './ort.mjs';
+  // The proxy mode picks the module, because it cannot be changed on one — see `runtimeUrl`, and
+  // `proxiedSiblingUrl` for the fallback when a host cannot serve the query form.
+  const ort = await loadRuntime(ortUrl, !gpu);
+
+  // This was a hard 1, with the note "so no SharedArrayBuffer / cross-origin-isolation headers
+  // are needed" — true when written, and it meant every non-Apple build ran a THREADED runtime
+  // on one core: measured at 297 ms per inference in WebKit and 234 ms in Chromium, 3-4 fps.
+  // apps/web/serve.mjs and tauri.conf.json now send COOP/COEP, so the page can be isolated and
+  // the threads asked for here are real. It still falls back to 1 wherever it is not.
+  const numThreads = opts.numThreads ?? defaultThreadCount();
+  const wasmDir = opts.wasmPaths ?? './';
+  const session = await createSession(ort, {
+    modelUrl,
+    ortUrl,
+    numThreads,
+    wasmDir,
+    // The proxy is OFF for the GPU path — see `createSession` for why that is not a compromise.
+    gpu,
+    executionProviders,
   });
 
   return owning(session, async (relinquish): Promise<ModelRunner> => {
@@ -996,7 +1053,12 @@ export async function createModelRunner(
     // it, which keeps every existing caller working while giving the ones that own the lifecycle a
     // way to end it. Without this each rebuilt scan panel left a session behind holding its wasm
     // heap or its GPU device, for the life of the page.
-    return Object.assign(run, {
+    //
+    // ON THE CHAIN, because what this runner submits is what the NEXT session's probe would
+    // otherwise count as its own evidence — see `serialise`. The raw `run` stays raw: it is what
+    // the probe section above calls, from inside the chain, and taking it there would deadlock.
+    const serialised: RunModel = (input, imgsz) => serialise(ort, () => run(input, imgsz));
+    return Object.assign(serialised, {
       dispose: () => session.release(),
       providers: executionProviders,
     });

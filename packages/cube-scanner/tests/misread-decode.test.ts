@@ -438,6 +438,14 @@ describe('the lower bound presumes the centres were read right', () => {
     const got = decodeMisread(f, owner);
     const reported = got.kind === 'unknown' ? Number.POSITIVE_INFINITY : got.distance;
     expect(reported).toBeGreaterThan(2);
+    // MEASURED, not merely "more than two" (2026-09-05). The number is what the app puts in a
+    // sentence, so it is what this pins: no repair exists within the default cap of four, and
+    // `diagnoseMisread` therefore reports five — "at least 5 stickers were misread", about a cube
+    // with two. Pinning the exact figure is what makes the docstring's "several times that"
+    // checkable, and what turns a decoder that learns to see this into a red test rather than a
+    // silently better number.
+    expect(got).toEqual({ kind: 'beyond', distance: 4 });
+    expect(diagnoseMisread(f)).toEqual({ misreadCount: 5 });
   });
 });
 

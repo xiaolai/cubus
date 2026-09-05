@@ -91,6 +91,27 @@ interface TauriGlobal {
   __TAURI__?: { core?: { invoke?: Invoke } };
 }
 
+/** The command a quiet rejection has to be ABOUT, escaped for use inside a pattern. */
+const PROBE = `${CUBE_VISION}probe`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The two shapes Tauri uses for "this command is not in this build", each NAMING the command.
+ *
+ * NAMING IT IS THE WHOLE POINT (2026-09-05). This was `/not found|unknown command/`, which is a
+ * test on the WORDS and not on the subject, and "not found" is the commonest two words in a
+ * platform failure: a missing native runtime library, a model path, a device. Any of those
+ * arriving from a plugin that IS installed was downgraded to "no plugin on this platform" and
+ * logged at `info` — the silence this whole branch exists to break, restored by the matcher meant
+ * to protect it. The phrase now has to sit next to the command's own name, so a rejection that
+ * merely mentions something else was not found stays loud.
+ */
+const NOT_REGISTERED = [
+  // `Command plugin:cube-vision|probe not found`
+  new RegExp(`(?:^|\\s)(?:command\\s+)?${PROBE}\\s+not found\\b`, 'i'),
+  // `unknown command: plugin:cube-vision|probe`
+  new RegExp(`unknown command:?\\s+${PROBE}\\b`, 'i'),
+];
+
 /**
  * Is this rejection just "there is no such command here"?
  *
@@ -109,7 +130,7 @@ interface TauriGlobal {
  */
 function absentCommand(err: unknown): boolean {
   const text = typeof err === 'string' ? err : ((err as Error)?.message ?? '');
-  return /not found|unknown command/i.test(text);
+  return NOT_REGISTERED.some((shape) => shape.test(text));
 }
 
 /**

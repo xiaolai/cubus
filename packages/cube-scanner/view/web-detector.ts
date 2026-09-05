@@ -157,10 +157,17 @@ export class WebDetector implements Detector {
    * door the URL guard had just opened. The generation is therefore captured BEFORE the wait and
    * re-checked after it, so a queued load is invalidated exactly as an in-flight one is. A `load()`
    * called AFTER the dispose still starts a real one — that is a new caller, not a stale queue.
+   *
+   * AND THE IN-FLIGHT QUESTION IS ASKED FIRST (2026-09-05). The installed-model shortcut used to
+   * run before it, which reads as an obvious cheap-test-first ordering and is wrong in exactly the
+   * case the two guards were combined for: with A INSTALLED and B loading, a caller asking for A
+   * was told "already loaded" and returned — and B then replaced A underneath it, so the last
+   * caller to ask ended up on a model nobody had asked it for. What is installed is only an answer
+   * while nothing is about to change it, so the pending load is settled first and the shortcut is
+   * re-asked afterwards.
    */
   async load(): Promise<void> {
     const modelUrl = this.modelUrl();
-    if (this.run && this.loadedUrl === modelUrl) return;
     if (this.loading) {
       if (this.loadingUrl === modelUrl) return this.loading;
       // Someone else's model is loading. Wait it out rather than racing it — two sessions being
@@ -172,6 +179,7 @@ export class WebDetector implements Detector {
       if (generation !== this.loadGeneration) return;
       return this.load();
     }
+    if (this.run && this.loadedUrl === modelUrl) return;
     const pending = this.loadModel(modelUrl).finally(() => {
       // Only if it is still OURS: a later load may already have replaced it.
       if (this.loading === pending) {
@@ -186,6 +194,24 @@ export class WebDetector implements Detector {
 
   private async loadModel(modelUrl: string): Promise<void> {
     const generation = this.loadGeneration;
+    // RELEASED BEFORE THE REPLACEMENT IS BUILT, which is what `load()` above has always claimed and
+    // what this did in the other order (2026-09-05). A model change is the one moment this class
+    // can hold two `InferenceSession`s at once — a wasm heap or a GPU device each — and it built
+    // the new one, warmed it, timed it, and only then let the old one go: peak memory doubled for
+    // the length of a load, on the machine least able to spare it. Nothing is owed the old session
+    // here either, because the only way to reach this line with one installed is a caller asking
+    // for a DIFFERENT model, and `loadedModel` already reports what is installed rather than what
+    // was asked for — so a caller that reads it during the swap is told the truth (nothing) rather
+    // than the previous owner's model.
+    const outgoing = this.run;
+    if (outgoing) {
+      this.run = null;
+      this.loadedUrl = null;
+      await outgoing.dispose().catch(() => {});
+      // A dispose() while the release was awaited has moved on without us; installing what this
+      // load is about to build would be the leak `loadGeneration` exists to close.
+      if (generation !== this.loadGeneration) return;
+    }
     // onnxruntime-web resolves wasmPaths inconsistently: the .wasm relative to the document, but the
     // dynamically-imported .mjs glue relative to THIS bundle (…/vendor/) — so a relative "./vendor/"
     // doubles into "/vendor/vendor/…mjs" and a relative "./" puts the .wasm at the page root (404).
@@ -214,10 +240,8 @@ export class WebDetector implements Detector {
       void run.dispose().catch(() => {});
       return;
     }
-    const previous = this.run;
     this.run = run;
     this.loadedUrl = modelUrl;
-    if (previous) void previous.dispose().catch(() => {});
   }
 
   async next(): Promise<ModelOutput | null> {

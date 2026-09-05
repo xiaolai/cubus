@@ -14,6 +14,7 @@
 // question while making the test a browser test. `tests/model-runner.test.ts` owns the runtime.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FrameNotReadyError } from '../src/camera.js';
 import { WebDetector } from '../view/web-detector.js';
 
 /** One `createModelRunner` call, held open so the test decides when the model "arrives". */
@@ -147,10 +148,13 @@ describe('WebDetector — a load that lands after the world moved', () => {
 
     pending()[0]!.resolve(runnerFor('A'));
     await first;
-    expect(det.providers).toEqual(['A']);
 
-    // Only now does B's own load start — and it is B that is asked for.
-    await Promise.resolve();
+    // Only now does B's own load start — and it is B that is asked for. `flush` rather than one
+    // microtask since 2026-09-05: B's load releases A BEFORE it builds, and a release is awaited,
+    // which is also why A's installation is observable here as its RELEASE rather than as
+    // `providers` — the queued load takes it down on its way in.
+    await flush();
+    expect(seam.released).toEqual(['A']);
     expect(pending()).toHaveLength(2);
     expect(pending()[1]?.modelUrl).toMatch(/model-b\.onnx$/);
     pending()[1]!.resolve(runnerFor('B'));
@@ -233,6 +237,115 @@ describe('WebDetector — a load that lands after the world moved', () => {
     expect(det.providers).toEqual(['A2']);
   });
 
+  it('leaves the LAST model asked for installed, not the one that was loading', async () => {
+    // THE INSTALLED-MODEL SHORTCUT, ASKED TOO EARLY. `if (this.run && loadedUrl === url) return`
+    // read as the cheapest test first and was wrong in exactly the case the two guards were
+    // combined for: with A installed and B on its way, a caller asking for A was told "already
+    // loaded" and returned — and B then replaced A underneath it, so the LAST caller to ask ended
+    // up scanning on a model nobody had asked it for. Reachable through the park, where the owner
+    // and the model URL change together and a host may change its mind twice inside one load.
+    const video = videoEl();
+    let url = './model-a.onnx';
+    const det = new WebDetector(
+      () => video,
+      () => url,
+    );
+    const toA = det.load();
+    pending()[0]!.resolve(runnerFor('A'));
+    await toA;
+    expect(det.providers).toEqual(['A']);
+
+    url = './model-b.onnx';
+    const toB = det.load();
+    await flush();
+    expect(pending()).toHaveLength(2);
+    url = './model-a.onnx';
+    const backToA = det.load();
+
+    pending()[1]!.resolve(runnerFor('B'));
+    await toB;
+    await flush();
+    // A is asked for AFRESH rather than assumed: the runner that said A was released when B
+    // started, so there is nothing installed to short-circuit on.
+    expect(pending()).toHaveLength(3);
+    pending()[2]!.resolve(runnerFor('A2'));
+    await backToA;
+    // The model the last caller asked for. Before this it was B, silently.
+    expect(det.providers).toEqual(['A2']);
+  });
+
+  it('releases the model it is replacing BEFORE it builds the replacement', async () => {
+    // Two `InferenceSession`s alive at once is the one arrangement that can fail for want of
+    // memory on the machine least able to spare it — a phone swapping models mid-session — and
+    // `load()` has documented the release-before-build order since it was written while doing it
+    // in the other order: build, warm, time, and only then let the old heap go.
+    const video = videoEl();
+    let url = './model-a.onnx';
+    const det = new WebDetector(
+      () => video,
+      () => url,
+    );
+    const first = det.load();
+    pending()[0]!.resolve(runnerFor('A'));
+    await first;
+
+    url = './model-b.onnx';
+    const second = det.load();
+    await flush();
+    // A is gone by the time B is even asked for, and the detector says so meanwhile: `loadedModel`
+    // reports what is INSTALLED, so a reader caught mid-swap is told nothing rather than A.
+    expect(seam.released).toEqual(['A']);
+    expect(pending()).toHaveLength(2);
+    expect(det.providers).toBeNull();
+    pending()[1]!.resolve(runnerFor('B'));
+    await second;
+    expect(det.providers).toEqual(['B']);
+    expect(seam.released).toEqual(['A']);
+  });
+
+  it('builds nothing for a detector disposed while the old model was still being released', async () => {
+    // The window the release-before-build order opens: `dispose()` can land while the OUTGOING
+    // session is being given back, and the replacement is not built yet. Building and installing it
+    // then would put a live InferenceSession on a detector nobody holds — the one leak this class
+    // has no way back from, arriving through the door the memory fix had just opened.
+    const video = videoEl();
+    let url = './model-a.onnx';
+    const det = new WebDetector(
+      () => video,
+      () => url,
+    );
+    const first = det.load();
+    let finishRelease = (): void => {};
+    pending()[0]!.resolve(
+      Object.assign(async () => ({ data: new Float32Array(0), anchors: 0, rows: 10 }), {
+        dispose: (): Promise<void> =>
+          new Promise<void>((resolve) => {
+            finishRelease = (): void => {
+              seam.released.push('A');
+              resolve();
+            };
+          }),
+        providers: ['A'],
+      }),
+    );
+    await first;
+
+    url = './model-b.onnx';
+    const second = det.load();
+    await flush();
+    expect(pending()).toHaveLength(1); // still inside the release; B has not been asked for
+
+    det.dispose();
+    finishRelease();
+    await second;
+    await flush();
+
+    // B's session was never created, so there is nothing to leak and nothing installed.
+    expect(pending()).toHaveLength(1);
+    expect(det.providers).toBeNull();
+    expect(seam.released).toEqual(['A']);
+  });
+
   it('a failed load does not wedge the next one', async () => {
     const video = videoEl();
     const det = new WebDetector(
@@ -282,6 +395,106 @@ describe('WebDetector — the camera-open completion boundary', () => {
     await opening;
     expect(det.device).toEqual({ deviceId: 'cam-1', label: 'cam-1' });
     expect(seam.stopped).toEqual([]);
+  });
+});
+
+describe('WebDetector — next(), the one call the scan loop makes', () => {
+  /**
+   * A detector with a camera open and a model installed — the state `next()` requires.
+   *
+   * Built through the public methods rather than by reaching into privates, because what is under
+   * test is what `next()` does with what those two left behind.
+   */
+  async function ready(
+    grab?: () => unknown,
+    runner: unknown = runnerFor('A'),
+  ): Promise<WebDetector> {
+    const det = new WebDetector(videoEl, () => './model-a.onnx');
+    const opening = det.use({});
+    await Promise.resolve();
+    const source = sourceNamed('cam-1') as Record<string, unknown>;
+    if (grab) source.grab = grab;
+    seam.cameras[0]!.settle(source);
+    await opening;
+    const loading = det.load();
+    pending()[0]!.resolve(runner);
+    await loading;
+    return det;
+  }
+
+  it('preprocesses the frame and hands back what the model said', async () => {
+    const det = await ready();
+    await expect(det.next()).resolves.toEqual({
+      data: expect.any(Float32Array),
+      anchors: 0,
+      rows: 10,
+    });
+  });
+
+  it('answers null for a camera that has opened but delivered nothing yet', async () => {
+    // "Not yet" is a tick to skip, not a failure: a camera takes a moment to produce its first
+    // frame and the loop simply asks again.
+    const det = await ready(() => {
+      throw new FrameNotReadyError();
+    });
+    await expect(det.next()).resolves.toBeNull();
+  });
+
+  it('rejects a frame that genuinely cannot be read, rather than skipping the tick', async () => {
+    // THE FAIL-LOUD RULE, at the app's most important surface. A bare `catch { return null }` here
+    // turned every failure into "try again next tick" — a canvas that could not be allocated, a
+    // `getImageData` refused by a tainted surface, a video element the owner detached — and the
+    // scanner then idled forever on "Show any side" with a camera that was never going to deliver.
+    const det = await ready(() => {
+      throw new TypeError('the canvas is tainted');
+    });
+    await expect(det.next()).rejects.toThrow(/tainted/);
+  });
+
+  it('lets an inference failure escape to the caller', async () => {
+    // The panel counts failing ticks and eventually says the scanner stopped; it can only do that
+    // if a run that rejects reaches it.
+    const failing = Object.assign(
+      async (): Promise<never> => {
+        throw new Error('the session died');
+      },
+      { dispose: async (): Promise<void> => {}, providers: ['A'] },
+    );
+    const det = await ready(undefined, failing);
+    await expect(det.next()).rejects.toThrow(/session died/);
+  });
+
+  it('refuses to run at all without a camera or without a model', async () => {
+    const noCamera = new WebDetector(videoEl, () => './model-a.onnx');
+    await expect(noCamera.next()).rejects.toThrow(/no camera open/);
+
+    const noModel = new WebDetector(videoEl, () => './model-a.onnx');
+    const opening = noModel.use({});
+    await Promise.resolve();
+    seam.cameras[0]!.settle(sourceNamed('cam-1'));
+    await opening;
+    await expect(noModel.next()).rejects.toThrow(/model not loaded/);
+  });
+
+  it('is usable again after dispose(), which releases rather than tombstones', async () => {
+    // `Detector.dispose` says what this does and it is not "the detector is unusable afterwards":
+    // the disposal paths and the re-use paths overlap by construction at the park, so a refusal
+    // here would turn "the panel came back" into "the scanner is dead".
+    const det = await ready();
+    det.dispose();
+    await flush();
+    expect(seam.released).toEqual(['A']);
+    expect(det.device).toBeNull();
+
+    const opening = det.use({});
+    await Promise.resolve();
+    seam.cameras[1]!.settle(sourceNamed('cam-2'));
+    await opening;
+    const loading = det.load();
+    pending()[1]!.resolve(runnerFor('A2'));
+    await loading;
+    expect(det.device).toEqual({ deviceId: 'cam-2', label: 'cam-2' });
+    await expect(det.next()).resolves.toMatchObject({ rows: 10 });
   });
 });
 
