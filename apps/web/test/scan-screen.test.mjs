@@ -688,6 +688,45 @@ test('a scan contradicting a tracking cube adopts nothing and disables Solve', a
   state.live = null; state.reported = null;
 });
 
+// The other half of that refusal: WHICH trust it is about.
+//
+// `state.cube.trusted` is also true of a generated scramble — the die, the Timer, and the
+// Scramble screen's hand-off all adopt one as `source: 'generated'`, which is perfect knowledge
+// of a cube nobody has looked at. It says nothing whatever about whether this cube's reports are
+// in step, and reading it as "the cube was tracking" refused the camera repair in the one
+// situation the repair exists for: a cube that has drifted, on a screen where a scramble was
+// rolled (found by audit, 2026-09-05).
+test('a trusted generated scramble is not a tracking cube — the camera repair still runs', async () => {
+  const { state } = await import('../lib/app.js');
+  // A REAL re-entry, not just the hash: the screen above left its own `refused` flag standing,
+  // and this test is about a scan the screen believes.
+  win.cubusGo('scan');
+  await tick();
+  win.cubusFeed.useConnection(fakeConn());
+  const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  win.cubusFeed.facelets(S); // the cube reports S, and nothing has ever confirmed that it is right
+  // Exactly what adoptCube(target, { physical: false, source: 'generated' }) leaves behind.
+  state.cube.trusted = true; state.cube.source = 'generated'; state.cube.isPhysical = false;
+  // What the camera sees: the real cube, which is not where its own reports put it. That gap IS
+  // the correction — refusing to derive it is refusing the repair.
+  const REAL = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+  assert.notEqual(REAL, state.live, 'precondition: the reading disagrees with what the cube reports');
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: REAL, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+
+  assert.equal(state.cube.facelets, REAL, 'the scan was refused because a SCRAMBLE was trusted');
+  assert.equal(state.cube.source, 'camera', 'and the camera never got to say where the cube is');
+  assert.ok(state.cube.offset, 'the correction this whole reading exists to derive was never derived');
+  assert.equal(state.cube.offsetFrom, 'scan');
+  assert.equal($('#scanSolveBtn').disabled, false, 'a repaired cube is walkable');
+  assert.match($('#scanHow').textContent, /back in step/i, 'and the repair is what the screen reports');
+
+  win.cubusFeed.useConnection(null); // clears the offset with the chain it corrected
+  state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
+  state.live = null; state.reported = null;
+});
+
 // A refusal has to SURVIVE the next tick, and that is the whole of this test.
 //
 // The panel reports `complete` on every state change once it has a finished scan, and `complete`

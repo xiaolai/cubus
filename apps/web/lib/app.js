@@ -1242,7 +1242,15 @@ function repairTracking(scanned, { reconciling = false } = {}) {
   // taken before the connection had reported anything. There the trust being read here is the
   // scan's OWN, granted moments ago, and `live` is null precisely because no report had arrived
   // to establish one: the pair being compared would be the scan against nothing.
-  if (state.cube.trusted && !reconciling && scanned !== state.live) {
+  //
+  // And the trust that gates it is the CHAIN's, not the subject's. `state.cube.trusted` is also
+  // true of a generated scramble — the die, the Timer, the Scramble hand-off — which is perfect
+  // knowledge of a cube nobody looked at, and says nothing whatever about whether this cube's
+  // reports are in step. A camera repair on a stale cube was refused for the words "the cube was
+  // tracking" purely because a scramble had been rolled, which is the one moment the repair
+  // exists for (found by audit, 2026-09-05). chainTrusted() is the predicate that means what
+  // this sentence claims: trusted knowledge of the cube ITSELF.
+  if (chainTrusted() && !reconciling && scanned !== state.live) {
     return {
       ok: false,
       text: 'This is not what your cube is reporting, and the cube was tracking. One of the two is wrong, so nothing was changed — check that you scanned the cube that is connected.',
@@ -3154,6 +3162,18 @@ const WALK_FAILURES = {
   'cross-check': 'the answer did not check out — read the cube again',
 };
 
+/** Which run of `runProof` owns the shared prove/stop buttons.
+ *
+ *  A proof's cleanup can land long after a newer proof has taken those controls over: a status
+ *  reply that arrives late, a native call that settles after a retarget replaced the walk. The
+ *  `finally` runs for the OLD proof either way, and it used to hide the stop button and clear its
+ *  handler unconditionally — so the proof actually running could no longer be called off, and
+ *  the button that would have done it was gone from the screen (found by audit, 2026-09-05).
+ *
+ *  A counter rather than a flag, because ownership is "the latest run", and the question is asked
+ *  from a cleanup that must still release ITS OWN timers and listeners whatever the answer is. */
+let proofRun = 0;
+
 /**
  * Run one native minimality proof, from the press to the state it leaves the button in.
  *
@@ -3180,6 +3200,11 @@ async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sayP
   let reveal = null;
   let ruledOut = null;
   const startedAt = Date.now();
+  // Taken synchronously with the press: from here on, this run owns the buttons until another
+  // press takes them. `fresh()` cannot answer this — it is about the WALK, and two proofs about
+  // two different walks are exactly the case where the older one's cleanup arrives last.
+  const myRun = ++proofRun;
+  const owns = () => myRun === proofRun;
 
   const clock = () => {
     const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
@@ -3202,7 +3227,14 @@ async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sayP
     ticking ??= setInterval(paintWait, 1000);
   };
   const endWaiting = () => {
+    // OWNED unconditionally: this run's timer and its reveal stop when this run ends, whoever
+    // holds the buttons. Releasing them is never someone else's business, and skipping it would
+    // leave a superseded proof repainting a button it no longer writes to.
     clearTimeout(reveal); clearInterval(ticking); ticking = null;
+    // SHARED, so only while this run still owns them. A stop hidden by the previous proof's
+    // cleanup is a proof that cannot be called off — minutes to hours of native work with
+    // nothing on screen to end it.
+    if (!owns()) return;
     proveBtn.title = '';
     if (cancelBtn) { cancelBtn.hidden = true; cancelBtn.onclick = null; }
   };
@@ -3778,6 +3810,11 @@ const cubeScreen = (screenMode) => {
       };
       if (solveIt) {
         solveIt.onclick = () => {
+          // The target is what this button HANDS OVER, so a press without one has nothing to do.
+          // Guarded here as well as at the point the button is drawn: `hidden` is a property any
+          // later paint could get wrong, and handing `null` to adoptCube stores a subject with no
+          // facelets at all — Home then draws a cube nobody rolled.
+          if (!target) return;
           // `alg` is this scramble's own setup alg — the walk that just finished, from solved to
           // `target` — so Home needs no search to know how the cube it is handed was reached.
           if (!cubeTruth()) adoptCube(target, { physical: false, source: 'generated', setupAlg: alg });
@@ -3802,9 +3839,14 @@ const cubeScreen = (screenMode) => {
         // cube, saying "done" where the count beside it already read 22 / 22.
         $('#doneMark', root).hidden = i < total;
         // And, on Scramble, the way onward — labelled for what is actually known at that moment.
+        // Gated on the TARGET, not on the count: between beginWalk() and the roll landing, and
+        // after a roll that failed, `total` is 0 and `i >= total` is trivially true — so the
+        // button offered to hand Home a scramble while `target` was still null, and the press
+        // stored a subject with no facelets (found by audit, 2026-09-05). There is nothing to
+        // walk onward from until there is something to hand over.
         if (solveIt) {
-          solveIt.hidden = i < total;
-          if (i >= total) solveIt.textContent = solveItLabel();
+          solveIt.hidden = !target || i < total;
+          if (target && i >= total) solveIt.textContent = solveItLabel();
         }
       }
       // Signalled, because `cube` is parked and re-used between screens now: an unscoped
@@ -4117,11 +4159,16 @@ const cubeScreen = (screenMode) => {
             gotRoll = rolled;
             gotTarget = rolled.facelets;
             if (!gotTarget || !rolled.alg) throw new Error('no scramble');
-            gotAlg = rolled.alg; gotMoves = gotAlg.trim().split(/\s+/);
-            // Per-step states for Follow cube, built the same way the solve path builds its own.
-            const b = Cube.fromString(SOLVED);
-            gotSteps = [b.asString()];
-            for (const m of gotMoves) { b.move(m); gotSteps.push(b.asString()); }
+            // The SAME tokenizer and the SAME replay the solve path uses (movesOf, stepStates),
+            // not a second copy of each. They were written out again here, and the copies had
+            // already drifted in the way two copies of one rule always do: this one threw where
+            // stepStates warns, so one walk called a failed replay "a scramble could not be
+            // rolled" and the other quietly shipped a short step array (found by audit,
+            // 2026-09-05). One path now, with the refusal kept where it belongs — a scramble
+            // whose replay came up short IS a failed roll, and says so in those words.
+            gotAlg = rolled.alg; gotMoves = movesOf(gotAlg);
+            gotSteps = stepStates(SOLVED, gotMoves);
+            if (gotSteps.length !== gotMoves.length + 1) throw new Error('no scramble');
           } else {
             if (!solverReady && !(await loadSolver())) throw new Error('solver unavailable');
             // Each improvement lands on the heading as it is found, so a tight tier shows 21
