@@ -46,7 +46,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
  * to it, so the five version fields this repo carries can no longer drift apart silently — the
  * About card spent months claiming 0.4.2 over manifests that all said 0.1.0. Exported for that
  * test, not as API. */
-export const VERSION = '0.3.3';
+export const VERSION = '0.3.4';
 /** A cube with nothing wrong with it: the solved state, and the one search that costs only the
  *  tables. There used to be a second copy of this string under the name SOLVED_FACELETS, which is
  *  how two identical 54-character literals come to disagree. */
