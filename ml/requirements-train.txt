@@ -13,7 +13,7 @@ torch==2.13.0
 onnx==1.22.0
 onnxruntime==1.29.0
 onnx2tf==1.28.8
-tensorflow==2.19.0
+tensorflow==2.21.0
 coremltools==9.0 ; sys_platform == "darwin"
 # The golden harness runs against what this stack exports; keep the two files' shared pins equal.
 numpy==2.3.5
