@@ -283,9 +283,18 @@ const SOFTWARE_RENDERERS = [
  * MEASURED, and the reason this function exists. On the shipped code, one page, this model:
  *
  *     provider                              model load     per frame
- *     webgpu, real GPU (Chromium/WebKit)       0.4-2.0 s      20 ms
- *     wasm, 6 threads, proxy                   0.8 s          57 ms
+ *     webgpu, real GPU (Chromium/WebKit)       0.4-2.0 s      15 ms
+ *     wasm, 6 threads, proxy                   0.5-0.8 s      59 ms
  *     webgpu, SwiftShader                     86.3 s        6184 ms
+ *
+ * THIS IS THE ONE COPY of that ladder; the panel's cadence comment points here rather than
+ * restating it. The first two rows were re-measured across the onnxruntime-web 1.27 -> 1.29.0 bump
+ * (2026-09-05, headed Chromium, Apple Metal-3, twelve runs each, warm median): the GPU went
+ * 18 -> 15 ms and six-thread wasm 61 -> 59 ms, which is inside its own run-to-run spread. Both
+ * runtimes returned a bit-identical output tensor, so the ladder got slightly faster and did not
+ * change shape — and the shape is the only thing the budget below rests on. The SwiftShader row is
+ * the 1.27 measurement and has NOT been re-run: no software adapter was to hand, and inventing one
+ * would be worse than an old number that is honestly labelled.
  *
  * So a software adapter is not a slower GPU, it is a 100x REGRESSION against the wasm path the same
  * machine would otherwise have taken — and `requestAdapter()` hands one out without being asked
@@ -662,10 +671,10 @@ export async function createModelRunner(
       // provider do it at all", which is the actual question — a rasteriser's best run is still
       // thousands of milliseconds, so the margin below survives it intact.
       //
-      // That margin is enormous on purpose — measured on this model: 20 ms on a real GPU in both
-      // engines, 57 ms for 6-thread wasm, 6184 ms on SwiftShader. Anything between 400 ms and those
-      // extremes is a machine where neither path is good, and rebuilding there costs more than it
-      // saves.
+      // That margin is enormous on purpose — see the ladder above `softwareAdapter`, which is where
+      // those numbers are measured and dated: ~15 ms on a real GPU, ~59 ms for 6-thread wasm,
+      // 6184 ms on SwiftShader. Anything between 400 ms and those extremes is a machine where
+      // neither path is good, and rebuilding there costs more than it saves.
       // A HIDDEN PAGE IS NOT EVIDENCE. Both samples can land inside one throttled stretch — a
       // backgrounded tab, a locked screen — and the penalty here is permanent for the runner's
       // life, so the honest move is to decline to judge rather than to judge on bad data. Keeping

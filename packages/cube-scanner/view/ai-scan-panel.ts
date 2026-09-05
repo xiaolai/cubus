@@ -96,10 +96,13 @@ const FRAME_HINT: Record<FitReason, string> = {
 // The capture cadence, MEASURED rather than assumed per runtime.
 //
 // There were two constants, 200 ms for "web" and 60 ms for "native", and the 200 was justified by a
-// ~400 ms wasm run that no longer exists: measured on this model, wasm at six threads is 57 ms and a
-// real GPU is 20 ms, so a fixed 200 ms tick had become the bottleneck on the path it was chosen for
+// ~400 ms wasm run that no longer exists: on this model six-thread wasm is ~59 ms and a real GPU
+// ~15 ms, so a fixed 200 ms tick had become the bottleneck on the path it was chosen for
 // — and it was chosen for a runtime label rather than for a speed, so a Windows machine with a GPU
 // and a phone on the ANE were told apart by which class built them.
+// The ladder itself is measured and dated in ONE place, `view/onnx-runtime.ts` above
+// `softwareAdapter` — three copies of one measurement is three chances to go stale, and this file
+// has already been the one carrying the stale copy.
 //
 // The rule instead is "as fast as the run actually comes back, and no faster than the floor". The
 // floor is 60 ms (~16 fps), which is comfortably inside a camera's frame rate and leaves the ANE and
