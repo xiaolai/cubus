@@ -142,7 +142,7 @@ it walks you through solving it.
   ordering to change and nothing tested it. Attributes go on before connecting now.
   Result: the synchronous click went from 55–271 ms to **0–1 ms**, the longest main-thread block
   from 59–272 ms to 14–33 ms, and Kociemba searches on the UI thread to **zero**.
-  Pinned by `apps/web/test/screen-swap.test.mjs`, whose assertions are all about a frame that
+  Pinned by `apps/web/test/browser/screen-swap.test.mjs`, whose assertions are all about a frame that
   must NOT exist or a search that must NOT run; five of its eight fail against the old code.
 - **`<cubus-cube>` is parked and re-used, not rebuilt** (2026-08-29). It used to dispose on the
   way out of the DOM and return early on the way back in, so it could never be re-inserted and
@@ -349,8 +349,20 @@ it walks you through solving it.
   **TypeScript stays at 6.0.x until typescript-eslint admits 7** (2026-09-05): its peer range is
   `typescript >=4.8.4 <6.1.0`, and the type-aware ESLint pass is half of what `check` means here,
   so a 7.x bump would leave that half running unsupported rather than running. And a trap in the
-  runner itself: `node --test <missing-file>` prints "Could not find" and exits 0, so a hand-written
-  test list can go green by naming nothing — pass directories, or assert the file exists first.
+  runner itself: `node --test` given a PATTERN that matches nothing prints "tests 0" and exits 0
+  (a literal missing file does exit 1 — measured on Node 24.18, 2026-09-05), so a hand-written
+  test list can go green by naming nothing. `apps/web/run-tests.mjs` exists for this: it expands
+  each tier's patterns itself, refuses an empty one, and refuses a test file no tier claims.
+  **The gate has two tiers (2026-09-05), and `pnpm check` is still the full one.** `pnpm
+  check:fast` is typecheck + lint + tests without coverage, and the web suites minus
+  `apps/web/test/browser/` — every suite that launches Playwright lives there and nowhere else
+  (`test-tiers.test.mjs` fails on one that strays either way). The fast tier runs before every
+  push (`.githooks/pre-push`, reached through the global hook's delegation rather than
+  `core.hooksPath`, which would switch the global guards off) and on every pull request; the full
+  tier runs on `main`, nightly, on dispatch, and on a pull request labelled `e2e`; and on a pull
+  request the platform jobs run only when their inputs changed (`scripts/ci-plan.mjs`, pinned by
+  `ci-plan.test.mjs`). `main` is never thinned, because the release gate reads the push-event run
+  and only that run (`--event push`). A tier is where a suite runs, never a way to leave one out.
 - **The 2026-09-04 audit, and what it changed (2026-09-05).** Nine read-only reviewers over
   every slice, then one fix pass; the full record is `dev-docs/audit-2026-09-04.md`. The
   class-level lessons, each now pinned by a test or a gate:
