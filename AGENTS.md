@@ -313,6 +313,18 @@ it walks you through solving it.
   from the ORIGINAL file text, so two sites in one file meant the second write clobbered the
   first — and it reported BOTH as bumped, which is the worst way a version tool can fail. Each
   file is now read once and every site applied to the same evolving text.
+- **A download with no timeout and no progress is a hang to the person watching** (2026-09-06).
+  "Install and restart" ran the updater's download, verify, install and relaunch as one silent
+  promise: the Settings button said "Checking…" throughout, a launch-path install had no surface
+  at all, and the plugin's default request timeout is none. Reproduced with the real 0.3.2 build:
+  through a local proxy tunnel one download sat at 1454 bytes for five minutes and then
+  completed, installed and restarted on its own — the user had quit long before. Now `check()`
+  and `downloadAndInstall()` are bounded (`CHECK_TIMEOUT_MS`, `DOWNLOAD_TIMEOUT_MS` in
+  `lib/app-update.js`), every progress event reaches a fixed status chip with a stall notice
+  ticking between events, and a Settings press that joins the daily launch check gets its own
+  announcement rather than the launch check's silence. `app-update.test.mjs`. The wider rule: a
+  network call the user is waiting on needs a bound AND a visible pulse; either alone still
+  reads as stuck.
 - **A model change is not verified until `ml/golden_frames.py` has run.** It is the parity gate —
   every fixture through the app's exact letterbox, one runtime, the app's exact post-processing —
   and CI enforces it, but `pnpm check` does NOT, so it is the gate you can ship past locally. On
