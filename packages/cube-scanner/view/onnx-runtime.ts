@@ -11,8 +11,8 @@
 // TYPE-ONLY. The runtime is loaded from a URL at call time (see `loadOrt`) so that esbuild leaves
 // it out of the panel bundle — which is the whole reason inference can run off the main thread.
 import type * as ortNs from 'onnxruntime-web';
-import { DETECT_ROWS, IMG_SIZE } from '../src/onnx-detect.js';
 import type { RunModel } from '../src/onnx-detect.js';
+import { DETECT_ROWS, IMG_SIZE } from '../src/onnx-detect.js';
 
 type Ort = typeof ortNs;
 

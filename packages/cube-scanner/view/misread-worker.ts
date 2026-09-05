@@ -14,7 +14,7 @@
 // would be a second, weaker copy of that rule — and one that answered nothing at all, since a
 // worker that swallows an error still owes its caller a reply.
 
-import { type MisreadRequest, handleMisreadRequest } from './misread-protocol.js';
+import { handleMisreadRequest, type MisreadRequest } from './misread-protocol.js';
 
 self.addEventListener('message', (ev: MessageEvent) => {
   self.postMessage(handleMisreadRequest(ev.data as MisreadRequest));

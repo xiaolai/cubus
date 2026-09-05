@@ -10,14 +10,14 @@
 
 import Cube from 'cubejs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type ColorFace, assembleColors } from '../src/ai-assemble.js';
+import { assembleColors, type ColorFace } from '../src/ai-assemble.js';
 import { rotateFace } from '../src/facelet-cube.js';
 import { FACES, type Face } from '../src/types.js';
 import { MisreadDecoder } from '../view/misread-client.js';
 import {
+  handleMisreadRequest,
   type MisreadReply,
   type MisreadRequest,
-  handleMisreadRequest,
 } from '../view/misread-protocol.js';
 
 const LETTER_CLASS: Record<Face, number> = { U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 };

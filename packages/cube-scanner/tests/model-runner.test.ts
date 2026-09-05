@@ -16,9 +16,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createModelRunner,
   GPU_BUDGET_MS,
   GPU_PROBE_RUNS,
-  createModelRunner,
   proxiedSiblingUrl,
   runtimeUrl,
 } from '../view/onnx-runtime.js';

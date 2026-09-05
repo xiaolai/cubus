@@ -10,9 +10,9 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { GanGen4Cipher, deriveKeyIv, macToSalt } from '../src/gen4/crypto.js';
-import { GEN4_EVENT, decodeGen4 } from '../src/gen4/decode.js';
-import { SOLVED_FACELETS, isValidFaceletCounts } from '../src/gen4/facelets.js';
+import { deriveKeyIv, GanGen4Cipher, macToSalt } from '../src/gen4/crypto.js';
+import { decodeGen4, GEN4_EVENT } from '../src/gen4/decode.js';
+import { isValidFaceletCounts, SOLVED_FACELETS } from '../src/gen4/facelets.js';
 import { MessageView } from '../src/gen4/message-view.js';
 
 const MAC = '54:6C:50:89:C8:D3';
