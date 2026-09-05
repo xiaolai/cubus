@@ -19,10 +19,12 @@
 //   * **Twenty is a floor under EVERY tier, because it is a fact about the cube.** God's number
 //     is 20, so a <= 20 solution always exists — for every position, whatever the person asked
 //     for. This module keeps that rather than aiming at it: while the answer in hand is longer
-//     than 20, running out of budget means the budget was too small (the engine is complete;
-//     see GODS_NUMBER below), so it asks again with more. Tying this to the TIER instead of the
-//     cube was a real bug — the 19, 18 and "shortest" rungs then had no floor, and each of them
-//     could end at 21. Asking for something shorter must never yield something longer.
+//     than 20, running out of budget is read as a budget that was too small (what the ENGINE
+//     guarantees is narrower than completeness — see GODS_NUMBER below — but a refusal is a
+//     statement about the SEARCH either way, never about the cube), so it asks again with more.
+//     Tying this to the TIER instead of the cube was a real bug — the 19, 18 and "shortest" rungs
+//     then had no floor, and each of them could end at 21. Asking for something shorter must never
+//     yield something longer.
 //   * **Below the floor the tiers are not the same kind of promise.** <= 18 is a different kind
 //     of thing: roughly 3.5% of positions are optimally 19 or 20, and for those 18 moves is
 //     impossible rather than expensive. A tier that cannot always be met must say so rather
@@ -43,6 +45,26 @@
 // Pure: no DOM, no storage, no globals, no worker. The search itself is injected, so this is
 // testable against a fake and the same code drives the real engine. The two protocol imports
 // below are a move counter and the answer validator — the injected-solve seam stays.
+//
+// ---- what a caller may hand `refine`, beyond the cube ------------------------------------------
+//
+//   * **`signal`** — an AbortSignal, one per solve. Aborting it is how a SUPERSEDED search is
+//     stopped: a die press or a reconnect answered while a hard search is still running would
+//     otherwise queue behind it on every pool worker. Two things travel on it. This module stops
+//     asking for more (it checks between asks, and treats a null that arrives alongside an abort
+//     as cancelled rather than exhausted), and the signal rides ALONG WITH THE BOUNDS into the
+//     injected `solve`, which is what lets lib/solve-client.js reach inside the running search:
+//     it publishes the stop value into that solve's shared word, the engine's next poll sees it,
+//     and the worker returns null without being terminated and without rebuilding its tables.
+//     An abort before the first answer yields nothing at all; an abort after one keeps the answer
+//     in hand and ends the progression with STOPPED.CANCELLED (or STOPPED.MET, if the promise
+//     was already kept — see endReason).
+//   * **`onProgress`** — `({ attempt, budget, spent })`, called before each attempt of the FIRST
+//     search only, which is the only one that escalates and therefore the only one whose wait is
+//     unbounded from a watcher's point of view. Up to 511x the base budget can be spent before
+//     anything at all is yielded, and a screen that shows a spinner through it can say nothing
+//     about how much of that has gone. Optional: nothing here depends on it, and the old call
+//     shape keeps working.
 
 import { movesIn, validateAnswer } from './solver-engine.js';
 
@@ -58,11 +80,25 @@ export const TIERS = Object.freeze([
 
 /** God's number in the half-turn metric: every one of the 43,252,003,274,489,856,000 legal
  *  positions has a solution of 20 moves or fewer (Rokicki, Kociemba, Davidson and Dethridge,
- *  2010). A target at or above it is therefore a PROMISE this app can always keep, and the
- *  engine can always keep it: solvePattern deepens phase-1 to solLen - 1, so at d1 = L the
- *  phase-2 tail is empty and a length-L solution is itself inside the enumeration — with
- *  canonical pruning already proved to delete no optimal path (optimal-solver-plan.md section
- *  7). What that leaves is a budget question, never an existence one. */
+ *  2010). A target at or above it is therefore a PROMISE about the CUBE that this app can always
+ *  keep, and it is why a refusal at that target buys more budget instead of becoming a verdict.
+ *
+ *  What the ENGINE promises is narrower than this comment used to say, and the difference is
+ *  worth having written down (corrected 2026-09-04, from an audit that read both sides):
+ *
+ *    * `solvePattern` deepens phase-1 to `solLen - 1`, and canonical pruning is proved to delete
+ *      no optimal path (optimal-solver-plan.md §7). No length is out of reach for want of depth.
+ *    * But phase 1 REJECTS a maneuver whose last move is a G1 move (two-phase.js's phase1DFS),
+ *      and phase 2 is capped at MAX_PHASE2 = 12. A solution of length L therefore sits inside the
+ *      enumeration at exactly ONE split — immediately before its maximal trailing run of G1
+ *      moves — and only if that run is 12 moves or fewer.
+ *
+ *  So the honest statement is not "the engine is complete". It is: every <= 20 solution whose
+ *  trailing G1 run is <= 12 is inside the enumeration, in each of six independent views, and a
+ *  budget is the only thing that can stop it being found. Nothing has ever been observed to fail
+ *  that; nothing proves it cannot. Which changes nothing about the rule below, because the rule
+ *  never rested on completeness: a refusal is a statement about the SEARCH, never about the cube,
+ *  so it escalates — and at the cap it raises LOUDLY rather than reporting an impossibility. */
 export const GODS_NUMBER = 20;
 
 /** The bound the FIRST attempt uses — the floor, not the engine's ceiling.
@@ -127,6 +163,71 @@ export const BONUS_BUDGET = 2_000_000;
  *  false claim this whole mechanism exists to make unreachable. */
 export const MAX_PROMISE_ESCALATIONS = 8;
 
+/**
+ * What both entry points here require of a caller, checked in one place.
+ *
+ * `refine` and `solveWithinGodsNumber` had a copy each — the same checks, the same wording behind a
+ * different prefix — and they are one contract, not two: `refine` hands its `solve`, its
+ * `probeBudget` and its `onProgress` straight to `solveWithinGodsNumber`. Two maintenance sites for
+ * one rule is how a NaN budget ends up refused on one path and forwarded on the other.
+ *
+ * `who` keeps each caller's own message, because the name in it is the function a caller actually
+ * wrote down, and validation must still happen BEFORE the abort check in both — a malformed call
+ * is malformed whether or not somebody has stopped caring about the answer. `refine`'s abort check
+ * used to sit in front of the watcher check for exactly the reason this comment says it must not
+ * (2026-09-05).
+ */
+function requireSolveInputs(who, solve, probeBudget, onProgress = null) {
+  if (typeof solve !== 'function') throw new TypeError(`${who} needs a solve function`);
+  if (!Number.isSafeInteger(probeBudget) || probeBudget < 1) {
+    // NaN or Infinity would pass straight through to the engine's termination check.
+    throw new TypeError(`${who}: probeBudget ${probeBudget} is not a positive integer`);
+  }
+  if (onProgress !== null && typeof onProgress !== 'function') {
+    // Refused rather than ignored: a caller that passed something else meant to watch this
+    // search, and silently not calling it is the failure that looks exactly like a search that
+    // never escalated.
+    throw new TypeError(`${who}: onProgress must be a function or null`);
+  }
+}
+
+/**
+ * May the promise buy more budget, or is this the end of what is sanctioned?
+ *
+ * Both refusals are LOUD and neither says anything about the cube. Lifted out of the retry loop so
+ * that loop reads as the sequence it is (2026-09-05 audit, refactoring debt) — the messages are
+ * the part with the reasoning in them, and they were what made the loop hard to see at all.
+ */
+function requireAnotherEscalation(escalations, budget, spent) {
+  if (escalations >= MAX_PROMISE_ESCALATIONS) {
+    // Says what happened, not what it means. The engine is not COMPLETE — its guarantee is the
+    // qualified one stated at GODS_NUMBER, and this comment used to claim otherwise (corrected
+    // 2026-09-05) — but nothing has ever been observed to fall outside it, so on the shipped
+    // budget getting here is a bug rather than a cube. That is still not a thing to assert in
+    // the message: a caller may pass any budget it likes, and `probeBudget: 1` exhausting after
+    // 256 nodes accuses the engine of something the caller did.
+    // Ordered so the claim never outruns what is known. God's number guarantees a <= 20
+    // solution for every LEGAL cube, and this module never establishes legality — the engine
+    // answers null both for "out of budget" and for "not a solvable state", and cannot be
+    // asked which. So the unsolvable case is named first, and the guarantee is stated as the
+    // conditional it actually is. (Escalating eight times on an unsolvable state costs
+    // nothing measurable: the engine rejects the facelets before searching, so each attempt
+    // returns immediately rather than spending its budget.)
+    throw new Error(
+      `solver found no solution of ${GODS_NUMBER} moves or fewer within ${escalations} ` +
+        `escalations, spending up to ${spent} nodes in all (the last attempt asked for ` +
+        `${budget}). Either this is not a solvable cube — for one that is, a solution this ` +
+        'short always exists — or the budget was far too small, or the engine is broken',
+    );
+  }
+  if (!Number.isSafeInteger(budget * 2)) {
+    throw new Error(
+      `solver found no solution of ${GODS_NUMBER} moves or fewer, and the budget cannot be ` +
+        `doubled past ${budget} without leaving the safe-integer range`,
+    );
+  }
+}
+
 export function tierByName(name) {
   const tier = TIERS.find((t) => t.name === name);
   if (!tier) throw new Error(`unknown tier: ${name}`);
@@ -153,24 +254,27 @@ export const STOPPED = Object.freeze({
  * @param {(f: string, bounds: object) => Promise<string|null>} opts.solve  the engine, injected
  * @param {number} [opts.probeBudget]  the first attempt's budget; doubled on every refusal
  * @param {AbortSignal|null} [opts.signal]
+ * @param {((p: {attempt: number, budget: number, spent: number}) => void)|null} [opts.onProgress]
+ *        called BEFORE each attempt: which attempt it is (0-based), the budget about to be
+ *        spent, and the budget the attempts before it were given — an upper bound on what they
+ *        walked, since a continuation does not re-walk the depths its predecessor finished. The
+ *        only window a caller has into a wait that can reach 511x the base budget with nothing
+ *        on screen.
  * @returns {Promise<string|undefined>} the validated algorithm, or undefined if aborted
  * @throws if every sanctioned escalation is spent. The message names the unsolvable case first
  *         because this module never establishes legality — see the comment inside.
  */
 export async function solveWithinGodsNumber(
   facelets,
-  { solve, probeBudget = DEFAULT_PROBE_BUDGET, signal = null } = {},
+  { solve, probeBudget = DEFAULT_PROBE_BUDGET, signal = null, onProgress = null } = {},
 ) {
-  if (typeof solve !== 'function') throw new TypeError('solveWithinGodsNumber needs a solve function');
-  if (!Number.isSafeInteger(probeBudget) || probeBudget < 1) {
-    throw new TypeError(`solveWithinGodsNumber: probeBudget ${probeBudget} is not a positive integer`);
-  }
+  requireSolveInputs('solveWithinGodsNumber', solve, probeBudget, onProgress);
   if (signal?.aborted) return undefined;
   // The first answer IS the floor, so this is where the floor is kept — and the only place it
-  // can be missed now. For a LEGAL cube a refusal here cannot mean "no such solution exists":
-  // God's number says one of 20 or fewer always does, and the engine is complete (solvePattern
-  // deepens phase-1 to solLen - 1, and canonical pruning is proved to delete no optimal path).
-  // So the ask repeats with twice as much.
+  // can be missed now. For a LEGAL cube a refusal here is not evidence that no such solution
+  // exists: God's number says one of 20 or fewer always does, and one is inside the enumeration
+  // unless every <= 20 solution in all six views ends in a run of more than 12 G1 moves (see
+  // GODS_NUMBER). So the ask repeats with twice as much.
   //
   // "For a legal cube" is the whole caveat, and this module cannot discharge it: `solve` answers
   // null both for "out of budget" and for "not a solvable state", with no way to ask which, and
@@ -183,38 +287,44 @@ export async function solveWithinGodsNumber(
   // loop below needs no floor of its own: it can only shorten.
   let budget = probeBudget;
   let escalations = 0;
-  let first = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget });
+  // What has actually been asked for, summed. The raise below used to report `budget` alone —
+  // the LAST doubled figure — which reads as the size of the search rather than as its cost:
+  // "12.8 billion nodes" for a run whose eight earlier attempts had already spent 12.75 billion
+  // between them. Both numbers are stated now, and this is the one that answers "how long was
+  // I waiting".
+  //
+  // Since 2026-09-05 it is an UPPER bound rather than the exact figure, and the wording that
+  // reports it says "up to" for that reason: a doubled attempt CONTINUES the search below rather
+  // than restarting it, so it spends its budget minus whatever depths the attempt before it
+  // finished. Every attempt still spends at most the budget it was given, so the sum over the
+  // continuations is still true — it is simply no longer tight (see `carry`).
+  let spent = 0;
+  // The resume point, carried across the escalations and owned here.
+  //
+  // This is the whole of §3 of dev-docs/deferred-plans-2026-09-05.md at this level: a refusal used
+  // to throw away everything the attempt had walked, and the doubled ask began again at phase-1
+  // depth 0. Over n attempts that is B(2ⁿ⁺¹ − 1) nodes to reach a frontier of 2ⁿB, about half of it
+  // repetition. With the carrier, `probeMax` is the FRONTIER the search should reach rather than an
+  // increment, and the answer at that frontier is bit-for-bit the answer a from-scratch search at
+  // the same `probeMax` gives — which is what made the resume worth shipping at all
+  // (escalation-resume.test.mjs). A `solve` that ignores the carrier — every fake in the tests —
+  // simply searches from the start, exactly as before.
+  const carry = { state: null };
+  const attempt = async () => {
+    onProgress?.({ attempt: escalations, budget, spent });
+    const answer = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget, signal, resume: carry });
+    spent += budget;
+    return answer;
+  };
+  let first = await attempt();
   while (first === null) {
     // An abort here is a person leaving before the first answer — nothing to show, so nothing
     // is yielded, exactly as an abort before any search at all.
     if (signal?.aborted) return undefined;
-    if (escalations >= MAX_PROMISE_ESCALATIONS) {
-      // Says what happened, not what it means. The engine IS complete, so on the shipped budget
-      // this can only be a bug — but a caller may pass any budget it likes, and `probeBudget: 1`
-      // exhausting after 256 nodes accuses the engine of something the caller did.
-      // Ordered so the claim never outruns what is known. God's number guarantees a <= 20
-      // solution for every LEGAL cube, and this module never establishes legality — the engine
-      // answers null both for "out of budget" and for "not a solvable state", and cannot be
-      // asked which. So the unsolvable case is named first, and the guarantee is stated as the
-      // conditional it actually is. (Escalating eight times on an unsolvable state costs
-      // nothing measurable: the engine rejects the facelets before searching, so each attempt
-      // returns immediately rather than spending its budget.)
-      throw new Error(
-        `solver found no solution of ${GODS_NUMBER} moves or fewer within ${escalations} ` +
-          `escalations, up to ${budget} nodes. Either this is not a solvable cube — for one ` +
-          'that is, a solution this short always exists — or the budget was far too small, or ' +
-          'the engine is broken',
-      );
-    }
-    if (!Number.isSafeInteger(budget * 2)) {
-      throw new Error(
-        `solver found no solution of ${GODS_NUMBER} moves or fewer, and the budget cannot be ` +
-          `doubled past ${budget} without leaving the safe-integer range`,
-      );
-    }
+    requireAnotherEscalation(escalations, budget, spent);
     escalations += 1;
     budget *= 2;
-    first = await solve(facelets, { solLen: FIRST_BOUND, probeMax: budget });
+    first = await attempt();
   }
 
   return validateAnswer(first, FIRST_BOUND);
@@ -232,6 +342,10 @@ export async function solveWithinGodsNumber(
  * something to show and it is never a count above God's number. That search escalates its
  * budget on refusal, so the first yield may cost more than one search.
  *
+ * `signal` and `onProgress` are optional and documented at the top of this file: the first stops
+ * a superseded search inside the engine rather than only between asks, the second is the only
+ * window into the escalating first search's wait.
+ *
  * @throws if the first search still fails after every sanctioned escalation — the state is not
  *         a solvable cube, the budget was far too small, or the engine is broken. Either way
  *         there is nothing to show, which is what makes it an error and not a result.
@@ -242,6 +356,7 @@ export async function* refine(facelets, {
   probeBudget = DEFAULT_PROBE_BUDGET,
   bonusBudget = BONUS_BUDGET,
   signal = null,
+  onProgress = null,
 } = {}) {
   const { target } = typeof tier === 'string' ? tierByName(tier) : (tier ?? {});
   if (target !== null && (!Number.isInteger(target) || target < 1)) {
@@ -249,18 +364,14 @@ export async function* refine(facelets, {
     // meaningful, quietly.
     throw new TypeError(`refine: tier target ${target} is neither null nor a positive integer`);
   }
-  if (typeof solve !== 'function') throw new TypeError('refine needs a solve function');
-  if (!Number.isSafeInteger(probeBudget) || probeBudget < 1) {
-    // NaN or Infinity would pass straight through to the engine's termination check.
-    throw new TypeError(`refine: probeBudget ${probeBudget} is not a positive integer`);
-  }
+  requireSolveInputs('refine', solve, probeBudget, onProgress);
   if (!Number.isSafeInteger(bonusBudget) || bonusBudget < 1) {
     throw new TypeError(`refine: bonusBudget ${bonusBudget} is not a positive integer`);
   }
   // Cancelled before anything was searched: there is nothing to show, so nothing is yielded.
   if (signal?.aborted) return;
 
-  const first = await solveWithinGodsNumber(facelets, { solve, probeBudget, signal });
+  const first = await solveWithinGodsNumber(facelets, { solve, probeBudget, signal, onProgress });
   // undefined is an abort before the first answer: nothing to show, so nothing is yielded.
   if (first === undefined) return;
 
@@ -275,13 +386,10 @@ export async function* refine(facelets, {
     stopped,
   });
 
-  // A zero-move answer is a solved cube: any numeric target is met, and "shortest" cannot
-  // improve on nothing. Either way the search is over before it starts.
-  if (moves === 0) {
-    yield snapshot(target === null ? STOPPED.EXHAUSTED : STOPPED.MET);
-    return;
-  }
-
+  /** Why a SOLVED cube ends the descent: any numeric target is met, and "shortest" cannot improve
+   *  on nothing. One constant, because zero moves can arrive at two different moments and the
+   *  answer is the same at both — see `terminal`. */
+  const solvedEnd = target === null ? STOPPED.EXHAUSTED : STOPPED.MET;
   // Whether the target is already satisfied — which at the <= 20 tier the free answer usually
   // is. A met target does not end the search any more: it only drops the budget to the bonus
   // rate, so an easy cube keeps descending to its real answer while a hard cube stops after
@@ -292,8 +400,32 @@ export async function* refine(facelets, {
   // extras. CANCELLED and EXHAUSTED are for searches stopped short of the promise.
   const endReason = (whileSearching) => (met() ? STOPPED.MET : whileSearching);
 
-  if (signal?.aborted) {
-    yield snapshot(endReason(STOPPED.CANCELLED));
+  /**
+   * Whether the progression ends HERE, and why — or null to carry on.
+   *
+   * The two questions were asked at five sites in the same order, and the ORDER is the part that
+   * had to be got right at every one of them (consolidated 2026-09-05, audit refactoring debt):
+   *
+   *   * **Solved first, always.** A cube solved by an IMPROVEMENT ends the descent exactly as one
+   *     solved by the first answer does. That handling once applied only to the first, so a
+   *     descent that reached zero yielded it as still improving and then asked for `solLen: 0` —
+   *     "shorter than nothing" — which the engine boundary refuses as out of range. Reproduced
+   *     with the answers "R R'" then "" (2026-09-05 audit): a learner one turn from done got a
+   *     RangeError instead of a solved cube. It is checked before the abort because there is no
+   *     further ask to cancel.
+   *   * **Then the abort.** An improvement that arrived alongside one is kept — it is real — but
+   *     it ends the progression rather than pretending the search is still going.
+   */
+  const terminal = () => {
+    if (moves === 0) return solvedEnd;
+    if (signal?.aborted) return endReason(STOPPED.CANCELLED);
+    return null;
+  };
+
+  // The first answer may already be the whole cube, or the person may already have left.
+  const opening = terminal();
+  if (opening !== null) {
+    yield snapshot(opening);
     return;
   }
   yield snapshot(null);
@@ -302,32 +434,41 @@ export async function* refine(facelets, {
   // loop only ever shortens it. A refusal below the floor is an honest end — 18 genuinely does
   // not exist for roughly 3.5% of positions — so exhaustion here reports, never escalates.
   while (true) {
-    if (signal?.aborted) {
-      yield snapshot(endReason(STOPPED.CANCELLED));
+    // Asked again after the yield above, and after the one at the foot of this loop: a yield
+    // hands control to the consumer, which is exactly where an abort lands.
+    const resumed = terminal();
+    if (resumed !== null) {
+      yield snapshot(resumed);
       return;
     }
     // Ask for strictly shorter than what we have. One move at a time: each answer is a real
-    // improvement worth showing, and skipping ahead would throw away the cheap rungs.
-    const shorter = await solve(facelets, { solLen: moves, probeMax: met() ? bonusBudget : probeBudget });
+    // improvement worth showing, and skipping ahead would throw away the cheap rungs. The signal
+    // rides with the bounds so the client can reach INSIDE this search rather than only between
+    // two of them — a synchronous search that nobody can interrupt is exactly the wait an abort
+    // is supposed to end.
+    const shorter = await solve(facelets, { solLen: moves, probeMax: met() ? bonusBudget : probeBudget, signal });
     if (shorter === null) {
-      // Out of budget, or out of two-phase solutions. Either way the answer we have stands,
-      // and if it does not meet the target we say so rather than presenting it as if it did.
-      yield snapshot(endReason(STOPPED.EXHAUSTED));
+      // Out of budget, out of two-phase solutions, or STOPPED: a cancelled search returns null
+      // too, because the stop word makes the engine give up rather than answer. Which of those
+      // it was is not guessable from the null — so the signal is asked, through the same helper,
+      // and only a search that was NOT stopped reports EXHAUSTED. Reporting a cancelled search as
+      // exhausted would tell someone who pressed a button that the solver had run out, which is
+      // the same class of wrong answer as calling a missed target an impossibility.
+      yield snapshot(terminal() ?? endReason(STOPPED.EXHAUSTED));
       return;
     }
+    // The one guarantee this module makes — every yield is shorter than the last — is kept by
+    // validateAnswer, whose bound here IS the current move count and is EXCLUSIVE. A separate
+    // `nextMoves >= moves` re-check used to follow it; it could not fire, because the only way
+    // past validateAnswer is with strictly fewer tokens than `moves`, counted by the same
+    // tokenizer movesIn uses. Dead code in front of a real guarantee reads as the guarantee.
     const nextAlg = validateAnswer(shorter, moves);
     const nextMoves = movesIn(nextAlg);
-    if (nextMoves >= moves) {
-      // The solver broke its own contract. Refusing here rather than yielding it keeps the one
-      // guarantee this module makes — that every yield is shorter than the last.
-      throw new Error(`solver returned ${nextMoves} moves when asked for fewer than ${moves}`);
-    }
     alg = nextAlg;
     moves = nextMoves;
-    // An improvement that arrived alongside an abort is kept — it is real — but it ends the
-    // progression rather than pretending the search is still going.
-    if (signal?.aborted) {
-      yield snapshot(endReason(STOPPED.CANCELLED));
+    const improved = terminal();
+    if (improved !== null) {
+      yield snapshot(improved);
       return;
     }
     yield snapshot(null);

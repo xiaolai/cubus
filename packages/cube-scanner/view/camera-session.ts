@@ -1,6 +1,6 @@
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector } from '../src/detector.js';
-import { type ScanRuntime, pickDetector } from './pick-detector.js';
+import { parkDetector, pickDetector, type ScanRuntime } from './pick-detector.js';
 
 /**
  * The camera's lifecycle, and the two counters that keep a stale one from speaking.
@@ -32,13 +32,47 @@ import { type ScanRuntime, pickDetector } from './pick-detector.js';
 export class CameraSession {
   private detectorPromise: Promise<Detector> | null = null;
   private detector: Detector | null = null;
-  private timer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Did this session's detector come from `pickDetector`, i.e. may it go back to the page's park?
+   *
+   * An INJECTED one may not. `use()` is the test seam and the native host's, and a fake handed in
+   * by one case must never reach a page-wide slot where the next case would be given it — the
+   * failure mode is a suite that passes alone and fails in a file.
+   */
+  private parkable = false;
+  private timer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
   private epoch = 0;
   /** Bumped by `use()`, so an injection beats a probe that is still in flight. See `use`. */
   private detectorChoice = 0;
-  /** The `detector.use()` still in flight, so the next one queues behind it. See `open`. */
-  private opening: Promise<unknown> | null = null;
+  /**
+   * The open chain, and WHOSE it is.
+   *
+   * `tail` is the `detector.use()` still in flight, so the next one queues behind it (see `open`);
+   * `count` is how many `open()` calls are queued or inside the detector right now — a count and
+   * not a boolean, because the chain serialises opens rather than rejecting them and three can be
+   * waiting at once. `park()` is the only reader of the count; see there for why handing the
+   * detector to the page while one is still out makes a cross-owner camera kill possible.
+   *
+   * KEYED ON THE DETECTOR, because an ordering constraint between two DIFFERENT detectors is not
+   * one (2026-09-05). The chain outlived the object it was about, so a `use()` that replaced the
+   * detector — the test seam, and the native host's — left the new one queued behind the old one's
+   * pending permission prompt, which a user who never answers leaves pending forever. The
+   * replacement is discarded and stopped by then, so there is nothing left for its queue to order:
+   * a new detector starts a new chain, and the old links still decrement the record they were
+   * registered on rather than an unrelated counter.
+   */
+  private opens: { detector: Detector; tail: Promise<void>; count: number } | null = null;
+  /**
+   * The owner's model-URL getter, kept as the FALLBACK label for a runtime that has no URL.
+   *
+   * `modelLoaded` on its own is a claim with no subject, and the park is where the subject changes
+   * — see `DetectorChoice.modelUrl`. This used to BE the subject, read at park time, and that was
+   * the defect: it is the URL the owner is asking for NOW, which is not the one that was compiled.
+   * See `modelHeldBy`, which asks the detector instead and falls back to this only where the
+   * detector answers to no URL at all.
+   */
+  private modelUrlOf: (() => string) | null = null;
 
   /** Which backend was chosen. Read by the panel purely to report it. */
   runtime: ScanRuntime | null = null;
@@ -112,6 +146,7 @@ export class CameraSession {
     this.stopLoop();
     this.detectorChoice++;
     this.detector = detector;
+    this.parkable = false; // the caller's object, never the page's — see `parkable`
     this.detectorPromise = Promise.resolve(detector);
     this.runtime = runtime;
     this.modelLoaded = false;
@@ -119,25 +154,118 @@ export class CameraSession {
   }
 
   /**
+   * Hand the detector back to the page, so the next mount reuses its session and its model.
+   *
+   * Called when the OWNER goes away — `<ai-scan-panel>`'s disconnectedCallback — and not from
+   * `close()`, which runs on every `stop()` and would give the detector away while the same panel
+   * still intends to scan with it. `parkDetector` stops the camera; the model survives.
+   *
+   * The session forgets it either way: a parked detector is no longer this session's to drive, and
+   * a later `ensureDetector()` must ask the page for one afresh rather than resolve a promise
+   * holding the one it gave back. Forgetting includes BUMPING `detectorChoice`: clearing
+   * `detectorPromise` alone left a `pickDetector` probe still in flight free to land afterwards and
+   * install its detector on a session that has already given its one away — and `chosen` and the
+   * cached promise then pointed at different objects, with the loser's camera and model held by
+   * nothing that could release them. (2026-09-05.)
+   *
+   * THE HANDOVER WAITS FOR THE OPEN. `close()` above supersedes this session's attempts, so a
+   * `detector.use()` still inside the detector will call `detector.stop()` on its way out — see
+   * `open`'s finally, which is right while this session owns the detector and catastrophic once it
+   * does not. Hand it to the page immediately and the next `<ai-scan-panel>` can take it, open its
+   * camera, and have the old link's cleanup close the lens under it. Nothing in the chain is a
+   * cross-session ordering constraint — each session has its own — so the wait is the only thing
+   * that can express one. The cost when it fires is a park that lands late, so a re-mount inside
+   * that window builds its own detector rather than reusing this one; a rebuilt session is a cost,
+   * a camera killed by its predecessor is a fault.
+   */
+  park(): void {
+    this.close();
+    const detector = this.detector;
+    const parkable = this.parkable;
+    this.detector = null;
+    this.detectorPromise = null;
+    this.detectorChoice++;
+    this.parkable = false;
+    const runtime = this.runtime;
+    const modelLoaded = this.modelLoaded;
+    // Read BEFORE the getter is forgotten, and only when there is a claim for it to be about.
+    const modelUrl = modelLoaded && detector ? this.modelHeldBy(detector) : null;
+    this.modelLoaded = false;
+    this.modelUrlOf = null;
+    if (!(detector && parkable && runtime)) return;
+    // The chain to wait on is THIS detector's, and only while it still holds it: a record left by
+    // a detector this session no longer has says nothing about the one being handed over.
+    const queue = detector && this.opens?.detector === detector ? this.opens : null;
+    this.opens = null;
+    const handOver = (): void => parkDetector({ detector, runtime, modelLoaded, modelUrl });
+    // Synchronous when nothing is out, which is every ordinary disconnect.
+    if (!queue || queue.count === 0) handOver();
+    else void queue.tail.then(handOver, handOver);
+  }
+
+  /**
+   * WHICH model the detector actually holds — asked of the DETECTOR, which is the only thing that
+   * knows (2026-09-05).
+   *
+   * `park()` used to read the owner's `modelUrl` getter here, and that is a different fact wearing
+   * the same name: it is the URL this panel is asking for at the moment it disconnects, not the one
+   * that was compiled into the session. The two come apart in exactly the place the park matters —
+   * a host that changes its `model-url` attribute after the load — and the failure is silent:
+   * model A was parked under B's name, `pickDetector` compared B against B, and the next mount was
+   * told its model was ready while what is compiled is A. A wrong model produces readings, not
+   * errors. Reproduced.
+   *
+   * `undefined` from the detector is "I do not answer to a URL", and only there does the owner's
+   * getter stand in: the native plugin resolves and compiles the bundled model itself, so its
+   * identity cannot disagree with itself and the URL is a label rather than a claim. `null` is the
+   * detector saying it holds nothing, and is passed through as that.
+   */
+  private modelHeldBy(detector: Detector): string | null {
+    const stated = detector.loadedModel;
+    return stated === undefined ? (this.modelUrlOf?.() ?? null) : stated;
+  }
+
+  /**
    * The detector, chosen once and kept for the session's life, so the model survives a stop()/
    * start() and the native probe runs only once. Cached as a promise because the choice is async.
+   *
+   * AND `modelLoaded` IS RE-ASKED EVERY TIME, because it is a claim about a MODEL and this is
+   * where the model can change (2026-09-05). The park had this covered — `pickDetector` compares
+   * the parked URL against the new owner's — but the cached path had nothing: the same owner
+   * re-pointing its `model-url` between a stop and a start kept a flag that was about the previous
+   * URL, so the panel skipped `load()` and scanned model A while every screen said B. A wrong
+   * model produces readings, not errors. Same comparison as the park's, for the same reasons: the
+   * detector is asked (`modelHeldBy`), the strings are compared as the owners' getters produce
+   * them, and a false mismatch costs one call to an idempotent `load()` while a false match costs
+   * the scan.
    */
   ensureDetector(video: () => HTMLVideoElement, modelUrl: () => string): Promise<Detector> {
+    this.modelUrlOf = modelUrl;
+    if (this.modelLoaded && this.detector && this.modelHeldBy(this.detector) !== modelUrl()) {
+      this.modelLoaded = false;
+    }
     if (this.detectorPromise === null) {
       const choice = this.detectorChoice;
-      this.detectorPromise = pickDetector({ video, modelUrl }).then(({ detector, runtime }) => {
-        // A `use()` landed while the probe was out: the injection wins, and the detector this
-        // probe built is released rather than left holding whatever it opened.
-        if (choice !== this.detectorChoice) {
-          // This one lost and is thrown away, so its model goes with it.
-          detector.dispose?.();
-          detector.stop();
-          return this.detector ?? detector;
-        }
-        this.detector = detector;
-        this.runtime = runtime;
-        return detector;
-      });
+      this.detectorPromise = pickDetector({ video, modelUrl }).then(
+        ({ detector, runtime, modelLoaded }) => {
+          // A `use()` landed while the probe was out: the injection wins, and the detector this
+          // probe built is released rather than left holding whatever it opened.
+          if (choice !== this.detectorChoice) {
+            // This one lost and is thrown away, so its model goes with it.
+            detector.dispose?.();
+            detector.stop();
+            return this.detector ?? detector;
+          }
+          this.detector = detector;
+          this.parkable = true;
+          this.runtime = runtime;
+          // A parked detector arrives with its model already compiled, and says so — otherwise
+          // every re-mount reported "loading the model…" and crossed the bridge again for a load
+          // both implementations would only short-circuit.
+          this.modelLoaded = modelLoaded;
+          return detector;
+        },
+      );
     }
     return this.detectorPromise;
   }
@@ -151,7 +279,7 @@ export class CameraSession {
   /** Stop ticking. Does not touch the camera — `restart` keeps the lens alive on purpose. */
   stopLoop(): void {
     if (this.timer !== null) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
   }
@@ -164,11 +292,30 @@ export class CameraSession {
    * `dropFramesInFlight()` the one caller had to remember alongside this, which is a two-call
    * protocol enforced by nothing: a second caller restarting the loop directly would make an
    * inference from the previous loop pass `freshFrame` again the instant the new timer existed.
+   *
+   * A RE-ARMED TIMEOUT, not an interval, because the cadence is a function rather than a constant:
+   * the panel ticks as fast as the runtime it actually got can answer, and that is known only
+   * after the first inference. `setInterval` fixes its period when it is created, so following a
+   * measurement would have meant tearing the loop down and rebuilding it on every change — which
+   * bumps the epoch, and an epoch bump mid-scan discards the inference in flight.
+   *
+   * Re-armed BEFORE the tick runs, so a `stopLoop()` from inside the tick — `scheduleCheck` does
+   * exactly that — clears the timer that was just set instead of being overwritten by it.
    */
-  beginLoop(ms: number, tick: () => void): void {
+  beginLoop(delay: number | (() => number), tick: () => void): void {
     this.stopLoop();
     this.epoch++;
-    this.timer = setInterval(tick, ms);
+    const next = typeof delay === 'function' ? delay : (): number => delay;
+    const arm = (): void => {
+      this.timer = setTimeout(
+        () => {
+          arm();
+          tick();
+        },
+        Math.max(1, next()),
+      );
+    };
+    arm();
   }
 
   /** Supersede everything in flight, stop ticking, and release the camera. */
@@ -212,7 +359,25 @@ export class CameraSession {
     opts: CameraOptions,
     token: number,
   ): Promise<{ fellBack: boolean }> {
+    // This detector's chain, or a new one for a detector that has not opened anything yet — see
+    // `opens`. The record is captured here so the links below decrement the one they joined, not
+    // whichever record happens to be current when they finish.
+    if (this.opens?.detector !== detector) {
+      this.opens = { detector, tail: Promise.resolve(), count: 0 };
+    }
+    const queue = this.opens;
+    queue.count++;
     const run = async (): Promise<{ fellBack: boolean }> => {
+      // CANCELLED WHILE IT QUEUED — so it opens nothing at all, and there is nothing to clean up.
+      //
+      // The chain makes this reachable by design: an attempt can sit behind another for as long as
+      // a permission prompt goes unanswered, and `stop()`, `restart` or a newer `start()` in that
+      // window supersedes it. It used to call `detector.use()` anyway, which asks the platform for
+      // a camera AFTER the user stopped the scanner — a lens that flicks on and straight back off
+      // via the finally below — and, worse, made the current attempt queue behind a permission wait
+      // nobody was waiting for. Returning before the try is deliberate: `fellBack` is a fact about
+      // an open that happened, and the caller's own generation check is what reads it. (2026-09-05)
+      if (!this.current(token)) return { fellBack: false };
       try {
         await detector.use(opts);
         return { fellBack: false };
@@ -237,11 +402,17 @@ export class CameraSession {
     // Whatever the previous link did, and whether it threw: this is an ordering constraint, not a
     // dependency. The tail is published BEFORE it is awaited, so the link after this one queues
     // behind this one rather than behind the same predecessor.
-    const chained = (this.opening ?? Promise.resolve()).then(run, run);
-    this.opening = chained.then(
+    const chained = queue.tail.then(run, run);
+    queue.tail = chained.then(
       () => undefined,
       () => undefined,
     );
+    // Registered AFTER the tail, so a `park()` waiting on it runs once this link is no longer
+    // counted as in flight.
+    const done = (): void => {
+      queue.count--;
+    };
+    void chained.then(done, done);
     return chained;
   }
 }

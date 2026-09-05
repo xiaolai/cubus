@@ -98,10 +98,15 @@ test('the whole load path runs, and a library that will not validate yields no i
   tampered[0].optimalLength += 1;
   await assert.rejects(() => loadChallenges({ Cube, fetch: serve(tampered) }), /its algs disagree/);
 
-  // And a state whose "minimal" solution does not solve it at all.
+  // And an alg that is not in the metric at all: refused by the GRAMMAR, before any oracle work.
+  // This fixture used to stand for "a solution that does not solve", and it never reached that
+  // check — entry 0's solution begins with `L'`, so priming it again spells `L''` and htmMoves
+  // rejects it (found by the 2026-09-05 audit; the oracle paths it was standing in for are the
+  // test below). Kept, because the grammar gate is worth pinning on its own — with the message
+  // that says WHICH refusal fired.
   const wrong = JSON.parse(JSON.stringify(real));
   wrong[0].optimalSolution = wrong[0].optimalSolution.replace(/^(\S+)/, "$1'");
-  await assert.rejects(() => loadChallenges({ Cube, fetch: serve(wrong) }), /optimal-challenges/);
+  await assert.rejects(() => loadChallenges({ Cube, fetch: serve(wrong) }), /is not a face turn/);
 
   await assert.rejects(() => loadChallenges({ Cube, fetch: serve(real, false) }), /did not load \(404\)/);
 });
@@ -145,4 +150,59 @@ test('every way the library can fail leaves through the same door', async () => 
   const bad = await loadIndex({ Cube, fetch: serve(dupes), onError: (e) => { seen = e; } });
   assert.equal(bad, NO_CHALLENGES, 'a self-contradicting library yields no index either');
   assert.match(String(seen), /two entries claim the same state/, 'and reaches the caller rather than the void');
+});
+
+test('the two ORACLE refusals fire, on fixtures the grammar gate cannot catch', async () => {
+  // The gap the 2026-09-05 audit found: every "bad library" fixture in this file was rejected by
+  // the tokenizer or by an arithmetic length check, so the two checks that actually need cubejs —
+  // does the scramble reach the state, does the "minimal" solution solve it — had never once been
+  // observed to fire. Deleting either would have left this file green.
+  //
+  // Each fixture is therefore proved to BE what it claims first: same length, strict HTM, and
+  // genuinely wrong. A fixture that trips an earlier gate tests that gate, not this one.
+  const Cube = (await import(vendored)).default;
+  const { validateChallenges, loadIndex, NO_CHALLENGES } = await import('../lib/optimal-challenges.js');
+  const { htmMoves } = await import('../lib/optimal.js');
+  const { readFileSync } = await import('node:fs');
+  const real = JSON.parse(readFileSync(data, 'utf8'));
+  const serve = (body) => async () => ({ ok: true, status: 200, json: async () => body });
+
+  /** One move swapped for a different face, keeping the modifier — so the alg stays strict HTM
+   *  and exactly as long, and only its EFFECT changes. */
+  const swapLastFace = (alg) => {
+    const tokens = alg.trim().split(/\s+/);
+    const last = tokens[tokens.length - 1];
+    tokens[tokens.length - 1] = (last[0] === 'L' ? 'R' : 'L') + last.slice(1);
+    return tokens.join(' ');
+  };
+
+  // 1. A solution that is a real 17-move HTM alg and does not solve the cube.
+  const wrong = JSON.parse(JSON.stringify(real));
+  wrong[0].optimalSolution = swapLastFace(wrong[0].optimalSolution);
+  assert.equal(htmMoves(wrong[0].optimalSolution, 'fixture').length, wrong[0].optimalLength,
+    'the fixture must be strict HTM and the claimed length, or an earlier gate catches it');
+  const notSolved = Cube.fromString(wrong[0].facelets);
+  notSolved.move(wrong[0].optimalSolution);
+  assert.equal(notSolved.isSolved(), false, 'the fixture must really fail to solve');
+  assert.throws(() => validateChallenges(wrong, { Cube }),
+    /entry 0's "minimal" solution does not solve the cube/);
+
+  // 2. A scramble that is a real HTM alg of the claimed length and reaches a DIFFERENT state.
+  const drifted = JSON.parse(JSON.stringify(real));
+  drifted[0].scramble = swapLastFace(drifted[0].scramble);
+  assert.equal(htmMoves(drifted[0].scramble, 'fixture').length, drifted[0].optimalLength);
+  const elsewhere = new Cube();
+  elsewhere.move(drifted[0].scramble);
+  assert.notEqual(elsewhere.asString(), drifted[0].facelets, 'the fixture must really drift');
+  assert.throws(() => validateChallenges(drifted, { Cube }),
+    /entry 0's scramble does not reach its state/);
+
+  // 3. And both leave the app with the EMPTY index rather than a partial one: a library holding a
+  //    single unverifiable entry must cost every lookup, not just that entry's.
+  for (const [what, body] of [['a non-solving solution', wrong], ['a drifting scramble', drifted]]) {
+    let seen = null;
+    const index = await loadIndex({ Cube, fetch: serve(body), onError: (e) => { seen = e; } });
+    assert.equal(index, NO_CHALLENGES, `${what} must yield no index at all`);
+    assert.match(String(seen), /entry 0/, `${what} must reach the caller, naming the entry`);
+  }
 });

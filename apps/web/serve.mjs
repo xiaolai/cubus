@@ -13,13 +13,16 @@
 // when a change is broadcast. So editing index.html — or running `npm run build:panel`,
 // which writes web/vendor/ai-scan-panel.js — refreshes the open tab on its own.
 
-import { createReadStream, watch } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { createReadStream, realpathSync, watch } from 'node:fs';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+// The root with every symlink resolved, because containment is decided on REAL paths (see the
+// request handler): a checkout that itself sits behind a symlink must not be refused wholesale.
+const ROOT_REAL = realpathSync(ROOT);
 const PORT = Number(process.env.PORT) || 15173;
 // Loopback by default, on purpose: this server has no auth and serves the whole app directory, so
 // it should not appear on the LAN because someone ran `pnpm dev`. CUBUS_DEV_HOST=0.0.0.0 opens it
@@ -43,7 +46,47 @@ const MIME = {
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json',
+  '.md': 'text/markdown; charset=utf-8', // THIRD_PARTY_NOTICES.md, linked from the About card
 };
+
+/** The host name inside a Host header, lower-cased and without its port; null when there is none. */
+function hostnameOf(header) {
+  if (typeof header !== 'string' || header.trim() === '') return null;
+  const h = header.trim().toLowerCase();
+  if (h.startsWith('[')) { // an IPv6 literal: [::1]:15173
+    const end = h.indexOf(']');
+    return end === -1 ? null : h.slice(1, end);
+  }
+  const colon = h.lastIndexOf(':');
+  return colon === -1 ? h : h.slice(0, colon);
+}
+
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+const IPV6 = /^[0-9a-f:.]+$/; // already unbracketed; loose on purpose — an IP literal is not a DNS name
+
+/**
+ * Whether a request's Host header names THIS server rather than a name an attacker controls.
+ *
+ * DNS rebinding: a page on evil.example, once loaded, re-points its own name at 127.0.0.1 and then
+ * reads http://evil.example:15173/ — same-origin to itself, answered by this process, which has no
+ * auth and serves the whole app directory. The tell is the Host header: it carries the attacker's
+ * NAME, because a name is the only thing that can be rebound. So a Host that is a loopback name or
+ * an IP literal is this server's, and anything else is refused before routing. `.localhost` names
+ * are loopback by RFC 6761; an IP literal has no DNS record to move (and a cross-origin fetch to
+ * one gets no CORS headers from here, so its response is unreadable anyway). CUBUS_DEV_HOST set to
+ * a NAME is allowed too, since that is what the operator asked this server to answer as; the
+ * wildcard binds (0.0.0.0, ::) are not names and grant nothing.
+ */
+function hostAllowed(hostname) {
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
+  if (IPV4.test(hostname) || (hostname.includes(':') && IPV6.test(hostname))) return true;
+  const bound = HOST.toLowerCase();
+  return hostname === bound && bound !== '0.0.0.0' && bound !== '::';
+}
+
+/** Is `p` the directory `root`, or somewhere beneath it? A text comparison; see the handler. */
+const inside = (p, root) => p === root || p.startsWith(root + sep);
 
 // --- live-reload plumbing (SSE) ---
 // Open SSE connections; each is an http response we keep writing to.
@@ -118,6 +161,18 @@ const ignoreClientLoss = (stream, onGone) => {
 const server = createServer(async (req, res) => {
   ignoreClientLoss(req);
   ignoreClientLoss(res);
+  // The Host header before any route — the reload endpoint included, because a rebound name must
+  // not get to hold a connection open either. HTTP/1.1 requires the header; a request without one
+  // is not a browser's, and there is nothing to check it against.
+  const hostname = hostnameOf(req.headers.host);
+  if (hostname === null) {
+    res.writeHead(400).end('bad request: no Host header');
+    return;
+  }
+  if (!hostAllowed(hostname)) {
+    res.writeHead(403).end('forbidden: this server answers to localhost and IP literals only');
+    return;
+  }
   // SSE endpoint: keep the connection open and register this client for reload pushes.
   if (req.url === RELOAD_PATH) {
     res.writeHead(200, {
@@ -133,16 +188,37 @@ const server = createServer(async (req, res) => {
   }
 
   try {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
+    // A fixed base: the path is all that is wanted from the request line, and the Host header
+    // has already been judged above — it must not get a second chance to shape the URL.
+    const url = new URL(req.url ?? '/', 'http://localhost');
     const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '') || 'index.html';
     let target = normalize(join(ROOT, rel));
     // Reject path traversal: the resolved path must stay inside ROOT.
-    if (target !== ROOT && !target.startsWith(ROOT + sep)) {
+    if (!inside(target, ROOT)) {
       res.writeHead(403).end('forbidden');
       return;
     }
-    const s = await stat(target).catch(() => null);
-    if (s?.isDirectory()) target = join(target, 'index.html');
+    let s = await stat(target).catch(() => null);
+    if (s?.isDirectory()) {
+      target = join(target, 'index.html');
+      s = await stat(target).catch(() => null);
+    }
+    if (!s?.isFile()) {
+      res.writeHead(404).end('not found');
+      return;
+    }
+    // SYMLINKS RESOLVED, and checked again. `normalize` reasons about the TEXT of a path, and a
+    // symlink is a file whose text says one thing while its bytes live somewhere else: with
+    // CUBUS_DEV_HOST=0.0.0.0, `/node_modules/three/package.json` stayed inside ROOT textually and
+    // served the pnpm store — every package in the monorepo, from the repository root — through
+    // the link, to anyone on the LAN. So the path is realpath'd, every link in it followed, and
+    // the REAL location must be inside the REAL root. ROOT is realpath'd too (ROOT_REAL), so a
+    // checkout that itself sits behind a symlink is not refused wholesale.
+    const real = await realpath(target);
+    if (!inside(real, ROOT_REAL)) {
+      res.writeHead(403).end('forbidden');
+      return;
+    }
     const ext = extname(target);
     // Dev server: never cache, so a plain reload always fetches fresh files. Not for production.
     // Cross-origin isolation, which is the whole reason the scanner can use more than one core.
@@ -170,7 +246,7 @@ const server = createServer(async (req, res) => {
       // Inject the live-reload client just before </body> (or append if there is none) — unless
       // live-reload is off, in which case the page must not even open the EventSource: a client
       // that is merely never pushed to is one broadcastReload away from a reload nobody wanted.
-      let html = await readFile(target, 'utf8');
+      let html = await readFile(real, 'utf8');
       if (LIVE_RELOAD) {
         html = html.includes('</body>') ? html.replace('</body>', `${RELOAD_SNIPPET}</body>`) : html + RELOAD_SNIPPET;
       }
@@ -193,11 +269,10 @@ const server = createServer(async (req, res) => {
     // parses. Streaming removes the cause: the suite runs at --test-concurrency=6 and several
     // files each spawn their own server, so buffering ~27 MB per request multiplied by
     // concurrent requests, and a socket write under that memory pressure is where the bytes went.
-    // `s` is the stat of the REQUESTED path; a directory request was rewritten to its
-    // index.html above, so only re-use it when it is the file being sent.
-    const info = s?.isFile() ? s : await stat(target);
-    res.writeHead(200, { ...headers, 'Content-Length': info.size });
-    const file = createReadStream(target);
+    // `s` is the stat of the file being sent: a directory request was re-stat'd as its index.html
+    // above, and `stat` follows links, so this is the size of the real bytes.
+    res.writeHead(200, { ...headers, 'Content-Length': s.size });
+    const file = createReadStream(real);
     // A read that dies mid-flight must break the connection, never end it tidily: a clean end
     // after a partial body is exactly the silent truncation this whole change is about.
     file.on('error', () => res.destroy());

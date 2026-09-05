@@ -1,6 +1,9 @@
 // The CoreML runner. Loads the NMS-free .mlpackage exported by ml/export.py (raw 1×(4+nc)×8400
-// output, float tensor in / fp16 out), compiles it on first use (CoreML caches the .mlmodelc), and
-// runs one frame to the raw output tensor. The tensor is copied out row-major as Float32 — the exact
+// output, float tensor in / fp16 out), compiles it, and runs one frame to the raw output tensor.
+// `compileModel(at:)` writes a fresh .mlmodelc into a temporary directory on EVERY call — it does
+// not cache, whatever this comment used to say — so the one place a repeat load is made free is
+// FFI.swift's `cube_vision_load`, which keeps the built model and answers a same-path, same-units
+// load from it. The tensor is copied out row-major as Float32 — the exact
 // `{ data, anchors }` layout `decodeDetections` parses, so the post-processing is byte-for-byte the
 // browser's. NMS, grid-fit and assembly stay in TypeScript; nothing here interprets the numbers.
 
@@ -19,8 +22,8 @@ public final class CubeModel {
     private let outputName: String
 
     public init(mlpackageURL: URL, computeUnits: MLComputeUnits = .all) throws {
-        // .mlpackage must be compiled to .mlmodelc before load; CoreML caches the result so this is
-        // a one-time cost (seconds) that the plan calls out under "Known costs".
+        // .mlpackage must be compiled to .mlmodelc before load: seconds, and paid per call of this
+        // initialiser (the plan's "Known costs" row). Not repeating it is the caller's job.
         let compiled = try MLModel.compileModel(at: mlpackageURL)
         let cfg = MLModelConfiguration()
         cfg.computeUnits = computeUnits

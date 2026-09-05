@@ -8,7 +8,8 @@
 //
 // "On a desktop" is not decoration. The iOS and Android shells inject exactly the same command
 // surface, and the first press of the affordance generates 86 MB of pattern databases with a
-// rayon fan-out over every core — minutes of work and ~500 MB peak. That is a desktop's job.
+// rayon fan-out over every core — measured 2026-09-05 at ~3.6 s and a 281 MB peak on a laptop
+// (804 MB before the level-synchronous generator). That is still a desktop's job.
 // A phone gets the browser's answer, which is the same answer it would get with no native side
 // at all, so nothing on any screen depends on which build is running.
 //
@@ -17,6 +18,10 @@
 // error at this boundary, not a wrong number wearing the word "proved".
 
 import { isDesktopHost } from './host.js';
+// The pipeline's one tokenizer. solver-engine.js is the protocol boundary and imports no engine,
+// so this costs the seam nothing; what it buys is that a proof's move count and the app's move
+// count cannot come from two different splitters.
+import { moveTokens } from './solver-engine.js';
 
 /** The face-turn grammar the proofs are stated in. cubejs would happily apply rotations,
  *  slices and wide moves too — and a native answer using them would "solve" while proving
@@ -25,7 +30,7 @@ export const HTM_TOKEN = /^[URFDLB](?:2|')?$/;
 
 /** Split an alg into tokens, refusing anything outside the HTM face-turn grammar. */
 export function htmMoves(alg, what) {
-  const tokens = alg.trim() ? alg.trim().split(/\s+/) : [];
+  const tokens = moveTokens(alg);
   for (const token of tokens) {
     if (!HTM_TOKEN.test(token)) {
       throw new Error(`${what}: "${token}" is not a face turn — wrong metric, refusing`);
@@ -62,36 +67,46 @@ export async function status() {
 }
 
 /**
- * Prove the minimal length of `facelets`. Returns `{ moves, alg, nodes, millis }` where
- * `moves` is PROVEN minimal — or throws: 'cancelled', tables-not-ready, or an oracle failure.
+ * Claim the native proof slot, behind the fences and behind a cancellation the wait may cross.
  *
- * `Cube` is injected (the vendored cubejs the app already holds) so this module stays free of
- * loading concerns and the test can hand in the real oracle with a fake native side.
- * `upperBound` is the two-phase answer already in hand: optimal ≤ two-phase, ALWAYS, and a
- * claimed minimum above an existing solution is a proof of a bug, refused here rather than
- * shown (§5 check 3 — the one cross-solver invariant, enforced where the two solvers meet).
+ * Two fences before claiming the slot. The cancel fence: a cancel issued for the PREVIOUS proof
+ * may still be in flight (teardown fires it without awaiting), and claiming before it lands would
+ * let the stale cancel kill THIS proof. The prove fence: a cancelled proof releases its slot only
+ * when its worker exits, so starting before the previous prove settles would bounce off "a proof
+ * is already running" — a loud but pointless refusal. Errors behind either fence belong to their
+ * own callers, not to us.
+ *
+ * The PREDECESSOR is captured before the fence exists, and every iteration waits on that fixed
+ * promise rather than on `lastProve` (fixed 2026-09-05). `lastProve` is reassigned to THIS proof's
+ * settling two lines below, so a second iteration — which a cancel arriving during the wait is
+ * exactly what causes — re-read a promise that had become this proof's own completion and waited
+ * for itself. Reproduced: the proof never reached the native side, and neither did any proof after
+ * it, because `lastProve` stayed pending forever.
+ *
+ * And the TOKEN, which is the reason a queued proof can be called off at all (2026-09-05 audit).
+ * Waiting out the fences takes at least a microtask, so `prove(); cancel()` reached the native side
+ * as `optimal_cancel` THEN `optimal_prove` — reproduced — and the cancelled proof then started and
+ * ran for hours with nothing left on screen to stop it. The generation is captured synchronously
+ * with the caller's `prove()` and compared after the wait, before the native call: a cancel issued
+ * BEFORE this proof was asked for is the stale one the fence exists to absorb, and a cancel issued
+ * AFTER it is aimed at this proof or at everything, so the queued proof never starts.
  */
-export async function prove(facelets, { Cube, upperBound = null }) {
-  const invoke = surface();
-  if (!invoke) throw new Error('optimal: no native solver here');
-  // A NaN or Infinity bound would make the cross-solver comparison silently false — the one
-  // invariant this seam enforces would just not fire. Refuse it before any native work.
-  if (upperBound !== null && (!Number.isSafeInteger(upperBound) || upperBound < 0)) {
-    throw new Error('optimal: upperBound must be null or a non-negative integer');
-  }
-  // Two fences before claiming the native slot. The cancel fence: a cancel issued for the
-  // PREVIOUS proof may still be in flight (teardown fires it without awaiting), and claiming
-  // before it lands would let the stale cancel kill THIS proof. The prove fence: a cancelled
-  // proof releases its slot only when its worker exits, so starting before the previous
-  // prove settles would bounce off "a proof is already running" — a loud but pointless
-  // refusal. Errors behind either fence belong to their own callers, not to us.
+function scheduleProof(invoke, facelets) {
+  const generation = cancelGeneration;
+  const predecessor = lastProve;
   const fenced = (async () => {
     // Loop until the cancel fence is STABLE: while waiting out the previous proof, another
     // cancel aimed at it may arrive — a single snapshot would leave that one in flight.
     for (;;) {
       const snapshot = pendingCancels;
-      await Promise.allSettled([snapshot, lastProve]);
+      await Promise.allSettled([snapshot, predecessor]);
       if (snapshot === pendingCancels) break;
+    }
+    if (cancelGeneration !== generation) {
+      // The wording carries "cancelled" because that is the word app.js matches to tell a stop
+      // from a failure — a proof called off before it started is the same choice as one called
+      // off after, and must read the same on screen.
+      throw new Error('optimal: cancelled before the proof started');
     }
     return invoke('optimal_prove', { facelets });
   })();
@@ -99,7 +114,17 @@ export async function prove(facelets, { Cube, upperBound = null }) {
     () => {},
     () => {},
   );
-  const proof = await fenced;
+  return fenced;
+}
+
+/**
+ * Everything a native answer must satisfy before the word "proved" may be used about it.
+ *
+ * Synchronous and pure, which is the point of it being here rather than inline: the oracle check
+ * is the whole justification for this seam, and it can be driven directly with a malformed proof
+ * rather than only through a fake native side.
+ */
+export function validateProof(proof, { facelets, Cube, upperBound = null }) {
   if (!proof || typeof proof.length !== 'number' || typeof proof.solution !== 'string') {
     throw new Error('optimal: malformed proof from the native side');
   }
@@ -137,17 +162,47 @@ export async function prove(facelets, { Cube, upperBound = null }) {
   };
 }
 
+/**
+ * Prove the minimal length of `facelets`. Returns `{ moves, alg, nodes, millis }` where
+ * `moves` is PROVEN minimal — or throws: 'cancelled', tables-not-ready, or an oracle failure.
+ *
+ * `Cube` is injected (the vendored cubejs the app already holds) so this module stays free of
+ * loading concerns and the test can hand in the real oracle with a fake native side.
+ * `upperBound` is the two-phase answer already in hand: optimal ≤ two-phase, ALWAYS, and a
+ * claimed minimum above an existing solution is a proof of a bug, refused here rather than
+ * shown (§5 check 3 — the one cross-solver invariant, enforced where the two solvers meet).
+ */
+export async function prove(facelets, { Cube, upperBound = null }) {
+  const invoke = surface();
+  if (!invoke) throw new Error('optimal: no native solver here');
+  // A NaN or Infinity bound would make the cross-solver comparison silently false — the one
+  // invariant this seam enforces would just not fire. Refuse it before any native work.
+  if (upperBound !== null && (!Number.isSafeInteger(upperBound) || upperBound < 0)) {
+    throw new Error('optimal: upperBound must be null or a non-negative integer');
+  }
+  return validateProof(await scheduleProof(invoke, facelets), { facelets, Cube, upperBound });
+}
+
 /** EVERY outstanding cancellation round trip, aggregated — replacing rather than
  *  accumulating would let an older, slower cancel slip past the fence and land on a proof
  *  it was never aimed at. */
 let pendingCancels = Promise.resolve();
 /** The most recent proof's settling — the second half of the fence prove() waits behind. */
 let lastProve = Promise.resolve();
+/** How many cancellations have been ASKED FOR — the fence cannot answer that, because a cancel
+ *  and the proof it was aimed at are told apart by WHEN, not by what the native side replies.
+ *  A proof queued behind the fence compares this against the value it captured and refuses to
+ *  start if it moved; see scheduleProof. */
+let cancelGeneration = 0;
 
-/** Ask the running proof to stop. Resolves true if one was running. */
+/** Ask the running proof to stop — and call off any proof still queued behind the fence, which
+ *  is the one a cancel would otherwise race INTO existence. Resolves true if one was running. */
 export async function cancel() {
   const invoke = surface();
   if (!invoke) return false;
+  // Bumped before the invoke, and synchronously, so a proof waiting out the fence sees it at its
+  // next check whatever the native side does with the request.
+  cancelGeneration += 1;
   const flight = invoke('optimal_cancel');
   pendingCancels = Promise.allSettled([pendingCancels, flight]).then(() => {});
   return flight;

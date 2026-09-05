@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  type ColorFace,
   assembleColors,
   assemblePainted,
+  type ColorFace,
   matchingRotations,
 } from '../src/ai-assemble.js';
 import { SOLVED_FACELETS } from '../src/facelet-cube.js';
@@ -36,6 +36,35 @@ describe('assembleColors', () => {
     const r = assembleColors(faces(f));
     expect(r.facelets).toBe(f);
     expect(r.valid).toBe(true);
+  });
+
+  it('refuses a centre colour class the detector cannot produce, in both assemblers', () => {
+    // A CENTRE NAMES A FACE, so an out-of-range one is silently accepted as the name of one.
+    // Replacing all nine U stickers with class 17 built the map `17 -> U`, every one of them then
+    // resolved through it, and BOTH entry points returned `valid: true` for a facelet string
+    // assembled out of a colour class no model emits. NaN is the worse half: `Map` matches it to
+    // itself, so it works exactly as well as a real class. This is "Never invent data" at the one
+    // seam where the detector's output stops being checked — the ordinary stickers are deliberately
+    // left alone, because an unknown colour THERE is a statement about the cube.
+    for (const bad of [17, Number.NaN, -1, 2.5]) {
+      const f = faces(SOLVED_FACELETS);
+      f.U.colors = Array(9).fill(bad) as number[];
+      for (const assemble of [assembleColors, assemblePainted]) {
+        const r = assemble(f);
+        expect(r.valid, `${assemble.name} accepted centre class ${bad}`).toBe(false);
+        expect(r.reason).toMatch(/centre colour/);
+      }
+    }
+  });
+
+  it('still lets an unreadable ORDINARY sticker say what it says about the cube', () => {
+    // The other side of the rule above: a non-centre sticker that is not one of the six centre
+    // colours is refused in words a child can act on, not as malformed input.
+    const f = faces(SOLVED_FACELETS);
+    f.U.colors[0] = 9;
+    const r = assemblePainted(f);
+    expect(r.valid).toBe(false);
+    expect(r.reason).toMatch(/not one of the six centre colours/);
   });
 
   it('rejects (with a reason) when two faces share a centre colour', () => {
@@ -296,6 +325,39 @@ describe('assembleColors — confirmations are rotation measurements, and refusa
     expect(assembleColors(ok).valid).toBe(true);
   });
 
+  it('a confirmation that is not nine stickers is refused, never matched by tolerance', () => {
+    // A confirmation is USER INPUT arriving through the same public argument as the six sides, and
+    // it was the one capture nobody checked. `matchingRotations` compares nine positions against
+    // whatever array it is handed, so a SHORT one reads `undefined` at the missing indices — which
+    // counts as at most two differences and therefore passes CONFIRM_TOLERANCE at some rotation.
+    //
+    // Measured before the check existed: seven colours and no confidences at all, fed as the answer
+    // to every confirm request, narrowed a once-turned cube all the way to `valid: true` — on all
+    // six of U, U', U R, D, U2 and R U'. The cube it returned happened to be the true one, which is
+    // the worst version of the bug: an accepted reading whose deciding evidence was a rotation
+    // measured from a capture that does not exist.
+    //
+    // It THROWS, like every other malformed capture here: a reject is a sentence shown to a child
+    // about their cube, and a caller handing over a seven-sticker face is not making a claim about
+    // a cube at all.
+    const truth = scrambleFacelets('U');
+    const shown = faces(truth);
+    const ask = assembleColors(shown);
+    const face = ask.confirm!.face;
+    const short: ColorFace = { colors: faces(truth)[face]!.colors.slice(0, 7), confidence: [] };
+    expect(() => assembleColors(shown, 0.15, { [face]: short })).toThrow(
+      new RegExp(`confirmation of ${face}`),
+    );
+    // A full-length confirmation whose confidences are not numbers is refused on the same rule.
+    const nan: ColorFace = {
+      colors: faces(truth)[face]!.colors,
+      confidence: Array(9).fill(Number.NaN),
+    };
+    expect(() => assembleColors(shown, 0.15, { [face]: nan })).toThrow(/confirmation of/);
+    // …and a well-formed one is still accepted, so the guard did not simply refuse everything.
+    expect(() => assembleColors(shown, 0.15, { [face]: canonical(truth, face) })).not.toThrow();
+  });
+
   it('a confirmation matches at every rotation inside the tolerance, not only the closest', () => {
     // CONFIRM_TOLERANCE grants two differing stickers. Keeping only the MINIMUM-distance rotations
     // was a second, stricter rule on top of it that undid the first: on this pair the distances
@@ -495,7 +557,7 @@ describe('assemblePainted', () => {
       const was = broken.U!.colors[k]!;
       broken.U!.colors[k] = (was + 1) % 6;
       const r = assemblePainted(broken);
-      if (!r.suspects || r.suspects.length !== 1) continue;
+      if (r.suspects?.length !== 1) continue;
       pointed += 1;
       const s = r.suspects[0]!;
       const repaired = faces(truth);

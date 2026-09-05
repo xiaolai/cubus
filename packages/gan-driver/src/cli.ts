@@ -8,15 +8,14 @@
 //   gan16 raw [char]           timestamped raw + decrypted packets (default FFF6)
 //   gan16 record <name>        save a lossless capture under captures/
 
-import { spawn } from 'node:child_process';
 import { createWriteStream, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { decodePacket, recordingShutdown, startRecording } from './capture.js';
 import { GanCube } from './driver.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
-import { decodeGen4 } from './gen4/decode.js';
 import { extractMacFromManufacturerData, macMatchesName } from './mac.js';
-import { BlewTransport, scanForCube } from './transport/blew.js';
+import { BlewTransport, runBlew, scanForCube, type Transport } from './transport/blew.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCAN_ADV = join(ROOT, 'scripts', 'scan-adv');
@@ -74,20 +73,18 @@ function keepAlive(): void {
   setInterval(() => {}, 1 << 30);
 }
 
-function blew(args: string[]): Promise<void> {
-  return new Promise((res) => {
-    const p = spawn('blew', args, { stdio: 'inherit' });
-    p.on('close', () => res());
-  });
-}
-
 async function cmdInspect() {
   const c = await findCube();
   console.log(`# ${c.name}  (${c.id})  mac ${c.mac}\n`);
-  await blew(['-o', 'kv', 'gatt', 'tree', '--id', c.id]);
+  await runBlew(['-o', 'kv', 'gatt', 'tree', '--id', c.id]);
   console.log('\n# initial reads');
   for (const ch of ['FFF4', 'FFF5', 'FFF6', 'FFF7']) {
-    await blew(['-o', 'kv', 'read', '--id', c.id, ch]);
+    // A characteristic that will not read is itself a finding, not a reason to abandon the other
+    // three — so the failure is named where it happened and the dump continues. The tree above is
+    // not treated that way on purpose: without it there is nothing to inspect.
+    await runBlew(['-o', 'kv', 'read', '--id', c.id, ch]).catch((e: unknown) =>
+      console.error(`  ! read ${ch} failed: ${e instanceof Error ? e.message : String(e)}`),
+    );
   }
 }
 
@@ -132,6 +129,17 @@ async function cmdMonitor() {
   cube.on('gap', (g) =>
     console.log(`⚠ GAP   missed ${g.missing} move(s) between serial ${g.from}->${g.to}`),
   );
+  // A move the counter refused. Printed because a packet dropped on purpose still happened, and
+  // a run where these appear is the evidence that the link is repeating or re-ordering packets.
+  cube.on('stale', (s) =>
+    console.log(`↩ STALE ${s.reason} serial=${s.serial} (counter at ${s.lastSerial})`),
+  );
+  // The counter moving on its own, across a link break. Printed for the same reason as STALE: the
+  // driver adopting a new baseline is a decision about the move stream, not an implementation
+  // detail, and the reconnect experiment is exactly where it needs to be visible.
+  cube.on('rebase', (r) =>
+    console.log(`⟲ REBASE cube counter restarted: ${r.from} -> ${r.to} (${r.reason})`),
+  );
   cube.on('unknown', (u) =>
     console.log(`? UNKNOWN evt=0x${(u.eventType ?? 0).toString(16)} ${u.rawHex ?? ''}`),
   );
@@ -162,65 +170,132 @@ async function cmdRaw(char = 'FFF6') {
     process.exit(1);
   });
   sub.on('packet', (hex: string, ts: number) => {
-    let decHex = '';
-    let evt = '';
-    if (hex.length === 40) {
-      const dec = cipher.decrypt(Buffer.from(hex, 'hex'));
-      decHex = Buffer.from(dec).toString('hex');
-      const e = decodeGen4(dec, ts);
-      evt = e.type + (e.type === 'MOVE' ? ` ${e.notation}` : '');
-    }
-    console.log(`${new Date(ts).toISOString()}  enc=${hex}  dec=${decHex}  ${evt}`);
+    const { dec, event, error } = decodePacket(cipher, hex, ts);
+    const evt = event
+      ? event.type + (event.type === 'MOVE' ? ` ${event.notation}` : '')
+      : `undecoded: ${error}`;
+    console.log(`${new Date(ts).toISOString()}  enc=${hex}  dec=${dec}  ${evt}`);
   });
   keepAlive();
   await new Promise(() => {});
 }
 
-async function cmdRecord(name: string) {
+/** What `record` needs from a cube, whether or not there is one. */
+interface RecordHost {
+  findCube(): Promise<{ id: string; name: string; mac: string }>;
+  transport(id: string): Transport;
+  captureDir(): string;
+}
+
+const hardware: RecordHost = {
+  findCube,
+  transport: (id) => new BlewTransport(id),
+  captureDir: () => join(ROOT, 'captures', 'recordings'),
+};
+
+/**
+ * Where `record` gets its cube, its transport and its capture directory.
+ *
+ * The two properties this command exists to keep — a Ctrl-C that flushes before it exits, and a
+ * stream failure that is never called "saved" — had no executable test until 2026-09-05, because
+ * the only way into cmdRecord was a scan for a physical GAN16. recording.test.ts asserted on the
+ * SOURCE TEXT of this function instead, and source text is not a lifecycle: it cannot watch a
+ * signal handler run, an exit code come back, or a file land on disk.
+ *
+ * GAN16_HOST names a module exporting `host`, and everything hardware-shaped below comes from it.
+ * Unset — every invocation a user can make without deliberately setting it — it is the
+ * advertisement scan, the blew transport, and captures/recordings. The fake lives in tests/ and
+ * never here: a seam that ships its own test double is a second implementation of the command.
+ */
+async function recordHost(): Promise<RecordHost> {
+  const spec = process.env.GAN16_HOST;
+  if (!spec) return hardware;
+  const url = spec.startsWith('file:')
+    ? spec
+    : pathToFileURL(isAbsolute(spec) ? spec : resolve(spec)).href;
+  const mod = (await import(url)) as { host?: RecordHost };
+  if (!mod.host) throw new Error(`GAN16_HOST module ${spec} exports no \`host\``);
+  return mod.host;
+}
+
+/**
+ * An experiment name is ONE filename component, and anything else is refused rather than escaped.
+ *
+ * It is interpolated straight into the capture filename, so a name carrying separators or enough
+ * `..` segments walks out of captures/recordings/ and the stream then truncates whatever it landed
+ * on — `record ../../../../etc/hosts` was a working command. Allowlisted rather than
+ * denylisted, because a name needing to be escaped is a typo and the right answer to a typo is a
+ * refusal, not a guess at what was meant.
+ */
+function experimentName(name: string): string {
   if (!name) throw new Error('usage: gan16 record <experiment-name>');
-  const c = await findCube();
-  const dir = join(ROOT, 'captures', 'recordings');
+  if (!/^[A-Za-z0-9._-]+$/.test(name) || /^\.+$/.test(name)) {
+    throw new Error(
+      `refusing to record to '${name}': an experiment name is one filename component — letters, digits, dot, dash and underscore only`,
+    );
+  }
+  return name;
+}
+
+async function cmdRecord(rawName: string) {
+  const name = experimentName(rawName);
+  const host = await recordHost();
+  const c = await host.findCube();
+  const dir = host.captureDir();
   mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const path = join(dir, `${stamp}-${name}.jsonl`);
-  const out = createWriteStream(path);
-  out.write(
-    `${JSON.stringify({
-      meta: {
-        device: c.name,
-        id: c.id,
-        mac: c.mac,
-        experiment: name,
-        startedAt: new Date().toISOString(),
-      },
-    })}\n`,
-  );
-  const cipher = new GanGen4Cipher(c.mac);
-  const transport = new BlewTransport(c.id);
+  // Exclusive creation: the name is already one component and the stamp carries milliseconds, so
+  // the belt is the braces here — but truncating an existing capture is unrecoverable, and a
+  // refusal costs a rerun.
+  const out = createWriteStream(path, { flags: 'wx' });
+  const transport = host.transport(c.id);
   const sub = transport.subscribe('FFF6');
+  const rec = startRecording({
+    sub,
+    cipher: new GanGen4Cipher(c.mac),
+    out,
+    path,
+    meta: {
+      device: c.name,
+      id: c.id,
+      mac: c.mac,
+      experiment: name,
+      startedAt: new Date().toISOString(),
+    },
+    onPacket: (packets) => process.stdout.write(`\rrecorded ${packets} packets -> ${path}`),
+    // The shutdown reports the failure from stop(), naming the path — printing it here as well
+    // would say the same thing twice.
+    onError: () => finish(1),
+  });
+
+  // Every way this command can end goes through one shutdown, which owns both the flush and the
+  // verdict: Ctrl-C used to call out.end() and process.exit() on the next line, and end() returns
+  // before the stream's buffer drains, so the last packets were still unwritten when the process
+  // went away under a message saying "saved." The exit code comes BACK from the shutdown rather
+  // than being chosen here, because a file that did not close is a failed run whichever way the
+  // shutdown was asked for.
+  const shutdown = recordingShutdown({
+    rec,
+    stopPackets: () => transport.disconnect(), // no more packets while the file is closing
+    path,
+    say: (msg) => console.log(msg),
+    warn: (msg) => console.error(msg),
+  });
+  function finish(code: number): void {
+    void shutdown(code).then((c) => process.exit(c));
+  }
+
   sub.on('error', (e: Error) => console.error('error:', e.message));
   sub.on('giveup', (e: Error) => {
-    out.end();
     console.error(e.message);
-    process.exit(1);
+    finish(1);
   });
-  let n = 0;
-  sub.on('packet', (hex: string, ts: number) => {
-    const rec: Record<string, unknown> = { ts, char: 'FFF6', enc: hex };
-    if (hex.length === 40) {
-      const dec = cipher.decrypt(Buffer.from(hex, 'hex'));
-      rec.dec = Buffer.from(dec).toString('hex');
-      rec.event = decodeGen4(dec, ts);
-    }
-    out.write(`${JSON.stringify(rec)}\n`);
-    n++;
-    process.stdout.write(`\rrecorded ${n} packets -> ${path}`);
-  });
-  process.on('SIGINT', () => {
-    out.end();
-    console.log('\nsaved.');
-    process.exit(0);
-  });
+  // Both signals, through the same shutdown. SIGTERM exited immediately — no flush, no verdict,
+  // and the BLE child left running — which is what a `kill`, a timeout wrapper, a supervisor or a
+  // closing terminal sends. A capture killed politely lost more than one killed with Ctrl-C.
+  process.on('SIGINT', () => finish(0));
+  process.on('SIGTERM', () => finish(0));
   console.log(`RECORDING '${name}' -> ${path}  (Ctrl-C to stop)`);
   keepAlive();
   await new Promise(() => {});
@@ -235,8 +310,13 @@ const run: Record<string, () => Promise<void>> = {
   raw: () => cmdRaw(rest[0]),
   record: () => cmdRecord(rest[0] ?? ''),
 };
+// hasOwn, not a bare lookup: `run.toString` is Object.prototype's, and calling it returned a
+// string that the .catch() below then tried to call a method on — an uncaught TypeError with no
+// message a user could act on, where `gan16 toString` should simply be a usage error. Same for
+// `constructor` and `__proto__`, neither of which is callable at all.
+const chosen = cmd !== undefined && Object.hasOwn(run, cmd) ? run[cmd] : undefined;
 (
-  run[cmd ?? ''] ??
+  chosen ??
   (async () => {
     console.log('usage: gan16 <scan|inspect|state|monitor|raw|record>');
     process.exit(1);

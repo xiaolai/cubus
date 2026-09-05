@@ -52,12 +52,29 @@ test('a shortfall is never dressed up as an impossibility', () => {
   //
   // Comments are stripped first, on purpose: the history of the wording is worth keeping in the
   // source, and a test that could not tell a comment from a string would forbid recording it.
+  //
+  // THREE phrasings were forbidden until 2026-09-04, and a rule with three spellings is a rule
+  // about spellings: "18 cannot be done here" and "no shorter solution exists" say the same
+  // false thing and both passed. The list below is not exhaustive either — no list is — but it
+  // covers the ways this sentence has actually been written, and each of them is a claim about
+  // the CUBE made by a search that only knows about its own budget.
   const withoutComments = app
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/[^\n]*$/gm, '')
     .replace(/([^:'"`])\/\/[^\n]*/g, '$1');
-  assert.doesNotMatch(withoutComments, /not possible|impossible|does not exist/i,
-    'no screen may state that a move count is impossible — the search cannot know that');
+  // PROVE_COPY is removed by name, and it is the one region that may say it: a NATIVE proof
+  // really does establish that no shorter solution exists — that is the whole of the fourth
+  // seam, and optimal.test.mjs pins that block as one of exactly three places allowed to make a
+  // minimality claim. This sweep is about what the SEARCH may say. Removing it by name rather
+  // than choosing a regex it slips under keeps both rules legible.
+  const proveCopy = withoutComments.match(/const PROVE_COPY = \{[\s\S]*?\n\};/)?.[0] ?? '';
+  assert.ok(proveCopy, 'PROVE_COPY must still exist and be named — see optimal.test.mjs');
+  const screens = withoutComments.replace(proveCopy, '');
+  assert.doesNotMatch(
+    screens,
+    /not possible|impossible|cannot be done|can't be done|no shorter[^.]{0,30}exists?|can't exist|cannot exist|does not exist/i,
+    'no screen may state that a move count is impossible — the search cannot know that',
+  );
 });
 
 test('the solution is cleared alongside its verdict everywhere', () => {

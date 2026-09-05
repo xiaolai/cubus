@@ -56,6 +56,12 @@ class BlePluginHelpersTest {
     fun `a malformed hex string decodes to null rather than to wrong bytes`() {
         assertNull("odd length", BlePlugin.hex("abc"))
         assertNull("not hex", BlePlugin.hex("zz"))
+        // `toInt(16)` accepts a sign, so these used to decode to bytes nobody sent.
+        assertNull("a signed pair is not hex", BlePlugin.hex("+f"))
+        assertNull("a negative pair is not hex", BlePlugin.hex("-1"))
+        assertNull("a sign inside is not hex", BlePlugin.hex("ab-1"))
+        assertNull("whitespace is not hex", BlePlugin.hex(" a"))
+        assertEquals("", BlePlugin.toHex(BlePlugin.hex("")!!))
     }
 
     /**

@@ -26,25 +26,42 @@ const invert = (alg) => alg.trim().split(/\s+/).reverse()
   .map((m) => (m.endsWith('2') ? m : m.endsWith("'") ? m.slice(0, -1) : `${m}'`))
   .join(' ');
 
-test('every scramble is God\'s number or shorter, and actually reaches its cube', async () => {
-  // The engine is complete and the promise escalates its budget, so there is no "usually" here:
-  // a state that could not be answered inside the bound would throw rather than come back long.
-  for (let i = 0; i < 12; i++) {
-    const cube = randomCube(Cube);
-    const facelets = cube.asString();
-    const solution = await solveWithinGodsNumber(facelets, { solve });
-    const scramble = invert(solution);
-    const moves = scramble.trim().split(/\s+/).length;
+test('every scramble is God\'s number or shorter, and actually reaches its cube',
+  { timeout: 120_000 }, async () => {
+    // The promise escalates its budget, so there is no "usually" here: a state that could not be
+    // answered inside the bound would throw rather than come back long.
+    //
+    // A RANDOM draw is right here, unlike the solver's contract fixtures, and stays: what is
+    // under test is a property of every state — "the scramble the app hands you is <= 20 and
+    // really reaches its cube" — and freezing twelve cubes would turn that into a claim about
+    // twelve cubes. Two things make the draw safe rather than a lottery (2026-09-04). The state
+    // is NAMED in every failure, including the escalation raise, so a red run is reproducible
+    // instead of being a state nobody can recover; and the whole test is bounded in wall time,
+    // because escalation converts a hard draw into a long wait rather than a failure — up to
+    // 12.75e9 nodes, minutes — and a release gate that can hang is its own defect. Twelve states
+    // cost about 3 s, so the ceiling is 40x the measured run and cannot fire on ordinary work.
+    for (let i = 0; i < 12; i++) {
+      const cube = randomCube(Cube);
+      const facelets = cube.asString();
+      let solution;
+      try {
+        solution = await solveWithinGodsNumber(facelets, { solve });
+      } catch (cause) {
+        // The raise names the budget it spent, not the cube it spent it on. Both, now.
+        throw new Error(`no scramble within God's number for ${facelets}`, { cause });
+      }
+      const scramble = invert(solution);
+      const moves = scramble.trim().split(/\s+/).length;
 
-    assert.ok(moves <= GODS_NUMBER, `scramble of ${moves} moves for ${facelets}`);
-    assert.equal(moves, solution.trim().split(/\s+/).length, 'inversion must preserve length');
-    // The scramble is only a scramble if it REACHES the state from solved — the check app.js
-    // makes with `reaches` before it will draw one.
-    const built = new Cube();
-    built.move(scramble);
-    assert.equal(built.asString(), facelets, 'the scramble does not reach its own cube');
-  }
-});
+      assert.ok(moves <= GODS_NUMBER, `scramble of ${moves} moves for ${facelets}`);
+      assert.equal(moves, solution.trim().split(/\s+/).length, 'inversion must preserve length');
+      // The scramble is only a scramble if it REACHES the state from solved — the check app.js
+      // makes with `reaches` before it will draw one.
+      const built = new Cube();
+      built.move(scramble);
+      assert.equal(built.asString(), facelets, 'the scramble does not reach its own cube');
+    }
+  });
 
 test('a scramble is never rolled by cubejs, whose bound is 22', () => {
   // The defect this file exists for, pinned at the source. cubejs stays as the parser and the

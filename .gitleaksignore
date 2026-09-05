@@ -1,0 +1,9 @@
+# gitleaks fingerprints (commit:file:rule:line) of findings that are not secrets, each with its
+# reason. The CI `secrets` job fails on anything not listed here.
+#
+# The GAN Gen4 smart cube's fixed AES key, as published by afedotov/gan-web-bluetooth (MIT) and
+# carried by every implementation of that protocol, including the one in packages/gan-driver. It is
+# a constant of the wire format the cube itself uses, not a credential of this project's; the file
+# is the protocol write-up (gan16-driver/ was the package's earlier path).
+5d49e3f1d8d946e80cd8cd2beb15c8eaca00dd6f:packages/gan-driver/docs/protocol.md:generic-api-key:69
+678102950686f7bc34cb68f37b304642ab6824e1:gan16-driver/docs/protocol.md:generic-api-key:69

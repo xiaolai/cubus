@@ -158,6 +158,35 @@ cube can, so the override is theirs to give and is never inferred. The pre-read,
 verifying re-read all still happen. A wrongly forced anchor causes precisely the divergence
 described above, and nothing in the protocol can detect it afterwards.
 
+### The precondition is about a moment, not a reading (2026-09-05)
+
+REQUEST_RESET anchors the position the cube is in when the packet **lands**, and the
+precondition is a claim about the position it was in when it was **read**. Those are the same
+position only if nothing happened in between, which was assumed rather than checked: a MOVE
+arriving after the pre-read meant a state that had passed the guard was no longer the state
+being anchored, and nothing afterwards could detect it — a cube that accepted the command
+reports solved either way.
+
+So the driver counts everything that invalidates a reading — any MOVE packet, accepted or
+refused, and a link that dropped or respawned — and holds that count across the **whole**
+operation: the pre-read, the write, and the re-read that verifies it. Before the write it refuses
+and transmits nothing. After it, the packet has gone, so it reports the anchor as **uncertain**
+and says to re-scan; that is the honest answer, not a verification. `force` does not waive this
+check: it vouches for the cube the caller is looking at, and a cube that has turned since is not
+that cube.
+
+The verifying re-read was outside that span until later the same day, and its window is real: a
+request holds an answer that arrives before its own write completes, so a MOVE landing between
+the solved report and the moment it resolves left `anchorSolved()` returning that report as
+proof of a position the cube had already left. It is the third interleaving, and it settles the
+same way — a reading that cannot confirm the reset is not a confirmation.
+
+The write itself now carries the same deadline and the same disconnect-cancellation as every
+other request on the link. It had neither, so a transport that never settled left the anchor
+waiting past any timeout the caller asked for and through a disconnect. An abandoned write
+cannot be recalled, so its error says the packet may still have reached the cube.
+`tests/anchor-race.test.ts` pins all three interleavings.
+
 The residual case the guard cannot see is a cube that **reports** solved while
 physically scrambled. Facelets come from the cube's own state, so BLE cannot
 distinguish it, and neither can this method. Such a cube has already drifted
