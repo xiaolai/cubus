@@ -8,15 +8,14 @@
 //   gan16 raw [char]           timestamped raw + decrypted packets (default FFF6)
 //   gan16 record <name>        save a lossless capture under captures/
 
-import { spawn } from 'node:child_process';
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { decodePacket, startRecording } from './capture.js';
 import { GanCube } from './driver.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
-import { decodeGen4 } from './gen4/decode.js';
 import { extractMacFromManufacturerData, macMatchesName } from './mac.js';
-import { BlewTransport, scanForCube } from './transport/blew.js';
+import { BlewTransport, runBlew, scanForCube } from './transport/blew.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCAN_ADV = join(ROOT, 'scripts', 'scan-adv');
@@ -74,20 +73,18 @@ function keepAlive(): void {
   setInterval(() => {}, 1 << 30);
 }
 
-function blew(args: string[]): Promise<void> {
-  return new Promise((res) => {
-    const p = spawn('blew', args, { stdio: 'inherit' });
-    p.on('close', () => res());
-  });
-}
-
 async function cmdInspect() {
   const c = await findCube();
   console.log(`# ${c.name}  (${c.id})  mac ${c.mac}\n`);
-  await blew(['-o', 'kv', 'gatt', 'tree', '--id', c.id]);
+  await runBlew(['-o', 'kv', 'gatt', 'tree', '--id', c.id]);
   console.log('\n# initial reads');
   for (const ch of ['FFF4', 'FFF5', 'FFF6', 'FFF7']) {
-    await blew(['-o', 'kv', 'read', '--id', c.id, ch]);
+    // A characteristic that will not read is itself a finding, not a reason to abandon the other
+    // three — so the failure is named where it happened and the dump continues. The tree above is
+    // not treated that way on purpose: without it there is nothing to inspect.
+    await runBlew(['-o', 'kv', 'read', '--id', c.id, ch]).catch((e: unknown) =>
+      console.error(`  ! read ${ch} failed: ${e instanceof Error ? e.message : String(e)}`),
+    );
   }
 }
 
@@ -137,6 +134,12 @@ async function cmdMonitor() {
   cube.on('stale', (s) =>
     console.log(`↩ STALE ${s.reason} serial=${s.serial} (counter at ${s.lastSerial})`),
   );
+  // The counter moving on its own, across a link break. Printed for the same reason as STALE: the
+  // driver adopting a new baseline is a decision about the move stream, not an implementation
+  // detail, and the reconnect experiment is exactly where it needs to be visible.
+  cube.on('rebase', (r) =>
+    console.log(`⟲ REBASE cube counter restarted: ${r.from} -> ${r.to} (${r.reason})`),
+  );
   cube.on('unknown', (u) =>
     console.log(`? UNKNOWN evt=0x${(u.eventType ?? 0).toString(16)} ${u.rawHex ?? ''}`),
   );
@@ -167,15 +170,11 @@ async function cmdRaw(char = 'FFF6') {
     process.exit(1);
   });
   sub.on('packet', (hex: string, ts: number) => {
-    let decHex = '';
-    let evt = '';
-    if (hex.length === 40) {
-      const dec = cipher.decrypt(Buffer.from(hex, 'hex'));
-      decHex = Buffer.from(dec).toString('hex');
-      const e = decodeGen4(dec, ts);
-      evt = e.type + (e.type === 'MOVE' ? ` ${e.notation}` : '');
-    }
-    console.log(`${new Date(ts).toISOString()}  enc=${hex}  dec=${decHex}  ${evt}`);
+    const { dec, event, error } = decodePacket(cipher, hex, ts);
+    const evt = event
+      ? event.type + (event.type === 'MOVE' ? ` ${event.notation}` : '')
+      : `undecoded: ${error}`;
+    console.log(`${new Date(ts).toISOString()}  enc=${hex}  dec=${dec}  ${evt}`);
   });
   keepAlive();
   await new Promise(() => {});
@@ -189,43 +188,53 @@ async function cmdRecord(name: string) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const path = join(dir, `${stamp}-${name}.jsonl`);
   const out = createWriteStream(path);
-  out.write(
-    `${JSON.stringify({
-      meta: {
-        device: c.name,
-        id: c.id,
-        mac: c.mac,
-        experiment: name,
-        startedAt: new Date().toISOString(),
-      },
-    })}\n`,
-  );
-  const cipher = new GanGen4Cipher(c.mac);
   const transport = new BlewTransport(c.id);
   const sub = transport.subscribe('FFF6');
+  const rec = startRecording({
+    sub,
+    cipher: new GanGen4Cipher(c.mac),
+    out,
+    path,
+    meta: {
+      device: c.name,
+      id: c.id,
+      mac: c.mac,
+      experiment: name,
+      startedAt: new Date().toISOString(),
+    },
+    onPacket: (packets) => process.stdout.write(`\rrecorded ${packets} packets -> ${path}`),
+    // finish() reports the failure from stop(), naming the path — printing it here as well would
+    // say the same thing twice.
+    onError: () => void finish(1),
+  });
+
+  let finishing = false;
+  /**
+   * The one way a recording ends, whichever way it was asked to. Ctrl-C used to call out.end() and
+   * process.exit() on the next line: end() returns before the stream's buffer drains, so the last
+   * packets were still unwritten when the process went away, under a message saying "saved."
+   * The packets are stopped first, the flush is awaited, and only then is anything claimed.
+   */
+  async function finish(code: number): Promise<void> {
+    if (finishing) return;
+    finishing = true;
+    transport.disconnect(); // no more packets while the file is closing
+    try {
+      const packets = await rec.stop();
+      console.log(`\nsaved ${packets} packets -> ${path}`);
+      process.exit(code);
+    } catch (e) {
+      console.error(`\n${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
+  }
+
   sub.on('error', (e: Error) => console.error('error:', e.message));
   sub.on('giveup', (e: Error) => {
-    out.end();
     console.error(e.message);
-    process.exit(1);
+    void finish(1);
   });
-  let n = 0;
-  sub.on('packet', (hex: string, ts: number) => {
-    const rec: Record<string, unknown> = { ts, char: 'FFF6', enc: hex };
-    if (hex.length === 40) {
-      const dec = cipher.decrypt(Buffer.from(hex, 'hex'));
-      rec.dec = Buffer.from(dec).toString('hex');
-      rec.event = decodeGen4(dec, ts);
-    }
-    out.write(`${JSON.stringify(rec)}\n`);
-    n++;
-    process.stdout.write(`\rrecorded ${n} packets -> ${path}`);
-  });
-  process.on('SIGINT', () => {
-    out.end();
-    console.log('\nsaved.');
-    process.exit(0);
-  });
+  process.on('SIGINT', () => void finish(0));
   console.log(`RECORDING '${name}' -> ${path}  (Ctrl-C to stop)`);
   keepAlive();
   await new Promise(() => {});

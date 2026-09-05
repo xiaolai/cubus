@@ -74,7 +74,7 @@ describe('REQUEST_RESET containment', () => {
     const calls = driver.match(/buildUnsafeCommand\(/g) ?? [];
     expect(calls).toHaveLength(1);
     // …and that call sits in sendUnsafe, not scattered somewhere new.
-    const sendUnsafe = /private async sendUnsafe\([^)]*\)[^{]*\{([\s\S]*?)\n {2}\}/.exec(
+    const sendUnsafe = /private (?:async )?sendUnsafe\([^)]*\)[^{]*\{([\s\S]*?)\n {2}\}/.exec(
       driver,
     )?.[1];
     expect(sendUnsafe, 'sendUnsafe not found — did it get renamed?').toBeTruthy();
@@ -88,9 +88,15 @@ describe('REQUEST_RESET containment', () => {
     expect(callers).toBe(1);
     const anchor = /async anchorSolved\([\s\S]*?\n {2}\}/.exec(driver)?.[0];
     expect(anchor, 'anchorSolved not found — did it get renamed?').toBeTruthy();
-    expect(anchor).toMatch(/this\.sendUnsafe\('REQUEST_RESET'\)/);
-    // The guard must precede the send, not follow it.
+    // The deadline is pinned with the call site: an unsafe write with no budget is the defect
+    // fixed on 2026-09-05, where a transport that never settled left the anchor waiting forever.
+    expect(anchor).toMatch(/this\.sendUnsafe\('REQUEST_RESET', timeoutMs\)/);
+    // The guards must precede the send, not follow it — both of them. The second is the one that
+    // rechecks the pre-read after the wait: a cube that turned in between has not been checked.
     expect(anchor!.indexOf('refusing to anchor')).toBeLessThan(anchor!.indexOf('this.sendUnsafe'));
+    expect(anchor!.indexOf('this.readEpoch !== readAt')).toBeLessThan(
+      anchor!.indexOf('this.sendUnsafe'),
+    );
   });
 
   it('cannot reach the safe send() path', () => {
