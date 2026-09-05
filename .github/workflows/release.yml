@@ -88,9 +88,19 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -eu
-          kind=$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")
-          if [ "$kind" != "tag" ]; then
-            echo "::error::$GITHUB_REF_NAME is a lightweight tag (git object: $kind). Cut releases from ANNOTATED tags: git tag -a $GITHUB_REF_NAME -m 'release: ${GITHUB_REF_NAME#v}' — dev-docs/release-runbook.md §3."
+          # Ask the REMOTE, not the checkout. actions/checkout fetches a tag push by its commit
+          # SHA and names that `refs/tags/$GITHUB_REF_NAME`, so on the runner the local ref is the
+          # peeled commit even when the pushed tag is annotated — `git cat-file -t` said "commit"
+          # for v0.3.0 (2026-09-05), a tag that was annotated everywhere but here, and the gate
+          # refused a release it should have built. An annotated tag on the remote lists a peeled
+          # `^{}` entry beside the tag object; a lightweight one lists no such line.
+          peeled=$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME^{}" | awk '{print $1}')
+          if [ -z "$peeled" ]; then
+            echo "::error::$GITHUB_REF_NAME is a lightweight tag on the remote. Cut releases from ANNOTATED tags: git tag -a $GITHUB_REF_NAME -m 'release: ${GITHUB_REF_NAME#v}' — dev-docs/release-runbook.md §3."
+            exit 1
+          fi
+          if [ "$peeled" != "$GITHUB_SHA" ]; then
+            echo "::error::$GITHUB_REF_NAME's annotated tag peels to $peeled, but this run is for $GITHUB_SHA — the tag was moved after it was pushed."
             exit 1
           fi
           case "$GITHUB_REF_NAME" in
