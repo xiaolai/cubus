@@ -1356,6 +1356,12 @@ function checkOutcome(point, key) {
     }
     return;
   }
+  // A completed record names a POSITION as well as an outcome, and nothing downstream ever looks
+  // at it: `runSearch` returns a done point's answer before it reads `depth` or `cursor`, so the
+  // bounds check that guards every unfinished point is never reached (2026-09-05, round 2 of the
+  // audit — the round-1 record carrying `cursor: 999` was refused for its ANSWER, and would have
+  // been believed with a legal one).
+  const viewCount = key.views === null ? VIEW_COUNT : key.views.length;
   if (point.alg === null) {
     // The two finishes with no answer: a state that is not a cube, and an enumeration walked to
     // its end. Neither ever published a winner.
@@ -1363,6 +1369,27 @@ function checkOutcome(point, key) {
       throw new RangeError(
         `two-phase: this resume point found nothing and yet names depth ${point.foundDepth}, ` +
           `view ${point.foundView} as its winner`,
+      );
+    }
+    // WHICH of the two it is, checked rather than believed — this branch had no check at all, and
+    // it is the cheapest forgery there is: `{...freshPoint, done: true}` made `runSearch` answer
+    // null after ZERO nodes for a cube whose real answer the audit measured at one move (`U'`).
+    // A null from an exhausted enumeration and a null from an unstarted one are the same value,
+    // and `solveWithinGodsNumber` reads the second as a budget that was too small — so a forged
+    // record would burn every escalation and then raise about a cube that is one turn from solved.
+    if (parseFacelets(key.facelets) === null) {
+      // Not a cube: no budget makes it solvable, so `done` is right whatever position it names,
+      // and the search would answer null from any of them.
+      return;
+    }
+    // Out of DEPTHS is the only other way to finish empty, and it lands in exactly one place: the
+    // loop increments past `solLen - 1` and resets the cursor as it goes, so the position is the
+    // bound itself, view 0. Anything else is a search that ran out of NODES, which is not finished.
+    if (point.depth !== key.solLen || point.cursor !== 0) {
+      throw new RangeError(
+        `two-phase: this resume point claims a finished search of a real cube with no answer, but ` +
+          `it sits at depth ${point.depth}, view ${point.cursor} — an enumeration that ran out of ` +
+          `depths ends at depth ${key.solLen}, view 0, and one that ran out of nodes is not finished`,
       );
     }
     return;
@@ -1403,6 +1430,17 @@ function checkOutcome(point, key) {
     throw new RangeError(
       'two-phase: this resume point\'s answer does not solve the cube its key names — it is not ' +
         'an answer this search can have produced',
+    );
+  }
+  // And the position it finished FROM. A search that found an answer leaves the loop by `break`
+  // and never writes `depth`/`cursor` back, so they are still the position it was resumed at:
+  // inside the enumeration, both of them. `runSearch` checks exactly this for every unfinished
+  // point and never for a finished one, which is how `cursor: 999` rode in.
+  if (point.depth >= key.solLen || point.cursor >= viewCount) {
+    throw new RangeError(
+      `two-phase: this resume point's answer was found from depth ${point.depth}, view ` +
+        `${point.cursor} of ${viewCount} under a bound of ${key.solLen} — outside the search it ` +
+        'claims to have finished',
     );
   }
 }

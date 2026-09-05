@@ -128,6 +128,42 @@ function checkViews(views, engine) {
 }
 
 /**
+ * Can this carrier actually TAKE a resume point back?
+ *
+ * Asked by writing, because nothing else answers it. Round 1's check read the OWN property
+ * descriptor and fell back to `Object.isExtensible`, which passes two carriers that cannot take a
+ * write — both reproduced by the 2026-09-05 audit, and each failing in its own way:
+ *
+ *   * an INHERITED read-only `state` (`Object.create(Object.freeze({state: null}))`) has no own
+ *     descriptor at all, so the extensibility fallback said yes; the assignment then threw in
+ *     strict mode AFTER `setBounds` had moved the bounds and after the search had run;
+ *   * a DISCARDING SETTER (`{get state(){return null}, set state(_){}}`) has an own accessor, so
+ *     the `typeof own.set === 'function'` branch said yes; the write then went nowhere and the
+ *     next attempt silently re-walked the search this one asked to continue. That one is worse
+ *     than the throw: nothing anywhere says it happened.
+ *
+ * Walking the prototype chain by hand would answer the first and not the second, so the probe is a
+ * real write of a sentinel followed by a read-back, and the original value is put straight back —
+ * the carrier is left exactly as it was found, which is what the old comment here was protecting
+ * and the reason this is a probe rather than a one-way write. It costs two property accesses on a
+ * path that runs once per attempt.
+ */
+function carrierTakesWrites(resume) {
+  const before = resume.state;
+  // Frozen, so no getter can hand this object back by coincidence and no setter can keep it.
+  const probe = Object.freeze({ probe: 'solver-engine' });
+  try {
+    resume.state = probe;
+    const took = resume.state === probe;
+    resume.state = before;
+    return took;
+  } catch {
+    // A frozen carrier, an own or inherited read-only `state`, or a setter that throws.
+    return false;
+  }
+}
+
+/**
  * A resume carrier this wrapper can both read and WRITE.
  *
  * Two ways it can fail, and until 2026-09-05 only the first was checked. The engine may not be able
@@ -136,17 +172,12 @@ function checkViews(views, engine) {
  * throw on the write, which happens AFTER `setBounds` has moved the bounds and after the search has
  * run. That is precisely the "validate first, commit together" rule this file states, broken by the
  * check that states it; the audit reproduced all three.
- *
- * Writability is asked of the property rather than tried on it: a probe write would mutate the
- * caller's carrier as part of validating it, which is the same rule one level down.
  */
 function checkCarrier(resume, engine) {
   if (typeof resume !== 'object') {
     throw new TypeError(`solver-engine: resume must be null or a { state } carrier, not ${typeof resume}`);
   }
-  const own = Object.getOwnPropertyDescriptor(resume, 'state');
-  const writable = own ? own.writable === true || typeof own.set === 'function' : Object.isExtensible(resume);
-  if (!writable) {
+  if (!carrierTakesWrites(resume)) {
     throw new TypeError(
       'solver-engine: this resume carrier cannot take a resume point back, so the next attempt ' +
         'would silently re-walk the search this one asked to continue.',
