@@ -32,11 +32,42 @@ export enum ComputeUnits {
 export const CUBE_VISION = 'plugin:cube-vision|';
 const P = CUBE_VISION;
 
+/**
+ * WHO HOLDS THE ONE NATIVE CAMERA — a module-level claim, because the camera is module-level.
+ *
+ * `open_camera` and `close_camera` name a device the PLUGIN owns, one per process. Every other
+ * lifecycle rule in this package is about one detector's own resources — a `MediaStream`, an
+ * `InferenceSession` — and can be settled inside the object that holds it. This one cannot: two
+ * `NativeDetector`s are two JavaScript objects over one physical camera, so a `stop()` on either
+ * closed whatever was open, including the other's.
+ *
+ * Two of them is not hypothetical, it is what the detector park produces (2026-09-05). `park()`
+ * defers the hand-over while an open is still inside the platform — that deferral is itself a fix,
+ * for the case where the SAME detector is handed on and killed by its predecessor's cleanup — so
+ * during that window the page's slot is EMPTY. A panel re-mounting there builds a second
+ * `NativeDetector`, opens the camera with it, and the abandoned open's cleanup then issues
+ * `close_camera` and takes the lens out from under the new owner, whose panel reports a live camera
+ * over a dead one. The deferral traded a same-object race for a same-DEVICE one.
+ *
+ * So a close is permitted from exactly two positions: the claim that opened what is open now, and
+ * nobody — the latter kept because it is the pre-existing behaviour for a `stop()` that races its
+ * own `open_camera` across the bridge, where the ordering the plugin applies is not ours to know.
+ * A claim is taken when the open is ISSUED and not when it resolves, because the resolutions are
+ * what can arrive out of order; the issue order is the order the plugin sees.
+ */
+let cameraClaim = 0;
+let claims = 0;
+
+/** May the attempt holding `claim` close the native camera? See `cameraClaim`. */
+const mayClose = (claim: number): boolean => cameraClaim === 0 || cameraClaim === claim;
+
 export class NativeDetector implements Detector {
   private dev: CameraDevice | null = null;
   private loaded = false;
   /** Bumped by `stop()`, so an open still crossing the bridge knows it has been cancelled. */
   private opening = 0;
+  /** This detector's most recent claim on the one native camera — see `cameraClaim`. */
+  private claim = 0;
 
   /**
    * @param invoke        the Tauri `invoke` (from `window.__TAURI__.core`). This is the ONLY thing
@@ -73,9 +104,15 @@ export class NativeDetector implements Detector {
   async use(opts: CameraOptions = {}): Promise<void> {
     const attempt = ++this.opening;
     const cancelled = (): boolean => attempt !== this.opening;
+    // Claimed BEFORE the call goes out, so the claims are in the order the plugin receives the
+    // opens rather than the order they happen to resolve in. See `cameraClaim`.
+    const claim = ++claims;
+    this.claim = claim;
+    cameraClaim = claim;
     const abort = (): never => {
-      // The camera may already be open on the plugin side; close what we are abandoning.
-      void this.invoke(`${P}close_camera`).catch(() => {});
+      // Close what we are abandoning — unless a LATER open has taken the camera, in which case the
+      // lens on now is not the one this attempt opened.
+      this.closeCamera(claim);
       throw new DOMException('camera open superseded', 'AbortError');
     };
     // `facingMode` is meaningless natively (the plugin selects by deviceId or the platform default);
@@ -128,8 +165,18 @@ export class NativeDetector implements Detector {
   stop(): void {
     this.opening++; // supersede an open still in flight — see `use`
     this.dev = null;
-    // Fire-and-forget: releasing the camera must not make stop() async (the panel calls it from
-    // synchronous teardown). A failure here only means the camera closes a tick later.
+    this.closeCamera(this.claim);
+  }
+
+  /**
+   * Close the one native camera, if this claim is entitled to. See `cameraClaim`.
+   *
+   * Fire-and-forget: releasing the camera must not make `stop()` async (the panel calls it from
+   * synchronous teardown). A failure here only means the camera closes a tick later.
+   */
+  private closeCamera(claim: number): void {
+    if (!mayClose(claim)) return;
+    cameraClaim = 0;
     void this.invoke(`${P}close_camera`).catch(() => {});
   }
 }

@@ -443,6 +443,21 @@ export class AiScanPanel extends HTMLElement {
   private finished = false;
   /** The pinned explanation riding on every report; null when nothing needs saying. */
   private notice: ScanNotice | null = null;
+  /**
+   * The notice a CAMERA OR STARTUP FAILURE pinned, so a start that works can take exactly it down.
+   *
+   * A notice stands until the situation changes, and a working scanner IS the situation changing —
+   * but nothing cleared these three ("The camera did not open", "The model did not load", "The
+   * scanner stopped"), so a user who pressed Start again and got a live camera and a running scan
+   * kept reading that the scanner had stopped. The transient status line said one thing and the
+   * pinned sentence the opposite, which is the state this field exists to make impossible.
+   *
+   * Held BY IDENTITY rather than as a flag: the clear only fires if the notice on screen is still
+   * the very object the failure pinned, so a refusal, a confirm request, or any other guidance
+   * raised in between is left exactly where it is. Capture guidance is not a camera fault and must
+   * survive a restart.
+   */
+  private cameraFault: ScanNotice | null = null;
   /** Where a colour misread most plausibly is; rides on every report so a host can mark them. */
   private suspects: StickerSuspect[] = [];
   /** The pending deferred assembly (see CHECK_BEAT_MS); epoch-guarded and cleared on stop(). */
@@ -640,6 +655,10 @@ export class AiScanPanel extends HTMLElement {
         this.cam.modelLoaded = true;
         this.announceRuntime(detector);
       }
+      // A CAMERA AND A MODEL: whatever failure was pinned about getting here is over. Only the
+      // notice a failure raised is taken down, and only if it is still the one on screen — see
+      // `cameraFault`. Before the loop below, so the report it sends already carries the clear.
+      this.clearCameraFault();
       // The instruction `loop()` could not give because the camera was dark, given now. A camera
       // reopening mid-flow (after painting, after a done-scan correction) otherwise resumes where
       // the scan was: a pending confirm request keeps its phase and its ask.
@@ -715,11 +734,12 @@ export class AiScanPanel extends HTMLElement {
         // A REMEDY, not just a diagnosis. `startFailed` puts the underlying message on the status
         // line and re-offers Start; this is the part that says what to do about it, including the
         // way forward that needs no model at all.
-        this.notice = {
+        this.cameraFault = {
           title: 'The model did not load',
           tone: 'err',
           body: 'The scanner could not finish downloading its model. Check the connection and press Start to try again — or paint the cube by hand, which needs no model.',
         };
+        this.notice = this.cameraFault;
       } else if (waiting) {
         this.notice = null;
       }
@@ -728,6 +748,13 @@ export class AiScanPanel extends HTMLElement {
       clearTimeout(slow);
       clearTimeout(timer);
     }
+  }
+
+  /** Take down the notice a camera/startup failure pinned, if it is still the one showing. */
+  private clearCameraFault(): void {
+    if (this.cameraFault === null) return;
+    if (this.notice === this.cameraFault) this.notice = null;
+    this.cameraFault = null;
   }
 
   /**
@@ -754,7 +781,8 @@ export class AiScanPanel extends HTMLElement {
       // It is the ONLY record of which of several causes it was, and the sentence shown instead is
       // deliberately not a translation of it.
       console.warn('[ai-scan-panel] the camera would not open', err);
-      this.notice = { title: 'The camera did not open', tone: 'err', body: said };
+      this.cameraFault = { title: 'The camera did not open', tone: 'err', body: said };
+      this.notice = this.cameraFault;
       this.report('error', this.tinted('err', said));
       return;
     }
@@ -912,18 +940,27 @@ export class AiScanPanel extends HTMLElement {
       if (!this.cam.freshFrame(epoch)) return;
       // How long this runtime actually takes, which is what the next tick's delay is made of.
       this.lastInferenceMs = performance.now() - started;
-      // A tick that got an answer at all is a working scanner. This used to be cleared only where
-      // a BRAND NEW face was filed, so every other outcome — no frame yet, an abstain, a read still
-      // settling, a confirm, a side already captured, a finished scan — left the timestamp of some
-      // long-past hiccup lying around. The next single transient failure then measured itself
-      // against that, cleared TICK_FAIL_MS on its first tick, and killed a scanner that was fine.
-      this.tickFailingSince = null;
       if (output === null) {
+        // A tick that got an ANSWER at all is a working detector, even an empty one — `noFrameTick`
+        // has its own clock for a camera that never delivers. This used to be cleared only where a
+        // BRAND NEW face was filed, so every other outcome left the timestamp of some long-past
+        // hiccup lying around, and the next single transient failure measured itself against that
+        // and killed a scanner that was fine.
+        this.tickFailingSince = null;
         this.noFrameTick(); // camera opened but no frame yet — try again next tick
         return;
       }
       this.noFrameSince = null;
       this.readFrame(output);
+      // CLEARED AFTER THE FRAME WAS PROCESSED, NOT BEFORE IT (2026-09-05). `readFrame` runs the
+      // whole post-processing tail — decode, NMS, fitFace, and on the sixth side an assemble — and
+      // every one of those can throw: `fitFromOutput` refuses a head with the wrong row count, and
+      // the native bridge can hand back a tensor that disagrees with its own header. Clearing the
+      // clock first meant `failingTick` always started a FRESH run, so a scanner throwing on every
+      // single frame never reached TICK_FAIL_MS and never stopped — it reported a transient error
+      // forever, over a camera that was working and a model that was not. The one failure with no
+      // way out was the one the fatal threshold exists for.
+      this.tickFailingSince = null;
     } catch (err) {
       // A rejection can land after the scan it belonged to is over — a stop(), a restart, painting
       // switched on — exactly as a successful result can, and the success path has always said so.
@@ -1038,16 +1075,25 @@ export class AiScanPanel extends HTMLElement {
     this.showPreview(null);
     this.tickFailingSince = null;
     this.noFrameSince = null;
+    // A DIAGNOSIS IN FLIGHT MUST NOT SPEAK AFTER THIS (2026-09-05). A refusal published seconds ago
+    // has its misread decode running on another thread, and its answer republishes — `notice` and
+    // all, at phase 'scanning'. Landing here it replaced "The scanner stopped" with a sentence
+    // about stickers, over a camera this method has just CLOSED: the user is told to show a side
+    // again by a scanner with no lens on and no loop running. The count is lost, which is the
+    // cheaper half — the panel's pinned sentence is now the camera error, and a refusal is
+    // re-decided from scratch the moment the scan resumes.
+    this.dropDiagnosis();
     const start = this.maybe<HTMLButtonElement>('start');
     if (start) {
       start.hidden = false;
       start.disabled = false;
     }
-    this.notice = {
+    this.cameraFault = {
       title: 'The scanner stopped',
       tone: 'err',
       body: 'The camera opened but no frame could be read for several seconds. Try Start again, and if it keeps happening the model or the camera driver is at fault rather than the cube.',
     };
+    this.notice = this.cameraFault;
     this.report('error', 'Could not read from the camera.');
     // Rethrown into the console for whoever is debugging: the notice tells the user what to do,
     // and this is the only place the underlying cause survives at all.

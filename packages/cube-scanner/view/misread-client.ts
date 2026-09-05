@@ -28,11 +28,32 @@
 // (one that answered before and then died is not a reason to block the page for the rest of the
 // session).
 
+import { FACES } from '../src/types.js';
 import {
   handleMisreadRequest,
   type MisreadReply,
   type MisreadRequest,
 } from './misread-protocol.js';
+
+/**
+ * A request copied down to its sticker arrays, taken the moment it is accepted.
+ *
+ * A caller hands its LIVE reading in — `ai-scan-panel` passes `this.faces` itself — and a request
+ * does not always leave at once: it may sit as `queued` behind a running decode, and on a worker
+ * failure it is run on this thread from whatever it holds by then. Hand-painting mutates those
+ * arrays between the two moments (every stroke re-checks the cube), so the decode ran over a
+ * reading the epoch it carries does not describe: the caller then accepts an answer about the
+ * cube as it is NOW under the serial number of the cube as it WAS, which is the one confusion the
+ * epoch exists to make impossible.
+ *
+ * `postMessage` already snapshots on the way to a worker (structured clone), which is exactly why
+ * this was invisible: the copy happened, just later than the promise it backs.
+ */
+function snapshot(request: MisreadRequest): MisreadRequest {
+  const faces = {} as MisreadRequest['faces'];
+  for (const face of FACES) faces[face] = { colors: [...request.faces[face].colors] };
+  return { epoch: request.epoch, faces, fixedRotation: request.fixedRotation };
+}
 
 /**
  * One worker's worth of misread decoding, owned by whoever constructs it.
@@ -64,7 +85,18 @@ export class MisreadDecoder {
    *
    * Returns the answer outright when this page has nowhere else to run it — in which case
    * `answer` is never called and the caller already has everything. Returns null when a worker
-   * took the request, and `answer` runs exactly once, later, with the reply for this epoch.
+   * took the request, and `answer` runs AT MOST once, later, with the reply for this epoch.
+   *
+   * AT MOST, not exactly (corrected 2026-09-05, having been the stronger claim since this class
+   * was written). Three things drop a callback, and all three are deliberate: a newer ask replaces
+   * one that has not been posted yet (see below); `dispose()` gives the worker back and forgets
+   * what it was holding; and a worker failure answers only the LATEST of the two it was carrying,
+   * because the other is already about a cube that is gone. Every one of them means the answer
+   * would have been discarded on arrival for its epoch anyway — so a caller must not treat this
+   * callback as the thing that CLEARS a "checking…" marker on its own. `ai-scan-panel` does not:
+   * every site that supersedes a reading bumps `diagnosisEpoch` and republishes.
+   *
+   * The request is SNAPSHOT here, not held by reference — see `snapshot`.
    */
   request(request: MisreadRequest, answer: (reply: MisreadReply) => void): MisreadReply | null {
     const worker = this.spawn();
@@ -84,7 +116,7 @@ export class MisreadDecoder {
     // with no yield point, so there is nothing to interrupt short of terminating the thread; its
     // answer is delivered and the caller drops it on the epoch it carries (`ai-scan-panel` checks
     // `diagnosisEpoch` before it publishes anything).
-    this.queued = { request, answer };
+    this.queued = { request: snapshot(request), answer };
     this.dispatch();
     return null;
   }

@@ -2262,16 +2262,17 @@ function assignments(tensor, n, budget, counter) {
   walk(0, 0);
   return exhausted ? null : out;
 }
+function writeCubies(out, slots, colours, a) {
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    const cubie = colours[a.cubie[i]];
+    for (let p = 0; p < slot.length; p++) out[slot[p]] = cubie[(p + a.ori[i]) % slot.length];
+  }
+}
 function realise(t, corners, edges, base) {
   const out = [...base];
-  for (let i = 0; i < 8; i++) {
-    const colours = t.cornerColors[corners.cubie[i]];
-    for (let p = 0; p < 3; p++) out[CORNER_FACELET[i][p]] = colours[(p + corners.ori[i]) % 3];
-  }
-  for (let i = 0; i < 12; i++) {
-    const colours = t.edgeColors[edges.cubie[i]];
-    for (let p = 0; p < 2; p++) out[EDGE_FACELET[i][p]] = colours[(p + edges.ori[i]) % 2];
-  }
+  writeCubies(out, CORNER_FACELET, t.cornerColors, corners);
+  writeCubies(out, EDGE_FACELET, t.edgeColors, edges);
   return out;
 }
 function isLegal(colors54, centreOwner) {

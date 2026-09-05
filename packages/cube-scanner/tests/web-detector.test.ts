@@ -19,6 +19,7 @@ import { WebDetector } from '../view/web-detector.js';
 /** One `createModelRunner` call, held open so the test decides when the model "arrives". */
 interface PendingLoad {
   modelUrl: string;
+  opts: { wasmPaths?: string; ortUrl?: string };
   resolve: (runner: unknown) => void;
   reject: (err: unknown) => void;
 }
@@ -26,18 +27,38 @@ interface PendingLoad {
 const seam = vi.hoisted(() => ({
   pending: [] as {
     modelUrl: string;
+    opts: { wasmPaths?: string; ortUrl?: string };
     resolve: (runner: unknown) => void;
     reject: (err: unknown) => void;
   }[],
   released: [] as string[],
+  /** Every `openCamera` call: the options it was given and the switch that settles it. */
+  cameras: [] as {
+    settle: (source: unknown) => void;
+    fail: (err: unknown) => void;
+  }[],
+  /** Sources whose `stop()` ran — by the label the test gave them. */
+  stopped: [] as string[],
 }));
 
 vi.mock('../view/onnx-runtime.js', () => ({
-  createModelRunner: (modelUrl: string) =>
+  createModelRunner: (modelUrl: string, opts: { wasmPaths?: string; ortUrl?: string }) =>
     new Promise((resolve, reject) => {
-      seam.pending.push({ modelUrl, resolve, reject });
+      seam.pending.push({ modelUrl, opts, resolve, reject });
     }),
 }));
+
+vi.mock('../src/camera.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../src/camera.js')>();
+  return {
+    ...real,
+    listCameras: async () => [],
+    openCamera: () =>
+      new Promise((settle, fail) => {
+        seam.cameras.push({ settle, fail });
+      }),
+  };
+});
 
 const pending = (): PendingLoad[] => seam.pending;
 
@@ -61,9 +82,22 @@ const videoEl = (): HTMLVideoElement => document.createElement('video');
 /** `dispose()` is fire-and-forget by contract, so a release lands a microtask later. */
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** A `FrameSource` that records being stopped, so a released stream is observable. */
+function sourceNamed(id: string): unknown {
+  return {
+    device: { deviceId: id, label: id },
+    grab: () => ({ data: new Uint8ClampedArray(4), width: 1, height: 1 }),
+    stop: () => {
+      seam.stopped.push(id);
+    },
+  };
+}
+
 afterEach(() => {
   seam.pending.length = 0;
   seam.released.length = 0;
+  seam.cameras.length = 0;
+  seam.stopped.length = 0;
 });
 
 describe('WebDetector — a load that lands after the world moved', () => {
@@ -147,6 +181,58 @@ describe('WebDetector — a load that lands after the world moved', () => {
     expect(pending()).toHaveLength(1);
   });
 
+  it('does not start a QUEUED load for B on a detector disposed while it waited', async () => {
+    // The hole the per-URL guard opened. A load for B that arrives while A is in flight does not
+    // start its own session — it waits for A and then re-enters `load()`, and that re-entry read
+    // the disposal generation AS IT WAS BY THEN. So a panel that disconnects during the wait —
+    // exactly the window the park makes ordinary — got B's session built and INSTALLED on a
+    // detector nobody holds: an InferenceSession with no reference left able to release it, which
+    // is the one leak this class has no way back from.
+    const video = videoEl();
+    let url = './model-a.onnx';
+    const det = new WebDetector(
+      () => video,
+      () => url,
+    );
+    const first = det.load();
+    url = './model-b.onnx';
+    const queued = det.load();
+    expect(pending()).toHaveLength(1); // B is waiting on A, not racing it
+
+    det.dispose();
+    pending()[0]!.resolve(runnerFor('A'));
+    await first;
+    await queued;
+
+    // B's load never started…
+    await flush();
+    expect(pending()).toHaveLength(1);
+    // …nothing was installed…
+    expect(det.providers).toBeNull();
+    // …and A, which was already out when the dispose landed, was given back.
+    expect(seam.released).toEqual(['A']);
+  });
+
+  it('still starts a load asked for AFTER a dispose', async () => {
+    // The other side of the same generation check: `dispose()` forgets the pending promise on
+    // purpose, so a NEW caller is a new caller. Only a queue that was already waiting is stale.
+    const video = videoEl();
+    const det = new WebDetector(
+      () => video,
+      () => './model-a.onnx',
+    );
+    const abandoned = det.load();
+    det.dispose();
+    pending()[0]!.resolve(runnerFor('A'));
+    await abandoned;
+
+    const fresh = det.load();
+    expect(pending()).toHaveLength(2);
+    pending()[1]!.resolve(runnerFor('A2'));
+    await fresh;
+    expect(det.providers).toEqual(['A2']);
+  });
+
   it('a failed load does not wedge the next one', async () => {
     const video = videoEl();
     const det = new WebDetector(
@@ -161,5 +247,62 @@ describe('WebDetector — a load that lands after the world moved', () => {
     pending()[1]!.resolve(runnerFor('A'));
     await retry;
     expect(det.providers).toEqual(['A']);
+  });
+});
+
+describe('WebDetector — the camera-open completion boundary', () => {
+  it('does not install a camera that resolved after stop()', async () => {
+    // `openCamera` releases its stream itself while it is still opening — but once it has RESOLVED
+    // its abort listener is gone, and the microtask between that resolution and `use()` resuming
+    // was guarded by nothing. A `stop()` landing there found `source` still null and returned;
+    // `use()` then assigned the live stream onto a detector the caller had just stopped. The lens
+    // stayed on, and `Detector.use`'s promise that a cancelled open rejects was broken in exactly
+    // the case it exists for.
+    const det = new WebDetector(videoEl, () => './model-a.onnx');
+    const opening = det.use({});
+    await Promise.resolve();
+    expect(seam.cameras).toHaveLength(1);
+
+    // Resolve FIRST, then stop before the awaiting `use()` gets its turn.
+    seam.cameras[0]!.settle(sourceNamed('cam-1'));
+    det.stop();
+
+    await expect(opening).rejects.toMatchObject({ name: 'AbortError' });
+    // Nothing installed…
+    expect(det.device).toBeNull();
+    // …and the stream that was opened behind the stop was released rather than left running.
+    expect(seam.stopped).toEqual(['cam-1']);
+  });
+
+  it('installs a camera that resolved with nothing superseding it', async () => {
+    const det = new WebDetector(videoEl, () => './model-a.onnx');
+    const opening = det.use({});
+    await Promise.resolve();
+    seam.cameras[0]!.settle(sourceNamed('cam-1'));
+    await opening;
+    expect(det.device).toEqual({ deviceId: 'cam-1', label: 'cam-1' });
+    expect(seam.stopped).toEqual([]);
+  });
+});
+
+describe('WebDetector — where the runtime is fetched from', () => {
+  it('takes the model URL’s DIRECTORY, not the text before its last slash', async () => {
+    // Stripping the filename with `/[^/]+$/` parses a URL by hand and reads a query or a fragment
+    // as path: `model.onnx?path=a/b` kept `model.onnx?path=a/` as the "directory", so wasmPaths and
+    // the runtime module were fetched from a URL no server has and the model never loaded.
+    const det = new WebDetector(videoEl, () => './vendor/model.onnx?path=a/b#frag/ment');
+    void det.load();
+    await Promise.resolve();
+    const asked = pending()[0]!;
+    expect(asked.modelUrl).toBe('./vendor/model.onnx?path=a/b#frag/ment');
+    expect(asked.opts.wasmPaths).toBe(new URL('./vendor/', document.baseURI).href);
+    expect(asked.opts.ortUrl).toBe(new URL('./vendor/ort.mjs', document.baseURI).href);
+  });
+
+  it('still points an ordinary model at its own folder', async () => {
+    const det = new WebDetector(videoEl, () => './vendor/cube-yolo.onnx');
+    void det.load();
+    await Promise.resolve();
+    expect(pending()[0]?.opts.wasmPaths).toBe(new URL('./vendor/', document.baseURI).href);
   });
 });

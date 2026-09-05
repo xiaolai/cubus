@@ -325,17 +325,33 @@ function assignments(
   return exhausted ? null : out;
 }
 
+/**
+ * Write one assignment's cubies into `out`, at the facelet positions `slots` names.
+ *
+ * ONE loop for corners and edges. It was written twice — the same orientation arithmetic, with 8/3
+ * hardcoded in the first copy and 12/2 in the second — so a correction to how an orientation
+ * indexes a cubie's colours had to be made in both places and read as correct in both. Every
+ * dimension here comes off the arrays instead: `slots.length` is how many cubies, and each slot's
+ * own length is how many facelets one carries, which is also the modulus an orientation turns by.
+ */
+function writeCubies(
+  out: number[],
+  slots: readonly (readonly number[])[],
+  colours: readonly (readonly number[])[],
+  a: Assignment,
+): void {
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i]!;
+    const cubie = colours[a.cubie[i]!]!;
+    for (let p = 0; p < slot.length; p++) out[slot[p]!] = cubie[(p + a.ori[i]!) % slot.length]!;
+  }
+}
+
 /** Write a corner and edge assignment into a full 54-facelet colour array. */
 function realise(t: Tensors, corners: Assignment, edges: Assignment, base: number[]): number[] {
   const out = [...base];
-  for (let i = 0; i < 8; i++) {
-    const colours = t.cornerColors[corners.cubie[i]!]!;
-    for (let p = 0; p < 3; p++) out[CORNER_FACELET[i]![p]!] = colours[(p + corners.ori[i]!) % 3]!;
-  }
-  for (let i = 0; i < 12; i++) {
-    const colours = t.edgeColors[edges.cubie[i]!]!;
-    for (let p = 0; p < 2; p++) out[EDGE_FACELET[i]![p]!] = colours[(p + edges.ori[i]!) % 2]!;
-  }
+  writeCubies(out, CORNER_FACELET, t.cornerColors, corners);
+  writeCubies(out, EDGE_FACELET, t.edgeColors, edges);
   return out;
 }
 

@@ -61,7 +61,7 @@
 // Colour-class indices match ml/data.yaml: 0 white 1 red 2 green 3 yellow 4 orange 5 blue.
 
 import Cube from 'cubejs';
-import { isStructurallyValid, rotateFace } from './facelet-cube.js';
+import { FACE_NEIGHBOURS, isStructurallyValid, rotateFace } from './facelet-cube.js';
 import { type DecodedSticker, diagnoseMisread, type MisreadDiagnosis } from './misread-decode.js';
 import { FACES, type Face, type ScanResult } from './types.js';
 
@@ -179,15 +179,15 @@ export type AiScanResult = ScanResult & {
  * must point up for a capture of that face to be in canonical rotation. Four of the six answer
  * "U", which is why a side face is the one to ask about when there is a choice: "hold white up"
  * is an instruction a child can follow.
+ *
+ * DERIVED, not written out (2026-09-05). This was a hand-written table of the same six answers
+ * `FACE_NEIGHBOURS` already computes from `EDGE_FACELET` — the cube's own geometry — so the
+ * instruction a user is given to hold their cube by had a second, independent source that nothing
+ * checked against the first. The two agreeing was a fact about whoever typed the table.
  */
-const TOP_NEIGHBOUR: Readonly<Record<Face, Face>> = {
-  U: 'B',
-  R: 'U',
-  F: 'U',
-  D: 'F',
-  L: 'U',
-  B: 'U',
-};
+const TOP_NEIGHBOUR: Readonly<Record<Face, Face>> = Object.freeze(
+  Object.fromEntries(FACES.map((face) => [face, FACE_NEIGHBOURS[face].top])),
+) as Readonly<Record<Face, Face>>;
 
 /**
  * How many stickers a confirmation may read differently from the first capture and still count as
@@ -421,6 +421,17 @@ function buildCentreOwner(faces: Record<Face, ColorFace>): Map<number, Face> | A
   for (const face of FACES) {
     const f = checkedCapture(`face ${face}`, faces[face]);
     const centre = f.colors[4]!;
+    // A CENTRE IS A COLOUR THE DETECTOR CAN PRODUCE, and this is where that is checked
+    // (2026-09-05). Ordinary stickers are deliberately not range-checked — an unknown colour there
+    // is a statement about the cube and `assemblePainted` refuses it in words — but a CENTRE names
+    // a face, so an out-of-range one is silently accepted as the name of one: nine stickers of
+    // class 17 on U built the map `17 -> U`, every one of them then resolved through it, and both
+    // assemblers returned `valid: true` for a facelet string assembled out of a colour class no
+    // model emits. NaN was worse, because `Map` matches it to itself. That is detector data this
+    // module cannot read, not a cube it can describe, so it is refused rather than named.
+    if (!Number.isInteger(centre) || centre < 0 || centre >= FACES.length) {
+      return reject(`face ${face} has centre colour ${centre}, which is not one of the six`);
+    }
     // Unreachable from either host path, and kept as a guard on the public API rather than a
     // case with a UI: the camera files every capture under FACES[centre] (so a second face with
     // the same centre overwrites the first rather than joining it), and a painted side is seeded

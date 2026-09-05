@@ -25,9 +25,32 @@ export interface Preprocessed {
  * Letterbox an RGBA frame to imgsz×imgsz (aspect-preserving, grey pad) and emit a CHW RGB
  * float tensor in [0,1] — the exact input Ultralytics YOLO expects. Bilinear resample so
  * it matches the training-time resize. Pure: no canvas, no DOM.
+ *
+ * IT REFUSES A FRAME IT CANNOT READ, rather than producing a tensor from one (2026-09-05). Every
+ * malformed input had an answer that looked like an answer: a 0×0 frame ran no loop at all and
+ * came back as 640×640 of flat grey — the exact input the model is trained to ABSTAIN on, so it
+ * abstained, and a camera delivering nothing was indistinguishable from a camera pointed at a
+ * wall. A buffer shorter than `width*height*4` read `undefined` past its end and normalised it to
+ * NaN, which compares false against every confidence threshold downstream and so was silently
+ * dropped rather than reported. A non-integer or non-positive `imgsz` produced a tensor of the
+ * wrong length, which `validatedRun` then blamed on the model.
+ *
+ * The bar is the project's: an unreadable scan surfaces where it happens. This is the seam every
+ * browser frame passes through, and it is the last place that still knows the frame is a frame.
  */
 export function preprocess(frame: Frame, imgsz: number = IMG_SIZE): Preprocessed {
   const { data: src, width: w, height: h } = frame;
+  if (!Number.isInteger(imgsz) || imgsz <= 0) {
+    throw new Error(`preprocess: imgsz ${imgsz} is not a positive whole number of pixels`);
+  }
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
+    throw new Error(`preprocess: a frame of ${w}x${h} is not an image`);
+  }
+  if (src.length !== w * h * 4) {
+    throw new Error(
+      `preprocess: a ${w}x${h} RGBA frame is ${w * h * 4} bytes, but this one holds ${src.length}`,
+    );
+  }
   const scale = imgsz / Math.max(w, h);
   const newW = Math.max(1, Math.round(w * scale));
   const newH = Math.max(1, Math.round(h * scale));
