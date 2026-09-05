@@ -19,6 +19,11 @@ export interface DetectorChoice {
    * asking for model B was handed a detector whose flag said "loaded" about model A — and the
    * panel then skipped `load()` and scanned with the previous owner's model, reporting nothing
    * unusual. The URL travels with the flag so the claim can be checked.
+   *
+   * It comes from the DETECTOR (`Detector.loadedModel`), never from the parking owner's getter —
+   * see `CameraSession.modelHeldBy`. Filling it from the owner is how the same silence came back
+   * once already: the getter names the model being asked for, and a host that re-points it before
+   * disconnecting parked model A under model B's name.
    */
   modelUrl: string | null;
 }

@@ -65,6 +65,21 @@ export interface Detector {
   /** The camera in use, or null when none is open. A host that shows no preview needs it. */
   readonly device: CameraDevice | null;
   /**
+   * WHICH model is loaded right now — the string `load()` was given — or null when none is.
+   *
+   * The detector is the only thing that knows, and that is the whole reason this is on the seam.
+   * Everything else has to ask its OWNER, which answers with the model the owner is asking for NOW:
+   * an attribute changed between the load and the disconnect made `CameraSession.park()` file
+   * model A under model B's name, and the next mount asking for B was told it was already loaded
+   * and scanned on A. Reproduced. A flag with no subject cannot be checked; this is the subject.
+   *
+   * Optional, and `undefined` means "this runtime does not answer to a URL" rather than "nothing is
+   * loaded" — the native plugin resolves and compiles the bundled model itself, so its identity is
+   * not a URL and a caller must fall back to the label its owner uses. `null` is the negative
+   * answer, and the two are deliberately different values.
+   */
+  readonly loadedModel?: string | null;
+  /**
    * What the loaded model was asked to run ON, by name — `['webgpu', 'wasm']`, `['wasm']`. Null
    * until the model has loaded, and absent entirely where the runtime does not publish one (the
    * native plugin compiles for CoreML/LiteRT and offers no such list).

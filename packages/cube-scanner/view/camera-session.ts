@@ -56,12 +56,13 @@ export class CameraSession {
    */
   private openCount = 0;
   /**
-   * The owner's model-URL getter, kept so `park()` can say WHICH model the detector holds.
+   * The owner's model-URL getter, kept as the FALLBACK label for a runtime that has no URL.
    *
    * `modelLoaded` on its own is a claim with no subject, and the park is where the subject changes
-   * — see `DetectorChoice.modelUrl`. Read at park time rather than captured at choice time,
-   * because the URL is an attribute a host may set after the element mounts, exactly as
-   * `ensureDetector` takes it lazily for the same reason.
+   * — see `DetectorChoice.modelUrl`. This used to BE the subject, read at park time, and that was
+   * the defect: it is the URL the owner is asking for NOW, which is not the one that was compiled.
+   * See `modelHeldBy`, which asks the detector instead and falls back to this only where the
+   * detector answers to no URL at all.
    */
   private modelUrlOf: (() => string) | null = null;
 
@@ -180,7 +181,7 @@ export class CameraSession {
     const runtime = this.runtime;
     const modelLoaded = this.modelLoaded;
     // Read BEFORE the getter is forgotten, and only when there is a claim for it to be about.
-    const modelUrl = modelLoaded ? (this.modelUrlOf?.() ?? null) : null;
+    const modelUrl = modelLoaded && detector ? this.modelHeldBy(detector) : null;
     this.modelLoaded = false;
     this.modelUrlOf = null;
     if (!(detector && parkable && runtime)) return;
@@ -188,6 +189,28 @@ export class CameraSession {
     // Synchronous when nothing is out, which is every ordinary disconnect.
     if (this.openCount === 0 || !this.opening) handOver();
     else void this.opening.then(handOver, handOver);
+  }
+
+  /**
+   * WHICH model the detector actually holds — asked of the DETECTOR, which is the only thing that
+   * knows (2026-09-05).
+   *
+   * `park()` used to read the owner's `modelUrl` getter here, and that is a different fact wearing
+   * the same name: it is the URL this panel is asking for at the moment it disconnects, not the one
+   * that was compiled into the session. The two come apart in exactly the place the park matters —
+   * a host that changes its `model-url` attribute after the load — and the failure is silent:
+   * model A was parked under B's name, `pickDetector` compared B against B, and the next mount was
+   * told its model was ready while what is compiled is A. A wrong model produces readings, not
+   * errors. Reproduced.
+   *
+   * `undefined` from the detector is "I do not answer to a URL", and only there does the owner's
+   * getter stand in: the native plugin resolves and compiles the bundled model itself, so its
+   * identity cannot disagree with itself and the URL is a label rather than a claim. `null` is the
+   * detector saying it holds nothing, and is passed through as that.
+   */
+  private modelHeldBy(detector: Detector): string | null {
+    const stated = detector.loadedModel;
+    return stated === undefined ? (this.modelUrlOf?.() ?? null) : stated;
   }
 
   /**

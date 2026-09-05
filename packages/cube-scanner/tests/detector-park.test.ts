@@ -153,6 +153,39 @@ describe('the page-level detector park', () => {
     second.park();
   });
 
+  it('parks the model the detector LOADED, not the one its owner is now asking for', async () => {
+    // THE SUBJECT HAS TO COME FROM THE DETECTOR. `park()` filed the URL by reading the owner's
+    // `modelUrl` getter, which answers with the model this panel is asking for at the moment it
+    // disconnects — a different fact wearing the same name. A host that re-points its `model-url`
+    // attribute and then disconnects therefore parked model A under model B's name, `pickDetector`
+    // compared B against B, and the next mount was told its model was ready while what is compiled
+    // is A. The panel skips `load()` on that flag, so the scan runs on the wrong model — and a
+    // wrong model produces readings rather than errors, which is this project's worst failure.
+    //
+    // The detector is the only thing that knows what it loaded, so it is what gets asked.
+    const first = new CameraSession();
+    let asking = MODEL_URL;
+    const a = await first.ensureDetector(videoFor('a'), () => asking);
+    await a.load();
+    first.modelLoaded = true;
+    expect(sessions()).toBe(1);
+
+    const other = `${MODEL_URL}?b`;
+    asking = other; // re-pointed at another model, and disconnected before it could be loaded
+    first.park();
+
+    const second = new CameraSession();
+    const same = await second.ensureDetector(videoFor('b'), () => other);
+    expect(same).toBe(a); // still the page's one detector…
+    expect(second.modelLoaded).toBe(false); // …and what it holds is not this owner's model
+
+    // …so the load the flag no longer skips really does build B, on the same detector.
+    await same.load();
+    expect(sessions()).toBe(2);
+    expect((same as WebDetector).loadedModel).toBe(other);
+    second.park();
+  });
+
   it('parking releases the CAMERA and keeps the model', async () => {
     // The whole distinction `stop()` and `dispose()` exist to draw. Parking may cost a lens left
     // on if it gets this wrong, and may never cost the compiled model — that is the point of it.

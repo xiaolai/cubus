@@ -28,10 +28,35 @@ const cfg = () => ({
   dims: [1, ROWS, ANCHORS],
   outLength: null,
   noInputNames: false,
+  /** `true` for every session, or a list of the model URLs WebGPU refuses — see `refuses`. */
   webgpuDeclines: false,
   proxiedCreateFails: false,
+  /** Every create rejects, whatever the proxy mode: how a test drives a failed initialisation. */
+  createFails: false,
+  /** Macrotask ticks a run waits before it submits anything, keyed by model URL — see `tick`. */
+  runTicks: {},
   ...registry.model,
 });
+
+/** Does the GPU refuse THIS model's graph? A list, because two sessions on one device differ. */
+const refuses = (modelUrl) => {
+  const declines = cfg().webgpuDeclines;
+  return declines === true || (Array.isArray(declines) && declines.includes(modelUrl));
+};
+
+/**
+ * A run that YIELDS before it submits, so two probes can genuinely overlap.
+ *
+ * The rest of this fake is synchronous, which makes it deterministic and makes every existing case
+ * cheap — and also means one runner's whole probe finishes before another's begins, so the queue
+ * observation could never be caught counting somebody else's work. `runTicks` buys exactly the
+ * window that matters: a real inference is milliseconds of awaited work, and a second
+ * `createModelRunner` on the same page walks straight into the middle of it.
+ *
+ * Macrotasks and not microtasks, because a microtask queue drains before any timer and the two
+ * runners would still take turns rather than overlap. Zero by default, so nothing else changes.
+ */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** This module instance's log — one per distinct URL the runner imports. */
 const instance = {
@@ -99,7 +124,7 @@ export class Tensor {
 }
 
 export const InferenceSession = {
-  async create(_modelUrl, options) {
+  async create(modelUrl, options) {
     // A wasm backend that will not start — no SharedArrayBuffer, a blocked worker. It is how a
     // test drives the GPU fallback's own REBUILD failing, which is the path where the abandoned
     // GPU session used to be released twice. Keyed on the proxy mode, because only the rebuild
@@ -107,20 +132,27 @@ export const InferenceSession = {
     if (cfg().proxiedCreateFails && instance.proxy === true) {
       throw new Error('the wasm backend would not start');
     }
+    // A create that fails AFTER the backend has been initialised from `ort.env` — the ordinary
+    // shape of a 404 model, and the one that pins the module's configuration on its way past.
+    if (cfg().createFails) throw new Error('the model would not load');
     instance.sessions++;
     instance.providers = options.executionProviders;
     const first = options.executionProviders?.[0];
     const asked = typeof first === 'string' ? first : first?.name;
     // Whether the GPU takes THIS session's graph — decided per session, and remembered by it.
-    const onGpu = asked === 'webgpu' && !cfg().webgpuDeclines;
+    const onGpu = asked === 'webgpu' && !refuses(modelUrl);
     // The device is published once and then stays, whatever later sessions do. See `gpuDevice`.
     if (onGpu) env.webgpu.device = gpuDevice;
+    const ticks = cfg().runTicks[modelUrl] ?? 0;
     const session = {
       inputNames: cfg().noInputNames ? [] : ['images'],
       outputNames: ['output0'],
       inputMetadata: [{ isTensor: true, shape: [1, 3, 640, 640] }],
       async run(feeds) {
         instance.runs++;
+        // Awaited BEFORE the submissions, so the window a second probe can open inside is the
+        // window in which this session's own evidence is produced. See `tick`.
+        for (let i = 0; i < ticks; i++) await tick();
         // Through the queue OBJECT, so an observer that has replaced `submit` on it counts these.
         if (onGpu) for (let i = 0; i < 17; i++) gpuDevice.queue.submit([]);
         const fed = Object.values(feeds ?? {})[0];
