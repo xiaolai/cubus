@@ -64,8 +64,8 @@ targets:
         # `tauri ios dev|build` — so it survives `tauri ios init` as this file does not, and it
         # is the copy that ships. Declaring them here as well (2026-08-31 to 2026-09-05) meant two
         # sources in different words, of which only this non-shipping one was tested.
-        CFBundleShortVersionString: 0.3.2
-        CFBundleVersion: "0.3.2"
+        CFBundleShortVersionString: 0.3.3
+        CFBundleVersion: "0.3.3"
     entitlements:
       path: cubus-desktop_iOS/cubus-desktop_iOS.entitlements
     scheme:
