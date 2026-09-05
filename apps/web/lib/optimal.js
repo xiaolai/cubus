@@ -90,12 +90,20 @@ export async function prove(facelets, { Cube, upperBound = null }) {
   // proof releases its slot only when its worker exits, so starting before the previous
   // prove settles would bounce off "a proof is already running" — a loud but pointless
   // refusal. Errors behind either fence belong to their own callers, not to us.
+  //
+  // The PREDECESSOR is captured before the fence exists, and every iteration waits on that fixed
+  // promise rather than on `lastProve` (fixed 2026-09-05). `lastProve` is reassigned to THIS
+  // proof's settling two lines below, so a second iteration — which a cancel arriving during the
+  // wait is exactly what causes — re-read a promise that had become this proof's own completion
+  // and waited for itself. Reproduced: the proof never reached the native side, and neither did
+  // any proof after it, because `lastProve` stayed pending forever.
+  const predecessor = lastProve;
   const fenced = (async () => {
     // Loop until the cancel fence is STABLE: while waiting out the previous proof, another
     // cancel aimed at it may arrive — a single snapshot would leave that one in flight.
     for (;;) {
       const snapshot = pendingCancels;
-      await Promise.allSettled([snapshot, lastProve]);
+      await Promise.allSettled([snapshot, predecessor]);
       if (snapshot === pendingCancels) break;
     }
     return invoke('optimal_prove', { facelets });
