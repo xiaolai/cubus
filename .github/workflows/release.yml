@@ -296,11 +296,29 @@ jobs:
             Write-Output "::error::target/release/DirectML.dll is missing after the build — ort-sys's copy-dylibs did not run, or pyke's directml distribution no longer carries the DLL"
             exit 1
           }
-          Write-Output "DirectML.dll: $((Get-Item $dll).Length) bytes"
+          # ort-sys's copy-dylibs tries a SYMLINK first and copies only when that fails; on this
+          # runner (an administrator session) the link succeeds, so the path above is a link whose
+          # own length PowerShell reports as 0 bytes — the first run of this step (v0.3.1,
+          # 2026-09-05) printed exactly that and then fed the link to tauri-build, which lost a
+          # race against the second build's own use of target/ ("used by another process").
+          # Resolve the link to the real file, copy THAT out of target/ to a path nothing else
+          # writes, and bundle from the copy. Assert the copy is the real DLL by size: pyke's
+          # directml distribution ships DirectML.dll at ~18 MB, and a placeholder is a shipped bug.
+          $item = Get-Item $dll
+          $source = if ($item.LinkType) { (Get-Item $item.Target) } else { $item }
+          $stable = Join-Path $PWD 'apps\desktop\src-tauri\gen\windows'
+          New-Item -ItemType Directory -Force -Path $stable | Out-Null
+          Copy-Item -LiteralPath $source.FullName -Destination (Join-Path $stable 'DirectML.dll') -Force
+          $copied = Get-Item (Join-Path $stable 'DirectML.dll')
+          Write-Output "DirectML.dll: $($copied.Length) bytes (from $($source.FullName))"
+          if ($copied.Length -lt 1MB) {
+            Write-Output "::error::gen/windows/DirectML.dll is $($copied.Length) bytes — not the DirectML runtime; refusing to bundle a placeholder"
+            exit 1
+          }
           # Resource paths are relative to apps/desktop/src-tauri; the value is where the file lands
           # in the installed application directory.
           $overlay = Join-Path $env:RUNNER_TEMP 'directml.conf.json'
-          '{"bundle":{"resources":{"../../../target/release/DirectML.dll":"DirectML.dll"}}}' | Set-Content -Path $overlay -Encoding ascii
+          '{"bundle":{"resources":{"gen/windows/DirectML.dll":"DirectML.dll"}}}' | Set-Content -Path $overlay -Encoding ascii
           pnpm --filter cubus-desktop exec tauri build --config $overlay
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
