@@ -5,7 +5,7 @@
 # on the maintainer's machine, and a genuine model/runtime change is the only thing that can move a
 # read. Split by platform: Linux CI runs onnx + onnx-int8 + tflite; the macOS runner adds coreml +
 # the native (plugin) leg, which also needs the Swift probe built (see .github/workflows/ci.yml).
-numpy==2.3.5
+numpy==2.5.2
 pillow==12.3.0
 onnxruntime==1.29.0
 # ml/test_pipeline.py re-derives cube-yolo.int8.onnx with onnxruntime.quantization, which imports onnx.
