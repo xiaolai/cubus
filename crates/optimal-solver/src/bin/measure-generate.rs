@@ -29,6 +29,54 @@ fn usage() -> ! {
     std::process::exit(1);
 }
 
+/// A scratch directory this process CREATED, removed when the value goes out of scope.
+///
+/// Two defects it exists for (2026-09-05). The old name was `cubus-measure-<pid>` and was used
+/// whether or not it already existed: a pid is reused within a day, so a leftover directory from
+/// an earlier crashed run was written into and then recursively deleted — and if a pid happened
+/// to collide with something else's directory, that went too. `create_dir` refuses to make a
+/// directory that exists, so a name this call did not create is a name this type never holds,
+/// and the random component makes a collision a lottery rather than a schedule.
+/// And the removal was `let _ = remove_dir_all(...)` placed after a `save` that panics on
+/// failure, so the one case that leaves 86 MB behind — a failed save — was the one case that
+/// never cleaned up. Drop runs while unwinding; a cleanup that fails says so out loud, because a
+/// measurement harness that quietly fills a temp directory is a measurement harness nobody
+/// notices is broken.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn create() -> std::io::Result<Scratch> {
+        let mut nonce = [0u8; 8];
+        getrandom::getrandom(&mut nonce).map_err(|e| {
+            std::io::Error::other(format!("no random source for a scratch name: {e}"))
+        })?;
+        let dir = std::env::temp_dir().join(format!(
+            "cubus-measure-{}-{:016x}",
+            std::process::id(),
+            u64::from_le_bytes(nonce)
+        ));
+        // Not create_dir_all: this must FAIL on an existing directory, or the guard would take
+        // ownership of something it did not make and delete it on the way out.
+        std::fs::create_dir(&dir)?;
+        Ok(Scratch(dir))
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.0) {
+            eprintln!(
+                "warning: scratch directory {} not removed: {e}",
+                self.0.display()
+            );
+        }
+    }
+}
+
 /// The kinds a mode should build: all three by default, or the one named. Measuring one in
 /// isolation is what says WHERE the peak lives; measuring all three says what the app pays.
 fn selected(arg: Option<&String>) -> Vec<(Kind, &'static str)> {
@@ -68,7 +116,8 @@ fn main() {
         // The desktop's prepare, minus Tauri: generate, Bellman-certify each table, serialize
         // and write all three.
         "prepare" if rest.is_empty() => {
-            let dir = std::env::temp_dir().join(format!("cubus-measure-{}", std::process::id()));
+            let scratch = Scratch::create().expect("a scratch directory this run owns");
+            let dir = scratch.path();
             let tables = Tables::generate(&mut |stage, done, total| {
                 if done == total {
                     println!("  {stage} done at {:8.1} s", whole.elapsed().as_secs_f64());
@@ -76,15 +125,50 @@ fn main() {
             })
             .expect("generation must certify or refuse");
             let t = Instant::now();
-            tables.save(&dir).expect("save");
+            // A save that refuses still cleans up: the guard's Drop runs while unwinding, which
+            // is the case that used to leave 86 MB of half-written tables in the temp directory.
+            tables.save(dir).expect("save");
             println!(
                 "save     {:8.1} s -> {}",
                 t.elapsed().as_secs_f64(),
                 dir.display()
             );
-            let _ = std::fs::remove_dir_all(&dir);
+            drop(scratch);
         }
         _ => usage(),
     }
     println!("total    {:8.1} s", whole.elapsed().as_secs_f64());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Scratch;
+
+    /// The two properties the guard exists for: the directory is one this run made (so cleanup
+    /// can never reach anything it did not), and it goes away with its contents on every exit —
+    /// including the panicking one, which is the same `Drop` this test observes.
+    #[test]
+    fn a_scratch_directory_is_this_runs_own_and_leaves_nothing_behind() {
+        let path = {
+            let scratch = Scratch::create().expect("a fresh scratch directory");
+            let path = scratch.path().to_path_buf();
+            assert!(path.is_dir());
+            // The mechanism the ownership claim rests on: `create_dir` refuses a name that
+            // already exists, so no guard can ever adopt a directory it did not make.
+            assert!(
+                std::fs::create_dir(&path).is_err(),
+                "create_dir must refuse an existing directory"
+            );
+            // And two guards alive at once never name the same one — the bare pid did, across a
+            // pid reuse, which is what made cleanup a hazard rather than a courtesy.
+            let other = Scratch::create().expect("a second scratch directory");
+            assert_ne!(other.path(), path);
+            std::fs::write(path.join("corner.pdb"), b"an artifact").unwrap();
+            path
+        };
+        assert!(
+            !path.exists(),
+            "the guard removed its directory, contents and all"
+        );
+    }
 }

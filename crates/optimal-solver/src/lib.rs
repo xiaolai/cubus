@@ -78,6 +78,12 @@ pub struct Tables {
 /// `sync_all`ed before the rename: without it a power loss after the rename can leave a
 /// zero-length or partially-written file under the FINAL name on filesystems that reorder the
 /// data behind the metadata, which is the one outcome a rename was supposed to rule out.
+///
+/// And a third, added 2026-09-05: the PARENT DIRECTORY is synced after the rename. Syncing the
+/// temp file makes its bytes durable; the directory entry that gives those bytes their final
+/// name is separate metadata, so a crash between the rename and the directory's own writeback
+/// could leave the file back under its temp name or gone entirely — a save that returned Ok and
+/// did not happen, which is exactly what this function exists to rule out.
 fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write as _;
     let dir = path.parent().ok_or("artifact path has no directory")?;
@@ -97,7 +103,8 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, path)?;
+        sync_dir(dir)
     })();
     if let Err(e) = result {
         // Leave nothing behind: a stray temp file is a plausible-looking fragment by another name.
@@ -105,6 +112,52 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
         return Err(format!("{}: {e}", path.display()));
     }
     Ok(())
+}
+
+/// Flush the directory's own entries, so the rename that published the file is as durable as the
+/// file's bytes already are. Opening a directory read-only and `fsync`ing that handle is the
+/// POSIX way to do it — there is nothing to write, so no write permission is involved — and the
+/// failure is returned, never swallowed: a save that could not make its own name durable has not
+/// finished.
+#[cfg(unix)]
+fn sync_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// Windows has no directory handle to sync: opening one needs backup semantics and
+/// `FlushFileBuffers` refuses it regardless, so there is nothing to call. A documented no-op
+/// rather than a silent one — the durability of `MoveFileEx` is the platform's answer here, and
+/// stating that is the difference between a known limit and an unnoticed gap.
+#[cfg(not(unix))]
+fn sync_dir(_dir: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Read a file that must be at most `exact` bytes, refusing anything larger WITHOUT reading it.
+///
+/// `std::fs::read` sizes its buffer from the file's own metadata, so a corrupt or foreign
+/// `corner.pdb` of forty gigabytes was a forty-gigabyte allocation before the first check ran —
+/// the process dies where it should have said `Invalid` and regenerated. An artifact's size is
+/// known exactly from its kind, so the read is bounded by it; the one extra byte is what makes a
+/// full buffer mean OVERSIZED rather than "exactly right", since a file that fills the bound and
+/// still has a byte left cannot be this table.
+fn read_bounded(path: &std::path::Path, name: &str, exact: usize) -> Result<Vec<u8>, LoadError> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => LoadError::Missing(format!("{name}: {e}")),
+        _ => LoadError::Io(format!("{name}: {e}")),
+    })?;
+    let mut bytes = Vec::with_capacity(exact + 1);
+    file.take(exact as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| LoadError::Io(format!("{name}: {e}")))?;
+    if bytes.len() > exact {
+        // Invalid, not Io: the directory is readable and the cure is regeneration.
+        return Err(LoadError::Invalid(format!(
+            "{name}: longer than the {exact} bytes a whole artifact is"
+        )));
+    }
+    Ok(bytes)
 }
 
 impl Tables {
@@ -169,10 +222,9 @@ impl Tables {
     /// publish a resealed table as a certified one.
     pub fn load(dir: &std::path::Path) -> Result<Tables, LoadError> {
         let read = |(name, kind): (&str, Kind)| -> Result<Pdb, LoadError> {
-            let bytes = std::fs::read(dir.join(name)).map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => LoadError::Missing(format!("{name}: {e}")),
-                _ => LoadError::Io(format!("{name}: {e}")),
-            })?;
+            // Bounded by what this kind's artifact IS: an oversized file is refused before it is
+            // read, not after it has been held in memory.
+            let bytes = read_bounded(&dir.join(name), name, pdb::serialized_len(kind))?;
             pdb::deserialize(&bytes, kind).map_err(|e| LoadError::Invalid(format!("{name}: {e}")))
         };
         let [corner, edge_a, edge_b] = ARTIFACTS.map(read);
@@ -246,21 +298,69 @@ mod write_atomic_tests {
 
     /// Two writers, one target, at once: each uses its own temp name, so neither publishes the
     /// other's bytes half-written. The fixed `.tmp` name this replaces made exactly that possible.
+    ///
+    /// A READER RUNS BESIDE THEM, and that is the half that makes this a test of atomic
+    /// publication rather than of the last write. Reading only after every writer has finished
+    /// looks at one file — the survivor — and a torn or mixed intermediate state would have come
+    /// and gone unobserved (the audit's finding, 2026-09-05). The guarantee is about every
+    /// instant the file is visible, so every instant is looked at: each read must be a whole
+    /// payload from the allowed set, or the file must not be there at all.
     #[test]
     fn concurrent_writers_never_publish_each_others_fragments() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
         let d = scratch("race");
         let target = d.join("edge-a.pdb");
         let payloads: Vec<Vec<u8>> = (0..8u8).map(|i| vec![i; 200_000]).collect();
+        let done = AtomicBool::new(false);
+        let reads = AtomicU64::new(0);
         std::thread::scope(|scope| {
-            for p in &payloads {
+            {
                 let target = target.clone();
+                let payloads = &payloads;
+                let (done, reads) = (&done, &reads);
                 scope.spawn(move || {
-                    for _ in 0..5 {
-                        write_atomic(&target, p).unwrap();
+                    while !done.load(Ordering::Relaxed) {
+                        match std::fs::read(&target) {
+                            Ok(got) => {
+                                assert!(
+                                    payloads.contains(&got),
+                                    "a reader saw {} bytes that are no writer's whole payload",
+                                    got.len()
+                                );
+                                reads.fetch_add(1, Ordering::Relaxed);
+                            }
+                            // Before the first rename lands there is legitimately no file.
+                            Err(e) => assert_eq!(
+                                e.kind(),
+                                std::io::ErrorKind::NotFound,
+                                "a reader hit an unexpected error: {e}"
+                            ),
+                        }
                     }
                 });
             }
+            let writers: Vec<_> = payloads
+                .iter()
+                .map(|p| {
+                    let target = target.clone();
+                    scope.spawn(move || {
+                        for _ in 0..5 {
+                            write_atomic(&target, p).unwrap();
+                        }
+                    })
+                })
+                .collect();
+            // Joined here rather than at the end of the scope, because the reader spins until it
+            // is told to stop and only the writers finishing is that signal.
+            for w in writers {
+                w.join().unwrap();
+            }
+            done.store(true, Ordering::Relaxed);
         });
+        assert!(
+            reads.load(Ordering::Relaxed) > 0,
+            "the reader never observed the file, so it checked nothing"
+        );
         let got = std::fs::read(&target).unwrap();
         assert_eq!(got.len(), 200_000, "the published file is a whole payload");
         assert!(
@@ -269,6 +369,51 @@ mod write_atomic_tests {
         );
         let leftovers = std::fs::read_dir(&d).unwrap().count();
         assert_eq!(leftovers, 1, "only the target remains");
+    }
+
+    /// The read bound, at its edge. An artifact's length is known exactly from its kind, so a
+    /// file one byte over cannot be one — and refusing it is what keeps a corrupt forty-gigabyte
+    /// `corner.pdb` from being allocated before anything is checked.
+    #[test]
+    fn a_bounded_read_takes_an_exact_file_and_refuses_one_byte_more() {
+        use super::{read_bounded, LoadError};
+        let d = scratch("bounded");
+        let at = d.join("corner.pdb");
+
+        std::fs::write(&at, vec![7u8; 64]).unwrap();
+        assert_eq!(read_bounded(&at, "corner.pdb", 64).unwrap().len(), 64);
+        // Under the bound is fine too: short files are the deserializer's business, not this
+        // function's — it refuses only what it must not hold.
+        assert_eq!(read_bounded(&at, "corner.pdb", 4096).unwrap().len(), 64);
+
+        std::fs::write(&at, vec![7u8; 65]).unwrap();
+        let err = read_bounded(&at, "corner.pdb", 64).expect_err("one byte over is refused");
+        assert!(
+            matches!(&err, LoadError::Invalid(m) if m.contains("corner.pdb") && m.contains("64")),
+            "Invalid and it names the file and the bound: {err}"
+        );
+
+        // An absent file is still Missing, not Invalid — the first-launch case must survive the
+        // bound, or every cold start reports corruption.
+        std::fs::remove_file(&at).unwrap();
+        assert!(matches!(
+            read_bounded(&at, "corner.pdb", 64),
+            Err(LoadError::Missing(_))
+        ));
+    }
+
+    /// The directory sync reports its failures rather than swallowing them: a save that could not
+    /// make its own name durable has not finished, and `write_atomic` returns that. Unix only,
+    /// because there the call is real; on Windows it is a documented no-op with nothing to fail.
+    #[cfg(unix)]
+    #[test]
+    fn syncing_a_directory_that_is_not_there_is_an_error() {
+        let d = scratch("syncdir");
+        assert!(super::sync_dir(&d).is_ok(), "a real directory syncs");
+        assert!(
+            super::sync_dir(&d.join("no-such-directory")).is_err(),
+            "and a missing one is reported, never shrugged off"
+        );
     }
 
     #[test]
