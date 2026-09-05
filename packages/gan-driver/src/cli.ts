@@ -11,7 +11,7 @@
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decodePacket, startRecording } from './capture.js';
+import { decodePacket, recordingShutdown, startRecording } from './capture.js';
 import { GanCube } from './driver.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
 import { extractMacFromManufacturerData, macMatchesName } from './mac.js';
@@ -203,38 +203,34 @@ async function cmdRecord(name: string) {
       startedAt: new Date().toISOString(),
     },
     onPacket: (packets) => process.stdout.write(`\rrecorded ${packets} packets -> ${path}`),
-    // finish() reports the failure from stop(), naming the path — printing it here as well would
-    // say the same thing twice.
-    onError: () => void finish(1),
+    // The shutdown reports the failure from stop(), naming the path — printing it here as well
+    // would say the same thing twice.
+    onError: () => finish(1),
   });
 
-  let finishing = false;
-  /**
-   * The one way a recording ends, whichever way it was asked to. Ctrl-C used to call out.end() and
-   * process.exit() on the next line: end() returns before the stream's buffer drains, so the last
-   * packets were still unwritten when the process went away, under a message saying "saved."
-   * The packets are stopped first, the flush is awaited, and only then is anything claimed.
-   */
-  async function finish(code: number): Promise<void> {
-    if (finishing) return;
-    finishing = true;
-    transport.disconnect(); // no more packets while the file is closing
-    try {
-      const packets = await rec.stop();
-      console.log(`\nsaved ${packets} packets -> ${path}`);
-      process.exit(code);
-    } catch (e) {
-      console.error(`\n${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    }
+  // Every way this command can end goes through one shutdown, which owns both the flush and the
+  // verdict: Ctrl-C used to call out.end() and process.exit() on the next line, and end() returns
+  // before the stream's buffer drains, so the last packets were still unwritten when the process
+  // went away under a message saying "saved." The exit code comes BACK from the shutdown rather
+  // than being chosen here, because a file that did not close is a failed run whichever way the
+  // shutdown was asked for.
+  const shutdown = recordingShutdown({
+    rec,
+    stopPackets: () => transport.disconnect(), // no more packets while the file is closing
+    path,
+    say: (msg) => console.log(msg),
+    warn: (msg) => console.error(msg),
+  });
+  function finish(code: number): void {
+    void shutdown(code).then((c) => process.exit(c));
   }
 
   sub.on('error', (e: Error) => console.error('error:', e.message));
   sub.on('giveup', (e: Error) => {
     console.error(e.message);
-    void finish(1);
+    finish(1);
   });
-  process.on('SIGINT', () => void finish(0));
+  process.on('SIGINT', () => finish(0));
   console.log(`RECORDING '${name}' -> ${path}  (Ctrl-C to stop)`);
   keepAlive();
   await new Promise(() => {});
