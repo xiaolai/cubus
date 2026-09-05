@@ -505,7 +505,11 @@ test('a refuted solution still blocks — the oracle can still say no', async ()
       const { state } = await import('/lib/app.js');
       if (!state.cube.solution) return false;
       state.cube.solution = "R U"; // well-formed, reaches nothing
-      state.cube.crossChecked = false; // exactly how a carried solution arrives
+      // Cleared so the next walk RE-ASKS the oracle. A carried solution arrives already checked
+      // (takeDerivation commits through finishSolve, 2026-09-05), and a solution nobody has
+      // vouched for is exactly what this flag means: solve() re-runs finishSolve, and that is
+      // the refusal being provoked here.
+      state.cube.crossChecked = false;
       return true;
     })()`);
     assert.ok(corrupted, 'no carried solution to corrupt — the derivation path is gone');

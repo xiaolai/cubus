@@ -13,7 +13,9 @@ import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
+import Cube from '../vendor/cubejs.js';
 
+const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -227,6 +229,55 @@ test('a solve the browser refused to store says so on the clock', async () => {
   assert.match(hint.textContent, /NOT saved/i, 'a time that vanished on reload must be announced when it happens');
 });
 
+// The same promise on the path where nobody pressed anything. The hand-stopped stop() says its
+// idle hint BEFORE it records, so the warning above survives; the cube-driven one said it AFTER,
+// in the same task, so no frame ever carried the sentence — and a solve that quietly failed to
+// store looks exactly like the app deciding the solve did not count.
+test('a CUBE-timed solve the browser refused to store says so as well', async () => {
+  const { state } = await import('../lib/app.js');
+  const before = { connected: state.connected, trusted: state.cube.trusted, source: state.cube.source };
+  try {
+    // No `conn`, so the timer's "can this cube be timed" question is not being answered by a
+    // stub: with no session there is nothing declining, which is the app's own rule.
+    state.connected = true;
+    state.cube.trusted = true;
+    state.cube.source = 'cube';
+    state.cube.staleWhy = '';
+    await go('home');
+    await go('timer');
+    const hint = $('#timerHint');
+    const clock = $('#clock');
+    const scr = $('#scr');
+    for (let i = 0; i < 200 && !/^[URFDLB]/.test(scr.textContent || ''); i++) await settle(50);
+    assert.match(scr.textContent, /^[URFDLB]/, 'precondition: a scramble is on screen');
+
+    // The arrangement that scramble produces, computed independently of the app.
+    const c = Cube.fromString(SOLVED_FACELETS);
+    for (const m of scr.textContent.trim().split(/\s+/)) c.move(m);
+    win.cubusFeed.facelets(c.asString(), 2);
+    await tick();
+    assert.equal(hint.textContent, 'Ready — turn to start', 'precondition: the cube armed the clock');
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await tick();
+
+    failWrites = true;
+    try {
+      win.cubusFeed.move({ notation: "R'", serial: 4, cubeTimestamp: 4200, timestamp: Date.now() });
+      win.cubusFeed.facelets(SOLVED_FACELETS, 4);
+      await tick();
+    } finally { failWrites = false; }
+
+    assert.equal(clock.textContent, '3.20', 'precondition: the cube timed the solve');
+    assert.match(hint.textContent, /NOT saved/i,
+      'the warning was overwritten by the idle hint in the same task — the time vanished on reload with nothing said');
+  } finally {
+    state.connected = before.connected;
+    state.cube.trusted = before.trusted;
+    state.cube.source = before.source;
+    await go('home');
+  }
+});
+
 test('a roll that lands while the clock is running is parked, never put in play', async () => {
   await go('timer');
   const scr = $('#scr');
@@ -349,6 +400,76 @@ test('Undo removes the solve it is drawn beside, not the row above it', async ()
   assert.equal(list.length, 2, 'exactly one record was removed');
   assert.equal(list[0].time, '', 'and the corrupt row keeps its place, so the averages stay honest');
   assert.match($('#timerHint').textContent, /Removed/i, 'and it says so');
+});
+
+// ---- What only a cube can know ------------------------------------------------------------------
+//
+// `recentSolves()` is the boundary EVERY read and every write passes through — `pushSolve` reads
+// the list back through it in order to write it out again — so a field missing from its whitelist
+// is not merely unread: the next solve erases it from every older record. `source`, `moves` and
+// `inspectionMs` were all missing, so a cube-timed solve lost the three facts only a cube can
+// supply, the turn rate on Stats could not be computed by construction, and the card explained an
+// absence it had caused itself.
+
+test('a cube-timed solve keeps its source and move count through a later solve', async () => {
+  win.localStorage.setItem('cubusSolves', JSON.stringify({
+    list: [{ n: 1, time: '12.34', scramble: 'R U', at: Date.now() - 60_000, source: 'cube', moves: 42, inspectionMs: 3200 }],
+  }));
+  await go('home');
+  await go('timer');
+  // A hand-timed solve — the ordinary write that used to strip the record above it.
+  $('#clock').click();
+  await tick();
+  $('#clock').click();
+  await tick();
+
+  const list = JSON.parse(win.localStorage.getItem('cubusSolves')).list;
+  const kept = list.find((s) => s.n === 1);
+  assert.ok(kept, 'precondition: the older record is still there');
+  assert.equal(kept.source, 'cube', 'who timed it survived the rewrite');
+  assert.equal(kept.moves, 42, 'and the move count a turn rate is computed from');
+  assert.equal(kept.inspectionMs, 3200, 'and the inspection, which nothing else can reconstruct');
+
+  const fresh = list.find((s) => s.n === 2);
+  assert.equal(fresh.source, 'manual', 'the new solve says what timed IT');
+  assert.equal('moves' in fresh, false, 'and carries no move count — a click on a clock is not a move stream');
+});
+
+test('the turn rate reaches Stats, from those fields and nothing else', async () => {
+  await go('stats');
+  const tile = all('.card.stat').find((c) => /TURN RATE/.test(c.querySelector('.eyebrow')?.textContent ?? ''));
+  assert.ok(tile, 'the Stats screen draws a turn-rate tile');
+  assert.equal(tile.querySelector('.v').textContent, '3.40', '42 moves over 12.34 s, or an em dash forever');
+  assert.match(tile.querySelector('.d').textContent, /1 cube-timed solve\b/, 'and it says how many solves it rests on');
+});
+
+test('a stored solve cannot claim a cube timed it, or how many moves it took', async () => {
+  // The other half of a whitelist: what it lets through. `cubeTimed` in solve-stats reads
+  // `source === 'cube'` as its licence to put a solve into a turn rate, so anything on this
+  // origin could otherwise fabricate one — 1 move in 0.01 s is 100 turns per second.
+  win.localStorage.setItem('cubusSolves', JSON.stringify({
+    list: [
+      { n: 3, time: '10.00', scramble: 'R U', at: Date.now(), source: 'cube', moves: '9999' },
+      { n: 2, time: '10.00', scramble: 'R U', at: Date.now(), source: 'psychic', moves: 30 },
+      { n: 1, time: '10.00', scramble: 'R U', at: Date.now(), source: 'cube', moves: 0, inspectionMs: -5 },
+    ],
+  }));
+  await go('home');
+  await go('stats');
+  const tile = all('.card.stat').find((c) => /TURN RATE/.test(c.querySelector('.eyebrow')?.textContent ?? ''));
+  assert.equal(tile.querySelector('.v').textContent, '—',
+    'a figure was computed from fields no solve of this app ever wrote');
+  // And the rejection is per FIELD, so it survives the rewrite as the record it really is.
+  await go('timer');
+  $('#clock').click();
+  await tick();
+  $('#clock').click();
+  await tick();
+  const list = JSON.parse(win.localStorage.getItem('cubusSolves')).list;
+  assert.equal('moves' in list.find((s) => s.n === 3), false, 'a string is not a move count');
+  assert.equal('source' in list.find((s) => s.n === 2), false, 'and an unknown source is not one');
+  assert.equal('inspectionMs' in list.find((s) => s.n === 1), false, 'nor is a negative inspection');
+  assert.equal(list.find((s) => s.n === 1).source, 'cube', 'while the fields that ARE usable stay');
 });
 
 // ---- The surface app.js adds to the page ------------------------------------------------------

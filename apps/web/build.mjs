@@ -47,6 +47,48 @@ export const FILES = ['index.html', 'tokens.css', 'manifest.webmanifest', 'THIRD
 //       REMOVED on 2026-08-29: a note about code that is not in the app.
 export const NEVER_SHIPPED = ['vendor/tauri-mcp-guest.js', 'vendor/min2phase.PROVENANCE.md'];
 
+// ONE grammar for the onnxruntime assets, written once as a source string and used for BOTH
+// directions of the scanner check below — what the shipped loader NAMES, and what vendor/ HOLDS.
+// It is copy-ort.mjs's `OWNED_ASSET` predicate, and that file records why it is one string: the
+// two uses need different anchoring (a global scan of a bundle's text, an exact test of a
+// filename), and writing the pattern out twice is how this contract broke before. It broke again
+// here, differently: this file spelled it `ort-wasm-simd-threaded.*.wasm` in two places, so the
+// `.mjs` glue the loader fetches beside the binary was never checked at all.
+const ORT_ASSET = 'ort-wasm[a-z0-9.\\-]*\\.(?:wasm|mjs)';
+/** Every runtime asset `text` names. A bundle cannot fetch a filename it does not contain, so
+ *  what the loader names IS the complete set of what it can reach at runtime. */
+const ortAssetsNamedBy = (text) => [...new Set([...text.matchAll(new RegExp(ORT_ASSET, 'g'))].map((m) => m[0]))];
+/** Is this filename one of the runtime's own? Anchored, so it matches a whole name, not a part. */
+const isOrtAsset = (f) => new RegExp(`^${ORT_ASSET}$`).test(f);
+
+/**
+ * The entry and every LOCAL module it pulls in, transitively — an esbuild bundle's own sources.
+ *
+ * Bare specifiers (`three`) are deliberately not followed: those are node_modules, re-stamped by
+ * every install and asked for by name, so they are not what a freshness check is about.
+ *
+ * Throws when a specifier does not resolve: an import that points at nothing is a bundle that
+ * cannot be built, and reading past it here would silently shrink the set being compared.
+ */
+export function bundleInputs(entry) {
+  const seen = new Set();
+  const walk = (file) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    const text = readFileSync(file, 'utf8');
+    // `from './x.js'`, `import './x.js'` and `import('./x.js')` — the three shapes this source
+    // tree uses. A specifier that is not relative is a package, and skipped above.
+    for (const m of text.matchAll(/(?:from|import)\s*\(?\s*['"](\.[^'"]+)['"]/g)) {
+      const next = join(dirname(file), m[1]);
+      if (!existsSync(next)) throw new Error(`build: ${file} imports ${m[1]}, which does not exist`);
+      walk(next);
+    }
+  };
+  if (!existsSync(entry)) throw new Error(`build: missing bundle entry ${entry}`);
+  walk(entry);
+  return [...seen];
+}
+
 /**
  * Assemble a dist directory from `root` (apps/web). Throws on anything missing
  * or stale, so a bad assembly is a failed build and never a blank window.
@@ -134,25 +176,37 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
   // appears in no HTML either — and its absence degrades QUIETLY, back to the three-second
   // main-thread decode it exists to move off the page. It is committed rather than generated, so
   // this catches a dist/ assembled before `build:misread-worker` ever ran.
-  const SCANNER = ['vendor/ort.mjs', 'vendor/cube-yolo.onnx', 'vendor/misread-worker.js'];
-  // The wasm binaries need TWO checks, because either one alone is vacuous.
+  // ort.proxied.mjs is the SAME loader under its second name — the identity onnxruntime needs for
+  // the proxied wasm instance where a query string cannot serve it (a Tauri asset protocol; see
+  // copy-ort.mjs). It is published with ort.mjs and it is fetched at runtime, so a dist/ carrying
+  // one and not the other is a scanner that works in one proxy mode and 404s in the other.
+  const SCANNER = ['vendor/ort.mjs', 'vendor/ort.proxied.mjs', 'vendor/cube-yolo.onnx', 'vendor/misread-worker.js'];
+  const absentScanner = new Set(SCANNER.filter((f) => !existsSync(join(dist, f))));
+  // The runtime's own assets, DERIVED FROM THE SHIPPED LOADER rather than from a filename shape.
   //
-  // onnxruntime picks its binary at runtime from inside its own worker, so which variant it wants is
-  // not knowable from here; naming one would risk asserting a file the app never loads. So: every
-  // file copy-ort placed in vendor/ must survive into dist/ — AND dist/ must hold at least one, or a
-  // checkout that never ran copy-ort passes trivially. The first check derives its expectation from
-  // vendor/, so on its own it cannot see a file that was never copied there in the first place.
-  const wasmInVendor = readdirSync(join(root, 'vendor'))
-    .filter((f) => f.startsWith('ort-wasm-simd-threaded.') && f.endsWith('.wasm'))
-    .map((f) => `vendor/${f}`);
-  const absentScanner = [...SCANNER, ...wasmInVendor].filter((f) => !existsSync(join(dist, f)));
-  const wasmInDist = existsSync(join(dist, 'vendor'))
-    ? readdirSync(join(dist, 'vendor')).filter((f) => f.startsWith('ort-wasm-simd-threaded.') && f.endsWith('.wasm'))
-    : [];
-  if (wasmInDist.length === 0) absentScanner.push('vendor/ort-wasm-simd-threaded*.wasm (none present)');
-  if (absentScanner.length) {
+  // onnxruntime picks its binary inside its own worker, so which variant it wants is not knowable
+  // from here — but the loader in dist/ names exactly the ones it can request, and it is right
+  // there to be read. That is what makes this check neither vacuous nor over-strict, and it is
+  // what the old pair of `ort-wasm-simd-threaded.*.wasm` scans could not be: they asserted the
+  // BINARY and never the `.mjs` glue beside it (a missing glue file is a scanner that cannot
+  // start), and their expectation came from vendor/, so an unrelated variant sitting there passed
+  // both while the loader asked for a file nobody had copied.
+  if (!absentScanner.size) {
+    const named = ortAssetsNamedBy(readFileSync(join(dist, 'vendor', 'ort.mjs'), 'utf8'));
+    // Loud rather than trivially green: a loader that names none of its assets means onnxruntime
+    // has changed how it fetches them, and this check would otherwise silently verify nothing.
+    if (!named.length) absentScanner.add('vendor/ort.mjs names no ort-wasm-* runtime asset (has onnxruntime-web changed?)');
+    for (const f of named) if (!existsSync(join(dist, 'vendor', f))) absentScanner.add(`vendor/${f}`);
+    // And the other direction, one grammar: everything copy-ort published into vendor/ must
+    // survive the copy into dist/. The loader-derived set above cannot see a file the filter
+    // dropped on the way in if the loader never names it, and vendor/ is what actually ships.
+    for (const f of readdirSync(join(root, 'vendor')).filter(isOrtAsset)) {
+      if (!existsSync(join(dist, 'vendor', f))) absentScanner.add(`vendor/${f}`);
+    }
+  }
+  if (absentScanner.size) {
     throw new Error(
-      `build: dist/ is missing vendored scanner files:\n  ${absentScanner.join('\n  ')}\n` +
+      `build: dist/ is missing vendored scanner files:\n  ${[...absentScanner].join('\n  ')}\n` +
         '  Run `pnpm --filter cubus-web copy-ort` first — without these the app loads but cannot scan.',
     );
   }
@@ -164,12 +218,19 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
   // timestamps, so a copied file always looks freshly modified and the comparison
   // could never fail. That mistake made this check decorative until a negative
   // test (touch the source, expect a throw) caught it returning success.
+  //
+  // EVERY INPUT, not just the entry. lib/cube-frame.js is bundled into vendor/cubus-cube.js — it
+  // is where the silhouette and the camera fit live — so editing it and shipping without a
+  // rebuild passed this check while dist/ carried a renderer that behaves differently from its
+  // source. That is the same defect the check exists for, one import away from where it looked.
   if (freshness) {
     const built = statSync(join(root, 'vendor', 'cubus-cube.js')).mtimeMs;
-    const source = statSync(join(root, 'lib', 'cubus-cube.js')).mtimeMs;
-    if (built < source) {
+    const newer = bundleInputs(join(root, 'lib', 'cubus-cube.js'))
+      .filter((f) => statSync(f).mtimeMs > built)
+      .map((f) => posix(f));
+    if (newer.length) {
       throw new Error(
-        'build: vendor/cubus-cube.js is older than lib/cubus-cube.js — run build:cube first',
+        `build: vendor/cubus-cube.js is older than ${newer.join(', ')} — run build:cube first`,
       );
     }
   }

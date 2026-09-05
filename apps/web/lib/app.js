@@ -1638,6 +1638,34 @@ function setConnected(on, name = '', mac = '') {
   }
 }
 
+/**
+ * The identity a connected cube is remembered under — ITS OWN, and nothing else's.
+ *
+ * A cube with no address is remembered under its NAME rather than under an empty string. Only the
+ * GAN protocols expose a MAC; the others report '', and keying the registry on that makes every
+ * such cube the same cube — one nickname, one shared last-seen record, and a reconnect that
+ * greets a stranger with another cube's memory.
+ *
+ * `name:` is the registry's own prefix (NAME_PREFIX), spelled once there: every path that stores
+ * or looks up a record runs the id through `normaliseIdentity`, which is what makes this a key
+ * rather than a string that merely looks like one. It was a bare template literal here and
+ * `normaliseMac` everywhere else, so these cubes were documented as remembered and were in fact
+ * never written at all.
+ *
+ * ONE ARGUMENT, and that is the fix of 2026-09-05. This used to fall back to the address the
+ * connect attempt had been GIVEN — `macFromUi` or, failing that, `lastCubeMac()`, the most
+ * recently used remembered cube. So connecting an addressless cube while a GAN was the last cube
+ * used filed it under the GAN's MAC: two cubes, one record, each inheriting the other's nickname,
+ * history and remembered arrangement, and a reconnect question about the wrong cube. The session's
+ * resolved address is the only evidence there is — the protocol layer publishes `deviceMAC` when
+ * it has one, including one it took from the provider and then VERIFIED against the cube — so an
+ * empty one means no address was established, and the name is the honest key.
+ */
+function sessionIdentity(session) {
+  return normaliseIdentity(session?.mac)
+    || normaliseIdentity(NAME_PREFIX + (session?.name || 'cube'));
+}
+
 let connecting = null;
 async function doConnect(macFromUi) {
   // Single-flight: two overlapping attempts raced through the shared transport/conn state, the
@@ -1666,6 +1694,11 @@ async function connectOnce(macFromUi) {
     // the protocol layer reads it per brand; this only answers when the advertisement did not
     // carry one. It used to be mandatory in the browser, which asked a beginner for a hexadecimal
     // address before they could connect at all.
+    //
+    // It is an ANSWER TO THE PROTOCOL LAYER and never an identity: what it supplies here is
+    // checked against the cube (the library verifies a provided MAC before the connection stands)
+    // and comes back as `session.mac` if it holds. Feeding it to the registry directly is what
+    // made an addressless cube inherit the last cube's record — see sessionIdentity.
     const session = await connectCube({
       Cube,
       macProvider: typed ? async () => typed : undefined,
@@ -1703,19 +1736,7 @@ async function connectOnce(macFromUi) {
     session.onMovesLost(() => { if (conn === session) onMovesLost(); });
 
     conn = session;
-    // A cube with no address is remembered under its NAME rather than under an empty string.
-    // Only the GAN protocols expose a MAC; the others report '', and keying the registry on that
-    // makes every such cube the same cube — one nickname, one shared last-seen record, and a
-    // reconnect that greets a stranger with another cube's memory.
-    //
-    // `name:` is the registry's own prefix (NAME_PREFIX), spelled once there: every path that
-    // stores or looks up a record runs the id through `normaliseIdentity`, which is what makes
-    // this a key rather than a string that merely looks like one. It was a bare template literal
-    // here and `normaliseMac` everywhere else, so these cubes were documented as remembered and
-    // were in fact never written at all.
-    const identity = normaliseIdentity(session.mac || typed)
-      || normaliseIdentity(NAME_PREFIX + (session.name || 'cube'));
-    adoptConnection(identity, session.name || 'Smart cube');
+    adoptConnection(sessionIdentity(session), session.name || 'Smart cube');
     // The reply is NOT fed to onFacelets here. It arrives on the event stream too, and the
     // permanent listener above already handles it — passing it on as well delivered the
     // connection's first report twice, which runs the reconnect classification against a question
@@ -1772,21 +1793,44 @@ function reaches(facelets, setupAlg) {
 function takeDerivation(facelets, setupAlg) {
   if (!Cube) return;
   const c = state.cube;
-  const solution = invertAlg(setupAlg);
   if (!reaches(facelets, setupAlg)) {
     console.error('setup alg does not reach the cube it came with — deriving instead', { setupAlg });
     return;
   }
+  // Written BEFORE the commit, so takeSetupAlg inside finishSolve takes its "already carried in
+  // and already checked" branch instead of re-deriving and re-checking the alg handed in here.
+  c.setupAlg = setupAlg;
   try {
-    if (!Cube.fromString(facelets).move(solution).isSolved()) {
-      console.error('the inverse of the setup alg does not solve the cube — deriving instead', { setupAlg });
-      return;
-    }
+    // ONE CHECKED-SOLUTION COMMIT PATH (2026-09-05). This function used to repeat all of
+    // finishSolve — the oracle applying the solution, the assignment, the tokenizer, the
+    // per-step states — and then set `crossChecked = false`, so the first use of the cube ran
+    // every one of them a second time (`solve()` answers a carried solution by calling
+    // finishSolve). Two copies of one rule is how one copy quietly stops being verified, and
+    // this one had already drifted: the flag said "unverified" about a check cubejs had just
+    // performed and passed.
+    //
+    // The oracle rule is unchanged, only spelled once: `crossChecked` is true because cubejs
+    // ACTUALLY SAID YES — it applied this solution to these facelets and found them solved —
+    // and false whenever it could not run. That is an independent check now in a way the old
+    // comment here predates: the alg comes from the two-phase engine (rollScramble inverts the
+    // pool's answer, 2026-08-31), so this is cubejs checking a different implementation's work,
+    // where it used to be cubejs checking cubejs.
+    //
+    // Undoing the setup alg solves the cube by construction, which is why no search follows:
+    // the app used to hand this state to a second Kociemba search and then discard an answer it
+    // already held — the longest thing a press of the die waited on.
+    finishSolve(c, invertAlg(setupAlg));
   } catch (err) {
-    console.error('setup alg could not be applied — deriving instead', err);
+    // A DEFINITE refutation is the only thing that reaches here — finishSolve throws on one and
+    // commits nothing before it. The cube is left underived and with no setup alg, exactly as
+    // this function left it before, so the pool's answer supplies both rather than the app
+    // drawing a walk nobody checked. (An oracle that could not RUN is not this branch: it has
+    // refuted nothing, so finishSolve commits with `crossChecked` false and the next solve
+    // retries the check.)
+    c.setupAlg = '';
+    console.error('the inverse of the setup alg does not solve the cube — deriving instead', err);
     return;
   }
-  c.setupAlg = setupAlg;
   // It took moves to get here, so there are moves back — and an arrangement a real alg reaches is
   // a real arrangement, which is what the check above has just established. `unsolvable` is
   // written beside `solvable` rather than left to whoever ingested: the two are one verdict, and
@@ -1794,19 +1838,6 @@ function takeDerivation(facelets, setupAlg) {
   c.solvable = true;
   c.unsolvable = false;
   c.derived = true;
-  // AND THE SOLUTION, which is why the search that used to follow is gone. Undoing the setup alg
-  // solves the cube by construction — there is nothing left to search FOR. The app used to send
-  // this state to the `cubing` package's worker (removed entirely, 2026-08-29) for a second,
-  // independent Kociemba search, and then discard
-  // an answer it already held. That search is the longest thing a press of the die waited on.
-  //
-  // Not verified here: it is checked above by cubejs, which is the library that produced the
-  // setup alg, so this pass proves our own reverse-and-invert rule and nothing about the search.
-  // The independent check — cubejs applying it, no search — is solve()'s, once, on first use.
-  c.solution = solution;
-  c.moves = movesOf(solution); // the one tokenizer both solve paths share
-  c.stepFacelets = stepStates(facelets, c.moves);
-  c.crossChecked = false;
 }
 
 /** The state after each move of a walk, so the 2D net and the move list can co-move with the 3D
@@ -1911,6 +1942,15 @@ function onFacelets(reported, serial) {
 // person who had never solved a cube was shown their "recent solves", complete with turn rates.
 // An empty session now reads as empty. Placeholder data that looks real is worse than nothing,
 // and this is the screen where that costs the most.
+/** Who timed a solve. Exactly these two: `cubeTimed` in solve-stats.js reads `source === 'cube'`
+ *  as its licence to put a solve into a turn rate, so an unrecognised value must never survive
+ *  the boundary below wearing that name. */
+const SOLVE_SOURCES = new Set(['cube', 'manual']);
+/** A plausible inspection: from the moment the scramble was reached to the first turn. Bounded
+ *  because a stored number with no ceiling is a statistic waiting to be fabricated; a day is
+ *  generous past anything a person inspects for and short of anything a clock glitch invents. */
+const MAX_INSPECTION_MS = 24 * 60 * 60 * 1000;
+
 /** Solves from storage, normalised. This is the boundary: `cubusSolves` is written by anything on
  *  the origin and edited by anyone with devtools, so `{list: null}` or a list of strings must
  *  become an empty session rather than reaching a `.slice` or an innerHTML template. Fields are
@@ -1928,6 +1968,19 @@ function recentSolves() {
     time: ok(s) && typeof s.time === 'string' ? s.time : '',
     scramble: ok(s) && typeof s.scramble === 'string' ? s.scramble : '',
     at: ok(s) && Number.isSafeInteger(s.at) && s.at > 0 ? s.at : 0,
+    // What a CUBE-timed solve knows and a hand-timed one cannot — and, until 2026-09-05, what
+    // this whitelist silently ate. `pushSolve` writes them and then reads the list back THROUGH
+    // here to write it out again, so every recorded solve erased them from every older record:
+    // the turn rate on Stats could not be computed by construction, and "0 cube-timed solves"
+    // was the honest report of a list this function had emptied.
+    //
+    // Per field, and only when usable. A missing key is the ABSENCE this app owes the reader —
+    // `moves: 0` or `source: 'cube'` over a hand-timed row would be a fabricated fact about a
+    // solve, which is the one thing the statistics module exists to refuse.
+    ...(ok(s) && SOLVE_SOURCES.has(s.source) ? { source: s.source } : {}),
+    ...(ok(s) && Number.isSafeInteger(s.moves) && s.moves > 0 ? { moves: s.moves } : {}),
+    ...(ok(s) && Number.isFinite(s.inspectionMs) && s.inspectionMs >= 0 && s.inspectionMs <= MAX_INSPECTION_MS
+      ? { inspectionMs: s.inspectionMs } : {}),
   }));
 }
 
@@ -2932,6 +2985,27 @@ const SPEEDS = [
 ];
 const DEFAULT_SPEED = 'normal';
 
+/**
+ * Why there turned out to be no walk.
+ *
+ * The reason is the message, and it used to be one sentence for four different failures: the
+ * solver never loaded, no scramble could be rolled, the worker died, the oracle refused the
+ * answer. "Could not work it out" blames the CUBE for every one of them, and offers re-scanning
+ * as the remedy even when the cube is blameless and re-scanning cannot help (found by audit,
+ * 2026-09-04). Each one now says what happened and what to do instead — and none of them says a
+ * move count is impossible, which two-phase cannot know.
+ *
+ * At module scope rather than inside the mount, because the die's own roll fails in exactly the
+ * same way and must say exactly the same sentence: a `const` after `if (!walking) return` is in
+ * the temporal dead zone on every screen that has no walk, which is precisely where the die's
+ * failure had nothing to say at all.
+ */
+const WALK_FAILURES = {
+  'solver unavailable': 'the solver did not load — reload the app',
+  'no scramble': 'a scramble could not be rolled — try again',
+  'cross-check': 'the answer did not check out — read the cube again',
+};
+
 /** Solve and Scramble are the same screen walked from opposite ends.
  *
  * Solve starts at YOUR cube and ends solved; Scramble starts SOLVED and ends at a random state.
@@ -3241,6 +3315,20 @@ const cubeScreen = (screenMode) => {
       // until the solver answered — one whole presented frame, measured, and the blink this
       // button was reported for. Solving first spends the same milliseconds with the screen still
       // complete, and every await in loadWalk then resolves as a microtask.
+      /** A roll produced nothing — say so where this screen has a sentence to spare.
+       *
+       *  The count beside the solution heading is this screen's status line: it is where
+       *  failWalk reports the identical failure on the Scramble side, so the same press gets the
+       *  same words wherever it is made. A screen with no walk has no such line (a solved cube
+       *  draws no solution card), and there the console is the only channel — but the die stays
+       *  enabled either way, so the answer to a failed roll is the same one it prints: try again.
+       *  Silence was what both branches did before: an empty roll returned, and a rejected one
+       *  escaped this handler entirely as an unhandled promise. */
+      const sayRollFailed = (err) => {
+        console.error('a random cube could not be rolled', err ?? 'the roller produced no cube');
+        const status = $('#moveCount', root);
+        if (status) status.textContent = t(WALK_FAILURES['no scramble']);
+      };
       const die = $('#randCube', root);
       if (die) die.onclick = async () => {
         if (!solverReady || die.disabled) return;
@@ -3251,9 +3339,18 @@ const cubeScreen = (screenMode) => {
           // bug behind a solved physical cube instantly completing a random solve: the guide
           // accepted the real cube's snapshots as progress through an arrangement it had never
           // been in.
-          const rolled = await randomScramble();
+          let rolled;
+          try {
+            rolled = await randomScramble();
+          } catch (err) {
+            // Rolling IS a solve (2026-08-31), so it fails the way a solve fails — eight budget
+            // escalations, or a pool that could not spawn a worker. The press must not end in
+            // silence and an unhandled rejection.
+            if (!stale()) sayRollFailed(err);
+            return;
+          }
           if (stale()) { parkRoll(rolled); return; } // rolling is a real search; do not waste it
-          if (!rolled.facelets) return;
+          if (!rolled.facelets) { sayRollFailed(null); return; }
           putInPlay(rolled);
           adoptCube(rolled.facelets, { physical: false, source: 'generated', setupAlg: rolled.alg });
         }
@@ -3281,6 +3378,16 @@ const cubeScreen = (screenMode) => {
         // physical cube — with a generated or unreadable subject on screen, painting the
         // connected cube over it would show one cube while every label describes another.
         if (!state.cube.isPhysical) return;
+        // A NEW SUBJECT CAN ALSO BE A NEW COMPOSITION (2026-09-05). `walking` and `unsolvable`
+        // were decided when this screen was built, and they decide whether the transport, the
+        // solution card and the explanation exist AT ALL. So a cube that was solved and has now
+        // been turned has a walk with nowhere to put it: the old handler repainted the picture
+        // and stopped, leaving a scrambled cube on screen with no solution, no move list and no
+        // way to ask for one — the app going quiet at exactly the moment it has something to say.
+        // A composition change is a rebuild, which is precisely the answer refreshScreen() gets
+        // from update() on a screen with no walk to replace.
+        const now = classifyCube();
+        if (now.solvable !== walking || now.unsolvable !== unsolvable) { refreshScreen(); return; }
         paintNet(f);
         cube.setAttribute('facelets', f);
       };
@@ -3656,21 +3763,6 @@ const cubeScreen = (screenMode) => {
         setStatus('working…');
       }
 
-      /**
-       * And when there turns out to be no walk at all.
-       *
-       * The reason is the message, and it used to be one sentence for four different failures:
-       * the solver never loaded, no scramble could be rolled, the worker died, the oracle refused
-       * the answer. "Could not work it out" blames the CUBE for every one of them, and offers
-       * re-scanning as the remedy even when the cube is blameless and re-scanning cannot help
-       * (found by audit, 2026-09-04). Each one now says what happened and what to do instead —
-       * and none of them says a move count is impossible, which two-phase cannot know.
-       */
-      const WALK_FAILURES = {
-        'solver unavailable': 'the solver did not load — reload the app',
-        'no scramble': 'a scramble could not be rolled — try again',
-        'cross-check': 'the answer did not check out — read the cube again',
-      };
       function failWalk(err) {
         const key = String(err?.message ?? err ?? '');
         refuseFollow('Needs a solve worked out on this screen');
@@ -4139,7 +4231,22 @@ SCREENS.timer = () => {
           });
           return;
         }
-        const rolled = await randomScramble();
+        // A roll that THREW says the same thing to a user as one that came back empty: there is
+        // no scramble, and the button is the retry. It used to say nothing at all — `newScr` is
+        // wired straight to onclick, so the rejection left the click handler as an unhandled
+        // promise and the screen sat on the old scramble with no explanation. The engine raises
+        // here for real (eight budget escalations, or a pool that cannot spawn a worker).
+        let rolled;
+        try {
+          rolled = await randomScramble();
+        } catch (err) {
+          if (!root.isConnected || state.screen !== 'timer') return;
+          console.error('scramble could not be rolled', err);
+          // The scramble already in play is left exactly as it is: it is still the one this
+          // screen would record a solve against, and blanking it would lose that too.
+          say(t('A scramble could not be worked out — press New scramble to try again.'));
+          return;
+        }
         // RE-CHECKED after the await, not only before it. A roll is a real Kociemba search now,
         // so seconds can pass inside this call — long enough to press the clock and start a solve.
         // Landing then would file that solve under a scramble shown after it began, and disarm the
@@ -4228,13 +4335,19 @@ SCREENS.timer = () => {
         clock.textContent = r.seconds;
         // `inspectionMs` is host-clocked at both ends and therefore coarser than the solve; it is
         // stored as-is (or omitted) rather than rounded into looking as precise as `time`.
-        record(r.seconds, {
+        const saved = record(r.seconds, {
           source: 'cube',
           moves: r.moves,
           ...(r.inspectionMs === null ? {} : { inspectionMs: r.inspectionMs }),
         });
         auto.reset();
-        say(MANUAL);
+        // ONLY ON A SUCCESSFUL WRITE. `record()` puts the "that time is on the clock but was NOT
+        // saved" sentence on this same line, and saying the idle hint straight after wiped it in
+        // the same task — no frame ever carried it. The cube-timed solve is exactly where that
+        // matters most: nobody pressed anything, so a time that quietly failed to store looks
+        // like the app deciding the solve did not count. The hand-stopped path says MANUAL
+        // BEFORE it records, which is why it never had this bug.
+        if (saved) say(MANUAL);
         renderLast();
       };
       clock.onclick = toggle;
@@ -5294,11 +5407,17 @@ window.cubusFeed = {
   /** Stand in for a paired driver. Setting `state.connected` alone is deliberately not enough —
    *  a flag saying "connected" with nothing behind it must fall back to the camera, which is its
    *  own test. This is the SAME call doConnect makes, not a lookalike: the address is part of a
-   *  connection, and identity is what the registry keys on. */
+   *  connection, and identity is what the registry keys on — so the key is RESOLVED here the way
+   *  connectOnce resolves it, from the session's own address and its name. `mac` stands in for
+   *  the address a real protocol layer would have published on the session; a fake that carries
+   *  its own `mac` (including the empty one five of the ten protocols report) overrides it, which
+   *  is how an addressless cube can be driven through this seam at all. */
   useConnection: (fake, mac = 'AA:BB:CC:DD:EE:FF') => {
     conn = fake;
-    if (fake) adoptConnection(mac, 'Test cube');
-    else onDisconnect();
+    if (fake) {
+      const session = { mac: fake.mac ?? mac, name: fake.name ?? 'Test cube' };
+      adoptConnection(sessionIdentity(session), session.name);
+    } else onDisconnect();
     // doConnect reads the battery on connect; a stand-in that skipped it would leave every test
     // looking at the "unknown" state and quietly never exercise the meter at all.
     if (fake) void refreshBattery();

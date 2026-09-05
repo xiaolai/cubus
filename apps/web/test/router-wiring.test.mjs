@@ -1646,6 +1646,36 @@ test('finishing a scramble offers to solve it — on a press, and as a generated
   }
 });
 
+// The hand-off carries a setup alg with the cube, which is the one path where a solution arrives
+// without a search: it is that alg inverted. `takeDerivation` used to repeat all of finishSolve —
+// the oracle applying the solution, the assignment, the tokenizer, the per-step states — and then
+// record the result as UNVERIFIED, so the first use of the cube ran every one of them a second
+// time. Two copies of one rule is how one copy quietly stops being verified, and this one had
+// already drifted: the flag denied a check cubejs had just performed and passed.
+test('a carried solution arrives CHECKED, committed once, with its steps already built', async () => {
+  const { state } = await import('../lib/app.js');
+  const prev = { facelets: state.cube.facelets, physical: state.cube.isPhysical, source: state.cube.source, trusted: state.cube.trusted };
+  try {
+    const { moves, target } = await mountScramble();
+    stepTo(moves.length, moves.length);
+    // Synchronous: the adoption happens on the press, and the route change does not land until
+    // the hashchange task — so this reads the state the COMMIT left, with no screen involved.
+    win.document.querySelector('#solveItBtn').click();
+    assert.equal(state.cube.facelets, target, 'precondition: the hand-off adopted the scramble target');
+    assert.ok(state.cube.solution, 'the carried alg IS the answer, inverted — there is nothing to search for');
+    assert.equal(state.cube.crossChecked, true,
+      'cubejs applied this solution to these facelets and found them solved; recording that as unverified made the whole commit run again');
+    assert.equal(state.cube.moves.length, state.cube.solution.trim().split(/\s+/).length, 'tokenized once');
+    assert.equal(state.cube.stepFacelets.length, state.cube.moves.length + 1, 'and the per-step states are already there');
+    assert.equal(state.cube.derived, true);
+    assert.equal(state.cube.unsolvable, false, 'an arrangement a real alg reaches is a real arrangement');
+    await tick();
+  } finally {
+    state.cube.facelets = prev.facelets; state.cube.isPhysical = prev.physical;
+    state.cube.source = prev.source; state.cube.trusted = prev.trusted;
+  }
+});
+
 test('with a trusted cube at the target, the hand-off solves the cube itself and adopts nothing', async () => {
   const { state } = await import('../lib/app.js');
   const prev = { facelets: state.cube.facelets, physical: state.cube.isPhysical, source: state.cube.source };
@@ -1767,4 +1797,91 @@ test('phase 4: every timer-screen sentence goes through t()', async () => {
   const body = src.slice(src.indexOf('SCREENS.timer = () => {'), src.indexOf('SCREENS.settings = () => {'));
   const raw = [...body.matchAll(/say\((['"])(?!.*\$\{)([A-Z][^'"]{4,})\1\)/g)].map((m) => m[2]);
   assert.deepEqual(raw, [], `these timer sentences bypass t(): ${raw.join(' | ')}`);
+});
+
+// ── A roll that produces nothing ───────────────────────────────────────────────────────────────
+//
+// Rolling a scramble IS a solve (AGENTS.md, 2026-08-31), so it fails the way a solve fails — and
+// both screens that press for one used to drop that failure on the floor. The Timer's handler is
+// wired straight to onclick, so a rejection left the click as an unhandled promise while the
+// screen sat on the old scramble saying nothing; Home's die awaited the roll outside its own
+// try/catch and returned in silence when it came back empty. A press that can fail has to say so.
+
+/** Run `fn` with the platform's cryptographic source taken away.
+ *
+ *  This is the app's own loud failure arriving from the one place a roll cannot work around:
+ *  random-state.js draws every scramble from `crypto.getRandomValues` and refuses to fall back to
+ *  Math.random(), so no entropy means no cube — which is exactly a roll that cannot answer. */
+const withoutEntropy = async (fn) => {
+  const real = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  Object.defineProperty(globalThis, 'crypto', {
+    value: { getRandomValues() { throw new Error('no cryptographic source (test)'); } },
+    configurable: true,
+    writable: true,
+  });
+  try { return await fn(); } finally { Object.defineProperty(globalThis, 'crypto', real); }
+};
+
+test('the Timer says a scramble could not be rolled, and keeps the one in play', async () => {
+  win.location.hash = '#/timer';
+  await tick();
+  const scr = () => win.document.querySelector('#scr');
+  const hint = () => win.document.querySelector('#timerHint');
+  assert.ok(await waitFor(() => /^[URFDLB]/.test(scr().textContent || '')), 'precondition: a scramble is on screen');
+
+  await withoutEntropy(async () => {
+    const said = () => /scramble could not be worked out/i.test(hint().textContent || '');
+    // The first press may be handed the cube rolled ahead of it — there is at most one, and no
+    // more can be rolled now — so it is the SECOND press that has to roll on the spot, and its
+    // failure is the one this is about.
+    win.document.querySelector('#newScr').click();
+    await waitFor(said, 1000);
+    const inPlay = scr().textContent;
+    win.document.querySelector('#newScr').click();
+    await waitFor(said, 2000);
+    assert.ok(said(),
+      `the press was answered with "${hint().textContent}" — and, before that, with an unhandled rejection`);
+    assert.equal(scr().textContent, inPlay,
+      'the scramble already in play is what a solve would be recorded against; a failed roll must not lose it');
+  });
+});
+
+test('the die on the cube screen says a roll failed, where it says everything else', async () => {
+  // The die is a developer affordance on the solve side, so Advanced has to be open for it to
+  // exist at all — the same door the toggle test above uses.
+  win.location.hash = '#/settings';
+  await tick();
+  win.document.dispatchEvent(chord());
+  await tick();
+  const toggle = () => win.document.querySelector('[data-toggle="devRandCube"]');
+  assert.ok(toggle(), 'precondition: the die has a toggle in Advanced');
+  toggle().click();
+  await tick();
+  try {
+    await scrambledHome(); // a cube with a walk, so the screen has its status line
+    const status = () => win.document.querySelector('#moveCount');
+    assert.ok(status(), 'precondition: the solution card is on screen');
+    await withoutEntropy(async () => {
+      const said = () => /scramble could not be rolled/i.test(status()?.textContent || '');
+      // At most one roll can be waiting ahead of the press, so the second has to roll on the
+      // spot; the third press is slack for the solve the first one starts (the die is held
+      // while it runs, and a press it ignores is not the press being measured).
+      for (let press = 0; press < 3 && !said(); press++) {
+        const die = win.document.querySelector('#randCube');
+        assert.ok(die, 'precondition: the die is drawn');
+        if (!die.disabled) die.click();
+        await waitFor(said, 1500);
+      }
+      assert.ok(said(),
+        `the press changed nothing and said "${status()?.textContent}" — a count still describing the previous cube`);
+    });
+  } finally {
+    // Off through the same UI, so later tests see the default screen.
+    win.location.hash = '#/settings';
+    await tick();
+    toggle()?.click();
+    await tick();
+    win.location.hash = '#/home';
+    await tick();
+  }
 });
