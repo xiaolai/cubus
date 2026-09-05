@@ -446,6 +446,14 @@ mod write_atomic_tests {
     /// and gone unobserved (the audit's finding, 2026-09-05). The guarantee is about every
     /// instant the file is visible, so every instant is looked at: each read must be a whole
     /// payload from the allowed set, or the file must not be there at all.
+    ///
+    /// **And the reader must be given something to see.** One whole payload is published before
+    /// the reader starts, and the writers are held until it has read one — so `reads > 0` at the
+    /// end is a fact about the code rather than about the scheduler. It used to be neither: the
+    /// reader had to be scheduled AND find a file before eight writers finished forty renames
+    /// between them, which is a green run that verified nothing when it lost that race narrowly
+    /// and a spurious failure when it lost it badly (the audit's finding, 2026-09-05, reproduced
+    /// by delaying the reader 300 ms).
     #[test]
     fn concurrent_writers_never_publish_each_others_fragments() {
         use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -454,6 +462,8 @@ mod write_atomic_tests {
         let payloads: Vec<Vec<u8>> = (0..8u8).map(|i| vec![i; 200_000]).collect();
         let done = AtomicBool::new(false);
         let reads = AtomicU64::new(0);
+        // The file the reader is guaranteed to find, published while nothing else is running.
+        write_atomic(&target, &payloads[0]).unwrap();
         std::thread::scope(|scope| {
             {
                 let target = target.clone();
@@ -480,11 +490,24 @@ mod write_atomic_tests {
                     }
                 });
             }
+            let reads = &reads;
             let writers: Vec<_> = payloads
                 .iter()
                 .map(|p| {
                     let target = target.clone();
                     scope.spawn(move || {
+                        // Held until the reader has seen the pre-published file, so the one thing
+                        // it is guaranteed to find is still there when it looks. A DEADLINE and
+                        // not a barrier: a reader that died has its own assertion waiting for it
+                        // at the end, and must not ALSO hang the suite here — the same reason
+                        // the joins below are collected before `done` is stored.
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(10);
+                        while reads.load(Ordering::Relaxed) == 0
+                            && std::time::Instant::now() < deadline
+                        {
+                            std::thread::yield_now();
+                        }
                         for _ in 0..5 {
                             write_atomic(&target, p).unwrap();
                         }
@@ -758,6 +781,16 @@ mod write_atomic_tests {
     /// have reached its own sync yet, or may die before it does. A saver that returns `Ok` on the
     /// strength of another process's unfinished work has published nothing. Found by the audit's
     /// verification pass, 2026-09-05.
+    ///
+    /// **Starting the two together does not make them race**, and the fix this test stands for
+    /// lives entirely in the branch a non-race never enters. One saver can finish outright before
+    /// the other begins; the second then walks the tree, finds the target already a directory,
+    /// syncs its parent and returns — never calling `create_dir` at all, so `AlreadyExists` is
+    /// never taken while every assertion here passes (the audit's finding, 2026-09-05, reproduced
+    /// by serializing the two calls: green, and testing nothing). So there is a SECOND barrier,
+    /// inside the first sync: both savers are held there after each has walked the tree and found
+    /// the target missing, and before either can create it. Both therefore go on to `create_dir`,
+    /// and exactly one of them loses.
     #[test]
     fn two_savers_racing_to_create_one_directory_both_publish_it() {
         use super::create_dirs_with;
@@ -766,19 +799,25 @@ mod write_atomic_tests {
         let seen: std::sync::Mutex<Vec<(usize, std::path::PathBuf, bool)>> =
             std::sync::Mutex::new(Vec::new());
         let start = std::sync::Barrier::new(2);
-        let (seen, start, target) = (&seen, &start, &target);
+        let both_walked = std::sync::Barrier::new(2);
+        let (seen, start, both_walked, target) = (&seen, &start, &both_walked, &target);
 
         std::thread::scope(|s| {
             for who in 0..2 {
                 s.spawn(move || {
                     start.wait();
+                    let mut walking = true;
                     create_dirs_with(target, &mut |at| {
                         // Recorded WITH the fact that decides the question: whether the directory
                         // existed at the moment of the sync. A sync before it is created cannot
-                        // have published it.
+                        // have published it. Recorded BEFORE the barrier, so both savers write
+                        // "not there yet" whichever order they arrive in.
                         seen.lock()
                             .expect("the recording lock is never poisoned")
                             .push((who, at.to_path_buf(), target.is_dir()));
+                        if std::mem::take(&mut walking) {
+                            both_walked.wait();
+                        }
                         Ok(())
                     })
                     .expect("losing the race is not a failure");
@@ -790,9 +829,24 @@ mod write_atomic_tests {
         let seen = seen.lock().expect("the recording lock is never poisoned");
         let parent = d.clone();
         for who in 0..2 {
+            let mine: Vec<_> = seen.iter().filter(|(w, ..)| *w == who).collect();
+            // TWO syncs is what says this saver went through `create_dir`: the directory it
+            // FOUND, then the one it made — or found already made, which is the branch. A saver
+            // that arrived after the target existed makes exactly ONE call, and that one-call
+            // shape used to satisfy everything below.
+            assert_eq!(
+                mine.len(),
+                2,
+                "saver {who} never attempted the creation, so it never met `AlreadyExists`: \
+                 {seen:?}"
+            );
             assert!(
-                seen.iter()
-                    .any(|(w, at, existed)| *w == who && *at == parent && *existed),
+                !mine[0].2,
+                "saver {who} walked the tree with the directory already there, so it was not \
+                 racing anyone: {seen:?}"
+            );
+            assert!(
+                mine[1].1 == parent && mine[1].2,
                 "saver {who} returned Ok, so it synced {} itself with the directory already \
                  there — waiting on the other one's fsync is not publishing: {seen:?}",
                 parent.display()
