@@ -75,6 +75,41 @@ test('the Android activity re-pushes after the document can exist', () => {
   assert.match(kotlin, /postDelayed/, 'MainActivity.kt should re-push the insets after page load');
 });
 
+test('the Android activity also offers the insets for the web side to PULL at boot', () => {
+  // The push rests on an 800 ms guess about when the document exists. The pull channel —
+  // `window.cubusInsets.get()` returning `{"t","r","b","l"}` in CSS px, or `null` before the
+  // first dispatch — is what lets app.js read the insets whenever IT is ready, so a first paint
+  // never depends on the timer having guessed well. The interface name is the contract; app.js
+  // reads it by this exact string.
+  assert.match(kotlin, /addJavascriptInterface\(InsetsBridge\(\), INSETS_INTERFACE\)/);
+  assert.match(kotlin, /const val INSETS_INTERFACE = "cubusInsets"/);
+  assert.match(kotlin, /@JavascriptInterface\s*\n\s*fun get\(\): String/);
+});
+
+// The other half of that channel, which is what makes it worth having: a bridge nobody reads is
+// the same as no bridge. app.js pulls at boot, BEFORE the first screen renders, so a first paint
+// never depends on the 800 ms push having guessed well.
+test('app.js pulls the insets at boot, and refuses a payload it cannot trust', () => {
+  const app = readFileSync(path.join(root, 'lib/app.js'), 'utf8');
+  assert.match(app, /window\?\.cubusInsets/, 'app.js must read the interface MainActivity registers');
+  assert.match(app, /if \(platform === 'android'\) pullAndroidInsets\(\);/,
+    'and read it during boot, before the first render');
+  const fn = /function pullAndroidInsets\(\) \{([\s\S]*?)\n\}/.exec(app);
+  assert.ok(fn, 'the pull is a named function so this test can read it');
+  // `"null"` is the honest answer before the first dispatch, and leaving it alone is what keeps
+  // env()'s fallback standing rather than writing four zeroes over it.
+  assert.match(fn[1], /raw === 'null'/, "the pre-dispatch answer must be left alone, not written as 0");
+  // It crosses a JNI bridge as TEXT. A malformed number reaching setProperty is a silently broken
+  // layout rather than an error, which is the one failure mode this whole chain exists to avoid.
+  assert.match(fn[1], /Number\.isFinite/, 'the payload is untrusted input and must be checked');
+  for (const [side] of SIDES) {
+    assert.ok(
+      fn[1].includes('`--os-inset-${k}`') || fn[1].includes(`--os-inset-${side}`),
+      `the pull must write --os-inset-${side}`,
+    );
+  }
+});
+
 // --- where the BOTTOM inset lives -------------------------------------------------------------
 // Reported from a real iPad screenshot: a strip of paper under the tab bar, because .app padded
 // itself by the bottom inset and the bar (a --panel background) stopped short of the screen edge.

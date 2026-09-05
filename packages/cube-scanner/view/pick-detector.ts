@@ -1,13 +1,116 @@
-import type { Detector } from '../src/detector.js';
+import type { Detector, DetectorSource } from '../src/detector.js';
 import { CUBE_VISION, type Invoke, NativeDetector } from './native-detector.js';
 import { WebDetector } from './web-detector.js';
 
 /** Which inference backend a panel ended up on. */
 export type ScanRuntime = 'native' | 'web';
 
+/** A chosen detector, and what a later owner needs to know about it. */
+export interface DetectorChoice {
+  detector: Detector;
+  runtime: ScanRuntime;
+  /** True once this detector's model is loaded — carried with it, so a re-mount does not reload. */
+  modelLoaded: boolean;
+  /**
+   * WHICH model `modelLoaded` is about, or null when nothing is loaded.
+   *
+   * The flag alone is a claim with no subject, and a parked detector is precisely where the
+   * subject can change: `pickDetector` re-points it at the NEW owner's `modelUrl`, so a panel
+   * asking for model B was handed a detector whose flag said "loaded" about model A — and the
+   * panel then skipped `load()` and scanned with the previous owner's model, reporting nothing
+   * unusual. The URL travels with the flag so the claim can be checked.
+   *
+   * It comes from the DETECTOR (`Detector.loadedModel`), never from the parking owner's getter —
+   * see `CameraSession.modelHeldBy`. Filling it from the owner is how the same silence came back
+   * once already: the getter names the model being asked for, and a host that re-points it before
+   * disconnecting parked model A under model B's name.
+   */
+  modelUrl: string | null;
+}
+
+/**
+ * THE PAGE'S ONE DETECTOR, parked between `<ai-scan-panel>` mounts.
+ *
+ * A detector owns an InferenceSession — a wasm heap or a GPU device — plus a 1–5 s model load, and
+ * every visit to the scan screen built a fresh one: `stage.innerHTML` is replaced, the old panel
+ * disconnects, a new panel connects, and the old session was never released by anything. The page
+ * accumulated one live session per visit.
+ *
+ * The fix is the `<cubus-cube>` rule, which the app already applies to the WebGL context for
+ * exactly this reason: park one instance between renders rather than rebuilding it. So:
+ *
+ *   - `pickDetector` hands out the parked one when there is one, re-pointed at the new owner's
+ *     `<video>` and model URL (`Detector.retarget`) — a detector still driving the previous
+ *     panel's detached shadow root is a camera nobody can see.
+ *   - `parkDetector` takes it back when the owner disconnects, stopping the CAMERA and keeping the
+ *     MODEL. That is the whole distinction `Detector.stop` and `Detector.dispose` exist to draw.
+ *   - Exactly ONE is kept. While it is lent out the slot is null, so a second panel alive at the
+ *     same time gets a detector of its own rather than fighting over one camera — and that one is
+ *     disposed when it is handed back, because a quiet session leak is worse than a rebuild. This
+ *     is the same rule `<cubus-cube>` states as "a detached, unparked cube releases itself".
+ *   - Nothing is parked automatically. An injected detector (`CameraSession.use`, the test seam)
+ *     belongs to its caller and must never reach a page-wide slot, so the session tracks which of
+ *     the two it holds and only offers the one that came from here.
+ */
+let parked: DetectorChoice | null = null;
+
+/**
+ * Give the page's detector back, or dispose it if the slot is already taken.
+ *
+ * `stop()` and not `dispose()`: the camera is released and the compiled model is kept, which is
+ * the entire point of parking. The only thing parking may cost is a lens left on.
+ */
+export function parkDetector(choice: DetectorChoice): void {
+  choice.detector.stop();
+  if (parked && parked.detector !== choice.detector) {
+    choice.detector.dispose?.();
+    return;
+  }
+  parked = choice;
+}
+
+/** What the page is keeping, or null while it is lent out. Reading it never takes it. */
+export function parkedDetector(): DetectorChoice | null {
+  return parked;
+}
+
+/**
+ * Release the page's parked detector, model and all. The next scan builds a fresh one.
+ *
+ * For a host that genuinely wants the memory back — and for tests, which must not carry one
+ * page's session into the next case.
+ */
+export function disposeParkedDetector(): void {
+  const kept = parked;
+  parked = null;
+  kept?.detector.dispose?.();
+  kept?.detector.stop();
+}
+
 interface TauriGlobal {
   __TAURI__?: { core?: { invoke?: Invoke } };
 }
+
+/** The command a quiet rejection has to be ABOUT, escaped for use inside a pattern. */
+const PROBE = `${CUBE_VISION}probe`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The two shapes Tauri uses for "this command is not in this build", each NAMING the command.
+ *
+ * NAMING IT IS THE WHOLE POINT (2026-09-05). This was `/not found|unknown command/`, which is a
+ * test on the WORDS and not on the subject, and "not found" is the commonest two words in a
+ * platform failure: a missing native runtime library, a model path, a device. Any of those
+ * arriving from a plugin that IS installed was downgraded to "no plugin on this platform" and
+ * logged at `info` — the silence this whole branch exists to break, restored by the matcher meant
+ * to protect it. The phrase now has to sit next to the command's own name, so a rejection that
+ * merely mentions something else was not found stays loud.
+ */
+const NOT_REGISTERED = [
+  // `Command plugin:cube-vision|probe not found`
+  new RegExp(`(?:^|\\s)(?:command\\s+)?${PROBE}\\s+not found\\b`, 'i'),
+  // `unknown command: plugin:cube-vision|probe`
+  new RegExp(`unknown command:?\\s+${PROBE}\\b`, 'i'),
+];
 
 /**
  * Is this rejection just "there is no such command here"?
@@ -27,7 +130,7 @@ interface TauriGlobal {
  */
 function absentCommand(err: unknown): boolean {
   const text = typeof err === 'string' ? err : ((err as Error)?.message ?? '');
-  return /not found|unknown command/i.test(text);
+  return NOT_REGISTERED.some((shape) => shape.test(text));
 }
 
 /**
@@ -46,10 +149,29 @@ function absentCommand(err: unknown): boolean {
  * and the model URL can be set by an attribute after construction, so taking either by value here
  * would capture whatever happened to be true at selection time.
  */
-export async function pickDetector(opts: {
-  video: () => HTMLVideoElement;
-  modelUrl: () => string;
-}): Promise<{ detector: Detector; runtime: ScanRuntime }> {
+export async function pickDetector(opts: DetectorSource): Promise<DetectorChoice> {
+  // The page already has one, and it is not in use: take it, and point it at this owner. The
+  // probe is not repeated either — which runtime this build has cannot change between two mounts
+  // of the same element on the same page.
+  const kept = parked;
+  if (kept) {
+    parked = null;
+    kept.detector.retarget?.(opts);
+    // THE MODEL IS ONLY LOADED IF IT IS THIS OWNER'S MODEL. `retarget` has just changed which URL
+    // the detector answers for, so carrying the flag across unchecked told the new panel its model
+    // was ready when what is compiled is the PREVIOUS owner's. `load()` was then skipped and the
+    // scan ran on the wrong model, which produces readings rather than errors.
+    //
+    // Compared as the STRINGS the two owners' `modelUrl` getters produce, not as resolved URLs:
+    // this module runs where there may be no document to resolve against, and the two failures are
+    // not symmetrical. A false MISMATCH costs one call to an idempotent `load()` that returns at
+    // once; a false MATCH is the wrong model, silently. String equality can only produce the first.
+    const wanted = opts.modelUrl();
+    if (kept.modelLoaded && kept.modelUrl !== wanted) {
+      return { detector: kept.detector, runtime: kept.runtime, modelLoaded: false, modelUrl: null };
+    }
+    return kept;
+  }
   const invoke = (globalThis as TauriGlobal).__TAURI__?.core?.invoke;
   if (invoke) {
     try {
@@ -59,7 +181,12 @@ export async function pickDetector(opts: {
       // on a native path whose commands then fail one frame at a time. Only the one answer the
       // plugin promises counts as yes.
       if ((await invoke(`${CUBE_VISION}probe`)) === true) {
-        return { detector: new NativeDetector(invoke), runtime: 'native' };
+        return {
+          detector: new NativeDetector(invoke),
+          runtime: 'native',
+          modelLoaded: false,
+          modelUrl: null,
+        };
       }
     } catch (err) {
       // The browser path is what every build has, so falling through is always right. But
@@ -80,5 +207,10 @@ export async function pickDetector(opts: {
       );
     }
   }
-  return { detector: new WebDetector(opts.video, opts.modelUrl), runtime: 'web' };
+  return {
+    detector: new WebDetector(opts.video, opts.modelUrl),
+    runtime: 'web',
+    modelLoaded: false,
+    modelUrl: null,
+  };
 }

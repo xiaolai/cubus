@@ -4,7 +4,10 @@ version = "0.1.0"
 license = "AGPL-3.0-only"
 description = "Native camera capture + CoreML inference for cubus, as a Tauri plugin. The one sanctioned command-bearing native capability (AGENTS.md, 2026-08-26): it sits behind the Detector seam the browser build also implements, so both builds stay the same app."
 edition = "2021"
-rust-version = "1.77.2"
+# The floor the dependency tree actually needs (measured 2026-09-05 by the build agent over every
+# target: 80 crates above 1.77, the highest at 1.88 — darling, icu_*, ort, time, plist — and 39
+# edition-2024 crates). "1.77.2" was a claim nothing checked; the MSRV CI job now reads this value.
+rust-version = "1.88"
 publish = false
 # Required by tauri-plugin so the app's build can discover this plugin's permission schema.
 links = "cube-vision"
@@ -17,6 +20,9 @@ tauri = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
+# `infer_frame` carries its still frame as base64 on EVERY platform (src/frame.rs): a `Vec<u8>`
+# crosses Tauri's bridge as a JSON array of numbers, ~4 bytes of text per pixel byte.
+base64 = "0.22"
 
 # Windows gets its own native path: Media Foundation for frames (nokhwa), onnxruntime with the
 # DirectML execution provider for the model (ort). Windows-only on purpose — every dependency here
@@ -29,10 +35,18 @@ log = "0.4"
 # see the provider list there. No `ndarray` feature: tensors are built from a flat Vec and a shape
 # tuple, and enabling it only pulls ort into a version fight with whatever ndarray the tree resolves.
 # `std` IS needed though: `default-features = false` drops it, and `commit_from_file` lives behind it.
+#
+# `copy-dylibs`: the pyke `directml` distribution ships `DirectML.dll` (18.5 MB, verified by listing
+# the archive on 2026-09-05) and `ort-sys` links it statically-by-import — the EP still loads the
+# DLL at runtime from beside the executable. With this feature ort-sys copies every DLL from its
+# extraction dir into `target/<profile>/` (and `deps/`), so `cargo test`/`cargo run` on Windows can
+# register DirectML at all. It does NOT ship it: bundling is the release workflow's job (a static
+# `bundle.resources` entry cannot name that file — tauri-build copies resources at cargo-build time
+# and fails on a missing one, and cargo does not order this crate's build script after ort-sys's
+# extraction). `load_model` logs which provider a session actually got, so a CPU fallback is visible.
 [target.'cfg(target_os = "windows")'.dependencies]
-ort = { version = "2.0.0-rc.10", default-features = false, features = ["std", "download-binaries", "tls-rustls", "directml"] }
+ort = { version = "2.0.0-rc.10", default-features = false, features = ["std", "download-binaries", "tls-rustls", "directml", "copy-dylibs"] }
 nokhwa = { version = "0.10", features = ["input-msmf"] }
-base64 = "0.22"
 
 # Generates the command permission ACL the app's capability references. Runs on every host, so the
 # desktop build resolves `cube-vision:default` on Linux CI too (where the commands are inert).

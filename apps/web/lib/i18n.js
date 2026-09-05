@@ -42,8 +42,51 @@ export function availableLocales() {
  */
 export function setLocale(tag) {
   active = catalogs.get(tag) ?? null;
+  activeTag = active ? tag : 'en';
+  // The DOCUMENT'S language, not just the catalog's. `<html lang>` is what a screen reader picks
+  // its voice and its pronunciation rules from, what a browser offers to translate against, and
+  // what CSS `:lang()` and hyphenation read; leaving it at `en` while the app speaks another
+  // language is the whole page lying about itself in the one place assistive software looks.
+  // Guarded, because this module is used from plain Node tests with no document.
+  const html = globalThis.document?.documentElement;
+  if (html) html.lang = active ? tag : 'en';
   return active !== null || tag === 'en';
 }
+
+/**
+ * One / many, chosen by the language rather than by an `n === 1` written at the call site.
+ *
+ * English plurals were hard-coded in a dozen templates (`solve${n === 1 ? '' : 's'}`), which is
+ * both untranslatable and wrong for most languages — Chinese has no plural inflection at all,
+ * Russian has three forms. `Intl.PluralRules` knows the answer for the ACTIVE locale, and the
+ * caller supplies the forms it has; a language needing a form nobody wrote falls back to
+ * `other`, which is the form every language declares.
+ *
+ * The forms go through `t()` themselves, so a catalog translates them as ordinary sentences —
+ * which is what keeps this a helper rather than a second, parallel translation mechanism.
+ *
+ * @param {number} n
+ * @param {Record<string, string>} forms  keyed by Intl category: one, other, and any of
+ *   zero/two/few/many the language uses. `%1` in a form is substituted with `n`.
+ */
+export function plural(n, forms) {
+  let category = 'other';
+  try {
+    category = new Intl.PluralRules(activeTag).select(n);
+  } catch {
+    // An engine without Intl.PluralRules, or a tag it will not parse. English's own rule is the
+    // honest fallback for a file whose keys are English.
+    category = n === 1 ? 'one' : 'other';
+  }
+  const form = forms[category] ?? forms.other;
+  return t(form, n);
+}
+
+/** The active tag, for Intl. English is the source language, so an inactive catalog is 'en'. */
+let activeTag = 'en';
+/** What Intl should format in. Exported because the app formats dates and relative times too,
+ *  and they must agree with the sentences around them. */
+export const locale = () => activeTag;
 
 /**
  * Pick the startup locale: an explicit choice wins; otherwise the browser's language, matched
@@ -51,7 +94,14 @@ export function setLocale(tag) {
  * nothing — which is today.
  */
 export function initLocale(preferred) {
-  const want = preferred || (typeof navigator !== 'undefined' ? navigator.language : '') || 'en';
+  // STRINGS ONLY. `preferred` comes from settings, which comes from localStorage, which is
+  // untrusted input — and a truthy non-string sailed past the `||` and reached `.toLowerCase()`,
+  // where it threw. That throw happened inside boot() before the first route was applied, so a
+  // stored `language: 7` did not degrade the language picker: it left the app with a blank stage
+  // (found 2026-09-04 by the hostile-settings suite). A tag that is not a string is not a tag.
+  const asked = typeof preferred === 'string' ? preferred : '';
+  const fromNav = typeof navigator !== 'undefined' && typeof navigator.language === 'string' ? navigator.language : '';
+  const want = asked || fromNav || 'en';
   if (setLocale(want) && catalogs.has(want)) return want;
   const base = want.toLowerCase().split('-')[0];
   if (catalogs.has(base)) {

@@ -9,6 +9,7 @@
 use crate::coords::{Coords, MoveTables, CORNER_N, EDGE_N, N_FLIP6, N_MOVES, N_TWIST};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Exhaustively measured depth histograms, asserted exactly by the generator — the strongest
 /// single check this crate has. The corner and first-edge-set histograms are §7's own numbers
@@ -78,10 +79,19 @@ impl Kind {
     }
 }
 
-/// A generated, validated database: packed nibbles plus the histogram that certified it.
-/// Fields are PRIVATE on purpose — the only ways to hold a Pdb are generation (which
-/// certifies exhaustively) and deserialization (which refuses corruption), and nothing may
-/// mutate one afterwards: a "validated" struct anyone can edit is a claim, not a property.
+/// A database: packed nibbles plus the histogram that goes with them. Fields are PRIVATE on
+/// purpose — the only ways to hold one are generation and deserialization, and nothing may
+/// mutate one afterwards: an invariant anyone can edit is a claim, not a property.
+///
+/// **What holding one does and does not prove** (corrected 2026-09-05; the older wording said
+/// "validated" for both doors and overstated the weaker one). Both doors establish that the
+/// depths present are the exhaustively measured MULTISET — every entry initialised, the
+/// histogram exact, the diameter unmoved. Neither establishes that each depth is at its right
+/// INDEX: a swap of two entries of different depths leaves the multiset untouched, so it walks
+/// through the file checks (`a_resealed_nibble_swap_passes_the_file_checks_and_bellman_on_load_refuses_it`).
+/// Only [`bellman_validate`] pins entries to places, and it is what both `Tables::generate` and
+/// `Tables::load` run before a `Tables` exists — so a *certified* table is a `Tables`, and a
+/// `Pdb` on its own is a structurally sound one.
 pub struct Pdb {
     kind: Kind,
     nibbles: Vec<u8>,
@@ -136,60 +146,160 @@ fn solved_index(kind: Kind) -> usize {
     }
 }
 
-/// Exhaustive BFS from solved over the whole coordinate space. Byte distances during the
-/// search (255 = unvisited), packed to nibbles only after every certification has held.
+/// How much of a level's scan runs before `progress` is offered a number — the same 4M-entry
+/// beat the queue form reported at, so what the desktop's bar means does not change across the
+/// rewrite. Splitting a level's scan into segments is safe because the frontier test is `== d`
+/// and the only value ever written is `d + 1`: an entry marked by an earlier segment of the
+/// same level is never mistaken for a member of the level being scanned.
+const SCAN_SEGMENT: usize = 4_000_000;
+
+/// Expand one segment of the level-`d` frontier: every entry in `base..end` holding `d` marks its
+/// unmarked neighbours `d + 1`. Returns how many entries this segment claimed — a COUNT, not an
+/// estimate, which is what makes the caller's "reached every entry" check mean something.
+///
+/// It takes the WHOLE array plus a range rather than a slice: the scan is confined to the segment,
+/// the neighbours it marks are anywhere. Lifted out of `generate_levels` so that function reads as
+/// what it is — a level schedule with a progress rule and a termination rule — instead of burying
+/// them under two levels of parallel expansion (the audit's finding, 2026-09-05). The move is
+/// scheduling-neutral by construction and certified as such: every generated table still goes
+/// through the histogram, diameter and Bellman checks, which do not know how the array was filled.
+fn expand_segment(
+    kind: Kind,
+    tables: &MoveTables,
+    dist: &[AtomicU8],
+    base: usize,
+    end: usize,
+    d: u8,
+) -> u64 {
+    dist[base..end]
+        .par_iter()
+        .enumerate()
+        .with_min_len(1 << 16)
+        .map(|(offset, cell)| {
+            if cell.load(Ordering::Relaxed) != d {
+                return 0;
+            }
+            let idx = base + offset;
+            let mut marked = 0u64;
+            for m in 0..N_MOVES {
+                let nb = &dist[neighbor(kind, tables, idx, m)];
+                // Claim with a compare-exchange, not a load-then-store: two threads expanding
+                // different frontier entries reach common neighbours, and a plain store would let
+                // both count the same one. The exchange succeeds exactly once per entry, so the
+                // caller's `reached` is a count rather than an estimate. The load in front of it
+                // keeps the uncontended common case (an already-marked neighbour) a plain read.
+                if nb.load(Ordering::Relaxed) == 255
+                    && nb
+                        .compare_exchange(255, d + 1, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    marked += 1;
+                }
+            }
+            marked
+        })
+        .sum()
+}
+
+/// Exhaustive level-synchronous BFS from solved over the whole coordinate space (plan §8).
+///
+/// At depth `d` every entry is scanned and each one holding `d` marks its unmarked neighbours
+/// `d + 1`; the pass that marks nothing is the one past the diameter. That visits exactly the
+/// states the queue form visits at exactly the depths it assigns them — the frontier at level
+/// `d` IS the set of entries holding `d` — so this is a scheduling change, and the checks
+/// below (which do not know how the array was filled) certify it unchanged.
+///
+/// The point is memory. A `Vec<u32>` queue sized to the space is 352 MB for the corner table,
+/// live beside the distances and the packed output; the level form has no queue, so the
+/// distance array is the only large allocation. Byte distances during the search
+/// (255 = unvisited), packed to nibbles only after every certification has held.
 /// Certification failures are errors, not panics: the caller (a CLI, or the desktop's prepare
 /// command) refuses cleanly instead of unwinding a worker thread.
-pub fn generate(
+pub fn generate_levels(
     kind: Kind,
     tables: &MoveTables,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<Pdb, String> {
     let n = kind.entries();
-    let mut dist = vec![255u8; n];
-    let mut queue: Vec<u32> = Vec::with_capacity(n);
-    let start = solved_index(kind);
-    dist[start] = 0;
-    queue.push(start as u32);
-    let mut head = 0usize;
-    while head < queue.len() {
-        let idx = queue[head] as usize;
-        head += 1;
-        if head % 4_000_000 == 0 {
-            progress(head as u64, n as u64);
+    // `AtomicU8` is one byte with no padding, so this is n bytes and not a byte more — the
+    // atomics buy safe concurrent marking, not space. Relaxed throughout: the only ordering
+    // that matters is the barrier between levels, and that is the join at the end of each
+    // parallel pass, not anything a load or store here could express.
+    //
+    // Reserved once at the exact size, then filled. `collect()` measured identical on
+    // 2026-09-05 — its length is known, so it reserves rather than doubling — but that is a
+    // specialization, and this is the one function whose whole reason for existing is its
+    // peak: a growth by doubling would hold the half-size buffer beside the full one, which
+    // is 44 MB of surplus nobody would see in a test.
+    let mut dist: Vec<AtomicU8> = Vec::with_capacity(n);
+    dist.resize_with(n, || AtomicU8::new(255));
+    dist[solved_index(kind)].store(0, Ordering::Relaxed);
+    let mut reached: u64 = 1;
+    // Reported only when it MOVES. Every level after the last one that marks anything still
+    // scans the whole array, and reporting per segment regardless would hand the desktop
+    // thirty consecutive "done == total" events — the queue form sent exactly one, and its
+    // listener treats that as the cue to switch stages (measured 2026-09-05: the first
+    // level-form run printed the corner stage's completion twenty-plus times).
+    let mut reported: u64 = 0;
+    let mut d: u8 = 0;
+    loop {
+        // A level past the certified diameter cannot be real. Bail before scanning it rather
+        // than after packing: depth 15 is the reserved "uninitialised" nibble, and a runaway
+        // search that reached it would write a value the loader is entitled to read as absent.
+        if d > kind.diameter() {
+            return Err(format!("{kind:?}: depth {d} beyond the known diameter"));
         }
-        let d = dist[idx] + 1;
-        for m in 0..N_MOVES {
-            let nb = neighbor(kind, tables, idx, m);
-            if dist[nb] == 255 {
-                dist[nb] = d;
-                queue.push(nb as u32);
+        let mut marked_this_level: u64 = 0;
+        for base in (0..n).step_by(SCAN_SEGMENT) {
+            let end = (base + SCAN_SEGMENT).min(n);
+            let marked = expand_segment(kind, tables, &dist, base, end, d);
+            marked_this_level += marked;
+            reached += marked;
+            if reached != reported {
+                reported = reached;
+                progress(reached, n as u64);
             }
         }
+        if marked_this_level == 0 {
+            break;
+        }
+        d += 1;
     }
-    progress(n as u64, n as u64);
+    certify_and_pack(kind, reached, |i| dist[i].load(Ordering::Relaxed))
+}
 
+/// Certify a finished distance array and pack it into nibbles. Every generator ends here, so
+/// the certification and the packing cannot drift from one another: the only thing a generator
+/// gets to choose is the ORDER it reaches states in, and the checks below are indifferent to
+/// that by construction (plan §8 — this is what makes the rewrite a scheduling change).
+fn certify_and_pack<F>(kind: Kind, reached: u64, dist: F) -> Result<Pdb, String>
+where
+    F: Fn(usize) -> u8,
+{
+    let n = kind.entries();
     // Every reachable-space claim, certified rather than trusted.
-    if queue.len() != n {
+    if reached != n as u64 {
         return Err(format!(
-            "{kind:?}: BFS reached {} of {n} — a move table is wrong",
-            queue.len()
+            "{kind:?}: BFS reached {reached} of {n} — a move table is wrong"
         ));
     }
     let expected = kind.expected_histogram();
     let mut histogram = vec![0u64; expected.len()];
-    for &d in dist.iter() {
+    let mut deepest = 0u8;
+    for i in 0..n {
+        let d = dist(i);
         if d as usize >= expected.len() {
             return Err(format!("{kind:?}: depth {d} beyond the known diameter"));
         }
         histogram[d as usize] += 1;
+        deepest = deepest.max(d);
     }
     if histogram != expected {
         return Err(format!(
             "{kind:?}: depth histogram differs from the exhaustively measured one — a table is wrong\n  got      {histogram:?}\n  expected {expected:?}"
         ));
     }
-    if *dist.iter().max().unwrap() != kind.diameter() {
+    if deepest != kind.diameter() {
         return Err(format!("{kind:?}: diameter moved"));
     }
 
@@ -197,7 +307,8 @@ pub fn generate(
     // — so an unwritten nibble reads as "uninitialised", never as a plausible goal-distance
     // zero. (A zero-initialised buffer once made that claim false while looking identical.)
     let mut nibbles = vec![0xffu8; n.div_ceil(2)];
-    for (i, &d) in dist.iter().enumerate() {
+    for i in 0..n {
+        let d = dist(i);
         debug_assert!(d < 15);
         if i & 1 == 0 {
             nibbles[i >> 1] = (nibbles[i >> 1] & 0xf0) | d;
@@ -285,11 +396,22 @@ pub fn move_set_hash() -> [u8; 32] {
     h.finalize().into()
 }
 
+/// Everything before the histogram: magic + version + kind/metric/reserved + move-set hash +
+/// entry count + the histogram's own length byte.
+const HEADER_FIXED: usize = 8 + 4 + 4 + 32 + 8 + 1;
+
+/// The exact byte length of a well-formed artifact of this kind — fixed header, histogram,
+/// nibble payload, trailing hash. One derivation, read by `serialize` for its capacity and by
+/// the loader for its read bound: a size a reader guesses at is a size that can disagree with
+/// what a writer produces.
+pub fn serialized_len(kind: Kind) -> usize {
+    HEADER_FIXED + kind.expected_histogram().len() * 8 + kind.entries().div_ceil(2) + 32
+}
+
 pub fn serialize(pdb: &Pdb) -> Vec<u8> {
-    // Exact capacity, computed not guessed: magic + version + kind/metric/reserved + move-set
-    // hash + count + histogram length byte + histogram + payload + trailing hash. A wrong
-    // guess here silently reallocates tens of megabytes mid-append.
-    let exact = 8 + 4 + 4 + 32 + 8 + 1 + pdb.histogram.len() * 8 + pdb.nibbles.len() + 32;
+    // Exact capacity, computed not guessed. A wrong guess here silently reallocates tens of
+    // megabytes mid-append — and the assertion at the end is what keeps the number honest.
+    let exact = serialized_len(pdb.kind);
     let mut out = Vec::with_capacity(exact);
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
@@ -309,22 +431,21 @@ pub fn serialize(pdb: &Pdb) -> Vec<u8> {
     out
 }
 
-/// Refuses everything §7's packed-layout row lists: wrong magic/version/kind/metric, nonzero
-/// reserved bytes, a foreign move set, a truncated payload, any bit flip (the trailing SHA
-/// covers header and payload alike) — and, because a checksum only proves the file matches
-/// ITSELF, the payload's recomputed depth histogram must equal the exhaustively measured one.
-/// A resealed file with a doctored payload fails that check; full Bellman certification stays
-/// at generation time (minutes, not the 100 ms this costs). Every read is bounds-checked: a
-/// crafted length field returns Err, never a panic.
-pub fn deserialize(bytes: &[u8], expect: Kind) -> Result<Pdb, String> {
-    if bytes.len() < 8 + 4 + 4 + 32 + 8 + 1 + 32 {
-        return Err("file too short to be a pattern database".into());
-    }
-    let (body, tail) = bytes.split_at(bytes.len() - 32);
-    let hash: [u8; 32] = Sha256::digest(body).into();
-    if hash != tail {
-        return Err("checksum mismatch — the file is corrupt or truncated".into());
-    }
+/// Everything the header claims, checked — and the cursor position the payload starts at.
+///
+/// Split from [`deserialize`] so the two halves of a file check read as the two claims they are:
+/// "this header describes the table we asked for" here, "this payload is the one that header
+/// describes" there. The ORDER is the load-bearing part and is unchanged — the checksum is
+/// verified by the caller before a single field is read, and every field is read through the
+/// bounds-checked cursor below, so a crafted length returns Err and never a panic.
+struct Header {
+    kind: Kind,
+    entries: usize,
+    histogram: Vec<u64>,
+    payload_at: usize,
+}
+
+fn parse_header(body: &[u8], expect: Kind) -> Result<Header, String> {
     let mut at = 0usize;
     let mut take = |n: usize| -> Result<&[u8], String> {
         let end = at.checked_add(n).ok_or("length overflow")?;
@@ -373,18 +494,21 @@ pub fn deserialize(bytes: &[u8], expect: Kind) -> Result<Pdb, String> {
     if histogram != expected_hist {
         return Err("stored histogram differs from the exhaustively measured one".into());
     }
-    let payload = &body[at..];
-    if payload.len() != n.div_ceil(2) {
-        return Err(format!(
-            "payload {} bytes, expected {}",
-            payload.len(),
-            n.div_ceil(2)
-        ));
-    }
-    // The payload must actually HAVE the histogram it claims — this is what catches a
-    // doctored-and-resealed payload, and any serializer bug, at ~100 ms for the corner table.
-    let mut recomputed = vec![0u64; expected_hist.len()];
-    for i in 0..n {
+    Ok(Header {
+        kind,
+        entries: n,
+        histogram,
+        payload_at: at,
+    })
+}
+
+/// The payload must actually HAVE the histogram the header claims — this is what catches a
+/// doctored-and-resealed payload, and any serializer bug, at ~100 ms for the corner table. It
+/// is a recount of a MULTISET, so it is blind to two entries of different depths trading
+/// places; see the `Pdb` docs for what that costs and what covers it.
+fn recount_depths(payload: &[u8], entries: usize, buckets: usize) -> Result<Vec<u64>, String> {
+    let mut recomputed = vec![0u64; buckets];
+    for i in 0..entries {
         let b = payload[i >> 1];
         let d = if i & 1 == 0 { b & 0x0f } else { b >> 4 } as usize;
         if d >= recomputed.len() {
@@ -394,15 +518,54 @@ pub fn deserialize(bytes: &[u8], expect: Kind) -> Result<Pdb, String> {
         }
         recomputed[d] += 1;
     }
-    if recomputed != expected_hist {
+    Ok(recomputed)
+}
+
+/// Refuses everything §7's packed-layout row lists: wrong magic/version/kind/metric, nonzero
+/// reserved bytes, a foreign move set, a truncated payload, any bit flip (the trailing SHA
+/// covers header and payload alike) — and, because a checksum only proves the file matches
+/// ITSELF, the payload's recomputed depth histogram must equal the exhaustively measured one.
+/// Every read is bounds-checked: a crafted length field returns Err, never a panic.
+///
+/// **What this does NOT establish** (corrected 2026-09-05 — the old wording claimed a resealed
+/// doctored payload fails here, full stop, and that Bellman certification happens only at
+/// generation): the recount compares MULTISETS, so a reseal that swaps two entries of different
+/// depths passes every check in this function. The returned `Pdb` is therefore structurally
+/// sound and uncertified; `Tables::load` runs a full [`bellman_validate`] pass afterwards, which
+/// is the check that pins entries to their places, and
+/// `a_resealed_nibble_swap_passes_the_file_checks_and_bellman_on_load_refuses_it` is that
+/// division of labour as a test.
+pub fn deserialize(bytes: &[u8], expect: Kind) -> Result<Pdb, String> {
+    if bytes.len() < HEADER_FIXED + 32 {
+        return Err("file too short to be a pattern database".into());
+    }
+    let (body, tail) = bytes.split_at(bytes.len() - 32);
+    let hash: [u8; 32] = Sha256::digest(body).into();
+    if hash != tail {
+        return Err("checksum mismatch — the file is corrupt or truncated".into());
+    }
+    let header = parse_header(body, expect)?;
+    let payload = &body[header.payload_at..];
+    if payload.len() != header.entries.div_ceil(2) {
+        return Err(format!(
+            "payload {} bytes, expected {}",
+            payload.len(),
+            header.entries.div_ceil(2)
+        ));
+    }
+    // Against the exhaustively measured CONSTANT, not against the file's own stored histogram —
+    // the header check has already proved those equal, and anchoring to the constant is what
+    // keeps this a check on the file rather than a check of the file against itself.
+    let expected_hist = header.kind.expected_histogram();
+    if recount_depths(payload, header.entries, expected_hist.len())? != expected_hist {
         return Err(
             "payload depth histogram differs from the certified one — the payload was altered"
                 .into(),
         );
     }
     Ok(Pdb {
-        kind,
+        kind: header.kind,
         nibbles: payload.to_vec(),
-        histogram,
+        histogram: header.histogram,
     })
 }

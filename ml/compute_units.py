@@ -78,7 +78,9 @@ def coreml_matrix(mlpackage: Path, inputs: list[np.ndarray]) -> dict:
         load_ms = (time.perf_counter() - t0) * 1000
         spec = model.get_spec()
         inp, outp = spec.description.input[0].name, spec.description.output[0].name
-        stats = bench(lambda x: model.predict({inp: x[None]})[outp], inputs)
+        # B023 is a false positive here: the lambda is consumed by `bench` before the loop
+        # advances, so it can only ever see this iteration's model and tensor names.
+        stats = bench(lambda x: model.predict({inp: x[None]})[outp], inputs)  # noqa: B023
         stats["load_ms"] = round(load_ms, 1)
         # The read must not depend on the compute units: assert it, do not assume it.
         reads = [cube_infer.read_face(np.asarray(model.predict({inp: x[None]})[outp], dtype=np.float32)) for x in inputs]

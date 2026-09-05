@@ -12,6 +12,14 @@
   a permission problem wearing a hardware problem's face. Deliberately NO
   NSMicrophoneUsageDescription: the scanner asks for `{ video: …, audio: false }`.
 
+  THIS FILE IS THE ONE SOURCE OF BOTH STRINGS ON iOS (2026-09-05). They were also written into
+  gen/apple/project.yml, in different words — the Bluetooth sentence there named no brand, this
+  one named one — and only the non-shipping copy was tested. Tauri merges this file over the
+  xcodegen output on every `tauri ios dev|build`, which is why the committed
+  gen/apple/cubus-desktop_iOS/Info.plist carries THESE words and not project.yml's: the merge
+  is what ships. project.yml no longer declares either key, and apps/web/test/mobile-shell.test.mjs
+  reads this file and the committed plist and asserts they agree, brand-free.
+
   UISupportedInterfaceOrientations~iphone is stage-contract decision 6 — phones are portrait-
   locked, iPad rotates freely, so the generated all-orientations list stands for iPad and this
   narrows it for phones only. UIRequiresFullScreen is decision 7: Split View at 1/3 width is
@@ -24,7 +32,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Cubus reads your cube's six sides through the camera. Everything happens on this device — no image is stored or sent anywhere.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Cubus talks to your GAN smart cube over Bluetooth, so it can follow the moves you make. It connects only to a cube you choose.</string>
+	<string>Cubus talks to your smart cube over Bluetooth, so it can follow the moves you make. It connects only to a cube you choose.</string>
 	<key>UISupportedInterfaceOrientations~iphone</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

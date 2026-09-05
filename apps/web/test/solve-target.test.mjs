@@ -132,6 +132,109 @@ test('cancelling keeps the best answer so far and says it was cancelled', async 
   assert.equal(last.met, false);
 });
 
+test('the signal rides ALONG WITH the bounds, into every search', async () => {
+  // The contract with lib/solve-client.js, and the half that makes cancellation work at all.
+  // Checking `signal.aborted` between asks stops the NEXT search; it does nothing about the one
+  // already running, and a search is synchronous — on a worker it does not return to its event
+  // loop, so nothing can reach it except the stop word its client publishes into. The client can
+  // only do that if the signal arrives WITH the request. It used not to: `refine` had a signal
+  // it checked and never forwarded, so STOPPED.CANCELLED was unreachable from a real search.
+  const controller = new AbortController();
+  const solve = scripted([20, 19, 18]);
+  await collect(refine('F', { solve, tier: 'shortest', signal: controller.signal }));
+  assert.ok(solve.asked.length >= 2, 'the fixture must have made several searches');
+  for (const [i, bounds] of solve.asked.entries()) {
+    assert.equal(bounds.signal, controller.signal, `search ${i} was sent without the signal`);
+  }
+});
+
+test('a null that arrives with an abort is CANCELLED, never EXHAUSTED', async () => {
+  // A stopped search answers null, exactly as an exhausted one does — the engine gives up, it
+  // does not report why. So the null alone cannot say which happened, and reading it as
+  // exhaustion would tell someone who pressed a button that the solver had run out of ideas.
+  // That is the same class of wrong answer as calling a missed target an impossibility.
+  const controller = new AbortController();
+  const solve = async (facelets, bounds) => {
+    if (bounds.solLen === 20) { // the 20 -> 19 ask: stopped, not exhausted
+      controller.abort();
+      return null;
+    }
+    return algOf(20);
+  };
+  const steps = await collect(refine('F', { solve, tier: 'twenty', signal: controller.signal }));
+  const last = steps.at(-1);
+  assert.equal(last.moves, 20, 'the answer in hand is kept');
+  assert.equal(last.stopped, STOPPED.MET, 'a kept promise stays kept whatever ended the extras');
+
+  // And below the promise, where there is nothing to report as met, it says cancelled.
+  const other = new AbortController();
+  const tight = async (facelets, bounds) => {
+    if (bounds.solLen === 19) { other.abort(); return null; }
+    return algOf(bounds.solLen === 21 ? 20 : 19);
+  };
+  const tightSteps = await collect(refine('F', { solve: tight, tier: 'eighteen', signal: other.signal }));
+  assert.equal(tightSteps.at(-1).stopped, STOPPED.CANCELLED,
+    'a search stopped by a person is not a search that ran out');
+  assert.equal(tightSteps.at(-1).met, false);
+});
+
+test('the escalating first search reports each attempt, and what it has spent', async () => {
+  // The wait nothing could see. Only the FIRST search escalates, and it can spend 511x the base
+  // budget before anything at all is yielded — several minutes with an empty screen and no way
+  // to say how much of it has gone. `onProgress` is that window, and it is called BEFORE each
+  // attempt so the number on screen is the work about to be done rather than a report after
+  // the fact.
+  const seen = [];
+  const solve = scripted([null, null, 20]);
+  await collect(refine('F', {
+    solve, tier: 'twenty', probeBudget: 1000, onProgress: (p) => seen.push(p),
+  }));
+  assert.deepEqual(seen, [
+    { attempt: 0, budget: 1000, spent: 0 },
+    { attempt: 1, budget: 2000, spent: 1000 },
+    { attempt: 2, budget: 4000, spent: 3000 },
+  ], 'each attempt, the budget it is about to spend, and everything spent before it');
+  // The descent below the floor does NOT report: it is bounded, every rung yields, and a caller
+  // watching it would be told about work it can already see.
+  assert.equal(seen.length, 3, 'the free descent must not masquerade as escalation');
+});
+
+test('the raise says what the whole run cost, not what its last attempt asked for', async () => {
+  // The message used to name `budget` — the last doubled figure — which reads as the size of
+  // the search rather than as its cost. A run that reported "12.8 billion nodes" had spent
+  // 25.5 billion getting there, and the number nobody had was the one that answers "how long
+  // was I waiting".
+  const solve = scripted(Array(MAX_PROMISE_ESCALATIONS + 2).fill(null));
+  await assert.rejects(
+    () => collect(refine('F', { solve, tier: 'twenty', probeBudget: 1000 })),
+    (err) => {
+      // 1000 * (2^9 - 1) = 511,000 over nine attempts; the last of them asked for 256,000.
+      assert.match(err.message, /spending up to 511000 nodes in all/, err.message);
+      assert.match(err.message, /the last attempt asked for 256000/, err.message);
+      return true;
+    },
+  );
+});
+
+test('an onProgress that is not a function is refused, not ignored', async () => {
+  // Silently not calling it looks exactly like a search that never escalated.
+  const solve = scripted([20]);
+  await assert.rejects(() => collect(refine('F', { solve, onProgress: 'tell me' })), TypeError);
+  assert.equal(solve.asked.length, 0, 'and nothing was searched first');
+
+  // And refused BEFORE the abort check, which is the rule this module states for every other
+  // input and was the one place it did not keep (2026-09-05): `refine` returned quietly on an
+  // aborted signal and the watcher was validated afterwards, inside `solveWithinGodsNumber`, so
+  // a caller that had made this mistake could go a whole session without being told.
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    () => collect(refine('F', { solve, onProgress: 'tell me', signal: controller.signal })),
+    TypeError,
+    'a malformed call is malformed whether or not anyone is still waiting for the answer',
+  );
+});
+
 test('a signal aborted before anything ran yields nothing at all', async () => {
   // Cancelled before the first search: there is no answer to show, so starting work anyway
   // would be acting on a request the caller already withdrew.
@@ -371,4 +474,40 @@ test('an abort during a search ends the progression with the answer in hand', as
   assert.equal(last.stopped, STOPPED.CANCELLED);
   assert.equal(last.moves, 19, 'the improvement that arrived with the abort is kept');
   assert.equal(base.asked.length, 2, 'and no further search was started');
+});
+
+test('a cube solved by an IMPROVEMENT ends the descent, rather than asking for shorter than nothing', async () => {
+  // The zero-move terminal handling applied to the first answer only, so a descent that actually
+  // reached a solved cube yielded it as still improving and then asked for `solLen: 0`. The engine
+  // boundary refuses that as out of range — so the last rung of an easy solve was a RangeError
+  // rather than an answer (2026-09-05 audit; reproduced with "R R'" followed by "").
+  //
+  // The fake refuses solLen < 1 exactly as lib/solver-engine.js does: a fake looser than the real
+  // boundary would have made the invalid ask invisible, which is how this survived.
+  const bounded = (lengths) => {
+    const inner = scripted(lengths);
+    const solve = async (facelets, options) => {
+      if (!Number.isInteger(options.solLen) || options.solLen < 1) {
+        throw new RangeError(`solver-engine: solLen ${options.solLen} is outside 1..23`);
+      }
+      return inner(facelets, options);
+    };
+    solve.asked = inner.asked;
+    return solve;
+  };
+
+  const solve = bounded([2, 0]);
+  const steps = await collect(refine('F', { solve, tier: 'twenty' }));
+  assert.deepEqual(steps.map((s) => s.moves), [2, 0], 'the solved cube is the last thing shown');
+  assert.equal(steps.at(-1).stopped, STOPPED.MET, 'zero moves meets any numeric target');
+  assert.equal(steps.at(-1).alg, '');
+  assert.deepEqual(solve.asked.map((a) => a.solLen), [GODS_NUMBER + 1, 2],
+    'nothing may ask for a solution shorter than nothing');
+
+  // And on the untargeted rung, where there is no target to meet: nothing improves on zero.
+  const shortest = bounded([2, 0]);
+  const descent = await collect(refine('F', { solve: shortest, tier: 'shortest' }));
+  assert.deepEqual(descent.map((s) => s.moves), [2, 0]);
+  assert.equal(descent.at(-1).stopped, STOPPED.EXHAUSTED);
+  assert.equal(shortest.asked.length, 2, 'and the search stopped rather than asking again');
 });

@@ -6,7 +6,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { JDK_MAX, JDK_MIN, chooseJdk, majorVersion, supported } from '../../../scripts/tauri-android.mjs';
+import { pathToFileURL } from 'node:url';
+
+import { JDK_MAX, JDK_MIN, chooseJdk, isMain, majorVersion, supported } from '../../../scripts/tauri-android.mjs';
 
 test('majorVersion reads the modern and the legacy 1.x forms', () => {
   assert.equal(majorVersion('21.0.5'), 21);
@@ -54,4 +56,19 @@ test('chooseJdk returns null rather than an unusable JDK', () => {
     null,
     'a supported version with no path is not a usable answer',
   );
+});
+
+test('the main guard recognises the script from a path containing a space', () => {
+  // The case that produced a wrapper that exited 0 having built nothing: `import.meta.url` is
+  // percent-encoded (`my%20dir`) and `process.argv[1]` is not, so a raw `file://` concatenation
+  // never matched from any checkout path with a space in it.
+  const withSpace = '/Users/someone/my projects/cubus/scripts/tauri-android.mjs';
+  assert.equal(isMain(withSpace, pathToFileURL(withSpace).href), true);
+  assert.equal(
+    isMain(withSpace, `file://${withSpace}`),
+    false,
+    'the raw concatenation is NOT the loader URL, which is the whole bug',
+  );
+  assert.equal(isMain('/a/other.mjs', pathToFileURL('/a/tauri-android.mjs').href), false);
+  assert.equal(isMain(undefined, pathToFileURL('/a/tauri-android.mjs').href), false, 'no argv[1] is an import');
 });

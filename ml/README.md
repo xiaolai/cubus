@@ -9,12 +9,17 @@ Blender publishes **no Linux ARM64 build** (only linux-x64; conda-forge/pip `bpy
 too), so BlenderProc can't render on the training host's arm64 GB10 without compiling Blender from
 source. But Blender has **native macOS Apple-Silicon builds with Metal GPU Cycles**, so:
 
-- **Render on a Mac** (Apple Silicon + Metal) — `a MacBook Pro` / `a Mac mini`, or this box.
-- **Train on the training host** (GB10 CUDA, NGC container — Alan verified `--gpus all` sees the GB10).
+- **Render on the many-core desktop Mac** (Apple Silicon + Metal) — never on the fanless laptop,
+  which is 5.2× slower and is the machine you are being asked to keep usable (AGENTS.md, measured
+  2026-08-29).
+- **Train on the near GPU box** (GB10 CUDA, the pinned `cube-train:1` container from
+  `Dockerfile.train`). The far box is identical silicon but 0.1 MB/s away: use it only for work whose
+  data is already on it (baseline evals, parallel jobs). The reasoning is in `train.sh`'s header.
 - Move the dataset between them over the **LAN** (fast; the internet egress is a slow US proxy).
 
 ## Why synthetic
-Public real datasets are tiny (~600 images total on Roboflow) and don't generalize across
+Public real datasets are small (five Roboflow sets merge to ~1.9k training photos — 1,938 in
+`ml/out/train_imgs`, counted 2026-09-04 — plus a 169-image test split) and don't generalize across
 cubes/lighting. Rendering lets us make **millions of perfectly-labeled** images while
 randomizing the exact things that broke the classical scanner: **lighting** (HDRI
 environments), **glossy materials** (physically-correct glare), **perspective**, and
@@ -32,10 +37,15 @@ environments), **glossy materials** (physically-correct glare), **perspective**,
 | `merge_real.py` | remap/merge those into our 6-class YOLO set (pure) | — |
 | `generate_cube_dataset.py` | **BlenderProc generator** (needs Blender) | validated on Mac |
 | `render.sh` | parallel render → merge → YOLO → split (on a Mac) | — |
-| `train.sh` | YOLOv11n fine-tune in NGC arm64 container → ONNX | the training host |
+| `train.sh` | YOLOv11n fine-tune in the pinned NGC arm64 container → `best.pt` | the near GPU box |
+| `export.py` | ONE checkpoint → `models/` (ONNX fp32 + int8, CoreML, TFLite) + `MANIFEST.json` | — |
+| `golden_frames.py` | the parity gate: every runtime reads 20 fixtures as pinned in `golden/expected.json` | CI |
+| `metrics_table.py` | the mAP tables of `MODEL_CARD.md` / `OOD_EVAL.md`, from `yolo val` | — |
 | `data.yaml` | 6-class dataset config | — |
 
-Run the pure tests locally: `python3 ml/test_pipeline.py`
+Run the pure tests locally: `ml/venv/bin/python ml/test_pipeline.py` (needs only
+`ml/requirements-golden.txt`; it also asserts the committed int8 is `quantize_dynamic` of the
+committed fp32 and that `MANIFEST.json` carries `export.py`'s labels).
 
 ## Run: render on a Mac → train on the training host
 
@@ -85,13 +95,14 @@ ml/venv/bin/blenderproc run ml/generate_cube_dataset.py -- \
   --output_dir /tmp/out --hdri_dir /nonexistent --num_poses 3 --res 320 --seed 1
 ```
 
-### 2. Train + export ONNX on the training host (GB10 CUDA)
-Move `~/datasets/cube/dataset` to the training host over the **LAN** (fast), not the internet proxy.
+### 2. Train on the near GPU box (GB10 CUDA)
+Move `~/datasets/cube/dataset` to the box over the **LAN** (fast), not the internet proxy.
 ```bash
-DATASET=~/datasets/cube/dataset bash ml/train.sh   # in the NGC arm64 container Alan verified
-#    → best.onnx
+DATASET=~/datasets/cube/dataset DETACH=1 bash ml/train.sh   # in cube-train:1; detached survives an SSH drop
+#    → $DATASET/runs/cube/weights/best.pt   (no ONNX here — export.py is the one exporter, step 3 below)
 ```
-Batch can be large (GB10 shares ~113 GB unified memory).
+Batch can be large (GB10 shares ~113 GB unified memory). The starting `yolo11n.pt` must be present
+and match its pinned md5 (`train.sh` refuses otherwise).
 
 ## Real data (domain adaptation + a real test set)
 Synthetic is the volume backbone, but real photos close the sim-to-real gap. Public real cube
@@ -100,24 +111,65 @@ exists: the Roboflow Universe sets (real photos, per-sticker colour boxes, CC BY
 ```bash
 ROBOFLOW_API_KEY=xxxx python fetch_roboflow.py --out ~/datasets/real_cube/roboflow
 python merge_real.py --roboflow ~/datasets/real_cube/roboflow --out ~/datasets/real_cube/merged
-#    → ~2.3k real images (train/val/test), classes remapped to ours, face/center dropped
+#    → ~2.1k real images (1,938 train + 169 test in ml/out, counted 2026-09-04), classes remapped to ours, face/center dropped
 ```
 Mix `merged/{train,val}` into synthetic training; hold out `merged/test` as the real benchmark.
 Also useful: `dwalton76/rubiks-cube-tracker` (MIT, real color ground-truth) and the eyeeco /
 arXiv 1901.03470 color tables for red↔orange calibration.
 
-## Then wire it into the app
-- Copy `best.onnx` → `apps/web/vendor/cube-yolo.onnx`.
-- Add an **"AI scan" mode** to the scanner that runs the model via `onnxruntime-web`:
-  letterbox the frame to 640 → run → NMS → map the 9 sticker detections to a face → feed the
-  9 colors into the existing `solveOrientations` (balanced HSV + red/orange disambiguation).
-- Keep the guided fixed-grid scan as the no-download default; AI mode is the robust option.
+## Regenerating the model, end to end
 
-## Status & open items
+A model change is not verified until `golden_frames.py` has run (AGENTS.md), and nothing reaches the
+app by copying a file: the artefacts, the manifest, the golden pins and the app's vendored copy are
+one set. Every flag below exists as written.
+
+```bash
+# 1. Render (many-core desktop). Absolute paths for HDRI_DIR/OUT; GEN passed explicitly on purpose.
+BLENDERPROC=ml/venv/bin/blenderproc PYTHON=ml/venv/bin/python WORKERS=4 GEN=generate_cube3d.py \
+  SCENES=1000 POSES=40 HDRI_DIR="$HOME/datasets/hdris" OUT="$HOME/datasets/cube" bash ml/render.sh
+
+# 2. Train (near GPU box). Detached; refuses unless the pinned yolo11n.pt is present.
+DATASET=~/datasets/cube/dataset DETACH=1 EPOCHS=80 bash ml/train.sh
+#    → $DATASET/runs/cube/weights/best.pt — copy it to ml/out/<name>_best.pt
+
+# 3. Export all four artefacts + MANIFEST.json from that ONE checkpoint (venv from requirements-train.txt).
+ml/venv/bin/python ml/export.py --pt ml/out/<name>_best.pt --out ml/models
+#    asserts sha256(fp32) unchanged after every step and int8 == quantize_dynamic(fp32)
+
+# 4. The golden gate, on the pinning host. Expect reads to change; read WHICH before re-pinning.
+ml/venv/bin/python ml/golden_frames.py                 # all five legs on macOS; fails on any drift
+ml/venv/bin/python ml/golden_frames.py --parity        # what CI runs; must also be green
+
+# 5. Re-pin — guarded: --yes, a COMMITTED ml/models (commit the artefacts + manifest first), and the
+#    reason for the checkpoint change, which is written into expected.json.
+ml/venv/bin/python ml/golden_frames.py --write-expected --yes --repin-checkpoint "v6: <why>"
+ml/venv/bin/python ml/golden_frames.py                 # green against the new pins
+
+# 6. Vendor the fp32 for the browser (the desktop/mobile bundles copy from ml/models at build time:
+#    tauri.macos/ios.conf.json bundle the .mlpackage, gen/android's gradle copies the .tflite).
+cp ml/models/cube-yolo.onnx apps/web/vendor/cube-yolo.onnx
+node --test apps/web/test/shipped-model.test.mjs       # pins that the browser serves the fp32, byte for byte
+pnpm check
+
+# 7. The numbers in MODEL_CARD.md / OOD_EVAL.md (needs the labelled sets under ml/out).
+ml/venv/bin/python ml/metrics_table.py --json ml/out/metrics.json
+ml/venv/bin/python ml/color_eval.py --model ml/models/cube-yolo.onnx --images ml/out/heldout/images --labels ml/out/heldout/labels
+```
+
+Only the int8 drifted? `ml/venv/bin/python ml/export.py --int8-only` re-derives it from the committed
+fp32 and touches nothing else (that is not a model change; the pins stay).
+
+## Status
 - [x] **Generator validated on macOS-arm64** — Blender 4.2 Cycles renders; all 9 stickers are
       labelled per frame; COCO→YOLO shift + body-drop verified (`test_pipeline.py` guards it).
 - [x] **HDRIs** — 200 Poly Haven CC0 `.hdr` fetched (`fetch_hdris.py`); parallel render + merge
       + split validated end-to-end (part-prefixed, no filename collisions).
-- [ ] **NGC image tag** — pin `train.sh`'s `NGC_IMAGE` to the arm64 CUDA image Alan verified.
-- [ ] **Move dataset to the training host** over the LAN; put it on the fast scratch disk (~2.8 T free).
-- [ ] **(optional) real Roboflow images** — mix the ~600 real shots in for extra realism.
+- [x] **Training image pinned** — `Dockerfile.train` pins the NGC base by digest and the
+      ultralytics/onnxruntime versions, and asserts the pins took; `train.sh` pins `yolo11n.pt` by md5.
+- [x] **Real Roboflow images mixed in** — ~1.9k training photos (`MODEL_CARD.md` §Training data;
+      attribution in §Attribution).
+- [x] **Shipped: v3** — `MODEL_CARD.md`; v5 was shipped and reverted 2026-08-29 (it failed the golden gate).
+- [ ] **Android native path** — the `.tflite` is in the APK but `verifiedOnDevice=false` until it is
+      measured on a device (`VisionPlugin.kt`).
+- [ ] **Held-out set re-cut** — `dedup_heldout.py --dihedral` flags 36 of the 207 as rotated/flipped
+      training images (`OOD_EVAL.md`); a dataset decision, not a script change.

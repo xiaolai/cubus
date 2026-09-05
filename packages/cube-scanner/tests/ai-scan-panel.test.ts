@@ -12,15 +12,95 @@
 //   - a mis-held confirmation can cost looks but can never produce a wrong cube.
 import Cube from 'cubejs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { rotateFace } from '../src/ai-assemble.js';
 import type { AiScanResult } from '../src/ai-assemble.js';
+import { rotateFace } from '../src/ai-assemble.js';
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { FACES, type Face } from '../src/types.js';
 import { AiScanPanel, type ScanProgress } from '../view/ai-scan-panel.js';
+import {
+  handleMisreadRequest,
+  type MisreadReply,
+  type MisreadRequest,
+} from '../view/misread-protocol.js';
+
+// A SEAM ON THE ONE CALL THAT COSTS SECONDS, and a pass-through in every other respect.
+//
+// "The misread decode does not run on the calling thread" is otherwise unfalsifiable from outside
+// the element: a refusal that decoded and threw the answer away paints exactly like one that never
+// decoded at all — it just takes up to three seconds longer, which no assertion about the DOM can
+// see. Counting the calls is the only way to state it, so the count is what is asserted.
+const seam = vi.hoisted(() => ({ decodes: 0 }));
+vi.mock('../src/misread-decode.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/misread-decode.js')>();
+  return {
+    ...actual,
+    diagnoseMisread: (...args: Parameters<typeof actual.diagnoseMisread>) => {
+      seam.decodes++;
+      return actual.diagnoseMisread(...args);
+    },
+  };
+});
+
+/**
+ * A `Worker` that stays on this thread but answers with the code the real one runs.
+ *
+ * happy-dom has no `Worker`, so every other test in this file exercises the synchronous fallback —
+ * which is the right default here and is why nothing else had to change. These install this to
+ * take the other branch.
+ */
+class FakeWorker {
+  static built: FakeWorker[] = [];
+  static last(): FakeWorker {
+    const w = FakeWorker.built[FakeWorker.built.length - 1];
+    if (!w) throw new Error('the panel never built a worker');
+    return w;
+  }
+  posted: MisreadRequest[] = [];
+  private listeners: ((ev: unknown) => void)[] = [];
+  constructor(readonly url: URL) {
+    FakeWorker.built.push(this);
+  }
+  addEventListener(type: string, fn: (ev: unknown) => void): void {
+    if (type === 'message') this.listeners.push(fn);
+  }
+  postMessage(message: MisreadRequest): void {
+    this.posted.push(structuredClone(message));
+  }
+  terminate(): void {}
+  /** Deliver the answer to a posted request, whenever the test decides it lands. */
+  answer(index = 0): void {
+    const request = this.posted[index];
+    if (!request) throw new Error(`nothing posted at ${index}`);
+    this.deliver(structuredClone(handleMisreadRequest(request)));
+  }
+  /** Deliver a reply the test wrote itself — for the answers a real decode gives rarely. */
+  deliver(reply: MisreadReply): void {
+    for (const fn of this.listeners) fn({ data: reply });
+  }
+}
+
+/** Put a worker on this page for the duration of one test. */
+function withWorker(): void {
+  FakeWorker.built = [];
+  (globalThis as { Worker?: unknown }).Worker = FakeWorker;
+}
 
 const LETTER_CLASS: Record<Face, number> = { U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 };
-const TICK = 200; // TICK_MS_WEB — the fake detector registers as the 'web' runtime
+// TICK_FLOOR_MS. The cadence follows the runtime now — `max(60, last inference ms)` — and the fake
+// detector answers instantly under fake timers, so every tick here lands on the floor.
+const TICK = 60;
+/**
+ * Ticks a face must be held for before it is captured, at the floor cadence.
+ *
+ * Both halves of the stillness gate, worked out rather than guessed: reads land at 60, 120, … so
+ * on tick k the run is k reads old and (k-1)*60 ms old. STABLE=3 is satisfied at k=3; STABLE_MS=500
+ * needs (k-1)*60 >= 500, i.e. k >= 9.34, so k=10 is the first tick that satisfies both. Advancing
+ * EXACTLY this far is what lets `show()` stop feeding the face on the tick it is captured — a
+ * generous over-advance leaves further ticks re-reading a side that is already filed, and the last
+ * message is then "hold still" rather than the capture.
+ */
+const SETTLE_TICKS = 10;
 const CHECK = 400; // > CHECK_BEAT_MS, enough to fire the deferred assembly
 
 /** A facelet string → per-face 9 colour classes, canonical rotation. */
@@ -43,11 +123,15 @@ function tensorFor(colors: number[]): ModelOutput {
     data[3 * anchors + a] = 30; // h
     data[(4 + colors[a]!) * anchors + a] = 0.9;
   }
-  return { data, anchors };
+  return { data, anchors, rows: 4 + 6 };
 }
 
 /** A frame with nothing on it — decodes to zero detections, i.e. a NO_FACE abstention. */
-const emptyTensor = (): ModelOutput => ({ data: new Float32Array((4 + 6) * 9), anchors: 9 });
+const emptyTensor = (): ModelOutput => ({
+  data: new Float32Array((4 + 6) * 9),
+  anchors: 9,
+  rows: 4 + 6,
+});
 
 class FakeDetector implements Detector {
   device: CameraDevice | null = null;
@@ -66,18 +150,34 @@ class FakeDetector implements Detector {
     this.uses.push(opts);
     const gate = this.hold;
     if (gate) await gate;
+    if (this.openError) throw this.openError;
     if (this.openFails === 'always') throw new Error('camera denied');
     if (this.openFails === 'pinned' && opts?.deviceId) throw new Error('that camera is gone');
     this.device = { deviceId: opts?.deviceId ?? 'fake', label: 'Fake Camera' };
   }
-  async load(): Promise<void> {}
+  /** A specific rejection from `use()` — the four DOMExceptions getUserMedia actually throws. */
+  openError: Error | null = null;
+  /** Set to a never-settling promise to model a model download that stalls. */
+  loadHold: Promise<void> | null = null;
+  async load(): Promise<void> {
+    if (this.loadHold) await this.loadHold;
+  }
   /** Set to make every `next()` throw — a model that failed to load, or a malformed tensor. */
   failWith: Error | null = null;
+  /**
+   * Set to a never-settling promise to model an inference that is LOST rather than slow.
+   *
+   * Not the same fake as `failWith`, and the difference is the point: a rejection is something the
+   * loop can see, and a promise that never settles is not. It is what a native plugin call dropped
+   * on the bridge, or a runtime worker that died mid-run, looks like from here.
+   */
+  nextHold: Promise<void> | null = null;
   /** Every `use()` call, so a test can see whether the pinned deviceId was dropped on retry. */
   uses: (CameraOptions | undefined)[] = [];
   /** Make `use()` throw — always, or only when a deviceId is pinned (an unplugged webcam). */
   openFails: 'never' | 'always' | 'pinned' = 'never';
   async next(): Promise<ModelOutput | null> {
+    if (this.nextHold) await this.nextHold;
     if (this.failWith) throw this.failWith;
     return this.output;
   }
@@ -100,12 +200,10 @@ const last = (): ScanProgress => {
   return p;
 };
 
-/** Hold one face in front of the fake camera until it is captured (4 stable ticks), then remove it. */
+/** Hold one face in front of the fake camera until it settles, then remove it. See SETTLE_TICKS. */
 async function show(colors: number[]): Promise<void> {
   fake.output = tensorFor(colors);
-  // STABLE=3 identical reads plus STABLE_MS=500 of stillness: reads land at t+200/400/600/800,
-  // and the 800 ms read is the first that is both 3-stable and 500 ms old — the 4th tick.
-  await vi.advanceTimersByTimeAsync(TICK * 4);
+  await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
   fake.output = null;
 }
 
@@ -182,6 +280,8 @@ beforeEach(async () => {
 afterEach(() => {
   panel.remove(); // disconnectedCallback stops the loop and the fake camera
   vi.useRealTimers();
+  (globalThis as { Worker?: unknown }).Worker = undefined;
+  FakeWorker.built = [];
 });
 
 describe('ai-scan-panel — capture and settle', () => {
@@ -206,7 +306,10 @@ describe('ai-scan-panel — capture and settle', () => {
 
   it('a face is not captured until it has been still for both 3 reads and 500 ms', async () => {
     fake.output = tensorFor(facesOf(DEEP).U);
-    await vi.advanceTimersByTimeAsync(TICK * 3); // 3 reads, but the streak is only 400 ms old
+    // Nine reads at the floor cadence: the count is long satisfied and the clock is 480 ms — which
+    // is the half that decides. With the tick following the runtime rather than pinned at 200 ms,
+    // it is the CLOCK that gates on every machine and the count is only a floor.
+    await vi.advanceTimersByTimeAsync(TICK * (SETTLE_TICKS - 1));
     expect(last().captured).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(TICK);
     expect(last().captured).toHaveLength(1);
@@ -421,6 +524,27 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     expect(last().captured).toHaveLength(2);
   });
 
+  it('a camera switch during the checking beat does not swallow the check', async () => {
+    // THE SCAN THAT CANNOT BE FINISHED OR RECOVERED. The sixth capture stops the loop and schedules
+    // the assembly one beat later; the check was guarded on the CAMERA's epoch, so anything that
+    // touched the camera inside those 350 ms cancelled it and put nothing in its place. Switching
+    // cameras is exactly that — and the state it leaves is a trap: six sides on screen, `complete`
+    // never set, and no way back, because re-showing a side whose reading is unchanged is answered
+    // with "that side reads the same as before". A check is a computation over the six faces; the
+    // camera has already said everything it has to say about them.
+    const shown = facesOf(DEEP);
+    for (const face of FACES) await show(shown[face]);
+    expect(last().captured).toHaveLength(6);
+    expect(last().phase).toBe('checking');
+
+    panel.setAttribute('device-id', 'the-other-camera');
+    await panel.start(); // the host switches cameras inside the beat
+    await vi.advanceTimersByTimeAsync(CHECK);
+
+    expect(completions).toHaveLength(1);
+    expect(last().complete).toBe(true);
+  });
+
   it('a painted cube one sticker from legal marks it, and offers the colour', async () => {
     // The claim: decodeMisread's guarantee is about the COLOURING, not about who produced it, so a
     // painted cube gets the same pointing a scanned one does. Before this, painting threw the
@@ -516,6 +640,28 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     expect(events.length).toBe(after);
   });
 
+  it('a tick that ANSWERS and then cannot be read still reaches the fatal threshold', async () => {
+    // THE CLOCK WAS CLEARED BEFORE THE FRAME WAS PROCESSED. `next()` resolving was treated as the
+    // whole of a healthy tick, so the failure clock was reset and only THEN was the frame decoded
+    // — and `readFrame` is where the post-processing tail lives, which throws on a head with the
+    // wrong row count and on a native tensor that disagrees with its own header. Every such frame
+    // therefore started a FRESH failure run, so a scanner throwing on every single frame never
+    // reached TICK_FAIL_MS: it reported a transient error forever, over a working camera. The one
+    // failure with no way out was the one the fatal threshold exists for. Existing coverage only
+    // ever rejected `next()`, which never reaches the reset at all.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // A tensor the detector HANDS BACK happily, and that post-processing refuses: nine rows, not
+    // the ten a six-class detect head produces.
+    fake.output = { data: new Float32Array(9 * 9), anchors: 9, rows: 9 };
+    await vi.advanceTimersByTimeAsync(TICK * 3);
+    expect(last().phase).not.toBe('error'); // still patient, as for any other transient
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(last().phase).toBe('error');
+    expect(last().notice?.title ?? '').toMatch(/stopped/i);
+    expect(String(logged.mock.calls[0]?.[1] ?? '')).toMatch(/9 rows/);
+    logged.mockRestore();
+  });
+
   it('a brief camera hiccup is still forgiven, and forgotten once a tick succeeds', async () => {
     // The other half of the same claim: if this were a plain counter the transient case would
     // eventually trip it too, and the fix would have traded a silent failure for a false alarm.
@@ -543,13 +689,13 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     // the duration half of the gate exists to refuse.
     const shown = facesOf(DEEP);
     fake.output = tensorFor(shown.U);
-    await vi.advanceTimersByTimeAsync(TICK * 3); // 3 reads, only 400 ms of stillness — not yet
+    await vi.advanceTimersByTimeAsync(TICK * (SETTLE_TICKS - 1)); // one tick short of settling
     expect(last().captured).toHaveLength(0);
     fake.output = null; // the camera stalls
     await vi.advanceTimersByTimeAsync(TICK);
     fake.output = tensorFor(shown.U); // the same read comes back
-    await vi.advanceTimersByTimeAsync(TICK * 3);
-    // The run restarted at the first read AFTER the stall, so this is 400 ms old, not 1200.
+    await vi.advanceTimersByTimeAsync(TICK * (SETTLE_TICKS - 1));
+    // The run restarted at the first read AFTER the stall, so it is 480 ms old, not 1140.
     expect(last().captured).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(TICK); // and one more tick does settle it
     expect(last().captured).toHaveLength(1);
@@ -652,15 +798,35 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     solo.remove();
   });
 
-  it('toggling painting off and on keeps the sides already captured', async () => {
+  it('painting drops the captures whose rotation was never settled, and names them', async () => {
+    // THE MODE BOUNDARY. This test used to assert the opposite — that a toggle keeps every capture
+    // — and that was the bug rather than the contract. Painting edits stickers BY INDEX, and a
+    // camera capture is at whatever rotation the side was held at, so index i of what is stored is
+    // not the sticker the user is looking at. `assemblePainted` searches no rotations by design,
+    // so it then judged a 90°-off capture as authored-in-place and invented a misread count for a
+    // cube with nothing wrong with it.
     const shown = facesOf(DEEP);
     await show(shown.U);
     await show(shown.R);
+    expect(last().captured).toHaveLength(2);
     panel.setPainting(true);
     expect(last().device).toBeNull();
-    panel.setPainting(false);
-    await vi.advanceTimersByTimeAsync(TICK);
-    expect(last().captured).toHaveLength(2);
+    expect(last().captured).toHaveLength(0);
+    // Named, not silently discarded: the user showed those sides and is owed the reason.
+    expect(last().notice?.body ?? '').toMatch(/which way up/i);
+    expect(last().notice?.params?.[0]).toMatch(/WHITE/);
+    expect(last().notice?.params?.[0]).toMatch(/RED/);
+  });
+
+  it('a finished scan is settled, so painting over it keeps every side', async () => {
+    // The other half, and the common path: scan, then hand-fix one sticker. `finishAccepted` turns
+    // every capture into canonical rotation, so there is nothing unsettled left to drop and the
+    // rule above costs the user nothing here.
+    await showAll(DEEP, [1, 2, 3, 0, 1, 2]);
+    expect(last().complete).toBe(true);
+    panel.setPainting(true);
+    expect(last().captured).toHaveLength(6);
+    expect(last().notice).toBeNull();
   });
 
   it('a start superseded while opening does not close the camera the newer one opened', async () => {
@@ -768,5 +934,694 @@ describe('ai-scan-panel — captures survive mode and camera changes', () => {
     expect(last().phase).toBe('painting');
     expect(logged).not.toHaveBeenCalled();
     logged.mockRestore();
+  });
+});
+
+describe('ai-scan-panel — a camera that answers but never delivers', () => {
+  it('gives up on a camera that is open and frameless, instead of idling forever', async () => {
+    // `next()` resolving to `null` means "open, no frame yet" — genuinely transient for a tick or
+    // two while a video element gets its dimensions. A camera that never delivers answers `null`
+    // for as long as the screen is open, and `null` was treated as proof that the scanner works:
+    // it CLEARED the failure clock. So the one failure that needs no exception to happen was the
+    // one failure nothing watched, and the panel sat on "Show any side" with the lens on.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fake.output = null; // open, and frameless, for good
+    await vi.advanceTimersByTimeAsync(TICK * 10);
+    expect(last().phase).not.toBe('error'); // under TICK_FAIL_MS: still patient
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(last().phase).toBe('error');
+    // The existing copy, which was already describing this case while being unreachable from it.
+    expect(last().notice?.body ?? '').toMatch(/opened but no frame could be read/i);
+    expect(last().device).toBeNull(); // and the lens is off, not left on under a dead loop
+    logged.mockRestore();
+  });
+
+  it('a frameless run that ends is forgotten, so one stall never kills a later scan', async () => {
+    // The other half: the clock must be a claim about a RUN of frameless ticks, not a total. Its
+    // neighbour clock had exactly this bug — cleared in only one branch — and a healthy minute of
+    // scanning followed by one hiccup then read as three seconds of solid failure.
+    const shown = facesOf(new Cube().move('R U').asString());
+    fake.output = null;
+    await vi.advanceTimersByTimeAsync(2900);
+    fake.output = tensorFor(shown.U); // a frame arrives
+    await vi.advanceTimersByTimeAsync(TICK);
+    fake.output = null;
+    await vi.advanceTimersByTimeAsync(2900);
+    expect(last().phase).not.toBe('error');
+  });
+});
+
+describe('ai-scan-panel — an inference that is lost rather than slow', () => {
+  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+  // INFERENCE_TIMEOUT_MS and TICK_FAIL_MS, written out because neither is exported and both are
+  // load-bearing for the arithmetic below: the deadline abandons a wait, and two abandoned waits
+  // in a row are what the failure clock then reports on.
+  const DEADLINE = 15_000;
+
+  it('a hung next() does not wedge every later tick, and a restart recovers', async () => {
+    // The busy guard used to be a bare flag, so an inference that never settles left it set for the
+    // life of the page: every later tick returned at the first line, both failure clocks stopped
+    // advancing because only a tick that gets somewhere touches them, and stop() + start() could
+    // not recover — the flag outlived the scan it belonged to. The panel sat on its last message
+    // with the lens on, which is a hung app rather than a slow one.
+    fake.nextHold = new Promise<void>(() => {}); // lost on the bridge, not merely slow
+    fake.output = tensorFor(facesOf(DEEP).U);
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
+    expect(last().captured).toHaveLength(0); // nothing can be read while it hangs
+
+    // The user's move, and it has to work.
+    fake.nextHold = null;
+    panel.stop();
+    await panel.start();
+    await show(facesOf(DEEP).U);
+    expect(last().captured).toHaveLength(1);
+  });
+
+  it('reports a runtime that has gone silent, rather than waiting on it forever', async () => {
+    // Fail loud. The deadline ABANDONS THE WAIT, not the inference, and its rejection joins the
+    // same failure clock every other tick error does — so a wedged runtime ends in the notice that
+    // was written for exactly this and offers a way back on, instead of in silence.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fake.nextHold = new Promise<void>(() => {});
+    // One deadline is patience, not a verdict: the first abandoned wait only starts the clock.
+    await vi.advanceTimersByTimeAsync(DEADLINE + TICK);
+    expect(last().phase).not.toBe('error');
+    // The second lands more than TICK_FAIL_MS later, and that is the report.
+    await vi.advanceTimersByTimeAsync(DEADLINE + TICK);
+    expect(last().phase).toBe('error');
+    expect(last().notice?.title).toMatch(/scanner stopped/i);
+    expect(last().device).toBeNull(); // and the lens is off, not left on under a dead loop
+    logged.mockRestore();
+  });
+
+  it('a frame that could not be read breaks the stillness run', async () => {
+    // Stillness is a claim about what was watched CONTINUOUSLY. Every other way a tick ends with no
+    // usable read resets the run — a frameless tick, an abstain, a bad geometry — but a frame that
+    // THREW left it standing, so two matching reads, a failure, and more matching reads satisfied
+    // both halves of the capture gate over an observation with a hole in it.
+    const U = facesOf(DEEP).U;
+    fake.output = tensorFor(U);
+    await vi.advanceTimersByTimeAsync(TICK * 2); // two matching reads
+    fake.failWith = new Error('the frame could not be read');
+    await vi.advanceTimersByTimeAsync(TICK); // …and one that threw
+    fake.failWith = null;
+    // Far enough that an UNBROKEN hold would have captured: SETTLE_TICKS reads from the first one.
+    await vi.advanceTimersByTimeAsync(TICK * (SETTLE_TICKS - 3));
+    expect(last().captured).toHaveLength(0);
+    // Recovery takes a fresh continuous hold — 500 ms measured from the first read AFTER the gap.
+    await vi.advanceTimersByTimeAsync(TICK * 3);
+    expect(last().captured).toHaveLength(1);
+    fake.output = null;
+  });
+});
+
+describe('ai-scan-panel — what it says when things go wrong', () => {
+  /** A camera rejection with the name getUserMedia actually uses. */
+  const refuse = async (name: string): Promise<ScanProgress> => {
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    det.openError = new DOMException('Permission denied', name);
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    await solo.start();
+    solo.remove();
+    const end = seen.at(-1);
+    if (!end) throw new Error('no report');
+    return end;
+  };
+
+  it('turns each way a camera refuses into something a child can do', async () => {
+    // "Cannot start: The request is not allowed by the user agent or the platform in the current
+    // context" is the browser's own sentence, and it was shown verbatim. It names no action, and
+    // the four causes need four different ones — which is exactly what the raw string hides. The
+    // NAME is the specified part, so the name is what is mapped.
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect((await refuse('NotAllowedError')).message).toMatch(/Allow the camera/i);
+    expect((await refuse('NotFoundError')).message).toMatch(/No camera was found/i);
+    expect((await refuse('NotReadableError')).message).toMatch(/Another app is using the camera/i);
+    expect((await refuse('OverconstrainedError')).message).toMatch(/default one/i);
+    for (const name of ['NotAllowedError', 'NotFoundError'] as const) {
+      const end = await refuse(name);
+      expect(end.phase).toBe('error');
+      expect(end.notice?.title ?? '').toMatch(/camera did not open/i);
+      expect(end.message).not.toMatch(/Cannot start:/);
+    }
+    // The browser's own words are not thrown away — they are the only record of which cause it
+    // was, and they go where whoever has to fix it will look.
+    expect(warned).toHaveBeenCalled();
+    warned.mockRestore();
+  });
+
+  it('takes a camera-failure notice down once a retry actually works', async () => {
+    // A notice stands until the situation changes, and a working scanner IS the situation
+    // changing — but nothing cleared these. A user who pressed Start again, got their camera and
+    // watched the scan run was still reading "The camera did not open" under a live preview: the
+    // transient line said one thing and the pinned sentence the opposite.
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    det.openError = new DOMException('Permission denied', 'NotAllowedError');
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    await solo.start();
+    expect(seen.at(-1)?.notice?.title ?? '').toMatch(/camera did not open/i);
+
+    det.openError = null; // the user allowed it, and pressed Start again
+    await solo.start();
+    expect(seen.at(-1)?.notice).toBeNull();
+    expect(seen.at(-1)?.phase).toBe('scanning');
+    solo.remove();
+    warned.mockRestore();
+  });
+
+  it('takes "The scanner stopped" down when Start brings the scanner back', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fake.failWith = new Error('malformed tensor');
+    await vi.advanceTimersByTimeAsync(3500);
+    expect(last().notice?.title ?? '').toMatch(/stopped/i);
+
+    fake.failWith = null;
+    await panel.start();
+    expect(last().notice).toBeNull();
+    expect(last().phase).not.toBe('error');
+    logged.mockRestore();
+  });
+
+  it('a restart does NOT take capture guidance down — only a camera failure', async () => {
+    // The other half, and the reason the clear is by identity rather than by a flag: a refusal's
+    // explanation and a confirm request are about the CUBE, and reopening the camera (a camera
+    // switch, a correction after a finished scan) must not wipe what the user still has to act on.
+    const TRUTH = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+    const shown = facesOf(TRUTH);
+    const bad = [...shown.F];
+    bad[0] = (bad[0]! + 1) % 6;
+    for (const face of FACES) await show(face === 'F' ? bad : shown[face]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    const pinned = last().notice?.title ?? '';
+    expect(pinned).toMatch(/sticker/i);
+
+    await panel.start();
+    expect(last().notice?.title).toBe(pinned);
+  });
+
+  it('keeps the raw message for a rejection it does not recognise', async () => {
+    // Deliberately narrow: a wording nobody predicted must reach a person intact rather than be
+    // flattened into a guess about which of four things happened.
+    const end = await refuse('SomeFutureError');
+    expect(end.message).toMatch(/Cannot start: Permission denied/);
+  });
+
+  it('says the model is slow, then stops waiting for one that never arrives', async () => {
+    // A multi-megabyte fetch is allowed to take a while; it is not allowed to take forever with
+    // nothing said and nothing to press. There was no notice and no bound at all.
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    det.loadHold = new Promise<void>(() => {}); // a download that stalls for good
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    const starting = solo.start();
+
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(seen.at(-1)?.phase).toBe('loading');
+    expect(seen.at(-1)?.notice?.title ?? '').toMatch(/taking a while/i);
+    // …and the camera is already open behind it, which is the whole point of camera-first.
+    expect(det.device).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await starting;
+    expect(seen.at(-1)?.phase).toBe('error');
+    expect(seen.at(-1)?.message).toMatch(/did not load within/i);
+    // A remedy, and one of them needs no model at all.
+    expect(seen.at(-1)?.notice?.title).toMatch(/did not load/i);
+    expect(seen.at(-1)?.notice?.body ?? '').toMatch(/paint the cube by hand/i);
+    solo.remove();
+  });
+
+  it('takes the slow-load notice down once the model arrives', async () => {
+    // A notice stands until the situation changes, and a finished load IS the situation changing.
+    // Leaving it up means a working scanner explaining that it is still downloading.
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const det = new FakeDetector();
+    let arrive = (): void => {};
+    det.loadHold = new Promise<void>((res) => {
+      arrive = () => res();
+    });
+    solo.useDetector(det, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    const starting = solo.start();
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(seen.at(-1)?.notice?.title ?? '').toMatch(/taking a while/i);
+    arrive();
+    await starting;
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(seen.at(-1)?.notice).toBeNull();
+    expect(seen.at(-1)?.phase).toBe('scanning');
+    solo.remove();
+  });
+
+  it('a load abandoned by a restart says nothing over the scan that replaced it', async () => {
+    // The notice is the panel's ONE pinned sentence, and `loadModel` wrote to it with no
+    // generation check at all — the only place in start() that did. An abandoned load settles up
+    // to a minute later, so "The model did not load" landed on top of whatever the CURRENT state
+    // was saying: here, a scanner that is running.
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const stalled = new FakeDetector();
+    stalled.loadHold = new Promise<void>(() => {}); // never arrives
+    solo.useDetector(stalled, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    const abandoned = solo.start();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seen.at(-1)?.phase).toBe('loading');
+
+    // The user gives up and starts again on a detector whose model is there. Frames arrive with no
+    // readable side in them, so the scan simply runs.
+    const working = new FakeDetector();
+    working.output = emptyTensor();
+    solo.useDetector(working, 'web');
+    await solo.start();
+    expect(seen.at(-1)?.phase).toBe('scanning');
+    expect(seen.at(-1)?.notice).toBeNull();
+
+    // …and a minute later the abandoned load gives up. Its verdict is about a scan that is over.
+    await vi.advanceTimersByTimeAsync(61_000);
+    await abandoned;
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(seen.at(-1)?.notice).toBeNull();
+    expect(seen.at(-1)?.phase).toBe('scanning');
+    solo.remove();
+  });
+
+  it('a load abandoned mid-flight does not mark the REPLACEMENT detector’s model loaded', async () => {
+    // `modelLoaded` was set before the generation was checked, so a superseded attempt could mark
+    // the session's model loaded — and `useDetector` may have put a DIFFERENT detector there in
+    // the meantime, whose model has never been compiled. The next start then skipped the load
+    // entirely and the tick loop asked an unloaded runtime for frames.
+    const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+    const solo = new AiScanPanel();
+    solo.setAttribute('headless', '');
+    const first = new FakeDetector();
+    let arrive = (): void => {};
+    first.loadHold = new Promise<void>((res) => {
+      arrive = () => res();
+    });
+    solo.useDetector(first, 'web');
+    document.body.appendChild(solo);
+    const seen: ScanProgress[] = [];
+    solo.addEventListener('scan-progress', (e) =>
+      seen.push((e as CustomEvent<ScanProgress>).detail),
+    );
+    const abandoned = solo.start();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seen.at(-1)?.phase).toBe('loading');
+
+    // A different detector is injected — the native host's path, and the test seam's — and ITS
+    // model is still compiling. It would answer `next()` perfectly happily if anything asked.
+    const replacement = new FakeDetector();
+    replacement.loadHold = new Promise<void>(() => {});
+    replacement.output = tensorFor(facesOf(DEEP).U);
+    solo.useDetector(replacement, 'web');
+
+    // The abandoned load finishes. Nothing it says is about the session that replaced it.
+    arrive();
+    await abandoned;
+
+    const starting = solo.start();
+    await vi.advanceTimersByTimeAsync(TICK * SETTLE_TICKS);
+    // Still waiting on the replacement's own model — not scanning, and certainly not capturing a
+    // side read through a runtime that has never loaded one.
+    expect(seen.at(-1)?.phase).toBe('loading');
+    expect(seen.at(-1)?.captured ?? []).toHaveLength(0);
+    // Leave nothing pending: the load times out on its own and re-offers Start.
+    await vi.advanceTimersByTimeAsync(61_000);
+    await starting;
+    solo.remove();
+  });
+});
+
+describe('ai-scan-panel — an instruction survives the camera reopening', () => {
+  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+
+  it('names the side it wants after a finished scan released the camera', async () => {
+    // `rescanFace` is what a tap on a CENTRE sticker does — a centre cannot be recoloured, so the
+    // side is read again. After a finished scan the camera is off, and `loop()` handled that by
+    // reopening and DROPPING the words it was given. So the one instruction the user needed was
+    // replaced by "Opening the camera…" and then by the generic idle line: the app asked for
+    // nothing, and the tap looked like it had done nothing.
+    await showAll(DEEP, [0, 0, 0, 0, 0, 0]);
+    expect(last().phase).toBe('done');
+    expect(last().device).toBeNull();
+
+    panel.rescanFace('L');
+    await vi.advanceTimersByTimeAsync(TICK);
+    expect(last().message).toMatch(/Show the ORANGE side again/);
+    expect(last().device).not.toBeNull(); // and the camera really did come back
+  });
+
+  it('drops the pending instruction when the scan is thrown away', async () => {
+    await showAll(DEEP, [0, 0, 0, 0, 0, 0]);
+    panel.rescanFace('L');
+    panel.restart();
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    expect(last().message).not.toMatch(/Show the ORANGE side again/);
+  });
+});
+
+describe('ai-scan-panel — a settled scan is not re-solved', () => {
+  // One turn from solved: the case six unoriented photos cannot determine, so the first pass costs
+  // confirmations. Once they are spent the rotations are KNOWN, and a later correction must not
+  // spend them again.
+  const ONE_TURN = new Cube().move('U').asString();
+
+  it('a correction after a settle never re-asks for looks', async () => {
+    await showAll(ONE_TURN, [0, 0, 0, 0, 0, 0]);
+    await answerConfirms(ONE_TURN);
+    expect(completions).toEqual([ONE_TURN]);
+
+    const truth = facesOf(ONE_TURN);
+    const was = truth.F[1]!;
+    panel.setSticker('F', 1, (was + 1) % 6); // break it…
+    await vi.advanceTimersByTimeAsync(CHECK);
+    const askedWhileBroken = events.some((e) => e.phase === 'confirm' && e.confirm !== null);
+    panel.setSticker('F', 1, was); // …and put it back
+    await vi.advanceTimersByTimeAsync(CHECK);
+
+    expect(completions).toEqual([ONE_TURN, ONE_TURN]);
+    expect(last().phase).toBe('done');
+    // The searches that used to happen: the rotations were solved once and thrown away, so every
+    // re-check re-ran the 4^6 search over captures it had already settled and asked to be shown a
+    // side again — for an orientation nobody had lost.
+    const asksAfterSettle = events
+      .slice(events.findIndex((e) => e.phase === 'done'))
+      .filter((e) => e.confirm !== null);
+    expect(asksAfterSettle).toEqual([]);
+    expect(askedWhileBroken).toBe(true); // the first pass really did need looks
+  });
+});
+
+describe('ai-scan-panel — a sticker that will not settle is named', () => {
+  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+
+  it('says which sticker keeps changing instead of repeating "hold still"', async () => {
+    // The gate keys on all nine colours, so ONE sticker flickering between red and orange — the
+    // detector's known weak pair — means no run ever completes and the side is never captured.
+    // That was a dead end with no message: "hold still" for as long as the user was willing.
+    const face = [...facesOf(DEEP).U];
+    const other = (face[2]! + 1) % 6;
+    for (let i = 0; i < 12; i++) {
+      face[2] = i % 2 === 0 ? facesOf(DEEP).U[2]! : other;
+      fake.output = tensorFor(face);
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+    expect(last().captured).toHaveLength(0); // it genuinely never settles
+    expect(last().message).toMatch(/top right sticker keeps changing colour/i);
+    fake.output = null;
+  });
+
+  it('stays quiet when the whole face changes — that is a cube being turned', async () => {
+    const a = facesOf(DEEP).U;
+    const b = facesOf(DEEP).R;
+    for (let i = 0; i < 12; i++) {
+      fake.output = tensorFor(i % 2 === 0 ? a : b);
+      await vi.advanceTimersByTimeAsync(TICK);
+    }
+    expect(last().message).toMatch(/hold still/i);
+    expect(last().message).not.toMatch(/keeps changing colour/i);
+    fake.output = null;
+  });
+});
+
+describe('ai-scan-panel — the two voices agree about the same refusal', () => {
+  // A cube whose readings no further look can split: the confirmations run out before the
+  // ambiguity does, and `assembleColors` says so instead of promising a deciding look.
+  const TOO_SYMMETRIC = new Cube().move('U D R L F B').asString();
+
+  it('an ambiguous cube is not called unsolvable', async () => {
+    // The pinned notice said "This cube reads the same several ways… turn any one face"; the
+    // transient line under it said "That isn't a solvable cube yet — fix a sticker, or show a side
+    // again" — for a cube that IS solvable, every reading of which is solvable, three lines below
+    // the sentence saying so. One sentence for every branch is how that happened.
+    await showAll(TOO_SYMMETRIC, [0, 0, 0, 0, 0, 0]);
+    await answerConfirms(TOO_SYMMETRIC);
+    expect(completions).toEqual([]);
+    expect(last().notice?.title).toBe('Too symmetric to tell');
+    expect(last().message).toMatch(/reads the same several ways/i);
+    expect(last().message).toMatch(/turn any one face/i);
+    expect(last().message).not.toMatch(/isn't a solvable cube/i);
+    expect(last().captured).toHaveLength(6); // and the work survives, as every refusal must
+  });
+
+  it('a genuine misread still says so', async () => {
+    // The other branch, unchanged: the wording is per-refusal, not one line dressed differently.
+    const truth = facesOf(new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString());
+    const badF = [...truth.F];
+    badF[0] = (badF[0]! + 1) % 6;
+    const badR = [...truth.R];
+    badR[2] = (badR[2]! + 2) % 6;
+    for (const face of FACES) {
+      await show(face === 'F' ? badF : face === 'R' ? badR : truth[face]);
+    }
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(last().message).toMatch(/isn't a solvable cube yet/i);
+    expect(last().message).not.toMatch(/reads the same several ways/i);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+describe('ai-scan-panel — the misread count arrives after the refusal, not before it', () => {
+  const TRUTH = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+  const F_TRUE = facesOf(TRUTH).F[0]!;
+
+  /** Show all six sides with `n` stickers of the Front side read as a colour they are not. */
+  async function scanMisreading(n: number): Promise<void> {
+    const shown = facesOf(TRUTH);
+    const bad = [...shown.F];
+    for (let i = 0; i < n; i++) bad[i] = (bad[i]! + 1) % 6;
+    for (const face of FACES) await show(face === 'F' ? bad : shown[face]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+  }
+
+  it('publishes the refusal without decoding anything on this thread', async () => {
+    // THE POINT OF THE WHOLE CHANGE. Before this, `decodeMisread` ran between the sixth capture and
+    // the frame that explains the refusal — 52-125 ms on an easy scramble and up to 3.0 s when its
+    // node budget is exhausted, all of it on the page's thread, with the board frozen.
+    withWorker();
+    const invalid: AiScanResult[] = [];
+    panel.addEventListener('scan-invalid', (e) =>
+      invalid.push((e as CustomEvent<AiScanResult>).detail),
+    );
+    const before = seam.decodes;
+    await scanMisreading(1);
+
+    // Not "few decodes", none: a decode that ran and was discarded blocks exactly as long.
+    expect(seam.decodes).toBe(before);
+    // The refusal is out, and says what it can — which is that it is checking, and NOT a count.
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0]!.misreadCount).toBeNull();
+    expect(invalid[0]!.suspects).toBeUndefined();
+    expect(last().suspects).toEqual([]);
+    expect(last().notice?.body ?? '').toMatch(/working out how many stickers are wrong/i);
+    // `null` must never be read as zero or as "nothing can be said": both of those are sentences
+    // this panel has, and neither is true here.
+    expect(last().notice?.body ?? '').not.toMatch(/too much of the cube/i);
+    expect(last().notice?.params).toBeUndefined();
+    // And the work went somewhere: one request, carrying this reading and its rotation status.
+    const worker = FakeWorker.last();
+    expect(worker.posted).toHaveLength(1);
+    expect(worker.posted[0]!.fixedRotation).toBe(false);
+    expect(worker.posted[0]!.faces.F!.colors[0]).toBe((F_TRUE + 1) % 6);
+  });
+
+  it('refines the notice, and re-announces the refusal, when the count lands', async () => {
+    withWorker();
+    const invalid: AiScanResult[] = [];
+    panel.addEventListener('scan-invalid', (e) =>
+      invalid.push((e as CustomEvent<AiScanResult>).detail),
+    );
+    await scanMisreading(1);
+    FakeWorker.last().answer();
+
+    // The public event carries the same null-then-value shape the field does, so a host learns the
+    // count on the channel it learned the refusal on rather than having to watch two.
+    expect(invalid).toHaveLength(2);
+    expect(invalid[1]!.misreadCount).toBe(1);
+    expect(invalid[1]!.suspects).toContainEqual({ face: 'F', index: 0, to: F_TRUE });
+    // And the words are the ones a decided count earns — the proven wording, unchanged.
+    expect(last().notice?.title).toMatch(/check the marked sticker/i);
+    expect(last().suspects).toContainEqual({ face: 'F', index: 0, to: F_TRUE });
+  });
+
+  it('states the count and accuses nothing when the answer is more than one', async () => {
+    withWorker();
+    await scanMisreading(2);
+    expect(last().notice?.body ?? '').toMatch(/working out how many/i);
+    FakeWorker.last().answer();
+    expect(last().notice?.title).toBe('More than one sticker looks wrong');
+    expect(last().notice?.params?.[0]).toBeGreaterThanOrEqual(2);
+    expect(last().suspects).toEqual([]);
+  });
+
+  it('stops saying it is checking when the decode answers that it cannot say', async () => {
+    // THE TRAP `null` EXISTS TO CREATE, and the one this was found failing on while measuring.
+    // A decode that exhausts its 20M-node backstop answers with nothing at all — which is a real
+    // answer ("the search could not tell") and NOT the deferred state. Spreading an empty
+    // diagnosis over a result still carrying `misreadCount: null` leaves the marker standing, so
+    // the panel says "working out how many stickers are wrong" for the rest of the session about
+    // a question that will never be answered any further.
+    withWorker();
+    await scanMisreading(1);
+    const worker = FakeWorker.last();
+    // Reply as an exhausted search does: the epoch, and no claim.
+    const epoch = worker.posted[0]!.epoch;
+    worker.deliver({ epoch, diagnosis: {} });
+
+    expect(last().notice?.body ?? '').not.toMatch(/working out how many/i);
+    expect(last().notice?.title).toMatch(/doesn.t read as a solvable cube/i);
+    expect(last().notice?.body ?? '').toMatch(/too much of the cube was read wrong/i);
+    expect(last().suspects).toEqual([]);
+  });
+
+  it('drops an answer about a reading that is no longer on screen', async () => {
+    // The decode can take seconds, and the scan does not stop while it runs. An answer that lands
+    // after a correction describes a cube nobody is looking at — and it would land as a COUNT,
+    // over a reading the user may have just fixed.
+    withWorker();
+    await scanMisreading(1);
+    const stale = FakeWorker.last();
+    // The user fixes the sticker: the reading changes, and the verdict is re-opened.
+    panel.setSticker('F', 0, F_TRUE);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    const settled = last();
+
+    stale.answer(0); // the old decode finally finishes
+    expect(last()).toBe(settled); // …and nothing at all was said about it
+  });
+
+  it('says nothing over a camera failure that landed while the decode was out', async () => {
+    // The diagnosis outlives its subject by design, and every site that re-decides a reading bumps
+    // the epoch so a late answer is dropped. A FATAL CAMERA FAILURE was not one of those sites —
+    // and it is the one that hurts most, because the answer republishes at phase 'scanning' with a
+    // notice about stickers. Landing after `tickFail` it replaced "The scanner stopped" with an
+    // instruction to show a side again, over a camera this panel had just closed and a loop that
+    // is no longer running: the user is told to do something the scanner cannot receive.
+    withWorker();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await scanMisreading(1);
+    expect(last().notice?.body ?? '').toMatch(/working out how many/i);
+    const worker = FakeWorker.last();
+    expect(worker.posted).toHaveLength(1);
+
+    // The camera dies while the decode is out.
+    fake.failWith = new Error('malformed tensor');
+    await vi.advanceTimersByTimeAsync(3500);
+    expect(last().phase).toBe('error');
+    expect(last().notice?.title ?? '').toMatch(/stopped/i);
+
+    const stopped = last();
+    worker.answer(0); // …and only now does the count arrive
+    expect(last()).toBe(stopped); // nothing was said at all
+    expect(last().notice?.title ?? '').toMatch(/stopped/i);
+    expect(last().phase).toBe('error');
+    logged.mockRestore();
+  });
+
+  it('says nothing over a camera that would not REOPEN while the decode was out', async () => {
+    // THE SIBLING SITE, left out when the case above was fixed. `tickFail` drops the diagnosis
+    // because it closes the camera; `startFailed` pins its own sentence and does not — and the
+    // reading has not changed, so the epoch cannot tell. The answer therefore republished at phase
+    // 'scanning' with a notice about stickers, replacing "The camera did not open" over a device
+    // that is null: the user is told to show a side again by a scanner with no camera at all.
+    withWorker();
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await scanMisreading(1);
+    expect(last().notice?.body ?? '').toMatch(/working out how many/i);
+    const worker = FakeWorker.last();
+
+    // The user switches camera, or presses Start again, and this time it is refused.
+    fake.openError = new DOMException('Permission denied', 'NotAllowedError');
+    await panel.start();
+    expect(last().phase).toBe('error');
+    expect(last().notice?.title ?? '').toMatch(/camera did not open/i);
+
+    const failed = last();
+    worker.answer(0); // …and only now does the count arrive
+    expect(last()).toBe(failed); // nothing was said at all
+    expect(last().notice?.title ?? '').toMatch(/camera did not open/i);
+    warned.mockRestore();
+  });
+
+  it('answers with the count in one go where the page has no worker', async () => {
+    // No `Worker` at all — a webview that forbids one, or this very test environment. The panel
+    // must still get the whole diagnosis, in the same tick, exactly as it did before the decode
+    // moved: one refusal event carrying the count, and no second one.
+    expect(typeof (globalThis as { Worker?: unknown }).Worker).toBe('undefined');
+    const invalid: AiScanResult[] = [];
+    panel.addEventListener('scan-invalid', (e) =>
+      invalid.push((e as CustomEvent<AiScanResult>).detail),
+    );
+    const before = seam.decodes;
+    await scanMisreading(1);
+    expect(seam.decodes).toBe(before + 1);
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0]!.misreadCount).toBe(1);
+    expect(last().notice?.title).toMatch(/check the marked sticker/i);
+    expect(last().notice?.body ?? '').not.toMatch(/working out how many/i);
+  });
+
+  it('defers a refused PAINTING the same way, and asks about it as painted', async () => {
+    // Painting refuses through its own path and had the same block — worse, since it lands between
+    // a tap and the tile changing colour, and since once the sixth side exists EVERY stroke
+    // re-checks the whole cube. And its decode must be told the rotations are known, or it answers
+    // "0 misreads" about a cube the painted validator has just refused.
+    withWorker();
+    panel.setPainting(true);
+    const truth = facesOf(TRUTH);
+    for (const f of FACES)
+      for (let i = 0; i < 9; i++) if (i !== 4) panel.setSticker(f, i, truth[f]![i]!);
+    const before = seam.decodes;
+    panel.setSticker('U', 0, (truth.U![0]! + 1) % 6);
+
+    expect(seam.decodes).toBe(before);
+    expect(last().notice?.body ?? '').toMatch(/working out how many/i);
+    const worker = FakeWorker.last();
+    // ONE decode is out and the rest of the strokes collapsed into the latest ask — a queue of
+    // obsolete decodes is what `MisreadDecoder` refuses to build (see misread-worker.test.ts), and
+    // it is this path that reaches it: once the sixth side exists every stroke re-checks the cube.
+    const running = worker.posted.length - 1;
+    // An earlier stroke's answer, arriving late, must say nothing about this reading…
+    const settled = last();
+    worker.answer(running);
+    expect(last()).toBe(settled);
+    // …and answering it is what sends this stroke's own ask, which must be told the rotations are
+    // known or the decode answers "0 misreads" about a cube the painted validator has refused.
+    const mine = worker.posted.length - 1;
+    expect(mine).toBeGreaterThan(running);
+    expect(worker.posted[mine]!.fixedRotation).toBe(true);
+    worker.answer(mine);
+    expect(last().suspects).toContainEqual({ face: 'U', index: 0, to: truth.U![0]! });
   });
 });

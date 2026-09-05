@@ -7,8 +7,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  CANCELLED_MESSAGE, createParallelSolveClient, createSolveClient, pickWinner, shareBudget,
-  sliceViews, stopDescriptor, stopWord,
+  CANCELLED_MESSAGE, STOP_NOW, createParallelSolveClient, createSolveClient, isWorkerFailure,
+  pickWinner, publishBest, shareBudget, sliceViews, stopDescriptor, stopWord,
 } from '../lib/solve-client.js';
 import { DEFAULT_NODE_BUDGET } from '../lib/solver-engine.js';
 
@@ -26,9 +26,15 @@ function fakeWorker({ reply = (msg) => ({ id: msg.id, ok: true, alg: 'R U', dept
     terminate() { w.terminated++; },
     fail: (message) => listeners.get('error')?.({ message }),
     emit: (data) => listeners.get('message')?.({ data }),
+    /** A reply that could not be deserialised. It carries no data at all — that is the whole
+     *  difficulty, and why the client cannot know which search it belonged to. */
+    garble: () => listeners.get('messageerror')?.({}),
   };
   return w;
 }
+
+/** The reply a worker sends for a search that was stopped: null, exactly as an exhausted one. */
+const stoppedReply = (msg) => ({ id: msg.id, ok: true, alg: null, depth: -1, view: -1 });
 
 test('a client needs a way to make a worker', () => {
   assert.throws(() => createSolveClient(), TypeError);
@@ -43,12 +49,14 @@ test('a search is forwarded with its bounds and answered', async () => {
   // `views: null` is on every request, not only a parallel one: the field is the protocol's,
   // and a single-worker client sending a DIFFERENT shape from a pooled one is how the two
   // drift apart. Null means "all six views", which is what one worker always searches.
-  // `views: null` and `shared: null` ride on EVERY request, not only a pooled one: the fields
-  // are the protocol's, and a single-worker client sending a different shape from a pooled one
-  // is how the two drift apart. Null views means all of them; null shared means nothing can
-  // call this search off, which is exactly a lone worker's situation.
+  // `views: null`, `shared: null` and `resume: null` ride on EVERY request, not only a pooled or
+  // an escalating one: the fields are the protocol's, and a single-worker client sending a
+  // different shape from a pooled one is how the two drift apart. Null views means all of them;
+  // null shared means nothing can call this search off, which is exactly a lone worker's
+  // situation; null resume means this search is not one anybody intends to continue — which is
+  // NOT the same as `{state: null}`, a continuable search that has not started yet.
   assert.deepEqual(w.sent[0], {
-    id: 1, facelets: 'F'.repeat(54), solLen: 21, probeMax: 100, views: null, shared: null,
+    id: 1, facelets: 'F'.repeat(54), solLen: 21, probeMax: 100, views: null, shared: null, resume: null,
   });
 });
 
@@ -218,6 +226,91 @@ test('a spawn that throws rejects the promise instead of escaping solve()', asyn
   assert.equal(client.idle, true);
 });
 
+test('a reply that could not be read fails the searches rather than hanging them', async () => {
+  // `messageerror` had no listener at all. A reply that fails to deserialise arrives with no
+  // data — so there is no id, and no way to know whose answer was lost — and the promise it
+  // belonged to would simply never settle: on screen, indistinguishable from a search still
+  // going. Everything in flight is failed instead, tagged as a WORKER failure so the pool
+  // retries on fewer threads rather than telling anyone their cube cannot be solved.
+  const w = fakeWorker({ autoReply: false });
+  const client = createSolveClient({ spawn: () => w });
+  const first = client.solve('F'.repeat(54));
+  const second = client.solve('F'.repeat(54));
+  w.garble();
+  for (const [name, promise] of [['first', first], ['second', second]]) {
+    await assert.rejects(async () => {
+      try {
+        await promise;
+      } catch (err) {
+        assert.ok(isWorkerFailure(err), `the ${name} rejection must be retryable on fewer threads`);
+        throw err;
+      }
+    }, /could not be read/);
+  }
+  assert.equal(client.idle, true, 'nothing may be left waiting on a reply that will not come');
+  assert.equal(w.terminated, 0,
+    'one message failed to cross, which says nothing about the thread or its 10 MB of tables');
+});
+
+test('an aborted search publishes the stop word and keeps the thread', async () => {
+  // The whole point of the stop word over `cancel()`: the search really stops — the engine sees
+  // STOP_NOW at its next poll, ~1 ms — and the worker keeps its tables, so the cube the person
+  // actually wants pays nothing for the one they abandoned. Ending the thread would cost the
+  // 0.5-2.6 s table build on the very next press.
+  let spawns = 0;
+  const w = fakeWorker({ autoReply: false });
+  const client = createSolveClient({ spawn: () => { spawns += 1; return w; } });
+  const word = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.store(word, 0, 0x7fffffff);
+  const controller = new AbortController();
+  const abandoned = client.solve('F'.repeat(54), {
+    solLen: 21, probeMax: 100, shared: word, signal: controller.signal,
+  });
+  controller.abort();
+  assert.equal(Atomics.load(word, 0), STOP_NOW, 'the running search was never told to stop');
+  assert.equal(w.terminated, 0, 'the thread must survive a stopped search');
+  // The worker still answers, with the null a stopped search returns.
+  w.emit(stoppedReply(w.sent[0]));
+  assert.equal(await abandoned, null, 'a stopped search answers null, like an exhausted one');
+
+  const next = client.solve('F'.repeat(54));
+  w.emit({ id: w.sent[1].id, ok: true, alg: 'R U', depth: 9, view: 0 });
+  assert.equal(await next, 'R U', 'and the kept worker answers the next cube');
+  assert.equal(spawns, 1, 'a second spawn means the tables were rebuilt after all');
+});
+
+test('a search aborted before it starts costs nothing at all', async () => {
+  let spawns = 0;
+  const client = createSolveClient({ spawn: () => { spawns += 1; return fakeWorker(); } });
+  const controller = new AbortController();
+  controller.abort();
+  assert.equal(await client.solve('F'.repeat(54), { signal: controller.signal }), null);
+  assert.equal(spawns, 0, 'an abandoned solve must not be the thing that pays for a table build');
+});
+
+test('with no stop word the thread is ended — but only when nothing else is on it', async () => {
+  // Without a shared word there is no channel into a synchronous search, so the only stop is
+  // ending the thread. That takes every OTHER search on it too, which is why it is done only
+  // when this one is the last: stealing a sibling's answer to hurry this one is the same bug
+  // one level down.
+  const w = fakeWorker({ autoReply: false });
+  const client = createSolveClient({ spawn: () => w });
+  const first = new AbortController();
+  const abandoned = client.solve('F'.repeat(54), { signal: first.signal });
+  const bystander = client.solve('U'.repeat(54));
+  first.abort();
+  assert.equal(await abandoned, null, 'the abandoned search settles rather than hanging');
+  assert.equal(w.terminated, 0, 'a sibling was still searching on that thread');
+  w.emit({ id: w.sent[1].id, ok: true, alg: 'R U', depth: 9, view: 0 });
+  assert.equal(await bystander, 'R U', 'and it answered, untouched');
+
+  const second = new AbortController();
+  const alone = client.solve('F'.repeat(54), { signal: second.signal });
+  second.abort();
+  assert.equal(await alone, null);
+  assert.equal(w.terminated, 1, 'the last search on a thread may end it — nothing else is lost');
+});
+
 test('a failure reply whose error is not a string is a malformed reply', async () => {
   // new Error(Symbol()) throws — after the pending entry was deleted, which would have left
   // the caller's promise unsettled forever. Non-string reasons are malformed, full stop.
@@ -363,6 +456,80 @@ test('one worker failing cancels its siblings instead of leaving them running', 
   assert.ok(made.slice(1, 3).every((w) => w.terminated > 0), 'the siblings were ended, not abandoned');
 });
 
+test('one solve failing abandons ITS OWN siblings, not an overlapping solve', async () => {
+  // The scoping bug. `abandonAll` called `c.cancel()` on every sibling CLIENT, and cancel()
+  // rejects every entry on a client — including a second, overlapping solve's, which the app
+  // allows (a die press while a reconnect is still solving, or the other way round). That solve
+  // then failed with "could not work it out" about a cube nothing was wrong with, caused by a
+  // failure that was not its own.
+  //
+  // The failure here is an ENGINE refusal, not a dead thread, because that is the case where
+  // the bystander has no failure of its own to fall back on: a malformed cube is refused
+  // identically on one worker, so it propagates untouched and the pool stays a pool.
+  const made = [];
+  const spawn = () => { const w = fakeWorker({ autoReply: false }); made.push(w); return w; };
+  const client = createParallelSolveClient({ spawn, workers: 3, viewCount: 6 });
+  const doomed = client.solve('nope', { solLen: 21, probeMax: 300 });
+  const bystander = client.solve('F'.repeat(54), { solLen: 21, probeMax: 300 });
+  await Promise.resolve();
+  assert.deepEqual(made.map((w) => w.sent.length), [2, 2, 2], 'both solves must be in flight together');
+
+  // The refusal, on one worker, for the malformed cube only.
+  const bad = made[0].sent.find((m) => m.facelets === 'nope');
+  made[0].emit({ id: bad.id, ok: false, error: 'facelets must be a 54-character string' });
+  await assert.rejects(() => doomed, /54-character/);
+  assert.equal(made.length, 3, 'an engine refusal must not be retried on a fourth thread');
+  assert.equal(client.workers, 3, 'nor collapse the pool');
+  assert.ok(made.every((w) => w.terminated === 0),
+    'the bystander was still searching on every one of those threads');
+
+  // And the bystander answers, from the workers that were never touched.
+  for (const w of made) {
+    const mine = w.sent.find((m) => m.facelets !== 'nope');
+    w.emit({ id: mine.id, ok: true, alg: 'R U', depth: 9, view: mine.views[0] });
+  }
+  assert.equal(await bystander, 'R U', 'an overlapping solve was cancelled by someone else\'s failure');
+  assert.equal(client.idle, true);
+});
+
+test('the FALLBACK does not cancel an overlapping solve either', async () => {
+  // The same defect as above, one level out, and the half the fix missed (2026-09-05 audit). The
+  // per-request controller stopped `abandonAll` from touching a bystander — and then the fallback
+  // path, reached when a WORKER failure collapses the pool, called `c.cancel()` on every client
+  // anyway. cancel() rejects every entry on a client, so the bystander was rejected with "solve
+  // cancelled" by a failure that was not its own and that its own workers never saw.
+  //
+  // The shape that isolates it: a one-node budget uses exactly one client, so the bystander
+  // occupies worker 0 and nothing else, and the spawn of worker 1 — which only the second solve
+  // ever asks for — throws. The bystander's own worker is untouched throughout.
+  const made = [];
+  let spawns = 0;
+  const spawn = () => {
+    spawns += 1;
+    if (spawns === 2) throw new Error('Worker refused to start');
+    // The bystander's worker stays silent, so it is still searching when the fallback happens;
+    // the fallback's own worker answers, so the failing solve completes.
+    const w = fakeWorker({ autoReply: spawns > 2 }); made.push(w); return w;
+  };
+  const client = createParallelSolveClient({ spawn, workers: 3, viewCount: 6 });
+  let bystanderFailed = null;
+  const bystander = client.solve('F'.repeat(54), { solLen: 21, probeMax: 1 })
+    .catch((err) => { bystanderFailed = err; });
+  await Promise.resolve();
+  assert.equal(made.length, 1, 'a one-node budget must use exactly one client');
+
+  const { value } = await withWarnings(() => client.solve('U'.repeat(54), { solLen: 21, probeMax: 300 }));
+  assert.equal(value, 'R U', 'the fallback still answers the solve that failed');
+  // A turn of the event loop, so a rejection that IS coming has arrived before it is denied.
+  await new Promise((r) => { setTimeout(r, 0); });
+  assert.equal(bystanderFailed, null, 'the bystander was rejected by someone else\'s failure');
+  assert.equal(made[0].terminated, 0, 'and its worker — which never failed — was ended under it');
+
+  // It is still in flight, on the thread it started on, and answers from there.
+  made[0].emit({ id: made[0].sent[0].id, ok: true, alg: 'R U', depth: 9, view: 0 });
+  assert.equal(await bystander, 'R U');
+});
+
 test('an omitted budget is the engine default, divided — not one node each', async () => {
   const made = [];
   const client = createParallelSolveClient({ spawn: () => { const w = fakeWorker(); made.push(w); return w; }, workers: 3, viewCount: 6 });
@@ -462,23 +629,156 @@ test('a worker that DIES mid-solve falls back rather than losing the answer', as
   assert.equal(client.idle, true, 'no sibling and no fallback is left pending');
 });
 
-test('the POOL works through inline workers, not just the single client', async () => {
-  // The defect this pins cost a whole fallback path. The inline worker did not report
-  // depth/view, and pickWinner REJECTS a reply without them — so a pooled solve running on
-  // inline workers found answers, discarded every one, exhausted all eight budget escalations
-  // and threw. The single-worker client ignores those fields, so nothing noticed until rolling
-  // a scramble started going through the pool.
+test('a worker that dies and a CANCEL in the same turn does not fall back — nobody is waiting', async () => {
+  // The fallback's own era check (2026-09-05 audit), and the second place a teardown can be
+  // crossed. `pooled` asks whether the pool is still the one it started on; the catch below it
+  // did not, so a worker failure arriving in the same turn as `cancel()` sent the solve down the
+  // fallback path: it spawned a REPLACEMENT worker, searched on it and RESOLVED — an answer for a
+  // cube nobody was waiting for, and a session-long downgrade announced over a button press.
+  //
+  // Reproduced exactly as the audit did, and asserted on the thing that must NOT exist: a
+  // seventh worker. A rejection alone would not pin it — the fallback could still have run.
+  //
+  // The would-be fallback worker ANSWERS, deliberately: against the old code this test must fail
+  // by resolving, not by hanging, and a hanging test reports nothing at all.
+  const made = [];
+  const spawn = () => { const w = fakeWorker({ autoReply: made.length >= 6 }); made.push(w); return w; };
+  const client = createParallelSolveClient({ spawn, workers: 6, viewCount: 6 });
+  const { value, said } = await withWarnings(async () => {
+    const inFlight = client.solve('F'.repeat(54), { solLen: 21, probeMax: 600 })
+      .then((v) => ({ resolved: v }), (e) => ({ rejected: e.message }));
+    await Promise.resolve();
+    await Promise.resolve();
+    made[0].fail('out of memory');
+    client.cancel();
+    return inFlight;
+  });
+  assert.deepEqual(value, { rejected: CANCELLED_MESSAGE }, 'a cancelled solve must not answer');
+  assert.equal(made.length, 6, 'a seventh worker is a replacement spawned for a solve nobody wanted');
+  assert.deepEqual(said, [], 'a teardown is not evidence that this page cannot staff a pool');
+});
+
+test('the stop word is published only by a shallower ANSWER, and atomically', () => {
+  // `shouldStop`'s mirror, extracted from `pooled` and exported for the same reason (2026-09-05
+  // audit, refactoring debt): a wrong comparison here is invisible from outside, because every
+  // answer is still a valid solution — just not deterministically the same one.
+  const word = new Int32Array(1);
+  const NO_BEST = 0x7fffffff;
+  word[0] = NO_BEST;
+  assert.equal(publishBest(word, 11), true);
+  assert.equal(word[0], 11);
+  assert.equal(publishBest(word, 12), false, 'a deeper answer must not be published');
+  assert.equal(word[0], 11);
+  assert.equal(publishBest(word, 11), false, 'nor an equal one — at the same depth a lower view still wins');
+  assert.equal(word[0], 11);
+  assert.equal(publishBest(word, 9), true);
+  assert.equal(word[0], 9);
+  // A cancelled solve's word, which every later reply must leave alone.
+  word[0] = STOP_NOW;
+  assert.equal(publishBest(word, 0), false, 'a late reply cannot quietly un-cancel a solve');
+  assert.equal(word[0], STOP_NOW);
+  // "No depth applies" is not a depth: a null reply carries -1, and publishing it would read as
+  // the shallowest possible and stop every sibling.
+  word[0] = NO_BEST;
+  assert.equal(publishBest(word, -1), false);
+  assert.equal(publishBest(word, 1.5), false);
+  assert.equal(publishBest(null, 3), false, 'a pool with no shared word simply never stops early');
+  assert.equal(word[0], NO_BEST);
+});
+
+test('a reply that cannot WIN cannot stop the siblings that can', async () => {
+  // The publication used to ask only "is there an algorithm" while the pick asks for the whole sort
+  // key, so the two disagreed about exactly one shape: a real depth with a malformed view. That
+  // reply stopped every sibling at its depth — the stop word is how a slice is told to give up —
+  // and was then discarded by `pickWinner`, so the pool answered null for a cube the sibling it
+  // stopped was about to solve (2026-09-05 audit). Both sides ask one predicate now.
+  //
+  // Asserted on the word itself, because that is where the damage is done: by the time a screen
+  // sees the null, nothing says which reply caused it.
+  const word = new Int32Array(new SharedArrayBuffer(4));
+  const made = [];
+  const spawn = () => { const w = fakeWorker({ autoReply: false }); made.push(w); return w; };
+  const client = createParallelSolveClient({
+    spawn, workers: 2, viewCount: 6, makeShared: () => word,
+  });
+  const solving = client.solve('F'.repeat(54), { solLen: 21, probeMax: 200 });
+  await Promise.resolve();
+  assert.deepEqual(made.map((w) => w.sent.length), [1, 1], 'both slices must be in flight');
+
+  // Slice 0: an answer at a shallow depth, from a view index that is not one — the shape a garbled
+  // reply takes, and the only one where the two questions differ.
+  made[0].emit({ id: made[0].sent[0].id, ok: true, alg: 'U', depth: 3, view: -1 });
+  await Promise.resolve();
+  assert.equal(Atomics.load(word, 0), 0x7fffffff,
+    'a reply the pick will throw away published a depth that stops every sibling');
+
+  // And the sibling that CAN win still answers, and is the pool's answer.
+  made[1].emit({ id: made[1].sent[0].id, ok: true, alg: 'R U', depth: 9, view: 1 });
+  assert.equal(await solving, 'R U', 'the pool discarded the only reply that could win');
+  assert.equal(Atomics.load(word, 0), 9, 'and the winner did publish its own depth');
+});
+
+test('a pooled solve abandoned before it starts staffs nothing and shares nothing', async () => {
+  // The single-worker client refuses this before `attach()` — "an abandoned solve must not be the
+  // thing that pays for a table build" — and the pool did not (2026-09-05 audit). Six threads, six
+  // spawns and the whole 9.82 MiB handshake, for a solve whose every request then answered null.
+  // The app aborts a superseded solve the moment the cube changes, so this is the ordinary case.
+  let spawns = 0;
+  const made = [];
+  const client = createParallelSolveClient({
+    spawn: () => { spawns += 1; const w = fakeWorker(); made.push(w); return w; },
+    workers: 6,
+    viewCount: 6,
+    shareTables: true,
+    makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
+  });
+  const controller = new AbortController();
+  controller.abort();
+  assert.equal(
+    await client.solve('F'.repeat(54), { solLen: 21, probeMax: 600, signal: controller.signal }),
+    null,
+    'an abandoned solve answers null, exactly as one that was stopped',
+  );
+  assert.equal(spawns, 0, 'six threads were spawned for a solve nobody was waiting for');
+  assert.deepEqual(made.map((w) => w.sent), [], 'and not one message may be sent — search or handshake');
+  // The pool is untouched by it: the next solve is a pool, not a fallback. That solve DOES run the
+  // handshake, and this fake worker answers a control request as if it were a search — so sharing
+  // is given up, loudly and harmlessly. Captured rather than left in the test's output.
+  const { value } = await withWarnings(() => client.solve('F'.repeat(54), { solLen: 21, probeMax: 600 }));
+  assert.equal(value, 'R U');
+  assert.equal(client.workers, 6);
+});
+
+test('a pool of main-thread workers COLLAPSES to one, and still answers', async () => {
+  // Two defects, one test, because the second was hidden behind the first.
+  //
+  // The inline worker did not report depth/view, and pickWinner REJECTS a reply without them —
+  // so a pooled solve on inline workers found answers, discarded every one, exhausted all eight
+  // budget escalations and threw. That is fixed and still pinned here: the answer must come
+  // back, and must solve.
+  //
+  // But a pool of them was never a pool. `spawnSolveWorker` answers with a main-thread worker
+  // where it cannot build a real one — no `Worker`, a CSP forbidding worker-src, a blocked
+  // module URL — and app.js gated the pool on `typeof Worker` alone, so under a CSP it built
+  // three of them and ran three sequential searches on this thread with a THIRD of the budget
+  // each. That is strictly worse than one of them searching every view with all of it, and the
+  // stop word buys nothing because nothing runs concurrently to be stopped. The pool now looks
+  // at what it got before it divides anything, and says so out loud.
   const { spawnSolveWorker } = await import('../lib/solve-client.js');
   const realWorker = globalThis.Worker;
   const realWarn = console.warn;
-  console.warn = () => {};
+  const said = [];
+  console.warn = (m) => said.push(String(m));
   try {
     Object.defineProperty(globalThis, 'Worker', { value: undefined, configurable: true });
     const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
     Cube.initSolver();
     const facelets = new Cube().move("R U R' U' F2 L D L' B2 R").asString();
+    const made = [];
     const client = createParallelSolveClient({
-      spawn: spawnSolveWorker, workers: 3, viewCount: 6,
+      spawn: () => { const w = spawnSolveWorker(); made.push(w); return w; },
+      workers: 3,
+      viewCount: 6,
       makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
     });
     const alg = await client.solve(facelets, { solLen: 21, probeMax: 20_000_000 });
@@ -487,6 +787,11 @@ test('the POOL works through inline workers, not just the single client', async 
     const oracle = Cube.fromString(facelets);
     oracle.move(alg);
     assert.ok(oracle.isSolved(), 'and what it did return must actually solve the cube');
+    assert.equal(client.workers, 1,
+      'three main-thread searches with a third of the budget each is not a pool');
+    assert.ok(made.every((w) => w.inline === true), 'every worker here should be a main-thread one');
+    assert.ok(said.some((m) => /falling back to a single worker/.test(m)),
+      'a silent collapse hides a page that can never staff a pool');
   } finally {
     console.warn = realWarn;
     if (realWorker === undefined) delete globalThis.Worker;

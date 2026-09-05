@@ -33,7 +33,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
-use base64::Engine as _;
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
 use nokhwa::Camera;
@@ -45,6 +44,9 @@ use tauri::ipc::Response;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager, Runtime, State};
 
+use crate::frame;
+use crate::worker::{CaptureWorker, Joined};
+
 /// Ultralytics letterbox pad colour (grey 114), normalised — the same constant as the TS.
 const PAD: f32 = 114.0 / 255.0;
 const IMG: usize = 640;
@@ -53,6 +55,11 @@ const IMG: usize = 640;
 /// [note_capture_failure].
 const STALE_AFTER_FAILURES: u32 = 30;
 const RETRY_BACKOFF_MS: u64 = 20;
+/// How long a reopen or close waits for the previous capture thread to release the device. A
+/// worker blocked in `cam.frame()` leaves within one frame interval; one blocked inside a
+/// ten-second `Camera::new` may not, and is then left to notice the generation change on its own
+/// rather than freezing the command that replaced it.
+const WORKER_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Serialize)]
 struct CameraInfo {
@@ -76,6 +83,9 @@ pub struct CubeVision {
     generation: Arc<AtomicUsize>,
     /// Why the last frame did not arrive, if it did not. See the capture loop.
     capture_error: Arc<Mutex<Option<String>>>,
+    /// The live capture thread, kept so the NEXT open can wait for it to release the device
+    /// (see [stop_capture] and `crate::worker`). None between sessions.
+    worker: Mutex<Option<CaptureWorker>>,
     session: Mutex<Option<Session>>,
     opened: Mutex<Option<CameraInfo>>,
 }
@@ -156,8 +166,10 @@ fn probe<R: Runtime>(app: AppHandle<R>) -> bool {
         Err(e) => {
             // Loud: falling back to WebDetector is the right outcome, but silently is not — this is
             // the difference between "this machine prefers the browser path" and "onnxruntime did
-            // not load", and only one of those is worth anybody's time to investigate.
-            eprintln!("cube-vision: onnxruntime is unavailable, falling back to WebDetector: {e}");
+            // not load", and only one of those is worth anybody's time to investigate. Through the
+            // `log` facade, not stderr: a Start-menu launch has no stderr, and only the facade
+            // reaches the log file `tauri_plugin_log` keeps.
+            log::warn!("cube-vision: onnxruntime is unavailable, falling back to WebDetector: {e}");
             false
         }
     }
@@ -197,8 +209,9 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
         ),
         None => CameraIndex::Index(0),
     };
-    // Retires whatever was running and claims the next session number in one step. Everything the
-    // new worker does is conditioned on still owning it.
+    // Retires whatever was running — and WAITS for it to leave, so the device below is free —
+    // then claims the next session number. Everything the new worker does is conditioned on still
+    // owning it.
     let mine = stop_capture(&state);
     let (label_tx, label_rx) = mpsc::channel::<Result<String, String>>();
     let latest = Arc::clone(&state.latest);
@@ -206,7 +219,7 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
     let capture_error = Arc::clone(&state.capture_error);
     let idx = index.clone();
 
-    std::thread::spawn(move || {
+    let worker = CaptureWorker::spawn(move || {
         let format =
             RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
         let mut cam = match Camera::new(idx, format) {
@@ -280,6 +293,10 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
         }
         let _ = cam.stop_stream();
     });
+    // Kept, so the next `stop_capture` can join it. If a close already superseded this open while
+    // the thread was being spawned, the worker exits on its first generation check and the handle
+    // parked here is joined by whichever stop comes next — never leaked, never re-used.
+    *state.worker.lock().map_err(|_| "camera state poisoned")? = Some(worker);
 
     // Wait for the thread to say whether the camera opened, so a failure is this command's error
     // rather than a scan that quietly never produces a frame.
@@ -298,11 +315,19 @@ fn open_camera(state: State<'_, CubeVision>, device_id: Option<String>) -> Resul
     Ok(())
 }
 
-/// Retire the current capture session and return the number of the NEW one.
+/// Retire the current capture session, wait for its thread to release the device, and return the
+/// number of the NEW session.
 ///
 /// Split out so `open_camera` can reuse it without going through the command wrapper — reopening
 /// must not leave the previous thread holding the device. Returning the new generation is what
 /// makes "stop, then start" a single indivisible step from the caller's point of view.
+///
+/// The JOIN is the half this used to lack. Bumping the generation tells the worker to stop; it
+/// does not wait for it, so a reopen spawned its new thread while the old one still held Media
+/// Foundation's device — and `Camera::new` on the new thread then failed against a camera nobody
+/// else was using. Bounded (`WORKER_JOIN_TIMEOUT`), and a timeout is logged rather than fatal:
+/// the straggler re-checks the generation before it publishes anything, so the worst it can do
+/// is hold the device a little longer, which the next open then reports honestly.
 fn stop_capture(state: &CubeVision) -> usize {
     let next = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     if let Ok(mut slot) = state.opened.lock() {
@@ -313,6 +338,16 @@ fn stop_capture(state: &CubeVision) -> usize {
     }
     if let Ok(mut slot) = state.capture_error.lock() {
         *slot = None;
+    }
+    let worker = state.worker.lock().ok().and_then(|mut w| w.take());
+    if let Some(worker) = worker {
+        if worker.join_within(WORKER_JOIN_TIMEOUT) == Joined::TimedOut {
+            log::warn!(
+                "cube-vision: the previous capture thread did not release the camera within {:?}; \
+                 the next open may find the device busy",
+                WORKER_JOIN_TIMEOUT
+            );
+        }
     }
     next
 }
@@ -345,7 +380,9 @@ fn note_capture_failure(
     std::thread::sleep(std::time::Duration::from_millis(RETRY_BACKOFF_MS));
 }
 
-#[tauri::command]
+/// `(async)` because closing now WAITS for the capture thread (up to `WORKER_JOIN_TIMEOUT`), and a
+/// plain command runs on the main thread — a frozen UI is the wrong price for a clean release.
+#[tauri::command(async)]
 fn close_camera(state: State<'_, CubeVision>) -> Result<(), String> {
     let _ = stop_capture(&state);
     Ok(())
@@ -364,22 +401,56 @@ fn load_model<R: Runtime>(app: AppHandle<R>, state: State<'_, CubeVision>) -> Re
         return Ok(());
     }
     let path = resolve_model_path(&app)?;
-    // DirectML FIRST, CPU second, and the order is the whole point: onnxruntime walks the list, so
-    // a machine without a D3D12 device still gets a working scanner rather than a failure. Falling
-    // back is not a silent downgrade here — `probe` has already committed us to the native path, so
-    // the alternative to a CPU session is no scanner at all.
+    // DirectML FIRST, CPU second — but as two ATTEMPTS, not one provider list. onnxruntime walks a
+    // list silently: a DirectML registration that fails (no D3D12 device, or `DirectML.dll` not
+    // beside the executable, which is exactly what an unbundled build looks like) falls through to
+    // CPU with nothing said, and the scanner then runs ~30x slower while every log reads as if the
+    // GPU path were live. `error_on_failure` makes the first attempt refuse instead, so the
+    // fallback is a decision this function makes out loud and the provider a session got is a fact
+    // it can log. Falling back is still right — `probe` has already committed us to the native
+    // path, so the alternative to a CPU session is no scanner at all.
+    let session = match build_session(&path, Some(DirectML::default().build().error_on_failure())) {
+        Ok(session) => {
+            log::info!(
+                "cube-vision: model loaded on DirectML from {}",
+                path.display()
+            );
+            session
+        }
+        Err(e) => {
+            log::warn!(
+                "cube-vision: DirectML is not available ({e}); the model runs on the CPU. If \
+                 DirectML.dll is not beside the executable this is the missing-bundle case, not a \
+                 missing GPU."
+            );
+            let session = build_session(&path, None)?;
+            log::info!("cube-vision: model loaded on CPU from {}", path.display());
+            session
+        }
+    };
+    *state.session.lock().map_err(|_| "model state poisoned")? = Some(session);
+    Ok(())
+}
+
+/// One session builder, with or without an accelerator in front of the CPU provider.
+fn build_session(
+    path: &std::path::Path,
+    accelerator: Option<ort::ep::ExecutionProviderDispatch>,
+) -> Result<Session, String> {
+    let providers: Vec<ort::ep::ExecutionProviderDispatch> = accelerator
+        .into_iter()
+        .chain(std::iter::once(CPU::default().build()))
+        .collect();
     // Not one chain: `commit_from_file` takes `&mut self`, so the builder has to be a binding.
     let mut builder = Session::builder()
         .map_err(|e| format!("onnxruntime unavailable: {e}"))?
-        .with_execution_providers([DirectML::default().build(), CPU::default().build()])
+        .with_execution_providers(providers)
         .map_err(|e| format!("could not set execution providers: {e}"))?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|e| format!("could not set optimisation level: {e}"))?;
-    let session = builder
-        .commit_from_file(&path)
-        .map_err(|e| format!("could not load {}: {e}", path.display()))?;
-    *state.session.lock().map_err(|_| "model state poisoned")? = Some(session);
-    Ok(())
+    builder
+        .commit_from_file(path)
+        .map_err(|e| format!("could not load {}: {e}", path.display()))
 }
 
 /// `preprocess()` from src/onnx-detect.ts, reproduced exactly. See the module note.
@@ -513,34 +584,20 @@ fn next_detection(state: State<'_, CubeVision>) -> Result<Response, String> {
 /// Run one frame the caller already has. The parity harness's door: it hands pixels in and compares
 /// the tensor against the other runtimes, which is how a letterbox drift is caught by a test rather
 /// than by a scan that has quietly become worse.
+///
+/// The wire shape is `crate::frame`'s — `rgba_base64` plus `usize` dimensions, the same on every
+/// platform — and every check (positive dimensions, `checked_mul`, exact length) happens there
+/// before a byte is indexed. The alpha channel is dropped here because this letterbox reads RGB
+/// triples; the camera thread decodes straight to RGB and never pays that pass.
 #[tauri::command(async)]
 fn infer_frame(
     state: State<'_, CubeVision>,
-    rgb_base64: String,
+    rgba_base64: String,
     width: usize,
     height: usize,
 ) -> Result<Response, String> {
-    let rgb = base64::engine::general_purpose::STANDARD
-        .decode(rgb_base64.as_bytes())
-        .map_err(|e| format!("rgb_base64 is not base64: {e}"))?;
-    // Zero dimensions passed the old length check against an empty payload, and `letterbox` then
-    // underflowed at `w - 1`; a large pair overflowed the multiplication and could accept a buffer
-    // far too small. Both are rejected before any indexing happens.
-    if width == 0 || height == 0 {
-        return Err(format!(
-            "frame dimensions must be positive, got {width}x{height}"
-        ));
-    }
-    let expected = width
-        .checked_mul(height)
-        .and_then(|px| px.checked_mul(3))
-        .ok_or_else(|| format!("{width}x{height} RGB overflows a usize"))?;
-    if rgb.len() != expected {
-        return Err(format!(
-            "rgb is {} bytes, expected {expected} for {width}x{height} RGB",
-            rgb.len()
-        ));
-    }
+    let rgba = frame::decode_rgba(&rgba_base64, width, height)?;
+    let rgb = frame::strip_alpha(&rgba);
     run_inference(&state, letterbox(&rgb, width, height))
 }
 
@@ -646,15 +703,14 @@ mod tests {
     }
 
     /// Zero dimensions and an oversized pair are rejected before anything indexes the buffer.
+    /// `letterbox` itself is only ever reached through `frame::decode_rgba`'s validation or the
+    /// capture loop's, both of which reject these; `frame.rs` carries the tests for the former.
     #[test]
     fn a_degenerate_frame_is_refused_rather_than_indexed() {
-        // `letterbox` itself is only ever reached through `infer_frame`'s validation or the capture
-        // loop's, both of which reject these — this pins the reason those checks exist by showing
-        // what the arithmetic would do with h = 0: `h - 1` underflows.
-        assert_eq!(
-            0usize.checked_sub(1),
-            None,
-            "h - 1 underflows for a zero-height frame"
+        assert!(frame::rgba_len(0, 480).is_err(), "h - 1 would underflow");
+        assert!(
+            frame::rgba_len(usize::MAX / 2, 4).is_err(),
+            "the product would wrap"
         );
     }
 

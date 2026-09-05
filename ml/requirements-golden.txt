@@ -8,6 +8,8 @@
 numpy==2.3.5
 pillow==12.3.0
 onnxruntime==1.29.0
+# ml/test_pipeline.py re-derives cube-yolo.int8.onnx with onnxruntime.quantization, which imports onnx.
+onnx==1.22.0
 # Linux + macOS: the Android artefact's runtime.
 ai-edge-litert==2.2.0
 # macOS only (the coreml leg). pip resolves this on Linux too but the leg is not run there.

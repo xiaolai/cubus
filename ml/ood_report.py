@@ -4,9 +4,15 @@ Unlike ood_gallery.py (a big local review grid that references preview/*.jpg), t
 chosen examples as base64 thumbnails so the file is fully self-contained and publish-quality —
 the honest-evaluation summary you can send to someone. Dark/light aware, no external requests.
 
-  python ood_report.py --out <ood_eval_out_dir> --dest <report.html> --highlights <highlights.json>
+  python ood_report.py --out <ood_eval_out_dir> --dest <report.html> --highlights <highlights.json> \
+                       [--metrics <metrics.json from ml/metrics_table.py --json>]
 
 highlights.json: [{"file": "...", "caption": "...", "verdict": "good|bad"}]  (order preserved)
+
+No number in the report is a literal: mAP rows come from --metrics (or print as a dash), and the
+evaluated artefact is named from diagnostics.json and described by ml/models/MANIFEST.json. The
+first version baked "mAP50 0.972", "0.971" and "the shipped int8" into the template, three claims
+that were each true of a different model at a different time.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ import html
 import io
 import json
 import os
+from pathlib import Path
 
 from PIL import Image
 
@@ -32,15 +39,24 @@ def _thumb_b64(path: str) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def _weakest_class(m: dict) -> str:
+    """The lowest per-class mAP50 on the held-out set, named from the metrics rather than typed in."""
+    pc = m["heldout"].get("per_class_mAP50") or {}
+    if not pc:
+        return "—"
+    name = min(pc, key=pc.get)
+    return f"<b>{html.escape(name)}</b> (held-out mAP50 {pc[name]:.3f})"
+
+
 def _rigorous_block(m: dict) -> str:
-    """The headline: reproduced-IID vs deduped-held-out mAP, side by side."""
+    """The headline: reproduced-IID vs deduped-held-out mAP, side by side — every number from `--metrics`."""
     iid, ho = m["iid"], m["heldout"]
     return f"""
 <h2>The rigorous number: unseen-dataset mAP</h2>
-<p>Scored with the same tool (<code>yolo val</code>) that produced 0.973 — first <b>reproduced</b>
-in-distribution at exactly 0.973 to prove the harness, then run on a <b>different</b> Roboflow dataset
-the model never trained on. It's a fork of a related set, so <b>{ho['removed']} of its images were
-near-duplicates</b> of our data and were removed (leakage) before scoring {ho['images']} genuinely-unseen photos.</p>
+<p>Scored with the same tool (<code>yolo val</code>, via <code>ml/metrics_table.py</code>) on the
+in-distribution test split, then on a <b>different</b> Roboflow dataset the model never trained on.
+It's a fork of a related set, so <b>{ho['removed']} of its images were near-duplicates</b> of our data
+and were removed (leakage) before scoring {ho['images']} genuinely-unseen photos.</p>
 <table>
   <tr><th>Test set</th><th>images</th><th>mAP50</th><th>mAP50-95</th><th>precision</th><th>recall</th></tr>
   <tr><td>In-distribution (same sources as training)</td><td>{iid['images']}</td><td>{iid['mAP50']:.3f}</td>
@@ -48,12 +64,24 @@ near-duplicates</b> of our data and were removed (leakage) before scoring {ho['i
   <tr><td><b>Held-out, deduped</b></td><td>{ho['images']}</td><td><b>{ho['mAP50']:.3f}</b></td>
       <td><b>{ho['mAP50_95']:.3f}</b></td><td>{ho['P']:.3f}</td><td><b>{ho['R']:.3f}</b></td></tr>
 </table>
-<div class="callout"><b>True generalization is mAP50 ≈ {ho['mAP50']:.2f}, not 0.97.</b> The biggest drop is
+<div class="callout"><b>True generalization is mAP50 ≈ {ho['mAP50']:.2f}, not {iid['mAP50']:.2f}.</b> The biggest drop is
 <b>recall</b> ({iid['R']:.2f}→{ho['R']:.2f}) — it <em>misses</em> more stickers on unseen cubes. The
-weakest colour flips from orange (in-distribution) to <b>white</b> (held-out mAP50 0.669, recall 0.62):
-white drifts most with white-balance and blends into bright backgrounds. This is still <em>near</em>-OOD
+weakest colour held-out is {_weakest_class(m)}. This is still <em>near</em>-OOD
 (Roboflow-style studio photos); the Wikimedia signals below probe further out.</div>
 """
+
+
+def _model_label(d: dict, metrics: dict | None) -> str:
+    """Which artefact was evaluated: the file ood_eval.py ran, described by MANIFEST.json when it is one of ours."""
+    name = d.get("model", "?")
+    manifest = Path(__file__).resolve().parent / "models" / "MANIFEST.json"
+    if manifest.is_file():
+        entry = json.loads(manifest.read_text()).get("artefacts", {}).get(name)
+        if entry:
+            return f"{name} ({entry.get('precision', '?')}; {entry.get('runtime', '?')})"
+    if metrics and metrics.get("model"):
+        return f"{name} ({metrics['model'].get('label', '?')})"
+    return name
 
 
 def build(out_dir: str, dest: str, highlights: list[dict], metrics: dict | None = None) -> str:
@@ -66,8 +94,13 @@ def build(out_dir: str, dest: str, highlights: list[dict], metrics: dict | None 
     per_class_rows = "".join(
         f"<tr><td><span class='sw' style='background:{hexc}'></span>{n}</td>"
         f"<td>{pc[n]['detections']}</td><td>{pc[n]['mean_conf']}</td></tr>"
-        for n, hexc in zip(order, ["#f6f7f8", "#d0202a", "#049e4a", "#ffd400", "#ff6a00", "#0057c8"])
+        for n, hexc in zip(order, ["#f6f7f8", "#d0202a", "#049e4a", "#ffd400", "#ff6a00", "#0057c8"], strict=True)
     )
+    # The in-distribution mAP comes from --metrics or it is a dash. It used to be a literal
+    # ("0.972", "0.971" — two different literals in one report), which is how a number outlives
+    # the model it was measured on.
+    iid_map = f"{metrics['iid']['mAP50']:.3f}" if metrics else "—"
+    model_label = html.escape(_model_label(d, metrics))
     ab = d["abstention_mix"]
     cards = []
     for h in highlights:
@@ -120,13 +153,13 @@ def build(out_dir: str, dest: str, highlights: list[dict], metrics: dict | None 
 </style>
 
 <h1>cube-yolo: how good is it, <em>really</em>?</h1>
-<p class="lede">The shipped model scores <b>mAP50 0.972</b> on <b>in-distribution</b> test images
-(same sources as training). Two honest measurements follow: a rigorous mAP on an unseen labelled
-dataset, then a label-free behavioural probe on {d['images']} far-out Wikimedia photos.</p>
+<p class="lede">Evaluated artefact: <code>{model_label}</code>. It scores <b>mAP50 {iid_map}</b> on
+<b>in-distribution</b> test images (same sources as training). Two honest measurements follow: a rigorous
+mAP on an unseen labelled dataset, then a label-free behavioural probe on {d['images']} far-out Wikimedia photos.</p>
 {rigorous}
 <h2>Behaviour further out: {d['images']} Wikimedia photos</h2>
 <div class="kpis">
-  <div class="kpi hero"><b>0.971</b><span>reported mAP50 — <em>in-distribution</em> (optimistic)</span></div>
+  <div class="kpi hero"><b>{iid_map}</b><span>mAP50 — <em>in-distribution</em> (optimistic{'' if metrics else '; pass --metrics to fill in'})</span></div>
   <div class="kpi"><b>{d['detection_rate_any']:.0%}</b><span>photos with ≥1 sticker found</span></div>
   <div class="kpi"><b>{d['clean_face_ok_rate']:.0%}</b><span>photos yielding a face the app would <em>accept</em></span></div>
 </div>
@@ -174,7 +207,8 @@ sim-to-real signal.</p>
     A true OOD mAP needs hand-labelled ground truth; ood_eval.py already emits YOLO pre-labels to correct.</li>
   <li>The pool is the raw Commons "Rubik's Cube" category — it deliberately includes non-cubes, so
     NO_FACE here is often <em>correct</em>, not a miss.</li>
-  <li>Evaluated the shipped <b>int8</b> model (what users run); fp32 is ~0.002 mAP higher.</li>
+  <li>Evaluated <code>{model_label}</code> — the artefact named in <code>diagnostics.json</code>, described by
+    <code>ml/models/MANIFEST.json</code>; the browser serves the fp32 graph (<code>apps/web/test/shipped-model.test.mjs</code>).</li>
 </ul>
 </html>"""
     with open(dest, "w") as f:

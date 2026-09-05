@@ -296,6 +296,8 @@ class PolyfillServer {
     this.device = device;
     this.connected = false;
     this._services = new Map();
+    /** The native release currently in flight, or null. See `disconnect`. */
+    this._releasing = null;
   }
 
   async connect() {
@@ -304,14 +306,55 @@ class PolyfillServer {
     return this;
   }
 
+  /**
+   * Forget everything discovered over the link that has just gone.
+   *
+   * Service and characteristic handles are properties of a CONNECTION, not of a device, and the
+   * polyfill reuses one `PolyfillDevice` per address for the life of the page. Keeping them meant
+   * `_load()` saw a non-empty map on the next connect and returned without discovering anything,
+   * and every characteristic still claimed `_notifying`, so `startNotifications()` became a no-op
+   * and `ble_subscribe` was never issued: the cube connected, reported nothing, and looked asleep.
+   *
+   * Queued notifications go with them on purpose — a packet from the dead connection delivered
+   * into the new one is a move that never happened.
+   */
+  _forget() {
+    for (const service of this._services.values()) {
+      for (const chr of service._chars.values()) {
+        chr._notifying = false;
+        chr._queue = [];
+      }
+      service._chars.clear();
+    }
+    this._services.clear();
+  }
+
+  /**
+   * Web Bluetooth's `disconnect()` is synchronous and returns void; this one returns a promise.
+   *
+   * That is a strict widening, and it is the half a native transport needs: the peripheral is
+   * still held until the native command lands, so anything that reconnects on the next line races
+   * a release that has not happened — which is how the following scan stares into silence at a
+   * cube sitting on the desk. A caller that ignores the return value gets exactly the old
+   * behaviour, and this never rejects, so an ignored promise cannot become an unhandled rejection.
+   * A failed release is reported instead, because a peripheral the native side never let go of is
+   * the one fault that looks identical to a clean goodbye.
+   */
   disconnect() {
-    // Web Bluetooth's disconnect is synchronous and fire-and-forget. The bridge's is not, so the
-    // promise is deliberately dropped — but never silently: a teardown that fails is a peripheral
-    // still held by the native side, which is what makes the NEXT scan stare into silence.
     this.connected = false;
-    Promise.resolve(this.device._bridge.disconnect(this.device.id)).catch((e) => {
-      console.warn('ble-polyfill: native disconnect failed', e);
-    });
+    this._forget();
+    const releasing = Promise.resolve()
+      .then(() => this.device._bridge.disconnect(this.device.id))
+      .catch((e) => {
+        console.warn('ble-polyfill: native disconnect failed', e);
+      })
+      .finally(() => {
+        // Only if it is still ours: two disconnects in a row would otherwise have the first one's
+        // completion clear a release that is still in flight.
+        if (this._releasing === releasing) this._releasing = null;
+      });
+    this._releasing = releasing;
+    return releasing;
   }
 
   async _load() {
@@ -341,11 +384,24 @@ class PolyfillServer {
   }
 }
 
+/**
+ * How many further scans one `watchAdvertisements` may ask the bridge for.
+ *
+ * Bounded rather than open-ended: the caller's own abort is the normal stop (it fires the moment
+ * the library has what it needs), and this is the backstop for a caller that never aborts. Eight
+ * covers the GAN case measured upstream — the first advertisement's manufacturer-data map is
+ * routinely empty and the MAC-bearing frame arrives a few packets later — without turning a cube
+ * that has gone to sleep into an unbounded scan loop.
+ */
+const EXTRA_ADVERTISEMENT_SCANS = 8;
+
 class PolyfillDevice extends EventTarget {
-  constructor(bridge, info, traffic = () => {}) {
+  constructor(bridge, info, traffic = () => {}, rescan = null) {
     super();
     this._bridge = bridge;
     this._traffic = traffic;
+    /** Ask the transport for a fresh advertisement for this device, or null if it cannot. */
+    this._rescan = rescan;
     this.id = info.id;
     this.name = info.name ?? '';
     this._rssi = info.rssi ?? null;
@@ -359,12 +415,7 @@ class PolyfillDevice extends EventTarget {
     // payload's bytes, and the symptom is a wrong AES key: the cube connects, streams, and decodes
     // to noise.
     this._manufacturerData = new Map();
-    for (const [id, bytes] of Object.entries(info.manufacturerData ?? {})) {
-      const u8 = Uint8Array.from(toBytes(bytes));
-      const owned = new Uint8Array(u8.length);
-      owned.set(u8);
-      this._manufacturerData.set(Number(id), new DataView(owned.buffer));
-    }
+    this._mergeManufacturerData(info.manufacturerData);
     for (const m of DELIBERATELY_ABSENT) {
       // Absent, not broken: defining a throwing stub would defeat the library's feature detection
       // and turn a supported "no" into a crash. Asserted by test rather than left to memory.
@@ -373,23 +424,84 @@ class PolyfillDevice extends EventTarget {
   }
 
   /**
-   * Report the advertisement this device was found by.
+   * Merge a scan result's manufacturer data into what this device has broadcast so far.
    *
-   * A browser streams these as the radio sees them. Here there is exactly one — the scan result
-   * that produced this device — delivered once, asynchronously, because the library attaches its
-   * listener and only then awaits this call. Delivering synchronously would fire into no listener
-   * and leave it waiting out its full timeout on every connect.
+   * Accumulated rather than replaced, because that is how the payload actually arrives: a cube
+   * broadcasts several frames and the interesting one is rarely the first. Answers whether
+   * anything new landed.
+   *
+   * Each payload owns its own ArrayBuffer, and that is load-bearing rather than tidy. The
+   * library's GAN extractor reads `manufacturerData.get(id).buffer` and slices from the buffer's
+   * start — so a view into a shared buffer would silently yield another payload's bytes, and the
+   * symptom is a wrong AES key: the cube connects, streams, and decodes to noise.
+   */
+  _mergeManufacturerData(data) {
+    let added = false;
+    for (const [id, bytes] of Object.entries(data ?? {})) {
+      const u8 = toBytes(bytes);
+      const owned = new Uint8Array(u8.length);
+      owned.set(u8);
+      const key = Number(id);
+      const before = this._manufacturerData.get(key);
+      // A later frame replaces an earlier one for the same company id — never truncates it. An
+      // empty or shorter payload for an id we already hold carries strictly less.
+      if (before && before.byteLength >= owned.length) continue;
+      this._manufacturerData.set(key, new DataView(owned.buffer));
+      added = true;
+    }
+    return added;
+  }
+
+  /**
+   * Report the advertisements this device is broadcasting.
+   *
+   * A browser streams these as the radio sees them, and the protocol layer counts on that: its MAC
+   * recovery MERGES frames until its own timeout, precisely because the first advertisement's
+   * manufacturer-data map is routinely empty and the MAC-bearing frame arrives later. Delivering
+   * exactly one — the scan result that produced this device — meant a GAN cube whose first frame
+   * was empty could never yield a MAC on a packaged build, and the connect failed with "Unable to
+   * determine cube MAC address" for a cube sitting on the desk.
+   *
+   * So this keeps asking the transport for a fresh advertisement, merging each into what the
+   * device has broadcast so far and reporting the union, until the caller aborts — which it does
+   * the moment its filter is satisfied — or the bound above is reached. A transport with no way to
+   * scan again delivers the one it has, exactly as before.
+   *
+   * Asynchronous on purpose, including the first: the library attaches its listener and only then
+   * awaits this call, so a synchronous dispatch would fire into no listener and leave it waiting
+   * out its full timeout on every connect.
    */
   async watchAdvertisements(options = {}) {
     const signal = options.signal;
     if (signal?.aborted) return;
-    queueMicrotask(() => {
-      if (signal?.aborted) return;
+    const report = () => {
+      if (signal?.aborted) return false;
       const ev = new Event('advertisementreceived');
       ev.device = this;
       ev.manufacturerData = this._manufacturerData;
       ev.rssi = this._rssi;
       this.dispatchEvent(ev);
+      return true;
+    };
+    queueMicrotask(async () => {
+      if (!report() || !this._rescan) return;
+      for (let i = 0; i < EXTRA_ADVERTISEMENT_SCANS; i++) {
+        if (signal?.aborted) return;
+        let info;
+        try {
+          info = await this._rescan();
+        } catch {
+          // A scan that cannot run is not a failure of this call: the first advertisement was
+          // still reported, which is exactly the old behaviour. Stop asking rather than looping.
+          return;
+        }
+        // Another cube answered the same filter. Reporting its payload under this device's name
+        // would derive a key for the wrong cube, which is worse than reporting nothing.
+        if (!info || info.id !== this.id) return;
+        this._rssi = info.rssi ?? this._rssi;
+        this._mergeManufacturerData(info.manufacturerData);
+        if (!report()) return;
+      }
     });
   }
 }
@@ -476,20 +588,34 @@ export function createBluetooth(bridge, { onRawPacket, onTraffic } = {}) {
     const dev = devices.get(device);
     if (!dev) return;
     dev.gatt.connected = false;
+    // Everything discovered belonged to the link that has just gone. Dropped BEFORE the event, so
+    // a listener that reconnects synchronously re-discovers rather than reusing dead handles —
+    // which is what made a reconnect through the same polyfill skip `ble_subscribe` entirely and
+    // leave the cube connected and silent.
+    dev.gatt._forget();
     dev.dispatchEvent(new Event('gattserverdisconnected'));
   });
 
   return {
     async requestDevice(options) {
-      const info = await bridge.requestDevice(options ?? {});
+      const filters = options ?? {};
+      const info = await bridge.requestDevice(filters);
       if (!info) {
         // Web Bluetooth rejects when the chooser is dismissed; the library treats a rejection as
         // "the user changed their mind" and a resolution as "here is your cube".
         throw new DOMException('User cancelled the requestDevice() chooser.', 'NotFoundError');
       }
       const existing = devices.get(info.id);
-      if (existing) return existing;
-      const dev = new PolyfillDevice(bridge, info, traffic);
+      if (existing) {
+        // A second scan for a device we already hold still carries an advertisement: merge it,
+        // because that is the payload the caller went looking for.
+        existing._mergeManufacturerData(info.manufacturerData);
+        return existing;
+      }
+      // The rescan closure carries the filters this device was FOUND by, so a later advertisement
+      // is asked for the same way. Nothing else in the polyfill remembers them, and asking with a
+      // different set would be a different question.
+      const dev = new PolyfillDevice(bridge, info, traffic, () => bridge.requestDevice(filters));
       devices.set(info.id, dev);
       return dev;
     },
@@ -497,6 +623,19 @@ export function createBluetooth(bridge, { onRawPacket, onTraffic } = {}) {
     getAvailability: unimplemented('Bluetooth', 'getAvailability'),
     getDevices: unimplemented('Bluetooth', 'getDevices'),
     addEventListener: unimplemented('Bluetooth', 'addEventListener'),
+
+    /**
+     * Resolve once no native release is still in flight. NOT part of Web Bluetooth.
+     *
+     * The protocol layer's own teardown calls `gatt.disconnect()` without awaiting it, which is
+     * correct against the real API — there, disconnect returns void — and leaves an app that wants
+     * to reconnect with nothing to wait on. This is that something. It is the app's handle, not
+     * the library's: the library keeps working unchanged, and a caller who needs the radio to have
+     * actually let go can say so.
+     */
+    async whenReleased() {
+      for (const dev of devices.values()) await dev.gatt._releasing;
+    },
 
     /** Test and diagnostic access. Not part of the Web Bluetooth surface. */
     _devices: devices,

@@ -19,6 +19,10 @@ public enum Letterbox {
     /// `rgba` is row-major width*height*4 bytes (R,G,B,A; alpha ignored). Returns CHW Float32,
     /// length 3*imgsz*imgsz, channel-major (all R, then all G, then all B), matching the ONNX input.
     public static func chw(rgba: UnsafePointer<UInt8>, width w: Int, height h: Int, imgsz: Int = imgSize) -> [Float] {
+        // A zero dimension computes `h - 1` below and reads before the buffer. The Rust side proves
+        // both positive before any pointer exists (crates/cube-vision/src/frame.rs); this is the
+        // belt for a caller that did not, and it stops here — loudly — rather than in a read.
+        precondition(w > 0 && h > 0, "Letterbox.chw needs positive dimensions, got \(w)x\(h)")
         let scale = Double(imgsz) / Double(max(w, h))
         let newW = max(1, Int((Double(w) * scale + 0.5).rounded(.down)))   // JS Math.round: floor(x+0.5)
         let newH = max(1, Int((Double(h) * scale + 0.5).rounded(.down)))

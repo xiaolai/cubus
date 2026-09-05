@@ -2,17 +2,38 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // The decoder tests do real work: a misread decode on a solved cube with one wrong sticker is
+    // ~1 s alone, ~2.7 s under v8 coverage instrumentation, and 7 s when the package's parallel
+    // workers share the machine with the WebKit suite (measured 2026-09-05, load average 12 on 10
+    // cores). vitest's 5 s default is a hang detector, and it was firing on legitimate work: two
+    // tests had already grown explicit 60 s budgets one at a time before the gate found two more.
+    // One budget for the class, sized so a genuine hang still fails.
+    testTimeout: 60_000,
     coverage: {
       provider: 'v8',
-      // Only the pure, hardware-free core is meaningfully unit-testable. camera.ts (getUserMedia)
-      // and the detector implementations need a browser + webcam, so they are excluded from the
-      // gate rather than dragging the threshold to a meaningless number. This list once named the
-      // removed OpenCV pipeline's files, so `coverage` measured nothing while still passing.
+      // Everything that can be driven without a webcam. camera.ts (getUserMedia) and the two files
+      // that own a real runtime — web-detector and onnx-runtime, which need a browser or 25 MB of
+      // wasm — stay out, so the threshold means something rather than being dragged to a number
+      // nobody would defend. This list once named the removed OpenCV pipeline's files, so
+      // `coverage` measured nothing while still passing; it then omitted misread-decode.ts, which
+      // decides what the app may CLAIM about a bad scan, and every pure file under view/.
       include: [
         'src/facelet-cube.ts',
         'src/ai-assemble.ts',
+        'src/misread-decode.ts',
         'src/onnx-postprocess.ts',
         'src/onnx-detect.ts',
+        'view/stillness.ts',
+        'view/camera-session.ts',
+        // The misread decode's client half and its wire. Included because nothing about them needs
+        // a camera or a model — a fake `Worker` reaches every branch — and because the branches
+        // that matter are the failure ones: a worker that will not build, and one that builds and
+        // then cannot load. Those are the paths a page in the wild takes and a developer never
+        // does, so leaving them unmeasured would leave them untested.
+        'view/misread-client.ts',
+        'view/misread-protocol.ts',
+        'view/pick-detector.ts',
+        'view/native-detector.ts',
       ],
       reporter: ['text', 'html'],
       thresholds: {

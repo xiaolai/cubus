@@ -9,14 +9,11 @@
     },
     "tauri-mcp": {
       "type": "stdio",
-      "command": "npx",
+      "command": "sh",
       "args": [
-        "-y",
-        "tauri-plugin-mcp-server@0.3.1"
-      ],
-      "env": {
-        "TAURI_MCP_IPC_PATH": "/tmp/cubus-mcp.sock"
-      }
+        "-c",
+        "TAURI_MCP_IPC_PATH=\"${TAURI_MCP_IPC_PATH:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/cubus-mcp.sock}\" exec npx -y tauri-plugin-mcp-server@0.3.1"
+      ]
     }
   }
 }

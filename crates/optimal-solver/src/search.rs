@@ -51,7 +51,11 @@ pub enum Certification {
     FoundAt(u8),
 }
 
-const CANCEL_STRIDE: u64 = 4096; // ~0.1 ms of nodes, so cancel and contour-stop bite immediately
+/// How many nodes a DFS visits between looks at the cancel flag — ~0.1 ms of work, so cancel and
+/// contour-stop bite immediately. Public because it is the unit of the cancellation PROMISE:
+/// after the flag flips, each active thread visits at most this many more nodes before it
+/// unwinds, and `plan_checks.rs` asserts that bound in nodes rather than in milliseconds.
+pub const CANCEL_STRIDE: u64 = 4096;
 
 struct Dfs<'a> {
     tables: &'a Tables,
@@ -60,6 +64,12 @@ struct Dfs<'a> {
     /// active subtrees unwind within a stride instead of finishing enormous root branches
     /// nobody will read.
     stop: &'a AtomicBool,
+    /// The search-wide counter, flushed at every poll point rather than once per opening. A
+    /// thread deep in a root branch used to hold millions of nodes locally until it finished,
+    /// so a reader of the total — the progress callback, and the cancellation test — saw a
+    /// number that lagged the work by whole subtrees. One atomic add per CANCEL_STRIDE nodes
+    /// is the cost, which is nothing.
+    total_nodes: &'a AtomicU64,
     nodes: u64,
     since_check: u64,
     path: Vec<u8>,
@@ -73,11 +83,18 @@ enum DfsOut {
 }
 
 impl Dfs<'_> {
+    /// Publish the nodes counted since the last flush.
+    fn flush(&mut self) {
+        self.total_nodes.fetch_add(self.nodes, Ordering::Relaxed);
+        self.nodes = 0;
+    }
+
     fn run(&mut self, c: Coords, g: u8, bound: u8, prev: i8) -> DfsOut {
         self.nodes += 1;
         self.since_check += 1;
         if self.since_check >= CANCEL_STRIDE {
             self.since_check = 0;
+            self.flush();
             if self.cancel.load(Ordering::Relaxed) || self.stop.load(Ordering::Relaxed) {
                 return DfsOut::Aborted;
             }
@@ -110,6 +127,48 @@ impl Dfs<'_> {
     }
 }
 
+/// One opening's subtree at this contour: replay the prefix, then depth-first from there.
+///
+/// Returns the outcome together with the path the DFS ended holding — the found maneuver when the
+/// outcome is `Found`, and meaningless otherwise, which is why the caller reads it in exactly that
+/// arm. `None` means the prefix is longer than the bound, so this opening has nothing in this
+/// contour at all.
+fn search_prefix(
+    tables: &Tables,
+    start: &Coords,
+    bound: u8,
+    prefix: &[u8],
+    cancel: &AtomicBool,
+    stop: &AtomicBool,
+    total_nodes: &AtomicU64,
+) -> Option<(DfsOut, Vec<u8>)> {
+    let g = prefix.len() as u8;
+    if g > bound {
+        return None;
+    }
+    let mut at = *start;
+    for &m in prefix {
+        at = at.step(&tables.moves, m as usize);
+    }
+    let mut dfs = Dfs {
+        tables,
+        cancel,
+        stop,
+        total_nodes,
+        nodes: 0,
+        since_check: 0,
+        path: prefix.to_vec(),
+    };
+    let prev = *prefix.last().expect("openings are non-empty") as i8;
+    // A prefix sitting exactly AT the bound is not a special case: `run`'s own `g == bound`
+    // arm counts the node and evaluates the terminal, which is what the branch that used to
+    // stand here did by hand — a second copy of the terminal rule, and the copy is what
+    // drifts. The `g > bound` guard above is what keeps this call inside the contour.
+    let out = dfs.run(at, g, bound, prev);
+    dfs.flush();
+    Some((out, dfs.path))
+}
+
 /// One contour, run root-parallel over the given openings (each a canonical move prefix).
 /// Returns the found path if any thread found a solution at exactly this bound, whether a
 /// cancel landed, and the nodes spent. A contour with no find and no cancel was FULLY
@@ -125,52 +184,39 @@ fn run_contour(
     let found: Mutex<Option<Vec<u8>>> = Mutex::new(None);
     let stop = AtomicBool::new(false);
     let cancelled = AtomicBool::new(false);
+    // "This contour is decided, and here is whether a cancel is why" — the two places that observe
+    // it (an opening that never starts, and a subtree that unwound) recorded it with two copies of
+    // the same pair of stores, which is how a cancel comes to be remembered at one and forgotten
+    // at the other (the audit's finding, 2026-09-05). Storing `stop` again where it was already
+    // set is idempotent and is what lets both callers say the same thing.
+    let decided = || {
+        if cancel.load(Ordering::Relaxed) {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        stop.store(true, Ordering::Relaxed);
+    };
     openings.par_iter().for_each(|prefix| {
-        if stop.load(Ordering::Relaxed) {
+        // The cancel flag as well as the contour's stop: without it a cancel that lands between
+        // openings started every remaining root, each of which then spent a full stride
+        // discovering it — thousands of roots at four-move depth.
+        if stop.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed) {
+            decided();
             return;
         }
-        let mut at = *start;
-        for &m in prefix {
-            at = at.step(&tables.moves, m as usize);
-        }
-        let g = prefix.len() as u8;
-        if g > bound {
+        let Some((out, path)) =
+            search_prefix(tables, start, bound, prefix, cancel, &stop, total_nodes)
+        else {
             return;
-        }
-        let mut dfs = Dfs {
-            tables,
-            cancel,
-            stop: &stop,
-            nodes: 0,
-            since_check: 0,
-            path: prefix.clone(),
         };
-        let prev = *prefix.last().expect("openings are non-empty") as i8;
-        let out = if g == bound {
-            dfs.nodes += 1; // the prefix state itself is evaluated — a node like any other
-            if at.is_solved() {
-                DfsOut::Found
-            } else {
-                DfsOut::Exhausted
-            }
-        } else {
-            dfs.run(at, g, bound, prev)
-        };
-        total_nodes.fetch_add(dfs.nodes, Ordering::Relaxed);
         match out {
             DfsOut::Found => {
                 let mut slot = found.lock().unwrap();
                 if slot.is_none() {
-                    *slot = Some(dfs.path.clone());
+                    *slot = Some(path);
                 }
                 stop.store(true, Ordering::Relaxed);
             }
-            DfsOut::Aborted => {
-                if cancel.load(Ordering::Relaxed) {
-                    cancelled.store(true, Ordering::Relaxed);
-                }
-                stop.store(true, Ordering::Relaxed);
-            }
+            DfsOut::Aborted => decided(),
             DfsOut::Exhausted => {}
         }
     });
@@ -219,18 +265,82 @@ fn root_ply(bound: u8) -> usize {
     (bound as usize).min(4)
 }
 
+/// The partition's whole universe: the canonical two-move openings a shard is a subset of.
+/// `certificate.rs` refuses the same ceiling when it collects, and the producer must refuse what
+/// the collector will, or it mints certificates guaranteed to be rejected.
+const SHARD_OPENINGS: u32 = 243;
+
 /// The 243 canonical two-move openings, in a fixed order every shard agrees on.
+///
+/// One enumeration, not two: this used to run its own nested loop over the same `move_allowed`
+/// rule that `expand_openings` already applies, so the SHARD PARTITION — which is defined as
+/// "opening k goes to shard k mod n", and therefore depends on the exact sequence — had two
+/// implementations that had to stay byte-identical across machines and across time, with nothing
+/// checking that they did (the audit's finding, 2026-09-05). They agreed when the duplicate was
+/// removed, which was verified before removing it; now there is nothing left to disagree.
 fn two_ply_openings() -> Vec<Vec<u8>> {
-    let mut out = Vec::with_capacity(243);
-    for m1 in 0..18u8 {
-        for m2 in 0..18u8 {
-            if move_allowed(m1 as i8, m2 as usize) {
-                out.push(vec![m1, m2]);
-            }
-        }
-    }
-    debug_assert_eq!(out.len(), 243);
+    let out = expand_openings(root_openings(), 2);
+    debug_assert_eq!(out.len() as u32, SHARD_OPENINGS);
     out
+}
+
+/// Is this tuple actually a shard? A predicate rather than an inline test, so it can be checked
+/// without the seconds of table generation `certify_no_solution_within` needs — the unit test
+/// that used to stand for this counted openings and would have passed with the validation
+/// deleted (the audit's finding, 2026-09-05). More shards than openings would mint empty shards
+/// whose "no solution" says nothing, and an unbounded count is an allocation lever.
+fn is_shard(index: u32, count: u32) -> bool {
+    count != 0 && index < count && count <= SHARD_OPENINGS
+}
+
+/// What a run of ascending contours ended in: some contour found a solution at its bound, or
+/// every contour through the cap was exhausted with none.
+enum ContourEnd {
+    Found { bound: u8, solution: Vec<u8> },
+    Exhausted,
+}
+
+/// Ascending contours over one set of base openings — the loop `prove_counted` and
+/// `certify_no_solution_within` each carried a copy of until 2026-09-05. One copy, because the
+/// two drift: cancellation, root expansion, result precedence, progress reporting and bound
+/// advancement are the same rules for a proof and for a certification, and a fix that reached
+/// one and missed the other would leave a distributed shard searching differently from the
+/// proof it is supposed to be a piece of.
+///
+/// What the callers keep is what genuinely differs: where the openings come from, where the
+/// first contour starts, and what a find or an exhaustion MEANS — "this is the minimum" and
+/// "this shard holds nothing shorter" are different claims, and the conversion is the place
+/// that says so.
+fn run_contours(
+    tables: &Tables,
+    start: &Coords,
+    bounds: std::ops::RangeInclusive<u8>,
+    base_openings: &[Vec<u8>],
+    cancel: &AtomicBool,
+    total_nodes: &AtomicU64,
+    progress: &mut dyn FnMut(u8, u64),
+) -> Result<ContourEnd, SearchEnd> {
+    let max_bound = *bounds.end();
+    let mut bound = *bounds.start();
+    while bound <= max_bound {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(SearchEnd::Cancelled);
+        }
+        // Expanded per contour for scheduling only: the expansion partitions each opening's
+        // subtree exactly and `root_ply` never goes below the base openings' own length, so the
+        // maneuvers covered — and a shard's partition identity — are untouched.
+        let roots = expand_openings(base_openings.to_vec(), root_ply(bound));
+        let (found, cancelled) = run_contour(tables, start, bound, &roots, cancel, total_nodes);
+        if let Some(solution) = found {
+            return Ok(ContourEnd::Found { bound, solution });
+        }
+        if cancelled {
+            return Err(SearchEnd::Cancelled);
+        }
+        progress(bound, total_nodes.load(Ordering::Relaxed));
+        bound += 1;
+    }
+    Ok(ContourEnd::Exhausted)
 }
 
 /// Prove the distance of `start`, up to `cap` moves inclusive. Contours run in ascending
@@ -245,35 +355,56 @@ pub fn prove(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u8, u64),
 ) -> Result<Proof, SearchEnd> {
+    let total_nodes = AtomicU64::new(0);
+    prove_counted(tables, start, cap, cancel, &total_nodes, progress)
+}
+
+/// [prove], with the node counter supplied by the caller and kept current to within one
+/// CANCEL_STRIDE per thread — so a caller that cancels can read how much work happened AFTER
+/// it asked, which is the deterministic half of the cancellation promise and what
+/// `plan_checks.rs` measures instead of a wall clock.
+///
+/// The roots are expanded to `root_ply(bound)` moves PER CONTOUR, exactly as
+/// `certify_no_solution_within` does and for the reason its comment records: 18 one-move roots
+/// left the last giant subtrees grinding on three cores of twenty at the deep contours
+/// (measured 2026-08-30), and a proof at length 18–20 spends nearly all of its time there. The
+/// partition is exact (`expand_openings`), so the maneuvers covered are the same; only the
+/// scheduling changes.
+pub fn prove_counted(
+    tables: &Tables,
+    start: &Coords,
+    cap: u8,
+    cancel: &AtomicBool,
+    total_nodes: &AtomicU64,
+    progress: &mut dyn FnMut(u8, u64),
+) -> Result<Proof, SearchEnd> {
     if start.is_solved() {
+        total_nodes.fetch_add(1, Ordering::Relaxed);
         return Ok(Proof {
             length: 0,
             solution: Vec::new(),
             nodes: 1,
         });
     }
-    let openings = root_openings();
-    let total_nodes = AtomicU64::new(0);
-    let mut bound = tables.heuristic(start).max(1);
-    while bound <= cap {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(SearchEnd::Cancelled);
-        }
-        let (found, cancelled) = run_contour(tables, start, bound, &openings, cancel, &total_nodes);
-        if let Some(solution) = found {
-            return Ok(Proof {
-                length: bound,
-                solution,
-                nodes: total_nodes.load(Ordering::Relaxed),
-            });
-        }
-        if cancelled {
-            return Err(SearchEnd::Cancelled);
-        }
-        progress(bound, total_nodes.load(Ordering::Relaxed));
-        bound += 1;
+    let first = tables.heuristic(start).max(1);
+    match run_contours(
+        tables,
+        start,
+        first..=cap,
+        &root_openings(),
+        cancel,
+        total_nodes,
+        progress,
+    )? {
+        // The first contour to find anything is the shallowest that could: every shallower one
+        // was exhausted first. That is the proof.
+        ContourEnd::Found { bound, solution } => Ok(Proof {
+            length: bound,
+            solution,
+            nodes: total_nodes.load(Ordering::Relaxed),
+        }),
+        ContourEnd::Exhausted => Err(SearchEnd::BeyondCap),
     }
-    Err(SearchEnd::BeyondCap)
 }
 
 /// Certify that `start` has NO solution within `max_bound` moves, over one shard of the
@@ -292,9 +423,8 @@ pub fn certify_no_solution_within(
     progress: &mut dyn FnMut(u8, u64),
 ) -> Result<Certification, SearchEnd> {
     let (index, count) = shard;
-    // The checker caps at the 243 canonical openings; the producer must refuse the same
-    // tuples, or it mints certificates the collector is guaranteed to reject.
-    if count == 0 || index >= count || count > 243 {
+    // Before any expensive work, and before the tables are touched at all.
+    if !is_shard(index, count) {
         return Err(SearchEnd::InvalidShard);
     }
     if start.is_solved() {
@@ -314,26 +444,22 @@ pub fn certify_no_solution_within(
         .map(|(_, o)| o)
         .collect();
 
+    // The shard IS its two-move openings, so this contour run covers exactly this shard's
+    // maneuvers — the same loop `prove` runs, over a slice of the space instead of all of it.
     let total_nodes = AtomicU64::new(0);
-    let mut bound = tables.heuristic(start).max(2);
-    while bound <= max_bound {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(SearchEnd::Cancelled);
-        }
-        // Expanded per contour for scheduling only: the shard IS its two-move openings, and
-        // root_ply never goes below their length, so the partition identity is untouched.
-        let roots = expand_openings(mine.clone(), root_ply(bound));
-        let (found, cancelled) = run_contour(tables, start, bound, &roots, cancel, &total_nodes);
-        if found.is_some() {
-            return Ok(Certification::FoundAt(bound));
-        }
-        if cancelled {
-            return Err(SearchEnd::Cancelled);
-        }
-        progress(bound, total_nodes.load(Ordering::Relaxed));
-        bound += 1;
+    let first = tables.heuristic(start).max(2);
+    match run_contours(
+        tables,
+        start,
+        first..=max_bound,
+        &mine,
+        cancel,
+        &total_nodes,
+        progress,
+    )? {
+        ContourEnd::Found { bound, .. } => Ok(Certification::FoundAt(bound)),
+        ContourEnd::Exhausted => Ok(Certification::NoSolutionWithin),
     }
-    Ok(Certification::NoSolutionWithin)
 }
 
 /// Render a solution as the app's move notation. Defensive on release, loud on debug: a move
@@ -367,10 +493,50 @@ mod tests {
         assert!(move_allowed(0, 3));
     }
 
+    /// The shard partition is an ORDER, not a set: "opening k belongs to shard k mod n" only
+    /// coordinates machines that enumerate the openings identically. So the sequence is pinned
+    /// here by its properties rather than by a second copy of the loop that produces it — the
+    /// copy is what was just deleted, and re-typing it into a test would put it straight back.
     #[test]
-    fn shard_tuples_are_validated_before_any_work() {
-        // No tables needed: validation happens first, which is the point — the CLI feeds this
-        // user input after minutes of generation.
-        assert_eq!(two_ply_openings().len(), 243);
+    fn the_shard_openings_are_one_fixed_canonical_sequence() {
+        let out = two_ply_openings();
+        assert_eq!(out.len() as u32, SHARD_OPENINGS);
+        assert!(
+            out.iter().all(|o| o.len() == 2),
+            "every shard opening is two moves — depths 0 and 1 are checked directly"
+        );
+        assert!(
+            out.iter().all(|o| move_allowed(o[0] as i8, o[1] as usize)),
+            "and every one is canonical"
+        );
+        // Strictly ascending as pairs: sorted AND without repeats, which together are what make
+        // `k mod n` a partition rather than an overlap with a gap somewhere else.
+        assert!(
+            out.windows(2).all(|w| w[0] < w[1]),
+            "the openings are in ascending (m1, m2) order, no duplicates"
+        );
+        // The ends, so a silent reordering cannot pass the properties above.
+        assert_eq!(out.first(), Some(&vec![0u8, 3]), "U then the first legal F");
+        assert_eq!(out.last(), Some(&vec![17u8, 14]));
+    }
+
+    #[test]
+    fn every_tuple_that_is_not_a_shard_is_refused() {
+        // The cap and the partition are ONE number, so a change to the openings cannot leave a
+        // stale ceiling behind.
+        assert_eq!(two_ply_openings().len() as u32, SHARD_OPENINGS);
+        assert!(is_shard(0, 1), "the whole space is a shard of one");
+        assert!(is_shard(242, SHARD_OPENINGS), "the last index of the last");
+        // Every way a tuple fails, one per clause — the predicate this replaces was asserted by
+        // a test that counted openings and would have passed with the validation deleted.
+        assert!(!is_shard(0, 0), "no shards at all divides nothing");
+        assert!(!is_shard(3, 3), "an index outside its own count");
+        assert!(
+            !is_shard(0, SHARD_OPENINGS + 1),
+            "more shards than openings mints empty shards, which certify nothing"
+        );
+        assert!(!is_shard(0, u32::MAX), "and an unbounded count allocates");
+        // That the SEARCH asks this, before any work, is pinned through the public API in
+        // tests/plan_checks.rs — the tables it needs are generated once there.
     }
 }

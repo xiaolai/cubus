@@ -13,27 +13,152 @@
 // A constant, not the engine: the solver itself is still injected.
 import { DEFAULT_NODE_BUDGET } from './solver-engine.js';
 
-/** How a search is abandoned. The solver cannot be interrupted mid-call — it is a synchronous
- *  search loop — so the only way to stop one already running is to end the thread it is on.
- *  That costs the table build (~0.5-2.6 s) on the next search, which is the right trade for a
- *  deliberate "stop": nothing else would actually stop it. */
+/** How a whole client is abandoned. The solver cannot be interrupted between messages — it is a
+ *  synchronous search loop — so the only way to stop one already running with nothing shared is
+ *  to end the thread it is on. That costs the table build (~0.5-2.6 s) on the next search, which
+ *  is the right trade for a deliberate teardown.
+ *
+ *  A single SEARCH is stopped by STOP_NOW below instead, which costs nothing at all. */
 const CANCELLED = 'solve cancelled';
+
+/**
+ * The stop word's "give up, whatever you are doing" value.
+ *
+ * Word 0 normally holds the shallowest phase-1 depth a sibling has already answered at, and a
+ * worker stops when that is STRICTLY shallower than the depth it is exploring. -1 is shallower
+ * than every real depth, so it needs no second channel, no message the worker cannot read
+ * mid-search, and no terminate: the next poll — ~1 ms of search — sees it, the search returns
+ * null, and the thread keeps its tables for the next cube.
+ *
+ * It is also lower than any depth a winner can publish, so a late compare-exchange from a
+ * sibling's reply cannot overwrite it and quietly un-cancel the solve.
+ */
+export const STOP_NOW = -1;
+
+/**
+ * The worker's stop rule, as a function rather than as a closure inside solve-worker.js.
+ *
+ * Strictness is the whole of it: `<` and not `<=`. At the SAME depth a lower view index still
+ * wins, so a worker that gave up there would change which answer comes back and the pooled
+ * result would stop being deterministic. `depth >= 0` is the other half — -1 means "no depth
+ * applies" (solveIntoG1, or a finished loop), and a stop decision about no depth is a decision
+ * about nothing.
+ *
+ * Exported so it can be unit-tested at all: inside the worker it runs only on a thread no test
+ * process has, and the two ways it can be wrong — the wrong comparison, and reading a depth that
+ * means nothing — are both invisible from outside (a search that stops early still returns a
+ * valid answer, just not the same one).
+ */
+export const shouldStop = (word, depth) =>
+  word !== null && word !== undefined && depth >= 0 && Atomics.load(word, 0) < depth;
+
+/**
+ * The WRITER half of the same word, and `shouldStop`'s mirror: publish `depth` if — and only if —
+ * it is strictly shallower than what is already there.
+ *
+ * The compare-exchange loop is what makes it atomic under six writers: a plain read-then-write
+ * could interleave with a shallower publication and put the deeper depth back, which would let a
+ * sibling that could still win stop searching. The retry re-reads the value the exchange saw
+ * rather than starting again, so the loop terminates after at most one turn per competing writer.
+ *
+ * Strictly shallower, never `<=`, for exactly `shouldStop`'s reason: at the same depth a lower
+ * view index still wins, and stopping those siblings would change which answer comes back.
+ * STOP_NOW is -1 and so is shallower than every real depth — a late publication cannot overwrite
+ * it and quietly un-cancel a solve.
+ *
+ * Extracted from `pooled` and exported for the same reason `shouldStop` is (2026-09-05 audit,
+ * refactoring debt): a wrong comparison here is invisible from outside — every answer is still a
+ * valid solution, just not deterministically the same one.
+ */
+export function publishBest(word, depth) {
+  if (word === null || word === undefined || !Number.isInteger(depth) || depth < 0) return false;
+  let seen = Atomics.load(word, 0);
+  while (depth < seen) {
+    const prev = Atomics.compareExchange(word, 0, seen, depth);
+    if (prev === seen) return true;
+    seen = prev;
+  }
+  return false;
+}
+
+/**
+ * Relay one solve's abort onto a controller of its own, and hand back the way to unsubscribe.
+ *
+ * A pool cancels its siblings for two different reasons — the caller stopped caring, and one
+ * slice failed — and both go through ONE controller so a stop is scoped to this solve's request
+ * ids rather than to a client (which is shared with overlapping solves). The release is not
+ * optional bookkeeping: a long-lived signal outliving its solve would otherwise accumulate one
+ * listener per search, each holding that search's closure.
+ */
+function relayAbort(signal) {
+  const controller = new AbortController();
+  const relay = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', relay, { once: true });
+  }
+  return { controller, release: () => signal?.removeEventListener('abort', relay) };
+}
+
+/**
+ * A resume point as this side will treat it: an object, or nothing at all.
+ *
+ * Everything that arrives from the other thread is untrusted, and this is the cheap half of that —
+ * anything that is not an object cannot be a resume point, so it becomes null and the next attempt
+ * simply starts over, which is always correct. The expensive half, the key check, is the engine's:
+ * a point that LOOKS right and belongs to another search must throw, not restart.
+ */
+const plainState = (value) => (value !== null && typeof value === 'object' ? value : null);
 
 /**
  * One request, one reply — shared by the real worker and the inline fallback so the two
  * protocols cannot drift. Tagged with `ok` so an empty error message cannot read as success,
  * which is exactly what `if (error)` once made of it.
+ *
+ * `request.resume` is null for an ordinary search and `{ state }` for a resumable one — the
+ * CARRIER shape rather than the bare state, because a fresh resumable search and a search that is
+ * not resumable at all would otherwise both be `null` on the wire and this side could not tell
+ * them apart. With no carrier the engine is driven exactly as it always was.
  */
 export function handleSolveRequest(solve, request, readStats = () => ({})) {
-  const { id, facelets, solLen, probeMax, views = null } = request ?? {};
+  const { id, facelets, solLen, probeMax, views = null, resume = null } = request ?? {};
   try {
-    const alg = solve(facelets, { solLen, probeMax, views });
+    const carrier = resume ? { state: plainState(resume.state) } : null;
+    const alg = solve(facelets, { solLen, probeMax, views, resume: carrier });
     // `depth` and `view` are the sort key a parallel caller needs and a single-worker caller
     // ignores. They are the engine's own: the phase-1 depth the answer was found at and the
     // index of the view that found it — which is exactly the order the sequential search
     // explores in, so the minimum across slices IS the sequential answer.
     const { depth = -1, view = -1 } = readStats() ?? {};
-    return { id, ok: true, alg, depth, view };
+    return { id, ok: true, alg, depth, view, resume: carrier ? carrier.state : null };
+  } catch (err) {
+    return { id, ok: false, error: errorText(err) };
+  }
+}
+
+/**
+ * The other half of the worker protocol: build the engine's tables, or take another thread's.
+ *
+ * Here rather than in solve-worker.js for the same reason `handleSolveRequest` is — that file runs
+ * only on a thread no test process has, so anything with a decision in it lives on this side of
+ * the boundary where `node --test` can drive it against the real engine.
+ *
+ * `PREPARE_TABLES` builds once into a SharedArrayBuffer and returns descriptors; `ADOPT_TABLES`
+ * takes them. Both answer in the same tagged `{ok}` shape as a solve, so one listener and one
+ * error rule cover every reply the worker can send.
+ */
+export const PREPARE_TABLES = 'prepare-tables';
+export const ADOPT_TABLES = 'adopt-tables';
+
+export function handleTableRequest(engine, request) {
+  const { id, kind } = request ?? {};
+  try {
+    if (kind === PREPARE_TABLES) return { id, ok: true, kind: 'tables', tables: engine.shareTables() };
+    if (kind === ADOPT_TABLES) {
+      engine.initialize({ adopt: request.tables });
+      return { id, ok: true, kind: 'adopted' };
+    }
+    return { id, ok: false, error: `solver worker was sent an unknown control request "${String(kind)}"` };
   } catch (err) {
     return { id, ok: false, error: errorText(err) };
   }
@@ -113,9 +238,22 @@ export function createSolveClient({ spawn } = {}) {
       const waiting = pending.get(data.id);
       if (!waiting) return; // a reply to a search that was already abandoned
       pending.delete(data.id);
+      // A control reply — table sharing — carries no algorithm, so it is settled on its own tag
+      // and never through the search validator below. Same `ok` rule either way: an empty error
+      // string must not read as success.
+      if (waiting.control) {
+        if (data.ok === true) waiting.resolve(data);
+        else if (data.ok === false && typeof data.error === 'string') waiting.reject(new Error(data.error));
+        else waiting.reject(new Error('solver worker sent a malformed reply'));
+        return;
+      }
       // The reply is validated, not trusted: `ok` is the tag (an empty error string must not
       // read as success), and a success carries an algorithm string or null, nothing else.
       if (data.ok === true && (typeof data.alg === 'string' || data.alg === null)) {
+        // The resume point rides with THIS reply too, and is written before the promise settles —
+        // a caller that awaits the answer and then reads its carrier must never see the point the
+        // attempt BEFORE this one left. Only a caller that asked for one has somewhere to put it.
+        if (waiting.resume) waiting.resume.state = plainState(data.resume);
         // The sort key rides with THIS reply. It used to be stashed on the client and read
         // after the await, which a concurrent reply could overwrite first — reproduced by the
         // audit: slice A1 won although A0 held the lower key. A per-request value cannot race.
@@ -125,6 +263,20 @@ export function createSolveClient({ spawn } = {}) {
       } else {
         waiting.reject(new Error('solver worker sent a malformed reply'));
       }
+    });
+    // A reply that could not be DESERIALISED. It arrives with no data, so there is no id to
+    // match it to; the one thing known is that some search's answer was lost, and a lost answer
+    // is a promise that never settles — on screen, indistinguishable from a search still going.
+    // So everything in flight is failed rather than one guess at which, and it is tagged as a
+    // WORKER failure so the pool retries on fewer threads instead of telling anyone their cube
+    // cannot be solved. The thread is NOT ended: one message failed to cross, which says nothing
+    // about the engine or its tables, and throwing away a 2.6 s table build over it would be a
+    // worse answer than re-asking.
+    spawned.addEventListener('messageerror', () => {
+      if (worker !== spawned) return;
+      const reason = workerFailure('solver worker sent a reply that could not be read');
+      for (const [, waiting] of pending) waiting.reject(reason);
+      pending.clear();
     });
     // A worker that dies takes every search in flight with it. Rejecting them is the only way
     // the caller finds out; leaving them pending would hang the screen with no error anywhere.
@@ -149,23 +301,107 @@ export function createSolveClient({ spawn } = {}) {
    * @param {Int32Array|null} [bounds.shared]  this solve's stop word — an Int32Array, not a bare
    *   buffer, so its offset can cross with it. Rejected with a TypeError if it is anything else.
    * @param {boolean} [bounds.detailed]  resolve `{alg, depth, view}` instead of the algorithm
+   * @param {AbortSignal|null} [bounds.signal]  stops THIS search and nothing else. With a stop
+   *   word that is a write the running search reads at its next poll; without one, the only
+   *   stop is ending the thread, which is done only when this search is the last one on it.
+   * @param {{state: object|null}|null} [bounds.resume]  a carrier the CALLER owns and keeps across
+   *   attempts. Its `state` goes out with the request and is replaced by whatever the worker's
+   *   search left, so the next attempt continues that search instead of walking it again. Null is
+   *   every caller but an escalating one; `probeMax` is then a frontier rather than an increment
+   *   (dev-docs/deferred-plans-2026-09-05.md §3).
    */
-  function solve(facelets, { solLen, probeMax, views = null, shared = null, detailed = false } = {}) {
+  function solve(facelets, { solLen, probeMax, views = null, shared = null, detailed = false, signal = null, resume = null } = {}) {
     const id = nextId++;
+    // Nothing to stop if it never starts. Checked before attach() so an already-abandoned solve
+    // cannot be the thing that spawns a worker and pays for a table build.
+    if (signal?.aborted) return Promise.resolve(detailed ? { alg: null, depth: -1, view: -1 } : null);
     return new Promise((resolve, reject) => {
       // attach() lives INSIDE the executor: a spawn() that throws must reject this promise,
       // not escape solve() synchronously — the function's contract is asynchronous either way.
       const active = attach();
-      pending.set(id, { resolve, reject, detailed });
+      /**
+       * Stop THIS search, by request id, and leave every other search alone.
+       *
+       * The scoping is the point. `cancel()` — which is what a failing sibling used to call —
+       * rejects every entry on the client, and the app allows overlapping solves: a die press
+       * whose thread died took the reconnect's search down with it, and that solve reported
+       * "could not work it out" about a cube nothing was wrong with.
+       *
+       * Two shapes, because there are two situations. With a stop word the search really stops:
+       * the worker sees STOP_NOW at its next poll and answers null, keeping its thread and its
+       * tables, and this promise settles on that reply like any other. Without one there is no
+       * channel into a synchronous search at all, so the request is abandoned here (its reply,
+       * if it ever comes, is dropped by the guard in the message listener) and the thread is
+       * ended only when nothing else is waiting on it — stealing a sibling's answer to hurry
+       * this one would be the same bug one level down.
+       */
+      const abandon = () => {
+        const waiting = pending.get(id);
+        if (!waiting) return; // already settled, or already abandoned
+        if (shared) {
+          Atomics.store(shared, 0, STOP_NOW);
+          return;
+        }
+        pending.delete(id);
+        if (pending.size === 0) {
+          worker?.terminate();
+          worker = null;
+        }
+        waiting.resolve(detailed ? { alg: null, depth: -1, view: -1 } : null);
+      };
+      signal?.addEventListener('abort', abandon, { once: true });
+      // Every exit removes the listener: a long-lived signal that outlives its solve would
+      // otherwise accumulate one handler per search, each holding this promise's closure.
+      const done = (settle) => (value) => {
+        signal?.removeEventListener('abort', abandon);
+        settle(value);
+      };
+      pending.set(id, { resolve: done(resolve), reject: done(reject), detailed, resume });
       try {
         // `shared` travels WITH the request, not as a one-off init message. One word per solve
         // is what keeps overlapping solves — which the app allows — from publishing each other's
         // depths into one channel and stopping the wrong cube's search. It goes as a descriptor
         // rather than a bare buffer so the offset survives the crossing; see stopDescriptor.
-        active.postMessage({ id, facelets, solLen, probeMax, views, shared: stopDescriptor(shared) });
+        //
+        // The resume point goes as a fresh `{state}` and never as the caller's own carrier: the
+        // carrier is a live object this client writes to, and posting it would be sending whatever
+        // else is on it as well. Null is a search that is not resumable at all — which is what
+        // makes it different from `{state: null}`, a resumable one that has not started yet.
+        active.postMessage({
+          id,
+          facelets,
+          solLen,
+          probeMax,
+          views,
+          shared: stopDescriptor(shared),
+          resume: resume ? { state: plainState(resume.state) } : null,
+        });
       } catch (err) {
         // A synchronous send failure would otherwise leave this entry pending forever — the
         // promise would reject, but `idle` would lie and cancel() would re-reject a corpse.
+        pending.delete(id);
+        done(reject)(err);
+      }
+    });
+  }
+
+  /**
+   * A control request on this client's worker — table sharing, and nothing else so far.
+   *
+   * It rides the SAME id space, the same pending map and the same listener as a search, so a
+   * control reply cannot be mistaken for a search's and a worker that dies mid-handshake rejects
+   * it exactly as it rejects a search. It carries no signal and no stop word: preparing tables is
+   * neither long enough to want stopping nor safe to abandon halfway — the reply is what the
+   * other five workers are waiting for.
+   */
+  function control(message) {
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+      const active = attach();
+      pending.set(id, { resolve, reject, control: true });
+      try {
+        active.postMessage({ id, ...message });
+      } catch (err) {
         pending.delete(id);
         reject(err);
       }
@@ -180,7 +416,18 @@ export function createSolveClient({ spawn } = {}) {
     worker = null;
   }
 
-  return { solve, cancel, get idle() { return pending.size === 0; } };
+  return {
+    solve,
+    cancel,
+    control,
+    /** Make the worker now, and hand it back, so a caller can see WHAT it got before committing
+     *  work to it. The pool needs exactly that: `spawnSolveWorker` answers with a main-thread
+     *  worker where it cannot build a real one, and dividing a budget between several of those
+     *  is strictly worse than giving one of them all of it. A spawn that throws still throws —
+     *  it is the same worker failure the first solve would have raised, only earlier. */
+    ensureWorker: () => attach(),
+    get idle() { return pending.size === 0; },
+  };
 }
 
 /** Deal the views round-robin, so every slice gets a spread rather than a block. Views differ in
@@ -216,12 +463,24 @@ export function shareBudget(probeMax, n) {
   return Array.from({ length: n }, (_, i) => base + (i < extra ? 1 : 0)).filter((b) => b > 0);
 }
 
+/**
+ * Could this reply WIN — an algorithm, and a complete sort key to place it by?
+ *
+ * One predicate, because two places ask it and they must not answer differently (2026-09-05 audit).
+ * The stop word used to be published on `typeof alg === 'string'` alone, so a reply whose VIEW was
+ * malformed — a garbled `-1` where `pickWinner` requires a real index — stopped every sibling at
+ * its depth and was then discarded, and the pool answered null for a cube its siblings were about
+ * to solve. A reply that cannot win may not cut short the ones that can.
+ */
+const canWin = (r) =>
+  Boolean(r) && typeof r.alg === 'string'
+  && Number.isInteger(r.depth) && r.depth >= 0
+  && Number.isInteger(r.view) && r.view >= 0;
+
 /** Lowest phase-1 depth first, then lowest view index — the order the sequential engine searches
  *  in. A reply with no answer, or without a usable key, cannot win. */
 export function pickWinner(replies) {
-  const found = replies.filter(
-    (r) => r && typeof r.alg === 'string' && Number.isInteger(r.depth) && r.depth >= 0 && Number.isInteger(r.view) && r.view >= 0,
-  );
+  const found = replies.filter(canWin);
   if (found.length === 0) return null;
   found.sort((a, b) => (a.depth - b.depth) || (a.view - b.view));
   return found[0].alg;
@@ -252,7 +511,7 @@ export function pickWinner(replies) {
  * allows overlapping solves, and a single shared word let one cube's answer stop another cube's
  * search.
  */
-export function createParallelSolveClient({ spawn, workers, viewCount, makeShared = null } = {}) {
+export function createParallelSolveClient({ spawn, workers, viewCount, makeShared = null, shareTables = false } = {}) {
   if (typeof spawn !== 'function') throw new TypeError('createParallelSolveClient needs a spawn function');
   const slices = sliceViews(workers ?? 1, viewCount);
   const clients = slices.map(() => createSolveClient({ spawn }));
@@ -261,11 +520,52 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
   // not give us six threads once will not give us six the next time either, and re-learning
   // that on every solve would cost a spawn attempt and a table build each time.
   let lone = null;
+  // Off unless the caller asks. The pool is constructed in tests against fake workers that know
+  // nothing of tables, and on a page without SharedArrayBuffer there is nothing to share — so the
+  // capability is INJECTED like `makeShared`, never inferred here.
+  let sharing = shareTables === true;
+  let handshake = null;
+  /**
+   * How many times this pool has been torn down — the only thing a cancel that lands DURING an
+   * await leaves behind (2026-09-05 audit).
+   *
+   * The table handshake is the long await, and a `cancel()` inside it reaches the awaiting code as
+   * an ordinary rejected control request. Reading that rejection as "the tables could not be
+   * shared" is what it looked like, so the solve carried on: it spawned six replacement workers,
+   * searched, and RESOLVED — a cancelled pool answering a question nobody was waiting for, and
+   * sharing given up for the session over a teardown that says nothing about it. A counter is
+   * enough, because the question is only ever "is this still the pool I started on".
+   */
+  let era = 0;
 
-  async function solve(facelets, { solLen, probeMax = DEFAULT_NODE_BUDGET } = {}) {
-    if (lone) return lone.solve(facelets, { solLen, probeMax });
+  /**
+   * A pool's resume point is SIX resume points, one per slice — they search different views and
+   * die at different depths, so there is nothing to merge and nothing that would mean anything
+   * merged. It rides in the caller's one carrier as an array aligned with the slices.
+   *
+   * The lone fallback searches ALL views, which is a different search with a different key, so its
+   * points would be refused by the engine — loudly, and over a cube nobody could then solve. So the
+   * carrier is EMPTIED at the crossing: a fallback starts over, which costs the re-walk this whole
+   * mechanism exists to avoid and is the only correct thing to do with a point for another search.
+   */
+  const dropPooledState = (resume) => {
+    if (resume && Array.isArray(resume.state)) resume.state = null;
+  };
+
+  async function solve(facelets, { solLen, probeMax = DEFAULT_NODE_BUDGET, signal = null, resume = null } = {}) {
+    if (lone) {
+      dropPooledState(resume);
+      return lone.solve(facelets, { solLen, probeMax, signal, resume });
+    }
+    // The era THIS solve started in, captured before the await that a teardown lands inside.
+    // `pooled` asks the same question about the handshake; the fallback below is the second place
+    // a cancel can be crossed, and it was not asking (2026-09-05 audit): a worker dying and a
+    // `cancel()` arriving in the same turn made a cancelled solve spawn a REPLACEMENT worker,
+    // search on it and resolve — reproduced. A worker failure says nothing about whether anyone
+    // is still waiting for the answer, so both have to be asked.
+    const mine = era;
     try {
-      return await pooled(facelets, { solLen, probeMax });
+      return await pooled(facelets, { solLen, probeMax, signal, resume });
     } catch (err) {
       // A pool that cannot be staffed still answers. A thread that failed to spawn, or died,
       // says nothing about this cube — and one worker searching all six views under the whole
@@ -277,20 +577,66 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
       // range — would fail identically on the retry and charge the user twice the wait for the
       // same "no", so it propagates untouched.
       if (!isWorkerFailure(err)) throw err;
+      // A pool torn down while it was failing is still torn down. Asked BEFORE the warning as
+      // well as before the fallback: a teardown is not evidence that this page cannot staff a
+      // pool, and announcing a session-long downgrade over one would be the same mistake the
+      // handshake's own era check exists to prevent.
+      if (era !== mine) throw new Error(CANCELLED);
       console.warn(
         `solve-client: the ${clients.length}-worker pool could not run (${err.message}) — ` +
         'falling back to a single worker for the rest of this session. Searches will be slower ' +
         'in the tail; answers are unaffected.',
       );
-      for (const c of clients) c.cancel();
-      lone = createSolveClient({ spawn });
-      return lone.solve(facelets, { solLen, probeMax });
+      // Release the pool's threads — and NEVER another solve's request. `cancel()` rejects every
+      // entry on a client, and the app allows overlapping solves, so this was the same defect the
+      // per-request controller in `pooled` exists to prevent, one level out: the 2026-09-05 audit
+      // reproduced one solve failing to spawn worker 1 and an unrelated solve on worker 0 rejecting
+      // with "solve cancelled" over a cube nothing was wrong with. This solve's own requests are
+      // already settled — `pooled` awaits them all before it throws — so an idle client is one
+      // holding nothing, and a busy one is holding somebody else's search. The trade is that a
+      // busy client keeps its thread for the session rather than being ended here; a stray thread
+      // costs memory, a stolen answer costs the user their solve.
+      for (const c of clients) if (c.idle) c.cancel();
+      // `??=`: two overlapping solves can fall back at once, and the second assignment would
+      // orphan the first one's client — still holding a search, and no longer cancellable
+      // through this pool.
+      lone ??= createSolveClient({ spawn });
+      dropPooledState(resume);
+      return lone.solve(facelets, { solLen, probeMax, signal, resume });
     }
   }
 
-  async function pooled(facelets, { solLen, probeMax }) {
+  async function pooled(facelets, { solLen, probeMax, signal, resume = null }) {
+    // Nothing to staff if nobody is waiting. The single-worker client has always refused this
+    // before `attach()` — the pool did not, and an abandoned solve therefore spawned six threads
+    // and ran the whole 9.82 MiB table handshake before every one of its requests answered null
+    // (2026-09-05 audit). A superseded solve is the ordinary case here, not the exotic one: the app
+    // aborts one the moment the cube changes.
+    if (signal?.aborted) return null;
+    const mine = era;
     const shares = shareBudget(probeMax, clients.length);
     const used = clients.slice(0, shares.length);
+    // Look at the threads BEFORE dividing a budget between them. `spawnSolveWorker` answers with
+    // a main-thread worker where it cannot build a real one — no `Worker` at all, a CSP
+    // forbidding worker-src, a blocked module URL — and N of those is not a pool: they run one
+    // after another on this thread with a share of the budget each, which is strictly worse than
+    // one of them searching every view with all of it, and the stop word buys nothing because
+    // nothing runs concurrently to be stopped. Raised as a worker failure so the collapse goes
+    // through the one fallback path that already exists, loudly.
+    if (used.some((c) => c.ensureWorker()?.inline === true)) {
+      throw workerFailure(
+        'there is no real worker here, so a pool would be main-thread searches with a share of the budget each',
+      );
+    }
+    // One build for the whole pool, before anything is asked to search. Awaited, and that is the
+    // point: the first solve used to wait for six concurrent table builds anyway, and now it
+    // waits for one uncontended build plus a handful of milliseconds of adoption.
+    if (sharing) await shareTablesAcrossPool();
+    // A cancel that landed while the handshake was in flight terminated these workers. Nothing in
+    // the rejection says so — it is the same "solve cancelled" any request gets — so the era is
+    // asked instead, and asked HERE, before a single replacement thread is spawned. Reproduced by
+    // the 2026-09-05 audit: a cancelled pool spawned six fresh workers, searched, and resolved.
+    if (era !== mine) throw new Error(CANCELLED);
     // A fresh word per solve. `makeShared` is injected so a page without SharedArrayBuffer — or
     // a test — gets a correct client that simply never stops early.
     const stop = makeShared?.() ?? null;
@@ -300,12 +646,26 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
     // Waiting first deadlocks: a worker that died takes its promise with it, and the others are
     // still searching a cube whose answer nobody will use — `allSettled` would wait for replies
     // that are never coming. Cancelling is what makes them settle, so the order matters.
+    //
+    // ONE CONTROLLER FOR THIS SOLVE. It used to be `c.cancel()` per client, which rejects every
+    // entry on that client — including a second, overlapping solve's, which the app allows and
+    // which had nothing to do with the failure. That solve then failed with "could not work it
+    // out" about a cube nothing was wrong with. Aborting is scoped by request id, and where
+    // there is a stop word it is also cheaper than cancelling: the siblings stop at their next
+    // poll instead of losing their threads and rebuilding their tables.
+    const { controller: abandon, release } = relayAbort(signal);
     let firstError = null;
     const abandonAll = (err) => {
       if (firstError !== null) return;
       firstError = err;
-      for (const c of used) c.cancel();
+      abandon.abort();
     };
+    // One carrier per slice, aligned by INDEX with `slices` — which is fixed for the pool's life,
+    // so slice i's point always goes back to slice i's views however many slices a budget affords.
+    // A carrier that was never filled (a slice whose reply was dropped) simply keeps the point the
+    // attempt before it left, which is still a valid position in that slice's enumeration.
+    const carried = Array.isArray(resume?.state) ? resume.state : null;
+    const carriers = resume === null ? null : used.map((_, i) => ({ state: plainState(carried?.[i]) }));
     const settled = await Promise.allSettled(used.map((client, i) =>
       client.solve(facelets, {
         solLen,
@@ -313,29 +673,131 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
         views: slices[i],
         shared: stop,
         detailed: true,
+        signal: abandon.signal,
+        resume: carriers?.[i] ?? null,
       }).catch((err) => { abandonAll(err); throw err; }).then((reply) => {
-        // Publish only a real answer, and only when it is SHALLOWER than what is published. A
-        // sibling exploring deeper can stop; one at the same depth cannot, because a lower view
-        // index there still wins — which is exactly why the pick stays deterministic.
-        if (stop && typeof reply.alg === 'string' && reply.depth >= 0) {
-          let seen = Atomics.load(stop, 0);
-          while (reply.depth < seen) {
-            const prev = Atomics.compareExchange(stop, 0, seen, reply.depth);
-            if (prev === seen) break;
-            seen = prev;
-          }
-        }
+        // Publish only the depth of a reply that could WIN — the same question `pickWinner` asks,
+        // through the same predicate. A null reply's -1 means "no depth applies" and would read as
+        // the shallowest possible; a reply with a real depth and a malformed view is worse, because
+        // it stops the siblings at that depth and is then thrown away by the pick.
+        if (canWin(reply)) publishBest(stop, reply.depth);
         return reply;
-      })));
+      }))).finally(release);
 
     // allSettled, not all: `all` would resolve the caller's promise while siblings were still
     // running and pending. Everyone is waited for, and the FIRST failure propagates — not a
     // cancellation caused by it, which is why abandonAll keeps the original.
     if (firstError !== null) throw firstError;
+    // After everyone has settled, never as they arrive: the array IS the pool's resume point, and
+    // publishing a half-written one would let a continuation resume some slices and restart others.
+    if (carriers) resume.state = carriers.map((c) => c.state);
     return pickWinner(settled.map((r) => r.value));
   }
 
+  /**
+   * Build the engine's eleven tables ONCE, on the first worker, and give the rest a view of them.
+   *
+   * 9.82 MiB and 0.4-2.6 s per worker, six times over, was the pool paying six times for one
+   * thing — and then holding six identical copies for the life of the page. The first worker
+   * builds into a SharedArrayBuffer and hands back descriptors; this thread relays them and never
+   * looks inside, which is what keeps the engine out of the main bundle (app.js imports this file
+   * and must not import two-phase.js — the rule the VIEW_COUNT comment in solver-engine.js states
+   * for one integer, and the tables are 9.82 MiB of it).
+   *
+   * Idempotent through `handshake`, because overlapping solves are allowed and two of them
+   * arriving cold must not build twice.
+   *
+   * Three ways it does not happen, and each leaves a pool that still answers:
+   *   * every "worker" is this thread — then there is ONE module instance and one set of tables
+   *     already, so there is nothing to share and nothing lost by not sharing;
+   *   * the worker cannot make a SharedArrayBuffer (no cross-origin isolation) — sharing is given
+   *     up for the session, loudly and once, and every worker builds its own exactly as before;
+   *   * a worker refuses the bundle — a checksum mismatch is a corrupted table set, so it is said
+   *     out loud and that worker simply builds its own on its next search.
+   */
+  async function shareTablesAcrossPool() {
+    const mine = era;
+    // A main-thread "worker" is one realm: the module instance, and therefore the tables, are
+    // already shared by construction. Checked before the handshake rather than after, or the
+    // control message would reach `handleSolveRequest` and come back as a solver error.
+    if (clients.some((c) => c.ensureWorker()?.inline === true)) {
+      sharing = false;
+      return;
+    }
+    // The attempt THIS call is waiting on, held by identity. `handshake` is module-of-the-pool
+    // state that a `cancel()` clears and the next solve refills, so the failing attempt's catch
+    // below must be able to tell "mine" from "somebody else's" — see there.
+    const attempt = (handshake ??= (async () => {
+      // The era THIS attempt opened in, asked again the moment the build comes back (2026-09-05
+      // round 3). A cancel that lands while PREPARE_TABLES is in flight rejects it, which the catch
+      // below already handles — but a cancel landing in the window between that reply RESOLVING and
+      // this continuation running leaves nothing rejected at all: `cancel()` ends the six threads,
+      // and the adoption below then asks five clients for a control request each, so `attach()`
+      // spawns five REPLACEMENT workers and pushes 9.82 MiB into them for a pool nobody is waiting
+      // on. Reproduced by the audit. Checked before a single adoption is issued, for the same reason
+      // `pooled` checks before a single search is.
+      const opened = era;
+      const published = await clients[0].control({ kind: PREPARE_TABLES });
+      if (era !== opened) throw new Error(CANCELLED);
+      const bundle = published?.tables ?? null;
+      if (!bundle) throw new Error('the solver worker published no tables');
+      const refusals = await Promise.all(clients.slice(1).map((c) =>
+        c.control({ kind: ADOPT_TABLES, tables: bundle }).then(() => null, (err) => err)));
+      // Both outcomes are said out loud, and they are not the same thing. A REFUSAL is a table
+      // set that failed its checksum — a defect, and the loudest thing here. A thread that DIED
+      // says nothing about the tables; what it costs is that its replacement will never be
+      // offered them, so it builds its own for the rest of the session — a slower pool, and
+      // silent unless it is reported.
+      for (const err of refusals) {
+        if (!err) continue;
+        if (isWorkerFailure(err)) {
+          console.warn(
+            `solve-client: a solver worker died during the table handshake (${err.message}) — ` +
+            'its replacement will build its own tables. Answers are unaffected.',
+          );
+        } else {
+          console.error(
+            `solve-client: a solver worker refused the shared tables (${err.message}) — ` +
+            'it will build its own. This is a corrupted or mismatched table set, not a slow one.',
+          );
+        }
+      }
+      return bundle;
+    })());
+    try {
+      await attempt;
+    } catch (err) {
+      // Only MY attempt is cleared. A cancel nulls `handshake` and the very next solve puts a new
+      // one there, so this catch — which runs a microtask later, when the cancelled control
+      // request finally rejects — was clearing a handshake that had nothing to do with the
+      // failure. Reproduced by the 2026-09-05 audit as `cancel()` then `solve()`: the replacement
+      // builder was sent PREPARE_TABLES twice and every replacement adopter ADOPT_TABLES twice,
+      // the whole 9.82 MiB handshake run again for nothing.
+      if (handshake === attempt) handshake = null;
+      // A thread that died says nothing about tables; it goes down the one fallback path the pool
+      // already has, which ends with a single worker searching every view.
+      if (isWorkerFailure(err)) throw err;
+      // Neither does a TEARDOWN. A cancel during the handshake rejects it like anything else in
+      // flight, and treating that as "this page cannot share tables" gave up 9.82 MiB per worker
+      // for the session over a button press. The capability is untouched; the caller is told by
+      // the era check in `pooled`.
+      if (era !== mine) return;
+      sharing = false;
+      console.warn(
+        `solve-client: the solver tables could not be shared (${err.message}) — ` +
+        'each worker will build its own for the rest of this session. Answers are unaffected; ' +
+        'a cold session costs one table build per worker instead of one in all.',
+      );
+    }
+  }
+
   function cancel() {
+    // The handshake is a fact about THESE workers, and this ends them. Keeping it made the next
+    // solve skip prepare/adopt entirely: every replacement worker built its own 9.82 MiB of
+    // private tables while `sharingTables` still reported the pool was on one set — a measurement
+    // and a diagnostic both quietly wrong, and six table builds nobody could see (2026-09-05).
+    era += 1;
+    handshake = null;
     for (const c of clients) c.cancel();
     lone?.cancel();
   }
@@ -347,6 +809,10 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
     // fallen back reports the one worker it actually has rather than the six it wanted.
     get idle() { return clients.every((c) => c.idle) && (lone?.idle ?? true); },
     get workers() { return lone ? 1 : clients.length; },
+    /** Whether the pool is still on one shared table set. False the moment it gave up on one,
+     *  so a test — or a measurement — cannot mistake a quiet fallback for the thing it meant to
+     *  measure. */
+    get sharingTables() { return sharing; },
   };
 }
 
@@ -382,6 +848,10 @@ function inlineWorker() {
     readStats = () => twoPhase.searchStats;
   })();
   return {
+    /** What this IS, said out loud, because from the outside it is worker-shaped and nothing
+     *  else could tell. The pool asks before it divides a budget: several of these are several
+     *  main-thread searches with a share each, run one after another. */
+    inline: true,
     addEventListener: (type, fn) => { listeners.set(type, fn); },
     postMessage(request) {
       void ready.then(
@@ -407,23 +877,44 @@ function inlineWorker() {
 
 /** The real worker, for the app. Kept out of `createSolveClient` so nothing in a test ever
  *  needs a DOM or a thread. */
+/** Set once a module worker has proved it cannot LOAD — see below. Module state on purpose: it
+ *  is a fact about this page, not about one client, and every client's spawn must learn it. */
+let moduleWorkerBroken = false;
+
 /**
  * A real worker where one can be had, and this thread where one cannot.
  *
- * Two different ways to have no worker, and they used to be treated as one: `Worker` missing
- * from the platform, and `Worker` present but refusing to build THIS script — a CSP that
- * forbids worker-src, a blocked module URL, a test denying it. Only the first fell back, so
- * the second reached the caller as an error and took solving down with it. Since rolling a
- * scramble became a solve, that would take the Random die down too.
+ * THREE ways to have no worker, and they were treated as one, then as two:
+ *
+ *   1. `Worker` missing from the platform.
+ *   2. `Worker` present but refusing to build THIS script, synchronously — a CSP that forbids
+ *      worker-src, a blocked module URL, a test denying it. Only (1) fell back at first, so this
+ *      reached the caller as an error and took solving down with it. Since rolling a scramble
+ *      became a solve, that took the Random die down too.
+ *   3. `Worker` built, and then the module fails to LOAD — a 404, a syntax error, an import the
+ *      page cannot resolve. This one is ASYNCHRONOUS: the constructor has already handed back a
+ *      Worker object and the failure arrives later as an `error` event, so neither of the fixes
+ *      above sees it. Every spawn after it built another thread exactly as doomed, and the pool
+ *      fell back to a "single worker" that could not load either.
+ *
+ * The distinction that makes (3) safe to remember is whether the worker ever SPOKE. A module
+ * that will not load never delivers a message; a thread that answered once and then died of
+ * memory pressure is not a reason to move every future search onto the main thread, and marking
+ * it broken would trade one lost search for a permanently blocked page.
  *
  * Loud either way: the inline worker announces that searches now block the page.
  */
 export const spawnSolveWorker = () => {
-  if (typeof Worker === 'undefined') return inlineWorker();
+  if (moduleWorkerBroken || typeof Worker === 'undefined') return inlineWorker();
   try {
-    return new Worker(new URL('./solve-worker.js', import.meta.url), { type: 'module' });
+    const spawned = new Worker(new URL('./solve-worker.js', import.meta.url), { type: 'module' });
+    let spoke = false;
+    spawned.addEventListener('message', () => { spoke = true; }, { once: true });
+    spawned.addEventListener('error', () => { if (!spoke) moduleWorkerBroken = true; }, { once: true });
+    return spawned;
   } catch (cause) {
     console.warn('solve-client: the solver worker could not be built, so it runs on this thread', cause);
+    moduleWorkerBroken = true;
     return inlineWorker();
   }
 };

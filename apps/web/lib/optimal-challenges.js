@@ -56,15 +56,48 @@ export function validateChallenges(data, { Cube } = {}) {
   return data;
 }
 
+/**
+ * "There is nothing here to fetch FROM" — raised before the fetch, and one line long.
+ *
+ * `fetch` is specified not to read `file:`, so in Node the library's URL — resolved beside this
+ * module — cannot be loaded at all. That is not a defect and not a library problem; it is the
+ * app's boot running in a test process. It used to be an undici `TypeError: fetch failed` whose
+ * `cause` chain Node prints in full, so every green gate run carried a nine-line stack trace of
+ * someone else's internals through a condition nobody can act on.
+ *
+ * The stack is replaced deliberately, and it costs nothing: the only frames it could hold are
+ * this function and its caller, both named in the message. Anything that CAN be fetched — a
+ * browser tab on http(s), a WKWebView, Tauri's custom protocol — never reaches here, so the
+ * shipped path is untouched. Nor is the refusal quiet: it leaves through `loadIndex`'s one door
+ * like every other failure, and yields NO index rather than a partial one.
+ */
+class NotFetchable extends Error {
+  constructor(url) {
+    super(
+      `optimal-challenges: the library is at a ${url.protocol} URL, which fetch cannot read — ` +
+        'this is not a browser, so no proven-library claim is available here',
+    );
+    this.name = 'NotFetchable';
+    this.stack = `${this.name}: ${this.message}`;
+  }
+}
+
 /** Load and validate the shipped library — oracle included when the caller has cubejs in
  *  hand, which the app always does. A challenge whose numbers cannot be trusted is worse
  *  than no challenge.
  *
  *  `fetch` is injectable so the whole load path — not merely the validator — can be driven by
  *  a test. Node's fetch cannot read a file: URL, so without this seam the one function the app
- *  actually calls would be the one function nothing exercises. */
-export async function loadChallenges({ Cube, fetch: get = globalThis.fetch } = {}) {
-  const response = await get(new URL('./data/optimal-challenges.json', import.meta.url));
+ *  actually calls would be the one function nothing exercises — and an injected fetch is also
+ *  the way to load the library from somewhere else entirely, which is why it is checked for
+ *  before the URL is. */
+export async function loadChallenges({ Cube, fetch: get } = {}) {
+  const url = new URL('./data/optimal-challenges.json', import.meta.url);
+  if (typeof get !== 'function') {
+    if (url.protocol === 'file:') throw new NotFetchable(url);
+    get = globalThis.fetch;
+  }
+  const response = await get(url);
   if (!response.ok) {
     throw new Error(`optimal-challenges: the library did not load (${response.status})`);
   }
@@ -116,9 +149,10 @@ export function provenAnswer(index, facelets) {
   const entry = index?.get?.(facelets);
   if (!entry) return null;
   // `setupAlg` is the entry's scramble under the app's name for it: solved -> this state. The
-  // validator has already applied it to a solved cube and compared, so handing it over saves
-  // the OTHER Kociemba search a known state would otherwise pay for — the one deriveCube runs
-  // on the UI thread purely to animate the cube into position.
+  // validator has already applied it to a solved cube and compared. Since 2026-09-05 no screen
+  // searches for a setup alg at all — `finishSolve` derives it by inverting the solution and
+  // checks it with `reaches()` — so this field is a shortcut the caller may take, not a search
+  // it avoids; the assertion that a proved state costs zero UI-thread searches still holds.
   return { moves: entry.optimalLength, alg: entry.optimalSolution, setupAlg: entry.scramble };
 }
 

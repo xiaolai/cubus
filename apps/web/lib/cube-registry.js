@@ -4,6 +4,10 @@
 // already required to decrypt anything it says. So the app never has to ask which cube it is
 // talking to, and never has to trust an answer it cannot check.
 //
+// Not every smart cube broadcasts one, though — Giiker, GoCube, MoYu v1, MoYu MHC and GAN gen1
+// connect with no address the app ever sees. Those are remembered under their DEVICE NAME instead
+// (`name:<label>`), which is weaker and is treated as weaker: see `normaliseIdentity`.
+//
 // A plain cube has no identity at all. Two identical shop cubes produce the same camera reading,
 // so there is nothing to key on and nothing worth storing. This module is therefore only ever
 // about smart cubes, and its absence for camera users is the design, not a gap.
@@ -52,11 +56,18 @@ function cleanStamp(value) {
  *  and every one of them would be parsed, cloned, sorted and rendered on the Settings screen. */
 export const MAX_CUBES = 32;
 
-/** The move serial a FACELETS report carries is 16 bits (gan-driver gen4/decode.ts); the 8-bit
- *  value the driver compares for gaps is the same counter masked. The remembered serial is the
- *  16-bit one, compared modulo this. It is information for wording, never proof for trust — the
- *  GAN16's counter restarts per connection, so it says nothing across a break (measured with the
- *  driver's CLI; dev-docs/smart-cube-ux-prd.md, "Reconnecting a known cube"). */
+/** The upper bound on a remembered move serial — a validation bound, not a claim about the wire.
+ *
+ *  The wire value is 16 bits: the GAN gen3/gen4 drivers read `getBitWord(…, 16)` from the FACELETS
+ *  frame. What REACHES this app is that counter masked to 8 (`& 0xFF`, in the protocol layer, on
+ *  both channels), so every serial stored here is in fact below 256. The bound stays at 2¹⁶
+ *  deliberately: it is the width of the counter the cube maintains, so a driver that one day
+ *  passes the full value through is accepted rather than silently cleaned to null — and nothing
+ *  reads the serial as a number, only as "same or different".
+ *
+ *  It is information for wording, never proof for trust: the GAN16's counter restarts per
+ *  connection, so it says nothing across a break, and `cube-reconnect.js` ignores it on purpose
+ *  (measured with the driver's CLI; dev-docs/smart-cube-ux-prd.md, "Reconnecting a known cube"). */
 export const SERIAL_MOD = 0x10000;
 
 const LAST_HOW = new Set(['camera', 'cube', 'confirmed']);
@@ -112,11 +123,47 @@ const byRecency = ([am, a], [bm, b]) => b.lastSeen - a.lastSeen || am.localeComp
 /** Canonical form of a cube address, or '' if the input is not one. Upper case because that is
  *  how every GAN tool prints it, and a registry keyed case-sensitively would hold the same cube
  *  twice. Strings only — no coercion: `String([mac])` would launder an array into an address,
- *  and an object with a throwing toString would escape a function documented to return ''. */
+ *  and an object with a throwing toString would escape a function documented to return ''.
+ *
+ *  MAC-only, deliberately: it answers "is this an address", and callers that need "is this a cube
+ *  we can file something under" ask `normaliseIdentity` instead. Widening this one would make
+ *  every address check quietly accept a name. */
 export function normaliseMac(value) {
   if (typeof value !== 'string') return '';
   const s = value.trim();
   return MAC_RE.test(s) ? s.toUpperCase() : '';
+}
+
+/** The prefix that marks a record keyed by device name rather than by address. Spelled once. */
+export const NAME_PREFIX = 'name:';
+
+/**
+ * The canonical key for a cube: an address where there is one, a device name where there is not.
+ *
+ * Five of the ten implemented protocols — Giiker, GoCube, MoYu v1, MoYu MHC, GAN gen1 — connect
+ * without ever exposing a Bluetooth address, so `normaliseMac` answers '' for them and every
+ * registry path keyed on it did nothing at all. Those cubes were documented as "remembered under
+ * their NAME" and were in fact never remembered (found 2026-09-04): no nickname, no history, no
+ * remembered arrangement, and no row in Settings.
+ *
+ * A name is a WEAKER identity and the app must not pretend otherwise. Two identical shop cubes
+ * broadcast the same name, so `name:` records can collide in a way `mac:` records cannot — which
+ * is precisely why the reconnect readings never grant trust from a record and always end at the
+ * user confirming the STATE (dev-docs/cube-trust-design.md §0). Nothing here changes that; this
+ * only decides where a record is filed.
+ *
+ * The `name:` prefix is required rather than inferred. Treating any non-address string as a name
+ * would file a MISTYPED address — 'AA:BB' — as a cube called "AA:BB", so a caller with a broken
+ * address would silently get a record instead of the '' that tells it something is wrong.
+ *
+ * @returns a canonical MAC, `name:<clean label>`, or '' for anything that is neither.
+ */
+export function normaliseIdentity(value) {
+  const mac = normaliseMac(value);
+  if (mac) return mac;
+  if (typeof value !== 'string' || !value.startsWith(NAME_PREFIX)) return '';
+  const label = cleanLabel(value.slice(NAME_PREFIX.length));
+  return label ? NAME_PREFIX + label : '';
 }
 
 /** Strip control characters and clamp. Applied to anything a human or a device supplies, because
@@ -146,7 +193,7 @@ export function parseRegistry(raw, Cube) {
   const out = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const [key, value] of Object.entries(raw)) {
-    const mac = normaliseMac(key);
+    const mac = normaliseIdentity(key);
     if (!mac || !value || typeof value !== 'object' || Array.isArray(value)) continue;
     const rec = {
       name: cleanLabel(value.name),
@@ -179,9 +226,12 @@ export function parseRegistry(raw, Cube) {
  * because the cube is the authority on its own name. The remembered arrangement survives too:
  * the reconnect readings exist to compare the fresh connection against it, so the connect that
  * triggers them must not be the write that erases it.
+ *
+ * `mac` is an IDENTITY, not necessarily an address: `name:<device name>` for the five protocols
+ * that never expose one. See `normaliseIdentity`.
  */
 export function rememberCube(reg, { mac, name = '', at = 0 } = {}, Cube) {
-  const id = normaliseMac(mac);
+  const id = normaliseIdentity(mac);
   if (!id) return parseRegistry(reg, Cube);
   const next = parseRegistry(reg, Cube);
   const prev = next[id];
@@ -217,7 +267,7 @@ export function rememberCube(reg, { mac, name = '', at = 0 } = {}, Cube) {
  * refused the same way — a memory is only worth keeping whole.
  */
 export function rememberLast(reg, mac, last, Cube) {
-  const id = normaliseMac(mac);
+  const id = normaliseIdentity(mac);
   const next = parseRegistry(reg, Cube);
   if (!id || !next[id]) return next;
   const clean = cleanLast(last, Cube);
@@ -229,7 +279,7 @@ export function rememberLast(reg, mac, last, Cube) {
 /** Give a cube a name of the user's own. A label, never a claim: nothing in the app branches on
  *  it, which is what makes it honest to accept something we cannot verify. */
 export function renameCube(reg, mac, nickname) {
-  const id = normaliseMac(mac);
+  const id = normaliseIdentity(mac);
   const next = parseRegistry(reg);
   if (!id || !next[id]) return next;
   next[id] = { ...next[id], nickname: cleanLabel(nickname) };
@@ -238,7 +288,7 @@ export function renameCube(reg, mac, nickname) {
 
 /** Forget a cube entirely. */
 export function forgetCube(reg, mac) {
-  const id = normaliseMac(mac);
+  const id = normaliseIdentity(mac);
   const next = parseRegistry(reg);
   delete next[id];
   return next;
@@ -247,8 +297,12 @@ export function forgetCube(reg, mac) {
 /** Known cubes, most recently seen first, each as `{ mac, name, nickname, lastSeen }` — plus
  *  `last`, the remembered arrangement, on cubes that have one (deliberately exposed: the
  *  reconnect readings are its consumer, and a projection that stripped it here would force a
- *  second lookup by address). Ties break on address so the list cannot reorder itself between
- *  two renders. */
+ *  second lookup by address). Ties break on the identity so the list cannot reorder itself between
+ *  two renders.
+ *
+ *  `mac` carries the IDENTITY, which is an address for most cubes and `name:<label>` for the five
+ *  protocols that never expose one. The field keeps its name because every caller passes it
+ *  straight back to the writers here, all of which take an identity. */
 export function listCubes(reg) {
   return Object.entries(parseRegistry(reg))
     .sort(byRecency)
@@ -256,12 +310,15 @@ export function listCubes(reg) {
 }
 
 /** What to call a cube on screen. The user's word wins; the device's name is the fallback; the
- *  address is the last resort, because a cube with no name is still a cube you must be able to
- *  pick out of a list. */
+ *  identity is the last resort, because a cube with no name is still a cube you must be able to
+ *  pick out of a list — shown as the address, or as the remembered name for a cube that has no
+ *  address, never as the raw `name:` key. */
 export function cubeLabel(rec) {
   if (!rec) return '';
   // Cleaned here too. Callers overlay a live device name straight off the wire — the app's own
   // `liveCubeLabel` does exactly that — which walked round the sanitiser the rest of this module
   // applies. A label is rendered; anything rendered goes through the cleaner.
-  return cleanLabel(rec.nickname) || cleanLabel(rec.name) || normaliseMac(rec.mac) || '';
+  const id = normaliseIdentity(rec.mac);
+  const fromId = id.startsWith(NAME_PREFIX) ? id.slice(NAME_PREFIX.length) : id;
+  return cleanLabel(rec.nickname) || cleanLabel(rec.name) || fromId || '';
 }

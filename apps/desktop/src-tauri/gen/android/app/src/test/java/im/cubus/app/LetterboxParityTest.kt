@@ -46,7 +46,7 @@ class LetterboxParityTest {
 
     @Test
     fun `the letterbox matches the typescript reference exactly`() {
-        val out = VisionPlugin.letterboxFrom(w, h, ::sample)
+        val out = VisionPlugin.letterboxFrom(w, h) { x, y, c -> sample(x, y, c) }
         assertEquals("the tensor is 640x640x3", VisionPlugin.IMG * VisionPlugin.IMG * 3, out.size)
 
         // (TypeScript CHW index, value). Three samples per channel inside the image band, and one
@@ -85,8 +85,23 @@ class LetterboxParityTest {
     /** Grey 114/255 outside the image, which is the Ultralytics convention the model was trained on. */
     @Test
     fun `the padding is ultralytics grey`() {
-        val out = VisionPlugin.letterboxFrom(w, h, ::sample)
+        val out = VisionPlugin.letterboxFrom(w, h) { x, y, c -> sample(x, y, c) }
         // Row 10 is above the image band for a 97x43 source scaled to 640 wide (284 tall, pad 178).
         assertEquals(114f / 255f, out[(10 * VisionPlugin.IMG + 10) * 3], 0.0f)
+    }
+
+    /**
+     * A reused buffer is filled completely: the pad colour is REWRITTEN on every call, so a frame
+     * letterboxed into a buffer that held a larger frame's band carries none of it.
+     */
+    @Test
+    fun `a reused buffer carries nothing of the previous frame`() {
+        val buf = FloatArray(VisionPlugin.IMG * VisionPlugin.IMG * 3) { 0.99f }
+        VisionPlugin.letterboxFrom(w, h, buf) { x, y, c -> sample(x, y, c) }
+        // Above the image band: pad, not the 0.99 the buffer held.
+        assertEquals(VisionPlugin.PAD, buf[(10 * VisionPlugin.IMG + 10) * 3], 0.0f)
+        // A second call over a square frame (no padding at all) rewrites the band region too.
+        VisionPlugin.letterboxFrom(4, 4, buf) { _, _, _ -> 0 }
+        assertEquals(0f, buf[(10 * VisionPlugin.IMG + 10) * 3], 0.0f)
     }
 }

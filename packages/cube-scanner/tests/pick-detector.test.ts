@@ -131,6 +131,27 @@ describe('pickDetector', () => {
     expect(noted).not.toHaveBeenCalled();
   });
 
+  it('a "not found" about something OTHER than the command is loud', async () => {
+    // The matcher tested the WORDS and not the subject, and "not found" is the commonest phrase in
+    // a platform failure. So a plugin that IS installed and cannot load its native runtime, find
+    // its model, or open its device was read as "no plugin on this platform" and logged at `info`
+    // — a build silently demoted to wasm, hidden by the very check that exists to expose it.
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const noted = vi.spyOn(console, 'info').mockImplementation(() => {});
+    for (const message of [
+      'cube-vision: native runtime DLL not found',
+      'plugin:cube-vision|probe failed: model file not found',
+      'the capture device was not found',
+    ]) {
+      withTauri(async () => {
+        throw new Error(message);
+      });
+      expect((await pickDetector(lazy().opts)).runtime).toBe('web');
+    }
+    expect(warned).toHaveBeenCalledTimes(3);
+    expect(noted).not.toHaveBeenCalled();
+  });
+
   it('a rejection it does not recognise is treated as a real failure', async () => {
     // The matcher is narrow ON PURPOSE. A wording it has not seen must land in the loud branch:
     // being told about a working build is cheap, and missing a broken one is not.

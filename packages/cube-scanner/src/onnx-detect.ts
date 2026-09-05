@@ -4,7 +4,13 @@
 // a heavy wasm runtime, and the whole path is exercised in tests with a fake `run`.
 
 import type { ModelOutput } from './detector.js';
-import { type FitResult, decodeDetections, fitFace, nms } from './onnx-postprocess.js';
+import {
+  decodeDetections,
+  type FitResult,
+  fitFace,
+  MIN_STICKER_CONFIDENCE,
+  nms,
+} from './onnx-postprocess.js';
 import type { Frame } from './types.js';
 
 export const IMG_SIZE = 640;
@@ -19,9 +25,32 @@ export interface Preprocessed {
  * Letterbox an RGBA frame to imgsz×imgsz (aspect-preserving, grey pad) and emit a CHW RGB
  * float tensor in [0,1] — the exact input Ultralytics YOLO expects. Bilinear resample so
  * it matches the training-time resize. Pure: no canvas, no DOM.
+ *
+ * IT REFUSES A FRAME IT CANNOT READ, rather than producing a tensor from one (2026-09-05). Every
+ * malformed input had an answer that looked like an answer: a 0×0 frame ran no loop at all and
+ * came back as 640×640 of flat grey — the exact input the model is trained to ABSTAIN on, so it
+ * abstained, and a camera delivering nothing was indistinguishable from a camera pointed at a
+ * wall. A buffer shorter than `width*height*4` read `undefined` past its end and normalised it to
+ * NaN, which compares false against every confidence threshold downstream and so was silently
+ * dropped rather than reported. A non-integer or non-positive `imgsz` produced a tensor of the
+ * wrong length, which `validatedRun` then blamed on the model.
+ *
+ * The bar is the project's: an unreadable scan surfaces where it happens. This is the seam every
+ * browser frame passes through, and it is the last place that still knows the frame is a frame.
  */
 export function preprocess(frame: Frame, imgsz: number = IMG_SIZE): Preprocessed {
   const { data: src, width: w, height: h } = frame;
+  if (!Number.isInteger(imgsz) || imgsz <= 0) {
+    throw new Error(`preprocess: imgsz ${imgsz} is not a positive whole number of pixels`);
+  }
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
+    throw new Error(`preprocess: a frame of ${w}x${h} is not an image`);
+  }
+  if (src.length !== w * h * 4) {
+    throw new Error(
+      `preprocess: a ${w}x${h} RGBA frame is ${w * h * 4} bytes, but this one holds ${src.length}`,
+    );
+  }
   const scale = imgsz / Math.max(w, h);
   const newW = Math.max(1, Math.round(w * scale));
   const newH = Math.max(1, Math.round(h * scale));
@@ -73,6 +102,9 @@ export const DETECT_ROWS = 4 + NUM_CLASSES;
 /** The injected model call: input CHW tensor → flat output tensor + its anchor count. */
 export type RunModel = (input: Float32Array, imgsz: number) => Promise<ModelOutput>;
 
+/** Re-exported beside its two consumers: `fitFromOutput` defaults both thresholds to it. */
+export { MIN_STICKER_CONFIDENCE } from './onnx-postprocess.js';
+
 export interface DetectOptions {
   numClasses?: number;
   confThreshold?: number;
@@ -89,10 +121,31 @@ export interface DetectOptions {
 export function fitFromOutput(output: ModelOutput, opts: DetectOptions = {}): FitResult {
   const {
     numClasses = NUM_CLASSES,
-    confThreshold = 0.25,
+    confThreshold = MIN_STICKER_CONFIDENCE,
     iouThreshold = 0.45,
-    minConf = 0.25,
+    minConf = MIN_STICKER_CONFIDENCE,
   } = opts;
+  // THE ROW COUNT, at the seam both runtimes pass through.
+  //
+  // `decodeDetections` reads four box coordinates and then one score per class at FIXED offsets
+  // into this tensor, so a head with a different row count is a different model decoded against
+  // stale offsets — and the result is not an error anywhere downstream, just a cube read off the
+  // wrong axis. The browser runtime has checked this since 515002d, inside `validatedRun`; the
+  // native plugin decoded `rows` out of its own header and discarded it, so the one path that
+  // crosses a bridge was the one path with no check. Asserting here covers both, and covers any
+  // runtime added later for free.
+  const expected = 4 + numClasses;
+  if (output.rows !== expected) {
+    // Rows are the SMALLER axis by orders of magnitude in a real detect head, so a row count at or
+    // above the anchor count names the likeliest cause rather than leaving it to be guessed at.
+    const why =
+      output.rows >= output.anchors
+        ? ` — ${output.rows} rows against ${output.anchors} anchors is the transpose of a detect head`
+        : '';
+    throw new Error(
+      `model output has ${output.rows} rows, not the ${expected} a ${numClasses}-class detect head produces${why}`,
+    );
+  }
   const dets = nms(
     decodeDetections(output.data, numClasses, output.anchors, confThreshold),
     iouThreshold,

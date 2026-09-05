@@ -1,0 +1,8 @@
+# Blank issues stay on: a bug in the solver or the scanner has no form, and a form that does not
+# fit is a report that does not get filed. The one template that exists (cube-report.yml) is for
+# the one kind of report that IS a file.
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/xiaolai/cubus/blob/main/SECURITY.md
+    about: Please do not file a vulnerability as a public issue. SECURITY.md says how to report one privately, what is in scope, and what to expect back.

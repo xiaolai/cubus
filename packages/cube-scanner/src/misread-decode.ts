@@ -26,12 +26,23 @@
 //     `distance === 1` AND `unique` AND exactly one sticker named. All three, because the search
 //     runs over 4^6 rotations and a rotationally symmetric face maps one canonical repair to a
 //     different as-shown index under each of its four turns — the witness case above comes back
-//     naming FOUR stickers, only one of which repairs the reading as given. `diagnose`
-//     (`ai-assemble.ts`) is the one caller and it checks all three; tests/misread-decode.test.ts
-//     pins the reading, tests/ai-assemble.test.ts pins what the app says about it.
+//     naming FOUR stickers, only one of which repairs the reading as given. `diagnoseMisread`
+//     below is the one caller and it checks all three; tests/misread-decode.test.ts pins the
+//     reading, tests/ai-assemble.test.ts pins what the app says about it.
 //   * The distance is never an OVERSTATEMENT — the true cube is always a legal repair at exactly
 //     the true number of misreads, so the minimum can never exceed it. That is what makes
 //     "at least N stickers were misread" an honest sentence at every N.
+//     PRESUMING THE SIX CENTRES WERE READ RIGHT, and that presumption is load-bearing rather than
+//     pedantic. Everything above is proved against the colouring the CENTRES define: `centreOwner`
+//     turns a colour into the face that owns it, so a centre read as the wrong colour is not one
+//     wrong sticker — it renames every sticker of that colour on all six sides, and the "true
+//     cube" the argument leans on is then a cube the user never held. The reachable case is two
+//     centres swapped: the true damage is 2 and the reported count is much larger (measured, and
+//     pinned in tests/misread-decode.test.ts). Nothing here can see it — the six centres are still
+//     six distinct colours, which is the only thing a reading lets us check — so it is a stated
+//     limit of the guarantee and not a defect in the search. Detecting it would need a second
+//     search over centre permutations, which is 15 more full decodes for a case the camera makes
+//     rare; dev-docs/misread-decoding.md carries the argument and the measurement.
 //
 // The method. For a fixed rotation combo the 54 facelets partition into 8 corner triples, 12 edge
 // pairs and 6 centres. A legal cube needs the 8 observed triples to BE the 8 real corner cubies
@@ -96,6 +107,29 @@ export type MisreadDecode =
   | { kind: 'repair'; distance: number; stickers: DecodedSticker[]; unique: boolean }
   | { kind: 'beyond'; distance: number }
   | { kind: 'unknown' };
+
+/**
+ * What a refused reading may be TOLD about itself — the decode, reduced to the three claims the
+ * argument above licenses, and nothing else.
+ *
+ * - `misreadCount` — the proven lower bound, so "at least N stickers were misread" is honest at
+ *   every N — ON THE READING AS ITS CENTRES LABEL IT, which is the header's fourth bullet and is
+ *   repeated here because this is the sentence a caller reads before putting the number on screen.
+ *   A misread CENTRE is not one wrong sticker, it renames a face; two swapped centres are two
+ *   misreads reported as several times that, and no property of a reading can detect it
+ *   (`tests/misread-decode.test.ts` pins the measurement and goes red if that ever stops being
+ *   true). `null` means a caller deferred the decode and is still waiting for it (see
+ *   `assembleColors`'s `diagnose` option); ABSENT means the decode ran and could claim nothing.
+ *   Those are opposite states and a caller that cannot tell them apart says "too much of the cube
+ *   was read wrong" over a cube nothing has looked at yet, which is why `null` is a value here.
+ * - `suspects` — populated only where the search itself says the repair is unambiguous.
+ * - `misreadFace` — the one side every minimal repair blames, when they agree on one.
+ */
+export interface MisreadDiagnosis {
+  misreadCount?: number | null;
+  suspects?: DecodedSticker[];
+  misreadFace?: Face;
+}
 
 export interface DecodeOptions {
   /** Largest repair to look for. Past this the answer is `beyond`, which is still truthful.
@@ -207,22 +241,34 @@ function buildTensors(
 }
 
 /**
+ * Per slot, the cheapest (cubie, orientation) choice — ignoring the requirement that every cubie be
+ * used once, which is exactly what makes it a bound rather than an answer.
+ *
+ * ONE implementation, for the two places that need it (2026-09-05). It was written three times —
+ * corners and edges in `lowerBound`, and again as `rowMin` inside `assignments` — and every pruning
+ * decision this module makes rests on the three agreeing: `lowerBound` prices the 4096 rotations
+ * and `assignments` prunes its DFS suffix, so a drift between them would silently discard the true
+ * repair and report a distance that is too large. Identical output to the three it replaces: the
+ * copies seeded `best` at 3, 2 and +Infinity, and a slot always has at least one cubie (8 corners
+ * with 3 orientations, 12 edges with 2), so the minimum is at most 3 or 2 in any case.
+ */
+function slotMinima(tensor: readonly number[][][]): number[] {
+  return tensor.map((slot) => {
+    let best = Number.POSITIVE_INFINITY;
+    for (const ori of slot) for (const d of ori) if (d < best) best = d;
+    return best;
+  });
+}
+
+/**
  * An admissible lower bound on the edits this rotation needs: each slot's cheapest cubie, ignoring
  * the requirement that every cubie be used once. Cheap enough to run on all 4096 rotations, and
  * never an overestimate, so pruning on it cannot discard the true answer.
  */
 function lowerBound(t: Tensors): number {
   let lb = 0;
-  for (const slot of t.corner) {
-    let best = 3;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    lb += best;
-  }
-  for (const slot of t.edge) {
-    let best = 2;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    lb += best;
-  }
+  for (const best of slotMinima(t.corner)) lb += best;
+  for (const best of slotMinima(t.edge)) lb += best;
   return lb;
 }
 
@@ -244,12 +290,7 @@ function assignments(
   budget: number,
   counter: { nodes: number; limit: number },
 ): Assignment[] | null {
-  const rowMin: number[] = [];
-  for (const slot of tensor) {
-    let best = Number.POSITIVE_INFINITY;
-    for (const ori of slot) for (const d of ori) if (d < best) best = d;
-    rowMin.push(best);
-  }
+  const rowMin = slotMinima(tensor);
   const suffix = new Array<number>(n + 1).fill(0);
   for (let i = n - 1; i >= 0; i--) suffix[i] = suffix[i + 1]! + rowMin[i]!;
 
@@ -289,17 +330,33 @@ function assignments(
   return exhausted ? null : out;
 }
 
+/**
+ * Write one assignment's cubies into `out`, at the facelet positions `slots` names.
+ *
+ * ONE loop for corners and edges. It was written twice — the same orientation arithmetic, with 8/3
+ * hardcoded in the first copy and 12/2 in the second — so a correction to how an orientation
+ * indexes a cubie's colours had to be made in both places and read as correct in both. Every
+ * dimension here comes off the arrays instead: `slots.length` is how many cubies, and each slot's
+ * own length is how many facelets one carries, which is also the modulus an orientation turns by.
+ */
+function writeCubies(
+  out: number[],
+  slots: readonly (readonly number[])[],
+  colours: readonly (readonly number[])[],
+  a: Assignment,
+): void {
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i]!;
+    const cubie = colours[a.cubie[i]!]!;
+    for (let p = 0; p < slot.length; p++) out[slot[p]!] = cubie[(p + a.ori[i]!) % slot.length]!;
+  }
+}
+
 /** Write a corner and edge assignment into a full 54-facelet colour array. */
 function realise(t: Tensors, corners: Assignment, edges: Assignment, base: number[]): number[] {
   const out = [...base];
-  for (let i = 0; i < 8; i++) {
-    const colours = t.cornerColors[corners.cubie[i]!]!;
-    for (let p = 0; p < 3; p++) out[CORNER_FACELET[i]![p]!] = colours[(p + corners.ori[i]!) % 3]!;
-  }
-  for (let i = 0; i < 12; i++) {
-    const colours = t.edgeColors[edges.cubie[i]!]!;
-    for (let p = 0; p < 2; p++) out[EDGE_FACELET[i]![p]!] = colours[(p + edges.ori[i]!) % 2]!;
-  }
+  writeCubies(out, CORNER_FACELET, t.cornerColors, corners);
+  writeCubies(out, EDGE_FACELET, t.edgeColors, edges);
   return out;
 }
 
@@ -331,12 +388,136 @@ function flatten(faces: Record<Face, ColorFaces>, rotations: number[]): number[]
   return out;
 }
 
+/** One rotation combo worth searching, with the price that let it through pass 1. */
+interface PricedRotation {
+  rotations: number[];
+  bound: number;
+}
+
+/** One repair that came back legal: the rotation it was found under, and both colourings. */
+interface Repair {
+  rotations: number[];
+  observed: number[];
+  repaired: number[];
+}
+
+/**
+ * PASS 1 — price every rotation cheaply, and keep only those that could still win.
+ *
+ * With `fixedRotation` there is exactly one candidate: the faces as the caller supplied them.
+ * Extracted from `decodeMisread` (2026-09-05) with `repairsAt` and `aggregate` below, which between
+ * them took that function from four nested loop levels to one. Nothing decides differently: this is
+ * the same loop over the same 4096 combos with the same admissible bound.
+ */
+function priceRotations(
+  faces: Record<Face, ColorFaces>,
+  canon: { corner: number[][]; edge: number[][] },
+  maxDistance: number,
+  fixedRotation: boolean,
+): PricedRotation[] {
+  const candidates: PricedRotation[] = [];
+  const combos = fixedRotation ? 1 : 4096;
+  for (let combo = 0; combo < combos; combo++) {
+    const rotations = [0, 1, 2, 3, 4, 5].map((i) => (combo >> (2 * i)) & 3);
+    const bound = lowerBound(buildTensors(flatten(faces, rotations), canon));
+    if (bound <= maxDistance) candidates.push({ rotations, bound });
+  }
+  return candidates;
+}
+
+/**
+ * PASS 2, at ONE budget — every solvable repair costing exactly `budget` edits, or null when the
+ * work budget ran out.
+ *
+ * `null` is the caller's `unknown`, and it is the whole reason this returns a union rather than a
+ * list: an exhausted search that answered with the repairs it happened to find would be a distance
+ * bought with work the caller refused to lend. The counter is passed IN and shared across every
+ * budget and every rotation, because `nodeBudget` is documented as a backstop on the WORK the whole
+ * decode does, not on one pass of it.
+ */
+function repairsAt(
+  budget: number,
+  candidates: readonly PricedRotation[],
+  faces: Record<Face, ColorFaces>,
+  canon: { corner: number[][]; edge: number[][] },
+  centreOwner: Map<number, Face>,
+  counter: { nodes: number; limit: number },
+): Repair[] | null {
+  const found: Repair[] = [];
+  for (const { rotations, bound } of candidates) {
+    if (bound > budget) continue;
+    const observed = flatten(faces, rotations);
+    const tensors = buildTensors(observed, canon);
+    const corners = assignments(tensors.corner, 8, budget, counter);
+    if (corners === null) return null;
+    const edges = assignments(tensors.edge, 12, budget, counter);
+    if (edges === null) return null;
+    for (const c of corners) {
+      for (const e of edges) {
+        // Charged to the SAME counter as the search that produced these lists. `nodeBudget` is
+        // documented as a hard backstop on the WORK, and it used to cover only the two DFS
+        // walks — leaving |corners| x |edges| pairings, each with a `realise` and a cubejs
+        // `isLegal`, outside it and on the main thread.
+        //
+        // Every assignment returned costs at least one DFS node, so |corners| and |edges| are
+        // each at most `nodes` and the product is at most `nodes^2` — quadratic in the very
+        // quantity the budget is supposed to bound. It is not theoretical: on the reading
+        // `misread-decode.test.ts` pins, the DFS spends 3,404 nodes and the pairing loop then
+        // wants 3,968 more, so at a budget of 3,500 removing this line turns an honest
+        // `unknown` into a distance-4 answer bought with work the caller refused to lend.
+        // (Three misreads on a scrambled cube do NOT show it — the DFS dominates there, which
+        // is why the first search for a witness came back empty and the comment that went with
+        // it claimed more than the search had established.)
+        if (++counter.nodes > counter.limit) return null;
+        if (c.total + e.total !== budget) continue;
+        const repaired = realise(tensors, c, e, observed);
+        if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * The answer, from the repairs one budget produced: every sticker some minimum repair changes, in
+ * the coordinates the user actually taps.
+ *
+ * Keyed by POSITION, so where two tied repairs disagree about the colour to write, the last one
+ * wins. That is safe only because the one caller allowed to act on `to` — `diagnoseMisread`, for an
+ * accusation — requires `unique` and a single sticker, i.e. exactly the case where no disagreement
+ * can exist. Everywhere else `stickers` is read for its FACES, which the merge preserves. Widening
+ * who may read `to` means giving this a set, not a winner.
+ */
+function aggregate(found: readonly Repair[], budget: number): MisreadDecode {
+  const stickers = new Map<string, DecodedSticker>();
+  const shapes = new Set<string>();
+  for (const { rotations, observed, repaired } of found) {
+    shapes.add(repaired.join(','));
+    for (let p = 0; p < 54; p++) {
+      if (repaired[p] === observed[p]) continue;
+      const fi = Math.floor(p / 9);
+      const index = SHOWN_INDEX[rotations[fi]!]![p % 9]!;
+      stickers.set(`${fi}:${index}`, { face: FACES[fi]!, index, to: repaired[p]! });
+    }
+  }
+  return {
+    kind: 'repair',
+    distance: budget,
+    stickers: [...stickers.values()],
+    unique: shapes.size === 1,
+  };
+}
+
 /**
  * Find the fewest sticker changes that turn this reading into a legal cube.
  *
  * `centreOwner` maps a centre colour to the face it names; the caller has already established the
  * six are distinct, because a reading whose centres collide is a different failure with a
  * different answer (name the two sides) and no amount of decoding improves it.
+ *
+ * DISTINCT is not the same as CORRECT, and the distance this returns is a bound on the reading as
+ * labelled by those centres. See the header's fourth bullet for what that costs when a centre is
+ * itself a misread.
  */
 export function decodeMisread(
   faces: Record<Face, ColorFaces>,
@@ -352,76 +533,95 @@ export function decodeMisread(
   const faceCentre = FACES.map((f) => faces[f]!.colors[4]!);
   const canon = canonicalColors(faceCentre);
 
-  // Pass 1 — price every rotation cheaply, and keep only those that could still win. With
-  // `fixedRotation` there is exactly one candidate: the faces as the caller supplied them.
-  const candidates: { rotations: number[]; bound: number }[] = [];
-  const combos = options.fixedRotation ? 1 : 4096;
-  for (let combo = 0; combo < combos; combo++) {
-    const rotations = [0, 1, 2, 3, 4, 5].map((i) => (combo >> (2 * i)) & 3);
-    const bound = lowerBound(buildTensors(flatten(faces, rotations), canon));
-    if (bound <= maxDistance) candidates.push({ rotations, bound });
-  }
+  const candidates = priceRotations(faces, canon, maxDistance, options.fixedRotation === true);
 
   // Pass 2 — widen the budget until some rotation yields a repair that is actually solvable.
   for (let budget = 0; budget <= maxDistance; budget++) {
-    const found: { rotations: number[]; observed: number[]; repaired: number[] }[] = [];
-    for (const { rotations, bound } of candidates) {
-      if (bound > budget) continue;
-      const observed = flatten(faces, rotations);
-      const tensors = buildTensors(observed, canon);
-      const corners = assignments(tensors.corner, 8, budget, counter);
-      if (corners === null) return { kind: 'unknown' };
-      const edges = assignments(tensors.edge, 12, budget, counter);
-      if (edges === null) return { kind: 'unknown' };
-      for (const c of corners) {
-        for (const e of edges) {
-          // Charged to the SAME counter as the search that produced these lists. `nodeBudget` is
-          // documented as a hard backstop on the WORK, and it used to cover only the two DFS
-          // walks — leaving |corners| x |edges| pairings, each with a `realise` and a cubejs
-          // `isLegal`, outside it and on the main thread.
-          //
-          // Every assignment returned costs at least one DFS node, so |corners| and |edges| are
-          // each at most `nodes` and the product is at most `nodes^2` — quadratic in the very
-          // quantity the budget is supposed to bound. It is not theoretical: on the reading
-          // `misread-decode.test.ts` pins, the DFS spends 3,404 nodes and the pairing loop then
-          // wants 3,968 more, so at a budget of 3,500 removing this line turns an honest
-          // `unknown` into a distance-4 answer bought with work the caller refused to lend.
-          // (Three misreads on a scrambled cube do NOT show it — the DFS dominates there, which
-          // is why the first search for a witness came back empty and the comment that went with
-          // it claimed more than the search had established.)
-          if (++counter.nodes > counter.limit) return { kind: 'unknown' };
-          if (c.total + e.total !== budget) continue;
-          const repaired = realise(tensors, c, e, observed);
-          if (isLegal(repaired, centreOwner)) found.push({ rotations, observed, repaired });
-        }
-      }
-    }
+    const found = repairsAt(budget, candidates, faces, canon, centreOwner, counter);
+    if (found === null) return { kind: 'unknown' };
     if (found.length === 0) continue;
-
-    // Every sticker some minimum repair changes, in the coordinates the user taps.
-    //
-    // Keyed by POSITION, so where two tied repairs disagree about the colour to write, the last
-    // one wins. That is safe only because the one caller allowed to act on `to` — `diagnose`, for
-    // an accusation — requires `unique` and a single sticker, i.e. exactly the case where no
-    // disagreement can exist. Everywhere else `stickers` is read for its FACES, which the merge
-    // preserves. Widening who may read `to` means giving this a set, not a winner.
-    const stickers = new Map<string, DecodedSticker>();
-    const shapes = new Set<string>();
-    for (const { rotations, observed, repaired } of found) {
-      shapes.add(repaired.join(','));
-      for (let p = 0; p < 54; p++) {
-        if (repaired[p] === observed[p]) continue;
-        const fi = Math.floor(p / 9);
-        const index = SHOWN_INDEX[rotations[fi]!]![p % 9]!;
-        stickers.set(`${fi}:${index}`, { face: FACES[fi]!, index, to: repaired[p]! });
-      }
-    }
-    return {
-      kind: 'repair',
-      distance: budget,
-      stickers: [...stickers.values()],
-      unique: shapes.size === 1,
-    };
+    return aggregate(found, budget);
   }
   return { kind: 'beyond', distance: maxDistance };
+}
+
+/**
+ * Turn a failed scan into what can honestly be said about it.
+ *
+ * This replaced a colour-COUNTING diagnosis, which could only ever speak when exactly one sticker
+ * was wrong — and was blind in two ways that mattered for this detector, whose weak pair is
+ * red/orange: a balanced swap (one red read as orange AND one orange read as red) leaves every
+ * colour count at nine, and partial cancellation makes the counts UNDERSTATE the damage, sending
+ * the search after a single-sticker repair that does not exist.
+ *
+ * The decoder answers both, and reports a count that is a proven lower bound. What it does NOT
+ * license is pointing: above one misread the nearest legal cube is not necessarily the user's
+ * cube, so only `distance === 1` becomes a suspect. dev-docs/misread-decoding.md has the whole
+ * argument and the measurements.
+ *
+ * It lives HERE, beside the search whose guarantees it spends, rather than in `ai-assemble.ts`
+ * where it was written (moved 2026-09-05). Two reasons, and the second is the load-bearing one.
+ * The rule it enforces — point only at `distance === 1` AND `unique` AND one sticker — is stated
+ * in this file's header as the decoder's own contract, and a rule and its enforcement one import
+ * apart is how the header came to describe a check that lived somewhere else. And the misread
+ * worker (`view/misread-worker.ts`) needs the diagnosis WITHOUT the assembler: bundling
+ * `ai-assemble.ts` to reach it would drag the whole rotation search, the confirmation logic and
+ * every refusal sentence into a thread that answers exactly one question.
+ *
+ * NEVER THROWS. Every caller is on a path that has ALREADY refused a scan, and the refusal is a
+ * sentence shown to a child about their cube; replacing it with a crash would be a strictly worse
+ * answer than "nothing more can be said". A defect still has to be visible, so it is logged and
+ * the diagnosis comes back empty — which every caller already handles, because an exhausted work
+ * budget produces the same empty answer.
+ */
+export function diagnoseMisread(
+  faces: Record<Face, ColorFaces>,
+  options: DecodeOptions = {},
+): MisreadDiagnosis {
+  let decoded: MisreadDecode;
+  try {
+    // Centre colour -> the face it names. `decodeMisread` proves everything against the colouring
+    // these define, so six DISTINCT centres is the precondition rather than a nicety; a reading
+    // whose centres collide is a different failure with a different answer (name the two sides)
+    // and no amount of decoding improves it. `assembleColors` refuses that reading before it ever
+    // gets here, so this is a guard on a public function and not a second copy of that policy —
+    // it claims nothing rather than deciding anything.
+    const centreOwner = new Map<number, Face>();
+    for (const face of FACES) centreOwner.set(faces[face]!.colors[4]!, face);
+    if (centreOwner.size !== FACES.length) return {};
+    decoded = decodeMisread(faces, centreOwner, options);
+  } catch (err) {
+    console.error('[cubus] misread diagnosis failed, so nothing is claimed about the scan', err);
+    return {};
+  }
+  if (decoded.kind === 'unknown') return {};
+  // No repair within the cap means strictly more than the cap are wrong, which is still a floor.
+  if (decoded.kind === 'beyond') return { misreadCount: decoded.distance + 1 };
+  // Pointing takes THREE facts, not one, and this used to check only the first.
+  //
+  //   * `distance === 1` — the reading is one sticker from legal.
+  //   * `unique` — there is only ONE such legal cube. The decoder already computes this and
+  //     nothing consumed it, which is exactly how the gap got in: the guarantee was assumed from
+  //     the minimum-distance argument instead of read off the search that had just measured it.
+  //   * exactly one sticker — a repair can be one CHANGE and still name several stickers, because
+  //     the search runs over 4^6 rotations and a rotationally symmetric face maps the same
+  //     canonical position to a different as-shown index under each of its four turns.
+  //
+  // Measured: a solved cube read with two of the U-layer 3-cycle's three stickers comes back at
+  // distance 1, `unique: false`, naming FOUR stickers — and the app said "One sticker looks
+  // wrong" over all four, three of which had been read correctly. `misread-decode.test.ts` pins
+  // that reading. Above one misread the nearest legal cube need not be the user's cube, so the
+  // decoder may report a COUNT and nothing more.
+  const pointable = decoded.distance === 1 && decoded.unique && decoded.stickers.length === 1;
+  const suspects: DecodedSticker[] = pointable
+    ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to }))
+    : [];
+  // A side to re-show, but only when every minimal repair blames that one side. Otherwise the
+  // honest instruction is "show the sides again", not a guess dressed as a lead.
+  const blamed = new Set(decoded.stickers.map((s) => s.face));
+  return {
+    misreadCount: decoded.distance,
+    ...(suspects.length > 0 ? { suspects } : {}),
+    ...(blamed.size === 1 ? { misreadFace: [...blamed][0]! } : {}),
+  };
 }

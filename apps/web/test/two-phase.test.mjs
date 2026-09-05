@@ -19,6 +19,7 @@ import { test } from 'node:test';
 
 import { MOVE_NAMES, SOLVED, applyMove } from '../lib/cube-pieces.js';
 import { randomBelow, randomState } from '../lib/random-state.js';
+import { CONTRACT_CUBES, ENGINE_CONTRACT_CUBES } from './fixtures/solver-cubes.mjs';
 import {
   ALL_MOVES,
   FLIP_COUNT,
@@ -304,22 +305,27 @@ test('the whole engine, behind createSolver: bounded, verified, every view exerc
   // rotation map or inverse map would surface as an alg that does not solve.
   //
   // ESCALATION on null, rather than one fixed budget. `probeMax` is a budget in search NODES and
-  // null means "spent it", which is a statement about the search and not about the cube — the
-  // engine deepens phase 1 to solLen - 1 and canonical pruning is proved to delete no optimal
-  // path, so it is complete and only the budget can fail. A single fixed budget therefore asserts
-  // a PROBABILISTIC property as if it were deterministic: this test failed on
-  // FULLUURBBDRBFRFUBDFURLFDUDLBBFLDRLRRDUULLBUDRDFLRBFFDB, a state that is perfectly solvable
-  // and merely expensive, while the very next test in this file already tolerates null as "rare
-  // at this budget". Doubling and asking again is exactly what lib/solve-target.js does for the
-  // app (GODS_NUMBER, MAX_PROMISE_ESCALATIONS), so this now tests the engine the way the app
-  // actually uses it.
+  // null means "spent it", which is a statement about the search and not about the cube. A single
+  // fixed budget therefore asserts a PROBABILISTIC property as if it were deterministic: this
+  // test failed on FULLUURBBDRBFRFUBDFURLFDUDLBBFLDRLRRDUULLBUDRDFLRBFFDB, a state that is
+  // perfectly solvable and merely expensive, while the very next test in this file already
+  // tolerates null as "rare at this budget". Doubling and asking again is exactly what
+  // lib/solve-target.js does for the app (GODS_NUMBER, MAX_PROMISE_ESCALATIONS), so this tests
+  // the engine the way the app actually uses it.
+  //
+  // FIXED states, though, and that is the half escalation does not fix (2026-09-04). Escalating
+  // makes a rare hard cube expensive rather than red — up to 12.75e9 nodes, some four minutes,
+  // per state — and it was still a draw asserting a not-null answer under a budget that has a
+  // ceiling. A gate that can spend four minutes on a state nobody can name afterwards is the
+  // same lottery in slower clothes; see test/fixtures/solver-cubes.mjs for the rule and the
+  // provenance. Seven states, measured, and both sets are used because the two contract tests
+  // then cover seven cubes between them rather than the same four twice.
   //
   // The assertion does not get weaker: after escalation a solution MUST be found, because God's
   // number is 20 and 21 is an exclusive bound above it. Raising the ceiling is not a threshold
   // being loosened to buy green — it is the mechanism the contract already specifies.
   const ESCALATIONS = 8;
-  for (let trial = 0; trial < 10; trial++) {
-    const facelets = randomCube(Cube).asString();
+  for (const facelets of [...ENGINE_CONTRACT_CUBES, ...CONTRACT_CUBES]) {
     let alg = null;
     let budget = 50_000_000;
     let spent = 0;
@@ -364,12 +370,21 @@ test('the escalation above is reachable, not decorative', () => {
 test('all six views win searches, and every winner is oracle-verified', () => {
   // The rotation and inversion mappings each have their own way to be wrong, and a broken one
   // produces answers that do not solve — so what this needs is evidence that every mapping
-  // PATH produces real, winning answers. searchStats.view records the winner; views are
-  // symmetric over random states, so each wins ~1/6 of tight searches and all six appear
-  // within a few dozen (the batch exits early once they have; 120 caps the tail at odds around
-  // 1e-8 of a false failure). Every winning answer is checked with the oracle.
+  // PATH produces real, winning answers. searchStats.view records the winner, and every winning
+  // answer is checked with the oracle.
+  //
+  // The views are NOT symmetric, and the comment here used to say they were (corrected
+  // 2026-09-04). Measured winner shares are 30 / 20 / 14 / 12 / 14 / 10 %, not a sixth each —
+  // the search tries them in index order within a depth, so a lower index wins every tie, and
+  // the identity view takes nearly a third. The bound that matters is therefore the RAREST
+  // view's, not the average one: at 10%, a view is missed by 0.9^n. The old cap of 120 put that
+  // at 3e-6 per view and rested on an evenness that is not there; 240 puts it at 1e-11, and the
+  // loop still exits the moment all six have won, so the ordinary run costs exactly what it did
+  // — 20-odd searches. A random draw is right here and stays: this asserts a distribution, and
+  // it tolerates null rather than asserting an answer, so it is not the lottery that fixtures
+  // exist to remove.
   const winners = new Set();
-  for (let trial = 0; trial < 120 && winners.size < 6; trial++) {
+  for (let trial = 0; trial < 240 && winners.size < 6; trial++) {
     const facelets = randomCube(Cube).asString();
     twoPhase.setBounds({ solLen: 21, probeMax: 50_000_000 });
     const alg = twoPhase.solvePattern(facelets);
@@ -384,28 +399,74 @@ test('all six views win searches, and every winner is oracle-verified', () => {
   assert.equal(winners.size, 6, `only views [${[...winners].sort()}] ever won — a view that never wins is a view whose mapping never runs`);
 });
 
+test('a solution is reachable only at the split before its trailing G1 run', () => {
+  // The mechanism behind the completeness claim in solve-target.js's GODS_NUMBER, demonstrated
+  // rather than asserted (2026-09-04). AGENTS.md and that comment used to say the engine is
+  // COMPLETE — "solvePattern deepens phase-1 to solLen - 1, so a length-L solution is itself
+  // inside the enumeration". Two things in the code say otherwise: phase 1 refuses a maneuver
+  // whose last move is a G1 move, and phase 2 is capped at MAX_PHASE2. Together they mean a
+  // solution of length L is inside the enumeration at exactly ONE split — immediately before its
+  // maximal trailing run of G1 moves — and only if that run fits under the cap.
+  //
+  // `U' D' F'` scrambles to a state whose only three-move solutions are `F D U` and `F U D`
+  // (D and U commute). Both end in a G1 run of two, so both need a phase-2 tail of two:
+  //
+  //   cap 1, identity view only -> null. Not "no solution": there is one, three moves long, and
+  //     the engine cannot reach it. d1 = 3 ends in a G1 move and is refused; d1 = 1 leaves a
+  //     two-move tail the cap will not search; d1 = 2 ends in a G1 move as well.
+  //   cap 1, all six views      -> found, from view 3, at depth 2. This is what the six views
+  //     are FOR: the same cube seen along another axis (or inverted) splits differently, and the
+  //     trailing run that did not fit here fits there.
+  //   cap 2, identity view only -> found, at depth 1 — exactly the split named above.
+  //
+  // `maxPhase2` is a measurement knob and MUST be put back: it is module state, so a test that
+  // leaves it at 1 would silently cripple every search after it in this file.
+  const facelets = new Cube().move("U' D' F'").asString();
+  try {
+    twoPhase.setBounds({ solLen: 4, probeMax: 5_000_000, maxPhase2: 1 });
+    assert.equal(twoPhase.solvePattern(facelets, [0]), null,
+      'a two-move G1 tail must not be reachable under a cap of one');
+    assert.equal(twoPhase.solvePattern(facelets), 'F D U',
+      'and another view must find it, which is why six views are searched');
+    assert.equal(twoPhase.searchStats.view, 3, 'from the view measured when this was written');
+    twoPhase.setBounds({ maxPhase2: 2 });
+    assert.equal(twoPhase.solvePattern(facelets, [0]), 'F D U',
+      'a cap of two reaches the split before the trailing run');
+    assert.equal(twoPhase.searchStats.depth, 1, 'which is d1 = 1: the maneuver F, then the tail');
+  } finally {
+    twoPhase.setBounds({ solLen: 23, probeMax: 100_000_000, maxPhase2: 12 });
+  }
+});
+
 test('the engine holds the contract the tiered search assumes, on real searches', async () => {
   const solve = createSolver(twoPhase);
-  // 200M nodes, not the app's 50M default: this asserts REACHABILITY (met === true), and a
-  // rare hard state can exhaust a single 50M attempt at the 21 -> 20 rung — seen once, ~6 s
-  // into a run. The app answers that case honestly with met: false; a test asserting met needs
-  // the headroom the assertion implies.
-  const asyncSolve = async (facelets, options) => solve(facelets, { ...options, probeMax: 200_000_000 });
-  for (let i = 0; i < 3; i++) {
-    const facelets = Cube.random().asString();
+  // FIXED states, not `Cube.random()`, because this asserts REACHABILITY (met === true) under a
+  // budget with a ceiling — the shape that failed the v0.2.3 release from a sibling file.
+  // test/fixtures/solver-cubes.mjs holds the set, its provenance and its measured cost.
+  //
+  // 200M nodes, not the app's 50M default: a rare hard state can exhaust a single 50M attempt at
+  // the 21 -> 20 rung — seen once, ~6 s into a run. The app answers that case honestly with
+  // met: false; a test asserting met needs the headroom the assertion implies. It goes in as
+  // `probeBudget`, the BASE budget refine escalates from, and NOT as a probeMax spread over
+  // whatever refine asked for: the spread flattened the escalation ladder this file is one of
+  // two places to exercise, and quietly replaced BONUS_BUDGET as well, so every free-descent
+  // rung below the target spent 200M nodes instead of the 2M it costs in the app.
+  const asyncSolve = async (facelets, options) => solve(facelets, options);
+  for (const facelets of ENGINE_CONTRACT_CUBES) {
+    const on = ` cube=${facelets}`;
     let previous = Infinity;
     let last = null;
-    for await (const step of refine(facelets, { solve: asyncSolve, tier: 'twenty' })) {
+    for await (const step of refine(facelets, { solve: asyncSolve, tier: 'twenty', probeBudget: 200_000_000 })) {
       const improved = step.moves < previous || (step.moves === previous && step.stopped !== null);
-      assert.ok(improved, `${previous} -> ${step.moves} (stopped=${step.stopped})`);
+      assert.ok(improved, `${previous} -> ${step.moves} (stopped=${step.stopped})${on}`);
       previous = step.moves;
       last = step;
       const oracle = Cube.fromString(facelets);
       oracle.move(step.alg);
-      assert.ok(oracle.isSolved(), 'every answer shown must solve the cube');
+      assert.ok(oracle.isSolved(), `every answer shown must solve the cube${on}`);
     }
-    assert.equal(last.met, true, '<= 20 is reachable on every cube');
-    assert.ok(last.moves <= 20);
+    assert.equal(last.met, true, `<= 20 is reachable on every cube${on}`);
+    assert.ok(last.moves <= 20, `${last.moves} moves${on}`);
   }
 });
 

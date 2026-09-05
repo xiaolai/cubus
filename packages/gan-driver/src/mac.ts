@@ -23,8 +23,10 @@ export function extractMacFromManufacturerData(manufacturerHex: string): string 
   if (bytes.length < 11) return null;
   // company id little-endian; GAN uses 0xXX01, i.e. low byte 0x01
   if (bytes[0] !== 0x01) return null;
-  const payload = bytes.subarray(2); // strip company id
-  if (payload.length < 9) return null;
+  // Strip the company id. No second length check: `bytes.length >= 11` above already puts at
+  // least nine bytes here, and a guard that cannot fire is a branch no test can reach
+  // (removed 2026-09-05).
+  const payload = bytes.subarray(2);
   const macBytes = Array.from(payload.subarray(3, 9)).reverse();
   return macBytes.map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join(':');
 }

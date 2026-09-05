@@ -1007,6 +1007,7 @@ dependencies = [
  "btleplug",
  "futures",
  "hex",
+ "log",
  "serde",
  "tokio",
  "uuid",

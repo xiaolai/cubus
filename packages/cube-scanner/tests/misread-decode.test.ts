@@ -1,9 +1,9 @@
 // The claims dev-docs/misread-decoding.md rests on. Each test here fails if one stops being true.
 
 import Cube from 'cubejs';
-import { describe, expect, it } from 'vitest';
-import { SOLVED_FACELETS, isStructurallyValid, rotateFace } from '../src/facelet-cube.js';
-import { type ColorFaces, decodeMisread } from '../src/misread-decode.js';
+import { describe, expect, it, vi } from 'vitest';
+import { isStructurallyValid, rotateFace, SOLVED_FACELETS } from '../src/facelet-cube.js';
+import { type ColorFaces, decodeMisread, diagnoseMisread } from '../src/misread-decode.js';
 import { FACES, type Face } from '../src/types.js';
 import { scrambleFacelets } from './helpers.js';
 
@@ -157,7 +157,9 @@ describe('decodeMisread', () => {
     const shown = {} as Record<Face, ColorFaces>;
     for (const f of FACES) shown[f] = { colors: [...rows[f]].map(Number) };
     const own = new Map<number, Face>();
-    FACES.forEach((f, i) => own.set(i, f));
+    FACES.forEach((f, i) => {
+      own.set(i, f);
+    });
     const opts = { fixedRotation: true, maxDistance: 4 };
 
     expect(decodeMisread(shown, own, { ...opts, nodeBudget: 3500 })).toEqual({ kind: 'unknown' });
@@ -259,7 +261,13 @@ describe('decodeMisread', () => {
         }
       }
     }
-  });
+    // AN EXPLICIT BUDGET, because vitest's 5 s default is a hang detector and not a budget for
+    // this. Thirty-six full 4^6-rotation decodes is what the claim costs to check: 0.7 s here
+    // uncontended, 3.4 s under v8 coverage instrumentation, and 9.4 s when the coverage run's
+    // other files are competing for the same four cores — a number that says how busy the machine
+    // is and nothing about the decoder. Measured on 2026-09-05, when adding a sibling test file
+    // was enough to tip it over and turn an exhaustive check into a flaky one.
+  }, 60_000);
 
   it('the distance is never an overstatement — the true cube is always a legal repair', () => {
     // The property that makes "at least N stickers were misread" honest. A single overstatement
@@ -314,7 +322,13 @@ describe('decodeMisread', () => {
     // returned it every time would pass the loop above without ever being examined. Require that
     // the runs mostly produced a claim.
     expect(claimed).toBeGreaterThan(checked / 2);
-  });
+    // AN EXPLICIT BUDGET, for the reason its neighbour above already carries one: vitest's 5 s
+    // default is a HANG DETECTOR, not a budget for twenty-four full decodes at up to distance 5.
+    // Measured 2026-09-05: 2.8-3.0 s alone under v8 coverage instrumentation, either side of that
+    // day's decoder refactor — and 6.8 s inside the full coverage run, where sixteen test files
+    // compete for four cores. The neighbour's comment predicted this exactly ("adding a sibling
+    // test file was enough to tip it over"), and adding `web-detector.test.ts` is what did.
+  }, 60_000);
 
   it('a balanced red/orange swap — invisible to colour counting — is found', () => {
     // One red read as orange AND one orange read as red leaves all six counts at exactly 9, so
@@ -396,5 +410,96 @@ describe('decodeMisread', () => {
     expect(
       decodeMisread(again, centreOwner(again), { maxDistance: 4, nodeBudget: 10_000 }),
     ).toEqual({ kind: 'unknown' });
+  });
+});
+
+describe('the lower bound presumes the centres were read right', () => {
+  it('two swapped centres are reported as far more damage than the two they are', () => {
+    // THE LIMIT OF THE GUARANTEE, pinned so the docstring cannot quietly become false.
+    //
+    // "The distance is never an OVERSTATEMENT" is proved against the colouring the CENTRES define:
+    // `centreOwner` turns a colour into the face that owns it, so a centre read as another face's
+    // colour does not add one wrong sticker — it RENAMES every sticker of that colour, on all six
+    // sides, and the "true cube" the proof leans on is a cube nobody held. The true damage here is
+    // two stickers; what comes back is a number several times larger, and the app would put it in
+    // "at least N stickers were misread".
+    //
+    // Nothing in a reading can see this: the six centres are still six distinct colours, which is
+    // the only property a reading lets us check. So it is a stated limit, and this test is what
+    // keeps the statement honest — if a future decoder learns to detect it, this goes red and the
+    // docstring is updated with it rather than after it.
+    const f = faces(DEEP);
+    const u = f.U.colors[4]!;
+    const r = f.R.colors[4]!;
+    f.U.colors[4] = r;
+    f.R.colors[4] = u;
+    const owner = centreOwner(f);
+    expect(owner.size).toBe(6); // still six distinct centres — nothing looks wrong
+    const got = decodeMisread(f, owner);
+    const reported = got.kind === 'unknown' ? Number.POSITIVE_INFINITY : got.distance;
+    expect(reported).toBeGreaterThan(2);
+    // MEASURED, not merely "more than two" (2026-09-05). The number is what the app puts in a
+    // sentence, so it is what this pins: no repair exists within the default cap of four, and
+    // `diagnoseMisread` therefore reports five — "at least 5 stickers were misread", about a cube
+    // with two. Pinning the exact figure is what makes the docstring's "several times that"
+    // checkable, and what turns a decoder that learns to see this into a red test rather than a
+    // silently better number.
+    expect(got).toEqual({ kind: 'beyond', distance: 4 });
+    expect(diagnoseMisread(f)).toEqual({ misreadCount: 5 });
+  });
+});
+
+describe('diagnoseMisread — the decode reduced to what may be said', () => {
+  it('claims nothing when the six centres are not six colours', () => {
+    // The precondition the whole proof rests on: everything decodeMisread establishes is about the
+    // colouring the CENTRES define, so a reading whose centres collide has no colouring to be
+    // right or wrong about. `assembleColors` refuses that reading before it can get here, and this
+    // is the guard on the public function — it must claim nothing rather than decide something.
+    const f = faces(DEEP);
+    f.R.colors[4] = f.U.colors[4]!;
+    expect(diagnoseMisread(f)).toEqual({});
+  });
+
+  it('never throws — a defect is logged and nothing is claimed', () => {
+    // Every caller is already on a refusal path, and a refusal is a sentence shown to a child
+    // about their cube. Replacing it with a crash is strictly worse than "nothing more can be
+    // said" — but a defect still has to be visible, so the log is asserted with the silence.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const broken = { ...faces(DEEP), U: undefined } as unknown as Record<Face, ColorFaces>;
+    expect(diagnoseMisread(broken)).toEqual({});
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
+  });
+
+  it('reports a count and no suspect when a repair is not unique', () => {
+    // The pinned counterexample, one describe above: two of the 3-cycle witness's three stickers.
+    // The reading is one change from a cube nobody held, and the search says so — `unique` false,
+    // four stickers named. A COUNT may be reported; a sticker may not. That is the pointing rule
+    // the module header states, asserted here through the one function that enforces it.
+    const arr = [...SOLVED_FACELETS];
+    arr[19] = 'R';
+    arr[37] = 'F';
+    const got = diagnoseMisread(faces(arr.join('')));
+    expect(got.misreadCount).toBe(1);
+    expect(got.suspects).toBeUndefined();
+  });
+
+  it('points only where the search says the repair is unambiguous', () => {
+    const f = faces(DEEP);
+    const was = f.U.colors[0]!;
+    f.U.colors[0] = (was + 1) % 6;
+    const got = diagnoseMisread(f);
+    expect(got.misreadCount).toBe(1);
+    expect(got.suspects).toEqual([{ face: 'U', index: 0, to: was }]);
+  });
+
+  it('takes a painted cube exactly as painted', () => {
+    // fixedRotation. Without it the decode is free to rotate the turned face back and answer
+    // "0 misreads" about a cube the painted validator has just refused — measured on nine
+    // scrambles with one side turned 90 degrees, all nine.
+    const f = faces(DEEP);
+    f.U.colors = rotateFace(f.U.colors, 1);
+    expect(diagnoseMisread(f).misreadCount).toBe(0);
+    expect(diagnoseMisread(f, { fixedRotation: true }).misreadCount).toBeGreaterThan(0);
   });
 });

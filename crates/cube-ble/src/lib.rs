@@ -309,7 +309,9 @@ pub async fn scan_all(central: &Adapter, timeout: Duration) -> Result<Vec<Advert
 /// a symptom nobody would trace back here without this line.
 fn report_stop_scan(r: std::result::Result<(), btleplug::Error>) {
     if let Err(e) = r {
-        eprintln!("cube-ble: the adapter did not stop scanning: {e}");
+        // The `log` facade, not stderr: inside the app only the facade reaches the log file, and
+        // a Finder-launched app has no stderr for a loud line to land in.
+        log::warn!("cube-ble: the adapter did not stop scanning: {e}");
     }
 }
 

@@ -35,7 +35,9 @@ it walks you through solving it.
     hand. Same test as above: no screen exists on one build only.
   - **Fourth seam, accepted 2026-08-29 with the owner's execution of
     `dev-docs/optimal-solver-plan.md`**: the optimal solver. Proving a solution minimal needs
-    ~86 MB of pattern databases whose generation is native work (minutes of BFS, ~500 MB peak),
+    ~86 MB of pattern databases whose generation is native work (a parallel BFS: 3.6 s and a
+    281 MB peak on a laptop since the level-synchronous generator of 2026-09-05; 23 s and 804 MB
+    before it),
     which a webview cannot do — that, not size, was always the barrier. The capability is "how
     short can this be, and can you prove it": the desktop answers with a native proof
     (`crates/optimal-solver` behind prepare/prove/cancel commands), the browser answers with the
@@ -106,6 +108,16 @@ it walks you through solving it.
   was reported as the page jittering. Measured in WebKit, nothing moves: the boxes are identical
   before and after, and the best-matching pixel shift between consecutive frames is (0,0)
   everywhere. It was four other things, and each needed its own fix.
+  **The last UI-thread search left on 2026-09-05**: `Cube.initSolver()` is gone from
+  `loadSolver()` (it built cubejs's tables for `deriveCube`'s `cube.solve()`, a 723 ms block right
+  after first paint, measured in WebKit; 40 ms after, all of it the renderer's first WebGL
+  build). The setup alg is now `invertAlg(solution)` of the pool's answer, checked with
+  `reaches()` in `finishSolve`; legality is arithmetic from cubejs's parser (`isCubeState`),
+  never the engine's null, because that null cannot tell "out of budget" from "not a cube" and
+  so must never become a verdict. A screen may say an ARRANGEMENT is unreachable (parity proves
+  it, `.unsolvable-card`); it still may never say a MOVE COUNT is. Pinned by
+  `initsolver-off-main-thread.test.mjs` (a spy appended to the cubejs bundle itself, and the
+  tables asserted null) and a screen-swap case that records what the renderer was ASKED to draw.
   **Two Kociemba searches for one cube**: `randomScramble()` searched a random state for its
   scramble alg, then `deriveCube()` searched the same state for the same answer. Fixed by
   carrying the alg with the cube and CHECKING it rather than trusting it (`reaches` /
@@ -236,9 +248,24 @@ it walks you through solving it.
 - **A search that ran out of budget is not a cube that cannot be solved** (2026-08-30). God's
   number is 20, so `<= 20` is a PROMISE the app keeps rather than a target it aims at: a refusal
   above a promised target doubles the budget and asks again (`GODS_NUMBER`,
-  `MAX_PROMISE_ESCALATIONS` in `lib/solve-target.js`), because `solvePattern` deepens phase-1 to
-  `solLen - 1` and canonical pruning is proved to delete no optimal path — so the engine is
-  complete and only the budget can fail. Eight refusals raise, stating the work actually spent;
+  `MAX_PROMISE_ESCALATIONS` in `lib/solve-target.js`) — and since 2026-09-05 the doubled attempt
+  CONTINUES the same search rather than restarting it: `openSearch` returns a resumable object
+  whose key (facelets, `solLen`, view filter, table format) is asserted against the bounds AS
+  THEY ARE NOW on every continuation (a key checked only at open time once answered a
+  21-bounded ask with 22 moves), `probeMax` on a continuation is a FRONTIER, not an increment,
+  so the answer is character-for-character the from-scratch answer at that frontier, and a
+  pooled resume point is six points that must never reach the lone fallback. Measured on the
+  costliest frozen state: 35 % of the nodes and wall time of a restart, same answer
+  (`escalation-resume.test.mjs`; `dev-docs/solver-move-count.md` §7) — because `solvePattern` deepens phase-1 to
+  `solLen - 1` and canonical pruning is proved to delete no optimal path. What that does NOT
+  make the engine is *complete* (corrected 2026-09-05): phase 1 refuses a maneuver whose last
+  move is a G1 move, and phase 2 is capped at `MAX_PHASE2 = 12`, so a length-L solution is
+  inside the enumeration at exactly one split — before its maximal trailing run of G1 moves —
+  and only if that run is ≤ 12. The honest guarantee is "every ≤ 20 solution whose trailing G1
+  run is ≤ 12, in each of six independent views"; nothing has been observed to fail it and
+  nothing proves it cannot (`two-phase.test.mjs` demonstrates the mechanism with the cap knob;
+  derivation in `dev-docs/solver-move-count.md` §4.1). The rule below never rested on
+  completeness: a refusal is a statement about the SEARCH, never about the cube. Eight refusals raise, stating the work actually spent;
   there is deliberately no "give up and call it impossible" branch. **No screen may state that a
   move count is impossible.** Two-phase cannot prove a minimum, so it cannot prove one absent:
   the wording is about the search ("couldn't get to 18"), never about the cube. The old sentence
@@ -267,11 +294,14 @@ it walks you through solving it.
   and the three measurements still owed: `dev-docs/misread-decoding.md`.
 - **Fail loud**: an unreadable scan, a state that cannot be solved, a storage write that did not
   land — each surfaces where it happens, never silently.
-- **The version is one number in EIGHT sites across seven files** — `apps/web/lib/app.js`
+- **The version is one number in TEN sites across eight files** (counted 2026-09-05; this said
+  "eight in seven" until the iOS plist pair was included) — `apps/web/lib/app.js`
   (`VERSION`, what the About card shows; the web app has no build step to read a manifest at
   runtime), both `package.json`s under `apps/`, `tauri.conf.json`, the desktop `Cargo.toml`,
-  `Cargo.lock`, and **`gen/apple/project.yml`, which carries two** —
-  `CFBundleShortVersionString` and `CFBundleVersion`. `pnpm bump X.Y.Z` moves them all
+  `Cargo.lock`, **`gen/apple/project.yml`, which carries two** —
+  `CFBundleShortVersionString` and `CFBundleVersion` — and **the committed
+  `gen/apple/cubus-desktop_iOS/Info.plist`, which carries the same two** (xcodegen's output,
+  added to the bump tool 2026-09-01, f0d4b45). `pnpm bump X.Y.Z` moves them all
   (`scripts/bump-version.mjs`, tested; it refuses rather than half-bumps), and a wiring test
   fails if any drifts from `VERSION`. Never edit one by hand.
   **The iOS pair was missed for as long as iOS existed** (found 2026-08-31, during the first
@@ -316,6 +346,110 @@ it walks you through solving it.
   `cargo fmt`/`clippy`/`check` for the desktop shell, and a step that rebuilds every vendored
   bundle and fails on any diff — those bundles are committed and have drifted from their sources
   four times.
+  **TypeScript stays at 6.0.x until typescript-eslint admits 7** (2026-09-05): its peer range is
+  `typescript >=4.8.4 <6.1.0`, and the type-aware ESLint pass is half of what `check` means here,
+  so a 7.x bump would leave that half running unsupported rather than running. And a trap in the
+  runner itself: `node --test <missing-file>` prints "Could not find" and exits 0, so a hand-written
+  test list can go green by naming nothing — pass directories, or assert the file exists first.
+- **The 2026-09-04 audit, and what it changed (2026-09-05).** Nine read-only reviewers over
+  every slice, then one fix pass; the full record is `dev-docs/audit-2026-09-04.md`. The
+  class-level lessons, each now pinned by a test or a gate:
+  - **A test that asserts `met` or a non-null answer under a budget must not draw its state.**
+    Escalation turns a lottery into a four-minute wait, not into safety; the frozen states, their
+    provenance and their measured cost in NODES live in `apps/web/test/fixtures/solver-cubes.mjs`.
+    The contract tests once spread a fixed `probeMax` AFTER the options, so escalation never
+    reached the engine and the raise reported a budget nobody spent — 73× the nodes for nothing.
+    The last draw of that kind went red on 2026-09-05 (`parallel-divergence.test.mjs`), and it
+    exposed a second false claim: "the pool answers exactly what one worker answers at the
+    shipped budget" is not a property — `WORKER_CUBES.tighter`'s winning view costs 10.8M nodes,
+    more than a sixth of 50M, so another view's slice answers with a DIFFERENT 20-mover. The
+    property is: both solve the cube in the same number of moves, and every difference is the
+    quota, proven per case by running the sequential winner's view alone with a slice's share.
+  - **A superseded search is stopped through the stop word (`STOP_NOW`, -1), never by
+    terminating a worker**: it is shallower than any depth a winner can publish, so it needs no
+    second channel and no table rebuild. `refine` carries `signal` INSIDE the bounds; an adapter
+    that destructures them loses cancellation silently.
+  - **One table build for the whole pool (2026-09-05).** The six solver workers each built the
+    engine's eleven tables — 9.82 MiB and 0.4–2.6 s apiece — so a cold session paid six builds
+    and held six copies. Worker 0 now builds into a SharedArrayBuffer and the rest adopt views of
+    it, published through the same descriptor mechanism as the stop word and for the same
+    reason: the byte OFFSET must cross with the buffer, and all eleven in ONE buffer behind a
+    4-byte seal leaves no table where a dropped offset would still be right. Shared memory is
+    shared damage, so every table is checksummed at build and verified before a single view is
+    installed — at ADOPTION only, because a re-check costs 2.3 ms against a ~4 ms warm solve,
+    and the read-only property is asserted instead (`verifyAdopted()` after a real solve). The
+    seal is `Atomics.store`/`Atomics.load`, so the builder's writes are visible by the memory
+    model and not by luck. A page without cross-origin isolation falls back to per-worker
+    builds, loudly and once. Measured: cold session → first pooled answer 720 → 425 ms, pool
+    memory 58.9 → 9.8 MiB. `apps/web/test/shared-solver-tables.test.mjs`.
+  - **The misread decoder runs in a worker (2026-09-05), and `null` is not absent.** A refusal
+    used to block the main thread for up to 3 s while `decodeMisread` spent its 20M-node backstop
+    on the thread that draws; `assembleColors(faces, { diagnose: false })` answers at once with
+    `misreadCount: null` ("checking") and `misread-worker.js` refines it for the CURRENT scan
+    epoch only (5 ms per refusal now). Two things that were bugs before they were rules: `null`
+    means "still checking" and ABSENT means "the decode ran and could claim nothing", so an
+    empty answer merged over the marker left "working out how many" standing forever; and a
+    worker that builds and then fails to LOAD must answer its stranded requests on this thread,
+    not merely be remembered as broken, or the notice it was going to refine never resolves.
+    A page with no `Worker` gets the synchronous answer. `packages/cube-scanner/tests/misread-worker.test.ts`.
+  - **The scanner keeps ONE detector per page, parked between `<ai-scan-panel>` mounts** — the
+    `<cubus-cube>` rule for the same reason: a rebuilt element meant a new `InferenceSession` and
+    a 1–5 s model load per visit, the old one unreachable for the life of the page.
+  - **`fitFace`'s geometry bounds are set by `ml/golden/frames/`, not by intuition** (measured
+    worst legitimate step 1.54, column spread 1.95, area ratio 3.42); the symmetric-looking
+    column rule at 1× refuses seven of the twenty. Any change re-runs the golden parity AND
+    compares reads. "At least N stickers were misread" presumes the six CENTRES were read
+    right; two swapped centres inflate the count and no reading can detect it.
+  - **A camera scan repairs untracked DRIFT, not a relabelled decoder.** The offset is
+    constant for a missed move (`H·D·H⁻¹`); a decoder in a rotated frame yields a commutator
+    that moves with the cube (constant for exactly the six U/D turns). So the camera layer needs
+    TWO scans and its rule is constancy, re-baselined only across a reconciliation failure.
+    That layer was never wired from `app.js` — `TRUSTED` was unreachable — and a REFUSED
+    session's reports still drove the walk; one predicate (`cubeRefused()`) gates all of it now.
+  - **A verdict designed not to move cannot also be how a change is reported** — a trusted
+    cube survives a lost packet by design, so the loss has its own channel (`onMovesLost`). A
+    declared capability the stream contradicts is reported, never absorbed.
+  - **A refusal is lifted when a platform is PROVEN, never when it builds**: iOS BLE had been
+    offered on a compile alone. Tear down in the order the bytes travel: the JS session disposed
+    the bridge BEFORE sending the goodbye, so `ble_disconnect` was never issued — the desktop
+    and Android disconnect paths ran for the first time on 2026-09-05.
+  - **App commands are under the ACL**: a command in `generate_handler!` must be in `build.rs`
+    `COMMANDS` and in exactly one capability or it is unreachable (`app-acl.test.mjs`). The CSP
+    lives in `tauri.conf.json` only; Tauri appends a nonce to `style-src`, which makes browsers
+    ignore `'unsafe-inline'` for style attributes, so `dangerousDisableAssetCspModification:
+    ["style-src"]` is load-bearing (13 violations at boot without it). `devCsp` is inert under
+    `tauri dev` with `devUrl`; a CSP check needs a `tauri build --debug --no-bundle` binary.
+  - **MSRV is 1.88** (the tree needs it; `1.77.2` was a claim nothing tested) and CI checks it.
+    The Android frame rotation and the iOS connection rotation are implemented but UNVERIFIED on
+    hardware; the native camera path on a phone is not done until a device says so.
+  - **The updater manifest is a table per INSTALLER** (`linux-x86_64-deb`, `-rpm`,
+    `-appimage`, `windows-x86_64-msi`, `-nsis`, then the bare key): the plugin looks up the
+    installer key first and `install_deb`/`install_rpm` refuse foreign bytes, so a bare-key-only
+    manifest gave every `.deb` user a daily prompt whose install always failed. The test asks
+    the client's question. A release tag is annotated, never moved, and CI-green — the gate
+    enforces all three. `@env:` is altool's syntax; notarytool has none. tauri-cli does the iOS
+    keychain/profile dance itself — hand it the secrets. `tauri.settings.gradle` is
+    tauri-build's output, not `tauri android init`'s. A backticked phrase inside a
+    double-quoted `echo` is a command (the commit-message rule's sibling — it ran in the tap
+    workflow).
+  - **Never hand a shipped artefact to another tool in place**: onnx2tf saved its simplified
+    graph back over the fp32 the int8 had been quantised from. `export.py` now converts a copy
+    and asserts `int8 == quantize_dynamic(fp32)` (tested); `--write-expected` refuses without
+    `--yes`, a committed `ml/models` and the pinned checkpoint; `expected.json` pins the model's
+    identity so a checkpoint swap fails CI; every eval script letterboxes through
+    `cube_infer.letterbox`; the 207-photo held-out set carries 36 dihedral copies of training
+    images — a dataset decision still owed.
+  - **A status colour cannot be both a fill and a sentence**: `--ok`/`--warn`/`--err` are
+    fills at 3:1, `--ok-ink`/`--warn-ink`/`--err-ink` are text at 4.5:1, and `tokens.test.mjs`
+    computes the contrast of every text token on both surfaces in all three themes. A test seam
+    must pass through the same gates the driver does. A weekday alone is a date that lies past
+    a week. `prefers-reduced-motion` stops decoration and only SHORTENS the cube's turns — the
+    turn is the thing being taught.
+  - **Gates that ran nothing, now running**: coverage thresholds (both TS `check` scripts run
+    `vitest --coverage`), `cargo test -p cube-ble`, `--features mcp`, macOS clippy/tests, the
+    iOS target check, the Kotlin unit tests, `ml/test_pipeline.py`, `pnpm audit --prod`,
+    `cargo audit` with a documented allowlist, gitleaks, shellcheck, actionlint, the
+    third-party-notices freshness check, and dist exclusions asserted on OUTPUT.
 
 ## Shared Memory
 

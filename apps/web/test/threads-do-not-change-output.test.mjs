@@ -178,17 +178,46 @@ test('the web runtime reads the golden fixtures the way the pinned reference doe
         ctx.drawImage(bitmap, 0, 0);
         const img = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
         const pre = preprocess({ data: img.data, width: img.width, height: img.height });
+        // The TENSOR, before anything runs on it. `expected.json` pins the SHA-256 of the
+        // letterboxed float32 bytes per fixture, and that pin ties the Python, Swift, Rust and
+        // Kotlin letterboxes to one another — every one of them except the runtime the browser,
+        // Windows, Linux and Android actually execute. Digested here, so the app's own
+        // `preprocess()` is measured against the same bytes rather than being the one
+        // implementation nobody compared. Taken BEFORE `session.run`, since the proxied path
+        // transfers the input buffer away and detaches it.
+        const digest = await crypto.subtle.digest('SHA-256', pre.data.buffer);
+        const sha = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
         const out = (await session.run({ [session.inputNames[0]]: new ort.Tensor('float32', pre.data, [1, 3, pre.imgsz, pre.imgsz]) }))[session.outputNames[0]];
         const fit = fitFace(nms(decodeDetections(out.data, out.dims[1] - 4, out.dims[2])));
-        results[f.name] = fit.ok ? `OK ${fit.face.colors.join('')}` : fit.reason;
+        results[f.name] = { read: fit.ok ? `OK ${fit.face.colors.join('')}` : fit.reason, sha };
       }
       return results;
     }, { origin: base, frames });
 
     const disagree = names
-      .filter((n) => got[n] !== pinned.frames[n].legs.onnx)
-      .map((n) => `${n}: web ${got[n]} vs pinned ${pinned.frames[n].legs.onnx}`);
+      .filter((n) => got[n].read !== pinned.frames[n].legs.onnx)
+      .map((n) => `${n}: web ${got[n].read} vs pinned ${pinned.frames[n].legs.onnx}`);
     assert.deepEqual(disagree, [], 'the shipped web runtime does not read the fixtures like the reference');
+
+    // THE LETTERBOX, pinned from the TypeScript side at last.
+    //
+    // `crates/cube-vision` and the Android plugin each pin ten sampled values "produced by running
+    // preprocess", from a run somebody did once; `ml/cube_infer.py` pins the whole tensor's SHA-256
+    // into expected.json. Nothing compared the app's own `preprocess()` to any of them, so an edit
+    // to it left every native implementation agreeing with each other and with a version of the app
+    // that no longer existed — and a letterbox drifts by a fraction of a pixel everywhere, which
+    // reads as a model that has got worse rather than as a preprocessing that has moved.
+    //
+    // Deliberately the same digest the Python computes over the same bytes: float32, little-endian,
+    // CHW, 3x640x640. `packages/cube-scanner/tests/letterbox-parity.test.ts` pins the same function
+    // against the native tests' 97x43 fixture; this one pins it against the twenty real frames.
+    const drifted = names
+      .filter((n) => got[n].sha !== pinned.frames[n].preprocess_sha256)
+      .map((n) => `${n}: web ${got[n].sha.slice(0, 12)} vs pinned ${pinned.frames[n].preprocess_sha256.slice(0, 12)}`);
+    assert.deepEqual(drifted, [],
+      'the app\'s letterbox no longer produces the tensor ml/golden/expected.json pins — every ' +
+        'native implementation is pinned to these same bytes, so this is a drift in preprocess(), ' +
+        'not a threshold to widen');
   } finally {
     await page.close();
   }

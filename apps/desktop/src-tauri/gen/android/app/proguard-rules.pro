@@ -19,3 +19,10 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# The insets bridge (MainActivity.InsetsBridge) is reached from JavaScript by name, as
+# `window.cubusInsets.get()`. R8 keeps @JavascriptInterface members by the default rules, but the
+# contract with app.js is worth stating where a rule change would be noticed.
+-keepclassmembers class im.cubus.app.MainActivity$InsetsBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}

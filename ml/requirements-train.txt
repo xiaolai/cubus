@@ -1,0 +1,21 @@
+# The export / training stack, pinned to the versions recorded in ml/models/MANIFEST.json `tools`
+# (the versions that produced the committed artefacts). ml/export.py imports every one of these;
+# ml/train.sh runs inside cube-train:1 (ml/Dockerfile.train), which pins ultralytics/onnxruntime
+# the same way and asserts the pin took.
+#
+# Re-pin deliberately, when re-baselining — never incidentally: a newer ultralytics changes the
+# TRAINING CODE between a baseline and the experiment meant to be compared against it, and a
+# newer exporter changes the artefact bytes under a golden pin.
+#
+#   python3.11 -m venv ml/venv && ml/venv/bin/pip install -r ml/requirements-train.txt
+ultralytics==8.4.126
+torch==2.13.0
+onnx==1.22.0
+onnxruntime==1.29.0
+onnx2tf==1.28.8
+tensorflow==2.19.0
+coremltools==9.0 ; sys_platform == "darwin"
+# The golden harness runs against what this stack exports; keep the two files' shared pins equal.
+numpy==2.3.5
+pillow==12.3.0
+ai-edge-litert==2.2.0

@@ -92,19 +92,24 @@ export async function connectCube({
   // all, and "no facelets yet" is a different thing from "no facelets ever" (§5).
   if (conn.capabilities && conn.capabilities.facelets === false) check.declareNoStateReports();
 
-  const listeners = { facelets: null, move: null, disconnect: null, verdict: null };
+  const listeners = { facelets: null, move: null, disconnect: null, verdict: null, movesLost: null };
   let alive = true;
-  /** The last serial the protocol layer supplied, or null if it supplies none.
+  /** The last serial the protocol layer supplied on EITHER channel, or null if it supplies none.
    *
    *  Deliberately NOT backfilled from a local counter. Counting the moves we received orders the
    *  events we have seen; the cube's serial says which turn the CUBE thinks it is on, and only
    *  that can reveal a turn that never reached us. A synthesised number would look identical to
-   *  the real one and mean something strictly weaker, which is the worst of both. */
-  let lastMoveSerial = null;
+   *  the real one and mean something strictly weaker, which is the worst of both.
+   *
+   *  Both channels, because moves and snapshots share one counter and the question this answers is
+   *  asked before either has necessarily arrived — see `numbersMoves`. */
+  let lastSerial = null;
   /** The last RAW report — what the cube itself claims, before any correction. anchorSolved's
    *  precondition is about the cube's own view, so it must not read a corrected value. */
   let lastReported = null;
   let lastReportedAt = 0;
+  /** Why the last `disconnect()` did not complete, or null. Never swallowed — see `disconnect`. */
+  let disconnectError = null;
 
   const sub = conn.events$.subscribe({
     next: (ev) => {
@@ -114,8 +119,10 @@ export async function connectCube({
         case 'FACELETS': {
           lastReported = ev.facelets;
           lastReportedAt = now();
+          if (Number.isFinite(ev.serial)) lastSerial = ev.serial;
           check.onFacelets(ev.facelets);
           notifyVerdict();
+          notifyLoss();
           listeners.facelets?.(ev.facelets, ev.serial);
           break;
         }
@@ -125,7 +132,7 @@ export async function connectCube({
           // moved since, and one turn inside the freshness window is exactly the case that would
           // otherwise anchor a scrambled cube on a "solved" reading from a moment ago.
           lastReportedAt = 0;
-          if (Number.isFinite(ev.serial)) lastMoveSerial = ev.serial;
+          if (Number.isFinite(ev.serial)) lastSerial = ev.serial;
           check.onMove(ev.move);
           notifyVerdict();
           listeners.move?.({
@@ -135,7 +142,7 @@ export async function connectCube({
             timestamp: ev.localTimestamp ?? ev.timestamp,
             cubeTimestamp: ev.cubeTimestamp,
             // Passed through, and undefined when the protocol layer does not expose it. Never
-            // synthesised — see lastMoveSerial.
+            // synthesised — see lastSerial.
             serial: ev.serial,
           });
           break;
@@ -170,13 +177,54 @@ export async function connectCube({
     listeners.verdict?.(check.verdict, check.reason);
   }
 
-  function teardown() {
-    if (!alive) return;
+  let lastLosses = check.losses;
+  /** Announce a turn the cube made that never reached us.
+   *
+   *  A second channel rather than a third reason, because the verdict is DESIGNED not to move
+   *  here: a cube the camera has confirmed stays trusted through a lost packet, so a caller
+   *  watching `onVerdict` alone would hear nothing at exactly the moment the guide it is drawing
+   *  stopped describing the cube in the hand. The count is what rises, so the count is what is
+   *  watched. */
+  function notifyLoss() {
+    if (check.losses === lastLosses) return;
+    const lost = check.losses - lastLosses;
+    lastLosses = check.losses;
+    listeners.movesLost?.({ lost, total: check.losses, verdict: check.verdict });
+  }
+
+  let released = false;
+
+  /** Stop consuming this connection. Idempotent; answers whether it was this call that did it. */
+  function stopConsuming() {
+    if (!alive) return false;
     alive = false;
     try {
       sub.unsubscribe();
     } catch {}
-    bridge.uninstall();
+    return true;
+  }
+
+  /**
+   * Release the transport. Separate from `stopConsuming` on purpose, and the order is the point.
+   *
+   * A disposed bridge refuses every command, so releasing it and THEN asking the cube to
+   * disconnect meant the native `ble_disconnect` was never issued at all: the protocol layer's
+   * teardown emits DISCONNECT before it touches the radio, so the app's own `disconnect()` tore
+   * the bridge down first, `stopNotifications()` and `gatt.disconnect()` both threw "this bridge
+   * was disposed", the polyfill logged a warning nobody reads, and the peripheral stayed held by
+   * Rust for the life of the process. Every symptom of that lands on the NEXT connect, which is
+   * why it survived: the goodbye looked clean.
+   */
+  function releaseBridge() {
+    if (released) return undefined;
+    released = true;
+    return bridge.uninstall();
+  }
+
+  /** The cube went away on its own: nothing more will be sent, so the transport goes too. */
+  function teardown() {
+    if (!stopConsuming()) return;
+    releaseBridge();
   }
 
   return {
@@ -208,14 +256,26 @@ export async function connectCube({
     maySourceOffset: () => maySourceOffset(check.verdict),
 
     /**
-     * Does this cube number its moves?
+     * Does this cube number its turns?
      *
-     * Load-bearing for the solve timer, which uses the fact that moves and snapshots share a
-     * serial to tell whether a snapshot is ahead of the moves it holds. With no serial both of its
-     * "moves were dropped" refusals go inert and it would report a span it cannot vouch for —
-     * so the timer asks this and declines to time rather than timing unverifiably.
+     * **This is the solve timer's question**, and it is the timer's to ask: `solve-timer.js` has
+     * two "moves were dropped" refusals, and both compare serials. With no serial they are inert,
+     * so the timer would report a span with nothing able to tell it a turn went missing — a
+     * measurement resting on an assumption. Measured against the protocol layer, only the GAN
+     * family numbers anything; moyu32, moyu-mhc and qiyi report a usable cube clock and no serial
+     * at all, which is exactly the combination that times unverifiably.
+     *
+     * Answered from what the cube has actually SENT, never from a brand table: a list of protocol
+     * ids here would be a second copy of the protocol layer's own knowledge, going stale the first
+     * time a driver gained a counter.
+     *
+     * Both channels count, and that is the fix rather than a widening (2026-09-04). Moves and
+     * snapshots share one counter, and the timer asks this when it ARMS — on a snapshot, before
+     * the first turn of the solve. Reading move events only, the honest answer at that instant was
+     * "no" for every GAN cube on earth, so wiring the timer to it would have declined to time the
+     * one family that can be timed.
      */
-    numbersMoves: () => lastMoveSerial !== null,
+    numbersMoves: () => lastSerial !== null,
 
     onFacelets(cb) {
       listeners.facelets = cb;
@@ -229,8 +289,27 @@ export async function connectCube({
     onVerdict(cb) {
       listeners.verdict = cb;
     },
+    /** A turn the cube made that never reached us. Fires whatever the verdict does. */
+    onMovesLost(cb) {
+      listeners.movesLost = cb;
+    },
 
-    /** Tell the checker what the camera saw, and get the repaired offset if there is one. */
+    /** How many turns are known to have gone missing on this connection. */
+    get losses() {
+      return check.losses;
+    },
+
+    /**
+     * Tell the checker what the camera saw, and get the repaired offset if there is one.
+     *
+     * The OFFSET is the return value, not the verdict, and that is the caller's need: a repair
+     * scan exists to produce a correction, and `repairTracking` applies exactly this. The verdict
+     * the same scan produced is on `session.verdict` at the moment this returns, and a change in
+     * it has already reached `onVerdict` — so nothing is lost by returning the useful half.
+     *
+     * Null when the scan established nothing: an unreadable scan is not evidence against the cube
+     * and says nothing rather than accusing it, and a refused cube never acquires an offset at all.
+     */
     cameraScan(scanned, reported) {
       check.onCameraScan(scanned, reported);
       notifyVerdict();
@@ -334,17 +413,49 @@ export async function connectCube({
           // Whether this cube numbers its moves is a FACT about the protocol that a reader of the
           // report needs: it decides whether a dropped turn is detectable from the move stream at
           // all, or only through reconciliation against a state report.
-          numbersMoves: lastMoveSerial !== null,
+          numbersMoves: lastSerial !== null,
           capabilities: conn.capabilities ?? null,
         },
       });
     },
 
+    /** Why the last disconnect did not complete, or null. A fact, so a screen can say it. */
+    get disconnectError() {
+      return disconnectError;
+    },
+
+    /**
+     * Let this cube go, and WAIT for the radio to agree.
+     *
+     * Awaited rather than fired and forgotten: the native side still holds the peripheral until
+     * its own disconnect lands, so a connect issued straight afterwards races a release that has
+     * not happened — which is how the next scan comes back empty for a cube sitting on the desk.
+     *
+     * A failure here is reported rather than swallowed. It used to be an empty catch, which is the
+     * worst available answer: the app tears down its own state either way, so a peripheral the
+     * native side never released looked exactly like a clean goodbye until the next connect failed
+     * for reasons nothing could explain.
+     */
     async disconnect() {
-      teardown();
+      // Stop listening first, so a late report cannot land as the current cube's anything — but
+      // keep the transport alive, because the disconnect has to travel over it.
+      stopConsuming();
+      disconnectError = null;
       try {
         await conn.disconnect();
-      } catch {}
+        // And then the radio itself. The protocol layer calls `gatt.disconnect()` without awaiting
+        // it — correct against the real Web Bluetooth, where it returns void — so its promise
+        // resolves while the native side still holds the peripheral. On the browser path there is
+        // no such handle and none is needed; this is the native seam both builds satisfy.
+        await bridge.bluetooth?.whenReleased?.();
+      } catch (e) {
+        disconnectError = e instanceof Error ? e : new Error(String(e));
+        console.error('cube-session: the cube was not released cleanly', disconnectError);
+      }
+      // Last, and awaited: `dispose()` waits for listener registration to settle, so a caller that
+      // connects the next cube on the following line would otherwise get the old listeners too.
+      await releaseBridge();
+      return disconnectError;
     },
   };
 
@@ -395,7 +506,19 @@ export async function connectCube({
           s.unsubscribe();
         } catch {}
       }
-      Promise.resolve(send()).catch((e) => settle(() => reject(e)));
+      // The send is guarded, not merely its promise. A SYNCHRONOUS throw from `send()` — a closed
+      // transport, a characteristic the polyfill refuses — escaped the executor and rejected this
+      // promise directly, leaving the subscription and the timer alive until the full timeout
+      // elapsed: the caller saw the right error at the right moment while a listener went on
+      // receiving events for a request that had already failed. Settling releases both.
+      let sent;
+      try {
+        sent = send();
+      } catch (e) {
+        settle(() => reject(e instanceof Error ? e : new Error(String(e))));
+        return;
+      }
+      Promise.resolve(sent).catch((e) => settle(() => reject(e)));
     });
   }
 }

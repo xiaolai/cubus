@@ -36,7 +36,12 @@
 #
 # Pinned base: the arm64 NGC PyTorch image verified to see the GB10 (Blackwell sm_121). A plain
 # `pip install torch` on this box may lack those kernels, which is why NGC is used at all.
-FROM nvcr.io/nvidia/pytorch:26.01-py3
+#
+# Pinned BY DIGEST, not by tag: NVIDIA can and does re-push a tag, and a tag that moves under a
+# baseline is the same confound as an unpinned pip install. This is the linux/arm64 manifest of
+# `nvcr.io/nvidia/pytorch:26.01-py3`, read on 2026-09-04 with `docker manifest inspect` (the
+# amd64 half of that tag is sha256:a411b86d…, deliberately not used: the training box is arm64).
+FROM nvcr.io/nvidia/pytorch:26.01-py3@sha256:1b6dd8dc60741fb99b9aa343fa03fc897fbb64fbdcb1c8afcbd48c75cba57255
 
 # libGL/libglib: ultralytics pulls opencv-python, which needs libGL.so.1 that this headless
 # server image lacks — without it `import ultralytics` dies on libGL.so.1: cannot open shared
