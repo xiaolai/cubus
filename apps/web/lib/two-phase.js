@@ -1329,6 +1329,28 @@ function adoptPoint(resume, key) {
   return point;
 }
 
+// ---- what a position in this enumeration is ----------------------------------------------------
+//
+// Three checks ask about a resume point's POSITION, and until 2026-09-05 they were three places to
+// get the same rule right: an unfinished point (`runSearch`), a finished one carrying an answer
+// (`checkOutcome`), and a finished one carrying none. The first two ask the same question — is
+// (depth, cursor) INSIDE the enumeration — in different words and against different spellings of the
+// same numbers, which is precisely how a gap hides. They ask it through one predicate now; the
+// wording of each refusal stays with the caller, because a reader of one message needs to know which
+// kind of point was refused.
+//
+// Why a FINISHED point needs its position checked here at all: `runSearch` returns a done point's
+// answer before it reads `depth` or `cursor`, so the bounds check that guards every unfinished point
+// is never reached for one — which is how `cursor: 999` rode in (2026-09-05, round 2).
+
+/** A position the loop could still be at: a depth the bound allows, and a view this slice has.
+ *  `solLen` is EXCLUSIVE, so the last searchable depth is `solLen - 1`. */
+const insideEnumeration = (point, solLen, viewCount) => point.depth < solLen && point.cursor < viewCount;
+
+/** The one position an enumeration that ran out of DEPTHS can be left at: the loop increments past
+ *  `solLen - 1` and resets the cursor as it goes, so it stops at the bound itself, view 0. */
+const atEndOfEnumeration = (point, solLen) => point.depth === solLen && point.cursor === 0;
+
 /**
  * The OUTCOME half of a resume point — `done`, `alg`, and the (depth, view) the winner published.
  *
@@ -1339,61 +1361,94 @@ function adoptPoint(resume, key) {
  * every property the engine promises, broken at once: the bound, the metric, the cube, and the key
  * a pooled caller sorts on.
  *
- * It is verified by ARITHMETIC, not trusted: the alg is applied to the state the key names, with
- * this module's own move tables, and must land on solved. That costs one parse and at most 22
- * cubie permutations, on a path that runs once per adoption and never inside the search.
+ * THREE outcomes, three validators (split 2026-09-05, round 3 of the audit): a search still going, a
+ * finish with nothing, and a finish with an answer. They have nothing in common but the position
+ * rules above, and the complaint the split answers is that a gap in one of them was invisible from
+ * the other two — every check had to be read to see which outcome it guarded.
  */
 function checkOutcome(point, key) {
-  if (!point.done) {
-    // An unfinished search has no outcome to carry. A record with one is not a position in this
-    // enumeration; `runSearch` would search on and then overwrite it, so believing it silently
-    // would hide whatever produced it.
-    if (point.alg !== null || point.foundDepth !== -1 || point.foundView !== -1) {
-      throw new RangeError(
-        'two-phase: this resume point is unfinished and yet carries an answer, so it is not a ' +
-          'position any search of this enumeration left',
-      );
-    }
-    return;
-  }
-  // A completed record names a POSITION as well as an outcome, and nothing downstream ever looks
-  // at it: `runSearch` returns a done point's answer before it reads `depth` or `cursor`, so the
-  // bounds check that guards every unfinished point is never reached (2026-09-05, round 2 of the
-  // audit — the round-1 record carrying `cursor: 999` was refused for its ANSWER, and would have
-  // been believed with a legal one).
+  // The view count is the SLICE's, not the engine's: a two-view search finishes at cursor 2, and
+  // measuring it against six would accept a position it can never be at.
   const viewCount = key.views === null ? VIEW_COUNT : key.views.length;
-  if (point.alg === null) {
-    // The two finishes with no answer: a state that is not a cube, and an enumeration walked to
-    // its end. Neither ever published a winner.
-    if (point.foundDepth !== -1 || point.foundView !== -1) {
-      throw new RangeError(
-        `two-phase: this resume point found nothing and yet names depth ${point.foundDepth}, ` +
-          `view ${point.foundView} as its winner`,
-      );
-    }
-    // WHICH of the two it is, checked rather than believed — this branch had no check at all, and
-    // it is the cheapest forgery there is: `{...freshPoint, done: true}` made `runSearch` answer
-    // null after ZERO nodes for a cube whose real answer the audit measured at one move (`U'`).
-    // A null from an exhausted enumeration and a null from an unstarted one are the same value,
-    // and `solveWithinGodsNumber` reads the second as a budget that was too small — so a forged
-    // record would burn every escalation and then raise about a cube that is one turn from solved.
-    if (parseFacelets(key.facelets) === null) {
-      // Not a cube: no budget makes it solvable, so `done` is right whatever position it names,
-      // and the search would answer null from any of them.
-      return;
-    }
-    // Out of DEPTHS is the only other way to finish empty, and it lands in exactly one place: the
-    // loop increments past `solLen - 1` and resets the cursor as it goes, so the position is the
-    // bound itself, view 0. Anything else is a search that ran out of NODES, which is not finished.
-    if (point.depth !== key.solLen || point.cursor !== 0) {
-      throw new RangeError(
-        `two-phase: this resume point claims a finished search of a real cube with no answer, but ` +
-          `it sits at depth ${point.depth}, view ${point.cursor} — an enumeration that ran out of ` +
-          `depths ends at depth ${key.solLen}, view 0, and one that ran out of nodes is not finished`,
-      );
-    }
+  if (!point.done) return checkUnfinished(point);
+  if (point.alg === null) return checkEmptyFinish(point, key, viewCount);
+  return checkAnsweredFinish(point, key, viewCount);
+}
+
+/** A search still going carries no outcome. A record with one is not a position in this enumeration;
+ *  `runSearch` would search on and then overwrite it, so believing it silently would hide whatever
+ *  produced it. */
+function checkUnfinished(point) {
+  if (point.alg !== null || point.foundDepth !== -1 || point.foundView !== -1) {
+    throw new RangeError(
+      'two-phase: this resume point is unfinished and yet carries an answer, so it is not a ' +
+        'position any search of this enumeration left',
+    );
+  }
+}
+
+/**
+ * A finish with NO answer — and there are exactly two of those: a state that is not a cube, and an
+ * enumeration walked out of depths. Neither ever published a winner.
+ *
+ * The cheapest forgery in the protocol lives here: `{...freshPoint, done: true}` made `runSearch`
+ * answer null after ZERO nodes for a cube whose real answer the audit measured at one move (`U'`).
+ * A null from an exhausted enumeration and a null from an unstarted one are the same value, and
+ * `solveWithinGodsNumber` reads the second as a budget that was too small — so a forged record
+ * would burn every escalation and then raise about a cube that is one turn from solved.
+ */
+function checkEmptyFinish(point, key, viewCount) {
+  if (point.foundDepth !== -1 || point.foundView !== -1) {
+    throw new RangeError(
+      `two-phase: this resume point found nothing and yet names depth ${point.foundDepth}, ` +
+        `view ${point.foundView} as its winner`,
+    );
+  }
+  if (parseFacelets(key.facelets) === null) {
+    // Not a cube: no budget makes it solvable, so `done` is right whatever position it names,
+    // and the search would answer null from any of them.
     return;
   }
+  // Out of DEPTHS is the only other way to finish empty, and it lands in exactly one place — see
+  // `atEndOfEnumeration`. Anything else is a search that ran out of NODES, which is not finished.
+  if (!atEndOfEnumeration(point, key.solLen)) {
+    throw new RangeError(
+      `two-phase: this resume point claims a finished search of a real cube with no answer, but ` +
+        `it sits at depth ${point.depth}, view ${point.cursor} — an enumeration that ran out of ` +
+        `depths ends at depth ${key.solLen}, view 0, and one that ran out of nodes is not finished`,
+    );
+  }
+  // And that it did the WORK. The position is a claim about where the search stopped; `covered` is
+  // the only evidence anywhere in the record that it ever ran (2026-09-05 round 3 — the position
+  // check alone accepted a fresh point patched with `done: true` and a depth of `solLen`, which then
+  // answered null after zero nodes for a cube one turn from solved, permanently, because a finished
+  // point is never searched again).
+  //
+  // The bound is arithmetic, not a heuristic: every (depth, view) pair costs at least one node,
+  // because `phase1DFS` spends one in `mustStop` before it prunes anything, and only pairs that ran
+  // to their END are banked. An enumeration that walked all `solLen` depths of `viewCount` views
+  // therefore banked at least that many. It is tight as well as sound — a cube whose root is pruned
+  // at every depth banks exactly one node per pair, measured at 12 for `solLen: 2` over the six
+  // views — so it refuses the forgery without refusing the cheapest real finish.
+  const leastWork = key.solLen * viewCount;
+  if (point.covered < leastWork) {
+    throw new RangeError(
+      `two-phase: this resume point claims a finished search of a real cube with no answer, but ` +
+        `banks ${point.covered} nodes — walking every one of the ${key.solLen} depths of ` +
+        `${viewCount} views costs at least ${leastWork}, so this search never ran`,
+    );
+  }
+}
+
+/**
+ * A finish WITH an answer — the one outcome `runSearch` hands straight back without searching, so
+ * every field of it has to be re-derived here or it is simply believed.
+ *
+ * The alg is checked by ARITHMETIC: applied to the state the key names, with this module's own move
+ * tables, it must land on solved. That costs one parse and at most 22 cubie permutations, on a path
+ * that runs once per adoption and never inside the search.
+ */
+function checkAnsweredFinish(point, key, viewCount) {
   const moves = point.alg.trim() ? point.alg.trim().split(/\s+/) : [];
   for (const name of moves) {
     if (!MOVE_NAMES.includes(name)) {
@@ -1432,11 +1487,12 @@ function checkOutcome(point, key) {
         'an answer this search can have produced',
     );
   }
-  // And the position it finished FROM. A search that found an answer leaves the loop by `break`
-  // and never writes `depth`/`cursor` back, so they are still the position it was resumed at:
-  // inside the enumeration, both of them. `runSearch` checks exactly this for every unfinished
-  // point and never for a finished one, which is how `cursor: 999` rode in.
-  if (point.depth >= key.solLen || point.cursor >= viewCount) {
+  // And the position it finished FROM. A search that found an answer leaves the loop by `break` and
+  // never writes `depth`/`cursor` back, so they are still the position it was resumed at: inside the
+  // enumeration, both of them — the SAME question `runSearch` asks of every unfinished point,
+  // through the same predicate, which is why it can no longer be asked in one place and not the
+  // other (that is how `cursor: 999` rode in).
+  if (!insideEnumeration(point, key.solLen, viewCount)) {
     throw new RangeError(
       `two-phase: this resume point's answer was found from depth ${point.depth}, view ` +
         `${point.cursor} of ${viewCount} under a bound of ${key.solLen} — outside the search it ` +
@@ -1537,7 +1593,9 @@ function runSearch(facelets, wanted, point) {
   // same thing. Null is every view, which is every caller but the parallel client.
   const all = buildViews(facelets, state);
   const views = wanted === null ? all : all.filter((v) => wanted.includes(v.index));
-  if (point.depth > maxTotal || point.cursor >= views.length) {
+  // The same question `checkOutcome` asks of a finished point that carries an answer, through the
+  // same predicate: `maxTotal` is `solLen - 1`, and `views.length` is the slice's view count.
+  if (!insideEnumeration(point, point.key.solLen, views.length)) {
     throw new RangeError(
       `two-phase: this resume point sits at depth ${point.depth}, view ${point.cursor} of ` +
         `${views.length} under a bound of ${maxTotal} — outside the search it claims to continue`,
