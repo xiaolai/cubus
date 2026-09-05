@@ -9,13 +9,13 @@
 //   gan16 record <name>        save a lossless capture under captures/
 
 import { createWriteStream, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { decodePacket, recordingShutdown, startRecording } from './capture.js';
 import { GanCube } from './driver.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
 import { extractMacFromManufacturerData, macMatchesName } from './mac.js';
-import { BlewTransport, runBlew, scanForCube } from './transport/blew.js';
+import { BlewTransport, runBlew, scanForCube, type Transport } from './transport/blew.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCAN_ADV = join(ROOT, 'scripts', 'scan-adv');
@@ -180,15 +180,76 @@ async function cmdRaw(char = 'FFF6') {
   await new Promise(() => {});
 }
 
-async function cmdRecord(name: string) {
+/** What `record` needs from a cube, whether or not there is one. */
+interface RecordHost {
+  findCube(): Promise<{ id: string; name: string; mac: string }>;
+  transport(id: string): Transport;
+  captureDir(): string;
+}
+
+const hardware: RecordHost = {
+  findCube,
+  transport: (id) => new BlewTransport(id),
+  captureDir: () => join(ROOT, 'captures', 'recordings'),
+};
+
+/**
+ * Where `record` gets its cube, its transport and its capture directory.
+ *
+ * The two properties this command exists to keep — a Ctrl-C that flushes before it exits, and a
+ * stream failure that is never called "saved" — had no executable test until 2026-09-05, because
+ * the only way into cmdRecord was a scan for a physical GAN16. recording.test.ts asserted on the
+ * SOURCE TEXT of this function instead, and source text is not a lifecycle: it cannot watch a
+ * signal handler run, an exit code come back, or a file land on disk.
+ *
+ * GAN16_HOST names a module exporting `host`, and everything hardware-shaped below comes from it.
+ * Unset — every invocation a user can make without deliberately setting it — it is the
+ * advertisement scan, the blew transport, and captures/recordings. The fake lives in tests/ and
+ * never here: a seam that ships its own test double is a second implementation of the command.
+ */
+async function recordHost(): Promise<RecordHost> {
+  const spec = process.env.GAN16_HOST;
+  if (!spec) return hardware;
+  const url = spec.startsWith('file:')
+    ? spec
+    : pathToFileURL(isAbsolute(spec) ? spec : resolve(spec)).href;
+  const mod = (await import(url)) as { host?: RecordHost };
+  if (!mod.host) throw new Error(`GAN16_HOST module ${spec} exports no \`host\``);
+  return mod.host;
+}
+
+/**
+ * An experiment name is ONE filename component, and anything else is refused rather than escaped.
+ *
+ * It is interpolated straight into the capture filename, so a name carrying separators or enough
+ * `..` segments walks out of captures/recordings/ and the stream then truncates whatever it landed
+ * on — `record ../../../../etc/hosts` was a working command. Allowlisted rather than
+ * denylisted, because a name needing to be escaped is a typo and the right answer to a typo is a
+ * refusal, not a guess at what was meant.
+ */
+function experimentName(name: string): string {
   if (!name) throw new Error('usage: gan16 record <experiment-name>');
-  const c = await findCube();
-  const dir = join(ROOT, 'captures', 'recordings');
+  if (!/^[A-Za-z0-9._-]+$/.test(name) || /^\.+$/.test(name)) {
+    throw new Error(
+      `refusing to record to '${name}': an experiment name is one filename component — letters, digits, dot, dash and underscore only`,
+    );
+  }
+  return name;
+}
+
+async function cmdRecord(rawName: string) {
+  const name = experimentName(rawName);
+  const host = await recordHost();
+  const c = await host.findCube();
+  const dir = host.captureDir();
   mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const path = join(dir, `${stamp}-${name}.jsonl`);
-  const out = createWriteStream(path);
-  const transport = new BlewTransport(c.id);
+  // Exclusive creation: the name is already one component and the stamp carries milliseconds, so
+  // the belt is the braces here — but truncating an existing capture is unrecoverable, and a
+  // refusal costs a rerun.
+  const out = createWriteStream(path, { flags: 'wx' });
+  const transport = host.transport(c.id);
   const sub = transport.subscribe('FFF6');
   const rec = startRecording({
     sub,
@@ -230,7 +291,11 @@ async function cmdRecord(name: string) {
     console.error(e.message);
     finish(1);
   });
+  // Both signals, through the same shutdown. SIGTERM exited immediately — no flush, no verdict,
+  // and the BLE child left running — which is what a `kill`, a timeout wrapper, a supervisor or a
+  // closing terminal sends. A capture killed politely lost more than one killed with Ctrl-C.
   process.on('SIGINT', () => finish(0));
+  process.on('SIGTERM', () => finish(0));
   console.log(`RECORDING '${name}' -> ${path}  (Ctrl-C to stop)`);
   keepAlive();
   await new Promise(() => {});
@@ -245,8 +310,13 @@ const run: Record<string, () => Promise<void>> = {
   raw: () => cmdRaw(rest[0]),
   record: () => cmdRecord(rest[0] ?? ''),
 };
+// hasOwn, not a bare lookup: `run.toString` is Object.prototype's, and calling it returned a
+// string that the .catch() below then tried to call a method on — an uncaught TypeError with no
+// message a user could act on, where `gan16 toString` should simply be a usage error. Same for
+// `constructor` and `__proto__`, neither of which is callable at all.
+const chosen = cmd !== undefined && Object.hasOwn(run, cmd) ? run[cmd] : undefined;
 (
-  run[cmd ?? ''] ??
+  chosen ??
   (async () => {
     console.log('usage: gan16 <scan|inspect|state|monitor|raw|record>');
     process.exit(1);

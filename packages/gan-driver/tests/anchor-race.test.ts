@@ -48,6 +48,13 @@ async function until(done: () => boolean): Promise<void> {
 interface AnchorSim {
   /** Emitted alongside the answer to the pre-read, i.e. AFTER the read and BEFORE the send. */
   turnDuringRead?: boolean;
+  /**
+   * Emitted alongside the answer to the VERIFYING read — after the reset has gone and after the
+   * solved report that is supposed to confirm it, but before that read resolves. request() holds
+   * an answer until its write completes, so this is the window where a solved report describes a
+   * position the cube has already left.
+   */
+  turnDuringVerify?: boolean;
   /** What the reset write does. Omitted, it completes at once. */
   onReset?: () => Promise<void>;
   reports?: string;
@@ -66,8 +73,12 @@ function anchorSim(opts: AnchorSim = {}) {
   const reported = { facelets: opts.reports ?? SOLVED_FACELETS };
   cube.connect();
   sim.sub.emit('packet', '00', 0); // any packet marks the subscription live
+  // Which state query this is: the pre-read that establishes the precondition, or the re-read
+  // that verifies the reset. They sit on either side of the write and have different windows.
+  let reads = 0;
   sim.onWrite = (_char, hex) => {
     if (hex === RESET_HEX) return opts.onReset ? opts.onReset() : Promise.resolve();
+    const verifying = ++reads > 1;
     queueMicrotask(() => {
       cube.emit('facelets', {
         type: 'FACELETS',
@@ -78,7 +89,8 @@ function anchorSim(opts: AnchorSim = {}) {
       });
       // Same microtask as the answer, so the turn is strictly after the state that was read and
       // strictly before anchorSolved's continuation — the window the refusal is about.
-      if (opts.turnDuringRead) sim.sub.emit('packet', movePacket(9), 0);
+      const turn = verifying ? opts.turnDuringVerify : opts.turnDuringRead;
+      if (turn) sim.sub.emit('packet', movePacket(9 + reads), 0);
     });
     return Promise.resolve();
   };
@@ -141,6 +153,32 @@ describe('a cube that turns while the reset is in flight is reported, not verifi
       },
     });
     await expect(cube.anchorSolved()).rejects.toThrow(/untrusted and re-scan/i);
+  });
+});
+
+// The third window, and the one the read-epoch rule did not reach until 2026-09-05: between the
+// FACELETS that verifies the reset and the moment that read resolves. request() holds an answer
+// until its write completes, so a MOVE landing in there left anchorSolved() returning a solved
+// report about a position the cube had already left — success, from a check that had verified
+// nothing. One epoch spans the whole operation now: read, send, verify.
+describe('a cube that turns while the reset is being verified has not been verified', () => {
+  it('rejects instead of returning the stale solved report', async () => {
+    const { cube } = anchorSim({ turnDuringVerify: true });
+    await expect(cube.anchorSolved()).rejects.toThrow(/anchor uncertain.*being verified/is);
+  });
+
+  it('says the reading is stale, not that the reset failed — the causes need different answers', async () => {
+    const { cube } = anchorSim({ turnDuringVerify: true });
+    await expect(cube.anchorSolved()).rejects.toThrow(/untrusted and re-scan/i);
+    await expect(cube.anchorSolved()).rejects.not.toThrow(/did not report a solved state/i);
+  });
+
+  // The reset itself was sent and may well have landed correctly — what is unknown is only
+  // whether the read back proves it. The message must not imply nothing happened.
+  it('does not claim nothing was sent', async () => {
+    const { sim, cube } = anchorSim({ turnDuringVerify: true });
+    await cube.anchorSolved().catch(() => {});
+    expect(sim.writes).toContain(RESET_HEX);
   });
 });
 

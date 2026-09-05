@@ -21,7 +21,13 @@ import { GanCube } from '../src/driver.js';
 import { buildUnsafeCommand } from '../src/gen4/commands.js';
 import { GanGen4Cipher } from '../src/gen4/crypto.js';
 import { bytesToHex } from '../src/hex.js';
-import { CAPTURE_MAC, faceletsPacket, movePacket, unknownPacket } from './helpers/packets.js';
+import {
+  CAPTURE_MAC,
+  corruptFaceletsPacket,
+  faceletsPacket,
+  movePacket,
+  unknownPacket,
+} from './helpers/packets.js';
 import { simulateTransport } from './helpers/simulate-transport.js';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -145,6 +151,87 @@ describe('an active request waits for its own write', () => {
     sim.sub.emit('packet', faceletsPacket(), 0);
     await expect(pending).resolves.toMatchObject({ type: 'FACELETS' });
     expect(sim.writes).toEqual([]);
+  });
+});
+
+// The other half of holding an early answer: how long it stays valid. A respawn deliberately does
+// NOT fail what is waiting — the link is coming back and the cube emits FACELETS ~1 Hz on its own,
+// so failing there would turn a recoverable respawn into an error every caller has to handle. But
+// a reading taken before the break belongs to a session that has ended, and the write completing
+// afterwards delivered it anyway: reproduced 2026-09-05, getState() resolving with the old
+// session's facelets while `live` was already false.
+describe('an answer does not outlive the link it arrived on', () => {
+  it('drops a held answer when the link respawns, and waits for the new one', async () => {
+    const { sim, cube } = connected();
+    let release!: () => void;
+    sim.onWrite = () => {
+      sim.sub.emit('packet', faceletsPacket(1), 0); // the old session answers
+      return new Promise<void>((r) => {
+        release = r;
+      });
+    };
+    const pending = cube.getState({ active: true, timeoutMs: 2000 });
+    await tick();
+
+    sim.sub.emit('reconnecting'); // the subprocess respawned; the cube may have slept in between
+    release(); // …and only now does the write that was outstanding complete
+    expect(await Promise.race([pending.then(() => 'resolved'), tick().then(() => 'waiting')])).toBe(
+      'waiting',
+    );
+
+    // The link's own reading is what answers it — not the one from before the break.
+    sim.sub.emit('packet', faceletsPacket(2), 0);
+    await expect(pending).resolves.toMatchObject({ type: 'FACELETS', serial: 2 });
+  });
+
+  // The respawn must stay recoverable: dropping the stale answer is not the same as failing the
+  // request, and turning one into the other would be the cure the comment in connect() refuses.
+  it('does not reject on the respawn itself', async () => {
+    const { sim, cube } = connected();
+    const pending = cube.getState({ timeoutMs: 2000 });
+    sim.sub.emit('reconnecting');
+    sim.sub.emit('packet', faceletsPacket(3), 0);
+    await expect(pending).resolves.toMatchObject({ type: 'FACELETS', serial: 3 });
+  });
+
+  it('times out saying what it was waiting for rather than answering from the old session', async () => {
+    const { sim, cube } = connected();
+    let release!: () => void;
+    sim.onWrite = () => {
+      sim.sub.emit('packet', faceletsPacket(1), 0);
+      return new Promise<void>((r) => {
+        release = r;
+      });
+    };
+    const pending = cube.getState({ active: true, timeoutMs: 40 });
+    await tick();
+    sim.sub.emit('reconnecting');
+    release();
+    await expect(pending).rejects.toThrow(/timeout waiting for facelets/);
+  });
+});
+
+// A frame that decrypts and then will not decode. decodeGen4 sat one line BELOW the catch, so the
+// throw came out of a transport notification callback, past every caller — in the CLI's monitor
+// and raw commands, straight out of the process. The recorder learned this on 2026-09-05
+// (capture.ts, decodePacket); the driver had the same line and no test.
+describe('a packet the decoder cannot read is an error event, not a thrown exception', () => {
+  it('emits error instead of throwing through the transport callback', () => {
+    const { sim, cube } = connected();
+    const errors: unknown[] = [];
+    cube.on('error', (e) => errors.push(e));
+    expect(() => sim.sub.emit('packet', corruptFaceletsPacket(), 5)).not.toThrow();
+    expect(errors).toHaveLength(1);
+  });
+
+  it('keeps decoding afterwards — one bad frame is not the end of the stream', () => {
+    const { sim, cube } = connected();
+    cube.on('error', () => {});
+    const moves: number[] = [];
+    cube.onMove((m) => moves.push(m.serial));
+    sim.sub.emit('packet', corruptFaceletsPacket(), 5);
+    sim.sub.emit('packet', movePacket(7), 6);
+    expect(moves).toEqual([7]);
   });
 });
 

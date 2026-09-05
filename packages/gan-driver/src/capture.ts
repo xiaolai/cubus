@@ -11,13 +11,29 @@
 // driver and the protocol layer.
 
 import type { EventEmitter } from 'node:events';
-import type { Writable } from 'node:stream';
+import { finished, type Writable } from 'node:stream';
 import type { GanGen4Cipher } from './gen4/crypto.js';
 import { type DecodeResult, decodeGen4 } from './gen4/decode.js';
 import { bytesToHex, hexToBytes } from './hex.js';
 
 /** A Gen4 message is 20 bytes on the wire — 40 hex characters. Anything else is not one. */
 const FRAME_HEX_LENGTH = 40;
+
+/**
+ * How many recorded lines may wait for a stalled stream before the capture is called failed.
+ *
+ * `write()` returns false once the stream is over its high-water mark, and ignoring that answer is
+ * how a slow disk becomes unbounded memory: measured on 2026-09-05, a stream with a 32-byte
+ * high-water mark had 878,902 bytes queued inside it and still climbing, because every packet was
+ * pushed in whatever the stream said. A notification handler cannot wait, so the choice is bounded
+ * memory or lost evidence — this takes bounded memory up to here and then fails loudly, because a
+ * capture that quietly dropped frames is worse than one that stopped and said so.
+ *
+ * 10,000 lines is ~1.5 MB of JSONL, and the four committed captures all ran at ~12 packets/s, so
+ * it is about fourteen minutes of a stream accepting nothing at all. A disk that has not taken a
+ * byte in fourteen minutes is not slow.
+ */
+export const MAX_QUEUED_LINES = 10_000;
 
 export interface DecodedPacket {
   /** The decrypted bytes as hex, or '' when the frame never got as far as being decrypted. */
@@ -72,10 +88,11 @@ export interface Recording {
   /** Packets written so far. */
   readonly packets: number;
   /**
-   * Stop capturing and close the file. Resolves once the stream has FLUSHED — the 'finish' event,
-   * not merely the end() call — so a caller may exit the process on it. Rejects, naming the path,
-   * if the stream failed at any point, including while it was draining. Idempotent: repeated calls
-   * get the same answer, which for a failure is the same Error.
+   * Stop capturing and close the file. Resolves once the stream has CLOSED — 'close', which comes
+   * after 'finish', not merely the end() call — so a caller may exit the process on it. Rejects,
+   * naming the path, if the stream failed at any point, including while it was draining and
+   * including on the close itself. Idempotent: repeated calls get the same answer, which for a
+   * failure is the same Error.
    */
   stop(): Promise<number>;
 }
@@ -96,17 +113,10 @@ export function startRecording(opts: RecordingOptions): Recording {
   let packets = 0;
   let failure: Error | null = null;
   let stopping: Promise<number> | null = null;
-
-  const onPacket = (hex: string, ts: number) => {
-    const { dec, event, error } = decodePacket(opts.cipher, hex, ts);
-    const line: Record<string, unknown> = { ts, char, enc: hex };
-    if (dec) line.dec = dec;
-    if (event) line.event = event;
-    if (error) line.decodeError = error;
-    opts.out.write(`${JSON.stringify(line)}\n`);
-    packets++;
-    opts.onPacket?.(packets);
-  };
+  /** True while the stream is over its high-water mark: lines go to `queued` until it drains. */
+  let full = false;
+  /** Lines the stream has refused for now, in order. Bounded by MAX_QUEUED_LINES. */
+  const queued: string[] = [];
 
   /**
    * The failure, named after the file it is about: "EACCES" alone does not say which path the
@@ -124,8 +134,56 @@ export function startRecording(opts: RecordingOptions): Recording {
     opts.onError?.(e);
   };
 
+  /** Hand the queue back to the stream, stopping again the moment it says it is full. */
+  const drainQueue = () => {
+    while (queued.length > 0) {
+      const line = queued.shift() as string;
+      if (!opts.out.write(line)) {
+        opts.out.once('drain', drainQueue);
+        return;
+      }
+    }
+    full = false;
+  };
+
+  /**
+   * One line to the stream, honouring its answer. False means the line was neither written nor
+   * kept — the queue overflowed, which is reported exactly like any other stream failure because
+   * it is one: the bytes are not reaching the file.
+   */
+  const writeLine = (line: string): boolean => {
+    if (full) {
+      if (queued.length >= MAX_QUEUED_LINES) {
+        onStreamError(
+          new Error(
+            `the stream has not drained for ${MAX_QUEUED_LINES} packets — the capture is not reaching the disk`,
+          ),
+        );
+        return false;
+      }
+      queued.push(line);
+      return true;
+    }
+    if (!opts.out.write(line)) {
+      full = true;
+      opts.out.once('drain', drainQueue);
+    }
+    return true;
+  };
+
+  const onPacket = (hex: string, ts: number) => {
+    const { dec, event, error } = decodePacket(opts.cipher, hex, ts);
+    const line: Record<string, unknown> = { ts, char, enc: hex };
+    if (dec) line.dec = dec;
+    if (event) line.event = event;
+    if (error) line.decodeError = error;
+    if (!writeLine(`${JSON.stringify(line)}\n`)) return;
+    packets++;
+    opts.onPacket?.(packets);
+  };
+
   opts.out.on('error', onStreamError);
-  opts.out.write(`${JSON.stringify({ meta: opts.meta })}\n`);
+  writeLine(`${JSON.stringify({ meta: opts.meta })}\n`);
   opts.sub.on('packet', onPacket);
 
   return {
@@ -139,21 +197,29 @@ export function startRecording(opts: RecordingOptions): Recording {
           reject(failure);
           return;
         }
-        // A failure that lands between the check above and the flush below still has to be
-        // answered, or this promise waits on a 'finish' that will never come.
-        opts.out.on('error', (err: Error) => reject(named(err)));
-        // end(cb) calls back on 'finish' — i.e. after everything buffered has been written — OR
-        // with the error that made 'finish' unreachable, and that ARGUMENT is the only timely
-        // report of a write failing while the buffer drains: Node invokes this callback with the
-        // error before it emits 'error', so a version that ignored the argument resolved here and
-        // the listener above arrived to find the promise already settled. Measured on 2026-09-05:
-        // a three-packet recording whose last flush failed resolved with 3, and "saved" went on
-        // the screen over a truncated file. The disk filling up is discovered on the flush, not on
-        // the write that filled it, so this is the ordinary shape of the failure, not an exotic one.
-        opts.out.end((err?: Error | null) => {
+        // Whatever the stream refused while it was full goes in now. The bound above protects a
+        // LIVE capture, where packets keep arriving and memory is the only thing that can give;
+        // end() below does not settle until every byte has drained, so the last write of a
+        // recording has nothing to protect against and everything to lose by dropping a line.
+        for (const line of queued.splice(0)) opts.out.write(line);
+        // 'finish' says the buffer drained; 'close' says the file descriptor was released, and
+        // only the second is what "saved" is a claim about — closing a file is itself a write on
+        // any filesystem that defers, and it can fail on its own after every byte was accepted.
+        // end(cb) calls back on 'finish', so a version built on it resolved with the count while
+        // the close was still pending, and a close that then failed printed "saved" over a file
+        // nobody could open (measured 2026-09-05: exit code 0, count 3, EIO on the close).
+        //
+        // finished() answers on 'close' when the stream emits one and on 'finish' when it does
+        // not, and its error argument covers every way this can go wrong at once: a write that
+        // fails while the buffer drains (Node reports that through end()'s callback FIRST and
+        // then emits 'error', so the event is still what settles this), a stream destroyed
+        // underneath the flush, and a close that failed. It is attached before end() so none of
+        // those can land in the gap.
+        finished(opts.out, (err) => {
           if (err) reject(named(err));
           else resolve(packets);
         });
+        opts.out.end();
       });
       return stopping;
     },
@@ -191,14 +257,34 @@ export function recordingShutdown(opts: ShutdownOptions): (code: number) => Prom
   return (code: number): Promise<number> => (ending ??= endRecording(opts, code));
 }
 
+const reason = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
 async function endRecording(opts: ShutdownOptions, code: number): Promise<number> {
-  opts.stopPackets();
+  // stopPackets() is the transport's, and a transport can fail to stop: a child process that will
+  // not die, a handle already gone. That is not a reason to abandon the file. It threw from
+  // OUTSIDE this try until 2026-09-05, so rec.stop() was never reached — the buffered packets
+  // never flushed, and the rejection went to a caller that only ever calls .then(), so the process
+  // stayed up under no verdict at all. The file is closed either way now; the failure is reported
+  // and costs the exit code, because a run that could not stop its own transport is not a clean
+  // one and its last lines may have been written while the file was closing.
+  let stuck: string | null = null;
+  try {
+    opts.stopPackets();
+  } catch (e) {
+    stuck = reason(e);
+  }
   try {
     const packets = await opts.rec.stop();
+    if (stuck) {
+      opts.warn(
+        `\nsaved ${packets} packets -> ${opts.path}, but the packet source would not stop: ${stuck}`,
+      );
+      return 1;
+    }
     opts.say(`\nsaved ${packets} packets -> ${opts.path}`);
     return code;
   } catch (e) {
-    opts.warn(`\n${e instanceof Error ? e.message : String(e)}`);
+    opts.warn(`\n${reason(e)}`);
     return 1;
   }
 }
