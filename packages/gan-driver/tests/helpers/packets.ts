@@ -43,9 +43,31 @@ export function movePacket(serial: number): string {
   return bytesToHex(cipher.encrypt(bytes));
 }
 
-/** A real FACELETS frame — what the cube emits ~1 Hz, and answers a state query with. */
-export function faceletsPacket(): string {
-  return bytesToHex(cipher.encrypt(FACELETS_TEMPLATE));
+/**
+ * A real FACELETS frame — what the cube emits ~1 Hz, and answers a state query with.
+ * With a serial, the 16-bit field docs/protocol.md pins (@bit16, little-endian) is rewritten;
+ * the cubie fields start at bit 32, so the reported position is the capture's either way.
+ */
+export function faceletsPacket(serial?: number): string {
+  const bytes = Uint8Array.from(FACELETS_TEMPLATE);
+  if (serial !== undefined) {
+    bytes[2] = serial & 0xff;
+    bytes[3] = (serial >>> 8) & 0xff;
+  }
+  return bytesToHex(cipher.encrypt(bytes));
+}
+
+/**
+ * A FACELETS frame whose corner permutation cannot belong to a cube: every explicit corner reads
+ * 7, so the parity-derived eighth is negative and falls outside the cubie table, which the decoder
+ * indexes past the end of and throws on. This is the packet a capture must not lose — a throw out
+ * of a notification handler used to take the recorder down before the encrypted bytes reached the
+ * file, destroying exactly the evidence a corrupt frame is worth keeping for.
+ */
+export function corruptFaceletsPacket(): string {
+  const bytes = Uint8Array.from(FACELETS_TEMPLATE);
+  bytes.fill(0xff, 4, 8); // corner permutation: 7 × 3 bits from bit 32
+  return bytesToHex(cipher.encrypt(bytes));
 }
 
 /** A frame whose event type the decoder recognises as nothing: it must surface, not vanish. */

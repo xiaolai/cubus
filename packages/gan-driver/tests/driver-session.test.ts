@@ -148,6 +148,170 @@ describe('an active request waits for its own write', () => {
   });
 });
 
+// The move counter is the cube's, and the cube may restart it — a GAN16 stops advertising ~1 s
+// after coming to rest, so a link that respawns has often been through a sleep. The baseline used
+// to outlive the link: the cube counted from zero again, every serial read as BEHIND the old
+// baseline, acceptMove refused it, and a refusal never advances the counter either — so every
+// move the cube made from then on was refused, permanently, with nothing able to repair it.
+//
+// The fix is not "rebase on any break", which would cost the other half. A counter that ADVANCED
+// across the break is moves made while the link was down, and that is exactly what 'gap' reports.
+// Only a counter that went backwards is a restart.
+describe('a serial baseline does not outlive its session', () => {
+  interface Rebase {
+    from: number;
+    to: number;
+    reason: string;
+  }
+
+  /** Watch everything the counter can say about a move: delivered, refused, gapped, rebased. */
+  function watch(cube: GanCube) {
+    const seen = {
+      moves: [] as number[],
+      refused: [] as number[],
+      gaps: [] as unknown[],
+      rebases: [] as Rebase[],
+    };
+    cube.onMove((m) => seen.moves.push(m.serial));
+    cube.on('stale', (s: { serial: number }) => seen.refused.push(s.serial));
+    cube.on('gap', (g) => seen.gaps.push(g));
+    cube.on('rebase', (r: Rebase) => seen.rebases.push(r));
+    return seen;
+  }
+
+  it('a counter that restarted across a reconnect is rebased, not refused for good', () => {
+    const { sim, cube } = connected();
+    const seen = watch(cube);
+    for (const s of [5000, 5001]) sim.sub.emit('packet', movePacket(s), 0);
+    sim.sub.emit('reconnecting'); // the subprocess respawned; the cube slept in between
+    for (const s of [1, 2, 3]) sim.sub.emit('packet', movePacket(s), 0);
+    expect(seen.moves).toEqual([5000, 5001, 1, 2, 3]);
+    expect(seen.refused).toEqual([]);
+  });
+
+  // A baseline the driver moves on its own is still a decision about the move stream, and the
+  // rule that keeps a refused move visible applies to it too.
+  it('announces the rebase rather than adopting the new counter in silence', () => {
+    const { sim, cube } = connected();
+    const seen = watch(cube);
+    sim.sub.emit('packet', movePacket(5001), 0);
+    sim.sub.emit('reconnecting');
+    sim.sub.emit('packet', movePacket(1), 0);
+    expect(seen.rebases).toEqual([{ from: 5001, to: 1, reason: 'counter-restart' }]);
+    expect(seen.gaps).toEqual([]);
+  });
+
+  it('an explicit disconnect and reconnect ends the session too', () => {
+    const { sim, cube } = connected();
+    sim.sub.emit('packet', movePacket(5000), 0);
+    cube.disconnect();
+    cube.connect();
+    sim.sub.emit('packet', '00', 0);
+    const seen = watch(cube);
+    sim.sub.emit('packet', movePacket(1), 0);
+    expect(seen.moves).toEqual([1]);
+  });
+
+  // The FACELETS half of the same question: the cube emits state ~1 Hz, so after a reconnect one
+  // usually arrives before any turn does, and it carries the counter.
+  it('a FACELETS serial rebases before any move arrives', () => {
+    const { sim, cube } = connected();
+    sim.sub.emit('packet', movePacket(5000), 0);
+    sim.sub.emit('reconnecting');
+    sim.sub.emit('packet', faceletsPacket(2), 0); // the cube is counting from 2 again
+    const seen = watch(cube);
+    sim.sub.emit('packet', movePacket(3), 0);
+    expect(seen.moves).toEqual([3]);
+    expect(seen.refused).toEqual([]);
+  });
+
+  // The half a blanket rebase would have destroyed. Moves made while the link was down are the
+  // signal the app uses to decide its tracking is broken and ask for a camera scan.
+  it('a counter that survived the break still reports the gap across it', () => {
+    const { sim, cube } = connected();
+    const seen = watch(cube);
+    sim.sub.emit('packet', movePacket(10), 0);
+    sim.sub.emit('reconnecting');
+    sim.sub.emit('packet', movePacket(13), 0);
+    expect(seen.moves).toEqual([10, 13]);
+    expect(seen.gaps).toEqual([{ missing: 2, from: 10, to: 13 }]);
+    expect(seen.rebases).toEqual([]);
+  });
+
+  // A repeated frame is a repeated frame under either reading, and refusing it locks nothing out
+  // — the next move still advances. Only a counter that went BACKWARDS is unrecoverable.
+  it('a duplicate across the break is still refused', () => {
+    const { sim, cube } = connected();
+    const seen = watch(cube);
+    sim.sub.emit('packet', movePacket(10), 0);
+    sim.sub.emit('reconnecting');
+    sim.sub.emit('packet', movePacket(10), 0);
+    expect(seen.moves).toEqual([10]);
+    expect(seen.refused).toEqual([10]);
+    expect(seen.rebases).toEqual([]);
+  });
+
+  it('nothing is rebased within one unbroken session', () => {
+    const { sim, cube } = connected();
+    const seen = watch(cube);
+    for (const s of [10, 9, 11]) sim.sub.emit('packet', movePacket(s), 0);
+    expect(seen.moves).toEqual([10, 11]);
+    expect(seen.refused).toEqual([9]);
+    expect(seen.rebases).toEqual([]);
+  });
+});
+
+// 'giveup' is the transport saying it has stopped retrying. It used to be only announced, which
+// left two things behind: requests waiting on a link that will never deliver again, and a
+// subscription the driver still believed it held — so connect() saw itself as connected and
+// returned without resubscribing, making an explicit reconnect a no-op.
+describe('a transport that gives up is terminal, and is handled as such', () => {
+  const gaveUp = () => new Error('gave up reconnecting to CUBE after 12 attempts with no data');
+
+  it('fails what was waiting instead of leaving it to time out', async () => {
+    const { sim, cube } = connected();
+    const pending = cube.getState({ timeoutMs: 5000 });
+    sim.sub.emit('giveup', gaveUp());
+    await expect(pending).rejects.toThrow(/gave up reconnecting/i);
+  });
+
+  it('releases the subscription, so an explicit connect() actually resubscribes', () => {
+    const { sim, cube } = connected();
+    sim.sub.emit('giveup', gaveUp());
+    cube.connect();
+    expect(sim.subscribes).toBe(2);
+    const moves: number[] = [];
+    cube.onMove((m) => moves.push(m.serial));
+    sim.sub.emit('packet', movePacket(7), 0);
+    expect(moves).toEqual([7]);
+  });
+
+  // Tearing the transport down would set its stopped flag, and the next subscribe() would spawn
+  // nothing — taking the retry away instead of handing it back.
+  it('does not disconnect the transport it is about to be asked to reuse', () => {
+    const { sim } = connected();
+    sim.sub.emit('giveup', gaveUp());
+    expect(sim.disconnects).toBe(0);
+  });
+
+  it('still announces it, once', () => {
+    const { sim, cube } = connected();
+    const seen: unknown[] = [];
+    cube.on('giveup', (e) => seen.push(e));
+    sim.sub.emit('giveup', gaveUp());
+    expect(seen).toHaveLength(1);
+  });
+
+  it('drops readiness, so the next active request waits rather than writing into nothing', async () => {
+    const { sim, cube } = connected();
+    sim.sub.emit('giveup', gaveUp());
+    await expect(cube.getState({ active: true, timeoutMs: 30 })).rejects.toThrow(
+      /subscription to go live/i,
+    );
+    expect(sim.writes).toEqual([]);
+  });
+});
+
 describe('an unrecognised event is announced once', () => {
   it('emits unknown a single time per packet', () => {
     const { sim, cube } = connected();
