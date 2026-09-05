@@ -53,6 +53,54 @@ export const shouldStop = (word, depth) =>
   word !== null && word !== undefined && depth >= 0 && Atomics.load(word, 0) < depth;
 
 /**
+ * The WRITER half of the same word, and `shouldStop`'s mirror: publish `depth` if — and only if —
+ * it is strictly shallower than what is already there.
+ *
+ * The compare-exchange loop is what makes it atomic under six writers: a plain read-then-write
+ * could interleave with a shallower publication and put the deeper depth back, which would let a
+ * sibling that could still win stop searching. The retry re-reads the value the exchange saw
+ * rather than starting again, so the loop terminates after at most one turn per competing writer.
+ *
+ * Strictly shallower, never `<=`, for exactly `shouldStop`'s reason: at the same depth a lower
+ * view index still wins, and stopping those siblings would change which answer comes back.
+ * STOP_NOW is -1 and so is shallower than every real depth — a late publication cannot overwrite
+ * it and quietly un-cancel a solve.
+ *
+ * Extracted from `pooled` and exported for the same reason `shouldStop` is (2026-09-05 audit,
+ * refactoring debt): a wrong comparison here is invisible from outside — every answer is still a
+ * valid solution, just not deterministically the same one.
+ */
+export function publishBest(word, depth) {
+  if (word === null || word === undefined || !Number.isInteger(depth) || depth < 0) return false;
+  let seen = Atomics.load(word, 0);
+  while (depth < seen) {
+    const prev = Atomics.compareExchange(word, 0, seen, depth);
+    if (prev === seen) return true;
+    seen = prev;
+  }
+  return false;
+}
+
+/**
+ * Relay one solve's abort onto a controller of its own, and hand back the way to unsubscribe.
+ *
+ * A pool cancels its siblings for two different reasons — the caller stopped caring, and one
+ * slice failed — and both go through ONE controller so a stop is scoped to this solve's request
+ * ids rather than to a client (which is shared with overlapping solves). The release is not
+ * optional bookkeeping: a long-lived signal outliving its solve would otherwise accumulate one
+ * listener per search, each holding that search's closure.
+ */
+function relayAbort(signal) {
+  const controller = new AbortController();
+  const relay = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', relay, { once: true });
+  }
+  return { controller, release: () => signal?.removeEventListener('abort', relay) };
+}
+
+/**
  * A resume point as this side will treat it: an object, or nothing at all.
  *
  * Everything that arrives from the other thread is untrusted, and this is the cheap half of that —
@@ -497,6 +545,13 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
       dropPooledState(resume);
       return lone.solve(facelets, { solLen, probeMax, signal, resume });
     }
+    // The era THIS solve started in, captured before the await that a teardown lands inside.
+    // `pooled` asks the same question about the handshake; the fallback below is the second place
+    // a cancel can be crossed, and it was not asking (2026-09-05 audit): a worker dying and a
+    // `cancel()` arriving in the same turn made a cancelled solve spawn a REPLACEMENT worker,
+    // search on it and resolve — reproduced. A worker failure says nothing about whether anyone
+    // is still waiting for the answer, so both have to be asked.
+    const mine = era;
     try {
       return await pooled(facelets, { solLen, probeMax, signal, resume });
     } catch (err) {
@@ -510,6 +565,11 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
       // range — would fail identically on the retry and charge the user twice the wait for the
       // same "no", so it propagates untouched.
       if (!isWorkerFailure(err)) throw err;
+      // A pool torn down while it was failing is still torn down. Asked BEFORE the warning as
+      // well as before the fallback: a teardown is not evidence that this page cannot staff a
+      // pool, and announcing a session-long downgrade over one would be the same mistake the
+      // handshake's own era check exists to prevent.
+      if (era !== mine) throw new Error(CANCELLED);
       console.warn(
         `solve-client: the ${clients.length}-worker pool could not run (${err.message}) — ` +
         'falling back to a single worker for the rest of this session. Searches will be slower ' +
@@ -575,12 +635,7 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
     // out" about a cube nothing was wrong with. Aborting is scoped by request id, and where
     // there is a stop word it is also cheaper than cancelling: the siblings stop at their next
     // poll instead of losing their threads and rebuilding their tables.
-    const abandon = new AbortController();
-    const relay = () => abandon.abort();
-    if (signal) {
-      if (signal.aborted) abandon.abort();
-      else signal.addEventListener('abort', relay, { once: true });
-    }
+    const { controller: abandon, release } = relayAbort(signal);
     let firstError = null;
     const abandonAll = (err) => {
       if (firstError !== null) return;
@@ -603,19 +658,11 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
         signal: abandon.signal,
         resume: carriers?.[i] ?? null,
       }).catch((err) => { abandonAll(err); throw err; }).then((reply) => {
-        // Publish only a real answer, and only when it is SHALLOWER than what is published. A
-        // sibling exploring deeper can stop; one at the same depth cannot, because a lower view
-        // index there still wins — which is exactly why the pick stays deterministic.
-        if (stop && typeof reply.alg === 'string' && reply.depth >= 0) {
-          let seen = Atomics.load(stop, 0);
-          while (reply.depth < seen) {
-            const prev = Atomics.compareExchange(stop, 0, seen, reply.depth);
-            if (prev === seen) break;
-            seen = prev;
-          }
-        }
+        // Publish only a real ANSWER's depth: a null reply's -1 means "no depth applies", and
+        // publishing it would read as the shallowest possible and stop every sibling.
+        if (typeof reply.alg === 'string') publishBest(stop, reply.depth);
         return reply;
-      }))).finally(() => signal?.removeEventListener('abort', relay));
+      }))).finally(release);
 
     // allSettled, not all: `all` would resolve the caller's promise while siblings were still
     // running and pending. Everyone is waited for, and the FIRST failure propagates — not a
@@ -657,7 +704,10 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
       sharing = false;
       return;
     }
-    handshake ??= (async () => {
+    // The attempt THIS call is waiting on, held by identity. `handshake` is module-of-the-pool
+    // state that a `cancel()` clears and the next solve refills, so the failing attempt's catch
+    // below must be able to tell "mine" from "somebody else's" — see there.
+    const attempt = (handshake ??= (async () => {
       const published = await clients[0].control({ kind: PREPARE_TABLES });
       const bundle = published?.tables ?? null;
       if (!bundle) throw new Error('the solver worker published no tables');
@@ -683,11 +733,17 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
         }
       }
       return bundle;
-    })();
+    })());
     try {
-      await handshake;
+      await attempt;
     } catch (err) {
-      handshake = null;
+      // Only MY attempt is cleared. A cancel nulls `handshake` and the very next solve puts a new
+      // one there, so this catch — which runs a microtask later, when the cancelled control
+      // request finally rejects — was clearing a handshake that had nothing to do with the
+      // failure. Reproduced by the 2026-09-05 audit as `cancel()` then `solve()`: the replacement
+      // builder was sent PREPARE_TABLES twice and every replacement adopter ADOPT_TABLES twice,
+      // the whole 9.82 MiB handshake run again for nothing.
+      if (handshake === attempt) handshake = null;
       // A thread that died says nothing about tables; it goes down the one fallback path the pool
       // already has, which ends with a single worker searching every view.
       if (isWorkerFailure(err)) throw err;

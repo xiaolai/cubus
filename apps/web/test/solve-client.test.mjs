@@ -8,7 +8,7 @@ import { test } from 'node:test';
 
 import {
   CANCELLED_MESSAGE, STOP_NOW, createParallelSolveClient, createSolveClient, isWorkerFailure,
-  pickWinner, shareBudget, sliceViews, stopDescriptor, stopWord,
+  pickWinner, publishBest, shareBudget, sliceViews, stopDescriptor, stopWord,
 } from '../lib/solve-client.js';
 import { DEFAULT_NODE_BUDGET } from '../lib/solver-engine.js';
 
@@ -627,6 +627,63 @@ test('a worker that DIES mid-solve falls back rather than losing the answer', as
   assert.match(said[0] ?? '', /solver worker failed: out of memory/, 'and say what actually died');
   assert.equal(client.workers, 1);
   assert.equal(client.idle, true, 'no sibling and no fallback is left pending');
+});
+
+test('a worker that dies and a CANCEL in the same turn does not fall back — nobody is waiting', async () => {
+  // The fallback's own era check (2026-09-05 audit), and the second place a teardown can be
+  // crossed. `pooled` asks whether the pool is still the one it started on; the catch below it
+  // did not, so a worker failure arriving in the same turn as `cancel()` sent the solve down the
+  // fallback path: it spawned a REPLACEMENT worker, searched on it and RESOLVED — an answer for a
+  // cube nobody was waiting for, and a session-long downgrade announced over a button press.
+  //
+  // Reproduced exactly as the audit did, and asserted on the thing that must NOT exist: a
+  // seventh worker. A rejection alone would not pin it — the fallback could still have run.
+  //
+  // The would-be fallback worker ANSWERS, deliberately: against the old code this test must fail
+  // by resolving, not by hanging, and a hanging test reports nothing at all.
+  const made = [];
+  const spawn = () => { const w = fakeWorker({ autoReply: made.length >= 6 }); made.push(w); return w; };
+  const client = createParallelSolveClient({ spawn, workers: 6, viewCount: 6 });
+  const { value, said } = await withWarnings(async () => {
+    const inFlight = client.solve('F'.repeat(54), { solLen: 21, probeMax: 600 })
+      .then((v) => ({ resolved: v }), (e) => ({ rejected: e.message }));
+    await Promise.resolve();
+    await Promise.resolve();
+    made[0].fail('out of memory');
+    client.cancel();
+    return inFlight;
+  });
+  assert.deepEqual(value, { rejected: CANCELLED_MESSAGE }, 'a cancelled solve must not answer');
+  assert.equal(made.length, 6, 'a seventh worker is a replacement spawned for a solve nobody wanted');
+  assert.deepEqual(said, [], 'a teardown is not evidence that this page cannot staff a pool');
+});
+
+test('the stop word is published only by a shallower ANSWER, and atomically', () => {
+  // `shouldStop`'s mirror, extracted from `pooled` and exported for the same reason (2026-09-05
+  // audit, refactoring debt): a wrong comparison here is invisible from outside, because every
+  // answer is still a valid solution — just not deterministically the same one.
+  const word = new Int32Array(1);
+  const NO_BEST = 0x7fffffff;
+  word[0] = NO_BEST;
+  assert.equal(publishBest(word, 11), true);
+  assert.equal(word[0], 11);
+  assert.equal(publishBest(word, 12), false, 'a deeper answer must not be published');
+  assert.equal(word[0], 11);
+  assert.equal(publishBest(word, 11), false, 'nor an equal one — at the same depth a lower view still wins');
+  assert.equal(word[0], 11);
+  assert.equal(publishBest(word, 9), true);
+  assert.equal(word[0], 9);
+  // A cancelled solve's word, which every later reply must leave alone.
+  word[0] = STOP_NOW;
+  assert.equal(publishBest(word, 0), false, 'a late reply cannot quietly un-cancel a solve');
+  assert.equal(word[0], STOP_NOW);
+  // "No depth applies" is not a depth: a null reply carries -1, and publishing it would read as
+  // the shallowest possible and stop every sibling.
+  word[0] = NO_BEST;
+  assert.equal(publishBest(word, -1), false);
+  assert.equal(publishBest(word, 1.5), false);
+  assert.equal(publishBest(null, 3), false, 'a pool with no shared word simply never stops early');
+  assert.equal(word[0], NO_BEST);
 });
 
 test('a pool of main-thread workers COLLAPSES to one, and still answers', async () => {

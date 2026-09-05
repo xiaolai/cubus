@@ -232,12 +232,78 @@ test('a COMPLETED resume point is checked too, rather than believed because it s
     // named by a point that found nothing.
     bad({ done: false }, /unfinished and yet carries an answer/);
     bad({ alg: null }, /found nothing and yet names depth/);
+    // The POSITION a finished point claims to have finished from — round 2 of the same audit.
+    // `runSearch` returns a done point's answer before it reads `depth` or `cursor`, so the bounds
+    // check that guards every unfinished point is unreachable here: the round-1 record above
+    // carried `cursor: 999` and was refused for its ANSWER, and with a legal answer it rode in.
+    // A search that finds one leaves by `break` and never writes the position back, so both fields
+    // are still inside the enumeration.
+    bad({ cursor: 999 }, /outside the search it claims to have finished/);
+    bad({ cursor: 6 }, /view 6 of 6/);
+    bad({ depth: 21 }, /outside the search it claims to have finished/);
 
     // The real record still passes, and still costs nothing.
     const kept = engine.openSearch(WORKER_CUBES.pooled, { resume: point });
     assert.equal(kept.continueTo(), answer, 'a sound finished point must still answer from cache');
     assert.equal(spent(), 0, 'and must not search to do it');
     assert.deepEqual([engine.searchStats.depth, engine.searchStats.view], [point.foundDepth, point.foundView]);
+  } finally {
+    restore();
+  }
+});
+
+test('a point that says it finished with NOTHING must show where it ran out', () => {
+  // The cheapest forgery in the protocol, and until 2026-09-05 the only completed shape with no
+  // check at all: `{...a fresh point, done: true}`. `runSearch` returns `point.alg` — null — after
+  // zero nodes, and a null from an exhausted enumeration is the same value as a null from a search
+  // that ran out of budget. So `solveWithinGodsNumber` reads it as a budget too small, doubles
+  // eight times over a cube it never looks at again, and RAISES about a state that is one turn
+  // from solved. Reproduced on exactly that cube: a fresh search answers `U'`.
+  //
+  // There are exactly two ways to finish empty and both are checkable here, which is why this is
+  // a check and not a comment: a state that is not a cube, and an enumeration walked out of
+  // DEPTHS — which lands in one place only, because the loop increments past `solLen - 1` and
+  // resets the cursor as it goes.
+  try {
+    const oneTurn = new Cube();
+    oneTurn.move('U');
+    const facelets = oneTurn.asString();
+    engine.setBounds({ solLen: FLOOR, probeMax: 50_000_000, maxPhase2: 12 });
+    assert.equal(engine.openSearch(facelets, {}).continueTo(), "U'", 'the cube must really be one turn from solved');
+
+    const unstarted = engine.openSearch(facelets, {}).state;
+    assert.deepEqual([unstarted.done, unstarted.alg, unstarted.frontier], [false, null, 0]);
+    assert.throws(
+      () => engine.openSearch(facelets, { resume: { ...unstarted, done: true } }).continueTo(),
+      /claims a finished search of a real cube with no answer/,
+      'an unstarted search that merely says it finished must not answer null',
+    );
+    // A position past the bound is not enough either — the cursor is part of the shape.
+    assert.throws(
+      () => engine.openSearch(facelets, { resume: { ...unstarted, done: true, depth: FLOOR, cursor: 3 } }).continueTo(),
+      /claims a finished search of a real cube with no answer/,
+    );
+
+    // And the two REAL answerless finishes still adopt, because this must refuse forgeries and
+    // not the mechanism. First: an enumeration that genuinely walked out of depths — a hard cube
+    // under a bound of 2 has no solution of one move or fewer.
+    engine.setBounds({ solLen: 2, probeMax: 50_000_000 });
+    const walked = engine.openSearch(WORKER_CUBES.pooled, {});
+    assert.equal(walked.continueTo(), null);
+    const out = walked.state;
+    assert.deepEqual([out.done, out.depth, out.cursor], [true, 2, 0], 'the shape the check is derived from');
+    engine.setBounds({ probeMax: 60_000_000 });
+    assert.equal(engine.openSearch(WORKER_CUBES.pooled, { resume: out }).continueTo(), null);
+    assert.equal(spent(), 0, 'a finished enumeration must not be walked again');
+
+    // Second: a state that is not a cube at all, which finishes at depth 0 and is right to.
+    engine.setBounds({ solLen: FLOOR, probeMax: 1000 });
+    const notACube = engine.openSearch('U'.repeat(54), {});
+    assert.equal(notACube.continueTo(), null);
+    assert.deepEqual([notACube.state.done, notACube.state.depth], [true, 0]);
+    engine.setBounds({ probeMax: 2000 });
+    assert.equal(engine.openSearch('U'.repeat(54), { resume: notACube.state }).continueTo(), null,
+      'no budget makes a non-cube solvable, so its finish is honest wherever it sits');
   } finally {
     restore();
   }
