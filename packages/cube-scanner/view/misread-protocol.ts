@@ -9,7 +9,7 @@
 // find. A list like that goes off for every private method anyone adds. One module both bundles
 // keep whole needs no list at all.
 
-import { type ColorFaces, type MisreadDiagnosis, diagnoseMisread } from '../src/misread-decode.js';
+import { type ColorFaces, diagnoseMisread, type MisreadDiagnosis } from '../src/misread-decode.js';
 import type { Face } from '../src/types.js';
 
 /** A decode to run: the six faces as read, and how the reading's rotations are known. */

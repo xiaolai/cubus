@@ -12,16 +12,16 @@
 //   - a mis-held confirmation can cost looks but can never produce a wrong cube.
 import Cube from 'cubejs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { rotateFace } from '../src/ai-assemble.js';
 import type { AiScanResult } from '../src/ai-assemble.js';
+import { rotateFace } from '../src/ai-assemble.js';
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { FACES, type Face } from '../src/types.js';
 import { AiScanPanel, type ScanProgress } from '../view/ai-scan-panel.js';
 import {
+  handleMisreadRequest,
   type MisreadReply,
   type MisreadRequest,
-  handleMisreadRequest,
 } from '../view/misread-protocol.js';
 
 // A SEAM ON THE ONE CALL THAT COSTS SECONDS, and a pass-through in every other respect.

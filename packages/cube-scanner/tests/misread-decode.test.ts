@@ -2,7 +2,7 @@
 
 import Cube from 'cubejs';
 import { describe, expect, it, vi } from 'vitest';
-import { SOLVED_FACELETS, isStructurallyValid, rotateFace } from '../src/facelet-cube.js';
+import { isStructurallyValid, rotateFace, SOLVED_FACELETS } from '../src/facelet-cube.js';
 import { type ColorFaces, decodeMisread, diagnoseMisread } from '../src/misread-decode.js';
 import { FACES, type Face } from '../src/types.js';
 import { scrambleFacelets } from './helpers.js';
@@ -157,7 +157,9 @@ describe('decodeMisread', () => {
     const shown = {} as Record<Face, ColorFaces>;
     for (const f of FACES) shown[f] = { colors: [...rows[f]].map(Number) };
     const own = new Map<number, Face>();
-    FACES.forEach((f, i) => own.set(i, f));
+    FACES.forEach((f, i) => {
+      own.set(i, f);
+    });
     const opts = { fixedRotation: true, maxDistance: 4 };
 
     expect(decodeMisread(shown, own, { ...opts, nodeBudget: 3500 })).toEqual({ kind: 'unknown' });

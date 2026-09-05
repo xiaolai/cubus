@@ -5,10 +5,10 @@
 
 import type { ModelOutput } from './detector.js';
 import {
-  type FitResult,
-  MIN_STICKER_CONFIDENCE,
   decodeDetections,
+  type FitResult,
   fitFace,
+  MIN_STICKER_CONFIDENCE,
   nms,
 } from './onnx-postprocess.js';
 import type { Frame } from './types.js';

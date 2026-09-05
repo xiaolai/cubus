@@ -1,6 +1,6 @@
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector } from '../src/detector.js';
-import { type ScanRuntime, parkDetector, pickDetector } from './pick-detector.js';
+import { parkDetector, pickDetector, type ScanRuntime } from './pick-detector.js';
 
 /**
  * The camera's lifecycle, and the two counters that keep a stale one from speaking.

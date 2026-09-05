@@ -32,12 +32,12 @@
 
 import {
   type AiScanResult,
-  type ColorFace,
-  type ConfirmRequest,
-  type StickerSuspect,
   assembleColors,
   assemblePainted,
+  type ColorFace,
+  type ConfirmRequest,
   rotateFace,
+  type StickerSuspect,
 } from '../src/ai-assemble.js';
 import type { CameraDevice } from '../src/camera.js';
 import type { Detector } from '../src/detector.js';
@@ -57,7 +57,7 @@ import { Stillness } from './stillness.js';
 // native plugin but has no web leg, so nothing anywhere could check that the runtime Windows,
 // Linux and Android actually run reads the fixtures the way the pinned one does.
 export { preprocess } from '../src/onnx-detect.js';
-export { decodeDetections, nms, fitFace } from '../src/onnx-postprocess.js';
+export { decodeDetections, fitFace, nms } from '../src/onnx-postprocess.js';
 // The runtime factory and the provider choice, for the same reason and one more. `apps/web/test/
 // scanner-gpu.test.mjs` drives them in a real browser to prove the vendored runtime can reach a
 // GPU and that both providers read a frame identically — and it has to reach them THROUGH this

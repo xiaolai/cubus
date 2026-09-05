@@ -14,7 +14,7 @@ import {
 } from '../src/camera.js';
 import type { Detector, DetectorSource, ModelOutput } from '../src/detector.js';
 import { preprocess } from '../src/onnx-detect.js';
-import { type ModelRunner, createModelRunner } from './onnx-runtime.js';
+import { createModelRunner, type ModelRunner } from './onnx-runtime.js';
 
 export class WebDetector implements Detector {
   private source: FrameSource | null = null;

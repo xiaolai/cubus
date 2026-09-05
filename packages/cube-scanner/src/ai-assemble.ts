@@ -62,7 +62,7 @@
 
 import Cube from 'cubejs';
 import { isStructurallyValid, rotateFace } from './facelet-cube.js';
-import { type DecodedSticker, type MisreadDiagnosis, diagnoseMisread } from './misread-decode.js';
+import { type DecodedSticker, diagnoseMisread, type MisreadDiagnosis } from './misread-decode.js';
 import { FACES, type Face, type ScanResult } from './types.js';
 
 export { rotateFace };
@@ -375,7 +375,11 @@ function buildCentreOwner(faces: Record<Face, ColorFace>): Map<number, Face> | A
   const centreOwner = new Map<number, Face>();
   for (const face of FACES) {
     const f = faces[face];
-    if (!f || f.colors.length !== 9 || f.confidence.length !== 9) {
+    // `faces[face]` is `| undefined` under noUncheckedIndexedAccess, and a face that is not there
+    // fails the same sentence as a face of the wrong length. The optional chain carries both: a
+    // missing face makes the first comparison true, so the second access is only ever reached once
+    // the first has proved `f` present.
+    if (f?.colors.length !== 9 || f.confidence.length !== 9) {
       throw new Error(`face ${face}: expected 9 colours + 9 confidences`);
     }
     // Colours are deliberately NOT range-checked here. A sticker that is not one of the six centre
