@@ -510,3 +510,39 @@ test('non-boolean persistence metadata is refused, not defaulted to fine', async
   );
   noNative();
 });
+
+test('a cancel arriving DURING the fence wait does not make a proof wait for itself', async () => {
+  // The other half of the fence above, and a deadlock until 2026-09-05. The loop re-reads the
+  // predecessor on every iteration, and a cancel landing while it waits is exactly what causes a
+  // second iteration — by which time `lastProve` had been reassigned to THIS proof's own settling,
+  // so the proof awaited its own completion. Reproduced: `optimal_prove` was never called, for this
+  // proof or for any proof after it, because the module's fence stayed pending for the page's life.
+  // The predecessor is captured before the fence exists now, so the loop cannot reach forward.
+  //
+  // Raced against a timer rather than simply awaited: the failure mode is a hang, and a hanging
+  // test reports nothing at all.
+  const settles = (promise) => Promise.race([promise, new Promise((r) => {
+    const t = setTimeout(() => r('HUNG'), 500);
+    t.unref?.();
+  })]);
+  const scrambled = new Cube();
+  scrambled.move('R2');
+  const facelets = scrambled.asString();
+  const calls = fakeNative({
+    optimal_cancel: async () => true,
+    optimal_prove: () => ({ length: 1, solution: 'R2', nodes: 1, millis: 1, tables_persisted: true }),
+  });
+  const proving = prove(facelets, { Cube });
+  cancel(); // fire-and-forget, as teardown does — and it lands inside the fence's first wait
+  const proof = await settles(proving);
+  assert.notEqual(proof, 'HUNG', 'the proof waited on its own completion');
+  assert.equal(proof.moves, 1);
+
+  // And the fence is not poisoned for what comes after it: the deadlocked promise stayed in
+  // `lastProve`, so every later proof queued behind a wait that could never end.
+  const next = await settles(prove(facelets, { Cube }));
+  assert.notEqual(next, 'HUNG', 'a later proof inherited the deadlock');
+  assert.equal(next.moves, 1);
+  assert.deepEqual(calls.map((c) => c.cmd), ['optimal_cancel', 'optimal_prove', 'optimal_prove']);
+  noNative();
+});

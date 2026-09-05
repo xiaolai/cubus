@@ -463,3 +463,39 @@ test('an abort during a search ends the progression with the answer in hand', as
   assert.equal(last.moves, 19, 'the improvement that arrived with the abort is kept');
   assert.equal(base.asked.length, 2, 'and no further search was started');
 });
+
+test('a cube solved by an IMPROVEMENT ends the descent, rather than asking for shorter than nothing', async () => {
+  // The zero-move terminal handling applied to the first answer only, so a descent that actually
+  // reached a solved cube yielded it as still improving and then asked for `solLen: 0`. The engine
+  // boundary refuses that as out of range — so the last rung of an easy solve was a RangeError
+  // rather than an answer (2026-09-05 audit; reproduced with "R R'" followed by "").
+  //
+  // The fake refuses solLen < 1 exactly as lib/solver-engine.js does: a fake looser than the real
+  // boundary would have made the invalid ask invisible, which is how this survived.
+  const bounded = (lengths) => {
+    const inner = scripted(lengths);
+    const solve = async (facelets, options) => {
+      if (!Number.isInteger(options.solLen) || options.solLen < 1) {
+        throw new RangeError(`solver-engine: solLen ${options.solLen} is outside 1..23`);
+      }
+      return inner(facelets, options);
+    };
+    solve.asked = inner.asked;
+    return solve;
+  };
+
+  const solve = bounded([2, 0]);
+  const steps = await collect(refine('F', { solve, tier: 'twenty' }));
+  assert.deepEqual(steps.map((s) => s.moves), [2, 0], 'the solved cube is the last thing shown');
+  assert.equal(steps.at(-1).stopped, STOPPED.MET, 'zero moves meets any numeric target');
+  assert.equal(steps.at(-1).alg, '');
+  assert.deepEqual(solve.asked.map((a) => a.solLen), [GODS_NUMBER + 1, 2],
+    'nothing may ask for a solution shorter than nothing');
+
+  // And on the untargeted rung, where there is no target to meet: nothing improves on zero.
+  const shortest = bounded([2, 0]);
+  const descent = await collect(refine('F', { solve: shortest, tier: 'shortest' }));
+  assert.deepEqual(descent.map((s) => s.moves), [2, 0]);
+  assert.equal(descent.at(-1).stopped, STOPPED.EXHAUSTED);
+  assert.equal(shortest.asked.length, 2, 'and the search stopped rather than asking again');
+});

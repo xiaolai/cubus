@@ -83,6 +83,85 @@ export function validateAnswer(answer, requestedBound) {
   return alg;
 }
 
+// ---- the validators -----------------------------------------------------------------------------
+//
+// Three of them, named, because `solve` below is a validate-then-execute function and that shape is
+// the point: EVERY check here runs before `setBounds`, which mutates persistent engine state, and a
+// reader has to be able to see that at a glance rather than by tracing sixty lines for the one
+// statement that commits (split out 2026-09-05). They take the engine where they need it — the
+// module imports nothing from two-phase.js, so the engine's own numbers are the only ones there
+// are.
+
+/** The cube and the two bounds. */
+function checkScalars(facelets, solLen, probeMax) {
+  if (typeof facelets !== 'string' || facelets.length !== 54) {
+    throw new TypeError('solver-engine: expected a 54-character facelet string');
+  }
+  // solLen 1 is legal: it asks for a zero-move solution, which a solved cube has — and which
+  // the shortest tier reaches when a state is one move from solved.
+  if (!Number.isInteger(solLen) || solLen < 1 || solLen > LOOSEST_BOUND) {
+    throw new RangeError(`solver-engine: solLen ${solLen} is outside 1..${LOOSEST_BOUND}`);
+  }
+  if (!Number.isSafeInteger(probeMax) || probeMax < 1) {
+    throw new RangeError(`solver-engine: probeMax ${probeMax} is not a positive integer`);
+  }
+}
+
+/** A non-empty set of distinct view indices this engine actually has. */
+function checkViews(views, engine) {
+  if (!Array.isArray(views) || views.length === 0) {
+    throw new RangeError('solver-engine: views must be null or a non-empty array of view indices');
+  }
+  // The upper bound comes from the ENGINE, not from a constant here: this module is written
+  // against an injected engine and imports nothing from two-phase.js, which is what lets it
+  // be tested against a fake. An engine that does not say how many views it has still gets
+  // the shape checked; the range check is simply the part only it can supply.
+  const count = Number.isInteger(engine.VIEW_COUNT) ? engine.VIEW_COUNT : null;
+  const seen = new Set();
+  for (const v of views) {
+    if (!Number.isInteger(v) || v < 0 || (count !== null && v >= count)) {
+      throw new RangeError(`solver-engine: view ${v} is not a view index${count === null ? '' : ` (0..${count - 1})`}`);
+    }
+    if (seen.has(v)) throw new RangeError(`solver-engine: view ${v} appears twice`);
+    seen.add(v);
+  }
+}
+
+/**
+ * A resume carrier this wrapper can both read and WRITE.
+ *
+ * Two ways it can fail, and until 2026-09-05 only the first was checked. The engine may not be able
+ * to continue a search at all — that is `openSearch`. And the carrier may not be able to take the
+ * resume point back: `resume: false`, `resume: 7` and a frozen `{state}` all read fine and then
+ * throw on the write, which happens AFTER `setBounds` has moved the bounds and after the search has
+ * run. That is precisely the "validate first, commit together" rule this file states, broken by the
+ * check that states it; the audit reproduced all three.
+ *
+ * Writability is asked of the property rather than tried on it: a probe write would mutate the
+ * caller's carrier as part of validating it, which is the same rule one level down.
+ */
+function checkCarrier(resume, engine) {
+  if (typeof resume !== 'object') {
+    throw new TypeError(`solver-engine: resume must be null or a { state } carrier, not ${typeof resume}`);
+  }
+  const own = Object.getOwnPropertyDescriptor(resume, 'state');
+  const writable = own ? own.writable === true || typeof own.set === 'function' : Object.isExtensible(resume);
+  if (!writable) {
+    throw new TypeError(
+      'solver-engine: this resume carrier cannot take a resume point back, so the next attempt ' +
+        'would silently re-walk the search this one asked to continue.',
+    );
+  }
+  // Refused rather than ignored — a caller that asked to continue a search and was quietly given
+  // a fresh one has been told nothing, and would go on paying for the re-walk it asked to avoid.
+  if (typeof engine.openSearch !== 'function') {
+    throw new TypeError(
+      'solver-engine: this engine has no openSearch(), so a search cannot be continued. ' +
+        'Pass resume: null to search from the start.',
+    );
+  }
+}
+
 /**
  * Wrap an engine module into `solve(facelets, { solLen, probeMax, views, resume })`.
  *
@@ -121,49 +200,13 @@ export function createSolver(engine) {
   }
 
   return function solve(facelets, { solLen = LOOSEST_BOUND, probeMax = DEFAULT_NODE_BUDGET, views = null, resume = null } = {}) {
-    if (typeof facelets !== 'string' || facelets.length !== 54) {
-      throw new TypeError('solver-engine: expected a 54-character facelet string');
-    }
-    // solLen 1 is legal: it asks for a zero-move solution, which a solved cube has — and which
-    // the shortest tier reaches when a state is one move from solved.
-    if (!Number.isInteger(solLen) || solLen < 1 || solLen > LOOSEST_BOUND) {
-      throw new RangeError(`solver-engine: solLen ${solLen} is outside 1..${LOOSEST_BOUND}`);
-    }
-    if (!Number.isSafeInteger(probeMax) || probeMax < 1) {
-      throw new RangeError(`solver-engine: probeMax ${probeMax} is not a positive integer`);
-    }
-    // BEFORE setBounds, like every other check here. setBounds mutates persistent engine state,
-    // so a filter validated after it would leave the bounds moved behind a thrown filter — the
-    // exact failure this wrapper's validate-first-commit-together rule exists to prevent, and
-    // the one setBounds itself documents.
-    if (views !== null) {
-      if (!Array.isArray(views) || views.length === 0) {
-        throw new RangeError('solver-engine: views must be null or a non-empty array of view indices');
-      }
-      // The upper bound comes from the ENGINE, not from a constant here: this module is written
-      // against an injected engine and imports nothing from two-phase.js, which is what lets it
-      // be tested against a fake. An engine that does not say how many views it has still gets
-      // the shape checked; the range check is simply the part only it can supply.
-      const count = Number.isInteger(engine.VIEW_COUNT) ? engine.VIEW_COUNT : null;
-      const seen = new Set();
-      for (const v of views) {
-        if (!Number.isInteger(v) || v < 0 || (count !== null && v >= count)) {
-          throw new RangeError(`solver-engine: view ${v} is not a view index${count === null ? '' : ` (0..${count - 1})`}`);
-        }
-        if (seen.has(v)) throw new RangeError(`solver-engine: view ${v} appears twice`);
-        seen.add(v);
-      }
-    }
-    // Same rule as the filter above, and for the same reason: a carrier that this engine cannot
-    // honour must be refused BEFORE setBounds moves anything. Refused rather than ignored — a
-    // caller that asked to continue a search and was quietly given a fresh one has been told
-    // nothing, and would go on paying for the re-walk it asked to avoid.
-    if (resume !== null && typeof engine.openSearch !== 'function') {
-      throw new TypeError(
-        'solver-engine: this engine has no openSearch(), so a search cannot be continued. ' +
-          'Pass resume: null to search from the start.',
-      );
-    }
+    // EVERYTHING is checked before setBounds, which mutates persistent engine state: a filter or a
+    // carrier validated after it would leave the bounds moved behind a throw — the exact failure
+    // this wrapper's validate-first-commit-together rule exists to prevent, and the one setBounds
+    // itself documents.
+    checkScalars(facelets, solLen, probeMax);
+    if (views !== null) checkViews(views, engine);
+    if (resume !== null) checkCarrier(resume, engine);
     engine.setBounds({ solLen, probeMax });
 
     // solvePattern initializes its own tables on first use — one owner for that lifecycle,

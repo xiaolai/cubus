@@ -181,6 +181,68 @@ test('a malformed resume point is refused rather than believed', () => {
   }
 });
 
+test('a COMPLETED resume point is checked too, rather than believed because it says it finished', () => {
+  // The branch every other check missed (2026-09-05 audit). A finished point is a CACHED ANSWER:
+  // `runSearch` hands back its alg and its (depth, view) without searching, so those four fields
+  // are the only ones nothing downstream re-derives — and nothing checked them either. The audit
+  // got "U U U" out of a search bounded at solLen 2, from view 999: the bound, the metric, the
+  // cube and the sort key a pooled caller relies on, all broken at once by one forged record.
+  //
+  // It crosses a structured clone from a worker, so "forged" and "corrupted" are the same input.
+  try {
+    engine.setBounds({ solLen: FLOOR, probeMax: 50_000_000, maxPhase2: 12 });
+    const search = engine.openSearch(WORKER_CUBES.pooled, {});
+    const answer = search.continueTo();
+    assert.ok(answer, 'WORKER_CUBES.pooled: 50M nodes must be enough — it is a 108k-node cube');
+    const point = search.state;
+    assert.equal(point.done, true);
+    const moves = answer.trim() ? answer.trim().split(/\s+/) : [];
+
+    // The auditor's record, exactly: three moves under a bound of two, won by a view that does
+    // not exist. Every field is internally plausible and the key matches, which is the point.
+    engine.setBounds({ solLen: 2 });
+    assert.throws(
+      () => engine.openSearch(WORKER_CUBES.pooled, {
+        resume: { ...point, key: { ...point.key, solLen: 2 }, cursor: 999, done: true, alg: 'U U U', foundDepth: 3, foundView: 999 },
+      }).continueTo(),
+      /3-move answer under a bound of 2/,
+      'a cached answer must be held to the bound its own key names',
+    );
+
+    engine.setBounds({ solLen: FLOOR });
+    const bad = (patch, pattern) => assert.throws(
+      () => engine.openSearch(WORKER_CUBES.pooled, { resume: { ...point, ...patch } }).continueTo(),
+      pattern, JSON.stringify(patch),
+    );
+    // An answer of the right length, in the right metric, for the wrong cube. Only the arithmetic
+    // catches this one — every structural check passes it.
+    const last = moves[moves.length - 1];
+    const wrong = [...moves.slice(0, -1), (last[0] === 'L' ? 'R' : 'L') + last.slice(1)].join(' ');
+    const oracle = Cube.fromString(WORKER_CUBES.pooled);
+    oracle.move(wrong);
+    assert.equal(oracle.isSolved(), false, 'the fixture must really fail to solve');
+    bad({ alg: wrong }, /does not solve the cube its key names/);
+    bad({ alg: 'x y z' }, /"x", which is not a move/);
+    // The sort key a pooled caller picks its winner by: a view outside the six, or a phase-1 depth
+    // deeper than the whole solution, would win a race it was never in.
+    bad({ foundView: 999 }, /found by view 999/);
+    bad({ foundView: -1 }, /found by view -1/);
+    bad({ foundDepth: moves.length + 1 }, /phase-1 depth/);
+    // And the two shapes no search ever leaves: an outcome on an unfinished point, and a winner
+    // named by a point that found nothing.
+    bad({ done: false }, /unfinished and yet carries an answer/);
+    bad({ alg: null }, /found nothing and yet names depth/);
+
+    // The real record still passes, and still costs nothing.
+    const kept = engine.openSearch(WORKER_CUBES.pooled, { resume: point });
+    assert.equal(kept.continueTo(), answer, 'a sound finished point must still answer from cache');
+    assert.equal(spent(), 0, 'and must not search to do it');
+    assert.deepEqual([engine.searchStats.depth, engine.searchStats.view], [point.foundDepth, point.foundView]);
+  } finally {
+    restore();
+  }
+});
+
 // ---- the equality the resume rests on ------------------------------------------------------------
 
 test('escalate-then-resume gives the from-scratch answer at every frontier, on every frozen state', () => {

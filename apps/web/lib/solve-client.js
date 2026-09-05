@@ -465,6 +465,18 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
   // capability is INJECTED like `makeShared`, never inferred here.
   let sharing = shareTables === true;
   let handshake = null;
+  /**
+   * How many times this pool has been torn down — the only thing a cancel that lands DURING an
+   * await leaves behind (2026-09-05 audit).
+   *
+   * The table handshake is the long await, and a `cancel()` inside it reaches the awaiting code as
+   * an ordinary rejected control request. Reading that rejection as "the tables could not be
+   * shared" is what it looked like, so the solve carried on: it spawned six replacement workers,
+   * searched, and RESOLVED — a cancelled pool answering a question nobody was waiting for, and
+   * sharing given up for the session over a teardown that says nothing about it. A counter is
+   * enough, because the question is only ever "is this still the pool I started on".
+   */
+  let era = 0;
 
   /**
    * A pool's resume point is SIX resume points, one per slice — they search different views and
@@ -503,7 +515,16 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
         'falling back to a single worker for the rest of this session. Searches will be slower ' +
         'in the tail; answers are unaffected.',
       );
-      for (const c of clients) c.cancel();
+      // Release the pool's threads — and NEVER another solve's request. `cancel()` rejects every
+      // entry on a client, and the app allows overlapping solves, so this was the same defect the
+      // per-request controller in `pooled` exists to prevent, one level out: the 2026-09-05 audit
+      // reproduced one solve failing to spawn worker 1 and an unrelated solve on worker 0 rejecting
+      // with "solve cancelled" over a cube nothing was wrong with. This solve's own requests are
+      // already settled — `pooled` awaits them all before it throws — so an idle client is one
+      // holding nothing, and a busy one is holding somebody else's search. The trade is that a
+      // busy client keeps its thread for the session rather than being ended here; a stray thread
+      // costs memory, a stolen answer costs the user their solve.
+      for (const c of clients) if (c.idle) c.cancel();
       // `??=`: two overlapping solves can fall back at once, and the second assignment would
       // orphan the first one's client — still holding a search, and no longer cancellable
       // through this pool.
@@ -514,6 +535,7 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
   }
 
   async function pooled(facelets, { solLen, probeMax, signal, resume = null }) {
+    const mine = era;
     const shares = shareBudget(probeMax, clients.length);
     const used = clients.slice(0, shares.length);
     // Look at the threads BEFORE dividing a budget between them. `spawnSolveWorker` answers with
@@ -532,6 +554,11 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
     // point: the first solve used to wait for six concurrent table builds anyway, and now it
     // waits for one uncontended build plus a handful of milliseconds of adoption.
     if (sharing) await shareTablesAcrossPool();
+    // A cancel that landed while the handshake was in flight terminated these workers. Nothing in
+    // the rejection says so — it is the same "solve cancelled" any request gets — so the era is
+    // asked instead, and asked HERE, before a single replacement thread is spawned. Reproduced by
+    // the 2026-09-05 audit: a cancelled pool spawned six fresh workers, searched, and resolved.
+    if (era !== mine) throw new Error(CANCELLED);
     // A fresh word per solve. `makeShared` is injected so a page without SharedArrayBuffer — or
     // a test — gets a correct client that simply never stops early.
     const stop = makeShared?.() ?? null;
@@ -622,6 +649,7 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
    *     out loud and that worker simply builds its own on its next search.
    */
   async function shareTablesAcrossPool() {
+    const mine = era;
     // A main-thread "worker" is one realm: the module instance, and therefore the tables, are
     // already shared by construction. Checked before the handshake rather than after, or the
     // control message would reach `handleSolveRequest` and come back as a solver error.
@@ -663,6 +691,11 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
       // A thread that died says nothing about tables; it goes down the one fallback path the pool
       // already has, which ends with a single worker searching every view.
       if (isWorkerFailure(err)) throw err;
+      // Neither does a TEARDOWN. A cancel during the handshake rejects it like anything else in
+      // flight, and treating that as "this page cannot share tables" gave up 9.82 MiB per worker
+      // for the session over a button press. The capability is untouched; the caller is told by
+      // the era check in `pooled`.
+      if (era !== mine) return;
       sharing = false;
       console.warn(
         `solve-client: the solver tables could not be shared (${err.message}) — ` +
@@ -673,6 +706,12 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
   }
 
   function cancel() {
+    // The handshake is a fact about THESE workers, and this ends them. Keeping it made the next
+    // solve skip prepare/adopt entirely: every replacement worker built its own 9.82 MiB of
+    // private tables while `sharingTables` still reported the pool was on one set — a measurement
+    // and a diagnostic both quietly wrong, and six table builds nobody could see (2026-09-05).
+    era += 1;
+    handshake = null;
     for (const c of clients) c.cancel();
     lone?.cancel();
   }

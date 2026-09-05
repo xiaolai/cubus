@@ -659,6 +659,41 @@ function moveAllowed(prevMove, m) {
   return AXIS_OF(face) !== AXIS_OF(prev) || face < prev;
 }
 
+/**
+ * The two questions every node of either phase asks before doing any work: is the budget spent,
+ * and has some other search already made this one pointless. True means stop.
+ *
+ * ONE copy (2026-09-05). Phase 1 and phase 2 each carried these three checks, identical but for
+ * the polarity their callers read — phase 1's "stop" is `true` (abort the enumeration), phase 2's
+ * is `false` (report no solution) — and the polarity is exactly why they had to be read carefully
+ * to be seen as the same thing. That is not a hypothetical cost: phase 2 did not poll the stop
+ * word AT ALL until it was noticed, so a worker already inside an expensive probe went on spending
+ * its whole budget after a shallower sibling had won. A cancellation fix has one place to land now.
+ *
+ * Argument-free and allocation-free, reading module state exactly as the two DFS functions do, for
+ * the same reason: the search is one synchronous walk with nowhere to thread a parameter through.
+ * It is on the hottest path in the app — one call per search node, ~15 ns of work between calls —
+ * so it was measured rather than assumed, interleaved so machine drift hits both sides: five frozen
+ * states, 11,130,753 nodes per run (identical either way, as it must be), fifteen runs a side.
+ * Best 170.5 / 163.5 ms before, 166.6 / 164.9 after; medians 178.1 / 164.5 against 168.2 / 166.3.
+ * The two orders disagree about which is faster, which is the answer: the call is inside the
+ * run-to-run spread, and V8 inlines a function this small.
+ */
+function mustStop() {
+  if (exhausted) return true; // the abort channel — nothing below spends what is not there
+  if (--nodesLeft < 0) {
+    exhausted = true;
+    return true;
+  }
+  // The same abort channel, reached from outside. `exhausted` already stops both phases
+  // wherever it is set, so a stop needs no new plumbing — only somewhere to be asked.
+  if ((nodesLeft & STOP_POLL_MASK) === 0 && stopRequested(currentDepth)) {
+    exhausted = true;
+    return true;
+  }
+  return false;
+}
+
 const IS_PHASE2 = (() => {
   const flags = new Array(P1_WIDTH).fill(false);
   for (const m of PHASE2_MOVES) flags[m] = true;
@@ -685,17 +720,7 @@ const IS_PHASE2 = (() => {
  * what makes the trailing-G1 split reachable" for the mechanism at cap 1.
  */
 function phase1DFS(t, f, s, depthLeft, prevMove, path, onSolution) {
-  if (exhausted) return true; // the abort channel — nothing below spends what is not there
-  if (--nodesLeft < 0) {
-    exhausted = true;
-    return true;
-  }
-  // The same abort channel, reached from outside. `exhausted` already stops both phases
-  // wherever it is set, so a stop needs no new plumbing — only somewhere to be asked.
-  if ((nodesLeft & STOP_POLL_MASK) === 0 && stopRequested(currentDepth)) {
-    exhausted = true;
-    return true;
-  }
+  if (mustStop()) return true; // true is phase 1's "stop": abort the enumeration
   searchStats.p1Nodes++; // counted only inside the budget, so spent === budget on exhaustion
   if (depthLeft === 0) {
     if (t === 0 && f === 0 && s === 0 && (path.length === 0 || !IS_PHASE2[path[path.length - 1]])) {
@@ -876,18 +901,9 @@ export function toFacelets(state) {
  * MOVE_NAMES) — the caller owns the array and reads it on true.
  */
 function phase2DFS(c, e, s, depthLeft, prevMove, path) {
-  if (exhausted) return false; // false, not found — the ladder and phase 1 both stop on the flag
-  if (--nodesLeft < 0) {
-    exhausted = true;
-    return false;
-  }
-  // Phase 2 polls as well as phase 1. It used not to, which made the stop protocol a half
-  // measure: a worker already inside an expensive probe kept spending its whole budget after a
-  // shallower sibling had won, which is exactly the wait the shared word exists to avoid.
-  if ((nodesLeft & STOP_POLL_MASK) === 0 && stopRequested(currentDepth)) {
-    exhausted = true;
-    return false;
-  }
+  // false is phase 2's "stop": not found. The ladder above and phase 1 both stop on `exhausted`
+  // itself, which is what makes the two polarities safe to share one check — see mustStop.
+  if (mustStop()) return false;
   searchStats.p2Nodes++;
   if (depthLeft === 0) return c === 0 && e === 0 && s === 0;
   if (Math.max(PRUNE2C[c * PERM4_COUNT + s], PRUNE2E[e * PERM4_COUNT + s]) > depthLeft) return false;
@@ -1309,7 +1325,86 @@ function adoptPoint(resume, key) {
   point.alg = typeof resume.alg === 'string' ? resume.alg : null;
   point.foundDepth = Number.isInteger(resume.foundDepth) ? resume.foundDepth : -1;
   point.foundView = Number.isInteger(resume.foundView) ? resume.foundView : -1;
+  checkOutcome(point, key);
   return point;
+}
+
+/**
+ * The OUTCOME half of a resume point — `done`, `alg`, and the (depth, view) the winner published.
+ *
+ * These four fields were the only ones nothing checked, and they are the ones a search never
+ * re-derives: `runSearch` returns a finished point's algorithm and its sort key straight back
+ * without searching. So a forged or corrupted completed record was believed entirely — the
+ * 2026-09-05 audit answered a search bounded at `solLen: 2` with "U U U", from view 999. That is
+ * every property the engine promises, broken at once: the bound, the metric, the cube, and the key
+ * a pooled caller sorts on.
+ *
+ * It is verified by ARITHMETIC, not trusted: the alg is applied to the state the key names, with
+ * this module's own move tables, and must land on solved. That costs one parse and at most 22
+ * cubie permutations, on a path that runs once per adoption and never inside the search.
+ */
+function checkOutcome(point, key) {
+  if (!point.done) {
+    // An unfinished search has no outcome to carry. A record with one is not a position in this
+    // enumeration; `runSearch` would search on and then overwrite it, so believing it silently
+    // would hide whatever produced it.
+    if (point.alg !== null || point.foundDepth !== -1 || point.foundView !== -1) {
+      throw new RangeError(
+        'two-phase: this resume point is unfinished and yet carries an answer, so it is not a ' +
+          'position any search of this enumeration left',
+      );
+    }
+    return;
+  }
+  if (point.alg === null) {
+    // The two finishes with no answer: a state that is not a cube, and an enumeration walked to
+    // its end. Neither ever published a winner.
+    if (point.foundDepth !== -1 || point.foundView !== -1) {
+      throw new RangeError(
+        `two-phase: this resume point found nothing and yet names depth ${point.foundDepth}, ` +
+          `view ${point.foundView} as its winner`,
+      );
+    }
+    return;
+  }
+  const moves = point.alg.trim() ? point.alg.trim().split(/\s+/) : [];
+  for (const name of moves) {
+    if (!MOVE_NAMES.includes(name)) {
+      throw new RangeError(`two-phase: this resume point's answer contains "${name}", which is not a move`);
+    }
+  }
+  // The bound is EXCLUSIVE, and it is part of the key, so this is the same bound the search that
+  // produced the answer was under.
+  if (moves.length >= key.solLen) {
+    throw new RangeError(
+      `two-phase: this resume point carries a ${moves.length}-move answer under a bound of ` +
+        `${key.solLen}, which no search of this enumeration can have found`,
+    );
+  }
+  if (!Number.isInteger(point.foundDepth) || point.foundDepth < 0 || point.foundDepth > moves.length) {
+    throw new RangeError(
+      `two-phase: this resume point's answer was found at phase-1 depth ${point.foundDepth} of a ` +
+        `${moves.length}-move solution`,
+    );
+  }
+  if (!Number.isInteger(point.foundView) || point.foundView < 0 || point.foundView >= VIEW_COUNT
+    || (key.views !== null && !key.views.includes(point.foundView))) {
+    throw new RangeError(
+      `two-phase: this resume point's answer was found by view ${point.foundView}, which is not ` +
+        `${key.views === null ? `one of the ${VIEW_COUNT} views` : `in the searched slice ${JSON.stringify(key.views)}`}`,
+    );
+  }
+  let state = parseFacelets(key.facelets);
+  if (state === null) {
+    throw new RangeError('two-phase: this resume point solves a state that is not a cube');
+  }
+  for (const name of moves) state = applyMove(state, name);
+  if (!statesEqual(state, SOLVED)) {
+    throw new RangeError(
+      'two-phase: this resume point\'s answer does not solve the cube its key names — it is not ' +
+        'an answer this search can have produced',
+    );
+  }
 }
 
 /**
