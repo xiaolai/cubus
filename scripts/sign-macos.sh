@@ -128,7 +128,7 @@ retry() {
 # convert it.
 MOUNT=""
 cleanup() {
-  [ -n "$MOUNT" ] && hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true
+  if [ -n "$MOUNT" ]; then hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true; fi
   MOUNT=""
 }
 trap cleanup EXIT

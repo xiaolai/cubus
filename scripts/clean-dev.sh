@@ -101,7 +101,7 @@ sizes() {
     # Asked of pnpm, not assumed: the store lives under ~/Library on macOS and ~/.local/share
     # elsewhere, and a hard-coded macOS path reported nothing on any other OS.
     store="$(pnpm store path 2>/dev/null || true)"
-    [ -n "$store" ] && du -sh "$store" 2>/dev/null || true
+    if [ -n "$store" ]; then du -sh "$store" 2>/dev/null || true; fi
   fi
   df -h / | tail -1 | awk '{print "  " $4 " free on /"}'
 }
