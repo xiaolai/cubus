@@ -153,6 +153,54 @@ fn solved_index(kind: Kind) -> usize {
 /// same level is never mistaken for a member of the level being scanned.
 const SCAN_SEGMENT: usize = 4_000_000;
 
+/// Expand one segment of the level-`d` frontier: every entry in `base..end` holding `d` marks its
+/// unmarked neighbours `d + 1`. Returns how many entries this segment claimed — a COUNT, not an
+/// estimate, which is what makes the caller's "reached every entry" check mean something.
+///
+/// It takes the WHOLE array plus a range rather than a slice: the scan is confined to the segment,
+/// the neighbours it marks are anywhere. Lifted out of `generate_levels` so that function reads as
+/// what it is — a level schedule with a progress rule and a termination rule — instead of burying
+/// them under two levels of parallel expansion (the audit's finding, 2026-09-05). The move is
+/// scheduling-neutral by construction and certified as such: every generated table still goes
+/// through the histogram, diameter and Bellman checks, which do not know how the array was filled.
+fn expand_segment(
+    kind: Kind,
+    tables: &MoveTables,
+    dist: &[AtomicU8],
+    base: usize,
+    end: usize,
+    d: u8,
+) -> u64 {
+    dist[base..end]
+        .par_iter()
+        .enumerate()
+        .with_min_len(1 << 16)
+        .map(|(offset, cell)| {
+            if cell.load(Ordering::Relaxed) != d {
+                return 0;
+            }
+            let idx = base + offset;
+            let mut marked = 0u64;
+            for m in 0..N_MOVES {
+                let nb = &dist[neighbor(kind, tables, idx, m)];
+                // Claim with a compare-exchange, not a load-then-store: two threads expanding
+                // different frontier entries reach common neighbours, and a plain store would let
+                // both count the same one. The exchange succeeds exactly once per entry, so the
+                // caller's `reached` is a count rather than an estimate. The load in front of it
+                // keeps the uncontended common case (an already-marked neighbour) a plain read.
+                if nb.load(Ordering::Relaxed) == 255
+                    && nb
+                        .compare_exchange(255, d + 1, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    marked += 1;
+                }
+            }
+            marked
+        })
+        .sum()
+}
+
 /// Exhaustive level-synchronous BFS from solved over the whole coordinate space (plan §8).
 ///
 /// At depth `d` every entry is scanned and each one holding `d` marks its unmarked neighbours
@@ -204,36 +252,7 @@ pub fn generate_levels(
         let mut marked_this_level: u64 = 0;
         for base in (0..n).step_by(SCAN_SEGMENT) {
             let end = (base + SCAN_SEGMENT).min(n);
-            let marked: u64 = dist[base..end]
-                .par_iter()
-                .enumerate()
-                .with_min_len(1 << 16)
-                .map(|(offset, cell)| {
-                    if cell.load(Ordering::Relaxed) != d {
-                        return 0;
-                    }
-                    let idx = base + offset;
-                    let mut marked = 0u64;
-                    for m in 0..N_MOVES {
-                        let nb = &dist[neighbor(kind, tables, idx, m)];
-                        // Claim with a compare-exchange, not a load-then-store: two threads
-                        // expanding different frontier entries reach common neighbours, and a
-                        // plain store would let both count the same one. The exchange succeeds
-                        // exactly once per entry, so `reached` is a count, not an estimate —
-                        // which is what makes the "reached every entry" check below mean
-                        // something. The load in front of it keeps the uncontended common case
-                        // (an already-marked neighbour) a plain read.
-                        if nb.load(Ordering::Relaxed) == 255
-                            && nb
-                                .compare_exchange(255, d + 1, Ordering::Relaxed, Ordering::Relaxed)
-                                .is_ok()
-                        {
-                            marked += 1;
-                        }
-                    }
-                    marked
-                })
-                .sum();
+            let marked = expand_segment(kind, tables, &dist, base, end, d);
             marked_this_level += marked;
             reached += marked;
             if reached != reported {
