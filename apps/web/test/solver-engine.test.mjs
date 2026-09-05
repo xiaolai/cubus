@@ -53,8 +53,21 @@ test('a carrier that cannot take the point back is refused, before the bounds mo
   // all read fine — `resume.state ?? null` is undefined, then null — so the bounds moved, the
   // search RAN, and the TypeError arrived on the write-back afterwards. Bounds are persistent
   // engine state and the search is the expensive part; both had already happened.
-  for (const carrier of [false, 7, 'nope', Object.freeze({ state: null }),
-    Object.defineProperty({}, 'state', { value: null, writable: false })]) {
+  //
+  // Round 2 added the two shapes that read-only descriptor check let through, both reproduced by
+  // the audit. They are the reason the check is a probe WRITE now: the first has no own descriptor
+  // to inspect, and the second has one that says it takes writes and then does not.
+  const shapes = [
+    ['false', false],
+    ['7', 7],
+    ["'nope'", 'nope'],
+    ['a frozen carrier', Object.freeze({ state: null })],
+    ['an own read-only state', Object.defineProperty({}, 'state', { value: null, writable: false })],
+    ['an INHERITED read-only state', Object.create(Object.freeze({ state: null }))],
+    ['a setter that DISCARDS the write', { get state() { return null; }, set state(_v) {} }],
+    ['a setter that throws', { get state() { return null; }, set state(_v) { throw new Error('no'); } }],
+  ];
+  for (const [what, carrier] of shapes) {
     let boundsSet = 0;
     let opened = 0;
     const solve = createSolver({
@@ -65,14 +78,42 @@ test('a carrier that cannot take the point back is refused, before the bounds mo
       VIEW_COUNT: 6,
     });
     const facelets = new Cube().asString();
-    assert.throws(() => solve(facelets, { resume: carrier }), TypeError, String(carrier));
-    assert.equal(boundsSet, 0, `${String(carrier)}: a refused carrier must not have moved the bounds`);
-    assert.equal(opened, 0, `${String(carrier)}: nor have searched`);
+    assert.throws(() => solve(facelets, { resume: carrier }), TypeError, what);
+    assert.equal(boundsSet, 0, `${what}: a refused carrier must not have moved the bounds`);
+    assert.equal(opened, 0, `${what}: nor have searched`);
     // And a carrier that CAN take it still works, on the same engine.
     const good = { state: null };
     assert.equal(solve(facelets, { resume: good }), '');
     assert.deepEqual(good.state, {});
   }
+});
+
+test('the writability probe puts the carrier back before the search ever sees it', () => {
+  // Writability is asked by WRITING (2026-09-05), which is only sound because the write is undone
+  // in the same breath: the probe is a sentinel, and a resume point is the one thing this wrapper
+  // must not invent. A carrier whose sentinel leaked would hand the engine a key it cannot match
+  // and turn a continuation into a loud refusal over a cube nothing is wrong with.
+  const seen = [];
+  const solve = createSolver({
+    initialize() {},
+    setBounds() {},
+    solvePattern: () => { throw new Error('a carrier must not take the from-scratch path'); },
+    openSearch: (_f, { resume }) => { seen.push(resume); return { continueTo: () => '', state: { after: true } }; },
+    VIEW_COUNT: 6,
+  });
+  const point = { carried: 'the search so far' };
+  // An accessor pair that really stores, so every value the probe passes through is recorded.
+  const written = [];
+  const carrier = {
+    held: point,
+    get state() { return this.held; },
+    set state(v) { written.push(v); this.held = v; },
+  };
+  assert.equal(solve(new Cube().asString(), { resume: carrier }), '');
+  assert.deepEqual(seen, [point], 'the engine was handed the probe instead of the resume point');
+  assert.deepEqual(carrier.state, { after: true }, 'and the search still wrote its point back');
+  assert.equal(written.length, 3, 'probe, restore, and the search — no more, no fewer');
+  assert.equal(written[1], point, 'the restore must put back the value that was there');
 });
 
 test('a carrier takes the resumable path and comes back holding the search', () => {

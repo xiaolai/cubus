@@ -221,6 +221,18 @@ test('an onProgress that is not a function is refused, not ignored', async () =>
   const solve = scripted([20]);
   await assert.rejects(() => collect(refine('F', { solve, onProgress: 'tell me' })), TypeError);
   assert.equal(solve.asked.length, 0, 'and nothing was searched first');
+
+  // And refused BEFORE the abort check, which is the rule this module states for every other
+  // input and was the one place it did not keep (2026-09-05): `refine` returned quietly on an
+  // aborted signal and the watcher was validated afterwards, inside `solveWithinGodsNumber`, so
+  // a caller that had made this mistake could go a whole session without being told.
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    () => collect(refine('F', { solve, onProgress: 'tell me', signal: controller.signal })),
+    TypeError,
+    'a malformed call is malformed whether or not anyone is still waiting for the answer',
+  );
 });
 
 test('a signal aborted before anything ran yields nothing at all', async () => {

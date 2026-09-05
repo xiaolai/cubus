@@ -572,3 +572,52 @@ test('a cancel drops the handshake, so replacement workers adopt instead of buil
   ], 'the replacements were never offered the tables, so all six built their own');
   assert.equal(pool.sharingTables, true);
 });
+
+test('a cancelled handshake clears its OWN attempt, never the one that replaced it', async () => {
+  // The half the identity check adds (2026-09-05 audit). `cancel()` nulls the handshake and the
+  // very next solve puts a new one there — but the cancelled attempt's catch runs a microtask
+  // LATER, when its control request finally rejects, and it was clearing whatever it found. So
+  // the replacement pool's handshake was thrown away while it was still running: the next solve
+  // saw no handshake, and sent PREPARE_TABLES to the replacement builder a SECOND time and
+  // ADOPT_TABLES to each replacement adopter a second time. 9.82 MiB re-published for nothing,
+  // and invisible — every solve still answered.
+  const made = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  // Only the FIRST builder is held: the replacements must answer at once, or the cancelled
+  // attempt's catch could not race them.
+  const pool = createParallelSolveClient({
+    spawn: () => {
+      const index = made.length;
+      const w = fakeWorker({
+        index,
+        prepare: index === 0
+          ? (msg) => gate.then(() => ({ id: msg.id, ok: true, kind: 'tables', tables: BUNDLE }))
+          : null,
+      });
+      made.push(w);
+      return w;
+    },
+    workers: 6,
+    viewCount: 6,
+    shareTables: true,
+  });
+  const bounds = { solLen: 21, probeMax: 600 };
+  const first = pool.solve('F'.repeat(54), bounds).then((v) => ({ resolved: v }), (e) => ({ rejected: e.message }));
+  await Promise.resolve();
+  assert.deepEqual(made[0].control, [PREPARE_TABLES], 'the handshake must be in flight to be cancelled');
+
+  pool.cancel();
+  const second = pool.solve('U'.repeat(54), bounds);
+  release();
+  assert.deepEqual(await first, { rejected: 'solve cancelled' });
+  assert.equal(await second, 'R U');
+  assert.equal(await pool.solve('D'.repeat(54), bounds), 'R U');
+
+  const replacements = made.slice(6);
+  assert.equal(replacements.length, 6, 'the cancel should cost exactly one set of replacement threads');
+  assert.deepEqual(replacements.map((w) => w.control), [
+    [PREPARE_TABLES], [ADOPT_TABLES], [ADOPT_TABLES], [ADOPT_TABLES], [ADOPT_TABLES], [ADOPT_TABLES],
+  ], 'a second handshake on the replacements is the cancelled attempt clearing theirs');
+  assert.equal(pool.sharingTables, true);
+});

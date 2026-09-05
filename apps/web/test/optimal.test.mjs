@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync } from 'node:fs';
 
-import { cancel, capability, prove, status } from '../lib/optimal.js';
+import { cancel, capability, prove, status, validateProof } from '../lib/optimal.js';
 
 const vendored = new URL('../vendor/cubejs.js', import.meta.url);
 assert.ok(existsSync(vendored), 'vendor/cubejs.js is missing — run `pnpm vendor:libs`');
@@ -131,6 +131,35 @@ test('a solved cube proves at zero moves', async () => {
   const proof = await prove(new Cube().asString(), { Cube, upperBound: 0 });
   assert.equal(proof.moves, 0);
   noNative();
+});
+
+test('the checks a proof must pass are drivable without a native side at all', () => {
+  // `validateProof` is the synchronous half, split out of `prove` (2026-09-05, audit refactoring
+  // debt) — queue coordination and result validation had nothing to say to each other and only
+  // one of them needs a fake command surface to exercise. Everything below runs with no window,
+  // no invoke and no fence: the oracle IS the seam, and this is it on its own.
+  const scrambled = new Cube();
+  scrambled.move("R U R' F2");
+  const facelets = scrambled.asString();
+  const sound = { length: 4, solution: "F2 R U' R'", nodes: 9, millis: 1, tables_persisted: true };
+  assert.deepEqual(
+    validateProof(sound, { facelets, Cube }),
+    { moves: 4, alg: "F2 R U' R'", nodes: 9, millis: 1, tablesPersisted: true },
+  );
+  const bad = (patch, pattern) => assert.throws(
+    () => validateProof({ ...sound, ...patch }, { facelets, Cube, upperBound: 6 }), pattern, JSON.stringify(patch),
+  );
+  bad({ solution: "F2 R U' R" }, /does not solve the cube/);
+  bad({ solution: 'y2 F2 R U2' }, /not a face turn/);
+  bad({ length: 5 }, /claimed length 5 but the solution has 4 moves/);
+  bad({ nodes: Number.NaN }, /malformed proof metadata/);
+  bad({ tables_persisted: 'yes' }, /malformed proof metadata/);
+  assert.throws(() => validateProof(null, { facelets, Cube }), /malformed proof/);
+  // The one cross-solver invariant, which is the whole reason the bound is carried at all.
+  assert.throws(
+    () => validateProof(sound, { facelets, Cube, upperBound: 3 }),
+    /claimed minimum of 4 above the 3-move solution/,
+  );
 });
 
 // ---- the wording rule, pinned in the app's source ---------------------------------------------
@@ -532,17 +561,68 @@ test('a cancel arriving DURING the fence wait does not make a proof wait for its
     optimal_cancel: async () => true,
     optimal_prove: () => ({ length: 1, solution: 'R2', nodes: 1, millis: 1, tables_persisted: true }),
   });
-  const proving = prove(facelets, { Cube });
+  const proving = prove(facelets, { Cube }).then((v) => v, (e) => ({ rejected: e.message }));
   cancel(); // fire-and-forget, as teardown does — and it lands inside the fence's first wait
   const proof = await settles(proving);
   assert.notEqual(proof, 'HUNG', 'the proof waited on its own completion');
-  assert.equal(proof.moves, 1);
+  // It SETTLES, which is what this test is about — and since 2026-09-05 it settles by refusing:
+  // the cancel arrived after the proof was asked for, so it is aimed at this proof and the
+  // queued proof must never start (the test below is that rule's own).
+  assert.match(proof.rejected ?? '', /cancelled/);
 
   // And the fence is not poisoned for what comes after it: the deadlocked promise stayed in
   // `lastProve`, so every later proof queued behind a wait that could never end.
   const next = await settles(prove(facelets, { Cube }));
   assert.notEqual(next, 'HUNG', 'a later proof inherited the deadlock');
   assert.equal(next.moves, 1);
-  assert.deepEqual(calls.map((c) => c.cmd), ['optimal_cancel', 'optimal_prove', 'optimal_prove']);
+  assert.deepEqual(calls.map((c) => c.cmd), ['optimal_cancel', 'optimal_prove']);
+  noNative();
+});
+
+test('a proof cancelled while it waits for the fence never reaches the native side', async () => {
+  // The worst of the 2026-09-05 audit's findings, reproduced exactly as it reported it: waiting
+  // out the fences takes at least a microtask, so `prove(); cancel()` invoked `optimal_cancel`
+  // BEFORE `optimal_prove` — and the cancel, having nothing to cancel, returned false while the
+  // proof it was aimed at started immediately afterwards and ran for HOURS with the screen no
+  // longer waiting for it. A cancel cannot be re-sent by the UI either: the stop affordance is
+  // gone by then.
+  //
+  // The assertion is about a call that must NOT happen, which is the only shape that can pin
+  // this: a proof that merely rejects while still starting the native search looks identical
+  // from the caller's side.
+  const scrambled = new Cube();
+  scrambled.move('R2');
+  const calls = fakeNative({
+    optimal_cancel: async () => false, // nothing running yet — which is exactly the trap
+    optimal_prove: () => ({ length: 1, solution: 'R2', nodes: 1, millis: 1, tables_persisted: true }),
+  });
+  const proving = prove(scrambled.asString(), { Cube });
+  await cancel();
+  await assert.rejects(() => proving, /cancelled/);
+  assert.deepEqual(calls.map((c) => c.cmd), ['optimal_cancel'], 'no proof may start behind a cancel');
+
+  // The generation is a fence, not a latch: the next proof asked for is a NEW question and runs.
+  const proof = await prove(scrambled.asString(), { Cube });
+  assert.equal(proof.moves, 1);
+  assert.deepEqual(calls.map((c) => c.cmd), ['optimal_cancel', 'optimal_prove']);
+  noNative();
+});
+
+test('a cancel issued BEFORE a proof was asked for does not call it off', async () => {
+  // The other side of the same rule, and the reason the token is a generation rather than a flag.
+  // Teardown fires cancel() without awaiting, so the round trip for the PREVIOUS proof is often
+  // still in flight when the next one is asked for — that cancel is the stale one the fence exists
+  // to absorb, and reading it as "this proof was cancelled" would make the affordance unusable
+  // straight after a stop.
+  const scrambled = new Cube();
+  scrambled.move('R2');
+  const calls = fakeNative({
+    optimal_cancel: async () => true,
+    optimal_prove: () => ({ length: 1, solution: 'R2', nodes: 1, millis: 1, tables_persisted: true }),
+  });
+  cancel(); // fire-and-forget, and NOT awaited: it is still in flight below
+  const proof = await prove(scrambled.asString(), { Cube });
+  assert.equal(proof.moves, 1);
+  assert.deepEqual(calls.map((c) => c.cmd), ['optimal_cancel', 'optimal_prove']);
   noNative();
 });
