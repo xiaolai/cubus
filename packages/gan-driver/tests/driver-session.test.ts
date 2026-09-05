@@ -1,0 +1,189 @@
+// The session around the packets: connecting, disconnecting, and what an active request is
+// allowed to believe.
+//
+// Three separate defects, found by audit on 2026-09-05, all of the same shape — the driver
+// treating a step as done because something ELSE happened:
+//
+//   connect() twice   installed a second set of listeners on the same subscription, so every
+//                     packet decoded twice and every move arrived twice.
+//   disconnect()      left `live` true, so the next active request skipped the readiness barrier
+//                     and wrote a command to a transport that was already torn down.
+//   request()         resolved on the next matching notification whether or not the write that
+//                     asked for it had succeeded. The cube emits FACELETS ~1 Hz on its own, so a
+//                     write that failed outright still produced a successful getState() — and
+//                     that is exactly the pre-read anchorSolved() uses as its readiness barrier
+//                     before REQUEST_RESET, the one command that can permanently desync the
+//                     driver from the cube.
+
+import { describe, expect, it } from 'vitest';
+
+import { GanCube } from '../src/driver.js';
+import { buildUnsafeCommand } from '../src/gen4/commands.js';
+import { GanGen4Cipher } from '../src/gen4/crypto.js';
+import { bytesToHex } from '../src/hex.js';
+import { CAPTURE_MAC, faceletsPacket, movePacket, unknownPacket } from './helpers/packets.js';
+import { simulateTransport } from './helpers/simulate-transport.js';
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+/** A connected driver whose subscription has already delivered a packet, so it is live. */
+function connected() {
+  const sim = simulateTransport();
+  const cube = new GanCube({ mac: CAPTURE_MAC, transport: sim.transport });
+  cube.connect();
+  // onPacket marks the subscription live before it validates framing, so a short frame is enough.
+  sim.sub.emit('packet', '00', 0);
+  return { sim, cube };
+}
+
+describe('connect() is idempotent', () => {
+  it('a second connect() does not double the move stream', () => {
+    const sim = simulateTransport();
+    const cube = new GanCube({ mac: CAPTURE_MAC, transport: sim.transport });
+    cube.connect();
+    cube.connect();
+    const moves: number[] = [];
+    cube.onMove((m) => moves.push(m.serial));
+    sim.sub.emit('packet', movePacket(7), 0);
+    expect(moves).toEqual([7]);
+  });
+
+  it('asks the transport for one subscription, not one per call', () => {
+    const sim = simulateTransport();
+    const cube = new GanCube({ mac: CAPTURE_MAC, transport: sim.transport });
+    cube.connect();
+    cube.connect();
+    cube.connect();
+    expect(sim.subscribes).toBe(1);
+  });
+
+  it('a disconnected driver can connect again, with a fresh subscription', () => {
+    const { sim, cube } = connected();
+    cube.disconnect();
+    cube.connect();
+    expect(sim.subscribes).toBe(2);
+    const moves: number[] = [];
+    cube.onMove((m) => moves.push(m.serial));
+    sim.sub.emit('packet', movePacket(7), 0);
+    expect(moves).toEqual([7]);
+  });
+
+  it('stops decoding packets once disconnected', () => {
+    const { sim, cube } = connected();
+    const moves: number[] = [];
+    cube.onMove((m) => moves.push(m.serial));
+    cube.disconnect();
+    sim.sub.emit('packet', movePacket(7), 0);
+    expect(moves).toEqual([]);
+    expect(sim.disconnects).toBe(1);
+  });
+});
+
+describe('readiness does not survive the link', () => {
+  it('an active request after disconnect() waits for readiness instead of writing', async () => {
+    const { sim, cube } = connected();
+    cube.disconnect();
+    await expect(cube.getState({ active: true, timeoutMs: 30 })).rejects.toThrow(
+      /subscription to go live/i,
+    );
+    // The point of the barrier: nothing was written to a transport that is gone.
+    expect(sim.writes).toEqual([]);
+  });
+
+  it('a request in flight when the link drops is rejected, not left waiting', async () => {
+    const { cube } = connected();
+    const pending = cube.getState({ timeoutMs: 2000 });
+    cube.disconnect();
+    await expect(pending).rejects.toThrow(/disconnect/i);
+  });
+
+  it('a subscription that closes clears readiness and rejects what was waiting', async () => {
+    const { sim, cube } = connected();
+    const pending = cube.getState({ timeoutMs: 2000 });
+    sim.sub.emit('close', 0);
+    await expect(pending).rejects.toThrow(/subscription closed/i);
+    await expect(cube.getState({ active: true, timeoutMs: 30 })).rejects.toThrow(
+      /subscription to go live/i,
+    );
+    expect(sim.writes).toEqual([]);
+  });
+});
+
+describe('an active request waits for its own write', () => {
+  it('rejects when the write fails, even though the cube answered meanwhile', async () => {
+    const { sim, cube } = connected();
+    sim.onWrite = () => {
+      // The cube's periodic state notification lands while the write is still in flight — this
+      // is the ~1 Hz stream, not an answer to anything.
+      sim.sub.emit('packet', faceletsPacket(), 0);
+      return Promise.reject(new Error('write failed: characteristic not writable'));
+    };
+    await expect(cube.getState({ active: true, timeoutMs: 500 })).rejects.toThrow(/write failed/);
+  });
+
+  it('holds an early answer until the write completes, rather than dropping it', async () => {
+    const { sim, cube } = connected();
+    let release!: () => void;
+    sim.onWrite = () => {
+      sim.sub.emit('packet', faceletsPacket(), 0);
+      return new Promise<void>((r) => {
+        release = r;
+      });
+    };
+    const pending = cube.getState({ active: true, timeoutMs: 2000 });
+    // The notification has already arrived; the write has not finished. Nothing may resolve yet.
+    expect(await Promise.race([pending.then(() => 'resolved'), tick().then(() => 'waiting')])).toBe(
+      'waiting',
+    );
+    release();
+    await expect(pending).resolves.toMatchObject({ type: 'FACELETS' });
+  });
+
+  it('a passive read still resolves on the notification alone — there is no write to wait for', async () => {
+    const { sim, cube } = connected();
+    const pending = cube.getState({ timeoutMs: 2000 });
+    sim.sub.emit('packet', faceletsPacket(), 0);
+    await expect(pending).resolves.toMatchObject({ type: 'FACELETS' });
+    expect(sim.writes).toEqual([]);
+  });
+});
+
+describe('an unrecognised event is announced once', () => {
+  it('emits unknown a single time per packet', () => {
+    const { sim, cube } = connected();
+    let unknowns = 0;
+    let events = 0;
+    cube.on('unknown', () => unknowns++);
+    cube.on('event', () => events++);
+    sim.sub.emit('packet', unknownPacket(), 0);
+    expect(unknowns).toBe(1);
+    expect(events).toBe(1);
+  });
+
+  it('still announces a frame of the wrong length, once', () => {
+    const { sim, cube } = connected();
+    const seen: { reason?: string }[] = [];
+    cube.on('unknown', (u: { reason?: string }) => seen.push(u));
+    sim.sub.emit('packet', 'abcd', 0);
+    expect(seen).toEqual([{ reason: 'bad-length', rawHex: 'abcd', timestamp: 0 }]);
+  });
+});
+
+// What the two-condition rule is FOR. anchorSolved() reads the cube before it sends REQUEST_RESET,
+// and that read is the barrier proving the channel works — the cube's own ~1 Hz state stream used
+// to satisfy it, so a pre-read whose write never landed still let the most destructive command in
+// the protocol through.
+describe('the barrier anchorSolved takes before REQUEST_RESET', () => {
+  it('a failed pre-read write stops the anchor, and nothing is reset', async () => {
+    const { sim, cube } = connected();
+    sim.onWrite = () => {
+      sim.sub.emit('packet', faceletsPacket(), 0);
+      return Promise.reject(new Error('write failed: characteristic not writable'));
+    };
+    await expect(cube.anchorSolved({ timeoutMs: 500 })).rejects.toThrow(/write failed/);
+    const reset = bytesToHex(
+      new GanGen4Cipher(CAPTURE_MAC).encrypt(buildUnsafeCommand('REQUEST_RESET')),
+    );
+    expect(sim.writes).not.toContain(reset);
+  });
+});
