@@ -180,3 +180,18 @@ test('scrollbars are hidden with the standard property, never ::-webkit-scrollba
   assert.doesNotMatch(css, /scrollbar-gutter:\s*stable/,
     'reserving the gutter is the opposite of hiding the bar — it takes the width back');
 });
+
+test('the focused screen region draws no focus ring, and nothing else loses its ring', () => {
+  // renderScreen focuses the screen region on every navigation (tabindex -1: reached by script,
+  // never by Tab), and WebKit's default `outline: auto` boxed the whole stage in blue at launch.
+  // The rule that removes it must be scoped to the screen and to nothing else: `outline: none` on
+  // a control is the classic accessibility regression, and a sweep that only looked for the
+  // screen's rule would wave a `*:focus { outline: none }` through beside it. The engine's own
+  // answer for the focused element is measured in test/browser/focus-ring.test.mjs.
+  const css = html.replace(/\/\*[\s\S]*?\*\//g, '');
+  const ringless = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, , body]) => /outline\s*:\s*none/.test(body))
+    .map(([, selector]) => selector.trim().split('\n').pop().trim());
+  assert.deepEqual(ringless, ['.screen:focus'],
+    'outline: none belongs on the focused screen region and on nothing else in the sheet');
+});
