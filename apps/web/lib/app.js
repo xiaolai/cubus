@@ -1113,11 +1113,19 @@ let pendingLast = null;
 /** True until the connection's FIRST report arrives; that report is the reconnect evidence. */
 let awaitingReport = false;
 /** A camera reading taken while this connection had reported NOTHING yet, held until its first
- *  report. A repair is derived FROM what the cube claims — the camera says where the cube is, the
- *  report says where the cube thinks it is — so with no report there is nothing to derive against
- *  and the scan cannot put tracking back in step. Cleared with the connection: a scan is evidence
- *  about the cube that was in front of the camera, and the next connection may be another one. */
+ *  report: `{facelets, turns}`. A repair is derived FROM what the cube claims — the camera says
+ *  where the cube is, the report says where the cube thinks it is — so with no report there is
+ *  nothing to derive against and the scan cannot put tracking back in step. Cleared with the
+ *  connection: a scan is evidence about the cube that was in front of the camera, and the next
+ *  connection may be another one.
+ *
+ *  `turns` is what makes the hold safe to use later. A held scan is reconcilable by the first
+ *  report ONLY if nothing turned in between — see dropHeldScan. */
 let scanAwaitingReport = null;
+/** Why a held scan was thrown away. One string, said from the two places that can establish it —
+ *  the turn itself, and the session's own count at the first report — because two wordings for
+ *  one fact would read on screen as two different faults. */
+const TURNED_SINCE_SCAN = 'it was turned after the camera saw it, and before it had reported anything';
 /** The 16-bit serial that came with the latest report, or null when it carried none. Stored
  *  beside the memory as information for wording, never proof: the GAN16's counter is
  *  per-connection and says nothing across a break. */
@@ -1214,7 +1222,13 @@ function repairTracking(scanned, { reconciling = false } = {}) {
     // Without this the scan granted camera trust with the repair silently skipped, and that first
     // report then replaced the scanned arrangement while keeping the trust the scan had earned —
     // a trusted subject nobody had looked at (found by audit, 2026-09-05).
-    scanAwaitingReport = scanned;
+    //
+    // The turn count travels with it, because the hold is only good while the cube holds still:
+    // a turn between the scan and the first report leaves the camera describing the cube BEFORE
+    // it and the report describing the cube AFTER, and a correction derived from that pair is an
+    // invented one (found by the same audit's second pass, 2026-09-05). dropHeldScan is the
+    // other half.
+    scanAwaitingReport = { facelets: scanned, turns: turnsReported() };
     return null;
   }
   // On an UNBROKEN chain the scan and the cube must agree. If they do not, one of them is wrong —
@@ -1319,6 +1333,55 @@ function clearOffset() {
 function onMovesLost() {
   markStale('a turn went unrecorded');
   if (liveGap) liveGap();
+}
+
+/** How many turns this connection has reported, as the SESSION counts them. The self-check is
+ *  shown every MOVE event before any listener of ours is, so this is the cube's own record rather
+ *  than a tally of what happened to reach this file — which is exactly what makes it worth asking
+ *  a second time at the report. Zero with no session, and zero for a session that counts nothing:
+ *  a count that cannot move can only ever say "nothing turned", which is what a cube reporting no
+ *  moves at all is in fact saying. */
+const turnsReported = () => conn?.evidence?.moveReports ?? 0;
+
+/**
+ * Throw away a scan held for a first report, and say where trust is shown why.
+ *
+ * A held scan is reconcilable by the first report ONLY if nothing turned in between. Once the
+ * cube has moved, the camera describes it before the turn and the report describes it after: the
+ * correction derived from that pair relates two different arrangements, so it is an offset nobody
+ * observed, and adopting it kept the camera's trust over an arrangement the cube had already
+ * left (found by audit, 2026-09-05, in the fix that introduced the hold).
+ *
+ * At the TURN rather than at the report, because a first report that never arrives would
+ * otherwise leave that trust standing for the life of the connection. Trust lapses through
+ * markStale like every other lapse, so the indicator, its live region and Settings all say it;
+ * the report itself then takes the ordinary path — which, with something remembered, is the
+ * reconnect question, the one question a beginner can answer.
+ */
+function dropHeldScan() {
+  if (!scanAwaitingReport) return;
+  scanAwaitingReport = null;
+  markStale(TURNED_SINCE_SCAN);
+}
+
+/**
+ * A turn the cube reported.
+ *
+ * ONE body for the driver and the test seam, and deliberately NOT the same thing as the follow
+ * hook. `liveMove` is cleared on every screen render, so on the scan screen — the screen a
+ * beginner is on when this matters — a turn used to reach nothing at all; and a refused cube's
+ * turns must not drive a walk, but a refused cube is still a cube that was turned. The one thing
+ * every turn does, whoever is watching, is invalidate a scan being held for a first report.
+ */
+function onCubeMove(m) {
+  dropHeldScan();
+  // The self-check GATES following, and only following: a refused cube has been proved to
+  // contradict itself, so letting it drive the walk would animate a cube nobody can vouch for,
+  // while everything short of a refusal still follows — mirroring a turn is not a claim about
+  // where the cube is. A session that is not there refuses nothing, exactly as cubeRefused()
+  // reads it: "no cube" and "a cube known to be wrong" are not the same state.
+  if (conn?.mayFollow?.() === false) return;
+  liveMove?.(m);
 }
 
 /** Record a live connection. The registry write and the connected flag are ONE step on purpose:
@@ -1743,15 +1806,10 @@ async function connectOnce(macFromUi) {
     session.onFacelets((facelets, serial) => { if (conn === session) onFacelets(facelets, serial); });
     // Following runs on moves (immediate); snapshots (~1Hz) only correct drift — a turn sequence
     // completed inside one second has no intermediate snapshots.
-    session.onMove((m) => {
-      if (conn !== session || !liveMove) return;
-      // The self-check GATES here, it does not merely observe. A refused cube has been proved to
-      // contradict itself — its moves and its own reported state do not add up — so letting it
-      // drive the walk would animate a cube nobody can vouch for. Everything short of a refusal
-      // still follows: mirroring a turn is not a claim about where the cube is.
-      if (!session.mayFollow()) return;
-      liveMove(m);
-    });
+    // Through onCubeMove, not straight to `liveMove`: the self-check's gate lives there so the
+    // test seam passes through the same one the driver does, and so does the one piece of
+    // bookkeeping that must happen on EVERY turn whether or not a screen is following.
+    session.onMove((m) => { if (conn === session) onCubeMove(m); });
     session.onDisconnect(() => { if (conn === session) onDisconnect(); });
     // Trust lapses HERE rather than in a screen's handler, so a verdict changing while you are in
     // Settings is not dropped. This replaces the driver's `gap` event and is a better trigger: the
@@ -1922,8 +1980,15 @@ function onFacelets(reported, serial) {
   //   * the answer to the reconnect question. Six sides establish what a two-sided memory
   //     comparison can only spot-check, so the question closes rather than being asked over a
   //     cube the camera has just read in full.
+  //
+  // Both of those rest on the cube having held still since the scan, so that is asked FIRST, and
+  // asked of the session's own turn count rather than of this file having noticed. A turn that
+  // arrives through onCubeMove drops the hold where it happens; this catches one the cube counted
+  // and our door never delivered, and it is the same question either way — an offset between an
+  // arrangement the camera saw and one the cube has since turned away from is invented.
+  if (scanAwaitingReport && scanAwaitingReport.turns !== turnsReported()) dropHeldScan();
   if (scanAwaitingReport) {
-    const scanned = scanAwaitingReport;
+    const scanned = scanAwaitingReport.facelets;
     scanAwaitingReport = null;
     awaitingReport = false;
     state.reconnect = null;
@@ -5532,7 +5597,7 @@ window.cubusGo = go;
  * doConnect); following cannot otherwise be exercised without a physical GAN cube in the room,
  * which is precisely why its worst bug survived so long. Same shape as cubusGo above. */
 window.cubusFeed = {
-  move: (m) => liveMove?.(m),
+  move: (m) => onCubeMove(m),
   facelets: (f, serial) => onFacelets(f, serial),
   /** A turn that reached the cube but not us. No argument: reconciliation proves the loss and
    *  cannot count it, so a seam that took a number would let a test assert something the app can
