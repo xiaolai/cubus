@@ -21,9 +21,56 @@ Cube.initSolver();
 const solve = createSolver(engine);
 
 test('the engine exposes the bounds surface the wrapper drives', () => {
-  for (const fn of ['initialize', 'solvePattern', 'setBounds']) {
+  // `openSearch` is on the list since 2026-09-05: the wrapper drives it for any caller that passes
+  // a resume carrier, and an engine without it must be refused THERE rather than quietly restarting
+  // a search someone asked to continue (dev-docs/deferred-plans-2026-09-05.md §3).
+  for (const fn of ['initialize', 'solvePattern', 'setBounds', 'openSearch']) {
     assert.equal(typeof engine[fn], 'function', `lib/two-phase.js has no ${fn}()`);
   }
+});
+
+test('an engine that cannot continue a search refuses one, before the bounds move', () => {
+  // Ignoring the carrier would be the worst of both: the caller pays the re-walk it asked to avoid
+  // and is told nothing about it. Refused BEFORE setBounds, like the view filter above and for the
+  // same reason — this wrapper's rule is validate first, commit together.
+  let boundsSet = 0;
+  const solve = createSolver({
+    initialize() {},
+    setBounds() { boundsSet += 1; },
+    solvePattern: () => '',
+    VIEW_COUNT: 6,
+  });
+  const facelets = new Cube().asString();
+  assert.throws(() => solve(facelets, { resume: { state: null } }), /has no openSearch\(\)/);
+  assert.equal(boundsSet, 0, 'a refused carrier must not have moved the bounds');
+  assert.doesNotThrow(() => solve(facelets, { resume: null }), 'and no carrier is the ordinary case');
+  assert.equal(boundsSet, 1);
+});
+
+test('a carrier takes the resumable path and comes back holding the search', () => {
+  // The seam itself: with a carrier the wrapper drives `openSearch`, and the state it writes back
+  // is what makes the NEXT attempt a continuation. Dropping that write would leave every escalation
+  // starting from scratch with every test still green — the failure this asserts against.
+  const answers = ['', 'R U'];
+  let opened = 0;
+  const solve = createSolver({
+    initialize() {},
+    setBounds() {},
+    solvePattern: () => { throw new Error('a carrier must not take the from-scratch path'); },
+    openSearch: (facelets, { viewFilter, resume }) => {
+      opened += 1;
+      return { continueTo: () => answers.shift(), state: { seen: resume, viewFilter } };
+    },
+    VIEW_COUNT: 6,
+  });
+  const facelets = new Cube().asString();
+  const carrier = { state: null };
+  assert.equal(solve(facelets, { resume: carrier, views: [1, 4] }), '');
+  assert.deepEqual(carrier.state, { seen: null, viewFilter: [1, 4] });
+  assert.equal(solve(facelets, { resume: carrier, views: [1, 4] }), 'R U');
+  assert.deepEqual(carrier.state.seen, { seen: null, viewFilter: [1, 4] },
+    'the second call must have been handed the point the first one left');
+  assert.equal(opened, 2);
 });
 
 test('a module without setBounds is refused rather than silently unbounded', () => {

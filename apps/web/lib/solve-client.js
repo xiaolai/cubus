@@ -53,20 +53,36 @@ export const shouldStop = (word, depth) =>
   word !== null && word !== undefined && depth >= 0 && Atomics.load(word, 0) < depth;
 
 /**
+ * A resume point as this side will treat it: an object, or nothing at all.
+ *
+ * Everything that arrives from the other thread is untrusted, and this is the cheap half of that —
+ * anything that is not an object cannot be a resume point, so it becomes null and the next attempt
+ * simply starts over, which is always correct. The expensive half, the key check, is the engine's:
+ * a point that LOOKS right and belongs to another search must throw, not restart.
+ */
+const plainState = (value) => (value !== null && typeof value === 'object' ? value : null);
+
+/**
  * One request, one reply — shared by the real worker and the inline fallback so the two
  * protocols cannot drift. Tagged with `ok` so an empty error message cannot read as success,
  * which is exactly what `if (error)` once made of it.
+ *
+ * `request.resume` is null for an ordinary search and `{ state }` for a resumable one — the
+ * CARRIER shape rather than the bare state, because a fresh resumable search and a search that is
+ * not resumable at all would otherwise both be `null` on the wire and this side could not tell
+ * them apart. With no carrier the engine is driven exactly as it always was.
  */
 export function handleSolveRequest(solve, request, readStats = () => ({})) {
-  const { id, facelets, solLen, probeMax, views = null } = request ?? {};
+  const { id, facelets, solLen, probeMax, views = null, resume = null } = request ?? {};
   try {
-    const alg = solve(facelets, { solLen, probeMax, views });
+    const carrier = resume ? { state: plainState(resume.state) } : null;
+    const alg = solve(facelets, { solLen, probeMax, views, resume: carrier });
     // `depth` and `view` are the sort key a parallel caller needs and a single-worker caller
     // ignores. They are the engine's own: the phase-1 depth the answer was found at and the
     // index of the view that found it — which is exactly the order the sequential search
     // explores in, so the minimum across slices IS the sequential answer.
     const { depth = -1, view = -1 } = readStats() ?? {};
-    return { id, ok: true, alg, depth, view };
+    return { id, ok: true, alg, depth, view, resume: carrier ? carrier.state : null };
   } catch (err) {
     return { id, ok: false, error: errorText(err) };
   }
@@ -186,6 +202,10 @@ export function createSolveClient({ spawn } = {}) {
       // The reply is validated, not trusted: `ok` is the tag (an empty error string must not
       // read as success), and a success carries an algorithm string or null, nothing else.
       if (data.ok === true && (typeof data.alg === 'string' || data.alg === null)) {
+        // The resume point rides with THIS reply too, and is written before the promise settles —
+        // a caller that awaits the answer and then reads its carrier must never see the point the
+        // attempt BEFORE this one left. Only a caller that asked for one has somewhere to put it.
+        if (waiting.resume) waiting.resume.state = plainState(data.resume);
         // The sort key rides with THIS reply. It used to be stashed on the client and read
         // after the await, which a concurrent reply could overwrite first — reproduced by the
         // audit: slice A1 won although A0 held the lower key. A per-request value cannot race.
@@ -236,8 +256,13 @@ export function createSolveClient({ spawn } = {}) {
    * @param {AbortSignal|null} [bounds.signal]  stops THIS search and nothing else. With a stop
    *   word that is a write the running search reads at its next poll; without one, the only
    *   stop is ending the thread, which is done only when this search is the last one on it.
+   * @param {{state: object|null}|null} [bounds.resume]  a carrier the CALLER owns and keeps across
+   *   attempts. Its `state` goes out with the request and is replaced by whatever the worker's
+   *   search left, so the next attempt continues that search instead of walking it again. Null is
+   *   every caller but an escalating one; `probeMax` is then a frontier rather than an increment
+   *   (dev-docs/deferred-plans-2026-09-05.md §3).
    */
-  function solve(facelets, { solLen, probeMax, views = null, shared = null, detailed = false, signal = null } = {}) {
+  function solve(facelets, { solLen, probeMax, views = null, shared = null, detailed = false, signal = null, resume = null } = {}) {
     const id = nextId++;
     // Nothing to stop if it never starts. Checked before attach() so an already-abandoned solve
     // cannot be the thing that spawns a worker and pays for a table build.
@@ -283,13 +308,26 @@ export function createSolveClient({ spawn } = {}) {
         signal?.removeEventListener('abort', abandon);
         settle(value);
       };
-      pending.set(id, { resolve: done(resolve), reject: done(reject), detailed });
+      pending.set(id, { resolve: done(resolve), reject: done(reject), detailed, resume });
       try {
         // `shared` travels WITH the request, not as a one-off init message. One word per solve
         // is what keeps overlapping solves — which the app allows — from publishing each other's
         // depths into one channel and stopping the wrong cube's search. It goes as a descriptor
         // rather than a bare buffer so the offset survives the crossing; see stopDescriptor.
-        active.postMessage({ id, facelets, solLen, probeMax, views, shared: stopDescriptor(shared) });
+        //
+        // The resume point goes as a fresh `{state}` and never as the caller's own carrier: the
+        // carrier is a live object this client writes to, and posting it would be sending whatever
+        // else is on it as well. Null is a search that is not resumable at all — which is what
+        // makes it different from `{state: null}`, a resumable one that has not started yet.
+        active.postMessage({
+          id,
+          facelets,
+          solLen,
+          probeMax,
+          views,
+          shared: stopDescriptor(shared),
+          resume: resume ? { state: plainState(resume.state) } : null,
+        });
       } catch (err) {
         // A synchronous send failure would otherwise leave this entry pending forever — the
         // promise would reject, but `idle` would lie and cancel() would re-reject a corpse.
@@ -428,10 +466,27 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
   let sharing = shareTables === true;
   let handshake = null;
 
-  async function solve(facelets, { solLen, probeMax = DEFAULT_NODE_BUDGET, signal = null } = {}) {
-    if (lone) return lone.solve(facelets, { solLen, probeMax, signal });
+  /**
+   * A pool's resume point is SIX resume points, one per slice — they search different views and
+   * die at different depths, so there is nothing to merge and nothing that would mean anything
+   * merged. It rides in the caller's one carrier as an array aligned with the slices.
+   *
+   * The lone fallback searches ALL views, which is a different search with a different key, so its
+   * points would be refused by the engine — loudly, and over a cube nobody could then solve. So the
+   * carrier is EMPTIED at the crossing: a fallback starts over, which costs the re-walk this whole
+   * mechanism exists to avoid and is the only correct thing to do with a point for another search.
+   */
+  const dropPooledState = (resume) => {
+    if (resume && Array.isArray(resume.state)) resume.state = null;
+  };
+
+  async function solve(facelets, { solLen, probeMax = DEFAULT_NODE_BUDGET, signal = null, resume = null } = {}) {
+    if (lone) {
+      dropPooledState(resume);
+      return lone.solve(facelets, { solLen, probeMax, signal, resume });
+    }
     try {
-      return await pooled(facelets, { solLen, probeMax, signal });
+      return await pooled(facelets, { solLen, probeMax, signal, resume });
     } catch (err) {
       // A pool that cannot be staffed still answers. A thread that failed to spawn, or died,
       // says nothing about this cube — and one worker searching all six views under the whole
@@ -453,11 +508,12 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
       // orphan the first one's client — still holding a search, and no longer cancellable
       // through this pool.
       lone ??= createSolveClient({ spawn });
-      return lone.solve(facelets, { solLen, probeMax, signal });
+      dropPooledState(resume);
+      return lone.solve(facelets, { solLen, probeMax, signal, resume });
     }
   }
 
-  async function pooled(facelets, { solLen, probeMax, signal }) {
+  async function pooled(facelets, { solLen, probeMax, signal, resume = null }) {
     const shares = shareBudget(probeMax, clients.length);
     const used = clients.slice(0, shares.length);
     // Look at the threads BEFORE dividing a budget between them. `spawnSolveWorker` answers with
@@ -504,6 +560,12 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
       firstError = err;
       abandon.abort();
     };
+    // One carrier per slice, aligned by INDEX with `slices` — which is fixed for the pool's life,
+    // so slice i's point always goes back to slice i's views however many slices a budget affords.
+    // A carrier that was never filled (a slice whose reply was dropped) simply keeps the point the
+    // attempt before it left, which is still a valid position in that slice's enumeration.
+    const carried = Array.isArray(resume?.state) ? resume.state : null;
+    const carriers = resume === null ? null : used.map((_, i) => ({ state: plainState(carried?.[i]) }));
     const settled = await Promise.allSettled(used.map((client, i) =>
       client.solve(facelets, {
         solLen,
@@ -512,6 +574,7 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
         shared: stop,
         detailed: true,
         signal: abandon.signal,
+        resume: carriers?.[i] ?? null,
       }).catch((err) => { abandonAll(err); throw err; }).then((reply) => {
         // Publish only a real answer, and only when it is SHALLOWER than what is published. A
         // sibling exploring deeper can stop; one at the same depth cannot, because a lower view
@@ -531,6 +594,9 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
     // running and pending. Everyone is waited for, and the FIRST failure propagates — not a
     // cancellation caused by it, which is why abandonAll keeps the original.
     if (firstError !== null) throw firstError;
+    // After everyone has settled, never as they arrive: the array IS the pool's resume point, and
+    // publishing a half-written one would let a continuation resume some slices and restart others.
+    if (carriers) resume.state = carriers.map((c) => c.state);
     return pickWinner(settled.map((r) => r.value));
   }
 
