@@ -9,7 +9,7 @@ import {
   type UnsafeCommand,
 } from './gen4/commands.js';
 import { GanGen4Cipher } from './gen4/crypto.js';
-import { decodeGen4 } from './gen4/decode.js';
+import { type DecodeResult, decodeGen4 } from './gen4/decode.js';
 import { SOLVED_FACELETS } from './gen4/facelets.js';
 import type { CubeEvent, CubeFacelets, CubeGyro, CubeMove } from './gen4/types.js';
 import { bytesToHex, hexToBytes } from './hex.js';
@@ -49,6 +49,13 @@ export class GanCube extends TinyEmitter {
    * CURRENT position rather than the one that was read.
    */
   private readEpoch = 0;
+  /**
+   * Bumped whenever the LINK changes identity — a respawn, or a close. A reading taken before the
+   * bump belongs to a session that has ended, however recently. Separate from readEpoch on
+   * purpose: a MOVE invalidates a position without ending a session, and only the session question
+   * decides whether an answer already in hand may still be delivered.
+   */
+  private linkEpoch = 0;
   private lastFacelets: CubeFacelets | null = null;
   private live = false;
   private hwFields: Record<string, string> = {};
@@ -86,6 +93,7 @@ export class GanCube extends TinyEmitter {
       // have slept and restarted its move counter, and moves made while it was down were not seen.
       this.sessionBreak = true;
       this.readEpoch++;
+      this.linkEpoch++;
       this.emit('reconnecting');
     };
     const onGiveup = (e: unknown) => {
@@ -165,6 +173,7 @@ export class GanCube extends TinyEmitter {
     // read as claims about a session that has ended.
     this.sessionBreak = true;
     this.readEpoch++;
+    this.linkEpoch++;
     const waiting = [...this.pending];
     this.pending.clear();
     for (const abort of waiting) abort(new Error(reason));
@@ -180,14 +189,19 @@ export class GanCube extends TinyEmitter {
       this.emit('unknown', { reason: 'bad-length', rawHex: hex, timestamp: ts });
       return;
     }
-    let decrypted: Uint8Array;
+    let ev: DecodeResult;
     try {
-      decrypted = this.cipher.decrypt(hexToBytes(hex));
+      // The DECODE is inside this too, and that is the fix rather than the tidying. decodeGen4
+      // can throw on a frame that decrypts perfectly well — a FACELETS whose parity-derived eighth
+      // corner falls outside the cubie table indexes past the end of it — and it sat one line
+      // below the catch, so a corrupt packet threw out of a transport notification callback,
+      // past every caller, and took the process down with no 'error' ever emitted. The recorder
+      // learned this on 2026-09-05 (capture.ts, decodePacket); the driver had the same line.
+      ev = decodeGen4(this.cipher.decrypt(hexToBytes(hex)), ts);
     } catch (e) {
       this.emit('error', e);
       return;
     }
-    const ev = decodeGen4(decrypted, ts);
     if (ev.type === 'MOVE_HISTORY') {
       this.emit('moveHistory', ev);
       return;
@@ -479,6 +493,16 @@ export class GanCube extends TinyEmitter {
     // the nature of the command. Under `force` the caller has taken that risk knowingly; by
     // default the precondition above is what prevents it.
     const after = await this.getState({ active: true, timeoutMs });
+    // The read-epoch rule runs to the END of the operation, not just up to the write. request()
+    // holds an answer that arrives before its write completes, so the FACELETS that verifies the
+    // reset can be older than the resolution — a MOVE landing in that window left a solved report
+    // describing a position the cube had already left, and this method returned it as proof.
+    // Reproduced 2026-09-05. One epoch spans the whole anchor: read, send, verify.
+    if (this.readEpoch !== readAt) {
+      throw new Error(
+        "anchor uncertain: the cube turned, or the link dropped, while the reset was being verified, so the state read back describes a position the cube has already left and cannot confirm the reset landed. Treat the driver's tracked state as untrusted and re-scan.",
+      );
+    }
     if (after.facelets !== SOLVED_FACELETS) {
       throw new Error(
         `anchor failed: the cube did not report a solved state afterwards. Treat the driver's tracked state as untrusted and re-scan.\n  reported: ${after.facelets}`,
@@ -559,6 +583,15 @@ export class GanCube extends TinyEmitter {
    * A notification arriving while the write is still in flight is HELD, not dropped: a transport
    * can deliver the cube's reply before its own write promise settles, and refusing it would
    * trade one race for another. The write is still what unblocks the answer.
+   *
+   * A held answer does not survive the LINK, though, and that half was missing. A respawn does not
+   * fail what is waiting — the link is coming back, and the cube emits FACELETS about once a
+   * second on its own, so failing here would turn a recoverable respawn into an error every caller
+   * has to handle. But an answer taken before the break is a reading from a session that has
+   * ended, and the write completing afterwards used to deliver it: reproduced 2026-09-05, a
+   * getState() resolving with the old session's facelets while `live` was already false. The
+   * answer is dropped instead and this keeps waiting, within the caller's own deadline, for one
+   * the current link produced.
    */
   private request<T = CubeEvent>(
     event: string,
@@ -570,6 +603,8 @@ export class GanCube extends TinyEmitter {
       let live = cmd === null; // a passive read waits on nothing but the cube
       let written = cmd === null; // ...and has no write to wait on either
       let answer: T | null = null;
+      /** Which link the held answer came in on. Compared, never trusted, at the moment it is used. */
+      let answerLink = this.linkEpoch;
 
       const stop = () => {
         settled = true;
@@ -584,6 +619,13 @@ export class GanCube extends TinyEmitter {
       };
       const settleIfComplete = () => {
         if (settled || !written || answer === null) return;
+        if (answerLink !== this.linkEpoch) {
+          // The link broke after this answer arrived, so it describes a session that has ended.
+          // Drop it and keep waiting: the cube's own ~1 Hz stream refills this on the new link,
+          // and a request that never gets one times out saying so, which is the honest outcome.
+          answer = null;
+          return;
+        }
         stop();
         resolve(answer);
       };
@@ -591,6 +633,7 @@ export class GanCube extends TinyEmitter {
       // held, and a fresher one replaces it.
       const onEvt = (e: T) => {
         answer = e;
+        answerLink = this.linkEpoch;
         settleIfComplete();
       };
       const abort = (reason: Error) => fail(reason);

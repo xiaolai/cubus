@@ -30,7 +30,13 @@ import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { decodePacket, type Recording, recordingShutdown, startRecording } from '../src/capture.js';
+import {
+  decodePacket,
+  MAX_QUEUED_LINES,
+  type Recording,
+  recordingShutdown,
+  startRecording,
+} from '../src/capture.js';
 import { GanGen4Cipher } from '../src/gen4/crypto.js';
 import {
   CAPTURE_MAC,
@@ -58,7 +64,7 @@ interface Line {
   meta?: Record<string, unknown>;
   enc?: string;
   dec?: string;
-  event?: { type: string };
+  event?: { type: string; serial?: number };
   decodeError?: string;
 }
 
@@ -207,6 +213,48 @@ class HeldStream extends Writable {
   }
 }
 
+/**
+ * A stream that takes every byte the moment it is offered and then fails to let go of the file.
+ *
+ * A close is itself a write on any filesystem that defers, and it can fail on its own after every
+ * byte was accepted — so 'finish' (the buffer drained) and 'close' (the descriptor was released)
+ * are two different claims, and only the second is what "saved" is about.
+ */
+class UncloseableStream extends Writable {
+  readonly chunks: string[] = [];
+  override _write(chunk: Buffer, _enc: string, cb: (e?: Error) => void): void {
+    this.chunks.push(chunk.toString());
+    cb();
+  }
+  override _destroy(_err: Error | null, cb: (e?: Error | null) => void): void {
+    cb(new Error('EIO: close failed'));
+  }
+}
+
+/**
+ * A stream that accepts nothing until it is released, with a high-water mark small enough that the
+ * very first line puts it over — a stalled disk, deterministically. `writableLength` is then the
+ * memory the recorder is costing while it waits, which is the whole of the finding.
+ *
+ * release() is synchronous on purpose: a write callback invoked from outside the stream runs
+ * Node's afterWrite path inline, which issues the next buffered write inline too, so one loop
+ * drains the queue without needing a tick per chunk.
+ */
+class StalledStream extends Writable {
+  readonly chunks: string[] = [];
+  private waiting: (() => void)[] = [];
+  constructor() {
+    super({ highWaterMark: 32 });
+  }
+  override _write(chunk: Buffer, _enc: string, cb: () => void): void {
+    this.chunks.push(chunk.toString());
+    this.waiting.push(cb);
+  }
+  release(): void {
+    for (let i = 0; i < 1e6 && this.waiting.length > 0; i++) (this.waiting.shift() as () => void)();
+  }
+}
+
 describe('stopping means the bytes are on disk', () => {
   it('does not resolve until the stream has flushed', async () => {
     const out = new HeldStream();
@@ -226,12 +274,108 @@ describe('stopping means the bytes are on disk', () => {
     expect(await stopped).toBe(6);
     expect(out.chunks).toHaveLength(7); // metadata + six packets
   });
+
+  // 'finish' and 'close' are two claims, and "saved" is about the second. Resolving on the first
+  // reported a saved capture while the descriptor was still open, and a close that then failed had
+  // nowhere left to be reported: exit code 0, count 3, EIO on the close (measured 2026-09-05).
+  it('rejects when every byte was written but the file would not close', async () => {
+    const out = new UncloseableStream();
+    const sub = new EventEmitter();
+    const rec = startRecording({ sub, cipher, out, path: '/captures/unclosed.jsonl', meta: {} });
+    for (let i = 1; i <= 3; i++) sub.emit('packet', movePacket(i), i);
+
+    await expect(rec.stop()).rejects.toThrow(
+      /recording to \/captures\/unclosed\.jsonl failed: EIO: close failed/,
+    );
+    // The distinction the assertion above rests on: nothing was ever refused on the way in.
+    expect(out.chunks).toHaveLength(4);
+  });
+});
+
+// A notification handler cannot wait, and write() returning false is the stream saying it is full.
+// Ignoring that answer made a stalled disk into unbounded memory: measured on 2026-09-05, 878,902
+// bytes queued inside a stream whose high-water mark was 32, still climbing, with the recorder
+// reporting every one of them as recorded.
+describe('a stream that is full is not written to anyway', () => {
+  it('queues the overflow instead of pushing it into the stream, and loses none of it', async () => {
+    const out = new StalledStream();
+    const sub = new EventEmitter();
+    const rec = startRecording({ sub, cipher, out, path: '/captures/slow.jsonl', meta: {} });
+    const packet = movePacket(1);
+    for (let i = 0; i < 2000; i++) sub.emit('packet', packet, i);
+
+    // One line in flight, and that is all — not two thousand of them behind a 32-byte mark.
+    expect(out.writableLength).toBeLessThan(1024);
+    expect(rec.packets).toBe(2000);
+
+    const stopped = rec.stop(); // the last write of a recording has nothing left to protect
+    out.release();
+    expect(await stopped).toBe(2000);
+    expect(out.chunks).toHaveLength(2001); // metadata + every packet, in order
+    expect(out.chunks[1]).toContain(packet);
+  });
+
+  // A disk that catches up is the ordinary case, and the recording has to continue through it in
+  // order — a queue that is handed back but not emptied would silently reorder a capture.
+  it('hands the queue back when the stream drains, and keeps recording in order', async () => {
+    const out = new StalledStream();
+    const sub = new EventEmitter();
+    const rec = startRecording({ sub, cipher, out, path: '/captures/recovers.jsonl', meta: {} });
+    for (let i = 1; i <= 30; i++) sub.emit('packet', movePacket(i), i);
+    expect(out.chunks.length).toBeLessThan(31); // most of it is queued, not written
+
+    out.release(); // the disk catches up, and 'drain' fires
+    await tick();
+    expect(out.chunks).toHaveLength(31); // metadata + thirty, all of it through
+
+    // …and the recorder is writing straight to the stream again, not into a queue nobody empties.
+    for (let i = 31; i <= 35; i++) sub.emit('packet', movePacket(i), i);
+    out.release();
+    const stopped = rec.stop();
+    out.release();
+    expect(await stopped).toBe(35);
+    const serials = out.chunks.slice(1).map((l) => (JSON.parse(l) as Line).event?.serial);
+    expect(serials).toEqual(Array.from({ length: 35 }, (_, i) => i + 1));
+  });
+
+  it('fails loudly rather than queueing without limit, and stops counting', async () => {
+    const out = new StalledStream();
+    const sub = new EventEmitter();
+    const seen: Error[] = [];
+    const rec = startRecording({
+      sub,
+      cipher,
+      out,
+      path: '/captures/wedged.jsonl',
+      meta: {},
+      onError: (e) => seen.push(e),
+    });
+    const packet = movePacket(1);
+    for (let i = 0; i < MAX_QUEUED_LINES + 2; i++) sub.emit('packet', packet, i);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.message).toMatch(
+      /recording to \/captures\/wedged\.jsonl failed: the stream has not drained/,
+    );
+    // The bound held, and the count says what actually got in rather than what was offered. One
+    // more than the bound: the first packet is the one the stream itself accepted before saying
+    // it was full, and the limit governs the queue that forms behind it.
+    expect(rec.packets).toBe(MAX_QUEUED_LINES + 1);
+    sub.emit('packet', packet, 0);
+    expect(rec.packets).toBe(MAX_QUEUED_LINES + 1);
+    await expect(rec.stop()).rejects.toThrow(/has not drained/);
+  });
 });
 
 // The CLI's half of the two properties above. `cli.ts` is an argv-dispatching script — importing
 // it runs a command — so these are asserted on the source, the way REQUEST_RESET containment is in
 // unsafe-commands.test.ts. A green run here says the command is wired to the flush and to the one
 // pipeline; the behaviour of both is established above, by running them.
+//
+// It says nothing about the lifecycle, which is what an audit named on 2026-09-05: source text
+// cannot watch a signal handler run or an exit code come back. cli-record.test.ts does that now,
+// by spawning the real CLI against a fake cube. These stay because they guard something that one
+// cannot — that the command keeps no SECOND copy of the flush, the message or the exit code.
 describe('the record command is wired to the flush, not around it', () => {
   const cli = readFileSync(new URL('../src/cli.ts', import.meta.url), 'utf8');
   const record = /async function cmdRecord\([\s\S]*?\n\}/.exec(cli)?.[0];
@@ -440,6 +584,49 @@ describe('the shutdown says only what happened', () => {
     expect(await Promise.all([shutdown(0), shutdown(1)])).toEqual([0, 0]);
     expect(stops).toBe(1);
     expect(s.said).toHaveLength(1);
+  });
+
+  // stopPackets() is the transport's, and a transport can refuse to stop — a child process that
+  // will not die, a handle already gone. It was called from OUTSIDE the try until 2026-09-05, so
+  // its throw skipped rec.stop() entirely: the buffered packets never flushed, and the rejection
+  // went to a caller that only ever calls .then(), leaving the process up under no verdict at all.
+  it('still closes the file when the packet source refuses to stop', async () => {
+    const path = await tempFile();
+    const sub = new EventEmitter();
+    const rec = startRecording({ sub, cipher, out: createWriteStream(path), path, meta: {} });
+    for (let i = 1; i <= 3; i++) sub.emit('packet', movePacket(i), i);
+
+    const said: string[] = [];
+    const warned: string[] = [];
+    const shutdown = recordingShutdown({
+      rec,
+      stopPackets: () => {
+        throw new Error('blew would not die');
+      },
+      path,
+      say: (m) => said.push(m.trim()),
+      warn: (m) => warned.push(m.trim()),
+    });
+
+    // A failed transport stop costs the exit code — the last lines may have been written while
+    // the file was closing — but it never costs the file.
+    expect(await shutdown(0)).toBe(1);
+    expect(said).toEqual([]);
+    expect(warned.join('')).toMatch(/saved 3 packets .*would not stop: blew would not die/);
+    expect(parse(readFileSync(path, 'utf8'))).toHaveLength(4);
+  });
+
+  it('never says saved for a file that would not close', async () => {
+    const out = new UncloseableStream();
+    const sub = new EventEmitter();
+    const path = '/captures/unclosed.jsonl';
+    const rec = startRecording({ sub, cipher, out, path, meta: {} });
+    sub.emit('packet', movePacket(1), 1);
+
+    const s = spy();
+    expect(await s.wire(rec, path)(0)).toBe(1);
+    expect(s.said).toEqual([]);
+    expect(s.warned.join('')).toMatch(/failed: EIO: close failed/);
   });
 
   it('reports a rejection that is not an Error rather than printing an object', async () => {

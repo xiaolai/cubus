@@ -27,7 +27,17 @@ export default defineConfig({
       // EventEmitter and a file is a Writable, so neither needs hardware — and both carry a
       // failure mode a capture session cannot afford: a decode that throws away the raw frame, and
       // a shutdown that reports "saved" over a buffer that never flushed.
-      include: ['src/gen4/**', 'src/mac.ts', 'src/capture.ts'],
+      //
+      // transport/blew.ts joined it the same day, and for the same reason held one level down: it
+      // needs a CHILD PROCESS, which a cube is not. Every property that matters there is about a
+      // subprocess's pipes, exit status and respawn timing — a POSIX shell reaches all of them,
+      // and a `blew` that never existed had three defects nothing could have seen.
+      //
+      // cli.ts is still out, and not for want of tests: cli-record.test.ts runs it as a real
+      // process, which is the only way to see a signal handler and an exit code, and v8 coverage
+      // in THIS process cannot see into that one. Including it would report an executable-tested
+      // file as untested.
+      include: ['src/gen4/**', 'src/mac.ts', 'src/capture.ts', 'src/transport/blew.ts'],
       reporter: ['text', 'html'],
       thresholds: {
         lines: 85,

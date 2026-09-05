@@ -2,7 +2,7 @@
   "name": "gan-driver",
   "version": "0.1.0",
   "type": "module",
-  "description": "Independent GAN Gen4 decoder, kept as the test oracle the linked protocol layer is measured against; plus a diagnostic CLI. The CLI and its `blew` transport are macOS-only dev tooling and nothing that ships depends on them. The gate covers the decoder under src/gen4, src/mac.ts, and src/capture.ts — the CLI's packet pipeline and recorder, which were lifted out of the script in 2026-09-05 precisely because a subscription is an EventEmitter and a file is a Writable, so neither needed the cube they were assumed to.",
+  "description": "Independent GAN Gen4 decoder, kept as the test oracle the linked protocol layer is measured against; plus a diagnostic CLI. The CLI and its `blew` transport are macOS-only dev tooling and nothing that ships depends on them. The gate covers the decoder under src/gen4, src/mac.ts, src/capture.ts — the CLI's packet pipeline and recorder — and src/transport/blew.ts, all lifted into it during 2026-09-05 on one observation: a subscription is an EventEmitter, a file is a Writable and a BLE transport is a child process, so none of the three needed the cube they were assumed to. cli.ts stays out because cli-record.test.ts runs it as a real process, which in-process coverage cannot see.",
   "license": "MIT",
   "bin": {
     "gan16": "./src/cli.ts"
