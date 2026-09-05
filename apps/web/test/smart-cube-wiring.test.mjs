@@ -264,3 +264,83 @@ test('Forget also removes the address the protocol layer cached', async () => {
     'the cached address outlived the forget');
   assert.equal(JSON.parse(win.localStorage.getItem('cubusCubes'))[MAC], undefined, 'and so did the record');
 });
+
+// ---- one cube, one record ----------------------------------------------------------------------
+//
+// The identity a connection is filed under used to fall back to the address the ATTEMPT had been
+// given — what was typed, or failing that `lastCubeMac()`, the most recently used remembered cube.
+// So a cube that reports no address (five of the ten protocols) inherited whichever cube was used
+// last: one record for two cubes, each wearing the other's nickname, history and remembered
+// arrangement, and a reconnect question asked about a cube that is not in your hand.
+
+test('an addressless cube is filed under its own name, never the last cube\'s address', async () => {
+  // A cube WITH an address first, so there is a remembered address on offer when the next one
+  // connects — that offer is the whole mechanism.
+  feed().useConnection(fakeConn({ mac: MAC, name: 'GAN-A' }), MAC);
+  await tick();
+  feed().useConnection(null);
+  await tick();
+  assert.ok(JSON.parse(win.localStorage.getItem('cubusCubes'))[MAC], 'precondition: the addressed cube has its own record');
+
+  // Now one that reports none. The second argument still offers the remembered address, exactly
+  // as connectOnce still hands it to the protocol layer as a place to look.
+  feed().useConnection(fakeConn({ mac: '', name: 'GoCube-77' }), MAC);
+  await tick();
+  const key = `${NAME_PREFIX}GoCube-77`;
+  const reg = JSON.parse(win.localStorage.getItem('cubusCubes'));
+  assert.ok(reg[key], 'a cube with no address must be remembered under its own name');
+  assert.equal(reg[key].name, 'GoCube-77');
+  assert.equal(reg[MAC].name, 'GAN-A', 'and the addressed cube keeps its own record — two cubes, two rows');
+  assert.equal((await appState()).cubeMac, key, 'the live cube is identified as itself');
+
+  feed().useConnection(null);
+  await tick();
+});
+
+test('the driver resolves identity through the same call the seam does', () => {
+  // The seam above is only worth what connectOnce does, so this pins that the two are one call
+  // and not a lookalike. Source, because the real path needs a radio, the vendored protocol
+  // bundle and a browser with Web Bluetooth — none of which exist in this harness.
+  const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+  assert.match(app, /adoptConnection\(sessionIdentity\(session\), session\.name/,
+    'connectOnce must file the connection under the SESSION\'s identity, with no address from elsewhere');
+  assert.doesNotMatch(app, /sessionIdentity\([^)]*typed/, 'the typed/remembered address is not an identity');
+});
+
+// ---- a subject that changes the COMPOSITION ------------------------------------------------------
+//
+// A screen takes a new SUBJECT in place; only a new COMPOSITION is a new screen (AGENTS.md). The
+// cube screen decides `walking` when it is built, and that decides whether the transport and the
+// solution card exist at all — so a physical cube that was solved and has now been turned needs a
+// screen it does not have. The live handler repainted the picture and stopped, which left a
+// scrambled cube on the paper with no solution, no move list, and nothing offering one.
+
+test('a solved cube turned in the hand grows a solution card, not just a repaint', async () => {
+  const state = await appState();
+  const conn = fakeConn();
+  feed().useConnection(conn, '22:33:44:55:66:77');
+  await tick();
+  feed().facelets(SOLVED); // the connection's first report; nothing remembered, so no question
+  await tick();
+
+  // Make the solved cube the SUBJECT the way a camera scan does: physical, trusted, solved.
+  await go('scan');
+  $('#stage ai-scan-panel').dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: SOLVED, valid: true },
+  }));
+  await tick();
+  await go('home');
+  assert.equal(state.cube.facelets, SOLVED, 'precondition: the cube in hand is the subject');
+  assert.equal(state.cube.isPhysical, true);
+  assert.equal($('#stage .solution-card'), null, 'precondition: a solved cube has no walk, so no card');
+
+  const turned = move(SOLVED, "R U R'");
+  feed().facelets(turned);
+  await tick();
+  assert.equal(state.cube.facelets, turned, 'the subject followed the cube');
+  assert.ok($('#stage .solution-card'), 'the cube has a walk and the screen still had nowhere to put one');
+  assert.ok($('#stage .transport'), 'and no way to walk it either');
+
+  feed().useConnection(null);
+  await tick();
+});
