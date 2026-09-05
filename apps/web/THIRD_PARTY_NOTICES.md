@@ -11,7 +11,7 @@ notices`); CI refuses a tree where the committed copy has drifted from what woul
 These are compiled into the bundles under `apps/web/vendor/` that every build of the app loads,
 in the browser and inside the Tauri shells alike. Each package's licence text follows it.
 
-### three 0.169.0 — MIT
+### three 0.185.1 — MIT
 
 Bundled into `vendor/cubus-cube.js` (the cube renderer). Author: mrdoob. Source: <https://github.com/mrdoob/three.js>.
 Licence text from `apps/web/node_modules/three/LICENSE`:
@@ -19,7 +19,7 @@ Licence text from `apps/web/node_modules/three/LICENSE`:
 ```
 The MIT License
 
-Copyright © 2010-2024 three.js authors
+Copyright © 2010-2026 three.js authors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
