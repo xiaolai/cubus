@@ -18,6 +18,13 @@ export default defineConfig({
         'src/onnx-detect.ts',
         'view/stillness.ts',
         'view/camera-session.ts',
+        // The misread decode's client half and its wire. Included because nothing about them needs
+        // a camera or a model — a fake `Worker` reaches every branch — and because the branches
+        // that matter are the failure ones: a worker that will not build, and one that builds and
+        // then cannot load. Those are the paths a page in the wild takes and a developer never
+        // does, so leaving them unmeasured would leave them untested.
+        'view/misread-client.ts',
+        'view/misread-protocol.ts',
         'view/pick-detector.ts',
         'view/native-detector.ts',
       ],

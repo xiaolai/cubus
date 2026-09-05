@@ -26,9 +26,9 @@
 //     `distance === 1` AND `unique` AND exactly one sticker named. All three, because the search
 //     runs over 4^6 rotations and a rotationally symmetric face maps one canonical repair to a
 //     different as-shown index under each of its four turns — the witness case above comes back
-//     naming FOUR stickers, only one of which repairs the reading as given. `diagnose`
-//     (`ai-assemble.ts`) is the one caller and it checks all three; tests/misread-decode.test.ts
-//     pins the reading, tests/ai-assemble.test.ts pins what the app says about it.
+//     naming FOUR stickers, only one of which repairs the reading as given. `diagnoseMisread`
+//     below is the one caller and it checks all three; tests/misread-decode.test.ts pins the
+//     reading, tests/ai-assemble.test.ts pins what the app says about it.
 //   * The distance is never an OVERSTATEMENT — the true cube is always a legal repair at exactly
 //     the true number of misreads, so the minimum can never exceed it. That is what makes
 //     "at least N stickers were misread" an honest sentence at every N.
@@ -107,6 +107,24 @@ export type MisreadDecode =
   | { kind: 'repair'; distance: number; stickers: DecodedSticker[]; unique: boolean }
   | { kind: 'beyond'; distance: number }
   | { kind: 'unknown' };
+
+/**
+ * What a refused reading may be TOLD about itself — the decode, reduced to the three claims the
+ * argument above licenses, and nothing else.
+ *
+ * - `misreadCount` — the proven lower bound, so "at least N stickers were misread" is honest at
+ *   every N. `null` means a caller deferred the decode and is still waiting for it (see
+ *   `assembleColors`'s `diagnose` option); ABSENT means the decode ran and could claim nothing.
+ *   Those are opposite states and a caller that cannot tell them apart says "too much of the cube
+ *   was read wrong" over a cube nothing has looked at yet, which is why `null` is a value here.
+ * - `suspects` — populated only where the search itself says the repair is unambiguous.
+ * - `misreadFace` — the one side every minimal repair blames, when they agree on one.
+ */
+export interface MisreadDiagnosis {
+  misreadCount?: number | null;
+  suspects?: DecodedSticker[];
+  misreadFace?: Face;
+}
 
 export interface DecodeOptions {
   /** Largest repair to look for. Past this the answer is `beyond`, which is still truthful.
@@ -439,4 +457,85 @@ export function decodeMisread(
     };
   }
   return { kind: 'beyond', distance: maxDistance };
+}
+
+/**
+ * Turn a failed scan into what can honestly be said about it.
+ *
+ * This replaced a colour-COUNTING diagnosis, which could only ever speak when exactly one sticker
+ * was wrong — and was blind in two ways that mattered for this detector, whose weak pair is
+ * red/orange: a balanced swap (one red read as orange AND one orange read as red) leaves every
+ * colour count at nine, and partial cancellation makes the counts UNDERSTATE the damage, sending
+ * the search after a single-sticker repair that does not exist.
+ *
+ * The decoder answers both, and reports a count that is a proven lower bound. What it does NOT
+ * license is pointing: above one misread the nearest legal cube is not necessarily the user's
+ * cube, so only `distance === 1` becomes a suspect. dev-docs/misread-decoding.md has the whole
+ * argument and the measurements.
+ *
+ * It lives HERE, beside the search whose guarantees it spends, rather than in `ai-assemble.ts`
+ * where it was written (moved 2026-09-05). Two reasons, and the second is the load-bearing one.
+ * The rule it enforces — point only at `distance === 1` AND `unique` AND one sticker — is stated
+ * in this file's header as the decoder's own contract, and a rule and its enforcement one import
+ * apart is how the header came to describe a check that lived somewhere else. And the misread
+ * worker (`view/misread-worker.ts`) needs the diagnosis WITHOUT the assembler: bundling
+ * `ai-assemble.ts` to reach it would drag the whole rotation search, the confirmation logic and
+ * every refusal sentence into a thread that answers exactly one question.
+ *
+ * NEVER THROWS. Every caller is on a path that has ALREADY refused a scan, and the refusal is a
+ * sentence shown to a child about their cube; replacing it with a crash would be a strictly worse
+ * answer than "nothing more can be said". A defect still has to be visible, so it is logged and
+ * the diagnosis comes back empty — which every caller already handles, because an exhausted work
+ * budget produces the same empty answer.
+ */
+export function diagnoseMisread(
+  faces: Record<Face, ColorFaces>,
+  options: DecodeOptions = {},
+): MisreadDiagnosis {
+  let decoded: MisreadDecode;
+  try {
+    // Centre colour -> the face it names. `decodeMisread` proves everything against the colouring
+    // these define, so six DISTINCT centres is the precondition rather than a nicety; a reading
+    // whose centres collide is a different failure with a different answer (name the two sides)
+    // and no amount of decoding improves it. `assembleColors` refuses that reading before it ever
+    // gets here, so this is a guard on a public function and not a second copy of that policy —
+    // it claims nothing rather than deciding anything.
+    const centreOwner = new Map<number, Face>();
+    for (const face of FACES) centreOwner.set(faces[face]!.colors[4]!, face);
+    if (centreOwner.size !== FACES.length) return {};
+    decoded = decodeMisread(faces, centreOwner, options);
+  } catch (err) {
+    console.error('[cubus] misread diagnosis failed, so nothing is claimed about the scan', err);
+    return {};
+  }
+  if (decoded.kind === 'unknown') return {};
+  // No repair within the cap means strictly more than the cap are wrong, which is still a floor.
+  if (decoded.kind === 'beyond') return { misreadCount: decoded.distance + 1 };
+  // Pointing takes THREE facts, not one, and this used to check only the first.
+  //
+  //   * `distance === 1` — the reading is one sticker from legal.
+  //   * `unique` — there is only ONE such legal cube. The decoder already computes this and
+  //     nothing consumed it, which is exactly how the gap got in: the guarantee was assumed from
+  //     the minimum-distance argument instead of read off the search that had just measured it.
+  //   * exactly one sticker — a repair can be one CHANGE and still name several stickers, because
+  //     the search runs over 4^6 rotations and a rotationally symmetric face maps the same
+  //     canonical position to a different as-shown index under each of its four turns.
+  //
+  // Measured: a solved cube read with two of the U-layer 3-cycle's three stickers comes back at
+  // distance 1, `unique: false`, naming FOUR stickers — and the app said "One sticker looks
+  // wrong" over all four, three of which had been read correctly. `misread-decode.test.ts` pins
+  // that reading. Above one misread the nearest legal cube need not be the user's cube, so the
+  // decoder may report a COUNT and nothing more.
+  const pointable = decoded.distance === 1 && decoded.unique && decoded.stickers.length === 1;
+  const suspects: DecodedSticker[] = pointable
+    ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to }))
+    : [];
+  // A side to re-show, but only when every minimal repair blames that one side. Otherwise the
+  // honest instruction is "show the sides again", not a guess dressed as a lead.
+  const blamed = new Set(decoded.stickers.map((s) => s.face));
+  return {
+    misreadCount: decoded.distance,
+    ...(suspects.length > 0 ? { suspects } : {}),
+    ...(blamed.size === 1 ? { misreadFace: [...blamed][0]! } : {}),
+  };
 }

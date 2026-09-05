@@ -12,7 +12,8 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "check": "npm run typecheck && npm run lint && npm run coverage",
-    "build:panel": "esbuild view/ai-scan-panel.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/ai-scan-panel.js"
+    "build:panel": "esbuild view/ai-scan-panel.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/ai-scan-panel.js",
+    "build:misread-worker": "esbuild view/misread-worker.ts --bundle --format=esm --target=es2022 --legal-comments=eof --outfile=../../apps/web/vendor/misread-worker.js"
   },
   "peerDependencies": {
     "cubejs": "^1.3.2"

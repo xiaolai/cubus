@@ -41,10 +41,12 @@ import {
 } from '../src/ai-assemble.js';
 import type { CameraDevice } from '../src/camera.js';
 import type { Detector } from '../src/detector.js';
+import type { MisreadDiagnosis } from '../src/misread-decode.js';
 import { fitFromOutput } from '../src/onnx-detect.js';
 import type { FitReason } from '../src/onnx-postprocess.js';
 import { FACES, type Face } from '../src/types.js';
 import { CameraSession } from './camera-session.js';
+import { MisreadDecoder } from './misread-client.js';
 import type { ScanRuntime } from './pick-detector.js';
 import { Stillness } from './stillness.js';
 
@@ -411,6 +413,17 @@ export class AiScanPanel extends HTMLElement {
   private suspects: StickerSuspect[] = [];
   /** The pending deferred assembly (see CHECK_BEAT_MS); epoch-guarded and cleared on stop(). */
   private checkTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The misread decode, off this thread where the page has one to spare. */
+  private misread = new MisreadDecoder();
+  /**
+   * Serial number of the READING a diagnosis is about.
+   *
+   * Bumped by everything that re-decides the verdict — a capture, a correction, a paint stroke, a
+   * mode change, a restart — so an answer that arrives seconds later can be recognised as being
+   * about a cube that is no longer on screen. Not the camera's `frameEpoch`: that moves when the
+   * camera does, and a tap on a sticker changes the reading without touching the camera at all.
+   */
+  private diagnosisEpoch = 0;
 
   constructor() {
     super();
@@ -441,6 +454,22 @@ export class AiScanPanel extends HTMLElement {
     // keeps the model, which is the whole distinction stop() and dispose() exist to draw; see
     // `pickDetector` for the page-wide slot and why exactly one is kept.
     this.cam.park();
+    // The decoder worker is NOT parked, for the reason the detector is: a model load is seconds
+    // and megabytes, a worker spawn is a module parse, and only a refusal ever creates one.
+    this.dropDiagnosis();
+    this.misread.dispose();
+  }
+
+  /**
+   * Everything decided about the current reading is stale from here on.
+   *
+   * A diagnosis in flight is about the six faces AS THEY WERE when it was posted, and the decode
+   * that produces it can take seconds; bumping the epoch is what stops that answer landing on top
+   * of a cube the user has since corrected, re-shown or thrown away. Called from every site that
+   * clears `suspects` — those are exactly the moments the verdict is re-opened.
+   */
+  private dropDiagnosis(): void {
+    this.diagnosisEpoch++;
   }
 
   /**
@@ -751,6 +780,7 @@ export class AiScanPanel extends HTMLElement {
     this.finished = false;
     this.notice = null;
     this.suspects = [];
+    this.dropDiagnosis();
     this.settled.clear();
     this.pendingOpening = null;
     for (const f of FACES) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
@@ -1035,6 +1065,7 @@ export class AiScanPanel extends HTMLElement {
     this.finished = false; // whatever was settled is being re-decided
     this.notice = null;
     this.suspects = [];
+    this.dropDiagnosis();
     this.report('checking', ...opening);
     const epoch = this.cam.frameEpoch();
     if (this.checkTimer !== null) clearTimeout(this.checkTimer);
@@ -1103,6 +1134,7 @@ export class AiScanPanel extends HTMLElement {
     this.finished = false;
     this.notice = null;
     this.suspects = [];
+    this.dropDiagnosis();
     const done = this.capturedFaces().length;
     if (this.painting) {
       this.afterPaintStroke(face, done);
@@ -1129,31 +1161,48 @@ export class AiScanPanel extends HTMLElement {
     // invalid by definition, so reporting each one as a failure would be noise, not news — but
     // once all six sides ARE painted, silence stops being kindness: say what still blocks it.
     if (done === FACES.length) {
-      const result = assemblePainted(this.faces);
+      // `diagnose: false` for the same reason the camera path passes it: the decode is seconds on
+      // a badly-painted cube, and here it lands between a tap and the tile turning colour.
+      const result = assemblePainted(this.faces, undefined, { diagnose: false });
       if (result.valid) {
         this.finish(result);
         return;
       }
-      // Same classification, same proven wording, same public event as the camera path — the
-      // only difference is how you get out of it, which here is tapping rather than re-showing.
-      // Painting used to build its own notice and emit nothing, so `scan-invalid` fired for a
-      // refused SCAN and not for a refused PAINTING: a public event that depended on which mode
-      // the user happened to be in.
-      this.suspects = result.suspects ?? [];
-      this.dispatchEvent(new CustomEvent<AiScanResult>('scan-invalid', { detail: result }));
-      this.notice = this.misreadNotice(result, {
-        one: 'If it is wrong, tap it and pick the colour you see.',
-        many: 'Check those sides against the cube in your hand and repaint what does not match.',
-      }) ?? {
-        title: 'Not solvable yet',
-        tone: 'info',
-        body: `${result.reason ?? 'Not a legal cube yet'} — check the sides against your cube.`,
-      };
+      this.diagnose(result, (r, first) => {
+        this.publishPaintRefusal(r);
+        // The stroke's own line is written once, by the caller below. A refinement replaces the
+        // notice and nothing else, so it re-reports rather than duplicating that sentence.
+        if (!first) {
+          this.report(
+            'painting',
+            `Painted the ${GUIDE[face].name} side — ${done}/${FACES.length} sides.`,
+          );
+        }
+      });
     }
     this.report(
       'painting',
       `Painted the ${GUIDE[face].name} side — ${done}/${FACES.length} sides.`,
     );
+  }
+
+  /** A refused painting, said out loud. Called again for each diagnosis that lands for it. */
+  private publishPaintRefusal(result: AiScanResult): void {
+    // Same classification, same proven wording, same public event as the camera path — the
+    // only difference is how you get out of it, which here is tapping rather than re-showing.
+    // Painting used to build its own notice and emit nothing, so `scan-invalid` fired for a
+    // refused SCAN and not for a refused PAINTING: a public event that depended on which mode
+    // the user happened to be in.
+    this.suspects = result.suspects ?? [];
+    this.dispatchEvent(new CustomEvent<AiScanResult>('scan-invalid', { detail: result }));
+    this.notice = this.misreadNotice(result, {
+      one: 'If it is wrong, tap it and pick the colour you see.',
+      many: 'Check those sides against the cube in your hand and repaint what does not match.',
+    }) ?? {
+      title: 'Not solvable yet',
+      tone: 'info',
+      body: `${result.reason ?? 'Not a legal cube yet'} — check the sides against your cube.`,
+    };
   }
 
   /**
@@ -1166,6 +1215,7 @@ export class AiScanPanel extends HTMLElement {
     this.painting = on;
     this.notice = null; // whichever mode's guidance was pinned, the mode it spoke to is over
     this.suspects = [];
+    this.dropDiagnosis();
     if (on) {
       const dropped = this.dropUnsettledCaptures();
       this.stop(); // stop() clears the device, so a host stops showing a live lens
@@ -1230,6 +1280,7 @@ export class AiScanPanel extends HTMLElement {
     this.finished = false;
     this.notice = null;
     this.suspects = [];
+    this.dropDiagnosis();
     this.buildDots();
     // loop() reopens the camera itself when it is dark, keeping the other five sides.
     this.loop('scanning', `Show the ${GUIDE[face].color} side again — it will be read fresh.`);
@@ -1305,6 +1356,18 @@ export class AiScanPanel extends HTMLElement {
     return missing.map((f) => GUIDE[f].color).join(' and ');
   }
 
+  /**
+   * The reading's rotations are already known — painted in place, or settled by an accepted scan.
+   *
+   * Read in ONE place because two things now depend on it and they must not disagree: which
+   * validator runs (`assemblePainted`, no rotation search), and how the deferred misread decode is
+   * asked the same question. A decode allowed to rotate a face back reports "0 misreads" about a
+   * cube the validator has just refused — measured on nine scrambles with one side turned 90°.
+   */
+  private inPlace(): boolean {
+    return this.capturedFaces().length === FACES.length && FACES.every((f) => this.settled.has(f));
+  }
+
   /** Read the six faces (plus any confirmations) into a cube, and act on what comes back. */
   private assemble(): void {
     let result: AiScanResult;
@@ -1316,8 +1379,8 @@ export class AiScanPanel extends HTMLElement {
     // one sticker on a finished near-solved cube dropped every confirmation the user had already
     // answered and asked to be shown a side again, for an orientation nobody had lost. Pinning is
     // what `assemblePainted` is: same validation, same diagnosis, no rotation search.
-    if (this.capturedFaces().length === FACES.length && FACES.every((f) => this.settled.has(f))) {
-      this.finish(assemblePainted(this.faces));
+    if (this.inPlace()) {
+      this.finish(assemblePainted(this.faces, undefined, { diagnose: false }));
       return;
     }
     // A `reread` means a confirmation disagreed with its first capture about colours: adopt the
@@ -1325,7 +1388,9 @@ export class AiScanPanel extends HTMLElement {
     // side at distance 0, so this settles within six rounds; the cap is a backstop, not a path.
     for (let round = 0; ; round++) {
       try {
-        result = assembleColors(this.faces, undefined, this.confirmed);
+        // `diagnose: false` — the assembly answers now and the misread decode arrives later, off
+        // this thread. Only the refusal branch is affected; every accepted scan is untouched.
+        result = assembleColors(this.faces, undefined, this.confirmed, { diagnose: false });
       } catch (err) {
         // Six well-formed faces should never throw — but if they do, never freeze on "checking…"
         // and never destroy the captures over it: say so and keep scanning.
@@ -1369,6 +1434,17 @@ export class AiScanPanel extends HTMLElement {
     recovery: { one: string; many: string; params?: (string | number)[] },
   ): ScanNotice | null {
     const misread = result.misreadCount ?? 0;
+    // The decode is still running (see AssembleOptions.diagnose). Say that, and say nothing about
+    // the cube: `null` is not zero, and it is not "the decoder could not tell" either — that one
+    // falls through to a caller's own sentence about damage too wide to place. No placeholders, so
+    // this sentence cannot pick up a count that does not exist yet.
+    if (result.misreadCount === null) {
+      return {
+        title: 'Not a solvable cube',
+        tone: 'err',
+        body: 'Working out how many stickers are wrong — that takes a moment on a badly-read cube.',
+      };
+    }
     if (this.suspects.length > 0) {
       // The ONE claim that is provable here is the one this sentence makes: changing the marked
       // sticker turns the reading into a legal cube. That is what the decoder measured.
@@ -1544,15 +1620,61 @@ export class AiScanPanel extends HTMLElement {
     this.loop('confirm', ...this.confirmWords(confirm));
   }
 
+  /**
+   * Explain a refusal now, and explain it better when the misread count arrives.
+   *
+   * `publish` is called at least once, synchronously, with `first` true — so the refusal is on
+   * screen within the same tick however long the decode turns out to take. It is called a second
+   * time, with `first` false, only for the answer to THIS reading: the epoch is captured here and
+   * re-read when the answer lands, so a correction, a re-shown side or a restart in between drops
+   * the answer rather than describing a cube that is no longer there.
+   *
+   * Where the page has no worker the whole thing collapses back to one call carrying the count —
+   * the behaviour that shipped before the decode moved off this thread.
+   */
+  private diagnose(result: AiScanResult, publish: (r: AiScanResult, first: boolean) => void): void {
+    // Nothing was deferred: an ambiguous reading (which has legal readings and so nothing to
+    // decode), or a diagnosis that already ran. Running the decoder over one of those spends a
+    // real search to answer "0 misreads" and would overwrite a count that is already right.
+    if (result.misreadCount !== null) {
+      publish(result, true);
+      return;
+    }
+    const epoch = ++this.diagnosisEpoch;
+    const reply = this.misread.request(
+      { epoch, faces: this.faces, fixedRotation: this.inPlace() },
+      (r) => {
+        if (r.epoch !== this.diagnosisEpoch) return;
+        publish(decided(result, r.diagnosis), false);
+      },
+    );
+    publish(reply ? decided(result, reply.diagnosis) : result, true);
+  }
+
   /** Refused: keep every capture, and say what would make it a cube. */
   private finishRefused(result: AiScanResult): void {
     // Refused — but NOT thrown away. The six captures are the user's work and every way out of a
     // refusal needs them: fix a sticker, re-show a side (the loop below replaces its reading), or
     // restart. The old code reset everything here, which wiped the board in the same paint as the
     // sixth capture and read as the app breaking.
-    this.dispatchEvent(new CustomEvent<AiScanResult>('scan-invalid', { detail: result }));
     this.confirmed = {};
     this.awaiting = null;
+    // Published NOW with whatever is known, and published again when the misread count lands. The
+    // first call restarts the capture loop; the second must not, or a user who has been holding a
+    // side still for the three seconds the decode took loses that run to a loop reset.
+    this.diagnose(result, (r, first) => this.publishRefusal(r, first));
+  }
+
+  /**
+   * Say a refusal out loud: the public event, the pinned notice, the transient line.
+   *
+   * Run once per refusal and once more per diagnosis that lands for it, so `scan-invalid` carries
+   * the same null-then-value shape `misreadCount` has — a host sees the refusal immediately and
+   * the count when there is one, rather than waiting seconds for either.
+   */
+  private publishRefusal(result: AiScanResult, first: boolean): void {
+    this.suspects = result.suspects ?? [];
+    this.dispatchEvent(new CustomEvent<AiScanResult>('scan-invalid', { detail: result }));
     const hold =
       " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
     // Classification and the proven wording come from misreadNotice(); only the way OUT is the
@@ -1592,7 +1714,9 @@ export class AiScanPanel extends HTMLElement {
       };
     }
     // Keep scanning: with all six sides in, a re-shown side replaces its reading (see onTick).
-    this.loop('scanning', this.tinted('err', line));
+    // A refinement only replaces the WORDS — see finishRefused for why it must not restart it.
+    if (first) this.loop('scanning', this.tinted('err', line));
+    else this.report('scanning', this.tinted('err', line));
   }
 
   private buildDots(): void {
@@ -1671,6 +1795,23 @@ export class AiScanPanel extends HTMLElement {
     span.textContent = text;
     return span;
   }
+}
+
+/**
+ * A deferred refusal, once the decode has spoken.
+ *
+ * The marker has to be REMOVED, not merged over: a decode that ran and could claim nothing (its
+ * 20M-node backstop exhausted) answers with an EMPTY diagnosis, and spreading that over a result
+ * still carrying `misreadCount: null` leaves the marker standing — so the panel says "working out
+ * how many stickers are wrong" for the rest of the session, about a question that has already been
+ * answered as far as it ever will be. Found by measuring rather than by reading: the worst input
+ * the plan names is exactly the input whose decode comes back empty.
+ */
+function decided(result: AiScanResult, diagnosis: MisreadDiagnosis): AiScanResult {
+  // Rest-destructured rather than spread-then-deleted: dropping the key is the whole job, and
+  // this is the one form that says so in the expression that builds the result.
+  const { misreadCount: _checking, ...settled } = result;
+  return { ...settled, ...diagnosis };
 }
 
 if (!customElements.get('ai-scan-panel')) {

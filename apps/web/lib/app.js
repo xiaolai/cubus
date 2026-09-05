@@ -2724,6 +2724,14 @@ SCREENS.scan = () => {
       // Solve over it would walk that older cube while the screen is telling you this one was not
       // readable. (The panel's own fields for a refusal are deliberately absent, so nothing here
       // reads them.)
+      //
+      // FIRES MORE THAN ONCE PER REFUSAL, since 2026-09-05, and this line is why that is safe.
+      // The misread decode moved to a worker, so a refusal is announced at once with
+      // `misreadCount: null` — "checking", not zero and not "nothing can be said" — and announced
+      // again with the count when it lands. Setting a flag both times is idempotent; counting the
+      // events, or reading `misreadCount` as a number, would not be. What the count is FOR is the
+      // panel's pinned notice, which arrives on scan-progress and is rendered above with its
+      // params, so the "at least N stickers were misread" wording stays the scanner's to prove.
       panel.addEventListener('scan-invalid', () => { refused = true; solveBtn.disabled = true; }, { signal });
       // Only a validated cube leaves this screen.
       panel.addEventListener('scan-complete', (e) => {

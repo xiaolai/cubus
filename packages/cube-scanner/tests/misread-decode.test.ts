@@ -1,9 +1,9 @@
 // The claims dev-docs/misread-decoding.md rests on. Each test here fails if one stops being true.
 
 import Cube from 'cubejs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SOLVED_FACELETS, isStructurallyValid, rotateFace } from '../src/facelet-cube.js';
-import { type ColorFaces, decodeMisread } from '../src/misread-decode.js';
+import { type ColorFaces, decodeMisread, diagnoseMisread } from '../src/misread-decode.js';
 import { FACES, type Face } from '../src/types.js';
 import { scrambleFacelets } from './helpers.js';
 
@@ -259,7 +259,13 @@ describe('decodeMisread', () => {
         }
       }
     }
-  });
+    // AN EXPLICIT BUDGET, because vitest's 5 s default is a hang detector and not a budget for
+    // this. Thirty-six full 4^6-rotation decodes is what the claim costs to check: 0.7 s here
+    // uncontended, 3.4 s under v8 coverage instrumentation, and 9.4 s when the coverage run's
+    // other files are competing for the same four cores — a number that says how busy the machine
+    // is and nothing about the decoder. Measured on 2026-09-05, when adding a sibling test file
+    // was enough to tip it over and turn an exhaustive check into a flaky one.
+  }, 60_000);
 
   it('the distance is never an overstatement — the true cube is always a legal repair', () => {
     // The property that makes "at least N stickers were misread" honest. A single overstatement
@@ -424,5 +430,60 @@ describe('the lower bound presumes the centres were read right', () => {
     const got = decodeMisread(f, owner);
     const reported = got.kind === 'unknown' ? Number.POSITIVE_INFINITY : got.distance;
     expect(reported).toBeGreaterThan(2);
+  });
+});
+
+describe('diagnoseMisread — the decode reduced to what may be said', () => {
+  it('claims nothing when the six centres are not six colours', () => {
+    // The precondition the whole proof rests on: everything decodeMisread establishes is about the
+    // colouring the CENTRES define, so a reading whose centres collide has no colouring to be
+    // right or wrong about. `assembleColors` refuses that reading before it can get here, and this
+    // is the guard on the public function — it must claim nothing rather than decide something.
+    const f = faces(DEEP);
+    f.R.colors[4] = f.U.colors[4]!;
+    expect(diagnoseMisread(f)).toEqual({});
+  });
+
+  it('never throws — a defect is logged and nothing is claimed', () => {
+    // Every caller is already on a refusal path, and a refusal is a sentence shown to a child
+    // about their cube. Replacing it with a crash is strictly worse than "nothing more can be
+    // said" — but a defect still has to be visible, so the log is asserted with the silence.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const broken = { ...faces(DEEP), U: undefined } as unknown as Record<Face, ColorFaces>;
+    expect(diagnoseMisread(broken)).toEqual({});
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
+  });
+
+  it('reports a count and no suspect when a repair is not unique', () => {
+    // The pinned counterexample, one describe above: two of the 3-cycle witness's three stickers.
+    // The reading is one change from a cube nobody held, and the search says so — `unique` false,
+    // four stickers named. A COUNT may be reported; a sticker may not. That is the pointing rule
+    // the module header states, asserted here through the one function that enforces it.
+    const arr = [...SOLVED_FACELETS];
+    arr[19] = 'R';
+    arr[37] = 'F';
+    const got = diagnoseMisread(faces(arr.join('')));
+    expect(got.misreadCount).toBe(1);
+    expect(got.suspects).toBeUndefined();
+  });
+
+  it('points only where the search says the repair is unambiguous', () => {
+    const f = faces(DEEP);
+    const was = f.U.colors[0]!;
+    f.U.colors[0] = (was + 1) % 6;
+    const got = diagnoseMisread(f);
+    expect(got.misreadCount).toBe(1);
+    expect(got.suspects).toEqual([{ face: 'U', index: 0, to: was }]);
+  });
+
+  it('takes a painted cube exactly as painted', () => {
+    // fixedRotation. Without it the decode is free to rotate the turned face back and answer
+    // "0 misreads" about a cube the painted validator has just refused — measured on nine
+    // scrambles with one side turned 90 degrees, all nine.
+    const f = faces(DEEP);
+    f.U.colors = rotateFace(f.U.colors, 1);
+    expect(diagnoseMisread(f).misreadCount).toBe(0);
+    expect(diagnoseMisread(f, { fixedRotation: true }).misreadCount).toBeGreaterThan(0);
   });
 });

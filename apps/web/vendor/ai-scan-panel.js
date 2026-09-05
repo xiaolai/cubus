@@ -2354,6 +2354,28 @@ function decodeMisread(faces, centreOwner, options = {}) {
   }
   return { kind: "beyond", distance: maxDistance };
 }
+function diagnoseMisread(faces, options = {}) {
+  let decoded;
+  try {
+    const centreOwner = /* @__PURE__ */ new Map();
+    for (const face of FACES) centreOwner.set(faces[face].colors[4], face);
+    if (centreOwner.size !== FACES.length) return {};
+    decoded = decodeMisread(faces, centreOwner, options);
+  } catch (err) {
+    console.error("[cubus] misread diagnosis failed, so nothing is claimed about the scan", err);
+    return {};
+  }
+  if (decoded.kind === "unknown") return {};
+  if (decoded.kind === "beyond") return { misreadCount: decoded.distance + 1 };
+  const pointable = decoded.distance === 1 && decoded.unique && decoded.stickers.length === 1;
+  const suspects = pointable ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to })) : [];
+  const blamed = new Set(decoded.stickers.map((s) => s.face));
+  return {
+    misreadCount: decoded.distance,
+    ...suspects.length > 0 ? { suspects } : {},
+    ...blamed.size === 1 ? { misreadFace: [...blamed][0] } : {}
+  };
+}
 
 // src/ai-assemble.ts
 var TOP_NEIGHBOUR = {
@@ -2436,18 +2458,9 @@ function solvableReadings(faces, centreOwner) {
   }
   return [...seen].filter((e) => e[1] !== null);
 }
-function diagnose(faces, centreOwner, options = {}) {
-  const decoded = decodeMisread(faces, centreOwner, options);
-  if (decoded.kind === "unknown") return {};
-  if (decoded.kind === "beyond") return { misreadCount: decoded.distance + 1 };
-  const pointable = decoded.distance === 1 && decoded.unique && decoded.stickers.length === 1;
-  const suspects = pointable ? decoded.stickers.map((s) => ({ face: s.face, index: s.index, to: s.to })) : [];
-  const blamed = new Set(decoded.stickers.map((s) => s.face));
-  return {
-    misreadCount: decoded.distance,
-    ...suspects.length > 0 ? { suspects } : {},
-    ...blamed.size === 1 ? { misreadFace: [...blamed][0] } : {}
-  };
+function refusalDiagnosis(faces, options) {
+  if (options.diagnose === false) return { misreadCount: null };
+  return diagnoseMisread(faces, { fixedRotation: options.fixedRotation });
 }
 function buildCentreOwner(faces) {
   const centreOwner = /* @__PURE__ */ new Map();
@@ -2476,7 +2489,7 @@ function summariseConfidence(conf, threshold) {
   });
   return { confidence: min, lowConfidence };
 }
-function assemblePainted(faces, threshold = LOW_CONFIDENCE_THRESHOLD) {
+function assemblePainted(faces, threshold = LOW_CONFIDENCE_THRESHOLD, options = {}) {
   const centreOwner = buildCentreOwner(faces);
   if (!(centreOwner instanceof Map)) return centreOwner;
   const letters = [];
@@ -2489,19 +2502,22 @@ function assemblePainted(faces, threshold = LOW_CONFIDENCE_THRESHOLD) {
   }
   const facelets = letters.join("");
   if (!isStructurallyValid(facelets) || !cubejsRoundTrips(facelets)) {
-    return reject("not a solvable cube yet", diagnose(faces, centreOwner, { fixedRotation: true }));
+    return reject(
+      "not a solvable cube yet",
+      refusalDiagnosis(faces, { ...options, fixedRotation: true })
+    );
   }
   const conf = FACES.flatMap((f) => faces[f].confidence);
   return { facelets, valid: true, ...summariseConfidence(conf, threshold) };
 }
-function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}) {
+function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
   const centreOwner = buildCentreOwner(faces);
   if (!(centreOwner instanceof Map)) return centreOwner;
   const all = solvableReadings(faces, centreOwner);
   if (all.length === 0) {
     return reject(
       "no orientation of the faces is solvable \u2014 a colour was misread",
-      diagnose(faces, centreOwner)
+      refusalDiagnosis(faces, options)
     );
   }
   const confirmedFaces = FACES.filter((f) => confirmed[f]);
@@ -3551,6 +3567,89 @@ var CameraSession = class {
   }
 };
 
+// view/misread-protocol.ts
+function handleMisreadRequest(request) {
+  return {
+    epoch: request.epoch,
+    diagnosis: diagnoseMisread(request.faces, { fixedRotation: request.fixedRotation })
+  };
+}
+
+// view/misread-client.ts
+var MisreadDecoder = class {
+  worker = null;
+  /** Set once a worker has proved it cannot be had at all, so no later request builds another. */
+  broken = false;
+  /** Whether the current worker has ever answered — the test that makes `broken` safe to set. */
+  spoke = false;
+  /** The request this decoder is still waiting on — at most one; see `request`. */
+  pending = /* @__PURE__ */ new Map();
+  /**
+   * Ask for `request`'s diagnosis.
+   *
+   * Returns the answer outright when this page has nowhere else to run it — in which case
+   * `answer` is never called and the caller already has everything. Returns null when a worker
+   * took the request, and `answer` runs exactly once, later, with the reply for this epoch.
+   */
+  request(request, answer) {
+    const worker = this.spawn();
+    if (!worker) return handleMisreadRequest(request);
+    this.pending.clear();
+    this.pending.set(request.epoch, { request, answer });
+    worker.postMessage(request);
+    return null;
+  }
+  /** Give the worker back. A decoder is usable again afterwards; it simply spawns a new one. */
+  dispose() {
+    this.worker?.terminate();
+    this.worker = null;
+    this.spoke = false;
+    this.pending.clear();
+  }
+  spawn() {
+    if (this.worker) return this.worker;
+    if (this.broken || typeof Worker === "undefined") return null;
+    try {
+      const spawned = new Worker(new URL("./misread-worker.js", import.meta.url), {
+        type: "module"
+      });
+      spawned.addEventListener("message", (ev) => {
+        this.spoke = true;
+        this.deliver(ev.data);
+      });
+      spawned.addEventListener("error", (ev) => this.failed(ev));
+      this.worker = spawned;
+      return spawned;
+    } catch (cause) {
+      console.warn(
+        "misread-client: the decoder worker could not be built, so it runs on this thread",
+        cause
+      );
+      this.broken = true;
+      return null;
+    }
+  }
+  deliver(reply) {
+    const waiting = this.pending.get(reply.epoch);
+    if (!waiting) return;
+    this.pending.delete(reply.epoch);
+    waiting.answer(reply);
+  }
+  failed(cause) {
+    if (!this.spoke) this.broken = true;
+    console.warn(
+      "misread-client: the decoder worker failed, so the reading is checked on this thread",
+      cause
+    );
+    this.worker?.terminate();
+    this.worker = null;
+    this.spoke = false;
+    const stranded = [...this.pending.values()];
+    this.pending.clear();
+    for (const { request, answer } of stranded) answer(handleMisreadRequest(request));
+  }
+};
+
 // view/stillness.ts
 var Stillness = class {
   /**
@@ -3821,6 +3920,17 @@ var AiScanPanel = class extends HTMLElement {
   suspects = [];
   /** The pending deferred assembly (see CHECK_BEAT_MS); epoch-guarded and cleared on stop(). */
   checkTimer = null;
+  /** The misread decode, off this thread where the page has one to spare. */
+  misread = new MisreadDecoder();
+  /**
+   * Serial number of the READING a diagnosis is about.
+   *
+   * Bumped by everything that re-decides the verdict — a capture, a correction, a paint stroke, a
+   * mode change, a restart — so an answer that arrives seconds later can be recognised as being
+   * about a cube that is no longer on screen. Not the camera's `frameEpoch`: that moves when the
+   * camera does, and a tap on a sticker changes the reading without touching the camera at all.
+   */
+  diagnosisEpoch = 0;
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
@@ -3839,6 +3949,19 @@ var AiScanPanel = class extends HTMLElement {
   disconnectedCallback() {
     this.stop();
     this.cam.park();
+    this.dropDiagnosis();
+    this.misread.dispose();
+  }
+  /**
+   * Everything decided about the current reading is stale from here on.
+   *
+   * A diagnosis in flight is about the six faces AS THEY WERE when it was posted, and the decode
+   * that produces it can take seconds; bumping the epoch is what stops that answer landing on top
+   * of a cube the user has since corrected, re-shown or thrown away. Called from every site that
+   * clears `suspects` — those are exactly the moments the verdict is re-opened.
+   */
+  dropDiagnosis() {
+    this.diagnosisEpoch++;
   }
   /**
    * Why the camera must not open right now — one answer, consulted by every entry point.
@@ -4080,6 +4203,7 @@ var AiScanPanel = class extends HTMLElement {
     this.finished = false;
     this.notice = null;
     this.suspects = [];
+    this.dropDiagnosis();
     this.settled.clear();
     this.pendingOpening = null;
     for (const f of FACES) delete this.faces[f];
@@ -4288,6 +4412,7 @@ var AiScanPanel = class extends HTMLElement {
     this.finished = false;
     this.notice = null;
     this.suspects = [];
+    this.dropDiagnosis();
     this.report("checking", ...opening);
     const epoch = this.cam.frameEpoch();
     if (this.checkTimer !== null) clearTimeout(this.checkTimer);
@@ -4342,6 +4467,7 @@ var AiScanPanel = class extends HTMLElement {
     this.finished = false;
     this.notice = null;
     this.suspects = [];
+    this.dropDiagnosis();
     const done = this.capturedFaces().length;
     if (this.painting) {
       this.afterPaintStroke(face, done);
@@ -4364,26 +4490,38 @@ var AiScanPanel = class extends HTMLElement {
    */
   afterPaintStroke(face, done) {
     if (done === FACES.length) {
-      const result = assemblePainted(this.faces);
+      const result = assemblePainted(this.faces, void 0, { diagnose: false });
       if (result.valid) {
         this.finish(result);
         return;
       }
-      this.suspects = result.suspects ?? [];
-      this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
-      this.notice = this.misreadNotice(result, {
-        one: "If it is wrong, tap it and pick the colour you see.",
-        many: "Check those sides against the cube in your hand and repaint what does not match."
-      }) ?? {
-        title: "Not solvable yet",
-        tone: "info",
-        body: `${result.reason ?? "Not a legal cube yet"} \u2014 check the sides against your cube.`
-      };
+      this.diagnose(result, (r, first) => {
+        this.publishPaintRefusal(r);
+        if (!first) {
+          this.report(
+            "painting",
+            `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
+          );
+        }
+      });
     }
     this.report(
       "painting",
       `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
     );
+  }
+  /** A refused painting, said out loud. Called again for each diagnosis that lands for it. */
+  publishPaintRefusal(result) {
+    this.suspects = result.suspects ?? [];
+    this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
+    this.notice = this.misreadNotice(result, {
+      one: "If it is wrong, tap it and pick the colour you see.",
+      many: "Check those sides against the cube in your hand and repaint what does not match."
+    }) ?? {
+      title: "Not solvable yet",
+      tone: "info",
+      body: `${result.reason ?? "Not a legal cube yet"} \u2014 check the sides against your cube.`
+    };
   }
   /**
    * Turn hand-painting on or off. The two are exclusive by nature, not by policy: painting means
@@ -4395,6 +4533,7 @@ var AiScanPanel = class extends HTMLElement {
     this.painting = on;
     this.notice = null;
     this.suspects = [];
+    this.dropDiagnosis();
     if (on) {
       const dropped = this.dropUnsettledCaptures();
       this.stop();
@@ -4456,6 +4595,7 @@ var AiScanPanel = class extends HTMLElement {
     this.finished = false;
     this.notice = null;
     this.suspects = [];
+    this.dropDiagnosis();
     this.buildDots();
     this.loop("scanning", `Show the ${GUIDE[face].color} side again \u2014 it will be read fresh.`);
   }
@@ -4522,16 +4662,27 @@ var AiScanPanel = class extends HTMLElement {
     if (missing.length === 0 || missing.length > 2) return null;
     return missing.map((f) => GUIDE[f].color).join(" and ");
   }
+  /**
+   * The reading's rotations are already known — painted in place, or settled by an accepted scan.
+   *
+   * Read in ONE place because two things now depend on it and they must not disagree: which
+   * validator runs (`assemblePainted`, no rotation search), and how the deferred misread decode is
+   * asked the same question. A decode allowed to rotate a face back reports "0 misreads" about a
+   * cube the validator has just refused — measured on nine scrambles with one side turned 90°.
+   */
+  inPlace() {
+    return this.capturedFaces().length === FACES.length && FACES.every((f) => this.settled.has(f));
+  }
   /** Read the six faces (plus any confirmations) into a cube, and act on what comes back. */
   assemble() {
     let result;
-    if (this.capturedFaces().length === FACES.length && FACES.every((f) => this.settled.has(f))) {
-      this.finish(assemblePainted(this.faces));
+    if (this.inPlace()) {
+      this.finish(assemblePainted(this.faces, void 0, { diagnose: false }));
       return;
     }
     for (let round = 0; ; round++) {
       try {
-        result = assembleColors(this.faces, void 0, this.confirmed);
+        result = assembleColors(this.faces, void 0, this.confirmed, { diagnose: false });
       } catch (err) {
         const why = String(err?.message ?? err);
         this.notice = {
@@ -4569,6 +4720,13 @@ var AiScanPanel = class extends HTMLElement {
    */
   misreadNotice(result, recovery) {
     const misread = result.misreadCount ?? 0;
+    if (result.misreadCount === null) {
+      return {
+        title: "Not a solvable cube",
+        tone: "err",
+        body: "Working out how many stickers are wrong \u2014 that takes a moment on a badly-read cube."
+      };
+    }
     if (this.suspects.length > 0) {
       return {
         title: "Check the marked sticker",
@@ -4686,11 +4844,49 @@ var AiScanPanel = class extends HTMLElement {
     };
     this.loop("confirm", ...this.confirmWords(confirm));
   }
+  /**
+   * Explain a refusal now, and explain it better when the misread count arrives.
+   *
+   * `publish` is called at least once, synchronously, with `first` true — so the refusal is on
+   * screen within the same tick however long the decode turns out to take. It is called a second
+   * time, with `first` false, only for the answer to THIS reading: the epoch is captured here and
+   * re-read when the answer lands, so a correction, a re-shown side or a restart in between drops
+   * the answer rather than describing a cube that is no longer there.
+   *
+   * Where the page has no worker the whole thing collapses back to one call carrying the count —
+   * the behaviour that shipped before the decode moved off this thread.
+   */
+  diagnose(result, publish) {
+    if (result.misreadCount !== null) {
+      publish(result, true);
+      return;
+    }
+    const epoch = ++this.diagnosisEpoch;
+    const reply = this.misread.request(
+      { epoch, faces: this.faces, fixedRotation: this.inPlace() },
+      (r) => {
+        if (r.epoch !== this.diagnosisEpoch) return;
+        publish(decided(result, r.diagnosis), false);
+      }
+    );
+    publish(reply ? decided(result, reply.diagnosis) : result, true);
+  }
   /** Refused: keep every capture, and say what would make it a cube. */
   finishRefused(result) {
-    this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
     this.confirmed = {};
     this.awaiting = null;
+    this.diagnose(result, (r, first) => this.publishRefusal(r, first));
+  }
+  /**
+   * Say a refusal out loud: the public event, the pinned notice, the transient line.
+   *
+   * Run once per refusal and once more per diagnosis that lands for it, so `scan-invalid` carries
+   * the same null-then-value shape `misreadCount` has — a host sees the refusal immediately and
+   * the count when there is one, rather than waiting seconds for either.
+   */
+  publishRefusal(result, first) {
+    this.suspects = result.suspects ?? [];
+    this.dispatchEvent(new CustomEvent("scan-invalid", { detail: result }));
     const hold = " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
     const camera = this.misreadNotice(result, {
       one: `If it is wrong, tap it and pick the colour you see; if it is right, show that side again to re-read it.${hold}`,
@@ -4714,7 +4910,8 @@ var AiScanPanel = class extends HTMLElement {
         body: `Too much of the cube was read wrong to say where. Show the sides to the camera again \u2014 each one is read fresh \u2014 or start the scan over.${hold}`
       };
     }
-    this.loop("scanning", this.tinted("err", line));
+    if (first) this.loop("scanning", this.tinted("err", line));
+    else this.report("scanning", this.tinted("err", line));
   }
   buildDots() {
     const dots = this.maybe("dots");
@@ -4789,6 +4986,10 @@ var AiScanPanel = class extends HTMLElement {
     return span;
   }
 };
+function decided(result, diagnosis) {
+  const { misreadCount: _checking, ...settled } = result;
+  return { ...settled, ...diagnosis };
+}
 if (!customElements.get("ai-scan-panel")) {
   customElements.define("ai-scan-panel", AiScanPanel);
 }

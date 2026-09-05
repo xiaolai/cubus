@@ -128,7 +128,13 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
   //
   // ort.mjs in particular must stay a SEPARATE file: onnxruntime spawns its inference worker from
   // its own import.meta.url, so bundling it into the panel puts inference back on the main thread.
-  const SCANNER = ['vendor/ort.mjs', 'vendor/cube-yolo.onnx'];
+  //
+  // misread-worker.js is here for the same reason and one more: the panel reaches it by a URL
+  // computed from its own bundle (`new URL('./misread-worker.js', import.meta.url)`), so it
+  // appears in no HTML either — and its absence degrades QUIETLY, back to the three-second
+  // main-thread decode it exists to move off the page. It is committed rather than generated, so
+  // this catches a dist/ assembled before `build:misread-worker` ever ran.
+  const SCANNER = ['vendor/ort.mjs', 'vendor/cube-yolo.onnx', 'vendor/misread-worker.js'];
   // The wasm binaries need TWO checks, because either one alone is vacuous.
   //
   // onnxruntime picks its binary at runtime from inside its own worker, so which variant it wants is
