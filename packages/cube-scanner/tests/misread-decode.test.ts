@@ -267,6 +267,14 @@ describe('decodeMisread', () => {
     // other files are competing for the same four cores — a number that says how busy the machine
     // is and nothing about the decoder. Measured on 2026-09-05, when adding a sibling test file
     // was enough to tip it over and turn an exhaustive check into a flaky one.
+    //
+    // And 180 s, later the same day, when the root `pnpm check` ran this package's coverage run
+    // CONCURRENTLY with gan-driver's and with the web app's browser suites — 44x the figure with
+    // coverage alone. That is not this budget's to absorb: each package's runner already fills
+    // every core, so running the packages side by side adds contention and no throughput, and
+    // the root scripts now run them one at a time (`--workspace-concurrency=1`). The budget stays
+    // a hang detector with an order of magnitude of headroom over what the test costs when it has
+    // the machine.
   }, 60_000);
 
   it('the distance is never an overstatement — the true cube is always a legal repair', () => {

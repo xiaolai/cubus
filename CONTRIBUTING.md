@@ -7,11 +7,20 @@ applies to people exactly as it applies to the agents it was written for.
 ## The gate
 
 `pnpm check` is the definition of green: strict `tsc`, Biome, a type-aware ESLint pass and vitest
-for the TypeScript packages; `node --test` over `apps/web/test/` for the web app. CI runs the same
-and more — `cargo fmt`/`clippy`/`check`/`test` on Linux, macOS and Windows plus the Android and iOS
-targets, the Kotlin unit tests, the golden-frame parity gate for the model, the icon measurements,
-`cargo audit`, `pnpm audit`, gitleaks, shellcheck, and a check that the licence notices match the
-lockfiles. A pull request is reviewed after it is green, not instead.
+with coverage for the TypeScript packages; every suite under `apps/web/test/` for the web app,
+including the nine in `apps/web/test/browser/` that launch Playwright's WebKit or Chromium. CI runs
+the same and more — `cargo fmt`/`clippy`/`check`/`test` on Linux, macOS and Windows plus the
+Android and iOS targets, the Kotlin unit tests, the golden-frame parity gate for the model, the
+icon measurements, `cargo audit`, `pnpm audit`, gitleaks, shellcheck, and a check that the licence
+notices match the lockfiles. A pull request is reviewed after it is green, not instead.
+
+It has a fast tier. `pnpm check:fast` is the same typecheck, lint and tests without coverage and
+without the browser suites — a minute or two of node, no Playwright install — and it is what runs
+before every push (`.githooks/pre-push`; `CUBUS_SKIP_CHECK=1 git push` to skip it once) and on
+every pull request. The browser suites, coverage, the platform matrix and the golden gate run on
+`main`, nightly, on a manual dispatch, and on a pull request you label **`e2e`**; a pull request
+also runs a platform job when it touches that platform's inputs (`scripts/ci-plan.mjs` lists them).
+`pnpm test:browser` runs the browser suites alone, when that is the thing you changed.
 
 `scripts/check-on-clone.sh` runs the web checks the way a fresh clone sees the tree, with the
 gitignored inputs hidden. It is how "works on my machine" gets caught before CI does, and it says

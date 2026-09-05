@@ -17,9 +17,9 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
-import { freePort } from './free-port.mjs';
+import { freePort } from '../free-port.mjs';
 
-const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
+const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 let proc;
 let browser;
 let base;

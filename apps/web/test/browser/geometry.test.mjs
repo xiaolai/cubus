@@ -23,16 +23,16 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
-import { pace } from './browser-wait.mjs';
+import { pace } from '../browser-wait.mjs';
 
-import { fitStage } from '../lib/stage.js';
-import { freePort } from './free-port.mjs';
+import { fitStage } from '../../lib/stage.js';
+import { freePort } from '../free-port.mjs';
 
 // Asked of the OS in before(), not chosen: a fixed port collides with an orphaned server
 // from an interrupted run, which fails at startup and reads like a regression. See free-port.mjs.
 let PORT;
 let BASE;
-const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
+const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 let proc;
 let browser;
 

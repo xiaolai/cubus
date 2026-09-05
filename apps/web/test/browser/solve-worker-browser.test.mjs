@@ -17,9 +17,9 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
-import { pace } from './browser-wait.mjs';
-import { WORKER_CUBES } from './fixtures/solver-cubes.mjs';
-import { freePort } from './free-port.mjs';
+import { pace } from '../browser-wait.mjs';
+import { WORKER_CUBES } from '../fixtures/solver-cubes.mjs';
+import { freePort } from '../free-port.mjs';
 
 /**
  * A ceiling on the searching tests, in wall time, because nothing else here has one.
@@ -39,7 +39,7 @@ const GATE = { timeout: 120_000 };
 // run fails at startup for a reason that has nothing to do with the code. See free-port.mjs.
 let PORT;
 let BASE;
-const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
+const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 let proc;
 let browser;
 
@@ -385,7 +385,7 @@ test('a state in the proven library is answered from data — no search, no proo
   // with `reaches()` in finishSolve (since 2026-09-05 nothing derives one by searching), and
   // solve() takes the solution, both already checked against the oracle at load.
   const entry = JSON.parse(
-    readFileSync(new URL('../lib/data/optimal-challenges.json', import.meta.url), 'utf8'),
+    readFileSync(new URL('../../lib/data/optimal-challenges.json', import.meta.url), 'utf8'),
   )[0];
 
   const out = await inBrowser(async (known) => {
