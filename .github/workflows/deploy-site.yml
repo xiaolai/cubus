@@ -1,0 +1,74 @@
+name: Deploy site
+
+# The introduction site at https://cubus.im — apps/site/public, published verbatim to GitHub
+# Pages. It is NOT the app: README.md ("Hosting the web build") records why the web app is not
+# served from here yet. The site's own test (apps/site/site.test.mjs) is the gate — every picture
+# the page names exists at the size the capture script produces, the page loads nothing remote,
+# the copied tokens and icons are identical to the app's, and this file says what that test
+# expects it to say. A pull request runs the check and stops; a push to main deploys.
+#
+# Every third-party action is pinned to a full commit SHA (the version is the trailing comment),
+# as in ci.yml: a tag is a name somebody else can re-point.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/site/**'
+      - '.github/workflows/deploy-site.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/site/**'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+
+# Read-only by default; only the deploy job is granted what a Pages deployment needs.
+permissions:
+  contents: read
+
+# One deployment at a time, and never cancelled: Pages serves whatever finished last, and a
+# deployment stopped halfway is not a state anyone wants to reason about.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      # Plain Node, no install: the test reads files and image headers and imports nothing
+      # from node_modules, so the gate cannot be skipped by a missing dependency.
+      - name: site — check
+        run: node --test apps/site/site.test.mjs
+
+      - name: upload the site
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
+        with:
+          path: apps/site/public
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: check
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      # `enablement: true` creates the Pages site on the first run, with this workflow as its
+      # source; after that it is a no-op. The custom domain comes from public/CNAME.
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+        with:
+          enablement: true
+
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

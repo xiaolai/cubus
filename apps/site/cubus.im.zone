@@ -1,0 +1,29 @@
+;; cubus.im — the DNS records GitHub Pages needs, as a BIND zone file for Cloudflare.
+;;
+;; Import it from the Cloudflare dashboard: the cubus.im zone › DNS › Records › Import and Export
+;; › Import DNS records › choose this file. Cloudflare reads the `cf_tags` comment on each line
+;; and creates the record DNS-only ("grey cloud"); if the import dialog offers to proxy the
+;; imported records, leave that unticked. They must stay DNS-only: GitHub issues the site's
+;; certificate by looking the name up itself, and a proxied record hides the Pages servers
+;; behind Cloudflare's addresses, so the issuance never completes and Enforce HTTPS stays greyed
+;; out.
+;;
+;; Before importing, delete any existing A, AAAA or CNAME record on `cubus.im` and on `www`, or
+;; the old address answers beside the new ones. The four A and four AAAA addresses are GitHub
+;; Pages' published set; the www CNAME points at the account's Pages host, and GitHub redirects
+;; it to the apex because public/CNAME names the apex. TTL 1 is Cloudflare's "Auto".
+;;
+;; site.test.mjs holds this file to exactly those records.
+
+$ORIGIN cubus.im.
+$TTL 1
+
+cubus.im.	1	IN	A	185.199.108.153 ; cf_tags=cf-proxied:false
+cubus.im.	1	IN	A	185.199.109.153 ; cf_tags=cf-proxied:false
+cubus.im.	1	IN	A	185.199.110.153 ; cf_tags=cf-proxied:false
+cubus.im.	1	IN	A	185.199.111.153 ; cf_tags=cf-proxied:false
+cubus.im.	1	IN	AAAA	2606:50c0:8000::153 ; cf_tags=cf-proxied:false
+cubus.im.	1	IN	AAAA	2606:50c0:8001::153 ; cf_tags=cf-proxied:false
+cubus.im.	1	IN	AAAA	2606:50c0:8002::153 ; cf_tags=cf-proxied:false
+cubus.im.	1	IN	AAAA	2606:50c0:8003::153 ; cf_tags=cf-proxied:false
+www.cubus.im.	1	IN	CNAME	xiaolai.github.io. ; cf_tags=cf-proxied:false
