@@ -5544,8 +5544,8 @@ var AiScanPanel = class extends HTMLElement {
     const hold = " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
     const camera = this.misreadNotice(result, {
       one: `If it is wrong, tap it and pick the colour you see; if it is right, show that side again to re-read it.${hold}`,
-      lead: result.misreadFace ? void 0 : "At least %1 stickers do not fit a real cube, and with that many the camera cannot tell which.",
-      many: result.misreadFace ? "Show the %2 side to the camera again \u2014 it will be read fresh." : `Start the scan over, with more light on the cube and each side held flat to the camera \u2014 red and orange are the colours it confuses most. ${RE_READ_LINE}`,
+      lead: result.misreadFace ? void 0 : "At least %1 stickers do not fit a real cube \u2014 too many to tell which.",
+      many: result.misreadFace ? "Show the %2 side to the camera again \u2014 it will be read fresh." : `Start the scan over, with more light and each side held flat to the camera; red and orange are the colours it confuses most. ${RE_READ_LINE}`,
       params: result.misreadFace ? [GUIDE[result.misreadFace].color] : [],
       action: result.misreadFace ? void 0 : { label: "Start over", kind: "restart" }
     });

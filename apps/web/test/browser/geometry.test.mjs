@@ -609,6 +609,46 @@ for (const fixture of FIXTURES) {
       assert.ok(m.solve.height >= (fixture.touch ? 44 : 40) - 0.5, `"Solve this cube" is ${m.solve.height}px tall`);
       assert.ok(m.solve.width >= m.sheet.width - 1, `"Solve this cube" is ${m.solve.width}px wide in a ${m.sheet.width}px sheet`);
 
+      // A LONG NOTICE never moves the button. The assertions above measured the sheet with the
+      // short default text; a refusal's explanation is seven lines and its card carries a button,
+      // and with those the sheet used to overflow the stage — which clips — so "Solve this cube"
+      // showed as a grey sliver at the window's foot with no scrollbar to say why (a user's
+      // screenshot, 2026-09-06). The card is what gives: it scrolls inside itself, and the button
+      // stays whole and inside the box. Fed through the same event the scanner emits, so the
+      // host's own painter lays it out.
+      await page.evaluate(() => {
+        document.querySelector('ai-scan-panel').dispatchEvent(new CustomEvent('scan-progress', {
+          detail: {
+            phase: 'scanning', message: 'Show one side to the camera to re-read just that side.',
+            captured: [], live: null, confirm: null, device: null, complete: false,
+            notice: {
+              title: 'Some stickers were misread', tone: 'err',
+              body: 'At least %1 stickers do not fit a real cube, and with that many the camera cannot tell which. Start the scan over, with more light on the cube and each side held flat to the camera — red and orange are the colours it confuses most. Show one side to the camera to re-read just that side. And a sentence more than any real notice carries, so the card is asked for more than it can ever need.',
+              params: [3], action: { label: 'Start over', kind: 'restart' },
+            },
+          },
+        }));
+      });
+      const long = await measureScan(page);
+      const card = await page.evaluate(() => {
+        const c = document.querySelector('.scan-sheet > .card');
+        const b = c.getBoundingClientRect();
+        const a = document.querySelector('#scanAction').getBoundingClientRect();
+        const title = document.querySelector('#scanHowTitle').getBoundingClientRect();
+        return { top: b.top, bottom: b.bottom, action: { top: a.top, bottom: a.bottom, height: a.height }, titleHeight: title.height };
+      });
+      assert.ok(long.solve.height >= (fixture.touch ? 44 : 40) - 0.5, `with a long notice "Solve this cube" is ${long.solve.height}px tall`);
+      if (!fixture.touch) {
+        assert.ok(long.solve.bottom <= long.cols.bottom + 1, `with a long notice "Solve this cube" ends ${long.solve.bottom - long.cols.bottom}px past the box`);
+        assert.ok(long.solve.top >= card.bottom - 1, `with a long notice the button (top ${long.solve.top}) overlaps the card (bottom ${card.bottom})`);
+        assert.ok(card.bottom <= long.cols.bottom + 1, `with a long notice the card ends ${card.bottom - long.cols.bottom}px past the box — it must scroll, not grow`);
+        // The notice's own button and its title are the parts the eye needs; only the body may
+        // scroll. The first fix scrolled the whole card and hid the button below the fold.
+        assert.ok(card.action.height >= 30, `with a long notice the notice's button is ${card.action.height}px tall`);
+        assert.ok(card.action.bottom <= card.bottom + 1 && card.action.top >= card.top - 1, `the notice's button (${card.action.top}–${card.action.bottom}) is outside its card (${card.top}–${card.bottom})`);
+        assert.ok(card.titleHeight >= 16, `with a long notice the title collapsed to ${card.titleHeight}px`);
+      }
+
       // One arrangement, everywhere: the cube's net (decided 2026-08-30). There is no second
       // layout to branch on any more — a finger's portrait used to get one face large over a
       // strip of five, and the focus flag that switched between them is gone with it.
