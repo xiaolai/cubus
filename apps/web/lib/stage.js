@@ -1,12 +1,24 @@
 // The layout contract's arithmetic, as an oracle — dev-docs/stage-contract.md.
 //
 // These functions produce the EXPECTED numbers: the safe content area a client offers, the
-// reference box fit to its short axis, what the long axis does with the difference, and the fixed
-// desktop window for a monitor. They are not the runtime. The stylesheet is the runtime
-// (index.html's .stage / .screen rules and the container query), and the geometry tests measure
-// that in a real engine against what these return. Keeping the arithmetic here, pure and tiny,
-// is what lets the contract's fixture table be a tested claim rather than a hand-typed one:
+// reference box fit to its short axis, what each axis does with the room the box does not take,
+// and the fixed desktop window for a monitor. They are not the runtime. The stylesheet is the
+// runtime (index.html's .stage / .screen rules and the container query), and the geometry tests
+// measure that in a real engine against what these return. Keeping the arithmetic here, pure and
+// tiny, is what lets the contract's fixture table be a tested claim rather than a hand-typed one:
 // stage.test.mjs reads the table out of the document and checks every row against these.
+//
+// The composition spans the whole stage on BOTH axes (amended 2026-09-06). The reference box is
+// unchanged — still fit to the short axis, still shrunk when the long axis cannot hold it — but
+// the room left around it now belongs to the flexible regions on either axis, so nothing
+// letterboxes. Long-axis room is `surplus` and goes to the sheet, as it always did; short-axis
+// room is `stretch` and goes to the two columns in portrait, the right-hand column's rows in
+// landscape. `stretch` is non-zero only where the long axis is short, which across the whole
+// fixture table is the three iPads in portrait and nothing else: they were letterboxed by 57, 24
+// and 4px on each side (13", 11", mini). That was the entirety of the app's paper — three
+// background strips, the widest 57px — and it cost a concept every screen had to answer for.
+// The field that reported that margin is therefore removed rather than kept at zero: a number
+// nothing may act on is a number something eventually will.
 
 /** The long side over the short side of the reference box: 4:3 landscape, 3:4 portrait. */
 export const RATIO = 4 / 3;
@@ -27,7 +39,10 @@ export const RATIO = 4 / 3;
  *   safe: {w: number, h: number},   the stage: viewport less insets less bars
  *   ref: {w: number, h: number},    the reference box fit to the stage's short axis
  *   surplus: number,                long-axis room beyond the reference box — the sheet's to take
- *   paper: number,                  short-axis margin on EACH side when the long axis is too short
+ *   stretch: number,                short-axis room beyond it — the columns' (portrait) or the
+ *                                   rows' (landscape); non-zero only when the long axis could
+ *                                   not hold the reference. Whole, not per side: it is room to
+ *                                   fill, not a margin to leave.
  * }}
  */
 export function fitStage({ width, height, insets = {}, bars = {} }) {
@@ -42,11 +57,12 @@ export function fitStage({ width, height, insets = {}, bars = {} }) {
   const orientation = portrait ? 'portrait' : 'landscape';
   const refLong = short * RATIO;
   if (refLong <= long) {
-    return { orientation, safe: { w, h }, ref: box(short, refLong), surplus: long - refLong, paper: 0 };
+    return { orientation, safe: { w, h }, ref: box(short, refLong), surplus: long - refLong, stretch: 0 };
   }
-  // The long axis cannot hold the reference: the box shrinks to it, and the short axis pads.
+  // The long axis cannot hold the reference: the box shrinks to it, and the short axis has room
+  // to spare — which the flexible regions take, so the composition still fills the stage.
   const boxShort = long / RATIO;
-  return { orientation, safe: { w, h }, ref: box(boxShort, long), surplus: 0, paper: (short - boxShort) / 2 };
+  return { orientation, safe: { w, h }, ref: box(boxShort, long), surplus: 0, stretch: short - boxShort };
 }
 
 /**

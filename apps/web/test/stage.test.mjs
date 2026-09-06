@@ -44,7 +44,7 @@ test('a landscape client with room on the long axis: the box is 4:3 on the heigh
   assert.equal(r.orientation, 'landscape');
   assert.deepEqual(r.ref, { w: 1200, h: 900 });
   assert.equal(r.surplus, 400);
-  assert.equal(r.paper, 0);
+  assert.equal(r.stretch, 0);
 });
 
 test('a portrait client with room on the long axis: the box is 3:4 on the width, the rest is surplus', () => {
@@ -52,14 +52,20 @@ test('a portrait client with room on the long axis: the box is 3:4 on the width,
   assert.equal(r.orientation, 'portrait');
   assert.deepEqual(r.ref, { w: 300, h: 400 });
   assert.equal(r.surplus, 400);
-  assert.equal(r.paper, 0);
+  assert.equal(r.stretch, 0);
 });
 
-test('a long axis too short for the reference: the box shrinks to it and the short axis pads', () => {
-  const r = fitStage({ width: 1000, height: 900 }); // 4:3 on 900 would be 1200 wide
+test('a long axis too short for the reference: the box shrinks to it and the short axis stretches', () => {
+  // The amendment of 2026-09-06 is entirely in the last line: the reference box is what it always
+  // was (4:3 on 900 would be 1200 wide, so it shrinks to the 1000 available), and the 150px the
+  // short axis has left over is now the flexible regions' to take rather than two 75px margins of
+  // paper. The box moving would be a different amendment: it is what sets the primary region's
+  // reference dimension. Not that a fixed box means a fixed drawing — the region's OTHER dimension
+  // is the column's, and the cube fitted to it grew 4.9% on the desktop portrait window.
+  const r = fitStage({ width: 1000, height: 900 });
   assert.deepEqual(r.ref, { w: 1000, h: 750 });
   assert.equal(r.surplus, 0);
-  assert.equal(r.paper, 75);
+  assert.equal(r.stretch, 150);
 });
 
 test('a square is landscape — the orientation the desktop reference is designed in', () => {
@@ -124,18 +130,69 @@ for (const { row, insets } of FIXTURES) {
     assert.equal(ratio, r.orientation === 'landscape' ? '4:3' : '3:4', `orientation for ${client}`);
     assert.deepEqual([Math.round(r.ref.w), Math.round(r.ref.h)], size(boxCell), `reference box for ${client}`);
 
-    const surplus = /sheet \+(\d+)/.exec(tailCell);
-    const paper = /paper (\d+)/.exec(tailCell);
-    assert.ok(surplus || paper, `the last cell must say "sheet +N …" or "paper N …": "${tailCell}"`);
-    if (surplus) {
-      assert.equal(Math.round(r.surplus), Number(surplus[1]), `surplus for ${client}`);
-      assert.equal(r.paper, 0);
+    // The last cell says where the room the box did not take went. Three forms, one per region
+    // that can take it, each anchored and exact about its unit word — the axis is half the claim,
+    // and `sheet +136 tall` on a landscape client would be a wrong cell that a loose regex reads
+    // as a right one. Anything else fails: a cell nobody parsed is a cell nobody checked.
+    const asSheet = /^sheet \+(\d+) (tall|wide)$/.exec(tailCell);
+    const asColumns = /^columns \+(\d+) wide$/.exec(tailCell); // portrait: the two columns share it
+    const asRows = /^rows \+(\d+) tall$/.exec(tailCell); // landscape: the right-hand column's rows
+    const portrait = r.orientation === 'portrait';
+    assert.ok(asSheet || asColumns || asRows,
+      `the last cell must say "sheet +N tall|wide", "columns +N wide" or "rows +N tall": "${tailCell}"`);
+    if (asSheet) {
+      // The sheet takes the LONG axis, which is the height in portrait and the width in landscape.
+      assert.equal(asSheet[2], portrait ? 'tall' : 'wide', `the sheet's axis for ${client}`);
+      assert.equal(Math.round(r.surplus), Number(asSheet[1]), `surplus for ${client}`);
+      assert.equal(r.stretch, 0, `${client} cannot stretch and have long-axis surplus at once`);
     } else {
-      assert.equal(Math.round(r.paper), Number(paper[1]), `paper for ${client}`);
-      assert.equal(r.surplus, 0);
+      assert.ok(portrait ? asColumns : asRows,
+        `${client} is ${r.orientation}, so its short-axis room goes to the ${portrait ? 'columns' : 'rows'}: "${tailCell}"`);
+      assert.equal(Math.round(r.stretch), Number((asColumns ?? asRows)[1]), `stretch for ${client}`);
+      assert.equal(r.surplus, 0, `${client} cannot stretch and have long-axis surplus at once`);
     }
   });
 }
+
+test('no fixture shows paper: the reference plus its stretch is the whole stage', () => {
+  // The amendment of 2026-09-06, as one claim over every row rather than per device: the
+  // composition box IS the stage content box, on both axes, everywhere. Long axis = ref + surplus,
+  // short axis = ref + stretch, and both hold in both branches of the fit — which is why this is
+  // asserted unconditionally instead of only where the long axis is short. A row that letterboxed
+  // would leave the short-axis sum short by twice its margin.
+  //
+  // Within 1e-9 px, not exactly: the long-axis identity goes through `short × 4/3`, and 4/3 is not
+  // a binary fraction, so a sum that is exact in decimal need not be in doubles. A billionth of a
+  // logical pixel is not a layout claim; treating one as a failure would be.
+  const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, `${msg}: ${a} vs ${b}`);
+  for (const { row, insets } of FIXTURES) {
+    const [client, , , tailCell] = rowsStartingWith(row)[0];
+    const [width, height] = size(client);
+    const bars = width >= height ? { top: 52 } : { top: 52, bottom: 49 };
+    const r = fitStage({ width, height, insets, bars });
+    const portrait = r.orientation === 'portrait';
+    near(r.ref[portrait ? 'h' : 'w'] + r.surplus, portrait ? r.safe.h : r.safe.w, `${client}: long axis (${tailCell})`);
+    near(r.ref[portrait ? 'w' : 'h'] + r.stretch, portrait ? r.safe.w : r.safe.h, `${client}: short axis (${tailCell})`);
+    assert.ok(r.stretch >= 0 && r.surplus >= 0, `${client}: neither remainder may be negative`);
+  }
+});
+
+test('the oracle has no paper left in it, and no fixture cell describes any', () => {
+  // "Paper" as a layout outcome is gone (2026-09-06); "paper" as the app's background colour is
+  // not, and the word is all over the codebase in that second sense — `--bg`, "a strip of paper
+  // under the tab bar", paper-one. So this scans two files and looks for the FIELD, not the word:
+  // a live read (`.paper`) or a live write (`paper:`). The module may still say the word in prose,
+  // as history of what it used to return. This file is not scanned — it is where the claim is
+  // written, so it necessarily names the thing it forbids.
+  const stage = readFileSync(new URL('../lib/stage.js', import.meta.url), 'utf8');
+  for (const dead of ['.paper', 'paper:']) {
+    assert.ok(!stage.includes(dead), `lib/stage.js still has a live \`${dead}\`: the field was removed on 2026-09-06`);
+  }
+  // A table cell is a different matter: the fixture is the contract's numbers, and under the
+  // amendment no client letterboxes, so the word itself must not appear in one.
+  const fixture = readFileSync(new URL('./fixtures/stage-contract.json', import.meta.url), 'utf8');
+  assert.ok(!/paper/i.test(fixture), 'a fixture cell still describes paper — the contract says nothing letterboxes');
+});
 
 test('the fixture table has no rows this test does not know the insets of', () => {
   const unknown = TABLES.devices

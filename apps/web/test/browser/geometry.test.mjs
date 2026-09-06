@@ -9,6 +9,10 @@
 //   - .stage is the safe area less the app's bars, edge to edge;
 //   - --ref-w/--ref-h resolve to the reference box the oracle (lib/stage.js) computes for the
 //     stage's content box — 4:3 on a landscape stage, 3:4 on a portrait one;
+//   - the composition box spans that content box on BOTH axes, on every fixture and on every
+//     screen: the reference box is the minimum a composition is designed at, not the box that
+//     gets drawn (amended 2026-09-06 — before it the short axis was clamped to the reference and
+//     the difference was drawn as paper);
 //   - the chrome: tabs over the title bar's centre in landscape, clear of its outer zones; a
 //     bottom bar in portrait that the stage stops above;
 //   - on a coarse pointer (a finger), a 52px bar and every control at 44px or more;
@@ -170,6 +174,11 @@ const measure = (page) =>
     const cs = getComputedStyle(stage);
     const a = getComputedStyle(app);
     const nav = $('#nav');
+    // The composition box. Every routable screen draws one, but this reads it defensively rather
+    // than assuming it, so a screen that draws none fails saying so instead of throwing inside
+    // the probe. (No backticks in this comment: it lives inside the template literal this whole
+    // probe is written in, and one would end the string.)
+    const cols = $('.cols');
     const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
     return {
       viewport: { w: innerWidth, h: innerHeight },
@@ -181,6 +190,7 @@ const measure = (page) =>
       stage: rect(stage),
       stagePad: [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(px),
       ref: { w: p.width, h: p.height },
+      cols: cols && rect(cols),
       nav: { position: getComputedStyle(nav).position, padBottom: px(getComputedStyle(nav).paddingBottom), ...rect(nav) },
       winPadBottom: px(getComputedStyle($('.win')).paddingBottom),
       lead: rect($('#tbLead')), trail: rect($('#tbTrail')), bar: rect($('#titlebar')),
@@ -303,6 +313,22 @@ for (const fixture of FIXTURES) {
       near(m.ref.h, expected.ref.h, `--ref-h (${expected.orientation})`);
       const boxRatio = expected.orientation === 'landscape' ? m.ref.w / m.ref.h : m.ref.h / m.ref.w;
       near(boxRatio, 4 / 3, 'reference box ratio', 0.01);
+
+      // And the box that is DRAWN is the stage's content box, on both axes, on every fixture —
+      // the claim "no fixture shows paper" (amended 2026-09-06, the owner's call). The reference
+      // box above is unchanged and still sets the primary's size; what changed is that the short
+      // axis is no longer clamped to it, so the difference goes to the flexible regions instead
+      // of being drawn as margin. Edges, not just width and height: a box the right SIZE sitting
+      // at the wrong offset is still paper, on one side instead of two.
+      // Measured against the old stylesheet, 2026-09-06 — this failed on exactly the two fixtures
+      // whose long axis is shorter than 4:3 of their short one, and passed on the other six:
+      //   iPad 11" portrait          box 735.75 wide in a 760.96 stage — 12.6px each side
+      //   desktop portrait window    box 511.17 wide in a 532.67 stage — 10.75px each side
+      assert.ok(m.cols, 'the screen drew no composition box at all');
+      near(m.cols.left, m.stage.left + pl, 'the composition box starts at the stage content box\'s left edge');
+      near(m.cols.right, m.stage.right - pr, 'the composition box reaches the stage content box\'s right edge');
+      near(m.cols.top, m.stage.top + pt, 'the composition box starts at the stage content box\'s top edge');
+      near(m.cols.bottom, m.stage.bottom - pb, 'the composition box reaches the stage content box\'s bottom edge');
     } finally {
       await context.close();
     }
@@ -404,15 +430,28 @@ for (const fixture of FIXTURES) {
       assert.ok(m.walking, 'the scramble screen walks a scramble');
       assert.ok(m.chips.length > 0, 'no chips on the sheet');
 
-      // The composition box: the reference box on the short axis, the whole stage on the long one.
-      if (portrait) {
-        near(m.cols.width, m.ref.w, 'portrait: cols width is the reference width');
-        near(m.cols.height, m.content.h, 'portrait: cols height is the stage content height');
-      } else {
-        near(m.cols.height, m.ref.h, 'landscape: cols height is the reference height');
-        near(m.cols.width, m.content.w, 'landscape: cols width is the stage content width');
-      }
+      // The composition box: the whole stage's content box, on BOTH axes (amended 2026-09-06).
+      // It used to be the reference box on the short axis — `near(m.cols.width, m.ref.w)` in
+      // portrait was this suite's assertion that the app letterboxes, and it was true of two
+      // fixtures. The short-axis room goes to the flexible regions now, as the long axis always
+      // did: in portrait the two columns share the extra width, in landscape the right-hand
+      // column's rows share the extra height.
+      near(m.cols.width, m.content.w, 'cols width is the stage content width');
+      near(m.cols.height, m.content.h, 'cols height is the stage content height');
 
+      // …and the primary is still cut from the REFERENCE box, not from the box that grew. The two
+      // are one pair — the box takes the short-axis room and the primary's share of the long axis
+      // does not move — and the second is what stops the first being a licence to resize the cube.
+      // Precisely what it pins is the dimension --primary-share owns: the height in portrait, the
+      // width in landscape. The other dimension belongs to the box, so in portrait the cube's SLOT
+      // does widen, and a cube already fitted to the slot's height is unchanged by that (iPad 11"
+      // portrait, measured 2026-09-06: painted 430×413 before the amendment, 431×413 after) while
+      // one fitted to its width grows into the room it was short of (the desktop portrait window:
+      // 244×235 to 256×246 painted px, +4.9%). That is the columns taking the stretch, which is
+      // what the amendment asks for; the assertion below is what keeps the PRIMARY out of it.
+      // The room the reference gave up is stated for the record; it is 0 on six of the eight.
+      const shortAxisRoom = portrait ? m.content.w - m.ref.w : m.content.h - m.ref.h;
+      assert.ok(shortAxisRoom >= -1, `the reference box exceeds the stage on its short axis by ${-shortAxisRoom}px`);
       // primary: --primary-share of the reference box's long side, less half a gap.
       if (portrait) near(m.primary.height, m.ref.h * m.share - m.rowsGap / 2, 'portrait: primary height');
       else near(m.primary.width, m.ref.w * m.share - m.colsGap / 2, 'landscape: primary width');
@@ -434,6 +473,10 @@ for (const fixture of FIXTURES) {
         assert.ok(!m.asideBox, 'portrait: the aside hands its children to the grid');
         assert.ok(m.state.left >= m.primary.right + m.colsGap - 1, 'portrait: the twin is beside the cube');
         near(m.state.top, m.primary.top, 'portrait: the twin is level with the cube');
+        // Where the stretch lands in this composition: the top row is the primary and the twin,
+        // and the twin is the one that reaches the box's right edge. A box that widened while its
+        // columns did not would leave paper inside itself, which is the same defect one level in.
+        near(m.state.right, m.cols.right, 'portrait: the twin reaches the box\'s right edge');
         assert.ok(m.state.bottom <= m.primary.bottom + 1, 'portrait: the twin is no taller than the cube');
         assert.ok(m.sheet.top >= m.aux.bottom - 1, 'portrait: the sheet is under the aux');
         near(m.sheet.width, m.cols.width, 'portrait: the sheet spans the box');
@@ -504,10 +547,18 @@ for (const fixture of FIXTURES) {
 const measureScan = (page) =>
   page.evaluate(`(() => {
     const rect = ${rect.toString()};
+    const px = (v) => Number.parseFloat(v);
     const $ = (s) => document.querySelector(s);
     const faces = $('.scan-faces');
     const board = $('.scanboard');
+    const sb = rect($('#stage'));
+    const scs = getComputedStyle($('#stage'));
     return {
+      // The stage's CONTENT box as four edges — what the composition box must span.
+      content: {
+        left: sb.left + px(scs.paddingLeft), right: sb.right - px(scs.paddingRight),
+        top: sb.top + px(scs.paddingTop), bottom: sb.bottom - px(scs.paddingBottom),
+      },
       focusFlag: getComputedStyle(faces).getPropertyValue('--focus').trim(),
       tiles: [...document.querySelectorAll('.scan-face')].map((t) => ({
         face: t.dataset.face, focus: t.classList.contains('focus'),
@@ -533,6 +584,14 @@ for (const fixture of FIXTURES) {
       const m = await measureScan(page);
       const portrait = m.stage.h > m.stage.w;
       assert.equal(m.tiles.length, 6);
+      // The same box rule on the third composition variant (`.cols.twin-low`, primary share 0.66):
+      // it spans the stage's content box on both axes (amended 2026-09-06). This screen shares the
+      // `.cols` size rules, so it letterboxed on exactly the fixtures the cube screen did — the
+      // scan net was 735.75 wide in a 760.96px iPad 11" portrait stage before that date.
+      near(m.cols.left, m.content.left, 'the scan composition starts at the stage content box\'s left edge');
+      near(m.cols.right, m.content.right, 'the scan composition reaches the stage content box\'s right edge');
+      near(m.cols.top, m.content.top, 'the scan composition starts at the stage content box\'s top edge');
+      near(m.cols.bottom, m.content.bottom, 'the scan composition reaches the stage content box\'s bottom edge');
       // With a mouse the whole screen is on screen: the tiles, the twin, the notice and the
       // button, at the reference minimums and above. (A phone's sheet may scroll.)
       if (!fixture.touch) {
@@ -604,6 +663,10 @@ const measureScreen = (page) =>
     const col = document.querySelector('.cols > .col'), aside = document.querySelector('.cols > .aside');
     return {
       stage: s, root: rect(root), content: s.width - px(cs.paddingLeft) - px(cs.paddingRight),
+      stagePad: [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(px),
+      // A list screen's root IS the composition box (\`.cols.flow\`), which shares the .cols size
+      // rules; asked rather than assumed, so a screen that stops using one is skipped, not wrong.
+      rootIsCols: root.classList.contains('cols'),
       // The two regions of a .cols screen, to assert they never draw over each other.
       col: col && rect(col), aside: aside && rect(aside),
       // A list screen's column (\`.cols.flow\`) takes its content's height — the room under its
@@ -653,6 +716,21 @@ for (const screen of SCREENS) {
         assert.deepEqual(m.beyond, [], 'drawn beyond the stage');
         assert.deepEqual(m.collapsed, [], 'a control on the page has no box — squashed by its column');
         assert.ok(m.root.width >= m.content * 0.9, `the screen's root is ${m.root.width}px wide in a ${m.content}px stage — it shrank to its content`);
+        // The fourth composition variant: a list screen's `.cols.flow` spans the stage's content
+        // box on both axes too (amended 2026-09-06). Before that date the portrait box was clamped
+        // to --ref-w, so Stats, Drill, Lessons and Settings letterboxed on an iPad in portrait
+        // exactly as the cube screen did — and the 0.9 floor above passed that at 0.967, which is
+        // why a loose floor is not a substitute for the claim.
+        // Timer and Trainer do not draw a `.cols` at all — their root is a plain div that already
+        // spanned the stage — so the guard is a class question rather than a list of screens. It
+        // was checked in a browser and not assumed: those two were the only ones with no box.
+        if (m.rootIsCols) {
+          const [pt, pr, pb, pl] = m.stagePad;
+          near(m.root.left, m.stage.left + pl, `${screen}: the box starts at the stage content box's left edge`);
+          near(m.root.right, m.stage.right - pr, `${screen}: the box reaches the stage content box's right edge`);
+          near(m.root.top, m.stage.top + pt, `${screen}: the box starts at the stage content box's top edge`);
+          near(m.root.bottom, m.stage.bottom - pb, `${screen}: the box reaches the stage content box's bottom edge`);
+        }
         if (m.col && m.aside) {
           // Beside or below, never over: a collapsed grid row once drew the sheet across the column.
           assert.ok(!overlaps(m.col, m.aside), `the sheet ${JSON.stringify(m.aside)} draws over the column ${JSON.stringify(m.col)}`);
