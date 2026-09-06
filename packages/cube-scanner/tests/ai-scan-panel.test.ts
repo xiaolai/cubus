@@ -424,7 +424,7 @@ describe('ai-scan-panel — a refusal keeps the captures', () => {
     // with the button in the card. "Show those sides again" named sides the decoder had just
     // said it could not name, and the orientation tip was about a different problem (2026-09-06).
     expect(p.notice?.body).toMatch(
-      /^At least %1 stickers do not fit a real cube, and with that many the camera cannot tell which\. Start the scan over/,
+      /^At least %1 stickers do not fit a real cube — too many to tell which\. Start the scan over/,
     );
     expect(p.notice?.body).toMatch(/Show one side to the camera to re-read just that side\.$/);
     expect(p.notice?.body).not.toMatch(/Show those sides|edge colours|settles itself/);

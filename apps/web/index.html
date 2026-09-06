@@ -477,8 +477,30 @@
       .primary { grid-area: primary; min-width: 0; min-height: 0; }
       .aux { grid-area: aux; min-width: 0; }
       .scan-sheet { display: flex; flex-direction: column; gap: 16px; }
+      /* The notice can be long — a refusal's explanation is seven lines and its card now carries
+         a button — and the sheet is a flex column of a fixed height. Without these two rules the
+         column squashed "Solve this cube" to 0px and the stage clipped the rest: a grey sliver at
+         the window's foot with no scrollbar to say why (a user's screenshot, 2026-09-06; measured
+         0px on both desktop windows). The card is what gives — it scrolls inside itself — and the
+         button never does. geometry.test.mjs feeds a notice longer than any real one. */
+      .scan-sheet > .card { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+      /* And inside the card only the BODY gives. The first cut scrolled the whole card, which put
+         the notice's own button — the one thing it asks the user to press — below the fold in
+         both desktop windows (looked at, not inferred, 2026-09-06). The title and the action stay
+         where the eye finds them; a long explanation scrolls under them. */
+      .scan-sheet > .card > .scan-say { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+      .scan-sheet > .card > .scan-hint, .scan-sheet > .card > .btn { flex: none; }
+      .scan-sheet > .btn { flex: none; }
       .state-card .net { margin: 30px auto 0; }
       #scanCube { height: 230px; margin-top: 6px; }
+      /* With a mouse the whole scan screen must be on screen, notice included (the geometry
+         suite's rule), and the notice's room is what the twin leaves it. On the desktop
+         landscape window the 230px twin left a five-line refusal no room at all, so the twin
+         yields first on a short stage: a quarter of the stage's height, never under 150px, never
+         over what it always was. A finger's portrait scrolls the whole column and keeps 230. */
+      @media (pointer: fine) {
+        #scanCube { height: clamp(150px, 26cqh, 230px); }
+      }
       /* `overflow-y: auto` is not optional here: .stage clips, and no column scrolled. Settings can
          now list up to 32 remembered cubes, so past a certain number the controls below them were
          simply unreachable — clipped off the bottom with no way to scroll to them. */

@@ -1925,10 +1925,10 @@ export class AiScanPanel extends HTMLElement {
       one: `If it is wrong, tap it and pick the colour you see; if it is right, show that side again to re-read it.${hold}`,
       lead: result.misreadFace
         ? undefined
-        : 'At least %1 stickers do not fit a real cube, and with that many the camera cannot tell which.',
+        : 'At least %1 stickers do not fit a real cube — too many to tell which.',
       many: result.misreadFace
         ? 'Show the %2 side to the camera again — it will be read fresh.'
-        : `Start the scan over, with more light on the cube and each side held flat to the camera — red and orange are the colours it confuses most. ${RE_READ_LINE}`,
+        : `Start the scan over, with more light and each side held flat to the camera; red and orange are the colours it confuses most. ${RE_READ_LINE}`,
       params: result.misreadFace ? [GUIDE[result.misreadFace].color] : [],
       action: result.misreadFace ? undefined : { label: 'Start over', kind: 'restart' },
     });
