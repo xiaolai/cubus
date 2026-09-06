@@ -583,3 +583,54 @@ describe('assemblePainted', () => {
     expect(() => assemblePainted(f)).toThrow(/expected 9 colours/);
   });
 });
+
+describe('assembleColors — what an ambiguous scan says about itself', () => {
+  // The six sides of a real scan, transcribed from a user's screenshot on 2026-09-06: every colour
+  // correct, and the app asked for another look. Four legal cubes fit these readings — the white
+  // side either way up, times the yellow side either way up — and the notice said only "several
+  // readings fit", which read as a failed scan. These are the facts the result must carry so the
+  // notice can say what is actually undetermined.
+  const CLASS: Record<string, number> = { W: 0, R: 1, G: 2, Y: 3, O: 4, B: 5 };
+  const side = (s: string): ColorFace => ({
+    colors: s.split(' ').map((l) => CLASS[l]!),
+    confidence: Array(9).fill(1),
+  });
+  const SCREENSHOT: Record<Face, ColorFace> = {
+    U: side('W Y Y Y W W Y W W'),
+    L: side('R B B R O O R R B'),
+    F: side('R B B B G G O G G'),
+    R: side('O O G O R R O G G'),
+    B: side('O O G B B G R R B'),
+    D: side('Y W W W Y Y W Y Y'),
+  };
+
+  it('names how many cubes fit and which sides they disagree about', () => {
+    const r = assembleColors(SCREENSHOT);
+    expect(r.valid).toBe(false);
+    expect(r.ambiguous).toBe(true);
+    expect(r.readings).toBe(4);
+    expect(r.undetermined).toEqual(['U', 'D']);
+    expect(r.confirm).toEqual({ face: 'U', up: 'B' });
+  });
+
+  it('asks about a side the readings disagree on, and the count is the one in the reason', () => {
+    let checked = 0;
+    for (const f of [SCREENSHOT, faces(scrambleFacelets('U')), faces(scrambleFacelets("U D'"))]) {
+      const r = assembleColors(f);
+      if (!r.ambiguous || !r.confirm) continue;
+      checked++;
+      expect(r.readings).toBeGreaterThanOrEqual(2);
+      expect(r.reason).toMatch(new RegExp(`^${r.readings} readings fit`));
+      expect(r.undetermined?.length).toBeGreaterThan(0);
+      expect(r.undetermined).toContain(r.confirm.face);
+    }
+    expect(checked).toBeGreaterThanOrEqual(2);
+  });
+
+  it('a unique reading carries neither field', () => {
+    const r = assembleColors(faces(scrambleFacelets("R U R' U' F2 L D'")));
+    expect(r.valid).toBe(true);
+    expect(r.readings).toBeUndefined();
+    expect(r.undetermined).toBeUndefined();
+  });
+});
