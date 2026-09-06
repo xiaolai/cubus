@@ -414,12 +414,25 @@ describe('ai-scan-panel — a refusal keeps the captures', () => {
     expect(completions).toEqual([]);
     expect(p.captured).toHaveLength(6); // still never wiped
     expect(p.suspects).toEqual([]); // nothing is accused…
-    expect(p.notice?.title).toBe('More than one sticker looks wrong');
+    expect(p.notice?.title).toBe('Some stickers were misread');
     expect(p.notice?.body).toContain('%1'); // …and the count arrives as a param, not baked in
     expect(p.notice?.params?.[0]).toBeGreaterThanOrEqual(2);
     // Never the old singular, which asserted exactly what the decoder had just ruled out.
     expect(p.notice?.body).not.toMatch(/A sticker was misread somewhere/);
     expect(p.notice?.body).not.toMatch(/Tap any sticker/);
+    // With no sticker to point at, the instruction is the one the user can follow: start over,
+    // with the button in the card. "Show those sides again" named sides the decoder had just
+    // said it could not name, and the orientation tip was about a different problem (2026-09-06).
+    expect(p.notice?.body).toMatch(
+      /^At least %1 stickers do not fit a real cube, and with that many the camera cannot tell which\. Start the scan over/,
+    );
+    expect(p.notice?.body).toMatch(/Show one side to the camera to re-read just that side\.$/);
+    expect(p.notice?.body).not.toMatch(/Show those sides|edge colours|settles itself/);
+    expect(p.notice?.action).toEqual({ label: 'Start over', kind: 'restart' });
+    // The transient line keeps the refusal's verdict and takes the notice's advice — never
+    // "fix a sticker" under a notice that says start over.
+    expect(p.message).toMatch(/isn't a solvable cube yet — start the scan over/);
+    expect(p.message).not.toMatch(/fix a sticker/);
   });
 });
 
@@ -1488,7 +1501,7 @@ describe('ai-scan-panel — the misread count arrives after the refusal, not bef
     await scanMisreading(2);
     expect(last().notice?.body ?? '').toMatch(/working out how many/i);
     FakeWorker.last().answer();
-    expect(last().notice?.title).toBe('More than one sticker looks wrong');
+    expect(last().notice?.title).toBe('Some stickers were misread');
     expect(last().notice?.params?.[0]).toBeGreaterThanOrEqual(2);
     expect(last().suspects).toEqual([]);
   });
