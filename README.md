@@ -36,9 +36,13 @@ compiles the Rust shell and, on a Mac, the Swift scanner.
 
 `pnpm --filter cubus-web build:dist` assembles `apps/web/dist/`, the static site every build
 serves. **Nothing in this repository deploys it anywhere yet** — there is no Pages, Netlify or
-nginx configuration, and `cubus.im` (which the About card names) is not published from here.
-Whoever hosts it has to serve exactly what `apps/web/serve.mjs` serves, or the scanner runs on
-one core:
+nginx configuration for the app. `cubus.im` (which the About card names) is the **introduction
+site**, not the app: `apps/site/public/` — one page, the app's own tokens and icons, and
+screenshots taken from the app by `apps/site/scripts/capture-screenshots.mjs` — published to
+GitHub Pages by `.github/workflows/deploy-site.yml` on every push to `main` that touches it,
+after `apps/site/site.test.mjs` has passed. GitHub Pages cannot send the headers below, which is
+one reason the app is not served there. Whoever hosts the app has to serve exactly what
+`apps/web/serve.mjs` serves, or the scanner runs on one core:
 
 - **Cross-origin isolation, on every response.** `Cross-Origin-Opener-Policy: same-origin`,
   `Cross-Origin-Embedder-Policy: require-corp`, `Cross-Origin-Resource-Policy: same-origin`.
