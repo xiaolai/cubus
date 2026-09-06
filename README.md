@@ -17,7 +17,7 @@ Bluetooth, and optional — every screen works without one.
 | The icon check (`python3 scripts/verify-icons.py`) | Python 3.11 with `pillow==12.3.0`, and librsvg (`rsvg-convert`) for the renderer-dependent measurements — without it those report as skipped, never as passed. |
 | Android (`pnpm --filter cubus-desktop android build`) | JDK 21 (Gradle 8.14 + AGP 8.11 run on 17–21; `scripts/tauri-android.mjs` refuses a newer one), the Android SDK with `ANDROID_HOME` set, and NDK 27.2.12479018 with `NDK_HOME` set. |
 | iOS | A Mac with Xcode. `cargo check -p cubus-desktop --target aarch64-apple-ios` compiles the Rust side; a signed build needs the material listed in the runbook. |
-| The model gate (`ml/golden_frames.py`) | `ml/venv`, a Python 3.11 environment from `ml/requirements-golden.txt`. CI runs it; `pnpm check` does not, and AGENTS.md records why that distinction matters. |
+| The model gate (`ml/golden_frames.py`) | `ml/venv`, a Python 3.11 environment from `ml/requirements-golden.txt`. CI runs it; `pnpm check` does not — it is the gate you can ship past locally, so run it by hand before vendoring a model. |
 
 ## Build
 

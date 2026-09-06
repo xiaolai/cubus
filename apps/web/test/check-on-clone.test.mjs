@@ -128,12 +128,16 @@ test('every ignored input a clone lacks is hidden and restored, files and symlin
     mkdirSync(join(root, 'runs'));
     writeFileSync(join(root, 'runs/last.pt'), 'weights');
     writeFileSync(join(root, 'error.log'), 'some tool');
+    // The maintainer's decision record and agent registrations, untracked since 2026-09-06.
+    writeFileSync(join(root, 'AGENTS.md'), 'decisions');
+    writeFileSync(join(root, 'CLAUDE.md'), '@AGENTS.md\n');
+    writeFileSync(join(root, '.mcp.json'), '{"mcpServers":{}}');
 
     const r = run(root);
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(
       r.stdout,
-      /hidden: dev-docs \.codex \.cc-suite\.md grill-report-2026-01-01\.md \.claude\/settings\.local\.json \.agents\/skills runs error\.log -> \.check-on-clone-stash/,
+      /hidden: dev-docs \.codex \.cc-suite\.md grill-report-2026-01-01\.md \.claude\/settings\.local\.json \.agents\/skills runs error\.log AGENTS\.md CLAUDE\.md \.mcp\.json -> \.check-on-clone-stash/,
       'not every ignored input was hidden, or not in the declared order',
     );
     assert.equal(readFileSync(join(root, '.cc-suite.md'), 'utf8'), 'suite');
@@ -141,6 +145,9 @@ test('every ignored input a clone lacks is hidden and restored, files and symlin
     assert.equal(readFileSync(join(root, '.claude/settings.local.json'), 'utf8'), '{}');
     assert.equal(readFileSync(join(root, 'runs/last.pt'), 'utf8'), 'weights');
     assert.equal(readFileSync(join(root, 'error.log'), 'utf8'), 'some tool');
+    assert.equal(readFileSync(join(root, 'AGENTS.md'), 'utf8'), 'decisions');
+    assert.equal(readFileSync(join(root, 'CLAUDE.md'), 'utf8'), '@AGENTS.md\n');
+    assert.equal(readFileSync(join(root, '.mcp.json'), 'utf8'), '{"mcpServers":{}}');
     assert.ok(lstatSync(join(root, '.agents/skills')).isSymbolicLink(), 'the symlink came back as something else');
     assert.equal(existsSync(join(root, STASH)), false);
   } finally {

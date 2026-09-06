@@ -38,8 +38,10 @@ HIDDEN=()
 # What gets hidden: paths and globs relative to the repo root, expanded at hide time. Named once,
 # because the recovery below must look for exactly these and nothing else: a stash holding
 # anything unexpected is a situation to report, not to tidy up by moving strangers into the repo
-# root. dev-docs and .codex stay first so the log reads the same as it always has.
-HIDE=(dev-docs .codex .cc-suite.md 'grill-report-*.md' '.claude/*.local.*' .agents/skills runs error.log)
+# root. dev-docs and .codex stay first so the log reads the same as it always has. The last three
+# are the maintainer's decision record and agent registrations, untracked since 2026-09-06 — a
+# clone has none of them, and csp.test.mjs reads one.
+HIDE=(dev-docs .codex .cc-suite.md 'grill-report-*.md' '.claude/*.local.*' .agents/skills runs error.log AGENTS.md CLAUDE.md .mcp.json)
 # A FIXED path inside the repo, not mktemp.
 #
 # This script moves gitignored directories aside, which means for the length of a run the only
