@@ -2407,14 +2407,17 @@ function matchingRotations(original, confirmed) {
   );
   return new Set([0, 1, 2, 3].filter((k) => dist[k] <= CONFIRM_TOLERANCE));
 }
-function pickConfirm(candidates, confirmed) {
-  const useful = FACES.filter((face2, fi) => {
-    if (confirmed[face2]) return false;
+function undeterminedFaces(candidates, confirmed) {
+  return FACES.filter((face, fi) => {
+    if (confirmed[face]) return false;
     const perCandidate = candidates.map(
       ([, combos]) => [...new Set(combos.map((c) => c[fi]))].sort().join(",")
     );
     return new Set(perCandidate).size > 1;
   });
+}
+function pickConfirm(candidates, confirmed) {
+  const useful = undeterminedFaces(candidates, confirmed);
   const face = useful.find((f) => TOP_NEIGHBOUR[f] === "U") ?? useful[0];
   return face === void 0 ? void 0 : { face, up: TOP_NEIGHBOUR[face] };
 }
@@ -2595,7 +2598,9 @@ function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed =
     if (confirm) {
       return reject(`${candidates.length} readings fit \u2014 another look narrows them`, {
         ambiguous: true,
-        confirm
+        confirm,
+        readings: candidates.length,
+        undetermined: undeterminedFaces(candidates, confirmed)
       });
     }
     return reject(
@@ -4225,6 +4230,20 @@ var Stillness = class {
 };
 
 // view/ai-scan-panel.ts
+var RE_READ_LINE = "Show one side to the camera to re-read just that side.";
+var COUNT_WORDS = [
+  "",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "ten"
+];
 var GUIDE = {
   U: { color: "WHITE", name: "Up", swatch: "#f6f7f8" },
   R: { color: "RED", name: "Right", swatch: "#d0202a" },
@@ -5250,6 +5269,25 @@ var AiScanPanel = class extends HTMLElement {
     return `Show the ${GUIDE[req.face].color} side again, with ${GUIDE[req.up].color} facing up.`;
   }
   /**
+   * What an ambiguous scan IS, said before the look that settles it.
+   *
+   * The sentence this replaced — "Several readings of this cube fit what the camera saw, and six
+   * photos cannot tell them apart" — was read as a failed scan by a user whose every colour was
+   * correct (2026-09-06). It said neither that the colours were right nor what was undetermined,
+   * and the cube drawn beside it looked right because it IS the six sides as they were held. So
+   * this says all of it: the colours are read; how many cubes fit them; which sides could have
+   * been held more than one way up (the assembler names them); and that the picture shows the
+   * sides as held, not which reading is the cube. The ask follows as its own sentence.
+   */
+  ambiguitySentence(result) {
+    const n = result.readings ?? 0;
+    const count = n >= 2 ? COUNT_WORDS[n] ?? String(n) : "";
+    const ways = count ? `${count} ways` : "more than one way";
+    const sides = (result.undetermined ?? []).map((f) => GUIDE[f].color);
+    const held = sides.length === 0 ? "" : sides.length === 1 ? ` \u2014 the ${sides[0]} side could have been held more than one way up \u2014` : ` \u2014 the ${sides.slice(0, -1).join(", ")} and ${sides[sides.length - 1]} sides could each have been held more than one way up \u2014`;
+    return `Every side's colours are read. This cube fits them ${ways}${held} and the picture shows the sides as they were held, not which of the ${count || "readings"} it is.`;
+  }
+  /**
    * The waiting-for-input line, matched to where the scan actually is. One generic "show any
    * side" for every state was how a finished scan kept being nagged for sides, and how the ask
    * for one SPECIFIC side got contradicted the moment the cube left the frame.
@@ -5259,9 +5297,7 @@ var AiScanPanel = class extends HTMLElement {
       return `Looking for the ${GUIDE[this.awaiting.face].color} side \u2014 hold it with ${GUIDE[this.awaiting.up].color} up.`;
     }
     if (this.finished) return "Scan finished \u2014 start the scan over to read a different cube.";
-    if (this.capturedFaces().length >= FACES.length) {
-      return "Show a side to the camera to re-read it.";
-    }
+    if (this.capturedFaces().length >= FACES.length) return RE_READ_LINE;
     return "Show any side to the camera.";
   }
   /** "YELLOW and BLUE" — the sides still to show, named once there are few enough to name. */
@@ -5344,10 +5380,11 @@ var AiScanPanel = class extends HTMLElement {
     }
     if (misread > 1) {
       return {
-        title: "More than one sticker looks wrong",
+        title: "Some stickers were misread",
         tone: "err",
-        body: `At least %1 stickers were misread, so there is no single sticker to point at. ${recovery.many}`,
-        params: [misread, ...recovery.params ?? []]
+        body: `${recovery.lead ?? "At least %1 stickers were misread, so there is no single sticker to point at."} ${recovery.many}`,
+        params: [misread, ...recovery.params ?? []],
+        ...recovery.action ? { action: recovery.action } : {}
       };
     }
     if (misread === 1) {
@@ -5448,7 +5485,7 @@ var AiScanPanel = class extends HTMLElement {
     this.notice = {
       title: "One more look",
       tone: "info",
-      body: (result.ambiguous ? "Several readings of this cube fit what the camera saw, and six photos cannot tell them apart \u2014 another look, held as asked, narrows them. " : "A single look could have been held wrong, so another one checks it. ") + this.confirmSentence(confirm)
+      body: (result.ambiguous ? `${this.ambiguitySentence(result)} ` : "A single look could have been held wrong, so another one checks it. ") + this.confirmSentence(confirm)
     };
     this.loop("confirm", ...this.confirmWords(confirm));
   }
@@ -5507,12 +5544,17 @@ var AiScanPanel = class extends HTMLElement {
     const hold = " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
     const camera = this.misreadNotice(result, {
       one: `If it is wrong, tap it and pick the colour you see; if it is right, show that side again to re-read it.${hold}`,
-      many: result.misreadFace ? `Show the %2 side to the camera again \u2014 it will be read fresh.${hold}` : `Show those sides to the camera again \u2014 each one is read fresh.${hold}`,
-      params: result.misreadFace ? [GUIDE[result.misreadFace].color] : []
+      lead: result.misreadFace ? void 0 : "At least %1 stickers do not fit a real cube \u2014 too many to tell which.",
+      many: result.misreadFace ? "Show the %2 side to the camera again \u2014 it will be read fresh." : `Start the scan over, with more light and each side held flat to the camera; red and orange are the colours it confuses most. ${RE_READ_LINE}`,
+      params: result.misreadFace ? [GUIDE[result.misreadFace].color] : [],
+      action: result.misreadFace ? void 0 : { label: "Start over", kind: "restart" }
     });
     let line = "That isn't a solvable cube yet \u2014 fix a sticker, or show a side again.";
     if (camera) {
       this.notice = camera;
+      if (camera.action) {
+        line = "That isn't a solvable cube yet \u2014 start the scan over, or show one side again.";
+      }
     } else if (result.ambiguous) {
       this.notice = {
         title: "Too symmetric to tell",
