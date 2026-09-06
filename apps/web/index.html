@@ -313,15 +313,32 @@
       }
       /* The reference box of the layout contract: a 4:3 box (landscape) or a 3:4 box (portrait)
          fit to the stage's short axis. Screens size their primary region from --ref-w/--ref-h and
-         let the sheet take whatever the long axis has beyond it. Declared on .screen, not .stage:
-         a container cannot query itself, only its descendants can ask it. */
+         let the flexible regions take whatever the stage has beyond it. Declared on .screen, not
+         .stage: a container cannot query itself, only its descendants can ask it.
+         Since 2026-09-06 the reference is the MINIMUM every composition is designed at, and no
+         longer the box that gets drawn: the drawn box spans the stage on both axes (see .cols),
+         and only the primary's size is still cut from --ref-w/--ref-h. The two are the same box
+         on most clients — the reference shrinks below the stage only when the long axis is
+         shorter than 4:3 of the short one, which of the supported clients is an iPad in portrait
+         and the app's own portrait desktop window (25.2px and 21.5px of stage content width the
+         reference could not take, measured 2026-09-06). */
       .screen { --ref-w: min(100cqw, 100cqh * 4 / 3); --ref-h: min(100cqh, 100cqw * 3 / 4); }
       @container stage (orientation: portrait) {
         .screen { --ref-w: min(100cqw, 100cqh * 3 / 4); --ref-h: min(100cqh, 100cqw * 4 / 3); }
       }
       .screen { display: none; height: 100%; }
-      /* A grid of one cell, so the composition box centres on the stage when the fit rule leaves
-         paper — an iPad portrait stage is a little wider than 3:4 of its height. */
+      /* A grid of one cell: the screen's root is handed the whole stage content box to place
+         itself in. `place-items: center` was here for paper — until 2026-09-06 the composition box
+         was clamped to the reference box on the short axis, and the centring is what split the
+         leftover down both sides instead of leaving it all on one. There is no leftover now (the
+         box spans the stage on both axes, see .cols), so for that box the centring is moot:
+         measured across the eight geometry fixtures, .cols's rect IS the stage's content box.
+         It stays because it is this cell's alignment rule for whatever root a screen puts in it,
+         not the paper rule: dropping it would switch every screen root from centred to stretched,
+         which is a different change and one nothing asked for. The roots that are not a .cols —
+         Timer's and Trainer's plain divs — were measured on 2026-09-06 and already fill the cell
+         on both axes, so this is conservatism about a rule outside the amendment's subject rather
+         than a dependency on it. */
       .screen.active { display: grid; place-items: center; }
       /* The screen is what every navigation focuses (renderScreen: a screen reader then announces
          the route and a keyboard user starts inside it). It is a region with tabindex -1 — reached
@@ -339,7 +356,8 @@
          reference box; `twin` — the same cube drawn the other way, the 2D net or the
          detected-state cube, a reference to glance at; `aux` — the transport row, present while
          a solution is being walked; and `sheet` — the moves (or the scan's notice and button),
-         which take whatever the long axis has beyond the reference box. Landscape: the twin tops
+         which take whatever the stage has beyond the reference box: on the long axis always, and
+         on the short axis too since 2026-09-06 (see the box's size below). Landscape: the twin tops
          the column beside the primary and the sheet fills the rest of it, the aux under the
          primary. Portrait: the twin sits BESIDE the cube and the sheet runs under both — so
          every card is on screen at once, without a scroll, at the reference minimums (the
@@ -354,9 +372,18 @@
       .cols {
         display: grid; min-width: 0; min-height: 0;
         column-gap: var(--cols-gap); row-gap: var(--rows-gap);
-        /* Landscape: the reference box is as tall as the stage; the right-hand column takes any
-           surplus width (the 1fr): the twin at its content's height, the sheet the rest. */
-        width: 100%; height: var(--ref-h);
+        /* The box spans the stage's content box on BOTH axes — the owner's call, 2026-09-06.
+           Landscape: the right-hand column takes any surplus width (the 1fr), the twin at its
+           content's height and the sheet the rest. `height` was var(--ref-h) until that date, and
+           that clamp is what letterboxed a landscape stage flatter than 4:3: the difference was
+           drawn as paper down the top and bottom. It is the flexible regions' now — the sheet's
+           1fr row grows, and the primary grows with the box because it spans both rows. What does
+           NOT change is the primary's WIDTH, which is still cut from --ref-w below, so the cube
+           keeps its share of the composition. Measured on the eight geometry fixtures,
+           2026-09-06: no landscape client letterboxed at all — the reference height WAS the
+           stage's content height on all three of them — so on every supported device this line is
+           a no-op, and it only states what happens on a stage narrower than the reference. */
+        width: 100%; height: 100%;
         --primary-w: calc(var(--ref-w) * var(--primary-share) - var(--cols-gap) / 2);
         grid-template-columns: var(--primary-w) minmax(0, 1fr);
         grid-template-rows: auto minmax(0, 1fr);
@@ -378,9 +405,26 @@
       .sheet { grid-area: sheet; min-width: 0; min-height: 0; }
       @container stage (orientation: portrait) {
         .cols {
-          /* Portrait: the reference box is as wide as the stage. The cube and its twin share the
-             top row, 3:2; the sheet is the bottom row and any surplus height is its. */
-          width: var(--ref-w); height: 100%;
+          /* Portrait: the cube and its twin share the top row, 3:2; the sheet is the bottom row
+             and any surplus height is its. `width` was var(--ref-w) until 2026-09-06, and that
+             clamp is where the app's only real paper was: the three iPads in portrait carried 57,
+             24 and 4px down each side (13", 11", mini — stage-contract.md's fixture table). The
+             width is the stage's now and the two columns share it; the sheet spans both, so all
+             of it reaches the moves.
+             The primary's HEIGHT is still cut from --ref-h below, so the region the cube is drawn
+             in is the height it was, and --primary-share still decides the cube's share of the
+             composition. Its slot got wider, though, so the DRAWN cube is unchanged only where
+             the fit was already height-bound — measured 2026-09-06, iPad 11" portrait: slot
+             699.75×527.97 to 724.97×527.97, painted cube 430×413 to 431×413. Where the slot was
+             the narrow way round the cube grows into the width it was short of: the 574×817
+             desktop portrait window's slot went 257.5×354.3 to 270.41×354.3 and its cube 244×235
+             to 256×246 painted px, +4.9%. That is the amendment doing what it says — the columns
+             take the room — not the primary escaping the reference.
+             Two of the eight geometry fixtures had any short-axis room at all: the iPad 11"
+             portrait, whose box widened by 25.2px, and that desktop portrait window, by 21.5px —
+             its stage is 3:4 before the portrait tab bar takes 49px out of it and flatter than
+             3:4 after. Every other fixture was already at the stage's full width. */
+          width: 100%; height: 100%;
           --primary-h: calc(var(--ref-h) * var(--primary-share) - var(--rows-gap) / 2);
           grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
           grid-template-rows: var(--primary-h) minmax(0, 1fr);
