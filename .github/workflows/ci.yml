@@ -498,6 +498,13 @@ jobs:
       # it is a proof and not a sample — it caught 1022 wrong ones (signalling NaNs) on its first run.
       - name: The fp16 widening matches Float16, exhaustively
         run: crates/cube-vision/swift/.build/release/cube-vision-probe --self-check
+      # The FFI entries are called from Rust threads that never pop an autorelease pool, and CoreML
+      # autoreleases per prediction: without a pool of their own they leaked 3.6 MB per inference,
+      # 58 MB/s at the scan panel's tick rate, and a user's Mac reported the app at 94 GB
+      # (2026-09-06). The probe drives the real entry from a pool-less thread and fails above
+      # 100 KB per call; the real leak was thirty-six times that.
+      - name: The FFI path leaves nothing behind on a pool-less thread
+        run: crates/cube-vision/swift/.build/release/cube-vision-probe --leak-check ml/models/cubedet.mlpackage 300
       - name: coreml · native — exact class parity with THIS host's fp32, plus the pinned model bytes
         run: python ml/golden_frames.py --parity --legs onnx coreml native
       # The same check with CoreML pinned to the CPU, which discriminates between the two candidate

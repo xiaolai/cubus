@@ -74,6 +74,28 @@ export type { ScanRuntime } from './pick-detector.js';
 // a hope.
 export { disposeParkedDetector, parkedDetector } from './pick-detector.js';
 
+/**
+ * The per-side re-read, as one sentence: the idle line once all six sides are in, and word for
+ * word the last sentence of the notice that recommends starting over — so the host's duplicate
+ * check draws it once, under the notice, rather than twice.
+ */
+const RE_READ_LINE = 'Show one side to the camera to re-read just that side.';
+
+/** Small counts as words, for a sentence: "fits them four ways". Larger ones stay digits. */
+const COUNT_WORDS = [
+  '',
+  'one',
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'seven',
+  'eight',
+  'nine',
+  'ten',
+];
+
 const GUIDE: Record<Face, { color: string; name: string; swatch: string }> = {
   U: { color: 'WHITE', name: 'Up', swatch: '#f6f7f8' },
   R: { color: 'RED', name: 'Right', swatch: '#d0202a' },
@@ -259,6 +281,13 @@ export interface ScanNotice {
   /** Values for the body's %1..%9, in order. Absent when the sentence has no placeholders. */
   params?: (string | number)[];
   tone: 'info' | 'ok' | 'err';
+  /**
+   * The one action the notice recommends, for the host to draw as a button IN the card. Added
+   * 2026-09-06 for the refusal that can name no sticker: its instruction is "start the scan
+   * over", and an instruction whose button sits in a toolbar the sentence does not point at is
+   * a sentence, not an instruction. `kind` is what the host calls; the label is what it says.
+   */
+  action?: { label: string; kind: 'restart' };
 }
 
 /**
@@ -1499,6 +1528,31 @@ export class AiScanPanel extends HTMLElement {
   }
 
   /**
+   * What an ambiguous scan IS, said before the look that settles it.
+   *
+   * The sentence this replaced — "Several readings of this cube fit what the camera saw, and six
+   * photos cannot tell them apart" — was read as a failed scan by a user whose every colour was
+   * correct (2026-09-06). It said neither that the colours were right nor what was undetermined,
+   * and the cube drawn beside it looked right because it IS the six sides as they were held. So
+   * this says all of it: the colours are read; how many cubes fit them; which sides could have
+   * been held more than one way up (the assembler names them); and that the picture shows the
+   * sides as held, not which reading is the cube. The ask follows as its own sentence.
+   */
+  private ambiguitySentence(result: AiScanResult): string {
+    const n = result.readings ?? 0;
+    const count = n >= 2 ? (COUNT_WORDS[n] ?? String(n)) : '';
+    const ways = count ? `${count} ways` : 'more than one way';
+    const sides = (result.undetermined ?? []).map((f) => GUIDE[f].color);
+    const held =
+      sides.length === 0
+        ? ''
+        : sides.length === 1
+          ? ` — the ${sides[0]} side could have been held more than one way up —`
+          : ` — the ${sides.slice(0, -1).join(', ')} and ${sides[sides.length - 1]} sides could each have been held more than one way up —`;
+    return `Every side's colours are read. This cube fits them ${ways}${held} and the picture shows the sides as they were held, not which of the ${count || 'readings'} it is.`;
+  }
+
+  /**
    * The waiting-for-input line, matched to where the scan actually is. One generic "show any
    * side" for every state was how a finished scan kept being nagged for sides, and how the ask
    * for one SPECIFIC side got contradicted the moment the cube left the frame.
@@ -1508,9 +1562,7 @@ export class AiScanPanel extends HTMLElement {
       return `Looking for the ${GUIDE[this.awaiting.face].color} side — hold it with ${GUIDE[this.awaiting.up].color} up.`;
     }
     if (this.finished) return 'Scan finished — start the scan over to read a different cube.';
-    if (this.capturedFaces().length >= FACES.length) {
-      return 'Show a side to the camera to re-read it.';
-    }
+    if (this.capturedFaces().length >= FACES.length) return RE_READ_LINE;
     return 'Show any side to the camera.';
   }
 
@@ -1596,7 +1648,14 @@ export class AiScanPanel extends HTMLElement {
    */
   private misreadNotice(
     result: AiScanResult,
-    recovery: { one: string; many: string; params?: (string | number)[] },
+    recovery: {
+      one: string;
+      many: string;
+      /** The count sentence for `many`, when the caller can say more than the default. */
+      lead?: string;
+      params?: (string | number)[];
+      action?: ScanNotice['action'];
+    },
   ): ScanNotice | null {
     const misread = result.misreadCount ?? 0;
     // The decode is still running (see AssembleOptions.diagnose). Say that, and say nothing about
@@ -1631,10 +1690,11 @@ export class AiScanPanel extends HTMLElement {
     }
     if (misread > 1) {
       return {
-        title: 'More than one sticker looks wrong',
+        title: 'Some stickers were misread',
         tone: 'err',
-        body: `At least %1 stickers were misread, so there is no single sticker to point at. ${recovery.many}`,
+        body: `${recovery.lead ?? 'At least %1 stickers were misread, so there is no single sticker to point at.'} ${recovery.many}`,
         params: [misread, ...(recovery.params ?? [])],
+        ...(recovery.action ? { action: recovery.action } : {}),
       };
     }
     if (misread === 1) {
@@ -1778,7 +1838,7 @@ export class AiScanPanel extends HTMLElement {
       tone: 'info',
       body:
         (result.ambiguous
-          ? 'Several readings of this cube fit what the camera saw, and six photos cannot tell them apart — another look, held as asked, narrows them. '
+          ? `${this.ambiguitySentence(result)} `
           : 'A single look could have been held wrong, so another one checks it. ') +
         this.confirmSentence(confirm),
     };
@@ -1853,12 +1913,24 @@ export class AiScanPanel extends HTMLElement {
       " Tip: hold each side the way its tile's edge colours show, and a scan settles itself.";
     // Classification and the proven wording come from misreadNotice(); only the way OUT is the
     // camera's own — show the side again, and hold it the way the tile shows.
+    // With two or more misread and no side to name, "show those sides again" named sides the
+    // decoder had just said it could not name, and the orientation tip was about a different
+    // problem (a user's screenshot, 2026-09-06). That many wrong stickers is usually one cause —
+    // red and orange under warm light, a side held at an angle, a misread centre that inflates
+    // the count and that no reading can detect — and re-showing sides one at a time keeps the
+    // cause. So the instruction is the one the user can follow: start over, better, with the
+    // button in the card; the per-side re-read stays as the last sentence for someone who can
+    // see which side is wrong. The count stays because it is what the decoder proves.
     const camera = this.misreadNotice(result, {
       one: `If it is wrong, tap it and pick the colour you see; if it is right, show that side again to re-read it.${hold}`,
+      lead: result.misreadFace
+        ? undefined
+        : 'At least %1 stickers do not fit a real cube — too many to tell which.',
       many: result.misreadFace
-        ? `Show the %2 side to the camera again — it will be read fresh.${hold}`
-        : `Show those sides to the camera again — each one is read fresh.${hold}`,
+        ? 'Show the %2 side to the camera again — it will be read fresh.'
+        : `Start the scan over, with more light and each side held flat to the camera; red and orange are the colours it confuses most. ${RE_READ_LINE}`,
       params: result.misreadFace ? [GUIDE[result.misreadFace].color] : [],
+      action: result.misreadFace ? undefined : { label: 'Start over', kind: 'restart' },
     });
     // The transient line has to describe the SAME refusal the notice does. It was one sentence for
     // every branch — "That isn't a solvable cube yet" — which is simply false for the ambiguous
@@ -1868,6 +1940,11 @@ export class AiScanPanel extends HTMLElement {
     let line = "That isn't a solvable cube yet — fix a sticker, or show a side again.";
     if (camera) {
       this.notice = camera;
+      // A notice that says "start over" cannot have a transient line under it saying "fix a
+      // sticker". Same verdict, the notice's own advice.
+      if (camera.action) {
+        line = "That isn't a solvable cube yet — start the scan over, or show one side again.";
+      }
     } else if (result.ambiguous) {
       this.notice = {
         title: 'Too symmetric to tell',
