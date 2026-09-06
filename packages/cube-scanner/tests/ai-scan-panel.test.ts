@@ -433,6 +433,14 @@ describe('ai-scan-panel — confirmations', () => {
     expect(p.phase).toBe('confirm');
     expect(p.confirm).not.toBeNull();
     expect(p.notice?.title).toBe('One more look');
+    // The body says what IS known and what is not. The old "Several readings of this cube fit
+    // what the camera saw" read as a failed scan to a user whose colours were all right
+    // (2026-09-06): it never said the colours were read, nor which sides were undetermined, nor
+    // that the picture is the sides as held rather than one of the readings.
+    expect(p.notice?.body).toMatch(
+      /^Every side's colours are read\. This cube fits them (two|three|four|five|six|seven|eight|nine|ten|\d+) ways — the [A-Z]+(, [A-Z]+)* (and [A-Z]+ sides could each|side could) have been held more than one way up — and the picture shows the sides as they were held, not which of the \w+ it is\. Show the [A-Z]+ side again, with [A-Z]+ facing up\.$/,
+    );
+    expect(p.notice?.body).not.toMatch(/Several readings/);
     // The ask survives the cube leaving the frame — keeping its phase, and with an idle line that
     // repeats WHICH side is wanted rather than contradicting the ask with "show any side".
     fake.output = emptyTensor();

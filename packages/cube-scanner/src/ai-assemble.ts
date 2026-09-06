@@ -114,6 +114,14 @@ export interface AssembleOptions {
 export type AiScanResult = ScanResult & {
   reason?: string;
   ambiguous?: boolean;
+  /**
+   * With `ambiguous` and a `confirm`: how many legal cubes fit the readings, and which sides'
+   * way-up those cubes disagree about — the sides a look can settle. The notice says both, because
+   * "several readings fit" was read as a failed scan by a user whose every colour was right
+   * (2026-09-06): the six sides had simply been held in ways the photos cannot tell apart.
+   */
+  readings?: number;
+  undetermined?: Face[];
   /** Set when one more look would help — to break a tie, to verify one, or to retry a mis-hold. */
   confirm?: ConfirmRequest;
   /** The confirmations contradict each other: one was mis-held, so they all have to be redone. */
@@ -267,17 +275,29 @@ export function matchingRotations(original: ColorFace, confirmed: ColorFace): Se
  * side face so the instruction is "hold the white side up". Faces already confirmed are skipped,
  * so a second round asks about something new rather than looping on the same side.
  */
-function pickConfirm(
+/**
+ * The unconfirmed sides whose way-up the surviving readings disagree about. Candidates that give
+ * the same facelet string always allow the same rotations of a side, so two readings differ on a
+ * side exactly when their rotation sets for it differ — and those are the sides a look can settle.
+ */
+function undeterminedFaces(
   candidates: [string, number[][]][],
   confirmed: Partial<Record<Face, ColorFace>>,
-): ConfirmRequest | undefined {
-  const useful = FACES.filter((face, fi) => {
+): Face[] {
+  return FACES.filter((face, fi) => {
     if (confirmed[face]) return false;
     const perCandidate = candidates.map(([, combos]) =>
       [...new Set(combos.map((c) => c[fi]!))].sort().join(','),
     );
     return new Set(perCandidate).size > 1;
   });
+}
+
+function pickConfirm(
+  candidates: [string, number[][]][],
+  confirmed: Partial<Record<Face, ColorFace>>,
+): ConfirmRequest | undefined {
+  const useful = undeterminedFaces(candidates, confirmed);
   const face = useful.find((f) => TOP_NEIGHBOUR[f] === 'U') ?? useful[0];
   return face === undefined ? undefined : { face, up: TOP_NEIGHBOUR[face] };
 }
@@ -681,6 +701,8 @@ export function assembleColors(
       return reject(`${candidates.length} readings fit — another look narrows them`, {
         ambiguous: true,
         confirm,
+        readings: candidates.length,
+        undetermined: undeterminedFaces(candidates, confirmed),
       });
     }
     // No unconfirmed side can tell the surviving readings apart (their rotation sets agree on

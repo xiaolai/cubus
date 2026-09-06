@@ -74,6 +74,21 @@ export type { ScanRuntime } from './pick-detector.js';
 // a hope.
 export { disposeParkedDetector, parkedDetector } from './pick-detector.js';
 
+/** Small counts as words, for a sentence: "fits them four ways". Larger ones stay digits. */
+const COUNT_WORDS = [
+  '',
+  'one',
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'seven',
+  'eight',
+  'nine',
+  'ten',
+];
+
 const GUIDE: Record<Face, { color: string; name: string; swatch: string }> = {
   U: { color: 'WHITE', name: 'Up', swatch: '#f6f7f8' },
   R: { color: 'RED', name: 'Right', swatch: '#d0202a' },
@@ -1499,6 +1514,31 @@ export class AiScanPanel extends HTMLElement {
   }
 
   /**
+   * What an ambiguous scan IS, said before the look that settles it.
+   *
+   * The sentence this replaced — "Several readings of this cube fit what the camera saw, and six
+   * photos cannot tell them apart" — was read as a failed scan by a user whose every colour was
+   * correct (2026-09-06). It said neither that the colours were right nor what was undetermined,
+   * and the cube drawn beside it looked right because it IS the six sides as they were held. So
+   * this says all of it: the colours are read; how many cubes fit them; which sides could have
+   * been held more than one way up (the assembler names them); and that the picture shows the
+   * sides as held, not which reading is the cube. The ask follows as its own sentence.
+   */
+  private ambiguitySentence(result: AiScanResult): string {
+    const n = result.readings ?? 0;
+    const count = n >= 2 ? (COUNT_WORDS[n] ?? String(n)) : '';
+    const ways = count ? `${count} ways` : 'more than one way';
+    const sides = (result.undetermined ?? []).map((f) => GUIDE[f].color);
+    const held =
+      sides.length === 0
+        ? ''
+        : sides.length === 1
+          ? ` — the ${sides[0]} side could have been held more than one way up —`
+          : ` — the ${sides.slice(0, -1).join(', ')} and ${sides[sides.length - 1]} sides could each have been held more than one way up —`;
+    return `Every side's colours are read. This cube fits them ${ways}${held} and the picture shows the sides as they were held, not which of the ${count || 'readings'} it is.`;
+  }
+
+  /**
    * The waiting-for-input line, matched to where the scan actually is. One generic "show any
    * side" for every state was how a finished scan kept being nagged for sides, and how the ask
    * for one SPECIFIC side got contradicted the moment the cube left the frame.
@@ -1778,7 +1818,7 @@ export class AiScanPanel extends HTMLElement {
       tone: 'info',
       body:
         (result.ambiguous
-          ? 'Several readings of this cube fit what the camera saw, and six photos cannot tell them apart — another look, held as asked, narrows them. '
+          ? `${this.ambiguitySentence(result)} `
           : 'A single look could have been held wrong, so another one checks it. ') +
         this.confirmSentence(confirm),
     };
