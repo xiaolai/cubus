@@ -70,7 +70,10 @@ jobs:
       # create the site, and the first run answered "Resource not accessible by integration" —
       # creating a site is an administrative act GITHUB_TOKEN is never granted, whatever
       # `permissions:` says. So this step only reads the site that exists, and fails loudly if it
-      # is ever deleted. The custom domain comes from public/CNAME.
+      # is ever deleted. The custom domain is a setting of that site, made the same day by hand
+      # (`gh api -X PUT repos/xiaolai/cubus/pages -f cname=cubus.im`): a workflow deployment
+      # IGNORES a CNAME file in the artifact — public/CNAME is the in-repo record of the domain,
+      # not what sets it, and the first deploy landed with no domain to prove it.
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
 
       - id: deployment
