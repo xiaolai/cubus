@@ -40,6 +40,28 @@ private final class State {
 private let state = State()
 private let stateLock = NSLock()
 
+/// Every entry below runs inside this: the state lock, and an autorelease pool.
+///
+/// THE POOL IS NOT OPTIONAL, and it is here rather than in each caller because the callers are
+/// Rust threads. A Tauri `(async)` command runs on a tokio worker that lives for the whole process
+/// and never pops an autorelease pool, and CoreML and AVFoundation autorelease objects on every
+/// call. With no pool in place the Objective-C runtime installs a page that nothing ever pops, so
+/// every object autoreleased on that thread lives until the process exits. Measured 2026-09-06
+/// with `cube-vision-probe --leak-check`: 3.6 MB per inference from a pool-less thread, flat with a
+/// pool. At the scan panel's 16 ticks a second that is 58 MB/s, which is how a user's Mac came to
+/// report the app at 94 GB and out of memory. One pool per call, so nothing outlives the call.
+private func entry<T>(_ body: () -> T) -> T {
+    autoreleasepool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return body()
+    }
+}
+
+/// The same pool for an entry that reads no state and so takes no lock.
+private func pooled<T>(_ body: () -> T) -> T {
+    autoreleasepool(invoking: body)
+}
+
 /// Record why a call failed. Under the lock already held by every caller.
 private func fail(_ what: String, _ error: Error) -> Int32 {
     state.lastError = "\(what): \(error)"
@@ -60,47 +82,50 @@ private func units(_ raw: Int32) -> MLComputeUnits {
 /// answered from the loaded model without touching CoreML.
 @_cdecl("cube_vision_load")
 public func cube_vision_load(_ path: UnsafePointer<CChar>, _ computeUnits: Int32) -> Int32 {
-    stateLock.lock(); defer { stateLock.unlock() }
-    let pathString = String(cString: path)
-    if state.model != nil, state.loadedPath == pathString, state.loadedUnits == computeUnits {
-        return Int32(state.rows * state.anchors)
-    }
-    let url = URL(fileURLWithPath: pathString)
-    do {
-        let model = try CubeModel(mlpackageURL: url, computeUnits: units(computeUnits))
-        state.compileCount += 1
-        // One warm inference to learn the output shape and pay the first-run compile now, not on tick 1.
-        let probe = try model.infer(chw: [Float](repeating: Letterbox.pad, count: 3 * Letterbox.imgSize * Letterbox.imgSize))
-        state.model = model
-        state.loadedPath = pathString
-        state.loadedUnits = computeUnits
-        state.rows = probe.rows
-        state.anchors = probe.anchors
-        return Int32(probe.rows * probe.anchors)
-    } catch {
-        // A failed load leaves no half-model behind that a later same-pair call could be answered from.
-        state.model = nil
-        state.loadedPath = nil
-        state.loadedUnits = nil
-        return fail("cube_vision_load", error)
+    return entry { () -> Int32 in
+        let pathString = String(cString: path)
+        if state.model != nil, state.loadedPath == pathString, state.loadedUnits == computeUnits {
+            return Int32(state.rows * state.anchors)
+        }
+        let url = URL(fileURLWithPath: pathString)
+        do {
+            let model = try CubeModel(mlpackageURL: url, computeUnits: units(computeUnits))
+            state.compileCount += 1
+            // One warm inference to learn the output shape and pay the first-run compile now, not on tick 1.
+            let probe = try model.infer(chw: [Float](repeating: Letterbox.pad, count: 3 * Letterbox.imgSize * Letterbox.imgSize))
+            state.model = model
+            state.loadedPath = pathString
+            state.loadedUnits = computeUnits
+            state.rows = probe.rows
+            state.anchors = probe.anchors
+            return Int32(probe.rows * probe.anchors)
+        } catch {
+            // A failed load leaves no half-model behind that a later same-pair call could be answered from.
+            state.model = nil
+            state.loadedPath = nil
+            state.loadedUnits = nil
+            return fail("cube_vision_load", error)
+        }
     }
 }
 
 /// The number of CoreML compiles this process has performed. A test instrument — see `State`.
 @_cdecl("cube_vision_compile_count")
 public func cube_vision_compile_count() -> Int32 {
-    stateLock.lock(); defer { stateLock.unlock() }
-    return state.compileCount
+    return entry { () -> Int32 in
+        return state.compileCount
+    }
 }
 
 /// The message recorded by the last failing call, consumed; null when none is recorded. Caller
 /// frees with cube_vision_free_string.
 @_cdecl("cube_vision_last_error")
 public func cube_vision_last_error() -> UnsafeMutablePointer<CChar>? {
-    stateLock.lock(); defer { stateLock.unlock() }
-    guard let message = state.lastError else { return nil }
-    state.lastError = nil
-    return strdup(message)
+    return entry { () -> UnsafeMutablePointer<CChar>? in
+        guard let message = state.lastError else { return nil }
+        state.lastError = nil
+        return strdup(message)
+    }
 }
 
 private func writeInference(_ inf: Inference, _ out: UnsafeMutablePointer<Float>, _ cap: Int32,
@@ -124,27 +149,30 @@ private func writeInference(_ inf: Inference, _ out: UnsafeMutablePointer<Float>
 public func cube_vision_infer_rgba(_ rgba: UnsafePointer<UInt8>, _ w: Int32, _ h: Int32,
                                    _ out: UnsafeMutablePointer<Float>, _ cap: Int32,
                                    _ outRows: UnsafeMutablePointer<Int32>, _ outAnchors: UnsafeMutablePointer<Int32>) -> Int32 {
-    stateLock.lock(); defer { stateLock.unlock() }
-    guard let model = state.model else {
-        state.lastError = "no model loaded"
-        return -3
-    }
-    do {
-        let chw = Letterbox.chw(rgba: rgba, width: Int(w), height: Int(h))
-        return writeInference(try model.infer(chw: chw), out, cap, outRows, outAnchors)
-    } catch {
-        return fail("cube_vision_infer_rgba", error)
+    return entry { () -> Int32 in
+        guard let model = state.model else {
+            state.lastError = "no model loaded"
+            return -3
+        }
+        do {
+            let chw = Letterbox.chw(rgba: rgba, width: Int(w), height: Int(h))
+            return writeInference(try model.infer(chw: chw), out, cap, outRows, outAnchors)
+        } catch {
+            return fail("cube_vision_infer_rgba", error)
+        }
     }
 }
 
 /// Cameras as a JSON array string; caller frees with cube_vision_free_string.
 @_cdecl("cube_vision_list_cameras")
 public func cube_vision_list_cameras() -> UnsafeMutablePointer<CChar>? {
-    let infos = Camera.list()
-    guard let data = try? JSONEncoder().encode(infos), let json = String(data: data, encoding: .utf8) else {
-        return strdup("[]")
+    return pooled { () -> UnsafeMutablePointer<CChar>? in
+        let infos = Camera.list()
+        guard let data = try? JSONEncoder().encode(infos), let json = String(data: data, encoding: .utf8) else {
+            return strdup("[]")
+        }
+        return strdup(json)
     }
-    return strdup(json)
 }
 
 @_cdecl("cube_vision_free_string")
@@ -154,31 +182,34 @@ public func cube_vision_free_string(_ ptr: UnsafeMutablePointer<CChar>?) {
 
 @_cdecl("cube_vision_current_camera")
 public func cube_vision_current_camera() -> UnsafeMutablePointer<CChar>? {
-    stateLock.lock(); defer { stateLock.unlock() }
-    guard let info = state.camera?.current,
-        let data = try? JSONEncoder().encode(info),
-        let json = String(data: data, encoding: .utf8)
-    else { return nil }
-    return strdup(json)
+    return entry { () -> UnsafeMutablePointer<CChar>? in
+        guard let info = state.camera?.current,
+            let data = try? JSONEncoder().encode(info),
+            let json = String(data: data, encoding: .utf8)
+        else { return nil }
+        return strdup(json)
+    }
 }
 
 @_cdecl("cube_vision_open_camera")
 public func cube_vision_open_camera(_ deviceId: UnsafePointer<CChar>?) -> Int32 {
-    stateLock.lock(); defer { stateLock.unlock() }
-    let cam = state.camera ?? Camera()
-    state.camera = cam
-    do {
-        try cam.open(deviceId: deviceId.map { String(cString: $0) })
-        return 0
-    } catch {
-        return fail("cube_vision_open_camera", error)
+    return entry { () -> Int32 in
+        let cam = state.camera ?? Camera()
+        state.camera = cam
+        do {
+            try cam.open(deviceId: deviceId.map { String(cString: $0) })
+            return 0
+        } catch {
+            return fail("cube_vision_open_camera", error)
+        }
     }
 }
 
 @_cdecl("cube_vision_close_camera")
 public func cube_vision_close_camera() {
-    stateLock.lock(); defer { stateLock.unlock() }
-    state.camera?.close()
+    return entry { () -> Void in
+        state.camera?.close()
+    }
 }
 
 /// Grab the latest camera frame, letterbox + infer it. Returns the element count, 0 when the camera
@@ -188,20 +219,21 @@ public func cube_vision_close_camera() {
 @_cdecl("cube_vision_next_detection")
 public func cube_vision_next_detection(_ out: UnsafeMutablePointer<Float>, _ cap: Int32,
                                        _ outRows: UnsafeMutablePointer<Int32>, _ outAnchors: UnsafeMutablePointer<Int32>) -> Int32 {
-    stateLock.lock(); defer { stateLock.unlock() }
-    guard let model = state.model else {
-        state.lastError = "no model loaded"
-        return -3
-    }
-    guard let cam = state.camera, cam.current != nil else {
-        state.lastError = "no camera is open"
-        return -4
-    }
-    guard let frame = cam.latestFrame() else { return 0 }
-    do {
-        let chw = frame.bytes.withUnsafeBufferPointer { Letterbox.chw(rgba: $0.baseAddress!, width: frame.width, height: frame.height) }
-        return writeInference(try model.infer(chw: chw), out, cap, outRows, outAnchors)
-    } catch {
-        return fail("cube_vision_next_detection", error)
+    return entry { () -> Int32 in
+        guard let model = state.model else {
+            state.lastError = "no model loaded"
+            return -3
+        }
+        guard let cam = state.camera, cam.current != nil else {
+            state.lastError = "no camera is open"
+            return -4
+        }
+        guard let frame = cam.latestFrame() else { return 0 }
+        do {
+            let chw = frame.bytes.withUnsafeBufferPointer { Letterbox.chw(rgba: $0.baseAddress!, width: frame.width, height: frame.height) }
+            return writeInference(try model.infer(chw: chw), out, cap, outRows, outAnchors)
+        } catch {
+            return fail("cube_vision_next_detection", error)
+        }
     }
 }

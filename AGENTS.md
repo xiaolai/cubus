@@ -332,6 +332,17 @@ it walks you through solving it.
   announcement rather than the launch check's silence. `app-update.test.mjs`. The wider rule: a
   network call the user is waiting on needs a bound AND a visible pulse; either alone still
   reads as stuck.
+- **Objective-C called from a Rust thread needs its own autorelease pool** (2026-09-06). A
+  Tauri `(async)` command runs on a tokio worker that lives for the whole process and never pops
+  a pool; CoreML and AVFoundation autorelease objects on every call; and with no pool in place
+  the runtime installs a page nothing ever pops, so every such object lives until the process
+  exits. The desktop scanner's `next_detection` ran that way at 16 ticks a second: measured with
+  `cube-vision-probe --leak-check`, 3.6 MB per inference, 58 MB/s, and a user's Mac reported the
+  app at 94 GB and out of application memory. Every `@_cdecl` entry in `FFI.swift` now runs
+  inside `entry`/`pooled`, which push a pool per call, and the probe's leak check is a CI gate
+  (golden-macos) that drives the real entry from a pool-less thread and fails above 100 KB per
+  call. The rule is not CoreML-specific: any Swift or Objective-C reached from Rust off the main
+  thread gets a pool at the boundary, on the Swift side, where the caller's thread is not known.
 - **A model change is not verified until `ml/golden_frames.py` has run.** It is the parity gate —
   every fixture through the app's exact letterbox, one runtime, the app's exact post-processing —
   and CI enforces it, but `pnpm check` does NOT, so it is the gate you can ship past locally. On
