@@ -11,7 +11,13 @@
 ;; Before importing, delete any existing A, AAAA or CNAME record on `cubus.im` and on `www`, or
 ;; the old address answers beside the new ones. The four A and four AAAA addresses are GitHub
 ;; Pages' published set; the www CNAME points at the account's Pages host, and GitHub redirects
-;; it to the apex because public/CNAME names the apex. TTL 1 is Cloudflare's "Auto".
+;; it to the apex because the apex is the site's custom domain (a setting on the Pages site,
+;; made by hand; a workflow deployment ignores public/CNAME). TTL 1 is Cloudflare's "Auto".
+;;
+;; Imported 2026-09-06 — and the records came in PROXIED, tags notwithstanding: GitHub's own
+;; health check read `is_proxied: true, is_https_eligible: false` for both names. The site
+;; serves through Cloudflare that way, but GitHub cannot issue its certificate or enforce HTTPS
+;; until every one of these is switched to DNS-only in the dashboard.
 ;;
 ;; site.test.mjs holds this file to exactly those records.
 
