@@ -76,6 +76,20 @@ it walks you through solving it.
     so the renderer keeps its FIRST frame — a camera or ghost attribute set after mount is never
     repainted. On 2026-08-28 that made the solved cube on Home look twice its size with no
     ghosts, and cost an hour of chasing a renderer bug that did not exist.
+- **`apps/site/` is the introduction site at cubus.im, not the app** (2026-09-06). One static
+  page under `apps/site/public/`, drawn in the app's own tokens and icons (copied, and held
+  byte-identical by `site.test.mjs`), with screenshots that are photographs of the REAL app:
+  `scripts/capture-screenshots.mjs` serves `apps/web` and shoots it in headless WebKit at the
+  desktop window's two reference shapes, and the scan screen in Chromium fed a golden frame as
+  its camera — never a mockup, never retouched. Published to GitHub Pages by
+  `.github/workflows/deploy-site.yml` on a push to `main` that touches it, gated on the site's
+  test, which pins every picture the page names to the size the script produces, the page to
+  loading nothing remote and running no script, and the workflow to publishing `public/`. The web
+  APP is still not hosted anywhere (README.md, "Hosting the web build" — Pages cannot send the
+  isolation headers the scanner needs); the page says so and offers no "open in browser", and
+  the test forbids one. When the app's look changes, re-run
+  `pnpm --filter cubus-site screenshots` and commit the pictures; a stale set is a claim the
+  page makes about an app that no longer looks like that.
 - **Smart-cube support returned, deliberately** (removed 2026-08-26, merged back 2026-08-28).
   The removal's reasoning is the bar the return is held to: a cube adds an axis — present or
   absent, trusted or not — that every screen has to answer, and for this audience that axis was

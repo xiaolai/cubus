@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cubus — a Rubik's Cube tutor for beginners and kids</title>
+    <meta name="description" content="Show your cube to the camera. Cubus reads the stickers on your computer, works out a solution of twenty moves or fewer, and walks you through it one turn at a time. Free, open source, and nothing leaves your device." />
+    <link rel="canonical" href="https://cubus.im/" />
+    <!-- The icons are the app's own, copied from apps/web/icons; site.test.mjs holds them identical. -->
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./icons/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1B1814" media="(prefers-color-scheme: dark)" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://cubus.im/" />
+    <meta property="og:title" content="Cubus — a Rubik's Cube tutor for beginners and kids" />
+    <meta property="og:description" content="Show your cube to the camera. Cubus reads the stickers on your computer and walks you through solving it, one turn at a time." />
+    <meta property="og:image" content="https://cubus.im/screenshots/og.png" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="1012" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <!-- The app's design tokens, verbatim (apps/web/tokens.css; the test holds the copy identical), so
+         the page is drawn in the app's own paper and ink, and follows the system's light or dark
+         appearance the way the app's Auto theme does. System fonts only; nothing is loaded from
+         anywhere but this site. -->
+    <link rel="stylesheet" href="./tokens.css" />
+    <style>
+      * { box-sizing: border-box; }
+      html { -webkit-text-size-adjust: 100%; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--font-ui);
+        font-size: var(--fs-body-l);
+        line-height: var(--lh-prose);
+        -webkit-font-smoothing: antialiased;
+      }
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { color: var(--accent-hover); text-decoration: underline; }
+      code, pre, .num { font-family: var(--font-num); }
+      h1, h2, h3 { line-height: var(--lh-tight); letter-spacing: -0.01em; margin: 0; font-weight: 700; }
+      h1 { font-size: clamp(34px, 5.2vw, var(--fs-display-l)); }
+      h2 { font-size: clamp(24px, 3.2vw, var(--fs-display-s)); }
+      h3 { font-size: var(--fs-title); }
+      p { margin: 0; }
+      .wrap { max-width: 1120px; margin: 0 auto; padding: 0 var(--s-10); }
+      .eyebrow {
+        font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+        color: var(--ink-5);
+      }
+      .sub { color: var(--ink-3); }
+      .dim { color: var(--ink-4); font-size: var(--fs-body); }
+
+      /* ---- header ---------------------------------------------------------- */
+      header.top {
+        display: flex; align-items: center; justify-content: space-between; gap: var(--s-8);
+        padding: var(--s-9) 0;
+      }
+      .brand { display: flex; align-items: center; gap: var(--s-4); color: var(--ink); font-weight: 700; font-size: var(--fs-title-s); }
+      .brand:hover { text-decoration: none; }
+      nav.links { display: flex; flex-wrap: wrap; gap: var(--s-6) var(--s-10); font-size: var(--fs-body); }
+      nav.links a { color: var(--ink-3); }
+      nav.links a:hover { color: var(--ink); }
+
+      /* ---- hero ------------------------------------------------------------ */
+      .hero { padding: clamp(24px, 5vw, 64px) 0 clamp(32px, 6vw, 72px); display: grid; gap: clamp(24px, 4vw, 48px); }
+      .hero .lede { max-width: 42em; font-size: clamp(16px, 1.6vw, 19px); }
+      .hero .head { display: grid; gap: var(--s-8); }
+      .acts { display: flex; flex-wrap: wrap; gap: var(--s-6); align-items: center; }
+      .btn {
+        display: inline-flex; align-items: center; justify-content: center; gap: var(--s-4);
+        min-height: 44px; padding: 0 var(--s-11); border-radius: var(--r-pill);
+        font-weight: 600; font-size: var(--fs-body-l); border: 1px solid transparent; white-space: nowrap;
+      }
+      .btn.primary { background: var(--accent); color: var(--on-accent); }
+      .btn.primary:hover { background: var(--accent-hover); color: var(--on-accent); text-decoration: none; }
+      .btn.outline { border-color: var(--line-strong); color: var(--ink); background: var(--panel); }
+      .btn.outline:hover { border-color: var(--ink-5); text-decoration: none; }
+      .facts { display: flex; flex-wrap: wrap; gap: var(--s-4) var(--s-9); font-size: var(--fs-body); color: var(--ink-4); }
+
+      /* A picture of the app sits in a window: the macOS radius the app measured, the window
+         shadow from the tokens, on the desk colour the design kit draws behind a window. */
+      .shot {
+        margin: 0; border-radius: var(--r-win-macos); overflow: hidden;
+        box-shadow: var(--shadow-win); background: var(--panel);
+      }
+      .shot img { display: block; width: 100%; height: auto; }
+      .shot figcaption { padding: var(--s-6) var(--s-8); font-size: var(--fs-caption); color: var(--ink-4); background: var(--panel-sunk); }
+      .shot.portrait { max-width: 420px; }
+
+      /* ---- steps ----------------------------------------------------------- */
+      section { padding: clamp(32px, 5vw, 64px) 0; border-top: 1px solid var(--line-faint); }
+      .section-h { display: grid; gap: var(--s-4); margin-bottom: clamp(20px, 3vw, 36px); }
+      .steps { display: grid; gap: clamp(28px, 4vw, 56px); }
+      .step {
+        display: grid; gap: clamp(16px, 3vw, 40px); align-items: center;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+      }
+      .step .text { display: grid; gap: var(--s-6); max-width: 34em; }
+      .step .n { font-family: var(--font-num); font-size: var(--fs-title-l); color: var(--ink-5); }
+      .step .pic.portrait { justify-self: center; }
+
+      /* ---- facts grid ------------------------------------------------------ */
+      .grid { display: grid; gap: var(--s-10); grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+      .card { display: grid; gap: var(--s-4); align-content: start; }
+      .card h3 { font-size: var(--fs-title-s); }
+
+      /* ---- downloads ------------------------------------------------------- */
+      table { width: 100%; border-collapse: collapse; font-size: var(--fs-body-l); }
+      th, td { text-align: left; vertical-align: top; padding: var(--s-7) var(--s-4); border-bottom: 1px solid var(--line-faint); }
+      th { font-size: var(--fs-caption); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-5); }
+      td:first-child { font-weight: 600; white-space: nowrap; }
+      /* Three columns do not fit a phone: each row becomes a small card with the platform as its
+         heading. (The app itself keys its layout on orientation alone; this page is not the app.) */
+      @media (max-width: 640px) {
+        thead { display: none; }
+        tr { display: grid; gap: var(--s-2); padding: var(--s-7) 0; border-bottom: 1px solid var(--line-faint); }
+        td { display: block; padding: 0; border: 0; white-space: normal; }
+      }
+      pre {
+        margin: var(--s-4) 0 0; padding: var(--s-6) var(--s-8); border-radius: var(--r-4);
+        background: var(--panel-sunk); color: var(--ink); font-size: var(--fs-body); overflow-x: auto;
+      }
+      .note { color: var(--ink-4); font-size: var(--fs-body); }
+
+      /* ---- footer ---------------------------------------------------------- */
+      footer { padding: var(--s-13) 0 clamp(40px, 6vw, 72px); border-top: 1px solid var(--line-faint); display: grid; gap: var(--s-8); font-size: var(--fs-body); color: var(--ink-4); }
+      footer nav { display: flex; flex-wrap: wrap; gap: var(--s-6) var(--s-10); }
+
+      @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="top">
+        <a class="brand" href="./"><img src="./icons/icon.svg" alt="" width="26" height="26" />cubus</a>
+        <nav class="links" aria-label="Sections">
+          <a href="#how">How it works</a>
+          <a href="#download">Download</a>
+          <a href="#privacy">Privacy</a>
+          <a href="https://github.com/xiaolai/cubus" rel="noopener">Source</a>
+        </nav>
+      </header>
+
+      <main>
+        <div class="hero">
+          <div class="head">
+            <p class="eyebrow">For beginners and kids</p>
+            <h1>Show it your cube.<br />It walks you through the solve.</h1>
+            <p class="lede sub">Hold a Rubik's Cube up to the camera. Cubus reads the stickers on your computer, works out a solution of twenty moves or fewer, and plays it back one turn at a time on a cube you can see from every side.</p>
+            <div class="acts">
+              <a class="btn primary" href="#download">Download</a>
+              <a class="btn outline" href="#how">See how it works</a>
+            </div>
+            <p class="facts"><span>Free and open source</span><span>macOS, Windows and Linux</span><span>Nothing leaves your device</span></p>
+          </div>
+          <figure class="shot">
+            <img src="./screenshots/walk-landscape.webp" width="1280" height="1012" alt="The Cubus window in landscape: a 3D cube three moves into a twenty-move solution, its hidden sides floating beside it; on the right, the net of the starting state and the row of move chips with the current move lit." fetchpriority="high" />
+          </figure>
+        </div>
+
+        <section id="how">
+          <div class="section-h">
+            <p class="eyebrow">How it works</p>
+            <h2>Three steps, and a cube that stays in your hands.</h2>
+          </div>
+          <div class="steps">
+            <div class="step">
+              <div class="text">
+                <span class="n">1</span>
+                <h3>Show each side to the camera.</h3>
+                <p class="sub">The camera opens with the screen and a sticker detector reads each side on your device. Show the six sides in any order; each tile fills in as it is read. A misread sticker can be corrected by hand, and a cube can be painted in without a camera at all.</p>
+              </div>
+              <figure class="shot pic">
+                <img src="./screenshots/scan-landscape.webp" width="1280" height="1012" alt="The scan screen: six face tiles laid out as a net, the right side already filled with the colours the scanner read, the others still waiting; a small 3D cube on the right shows the state detected so far." loading="lazy" decoding="async" />
+              </figure>
+            </div>
+            <div class="step">
+              <div class="text">
+                <span class="n">2</span>
+                <h3>Follow the moves, one at a time.</h3>
+                <p class="sub">Every solution is twenty moves or fewer. Each turn plays on the 3D cube, with the sides the camera cannot see floating beside it, and the net keeps track of where you are. Step forward, watch a move again, go back, or play it through.</p>
+              </div>
+              <figure class="shot pic portrait">
+                <img src="./screenshots/walk-portrait-night.webp" width="900" height="1252" alt="The Cubus window in portrait and in the dark Night theme: the 3D cube two moves into a solution, the transport controls under it, and the move chips below with the second move lit." loading="lazy" decoding="async" />
+              </figure>
+            </div>
+            <div class="step">
+              <div class="text">
+                <span class="n">3</span>
+                <h3>Scramble it, and go again.</h3>
+                <p class="sub">A scramble is drawn from a random state, the way competition scrambles are made, and played out turn by turn so you can set the cube up yourself. Then hand it to the camera and solve it back.</p>
+              </div>
+              <figure class="shot pic portrait">
+                <img src="./screenshots/scramble-portrait.webp" width="900" height="1252" alt="The scramble screen in portrait: a solved 3D cube ready to be turned, the target state as a net, and a nineteen-move scramble laid out as chips." loading="lazy" decoding="async" />
+              </figure>
+            </div>
+          </div>
+        </section>
+
+        <section id="inside">
+          <div class="section-h">
+            <p class="eyebrow">What is inside</p>
+            <h2>Built to be trusted by a beginner.</h2>
+          </div>
+          <div class="grid">
+            <div class="card">
+              <h3>Reads on your device</h3>
+              <p class="sub">The sticker detector runs on your computer. No picture is kept, and none is sent anywhere.</p>
+            </div>
+            <div class="card">
+              <h3>Twenty moves or fewer</h3>
+              <p class="sub">A two-phase solver written from the published method. The ceiling is a setting: twenty, nineteen, eighteen, or the shortest it can find.</p>
+            </div>
+            <div class="card">
+              <h3>Every side at once</h3>
+              <p class="sub">The 3D cube floats the faces the camera angle hides beside it, so all six sides are readable without turning anything.</p>
+            </div>
+            <div class="card">
+              <h3>Real scrambles</h3>
+              <p class="sub">Random-state scrambles from a cryptographic source, so a scramble is never easier than it looks.</p>
+            </div>
+            <div class="card">
+              <h3>A smart cube is optional</h3>
+              <p class="sub">Bluetooth smart cubes are supported and every screen works without one. The camera always comes first.</p>
+            </div>
+            <div class="card">
+              <h3>Two shapes, three themes</h3>
+              <p class="sub">A landscape or a portrait window; White, Cream or Night, following your system by default.</p>
+            </div>
+          </div>
+          <figure class="shot" style="margin-top: clamp(28px, 4vw, 56px)">
+            <img src="./screenshots/home-landscape.webp" width="1280" height="1012" alt="The home screen with a solved cube: the 3D cube with its three hidden faces floating beside it, and the solved net on the right." loading="lazy" decoding="async" />
+          </figure>
+        </section>
+
+        <section id="download">
+          <div class="section-h">
+            <p class="eyebrow">Download</p>
+            <h2>Desktop, today.</h2>
+            <p class="sub">Every build is on the <a href="https://github.com/xiaolai/cubus/releases/latest" rel="noopener">latest release page</a>. Installed apps check for a new version once a day and update themselves.</p>
+          </div>
+          <table>
+            <thead><tr><th scope="col">Platform</th><th scope="col">How</th><th scope="col">Notes</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>macOS</td>
+                <td>Homebrew, or the <code>.dmg</code> from the release page.<pre><code>brew install --cask xiaolai/tap/cubus</code></pre></td>
+                <td class="note">One universal build for Apple silicon and Intel. Signed with a Developer ID and notarized, so it opens without a warning.</td>
+              </tr>
+              <tr>
+                <td>Windows</td>
+                <td>The <code>.msi</code> or the setup <code>.exe</code> from the release page.</td>
+                <td class="note">Not yet code-signed: SmartScreen shows "Windows protected your PC" on install. Choose More info, then Run anyway. Each self-update asks the same way.</td>
+              </tr>
+              <tr>
+                <td>Linux</td>
+                <td>The <code>.deb</code>, <code>.rpm</code> or <code>.AppImage</code> from the release page.</td>
+                <td class="note">Ubuntu 22.04 or newer, or the equivalent. Unsigned, as is usual; updates are verified before they are installed.</td>
+              </tr>
+              <tr>
+                <td>Phones and the browser</td>
+                <td>Not yet.</td>
+                <td class="note">The iPhone and Android apps are in the source tree and build, but are not shipped. The web app is not hosted yet; this page is the introduction.</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="privacy">
+          <div class="section-h">
+            <p class="eyebrow">Privacy</p>
+            <h2>Nothing you do in Cubus leaves your device.</h2>
+          </div>
+          <div class="grid">
+            <div class="card">
+              <h3>The camera</h3>
+              <p class="sub">Frames are read by the sticker detector on your device. No frame is stored or transmitted.</p>
+            </div>
+            <div class="card">
+              <h3>The one request</h3>
+              <p class="sub">The desktop app asks GitHub once a day whether a newer version exists. That is the only network request it makes. There is no account, no analytics, no crash reporting.</p>
+            </div>
+            <div class="card">
+              <h3>The details</h3>
+              <p class="sub">Every sentence of the <a href="https://github.com/xiaolai/cubus/blob/main/PRIVACY.md" rel="noopener">privacy statement</a> is a fact about the source code that a test can check.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <nav aria-label="Project">
+          <a href="https://github.com/xiaolai/cubus" rel="noopener">Source on GitHub</a>
+          <a href="https://github.com/xiaolai/cubus/issues" rel="noopener">Report a problem</a>
+          <a href="https://github.com/xiaolai/cubus/blob/main/LICENSE" rel="noopener">Licence: AGPL-3.0</a>
+          <a href="https://github.com/xiaolai/cubus/blob/main/LICENSE-COMMERCIAL.md" rel="noopener">Commercial licence</a>
+        </nav>
+        <p>Cubus is free software under the GNU AGPL-3.0. Made by <a href="https://lixiaolai.com" rel="noopener">@xiaolai</a>. The pictures on this page are screenshots of the app as it ships, taken by a script from the app itself.</p>
+      </footer>
+    </div>
+  </body>
+</html>
