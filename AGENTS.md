@@ -96,9 +96,16 @@ it walks you through solving it.
   loads nothing remote (a test enforces it).
 - **Layout contract** (decided 2026-08-27): two compositions keyed only on orientation — a 4:3
   landscape reference and a 3:4 portrait reference — each with a locked primary region (the cube,
-  or the live scan face) and a sheet that absorbs the long-axis surplus, so a phone's extra height
-  is sheet, never paper. Every platform runs the same two; the desktop window is fixed-size,
-  non-resizable, sized from the monitor's work area, and can be either shape (a persisted toggle).
+  or the live scan face) and flexible regions that absorb the surplus on BOTH axes (amended
+  2026-09-06): the sheet takes the long axis's, so a phone's extra height is sheet; the two
+  columns in portrait and the right-hand column's rows in landscape take the short axis's, so no
+  supported client letterboxes. The reference box is unchanged in every case, including its shrink
+  when the long axis is short, so the primary region's REFERENCE dimension — its height in
+  portrait, its width in landscape — is what it always was; its other dimension is the column's,
+  which is exactly what widens, so the drawn cube grows only where that dimension was binding it:
+  measured +4.9% on the desktop portrait window (244×235 → 256×246) and unchanged on every other
+  fixture. Every platform runs the same two; the desktop window is fixed-size, non-resizable,
+  sized from the monitor's work area, and can be either shape (a persisted toggle).
   The browser tab is a test harness, not a supported viewport. No viewport width/height media
   queries anywhere in `apps/web` — a test enforces it; `@container`, `orientation`, `prefers-*`
   and `pointer` are the allowed queries. Contract, fit rule, fixture table, desktop formulas,
