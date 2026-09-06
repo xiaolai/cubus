@@ -2448,7 +2448,8 @@ SCREENS.scan = () => {
       <div class="sheet scan-sheet">
         <div class="card"><b style="font-size:var(--fs-body-l)" id="scanHowTitle">How it works</b>
           <div class="sub scan-say" id="scanHow" role="status" aria-live="polite" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
-          <div class="sub scan-hint" id="scanHint" hidden></div></div>
+          <div class="sub scan-hint" id="scanHint" hidden></div>
+          <button class="btn sm outline" id="scanAction" hidden style="margin-top:10px"></button></div>
         <button class="btn primary block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
       </div>
     </div></div>`,
@@ -2786,6 +2787,18 @@ SCREENS.scan = () => {
        *  until their call sites move to placeholder form — the seam dev-docs/i18n.md tracks. */
       const paintSay = (p) => {
         const n = p.notice;
+        // The notice's one recommended action, as a button in the same card as the sentence. A
+        // refusal that can name no sticker says "start the scan over"; pointing at the toolbar's
+        // ↻ from a sentence in the aside was the confusion (2026-09-06), so the button is here.
+        const action = $('#scanAction', root);
+        if (action) {
+          const a = n?.action;
+          action.hidden = !a;
+          if (a) {
+            action.textContent = t(a.label);
+            action.onclick = () => { closePops(); if (a.kind === 'restart') panel.restart?.(); };
+          }
+        }
         if (n) {
           sayTitle.textContent = t(n.title);
           // Translate FIRST, substitute after: a notice carrying a count or a side name keeps its

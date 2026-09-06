@@ -231,6 +231,29 @@ test('a pinned notice owns the card, with the camera hint on its own line below'
   assert.match($('#scanHint').textContent, /point a side/);
 });
 
+// A notice may recommend ONE action, and the host draws it as a button in the same card as the
+// sentence: the refusal that can name no sticker says "start the scan over", and pointing at the
+// toolbar's ↻ from the aside was the confusion (2026-09-06). Hidden again the moment a notice
+// without an action arrives, so a stale button never outlives its sentence.
+test('a notice with an action gets its button in the card, wired to the panel', () => {
+  let restarts = 0;
+  panel().restart = () => { restarts++; };
+  progress({ phase: 'scanning', message: 'Show one side to the camera to re-read just that side.',
+    captured: FACES.map(face), live: null, confirm: null,
+    notice: { title: 'Some stickers were misread', tone: 'err',
+      body: 'At least %1 stickers do not fit a real cube. Start the scan over. Show one side to the camera to re-read just that side.',
+      params: [3], action: { label: 'Start over', kind: 'restart' } } });
+  const btn = $('#scanAction');
+  assert.equal(btn.hidden, false, 'the action is drawn');
+  assert.equal(btn.textContent, 'Start over');
+  assert.equal($('#scanHint').hidden, true, 'the hint repeats the notice and is hidden');
+  btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(restarts, 1, 'the button is the panel restart');
+  progress({ phase: 'scanning', message: 'Show any side to the camera.',
+    captured: [], live: null, confirm: null, notice: null });
+  assert.equal($('#scanAction').hidden, true, 'no action, no button');
+});
+
 // A notice that has to state a NUMBER or a side name cannot bake it into the sentence: the baked
 // string would never match a catalog key. The panel sends the sentence with %1..%9 intact plus the
 // values, and the host translates first and substitutes after (dev-docs/i18n.md, the seam).
