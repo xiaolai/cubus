@@ -96,9 +96,16 @@ it walks you through solving it.
   loads nothing remote (a test enforces it).
 - **Layout contract** (decided 2026-08-27): two compositions keyed only on orientation — a 4:3
   landscape reference and a 3:4 portrait reference — each with a locked primary region (the cube,
-  or the live scan face) and a sheet that absorbs the long-axis surplus, so a phone's extra height
-  is sheet, never paper. Every platform runs the same two; the desktop window is fixed-size,
-  non-resizable, sized from the monitor's work area, and can be either shape (a persisted toggle).
+  or the live scan face) and flexible regions that absorb the surplus on BOTH axes (amended
+  2026-09-06): the sheet takes the long axis's, so a phone's extra height is sheet; the two
+  columns in portrait and the right-hand column's rows in landscape take the short axis's, so no
+  supported client letterboxes. The reference box is unchanged in every case, including its shrink
+  when the long axis is short, so the primary region's REFERENCE dimension — its height in
+  portrait, its width in landscape — is what it always was; its other dimension is the column's,
+  which is exactly what widens, so the drawn cube grows only where that dimension was binding it:
+  measured +4.9% on the desktop portrait window (244×235 → 256×246) and unchanged on every other
+  fixture. Every platform runs the same two; the desktop window is fixed-size, non-resizable,
+  sized from the monitor's work area, and can be either shape (a persisted toggle).
   The browser tab is a test harness, not a supported viewport. No viewport width/height media
   queries anywhere in `apps/web` — a test enforces it; `@container`, `orientation`, `prefers-*`
   and `pointer` are the allowed queries. Contract, fit rule, fixture table, desktop formulas,
@@ -325,6 +332,17 @@ it walks you through solving it.
   announcement rather than the launch check's silence. `app-update.test.mjs`. The wider rule: a
   network call the user is waiting on needs a bound AND a visible pulse; either alone still
   reads as stuck.
+- **Objective-C called from a Rust thread needs its own autorelease pool** (2026-09-06). A
+  Tauri `(async)` command runs on a tokio worker that lives for the whole process and never pops
+  a pool; CoreML and AVFoundation autorelease objects on every call; and with no pool in place
+  the runtime installs a page nothing ever pops, so every such object lives until the process
+  exits. The desktop scanner's `next_detection` ran that way at 16 ticks a second: measured with
+  `cube-vision-probe --leak-check`, 3.6 MB per inference, 58 MB/s, and a user's Mac reported the
+  app at 94 GB and out of application memory. Every `@_cdecl` entry in `FFI.swift` now runs
+  inside `entry`/`pooled`, which push a pool per call, and the probe's leak check is a CI gate
+  (golden-macos) that drives the real entry from a pool-less thread and fails above 100 KB per
+  call. The rule is not CoreML-specific: any Swift or Objective-C reached from Rust off the main
+  thread gets a pool at the boundary, on the Swift side, where the caller's thread is not known.
 - **A model change is not verified until `ml/golden_frames.py` has run.** It is the parity gate —
   every fixture through the app's exact letterbox, one runtime, the app's exact post-processing —
   and CI enforces it, but `pnpm check` does NOT, so it is the gate you can ship past locally. On
