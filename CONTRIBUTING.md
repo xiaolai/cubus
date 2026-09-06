@@ -1,8 +1,10 @@
 # Contributing
 
 Short, because the rules that matter are enforced by tests and workflows rather than by this file.
-`AGENTS.md` is the long version — the project's decisions and the reasons behind each — and it
-applies to people exactly as it applies to the agents it was written for.
+The long version — the project's decisions and the reasons behind each — is the maintainer's
+decision record, `AGENTS.md`, which is kept outside the public tree like `dev-docs/`; code
+comments cite it by name on purpose, the way they cite `dev-docs/` paths. What it requires of a
+change is enforced here by the gate, not by reading it.
 
 ## The gate
 
@@ -64,14 +66,16 @@ change that has already been explained.
 - Write a commit message through a file (`git commit -F msg.txt`) or a heredoc whose delimiter
   is **quoted** (`<<'EOF'`). A double-quoted `-m "…"` lets the shell run backticks and `$(…)`
   inside the message before git sees it, and a single-quoted one breaks on the first
-  apostrophe; `AGENTS.md` records the day a code span in a commit message ran `export` and
+  apostrophe. This rule exists because a code span in a commit message once ran `export` and
   published an environment.
 - Read the diff for secrets, tokens, private paths and internal hostnames before pushing. CI
   runs gitleaks, but a secret caught there is already in a pushed commit.
 
 ## Where things live
 
-`apps/web` is the app; `apps/desktop` the Tauri shell (a window, and the few native seams
-`AGENTS.md` sanctions); `packages/cube-scanner` the detector; `crates/*` the native side; `ml/`
-training and the golden gate. `dev-docs/` holds the design records and is gitignored — code
-comments cite its paths on purpose, and the tests that read it skip when it is absent and say so.
+`apps/web` is the app; `apps/desktop` the Tauri shell (a window, and the few native seams the
+decision record sanctions); `apps/site` the introduction site at cubus.im; `packages/cube-scanner`
+the detector; `crates/*` the native side; `ml/` training and the golden gate. `dev-docs/`, the
+design records, and `AGENTS.md`, `CLAUDE.md` and `.mcp.json`, the maintainer's decision record
+and agent registrations, are gitignored — code comments cite them on purpose, and the tests that
+read any of them skip that part when it is absent and say so.

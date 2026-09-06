@@ -32,7 +32,7 @@
 // violation reports. The receiver's log is the evidence; this file pins the text that was tested.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 const confUrl = new URL('../../desktop/src-tauri/tauri.conf.json', import.meta.url);
@@ -114,20 +114,14 @@ test('index.html carries no CSP meta of its own — the config is the one source
     'a CSP <meta> in index.html would be a second, weaker copy of the policy');
 });
 
-test('the MCP socket precedence is spelled identically on both sides', () => {
+test('the MCP socket precedence is spelled identically on both sides', (t) => {
   // The Rust side computes the socket path (lib.rs `mcp_socket_path_from`: explicit
   // TAURI_MCP_IPC_PATH → $XDG_RUNTIME_DIR → $TMPDIR → /tmp) and .mcp.json cannot expand variables
   // in `env`, so it runs the server through `sh -c` with the same precedence in shell. Two
   // spellings of one rule, pinned to each other here: a change to one without the other is an
   // agent that cannot find the app.
-  const mcp = JSON.parse(readFileSync(new URL('../../../.mcp.json', import.meta.url), 'utf8'));
-  const server = mcp.mcpServers['tauri-mcp'];
-  assert.equal(server.command, 'sh');
-  assert.equal(server.args[0], '-c');
-  assert.match(server.args[1],
-    /TAURI_MCP_IPC_PATH="\$\{TAURI_MCP_IPC_PATH:-\$\{XDG_RUNTIME_DIR:-\$\{TMPDIR:-\/tmp\}\}\/cubus-mcp\.sock\}"/,
-    '.mcp.json must derive the socket path with the explicit → XDG_RUNTIME_DIR → TMPDIR → /tmp precedence');
-  assert.ok(!server.args[1].includes('/tmp/cubus-mcp.sock"'), 'a bare /tmp socket is world-visible and pre-creatable');
+  //
+  // The Rust half first, and always: it is tracked, so it is checked on every machine.
   const rust = readFileSync(new URL('../../desktop/src-tauri/src/lib.rs', import.meta.url), 'utf8');
   for (const v of ['TAURI_MCP_IPC_PATH', 'XDG_RUNTIME_DIR', 'TMPDIR']) {
     assert.ok(rust.includes(`"${v}"`), `lib.rs no longer reads ${v}`);
@@ -135,4 +129,22 @@ test('the MCP socket precedence is spelled identically on both sides', () => {
   assert.ok(!/socket_path\(std::path::PathBuf::from\("\/tmp/.test(rust),
     'lib.rs must not hand the plugin a hardcoded shared /tmp socket');
   assert.match(rust, /\.socket_path\(socket\)/, 'the computed path is what the plugin gets');
+
+  // .mcp.json is gitignored (2026-09-06: the maintainer's agent-tooling registration, not the
+  // project's), so whether it is here is a fact about the MACHINE, not about the rule — the same
+  // situation no-dangling-pointers.test.mjs is in with dev-docs, handled the same way: the guard is
+  // on the file-reading half only, and an absent file is REPORTED as unchecked, never passed.
+  const mcpUrl = new URL('../../../.mcp.json', import.meta.url);
+  if (!existsSync(mcpUrl)) {
+    t.diagnostic('.mcp.json half NOT CHECKED — the file is gitignored and absent here');
+    return;
+  }
+  const mcp = JSON.parse(readFileSync(mcpUrl, 'utf8'));
+  const server = mcp.mcpServers['tauri-mcp'];
+  assert.equal(server.command, 'sh');
+  assert.equal(server.args[0], '-c');
+  assert.match(server.args[1],
+    /TAURI_MCP_IPC_PATH="\$\{TAURI_MCP_IPC_PATH:-\$\{XDG_RUNTIME_DIR:-\$\{TMPDIR:-\/tmp\}\}\/cubus-mcp\.sock\}"/,
+    '.mcp.json must derive the socket path with the explicit → XDG_RUNTIME_DIR → TMPDIR → /tmp precedence');
+  assert.ok(!server.args[1].includes('/tmp/cubus-mcp.sock"'), 'a bare /tmp socket is world-visible and pre-creatable');
 });
