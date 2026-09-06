@@ -86,6 +86,16 @@ grill-report-*.md
 .codex/
 .cc-suite.md
 
+# The maintainer's decision record and agent registrations, untracked since 2026-09-06 (they were
+# public before that, and the history still holds them). Same treatment as dev-docs above: code
+# comments and READMEs cite AGENTS.md on purpose, scripts/check-on-clone.sh hides all three so the
+# clean-clone run sees what a clone sees, and the one check that read one of them (csp.test.mjs,
+# the .mcp.json half of the socket-precedence test) reports that half as unchecked when the file
+# is absent rather than passing it. CLAUDE.md is the one-line import of AGENTS.md.
+AGENTS.md
+CLAUDE.md
+.mcp.json
+
 # Where scripts/check-on-clone.sh parks gitignored dirs for the length of a run. A fixed path so
 # an interrupted run is recoverable; the script empties it on the next start.
 .check-on-clone-stash/
