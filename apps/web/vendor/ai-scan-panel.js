@@ -2207,6 +2207,9 @@ function holdOffset(colour, up, scheme) {
   if (side < 0) return null;
   return (4 - side) % 4;
 }
+function heldUpColour(colour, rotation, scheme) {
+  return neighbourColours(colour, scheme)[(rotation % 4 + 4) % 4];
+}
 function schemeOfCentres(centres) {
   return SCHEMES.find((scheme) => FACES.every((p) => centres[p] === colourOf(p, scheme)));
 }
@@ -2441,7 +2444,7 @@ function diagnoseAcrossSchemes(bySlot, options = {}, schemes = SCHEMES) {
     const faces = {};
     for (const slot of FACES) faces[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
     const d = diagnoseMisread(faces, options);
-    if (typeof d.misreadCount !== "number") continue;
+    if (typeof d.misreadCount !== "number") return {};
     results.push({
       scheme,
       diagnosis: {
@@ -2502,11 +2505,15 @@ var schemesOf = (candidates) => SCHEMES.filter((s) => candidates.some((c) => c.s
 function undeterminedSlots(candidates, confirmed) {
   return FACES.filter((slot, si) => {
     if (confirmed[slot]) return false;
-    const perCandidate = candidates.map(
-      (c) => [...new Set(c.combos.map((combo) => combo[si]))].sort().join(",")
-    );
+    const perCandidate = candidates.map((c) => holdsOf(c, slot, si).join(","));
     return new Set(perCandidate).size > 1;
   });
+}
+function holdsOf(candidate, slot, si) {
+  const colour = colourOfSlot(slot);
+  return [
+    ...new Set(candidate.combos.map((combo) => heldUpColour(colour, combo[si], candidate.scheme)))
+  ].sort();
 }
 function permittedHold(slot, schemes) {
   const colour = colourOfSlot(slot);
@@ -2521,15 +2528,15 @@ function pickConfirm(candidates, confirmed) {
   const holds = undeterminedSlots(candidates, confirmed).map((slot) => permittedHold(slot, schemes)).filter((h) => h !== void 0);
   return holds.find((h) => h.up === "U") ?? holds[0];
 }
-function pickVerification(survivorCombos, weak, confirmed, schemes) {
+function pickVerification(survivors, weak, confirmed, schemes) {
   let best;
   let bestScore = 0;
   FACES.forEach((slot, si) => {
     if (confirmed[slot]) return;
     const hold = permittedHold(slot, schemes);
     if (!hold) return;
-    const ours = new Set(survivorCombos.map((c) => c[si]));
-    const score = weak.filter((w) => w.combos.every((c) => !ours.has(c[si]))).length + (hold.up === "U" ? 0.5 : 0);
+    const ours = new Set(survivors.flatMap((s) => holdsOf(s, slot, si)));
+    const score = weak.filter((w) => holdsOf(w, slot, si).every((up) => !ours.has(up))).length + (hold.up === "U" ? 0.5 : 0);
     if (score > bestScore) {
       bestScore = score;
       best = hold;
@@ -2579,16 +2586,25 @@ function checkedCapture(label, f) {
   }
   return f;
 }
-function checkedBySlot(faces) {
+function checkedCentres(faces) {
+  const centres = /* @__PURE__ */ new Map();
   const seen = /* @__PURE__ */ new Set();
-  for (const slot of FACES) {
-    const f = checkedCapture(`face ${slot}`, faces[slot]);
+  for (const key of FACES) {
+    const f = checkedCapture(`face ${key}`, faces[key]);
     const centre = f.colors[4];
     if (!isColour(centre)) {
-      return reject(`face ${slot} has centre colour ${centre}, which is not one of the six`);
+      return reject(`face ${key} has centre colour ${centre}, which is not one of the six`);
     }
     if (seen.has(centre)) return reject(`two faces share centre colour ${centre}`);
     seen.add(centre);
+    centres.set(key, centre);
+  }
+  return centres;
+}
+function checkedBySlot(faces) {
+  const centres = checkedCentres(faces);
+  if (!(centres instanceof Map)) return centres;
+  for (const [slot, centre] of centres) {
     if (slotOf(centre) !== slot) {
       return reject(
         `face ${slot} has centre colour ${centre}, which files under ${slotOf(centre)} \u2014 a slot names a colour, not a position`
@@ -2598,17 +2614,9 @@ function checkedBySlot(faces) {
   return faces;
 }
 function buildCentreOwner(faces) {
-  const centreOwner = /* @__PURE__ */ new Map();
-  for (const face of FACES) {
-    const f = checkedCapture(`face ${face}`, faces[face]);
-    const centre = f.colors[4];
-    if (!isColour(centre)) {
-      return reject(`face ${face} has centre colour ${centre}, which is not one of the six`);
-    }
-    if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
-    centreOwner.set(centre, face);
-  }
-  return centreOwner;
+  const centres = checkedCentres(faces);
+  if (!(centres instanceof Map)) return centres;
+  return new Map([...centres].map(([position, centre]) => [centre, position]));
 }
 function summariseConfidence(conf, threshold) {
   let min = 1;
@@ -2705,8 +2713,7 @@ function verifySurvivor(all, survivors, narrowed, confirmed) {
   const weak = all.filter((c) => c.facelets !== facelets && contradictions(c) < 2);
   if (weak.length === 0) return null;
   const schemes = schemesOf([...survivors, ...weak]);
-  const survivorCombos = survivors.flatMap((s) => s.combos);
-  const check = pickVerification(survivorCombos, weak, confirmed, schemes);
+  const check = pickVerification(survivors, weak, confirmed, schemes);
   if (check) {
     return reject("one more look to be sure \u2014 a single look could be held wrong", {
       confirm: check
@@ -4398,12 +4405,12 @@ var COUNT_WORDS = [
   "ten"
 ];
 var GUIDE = {
-  U: { color: "WHITE", name: "Up", swatch: "#f6f7f8" },
-  R: { color: "RED", name: "Right", swatch: "#d0202a" },
-  F: { color: "GREEN", name: "Front", swatch: "#049e4a" },
-  D: { color: "YELLOW", name: "Down", swatch: "#ffd400" },
-  L: { color: "ORANGE", name: "Left", swatch: "#ff6a00" },
-  B: { color: "BLUE", name: "Back", swatch: "#0057c8" }
+  U: { color: "WHITE", swatch: "#f6f7f8" },
+  R: { color: "RED", swatch: "#d0202a" },
+  F: { color: "GREEN", swatch: "#049e4a" },
+  D: { color: "YELLOW", swatch: "#ffd400" },
+  L: { color: "ORANGE", swatch: "#ff6a00" },
+  B: { color: "BLUE", swatch: "#0057c8" }
 };
 var CLASS_SWATCH = FACES.map((f) => GUIDE[f].swatch);
 var FRAME_HINT = {
@@ -5552,9 +5559,10 @@ var AiScanPanel = class extends HTMLElement {
   assemble() {
     let result;
     if (this.inPlace()) {
-      this.finish(
-        this.fromPositions(assemblePainted(this.positionFaces(), void 0, { diagnose: false }))
+      const { scheme: _assumed, ...checked } = this.fromPositions(
+        assemblePainted(this.positionFaces(), void 0, { diagnose: false })
       );
+      this.finish(checked);
       return;
     }
     for (let round = 0; ; round++) {
@@ -5685,7 +5693,7 @@ var AiScanPanel = class extends HTMLElement {
     this.mismatches = 0;
     this.finished = true;
     for (const f of FACES) this.settled.add(f);
-    this.scheme = result.scheme ?? null;
+    if (result.scheme !== void 0) this.scheme = result.scheme;
     this.notice = null;
     this.stop();
     this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));

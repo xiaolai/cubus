@@ -106,13 +106,22 @@ const COUNT_WORDS = [
   'ten',
 ];
 
-const GUIDE: Record<Face, { color: string; name: string; swatch: string }> = {
-  U: { color: 'WHITE', name: 'Up', swatch: '#f6f7f8' },
-  R: { color: 'RED', name: 'Right', swatch: '#d0202a' },
-  F: { color: 'GREEN', name: 'Front', swatch: '#049e4a' },
-  D: { color: 'YELLOW', name: 'Down', swatch: '#ffd400' },
-  L: { color: 'ORANGE', name: 'Left', swatch: '#ff6a00' },
-  B: { color: 'BLUE', name: 'Back', swatch: '#0057c8' },
+/**
+ * How the scanner names each SLOT — a colour, and the swatch that shows it.
+ *
+ * The positional labels ("Up", "Down", "Back") that used to sit here are gone with the last
+ * sentence that used one (2026-09-07): a slot is a colour, and where that colour sits is the
+ * scan's to decide, so calling the blue capture "Back" is right on most cubes and wrong on an
+ * older one. Keeping the field would have left six labels in the vocabulary this file exists to
+ * retire, ready for the next sentence to reach for.
+ */
+const GUIDE: Record<Face, { color: string; swatch: string }> = {
+  U: { color: 'WHITE', swatch: '#f6f7f8' },
+  R: { color: 'RED', swatch: '#d0202a' },
+  F: { color: 'GREEN', swatch: '#049e4a' },
+  D: { color: 'YELLOW', swatch: '#ffd400' },
+  L: { color: 'ORANGE', swatch: '#ff6a00' },
+  B: { color: 'BLUE', swatch: '#0057c8' },
 };
 /** Colour-class index → swatch, DERIVED from GUIDE so the face/colour map has one source
  *  (class i ↔ FACES[i], 0 white … 5 blue — matching ml/data.yaml). */
@@ -1722,9 +1731,17 @@ export class AiScanPanel extends HTMLElement {
     // answered and asked to be shown a side again, for an orientation nobody had lost. Pinning is
     // what `assemblePainted` is: same validation, same diagnosis, no rotation search.
     if (this.inPlace()) {
-      this.finish(
-        this.fromPositions(assemblePainted(this.positionFaces(), undefined, { diagnose: false })),
+      // WITHOUT A SCHEME, deliberately (2026-09-07, found by audit). `assemblePainted` reads the
+      // scheme off the centres it is handed — and on this path those centres were laid out BY
+      // `positionFaces()`, under the scheme this panel is already assuming, so the answer is that
+      // assumption handed back. Adopting it would turn a host's setting into a verdict the scan
+      // never reached: accept a solved cube as `undetermined`, tap one sticker and tap it back,
+      // and the cube would come back "proven Western". A correction re-decides stickers, not the
+      // arrangement, so `finishAccepted` keeps whatever the last real verdict established.
+      const { scheme: _assumed, ...checked } = this.fromPositions(
+        assemblePainted(this.positionFaces(), undefined, { diagnose: false }),
       );
+      this.finish(checked);
       return;
     }
     // A `reread` means a confirmation disagreed with its first capture about colours: adopt the
@@ -1922,7 +1939,12 @@ export class AiScanPanel extends HTMLElement {
     // What the verdict established about the cube's colours, kept for the host and for every
     // in-place re-check of this same cube. `'undetermined'` is a verdict too: the state is known
     // and the scheme is not, and a host must be told that rather than left with the last belief.
-    this.scheme = result.scheme ?? null;
+    //
+    // An ABSENT scheme leaves the last verdict standing rather than clearing it: only a result
+    // that actually searched the schemes carries one, and the in-place re-check deliberately does
+    // not (see `assemble`). Every fresh camera scan and every painting carries one, so this is
+    // not a way for a verdict to go missing — it is how a correction stops being one.
+    if (result.scheme !== undefined) this.scheme = result.scheme;
     this.notice = null;
     // Release the camera BEFORE reporting, so the 'done' report carries device: null and a host
     // that stays on the scan screen stops showing a live lens over a finished scan.

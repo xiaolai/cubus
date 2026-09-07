@@ -17,7 +17,15 @@ import { rotateFace } from '../src/ai-assemble.js';
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
 import { SOLVED_FACELETS } from '../src/facelet-cube.js';
-import { colourOf, colourOfSlot, holdOffset, positionOf, type Scheme } from '../src/scheme.js';
+import {
+  adjacentIn,
+  colourOf,
+  colourOfSlot,
+  holdOffset,
+  positionOf,
+  SCHEMES,
+  type Scheme,
+} from '../src/scheme.js';
 import { FACES, type Face } from '../src/types.js';
 import { AiScanPanel, type ScanProgress } from '../view/ai-scan-panel.js';
 import {
@@ -1741,13 +1749,19 @@ describe('ai-scan-panel — the colour scheme is the scan’s to decide (ADR 000
     expect(last().suspects).toEqual([{ face: 'F', index: 0, to: sides.F[0] }]);
   });
 
-  it('two readings that differ only by scheme: one look, then the turn instruction, never a guess', async () => {
+  it('two readings that differ only by scheme: the looks are answered, then the turn instruction', async () => {
     await showAllAs(CYCLE, 'western', [0, 0, 0, 0, 0, 0]);
+    // A look IS asked for: one that could separate them, held a way both kinds of cube can obey.
+    // (A look can eliminate a scheme in general — see ai-assemble.test.ts — so the scanner tries
+    // before it gives up.) Here the truthful answers fit both readings, and it says so.
     expect(last().phase).toBe('confirm');
-    // The look asked for is one both kinds of cube can obey: the white side, green up.
-    expect(last().confirm).toEqual({ face: 'U', up: 'F' });
+    const ask = last().confirm;
+    expect(ask).not.toBeNull();
+    for (const scheme of SCHEMES) {
+      expect(adjacentIn(colourOfSlot(ask!.face), colourOfSlot(ask!.up), scheme)).toBe(true);
+    }
     const looks = await answerAs(CYCLE, 'western');
-    expect(looks).toBe(1);
+    expect(looks).toBeGreaterThan(0);
     expect(completions).toEqual([]);
     expect(last().phase).toBe('scanning');
     expect(last().notice?.title).toMatch(/which colour is under white/i);
@@ -1810,6 +1824,31 @@ describe('ai-scan-panel — the colour scheme is the scan’s to decide (ADR 000
     panel.setPaintScheme('western');
     expect(completions).toEqual([DEEP, DEEP]);
     expect(last().scheme).toBe('western');
+  });
+
+  it('a correction never turns the host’s assumption into a verdict', async () => {
+    // A solved cube is one state under both arrangements, so the scan reports 'undetermined' and
+    // the app paints it in whatever it assumes. Correcting a sticker re-checks the cube IN PLACE
+    // — under that same assumption — so the check can only ever hand the assumption back. Taking
+    // it as an answer would promote a setting to a proven fact about the cube in the hand: tap a
+    // sticker, tap it back, and an unknown cube would come back "proven Western" (found by audit,
+    // 2026-09-07). The state is re-decided; the arrangement is not.
+    for (const assumed of ['western', 'japanese'] as const) {
+      panel.restart();
+      panel.setAttribute('scheme', assumed);
+      await showAllAs(SOLVED_FACELETS, assumed, [0, 0, 0, 0, 0, 0]);
+      expect(last().scheme).toBe('undetermined');
+      const sides = sidesOf(SOLVED_FACELETS, assumed);
+      // Break it, and put it back exactly as it was.
+      panel.setSticker('U', 0, (sides.U[0]! + 1) % 6);
+      await vi.advanceTimersByTimeAsync(CHECK);
+      expect(last().complete).toBe(false);
+      expect(last().scheme).toBe('undetermined'); // a refusal establishes nothing either
+      panel.setSticker('U', 0, sides.U[0]!);
+      await vi.advanceTimersByTimeAsync(CHECK);
+      expect(last().complete).toBe(true);
+      expect(last().scheme).toBe('undetermined');
+    }
   });
 
   it('a corrected sticker on an accepted Japanese scan is checked in place under its own scheme', async () => {
