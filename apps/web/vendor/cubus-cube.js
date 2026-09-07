@@ -28700,7 +28700,7 @@ function eyeDirection(latDeg, lonDeg) {
   const lon = lonDeg * Math.PI / 180;
   return [Math.cos(lat) * Math.sin(lon), Math.sin(lat), Math.cos(lat) * Math.cos(lon)];
 }
-function silhouette({ eye, elevation, scale = 0.9, cull = true }) {
+function silhouette({ eye, elevation, scale = 0.9 }) {
   const points = [];
   for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) points.push([sx * CUBE_HALF, sy * CUBE_HALF, sz * CUBE_HALF]);
   if (elevation === null || elevation === void 0 || !Number.isFinite(elevation)) return points;
@@ -28708,7 +28708,7 @@ function silhouette({ eye, elevation, scale = 0.9, cull = true }) {
   const lateral = 1 + GHOST_HALF * s;
   const along = 1 + GHOST_BASE + elevation * GHOST_PER_ELEVATION;
   for (const n of NORMALS) {
-    if (cull && dot(n, eye) >= SHOWS_BELOW) continue;
+    if (dot(n, eye) >= SHOWS_BELOW) continue;
     const axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].filter((a) => !dot(a, n));
     for (const a of [-1, 1]) for (const b of [-1, 1]) {
       points.push([
