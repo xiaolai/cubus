@@ -531,13 +531,19 @@ describe('diagnoseAcrossSchemes — the floor a refused CAMERA reading is told, 
     });
     return out;
   };
-  const SEXY = scrambleFacelets("R U R' U'");
+  // DEEP, not a near-solved scramble, and the choice is about COST rather than taste. The whole
+  // point of these cases is that the decode runs under BOTH arrangements, and under the wrong one
+  // it never reaches a legal repair — it spends its backstop before conceding. On a near-solved
+  // cube that wrong-scheme pass is 1.3–1.5 s against 34–47 ms for the right one; on a deep
+  // scramble both are ~50 ms, because the reading is far from every legal cube either way.
+  // Measured 2026-09-08, after a near-solved fixture put this file past vitest's 60 s limit on a
+  // CI runner and failed the RELEASE gate. Same claims, a twentieth of the time.
 
   it('reports the smaller floor, and names the scheme that produced it', () => {
-    // The measurement behind ADR 0001 §8.4: one sticker changed on a Japanese cube decodes to 4
-    // under the Western filing and 1 under the Japanese. A child was told "at least 4".
+    // The measurement behind ADR 0001 §8.4: one sticker changed on a Japanese cube decodes far
+    // higher under the Western filing than under the Japanese. A child was told "at least 4".
     for (const scheme of ['western', 'japanese'] as const) {
-      const f = capturesOf(SEXY, scheme);
+      const f = capturesOf(DEEP, scheme);
       const was = f.U.colors[0]!;
       f.U.colors[0] = 1;
       const got = diagnoseAcrossSchemes(f);
@@ -590,7 +596,7 @@ describe('diagnoseAcrossSchemes — the floor a refused CAMERA reading is told, 
 
   it('a correct reading of either kind of cube has a floor of zero under its own scheme', () => {
     for (const scheme of ['western', 'japanese'] as const) {
-      const got = diagnoseAcrossSchemes(capturesOf(SEXY, scheme));
+      const got = diagnoseAcrossSchemes(capturesOf(DEEP, scheme));
       expect(got.misreadCount).toBe(0);
       expect(got.misreadScheme).toBe(scheme);
     }
