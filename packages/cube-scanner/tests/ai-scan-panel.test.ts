@@ -16,6 +16,8 @@ import type { AiScanResult } from '../src/ai-assemble.js';
 import { rotateFace } from '../src/ai-assemble.js';
 import type { CameraDevice, CameraOptions } from '../src/camera.js';
 import type { Detector, ModelOutput } from '../src/detector.js';
+import { SOLVED_FACELETS } from '../src/facelet-cube.js';
+import { colourOf, colourOfSlot, holdOffset, positionOf, type Scheme } from '../src/scheme.js';
 import { FACES, type Face } from '../src/types.js';
 import { AiScanPanel, type ScanProgress } from '../view/ai-scan-panel.js';
 import {
@@ -1650,5 +1652,176 @@ describe('ai-scan-panel — the misread count arrives after the refusal, not bef
     expect(worker.posted[mine]!.fixedRotation).toBe(true);
     worker.answer(mine);
     expect(last().suspects).toContainEqual({ face: 'U', index: 0, to: truth.U![0]! });
+  });
+});
+
+describe('ai-scan-panel — the colour scheme is the scan’s to decide (ADR 0001)', () => {
+  const DEEP = new Cube().move("R U F2 D' L B R2 F D U2 L2 B'").asString();
+  /** The U-layer edge 3-cycle: valid under both schemes as two different cubes. */
+  const CYCLE = 'UFUUUUUUURRRFRRRRRFBFFFUFFFDDDDDDDDDLLLLLLLLLBRBBBBBBB';
+
+  /** The six sides of a cube in state `facelets` PAINTED IN `scheme`, by position, canonical. */
+  const sidesOf = (facelets: string, scheme: Scheme): Record<Face, number[]> => {
+    const out = {} as Record<Face, number[]>;
+    FACES.forEach((position, fi) => {
+      out[position] = [...facelets.slice(fi * 9, fi * 9 + 9)].map((l) =>
+        colourOf(l as Face, scheme),
+      );
+    });
+    return out;
+  };
+
+  /** Show all six sides of a cube of `scheme`, each turned as a user might hold it. */
+  async function showAllAs(facelets: string, scheme: Scheme, rots: number[]): Promise<void> {
+    const sides = sidesOf(facelets, scheme);
+    for (const [fi, position] of FACES.entries()) {
+      await show(rotateFace(sides[position], rots[fi]!));
+    }
+    await vi.advanceTimersByTimeAsync(CHECK);
+  }
+
+  /** Answer every confirm request the way a cube of `scheme` is physically held for it. */
+  async function answerAs(facelets: string, scheme: Scheme): Promise<number> {
+    const sides = sidesOf(facelets, scheme);
+    let looks = 0;
+    for (let round = 0; round < 8 && last().phase === 'confirm'; round++) {
+      const ask = last().confirm;
+      if (!ask) break;
+      const position = positionOf(colourOfSlot(ask.face), scheme);
+      const offset = holdOffset(colourOfSlot(ask.face), colourOfSlot(ask.up), scheme);
+      if (offset === null)
+        throw new Error(`asked for an impossible hold: ${ask.face} with ${ask.up} up`);
+      looks++;
+      await show(rotateFace(sides[position], offset));
+      await vi.advanceTimersByTimeAsync(CHECK);
+    }
+    return looks;
+  }
+
+  it('reads a Japanese cube, files each side by its colour, and the verdict names the scheme', async () => {
+    const verdicts: (string | undefined)[] = [];
+    panel.addEventListener('scan-complete', (e) =>
+      verdicts.push((e as CustomEvent<AiScanResult>).detail.scheme),
+    );
+    await showAllAs(DEEP, 'japanese', [1, 2, 3, 0, 1, 2]);
+    expect(completions).toEqual([DEEP]);
+    expect(verdicts).toEqual(['japanese']);
+    expect(last().scheme).toBe('japanese');
+    // The blue capture sits in slot B and the yellow one in slot D — slots are colours, and
+    // the host is told through `scheme` that on this cube blue is the bottom.
+    const captured = new Map(last().captured.map((c) => [c.face, c.colors]));
+    expect(captured.get('B')?.[4]).toBe(5);
+    expect(captured.get('D')?.[4]).toBe(3);
+    // Sides are named by colour in every sentence: the blue side of this cube is not "Back".
+    expect(events.some((e) => /Got the BLUE side/.test(e.message))).toBe(true);
+    expect(events.some((e) => /Back side/.test(e.message))).toBe(false);
+  });
+
+  it('a Western verdict says so, a solved cube is undetermined, and a restart forgets it', async () => {
+    expect(last().scheme).toBeNull();
+    await showAll(DEEP, [0, 0, 0, 0, 0, 0]);
+    expect(last().scheme).toBe('western');
+    panel.restart();
+    expect(last().scheme).toBeNull();
+    await showAll(SOLVED_FACELETS, [1, 2, 3, 0, 1, 2]);
+    expect(completions).toEqual([DEEP, SOLVED_FACELETS]);
+    expect(last().scheme).toBe('undetermined');
+  });
+
+  it('a refusal never sets the scheme', async () => {
+    const sides = sidesOf(DEEP, 'japanese');
+    const bad = [...sides.F];
+    bad[0] = (bad[0]! + 1) % 6;
+    for (const position of FACES) await show(position === 'F' ? bad : sides[position]);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([]);
+    expect(last().scheme).toBeNull();
+    // …and the floor it reports is the honest one for THIS cube, not the Western filing's.
+    expect(last().notice?.title).toMatch(/check the marked sticker/i);
+    expect(last().suspects).toEqual([{ face: 'F', index: 0, to: sides.F[0] }]);
+  });
+
+  it('two readings that differ only by scheme: one look, then the turn instruction, never a guess', async () => {
+    await showAllAs(CYCLE, 'western', [0, 0, 0, 0, 0, 0]);
+    expect(last().phase).toBe('confirm');
+    // The look asked for is one both kinds of cube can obey: the white side, green up.
+    expect(last().confirm).toEqual({ face: 'U', up: 'F' });
+    const looks = await answerAs(CYCLE, 'western');
+    expect(looks).toBe(1);
+    expect(completions).toEqual([]);
+    expect(last().phase).toBe('scanning');
+    expect(last().notice?.title).toMatch(/which colour is under white/i);
+    expect(last().notice?.body).toMatch(/turn any one face/i);
+    // One turn later the same cube reads decisively, as itself.
+    panel.restart();
+    const turned = Cube.fromString(CYCLE).move('R').asString();
+    await showAllAs(turned, 'western', [0, 0, 0, 0, 0, 0]);
+    expect(completions).toEqual([turned]);
+    expect(last().scheme).toBe('western');
+  });
+
+  it('paints by position under the host’s assumed scheme, and the painting carries its scheme', async () => {
+    const verdicts: (string | undefined)[] = [];
+    panel.addEventListener('scan-complete', (e) =>
+      verdicts.push((e as CustomEvent<AiScanResult>).detail.scheme),
+    );
+    panel.setAttribute('scheme', 'japanese');
+    panel.setPainting(true);
+    // The Down tile of a Japanese painting is the BLUE capture: one stroke on it creates a
+    // blue-centred side in slot B, seeded blue, with the painted sticker where it was tapped.
+    panel.setSticker('D', 0, 3);
+    const seeded = last().captured.find((c) => c.face === 'B');
+    expect(seeded?.colors[4]).toBe(5);
+    expect(seeded?.colors[0]).toBe(3);
+    expect(last().captured.find((c) => c.face === 'D')).toBeUndefined();
+    // Paint the whole of DEEP as a Japanese cube, tile by tile — and it is accepted as that.
+    const sides = sidesOf(DEEP, 'japanese');
+    for (const position of FACES) {
+      sides[position].forEach((colour, i) => {
+        if (i !== 4) panel.setSticker(position, i, colour);
+      });
+    }
+    expect(completions).toEqual([DEEP]);
+    expect(verdicts).toEqual(['japanese']);
+    expect(last().scheme).toBe('japanese');
+  });
+
+  it('swapping a painting’s centres re-decides it under the arrangement it now has', async () => {
+    panel.setPainting(true);
+    const sides = sidesOf(DEEP, 'western');
+    for (const position of FACES) {
+      sides[position].forEach((colour, i) => {
+        if (i !== 4) panel.setSticker(position, i, colour);
+      });
+    }
+    expect(completions).toEqual([DEEP]);
+    expect(last().scheme).toBe('western');
+    const refusals: number[] = [];
+    panel.addEventListener('scan-invalid', () => refusals.push(1));
+    // Declared Japanese, the same stickers are not a legal cube — a Western painting re-filed
+    // with blue under white never is once it is scrambled — and the panel says what changed.
+    panel.setPaintScheme('japanese');
+    expect(refusals).toHaveLength(1);
+    expect(last().complete).toBe(false);
+    expect(events.some((e) => /Centres swapped — BLUE is under WHITE now/.test(e.message))).toBe(
+      true,
+    );
+    // And back again, it is the accepted Western cube once more.
+    panel.setPaintScheme('western');
+    expect(completions).toEqual([DEEP, DEEP]);
+    expect(last().scheme).toBe('western');
+  });
+
+  it('a corrected sticker on an accepted Japanese scan is checked in place under its own scheme', async () => {
+    await showAllAs(DEEP, 'japanese', [0, 1, 2, 3, 0, 1]);
+    expect(completions).toEqual([DEEP]);
+    const sides = sidesOf(DEEP, 'japanese');
+    // Corrupt one sticker of the blue side (slot B, the bottom of this cube): refused, with the
+    // pointer in slot coordinates and the floor of one that the Japanese filing gives.
+    panel.setSticker('B', 0, (sides.D[0]! + 1) % 6);
+    await vi.advanceTimersByTimeAsync(CHECK);
+    expect(completions).toEqual([DEEP]);
+    expect(last().complete).toBe(false);
+    expect(last().suspects).toEqual([{ face: 'B', index: 0, to: sides.D[0] }]);
   });
 });
