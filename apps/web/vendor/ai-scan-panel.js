@@ -2164,6 +2164,60 @@ function isStructurallyValid(f) {
 
 // src/misread-decode.ts
 var import_cubejs = __toESM(require_cubejs(), 1);
+
+// src/scheme.ts
+var COLOURS = [0, 1, 2, 3, 4, 5];
+var SCHEMES = ["western", "japanese"];
+var SCHEME_COLOURS = Object.freeze({
+  western: Object.freeze({ U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 }),
+  japanese: Object.freeze({ U: 0, R: 1, F: 2, D: 5, L: 4, B: 3 })
+});
+function colourOf(position, scheme) {
+  return SCHEME_COLOURS[scheme][position];
+}
+function positionOf(colour, scheme) {
+  const table = SCHEME_COLOURS[scheme];
+  for (const position of FACES) if (table[position] === colour) return position;
+  throw new Error(`scheme ${scheme} paints no position ${colour}`);
+}
+function slotOf(colour) {
+  return FACES[colour];
+}
+function colourOfSlot(slot) {
+  return FACES.indexOf(slot);
+}
+function isColour(centre) {
+  return Number.isInteger(centre) && centre >= 0 && centre < COLOURS.length;
+}
+function neighbourColours(colour, scheme) {
+  const around = FACE_NEIGHBOURS[positionOf(colour, scheme)];
+  return ["top", "right", "bottom", "left"].map(
+    (side) => colourOf(around[side], scheme)
+  );
+}
+function adjacentIn(a, b, scheme) {
+  return neighbourColours(a, scheme).includes(b);
+}
+function commonNeighbours(colour, schemes) {
+  return COLOURS.filter((c) => c !== colour && schemes.every((s) => adjacentIn(colour, c, s)));
+}
+function holdOffset(colour, up, scheme) {
+  const around = neighbourColours(colour, scheme);
+  const side = around.indexOf(up);
+  if (side < 0) return null;
+  return (4 - side) % 4;
+}
+function heldUpColour(colour, rotation, scheme) {
+  return neighbourColours(colour, scheme)[(rotation % 4 + 4) % 4];
+}
+function schemeOfCentres(centres) {
+  return SCHEMES.find((scheme) => FACES.every((p) => centres[p] === colourOf(p, scheme)));
+}
+function neighbourColour(colour, side, scheme) {
+  return colourOf(FACE_NEIGHBOURS[positionOf(colour, scheme)][side], scheme);
+}
+
+// src/misread-decode.ts
 function whole(name, value, fallback) {
   if (value === void 0) return fallback;
   if (!Number.isInteger(value) || value < 0) {
@@ -2383,13 +2437,44 @@ function diagnoseMisread(faces, options = {}) {
     ...blamed.size === 1 ? { misreadFace: [...blamed][0] } : {}
   };
 }
+function diagnoseAcrossSchemes(bySlot, options = {}, schemes = SCHEMES) {
+  const toSlot = (position, scheme) => slotOf(colourOf(position, scheme));
+  const results = [];
+  for (const scheme of schemes) {
+    const faces = {};
+    for (const slot of FACES) faces[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
+    const d = diagnoseMisread(faces, options);
+    if (typeof d.misreadCount !== "number") return {};
+    results.push({
+      scheme,
+      diagnosis: {
+        misreadCount: d.misreadCount,
+        ...d.suspects ? { suspects: d.suspects.map((s) => ({ ...s, face: toSlot(s.face, scheme) })) } : {},
+        ...d.misreadFace ? { misreadFace: toSlot(d.misreadFace, scheme) } : {}
+      }
+    });
+  }
+  if (results.length === 0) return {};
+  const floor = Math.min(...results.map((r) => r.diagnosis.misreadCount));
+  const best = results.filter((r) => r.diagnosis.misreadCount === floor);
+  if (best.length === 1) return { ...best[0].diagnosis, misreadScheme: best[0].scheme };
+  const same = (pick) => {
+    const values = best.map((r) => JSON.stringify(pick(r.diagnosis) ?? null));
+    return values.every((v) => v === values[0]) ? pick(best[0].diagnosis) : void 0;
+  };
+  const suspects = same((d) => d.suspects);
+  const misreadFace = same((d) => d.misreadFace);
+  return {
+    misreadCount: floor,
+    ...suspects && suspects.length > 0 ? { suspects } : {},
+    ...misreadFace ? { misreadFace } : {}
+  };
+}
 
 // src/ai-assemble.ts
-var TOP_NEIGHBOUR = Object.freeze(
-  Object.fromEntries(FACES.map((face) => [face, FACE_NEIGHBOURS[face].top]))
-);
 var CONFIRM_TOLERANCE = 2;
 var LOW_CONFIDENCE_THRESHOLD = 0.15;
+var UP_PREFERENCE = [0, 2, 1, 4, 3, 5];
 function cubejsRoundTrips(facelets) {
   try {
     return import_cubejs2.default.fromString(facelets).asString() === facelets;
@@ -2407,43 +2492,70 @@ function matchingRotations(original, confirmed) {
   );
   return new Set([0, 1, 2, 3].filter((k) => dist[k] <= CONFIRM_TOLERANCE));
 }
-function undeterminedFaces(candidates, confirmed) {
-  return FACES.filter((face, fi) => {
-    if (confirmed[face]) return false;
-    const perCandidate = candidates.map(
-      ([, combos]) => [...new Set(combos.map((c) => c[fi]))].sort().join(",")
-    );
+function byPosition(bySlot, scheme) {
+  const out = {};
+  for (const slot of FACES) out[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
+  return out;
+}
+function comboToSlots(combo, scheme) {
+  return FACES.map((slot) => combo[FACES.indexOf(positionOf(colourOfSlot(slot), scheme))]);
+}
+var readingsOf = (candidates) => new Set(candidates.map((c) => c.facelets));
+var schemesOf = (candidates) => SCHEMES.filter((s) => candidates.some((c) => c.scheme === s));
+function undeterminedSlots(candidates, confirmed) {
+  return FACES.filter((slot, si) => {
+    if (confirmed[slot]) return false;
+    const perCandidate = candidates.map((c) => holdsOf(c, slot, si).join(","));
     return new Set(perCandidate).size > 1;
   });
 }
-function pickConfirm(candidates, confirmed) {
-  const useful = undeterminedFaces(candidates, confirmed);
-  const face = useful.find((f) => TOP_NEIGHBOUR[f] === "U") ?? useful[0];
-  return face === void 0 ? void 0 : { face, up: TOP_NEIGHBOUR[face] };
+function holdsOf(candidate, slot, si) {
+  const colour = colourOfSlot(slot);
+  return [
+    ...new Set(candidate.combos.map((combo) => heldUpColour(colour, combo[si], candidate.scheme)))
+  ].sort();
 }
-function pickVerification(survivorCombos, weak, confirmed) {
+function permittedHold(slot, schemes) {
+  const colour = colourOfSlot(slot);
+  const allowed = commonNeighbours(colour, schemes);
+  const tops = new Set(schemes.map((s) => neighbourColour(colour, "top", s)));
+  const canonical = tops.size === 1 ? [...tops][0] : void 0;
+  const up = canonical !== void 0 && allowed.includes(canonical) ? canonical : UP_PREFERENCE.find((c) => allowed.includes(c));
+  return up === void 0 ? void 0 : { face: slot, up: slotOf(up) };
+}
+function pickConfirm(candidates, confirmed) {
+  const schemes = schemesOf(candidates);
+  const holds = undeterminedSlots(candidates, confirmed).map((slot) => permittedHold(slot, schemes)).filter((h) => h !== void 0);
+  return holds.find((h) => h.up === "U") ?? holds[0];
+}
+function pickVerification(survivors, weak, confirmed, schemes) {
   let best;
   let bestScore = 0;
-  FACES.forEach((face, fi) => {
-    if (confirmed[face]) return;
-    const ours = new Set(survivorCombos.map((c) => c[fi]));
-    const score = weak.filter(([, combos]) => combos.every((c) => !ours.has(c[fi]))).length + (TOP_NEIGHBOUR[face] === "U" ? 0.5 : 0);
+  FACES.forEach((slot, si) => {
+    if (confirmed[slot]) return;
+    const hold = permittedHold(slot, schemes);
+    if (!hold) return;
+    const ours = new Set(survivors.flatMap((s) => holdsOf(s, slot, si)));
+    const score = weak.filter((w) => holdsOf(w, slot, si).every((up) => !ours.has(up))).length + (hold.up === "U" ? 0.5 : 0);
     if (score > bestScore) {
       bestScore = score;
-      best = face;
+      best = hold;
     }
   });
-  return best === void 0 || bestScore < 1 ? void 0 : { face: best, up: TOP_NEIGHBOUR[best] };
+  return best === void 0 || bestScore < 1 ? void 0 : best;
 }
-function solvableReadings(faces, centreOwner) {
+function solvableReadings(bySlot, scheme) {
+  const faces = byPosition(bySlot, scheme);
+  const owner = /* @__PURE__ */ new Map();
+  for (const position of FACES) owner.set(faces[position].colors[4], position);
   const buildFacelets = (rots2) => {
     const letters = [];
     for (let fi = 0; fi < 6; fi++) {
       const rc = rotateFace(faces[FACES[fi]].colors, rots2[fi]);
       for (let i = 0; i < 9; i++) {
-        const owner = centreOwner.get(rc[i]);
-        if (owner === void 0) return null;
-        letters.push(owner);
+        const position = owner.get(rc[i]);
+        if (position === void 0) return null;
+        letters.push(position);
       }
     }
     return letters.join("");
@@ -2459,13 +2571,9 @@ function solvableReadings(faces, centreOwner) {
       combos = isStructurallyValid(fl) && cubejsRoundTrips(fl) ? [] : null;
       seen.set(fl, combos);
     }
-    if (combos !== null) combos.push([...rots]);
+    if (combos !== null) combos.push(comboToSlots(rots, scheme));
   }
-  return [...seen].filter((e) => e[1] !== null);
-}
-function refusalDiagnosis(faces, options) {
-  if (options.diagnose === false) return { misreadCount: null };
-  return diagnoseMisread(faces, { fixedRotation: options.fixedRotation });
+  return [...seen].filter((e) => e[1] !== null).map(([facelets, combos]) => ({ scheme, facelets, combos }));
 }
 function checkedCapture(label, f) {
   if (f?.colors.length !== 9 || f.confidence.length !== 9) {
@@ -2478,18 +2586,37 @@ function checkedCapture(label, f) {
   }
   return f;
 }
-function buildCentreOwner(faces) {
-  const centreOwner = /* @__PURE__ */ new Map();
-  for (const face of FACES) {
-    const f = checkedCapture(`face ${face}`, faces[face]);
+function checkedCentres(faces) {
+  const centres = /* @__PURE__ */ new Map();
+  const seen = /* @__PURE__ */ new Set();
+  for (const key of FACES) {
+    const f = checkedCapture(`face ${key}`, faces[key]);
     const centre = f.colors[4];
-    if (!Number.isInteger(centre) || centre < 0 || centre >= FACES.length) {
-      return reject(`face ${face} has centre colour ${centre}, which is not one of the six`);
+    if (!isColour(centre)) {
+      return reject(`face ${key} has centre colour ${centre}, which is not one of the six`);
     }
-    if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
-    centreOwner.set(centre, face);
+    if (seen.has(centre)) return reject(`two faces share centre colour ${centre}`);
+    seen.add(centre);
+    centres.set(key, centre);
   }
-  return centreOwner;
+  return centres;
+}
+function checkedBySlot(faces) {
+  const centres = checkedCentres(faces);
+  if (!(centres instanceof Map)) return centres;
+  for (const [slot, centre] of centres) {
+    if (slotOf(centre) !== slot) {
+      return reject(
+        `face ${slot} has centre colour ${centre}, which files under ${slotOf(centre)} \u2014 a slot names a colour, not a position`
+      );
+    }
+  }
+  return faces;
+}
+function buildCentreOwner(faces) {
+  const centres = checkedCentres(faces);
+  if (!(centres instanceof Map)) return centres;
+  return new Map([...centres].map(([position, centre]) => [centre, position]));
 }
 function summariseConfidence(conf, threshold) {
   let min = 1;
@@ -2513,112 +2640,145 @@ function assemblePainted(faces, threshold = LOW_CONFIDENCE_THRESHOLD, options = 
   }
   const facelets = letters.join("");
   if (!isStructurallyValid(facelets) || !cubejsRoundTrips(facelets)) {
-    return reject(
-      "not a solvable cube yet",
-      refusalDiagnosis(faces, { ...options, fixedRotation: true })
-    );
+    const diagnosis = options.diagnose === false ? { misreadCount: null } : diagnoseMisread(faces, { fixedRotation: true });
+    return reject("not a solvable cube yet", diagnosis);
   }
   const conf = FACES.flatMap((f) => faces[f].confidence);
-  return { facelets, valid: true, ...summariseConfidence(conf, threshold) };
+  const centres = Object.fromEntries(FACES.map((f) => [f, faces[f].colors[4]]));
+  return {
+    facelets,
+    valid: true,
+    ...summariseConfidence(conf, threshold),
+    ...schemeOfCentres(centres) ? { scheme: schemeOfCentres(centres) } : {}
+  };
 }
-function narrowByConfirmations(faces, all, confirmed) {
-  const confirmedFaces = FACES.filter((f) => confirmed[f]);
+function narrowByConfirmations(bySlot, all, confirmed) {
+  const confirmedSlots = FACES.filter((slot) => confirmed[slot]);
   const allowed = /* @__PURE__ */ new Map();
-  for (const face of confirmedFaces) {
-    const capture = checkedCapture(`confirmation of ${face}`, confirmed[face]);
-    const rots = matchingRotations(faces[face], capture);
-    if (rots.size === 0) {
+  for (const slot of confirmedSlots) {
+    const { capture, up } = confirmed[slot];
+    const checked = checkedCapture(`confirmation of ${slot}`, capture);
+    if (!FACES.includes(up))
+      throw new Error(`confirmation of ${slot}: up ${String(up)} is not a slot`);
+    const physical = matchingRotations(bySlot[slot], checked);
+    if (physical.size === 0) {
       return {
         ok: false,
         refusal: reject(
           "that side read differently this time \u2014 checking again with the fresh read",
-          {
-            reread: face,
-            confirm: { face, up: TOP_NEIGHBOUR[face] }
-          }
+          { reread: slot, confirm: { face: slot, up } }
         )
       };
     }
-    allowed.set(face, rots);
+    const perScheme = /* @__PURE__ */ new Map();
+    for (const scheme of SCHEMES) {
+      const offset = holdOffset(colourOfSlot(slot), colourOfSlot(up), scheme);
+      perScheme.set(
+        scheme,
+        offset === null ? /* @__PURE__ */ new Set() : new Set([...physical].map((k) => (k - offset + 4) % 4))
+      );
+    }
+    allowed.set(slot, perScheme);
   }
-  const candidates = all.map(([fl, combos]) => [
-    fl,
-    combos.filter(
-      (c) => confirmedFaces.every((face) => allowed.get(face).has(c[FACES.indexOf(face)]))
-    )
-  ]).filter(([, combos]) => combos.length > 0);
+  const candidates = all.map(
+    (c) => ({
+      ...c,
+      combos: c.combos.filter(
+        (combo) => confirmedSlots.every(
+          (slot) => allowed.get(slot).get(c.scheme).has(combo[FACES.indexOf(slot)])
+        )
+      )
+    })
+  ).filter((c) => c.combos.length > 0);
   if (candidates.length === 0) {
-    const last = confirmedFaces[confirmedFaces.length - 1];
+    const last = confirmedSlots[confirmedSlots.length - 1];
     return {
       ok: false,
       refusal: reject("those two looks disagree \u2014 one was held the wrong way up; try again", {
         mismatch: true,
-        confirm: { face: last, up: TOP_NEIGHBOUR[last] }
+        confirm: { face: last, up: confirmed[last].up }
       })
     };
   }
-  return { ok: true, confirmedFaces, allowed, candidates };
+  return { ok: true, confirmedSlots, allowed, candidates };
 }
-function verifySurvivor(all, facelets, narrowed, confirmed) {
-  const { confirmedFaces, allowed } = narrowed;
-  const contradictions = (candidate) => confirmedFaces.filter((face) => {
-    const fi = FACES.indexOf(face);
-    return candidate.every((c) => !allowed.get(face).has(c[fi]));
+function verifySurvivor(all, survivors, narrowed, confirmed) {
+  const { confirmedSlots, allowed } = narrowed;
+  const facelets = survivors[0].facelets;
+  const contradictions = (candidate) => confirmedSlots.filter((slot) => {
+    const si = FACES.indexOf(slot);
+    const ok = allowed.get(slot).get(candidate.scheme);
+    return candidate.combos.every((c) => !ok.has(c[si]));
   }).length;
-  const weak = all.filter(([fl, c]) => fl !== facelets && contradictions(c) < 2);
+  const weak = all.filter((c) => c.facelets !== facelets && contradictions(c) < 2);
   if (weak.length === 0) return null;
-  const check = pickVerification(all.find(([fl]) => fl === facelets)[1], weak, confirmed);
+  const schemes = schemesOf([...survivors, ...weak]);
+  const check = pickVerification(survivors, weak, confirmed, schemes);
   if (check) {
     return reject("one more look to be sure \u2014 a single look could be held wrong", {
       confirm: check
     });
   }
+  return symmetricRefusal(survivors, weak);
+}
+function symmetricRefusal(survivors, alternatives) {
+  const survivorSchemes = new Set(survivors.map((c) => c.scheme));
+  const onlyScheme = alternatives.length > 0 && alternatives.every((c) => !survivorSchemes.has(c.scheme));
+  if (onlyScheme) {
+    return reject(
+      "these readings differ only in which colour is under white, and no hold can tell them apart \u2014 turn any one face, then scan again",
+      { ambiguous: true, schemeAmbiguous: true }
+    );
+  }
   return reject(
     "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
-    {
-      ambiguous: true
-    }
+    { ambiguous: true }
   );
 }
 function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
-  const centreOwner = buildCentreOwner(faces);
-  if (!(centreOwner instanceof Map)) return centreOwner;
-  const all = solvableReadings(faces, centreOwner);
+  const bySlot = checkedBySlot(faces);
+  if ("valid" in bySlot) return bySlot;
+  const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
   if (all.length === 0) {
     return reject(
       "no orientation of the faces is solvable \u2014 a colour was misread",
-      refusalDiagnosis(faces, options)
+      options.diagnose === false ? { misreadCount: null } : diagnoseAcrossSchemes(bySlot)
     );
   }
-  const narrowed = narrowByConfirmations(faces, all, confirmed);
+  const narrowed = narrowByConfirmations(bySlot, all, confirmed);
   if (!narrowed.ok) return narrowed.refusal;
   const candidates = narrowed.candidates;
-  if (candidates.length > 1) {
+  const readings = readingsOf(candidates);
+  if (readings.size > 1) {
     const confirm = pickConfirm(candidates, confirmed);
     if (confirm) {
-      return reject(`${candidates.length} readings fit \u2014 another look narrows them`, {
+      return reject(`${readings.size} readings fit \u2014 another look narrows them`, {
         ambiguous: true,
         confirm,
-        readings: candidates.length,
-        undetermined: undeterminedFaces(candidates, confirmed)
+        readings: readings.size,
+        undetermined: undeterminedSlots(candidates, confirmed)
       });
     }
-    return reject(
-      "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
-      { ambiguous: true }
+    const [first] = readings;
+    return symmetricRefusal(
+      candidates.filter((c) => c.facelets === first),
+      candidates.filter((c) => c.facelets !== first)
     );
   }
-  const [facelets, combos] = candidates[0];
-  const unverified = verifySurvivor(all, facelets, narrowed, confirmed);
+  const survivors = candidates;
+  const unverified = verifySurvivor(all, survivors, narrowed, confirmed);
   if (unverified) return unverified;
-  const chosen = combos[0];
+  const facelets = survivors[0].facelets;
+  const schemes = schemesOf(survivors);
+  const chosen = survivors.find((c) => c.scheme === schemes[0]).combos[0];
   const conf = [];
-  for (let fi = 0; fi < 6; fi++) {
-    for (const c of rotateFace(faces[FACES[fi]].confidence, chosen[fi])) conf.push(c);
-  }
+  FACES.forEach((slot, si) => {
+    for (const c of rotateFace(bySlot[slot].confidence, chosen[si])) conf.push(c);
+  });
   return {
     facelets,
     valid: true,
+    scheme: schemes.length === 1 ? schemes[0] : "undetermined",
     ...summariseConfidence(conf, threshold),
     rotations: [...chosen]
   };
@@ -4022,7 +4182,7 @@ var CameraSession = class {
 function handleMisreadRequest(request) {
   return {
     epoch: request.epoch,
-    diagnosis: diagnoseMisread(request.faces, { fixedRotation: request.fixedRotation })
+    diagnosis: request.fixedRotation ? diagnoseMisread(request.faces, { fixedRotation: true }) : diagnoseAcrossSchemes(request.faces)
   };
 }
 
@@ -4245,12 +4405,12 @@ var COUNT_WORDS = [
   "ten"
 ];
 var GUIDE = {
-  U: { color: "WHITE", name: "Up", swatch: "#f6f7f8" },
-  R: { color: "RED", name: "Right", swatch: "#d0202a" },
-  F: { color: "GREEN", name: "Front", swatch: "#049e4a" },
-  D: { color: "YELLOW", name: "Down", swatch: "#ffd400" },
-  L: { color: "ORANGE", name: "Left", swatch: "#ff6a00" },
-  B: { color: "BLUE", name: "Back", swatch: "#0057c8" }
+  U: { color: "WHITE", swatch: "#f6f7f8" },
+  R: { color: "RED", swatch: "#d0202a" },
+  F: { color: "GREEN", swatch: "#049e4a" },
+  D: { color: "YELLOW", swatch: "#ffd400" },
+  L: { color: "ORANGE", swatch: "#ff6a00" },
+  B: { color: "BLUE", swatch: "#0057c8" }
 };
 var CLASS_SWATCH = FACES.map((f) => GUIDE[f].swatch);
 var FRAME_HINT = {
@@ -4417,8 +4577,17 @@ var AiScanPanel = class extends HTMLElement {
    */
   pendingOpening = null;
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
+  /** Each confirmation with the hold it answered: the assembler projects it into every scheme's
+   *  frame from `up`, so a capture without its hold is not a confirmation (ADR 0001). */
   confirmed = {};
   awaiting = null;
+  /**
+   * The cube's colour scheme as the LAST VERDICT established it — `ScanProgress.scheme`. Null
+   * until a verdict speaks; set by an accepted scan and by an accepted painting (whose authored
+   * centres ARE its scheme); cleared by `reset()`, because the next cube is a different cube. A
+   * refusal never sets it. Corrections keep it: a tap re-decides a sticker, not the cube.
+   */
+  scheme = null;
   /** Hand-painting mode: the camera is off and every non-centre sticker is settable. */
   painting = false;
   /** Contradictory confirmations this scan; past one, the notice starts offering restart too. */
@@ -4774,6 +4943,7 @@ var AiScanPanel = class extends HTMLElement {
     this.settled.clear();
     this.pendingOpening = null;
     for (const f of FACES) delete this.faces[f];
+    this.scheme = null;
     this.buildDots();
   }
   /**
@@ -4953,13 +5123,13 @@ var AiScanPanel = class extends HTMLElement {
    */
   fileSettledRead(read) {
     const centre = read.colors[4];
-    const face = centre === void 0 ? void 0 : FACES[centre];
+    const face = centre !== void 0 && isColour(centre) ? slotOf(centre) : void 0;
     if (this.awaiting) {
       if (face !== this.awaiting.face) {
         this.report("confirm", ...this.confirmWords(this.awaiting));
         return;
       }
-      this.confirmed[face] = read;
+      this.confirmed[face] = { capture: read, up: this.awaiting.up };
       this.awaiting = null;
       this.flash();
       this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
@@ -4982,7 +5152,7 @@ var AiScanPanel = class extends HTMLElement {
           this.report(
             "scanning",
             "The ",
-            this.bold(GUIDE[face].name),
+            this.bold(GUIDE[face].color),
             " side reads the same as before \u2014 tap a sticker to fix it, or show another side."
           );
           return;
@@ -4993,14 +5163,14 @@ var AiScanPanel = class extends HTMLElement {
         this.mismatches = 0;
         this.buildDots();
         this.flash();
-        this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[face].name} side \u2014 checking\u2026`));
+        this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[face].color} side \u2014 checking\u2026`));
         return;
       }
       const named = this.missingSides();
       this.report(
         "scanning",
         "Already have the ",
-        this.bold(GUIDE[face].name),
+        this.bold(GUIDE[face].color),
         named ? ` side \u2014 still need ${named}.` : " side \u2014 show a different one."
       );
       return;
@@ -5023,7 +5193,7 @@ var AiScanPanel = class extends HTMLElement {
     this.report(
       "scanning",
       "Got the ",
-      this.bold(GUIDE[face].name),
+      this.bold(GUIDE[face].color),
       ` side \u2014 ${done}/6. ${named ? `Still to show: ${named}.` : "Show another side\u2026"}`
     );
   }
@@ -5089,7 +5259,7 @@ var AiScanPanel = class extends HTMLElement {
     if (read === void 0) {
       if (!this.painting) return;
       read = {
-        colors: Array(9).fill(FACES.indexOf(face)),
+        colors: Array(9).fill(colourOfSlot(face)),
         confidence: Array(9).fill(1)
       };
       this.faces[face] = read;
@@ -5103,11 +5273,14 @@ var AiScanPanel = class extends HTMLElement {
     this.invalidateReading();
     const done = this.capturedFaces().length;
     if (this.painting) {
-      this.afterPaintStroke(face, done);
+      this.afterPaintStroke(
+        `Painted the ${GUIDE[face].color} side \u2014 ${done}/${FACES.length} sides.`,
+        done
+      );
       return;
     }
     if (done < FACES.length) {
-      this.report("scanning", `Corrected the ${GUIDE[face].name} side. Show another side\u2026`);
+      this.report("scanning", `Corrected the ${GUIDE[face].color} side. Show another side\u2026`);
       return;
     }
     this.scheduleCheck(this.tinted("ok", "Corrected \u2014 checking\u2026"));
@@ -5121,27 +5294,21 @@ var AiScanPanel = class extends HTMLElement {
    * DEFINITION, so reporting each stroke as a failure would be noise rather than news —
    * and once all six sides are there, silence stops being kindness.
    */
-  afterPaintStroke(face, done) {
+  afterPaintStroke(line, done) {
     if (done === FACES.length) {
-      const result = assemblePainted(this.faces, void 0, { diagnose: false });
+      const result = this.fromPositions(
+        assemblePainted(this.positionFaces(), void 0, { diagnose: false })
+      );
       if (result.valid) {
         this.finish(result);
         return;
       }
       this.diagnose(result, (r, first) => {
         this.publishPaintRefusal(r);
-        if (!first) {
-          this.report(
-            "painting",
-            `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
-          );
-        }
+        if (!first) this.report("painting", line);
       });
     }
-    this.report(
-      "painting",
-      `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
-    );
+    this.report("painting", line);
   }
   /** A refused painting, said out loud. Called again for each diagnosis that lands for it. */
   publishPaintRefusal(result) {
@@ -5182,6 +5349,30 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     void this.start();
+  }
+  /**
+   * Declare which colour a PAINTED cube has under white — the paint board's centre swap.
+   *
+   * A painting is authored by position, so its centres ARE its scheme: the Down tile's centre is
+   * yellow on a Western painting and blue on a Japanese one, and swapping the pair is the one
+   * thing a painter can say about it that the tiles cannot. Everything painted stays with its
+   * COLOUR — the stickers painted around the blue centre are still around the blue centre, which
+   * has simply moved from the back to the bottom — and the reading is re-decided from there,
+   * because a cube is legal or not under the arrangement it actually has. Only meaningful while
+   * painting: a camera reading's scheme is the scan's to decide, never a caller's (ADR 0001).
+   */
+  setPaintScheme(scheme) {
+    if (!this.painting || !SCHEMES.includes(scheme) || this.scheme === scheme) return;
+    this.scheme = scheme;
+    this.invalidateReading();
+    const under = GUIDE[slotOf(colourOf("D", scheme))].color;
+    const line = `Centres swapped \u2014 ${under} is under WHITE now.`;
+    const done = this.capturedFaces().length;
+    if (done === FACES.length) {
+      this.afterPaintStroke(line, done);
+      return;
+    }
+    this.report("painting", `${line} ${PAINTING}`);
   }
   /**
    * Entering painting: forget every capture whose rotation is still unknown, and say which.
@@ -5307,6 +5498,52 @@ var AiScanPanel = class extends HTMLElement {
     return missing.map((f) => GUIDE[f].color).join(" and ");
   }
   /**
+   * The scheme the HOST assumes, from the `scheme` attribute — its Cube colours setting. Western
+   * when unset or unreadable: the default every cube had before there was a setting, and the
+   * assumption the model's class order encodes. Read on demand rather than observed, because it
+   * matters only at the moments a position is needed and nothing is drawn from it in between.
+   */
+  hostScheme() {
+    const attr = this.getAttribute("scheme");
+    return SCHEMES.find((s) => s === attr) ?? "western";
+  }
+  /**
+   * The scheme positions are taken under when this panel has to lay its slots out as positions:
+   * the verdict's, when a verdict decided one, else the host's assumption. Two places need a
+   * position at all — a painted cube, whose centres are authored by position, and a settled scan
+   * re-checked in place — and both are cubes the scan has already placed or the host has already
+   * assumed; nothing else in the panel ever names a position.
+   */
+  workingScheme() {
+    return this.scheme === "western" || this.scheme === "japanese" ? this.scheme : this.hostScheme();
+  }
+  /** The captures by POSITION under the working scheme — the record `assemblePainted` and an
+   *  in-place decode read, whose keys mean where a side sits rather than what colour it is. */
+  positionFaces() {
+    const scheme = this.workingScheme();
+    const out = {};
+    for (const slot of FACES) {
+      const read = this.faces[slot];
+      if (read) out[positionOf(colourOfSlot(slot), scheme)] = read;
+    }
+    return out;
+  }
+  /** The tile the host names for a position, as the SLOT its capture lives in. */
+  slotAt(position) {
+    return slotOf(colourOf(position, this.workingScheme()));
+  }
+  /**
+   * A result that was computed over POSITIONS (the painted path, an in-place decode), with every
+   * coordinate it names moved back into slots — the only coordinates a host ever receives.
+   */
+  fromPositions(r) {
+    return {
+      ...r,
+      ...r.suspects ? { suspects: r.suspects.map((s) => ({ ...s, face: this.slotAt(s.face) })) } : {},
+      ...r.misreadFace ? { misreadFace: this.slotAt(r.misreadFace) } : {}
+    };
+  }
+  /**
    * The reading's rotations are already known — painted in place, or settled by an accepted scan.
    *
    * Read in ONE place because two things now depend on it and they must not disagree: which
@@ -5321,7 +5558,10 @@ var AiScanPanel = class extends HTMLElement {
   assemble() {
     let result;
     if (this.inPlace()) {
-      this.finish(assemblePainted(this.faces, void 0, { diagnose: false }));
+      const { scheme: _assumed, ...checked } = this.fromPositions(
+        assemblePainted(this.positionFaces(), void 0, { diagnose: false })
+      );
+      this.finish(checked);
       return;
     }
     for (let round = 0; ; round++) {
@@ -5338,7 +5578,7 @@ var AiScanPanel = class extends HTMLElement {
         return;
       }
       const face = result.reread;
-      const fresh = face === void 0 ? void 0 : this.confirmed[face];
+      const fresh = face === void 0 ? void 0 : this.confirmed[face]?.capture;
       if (face === void 0 || fresh === void 0 || round >= FACES.length) {
         this.finish(result);
         return;
@@ -5452,6 +5692,7 @@ var AiScanPanel = class extends HTMLElement {
     this.mismatches = 0;
     this.finished = true;
     for (const f of FACES) this.settled.add(f);
+    if (result.scheme !== void 0) this.scheme = result.scheme;
     this.notice = null;
     this.stop();
     this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
@@ -5515,15 +5756,15 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     const epoch = ++this.diagnosisEpoch;
-    const reply = this.misread.request(
-      { epoch, faces: this.faces, fixedRotation: this.inPlace() },
-      (r) => {
-        if (r.epoch !== this.diagnosisEpoch) return;
-        if (this.cameraFault !== null && this.notice === this.cameraFault) return;
-        publish(decided(result, r.diagnosis), false);
-      }
-    );
-    publish(reply ? decided(result, reply.diagnosis) : result, true);
+    const inPlace = this.inPlace();
+    const faces = inPlace ? this.positionFaces() : this.faces;
+    const settle = (diagnosis) => inPlace ? this.fromPositions(diagnosis) : diagnosis;
+    const reply = this.misread.request({ epoch, faces, fixedRotation: inPlace }, (r) => {
+      if (r.epoch !== this.diagnosisEpoch) return;
+      if (this.cameraFault !== null && this.notice === this.cameraFault) return;
+      publish(decided(result, settle(r.diagnosis)), false);
+    });
+    publish(reply ? decided(result, settle(reply.diagnosis)) : result, true);
   }
   /** Refused: keep every capture, and say what would make it a cube. */
   finishRefused(result) {
@@ -5555,6 +5796,13 @@ var AiScanPanel = class extends HTMLElement {
       if (camera.action) {
         line = "That isn't a solvable cube yet \u2014 start the scan over, or show one side again.";
       }
+    } else if (result.schemeAmbiguous) {
+      this.notice = {
+        title: "Which colour is under white?",
+        tone: "err",
+        body: "Every side is read, but these readings differ only in which colour sits under white \u2014 blue or yellow \u2014 and no extra look can tell them apart. Turn any one face a quarter turn, then start the scan over to read the changed cube."
+      };
+      line = "This cube reads two ways that differ only in its colours \u2014 turn any one face a quarter turn, then start over.";
     } else if (result.ambiguous) {
       this.notice = {
         title: "Too symmetric to tell",
@@ -5581,7 +5829,7 @@ var AiScanPanel = class extends HTMLElement {
       const span = document.createElement("span");
       span.style.background = g.swatch;
       span.className = this.faces[face] ? "done" : "";
-      span.title = this.faces[face] ? `${g.name} \u2014 captured` : `${g.name} \u2014 needed`;
+      span.title = this.faces[face] ? `${g.color} \u2014 captured` : `${g.color} \u2014 needed`;
       dots.appendChild(span);
     }
   }
@@ -5628,7 +5876,8 @@ var AiScanPanel = class extends HTMLElement {
           runtime: this.cam.runtime,
           notice: this.notice,
           suspects: [...this.suspects],
-          complete: this.finished
+          complete: this.finished,
+          scheme: this.scheme
         }
       })
     );

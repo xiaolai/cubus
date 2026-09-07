@@ -13,7 +13,10 @@ export {
   assembleColors,
   assemblePainted,
   type ColorFace,
+  type Confirmation,
+  type ConfirmRequest,
   LOW_CONFIDENCE_THRESHOLD,
+  type StickerSuspect,
 } from './ai-assemble.js';
 export {
   type CameraDevice,
@@ -35,6 +38,7 @@ export {
   isStructurallyValid,
   SOLVED_FACELETS,
 } from './facelet-cube.js';
+export { diagnoseAcrossSchemes, type SchemeDiagnosis } from './misread-decode.js';
 export {
   type DetectOptions,
   detectFace,
@@ -54,5 +58,25 @@ export {
   MIN_STICKER_CONFIDENCE,
   nms,
 } from './onnx-postprocess.js';
+// The colour scheme (ADR 0001): a capture is a COLOUR, its place on the cube a POSITION under a
+// scheme, and these are the only functions allowed to turn one into the other.
+export {
+  adjacentIn,
+  COLOUR_NAMES,
+  COLOURS,
+  type Colour,
+  colourOf,
+  colourOfSlot,
+  commonNeighbours,
+  holdOffset,
+  isColour,
+  neighbourColours,
+  positionOf,
+  SCHEME_COLOURS,
+  SCHEMES,
+  type Scheme,
+  schemeOfCentres,
+  slotOf,
+} from './scheme.js';
 export type { Face, Frame, Lab, Rect, RGB, ScanResult, StickerSample } from './types.js';
 export { FACES } from './types.js';

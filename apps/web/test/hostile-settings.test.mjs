@@ -76,9 +76,13 @@ before(async () => {
   await tick();
 });
 
-test('an unknown palette is repaired at load, and the repair is saved', () => {
+test('an unknown palette is repaired at load, and the repair is saved', async () => {
   const stored = JSON.parse(win.localStorage.getItem('cubusSettings'));
-  assert.equal(stored.palette, 'muted', 'the stored value is corrected, not merely defaulted at read time');
+  // Against the app's own constant, not a second copy of the value: the repair's job is to reach
+  // the default, and a test that spells the default itself stops being about the repair the day
+  // someone changes one of the two.
+  const { DEFAULT_PALETTE } = await import('../lib/app.js');
+  assert.equal(stored.palette, DEFAULT_PALETTE, 'the stored value is corrected, not merely defaulted at read time');
   // The theme's own migration, which this object also exercises — a value that is not a theme is
   // not a theme, whatever it says.
   assert.equal(stored.theme, 'auto');

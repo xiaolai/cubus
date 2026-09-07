@@ -1,8 +1,14 @@
 # macOS
 .DS_Store
 
-# Dependencies — subpackages ignore their own; this covers any root-level install
+# Dependencies — subpackages ignore their own; this covers any root-level install.
+#
+# BOTH SPELLINGS, and the second is not redundant: a trailing slash matches a DIRECTORY only, so
+# a `node_modules` SYMLINK — which is what linking a git worktree's dependencies to the real
+# checkout produces — was not ignored, and a directory-wide `git add` committed one (2026-09-07).
+# The bare pattern matches the link too.
 node_modules/
+node_modules
 
 # ML training + validation output (YOLO / detlib)
 runs/
