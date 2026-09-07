@@ -563,13 +563,26 @@ describe('diagnoseAcrossSchemes — the floor a refused CAMERA reading is told, 
     expect(got.misreadFace).toBe('B');
   });
 
-  it('a scheme whose search ran out of budget does not compete, and says nothing when none can', () => {
-    const f = capturesOf(SEXY, 'japanese');
-    f.U.colors[0] = 1;
-    // A budget no search can finish under: every scheme is `unknown`, so nothing is claimed —
-    // never a count from a search the caller refused to fund.
-    expect(diagnoseAcrossSchemes(f, { nodeBudget: 1 })).toEqual({});
-    // Restricted to the one scheme that can answer, the floor comes back with its scheme.
+  it('a scheme that cannot answer empties the whole diagnosis — the MIXED case, not just the total one', () => {
+    // The case the first version of this test missed, and the one the soundness argument turns
+    // on (found in verification, 2026-09-07): not "no scheme could answer" but "one could and
+    // one could not". A floor is proved UNDER ITS OWN SCHEME; if the true arrangement is the one
+    // whose search ran out of budget, the surviving floor bounds a cube nobody is holding.
+    const f = capturesOf(DEEP, 'japanese');
+    const was = f.U.colors[0]!;
+    f.U.colors[0] = (was + 1) % 6; // ONE sticker misread, on a Japanese cube
+    const budget = { nodeBudget: 1 };
+    // At this budget the two schemes genuinely disagree about whether they can answer. The
+    // Western filing prices every rotation out of range and returns a `beyond` floor of 5 without
+    // spending a node; the Japanese filing — the cube's real arrangement — has candidates to
+    // search and cannot finish.
+    const west = diagnoseAcrossSchemes(f, budget, ['western']);
+    const east = diagnoseAcrossSchemes(f, budget, ['japanese']);
+    expect(west.misreadCount).toBe(5); // and 5 would OVERSTATE this cube's single misread
+    expect(east).toEqual({}); // the true scheme's search could claim nothing
+    // So together they claim nothing at all, rather than the number from the wrong arrangement.
+    expect(diagnoseAcrossSchemes(f, budget)).toEqual({});
+    // Funded properly, the true scheme answers and the count is honest.
     const one = diagnoseAcrossSchemes(f, {}, ['japanese']);
     expect(one.misreadCount).toBe(1);
     expect(one.misreadScheme).toBe('japanese');

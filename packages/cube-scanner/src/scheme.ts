@@ -160,6 +160,27 @@ export function holdOffset(colour: Colour, up: Colour, scheme: Scheme): number |
 }
 
 /**
+ * The colour that was UPWARDS when a capture was taken, given the canonical rotation a candidate
+ * assigned it under `scheme` — the physical, scheme-free name for a rotation.
+ *
+ * Why it is needed: a canonical rotation is a number IN A SCHEME'S FRAME. `rotate(capture, r)` is
+ * canonical, so the capture is canonical turned by `(4 - r) % 4`, which is the hold whose
+ * `holdOffset` is `(4 - r) % 4` — and since `holdOffset` is `(4 - sideIndex) % 4`, that hold's
+ * up-colour is the `r`-th neighbour in [top, right, bottom, left] order. The neighbours differ
+ * between the schemes wherever the positions do, so the SAME `r` names a different physical hold:
+ * measured, 12 of the 24 (slot, rotation) pairs. Comparing raw rotations across candidates of
+ * different schemes is therefore a comparison in mixed frames, and it was how `undeterminedSlots`
+ * and `pickVerification` decided which side to ask about (found by audit, 2026-09-07). Through
+ * this function both compare the thing a child actually does — which colour was on top.
+ *
+ * `scheme.test.ts` pins the derivation against `holdOffset` itself, and pins that the two schemes
+ * disagree, so a table change cannot quietly make this a no-op.
+ */
+export function heldUpColour(colour: Colour, rotation: number, scheme: Scheme): Colour {
+  return neighbourColours(colour, scheme)[((rotation % 4) + 4) % 4]!;
+}
+
+/**
  * The scheme a set of six centres describes, or undefined when it is neither — a hand-painted
  * arrangement that matches no table, or captures that are not six distinct colours.
  */

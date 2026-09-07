@@ -778,23 +778,13 @@ describe('assembleColors — the colour scheme is a third ambiguity dimension (A
     }
   });
 
-  it('the top-layer 3-cycle differs only by scheme: one look, then "turn any one face" — never a guess', () => {
+  it('the top-layer 3-cycle differs only by scheme: every look is answered, then "turn any one face"', () => {
     // Under one filing alone this scans as a unique, valid reading. Under both it is two
-    // different cubes that differ in nothing but which colour is under white. The search asks
-    // for the one look that could separate them — on the white side, held a way BOTH kinds of
-    // cube can obey — and when that look leaves the impostor contradicted only once, no second
-    // side can check it, so the answer is the too-symmetric refusal with its reason named. It is
-    // never the setting's guess: accepting either reading is a confidently wrong cube for
-    // whichever child has the other kind (ADR 0001 §8.2).
-    const first = assembleColors(capturesOf(CYCLE, 'western'));
-    expect(first.valid).toBe(false);
-    expect(first.readings).toBe(2);
-    expect(first.confirm).toBeDefined();
-    for (const scheme of SCHEMES) {
-      expect(
-        adjacentIn(colourOfSlot(first.confirm!.face), colourOfSlot(first.confirm!.up), scheme),
-      ).toBe(true);
-    }
+    // different cubes that differ in nothing but which colour is under white. The scanner asks
+    // for the looks that COULD separate them — each one a hold both kinds of cube can obey — and
+    // when the answers turn out to fit both, it says so and gives the one instruction that works.
+    // It never picks: accepting either reading is a confidently wrong cube for whichever child
+    // has the other kind (ADR 0001 §8.2).
     for (const scheme of SCHEMES) {
       const r = scanAs(CYCLE, scheme, [0, 0, 0, 0, 0, 0]);
       expect(r.valid).toBe(false);
@@ -811,6 +801,37 @@ describe('assembleColors — the colour scheme is a third ambiguity dimension (A
       expect(r.facelets).toBe(turned);
       expect(r.scheme).toBe(scheme);
     }
+  });
+
+  it('a look CAN eliminate a scheme, so a scan is never refused merely for standing under two', () => {
+    // The counterexample that killed a guard, kept as the fixture that stops it coming back
+    // (2026-09-07, found in verification). The reasoning it refuted: "the scanner only asks for
+    // holds both arrangements can obey, so an answer is consistent with both and can never tell
+    // them apart." A hold being POSSIBLE under both schemes does not mean both READINGS predict
+    // the same photograph of it — each candidate accepts its own set of rotations for that side,
+    // and a truthful answer can miss one candidate's set entirely.
+    //
+    // This state scans as nine Western readings and one Japanese one. Answering "the blue side,
+    // red up" leaves eight — the Japanese reading is among those gone — and the scan carries on
+    // narrowing within one scheme. A guard that refused whenever two schemes stood with different
+    // states threw this cube away with no look asked at all.
+    const cube = new Cube() as unknown as { ep: number[]; asString(): string };
+    const ep = cube.ep.slice();
+    [ep[1], ep[7], ep[10]] = [7, 10, 1];
+    cube.ep = ep;
+    const truth = cube.asString();
+    const shown = capturesOf(truth, 'western');
+
+    const before = assembleColors(shown);
+    expect(before.valid).toBe(false);
+    expect(before.confirm).toBeDefined(); // a look is asked for, never a turn
+
+    const after = assembleColors(shown, 0.15, {
+      B: answer(truth, 'western', { face: 'B', up: 'R' }),
+    });
+    expect(after.readings).toBe(8);
+    expect(after.confirm).toBeDefined(); // still narrowing
+    expect(after.schemeAmbiguous).toBeUndefined();
   });
 
   it('never returns a wrong cube when one look is mis-held, on either kind of cube', () => {

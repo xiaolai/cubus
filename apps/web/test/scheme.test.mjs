@@ -151,6 +151,17 @@ test('the lesson lint names a piece by two colours only where the prose does', (
   ]) {
     assert.deepEqual(lintColourPairs(s), [], s);
   }
+  // A comma before the piece is not a list unless what precedes it is a COLOUR: refusing every
+  // comma swallowed a real piece naming.
+  assert.deepEqual(lintColourPairs('Next, white and blue form an edge.').map((f) => f.pair), [
+    ['white', 'blue'],
+  ]);
+  // A corner is three colours, so it is three pairs — and the unsafe one is not the first.
+  assert.deepEqual(lintColourPairs('Find the red-white-blue corner.').map((f) => f.pair), [
+    ['white', 'blue'],
+  ]);
+  // …and a corner that exists on both cubes stays quiet.
+  assert.deepEqual(lintColourPairs('Find the red-white-green corner.'), []);
   // Sentences are reported so an author can find the line.
   assert.equal(lintColourPairs(shipped)[0].sentence, 'White and blue, sitting between the white centre and the blue centre.');
 });

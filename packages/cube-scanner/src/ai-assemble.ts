@@ -98,6 +98,7 @@ import {
   type Colour,
   colourOfSlot,
   commonNeighbours,
+  heldUpColour,
   holdOffset,
   isColour,
   neighbourColour,
@@ -394,6 +395,28 @@ const readingsOf = (candidates: readonly Candidate[]): Set<string> =>
 const schemesOf = (candidates: readonly Candidate[]): Scheme[] =>
   SCHEMES.filter((s) => candidates.some((c) => c.scheme === s));
 
+// A LOOK CAN ELIMINATE A SCHEME, and a guard here that assumed otherwise was reverted the day it
+// was written (2026-09-07, refuted in verification).
+//
+// The argument for it went: the scanner only ever asks for a hold that BOTH arrangements can obey
+// (`permittedHold` / `commonNeighbours`), so the answer must be consistent with both and can carry
+// nothing that tells them apart. It measured well on the fixture it was built from — of the 20
+// holds possible on both kinds of cube, none settles a cube with one reading per scheme — and it
+// is false in general. A hold's being physically possible under both schemes does NOT mean both
+// READINGS predict the same photograph of it: each candidate accepts a set of rotations for that
+// side, and a truthful answer can miss one candidate's set entirely.
+//
+// The counterexample, reproduced: the solved cube with edge slots 1, 7 and 10 three-cycled scans
+// as 9 Western readings and 1 Japanese one, and answering "the blue side, red up" leaves 8 — the
+// Japanese reading is gone, and the scan carries on narrowing. The guard refused that cube outright
+// with no look asked.
+//
+// What remains is the test that was already right: `undeterminedSlots` asks whether any
+// unconfirmed side's answer could separate the survivors, in the physical frame (`holdsOf`), and
+// `pickConfirm` returning nothing IS "no look can help". That is sound because it is measured
+// against the candidates rather than assumed from the instruction, and it is where the refusal
+// belongs.
+
 /**
  * Choose which side to ask about: one the surviving readings actually disagree over, held a way
  * that is possible in EVERY scheme still in play — preferring white up, so the instruction is the
@@ -414,11 +437,27 @@ function undeterminedSlots(
 ): Face[] {
   return FACES.filter((slot, si) => {
     if (confirmed[slot]) return false;
-    const perCandidate = candidates.map((c) =>
-      [...new Set(c.combos.map((combo) => combo[si]!))].sort().join(','),
-    );
+    const perCandidate = candidates.map((c) => holdsOf(c, slot, si).join(','));
     return new Set(perCandidate).size > 1;
   });
+}
+
+/**
+ * The holds a candidate says are possible for one slot, as UP-COLOURS — the physical frame
+ * (`heldUpColour`), not the candidate's own canonical rotations.
+ *
+ * A rotation is a number in its scheme's frame, and 12 of the 24 (slot, rotation) pairs name a
+ * different physical hold under the two schemes. Comparing raw rotations across candidates was
+ * therefore comparing mixed frames wherever both schemes were still standing, and it decided
+ * which side the scanner asked about and which sides it reported as undetermined (found by audit,
+ * 2026-09-07). Two candidates now differ on a slot exactly when they disagree about what a child
+ * would have been holding upwards, which is the question a look answers.
+ */
+function holdsOf(candidate: Candidate, slot: Face, si: number): number[] {
+  const colour = colourOfSlot(slot);
+  return [
+    ...new Set(candidate.combos.map((combo) => heldUpColour(colour, combo[si]!, candidate.scheme))),
+  ].sort();
 }
 
 /**
@@ -460,7 +499,7 @@ function pickConfirm(
  * differently" is exactly "their rotation sets are disjoint".
  */
 function pickVerification(
-  survivorCombos: readonly number[][],
+  survivors: readonly Candidate[],
   weak: readonly Candidate[],
   confirmed: Partial<Record<Face, Confirmation>>,
   schemes: readonly Scheme[],
@@ -471,11 +510,13 @@ function pickVerification(
     if (confirmed[slot]) return;
     const hold = permittedHold(slot, schemes);
     if (!hold) return;
-    const ours = new Set(survivorCombos.map((c) => c[si]!));
+    // In UP-COLOURS, not rotations: the survivors can stand under different schemes (the same
+    // state read both ways), so a set of their raw rotations would mix two frames. See `holdsOf`.
+    const ours = new Set(survivors.flatMap((s) => holdsOf(s, slot, si)));
     // How many still-standing readings this slot would expose, plus a nudge towards a side that
     // can be held white-up so the instruction stays "hold the white side up".
     const score =
-      weak.filter((w) => w.combos.every((c) => !ours.has(c[si]!))).length +
+      weak.filter((w) => holdsOf(w, slot, si).every((up) => !ours.has(up))).length +
       (hold.up === 'U' ? 0.5 : 0);
     if (score > bestScore) {
       bestScore = score;
@@ -566,31 +607,59 @@ function checkedCapture(label: string, f: ColorFace | undefined): ColorFace {
 }
 
 /**
- * Validate six captures for the CAMERA path: each a capture, each centre a colour class, the six
- * centres distinct, and every capture filed under the slot that names its colour.
+ * The six centres, validated — the rule both entry points share, in one place.
  *
- * Returns the captures typed as by-slot, or the rejection to hand straight back. The centre-class
- * check is where "a centre is a colour the detector can produce" is enforced (2026-09-05):
- * ordinary stickers are deliberately not range-checked — an unknown colour there is a statement
- * about the cube — but a CENTRE names a capture, so an out-of-range one is silently accepted as
- * the name of one: nine stickers of class 17 on U built the map `17 -> U`, every one of them then
- * resolved through it, and the assembler returned `valid: true` for a facelet string assembled out
- * of a colour class no model emits. NaN was worse, because `Map` matches it to itself.
+ * Every key must hold a capture (nine colours, nine real confidences), every centre must be a
+ * colour class the detector can emit, and the six must be distinct. The centre-class check is
+ * where "a centre is a colour the detector can produce" is enforced (2026-09-05): ordinary
+ * stickers are deliberately not range-checked — an unknown colour there is a statement about the
+ * cube — but a CENTRE names a face, so an out-of-range one is silently accepted as the name of
+ * one: nine stickers of class 17 on U built the map `17 -> U`, every one of them then resolved
+ * through it, and the assembler returned `valid: true` for a facelet string assembled out of a
+ * colour class no model emits. NaN was worse, because `Map` matches it to itself.
+ *
+ * ONE implementation, for the two callers (2026-09-07, found by audit). It was written twice, and
+ * the copies were already drifting: the same three rules, the same three sentences, one of them
+ * with an extra rule bolted on. Two lifetimes of one validation is how a caller comes to be
+ * trusted on one path and not the other — the reason `buildCentreOwner` was factored out in the
+ * first place, undone by the branch that added a second path.
+ *
+ * Returns the centre colour under each key, or the rejection to hand straight back; the caller
+ * discriminates on `instanceof Map`. What the KEYS mean is the caller's: a slot on the camera
+ * path, a position on the painted one.
  */
-function checkedBySlot(faces: Record<Face, ColorFace>): BySlot | AiScanResult {
+function checkedCentres(faces: Record<Face, ColorFace>): Map<Face, Colour> | AiScanResult {
+  const centres = new Map<Face, Colour>();
   const seen = new Set<number>();
-  for (const slot of FACES) {
-    const f = checkedCapture(`face ${slot}`, faces[slot]);
+  for (const key of FACES) {
+    const f = checkedCapture(`face ${key}`, faces[key]);
     const centre = f.colors[4]!;
     if (!isColour(centre)) {
-      return reject(`face ${slot} has centre colour ${centre}, which is not one of the six`);
+      return reject(`face ${key} has centre colour ${centre}, which is not one of the six`);
     }
     // Unreachable from either host path, and kept as a guard on the public API rather than a
     // case with a UI: the camera files every capture under its centre's slot (so a second capture
-    // of the same colour overwrites the first rather than joining it). A caller feeding captures
+    // of the same colour overwrites the first rather than joining it), and a painted side is
+    // seeded with its own colour while setSticker refuses index 4. A caller feeding captures
     // directly can still hit it, which is why it stays a loud refusal instead of an assumption.
     if (seen.has(centre)) return reject(`two faces share centre colour ${centre}`);
     seen.add(centre);
+    centres.set(key, centre);
+  }
+  // No `size !== 6` check follows. Six iterations that each return on a duplicate leave a map of
+  // exactly six; the check that used to be here was unreachable in both callers, and an
+  // unreachable guard reads as a second, weaker line of defence that is not there.
+  return centres;
+}
+
+/**
+ * Validate six captures for the CAMERA path, where a key is a SLOT: the shared centre rules, plus
+ * the one this path adds — a capture must be filed under the slot that names its colour.
+ */
+function checkedBySlot(faces: Record<Face, ColorFace>): BySlot | AiScanResult {
+  const centres = checkedCentres(faces);
+  if (!(centres instanceof Map)) return centres;
+  for (const [slot, centre] of centres) {
     if (slotOf(centre) !== slot) {
       return reject(
         `face ${slot} has centre colour ${centre}, which files under ${slotOf(centre)} — a slot names a colour, not a position`,
@@ -601,27 +670,14 @@ function checkedBySlot(faces: Record<Face, ColorFace>): BySlot | AiScanResult {
 }
 
 /**
- * Validate six faces and build the centre-colour → face map, for the PAINTED path, whose keys are
- * POSITIONS authored by the user rather than slots.
- *
- * Returns the map, or the rejection to hand straight back — the caller discriminates on
- * `instanceof Map`.
+ * Validate six faces and build the centre-colour → POSITION map, for the painted path, whose keys
+ * are positions authored by the user rather than slots. The inverse of `checkedCentres`, which is
+ * a bijection by construction: it has already refused two faces sharing a centre.
  */
 function buildCentreOwner(faces: Record<Face, ColorFace>): Map<number, Face> | AiScanResult {
-  const centreOwner = new Map<number, Face>();
-  for (const face of FACES) {
-    const f = checkedCapture(`face ${face}`, faces[face]);
-    const centre = f.colors[4]!;
-    if (!isColour(centre)) {
-      return reject(`face ${face} has centre colour ${centre}, which is not one of the six`);
-    }
-    if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
-    centreOwner.set(centre, face);
-  }
-  // No `size !== 6` check follows. Six iterations that each return on a duplicate leave a map of
-  // exactly six; the check that used to be here was unreachable in both callers, and an
-  // unreachable guard reads as a second, weaker line of defence that is not there.
-  return centreOwner;
+  const centres = checkedCentres(faces);
+  if (!(centres instanceof Map)) return centres;
+  return new Map([...centres].map(([position, centre]) => [centre as number, position]));
 }
 
 /** The reported confidence of a facelet string: its weakest sticker, and every one below the bar. */
@@ -827,8 +883,7 @@ function verifySurvivor(
   const weak = all.filter((c) => c.facelets !== facelets && contradictions(c) < 2);
   if (weak.length === 0) return null;
   const schemes = schemesOf([...survivors, ...weak]);
-  const survivorCombos = survivors.flatMap((s) => s.combos);
-  const check = pickVerification(survivorCombos, weak, confirmed, schemes);
+  const check = pickVerification(survivors, weak, confirmed, schemes);
   if (check) {
     return reject('one more look to be sure — a single look could be held wrong', {
       confirm: check,
