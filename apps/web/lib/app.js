@@ -150,7 +150,24 @@ const TITLES = {
 };
 
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty', proveMinimum: false });
+/**
+ * The cube colours a new install gets: CLASSIC, the saturated set (owner's call, 2026-09-07).
+ * It was `muted`, the warm-paper set the design kit was drawn around — which sits beautifully in
+ * the app's own palette and is not what a child's cube looks like. The first thing this app has
+ * to do is let someone match what is on screen to the plastic in their hand, and `classic` is the
+ * set that names those colours the way a cube does.
+ *
+ * ONE spelling, exported, because it was seven: the settings default, the repair's fallback, and
+ * five `NET_COLORS[…] || NET_COLORS.muted` reads, each free to drift from the others. A default
+ * written down seven times is a default that eventually disagrees with itself.
+ *
+ * It changes nothing for anyone already using the app: `load` merges storage over these defaults
+ * and `save` writes the whole object, so a stored palette — including a `muted` nobody ever chose
+ * deliberately — is kept. This is the value for a fresh install and for a repaired one.
+ * `hostile-settings.test.mjs` pins the repair against this constant rather than a copy of it.
+ */
+export const DEFAULT_PALETTE = 'classic';
+const settings = load('cubusSettings', { theme: 'auto', palette: DEFAULT_PALETTE, autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty', proveMinimum: false });
 // localStorage is untrusted input, and `load` merges it raw. The string "false" is truthy, so
 // a hand-edited or half-migrated value could opt someone in to an operation that runs for
 // hours — the one setting where "off unless explicitly true" is the whole point.
@@ -191,7 +208,7 @@ const PALETTES = ['muted', 'classic', 'colorsafe'];
  *  produce, trusted because it was in storage — so each is repaired the same way and at the same
  *  moment, rather than being caught at whichever call site happens to reach it first. */
 const repairs = [
-  [() => PALETTES.includes(settings.palette), () => { settings.palette = 'muted'; }],
+  [() => PALETTES.includes(settings.palette), () => { settings.palette = DEFAULT_PALETTE; }],
   [() => TIERS.some((tier) => tier.name === settings.solveTier), () => { settings.solveTier = 'twenty'; }],
   [() => typeof settings.language === 'string', () => { settings.language = ''; }],
   [() => typeof settings.cameraId === 'string', () => { settings.cameraId = ''; }],
@@ -874,7 +891,7 @@ const NET_COLORS = {
   colorsafe: { U: '#EFEAE0', D: '#E9C46A', F: '#6A9FB5', B: '#20405C', R: '#D1495B', L: '#8C5E8A' },
 };
 function applyNetColors() {
-  const p = NET_COLORS[settings.palette] || NET_COLORS.muted; const r = document.documentElement.style;
+  const p = NET_COLORS[settings.palette] || NET_COLORS[DEFAULT_PALETTE]; const r = document.documentElement.style;
   for (const k of NET_FACES) r.setProperty('--net-' + k, p[k]);
 }
 
@@ -2389,7 +2406,7 @@ const FACE_EDGES = {
 };
 
 SCREENS.scan = () => {
-  const pal = NET_COLORS[settings.palette] || NET_COLORS.muted;
+  const pal = NET_COLORS[settings.palette] || NET_COLORS[DEFAULT_PALETTE];
   const classColor = (i) => pal[NET_FACES[i]] || 'var(--facelet-off)';
   // background-COLOR, not the shorthand: a colour is all this ever sets, and the shorthand would
   // reset background-image and friends alongside it. (It is also the only form a DOM can report
@@ -4706,7 +4723,8 @@ SCREENS.timer = () => {
 };
 
 SCREENS.settings = () => {
-  const pals = ['muted', 'classic', 'colorsafe'];
+  // The list is PALETTES — the validated one — not a second copy of it beside it.
+  const pals = PALETTES;
   // No WCA-inspection toggle: it flipped a label and nothing else — the timer never implemented
   // the 15s countdown it named. A setting that claims behaviour it does not have is exactly the
   // invented data this app refuses elsewhere; it returns when the Timer actually earns it.
@@ -4949,7 +4967,7 @@ SCREENS.settings = () => {
         <div class="sub" style="color:var(--ink-3);margin-top:10px;line-height:1.55">${t(privacySentence())}</div></div>
     </div></div>`,
     mount(root) {
-      const swatch = () => { const p = NET_COLORS[settings.palette] || NET_COLORS.muted; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
+      const swatch = () => { const p = NET_COLORS[settings.palette] || NET_COLORS[DEFAULT_PALETTE]; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
       swatch();
       // Drawn only where `updater` exists, which is the desktop gate — so this never looks for a
       // button the browser build does not have. The press ALWAYS checks (it ignores the daily
@@ -5382,7 +5400,7 @@ const previewBanner = () => `<div class="card" style="padding:12px 16px;display:
 </div>`;
 
 SCREENS.trainer = () => {
-  const P2 = NET_COLORS[settings.palette] || NET_COLORS.muted;
+  const P2 = NET_COLORS[settings.palette] || NET_COLORS[DEFAULT_PALETTE];
   // The algs are REAL algorithms and stay — they are facts about a cube, not claims about you.
   // What went are the per-case percentages and the colour that ranked them.
   const oll = [
@@ -5407,7 +5425,7 @@ SCREENS.trainer = () => {
 };
 
 SCREENS.drill = () => {
-  const P2 = NET_COLORS[settings.palette] || NET_COLORS.muted;
+  const P2 = NET_COLORS[settings.palette] || NET_COLORS[DEFAULT_PALETTE];
   const grid = Array.from({ length: 9 }, (_, i) => ((i * 7 + 9) % 4 === 0 ? P2.D : 'var(--facelet-off)'));
   // `flow`: the flashcard is taller than a phone's locked primary region, and its controls
   // (Reveal, Again / Good / Easy) must never sit below a fold — so the box scrolls as one.
