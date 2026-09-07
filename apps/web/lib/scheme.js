@@ -1,4 +1,5 @@
-// The cube's colour scheme, on the app's side of the seam (ADR 0001, dev-docs/adr/0001-…).
+// The cube's colour scheme, on the app's side of the seam
+// (dev-docs/adr/0001-colour-scheme-is-an-ambiguity-dimension.md).
 //
 // A COPY of the table in `packages/cube-scanner/src/scheme.ts`, not an import: app.js cannot
 // import TypeScript, and reaching into the scanner's bundle for six numbers would make the app's
@@ -131,19 +132,33 @@ function neighbourOn(position, scheme) {
 export function lintColourPairs(text) {
   const names = COLOUR_NAMES;
   const unsafe = new Set(cubeDependentPairs().map(([a, b]) => `${a},${b}`));
-  const word = `(${names.join('|')})`;
-  // "white and blue", "white-blue", "white–blue", "white/blue", "white blue" (as in "the white
-  // blue edge") — one joiner, so a list of three is not two pairs. The lookbehind refuses a pair
-  // that continues a comma list: ", yellow and green" is the tail of "white, yellow and green".
-  const pair = new RegExp(`(?<!,\\s{0,3})\\b${word}\\s*(?:and|&|-|–|/|\\s)\\s*${word}\\b`, 'gi');
+  const word = `(?:${names.join('|')})`;
+  // A RUN: two or more colour words joined the way a piece is named — "white and blue",
+  // "blue-white", "red-white-blue", "the white yellow edge". A comma is deliberately NOT a
+  // joiner, so "white, green, red and orange" is three runs and not one piece.
+  const joiner = '\\s*(?:and|&|-|–|/|\\s)\\s*';
+  const run = new RegExp(`\\b${word}(?:${joiner}${word})+\\b`, 'gi');
+  // Whether a run is the TAIL OF A LIST rather than a piece: what precedes it is a colour word
+  // and a comma. That test is about the item before the comma, not about the comma — refusing
+  // every comma silently swallowed "Next, white and blue form an edge", a real piece naming
+  // (found by audit, 2026-09-07).
+  const listTail = new RegExp(`\\b${word}\\s*,\\s*$`, 'i');
   const found = [];
   for (const sentence of text.split(/(?<=[.!?])\s+|\n+/)) {
-    for (const m of sentence.matchAll(pair)) {
-      const a = names.indexOf(m[1].toLowerCase());
-      const b = names.indexOf(m[2].toLowerCase());
-      if (a === b) continue;
-      const key = `${Math.min(a, b)},${Math.max(a, b)}`;
-      if (unsafe.has(key)) found.push({ pair: [names[a], names[b]], sentence: sentence.trim() });
+    for (const m of sentence.matchAll(run)) {
+      if (listTail.test(sentence.slice(0, m.index))) continue;
+      const colours = m[0].split(new RegExp(joiner, 'i')).map((w) => names.indexOf(w.toLowerCase()));
+      // EVERY pair in the run, not just adjacent ones: "the red-white-blue corner" names three
+      // pieces' worth of pairs, and the one that does not exist on both cubes is white–blue —
+      // which a scan of adjacent pairs alone would step straight over.
+      for (let i = 0; i < colours.length; i++) {
+        for (let j = i + 1; j < colours.length; j++) {
+          const [a, b] = [colours[i], colours[j]];
+          if (a < 0 || b < 0 || a === b) continue;
+          if (!unsafe.has(`${Math.min(a, b)},${Math.max(a, b)}`)) continue;
+          found.push({ pair: [names[a], names[b]], sentence: sentence.trim() });
+        }
+      }
     }
   }
   return found;

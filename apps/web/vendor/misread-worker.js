@@ -2410,7 +2410,7 @@ function diagnoseAcrossSchemes(bySlot, options = {}, schemes = SCHEMES) {
     const faces = {};
     for (const slot of FACES) faces[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
     const d = diagnoseMisread(faces, options);
-    if (typeof d.misreadCount !== "number") continue;
+    if (typeof d.misreadCount !== "number") return {};
     results.push({
       scheme,
       diagnosis: {

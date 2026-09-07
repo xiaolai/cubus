@@ -652,8 +652,15 @@ export interface SchemeDiagnosis extends MisreadDiagnosis {
  *   * a tie — a pointer only where every tied scheme names the SAME sticker, in slot coordinates;
  *     tied schemes that point at different stickers point at nothing, because a pointer that is
  *     right under one assumption and wrong under another is not a sticker to check.
- * An `unknown` under one scheme (the search ran out of budget) simply does not compete: the other
- * scheme's floor is still a floor. Only when no scheme could claim anything is the answer empty.
+ *
+ * EVERY SCHEME MUST ANSWER, or nothing is claimed (corrected 2026-09-07, found by audit). This
+ * docstring used to say an `unknown` scheme "simply does not compete: the other scheme's floor is
+ * still a floor". It is a floor UNDER ITS OWN SCHEME, which is exactly what the minimum argument
+ * needs and exactly what a partial minimum loses: if the true scheme is the one whose search ran
+ * out of budget, the surviving floor bounds a cube nobody is holding. Measured: a Japanese cube
+ * with ONE sticker changed, at a budget the Japanese search cannot finish under, reported "at
+ * least 5" from the Western filing. So a missing floor makes the whole answer empty — the same
+ * "claim nothing rather than overstate" this module applies to `unknown` itself.
  *
  * Positions → slots: the decoder speaks in the positions of the filing it was handed, and a
  * host's tiles are captures. `colourOf(position, scheme)` names the capture; `slotOf` its key.
@@ -669,7 +676,10 @@ export function diagnoseAcrossSchemes(
     const faces = {} as Record<Face, ColorFaces>;
     for (const slot of FACES) faces[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
     const d = diagnoseMisread(faces, options);
-    if (typeof d.misreadCount !== 'number') continue;
+    // A scheme that could claim nothing takes the whole answer with it: see the docstring.
+    // Without this the minimum is taken over a SUBSET of the schemes the cube might have, and a
+    // floor proved under one arrangement is not a floor under another.
+    if (typeof d.misreadCount !== 'number') return {};
     results.push({
       scheme,
       diagnosis: {
