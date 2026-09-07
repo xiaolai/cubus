@@ -9,10 +9,15 @@
 // find. A list like that goes off for every private method anyone adds. One module both bundles
 // keep whole needs no list at all.
 
-import { type ColorFaces, diagnoseMisread, type MisreadDiagnosis } from '../src/misread-decode.js';
+import {
+  type ColorFaces,
+  diagnoseAcrossSchemes,
+  diagnoseMisread,
+  type SchemeDiagnosis,
+} from '../src/misread-decode.js';
 import type { Face } from '../src/types.js';
 
-/** A decode to run: the six faces as read, and how the reading's rotations are known. */
+/** A decode to run: the six faces as read, and how they were read. */
 export interface MisreadRequest {
   /**
    * The caller's serial number for the reading this describes, returned unchanged in the reply.
@@ -23,15 +28,25 @@ export interface MisreadRequest {
    * what has happened to the scan since.
    */
   epoch: number;
+  /**
+   * Keyed by SLOT for a camera reading (the colour's name, `scheme.ts`), by POSITION for a
+   * painted one — the two callers' own conventions, and `fixedRotation` says which this is.
+   */
   faces: Record<Face, ColorFaces>;
-  /** Painted in place (rotations already known), rather than photographed at unknown rotations. */
+  /**
+   * `false`: photographed at unknown rotations, filed by colour; decoded under every scheme,
+   * because a refused reading says nothing about which the cube has (ADR 0001).
+   * `true`: painted in place, positions known, centres already the scheme; decoded once, as
+   * given — the rotation search would otherwise let the decoder turn a face back and report
+   * "0 misreads" about a cube that was just refused.
+   */
   fixedRotation: boolean;
 }
 
 /** One decode's answer, tagged with the epoch of the reading it is about. */
 export interface MisreadReply {
   epoch: number;
-  diagnosis: MisreadDiagnosis;
+  diagnosis: SchemeDiagnosis;
 }
 
 /**
@@ -39,11 +54,13 @@ export interface MisreadReply {
  *
  * The whole of the worker is this call, and so is the whole of the fallback — which is what makes
  * "the worker's answer is the synchronous answer" a property of the code rather than a hope about
- * two copies. `diagnoseMisread` never throws, so neither does this.
+ * two copies. Neither diagnosis throws, so neither does this.
  */
 export function handleMisreadRequest(request: MisreadRequest): MisreadReply {
   return {
     epoch: request.epoch,
-    diagnosis: diagnoseMisread(request.faces, { fixedRotation: request.fixedRotation }),
+    diagnosis: request.fixedRotation
+      ? diagnoseMisread(request.faces, { fixedRotation: true })
+      : diagnoseAcrossSchemes(request.faces),
   };
 }

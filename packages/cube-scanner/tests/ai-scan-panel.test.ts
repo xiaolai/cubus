@@ -39,6 +39,12 @@ vi.mock('../src/misread-decode.js', async (importOriginal) => {
       seam.decodes++;
       return actual.diagnoseMisread(...args);
     },
+    // The camera path's entry since ADR 0001 — one refusal, one decode as the panel counts them,
+    // however many schemes the decoder walks inside.
+    diagnoseAcrossSchemes: (...args: Parameters<typeof actual.diagnoseAcrossSchemes>) => {
+      seam.decodes++;
+      return actual.diagnoseAcrossSchemes(...args);
+    },
   };
 });
 
