@@ -28700,7 +28700,7 @@ function eyeDirection(latDeg, lonDeg) {
   const lon = lonDeg * Math.PI / 180;
   return [Math.cos(lat) * Math.sin(lon), Math.sin(lat), Math.cos(lat) * Math.cos(lon)];
 }
-function silhouette({ eye, elevation, scale = 0.9 }) {
+function silhouette({ eye, elevation, scale = 0.9, cull = true }) {
   const points = [];
   for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) points.push([sx * CUBE_HALF, sy * CUBE_HALF, sz * CUBE_HALF]);
   if (elevation === null || elevation === void 0 || !Number.isFinite(elevation)) return points;
@@ -28708,7 +28708,7 @@ function silhouette({ eye, elevation, scale = 0.9 }) {
   const lateral = 1 + GHOST_HALF * s;
   const along = 1 + GHOST_BASE + elevation * GHOST_PER_ELEVATION;
   for (const n of NORMALS) {
-    if (dot(n, eye) >= SHOWS_BELOW) continue;
+    if (cull && dot(n, eye) >= SHOWS_BELOW) continue;
     const axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].filter((a) => !dot(a, n));
     for (const a of [-1, 1]) for (const b of [-1, 1]) {
       points.push([
@@ -28818,6 +28818,14 @@ var PALETTES = {
   classic: { U: "#F4F2EC", D: "#F0C000", F: "#00A651", B: "#0051BA", R: "#C41E3A", L: "#FF6C00" },
   colorsafe: { U: "#EFEAE0", D: "#E9C46A", F: "#6A9FB5", B: "#20405C", R: "#D1495B", L: "#8C5E8A" }
 };
+var SWAPPED = { U: "U", R: "R", F: "F", L: "L", D: "B", B: "D" };
+function paletteFor(name, scheme) {
+  const base = PALETTES[name] || PALETTES.muted;
+  if (scheme !== "japanese") return base;
+  const out = {};
+  for (const position of Object.keys(base)) out[position] = base[SWAPPED[position]];
+  return out;
+}
 var UNKNOWN_STICKER = "#C4BFB4";
 var FACES = [
   { key: "R", axis: "x", sign: 1, n: [1, 0, 0] },
@@ -28850,6 +28858,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "scramble",
     "alg",
     "palette",
+    "scheme",
     "autorotate",
     "highlight",
     "ghosts",
@@ -28890,6 +28899,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
   set palette(v) {
     this._set("palette", v);
   }
+  set scheme(v) {
+    this._set("scheme", v);
+  }
   set ghosts(v) {
     this._set("ghosts", v);
   }
@@ -28924,6 +28936,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
   /** Attribute defaults. Also what a REMOVED attribute falls back to — see _set(). */
   static DEFAULTS = {
     palette: "muted",
+    // Western unless a host says otherwise: the arrangement PALETTES is written in, and the
+    // one the app assumes until a scan proves the cube is the other kind.
+    scheme: "western",
     ghosts: "none",
     "ghost-elevation": "4",
     highlight: "none",
@@ -28950,7 +28965,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._attrs[name] = val;
     }
     if (!this._ghostMeshes) return;
-    if (name === "palette") this._paint();
+    if (name === "palette" || name === "scheme") this._paint();
     else if (name === "ghosts") {
       this._ghostVisible();
       this._paint();
@@ -29344,7 +29359,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   _paint(fl = this._facelets()) {
     if (!this.stickers) return;
-    const pal = PALETTES[this._attrs.palette] || PALETTES.muted;
+    const pal = paletteFor(this._attrs.palette, this._attrs.scheme);
     const letterOf = (m) => {
       if (!fl) return m.userData.face;
       const [x, y, z] = m.userData.home;
