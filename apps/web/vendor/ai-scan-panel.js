@@ -2164,6 +2164,57 @@ function isStructurallyValid(f) {
 
 // src/misread-decode.ts
 var import_cubejs = __toESM(require_cubejs(), 1);
+
+// src/scheme.ts
+var COLOURS = [0, 1, 2, 3, 4, 5];
+var SCHEMES = ["western", "japanese"];
+var SCHEME_COLOURS = Object.freeze({
+  western: Object.freeze({ U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 }),
+  japanese: Object.freeze({ U: 0, R: 1, F: 2, D: 5, L: 4, B: 3 })
+});
+function colourOf(position, scheme) {
+  return SCHEME_COLOURS[scheme][position];
+}
+function positionOf(colour, scheme) {
+  const table = SCHEME_COLOURS[scheme];
+  for (const position of FACES) if (table[position] === colour) return position;
+  throw new Error(`scheme ${scheme} paints no position ${colour}`);
+}
+function slotOf(colour) {
+  return FACES[colour];
+}
+function colourOfSlot(slot) {
+  return FACES.indexOf(slot);
+}
+function isColour(centre) {
+  return Number.isInteger(centre) && centre >= 0 && centre < COLOURS.length;
+}
+function neighbourColours(colour, scheme) {
+  const around = FACE_NEIGHBOURS[positionOf(colour, scheme)];
+  return ["top", "right", "bottom", "left"].map(
+    (side) => colourOf(around[side], scheme)
+  );
+}
+function adjacentIn(a, b, scheme) {
+  return neighbourColours(a, scheme).includes(b);
+}
+function commonNeighbours(colour, schemes) {
+  return COLOURS.filter((c) => c !== colour && schemes.every((s) => adjacentIn(colour, c, s)));
+}
+function holdOffset(colour, up, scheme) {
+  const around = neighbourColours(colour, scheme);
+  const side = around.indexOf(up);
+  if (side < 0) return null;
+  return (4 - side) % 4;
+}
+function schemeOfCentres(centres) {
+  return SCHEMES.find((scheme) => FACES.every((p) => centres[p] === colourOf(p, scheme)));
+}
+function neighbourColour(colour, side, scheme) {
+  return colourOf(FACE_NEIGHBOURS[positionOf(colour, scheme)][side], scheme);
+}
+
+// src/misread-decode.ts
 function whole(name, value, fallback) {
   if (value === void 0) return fallback;
   if (!Number.isInteger(value) || value < 0) {
@@ -2383,13 +2434,44 @@ function diagnoseMisread(faces, options = {}) {
     ...blamed.size === 1 ? { misreadFace: [...blamed][0] } : {}
   };
 }
+function diagnoseAcrossSchemes(bySlot, options = {}, schemes = SCHEMES) {
+  const toSlot = (position, scheme) => slotOf(colourOf(position, scheme));
+  const results = [];
+  for (const scheme of schemes) {
+    const faces = {};
+    for (const slot of FACES) faces[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
+    const d = diagnoseMisread(faces, options);
+    if (typeof d.misreadCount !== "number") continue;
+    results.push({
+      scheme,
+      diagnosis: {
+        misreadCount: d.misreadCount,
+        ...d.suspects ? { suspects: d.suspects.map((s) => ({ ...s, face: toSlot(s.face, scheme) })) } : {},
+        ...d.misreadFace ? { misreadFace: toSlot(d.misreadFace, scheme) } : {}
+      }
+    });
+  }
+  if (results.length === 0) return {};
+  const floor = Math.min(...results.map((r) => r.diagnosis.misreadCount));
+  const best = results.filter((r) => r.diagnosis.misreadCount === floor);
+  if (best.length === 1) return { ...best[0].diagnosis, misreadScheme: best[0].scheme };
+  const same = (pick) => {
+    const values = best.map((r) => JSON.stringify(pick(r.diagnosis) ?? null));
+    return values.every((v) => v === values[0]) ? pick(best[0].diagnosis) : void 0;
+  };
+  const suspects = same((d) => d.suspects);
+  const misreadFace = same((d) => d.misreadFace);
+  return {
+    misreadCount: floor,
+    ...suspects && suspects.length > 0 ? { suspects } : {},
+    ...misreadFace ? { misreadFace } : {}
+  };
+}
 
 // src/ai-assemble.ts
-var TOP_NEIGHBOUR = Object.freeze(
-  Object.fromEntries(FACES.map((face) => [face, FACE_NEIGHBOURS[face].top]))
-);
 var CONFIRM_TOLERANCE = 2;
 var LOW_CONFIDENCE_THRESHOLD = 0.15;
+var UP_PREFERENCE = [0, 2, 1, 4, 3, 5];
 function cubejsRoundTrips(facelets) {
   try {
     return import_cubejs2.default.fromString(facelets).asString() === facelets;
@@ -2407,43 +2489,66 @@ function matchingRotations(original, confirmed) {
   );
   return new Set([0, 1, 2, 3].filter((k) => dist[k] <= CONFIRM_TOLERANCE));
 }
-function undeterminedFaces(candidates, confirmed) {
-  return FACES.filter((face, fi) => {
-    if (confirmed[face]) return false;
+function byPosition(bySlot, scheme) {
+  const out = {};
+  for (const slot of FACES) out[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
+  return out;
+}
+function comboToSlots(combo, scheme) {
+  return FACES.map((slot) => combo[FACES.indexOf(positionOf(colourOfSlot(slot), scheme))]);
+}
+var readingsOf = (candidates) => new Set(candidates.map((c) => c.facelets));
+var schemesOf = (candidates) => SCHEMES.filter((s) => candidates.some((c) => c.scheme === s));
+function undeterminedSlots(candidates, confirmed) {
+  return FACES.filter((slot, si) => {
+    if (confirmed[slot]) return false;
     const perCandidate = candidates.map(
-      ([, combos]) => [...new Set(combos.map((c) => c[fi]))].sort().join(",")
+      (c) => [...new Set(c.combos.map((combo) => combo[si]))].sort().join(",")
     );
     return new Set(perCandidate).size > 1;
   });
 }
-function pickConfirm(candidates, confirmed) {
-  const useful = undeterminedFaces(candidates, confirmed);
-  const face = useful.find((f) => TOP_NEIGHBOUR[f] === "U") ?? useful[0];
-  return face === void 0 ? void 0 : { face, up: TOP_NEIGHBOUR[face] };
+function permittedHold(slot, schemes) {
+  const colour = colourOfSlot(slot);
+  const allowed = commonNeighbours(colour, schemes);
+  const tops = new Set(schemes.map((s) => neighbourColour(colour, "top", s)));
+  const canonical = tops.size === 1 ? [...tops][0] : void 0;
+  const up = canonical !== void 0 && allowed.includes(canonical) ? canonical : UP_PREFERENCE.find((c) => allowed.includes(c));
+  return up === void 0 ? void 0 : { face: slot, up: slotOf(up) };
 }
-function pickVerification(survivorCombos, weak, confirmed) {
+function pickConfirm(candidates, confirmed) {
+  const schemes = schemesOf(candidates);
+  const holds = undeterminedSlots(candidates, confirmed).map((slot) => permittedHold(slot, schemes)).filter((h) => h !== void 0);
+  return holds.find((h) => h.up === "U") ?? holds[0];
+}
+function pickVerification(survivorCombos, weak, confirmed, schemes) {
   let best;
   let bestScore = 0;
-  FACES.forEach((face, fi) => {
-    if (confirmed[face]) return;
-    const ours = new Set(survivorCombos.map((c) => c[fi]));
-    const score = weak.filter(([, combos]) => combos.every((c) => !ours.has(c[fi]))).length + (TOP_NEIGHBOUR[face] === "U" ? 0.5 : 0);
+  FACES.forEach((slot, si) => {
+    if (confirmed[slot]) return;
+    const hold = permittedHold(slot, schemes);
+    if (!hold) return;
+    const ours = new Set(survivorCombos.map((c) => c[si]));
+    const score = weak.filter((w) => w.combos.every((c) => !ours.has(c[si]))).length + (hold.up === "U" ? 0.5 : 0);
     if (score > bestScore) {
       bestScore = score;
-      best = face;
+      best = hold;
     }
   });
-  return best === void 0 || bestScore < 1 ? void 0 : { face: best, up: TOP_NEIGHBOUR[best] };
+  return best === void 0 || bestScore < 1 ? void 0 : best;
 }
-function solvableReadings(faces, centreOwner) {
+function solvableReadings(bySlot, scheme) {
+  const faces = byPosition(bySlot, scheme);
+  const owner = /* @__PURE__ */ new Map();
+  for (const position of FACES) owner.set(faces[position].colors[4], position);
   const buildFacelets = (rots2) => {
     const letters = [];
     for (let fi = 0; fi < 6; fi++) {
       const rc = rotateFace(faces[FACES[fi]].colors, rots2[fi]);
       for (let i = 0; i < 9; i++) {
-        const owner = centreOwner.get(rc[i]);
-        if (owner === void 0) return null;
-        letters.push(owner);
+        const position = owner.get(rc[i]);
+        if (position === void 0) return null;
+        letters.push(position);
       }
     }
     return letters.join("");
@@ -2459,13 +2564,9 @@ function solvableReadings(faces, centreOwner) {
       combos = isStructurallyValid(fl) && cubejsRoundTrips(fl) ? [] : null;
       seen.set(fl, combos);
     }
-    if (combos !== null) combos.push([...rots]);
+    if (combos !== null) combos.push(comboToSlots(rots, scheme));
   }
-  return [...seen].filter((e) => e[1] !== null);
-}
-function refusalDiagnosis(faces, options) {
-  if (options.diagnose === false) return { misreadCount: null };
-  return diagnoseMisread(faces, { fixedRotation: options.fixedRotation });
+  return [...seen].filter((e) => e[1] !== null).map(([facelets, combos]) => ({ scheme, facelets, combos }));
 }
 function checkedCapture(label, f) {
   if (f?.colors.length !== 9 || f.confidence.length !== 9) {
@@ -2478,12 +2579,30 @@ function checkedCapture(label, f) {
   }
   return f;
 }
+function checkedBySlot(faces) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const slot of FACES) {
+    const f = checkedCapture(`face ${slot}`, faces[slot]);
+    const centre = f.colors[4];
+    if (!isColour(centre)) {
+      return reject(`face ${slot} has centre colour ${centre}, which is not one of the six`);
+    }
+    if (seen.has(centre)) return reject(`two faces share centre colour ${centre}`);
+    seen.add(centre);
+    if (slotOf(centre) !== slot) {
+      return reject(
+        `face ${slot} has centre colour ${centre}, which files under ${slotOf(centre)} \u2014 a slot names a colour, not a position`
+      );
+    }
+  }
+  return faces;
+}
 function buildCentreOwner(faces) {
   const centreOwner = /* @__PURE__ */ new Map();
   for (const face of FACES) {
     const f = checkedCapture(`face ${face}`, faces[face]);
     const centre = f.colors[4];
-    if (!Number.isInteger(centre) || centre < 0 || centre >= FACES.length) {
+    if (!isColour(centre)) {
       return reject(`face ${face} has centre colour ${centre}, which is not one of the six`);
     }
     if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
@@ -2513,112 +2632,146 @@ function assemblePainted(faces, threshold = LOW_CONFIDENCE_THRESHOLD, options = 
   }
   const facelets = letters.join("");
   if (!isStructurallyValid(facelets) || !cubejsRoundTrips(facelets)) {
-    return reject(
-      "not a solvable cube yet",
-      refusalDiagnosis(faces, { ...options, fixedRotation: true })
-    );
+    const diagnosis = options.diagnose === false ? { misreadCount: null } : diagnoseMisread(faces, { fixedRotation: true });
+    return reject("not a solvable cube yet", diagnosis);
   }
   const conf = FACES.flatMap((f) => faces[f].confidence);
-  return { facelets, valid: true, ...summariseConfidence(conf, threshold) };
+  const centres = Object.fromEntries(FACES.map((f) => [f, faces[f].colors[4]]));
+  return {
+    facelets,
+    valid: true,
+    ...summariseConfidence(conf, threshold),
+    ...schemeOfCentres(centres) ? { scheme: schemeOfCentres(centres) } : {}
+  };
 }
-function narrowByConfirmations(faces, all, confirmed) {
-  const confirmedFaces = FACES.filter((f) => confirmed[f]);
+function narrowByConfirmations(bySlot, all, confirmed) {
+  const confirmedSlots = FACES.filter((slot) => confirmed[slot]);
   const allowed = /* @__PURE__ */ new Map();
-  for (const face of confirmedFaces) {
-    const capture = checkedCapture(`confirmation of ${face}`, confirmed[face]);
-    const rots = matchingRotations(faces[face], capture);
-    if (rots.size === 0) {
+  for (const slot of confirmedSlots) {
+    const { capture, up } = confirmed[slot];
+    const checked = checkedCapture(`confirmation of ${slot}`, capture);
+    if (!FACES.includes(up))
+      throw new Error(`confirmation of ${slot}: up ${String(up)} is not a slot`);
+    const physical = matchingRotations(bySlot[slot], checked);
+    if (physical.size === 0) {
       return {
         ok: false,
         refusal: reject(
           "that side read differently this time \u2014 checking again with the fresh read",
-          {
-            reread: face,
-            confirm: { face, up: TOP_NEIGHBOUR[face] }
-          }
+          { reread: slot, confirm: { face: slot, up } }
         )
       };
     }
-    allowed.set(face, rots);
+    const perScheme = /* @__PURE__ */ new Map();
+    for (const scheme of SCHEMES) {
+      const offset = holdOffset(colourOfSlot(slot), colourOfSlot(up), scheme);
+      perScheme.set(
+        scheme,
+        offset === null ? /* @__PURE__ */ new Set() : new Set([...physical].map((k) => (k - offset + 4) % 4))
+      );
+    }
+    allowed.set(slot, perScheme);
   }
-  const candidates = all.map(([fl, combos]) => [
-    fl,
-    combos.filter(
-      (c) => confirmedFaces.every((face) => allowed.get(face).has(c[FACES.indexOf(face)]))
-    )
-  ]).filter(([, combos]) => combos.length > 0);
+  const candidates = all.map(
+    (c) => ({
+      ...c,
+      combos: c.combos.filter(
+        (combo) => confirmedSlots.every(
+          (slot) => allowed.get(slot).get(c.scheme).has(combo[FACES.indexOf(slot)])
+        )
+      )
+    })
+  ).filter((c) => c.combos.length > 0);
   if (candidates.length === 0) {
-    const last = confirmedFaces[confirmedFaces.length - 1];
+    const last = confirmedSlots[confirmedSlots.length - 1];
     return {
       ok: false,
       refusal: reject("those two looks disagree \u2014 one was held the wrong way up; try again", {
         mismatch: true,
-        confirm: { face: last, up: TOP_NEIGHBOUR[last] }
+        confirm: { face: last, up: confirmed[last].up }
       })
     };
   }
-  return { ok: true, confirmedFaces, allowed, candidates };
+  return { ok: true, confirmedSlots, allowed, candidates };
 }
-function verifySurvivor(all, facelets, narrowed, confirmed) {
-  const { confirmedFaces, allowed } = narrowed;
-  const contradictions = (candidate) => confirmedFaces.filter((face) => {
-    const fi = FACES.indexOf(face);
-    return candidate.every((c) => !allowed.get(face).has(c[fi]));
+function verifySurvivor(all, survivors, narrowed, confirmed) {
+  const { confirmedSlots, allowed } = narrowed;
+  const facelets = survivors[0].facelets;
+  const contradictions = (candidate) => confirmedSlots.filter((slot) => {
+    const si = FACES.indexOf(slot);
+    const ok = allowed.get(slot).get(candidate.scheme);
+    return candidate.combos.every((c) => !ok.has(c[si]));
   }).length;
-  const weak = all.filter(([fl, c]) => fl !== facelets && contradictions(c) < 2);
+  const weak = all.filter((c) => c.facelets !== facelets && contradictions(c) < 2);
   if (weak.length === 0) return null;
-  const check = pickVerification(all.find(([fl]) => fl === facelets)[1], weak, confirmed);
+  const schemes = schemesOf([...survivors, ...weak]);
+  const survivorCombos = survivors.flatMap((s) => s.combos);
+  const check = pickVerification(survivorCombos, weak, confirmed, schemes);
   if (check) {
     return reject("one more look to be sure \u2014 a single look could be held wrong", {
       confirm: check
     });
   }
+  return symmetricRefusal(survivors, weak);
+}
+function symmetricRefusal(survivors, alternatives) {
+  const survivorSchemes = new Set(survivors.map((c) => c.scheme));
+  const onlyScheme = alternatives.length > 0 && alternatives.every((c) => !survivorSchemes.has(c.scheme));
+  if (onlyScheme) {
+    return reject(
+      "these readings differ only in which colour is under white, and no hold can tell them apart \u2014 turn any one face, then scan again",
+      { ambiguous: true, schemeAmbiguous: true }
+    );
+  }
   return reject(
     "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
-    {
-      ambiguous: true
-    }
+    { ambiguous: true }
   );
 }
 function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
-  const centreOwner = buildCentreOwner(faces);
-  if (!(centreOwner instanceof Map)) return centreOwner;
-  const all = solvableReadings(faces, centreOwner);
+  const bySlot = checkedBySlot(faces);
+  if ("valid" in bySlot) return bySlot;
+  const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
   if (all.length === 0) {
     return reject(
       "no orientation of the faces is solvable \u2014 a colour was misread",
-      refusalDiagnosis(faces, options)
+      options.diagnose === false ? { misreadCount: null } : diagnoseAcrossSchemes(bySlot)
     );
   }
-  const narrowed = narrowByConfirmations(faces, all, confirmed);
+  const narrowed = narrowByConfirmations(bySlot, all, confirmed);
   if (!narrowed.ok) return narrowed.refusal;
   const candidates = narrowed.candidates;
-  if (candidates.length > 1) {
+  const readings = readingsOf(candidates);
+  if (readings.size > 1) {
     const confirm = pickConfirm(candidates, confirmed);
     if (confirm) {
-      return reject(`${candidates.length} readings fit \u2014 another look narrows them`, {
+      return reject(`${readings.size} readings fit \u2014 another look narrows them`, {
         ambiguous: true,
         confirm,
-        readings: candidates.length,
-        undetermined: undeterminedFaces(candidates, confirmed)
+        readings: readings.size,
+        undetermined: undeterminedSlots(candidates, confirmed)
       });
     }
-    return reject(
-      "this cube is too symmetric to read for certain \u2014 turn any one face, then scan again",
-      { ambiguous: true }
+    const [first] = readings;
+    return symmetricRefusal(
+      candidates.filter((c) => c.facelets === first),
+      candidates.filter((c) => c.facelets !== first)
     );
   }
-  const [facelets, combos] = candidates[0];
-  const unverified = verifySurvivor(all, facelets, narrowed, confirmed);
+  const survivors = candidates;
+  const unverified = verifySurvivor(all, survivors, narrowed, confirmed);
   if (unverified) return unverified;
-  const chosen = combos[0];
+  const facelets = survivors[0].facelets;
+  const schemes = schemesOf(survivors);
+  const chosen = survivors.find((c) => c.scheme === schemes[0]).combos[0];
   const conf = [];
-  for (let fi = 0; fi < 6; fi++) {
-    for (const c of rotateFace(faces[FACES[fi]].confidence, chosen[fi])) conf.push(c);
-  }
+  FACES.forEach((slot, si) => {
+    for (const c of rotateFace(bySlot[slot].confidence, chosen[si])) conf.push(c);
+  });
   return {
     facelets,
     valid: true,
+    scheme: schemes.length === 1 ? schemes[0] : "undetermined",
     ...summariseConfidence(conf, threshold),
     rotations: [...chosen]
   };
@@ -4022,7 +4175,7 @@ var CameraSession = class {
 function handleMisreadRequest(request) {
   return {
     epoch: request.epoch,
-    diagnosis: diagnoseMisread(request.faces, { fixedRotation: request.fixedRotation })
+    diagnosis: request.fixedRotation ? diagnoseMisread(request.faces, { fixedRotation: true }) : diagnoseAcrossSchemes(request.faces)
   };
 }
 
@@ -4417,6 +4570,8 @@ var AiScanPanel = class extends HTMLElement {
    */
   pendingOpening = null;
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
+  /** Each confirmation with the hold it answered: the assembler projects it into every scheme's
+   *  frame from `up`, so a capture without its hold is not a confirmation (ADR 0001). */
   confirmed = {};
   awaiting = null;
   /** Hand-painting mode: the camera is off and every non-centre sticker is settable. */
@@ -4959,7 +5114,7 @@ var AiScanPanel = class extends HTMLElement {
         this.report("confirm", ...this.confirmWords(this.awaiting));
         return;
       }
-      this.confirmed[face] = read;
+      this.confirmed[face] = { capture: read, up: this.awaiting.up };
       this.awaiting = null;
       this.flash();
       this.scheduleCheck(this.tinted("ok", "Got it \u2014 checking\u2026"));
@@ -5338,7 +5493,7 @@ var AiScanPanel = class extends HTMLElement {
         return;
       }
       const face = result.reread;
-      const fresh = face === void 0 ? void 0 : this.confirmed[face];
+      const fresh = face === void 0 ? void 0 : this.confirmed[face]?.capture;
       if (face === void 0 || fresh === void 0 || round >= FACES.length) {
         this.finish(result);
         return;

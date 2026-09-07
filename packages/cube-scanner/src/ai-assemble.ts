@@ -16,7 +16,7 @@
 //
 //     moves from solved   0     1     2     3     4     5    10    20+
 //     unique reading    100%    0%   10%   34%   50%   70%   96%   100%
-//     with confirmation 100%  100%  100%  100%   99%   99%  100%    99%
+//     with confirmation 100%  100%  100%  100%   99%   99%  100%   99%
 //
 // which is the worst possible shape for a beginner's tutor: a nearly-solved cube — exactly what a
 // child hands it — is the case that cannot be read. Re-scanning cannot help either, because the
@@ -58,11 +58,55 @@
 // orientation is actually determined, so the check can fail. Two independent looks must agree, and
 // a mis-hold makes them disagree, which shows up as no surviving reading at all.
 //
+// THE COLOUR SCHEME IS A THIRD AMBIGUITY DIMENSION (2026-09-07, ADR 0001). A capture is identified
+// by its centre COLOUR; where that colour SITS — which of blue/yellow is under white — is the
+// cube's scheme, Western or Japanese (`scheme.ts`), and six face photographs carry no adjacency
+// information that could say. Until this date the filing was the Western scheme stated as an
+// identity (`FACES[centre]`), and a scrambled Japanese cube was refused as "at least 3 stickers
+// misread" about a correct read. The obvious remedy — try both filings, exactly one is legal —
+// is TRUE on random states (0 of 200 false positives each way) and FALSE on the near-solved,
+// structured states a beginner hands over: a top-layer edge 3-cycle is valid under both filings
+// as two DIFFERENT cubes, 196 of the 220 edge 3-cycles are readable under both, and two twisted
+// corners are the same string under both. So the search below runs over every scheme and the
+// scheme is decided by the same machinery that decides a rotation: a candidate carries its
+// scheme, confirmations narrow across schemes (projected into each candidate's frame, because the
+// same photograph of the blue side "red up" is canonical-rotated differently for a Western B and
+// a Japanese D), a look is only ever requested for a hold that is possible in every surviving
+// scheme, and a reading is accepted only when every alternative from EITHER scheme is gone. When
+// two readings differ only by scheme and no permitted look separates them, the answer is the
+// too-symmetric refusal with its reason named — "turn any one face" — never a setting's guess:
+// accepting either is a confidently wrong cube for whichever child has the other kind.
+// Search cost is one more 4^6 pass, 4–7 ms on every state class measured.
+//
+// EVERY COORDINATE IN A RESULT IS A CAPTURE COORDINATE. A `Record<Face, …>` of captures is keyed
+// by SLOT — `FACES[colour]`, the colour's name, never its position (`scheme.ts`, `slotOf`) — and
+// `rotations`, `suspects`, `misreadFace`, `undetermined` and `confirm` all name slots, so a host
+// that draws tiles by colour never has a reference move under it when the scheme is decided.
+// `facelets` is positional in the reported `scheme`.
+//
 // Colour-class indices match ml/data.yaml: 0 white 1 red 2 green 3 yellow 4 orange 5 blue.
 
 import Cube from 'cubejs';
-import { FACE_NEIGHBOURS, isStructurallyValid, rotateFace } from './facelet-cube.js';
-import { type DecodedSticker, diagnoseMisread, type MisreadDiagnosis } from './misread-decode.js';
+import { isStructurallyValid, rotateFace } from './facelet-cube.js';
+import {
+  type DecodedSticker,
+  diagnoseAcrossSchemes,
+  diagnoseMisread,
+  type MisreadDiagnosis,
+} from './misread-decode.js';
+import {
+  type Colour,
+  colourOfSlot,
+  commonNeighbours,
+  holdOffset,
+  isColour,
+  neighbourColour,
+  positionOf,
+  SCHEMES,
+  type Scheme,
+  schemeOfCentres,
+  slotOf,
+} from './scheme.js';
 import { FACES, type Face, type ScanResult } from './types.js';
 
 export { rotateFace };
@@ -74,8 +118,10 @@ export interface ColorFace {
 }
 
 /**
- * A request for the one extra look that breaks a tie: show `face` again, held with `up` facing
- * upwards. That fixes the captured rotation, because a face plus the face above it pins the cube.
+ * A request for the one extra look that breaks a tie: show the side in slot `face` again, held
+ * with the side in slot `up` upwards. Both are SLOTS — colours — so the instruction reads "show
+ * the blue side, red up", and `up` is always a colour adjacent to `face` in every scheme still in
+ * play, so the cube in the hand can obey it whichever kind it is.
  */
 export interface ConfirmRequest {
   face: Face;
@@ -83,9 +129,20 @@ export interface ConfirmRequest {
 }
 
 /**
+ * A confirmation as it must be handed back: the capture, and the hold it was taken under. The
+ * hold is not optional and not implied by the slot: the same photograph is a different rotation
+ * of the canonical capture under each scheme, and only the request's `up` lets each candidate
+ * project it into its own frame (`holdOffset`).
+ */
+export interface Confirmation {
+  capture: ColorFace;
+  up: Face;
+}
+
+/**
  * A sticker a colour misread most plausibly landed on: flipping it to `to` makes the scan a legal
- * cube. `index` is into the capture AS SHOWN — what a host's tile displays — so a suspect maps
- * straight onto the sticker a user can tap.
+ * cube. `face` is the SLOT (the colour's capture) and `index` is into that capture AS SHOWN — what
+ * a host's tile displays — so a suspect maps straight onto the sticker a user can tap.
  *
  * An ALIAS of the decoder's own `DecodedSticker`, not a second declaration of the same shape: this
  * is the name the app's hosts import, and the sticker they receive is the one the search named.
@@ -99,10 +156,11 @@ export interface AssembleOptions {
    *
    * `false` returns the refusal with `misreadCount: null` — "checking", never "nothing is wrong" —
    * and no `suspects` or `misreadFace`, so a caller can paint the refusal within a tick and put
-   * `diagnoseMisread` somewhere that is not the page's thread. Deferring is not a nicety: the
-   * decode is 52-125 ms at distance 3 on an easy scramble, 2.7 s for a distance-3 answer on a
-   * 20-move scramble, and 2.1-3.0 s when its 20M-node backstop is exhausted — seconds spent to
-   * claim nothing, all of it blocking whatever called it (measured 2026-09-05).
+   * the decode somewhere that is not the page's thread. Deferring is not a nicety: the decode is
+   * 52-125 ms at distance 3 on an easy scramble, 2.7 s for a distance-3 answer on a 20-move
+   * scramble, and 2.1-3.0 s when its 20M-node backstop is exhausted — seconds spent to claim
+   * nothing, all of it blocking whatever called it (measured 2026-09-05), and since 2026-09-07 it
+   * runs once per scheme.
    *
    * The default is deliberately the synchronous one. A caller with nowhere to run the decode still
    * gets the count, in one call, exactly as before.
@@ -132,6 +190,20 @@ export type AiScanResult = ScanResult & {
    * confirmation — the fresher, deliberately-held look — as the face's reading and re-assemble.
    */
   reread?: Face;
+  /**
+   * With `ambiguous` and no `confirm`: the readings left standing are different cubes that
+   * differ ONLY in which of blue/yellow is under white, and no hold a child could be asked for
+   * would tell them apart. The honest instruction is one turn and a fresh scan; the dishonest one
+   * is to let a setting choose. See the header's scheme section.
+   */
+  schemeAmbiguous?: boolean;
+  /**
+   * On success: which arrangement the accepted `facelets` are positional in. `'undetermined'`
+   * when the surviving readings are the SAME string under both schemes — the solved cube, two
+   * twisted corners — so the STATE is known and the colours under white are not; a host paints
+   * such a cube in whatever scheme it assumes and says that it assumed.
+   */
+  scheme?: Scheme | 'undetermined';
   /**
    * The sticker to point at: changing it to `to` makes the reading a legal cube. Populated ONLY
    * where the search itself says the repair is unambiguous — the READING is one change from legal,
@@ -164,6 +236,12 @@ export type AiScanResult = ScanResult & {
    * claim nothing. A host must not collapse the two — "checking…" and "too much of the cube was
    * read wrong to say where" are opposite sentences about the same field.
    *
+   * Since 2026-09-07 the decode runs under EVERY scheme and this is the smallest of the floors,
+   * because the true scheme is one of them and the minimum of two lower bounds is still a lower
+   * bound on the cube actually held — where before, a correctly read Japanese cube with one wrong
+   * sticker was told "at least 4" (measured: 4 under the Western filing, 1 under the Japanese).
+   * `misreadScheme` says which filing the count came from.
+   *
    * PRESUMING THE SIX CENTRES WERE READ RIGHT. The bound is proved against the colouring implied
    * by the centres, because the centres are what name the faces — so a misread CENTRE is not one
    * wrong sticker, it is a relabelling of every sticker of that colour, and the count reported is
@@ -173,29 +251,23 @@ export type AiScanResult = ScanResult & {
    * dev-docs/misread-decoding.md has the argument.
    */
   misreadCount?: number | null;
-  /** The one side every minimal repair blames, when they agree on one — a hint for what to re-show. */
+  /** The one side every minimal repair blames, when they agree on one — a hint for what to re-show. A slot. */
   misreadFace?: Face;
   /**
-   * On success: the rotation applied to each as-shown capture (URFDLB order, quarter turns CW) to
-   * reach the canonical layout — what a host needs to animate each tile turning the right way up.
+   * The scheme under which `misreadCount` (and any `suspects`) was found, when exactly one scheme
+   * produced the smallest floor. Absent when the schemes tie — then the count holds under either
+   * — or when no count could be given. A host words a count from a scheme its setting does not
+   * hold as conditional, and says where the toggle is.
+   */
+  misreadScheme?: Scheme;
+  /**
+   * On success: the rotation applied to each as-shown capture to reach the canonical layout, in
+   * SLOT order (index i is the colour-i capture — the capture keyed `FACES[i]`), quarter turns
+   * CW — what a host needs to animate each tile turning the right way up. For an
+   * `'undetermined'` scheme these are the Western filing's rotations.
    */
   rotations?: number[];
 };
-
-/**
- * The face that sits directly ABOVE each face in the URFDLB facelet layout — i.e. the side that
- * must point up for a capture of that face to be in canonical rotation. Four of the six answer
- * "U", which is why a side face is the one to ask about when there is a choice: "hold white up"
- * is an instruction a child can follow.
- *
- * DERIVED, not written out (2026-09-05). This was a hand-written table of the same six answers
- * `FACE_NEIGHBOURS` already computes from `EDGE_FACELET` — the cube's own geometry — so the
- * instruction a user is given to hold their cube by had a second, independent source that nothing
- * checked against the first. The two agreeing was a fact about whoever typed the table.
- */
-const TOP_NEIGHBOUR: Readonly<Record<Face, Face>> = Object.freeze(
-  Object.fromEntries(FACES.map((face) => [face, FACE_NEIGHBOURS[face].top])),
-) as Readonly<Record<Face, Face>>;
 
 /**
  * How many stickers a confirmation may read differently from the first capture and still count as
@@ -216,6 +288,13 @@ const CONFIRM_TOLERANCE = 2;
  * someone can change and the app must say something true if the two ever cross.
  */
 export const LOW_CONFIDENCE_THRESHOLD = 0.15;
+
+/**
+ * Which colour to hold upwards, in order of preference, when more than one is permitted: white
+ * first — "hold the white side up" is the instruction a child can follow — then the side colours,
+ * then the two that trade places between schemes.
+ */
+const UP_PREFERENCE: readonly Colour[] = [0, 2, 1, 4, 3, 5];
 
 function cubejsRoundTrips(facelets: string): boolean {
   try {
@@ -256,6 +335,9 @@ function reject(reason: string, extra: Partial<AiScanResult> = {}): AiScanResult
  * then finds no reading at all and tells a user who did everything right that they held it wrong.
  * The tolerance is the rule; the minimum was a second, unstated, stricter one on top of it.
  *
+ * PHYSICAL, and scheme-free: it relates two photographs of the same side. Which rotation is
+ * CANONICAL for a candidate is the candidate's business (`holdOffset`), applied by the caller.
+ *
  * Exported for tests only. The failure it exists to prevent needs a face that is two stickers from
  * its OWN quarter-turn, which is a property of the colouring rather than of the scan — searching
  * legal cubes for one is a worse test than stating the pair outright, and a worse test is how a
@@ -271,87 +353,158 @@ export function matchingRotations(original: ColorFace, confirmed: ColorFace): Se
 }
 
 /**
- * Choose which side to ask about: one the surviving readings actually disagree over, preferring a
- * side face so the instruction is "hold the white side up". Faces already confirmed are skipped,
- * so a second round asks about something new rather than looping on the same side.
+ * One legal reading of the six captures under one scheme: the positional facelet string, and
+ * EVERY rotation combo that produces it — not just the first — in SLOT order. A symmetric face (a
+ * solved side is the extreme case) is read the same at several rotations, so one string
+ * legitimately has many combos, and a later confirmation has to be able to match any of them.
+ * The same string can also arise under both schemes; those are two candidates that a host sees
+ * as one reading (`readingsOf`), because they are one STATE.
+ */
+interface Candidate {
+  scheme: Scheme;
+  facelets: string;
+  combos: number[][];
+}
+
+/**
+ * Six captures by the colour of their centre. The record's keys are slots and are REQUIRED to
+ * name their capture's colour — a capture filed under a slot that is not its colour is a caller
+ * that has confused a slot with a position, which is the confusion this whole file exists to
+ * end, so it is refused in words rather than silently re-filed.
+ */
+type BySlot = Readonly<Record<Face, ColorFace>>;
+
+/** The six captures laid out by POSITION under `scheme` — what the rotation search reads. */
+function byPosition(bySlot: BySlot, scheme: Scheme): Record<Face, ColorFace> {
+  const out = {} as Record<Face, ColorFace>;
+  for (const slot of FACES) out[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
+  return out;
+}
+
+/** A combo in POSITION order under `scheme`, re-indexed to SLOT order. */
+function comboToSlots(combo: readonly number[], scheme: Scheme): number[] {
+  return FACES.map((slot) => combo[FACES.indexOf(positionOf(colourOfSlot(slot), scheme))]!);
+}
+
+/** The distinct facelet strings a list of candidates describes — what a host counts as readings. */
+const readingsOf = (candidates: readonly Candidate[]): Set<string> =>
+  new Set(candidates.map((c) => c.facelets));
+
+/** The schemes some candidate in the list still stands under. */
+const schemesOf = (candidates: readonly Candidate[]): Scheme[] =>
+  SCHEMES.filter((s) => candidates.some((c) => c.scheme === s));
+
+/**
+ * Choose which side to ask about: one the surviving readings actually disagree over, held a way
+ * that is possible in EVERY scheme still in play — preferring white up, so the instruction is the
+ * easy one. Faces already confirmed are skipped, so a second round asks about something new
+ * rather than looping on the same side.
  */
 /**
- * The unconfirmed sides whose way-up the surviving readings disagree about. Candidates that give
- * the same facelet string always allow the same rotations of a side, so two readings differ on a
- * side exactly when their rotation sets for it differ — and those are the sides a look can settle.
+ * The unconfirmed slots whose way-up the surviving candidates disagree about. Candidates that
+ * give the same facelet string under the same scheme always allow the same rotations of a slot,
+ * so two candidates differ on a slot exactly when their rotation sets for it differ — and those
+ * are the slots a look can settle. Compared across schemes too: the same string under two schemes
+ * can allow different rotations of the blue and yellow captures, and a look there settles the
+ * SCHEME without changing the state.
  */
-function undeterminedFaces(
-  candidates: [string, number[][]][],
-  confirmed: Partial<Record<Face, ColorFace>>,
+function undeterminedSlots(
+  candidates: readonly Candidate[],
+  confirmed: Partial<Record<Face, Confirmation>>,
 ): Face[] {
-  return FACES.filter((face, fi) => {
-    if (confirmed[face]) return false;
-    const perCandidate = candidates.map(([, combos]) =>
-      [...new Set(combos.map((c) => c[fi]!))].sort().join(','),
+  return FACES.filter((slot, si) => {
+    if (confirmed[slot]) return false;
+    const perCandidate = candidates.map((c) =>
+      [...new Set(c.combos.map((combo) => combo[si]!))].sort().join(','),
     );
     return new Set(perCandidate).size > 1;
   });
 }
 
+/**
+ * The hold to ask for on `slot`, if any colour may be held up on every scheme in play.
+ *
+ * The side's CANONICAL top neighbour first, when every scheme in play agrees on it and permits
+ * it — that is the hold the assembler has always asked for ("white up" for a side face, "blue
+ * up" for the white side of a Western cube), so a scan with one scheme left asks exactly what
+ * it asked before this file knew about schemes. Only when the schemes disagree about what sits
+ * above a side does the preference list choose among the colours they have in common.
+ */
+function permittedHold(slot: Face, schemes: readonly Scheme[]): ConfirmRequest | undefined {
+  const colour = colourOfSlot(slot);
+  const allowed = commonNeighbours(colour, schemes);
+  const tops = new Set(schemes.map((s) => neighbourColour(colour, 'top', s)));
+  const canonical = tops.size === 1 ? [...tops][0]! : undefined;
+  const up =
+    canonical !== undefined && allowed.includes(canonical)
+      ? canonical
+      : UP_PREFERENCE.find((c) => allowed.includes(c));
+  return up === undefined ? undefined : { face: slot, up: slotOf(up) };
+}
+
 function pickConfirm(
-  candidates: [string, number[][]][],
-  confirmed: Partial<Record<Face, ColorFace>>,
+  candidates: readonly Candidate[],
+  confirmed: Partial<Record<Face, Confirmation>>,
 ): ConfirmRequest | undefined {
-  const useful = undeterminedFaces(candidates, confirmed);
-  const face = useful.find((f) => TOP_NEIGHBOUR[f] === 'U') ?? useful[0];
-  return face === undefined ? undefined : { face, up: TOP_NEIGHBOUR[face] };
+  const schemes = schemesOf(candidates);
+  const holds = undeterminedSlots(candidates, confirmed)
+    .map((slot) => permittedHold(slot, schemes))
+    .filter((h): h is ConfirmRequest => h !== undefined);
+  return holds.find((h) => h.up === 'U') ?? holds[0];
 }
 
 /**
  * Choose the side to ask about in order to rule out readings that are not yet ruled out TWICE:
  * one whose reading the survivor predicts differently from each of them. Candidates producing the
- * same facelet string always predict the same reading of a face, so "predicts differently" is
- * exactly "their rotation sets are disjoint".
+ * same facelet string under one scheme always predict the same reading of a slot, so "predicts
+ * differently" is exactly "their rotation sets are disjoint".
  */
 function pickVerification(
-  survivorCombos: number[][],
-  weak: [string, number[][]][],
-  confirmed: Partial<Record<Face, ColorFace>>,
+  survivorCombos: readonly number[][],
+  weak: readonly Candidate[],
+  confirmed: Partial<Record<Face, Confirmation>>,
+  schemes: readonly Scheme[],
 ): ConfirmRequest | undefined {
-  let best: Face | undefined;
+  let best: ConfirmRequest | undefined;
   let bestScore = 0;
-  FACES.forEach((face, fi) => {
-    if (confirmed[face]) return;
-    const ours = new Set(survivorCombos.map((c) => c[fi]!));
-    // How many still-standing readings this face would expose, plus a nudge towards a side face
-    // so the instruction stays "hold the white side up".
+  FACES.forEach((slot, si) => {
+    if (confirmed[slot]) return;
+    const hold = permittedHold(slot, schemes);
+    if (!hold) return;
+    const ours = new Set(survivorCombos.map((c) => c[si]!));
+    // How many still-standing readings this slot would expose, plus a nudge towards a side that
+    // can be held white-up so the instruction stays "hold the white side up".
     const score =
-      weak.filter(([, combos]) => combos.every((c) => !ours.has(c[fi]!))).length +
-      (TOP_NEIGHBOUR[face] === 'U' ? 0.5 : 0);
+      weak.filter((w) => w.combos.every((c) => !ours.has(c[si]!))).length +
+      (hold.up === 'U' ? 0.5 : 0);
     if (score > bestScore) {
       bestScore = score;
-      best = face;
+      best = hold;
     }
   });
-  return best === undefined || bestScore < 1 ? undefined : { face: best, up: TOP_NEIGHBOUR[best] };
+  return best === undefined || bestScore < 1 ? undefined : best;
 }
 
 /**
- * Every distinct solvable reading of six as-shown faces: facelet string → EVERY rotation combo
- * that produces it — not just the first. A symmetric face (a solved side is the extreme case) is
- * read the same at several rotations, so one string legitimately has many combos, and a later
- * confirmation has to be able to match any of them. Each distinct string is validated once;
- * `null` marks one already rejected.
+ * Every distinct solvable reading of six as-shown captures under ONE scheme. Each distinct string
+ * is validated once; `null` marks one already rejected.
  */
-function solvableReadings(
-  faces: Record<Face, ColorFace>,
-  centreOwner: Map<number, Face>,
-): [string, number[][]][] {
+function solvableReadings(bySlot: BySlot, scheme: Scheme): Candidate[] {
+  const faces = byPosition(bySlot, scheme);
+  // Colour → position, under this scheme's filing.
+  const owner = new Map<number, Face>();
+  for (const position of FACES) owner.set(faces[position].colors[4]!, position);
+
   // Build the 54-char facelet string for one per-face rotation combo, or null if any sticker's
   // colour isn't one of the 6 centre colours (can't be placed on a real cube).
   const buildFacelets = (rots: number[]): string | null => {
     const letters: string[] = [];
     for (let fi = 0; fi < 6; fi++) {
-      const rc = rotateFace(faces[FACES[fi]!]!.colors, rots[fi]!);
+      const rc = rotateFace(faces[FACES[fi]!].colors, rots[fi]!);
       for (let i = 0; i < 9; i++) {
-        const owner = centreOwner.get(rc[i]!);
-        if (owner === undefined) return null;
-        letters.push(owner);
+        const position = owner.get(rc[i]!);
+        if (position === undefined) return null;
+        letters.push(position);
       }
     }
     return letters.join('');
@@ -368,27 +521,11 @@ function solvableReadings(
       combos = isStructurallyValid(fl) && cubejsRoundTrips(fl) ? [] : null;
       seen.set(fl, combos);
     }
-    if (combos !== null) combos.push([...rots]);
+    if (combos !== null) combos.push(comboToSlots(rots, scheme));
   }
-  return [...seen].filter((e): e is [string, number[][]] => e[1] !== null);
-}
-
-/**
- * The diagnosis a refusal carries: run it here, or hand the caller the "checking" marker.
- *
- * The decode itself moved to `misread-decode.ts` (2026-09-05), beside the search whose guarantees
- * it spends and where the misread worker can reach it without the assembler. What stays here is
- * the one decision this module owns — WHETHER to spend seconds of the calling thread on it.
- */
-function refusalDiagnosis(
-  faces: Record<Face, ColorFace>,
-  options: AssembleOptions & { fixedRotation?: boolean },
-): MisreadDiagnosis {
-  // `null`, never an absent field: absent already means "the decode ran and could claim nothing",
-  // and a caller that reads the two the same way says "too much of the cube was read wrong to say
-  // where" about a cube nothing has looked at yet. See AiScanResult.misreadCount.
-  if (options.diagnose === false) return { misreadCount: null };
-  return diagnoseMisread(faces, { fixedRotation: options.fixedRotation });
+  return [...seen]
+    .filter((e): e is [string, number[][]] => e[1] !== null)
+    .map(([facelets, combos]) => ({ scheme, facelets, combos }));
 }
 
 /**
@@ -429,34 +566,55 @@ function checkedCapture(label: string, f: ColorFace | undefined): ColorFace {
 }
 
 /**
- * Validate six faces and build the centre-colour → face map, for both entry points.
+ * Validate six captures for the CAMERA path: each a capture, each centre a colour class, the six
+ * centres distinct, and every capture filed under the slot that names its colour.
+ *
+ * Returns the captures typed as by-slot, or the rejection to hand straight back. The centre-class
+ * check is where "a centre is a colour the detector can produce" is enforced (2026-09-05):
+ * ordinary stickers are deliberately not range-checked — an unknown colour there is a statement
+ * about the cube — but a CENTRE names a capture, so an out-of-range one is silently accepted as
+ * the name of one: nine stickers of class 17 on U built the map `17 -> U`, every one of them then
+ * resolved through it, and the assembler returned `valid: true` for a facelet string assembled out
+ * of a colour class no model emits. NaN was worse, because `Map` matches it to itself.
+ */
+function checkedBySlot(faces: Record<Face, ColorFace>): BySlot | AiScanResult {
+  const seen = new Set<number>();
+  for (const slot of FACES) {
+    const f = checkedCapture(`face ${slot}`, faces[slot]);
+    const centre = f.colors[4]!;
+    if (!isColour(centre)) {
+      return reject(`face ${slot} has centre colour ${centre}, which is not one of the six`);
+    }
+    // Unreachable from either host path, and kept as a guard on the public API rather than a
+    // case with a UI: the camera files every capture under its centre's slot (so a second capture
+    // of the same colour overwrites the first rather than joining it). A caller feeding captures
+    // directly can still hit it, which is why it stays a loud refusal instead of an assumption.
+    if (seen.has(centre)) return reject(`two faces share centre colour ${centre}`);
+    seen.add(centre);
+    if (slotOf(centre) !== slot) {
+      return reject(
+        `face ${slot} has centre colour ${centre}, which files under ${slotOf(centre)} — a slot names a colour, not a position`,
+      );
+    }
+  }
+  return faces;
+}
+
+/**
+ * Validate six faces and build the centre-colour → face map, for the PAINTED path, whose keys are
+ * POSITIONS authored by the user rather than slots.
  *
  * Returns the map, or the rejection to hand straight back — the caller discriminates on
- * `instanceof Map`. It was written twice, comment included, once in each of the two public
- * functions; two lifetimes of one validation rule is how a caller comes to be trusted on one path
- * and not the other.
+ * `instanceof Map`.
  */
 function buildCentreOwner(faces: Record<Face, ColorFace>): Map<number, Face> | AiScanResult {
   const centreOwner = new Map<number, Face>();
   for (const face of FACES) {
     const f = checkedCapture(`face ${face}`, faces[face]);
     const centre = f.colors[4]!;
-    // A CENTRE IS A COLOUR THE DETECTOR CAN PRODUCE, and this is where that is checked
-    // (2026-09-05). Ordinary stickers are deliberately not range-checked — an unknown colour there
-    // is a statement about the cube and `assemblePainted` refuses it in words — but a CENTRE names
-    // a face, so an out-of-range one is silently accepted as the name of one: nine stickers of
-    // class 17 on U built the map `17 -> U`, every one of them then resolved through it, and both
-    // assemblers returned `valid: true` for a facelet string assembled out of a colour class no
-    // model emits. NaN was worse, because `Map` matches it to itself. That is detector data this
-    // module cannot read, not a cube it can describe, so it is refused rather than named.
-    if (!Number.isInteger(centre) || centre < 0 || centre >= FACES.length) {
+    if (!isColour(centre)) {
       return reject(`face ${face} has centre colour ${centre}, which is not one of the six`);
     }
-    // Unreachable from either host path, and kept as a guard on the public API rather than a
-    // case with a UI: the camera files every capture under FACES[centre] (so a second face with
-    // the same centre overwrites the first rather than joining it), and a painted side is seeded
-    // with its own colour while setSticker refuses index 4. A caller feeding faces directly can
-    // still hit it, which is why it stays a loud refusal instead of an assumption.
     if (centreOwner.has(centre)) return reject(`two faces share centre colour ${centre}`);
     centreOwner.set(centre, face);
   }
@@ -482,7 +640,9 @@ function summariseConfidence(
 
 /**
  * Validate six faces whose orientation is already KNOWN — painted by hand straight into the
- * canonical net rather than shown to a camera.
+ * canonical net rather than shown to a camera. The keys are POSITIONS: the user authored each
+ * sticker in place, and the centres are whatever the user put there, so the scheme is read off
+ * them (`schemeOfCentres`) rather than searched for.
  *
  * No rotation search, deliberately. The 4^6 search exists because a camera cannot see which way up
  * a face is; someone painting a net has already answered that, and running the search anyway would
@@ -522,80 +682,100 @@ export function assemblePainted(
     // fixedRotation, because a painted face is authored in place. Without it the decoder is free
     // to rotate a face back and report "0 misreads" about a cube this function has just refused —
     // measured on nine scrambles with one face turned 90°, all nine. See DecodeOptions.
-    return reject(
-      'not a solvable cube yet',
-      refusalDiagnosis(faces, { ...options, fixedRotation: true }),
-    );
+    // One scheme only: the centres ARE the scheme here, so there is nothing to search across.
+    const diagnosis: MisreadDiagnosis =
+      options.diagnose === false
+        ? { misreadCount: null }
+        : diagnoseMisread(faces, { fixedRotation: true });
+    return reject('not a solvable cube yet', diagnosis);
   }
 
   const conf = FACES.flatMap((f) => faces[f]!.confidence);
-  return { facelets, valid: true, ...summariseConfidence(conf, threshold) };
+  const centres = Object.fromEntries(FACES.map((f) => [f, faces[f]!.colors[4]!])) as Record<
+    Face,
+    number
+  >;
+  return {
+    facelets,
+    valid: true,
+    ...summariseConfidence(conf, threshold),
+    ...(schemeOfCentres(centres) ? { scheme: schemeOfCentres(centres) } : {}),
+  };
 }
 
-/** The confirmations applied: what each one measures, and which readings are left standing. */
+/** The confirmations applied: what each one measures, and which candidates are left standing. */
 interface Narrowed {
   ok: true;
-  confirmedFaces: Face[];
-  /** Per confirmed face, the rotations of the original capture that confirmation is consistent with. */
-  allowed: Map<Face, Set<number>>;
-  candidates: [string, number[][]][];
+  confirmedSlots: Face[];
+  /** Per confirmed slot and scheme, the canonical rotations of the original capture the confirmation allows. */
+  allowed: Map<Face, Map<Scheme, Set<number>>>;
+  candidates: Candidate[];
 }
 /** …or the refusal to hand straight back, which is a sentence about a hold rather than a cube. */
 type Narrowing = Narrowed | { ok: false; refusal: AiScanResult };
 
 /**
- * Apply the confirmations: keep a reading only if at least one of ITS combos rotates the original
- * capture into what the confirmation saw, at tolerance match (see matchingRotations).
+ * Apply the confirmations: keep a candidate only if at least one of ITS combos rotates the
+ * original capture into what the confirmation saw, at tolerance match (see matchingRotations) —
+ * PROJECTED INTO THE CANDIDATE'S FRAME. `matchingRotations` gives the physical rotations `k`
+ * between the two photographs; the hold the confirmation was taken under is canonical turned by
+ * `holdOffset` under the candidate's scheme; so the canonical rotations it allows are `k - offset`.
+ * A hold the candidate's scheme calls impossible allows nothing, and the candidate falls.
  *
  * This is a FILTER over strings the solvability gate has already passed, so no confirmation —
  * however badly held or read — can introduce a cube that was not already verified.
- *
- * Lifted out of `assembleColors` (2026-09-05), which had grown to cover validation, the rotation
- * search, this narrowing, the ambiguity branches, the redundancy check and the result — six
- * decisions sharing one scope, where the middle two are the ones a mis-held look can corrupt.
- * Nothing here decides differently from the code it replaces; the tests in
- * `tests/ai-assemble.test.ts` that pin `reread`, `mismatch` and the never-a-wrong-cube property
- * are the ones that say so.
  */
 function narrowByConfirmations(
-  faces: Record<Face, ColorFace>,
-  all: [string, number[][]][],
-  confirmed: Partial<Record<Face, ColorFace>>,
+  bySlot: BySlot,
+  all: readonly Candidate[],
+  confirmed: Partial<Record<Face, Confirmation>>,
 ): Narrowing {
-  const confirmedFaces = FACES.filter((f) => confirmed[f]);
-  const allowed = new Map<Face, Set<number>>();
-  for (const face of confirmedFaces) {
+  const confirmedSlots = FACES.filter((slot) => confirmed[slot]);
+  const allowed = new Map<Face, Map<Scheme, Set<number>>>();
+  for (const slot of confirmedSlots) {
     // CHECKED FIRST, like every other capture this module reads. A confirmation is user input that
     // arrives through the same public argument as the six sides and was the one capture nobody
     // validated — see `checkedCapture` for what a short one does to the tolerance match.
-    const capture = checkedCapture(`confirmation of ${face}`, confirmed[face]);
-    const rots = matchingRotations(faces[face]!, capture);
+    const { capture, up } = confirmed[slot]!;
+    const checked = checkedCapture(`confirmation of ${slot}`, capture);
+    if (!FACES.includes(up))
+      throw new Error(`confirmation of ${slot}: up ${String(up)} is not a slot`);
+    const physical = matchingRotations(bySlot[slot], checked);
     // No rotation comes close: the two looks disagree about COLOURS, so this capture measures
     // nothing about the hold. Hand it back as `reread` — the caller adopts the fresh look (taken
     // under instruction, held a known way up) as the side's reading and re-assembles, instead of
     // telling a user who did everything right that they held it wrong.
-    if (rots.size === 0) {
+    if (physical.size === 0) {
       return {
         ok: false,
         refusal: reject(
           'that side read differently this time — checking again with the fresh read',
-          {
-            reread: face,
-            confirm: { face, up: TOP_NEIGHBOUR[face] },
-          },
+          { reread: slot, confirm: { face: slot, up } },
         ),
       };
     }
-    allowed.set(face, rots);
+    const perScheme = new Map<Scheme, Set<number>>();
+    for (const scheme of SCHEMES) {
+      const offset = holdOffset(colourOfSlot(slot), colourOfSlot(up), scheme);
+      perScheme.set(
+        scheme,
+        offset === null ? new Set() : new Set([...physical].map((k) => (k - offset + 4) % 4)),
+      );
+    }
+    allowed.set(slot, perScheme);
   }
   const candidates = all
-    .map(([fl, combos]): [string, number[][]] => [
-      fl,
-      combos.filter((c) =>
-        confirmedFaces.every((face) => allowed.get(face)!.has(c[FACES.indexOf(face)]!)),
-      ),
-    ])
-    .filter(([, combos]) => combos.length > 0);
+    .map(
+      (c): Candidate => ({
+        ...c,
+        combos: c.combos.filter((combo) =>
+          confirmedSlots.every((slot) =>
+            allowed.get(slot)!.get(c.scheme)!.has(combo[FACES.indexOf(slot)]!),
+          ),
+        ),
+      }),
+    )
+    .filter((c) => c.combos.length > 0);
 
   if (candidates.length === 0) {
     // The scan itself was fine; the confirmation is what ruled everything out, so it was held the
@@ -603,47 +783,52 @@ function narrowByConfirmations(
     // rather than throwing away five good faces.
     // Which confirmation was mis-held is not knowable from here, so re-asking only the last one
     // would loop forever when it was an earlier one. The caller drops them all and starts over.
-    const last = confirmedFaces[confirmedFaces.length - 1]!;
+    const last = confirmedSlots[confirmedSlots.length - 1]!;
     return {
       ok: false,
       refusal: reject('those two looks disagree — one was held the wrong way up; try again', {
         mismatch: true,
-        confirm: { face: last, up: TOP_NEIGHBOUR[last] },
+        confirm: { face: last, up: confirmed[last]!.up },
       }),
     };
   }
-  return { ok: true, confirmedFaces, allowed, candidates };
+  return { ok: true, confirmedSlots, allowed, candidates };
 }
 
 /**
- * The lone survivor, put to a further test — or null when it needs none and may be accepted.
+ * The lone reading, put to a further test — or null when it needs none and may be accepted.
  *
  * If a confirmation is what removed the other readings, that confirmation is load-bearing and a
  * mis-held one would have removed the TRUTH and kept an impostor. So demand redundancy: every
  * eliminated reading must be contradicted by at least TWO separate looks. A truthful look can never
  * contradict the real cube, so under that rule a single mis-hold can no longer eliminate the truth
  * on its own — the worst it can do is leave the scan ambiguous, which is safe, instead of
- * confidently wrong.
+ * confidently wrong. Across schemes too: a candidate under the other scheme is an alternative
+ * cube like any other, and it is projected into its own frame before it is counted contradicted.
  *
  * Counting looks instead of contradictions is NOT enough and was the first thing tried: when a
  * scan needs two looks just to narrow down, both get spent narrowing and nothing checks anything.
  * Measured, that returned a wrong cube in 5% of scans where the user mis-held one look.
  */
 function verifySurvivor(
-  all: [string, number[][]][],
-  facelets: string,
+  all: readonly Candidate[],
+  survivors: readonly Candidate[],
   narrowed: Narrowed,
-  confirmed: Partial<Record<Face, ColorFace>>,
+  confirmed: Partial<Record<Face, Confirmation>>,
 ): AiScanResult | null {
-  const { confirmedFaces, allowed } = narrowed;
-  const contradictions = (candidate: number[][]): number =>
-    confirmedFaces.filter((face) => {
-      const fi = FACES.indexOf(face);
-      return candidate.every((c) => !allowed.get(face)!.has(c[fi]!));
+  const { confirmedSlots, allowed } = narrowed;
+  const facelets = survivors[0]!.facelets;
+  const contradictions = (candidate: Candidate): number =>
+    confirmedSlots.filter((slot) => {
+      const si = FACES.indexOf(slot);
+      const ok = allowed.get(slot)!.get(candidate.scheme)!;
+      return candidate.combos.every((c) => !ok.has(c[si]!));
     }).length;
-  const weak = all.filter(([fl, c]) => fl !== facelets && contradictions(c) < 2);
+  const weak = all.filter((c) => c.facelets !== facelets && contradictions(c) < 2);
   if (weak.length === 0) return null;
-  const check = pickVerification(all.find(([fl]) => fl === facelets)![1], weak, confirmed);
+  const schemes = schemesOf([...survivors, ...weak]);
+  const survivorCombos = survivors.flatMap((s) => s.combos);
+  const check = pickVerification(survivorCombos, weak, confirmed, schemes);
   if (check) {
     return reject('one more look to be sure — a single look could be held wrong', {
       confirm: check,
@@ -652,87 +837,116 @@ function verifySurvivor(
   // No remaining side can tell the readings apart, so the answer would rest on one look that
   // nothing can check. Accepting here was measured leaking wrong cubes, so say so instead: a
   // single turn of any face breaks the symmetry and makes the next scan readable.
+  return symmetricRefusal(survivors, weak);
+}
+
+/**
+ * The dead end, named for what it is: the readings left standing cannot be told apart by any
+ * hold a child could be asked for. When they differ ONLY by scheme — each survivor and each
+ * alternative is a different cube under a different arrangement — the reason is that nothing in
+ * six photographs says which colour is under white, and the sentence says so; otherwise it is
+ * the cube's own symmetry. Both end the same way: one turn, and a fresh scan.
+ */
+function symmetricRefusal(
+  survivors: readonly Candidate[],
+  alternatives: readonly Candidate[],
+): AiScanResult {
+  const survivorSchemes = new Set(survivors.map((c) => c.scheme));
+  const onlyScheme =
+    alternatives.length > 0 && alternatives.every((c) => !survivorSchemes.has(c.scheme));
+  if (onlyScheme) {
+    return reject(
+      'these readings differ only in which colour is under white, and no hold can tell them apart — turn any one face, then scan again',
+      { ambiguous: true, schemeAmbiguous: true },
+    );
+  }
   return reject(
     'this cube is too symmetric to read for certain — turn any one face, then scan again',
-    {
-      ambiguous: true,
-    },
+    { ambiguous: true },
   );
 }
 
 /**
  * Turn 6 detected faces (colour classes, any rotation) into a validated ScanResult by solving each
- * face's rotation. Rejects a scan whose 6 centres are not 6 distinct colours (not a real cube) and
- * a colour misread (no rotation is solvable). When several readings survive, returns a `confirm`
- * request naming the one side to show again and the way up to hold it.
+ * face's rotation and the cube's colour scheme together. Rejects a scan whose 6 centres are not 6
+ * distinct colours (not a real cube) and a colour misread (no rotation is solvable under any
+ * scheme). When several readings survive, returns a `confirm` request naming the one side to show
+ * again and the colour to hold up.
  *
- * @param confirmed Captures already known to be in canonical rotation, from answering a previous
- *   `confirm` request. These only narrow the candidates the search already validated.
+ * @param faces The six captures, keyed by SLOT — `FACES[colour]`, the colour's name.
+ * @param confirmed Captures already taken under a `confirm` request, keyed by the slot they show,
+ *   each with the `up` it was held with. These only narrow the candidates the search already
+ *   validated.
  */
 export function assembleColors(
   faces: Record<Face, ColorFace>,
   threshold = LOW_CONFIDENCE_THRESHOLD,
-  confirmed: Partial<Record<Face, ColorFace>> = {},
+  confirmed: Partial<Record<Face, Confirmation>> = {},
   options: AssembleOptions = {},
 ): AiScanResult {
-  // Centre colour → face letter. Centres don't move under rotation, so this is fixed. Two faces
-  // sharing a centre colour is impossible on a real cube, so bail out loudly.
-  const centreOwner = buildCentreOwner(faces);
-  if (!(centreOwner instanceof Map)) return centreOwner;
+  const bySlot = checkedBySlot(faces);
+  if ('valid' in bySlot) return bySlot;
 
-  const all = solvableReadings(faces, centreOwner);
+  const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
 
   if (all.length === 0) {
     // Before refusing, do the diagnosis a refusal makes possible: how many stickers are wrong is
-    // always answerable, and when it is exactly one, WHICH one is answerable too.
+    // always answerable, and when it is exactly one, WHICH one is answerable too. Under every
+    // scheme, because the refused reading says nothing about which the cube has.
     return reject(
       'no orientation of the faces is solvable — a colour was misread',
-      refusalDiagnosis(faces, options),
+      options.diagnose === false ? { misreadCount: null } : diagnoseAcrossSchemes(bySlot),
     );
   }
 
-  const narrowed = narrowByConfirmations(faces, all, confirmed);
+  const narrowed = narrowByConfirmations(bySlot, all, confirmed);
   if (!narrowed.ok) return narrowed.refusal;
   const candidates = narrowed.candidates;
+  const readings = readingsOf(candidates);
 
-  if (candidates.length > 1) {
+  if (readings.size > 1) {
     const confirm = pickConfirm(candidates, confirmed);
     if (confirm) {
-      return reject(`${candidates.length} readings fit — another look narrows them`, {
+      return reject(`${readings.size} readings fit — another look narrows them`, {
         ambiguous: true,
         confirm,
-        readings: candidates.length,
-        undetermined: undeterminedFaces(candidates, confirmed),
+        readings: readings.size,
+        undetermined: undeterminedSlots(candidates, confirmed),
       });
     }
     // No unconfirmed side can tell the surviving readings apart (their rotation sets agree on
-    // every face we could still ask about) — the same dead end as the too-symmetric case in
+    // every slot we could still ask about) — the same dead end as the too-symmetric case in
     // `verifySurvivor`, so say the same thing rather than promising a deciding look that cannot
-    // be asked for.
-    return reject(
-      'this cube is too symmetric to read for certain — turn any one face, then scan again',
-      { ambiguous: true },
+    // be asked for. Survivors and alternatives here are the first string's candidates against
+    // the rest; which string counts as "the survivor" is immaterial to the wording.
+    const [first] = readings;
+    return symmetricRefusal(
+      candidates.filter((c) => c.facelets === first),
+      candidates.filter((c) => c.facelets !== first),
     );
   }
 
-  const [facelets, combos] = candidates[0]!;
-
-  // Exactly one reading survives — but a confirmation that removed the others is load-bearing, and
-  // a look nothing checks can be a mis-hold. See `verifySurvivor`.
-  const unverified = verifySurvivor(all, facelets, narrowed, confirmed);
+  // Exactly one STATE survives, under one scheme or under both. A confirmation that removed the
+  // others is load-bearing, and a look nothing checks can be a mis-hold. See `verifySurvivor`.
+  const survivors = candidates;
+  const unverified = verifySurvivor(all, survivors, narrowed, confirmed);
   if (unverified) return unverified;
 
+  const facelets = survivors[0]!.facelets;
+  const schemes = schemesOf(survivors);
   // Rotate the confidences the same way for the report, using a combo that satisfies every
   // confirmation. The combo itself rides along as `rotations`, so a host can turn each tile the
   // way the search turned the capture, and the caller can settle its captures into canonical.
-  const chosen = combos[0]!;
+  // Slot order throughout: the confidences and the captures are both keyed by slot.
+  const chosen = survivors.find((c) => c.scheme === schemes[0])!.combos[0]!;
   const conf: number[] = [];
-  for (let fi = 0; fi < 6; fi++) {
-    for (const c of rotateFace(faces[FACES[fi]!]!.confidence, chosen[fi]!)) conf.push(c);
-  }
+  FACES.forEach((slot, si) => {
+    for (const c of rotateFace(bySlot[slot].confidence, chosen[si]!)) conf.push(c);
+  });
   return {
     facelets,
     valid: true,
+    scheme: schemes.length === 1 ? schemes[0]! : 'undetermined',
     ...summariseConfidence(conf, threshold),
     rotations: [...chosen],
   };
