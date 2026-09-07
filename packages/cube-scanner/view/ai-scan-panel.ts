@@ -35,6 +35,7 @@ import {
   assembleColors,
   assemblePainted,
   type ColorFace,
+  type Confirmation,
   type ConfirmRequest,
   rotateFace,
   type StickerSuspect,
@@ -456,7 +457,9 @@ export class AiScanPanel extends HTMLElement {
    */
   private pendingOpening: { phase: ScanPhase; words: (string | Node)[] } | null = null;
   /** Captures known to be in canonical rotation, from answering a `confirm` request. */
-  private confirmed: Partial<Record<Face, ColorFace>> = {};
+  /** Each confirmation with the hold it answered: the assembler projects it into every scheme's
+   *  frame from `up`, so a capture without its hold is not a confirmation (ADR 0001). */
+  private confirmed: Partial<Record<Face, Confirmation>> = {};
   private awaiting: ConfirmRequest | null = null;
   /** Hand-painting mode: the camera is off and every non-centre sticker is settable. */
   private painting = false;
@@ -1165,7 +1168,7 @@ export class AiScanPanel extends HTMLElement {
         this.report('confirm', ...this.confirmWords(this.awaiting));
         return;
       }
-      this.confirmed[face] = read;
+      this.confirmed[face] = { capture: read, up: this.awaiting.up };
       this.awaiting = null;
       this.flash();
       this.scheduleCheck(this.tinted('ok', 'Got it — checking…'));
@@ -1621,7 +1624,7 @@ export class AiScanPanel extends HTMLElement {
         return;
       }
       const face = result.reread;
-      const fresh = face === undefined ? undefined : this.confirmed[face];
+      const fresh = face === undefined ? undefined : this.confirmed[face]?.capture;
       if (face === undefined || fresh === undefined || round >= FACES.length) {
         this.finish(result);
         return;

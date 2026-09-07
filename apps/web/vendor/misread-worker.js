@@ -2162,6 +2162,27 @@ function isStructurallyValid(f) {
   return state !== null && isSolvable(state);
 }
 
+// src/scheme.ts
+var SCHEMES = ["western", "japanese"];
+var SCHEME_COLOURS = Object.freeze({
+  western: Object.freeze({ U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 }),
+  japanese: Object.freeze({ U: 0, R: 1, F: 2, D: 5, L: 4, B: 3 })
+});
+function colourOf(position, scheme) {
+  return SCHEME_COLOURS[scheme][position];
+}
+function positionOf(colour, scheme) {
+  const table = SCHEME_COLOURS[scheme];
+  for (const position of FACES) if (table[position] === colour) return position;
+  throw new Error(`scheme ${scheme} paints no position ${colour}`);
+}
+function slotOf(colour) {
+  return FACES[colour];
+}
+function colourOfSlot(slot) {
+  return FACES.indexOf(slot);
+}
+
 // src/misread-decode.ts
 function whole(name, value, fallback) {
   if (value === void 0) return fallback;
@@ -2382,12 +2403,45 @@ function diagnoseMisread(faces, options = {}) {
     ...blamed.size === 1 ? { misreadFace: [...blamed][0] } : {}
   };
 }
+function diagnoseAcrossSchemes(bySlot, options = {}, schemes = SCHEMES) {
+  const toSlot = (position, scheme) => slotOf(colourOf(position, scheme));
+  const results = [];
+  for (const scheme of schemes) {
+    const faces = {};
+    for (const slot of FACES) faces[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
+    const d = diagnoseMisread(faces, options);
+    if (typeof d.misreadCount !== "number") continue;
+    results.push({
+      scheme,
+      diagnosis: {
+        misreadCount: d.misreadCount,
+        ...d.suspects ? { suspects: d.suspects.map((s) => ({ ...s, face: toSlot(s.face, scheme) })) } : {},
+        ...d.misreadFace ? { misreadFace: toSlot(d.misreadFace, scheme) } : {}
+      }
+    });
+  }
+  if (results.length === 0) return {};
+  const floor = Math.min(...results.map((r) => r.diagnosis.misreadCount));
+  const best = results.filter((r) => r.diagnosis.misreadCount === floor);
+  if (best.length === 1) return { ...best[0].diagnosis, misreadScheme: best[0].scheme };
+  const same = (pick) => {
+    const values = best.map((r) => JSON.stringify(pick(r.diagnosis) ?? null));
+    return values.every((v) => v === values[0]) ? pick(best[0].diagnosis) : void 0;
+  };
+  const suspects = same((d) => d.suspects);
+  const misreadFace = same((d) => d.misreadFace);
+  return {
+    misreadCount: floor,
+    ...suspects && suspects.length > 0 ? { suspects } : {},
+    ...misreadFace ? { misreadFace } : {}
+  };
+}
 
 // view/misread-protocol.ts
 function handleMisreadRequest(request) {
   return {
     epoch: request.epoch,
-    diagnosis: diagnoseMisread(request.faces, { fixedRotation: request.fixedRotation })
+    diagnosis: request.fixedRotation ? diagnoseMisread(request.faces, { fixedRotation: true }) : diagnoseAcrossSchemes(request.faces)
   };
 }
 
