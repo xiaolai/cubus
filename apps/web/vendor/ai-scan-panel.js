@@ -4574,6 +4574,13 @@ var AiScanPanel = class extends HTMLElement {
    *  frame from `up`, so a capture without its hold is not a confirmation (ADR 0001). */
   confirmed = {};
   awaiting = null;
+  /**
+   * The cube's colour scheme as the LAST VERDICT established it — `ScanProgress.scheme`. Null
+   * until a verdict speaks; set by an accepted scan and by an accepted painting (whose authored
+   * centres ARE its scheme); cleared by `reset()`, because the next cube is a different cube. A
+   * refusal never sets it. Corrections keep it: a tap re-decides a sticker, not the cube.
+   */
+  scheme = null;
   /** Hand-painting mode: the camera is off and every non-centre sticker is settable. */
   painting = false;
   /** Contradictory confirmations this scan; past one, the notice starts offering restart too. */
@@ -4929,6 +4936,7 @@ var AiScanPanel = class extends HTMLElement {
     this.settled.clear();
     this.pendingOpening = null;
     for (const f of FACES) delete this.faces[f];
+    this.scheme = null;
     this.buildDots();
   }
   /**
@@ -5108,7 +5116,7 @@ var AiScanPanel = class extends HTMLElement {
    */
   fileSettledRead(read) {
     const centre = read.colors[4];
-    const face = centre === void 0 ? void 0 : FACES[centre];
+    const face = centre !== void 0 && isColour(centre) ? slotOf(centre) : void 0;
     if (this.awaiting) {
       if (face !== this.awaiting.face) {
         this.report("confirm", ...this.confirmWords(this.awaiting));
@@ -5137,7 +5145,7 @@ var AiScanPanel = class extends HTMLElement {
           this.report(
             "scanning",
             "The ",
-            this.bold(GUIDE[face].name),
+            this.bold(GUIDE[face].color),
             " side reads the same as before \u2014 tap a sticker to fix it, or show another side."
           );
           return;
@@ -5148,14 +5156,14 @@ var AiScanPanel = class extends HTMLElement {
         this.mismatches = 0;
         this.buildDots();
         this.flash();
-        this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[face].name} side \u2014 checking\u2026`));
+        this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[face].color} side \u2014 checking\u2026`));
         return;
       }
       const named = this.missingSides();
       this.report(
         "scanning",
         "Already have the ",
-        this.bold(GUIDE[face].name),
+        this.bold(GUIDE[face].color),
         named ? ` side \u2014 still need ${named}.` : " side \u2014 show a different one."
       );
       return;
@@ -5178,7 +5186,7 @@ var AiScanPanel = class extends HTMLElement {
     this.report(
       "scanning",
       "Got the ",
-      this.bold(GUIDE[face].name),
+      this.bold(GUIDE[face].color),
       ` side \u2014 ${done}/6. ${named ? `Still to show: ${named}.` : "Show another side\u2026"}`
     );
   }
@@ -5240,11 +5248,12 @@ var AiScanPanel = class extends HTMLElement {
   setSticker(face, index, colour) {
     if (!Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
     if (!Number.isInteger(colour) || colour < 0 || colour >= FACES.length) return;
+    if (this.painting) face = this.slotAt(face);
     let read = this.faces[face];
     if (read === void 0) {
       if (!this.painting) return;
       read = {
-        colors: Array(9).fill(FACES.indexOf(face)),
+        colors: Array(9).fill(colourOfSlot(face)),
         confidence: Array(9).fill(1)
       };
       this.faces[face] = read;
@@ -5258,11 +5267,14 @@ var AiScanPanel = class extends HTMLElement {
     this.invalidateReading();
     const done = this.capturedFaces().length;
     if (this.painting) {
-      this.afterPaintStroke(face, done);
+      this.afterPaintStroke(
+        `Painted the ${GUIDE[face].color} side \u2014 ${done}/${FACES.length} sides.`,
+        done
+      );
       return;
     }
     if (done < FACES.length) {
-      this.report("scanning", `Corrected the ${GUIDE[face].name} side. Show another side\u2026`);
+      this.report("scanning", `Corrected the ${GUIDE[face].color} side. Show another side\u2026`);
       return;
     }
     this.scheduleCheck(this.tinted("ok", "Corrected \u2014 checking\u2026"));
@@ -5276,27 +5288,21 @@ var AiScanPanel = class extends HTMLElement {
    * DEFINITION, so reporting each stroke as a failure would be noise rather than news —
    * and once all six sides are there, silence stops being kindness.
    */
-  afterPaintStroke(face, done) {
+  afterPaintStroke(line, done) {
     if (done === FACES.length) {
-      const result = assemblePainted(this.faces, void 0, { diagnose: false });
+      const result = this.fromPositions(
+        assemblePainted(this.positionFaces(), void 0, { diagnose: false })
+      );
       if (result.valid) {
         this.finish(result);
         return;
       }
       this.diagnose(result, (r, first) => {
         this.publishPaintRefusal(r);
-        if (!first) {
-          this.report(
-            "painting",
-            `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
-          );
-        }
+        if (!first) this.report("painting", line);
       });
     }
-    this.report(
-      "painting",
-      `Painted the ${GUIDE[face].name} side \u2014 ${done}/${FACES.length} sides.`
-    );
+    this.report("painting", line);
   }
   /** A refused painting, said out loud. Called again for each diagnosis that lands for it. */
   publishPaintRefusal(result) {
@@ -5337,6 +5343,30 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     void this.start();
+  }
+  /**
+   * Declare which colour a PAINTED cube has under white — the paint board's centre swap.
+   *
+   * A painting is authored by position, so its centres ARE its scheme: the Down tile's centre is
+   * yellow on a Western painting and blue on a Japanese one, and swapping the pair is the one
+   * thing a painter can say about it that the tiles cannot. Everything painted stays with its
+   * COLOUR — the stickers painted around the blue centre are still around the blue centre, which
+   * has simply moved from the back to the bottom — and the reading is re-decided from there,
+   * because a cube is legal or not under the arrangement it actually has. Only meaningful while
+   * painting: a camera reading's scheme is the scan's to decide, never a caller's (ADR 0001).
+   */
+  setPaintScheme(scheme) {
+    if (!this.painting || !SCHEMES.includes(scheme) || this.scheme === scheme) return;
+    this.scheme = scheme;
+    this.invalidateReading();
+    const under = GUIDE[slotOf(colourOf("D", scheme))].color;
+    const line = `Centres swapped \u2014 ${under} is under WHITE now.`;
+    const done = this.capturedFaces().length;
+    if (done === FACES.length) {
+      this.afterPaintStroke(line, done);
+      return;
+    }
+    this.report("painting", `${line} ${PAINTING}`);
   }
   /**
    * Entering painting: forget every capture whose rotation is still unknown, and say which.
@@ -5462,6 +5492,52 @@ var AiScanPanel = class extends HTMLElement {
     return missing.map((f) => GUIDE[f].color).join(" and ");
   }
   /**
+   * The scheme the HOST assumes, from the `scheme` attribute — its Cube colours setting. Western
+   * when unset or unreadable: the default every cube had before there was a setting, and the
+   * assumption the model's class order encodes. Read on demand rather than observed, because it
+   * matters only at the moments a position is needed and nothing is drawn from it in between.
+   */
+  hostScheme() {
+    const attr = this.getAttribute("scheme");
+    return SCHEMES.find((s) => s === attr) ?? "western";
+  }
+  /**
+   * The scheme positions are taken under when this panel has to lay its slots out as positions:
+   * the verdict's, when a verdict decided one, else the host's assumption. Two places need a
+   * position at all — a painted cube, whose centres are authored by position, and a settled scan
+   * re-checked in place — and both are cubes the scan has already placed or the host has already
+   * assumed; nothing else in the panel ever names a position.
+   */
+  workingScheme() {
+    return this.scheme === "western" || this.scheme === "japanese" ? this.scheme : this.hostScheme();
+  }
+  /** The captures by POSITION under the working scheme — the record `assemblePainted` and an
+   *  in-place decode read, whose keys mean where a side sits rather than what colour it is. */
+  positionFaces() {
+    const scheme = this.workingScheme();
+    const out = {};
+    for (const slot of FACES) {
+      const read = this.faces[slot];
+      if (read) out[positionOf(colourOfSlot(slot), scheme)] = read;
+    }
+    return out;
+  }
+  /** The tile the host names for a position, as the SLOT its capture lives in. */
+  slotAt(position) {
+    return slotOf(colourOf(position, this.workingScheme()));
+  }
+  /**
+   * A result that was computed over POSITIONS (the painted path, an in-place decode), with every
+   * coordinate it names moved back into slots — the only coordinates a host ever receives.
+   */
+  fromPositions(r) {
+    return {
+      ...r,
+      ...r.suspects ? { suspects: r.suspects.map((s) => ({ ...s, face: this.slotAt(s.face) })) } : {},
+      ...r.misreadFace ? { misreadFace: this.slotAt(r.misreadFace) } : {}
+    };
+  }
+  /**
    * The reading's rotations are already known — painted in place, or settled by an accepted scan.
    *
    * Read in ONE place because two things now depend on it and they must not disagree: which
@@ -5476,7 +5552,9 @@ var AiScanPanel = class extends HTMLElement {
   assemble() {
     let result;
     if (this.inPlace()) {
-      this.finish(assemblePainted(this.faces, void 0, { diagnose: false }));
+      this.finish(
+        this.fromPositions(assemblePainted(this.positionFaces(), void 0, { diagnose: false }))
+      );
       return;
     }
     for (let round = 0; ; round++) {
@@ -5607,6 +5685,7 @@ var AiScanPanel = class extends HTMLElement {
     this.mismatches = 0;
     this.finished = true;
     for (const f of FACES) this.settled.add(f);
+    this.scheme = result.scheme ?? null;
     this.notice = null;
     this.stop();
     this.report("done", this.tinted("ok", "Scan complete \u2014 solvable cube captured."));
@@ -5670,15 +5749,15 @@ var AiScanPanel = class extends HTMLElement {
       return;
     }
     const epoch = ++this.diagnosisEpoch;
-    const reply = this.misread.request(
-      { epoch, faces: this.faces, fixedRotation: this.inPlace() },
-      (r) => {
-        if (r.epoch !== this.diagnosisEpoch) return;
-        if (this.cameraFault !== null && this.notice === this.cameraFault) return;
-        publish(decided(result, r.diagnosis), false);
-      }
-    );
-    publish(reply ? decided(result, reply.diagnosis) : result, true);
+    const inPlace = this.inPlace();
+    const faces = inPlace ? this.positionFaces() : this.faces;
+    const settle = (diagnosis) => inPlace ? this.fromPositions(diagnosis) : diagnosis;
+    const reply = this.misread.request({ epoch, faces, fixedRotation: inPlace }, (r) => {
+      if (r.epoch !== this.diagnosisEpoch) return;
+      if (this.cameraFault !== null && this.notice === this.cameraFault) return;
+      publish(decided(result, settle(r.diagnosis)), false);
+    });
+    publish(reply ? decided(result, settle(reply.diagnosis)) : result, true);
   }
   /** Refused: keep every capture, and say what would make it a cube. */
   finishRefused(result) {
@@ -5710,6 +5789,13 @@ var AiScanPanel = class extends HTMLElement {
       if (camera.action) {
         line = "That isn't a solvable cube yet \u2014 start the scan over, or show one side again.";
       }
+    } else if (result.schemeAmbiguous) {
+      this.notice = {
+        title: "Which colour is under white?",
+        tone: "err",
+        body: "Every side is read, but these readings differ only in which colour sits under white \u2014 blue or yellow \u2014 and no extra look can tell them apart. Turn any one face a quarter turn, then start the scan over to read the changed cube."
+      };
+      line = "This cube reads two ways that differ only in its colours \u2014 turn any one face a quarter turn, then start over.";
     } else if (result.ambiguous) {
       this.notice = {
         title: "Too symmetric to tell",
@@ -5736,7 +5822,7 @@ var AiScanPanel = class extends HTMLElement {
       const span = document.createElement("span");
       span.style.background = g.swatch;
       span.className = this.faces[face] ? "done" : "";
-      span.title = this.faces[face] ? `${g.name} \u2014 captured` : `${g.name} \u2014 needed`;
+      span.title = this.faces[face] ? `${g.color} \u2014 captured` : `${g.color} \u2014 needed`;
       dots.appendChild(span);
     }
   }
@@ -5783,7 +5869,8 @@ var AiScanPanel = class extends HTMLElement {
           runtime: this.cam.runtime,
           notice: this.notice,
           suspects: [...this.suspects],
-          complete: this.finished
+          complete: this.finished,
+          scheme: this.scheme
         }
       })
     );
