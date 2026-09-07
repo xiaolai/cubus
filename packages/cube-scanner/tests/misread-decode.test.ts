@@ -3,7 +3,13 @@
 import Cube from 'cubejs';
 import { describe, expect, it, vi } from 'vitest';
 import { isStructurallyValid, rotateFace, SOLVED_FACELETS } from '../src/facelet-cube.js';
-import { type ColorFaces, decodeMisread, diagnoseMisread } from '../src/misread-decode.js';
+import {
+  type ColorFaces,
+  decodeMisread,
+  diagnoseAcrossSchemes,
+  diagnoseMisread,
+} from '../src/misread-decode.js';
+import { type Colour, colourOf, type Scheme, slotOf } from '../src/scheme.js';
 import { FACES, type Face } from '../src/types.js';
 import { scrambleFacelets } from './helpers.js';
 
@@ -509,5 +515,84 @@ describe('diagnoseMisread — the decode reduced to what may be said', () => {
     f.U.colors = rotateFace(f.U.colors, 1);
     expect(diagnoseMisread(f).misreadCount).toBe(0);
     expect(diagnoseMisread(f, { fixedRotation: true }).misreadCount).toBeGreaterThan(0);
+  });
+});
+
+describe('diagnoseAcrossSchemes — the floor a refused CAMERA reading is told, whichever cube it is', () => {
+  // A camera reading keyed by SLOT (the colour's name): the captures of a cube in state
+  // `facelets` painted in `scheme`, filed under FACES[centre] the way the panel files them.
+  const capturesOf = (facelets: string, scheme: Scheme): Record<Face, ColorFaces> => {
+    const out = {} as Record<Face, ColorFaces>;
+    FACES.forEach((_p, fi) => {
+      const colors = [...facelets.slice(fi * 9, fi * 9 + 9)].map((l) =>
+        colourOf(l as Face, scheme),
+      );
+      out[slotOf(colors[4] as Colour)] = { colors };
+    });
+    return out;
+  };
+  const SEXY = scrambleFacelets("R U R' U'");
+
+  it('reports the smaller floor, and names the scheme that produced it', () => {
+    // The measurement behind ADR 0001 §8.4: one sticker changed on a Japanese cube decodes to 4
+    // under the Western filing and 1 under the Japanese. A child was told "at least 4".
+    for (const scheme of ['western', 'japanese'] as const) {
+      const f = capturesOf(SEXY, scheme);
+      const was = f.U.colors[0]!;
+      f.U.colors[0] = 1;
+      const got = diagnoseAcrossSchemes(f);
+      expect(got.misreadCount).toBe(1);
+      expect(got.misreadScheme).toBe(scheme);
+      // The pointer is in SLOT coordinates — the white capture, whichever position it sits at.
+      expect(got.suspects).toEqual([{ face: 'U', index: 0, to: was }]);
+      // And the other scheme alone would indeed have overstated it.
+      const other = scheme === 'western' ? 'japanese' : 'western';
+      expect(diagnoseAcrossSchemes(f, {}, [other]).misreadCount).toBeGreaterThan(1);
+    }
+  });
+
+  it('on a tie, keeps only what every tied scheme agrees on, and names no scheme', () => {
+    // A solved cube with one sticker read wrong is one change from legal under BOTH filings,
+    // and both name the same sticker: the floor is 1, the pointer survives, no scheme is claimed.
+    const f = capturesOf(SOLVED_FACELETS, 'western');
+    f.B.colors[0] = RED; // one blue sticker read as red
+    const got = diagnoseAcrossSchemes(f);
+    expect(got.misreadCount).toBe(1);
+    expect(got.misreadScheme).toBeUndefined();
+    expect(got.suspects).toEqual([{ face: 'B', index: 0, to: CLASS.B }]);
+    expect(got.misreadFace).toBe('B');
+  });
+
+  it('a scheme that cannot answer empties the whole diagnosis — the MIXED case, not just the total one', () => {
+    // The case the first version of this test missed, and the one the soundness argument turns
+    // on (found in verification, 2026-09-07): not "no scheme could answer" but "one could and
+    // one could not". A floor is proved UNDER ITS OWN SCHEME; if the true arrangement is the one
+    // whose search ran out of budget, the surviving floor bounds a cube nobody is holding.
+    const f = capturesOf(DEEP, 'japanese');
+    const was = f.U.colors[0]!;
+    f.U.colors[0] = (was + 1) % 6; // ONE sticker misread, on a Japanese cube
+    const budget = { nodeBudget: 1 };
+    // At this budget the two schemes genuinely disagree about whether they can answer. The
+    // Western filing prices every rotation out of range and returns a `beyond` floor of 5 without
+    // spending a node; the Japanese filing — the cube's real arrangement — has candidates to
+    // search and cannot finish.
+    const west = diagnoseAcrossSchemes(f, budget, ['western']);
+    const east = diagnoseAcrossSchemes(f, budget, ['japanese']);
+    expect(west.misreadCount).toBe(5); // and 5 would OVERSTATE this cube's single misread
+    expect(east).toEqual({}); // the true scheme's search could claim nothing
+    // So together they claim nothing at all, rather than the number from the wrong arrangement.
+    expect(diagnoseAcrossSchemes(f, budget)).toEqual({});
+    // Funded properly, the true scheme answers and the count is honest.
+    const one = diagnoseAcrossSchemes(f, {}, ['japanese']);
+    expect(one.misreadCount).toBe(1);
+    expect(one.misreadScheme).toBe('japanese');
+  });
+
+  it('a correct reading of either kind of cube has a floor of zero under its own scheme', () => {
+    for (const scheme of ['western', 'japanese'] as const) {
+      const got = diagnoseAcrossSchemes(capturesOf(SEXY, scheme));
+      expect(got.misreadCount).toBe(0);
+      expect(got.misreadScheme).toBe(scheme);
+    }
   });
 });

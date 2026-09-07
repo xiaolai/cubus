@@ -74,6 +74,7 @@ import {
   isStructurallyValid,
   rotateFace,
 } from './facelet-cube.js';
+import { colourOf, colourOfSlot, positionOf, SCHEMES, type Scheme, slotOf } from './scheme.js';
 import { FACES, type Face } from './types.js';
 
 /** Six faces of nine colour classes each — the detector's output, at unknown rotations. */
@@ -623,5 +624,87 @@ export function diagnoseMisread(
     misreadCount: decoded.distance,
     ...(suspects.length > 0 ? { suspects } : {}),
     ...(blamed.size === 1 ? { misreadFace: [...blamed][0]! } : {}),
+  };
+}
+
+/** `MisreadDiagnosis` in capture coordinates, tagged with the scheme the floor came from. */
+export interface SchemeDiagnosis extends MisreadDiagnosis {
+  /** The one scheme that produced the smallest floor; absent on a tie, or with no floor at all. */
+  misreadScheme?: Scheme;
+}
+
+/**
+ * The diagnosis of a CAMERA reading — six captures keyed by SLOT (`scheme.ts`: the colour's
+ * name, `FACES[colour]`) — decoded under EVERY scheme, reduced to what is true whichever scheme
+ * the cube has.
+ *
+ * Why every scheme, always (ADR 0001, Codex refute pass 2026-09-07): a refused reading says
+ * nothing about which arrangement the cube in the hand is, and a scheme learned from ANOTHER cube
+ * — the last one scanned on a shared device — says nothing about this one either. Decoded under
+ * the wrong filing, a Japanese `R U R' U'` with one sticker changed comes back as 4; under the
+ * right one, 1. So the count reported is the SMALLEST floor: the true scheme is one of those
+ * searched, each floor is a lower bound under its scheme, and the minimum of lower bounds is a
+ * lower bound on the cube actually held. "At least N" stays honest at every N.
+ *
+ * What travels with the count is decided by the schemes that ACHIEVED it:
+ *   * exactly one — its `suspects` and `misreadFace`, re-expressed in slots, and `misreadScheme`
+ *     names it so a host can word a count from a scheme its setting does not hold as conditional;
+ *   * a tie — a pointer only where every tied scheme names the SAME sticker, in slot coordinates;
+ *     tied schemes that point at different stickers point at nothing, because a pointer that is
+ *     right under one assumption and wrong under another is not a sticker to check.
+ *
+ * EVERY SCHEME MUST ANSWER, or nothing is claimed (corrected 2026-09-07, found by audit). This
+ * docstring used to say an `unknown` scheme "simply does not compete: the other scheme's floor is
+ * still a floor". It is a floor UNDER ITS OWN SCHEME, which is exactly what the minimum argument
+ * needs and exactly what a partial minimum loses: if the true scheme is the one whose search ran
+ * out of budget, the surviving floor bounds a cube nobody is holding. Measured: a Japanese cube
+ * with ONE sticker changed, at a budget the Japanese search cannot finish under, reported "at
+ * least 5" from the Western filing. So a missing floor makes the whole answer empty — the same
+ * "claim nothing rather than overstate" this module applies to `unknown` itself.
+ *
+ * Positions → slots: the decoder speaks in the positions of the filing it was handed, and a
+ * host's tiles are captures. `colourOf(position, scheme)` names the capture; `slotOf` its key.
+ */
+export function diagnoseAcrossSchemes(
+  bySlot: Record<Face, ColorFaces>,
+  options: DecodeOptions = {},
+  schemes: readonly Scheme[] = SCHEMES,
+): SchemeDiagnosis {
+  const toSlot = (position: Face, scheme: Scheme): Face => slotOf(colourOf(position, scheme));
+  const results: { scheme: Scheme; diagnosis: MisreadDiagnosis }[] = [];
+  for (const scheme of schemes) {
+    const faces = {} as Record<Face, ColorFaces>;
+    for (const slot of FACES) faces[positionOf(colourOfSlot(slot), scheme)] = bySlot[slot];
+    const d = diagnoseMisread(faces, options);
+    // A scheme that could claim nothing takes the whole answer with it: see the docstring.
+    // Without this the minimum is taken over a SUBSET of the schemes the cube might have, and a
+    // floor proved under one arrangement is not a floor under another.
+    if (typeof d.misreadCount !== 'number') return {};
+    results.push({
+      scheme,
+      diagnosis: {
+        misreadCount: d.misreadCount,
+        ...(d.suspects
+          ? { suspects: d.suspects.map((s) => ({ ...s, face: toSlot(s.face, scheme) })) }
+          : {}),
+        ...(d.misreadFace ? { misreadFace: toSlot(d.misreadFace, scheme) } : {}),
+      },
+    });
+  }
+  if (results.length === 0) return {};
+  const floor = Math.min(...results.map((r) => r.diagnosis.misreadCount as number));
+  const best = results.filter((r) => r.diagnosis.misreadCount === floor);
+  if (best.length === 1) return { ...best[0]!.diagnosis, misreadScheme: best[0]!.scheme };
+  // A tie: only what every tied scheme agrees on survives.
+  const same = <T>(pick: (d: MisreadDiagnosis) => T | undefined): T | undefined => {
+    const values = best.map((r) => JSON.stringify(pick(r.diagnosis) ?? null));
+    return values.every((v) => v === values[0]) ? pick(best[0]!.diagnosis) : undefined;
+  };
+  const suspects = same((d) => d.suspects);
+  const misreadFace = same((d) => d.misreadFace);
+  return {
+    misreadCount: floor,
+    ...(suspects && suspects.length > 0 ? { suspects } : {}),
+    ...(misreadFace ? { misreadFace } : {}),
   };
 }
