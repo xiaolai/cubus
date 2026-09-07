@@ -149,8 +149,37 @@ const TITLES = {
   settings: 'Settings',
 };
 
+import {
+  COLOUR_NAMES,
+  colourOf,
+  colourOfSlot,
+  isColour,
+  isScheme,
+  paletteFor,
+  positionOf,
+  slotAt,
+  slotOf,
+} from './scheme.js';
+
 // ---- app state -------------------------------------------------------------------------------
-const settings = load('cubusSettings', { theme: 'auto', palette: 'muted', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty', proveMinimum: false });
+/**
+ * The cube colours a new install gets: CLASSIC, the saturated set (owner's call, 2026-09-07).
+ * It was `muted`, the warm-paper set the design kit was drawn around — which sits beautifully in
+ * the app's own palette and is not what a child's cube looks like. The first thing this app has
+ * to do is let someone match what is on screen to the plastic in their hand, and `classic` is the
+ * set that names those colours the way a cube does.
+ *
+ * ONE spelling, exported, because it was seven: the settings default, the repair's fallback, and
+ * five `NET_COLORS[…] || NET_COLORS.muted` reads, each free to drift from the others. A default
+ * written down seven times is a default that eventually disagrees with itself.
+ *
+ * It changes nothing for anyone already using the app: `load` merges storage over these defaults
+ * and `save` writes the whole object, so a stored palette — including a `muted` nobody ever chose
+ * deliberately — is kept. This is the value for a fresh install and for a repaired one.
+ * `hostile-settings.test.mjs` pins the repair against this constant rather than a copy of it.
+ */
+export const DEFAULT_PALETTE = 'classic';
+const settings = load('cubusSettings', { theme: 'auto', palette: DEFAULT_PALETTE, scheme: 'western', schemeSource: 'default', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty', proveMinimum: false });
 // localStorage is untrusted input, and `load` merges it raw. The string "false" is truthy, so
 // a hand-edited or half-migrated value could opt someone in to an operation that runs for
 // hours — the one setting where "off unless explicitly true" is the whole point.
@@ -181,6 +210,9 @@ const THEMES = ['auto', 'white', 'cream', 'night'];
  *  corrected rather than re-read on every render — with the `||` kept at every read as the
  *  belt: this validation is what makes them unreachable, not what replaces them. */
 const PALETTES = ['muted', 'classic', 'colorsafe'];
+/** Where the app's belief about the cube's colour arrangement came from (ADR 0001 §8.3):
+ *  nobody has said (the default), the user set it, or a decisive scan established it. */
+const SCHEME_SOURCES = ['default', 'user', 'scan'];
 /** Every stored field whose value STEERS something, checked once, here.
  *
  *  The palette was the one that crashed, but it was not the only one that could: an unknown
@@ -191,7 +223,12 @@ const PALETTES = ['muted', 'classic', 'colorsafe'];
  *  produce, trusted because it was in storage — so each is repaired the same way and at the same
  *  moment, rather than being caught at whichever call site happens to reach it first. */
 const repairs = [
-  [() => PALETTES.includes(settings.palette), () => { settings.palette = 'muted'; }],
+  [() => PALETTES.includes(settings.palette), () => { settings.palette = DEFAULT_PALETTE; }],
+  // The cube's colour arrangement, and WHERE THAT BELIEF CAME FROM (ADR 0001 §8.3). A stored
+  // value replaced by the fallback carries no evidence, so the source falls back with it — a
+  // repaired scheme is a default, never a scan's verdict.
+  [() => isScheme(settings.scheme), () => { settings.scheme = 'western'; settings.schemeSource = 'default'; }],
+  [() => SCHEME_SOURCES.includes(settings.schemeSource), () => { settings.schemeSource = 'default'; }],
   [() => TIERS.some((tier) => tier.name === settings.solveTier), () => { settings.solveTier = 'twenty'; }],
   [() => typeof settings.language === 'string', () => { settings.language = ''; }],
   [() => typeof settings.cameraId === 'string', () => { settings.cameraId = ''; }],
@@ -832,6 +869,9 @@ function newCube({ animate = false } = {}) {
   // left to map. There used to be a PALETTE_ATTR identity map here, which read as a translation
   // between two vocabularies that have always been the same one.
   el.setAttribute('palette', settings.palette);
+  // …and the arrangement that palette is read in: the scan's verdict for this cube, else what
+  // the app assumes. Without it a Japanese cube is solved correctly and drawn wrong.
+  el.setAttribute('scheme', drawScheme());
   // Off by default: every cube in the app is set up at a chosen angle (the ghost faces depend on
   // it), and a stray drag on a touch screen or a trackpad swung it away with no way back.
   el.setAttribute('orbit', settings.dragRotate ? 'free' : 'locked');
@@ -873,8 +913,54 @@ const NET_COLORS = {
   classic: { U: '#F4F2EC', D: '#F0C000', F: '#00A651', B: '#0051BA', R: '#C41E3A', L: '#FF6C00' },
   colorsafe: { U: '#EFEAE0', D: '#E9C46A', F: '#6A9FB5', B: '#20405C', R: '#D1495B', L: '#8C5E8A' },
 };
+/**
+ * The net's colours for the cube being SHOWN — the palette remapped for its arrangement.
+ *
+ * `scheme` is the app's assumption; a cube the scan proved is drawn in ITS scheme instead, which
+ * is what the argument is for. Only D and B ever move (ADR 0001 §2), and `lib/scheme.js` owns the
+ * arithmetic so this file and the renderer cannot come to disagree about what Japanese means.
+ */
+function netPalette(scheme = settings.scheme) {
+  return paletteFor(NET_COLORS[settings.palette] || NET_COLORS[DEFAULT_PALETTE], scheme);
+}
+
+/**
+ * The arrangement to DRAW a cube in: the one a scan established for it, else what the app
+ * assumes. `'undetermined'` is a verdict about the colours, not a scheme — the state is known and
+ * which colour sits under white is not — so it falls back to the assumption, and the scan screen
+ * says so in words rather than silently picking (ADR 0001 §8.3).
+ */
+/**
+ * Take a scan's verdict as the app's belief, and say so when it changes something.
+ *
+ * A DECISIVE scan is the only evidence there is about a cube's colours, so it outranks whatever
+ * the app assumed and is remembered for the next one (`schemeSource: 'scan'`). The source is
+ * recorded even when the value agrees, because "a scan confirmed this" and "nobody has said" are
+ * different states and only one of them should still be offering to be corrected.
+ *
+ * A refusal never reaches here, and `'undetermined'` never reaches here: neither establishes
+ * anything, and adopting either would turn an absence of evidence into a belief.
+ */
+function adoptScheme(scheme) {
+  if (!isScheme(scheme)) return;
+  const changed = settings.scheme !== scheme;
+  if (!changed && settings.schemeSource === 'scan') return;
+  settings.scheme = scheme;
+  settings.schemeSource = 'scan';
+  save('cubusSettings', settings);
+  applyNetColors();
+  // It records; it does not speak. Whether a change is worth a sentence, and in whose voice,
+  // belongs to the screen the user is looking at — the same rule that keeps "press Solve this
+  // cube" out of the scanner package. Returns true when the belief actually moved.
+  return changed;
+}
+
+function drawScheme(cube = state.cube) {
+  return isScheme(cube?.scheme) ? cube.scheme : settings.scheme;
+}
+
 function applyNetColors() {
-  const p = NET_COLORS[settings.palette] || NET_COLORS.muted; const r = document.documentElement.style;
+  const p = netPalette(); const r = document.documentElement.style;
   for (const k of NET_FACES) r.setProperty('--net-' + k, p[k]);
 }
 
@@ -2389,8 +2475,15 @@ const FACE_EDGES = {
 };
 
 SCREENS.scan = () => {
-  const pal = NET_COLORS[settings.palette] || NET_COLORS.muted;
-  const classColor = (i) => pal[NET_FACES[i]] || 'var(--facelet-off)';
+  // TWO CONVERSIONS, and they must not be one (ADR 0001 §8.5). A detector CLASS is a colour and
+  // has one hex on every cube — `slotOf` names it, and no scheme is involved, because a yellow
+  // sticker is yellow whichever kind of cube it came off. A POSITION is a tile of the net and
+  // takes its colour from the palette remapped for the arrangement. Painting a class through the
+  // positional palette is the bug this pair exists to make unwritable: under a Japanese remap,
+  // class 3 (yellow) would have been drawn blue.
+  const pal = NET_COLORS[settings.palette] || NET_COLORS[DEFAULT_PALETTE];
+  const classColor = (i) => pal[slotOf(i)] || 'var(--facelet-off)';
+  const positionColor = (f, scheme) => netPalette(scheme)[f] || 'var(--facelet-off)';
   // background-COLOR, not the shorthand: a colour is all this ever sets, and the shorthand would
   // reset background-image and friends alongside it. (It is also the only form a DOM can report
   // back reliably — happy-dom drops `style.background = '#hex'` silently, which quietly blinded
@@ -2403,10 +2496,15 @@ SCREENS.scan = () => {
   const cell = (bg) => `<button type="button" class="cell" tabindex="-1" style="background-color:${bg}"></button>`;
   // A pending tile is nine dim wells with the face's own colour in the centre, so the board reads
   // "the yellow side is still missing" without a legend.
-  const pending = (f) => Array.from({ length: 9 }, (_, i) => cell(i === 4 ? pal[f] : 'var(--facelet-off)')).join('');
+  const pending = (f) => Array.from({ length: 9 }, (_, i) => cell(i === 4 ? positionColor(f, settings.scheme) : 'var(--facelet-off)')).join('');
   // border-color takes top/right/bottom/left in that order — the same order FACE_EDGES names.
   const e = (f) => FACE_EDGES[f];
-  const edgeColors = (f) => `${pal[e(f).top]} ${pal[e(f).right]} ${pal[e(f).bottom]} ${pal[e(f).left]}`;
+  // The four sides that border this tile, in the colours the arrangement gives them — how a user
+  // knows which way up to hold a side. Positions, so they follow the scheme.
+  const edgeColors = (f, scheme) => {
+    const c = (p) => positionColor(p, scheme);
+    return `${c(e(f).top)} ${c(e(f).right)} ${c(e(f).bottom)} ${c(e(f).left)}`;
+  };
   // The panel is registered by a module script; if that has not landed yet the element is still
   // inert, so say so rather than claiming a camera is opening.
   const registered = Boolean(customElements.get('ai-scan-panel'));
@@ -2432,9 +2530,9 @@ SCREENS.scan = () => {
     html: `<div class="cols twin-low" style="--primary-share:0.66">
     <div class="col">
       <div class="card scanboard">
-        <ai-scan-panel headless autostart${isDesktopHost() ? '' : ' facing="environment"'}></ai-scan-panel>
+        <ai-scan-panel headless autostart scheme="${settings.scheme}"${isDesktopHost() ? '' : ' facing="environment"'}></ai-scan-panel>
         <div class="scan-faces">${NET_FACES.map((f) => `<div class="scan-face" role="group" aria-label="${SCAN_FACE_NAME[f]} side" data-face="${f}">
-          <div class="tile" style="border-color:${edgeColors(f)}"><div class="tgrid">${pending(f)}</div></div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
+          <div class="tile" style="border-color:${edgeColors(f, settings.scheme)}"><div class="tgrid">${pending(f)}</div></div><div class="lbl">${SCAN_FACE_NAME[f]}</div></div>`).join('')}</div>
         <div class="scan-cam card-tools">
           <button id="scanResetBtn" title="Throw the whole scan away and start again" aria-label="Throw the whole scan away and start again">${icon('refresh', 19)}</button>
           <button id="scanPaintBtn" title="Paint the cube by hand instead of scanning it" aria-label="Paint the cube by hand instead of scanning it">${icon('paint-roller', 19)}</button>
@@ -2457,6 +2555,21 @@ SCREENS.scan = () => {
       // Captured at the top of the mount, never read late: by the time anything here awaits, the
       // module-level controller may already belong to the screen that replaced this one.
       const signal = screenAbort?.signal;
+      /**
+       * The arrangement the SIX TILES are laid out in: what the app assumes, until a scan
+       * establishes otherwise (ADR 0001 §8.3). Every tile is a POSITION and every capture is a
+       * COLOUR, so this is what says which capture belongs on which tile — the blue capture is
+       * the Down tile's on a Japanese cube and the Back tile's on a Western one.
+       *
+       * `let`, and updated from the scanner's verdict on every report: a scan that proves the
+       * other arrangement must move the two tiles under the user, not keep painting the cube it
+       * assumed. `'undetermined'` is not a scheme and leaves this as it was.
+       */
+      let tileScheme = settings.scheme;
+      /** The slot whose capture belongs on the tile for `position`. */
+      const slotFor = (position) => slotAt(position, tileScheme);
+      /** …and back: the tile a capture is drawn on. */
+      const tileOf = (slot) => positionOf(colourOfSlot(slot), tileScheme);
       // Both hands are on a cube in front of a camera for the length of a scan, so nothing tells
       // the platform anybody is still here. The display sleeping mid-scan is the interruption
       // this audience does not recover from.
@@ -2488,10 +2601,13 @@ SCREENS.scan = () => {
       // SHOWN in; their true rotation is not known until all six are in, which is what the settle
       // at the end is for.
       const partialFacelets = (captured) => {
-        const byFace = new Map(captured.map((c) => [c.face, c.colors]));
+        // Captures are keyed by COLOUR and the string is by POSITION, so both directions go
+        // through the arrangement: which capture sits at this position, and which position each
+        // of its sticker colours belongs to.
+        const bySlot = new Map(captured.map((c) => [c.face, c.colors]));
         return NET_FACES.map((f) => {
-          const colors = byFace.get(f);
-          return colors ? colors.map((c) => NET_FACES[c] ?? '?').join('') : '?'.repeat(9);
+          const colors = bySlot.get(slotFor(f));
+          return colors ? colors.map((c) => (isColour(c) ? positionOf(c, tileScheme) : '?')).join('') : '?'.repeat(9);
         }).join('');
       };
       // Which way up each side was held stops mattering the moment the cube reads as solvable: the
@@ -2522,8 +2638,9 @@ SCREENS.scan = () => {
       const settleTiles = (fl, rotations) => {
         clearTurns();
         for (const tile of tiles) {
-          const fi = NET_FACES.indexOf(tile.dataset.face);
-          const k = rotations?.[fi] ?? 0;
+          // Rotations are reported in SLOT order — one per capture — so a tile reads the entry
+          // for the capture it shows, not for its own position.
+          const k = rotations?.[NET_FACES.indexOf(slotFor(tile.dataset.face))] ?? 0;
           if (!k) { paintTile(tile, fl); continue; }
           const g = tile.querySelector('.tgrid');
           const deg = k === 3 ? -90 : k * 90; // a 270° CW turn reads better as 90° back
@@ -2600,8 +2717,25 @@ SCREENS.scan = () => {
       /** Did this screen refuse the finished scan? Screen-local, and cleared only by a scan that
        *  is no longer complete — see the scan-progress handler. */
       let refused = false;
+      /** Set when a scan MOVED the app's belief about this cube's colours, so the screen can say
+       *  so once. Null the rest of the time — including when a scan merely confirms it. */
+      let schemeNote = null;
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
+      /**
+       * Redraw what the TEMPLATE painted from the arrangement — each tile's four edge colours and
+       * its centre hint. The template runs once, before any verdict; when a scan proves the other
+       * arrangement the two tiles trade places and this is what makes the furniture agree with
+       * the cube rather than with what the app assumed a moment ago.
+       */
+      const repaintTileFurniture = () => {
+        for (const tile of tiles) {
+          const f = tile.dataset.face;
+          tile.querySelector('.tile').style.borderColor = edgeColors(f, tileScheme);
+          const centre = tile.querySelectorAll('.cell')[4];
+          if (!tile.classList.contains('done')) centre.style.backgroundColor = positionColor(f, tileScheme);
+        }
+      };
       // The six sides are the cube's net, everywhere (decided 2026-08-30). There used to be a
       // second arrangement for a finger in portrait — one face large over a strip of five — and
       // with it a `.focus` class, a `--focus` flag read back out of the stylesheet, and a tap
@@ -2649,7 +2783,7 @@ SCREENS.scan = () => {
       const refreshCellNames = () => {
         for (const tile of tiles) {
           const f = tile.dataset.face;
-          const got = lastCaptured.find((c) => c.face === f);
+          const got = lastCaptured.find((c) => c.face === slotFor(f));
           [...tile.querySelectorAll('.cell')].forEach((c, i) => {
             const centre = i === 4;
             const actionable = centre ? Boolean(got) && !painting : Boolean(got) || painting;
@@ -2659,7 +2793,10 @@ SCREENS.scan = () => {
                 ? `Scan the ${SCAN_FACE_NAME[f]} side again`
                 : `${SCAN_FACE_NAME[f]} side centre — it names the side`);
             } else {
-              const read = got ? `read as the ${SCAN_FACE_NAME[NET_FACES[got.colors[i]]]} side’s colour` : 'not read yet';
+              // The COLOUR it was read as. Naming a side here ("read as the Back side's colour")
+              // was the Western identity in a sentence: blue is the back of most cubes and the
+              // bottom of an older one, and the camera read a colour either way.
+              const read = got ? `read as ${COLOUR_NAMES[got.colors[i]] ?? 'an unknown colour'}` : 'not read yet';
               c.setAttribute('aria-label', `${SCAN_FACE_NAME[f]} side, sticker ${i + 1} — ${read}`);
             }
           });
@@ -2834,6 +2971,21 @@ SCREENS.scan = () => {
        *  scan-progress handler along with the words (2026-09-05): the handler was writing status
        *  messages, painting stickers, discovering cameras and answering a question about the
        *  user's cube, all in one body. Called LAST, for the reason its own comment gives. */
+      /**
+       * The one sentence this screen owes when a scan has proved the cube's colours are not what
+       * the app assumed. Said once, over the generic caption only — never over the scanner's own
+       * pinned notice, which is about the scan and outranks a remark about colours.
+       */
+      const sayScheme = (p) => {
+        if (!schemeNote || p.notice || p.phase === 'error') return;
+        sayTitle.textContent = t(schemeNote === 'japanese' ? 'Blue under white' : 'Yellow under white');
+        say.textContent = t(schemeNote === 'japanese'
+          ? 'Your cube has blue under white — the Japanese colours, common on older cubes. Nothing to do: the colours on screen now match it, and they will next time too.'
+          : 'Your cube has yellow under white — the usual colours. The colours on screen now match it, and they will next time too.');
+        say.className = 'sub scan-say ok';
+        schemeNote = null;
+      };
+
       const answerFromSides = (p) => {
         // ---- reconnect confirmation ----------------------------------------------------------
         // Each captured side is compared with the candidate — by its centre colour (the scanner
@@ -2842,7 +2994,13 @@ SCREENS.scan = () => {
         // three, so here a misread costs a full scan and never a false yes. Last, so its words
         // stand over the generic caption — but never over the scanner's own pinned notice.
         if (confirming && state.reconnect?.candidate && !p.notice && p.phase !== 'error') {
-          const sides = p.captured.map((c) => ({ face: c.face, stickers: c.colors.map((ci) => NET_FACES[ci] ?? '?').join('') }));
+          // The remembered state is positional, so both halves of each side are translated out
+          // of colour: which position this capture sits at, and which position each of its
+          // sticker colours belongs to.
+          const sides = p.captured.map((c) => ({
+            face: tileOf(c.face),
+            stickers: c.colors.map((ci) => (isColour(ci) ? positionOf(ci, tileScheme) : '?')).join(''),
+          }));
           const check = confirmCheck(expectedNow(), sides, Cube);
           if (check.verdict === 'confirmed') {
             confirming = false;
@@ -2909,6 +3067,14 @@ SCREENS.scan = () => {
         // verdict — and by the next accepted scan-complete.
         if (!p.complete) refused = false;
         solveBtn.disabled = !p.complete || refused;
+        // What the scan has ESTABLISHED about the cube's colours. A real scheme moves the tiles
+        // and is remembered; `'undetermined'` and null leave the assumption where it was, because
+        // neither is evidence (ADR 0001 §8.3). A refusal never reports one at all.
+        if (isScheme(p.scheme) && p.scheme !== tileScheme) {
+          tileScheme = p.scheme;
+          repaintTileFurniture();
+        }
+        if (isScheme(p.scheme) && adoptScheme(p.scheme)) schemeNote = p.scheme;
         paintSay(p);
         suspects = p.suspects ?? [];
         for (const tile of tiles) {
@@ -2917,21 +3083,21 @@ SCREENS.scan = () => {
           const centreCell = tile.querySelectorAll('.cell')[4];
           if (!centreCell.firstChild) centreCell.innerHTML = icon('refresh', 15);
           centreCell.title = `Scan the ${SCAN_FACE_NAME[f]} side again`;
-          const got = p.captured.find((c) => c.face === f);
+          const got = p.captured.find((c) => c.face === slotFor(f));
           const cells = [...tile.querySelectorAll('.cell')];
           tile.classList.toggle('done', Boolean(got));
           // A nearly-solved cube can read as several different cubes; the scanner then names one
           // side to show again, held a stated way up. Point at it — the sentence alone makes a
           // child hunt through six tiles for the colour it named.
-          tile.classList.toggle('asked', p.confirm?.face === f);
+          tile.classList.toggle('asked', p.confirm?.face === slotFor(f));
           // Same pointing for a suspected misread: the sticker whose fix would make the cube
           // legal pulses, so "one sticker looks wrong" never sends anyone hunting either.
-          const sus = suspects.filter((s) => s.face === f);
+          const sus = suspects.filter((s) => s.face === slotFor(f));
           cells.forEach((c, i) => c.classList.toggle('suspect', sus.some((s) => s.index === i)));
           // On 'done' the captures are already canonical and the settle turn owns the repaint —
           // painting them here would snap the tiles canonical before the turn starts.
           if (got && p.phase !== 'done') paint(cells, got.colors);
-          else if (!got) cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? pal[f] : 'var(--facelet-off)'; });
+          else if (!got) cells.forEach((c, i) => { c.style.backgroundColor = i === 4 ? positionColor(f, tileScheme) : 'var(--facelet-off)'; });
         }
         lastCaptured = p.captured;
         refreshCellNames();
@@ -2939,6 +3105,9 @@ SCREENS.scan = () => {
         if (!settled) stateCube.setAttribute('facelets', partialFacelets(p.captured));
         paintCameraRow(p);
         answerFromSides(p);
+        // Last, so it stands over the generic caption — and it declines to speak over a notice,
+        // which is why it is safe to run after everything else has had its say.
+        sayScheme(p);
       });
       // A scan the SCANNER refused is a scan this screen must not offer to solve either. It
       // restarts itself and explains why through scan-progress, so there is nothing to say here —
@@ -2973,7 +3142,12 @@ SCREENS.scan = () => {
         // names follow: captures were named as SHOWN, and the settle renames every sticker
         // from the validated string.
         settleTiles(fl, e.detail.rotations);
-        lastCaptured = NET_FACES.map((f, fi) => ({ face: f, colors: [...fl.slice(fi * 9, fi * 9 + 9)].map((ch) => NET_FACES.indexOf(ch)) }));
+        // Back into capture terms: each position's nine letters become the colours the
+        // arrangement paints there, filed under the capture that carries them.
+        lastCaptured = NET_FACES.map((f, fi) => ({
+          face: slotFor(f),
+          colors: [...fl.slice(fi * 9, fi * 9 + 9)].map((ch) => colourOf(ch, tileScheme)),
+        }));
         refreshCellNames();
         // The camera SAW the cube in the user's hand; nothing was inferred from anywhere else.
         //
@@ -3042,15 +3216,20 @@ SCREENS.scan = () => {
         back?.focus();
       };
       const closePops = () => { closeSwatches(); menu.hidden = true; };
-      for (const f of NET_FACES) {
+      // Six COLOURS, named as colours. The picker used to iterate the six face letters and pass
+      // the letter's index as the colour class — the Western identity again, and the one place a
+      // user could have picked "the Back side's colour" and got blue on a cube whose back is
+      // yellow. A sticker is set to a colour; where that colour lives is the arrangement's
+      // business, not this control's.
+      for (let colour = 0; colour < COLOUR_NAMES.length; colour++) {
         const b = document.createElement('button');
         b.type = 'button';
-        b.style.backgroundColor = pal[f];
-        b.title = SCAN_FACE_NAME[f];
-        b.setAttribute('aria-label', `Make it the ${SCAN_FACE_NAME[f]} side’s colour`);
-        b.dataset.face = f;
+        b.style.backgroundColor = classColor(colour);
+        b.title = COLOUR_NAMES[colour];
+        b.setAttribute('aria-label', `Make it ${COLOUR_NAMES[colour]}`);
+        b.dataset.colour = String(colour);
         b.onclick = () => {
-          if (editing) panel.setSticker?.(editing.face, editing.index, NET_FACES.indexOf(f));
+          if (editing) panel.setSticker?.(editing.slot, editing.index, colour);
           closeSwatches();
         };
         swatches.appendChild(b);
@@ -3066,22 +3245,22 @@ SCREENS.scan = () => {
         if (index === 4) {
           closePops();
           // Re-reading needs something to read with, so the centre does nothing while painting.
-          if (!painting && tile.classList.contains('done')) panel.rescanFace?.(tile.dataset.face);
+          if (!painting && tile.classList.contains('done')) panel.rescanFace?.(slotFor(tile.dataset.face));
           return;
         }
         // Correcting needs a reading to overrule; painting is where supplying one is the point, so
         // there all 48 outer stickers are open whether the camera has seen that side or not.
         if (!painting && !tile.classList.contains('done')) return;
         closePops();
-        editing = { face: tile.dataset.face, index, el: cellEl };
+        editing = { face: tile.dataset.face, slot: slotFor(tile.dataset.face), index, el: cellEl };
         cellEl.classList.add('editing');
         // Mark the colour already there, so the picker shows what it is changing FROM — and, when
         // this sticker is a misread suspect, ring the colour the scanner reckons it should be.
         const current = cellEl.style.backgroundColor;
-        const sug = suspects.find((s) => s.face === editing.face && s.index === index);
+        const sug = suspects.find((s) => s.face === editing.slot && s.index === index);
         for (const b of swatches.children) {
           b.classList.toggle('now', b.style.backgroundColor === current);
-          b.classList.toggle('suggest', sug !== undefined && NET_FACES.indexOf(b.dataset.face) === sug.to);
+          b.classList.toggle('suggest', sug !== undefined && Number(b.dataset.colour) === sug.to);
         }
         swatches.hidden = false;
         // Anchored below the TILE, not below the sticker: a picker covering the very sticker you
@@ -4706,7 +4885,8 @@ SCREENS.timer = () => {
 };
 
 SCREENS.settings = () => {
-  const pals = ['muted', 'classic', 'colorsafe'];
+  // The list is PALETTES — the validated one — not a second copy of it beside it.
+  const pals = PALETTES;
   // No WCA-inspection toggle: it flipped a label and nothing else — the timer never implemented
   // the 15s countdown it named. A setting that claims behaviour it does not have is exactly the
   // invented data this app refuses elsewhere; it returns when the Timer actually earns it.
@@ -4929,7 +5109,10 @@ SCREENS.settings = () => {
     <div class="aside">
       <div class="card"><div class="eyebrow">CUBE COLOURS</div>
         <div style="display:flex;gap:6px;margin-top:12px" id="palSwatch"></div>
-        <div style="display:flex;gap:6px;margin-top:12px">${pals.map((p) => `<button class="pill ${settings.palette === p ? 'on' : ''}" data-pal="${p}" aria-pressed="${settings.palette === p}" style="flex:1;justify-content:center">${escHtml(t(p))}</button>`).join('')}</div></div>
+        <div style="display:flex;gap:6px;margin-top:12px">${pals.map((p) => `<button class="pill ${settings.palette === p ? 'on' : ''}" data-pal="${p}" aria-pressed="${settings.palette === p}" style="flex:1;justify-content:center">${escHtml(t(p))}</button>`).join('')}</div>
+        <div style="display:flex;align-items:center;gap:16px;padding:13px 0 0;margin-top:8px;border-top:1px solid var(--line-faint)">
+          <div style="flex:1"><div style="font-weight:600">${escHtml(t('Japanese colours'))}</div><div class="sub" style="color:var(--ink-4)">${escHtml(t('Blue under white instead of yellow — the arrangement on many older cubes. Scanning your cube sets this on its own.'))}</div></div>
+          <button class="toggle ${settings.scheme === 'japanese' ? 'on' : ''}" data-scheme role="switch" aria-checked="${settings.scheme === 'japanese'}" aria-label="${escHtml(t('Japanese colours'))}"><i></i></button></div></div>
       ${advancedOpen ? `<div class="card"><div class="eyebrow">ADVANCED</div>
         <div class="sub" style="color:var(--ink-4);margin-top:6px;line-height:1.5">Toolbar tabs. Hiding one only takes it out of the row — its address still works.</div>
         ${HIDEABLE.map(([id, lbl]) => `<div style="display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line-faint)">
@@ -4949,7 +5132,7 @@ SCREENS.settings = () => {
         <div class="sub" style="color:var(--ink-3);margin-top:10px;line-height:1.55">${t(privacySentence())}</div></div>
     </div></div>`,
     mount(root) {
-      const swatch = () => { const p = NET_COLORS[settings.palette] || NET_COLORS.muted; $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
+      const swatch = () => { const p = netPalette(); $('#palSwatch', root).innerHTML = ['U', 'D', 'R', 'L', 'F', 'B'].map((k) => `<div style="flex:1;height:34px;border-radius:var(--r-2);background:${p[k]}"></div>`).join(''); };
       swatch();
       // Drawn only where `updater` exists, which is the desktop gate — so this never looks for a
       // button the browser build does not have. The press ALWAYS checks (it ignores the daily
@@ -5012,6 +5195,17 @@ SCREENS.settings = () => {
         }
       }
       for (const b of root.querySelectorAll('[data-pal]')) b.onclick = () => { settings.palette = b.dataset.pal; save('cubusSettings', settings); applyNetColors(); renderScreen(); };
+      // Setting it by hand is EVIDENCE, and is recorded as such: a scan may still correct it —
+      // the cube in the hand outranks a setting about the cube in the hand — but until one does,
+      // this is what the app draws, and it is no longer the default nobody chose (ADR 0001 §8.3).
+      const schemeToggle = $('[data-scheme]', root);
+      if (schemeToggle) schemeToggle.onclick = () => {
+        settings.scheme = settings.scheme === 'japanese' ? 'western' : 'japanese';
+        settings.schemeSource = 'user';
+        save('cubusSettings', settings);
+        applyNetColors();
+        renderScreen();
+      };
       for (const b of root.querySelectorAll('[data-toggle]')) b.onclick = () => { const k = b.dataset.toggle; settings[k] = !settings[k]; save('cubusSettings', settings); b.classList.toggle('on', settings[k]); b.setAttribute('aria-checked', String(Boolean(settings[k]))); };
 
       // ---- smart cube (recovered from v0) --------------------------------------------------
@@ -5382,7 +5576,7 @@ const previewBanner = () => `<div class="card" style="padding:12px 16px;display:
 </div>`;
 
 SCREENS.trainer = () => {
-  const P2 = NET_COLORS[settings.palette] || NET_COLORS.muted;
+  const P2 = NET_COLORS[settings.palette] || NET_COLORS[DEFAULT_PALETTE];
   // The algs are REAL algorithms and stay — they are facts about a cube, not claims about you.
   // What went are the per-case percentages and the colour that ranked them.
   const oll = [
@@ -5407,7 +5601,7 @@ SCREENS.trainer = () => {
 };
 
 SCREENS.drill = () => {
-  const P2 = NET_COLORS[settings.palette] || NET_COLORS.muted;
+  const P2 = NET_COLORS[settings.palette] || NET_COLORS[DEFAULT_PALETTE];
   const grid = Array.from({ length: 9 }, (_, i) => ((i * 7 + 9) % 4 === 0 ? P2.D : 'var(--facelet-off)'));
   // `flow`: the flashcard is taller than a phone's locked primary region, and its controls
   // (Reveal, Again / Good / Easy) must never sit below a fold — so the box scrolls as one.

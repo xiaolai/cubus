@@ -30,6 +30,11 @@ const progress = (detail) =>
 
 const FACES = ['U', 'R', 'F', 'D', 'L', 'B'];
 const face = (n) => ({ face: n, colors: Array(9).fill(FACES.indexOf(n)) });
+/** The net's hexes for the classic palette, as the DOM reports them — for asserting which colour
+ *  a tile got. Named for what it holds: two other tests use a local `NET` for the face letters. */
+const NET_HEX = {
+  U: '#F4F2EC', D: '#F0C000', F: '#00A651', B: '#0051BA', R: '#C41E3A', L: '#FF6C00',
+};
 
 /** A stand-in for a live session (lib/cube-session.js), with the REAL self-check behind it.
  *
@@ -327,7 +332,9 @@ test('suspect stickers are marked on the tile, and the picker rings the suggeste
   cells[2].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   const sug = all('.swatches button.suggest');
   assert.equal(sug.length, 1, 'the picker rings exactly the suggested colour');
-  assert.equal(sug[0].dataset.face, 'B', 'colour class 5 is Back/blue');
+  // The picker offers COLOURS now, not sides: class 5 is blue, wherever blue sits on the cube
+  // (ADR 0001 §8.5 — a class and a position are different questions).
+  assert.equal(Number(sug[0].dataset.colour), 5, 'the suggested colour class is the one rung');
   // A plain progress — the situation changed — clears the marks.
   progress({ phase: 'scanning', message: 'x', captured: FACES.map(face), live: null, confirm: null });
   assert.equal(all('.scan-face .cell.suspect').length, 0);
@@ -644,7 +651,7 @@ test('a corrected sticker is what reaches the cube screen, not the original read
   panel().setSticker = (...args) => calls.push(args);
   const cell = $('.scan-face[data-face="U"] .tgrid > .cell:nth-child(1)');
   cell.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-  const swatch = $('.swatches button[data-face="R"]');
+  const swatch = $('.swatches button[data-colour="1"]'); // red
   assert.ok(swatch, 'the six-colour picker opened on a read side');
   swatch.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal(calls.length, 1, 'the correction is handed to the panel, which owns validation');
@@ -915,7 +922,10 @@ test('every sticker is a button with a name, and the board is a single tab stop'
 test('the names carry the reading, and aria-disabled says what a press would do', () => {
   progress({ phase: 'scanning', message: '', captured: [face('R')], live: null, device: null, confirm: null });
   const rCells = all('.scan-face[data-face="R"] .tgrid > .cell');
-  assert.match(rCells[0].getAttribute('aria-label'), /Right side, sticker 1 — read as the Right side’s colour/);
+  // A sticker is read as a COLOUR. "The Right side's colour" was the Western identity in a
+  // sentence: it is red on every cube here, but blue is the back of most cubes and the bottom of
+  // an older one, and the camera read a colour either way.
+  assert.match(rCells[0].getAttribute('aria-label'), /Right side, sticker 1 — read as red/);
   assert.equal(rCells[0].getAttribute('aria-disabled'), 'false', 'a read sticker is correctable');
   assert.match(rCells[4].getAttribute('aria-label'), /Scan the Right side again/);
   assert.equal(rCells[4].getAttribute('aria-disabled'), 'false', 'a read centre re-reads its side');
@@ -949,4 +959,53 @@ test('activating a read sticker opens the picker with focus in it, and Escape ha
   win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   assert.equal(pick.hidden, true, 'Escape closes it');
   assert.equal(win.document.activeElement, cell, 'and hands focus back to the sticker that opened it');
+});
+
+// ---- the cube's colour arrangement, on the screen that reads it (ADR 0001) -------------------
+//
+// A tile is a POSITION and a capture is a COLOUR. On most cubes yellow is under white and the
+// two coincide, which is exactly why the app assumed it for so long. These pin the cases where
+// they come apart.
+
+test('a scan that proves the Japanese colours moves the two tiles and is remembered', () => {
+  // The blue capture belongs on the DOWN tile of a Japanese cube and the yellow one on the BACK
+  // tile — the opposite of what the app assumed a moment earlier.
+  const blue = { face: 'B', colors: Array(9).fill(5) };
+  const yellow = { face: 'D', colors: Array(9).fill(3) };
+  // 'scanning', not 'done': on 'done' the tiles deliberately leave their paint to the settle
+  // turn, so that phase would assert nothing about which capture landed where.
+  progress({
+    phase: 'scanning', message: 'x', captured: [blue, yellow], live: null, confirm: null,
+    scheme: 'japanese',
+  });
+  const down = all('.scan-face[data-face="D"] .tgrid > .cell');
+  const back = all('.scan-face[data-face="B"] .tgrid > .cell');
+  assert.equal(down[0].style.backgroundColor, NET_HEX.B, 'the DOWN tile shows the blue capture');
+  assert.equal(back[0].style.backgroundColor, NET_HEX.D, 'and the BACK tile the yellow one');
+  // …and the app remembers it, as evidence rather than as a preference.
+  const stored = JSON.parse(win.localStorage.getItem('cubusSettings'));
+  assert.equal(stored.scheme, 'japanese');
+  assert.equal(stored.schemeSource, 'scan', 'a scan is evidence, and is recorded as such');
+});
+
+test('an undetermined scan changes nothing — it is not evidence', () => {
+  const before = JSON.parse(win.localStorage.getItem('cubusSettings'));
+  progress({
+    phase: 'scanning', message: 'x', captured: [], live: null, confirm: null,
+    scheme: 'undetermined',
+  });
+  const after = JSON.parse(win.localStorage.getItem('cubusSettings'));
+  assert.equal(after.scheme, before.scheme, 'the state is known; the colours are not');
+  assert.equal(after.schemeSource, before.schemeSource);
+});
+
+test('a refusal never establishes an arrangement', () => {
+  const before = JSON.parse(win.localStorage.getItem('cubusSettings'));
+  progress({
+    phase: 'scanning', message: 'x', captured: [], live: null, confirm: null,
+    notice: { title: 'Some stickers were misread', tone: 'err', body: 'b' },
+  });
+  const after = JSON.parse(win.localStorage.getItem('cubusSettings'));
+  assert.equal(after.scheme, before.scheme);
+  assert.equal(after.schemeSource, before.schemeSource);
 });

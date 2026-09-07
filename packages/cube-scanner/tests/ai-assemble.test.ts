@@ -1,11 +1,25 @@
+import Cube from 'cubejs';
 import { describe, expect, it } from 'vitest';
 import {
+  type AiScanResult,
   assembleColors,
   assemblePainted,
   type ColorFace,
+  type Confirmation,
   matchingRotations,
 } from '../src/ai-assemble.js';
 import { SOLVED_FACELETS } from '../src/facelet-cube.js';
+import {
+  adjacentIn,
+  type Colour,
+  colourOf,
+  colourOfSlot,
+  holdOffset,
+  positionOf,
+  SCHEMES,
+  type Scheme,
+  slotOf,
+} from '../src/scheme.js';
 import { FACES, type Face } from '../src/types.js';
 import { scrambleFacelets } from './helpers.js';
 
@@ -115,25 +129,77 @@ const rot = (a: number[], k: number): number[] => {
   for (let t = 0; t < ((k % 4) + 4) % 4; t++) o = ROT90.map((i) => o[i]!);
   return o;
 };
-/** The canonical (correctly held) capture of one side of a known cube. */
+/** The colour painted on a facelet letter (a position) on a cube of the given scheme. */
+const paint = (letter: string, scheme: Scheme): Colour => colourOf(letter as Face, scheme);
+
+/**
+ * The six captures a camera makes of a cube in state `facelets` painted in `scheme`, each shown
+ * at its own rotation, FILED BY COLOUR the way the panel files them: under `FACES[centre]`. For
+ * a Western cube this is `faces()` turned; for a Japanese cube the blue capture lands in slot B
+ * and the yellow one in slot D whatever their positions, which is the whole point.
+ */
+function capturesOf(
+  facelets: string,
+  scheme: Scheme,
+  rots: number[] = [0, 0, 0, 0, 0, 0],
+): Record<Face, ColorFace> {
+  const out = {} as Record<Face, ColorFace>;
+  FACES.forEach((_position, fi) => {
+    const colors = rot(
+      [...facelets.slice(fi * 9, fi * 9 + 9)].map((l) => paint(l, scheme)),
+      rots[fi]!,
+    );
+    out[slotOf(colors[4] as Colour)] = { colors, confidence: Array(9).fill(1) };
+  });
+  return out;
+}
+
+/**
+ * What a camera sees of the side in `slot` when a cube of `scheme` is held with the `up` colour
+ * upwards — the canonical capture turned by the hold's physical offset — optionally mis-held by a
+ * further quarter turn. Built from the geometry, not from the assembler, so the projection the
+ * assembler does is tested against a construction and not against itself.
+ */
+function heldOf(facelets: string, scheme: Scheme, slot: Face, up: Face, misHold = 0): ColorFace {
+  const position = positionOf(colourOfSlot(slot), scheme);
+  const fi = FACES.indexOf(position);
+  const canonicalColors = [...facelets.slice(fi * 9, fi * 9 + 9)].map((l) => paint(l, scheme));
+  const offset = holdOffset(colourOfSlot(slot), colourOfSlot(up), scheme);
+  if (offset === null)
+    throw new Error(`impossible hold: ${slot} with ${up} up on a ${scheme} cube`);
+  return { colors: rot(canonicalColors, offset + misHold), confidence: Array(9).fill(1) };
+}
+
+/** A confirmation as the assembler takes it: the held capture and the hold it answered. */
+const answer = (
+  facelets: string,
+  scheme: Scheme,
+  req: { face: Face; up: Face },
+  misHold = 0,
+): Confirmation => ({
+  capture: heldOf(facelets, scheme, req.face, req.up, misHold),
+  up: req.up,
+});
+
+/** The canonical (correctly held) capture of one side of a WESTERN cube, held white-up for a
+ *  side face and as its canonical top neighbour dictates otherwise — what `up` the assembler
+ *  asks for on a Western-only scan. */
 const canonical = (facelets: string, face: Face, misHold = 0): ColorFace => ({
   colors: rot(faces(facelets)[face]!.colors, misHold),
   confidence: Array(9).fill(1),
 });
 
 /** Show all six sides at the given rotations, the way a user holds them: any way up. */
-const shownAs = (facelets: string, rots: number[]): Record<Face, ColorFace> => {
-  const f = faces(facelets);
-  FACES.forEach((face, fi) => {
-    f[face]!.colors = rot(f[face]!.colors, rots[fi]!);
-  });
-  return f;
-};
+const shownAs = (facelets: string, rots: number[]): Record<Face, ColorFace> =>
+  capturesOf(facelets, 'western', rots);
 
-/** Answer every `confirm` request, optionally mis-holding the nth one. Returns the final result. */
-function scanWithConfirmations(truth: string, rots: number[], misHoldNth = -1) {
-  const shown = shownAs(truth, rots);
-  let confirmed: Partial<Record<Face, ColorFace>> = {};
+/**
+ * Answer every `confirm` request the way a cube of `scheme` would be held, optionally mis-holding
+ * the nth one. Returns the final result and how many looks it took.
+ */
+function scanAs(truth: string, scheme: Scheme, rots: number[], misHoldNth = -1) {
+  const shown = capturesOf(truth, scheme, rots);
+  let confirmed: Partial<Record<Face, Confirmation>> = {};
   let looks = 0;
   for (let round = 0; round < 8; round++) {
     const r = assembleColors(shown, 0.15, confirmed);
@@ -144,12 +210,22 @@ function scanWithConfirmations(truth: string, rots: number[], misHoldNth = -1) {
     }
     confirmed = {
       ...confirmed,
-      [r.confirm.face]: canonical(truth, r.confirm.face, looks === misHoldNth ? 1 : 0),
+      [r.confirm.face]: answer(truth, scheme, r.confirm, looks === misHoldNth ? 1 : 0),
     };
     looks++;
   }
-  return { valid: false, facelets: '', looks, reason: 'gave up' } as const;
+  const gaveUp: AiScanResult & { looks: number } = {
+    valid: false,
+    facelets: '',
+    looks,
+    reason: 'gave up',
+  };
+  return gaveUp;
 }
+
+/** `scanAs` for the Western cube every pre-existing fixture is. */
+const scanWithConfirmations = (truth: string, rots: number[], misHoldNth = -1) =>
+  scanAs(truth, 'western', rots, misHoldNth);
 
 describe('assembleColors — cubes that six face photographs cannot pin down', () => {
   // Six unoriented face images genuinely do not determine the cube: turn the four side faces of a
@@ -248,9 +324,11 @@ describe('assembleColors — confirmations are rotation measurements, and refusa
     const shown = shownAs(oneTurn, [0, 0, 0, 0, 0, 0]);
     const first = assembleColors(shown);
     expect(first.confirm).toBeDefined();
-    const cap = canonical(oneTurn, first.confirm!.face);
+    const cap = heldOf(oneTurn, 'western', first.confirm!.face, first.confirm!.up);
     cap.colors[0] = (cap.colors[0]! + 1) % 6; // the second look flips one sticker
-    const second = assembleColors(shown, 0.15, { [first.confirm!.face]: cap });
+    const second = assembleColors(shown, 0.15, {
+      [first.confirm!.face]: { capture: cap, up: first.confirm!.up },
+    });
     // Never a mismatch ("held the wrong way up") for a colour flip; the scan continues instead.
     expect(second.mismatch).toBeUndefined();
     if (!second.valid) {
@@ -264,9 +342,10 @@ describe('assembleColors — confirmations are rotation measurements, and refusa
     const shown = shownAs(oneTurn, [0, 0, 0, 0, 0, 0]);
     const first = assembleColors(shown);
     const face = first.confirm!.face;
-    const cap = canonical(oneTurn, face);
+    const up = first.confirm!.up;
+    const cap = heldOf(oneTurn, 'western', face, up);
     for (const i of [0, 1, 2, 3]) cap.colors[i] = (cap.colors[i]! + 1) % 6; // 4 disagreements
-    const r = assembleColors(shown, 0.15, { [face]: cap });
+    const r = assembleColors(shown, 0.15, { [face]: { capture: cap, up } });
     expect(r.valid).toBe(false);
     expect(r.reread).toBe(face);
     expect(r.confirm?.face).toBe(face);
@@ -343,9 +422,9 @@ describe('assembleColors — confirmations are rotation measurements, and refusa
     const truth = scrambleFacelets('U');
     const shown = faces(truth);
     const ask = assembleColors(shown);
-    const face = ask.confirm!.face;
+    const { face, up } = ask.confirm!;
     const short: ColorFace = { colors: faces(truth)[face]!.colors.slice(0, 7), confidence: [] };
-    expect(() => assembleColors(shown, 0.15, { [face]: short })).toThrow(
+    expect(() => assembleColors(shown, 0.15, { [face]: { capture: short, up } })).toThrow(
       new RegExp(`confirmation of ${face}`),
     );
     // A full-length confirmation whose confidences are not numbers is refused on the same rule.
@@ -353,9 +432,18 @@ describe('assembleColors — confirmations are rotation measurements, and refusa
       colors: faces(truth)[face]!.colors,
       confidence: Array(9).fill(Number.NaN),
     };
-    expect(() => assembleColors(shown, 0.15, { [face]: nan })).toThrow(/confirmation of/);
+    expect(() => assembleColors(shown, 0.15, { [face]: { capture: nan, up } })).toThrow(
+      /confirmation of/,
+    );
+    // A confirmation without its hold is not a confirmation: the assembler cannot project it into
+    // any scheme's frame, and a bare capture handed in the old way must not be quietly accepted.
+    expect(() =>
+      assembleColors(shown, 0.15, { [face]: canonical(truth, face) as unknown as Confirmation }),
+    ).toThrow(/confirmation of/);
     // …and a well-formed one is still accepted, so the guard did not simply refuse everything.
-    expect(() => assembleColors(shown, 0.15, { [face]: canonical(truth, face) })).not.toThrow();
+    expect(() =>
+      assembleColors(shown, 0.15, { [face]: answer(truth, 'western', ask.confirm!) }),
+    ).not.toThrow();
   });
 
   it('a confirmation matches at every rotation inside the tolerance, not only the closest', () => {
@@ -450,10 +538,10 @@ describe('assembleColors — dead ends refuse rather than guess', () => {
     // these shown rotations leaves readings nothing further can tell apart.
     const truth = scrambleFacelets("L R' F' B");
     const shown = shownAs(truth, [0, 2, 1, 2, 2, 0]);
-    let confirmed: Partial<Record<Face, ColorFace>> = {};
+    let confirmed: Partial<Record<Face, Confirmation>> = {};
     let r = assembleColors(shown, 0.15, confirmed);
     for (let round = 0; round < 4 && r.confirm; round++) {
-      confirmed = { ...confirmed, [r.confirm.face]: canonical(truth, r.confirm.face) };
+      confirmed = { ...confirmed, [r.confirm.face]: answer(truth, 'western', r.confirm) };
       r = assembleColors(shown, 0.15, confirmed);
     }
     expect(r.valid).toBe(false);
@@ -632,5 +720,266 @@ describe('assembleColors — what an ambiguous scan says about itself', () => {
     expect(r.valid).toBe(true);
     expect(r.readings).toBeUndefined();
     expect(r.undetermined).toBeUndefined();
+  });
+});
+
+describe('assembleColors — the colour scheme is a third ambiguity dimension (ADR 0001)', () => {
+  // The states the design note measured (dev-docs/colour-scheme-switch.md §3, corrected the same
+  // day): a scrambled Japanese cube used to be refused as "at least 3 stickers misread" about a
+  // correct read, because a capture was filed under FACES[centre] — the Western scheme stated
+  // as an identity. And the obvious remedy, "exactly one filing is legal", is false on the
+  // near-solved states a beginner hands over, so the scheme is searched WITH the rotations.
+  const deep = scrambleFacelets("D2 L' B U2 F' R2 D B' L2 U F2 R");
+  const sexy = scrambleFacelets("R U R' U'");
+  /** The U-layer edge 3-cycle that is valid under BOTH filings as two different cubes. */
+  const CYCLE = 'UFUUUUUUURRRFRRRRRFBFFFUFFFDDDDDDDDDLLLLLLLLLBRBBBBBBB';
+  /** Two twisted corners: legal, unsolved, and the SAME string under both filings. */
+  const twisted = (() => {
+    // cubejs's typings do not expose the orientation arrays; the runtime object carries them.
+    const c = new Cube() as unknown as { co: number[]; asString(): string };
+    c.co[0] = 1;
+    c.co[1] = 2;
+    return c.asString();
+  })();
+
+  it('reads a scrambled Japanese cube, and says which scheme it is', () => {
+    for (const truth of [sexy, deep]) {
+      const r = assembleColors(capturesOf(truth, 'japanese'));
+      expect(r.valid).toBe(true);
+      expect(r.facelets).toBe(truth);
+      expect(r.scheme).toBe('japanese');
+    }
+  });
+
+  it('a Western cube is decisive the same way, and the old contract is unchanged for it', () => {
+    for (const truth of [sexy, deep]) {
+      const r = assembleColors(capturesOf(truth, 'western'));
+      expect(r.valid).toBe(true);
+      expect(r.facelets).toBe(truth);
+      expect(r.scheme).toBe('western');
+    }
+  });
+
+  it('a solved cube is one state under both schemes, and says the colours are undetermined', () => {
+    for (const scheme of SCHEMES) {
+      const r = assembleColors(capturesOf(SOLVED_FACELETS, scheme, [1, 2, 3, 0, 1, 2]));
+      expect(r.valid).toBe(true);
+      expect(r.facelets).toBe(SOLVED_FACELETS);
+      expect(r.scheme).toBe('undetermined');
+    }
+  });
+
+  it('two twisted corners: the STATE is known and the scheme is not, and it says so', () => {
+    for (const scheme of SCHEMES) {
+      const r = scanAs(twisted, scheme, [0, 0, 0, 0, 0, 0]);
+      expect(r.valid).toBe(true);
+      expect(r.facelets).toBe(twisted);
+      expect(r.scheme).toBe('undetermined');
+    }
+  });
+
+  it('the top-layer 3-cycle differs only by scheme: every look is answered, then "turn any one face"', () => {
+    // Under one filing alone this scans as a unique, valid reading. Under both it is two
+    // different cubes that differ in nothing but which colour is under white. The scanner asks
+    // for the looks that COULD separate them — each one a hold both kinds of cube can obey — and
+    // when the answers turn out to fit both, it says so and gives the one instruction that works.
+    // It never picks: accepting either reading is a confidently wrong cube for whichever child
+    // has the other kind (ADR 0001 §8.2).
+    for (const scheme of SCHEMES) {
+      const r = scanAs(CYCLE, scheme, [0, 0, 0, 0, 0, 0]);
+      expect(r.valid).toBe(false);
+      expect(r.schemeAmbiguous).toBe(true);
+      expect(r.reason).toMatch(/turn any one face/);
+      expect(r.confirm).toBeUndefined();
+    }
+    // And the instruction works: one turn of any face, and the same cube — of either kind — is
+    // read decisively, with its own scheme.
+    const turned = Cube.fromString(CYCLE).move('R').asString();
+    for (const scheme of SCHEMES) {
+      const r = assembleColors(capturesOf(turned, scheme));
+      expect(r.valid).toBe(true);
+      expect(r.facelets).toBe(turned);
+      expect(r.scheme).toBe(scheme);
+    }
+  });
+
+  it('a look CAN eliminate a scheme, so a scan is never refused merely for standing under two', () => {
+    // The counterexample that killed a guard, kept as the fixture that stops it coming back
+    // (2026-09-07, found in verification). The reasoning it refuted: "the scanner only asks for
+    // holds both arrangements can obey, so an answer is consistent with both and can never tell
+    // them apart." A hold being POSSIBLE under both schemes does not mean both READINGS predict
+    // the same photograph of it — each candidate accepts its own set of rotations for that side,
+    // and a truthful answer can miss one candidate's set entirely.
+    //
+    // This state scans as nine Western readings and one Japanese one. Answering "the blue side,
+    // red up" leaves eight — the Japanese reading is among those gone — and the scan carries on
+    // narrowing within one scheme. A guard that refused whenever two schemes stood with different
+    // states threw this cube away with no look asked at all.
+    const cube = new Cube() as unknown as { ep: number[]; asString(): string };
+    const ep = cube.ep.slice();
+    [ep[1], ep[7], ep[10]] = [7, 10, 1];
+    cube.ep = ep;
+    const truth = cube.asString();
+    const shown = capturesOf(truth, 'western');
+
+    const before = assembleColors(shown);
+    expect(before.valid).toBe(false);
+    expect(before.confirm).toBeDefined(); // a look is asked for, never a turn
+
+    const after = assembleColors(shown, 0.15, {
+      B: answer(truth, 'western', { face: 'B', up: 'R' }),
+    });
+    expect(after.readings).toBe(8);
+    expect(after.confirm).toBeDefined(); // still narrowing
+    expect(after.schemeAmbiguous).toBeUndefined();
+  });
+
+  it('never returns a wrong cube when one look is mis-held, on either kind of cube', () => {
+    const CASES: [string, number[]][] = [
+      ['U R', [1, 0, 2, 0, 3, 0]],
+      ['U', [0, 0, 0, 0, 0, 0]],
+      ["R U'", [1, 1, 1, 1, 1, 1]],
+      ["R U R' U'", [0, 1, 2, 3, 0, 1]],
+    ];
+    let accepted = 0;
+    for (const scheme of SCHEMES) {
+      for (const [alg, rots] of [...CASES, ['cycle', [2, 0, 1, 0, 3, 0]] as [string, number[]]]) {
+        const truth = alg === 'cycle' ? CYCLE : scrambleFacelets(alg);
+        const r = scanAs(truth, scheme, rots, 0);
+        if (r.valid) {
+          accepted++;
+          expect(`${scheme} ${alg}: ${r.facelets}`).toBe(`${scheme} ${alg}: ${truth}`);
+        }
+      }
+    }
+    expect(accepted).toBeGreaterThan(0);
+  });
+
+  it('a confirmation is projected into each scheme’s frame: every permitted hold recovers the truth', () => {
+    // The same photograph of the blue side "red up" is canonical for a Western B and a Japanese D
+    // at rotations a half turn apart. Answer every request the physical way for the cube's own
+    // scheme, at every starting rotation of every side, and the truth must come back.
+    for (const scheme of SCHEMES) {
+      for (const alg of ['U', 'U R', "F' D", 'L2 B']) {
+        const truth = scrambleFacelets(alg);
+        for (const rots of [
+          [0, 0, 0, 0, 0, 0],
+          [1, 2, 3, 0, 1, 2],
+          [3, 3, 3, 3, 3, 3],
+        ]) {
+          const r = scanAs(truth, scheme, rots);
+          expect(`${scheme} ${alg} ${rots}: ${r.facelets}`).toBe(
+            `${scheme} ${alg} ${rots}: ${truth}`,
+          );
+          expect(r.scheme === scheme || r.scheme === 'undetermined').toBe(true);
+        }
+      }
+    }
+  });
+
+  it('while both schemes are in play, a requested hold is possible on both kinds of cube', () => {
+    // A hold naming two faces that are opposite on the cube in the hand cannot be obeyed. Every
+    // request the search emits before the scheme is settled must be adjacent under every scheme.
+    let requests = 0;
+    for (const scheme of SCHEMES) {
+      for (const truth of [CYCLE, twisted, scrambleFacelets('U'), scrambleFacelets("U D'")]) {
+        const shown = capturesOf(truth, scheme);
+        let confirmed: Partial<Record<Face, Confirmation>> = {};
+        for (let round = 0; round < 6; round++) {
+          const r = assembleColors(shown, 0.15, confirmed);
+          if (!r.confirm) break;
+          requests++;
+          // Whatever the search still considers possible, the instruction must be obeyable on
+          // the ACTUAL cube — and on the other kind, until a look has ruled it out.
+          expect(adjacentIn(colourOfSlot(r.confirm.face), colourOfSlot(r.confirm.up), scheme)).toBe(
+            true,
+          );
+          confirmed = { ...confirmed, [r.confirm.face]: answer(truth, scheme, r.confirm) };
+        }
+      }
+    }
+    expect(requests).toBeGreaterThan(0);
+  });
+
+  it('a one-sticker misread on a Japanese cube is "at least 1", not the old "at least 4"', () => {
+    // Decoded under the Western filing this reading is four stickers from legal; under the
+    // Japanese, one. The count reported is the smaller floor, and the pointer comes from the
+    // scheme that achieved it, in slot coordinates — the tile the user can tap.
+    const shown = capturesOf(sexy, 'japanese');
+    const was = shown.U.colors[0]!;
+    shown.U.colors[0] = 1; // white read as red
+    const r = assembleColors(shown);
+    expect(r.valid).toBe(false);
+    expect(r.misreadCount).toBe(1);
+    expect(r.misreadScheme).toBe('japanese');
+    expect(r.suspects).toEqual([{ face: 'U', index: 0, to: was }]);
+  });
+
+  it('the same misread on a Western cube reports the same floor, from the Western filing', () => {
+    const shown = capturesOf(sexy, 'western');
+    const was = shown.U.colors[0]!;
+    shown.U.colors[0] = 1;
+    const r = assembleColors(shown);
+    expect(r.valid).toBe(false);
+    expect(r.misreadCount).toBe(1);
+    expect(r.misreadScheme).toBe('western');
+    expect(r.suspects).toEqual([{ face: 'U', index: 0, to: was }]);
+  });
+
+  it('a deferred diagnosis is still null, never a count, and never a scheme', () => {
+    const shown = capturesOf(sexy, 'japanese');
+    shown.U.colors[0] = 1;
+    const r = assembleColors(shown, 0.15, {}, { diagnose: false });
+    expect(r.valid).toBe(false);
+    expect(r.misreadCount).toBeNull();
+    expect(r.misreadScheme).toBeUndefined();
+    expect(r.suspects).toBeUndefined();
+  });
+
+  it('a capture filed under a slot that is not its colour is refused, not re-filed', () => {
+    // A slot names a colour. A caller that puts the blue capture under D has confused a slot
+    // with a position, and the assembler says so rather than guessing which was meant.
+    const shown = capturesOf(sexy, 'western');
+    const swapped = { ...shown, D: shown.B, B: shown.D };
+    const r = assembleColors(swapped);
+    expect(r.valid).toBe(false);
+    expect(r.reason).toMatch(/slot names a colour/);
+  });
+
+  it('rotations come back in slot order, so a host can turn every capture the right way up', () => {
+    const rots = [1, 2, 3, 0, 1, 2];
+    const shown = capturesOf(deep, 'japanese', rots);
+    const r = assembleColors(shown);
+    expect(r.valid).toBe(true);
+    expect(r.scheme).toBe('japanese');
+    // Rebuild the positional string from the captures and the reported rotations, placing each
+    // slot's capture at the position the reported scheme gives its colour.
+    const positional = new Array<string>(54);
+    FACES.forEach((slot, si) => {
+      const canonicalColors = rot(shown[slot]!.colors, r.rotations![si]!);
+      const position = positionOf(colourOfSlot(slot), 'japanese');
+      const base = FACES.indexOf(position) * 9;
+      canonicalColors.forEach((c, i) => {
+        positional[base + i] = positionOf(c as Colour, 'japanese');
+      });
+    });
+    expect(positional.join('')).toBe(deep);
+  });
+
+  it('a painted cube reports the scheme its centres describe', () => {
+    for (const scheme of SCHEMES) {
+      // Painted by POSITION: the user authored each tile in place, D included.
+      const painted = {} as Record<Face, ColorFace>;
+      FACES.forEach((position, fi) => {
+        painted[position] = {
+          colors: [...deep.slice(fi * 9, fi * 9 + 9)].map((l) => paint(l, scheme)),
+          confidence: Array(9).fill(1),
+        };
+      });
+      const r = assemblePainted(painted);
+      expect(r.valid).toBe(true);
+      expect(r.facelets).toBe(deep);
+      expect(r.scheme).toBe(scheme);
+    }
   });
 });
