@@ -39,6 +39,16 @@ export const SCHEME_COLOURS = Object.freeze({
   japanese: Object.freeze({ U: 0, R: 1, F: 2, D: 5, L: 4, B: 3 }),
 });
 
+/**
+ * Is `value` a detector colour class at all — 0..5 and nothing else?
+ *
+ * The scanner emits only these, but a colour reaches the app through captures, stored state and
+ * suspects, and a value that is not one names no position under any scheme. Every conversion here
+ * would otherwise answer with `undefined` and paint it as a colour nobody has.
+ */
+export const isColour = (value) =>
+  Number.isInteger(value) && value >= 0 && value < COLOUR_NAMES.length;
+
 /** Is this a scheme name the table knows? A stored value is untrusted input. */
 export const isScheme = (v) => SCHEMES.includes(v);
 

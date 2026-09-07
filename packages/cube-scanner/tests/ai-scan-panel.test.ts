@@ -25,6 +25,7 @@ import {
   positionOf,
   SCHEMES,
   type Scheme,
+  slotOf,
 } from '../src/scheme.js';
 import { FACES, type Face } from '../src/types.js';
 import { AiScanPanel, type ScanProgress } from '../view/ai-scan-panel.js';
@@ -1781,9 +1782,10 @@ describe('ai-scan-panel — the colour scheme is the scan’s to decide (ADR 000
     );
     panel.setAttribute('scheme', 'japanese');
     panel.setPainting(true);
-    // The Down tile of a Japanese painting is the BLUE capture: one stroke on it creates a
-    // blue-centred side in slot B, seeded blue, with the painted sticker where it was tapped.
-    panel.setSticker('D', 0, 3);
+    // A host draws the Down tile and knows that on a Japanese cube it shows the BLUE capture, so
+    // it calls with the slot — the panel speaks slots in every mode. One stroke creates a
+    // blue-centred side seeded blue, with the painted sticker where it was tapped.
+    panel.setSticker('B', 0, 3);
     const seeded = last().captured.find((c) => c.face === 'B');
     expect(seeded?.colors[4]).toBe(5);
     expect(seeded?.colors[0]).toBe(3);
@@ -1791,8 +1793,11 @@ describe('ai-scan-panel — the colour scheme is the scan’s to decide (ADR 000
     // Paint the whole of DEEP as a Japanese cube, tile by tile — and it is accepted as that.
     const sides = sidesOf(DEEP, 'japanese');
     for (const position of FACES) {
+      // The host's own mapping: this position's tile shows the capture of the colour the
+      // arrangement paints there.
+      const slot = slotOf(colourOf(position, 'japanese'));
       sides[position].forEach((colour, i) => {
-        if (i !== 4) panel.setSticker(position, i, colour);
+        if (i !== 4) panel.setSticker(slot, i, colour);
       });
     }
     expect(completions).toEqual([DEEP]);
@@ -1804,8 +1809,9 @@ describe('ai-scan-panel — the colour scheme is the scan’s to decide (ADR 000
     panel.setPainting(true);
     const sides = sidesOf(DEEP, 'western');
     for (const position of FACES) {
+      const slot = slotOf(colourOf(position, 'western'));
       sides[position].forEach((colour, i) => {
-        if (i !== 4) panel.setSticker(position, i, colour);
+        if (i !== 4) panel.setSticker(slot, i, colour);
       });
     }
     expect(completions).toEqual([DEEP]);
