@@ -165,3 +165,24 @@ test('the lesson lint names a piece by two colours only where the prose does', (
   // Sentences are reported so an author can find the line.
   assert.equal(lintColourPairs(shipped)[0].sentence, 'White and blue, sitting between the white centre and the blue centre.');
 });
+
+test('the renderer remaps the same two positions this module does', () => {
+  // `cubus-cube.js` carries its own one-line arithmetic — it is bundled as the renderer and
+  // depends on nothing in the app — so the two must be held equal or they can come to disagree
+  // about what Japanese means. Read out of the renderer's source, not imported: importing it
+  // would pull in three.js and a WebGL context to check a table.
+  const src = readFileSync(new URL('../lib/cubus-cube.js', import.meta.url), 'utf8');
+  const m = src.match(/const SWAPPED = \{([^}]*)\}/);
+  assert.ok(m, 'lib/cubus-cube.js no longer declares SWAPPED as a literal');
+  const swapped = Object.fromEntries([...m[1].matchAll(/([URFDLB]):\s*'([URFDLB])'/g)].map((x) => [x[1], x[2]]));
+  // What the renderer does to a palette, expressed as this module's own remap.
+  for (const position of POSITIONS) {
+    const mine = slotAt(position, 'japanese'); // the Western name of the colour Japanese puts here
+    assert.equal(swapped[position], mine, `${position} must read the same entry in both`);
+  }
+  // And the one fact underneath: only D and B move.
+  assert.deepEqual(
+    POSITIONS.filter((p) => swapped[p] !== p).sort(),
+    ['B', 'D'],
+  );
+});

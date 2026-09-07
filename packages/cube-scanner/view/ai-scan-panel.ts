@@ -1356,11 +1356,11 @@ export class AiScanPanel extends HTMLElement {
   setSticker(face: Face, index: number, colour: number): void {
     if (!Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
     if (!Number.isInteger(colour) || colour < 0 || colour >= FACES.length) return;
-    // `face` is a SLOT — the tile a host draws for a captured side is the side's colour — except
-    // while painting, where a host paints POSITIONS of a net and the slot behind a tile is the
-    // colour the working scheme puts there: the Down tile of a Japanese painting is the blue
-    // capture. Mapped here, once, so the rest of this method is about one capture.
-    if (this.painting) face = this.slotAt(face);
+    // `face` is a SLOT in every mode — the colour of the side being touched, never a position.
+    // A host draws its tiles by position and knows the arrangement it is drawing them in, so it
+    // is the host that maps the Down tile of a Japanese cube to the blue capture. The panel took
+    // a position while painting and a slot otherwise, which put the same asymmetry into every
+    // call site; one vocabulary at the boundary is what stops that (2026-09-07).
     // Outside painting, only a side the camera has actually read can be corrected. Hand-building
     // one the scanner never saw is a different act with a different failure mode — nine guesses
     // instead of one correction — and it would let a stray tap turn an unscanned tile into a face

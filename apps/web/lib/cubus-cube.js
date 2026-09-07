@@ -9,11 +9,36 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { eyeDirection, fitDistance, silhouette } from './cube-frame.js';
 import { parseHighlight, pieceKey, resolveHighlight } from './cube-highlight.js';
 
+// The six sticker colours of each set, BY POSITION on a Western cube — the arrangement every
+// entry here was chosen in, and the one the `scheme` attribute remaps (ADR 0001).
 const PALETTES = {
   muted:    { U:'#E8E3D6', D:'#D8B84A', F:'#4E8C6A', B:'#3C6E9E', R:'#B8503F', L:'#C87A3C' },
   classic:  { U:'#F4F2EC', D:'#F0C000', F:'#00A651', B:'#0051BA', R:'#C41E3A', L:'#FF6C00' },
   colorsafe:{ U:'#EFEAE0', D:'#E9C46A', F:'#6A9FB5', B:'#20405C', R:'#D1495B', L:'#8C5E8A' },
 };
+
+/**
+ * The palette a cube of `scheme` wears. Only D and B trade places: on a Japanese cube blue is
+ * under white and yellow is at the back (ADR 0001 §2).
+ *
+ * A REMAP, never a fourth palette. Each set's six hexes were chosen together — `colorsafe` most
+ * obviously so — and a Japanese cube must inherit that work rather than re-derive it. The tables
+ * are written in Western positions, and a Western position IS its colour's name, so this is only
+ * "read each position's colour out of the table under the name that colour has".
+ *
+ * Local arithmetic rather than an import, deliberately: this file is bundled as the renderer and
+ * depends on nothing in the app, and the fact it needs — which two positions trade — is one line.
+ * `apps/web/test/scheme.test.mjs` holds it against `lib/scheme.js`'s table, so the two cannot
+ * come to disagree about what Japanese means.
+ */
+const SWAPPED = { U: 'U', R: 'R', F: 'F', L: 'L', D: 'B', B: 'D' };
+function paletteFor(name, scheme) {
+  const base = PALETTES[name] || PALETTES.muted;
+  if (scheme !== 'japanese') return base;
+  const out = {};
+  for (const position of Object.keys(base)) out[position] = base[SWAPPED[position]];
+  return out;
+}
 // A sticker whose colour is not known YET — '?' in a facelet string. Deliberately not a member of
 // PALETTES: those are puzzle data, six real sticker colours, and "unknown" is not one of them. It
 // exists so a half-finished scan can be drawn honestly; without it an unread sticker falls through
@@ -62,7 +87,7 @@ class CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
 // on the DOM-lowercased spelling, so both are observed and normalized in _set().
   static observedAttributes = [
-    'facelets', 'scramble', 'alg', 'palette', 'autorotate', 'highlight',
+    'facelets', 'scramble', 'alg', 'palette', 'scheme', 'autorotate', 'highlight',
     'ghosts', 'ghost-elevation', 'ghostelevation',
     'camera-latitude', 'cameralatitude',
     'camera-longitude', 'cameralongitude',
@@ -86,6 +111,7 @@ class CubusCube extends HTMLElement {
   set scramble(v) { this._set('scramble', v); }
   set alg(v) { this._set('alg', v); }
   set palette(v) { this._set('palette', v); }
+  set scheme(v) { this._set('scheme', v); }
   set ghosts(v) { this._set('ghosts', v); }
   set ghostElevation(v) { this._set('ghost-elevation', v); }
   set cameraLatitude(v) { this._set('camera-latitude', v); }
@@ -104,7 +130,11 @@ class CubusCube extends HTMLElement {
   }
   /** Attribute defaults. Also what a REMOVED attribute falls back to — see _set(). */
   static DEFAULTS = {
-    palette: 'muted', ghosts: 'none', 'ghost-elevation': '4', highlight: 'none',
+    palette: 'muted',
+    // Western unless a host says otherwise: the arrangement PALETTES is written in, and the
+    // one the app assumes until a scan proves the cube is the other kind.
+    scheme: 'western',
+    ghosts: 'none', 'ghost-elevation': '4', highlight: 'none',
     // No camera distance: it is computed from what the view draws and the slot it draws into
     // (lib/cube-frame.js), so nothing is clipped at any slot shape.
     'camera-latitude': '35', 'camera-longitude': '45',
@@ -128,7 +158,7 @@ class CubusCube extends HTMLElement {
       this._attrs[name] = val;
     }
     if (!this._ghostMeshes) return;
-    if (name === 'palette') this._paint();
+    if (name === 'palette' || name === 'scheme') this._paint();
     else if (name === 'ghosts') { this._ghostVisible(); this._paint(); this._applyCamera(); }
     else if (name === 'ghost-elevation') { this._ghostPlace(); this._applyCamera(); }
     else if (name === 'facelet-scale') { this._applyScale(); this._applyCamera(); } // the scale is part of the silhouette
@@ -587,7 +617,7 @@ class CubusCube extends HTMLElement {
 
   _paint(fl = this._facelets()) {
     if (!this.stickers) return;
-    const pal = PALETTES[this._attrs.palette] || PALETTES.muted;
+    const pal = paletteFor(this._attrs.palette, this._attrs.scheme);
     // The colour letter a sticker carries under `fl`, or null for one the scanner could not read.
     // Factored out because _stampPieces needs the same answer, and asking the facelet string twice
     // in two spellings is how the two come to disagree.

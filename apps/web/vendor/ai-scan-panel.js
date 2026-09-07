@@ -5255,7 +5255,6 @@ var AiScanPanel = class extends HTMLElement {
   setSticker(face, index, colour) {
     if (!Number.isInteger(index) || index < 0 || index > 8 || index === 4) return;
     if (!Number.isInteger(colour) || colour < 0 || colour >= FACES.length) return;
-    if (this.painting) face = this.slotAt(face);
     let read = this.faces[face];
     if (read === void 0) {
       if (!this.painting) return;
