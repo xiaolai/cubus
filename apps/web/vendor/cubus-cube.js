@@ -28723,18 +28723,21 @@ function silhouette({ eye, elevation, scale = 0.9, cull = true }) {
 function cameraAxes(eye, worldUp = [0, 1, 0]) {
   const forward = [-eye[0], -eye[1], -eye[2]];
   let right = cross(forward, worldUp);
-  if (Math.hypot(...right) < 1e-6) {
-    const i = worldUp.map(Math.abs).indexOf(Math.min(...worldUp.map(Math.abs)));
+  const degenerate = Math.hypot(...right) < 1e-6;
+  if (degenerate) {
+    const mag = worldUp.map(Math.abs);
+    const i = mag.lastIndexOf(Math.min(...mag));
     right = cross(forward, [0, 1, 2].map((k) => k === i ? 1 : 0));
   }
   right = norm(right);
   const up = norm(cross(right, forward));
-  return { forward, right, up };
+  return { forward, right, up, degenerate };
 }
 function fitDistance({ points, vfovDeg, aspect: aspect2, eye, worldUp = [0, 1, 0], margin = 0.06 }) {
   const tanV = Math.tan(vfovDeg / 2 * Math.PI / 180) * (1 - margin);
   const tanH = tanV * aspect2;
-  const { right, up } = cameraAxes(eye, worldUp);
+  const { right, up, degenerate } = cameraAxes(eye, worldUp);
+  if (degenerate) return fitDistanceStable({ points, vfovDeg, aspect: aspect2, margin });
   let d = 0;
   for (const p of points) {
     const t = dot(p, eye);
@@ -29041,6 +29044,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     renderer.domElement.style.cssText = "width:100%;height:100%;display:block";
     this.appendChild(renderer.domElement);
     const controls = this.controls = new OrbitControls(camera, renderer.domElement);
+    this._controlsRoot = renderer.domElement.getRootNode();
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.enablePan = false;
@@ -29203,9 +29207,23 @@ var CubusCube = class _CubusCube extends HTMLElement {
   dispose() {
     this._stop();
     clearTimeout(this._release);
+    const canvas = this.controls?.domElement ?? this.renderer?.domElement;
+    const root = this._controlsRoot;
+    const host = root && (root.body ?? (root.nodeType === 11 ? root : null));
+    const detached = canvas && host && canvas.getRootNode() !== root;
+    const wasDisplay = detached ? canvas.style.display : null;
+    if (detached) {
+      canvas.style.display = "none";
+      host.appendChild(canvas);
+    }
+    this.controls?.dispose();
+    if (detached) {
+      canvas.remove();
+      canvas.style.display = wasDisplay;
+    }
     this.renderer?.dispose();
     this.renderer?.domElement?.remove();
-    this.scene = this.renderer = this.camera = this.controls = null;
+    this.scene = this.renderer = this.camera = this.controls = this._controlsRoot = null;
     this._ghostMeshes = null;
   }
   /**
@@ -29298,7 +29316,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const raw = String(this._attrs["camera-up"] ?? "U").trim().toUpperCase();
     const v = raw.length === 1 ? slotVector(raw) : null;
     if (!v) {
-      console.warn(`<cubus-cube> refusing camera-up "${this._attrs["camera-up"]}" \u2014 expected one of U D R L F B`);
+      console.warn(`<cubus-cube> refusing camera-up "${raw}" \u2014 expected one of U D R L F B`);
       return [0, 1, 0];
     }
     return v;
