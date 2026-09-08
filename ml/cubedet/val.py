@@ -133,7 +133,11 @@ def evaluate(model, loader, device: str, num_classes: int = NUM_CLASSES) -> dict
             # Precision and recall at the app's threshold, class-agnostic on location but
             # requiring the colour to be right — which is the product's actual success condition.
             confident = prediction[prediction[:, 4] >= REPORT_CONF]
-            matched = torch.zeros(len(gt_boxes), dtype=torch.bool)
+            # `device=` is load-bearing and its absence cost a training run: every other tensor in
+            # this block lives on the accelerator, and the CPU-only smoke test could not see the
+            # mismatch because there was only ever one device. `test_evaluate_runs_on_an_accelerator`
+            # is the check that can.
+            matched = torch.zeros(len(gt_boxes), dtype=torch.bool, device=gt_boxes.device)
             if len(confident) and len(gt_boxes):
                 ious = _iou_matrix(confident[:, :4], gt_boxes)
                 for p in torch.argsort(confident[:, 4], descending=True).tolist():
