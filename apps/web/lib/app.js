@@ -1128,7 +1128,12 @@ function buildChrome(platform) {
   // region, so it has one of its own: an off-screen sibling nobody has to be able to click.
   const cubeLive = `<button class="tb-ctl tb-live" id="cubeLive" hidden data-nav="settings">${icon('bluetooth', 17)}</button>`
     + '<span class="sr-only" id="cubeLiveSay" role="status" aria-live="polite"></span>';
-  const gear = `<button class="tb-ctl" data-nav="settings" title="Settings" aria-label="Settings">${icon('settings', 18)}</button>`;
+  // The shortcut hint is drawn only where the shortcut is guaranteed to arrive: under the desktop
+  // shell. A browser on macOS keeps ⌘, for itself, and a phone has no keyboard to promise.
+  const shortcut = isTauri && ['macos', 'windows', 'linux'].includes(platform)
+    ? (platform === 'macos' ? ' (⌘,)' : ' (Ctrl+,)')
+    : '';
+  const gear = `<button class="tb-ctl" data-nav="settings" title="Settings${shortcut}" aria-label="Settings">${icon('settings', 18)}</button>`;
   const cap = (name, win, round = false) => `<button class="tb-cap ${win}${round ? ' round' : ''}" data-win="${win}" title="${win}" aria-label="${win === 'min' ? 'Minimise' : 'Close'}">${icon(name, round ? 14 : 16)}</button>`;
   if (platform === 'macos') {
     const lights = preview ? ['#E8695E', '#E0B341', '#5FB55F'].map((c) => `<span class="tl" style="background:${c}"></span>`).join('') : '';
@@ -5675,6 +5680,30 @@ function installExternalLinks() {
   });
 }
 
+/**
+ * ⌘, opens Settings — the macOS convention for an app's preferences — and Ctrl+, does the same
+ * where the primary modifier is Ctrl. Nothing handled either until 2026-09-07: the desktop shell
+ * sets no native menu, so there was no Preferences… item to claim the accelerator, and the key
+ * reached the page, where nobody was listening. It is a page listener rather than a native menu
+ * item on purpose: a keyboard shortcut is a capability both builds satisfy, and a menu item would
+ * be a screen that exists on one build only. (A browser on macOS keeps ⌘, for its own
+ * preferences and the page never sees it; that is the browser's, not a failure here, and it is
+ * why the gear's hint is drawn only under the desktop shell.)
+ *
+ * Matched on e.code, like the Advanced chord, and EXACTLY: one primary modifier — Meta or Ctrl,
+ * not both, and neither is the other's synonym — with no Alt and no Shift, so ⌃⌥⌘D-style chords
+ * and any future ⇧⌘, stay distinct. `repeat` is ignored because a held key must not re-enter the
+ * screen sixty times a second; and arriving on Settings while already there is a no-op rather
+ * than a rebuild, since `go()` re-applies the route when the hash does not change.
+ */
+function installSettingsShortcut() {
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Comma' || e.repeat || e.altKey || e.shiftKey || e.metaKey === e.ctrlKey) return;
+    e.preventDefault();
+    if (state.screen !== 'settings') go('settings');
+  });
+}
+
 function installAdvancedShortcut() {
   document.addEventListener('keydown', (e) => {
     if (e.code !== 'KeyD' || !e.ctrlKey || !e.altKey || !e.metaKey) return;
@@ -6097,6 +6126,7 @@ async function boot() {
   // one an 800 ms timer will correct afterwards.
   if (platform === 'android') pullAndroidInsets();
   buildChrome(platform);
+  installSettingsShortcut();
   installAdvancedShortcut();
   installExternalLinks();
   // '' = follow the browser/OS language. No-op until a catalog is registered; the picker arrives
