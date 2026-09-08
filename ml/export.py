@@ -70,6 +70,9 @@ HERE = Path(__file__).resolve().parent
 NAME = "cube-yolo"
 IMGSZ = 640
 FP32, INT8, MLPACKAGE, TFLITE = f"{NAME}.onnx", f"{NAME}.int8.onnx", f"{NAME}.mlpackage", f"{NAME}.tflite"
+# The six colour classes in `ml/data.yaml` order. Repeated here rather than imported so that
+# `--cubedet` can run in an environment with nothing but torch, onnx and coremltools.
+CLASS_NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
 
 # What ships where, in one place. The committed MANIFEST.json must carry these strings verbatim
 # (test_pipeline.py::test_manifest_labels_match_export_py), so a label can only change here.
@@ -196,6 +199,103 @@ def export_coreml(pt: Path, work: Path, out: Path) -> Path:
     return dst
 
 
+def export_onnx_cubedet(pt: Path, work: Path, out: Path) -> tuple[Path, Path]:
+    """The same two ONNX artefacts, from a `cubedet` checkpoint and with no Ultralytics anywhere.
+
+    `cubedet` builds the app's output tensor itself (see `ml/cubedet/model.py`), so there is no
+    exporter to override and no head to re-wire — the traced module IS the contract. opset 12 and
+    `nms=False` are kept because they are what every consumer downstream was built against.
+    """
+    import torch
+
+    from cubedet.model import CubeDet, ExportWrapper
+
+    model = _load_cubedet(pt)
+    fp32 = out / FP32
+    torch.onnx.export(
+        ExportWrapper(model),
+        torch.zeros(1, 3, IMGSZ, IMGSZ),
+        str(fp32),
+        input_names=["images"],
+        output_names=["output0"],
+        opset_version=12,
+        do_constant_folding=True,
+        dynamo=False,
+    )
+    _assert_contract(fp32)
+    int8 = out / INT8
+    quantize_int8(fp32, int8)
+    return fp32, int8
+
+
+def export_coreml_cubedet(pt: Path, work: Path, out: Path) -> Path:
+    """CoreML from the same checkpoint, with the tensor input and fp16 output the bridge expects.
+
+    Identical settings to `export_coreml` above — tensor (not image) input, fp16 output, mlprogram,
+    macOS13 — but reached directly through `torch.jit.trace`, because the only thing Ultralytics
+    was providing on that path was the trace and the metadata.
+    """
+    import coremltools as ct
+    import numpy as np
+    import torch
+
+    from cubedet.model import ExportWrapper
+
+    model = _load_cubedet(pt)
+    sample = torch.zeros(1, 3, IMGSZ, IMGSZ)
+    traced = torch.jit.trace(ExportWrapper(model).eval(), sample, strict=False)
+    converted = ct.convert(
+        traced,
+        inputs=[ct.TensorType("image", shape=tuple(sample.shape), dtype=np.float32)],
+        outputs=[ct.TensorType("output0", dtype=np.float16)],
+        convert_to="mlprogram",
+        compute_precision=ct.precision.FLOAT16,
+        minimum_deployment_target=ct.target.macOS13,
+        skip_model_load=True,
+    )
+    converted.short_description = "cubus sticker-colour detector (cubedet)"
+    converted.author = "cubus"
+    converted.license = "see LICENSE"
+    converted.version = "cubedet-1"
+    converted.user_defined_metadata.update(
+        {"names": str(CLASS_NAMES), "imgsz": str(IMGSZ), "nms": "False", "stack": "cubedet"}
+    )
+    dst = out / MLPACKAGE
+    if dst.exists():
+        shutil.rmtree(dst)
+    converted.save(str(dst))
+    return dst
+
+
+def _load_cubedet(pt: Path):
+    """Rebuild the network from a `cubedet` checkpoint's own recorded width and class count."""
+    import torch
+
+    sys.path.insert(0, str(HERE))
+    from cubedet.model import CubeDet
+
+    state = torch.load(pt, map_location="cpu", weights_only=True)
+    weights = state.get("model", state)
+    model = CubeDet(num_classes=state.get("num_classes", 6), width=state.get("width", 1.0))
+    model.load_state_dict(weights)
+    return model.eval()
+
+
+def _assert_contract(onnx_path: Path) -> None:
+    """The exported graph must emit [1, 4 + classes, 8400], or nothing downstream can read it.
+
+    Checked HERE as well as in `test_cubedet.py` because this is the file that writes the artefact
+    the app ships: a contract asserted only in a unit test is a contract the release path skips.
+    """
+    import onnx
+
+    graph = onnx.load_model(str(onnx_path)).graph
+    shape = [d.dim_value for d in graph.output[0].type.tensor_type.shape.dim]
+    expected = [1, 4 + len(CLASS_NAMES), 8400]
+    if shape != expected:
+        sys.exit(f"{onnx_path.name} emits {shape}, not the {expected} decodeDetections reads")
+
+
 def _write_onnx2tf_sample(cwd: Path) -> None:
     """onnx2tf validates each op by comparing ONNX vs TF outputs on a fixed sample tensor it otherwise
     downloads — and numpy>=2.3 refuses to load the pickled .npy it ships (onnx2tf#545 territory). The
@@ -301,6 +401,8 @@ def main() -> None:
     ap.add_argument("--skip", nargs="*", default=[], choices=["onnx", "coreml", "tflite"], help="formats to skip")
     ap.add_argument("--int8-only", action="store_true", help="re-derive cube-yolo.int8.onnx from the fp32 already in --out; nothing else is touched")
     ap.add_argument("--work", type=Path, help="scratch directory (default: a temp dir, deleted afterwards)")
+    ap.add_argument("--cubedet", action="store_true",
+                    help="the checkpoint is a cubedet one (ml/cubedet) — export with no Ultralytics on any path")
     args = ap.parse_args()
 
     tmp = None
@@ -334,9 +436,25 @@ def main() -> None:
     import onnx
     import onnxruntime
     import torch
-    import ultralytics
 
-    manifest["tools"].update({"ultralytics": ultralytics.__version__, "torch": torch.__version__, "onnx": onnx.__version__, "onnxruntime": onnxruntime.__version__})
+    manifest["tools"].update({"torch": torch.__version__, "onnx": onnx.__version__, "onnxruntime": onnxruntime.__version__})
+    if args.cubedet:
+        # The whole point of the --cubedet path: record that the model has no AGPL lineage, and
+        # carry the training environment the checkpoint itself recorded, so the manifest — which
+        # ships beside the artefacts — is where the provenance can be read.
+        state = torch.load(args.pt, map_location="cpu", weights_only=True)
+        manifest["stack"] = "cubedet"
+        manifest["training_environment"] = state.get("environment", {})
+        manifest["licence_note"] = (
+            "Trained by ml/cubedet (PyTorch/torchvision, BSD-3), from random initialisation. "
+            "No Ultralytics code and no Ultralytics pretrained weights. "
+            "See ml/PERMISSIVE_DETECTOR_PROVENANCE.md."
+        )
+    else:
+        import ultralytics
+
+        manifest["stack"] = "ultralytics"
+        manifest["tools"]["ultralytics"] = ultralytics.__version__
 
     paths: dict[str, Path] = {}
     fp32 = args.out / FP32
@@ -348,7 +466,7 @@ def main() -> None:
             sys.exit(f"{FP32} changed during the {step} step — a tool rewrote the reference in place; the artefacts no longer describe one model")
 
     if "onnx" not in args.skip:
-        fp32, int8 = export_onnx(args.pt, work, args.out)
+        fp32, int8 = (export_onnx_cubedet if args.cubedet else export_onnx)(args.pt, work, args.out)
         paths[fp32.name] = fp32
         paths[int8.name] = int8
         manifest["artefacts"][FP32] = {**ARTEFACT_LABELS[FP32], "opset": 12}
@@ -359,7 +477,7 @@ def main() -> None:
         import coremltools as ct
 
         manifest["tools"]["coremltools"] = ct.__version__
-        mlp = export_coreml(args.pt, work, args.out)
+        mlp = (export_coreml_cubedet if args.cubedet else export_coreml)(args.pt, work, args.out)
         guard_fp32("coreml")
         paths[mlp.name] = mlp
         manifest["artefacts"][MLPACKAGE] = dict(ARTEFACT_LABELS[MLPACKAGE])
