@@ -427,12 +427,28 @@ class CubeDataset(Dataset):
             rng = None
 
         if self.augment and self.mosaic_open() and (rng.random() < MOSAIC_PROB):
-            # base_scale 0.5 brings the 2×IMG_SIZE collage back to a single image's scale; without
-            # it the model would only ever be shown cubes at half size.
+            # A MOSAIC IS CROPPED BACK TO IMG_SIZE, NOT SHRUNK TO IT, and the difference is the
+            # whole augmentation. The first version passed base_scale=0.5 to bring the 2×IMG_SIZE
+            # collage down to one frame, on the reasoning that the quartered cubes should come back
+            # to the size a single image would have had. That reasoning is backwards: scaling the
+            # collage down scales the CUBES down with it.
+            #
+            # Measured on 200 samples, native sticker 90 px: base_scale 0.5 gives a mean of 43.5 px,
+            # 48% of native, while validation shows them at 100%. A systematic train/test scale
+            # mismatch, and the symptom matched it exactly — mAP50 IMPROVED (0.8682 against 0.8648
+            # at epoch 25, detection is fairly scale-tolerant) while mAP50-95 collapsed (0.6271
+            # against 0.7492), and the TRAINING box loss was worse too, which is what ruled out an
+            # evaluation artefact.
+            #
+            # Detlib does it by cropping: `Mosaic.border = (-imgsz // 2, -imgsz // 2)`, a
+            # negative border that takes an IMG_SIZE window out of the 2×IMG_SIZE canvas, with the
+            # scale jitter then applied around NATIVE size. base_scale 1.0 here is that crop — the
+            # window lands where `translate` puts it, and objects keep the size they were rendered
+            # at (measured mean 74.0 px, 82% of native, the shortfall being ordinary scale jitter).
             image, boxes = _mosaic(self._read, len(self.files), index, rng)
             image, boxes = _affine(
                 image, boxes, rng, degrees=ROTATE_DEGREES, translate=TRANSLATE_JITTER,
-                scale=SCALE_JITTER, out_size=IMG_SIZE, base_scale=0.5,
+                scale=SCALE_JITTER, out_size=IMG_SIZE, base_scale=1.0,
             )
         else:
             image, boxes = self._read(index)
