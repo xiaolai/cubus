@@ -349,6 +349,120 @@ def test_photometric_never_moves_a_hue():
     assert worst["yellow"] < 11.5, worst["yellow"]
 
 
+def _tiny_dataset(tmp_path, n=8):
+    """A few 640×640 frames with one bright square each, in YOLO layout."""
+    from PIL import Image
+
+    (tmp_path / "images" / "train").mkdir(parents=True)
+    (tmp_path / "labels" / "train").mkdir(parents=True)
+    for i in range(n):
+        img = np.full((IMG_SIZE, IMG_SIZE, 3), 114, np.uint8)
+        x0, y0 = 100 + (i % 3) * 40, 120 + (i % 4) * 30
+        img[y0:y0 + 90, x0:x0 + 90] = (255, 0, 0)
+        Image.fromarray(img).save(tmp_path / "images" / "train" / f"{i:03d}.jpg", quality=95)
+        cx, cy = (x0 + 45) / IMG_SIZE, (y0 + 45) / IMG_SIZE
+        wh = 90 / IMG_SIZE
+        (tmp_path / "labels" / "train" / f"{i:03d}.txt").write_text(
+            f"1 {cx:.6f} {cy:.6f} {wh:.6f} {wh:.6f}\n"
+        )
+    return tmp_path
+
+
+def test_mosaic_keeps_every_box_on_its_own_paint(tmp_path):
+    """Four images into one frame, and every surviving box must still sit on red pixels.
+
+    Mosaic is the augmentation most able to corrupt labels quietly: it composes four images at a
+    random centre, each cropped differently, and every box has to be shifted by its own image's
+    offset. Get one quadrant's arithmetic wrong and the model trains on boxes pointing at a
+    neighbour's pixels — which presents as a slightly worse model, never as a bug.
+    """
+    from cubedet.data import CubeDataset
+
+    dataset = CubeDataset(_tiny_dataset(tmp_path), "train", augment=True, seed=1)
+    checked = 0
+    for index in range(8):
+        for epoch in range(4):
+            dataset.set_epoch(epoch, 100)          # well before close_mosaic
+            image, boxes = dataset[index]
+            picture = (image.numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+            # PAINT IS FOUND BY HUE, not by raw channel thresholds. The augmenter scales saturation
+            # over [0.5, 1.5] and brightness over [0.75, 1.25], so a perfectly good red sticker can
+            # come out as (196, 120, 130) — which a `G < 100` test calls background. That is what
+            # the first version of this check did, and it reported a correctly-placed box as
+            # "sitting on the wrong image". Hue survives every one of those transforms by
+            # construction (HUE_LIMIT_DEG is 0), and grey padding has no saturation at all, so
+            # hue-plus-saturation is the predicate that means what this test is asking.
+            from cubedet.data import _rgb_to_hsv
+
+            hsv = _rgb_to_hsv(picture.astype(np.float32) / 255.0)
+            hue, sat = hsv[:, :, 0], hsv[:, :, 1]
+            near_red = np.minimum(np.abs(hue - 0.0), 360 - np.abs(hue - 0.0)) < 40
+            red = near_red & (sat > 0.25)
+            for box in boxes.numpy():
+                x0, y0, x1, y1 = (int(round(v)) for v in box[1:])
+                x0, y0 = max(x0, 0), max(y0, 0)
+                x1, y1 = min(x1, IMG_SIZE), min(y1, IMG_SIZE)
+                if x1 - x0 < 6 or y1 - y0 < 6:
+                    continue
+                covered = red[y0:y1, x0:x1].mean()
+                # A kept box must be mostly paint. The threshold is loose because a rotated
+                # square's axis-aligned hull includes padding at the corners; it is nowhere near
+                # loose enough to admit a box on the wrong quadrant, which scores near zero.
+                assert covered > 0.45, (
+                    f"box {box[1:]} at index={index} epoch={epoch} covers {covered:.2f} paint "
+                    f"— it is sitting on the wrong image"
+                )
+                checked += 1
+    assert checked > 20, f"only {checked} boxes examined — the mosaic path may not have run"
+
+
+def test_mosaic_closes_for_the_final_epochs():
+    """`close_mosaic` must actually close, or training never ends on a clean image."""
+    from cubedet.data import CLOSE_MOSAIC_EPOCHS, CubeDataset
+
+    dataset = CubeDataset.__new__(CubeDataset)     # the predicate needs no disk
+    dataset.augment = True
+    dataset.total_epochs = 100
+    dataset.epoch = 0
+    assert dataset.mosaic_open()
+    dataset.epoch = 100 - CLOSE_MOSAIC_EPOCHS - 1
+    assert dataset.mosaic_open()
+    dataset.epoch = 100 - CLOSE_MOSAIC_EPOCHS
+    assert not dataset.mosaic_open(), "mosaic must be shut for the final epochs"
+    dataset.epoch = 99
+    assert not dataset.mosaic_open()
+    dataset.augment = False                        # never on for validation
+    dataset.epoch = 0
+    assert not dataset.mosaic_open()
+
+
+def test_set_epoch_reaches_the_workers(tmp_path):
+    """The epoch must cross the process boundary, or closing mosaic is a no-op.
+
+    DataLoader workers get a COPY of the dataset when they spawn. With `persistent_workers=True`
+    that copy outlives the epoch, so `set_epoch` updates the object in the parent and reaches
+    nothing that loads data: mosaic never closes, the augmentation seed never advances, and the
+    training log looks identical either way. This is the check that keeps it switched off.
+    """
+    from torch.utils.data import DataLoader
+
+    from cubedet.data import CubeDataset
+
+    dataset = CubeDataset(_tiny_dataset(tmp_path), "train", augment=True, seed=3)
+
+    def first_batch(epoch):
+        dataset.set_epoch(epoch, 100)
+        loader = DataLoader(dataset, batch_size=4, shuffle=False, num_workers=2,
+                            collate_fn=collate, persistent_workers=False)
+        images, _ = next(iter(loader))
+        return images.clone()
+
+    a = first_batch(0)
+    b = first_batch(1)
+    assert not torch.equal(a, b), "identical pixels at two epochs — set_epoch never reached the workers"
+    assert torch.equal(a, first_batch(0)), "the same epoch must reproduce, or the run is not seeded"
+
+
 def test_collate_masks_padding_rather_than_inventing_a_white_sticker():
     a = (torch.zeros(3, IMG_SIZE, IMG_SIZE), torch.tensor([[1.0, 10.0, 10.0, 20.0, 20.0]]))
     b = (torch.zeros(3, IMG_SIZE, IMG_SIZE), torch.zeros(0, 5))
