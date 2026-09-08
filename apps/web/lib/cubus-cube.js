@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { eyeDirection, fitDistance, silhouette } from './cube-frame.js';
+import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from './cube-frame.js';
 import { parseHighlight, pieceKey, resolveHighlight } from './cube-highlight.js';
 
 // The six sticker colours of each set, BY POSITION on a Western cube — the arrangement every
@@ -74,6 +74,11 @@ const AXES = { x: new THREE.Vector3(1,0,0), y: new THREE.Vector3(0,1,0), z: new 
 // Subtle by intent: it points, it does not shout, and it has to stay legible under a turn playing
 // over the top of it.
 const HL_PEAK = 0.38;        // emissiveIntensity at the top of the breath
+// A sticker outside the focus set keeps its LUMINANCE and loses its hue, then is pulled part-way
+// to a flat mid grey. Keeping luminance is what stops the cube reading as broken: it is still
+// visibly a cube with light and dark faces, it has just stopped telling you anything.
+const FOCUS_FLATTEN = 0.62;  // how far an out-of-focus sticker is pulled toward FOCUS_MID
+const FOCUS_MID = 0.44;
 const HL_PERIOD = 1200;      // ms for one full breath
 const GHOST_OPACITY = 0.45;  // a ghost at rest — single-sourced with its construction below
 const GHOST_HL_PEAK = 0.80;  // ghosts are unlit and have no emissive, so they breathe in opacity
@@ -87,10 +92,11 @@ class CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
 // on the DOM-lowercased spelling, so both are observed and normalized in _set().
   static observedAttributes = [
-    'facelets', 'scramble', 'alg', 'palette', 'scheme', 'autorotate', 'highlight',
+    'facelets', 'scramble', 'alg', 'palette', 'scheme', 'autorotate', 'highlight', 'focus',
     'ghosts', 'ghost-elevation', 'ghostelevation',
     'camera-latitude', 'cameralatitude',
     'camera-longitude', 'cameralongitude',
+    'camera-fit', 'camerafit',
     'facelet-scale', 'faceletscale',
     'tempo-scale', 'temposcale',
     'back-view', 'backview',
@@ -101,6 +107,7 @@ class CubusCube extends HTMLElement {
     ghostelevation: 'ghost-elevation',
     cameralatitude: 'camera-latitude',
     cameralongitude: 'camera-longitude',
+    camerafit: 'camera-fit',
     faceletscale: 'facelet-scale',
     temposcale: 'tempo-scale',
     backview: 'back-view',
@@ -138,6 +145,11 @@ class CubusCube extends HTMLElement {
     // No camera distance: it is computed from what the view draws and the slot it draws into
     // (lib/cube-frame.js), so nothing is clipped at any slot shape.
     'camera-latitude': '35', 'camera-longitude': '45',
+    // 'view' fits the silhouette THIS angle draws — tightest framing, and what a view that never
+    // moves programmatically wants. 'stable' fits every angle at once, so swinging the camera
+    // rotates the cube without resizing it. Default stays 'view': stable costs ~11% of apparent
+    // size with ghosts floating, and dragging to orbit never refits, so the app gains nothing.
+    'camera-fit': 'view',
     'facelet-scale': '0.9', 'tempo-scale': '1', 'back-view': 'none',
     orbit: 'free', // 'locked' = dragging does not turn the view; the host decides
   };
@@ -162,12 +174,14 @@ class CubusCube extends HTMLElement {
     else if (name === 'ghosts') { this._ghostVisible(); this._paint(); this._applyCamera(); }
     else if (name === 'ghost-elevation') { this._ghostPlace(); this._applyCamera(); }
     else if (name === 'facelet-scale') { this._applyScale(); this._applyCamera(); } // the scale is part of the silhouette
-    else if (name === 'camera-latitude' || name === 'camera-longitude') this._applyCamera();
+    else if (name === 'camera-latitude' || name === 'camera-longitude' || name === 'camera-fit') this._applyCamera();
     else if (name === 'back-view') this._dirty = true;
     else if (name === 'orbit') this._applyOrbit();
     else if (name === 'facelets' || name === 'scramble') this.reset();
     else if (name === 'alg') { this._sol = this._parse(this._attrs.alg || ''); this._cursor = 0; this._applied = 0; this._playing = false; }
     else if (name === 'highlight') { this._readHighlight(); this._syncHighlight(); }
+    // focus repaints rather than syncing: it changes sticker COLOUR, which only _paint() writes.
+    else if (name === 'focus') { this._readFocus(); this._paint(); }
   }
 
   connectedCallback() {
@@ -289,6 +303,7 @@ class CubusCube extends HTMLElement {
     // been read yet. reset() below paints, and painting re-resolves the highlight.
     this._hlSet = null;
     this._readHighlight();
+    this._readFocus();
     this._ghostVisible();
     this.reset();
 
@@ -470,12 +485,17 @@ class CubusCube extends HTMLElement {
     const lat = this._num('camera-latitude', 35);
     const lon = this._num('camera-longitude', 45);
     const eye = eyeDirection(lat, lon);
+    // A stable fit has to bound the ghosts on the faces THIS eye can see too, because some other
+    // angle will show them and the distance must already have room for them.
+    const stable = this._attrs['camera-fit'] === 'stable';
     const points = silhouette({
       eye,
       elevation: this._ghostsEnabled() ? this._num('ghost-elevation', 4) : null,
       scale: this._num('facelet-scale', 0.9),
+      cull: !stable,
     });
-    const d = fitDistance({ points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye });
+    const geom = { points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye };
+    const d = stable ? fitDistanceStable(geom) : fitDistance(geom);
     // The controls clamp the distance on every update(), so their limits follow the fit: a user
     // may zoom in to look closer, never out past the frame — and a resize puts the fit back.
     if (this.controls) { this.controls.minDistance = d * 0.5; this.controls.maxDistance = d; }
@@ -633,6 +653,7 @@ class CubusCube extends HTMLElement {
       m.material.color.set(letter === null ? UNKNOWN_STICKER : pal[letter]);
     }
     this._stampPieces(letterOf);
+    this._applyFocus();
     this._ghostPlace();
     this._applyScale();
     // Which cubies a selector names depends on what the cube now holds, so the set is re-resolved
@@ -663,6 +684,43 @@ class CubusCube extends HTMLElement {
   }
 
   /** Re-read the highlight attribute into selectors, naming a bad token rather than dropping it. */
+  /** Which pieces still matter. Same grammar as `highlight`, opposite job: highlight says "look at
+   *  this one", focus says "none of the others exist". For a whole stage the second is far stronger
+   *  — you cannot glow four pieces and expect the eye to ignore twenty-two.
+   *
+   *  Safe to do per-sticker ONLY because every sticker gets its own material at build time
+   *  (`new THREE.MeshStandardMaterial` inside the cubie loop). bodyMat is shared across all 26
+   *  cubies and must never be touched this way; the same trap caught the highlight channel once. */
+  _readFocus() {
+    const { selectors, invalid } = parseHighlight(this._attrs.focus);
+    if (invalid !== null) console.warn(`<cubus-cube> refusing focus — invalid selector "${invalid}"`);
+    this._fcSels = selectors;
+  }
+
+  /** Grey every sticker and ghost NOT named by `focus`. Called from _paint(), after the colour
+   *  loop has written each sticker's true colour — so this is always applied to fresh colours and
+   *  never compounds on itself. */
+  _applyFocus() {
+    const sels = this._fcSels || [];
+    if (!sels.length) return;
+    const cubies = this.cubies.map((c) => ({
+      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
+      piece: c.userData.piece ?? null,
+    }));
+    const { indices } = resolveHighlight(sels, cubies);
+    const keep = new Set(indices);
+    for (const [i, c] of this.cubies.entries()) {
+      if (keep.has(i)) continue;
+      for (const m of c.children) {
+        if (!m.userData?.face) continue;          // never the shared body material
+        const col = m.material.color;
+        const lum = 0.299 * col.r + 0.587 * col.g + 0.114 * col.b;
+        const g = lum * (1 - FOCUS_FLATTEN) + FOCUS_MID * FOCUS_FLATTEN;
+        col.setRGB(g, g, g);
+      }
+    }
+  }
+
   _readHighlight() {
     const { selectors, invalid } = parseHighlight(this._attrs.highlight);
     if (invalid !== null) console.warn(`<cubus-cube> refusing highlight — invalid selector "${invalid}"`);
