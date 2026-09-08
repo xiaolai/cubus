@@ -179,7 +179,15 @@ def main(argv: list[str] | None = None) -> int:
     val_set = CubeDataset(cfg.data, "val", augment=False)
     train_loader = DataLoader(
         train_set, batch_size=cfg.batch, shuffle=True, num_workers=cfg.workers,
-        collate_fn=collate, pin_memory=True, drop_last=True, persistent_workers=cfg.workers > 0,
+        collate_fn=collate, pin_memory=True, drop_last=True,
+        # persistent_workers is OFF, and that is not an oversight. Worker processes get a COPY of
+        # the dataset at spawn; with persistent workers that copy outlives the epoch, so
+        # `set_epoch` would update the object in this process and reach nothing that actually loads
+        # data. Mosaic would never close and the augmentation seed would never advance — both
+        # entirely silently, since the training loop would look exactly the same either way.
+        # Respawning costs a few seconds against a 240 s epoch. `test_set_epoch_reaches_the_workers`
+        # is what stops this being switched back on for the speed.
+        persistent_workers=False,
     )
     val_loader = DataLoader(
         val_set, batch_size=cfg.batch, shuffle=False, num_workers=cfg.workers,
@@ -223,6 +231,12 @@ def main(argv: list[str] | None = None) -> int:
 
     for epoch in range(start_epoch, cfg.epochs):
         model.train()
+        # The dataset needs the epoch for two reasons, and forgetting either fails silently. It
+        # mixes the epoch into the augmentation seed, so a sample is augmented differently each
+        # time it comes round rather than replaying one fixed enlarged dataset; and it closes
+        # mosaic for the final CLOSE_MOSAIC_EPOCHS, so training ends on the clean single images
+        # the scanner is actually shown.
+        train_set.set_epoch(epoch, cfg.epochs)
         started = time.time()
         running = {"total": 0.0, "cls": 0.0, "box": 0.0, "dfl": 0.0}
         for step, (images, targets) in enumerate(train_loader):
