@@ -65,11 +65,16 @@ def assert_permissive_environment(allow: bool) -> dict[str, str]:
 
     import torchvision
 
+    # EVERY VALUE IS COERCED TO str, and that is not cosmetic. `torch.__version__` is a
+    # `TorchVersion`, a str SUBCLASS, and pickling it records the class — so a checkpoint carrying
+    # it cannot be read back with `weights_only=True`, which is how both the resume path and
+    # `export.py --cubedet` load it. Left alone, this fails at the END: the run trains for hours
+    # and then nothing can open the weights. Stored as plain strings, the checkpoint is data.
     return {
         "python": sys.version.split()[0],
-        "torch": torch.__version__,
-        "torchvision": torchvision.__version__,
-        "numpy": np.__version__,
+        "torch": str(torch.__version__),
+        "torchvision": str(torchvision.__version__),
+        "numpy": str(np.__version__),
         "copyleft_detector_packages_present": ",".join(found) if found else "none",
     }
 

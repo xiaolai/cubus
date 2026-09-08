@@ -413,6 +413,34 @@ def test_evaluate_runs_on_an_accelerator():
         assert key in metrics and metrics[key] == metrics[key], (key, metrics)
 
 
+def test_checkpoint_reloads_under_weights_only(tmp_path):
+    """A checkpoint must be plain data, because that is how everything downstream opens it.
+
+    Both the resume path and `export.py --cubedet` load with `weights_only=True`, which refuses any
+    pickled object that is not a tensor or a primitive. `torch.__version__` is a `TorchVersion` —
+    a str SUBCLASS — so recording it verbatim produced checkpoints that could be written for hours
+    and then not read at all. The failure surfaces at the very end of a run, which is the worst
+    possible time to discover it, and never during training.
+    """
+    from cubedet.train import assert_permissive_environment
+
+    environment = assert_permissive_environment(allow=True)
+    for key, value in environment.items():
+        assert type(value) is str, f"{key} is {type(value).__name__}, not a plain str"
+
+    model = CubeDet(width=0.25)
+    path = tmp_path / "ckpt.pt"
+    torch.save(
+        {"model": model.state_dict(), "width": 0.25, "num_classes": NUM_CLASSES,
+         "epoch": 3, "metrics": {"map50": 0.5}, "environment": environment},
+        path,
+    )
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    rebuilt = CubeDet(num_classes=state["num_classes"], width=state["width"])
+    rebuilt.load_state_dict(state["model"])
+    assert state["environment"]["copyleft_detector_packages_present"] in {"none", "ultralytics"}
+
+
 def test_parameter_count_stays_near_the_model_it_replaces():
     """10.6 MB was an accepted download cost; this keeps a redesign from quietly doubling it."""
     params = count_parameters(CubeDet())
