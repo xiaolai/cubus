@@ -100,12 +100,12 @@ ROTATE_DEGREES = 8.0        # the baseline uses 0; a cube held in a hand is not 
 # was actually missing. The knob stays, at zero, with the numbers that set it.
 HUE_LIMIT_DEG = 0.0
 
-# Saturation, by contrast, is generous on purpose: scaling saturation does not rotate hue AT ALL,
-# it scales distance from grey, so no amount of it can turn a red sticker orange. That is why the
-# baseline can afford hsv_s 0.7 — its strongest colour augmentation is the one with no class risk.
-# A washed-out red is still red. The white-balance cast stays too, because saturation scaling is
-# exactly what could not tint white (the v3 bug, ml/OOD_EVAL.md).
-SAT_RANGE = (0.5, 1.5)
+# Saturation scaling cannot rotate hue — it scales distance from grey — so it carries none of the
+# class risk hue jitter does, and a washed-out red is still red. DESATURATION ONLY, though: k > 1
+# pushes a channel past 255 and the clamp that follows DOES rotate the hue (measured 6.6° before
+# this was bounded). See `_hue_saturation`. The white-balance cast stays regardless, because
+# saturation scaling is exactly what could not tint white (the v3 bug, ml/OOD_EVAL.md).
+SAT_RANGE = (0.5, 1.0)
 
 PAD_BYTE = int(round(float(PAD) * 255))
 
@@ -210,22 +210,58 @@ def _hsv_to_rgb(hsv: np.ndarray) -> np.ndarray:
 
 
 def _hue_saturation(img: np.ndarray, rng: random.Random) -> np.ndarray:
-    """A BOUNDED hue rotation and an unbounded-in-practice saturation scale.
+    """Scale saturation. Done in RGB, because in RGB it is three operations instead of a round trip.
 
-    The asymmetry is the point, and it is not a matter of taste. Hue IS the label here: red sits
-    at 349.9° and orange at 20.7°, so a rotation past half of that 30.8° gap makes the pixels say
-    orange while the label file still says red. `HUE_LIMIT_DEG` is set to 5°, a third of that
-    half-gap, and `test_photometric_never_moves_a_hue` measures the total drift of this function
-    and the cast together against each colour's own nearest neighbour.
+    SATURATION IS A PULL TOWARDS OR AWAY FROM GREY, and that is all it is:
 
-    Saturation cannot rotate hue at all — it scales the distance from grey — so it is free of that
-    risk entirely and is given the wide range the baseline used. A washed-out red is still red.
+        out = grey + k · (rgb − grey)
+
+    Every pairwise channel difference scales by k, so the ordering of R, G and B and the ratio
+    (G−B)/(max−min) are both unchanged — which is the definition of the hue. Costs about a
+    hundredth of the HSV round trip it replaces.
+
+    THE GUARANTEE HOLDS ONLY WHILE k ≤ 1, and the first version of this got that wrong. It claimed
+    exact hue preservation for the full [0.5, 1.5] range, and measured 6.6° of drift. The algebra is
+    right; the arithmetic is not, because k > 1 pushes a channel past 255 and the clamp that follows
+    changes the very channel ratios the hue is made of. Yellow is the clearest case: (255, 213, 0)
+    has luma 201, so k = 1.5 sends red to 282, it clips back to 255, and the colour rotates.
+    A guarantee with a silent exception is worse than no guarantee.
+
+    So k is drawn from [0.5, 1.0] — desaturation only, which moves every channel TOWARDS the luma
+    and therefore can never leave [0, 255]. Losing the increase costs little: the real-world
+    variation this stands in for is washed-out colour under bright light and weak phone sensors,
+    which is the desaturating direction, and the cast still supplies the tinting the v3 white-fix
+    needed.
+
+    Measured drift over 500 draws across the palette: **0.58° worst case**, and that residue is
+    8-bit rounding, not the transform — the algebra is exact in real arithmetic and the output is
+    quantised back to uint8. Stated as a number rather than as "exactly zero", because the previous
+    version of this docstring said "exactly" and was wrong by 6.6°.
+
+    WHY THIS WAS AN HSV ROUND TRIP, and what it cost. The first version converted to HSV, added a
+    hue offset, scaled saturation and converted back. Profiled at 316 ms per image — 36% of an
+    888 ms sample, which starved both GPUs to 0% while the CPU sat at load 22 on 20 cores. An
+    epoch would have taken 38 minutes alone and 76 sharing a box.
+
+    And the hue offset it was paying for does nothing: HUE_LIMIT_DEG is 0, set there by the
+    measurement two commits ago. The conversion was pure overhead in service of a disabled knob.
+    `_rgb_to_hsv` stays because the tests measure hue with it — measuring is not the hot path.
     """
-    rgb = img.astype(np.float32) / 255.0
-    hsv = _rgb_to_hsv(rgb)
-    hsv[..., 0] += rng.uniform(-HUE_LIMIT_DEG, HUE_LIMIT_DEG)
-    hsv[..., 1] = np.clip(hsv[..., 1] * rng.uniform(*SAT_RANGE), 0.0, 1.0)
-    return np.clip(_hsv_to_rgb(hsv) * 255.0, 0, 255).astype(np.uint8)
+    if HUE_LIMIT_DEG:
+        # Kept reachable, and deliberately on the slow path: if a future measurement finds hue
+        # budget, correctness matters more than speed for an experiment nobody is running yet.
+        rgb = img.astype(np.float32) / 255.0
+        hsv = _rgb_to_hsv(rgb)
+        hsv[..., 0] += rng.uniform(-HUE_LIMIT_DEG, HUE_LIMIT_DEG)
+        hsv[..., 1] = np.clip(hsv[..., 1] * rng.uniform(*SAT_RANGE), 0.0, 1.0)
+        return np.clip(_hsv_to_rgb(hsv) * 255.0, 0, 255).astype(np.uint8)
+
+    rgb = img.astype(np.float32)
+    # Rec. 601 luma: the grey a pixel desaturates towards. Any fixed weighting preserves hue by the
+    # argument above; luma is used so that dropping saturation does not also change brightness.
+    grey = (rgb @ np.array([0.299, 0.587, 0.114], dtype=np.float32))[..., None]
+    out = grey + rng.uniform(*SAT_RANGE) * (rgb - grey)
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 def _affine(
