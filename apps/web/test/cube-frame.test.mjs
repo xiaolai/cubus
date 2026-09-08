@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { eyeDirection, fitDistance, project, silhouette } from '../lib/cube-frame.js';
+import { eyeDirection, fitDistance, fitDistanceStable, project, silhouette } from '../lib/cube-frame.js';
 
 const ASPECTS = [0.3, 0.5, 0.75, 0.83, 1, 1.24, 1.33, 2, 3];
 const LATS = [-75, -35, 0, 35, 60, 89];
@@ -74,4 +74,42 @@ test('the tuned distance it replaced clipped: 18 with elevation 9 on the 658×79
   const old = 18 * 0.85 + 9 * 0.42; // _applyCamera before this module, before the aspect pull-back
   const outside = project({ points, vfovDeg: VFOV, aspect: 658 / 792, eye, d: old }).filter((p) => Math.abs(p.x) > 1 || Math.abs(p.y) > 1);
   assert.ok(outside.length > 0, 'the old distance fitted this slot, so the fit was never needed');
+});
+
+// A camera that refits as it swings appears to zoom: corner-on the cube is ~1.7 wide, face-on it
+// is 1 wide. That is correct for a fixed view and wrong for a moving one, and it is what
+// `camera-fit="stable"` exists to switch off.
+test('the stable fit is the same distance at every angle, and clips at none of them', () => {
+  for (const elevation of [null, 9]) {
+    const angles = [];
+    for (let lat = -90; lat <= 90; lat += 15) for (let lon = 0; lon < 360; lon += 15) angles.push([lat, lon]);
+
+    // The full point set does not depend on the eye once culling is off, so the distance cannot.
+    const dists = angles.map(([lat, lon]) => {
+      const eye = eyeDirection(lat, lon);
+      const points = silhouette({ eye, elevation, cull: false });
+      return fitDistanceStable({ points, vfovDeg: 30, aspect: 1.4 });
+    });
+    const spread = Math.max(...dists) - Math.min(...dists);
+    assert.ok(spread < 1e-9, `elevation ${elevation}: distance varies by ${spread} across angles`);
+
+    // Stronger than fitDistance's guarantee: nothing clips at ANY angle, at that one distance.
+    const d = dists[0];
+    for (const [lat, lon] of angles) {
+      const eye = eyeDirection(lat, lon);
+      const points = silhouette({ eye, elevation, cull: false });
+      for (const q of project({ points, vfovDeg: 30, aspect: 1.4, eye, d })) {
+        assert.ok(Math.abs(q.x) <= 1 && Math.abs(q.y) <= 1,
+          `elevation ${elevation}, lat ${lat} lon ${lon}: point projects to ${q.x.toFixed(3)},${q.y.toFixed(3)}`);
+        assert.ok(q.depth > 0, 'a point ended up behind the camera');
+      }
+    }
+  }
+});
+
+test('culling is on by default, so the existing per-view fit is untouched', () => {
+  const eye = eyeDirection(35, 45);
+  assert.deepEqual(silhouette({ eye, elevation: 9 }), silhouette({ eye, elevation: 9, cull: true }));
+  // With ghosts off there is nothing to cull, so both settings must agree exactly.
+  assert.deepEqual(silhouette({ eye, elevation: null }), silhouette({ eye, elevation: null, cull: false }));
 });
