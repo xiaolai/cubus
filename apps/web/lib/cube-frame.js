@@ -73,15 +73,24 @@ export function silhouette({ eye, elevation, scale = 0.9, cull = true }) {
 export function cameraAxes(eye, worldUp = [0, 1, 0]) {
   const forward = [-eye[0], -eye[1], -eye[2]];
   let right = cross(forward, worldUp);
-  if (Math.hypot(...right) < 1e-6) {
-    // The eye is looking straight along `worldUp`, so it fixes no roll. Any reference not
-    // parallel to it will do; take the axis `worldUp` leans on least, which cannot be parallel.
-    const i = worldUp.map(Math.abs).indexOf(Math.min(...worldUp.map(Math.abs)));
+  const degenerate = Math.hypot(...right) < 1e-6;
+  if (degenerate) {
+    // The eye is looking straight along `worldUp`, so it fixes no roll and this frame is one
+    // arbitrary choice out of a circle of them. Take the axis `worldUp` leans on least: its
+    // smallest component is at most 1/sqrt(3), so the cross product is never near zero.
+    //
+    // lastIndexOf, not indexOf, and that is not a detail. For the default up of [0,1,0] the X and
+    // Z components tie at zero; indexOf breaks the tie toward X and lastIndexOf toward Z, and Z is
+    // what this function returned for eight months before `worldUp` existed. Choosing X rotated
+    // the frame 90 degrees at the poles and moved `fitDistance` from 2.5683 to 5.1366 on an
+    // asymmetric point set — a silent regression in a default that was supposed to be untouched.
+    const mag = worldUp.map(Math.abs);
+    const i = mag.lastIndexOf(Math.min(...mag));
     right = cross(forward, [0, 1, 2].map((k) => (k === i ? 1 : 0)));
   }
   right = norm(right);
   const up = norm(cross(right, forward));
-  return { forward, right, up };
+  return { forward, right, up, degenerate };
 }
 
 /**
@@ -102,7 +111,16 @@ export function cameraAxes(eye, worldUp = [0, 1, 0]) {
 export function fitDistance({ points, vfovDeg, aspect, eye, worldUp = [0, 1, 0], margin = 0.06 }) {
   const tanV = Math.tan(((vfovDeg / 2) * Math.PI) / 180) * (1 - margin);
   const tanH = tanV * aspect;
-  const { right, up } = cameraAxes(eye, worldUp);
+  const { right, up, degenerate } = cameraAxes(eye, worldUp);
+  // When the eye looks straight along the up vector there is no roll to fit against: this
+  // function invents one, three.js's `lookAt` invents its own, and OrbitControls' `makeSafe()`
+  // nudges the pole and invents a third. Fitting to a roll nobody else will use is how a sticker
+  // corner ends up outside a tall canvas at `camera-up="R"`, latitude 0, longitude 90.
+  //
+  // So bound every roll instead. The enclosing-sphere bound covers the worst case over every
+  // viewing direction, which includes every roll of this one — larger than a correct per-roll fit
+  // would be, and strictly safer than guessing which roll the renderer will land on.
+  if (degenerate) return fitDistanceStable({ points, vfovDeg, aspect, margin });
   let d = 0;
   for (const p of points) {
     const t = dot(p, eye);
@@ -139,10 +157,10 @@ export function fitDistanceStable({ points, vfovDeg, aspect, margin = 0.06 }) {
  * Where each point lands, as a fraction of the half-frame (|x| ≤ 1 and |y| ≤ 1 means inside),
  * for a camera at distance `d` on `eye`. The check the test holds the fit to.
  */
-export function project({ points, vfovDeg, aspect, eye, d }) {
+export function project({ points, vfovDeg, aspect, eye, worldUp = [0, 1, 0], d }) {
   const tanV = Math.tan(((vfovDeg / 2) * Math.PI) / 180);
   const tanH = tanV * aspect;
-  const { right, up } = cameraAxes(eye);
+  const { right, up } = cameraAxes(eye, worldUp);
   return points.map((p) => {
     const depth = d - dot(p, eye);
     return { x: dot(p, right) / (depth * tanH), y: dot(p, up) / (depth * tanV), depth };

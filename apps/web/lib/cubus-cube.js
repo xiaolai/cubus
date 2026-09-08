@@ -217,6 +217,11 @@ class CubusCube extends HTMLElement {
     this.appendChild(renderer.domElement);
 
     const controls = this.controls = new OrbitControls(camera, renderer.domElement);
+    // Where OrbitControls put its capture-phase keydown listener. It binds to
+    // `domElement.getRootNode()` and UNBINDS from whatever that returns at dispose time —
+    // which is a different node once the canvas has been detached, so the document keeps
+    // the listener forever. Remembered here so teardown can put the canvas back first.
+    this._controlsRoot = renderer.domElement.getRootNode();
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.enablePan = false;
@@ -424,9 +429,32 @@ class CubusCube extends HTMLElement {
   dispose() {
     this._stop();
     clearTimeout(this._release);
+    // OrbitControls registers a capture-phase keydown listener on the canvas's root node, so
+    // dropping the reference is not releasing it. Worse, it unbinds from `getRootNode()` as it
+    // finds it AT DISPOSE TIME — and the common path here is the release timer, which fires after
+    // the element has been detached, when that call resolves to the detached subtree instead of
+    // the document. Measured: disposing while connected leaves 0 document listeners, disposing
+    // after detachment leaves 1.
+    //
+    // So put the canvas back where it was bound, just long enough to unbind. Hidden and removed
+    // immediately; it is never painted.
+    // Taken from the CONTROLS, not from `this.renderer`: the two are nulled together at the end
+    // of this method, but a caller that nulled the renderer first would otherwise skip the
+    // reattach and leak the listener again.
+    const canvas = this.controls?.domElement ?? this.renderer?.domElement;
+    const root = this._controlsRoot;
+    const host = root && (root.body ?? (root.nodeType === 11 ? root : null));
+    const detached = canvas && host && canvas.getRootNode() !== root;
+    // The style is put back. A caller may still hold this canvas — `dispose()` releases the GPU,
+    // it does not own the element — and leaving `display: none` on it is a permanent change made
+    // for the duration of one `appendChild`.
+    const wasDisplay = detached ? canvas.style.display : null;
+    if (detached) { canvas.style.display = 'none'; host.appendChild(canvas); }
+    this.controls?.dispose();
+    if (detached) { canvas.remove(); canvas.style.display = wasDisplay; }
     this.renderer?.dispose();
     this.renderer?.domElement?.remove();
-    this.scene = this.renderer = this.camera = this.controls = null;
+    this.scene = this.renderer = this.camera = this.controls = this._controlsRoot = null;
     this._ghostMeshes = null;
   }
 
@@ -538,7 +566,10 @@ class CubusCube extends HTMLElement {
     const raw = String(this._attrs['camera-up'] ?? 'U').trim().toUpperCase();
     const v = raw.length === 1 ? slotVector(raw) : null;
     if (!v) {
-      console.warn(`<cubus-cube> refusing camera-up "${this._attrs['camera-up']}" — expected one of U D R L F B`);
+      // `raw`, never the stored value: a Symbol survives `String()` above and then throws inside
+      // a template literal, so interpolating the original would turn a warn-and-recover into an
+      // exception and never return the fallback at all.
+      console.warn(`<cubus-cube> refusing camera-up "${raw}" — expected one of U D R L F B`);
       return [0, 1, 0];
     }
     return v;
