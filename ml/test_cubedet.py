@@ -13,6 +13,7 @@ Run: ml/venv/bin/python -m pytest ml/test_cubedet.py -q
 
 from __future__ import annotations
 
+import random
 import sys
 from pathlib import Path
 
@@ -414,6 +415,41 @@ def test_mosaic_keeps_every_box_on_its_own_paint(tmp_path):
                 )
                 checked += 1
     assert checked > 20, f"only {checked} boxes examined — the mosaic path may not have run"
+
+
+def test_mosaic_keeps_objects_near_their_native_size(tmp_path):
+    """A mosaic is CROPPED back to IMG_SIZE, not shrunk to it — so stickers keep their size.
+
+    This is the assertion that was missing while the first mosaic run burned two hours. Scaling the
+    2×IMG_SIZE collage down to one frame scales the cubes down with it: measured mean 43.5 px
+    against a native 90 px, 48%, while validation shows them at 100%. Nothing about that is visible
+    in a training log — it reads as a model that detects well and localises badly, which is exactly
+    what it was (mAP50 0.8682 vs 0.8648, mAP50-95 0.6271 vs 0.7492 at matched epochs).
+
+    The bound is deliberately wide. Scale jitter is ±50% by design, and clipping at the frame edge
+    trims some boxes, so the mean sits below native even when correct. It is nowhere near wide
+    enough to admit a half-scale mosaic.
+    """
+    from cubedet.data import (ROTATE_DEGREES, SCALE_JITTER, TRANSLATE_JITTER, CubeDataset,
+                              _affine, _clip_and_drop, _mosaic)
+
+    native = 90.0
+    dataset = CubeDataset(_tiny_dataset(tmp_path, n=16), "train", augment=True, seed=5)
+    sizes = []
+    for i in range(120):
+        rng = random.Random(i)
+        canvas, boxes = _mosaic(dataset._read, len(dataset.files), i % 16, rng)
+        _, moved = _affine(canvas, boxes, rng, degrees=ROTATE_DEGREES,
+                           translate=TRANSLATE_JITTER, scale=SCALE_JITTER,
+                           out_size=IMG_SIZE, base_scale=1.0)
+        kept = _clip_and_drop(moved)
+        sizes.extend(np.sqrt((kept[:, 3] - kept[:, 1]) * (kept[:, 4] - kept[:, 2])))
+    assert len(sizes) > 50, f"only {len(sizes)} boxes — the mosaic path may not have run"
+    mean = float(np.mean(sizes))
+    assert 0.65 * native < mean < 1.35 * native, (
+        f"mosaic stickers average {mean:.1f} px against a native {native:.0f} px "
+        f"({mean / native:.0%}) — the collage is being scaled instead of cropped"
+    )
 
 
 def test_mosaic_closes_for_the_final_epochs():
