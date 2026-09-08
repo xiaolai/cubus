@@ -28700,7 +28700,7 @@ function eyeDirection(latDeg, lonDeg) {
   const lon = lonDeg * Math.PI / 180;
   return [Math.cos(lat) * Math.sin(lon), Math.sin(lat), Math.cos(lat) * Math.cos(lon)];
 }
-function silhouette({ eye, elevation, scale = 0.9 }) {
+function silhouette({ eye, elevation, scale = 0.9, cull = true }) {
   const points = [];
   for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) points.push([sx * CUBE_HALF, sy * CUBE_HALF, sz * CUBE_HALF]);
   if (elevation === null || elevation === void 0 || !Number.isFinite(elevation)) return points;
@@ -28708,7 +28708,7 @@ function silhouette({ eye, elevation, scale = 0.9 }) {
   const lateral = 1 + GHOST_HALF * s;
   const along = 1 + GHOST_BASE + elevation * GHOST_PER_ELEVATION;
   for (const n of NORMALS) {
-    if (dot(n, eye) >= SHOWS_BELOW) continue;
+    if (cull && dot(n, eye) >= SHOWS_BELOW) continue;
     const axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].filter((a) => !dot(a, n));
     for (const a of [-1, 1]) for (const b of [-1, 1]) {
       points.push([
@@ -28738,6 +28738,12 @@ function fitDistance({ points, vfovDeg, aspect: aspect2, eye, margin = 0.06 }) {
     d = Math.max(d, t + Math.abs(dot(p, right)) / tanH, t + Math.abs(dot(p, up)) / tanV);
   }
   return d;
+}
+function fitDistanceStable({ points, vfovDeg, aspect: aspect2, margin = 0.06 }) {
+  const tanV = Math.tan(vfovDeg / 2 * Math.PI / 180) * (1 - margin);
+  const tanH = tanV * aspect2;
+  const r = points.reduce((m, p) => Math.max(m, Math.hypot(p[0], p[1], p[2])), 0);
+  return r * Math.max(Math.sqrt(1 + 1 / (tanV * tanV)), Math.sqrt(1 + 1 / (tanH * tanH)));
 }
 
 // lib/cube-highlight.js
@@ -28846,6 +28852,8 @@ var FACELET_INDEX = {
 var EASE = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 var AXES = { x: new Vector3(1, 0, 0), y: new Vector3(0, 1, 0), z: new Vector3(0, 0, 1) };
 var HL_PEAK = 0.38;
+var FOCUS_FLATTEN = 0.62;
+var FOCUS_MID = 0.44;
 var HL_PERIOD = 1200;
 var GHOST_OPACITY = 0.45;
 var GHOST_HL_PEAK = 0.8;
@@ -28861,6 +28869,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "scheme",
     "autorotate",
     "highlight",
+    "focus",
     "ghosts",
     "ghost-elevation",
     "ghostelevation",
@@ -28868,6 +28877,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "cameralatitude",
     "camera-longitude",
     "cameralongitude",
+    "camera-fit",
+    "camerafit",
     "facelet-scale",
     "faceletscale",
     "tempo-scale",
@@ -28880,6 +28891,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     ghostelevation: "ghost-elevation",
     cameralatitude: "camera-latitude",
     cameralongitude: "camera-longitude",
+    camerafit: "camera-fit",
     faceletscale: "facelet-scale",
     temposcale: "tempo-scale",
     backview: "back-view"
@@ -28946,6 +28958,11 @@ var CubusCube = class _CubusCube extends HTMLElement {
     // (lib/cube-frame.js), so nothing is clipped at any slot shape.
     "camera-latitude": "35",
     "camera-longitude": "45",
+    // 'view' fits the silhouette THIS angle draws — tightest framing, and what a view that never
+    // moves programmatically wants. 'stable' fits every angle at once, so swinging the camera
+    // rotates the cube without resizing it. Default stays 'view': stable costs ~11% of apparent
+    // size with ghosts floating, and dragging to orbit never refits, so the app gains nothing.
+    "camera-fit": "view",
     "facelet-scale": "0.9",
     "tempo-scale": "1",
     "back-view": "none",
@@ -28976,7 +28993,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     } else if (name === "facelet-scale") {
       this._applyScale();
       this._applyCamera();
-    } else if (name === "camera-latitude" || name === "camera-longitude") this._applyCamera();
+    } else if (name === "camera-latitude" || name === "camera-longitude" || name === "camera-fit") this._applyCamera();
     else if (name === "back-view") this._dirty = true;
     else if (name === "orbit") this._applyOrbit();
     else if (name === "facelets" || name === "scramble") this.reset();
@@ -28988,6 +29005,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
     } else if (name === "highlight") {
       this._readHighlight();
       this._syncHighlight();
+    } else if (name === "focus") {
+      this._readFocus();
+      this._paint();
     }
   }
   connectedCallback() {
@@ -29081,6 +29101,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._sol = this._parse(this._attrs.alg || "");
     this._hlSet = null;
     this._readHighlight();
+    this._readFocus();
     this._ghostVisible();
     this.reset();
     this._resize = () => {
@@ -29226,12 +29247,15 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const lat = this._num("camera-latitude", 35);
     const lon = this._num("camera-longitude", 45);
     const eye = eyeDirection(lat, lon);
+    const stable = this._attrs["camera-fit"] === "stable";
     const points = silhouette({
       eye,
       elevation: this._ghostsEnabled() ? this._num("ghost-elevation", 4) : null,
-      scale: this._num("facelet-scale", 0.9)
+      scale: this._num("facelet-scale", 0.9),
+      cull: !stable
     });
-    const d = fitDistance({ points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye });
+    const geom = { points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye };
+    const d = stable ? fitDistanceStable(geom) : fitDistance(geom);
     if (this.controls) {
       this.controls.minDistance = d * 0.5;
       this.controls.maxDistance = d;
@@ -29371,6 +29395,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       m.material.color.set(letter === null ? UNKNOWN_STICKER : pal[letter]);
     }
     this._stampPieces(letterOf);
+    this._applyFocus();
     this._ghostPlace();
     this._applyScale();
     this._syncHighlight();
@@ -29395,6 +29420,41 @@ var CubusCube = class _CubusCube extends HTMLElement {
     for (const [c, letters] of carried) c.userData.piece = letters === null ? null : pieceKey(letters);
   }
   /** Re-read the highlight attribute into selectors, naming a bad token rather than dropping it. */
+  /** Which pieces still matter. Same grammar as `highlight`, opposite job: highlight says "look at
+   *  this one", focus says "none of the others exist". For a whole stage the second is far stronger
+   *  — you cannot glow four pieces and expect the eye to ignore twenty-two.
+   *
+   *  Safe to do per-sticker ONLY because every sticker gets its own material at build time
+   *  (`new THREE.MeshStandardMaterial` inside the cubie loop). bodyMat is shared across all 26
+   *  cubies and must never be touched this way; the same trap caught the highlight channel once. */
+  _readFocus() {
+    const { selectors, invalid } = parseHighlight(this._attrs.focus);
+    if (invalid !== null) console.warn(`<cubus-cube> refusing focus \u2014 invalid selector "${invalid}"`);
+    this._fcSels = selectors;
+  }
+  /** Grey every sticker and ghost NOT named by `focus`. Called from _paint(), after the colour
+   *  loop has written each sticker's true colour — so this is always applied to fresh colours and
+   *  never compounds on itself. */
+  _applyFocus() {
+    const sels = this._fcSels || [];
+    if (!sels.length) return;
+    const cubies = this.cubies.map((c) => ({
+      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
+      piece: c.userData.piece ?? null
+    }));
+    const { indices } = resolveHighlight(sels, cubies);
+    const keep = new Set(indices);
+    for (const [i, c] of this.cubies.entries()) {
+      if (keep.has(i)) continue;
+      for (const m of c.children) {
+        if (!m.userData?.face) continue;
+        const col = m.material.color;
+        const lum = 0.299 * col.r + 0.587 * col.g + 0.114 * col.b;
+        const g = lum * (1 - FOCUS_FLATTEN) + FOCUS_MID * FOCUS_FLATTEN;
+        col.setRGB(g, g, g);
+      }
+    }
+  }
   _readHighlight() {
     const { selectors, invalid } = parseHighlight(this._attrs.highlight);
     if (invalid !== null) console.warn(`<cubus-cube> refusing highlight \u2014 invalid selector "${invalid}"`);
