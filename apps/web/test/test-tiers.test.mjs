@@ -14,7 +14,7 @@
 // the runner, so `pnpm check` cannot quietly drop back to a bare `node --test` whose default
 // discovery would make the split decorative.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -26,7 +26,26 @@ const WEB = fileURLToPath(new URL('../', import.meta.url));
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 // A static import at the start of a line, so this file's own mention of the pattern is not one.
-const launchesBrowser = (rel) => /^import\b[^\n]*\bfrom 'playwright'/m.test(readFileSync(WEB + rel, 'utf8'));
+//
+// Transitive over sibling modules, because the launch may have been extracted: `harness.mjs`
+// holds the server-and-WebKit lifecycle three suites used to copy, and a suite that uses it is
+// still a browser suite even though the word `playwright` no longer appears in it. Testing only
+// the file itself put camera-up.test.mjs on the wrong side of this assertion the moment that
+// duplication was removed.
+const importsPlaywright = (src) => /^import\b[^\n]*\bfrom 'playwright'/m.test(src);
+const siblings = (src) => [...src.matchAll(/^import\b[^\n]*\bfrom '(\.\/[^']+)'/gm)].map((m) => m[1]);
+
+function launchesBrowser(rel, seen = new Set()) {
+  if (seen.has(rel)) return false;
+  seen.add(rel);
+  const src = readFileSync(WEB + rel, 'utf8');
+  if (importsPlaywright(src)) return true;
+  const dir = rel.slice(0, rel.lastIndexOf('/') + 1);
+  return siblings(src).some((s) => {
+    const next = dir + s.slice(2);
+    return existsSync(WEB + next) && launchesBrowser(next, seen);
+  });
+}
 
 test('the fast tier launches no browser, and the browser tier is exactly the suites that do', () => {
   const fast = resolveTier('fast');
@@ -34,7 +53,9 @@ test('the fast tier launches no browser, and the browser tier is exactly the sui
   assert.ok(fast.length > 40, `only ${fast.length} fast-tier files — the pattern is broken`);
   assert.ok(browser.length >= 5, `only ${browser.length} browser-tier files — the pattern is broken`);
   assert.deepEqual(
-    fast.filter(launchesBrowser),
+    // Wrapped, never passed bare: `filter` hands the INDEX as the second argument, which lands
+    // in the recursion guard and throws.
+    fast.filter((f) => launchesBrowser(f)),
     [],
     'a suite in the fast tier imports playwright — move it to test/browser/',
   );
