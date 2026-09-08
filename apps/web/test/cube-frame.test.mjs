@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { eyeDirection, fitDistance, fitDistanceStable, project, silhouette } from '../lib/cube-frame.js';
+import { cameraAxes, eyeDirection, fitDistance, fitDistanceStable, project, silhouette } from '../lib/cube-frame.js';
 
 const ASPECTS = [0.3, 0.5, 0.75, 0.83, 1, 1.24, 1.33, 2, 3];
 const LATS = [-75, -35, 0, 35, 60, 89];
@@ -112,4 +112,71 @@ test('culling is on by default, so the existing per-view fit is untouched', () =
   assert.deepEqual(silhouette({ eye, elevation: 9 }), silhouette({ eye, elevation: 9, cull: true }));
   // With ghosts off there is nothing to cull, so both settings must agree exactly.
   assert.deepEqual(silhouette({ eye, elevation: null }), silhouette({ eye, elevation: null, cull: false }));
+});
+
+// --- which way is up ---------------------------------------------------------------------------
+//
+// `worldUp` decides the roll: which face of the world lands at the top of the frame. It is a
+// parameter and not the constant it used to be because a lesson can show a cube being held upside
+// down, and latitude/longitude alone cannot express that — they place the eye and leave the roll
+// at +Y, so the picture comes out vertically mirrored.
+
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
+
+test('the axes are orthonormal for every up, including one parallel to the eye', () => {
+  const eyes = [eyeDirection(35, 45), eyeDirection(-30, 135), eyeDirection(90, 0), eyeDirection(-90, 0)];
+  const ups = [[0, 1, 0], [0, -1, 0], [1, 0, 0], [0, 0, -1]];
+  for (const eye of eyes) {
+    for (const up of ups) {
+      const a = cameraAxes(eye, up);
+      for (const [name, v] of Object.entries(a)) {
+        assert.ok(near(Math.hypot(...v), 1), `${name} should be a unit vector for eye ${eye} up ${up}`);
+      }
+      assert.ok(near(dot3(a.right, a.up), 0), `right and up must be perpendicular for eye ${eye} up ${up}`);
+      assert.ok(near(dot3(a.right, a.forward), 0), `right and forward must be perpendicular`);
+      assert.ok(near(dot3(a.up, a.forward), 0), `up and forward must be perpendicular`);
+    }
+  }
+});
+
+test('turning the frame over negates both screen axes and leaves forward alone', () => {
+  const eye = eyeDirection(35, 45);
+  const a = cameraAxes(eye);
+  const b = cameraAxes(eye, [0, -1, 0]);
+  assert.deepEqual(b.forward, a.forward, 'the eye has not moved, so forward cannot change');
+  for (let i = 0; i < 3; i++) {
+    assert.ok(near(a.up[i] + b.up[i], 0), 'up must be exactly reversed');
+    assert.ok(near(a.right[i] + b.right[i], 0), 'right must be exactly reversed');
+  }
+});
+
+test('a half turn of the frame cannot change what fits in it', () => {
+  // The two screen axes both reverse, and the fit measures |dot| against each — so the distance is
+  // invariant. Worth pinning: if it were not, turning a cube over would appear to resize it, which
+  // is precisely the illusion `camera-fit="stable"` exists to remove.
+  for (const [lat, lon] of [[35, 45], [-30, 135], [0, 0], [70, 210]]) {
+    const eye = eyeDirection(lat, lon);
+    const geom = {
+      points: silhouette({ eye, elevation: 4, scale: 0.9, cull: true }),
+      vfovDeg: 45, aspect: 1.35, eye,
+    };
+    assert.ok(near(fitDistance({ ...geom, worldUp: [0, -1, 0] }), fitDistance(geom), 1e-12),
+      `the fit changed when the frame turned over, at ${lat}/${lon}`);
+  }
+});
+
+test('a QUARTER turn of the frame does change the fit, and the fit follows it', () => {
+  // The other half of the previous test: `worldUp` is genuinely wired into the framing rather
+  // than ignored. A non-square canvas fits differently when the subject is rolled ninety degrees,
+  // and the returned distance has to move with it or the corners clip.
+  const eye = eyeDirection(35, 45);
+  const geom = {
+    points: silhouette({ eye, elevation: 4, scale: 0.9, cull: true }),
+    vfovDeg: 45, aspect: 2.2, eye,
+  };
+  const upright = fitDistance(geom);
+  const rolled = fitDistance({ ...geom, worldUp: [1, 0, 0] });
+  assert.ok(Math.abs(rolled - upright) > 1e-6,
+    'a quarter turn in a wide frame must change the fit, or worldUp is not reaching it');
 });
