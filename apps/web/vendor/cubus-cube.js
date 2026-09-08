@@ -28720,18 +28720,21 @@ function silhouette({ eye, elevation, scale = 0.9, cull = true }) {
   }
   return points;
 }
-function cameraAxes(eye) {
+function cameraAxes(eye, worldUp = [0, 1, 0]) {
   const forward = [-eye[0], -eye[1], -eye[2]];
-  let right = cross(forward, [0, 1, 0]);
-  if (Math.hypot(...right) < 1e-6) right = cross(forward, [0, 0, 1]);
+  let right = cross(forward, worldUp);
+  if (Math.hypot(...right) < 1e-6) {
+    const i = worldUp.map(Math.abs).indexOf(Math.min(...worldUp.map(Math.abs)));
+    right = cross(forward, [0, 1, 2].map((k) => k === i ? 1 : 0));
+  }
   right = norm(right);
   const up = norm(cross(right, forward));
   return { forward, right, up };
 }
-function fitDistance({ points, vfovDeg, aspect: aspect2, eye, margin = 0.06 }) {
+function fitDistance({ points, vfovDeg, aspect: aspect2, eye, worldUp = [0, 1, 0], margin = 0.06 }) {
   const tanV = Math.tan(vfovDeg / 2 * Math.PI / 180) * (1 - margin);
   const tanH = tanV * aspect2;
-  const { right, up } = cameraAxes(eye);
+  const { right, up } = cameraAxes(eye, worldUp);
   let d = 0;
   for (const p of points) {
     const t = dot(p, eye);
@@ -28879,6 +28882,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "cameralongitude",
     "camera-fit",
     "camerafit",
+    "camera-up",
+    "cameraup",
     "facelet-scale",
     "faceletscale",
     "tempo-scale",
@@ -28892,6 +28897,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     cameralatitude: "camera-latitude",
     cameralongitude: "camera-longitude",
     camerafit: "camera-fit",
+    cameraup: "camera-up",
     faceletscale: "facelet-scale",
     temposcale: "tempo-scale",
     backview: "back-view"
@@ -28926,6 +28932,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
   set cameraLongitude(v) {
     this._set("camera-longitude", v);
   }
+  set cameraUp(v) {
+    this._set("camera-up", v);
+  }
   set faceletScale(v) {
     this._set("facelet-scale", v);
   }
@@ -28958,6 +28967,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
     // (lib/cube-frame.js), so nothing is clipped at any slot shape.
     "camera-latitude": "35",
     "camera-longitude": "45",
+    // Which face points at the top of the frame. 'U' is the world's up and the only value most
+    // views ever want; 'D' is a cube held upside down, which is a thing a lesson has to be able to
+    // show once a child has been told to turn theirs over. Latitude and longitude alone cannot
+    // express it: they place the eye and leave the roll fixed at +Y, so the picture arrives
+    // vertically mirrored — worse than not moving the camera, because it looks deliberate.
+    "camera-up": "U",
     // 'view' fits the silhouette THIS angle draws — tightest framing, and what a view that never
     // moves programmatically wants. 'stable' fits every angle at once, so swinging the camera
     // rotates the cube without resizing it. Default stays 'view': stable costs ~11% of apparent
@@ -28993,7 +29008,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     } else if (name === "facelet-scale") {
       this._applyScale();
       this._applyCamera();
-    } else if (name === "camera-latitude" || name === "camera-longitude" || name === "camera-fit") this._applyCamera();
+    } else if (name === "camera-latitude" || name === "camera-longitude" || name === "camera-fit" || name === "camera-up") this._applyCamera();
     else if (name === "back-view") this._dirty = true;
     else if (name === "orbit") this._applyOrbit();
     else if (name === "facelets" || name === "scramble") this.reset();
@@ -29247,6 +29262,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const lat = this._num("camera-latitude", 35);
     const lon = this._num("camera-longitude", 45);
     const eye = eyeDirection(lat, lon);
+    const worldUp = this._cameraUp();
     const stable = this._attrs["camera-fit"] === "stable";
     const points = silhouette({
       eye,
@@ -29254,17 +29270,38 @@ var CubusCube = class _CubusCube extends HTMLElement {
       scale: this._num("facelet-scale", 0.9),
       cull: !stable
     });
-    const geom = { points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye };
+    const geom = { points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye, worldUp };
     const d = stable ? fitDistanceStable(geom) : fitDistance(geom);
     if (this.controls) {
       this.controls.minDistance = d * 0.5;
       this.controls.maxDistance = d;
     }
+    this.camera.up.set(worldUp[0], worldUp[1], worldUp[2]);
     this.camera.position.set(d * eye[0], d * eye[1], d * eye[2]);
     this.camera.lookAt(0, 0, 0);
+    if (this.controls?._quat) {
+      this.controls._quat.setFromUnitVectors(this.camera.up, new Vector3(0, 1, 0));
+      this.controls._quatInverse = this.controls._quat.clone().invert();
+    }
     this.controls?.update();
     this._placeLights();
     this._dirty = true;
+  }
+  /**
+   * Which way is up, as a unit vector, from the `camera-up` face letter.
+   *
+   * Refuses rather than guesses: an unreadable value warns by name and falls back to the world's
+   * up, because a silently rolled camera is indistinguishable from a correct one until somebody
+   * notices the cube is upside down.
+   */
+  _cameraUp() {
+    const raw = String(this._attrs["camera-up"] ?? "U").trim().toUpperCase();
+    const v = raw.length === 1 ? slotVector(raw) : null;
+    if (!v) {
+      console.warn(`<cubus-cube> refusing camera-up "${this._attrs["camera-up"]}" \u2014 expected one of U D R L F B`);
+      return [0, 1, 0];
+    }
+    return v;
   }
   /** Turn the light rig with the given camera (the main one by default). */
   _placeLights(cam = this.camera) {
