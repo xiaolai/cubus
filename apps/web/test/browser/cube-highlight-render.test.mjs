@@ -122,6 +122,91 @@ test('six centres, twelve edges, eight corners — lit on the real cube', async 
   assert.equal((await litPositions(page)).length, 26);
 });
 
+const setFocus = (page, spec) => page.evaluate((v) => {
+  if (v === null) window.__cube.removeAttribute('focus');
+  else window.__cube.setAttribute('focus', v);
+}, spec);
+
+/** Each sticker's colour, tagged with whether it reads as grey and which face letter it carries.
+ *  Ghost twins are excluded: every sticker has one, it also carries `userData.face`, and counting
+ *  both is how a six-centre assertion turns into twelve. */
+const stickerColours = (page) => page.evaluate(() => window.__cube.cubies.flatMap((cu, i) =>
+  cu.children
+    .filter((m) => m.userData?.face && !m.userData.n)
+    .map((m) => {
+      const { r, g, b } = m.material.color;
+      return { cubie: i, face: m.userData.face, hex: m.material.color.getHex(),
+               grey: Math.abs(r - g) < 0.02 && Math.abs(g - b) < 0.02 };
+    })));
+
+test('focus greys everything it does not name, and restores exactly', async () => {
+  const { page } = await cubePage();
+  const before = await stickerColours(page);
+  assert.equal(before.length, 54, 'a cube has 54 stickers');
+  assert.ok(before.every((s) => !s.grey), 'nothing is grey before focus is set');
+
+  await setFocus(page, 'centers');
+  const during = await stickerColours(page);
+  assert.equal(during.filter((s) => !s.grey).length, 6, 'only the six centres keep their colour');
+
+  // Restoring must return the ORIGINAL hexes, not merely un-grey them: focus writes colour, and
+  // _paint() rewrites the true colour first, so a second application must not compound.
+  await setFocus(page, null);
+  const after = await stickerColours(page);
+  assert.deepEqual(after.map((s) => s.hex), before.map((s) => s.hex), 'removing focus restores every hex');
+
+  await setFocus(page, 'centers');
+  const twice = await stickerColours(page);
+  await setFocus(page, null);
+  await setFocus(page, 'centers');
+  assert.deepEqual((await stickerColours(page)).map((s) => s.hex), twice.map((s) => s.hex),
+    'applying focus twice equals applying it once');
+});
+
+test('focus is per-sticker: same colour, opposite treatment', async () => {
+  // THE assertion for this channel. It writes sticker COLOUR, so if any two stickers shared a
+  // material, greying one would grey the other — the bodyMat trap, which is real on this element
+  // (one material for all 26 cubie bodies) and caught the highlight channel once already.
+  // Naming one U-layer piece puts U-face stickers on BOTH sides of the divide at the same time.
+  const { page } = await cubePage();
+  await setFocus(page, 'piece:UF');
+  const u = (await stickerColours(page)).filter((s) => s.face === 'U');
+  const kept = u.filter((s) => !s.grey), greyed = u.filter((s) => s.grey);
+  assert.ok(kept.length > 0, 'the named piece keeps its U sticker');
+  assert.ok(greyed.length > 0, 'other U stickers are greyed');
+  assert.equal(kept.length + greyed.length, 9, 'all nine U-face stickers accounted for');
+  assert.equal(new Set(kept.map((s) => s.hex)).size, 1, 'the kept U sticker still holds the palette white');
+  assert.ok(!greyed.some((s) => kept.some((k) => k.hex === s.hex)),
+    'no greyed sticker shares a colour with a kept one — so no material is shared');
+});
+
+test('an invalid focus selector is refused whole, like an invalid highlight', async () => {
+  const { page, warnings } = await cubePage();
+  const before = await stickerColours(page);
+  warnings.length = 0;
+  await setFocus(page, 'centers,nonsense');
+  assert.deepEqual((await stickerColours(page)).map((s) => s.hex), before.map((s) => s.hex),
+    'a spec with one bad token changes nothing at all');
+  assert.ok(warnings.some((w) => /refusing focus/.test(w)), 'and says which selector it refused');
+});
+
+test('layer:X lights that face\'s nine cubies and nothing else — all six faces', async () => {
+  // Untested until a notation lesson leaned its whole visual argument on it: six `layer:X`
+  // highlights, one per face. Three of the six (D, B, L) are invisible from the default camera,
+  // so a highlight that lit the wrong slab — or nothing — would read as "that face is hidden"
+  // and survive review. The axis check is what makes this an assertion rather than a head count:
+  // nine lit cubies could be the wrong nine.
+  const { page } = await cubePage();
+  const AXIS = { R: [0, 1], L: [0, -1], U: [1, 1], D: [1, -1], F: [2, 1], B: [2, -1] };
+  for (const [face, [axis, sign]] of Object.entries(AXIS)) {
+    await setHighlight(page, `layer:${face}`);
+    const lit = (await litPositions(page)).map((s) => s.split(',').map(Number));
+    assert.equal(lit.length, 9, `layer:${face} should light nine cubies`);
+    const strays = lit.filter((p) => p[axis] !== sign);
+    assert.deepEqual(strays, [], `layer:${face} lit ${strays.length} cubies outside the layer`);
+  }
+});
+
 test('the shared cubie body is never lit — only the stickers are', async () => {
   // bodyGeo/bodyMat are built ONCE and handed to all 26 cubies. Walking a highlighted cubie's
   // children and lighting anything with an `emissive` would light that one material, and every
