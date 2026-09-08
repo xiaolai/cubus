@@ -41,9 +41,13 @@ export function eyeDirection(latDeg, lonDeg) {
  * @param {number[]} o.eye          unit direction toward the camera
  * @param {number|null} o.elevation ghost elevation, or null when ghosts are off
  * @param {number} [o.scale]        facelet-scale (0.3–1; 0.9 is the renderer's own default)
+ * @param {boolean} [o.cull]        false to include EVERY face's ghosts, not just the ones this
+ *                                  eye would see. Only the stable fit below wants this: a fit that
+ *                                  must hold at every angle has to bound the ghosts that show at
+ *                                  the other angles too.
  * @returns {number[][]}
  */
-export function silhouette({ eye, elevation, scale = 0.9 }) {
+export function silhouette({ eye, elevation, scale = 0.9, cull = true }) {
   const points = [];
   for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) points.push([sx * CUBE_HALF, sy * CUBE_HALF, sz * CUBE_HALF]);
   if (elevation === null || elevation === undefined || !Number.isFinite(elevation)) return points;
@@ -51,7 +55,7 @@ export function silhouette({ eye, elevation, scale = 0.9 }) {
   const lateral = 1 + GHOST_HALF * s; // the outer tiles' centres are at ±1, their edges GHOST_HALF·s beyond
   const along = 1 + GHOST_BASE + elevation * GHOST_PER_ELEVATION;
   for (const n of NORMALS) {
-    if (dot(n, eye) >= SHOWS_BELOW) continue; // faces the eye can see carry no ghost
+    if (cull && dot(n, eye) >= SHOWS_BELOW) continue; // faces the eye can see carry no ghost
     const axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].filter((a) => !dot(a, n));
     for (const a of [-1, 1]) for (const b of [-1, 1]) {
       points.push([
@@ -100,6 +104,30 @@ export function fitDistance({ points, vfovDeg, aspect, eye, margin = 0.06 }) {
     d = Math.max(d, t + Math.abs(dot(p, right)) / tanH, t + Math.abs(dot(p, up)) / tanV);
   }
   return d;
+}
+
+/**
+ * The distance that frames `points` at EVERY view angle, so orbiting does not resize the subject.
+ *
+ * `fitDistance` fits the silhouette THIS eye draws, which is right for a fixed view and wrong for
+ * a moving one: a cube seen corner-on is about 1.7 wide and seen face-on is 1 wide, so a camera
+ * that refits as it swings appears to zoom. Measured on the real element, walking from 35/45 to
+ * 15/0 pulled in from 10.66 to 8.41 and the cube grew 27% while "only the camera moved".
+ *
+ * The bound is the points' enclosing sphere, not a scan over candidate angles: for a point at
+ * radius r the worst case over all eyes of r*cos(t) + r*sin(t)/tan is r*sqrt(1 + 1/tan^2), which
+ * is exact and O(n). A scan would be approximate AND slower, and would need re-running on every
+ * aspect change.
+ *
+ * Strictly stronger than `fitDistance` — clip-free at every angle implies clip-free at this one.
+ * It is opt-in only because it costs apparent size, about 11% when ghosts are floating, and a view
+ * that never moves programmatically has nothing to gain from it.
+ */
+export function fitDistanceStable({ points, vfovDeg, aspect, margin = 0.06 }) {
+  const tanV = Math.tan(((vfovDeg / 2) * Math.PI) / 180) * (1 - margin);
+  const tanH = tanV * aspect;
+  const r = points.reduce((m, p) => Math.max(m, Math.hypot(p[0], p[1], p[2])), 0);
+  return r * Math.max(Math.sqrt(1 + 1 / (tanV * tanV)), Math.sqrt(1 + 1 / (tanH * tanH)));
 }
 
 /**
