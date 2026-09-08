@@ -70,10 +70,15 @@ export function silhouette({ eye, elevation, scale = 0.9, cull = true }) {
 
 /** The camera's right and up axes for an eye direction, with +y as "up" the way three.js's
  *  lookAt resolves it (and its fallback when the eye is straight above or below). */
-export function cameraAxes(eye) {
+export function cameraAxes(eye, worldUp = [0, 1, 0]) {
   const forward = [-eye[0], -eye[1], -eye[2]];
-  let right = cross(forward, [0, 1, 0]);
-  if (Math.hypot(...right) < 1e-6) right = cross(forward, [0, 0, 1]);
+  let right = cross(forward, worldUp);
+  if (Math.hypot(...right) < 1e-6) {
+    // The eye is looking straight along `worldUp`, so it fixes no roll. Any reference not
+    // parallel to it will do; take the axis `worldUp` leans on least, which cannot be parallel.
+    const i = worldUp.map(Math.abs).indexOf(Math.min(...worldUp.map(Math.abs)));
+    right = cross(forward, [0, 1, 2].map((k) => (k === i ? 1 : 0)));
+  }
   right = norm(right);
   const up = norm(cross(right, forward));
   return { forward, right, up };
@@ -94,10 +99,10 @@ export function cameraAxes(eye) {
  * @param {number[]} o.eye       unit direction toward the camera
  * @param {number} [o.margin]    share of the half-frame left clear (0.06 = 3% of the canvas each side)
  */
-export function fitDistance({ points, vfovDeg, aspect, eye, margin = 0.06 }) {
+export function fitDistance({ points, vfovDeg, aspect, eye, worldUp = [0, 1, 0], margin = 0.06 }) {
   const tanV = Math.tan(((vfovDeg / 2) * Math.PI) / 180) * (1 - margin);
   const tanH = tanV * aspect;
-  const { right, up } = cameraAxes(eye);
+  const { right, up } = cameraAxes(eye, worldUp);
   let d = 0;
   for (const p of points) {
     const t = dot(p, eye);

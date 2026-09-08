@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from './cube-frame.js';
-import { parseHighlight, pieceKey, resolveHighlight } from './cube-highlight.js';
+import { parseHighlight, pieceKey, resolveHighlight, slotVector } from './cube-highlight.js';
 
 // The six sticker colours of each set, BY POSITION on a Western cube — the arrangement every
 // entry here was chosen in, and the one the `scheme` attribute remaps (ADR 0001).
@@ -97,6 +97,7 @@ class CubusCube extends HTMLElement {
     'camera-latitude', 'cameralatitude',
     'camera-longitude', 'cameralongitude',
     'camera-fit', 'camerafit',
+    'camera-up', 'cameraup',
     'facelet-scale', 'faceletscale',
     'tempo-scale', 'temposcale',
     'back-view', 'backview',
@@ -108,6 +109,7 @@ class CubusCube extends HTMLElement {
     cameralatitude: 'camera-latitude',
     cameralongitude: 'camera-longitude',
     camerafit: 'camera-fit',
+    cameraup: 'camera-up',
     faceletscale: 'facelet-scale',
     temposcale: 'tempo-scale',
     backview: 'back-view',
@@ -123,6 +125,7 @@ class CubusCube extends HTMLElement {
   set ghostElevation(v) { this._set('ghost-elevation', v); }
   set cameraLatitude(v) { this._set('camera-latitude', v); }
   set cameraLongitude(v) { this._set('camera-longitude', v); }
+  set cameraUp(v) { this._set('camera-up', v); }
   set faceletScale(v) { this._set('facelet-scale', v); }
   set tempoScale(v) { this._set('tempo-scale', v); }
   set backView(v) { this._set('back-view', v); }
@@ -145,6 +148,12 @@ class CubusCube extends HTMLElement {
     // No camera distance: it is computed from what the view draws and the slot it draws into
     // (lib/cube-frame.js), so nothing is clipped at any slot shape.
     'camera-latitude': '35', 'camera-longitude': '45',
+    // Which face points at the top of the frame. 'U' is the world's up and the only value most
+    // views ever want; 'D' is a cube held upside down, which is a thing a lesson has to be able to
+    // show once a child has been told to turn theirs over. Latitude and longitude alone cannot
+    // express it: they place the eye and leave the roll fixed at +Y, so the picture arrives
+    // vertically mirrored — worse than not moving the camera, because it looks deliberate.
+    'camera-up': 'U',
     // 'view' fits the silhouette THIS angle draws — tightest framing, and what a view that never
     // moves programmatically wants. 'stable' fits every angle at once, so swinging the camera
     // rotates the cube without resizing it. Default stays 'view': stable costs ~11% of apparent
@@ -174,7 +183,8 @@ class CubusCube extends HTMLElement {
     else if (name === 'ghosts') { this._ghostVisible(); this._paint(); this._applyCamera(); }
     else if (name === 'ghost-elevation') { this._ghostPlace(); this._applyCamera(); }
     else if (name === 'facelet-scale') { this._applyScale(); this._applyCamera(); } // the scale is part of the silhouette
-    else if (name === 'camera-latitude' || name === 'camera-longitude' || name === 'camera-fit') this._applyCamera();
+    else if (name === 'camera-latitude' || name === 'camera-longitude' || name === 'camera-fit'
+             || name === 'camera-up') this._applyCamera();
     else if (name === 'back-view') this._dirty = true;
     else if (name === 'orbit') this._applyOrbit();
     else if (name === 'facelets' || name === 'scramble') this.reset();
@@ -485,6 +495,7 @@ class CubusCube extends HTMLElement {
     const lat = this._num('camera-latitude', 35);
     const lon = this._num('camera-longitude', 45);
     const eye = eyeDirection(lat, lon);
+    const worldUp = this._cameraUp();
     // A stable fit has to bound the ghosts on the faces THIS eye can see too, because some other
     // angle will show them and the distance must already have room for them.
     const stable = this._attrs['camera-fit'] === 'stable';
@@ -494,16 +505,43 @@ class CubusCube extends HTMLElement {
       scale: this._num('facelet-scale', 0.9),
       cull: !stable,
     });
-    const geom = { points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye };
+    const geom = { points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye, worldUp };
     const d = stable ? fitDistanceStable(geom) : fitDistance(geom);
     // The controls clamp the distance on every update(), so their limits follow the fit: a user
     // may zoom in to look closer, never out past the frame — and a resize puts the fit back.
     if (this.controls) { this.controls.minDistance = d * 0.5; this.controls.maxDistance = d; }
+    this.camera.up.set(worldUp[0], worldUp[1], worldUp[2]);
     this.camera.position.set(d * eye[0], d * eye[1], d * eye[2]);
     this.camera.lookAt(0, 0, 0);
+    // OrbitControls builds the quaternion that maps `object.up` onto +Y ONCE, in its constructor
+    // (three r185, OrbitControls.js line 406). Changing the camera's up afterwards would leave it
+    // orbiting in the old frame while the renderer drew in the new one — dragging up would move
+    // the cube down. Rebuilding the two derived fields is the whole fix; `camera-up.test.mjs`
+    // pins their names so a three upgrade that renames them fails loudly instead of drifting.
+    if (this.controls?._quat) {
+      this.controls._quat.setFromUnitVectors(this.camera.up, new THREE.Vector3(0, 1, 0));
+      this.controls._quatInverse = this.controls._quat.clone().invert();
+    }
     this.controls?.update();
     this._placeLights();
     this._dirty = true;
+  }
+
+  /**
+   * Which way is up, as a unit vector, from the `camera-up` face letter.
+   *
+   * Refuses rather than guesses: an unreadable value warns by name and falls back to the world's
+   * up, because a silently rolled camera is indistinguishable from a correct one until somebody
+   * notices the cube is upside down.
+   */
+  _cameraUp() {
+    const raw = String(this._attrs['camera-up'] ?? 'U').trim().toUpperCase();
+    const v = raw.length === 1 ? slotVector(raw) : null;
+    if (!v) {
+      console.warn(`<cubus-cube> refusing camera-up "${this._attrs['camera-up']}" — expected one of U D R L F B`);
+      return [0, 1, 0];
+    }
+    return v;
   }
 
   /** Turn the light rig with the given camera (the main one by default). */
