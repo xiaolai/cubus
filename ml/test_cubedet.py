@@ -358,6 +358,61 @@ def test_collate_masks_padding_rather_than_inventing_a_white_sticker():
     assert targets["mask"][1].tolist() == [False]
 
 
+def _accelerator() -> str | None:
+    """CUDA on the training box, MPS on the maintainer's Mac, otherwise nothing.
+
+    Both are enough to expose a device mismatch, which is the point: a test that only ever runs on
+    CPU cannot see one, because there is only one device for tensors to be on.
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return None
+
+
+def test_evaluate_runs_on_an_accelerator():
+    """The whole validation path on a real device, end to end.
+
+    This exists because a `torch.zeros(...)` without `device=` in `val.py` killed a training run
+    at the end of its first epoch — five minutes of GPU time to reach a line that a CPU-only test
+    had run hundreds of times without complaint. The failure is not subtle once it happens; the
+    point is that nothing before this could make it happen.
+    """
+    device = _accelerator()
+    if device is None:
+        pytest.skip("no CUDA or MPS device available")
+
+    from torch.utils.data import DataLoader
+
+    from cubedet.val import evaluate
+
+    model = CubeDet(width=0.25).to(device)
+    # FORCE THE CONFIDENT BRANCH. The precision/recall block — the one that carried the device bug
+    # — runs only when some prediction clears REPORT_CONF. A freshly built model sits at the 0.01
+    # class prior by construction (`DetectHead._init_biases`), so that branch is dead and the first
+    # version of this test passed happily against the bug it was written to catch. Driving the
+    # class bias positive makes every anchor confident, so the block actually executes.
+    with torch.no_grad():
+        for layer in model.head.cls_out:
+            layer.bias.fill_(4.0)          # sigmoid(4) ≈ 0.98
+
+    class TwoImages(torch.utils.data.Dataset):
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, index):
+            image = torch.full((3, IMG_SIZE, IMG_SIZE), 114 / 255)
+            image[:, 120:200, 120:200] = 1.0
+            target = torch.tensor([[1.0, 120.0, 120.0, 200.0, 200.0]])
+            return image, target
+
+    loader = DataLoader(TwoImages(), batch_size=2, collate_fn=collate)
+    metrics = evaluate(model, loader, device)
+    for key in ("map50", "map50_95", "precision", "recall"):
+        assert key in metrics and metrics[key] == metrics[key], (key, metrics)
+
+
 def test_parameter_count_stays_near_the_model_it_replaces():
     """10.6 MB was an accepted download cost; this keeps a redesign from quietly doubling it."""
     params = count_parameters(CubeDet())
