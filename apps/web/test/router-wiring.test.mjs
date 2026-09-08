@@ -582,6 +582,67 @@ test('a partial chord does nothing — every modifier is required', async () => 
   }
 });
 
+// ⌘, opens Settings — the preferences convention on macOS — and Ctrl+, where Ctrl is the primary
+// modifier. Until 2026-09-07 nothing listened: the desktop shell sets no native menu, so no
+// Preferences… item claimed the accelerator, and the key reached a page with no handler.
+const comma = (over = {}) =>
+  new win.KeyboardEvent('keydown', { code: 'Comma', key: ',', bubbles: true, cancelable: true, ...over });
+
+test('⌘, opens Settings from any screen, and so does Ctrl+,', async () => {
+  const { state } = await import('../lib/app.js');
+  for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
+    win.location.hash = '#/home';
+    await tick();
+    assert.equal(state.screen, 'home', 'precondition');
+    const ev = comma(modifier);
+    win.document.dispatchEvent(ev);
+    await tick();
+    assert.equal(state.screen, 'settings', `${JSON.stringify(modifier)} + comma`);
+    assert.equal(activeNav(), 'settings', 'the gear is marked active');
+    assert.ok(ev.defaultPrevented, 'the key is consumed, not also typed');
+  }
+});
+
+test('the Settings shortcut is exact: one primary modifier, no others, no key repeat', async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/home';
+  await tick();
+  const wrong = [
+    {},                                       // a bare comma is a comma
+    { metaKey: true, ctrlKey: true },         // both is neither
+    { metaKey: true, altKey: true },
+    { metaKey: true, shiftKey: true },
+    { metaKey: true, repeat: true },          // a held key must not re-enter the screen
+    { metaKey: true, code: 'Period', key: '.' },
+  ];
+  for (const over of wrong) {
+    const ev = comma(over);
+    win.document.dispatchEvent(ev);
+    await tick();
+    assert.equal(state.screen, 'home', `${JSON.stringify(over)} must not navigate`);
+    assert.ok(!ev.defaultPrevented, `${JSON.stringify(over)} must not be consumed`);
+  }
+});
+
+test('⌘, on Settings is a no-op, not a rebuild', async () => {
+  const { state } = await import('../lib/app.js');
+  win.location.hash = '#/settings';
+  await tick();
+  assert.equal(state.screen, 'settings', 'precondition');
+  const before = win.document.querySelector('#stage').firstElementChild;
+  assert.ok(before, 'the settings screen is mounted');
+  win.document.dispatchEvent(comma({ metaKey: true }));
+  await tick();
+  assert.equal(win.document.querySelector('#stage').firstElementChild, before, 'the same DOM, untouched');
+});
+
+// The hint beside the gear is drawn only where the shortcut is guaranteed to arrive — the
+// desktop shell. This harness is a browser with no Tauri API, and a browser on macOS keeps ⌘,
+// for its own preferences, so a hint here would promise something the page never receives.
+test('in the browser build the gear promises no shortcut', () => {
+  assert.equal(win.document.querySelector('#tbTrail [aria-label="Settings"]').getAttribute('title'), 'Settings');
+});
+
 // The About card: the app's mark, then a short table — version, website, author — each row led
 // by an inline icon from the app's own set (there is no icon library to need; the paths in `P`
 // are drawn by hand). The links are real anchors: the old card printed "cubus.im" as dead text.
