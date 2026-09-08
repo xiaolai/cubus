@@ -13,6 +13,8 @@ RUN="${1:-cubedet_v1}"
 EPOCHS="${2:-80}"
 BATCH="${3:-64}"
 WIDTH="${4:-1.0}"
+shift 4 2>/dev/null || shift $#
+EXTRA=("$@")          # anything further goes straight to train.py: --imgsz, --context, ...
 
 IMAGE='nvcr.io/nvidia/pytorch:26.01-py3'
 # WHICH DATASET, and it is not the obvious one. `cube_combined` looks right by name and has the
@@ -100,7 +102,7 @@ docker run -d --name "cubedet_${RUN}" --gpus all --ipc=host \
   "$IMAGE" \
   python /work/cubedet/train.py \
     --data /data --out "/work/out/$RUN" \
-    --epochs "$EPOCHS" --batch "$BATCH" --width "$WIDTH" --workers 12
+    --epochs "$EPOCHS" --batch "$BATCH" --width "$WIDTH" --workers 12 "${EXTRA[@]}"
 
 echo "started container cubedet_${RUN}"
 echo "  follow:  docker logs -f cubedet_${RUN}"

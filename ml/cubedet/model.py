@@ -220,12 +220,42 @@ class DetectHead(nn.Module):
     edges, as DFL distributions over REG_MAX + 1 bins, plus one logit per colour class.
     """
 
-    def __init__(self, channels: tuple[int, int, int], num_classes: int = NUM_CLASSES):
+    def __init__(self, channels: tuple[int, int, int], num_classes: int = NUM_CLASSES,
+                 context: bool = False):
         super().__init__()
         self.num_classes = num_classes
         self.reg_channels = 4 * (REG_MAX + 1)
         hidden_c = max(channels[0], 64)
         hidden_r = max(channels[0] // 2, 64)
+
+        # THE COLOUR-CONTEXT BRANCH, and the measurement that motivates it.
+        #
+        # `ml/redorange_separability.py` measured, on the 207-image held-out set: every photograph
+        # holding both red and orange has a clean hue gap between the two groups (164/164, median
+        # 19°), while the best SINGLE GLOBAL threshold over all images reaches only 94.7%. The
+        # illuminant moves the absolute hues and leaves the RELATION between them intact.
+        #
+        # A per-anchor classification head cannot use that relation. It sees one sticker's features
+        # and must name a colour — a decision that is only well-posed relative to the other stickers
+        # in the frame. That is a candidate explanation for why v5 improved detection by 6.8% and
+        # moved red/orange not at all, and why more capacity would not be expected to help either:
+        # what is missing is not capacity, it is a view of the rest of the cube.
+        #
+        # So: pool the deepest feature map over the whole image, project it, and ADD it to every
+        # position of the classification stem. Broadcasting is what makes it shared — every anchor's
+        # colour decision is offset by the same image-level summary, which is exactly the "what does
+        # the rest of this cube look like" term the relation needs. The BOX branch deliberately does
+        # not get it: localisation is a local question, and a global vector there is capacity spent
+        # against the grain.
+        #
+        # A hypothesis under test, not a fix. `--context` selects it, and a matched run against the
+        # baseline is what decides whether it earns its place.
+        self.context = context
+        if context:
+            self.context_mlp = nn.Sequential(
+                nn.Linear(channels[2], hidden_c), nn.SiLU(inplace=True),
+                nn.Linear(hidden_c, hidden_c),
+            )
         self.cls_stems = nn.ModuleList(
             nn.Sequential(ConvBNAct(c, hidden_c, 3), ConvBNAct(hidden_c, hidden_c, 3)) for c in channels
         )
@@ -260,10 +290,21 @@ class DetectHead(nn.Module):
         keeps a sigmoid from being applied twice, which is a bug that trains almost normally.
         reg_dist:   [B, A, 4, REG_MAX + 1] — DFL logits per side.
         """
+        # One image-level summary, computed once and shared by every level and every anchor. Taken
+        # from the DEEPEST map because that is where a whole cube fits inside the receptive field;
+        # pooling P3 would average a lot of pixels that never saw each other.
+        shared = None
+        if self.context:
+            pooled = feats[-1].mean(dim=(2, 3))                  # [B, C5]
+            shared = self.context_mlp(pooled)[:, :, None, None]  # [B, hidden_c, 1, 1]
+
         cls_all, reg_all = [], []
         for i, feat in enumerate(feats):
             b = feat.shape[0]
-            cls = self.cls_out[i](self.cls_stems[i](feat))
+            cls_feat = self.cls_stems[i](feat)
+            if shared is not None:
+                cls_feat = cls_feat + shared
+            cls = self.cls_out[i](cls_feat)
             reg = self.reg_out[i](self.reg_stems[i](feat))
             cls_all.append(cls.permute(0, 2, 3, 1).reshape(b, -1, self.num_classes))
             reg_all.append(reg.permute(0, 2, 3, 1).reshape(b, -1, 4, REG_MAX + 1))
@@ -321,13 +362,16 @@ class CubeDet(nn.Module):
     note at the top of this file.
     """
 
-    def __init__(self, num_classes: int = NUM_CLASSES, width: float = 1.0, image_size: int = 640):
+    def __init__(self, num_classes: int = NUM_CLASSES, width: float = 1.0, image_size: int = 640,
+                 context: bool = False):
         super().__init__()
         self.num_classes = num_classes
         self.image_size = image_size
+        self.width = width
+        self.context = context
         self.backbone = Backbone(width)
         self.neck = PANNeck(self.backbone.c1, self.backbone.c2, self.backbone.c3)
-        self.head = DetectHead(self.neck.out_channels, num_classes)
+        self.head = DetectHead(self.neck.out_channels, num_classes, context=context)
 
     def forward(self, x: torch.Tensor):
         feats = self.neck(*self.backbone(x))

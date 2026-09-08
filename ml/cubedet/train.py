@@ -95,6 +95,8 @@ class Config:
     ema_decay: float = 0.9998
     amp: bool = True
     val_every: int = 1
+    imgsz: int = 640
+    context: bool = False
     history: list = field(default_factory=list)
 
 
@@ -159,6 +161,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=12)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--width", type=float, default=1.0)
+    parser.add_argument("--imgsz", type=int, default=640,
+                        help="input resolution; dev-docs detector-stack-replacement.md §7 names this "
+                             "the cheapest unrun experiment for red/orange")
+    parser.add_argument("--context", action="store_true",
+                        help="give the colour head a pooled image-level summary — the relative-signal "
+                             "hypothesis from ml/redorange_separability.py")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--no-amp", action="store_true")
@@ -171,12 +179,14 @@ def main(argv: list[str] | None = None) -> int:
         data=args.data, out=args.out, epochs=args.epochs, batch=args.batch, workers=args.workers,
         lr=args.lr, width=args.width, seed=args.seed, amp=not args.no_amp,
     )
+    cfg.imgsz = args.imgsz
+    cfg.context = args.context
     cfg.out.mkdir(parents=True, exist_ok=True)
     seed_everything(cfg.seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    train_set = CubeDataset(cfg.data, "train", augment=True, seed=cfg.seed)
-    val_set = CubeDataset(cfg.data, "val", augment=False)
+    train_set = CubeDataset(cfg.data, "train", augment=True, seed=cfg.seed, imgsz=cfg.imgsz)
+    val_set = CubeDataset(cfg.data, "val", augment=False, imgsz=cfg.imgsz)
     train_loader = DataLoader(
         train_set, batch_size=cfg.batch, shuffle=True, num_workers=cfg.workers,
         collate_fn=collate, pin_memory=True, drop_last=True,
@@ -194,7 +204,8 @@ def main(argv: list[str] | None = None) -> int:
         collate_fn=collate, pin_memory=True, persistent_workers=cfg.workers > 0,
     )
 
-    model = CubeDet(num_classes=NUM_CLASSES, width=cfg.width).to(device)
+    model = CubeDet(num_classes=NUM_CLASSES, width=cfg.width, image_size=cfg.imgsz,
+                    context=cfg.context).to(device)
     criterion = DetectionLoss(NUM_CLASSES)
     # No weight decay on norms and biases: decaying a BatchNorm scale pulls it towards zero, which
     # is a different and worse regulariser than the one intended.
@@ -226,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"resumed from {args.resume} at epoch {start_epoch}")
 
     print(f"device={device} bf16={use_bf16} params={count_parameters(model):,} "
+          f"imgsz={cfg.imgsz} context={cfg.context} width={cfg.width} "
           f"train={len(train_set)} val={len(val_set)} batches/epoch={len(train_loader)}")
     print(f"environment: {environment}")
 
@@ -270,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
                 best = score
                 torch.save(
                     {"model": ema.module.state_dict(), "width": cfg.width,
+                     "imgsz": cfg.imgsz, "context": cfg.context,
                      "num_classes": NUM_CLASSES, "epoch": epoch, "metrics": metrics,
                      "environment": environment},
                     cfg.out / "best.pt",

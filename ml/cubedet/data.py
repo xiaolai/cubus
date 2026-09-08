@@ -127,11 +127,11 @@ def _load_labels(path: Path) -> np.ndarray:
     return np.asarray(rows, dtype=np.float32) if rows else np.zeros((0, 5), dtype=np.float32)
 
 
-def _to_canvas(labels: np.ndarray, w: int, h: int) -> np.ndarray:
-    """Normalised (cx, cy, w, h) on a w×h frame → absolute xyxy on the 640 letterbox canvas."""
+def _to_canvas(labels: np.ndarray, w: int, h: int, imgsz: int = IMG_SIZE) -> np.ndarray:
+    """Normalised (cx, cy, w, h) on a w×h frame → absolute xyxy on the letterbox canvas."""
     if len(labels) == 0:
         return np.zeros((0, 5), dtype=np.float32)
-    scale, _, _, pad_x, pad_y = letterbox_geometry(w, h)
+    scale, _, _, pad_x, pad_y = letterbox_geometry(w, h, imgsz)
     cx = labels[:, 1] * w * scale + pad_x
     cy = labels[:, 2] * h * scale + pad_y
     bw = labels[:, 3] * w * scale
@@ -285,7 +285,7 @@ def _affine(
     return out, boxes
 
 
-def _mosaic(read, count: int, index: int, rng: random.Random) -> tuple[np.ndarray, np.ndarray]:
+def _mosaic(read, count: int, index: int, rng: random.Random, imgsz: int = IMG_SIZE) -> tuple[np.ndarray, np.ndarray]:
     """Four images into one 2×IMG_SIZE collage, with every box carried into collage coordinates.
 
     Mosaic is the regulariser the first training run was missing, and the reason it matters here is
@@ -296,7 +296,7 @@ def _mosaic(read, count: int, index: int, rng: random.Random) -> tuple[np.ndarra
     The centre is drawn from the middle half of the collage, so every quadrant contributes a
     meaningful area — a centre near a corner would make three of the four images slivers.
     """
-    size = IMG_SIZE
+    size = imgsz
     canvas = np.full((size * 2, size * 2, 3), PAD_BYTE, dtype=np.uint8)
     centre_x = rng.randint(size // 2, size + size // 2)
     centre_y = rng.randint(size // 2, size + size // 2)
@@ -343,7 +343,8 @@ def _mosaic(read, count: int, index: int, rng: random.Random) -> tuple[np.ndarra
 
 
 def _clip_and_drop(
-    boxes: np.ndarray, min_area_fraction: float = 0.25, bounds: tuple[int, int, int, int] | None = None
+    boxes: np.ndarray, min_area_fraction: float = 0.25, bounds: tuple[int, int, int, int] | None = None,
+    imgsz: int = IMG_SIZE,
 ) -> np.ndarray:
     """Clip boxes to the canvas and drop the ones augmentation pushed mostly out of frame.
 
@@ -358,7 +359,7 @@ def _clip_and_drop(
     """
     if len(boxes) == 0:
         return boxes
-    bx0, by0, bx1, by1 = bounds or (0, 0, IMG_SIZE, IMG_SIZE)
+    bx0, by0, bx1, by1 = bounds or (0, 0, imgsz, imgsz)
     original = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 4] - boxes[:, 2])
     clipped = boxes.copy()
     clipped[:, [1, 3]] = clipped[:, [1, 3]].clip(bx0, bx1)
@@ -371,7 +372,8 @@ def _clip_and_drop(
 class CubeDataset(Dataset):
     """The YOLO-layout dataset on disk, letterboxed to 640 and optionally augmented."""
 
-    def __init__(self, root: Path, split: str, augment: bool = False, seed: int = 0):
+    def __init__(self, root: Path, split: str, augment: bool = False, seed: int = 0,
+                 imgsz: int = IMG_SIZE):
         self.root = Path(root)
         self.image_dir = self.root / "images" / split
         self.label_dir = self.root / "labels" / split
@@ -382,6 +384,10 @@ class CubeDataset(Dataset):
             raise FileNotFoundError(f"{self.image_dir} holds no images")
         self.augment = augment
         self.seed = seed
+        # The input resolution is a per-EXPERIMENT choice, not a constant: dev-docs
+        # detector-stack-replacement.md §7 names "does higher input resolution move red/orange"
+        # as the cheapest unrun experiment in the note. Everything downstream reads it from here.
+        self.imgsz = imgsz
         # Mosaic is on for most of training and off for the last CLOSE_MOSAIC_EPOCHS. The trainer
         # calls `set_epoch` each epoch; if nothing ever does, mosaic simply stays on, which is the
         # safe default — the failure mode of forgetting is a slightly under-trained tail, not a
@@ -409,11 +415,11 @@ class CubeDataset(Dataset):
         with Image.open(path) as handle:
             image = handle.convert("RGB")
             w, h = image.size
-            scale, new_w, new_h, pad_x, pad_y = letterbox_geometry(w, h)
+            scale, new_w, new_h, pad_x, pad_y = letterbox_geometry(w, h, self.imgsz)
             resized = image.resize((new_w, new_h), Image.BILINEAR)
-        canvas = np.full((IMG_SIZE, IMG_SIZE, 3), int(round(float(PAD) * 255)), dtype=np.uint8)
+        canvas = np.full((self.imgsz, self.imgsz, 3), PAD_BYTE, dtype=np.uint8)
         canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = np.asarray(resized, dtype=np.uint8)
-        boxes = _to_canvas(_load_labels(self.label_dir / f"{path.stem}.txt"), w, h)
+        boxes = _to_canvas(_load_labels(self.label_dir / f"{path.stem}.txt"), w, h, self.imgsz)
         return canvas, boxes
 
     def __getitem__(self, index: int):
@@ -445,10 +451,10 @@ class CubeDataset(Dataset):
             # scale jitter then applied around NATIVE size. base_scale 1.0 here is that crop — the
             # window lands where `translate` puts it, and objects keep the size they were rendered
             # at (measured mean 74.0 px, 82% of native, the shortfall being ordinary scale jitter).
-            image, boxes = _mosaic(self._read, len(self.files), index, rng)
+            image, boxes = _mosaic(self._read, len(self.files), index, rng, self.imgsz)
             image, boxes = _affine(
                 image, boxes, rng, degrees=ROTATE_DEGREES, translate=TRANSLATE_JITTER,
-                scale=SCALE_JITTER, out_size=IMG_SIZE, base_scale=1.0,
+                scale=SCALE_JITTER, out_size=self.imgsz, base_scale=1.0,
             )
         else:
             image, boxes = self._read(index)
@@ -464,11 +470,11 @@ class CubeDataset(Dataset):
                 # neighbours — see ADR 0001 on chirality — but nothing here does.
                 image = image[:, ::-1].copy()
                 if len(boxes):
-                    x0 = IMG_SIZE - boxes[:, 3]
-                    x1 = IMG_SIZE - boxes[:, 1]
+                    x0 = self.imgsz - boxes[:, 3]
+                    x1 = self.imgsz - boxes[:, 1]
                     boxes[:, 1], boxes[:, 3] = x0, x1
             image = _photometric(image, rng)
-        boxes = _clip_and_drop(boxes)
+        boxes = _clip_and_drop(boxes, imgsz=self.imgsz)
         if len(boxes) > MAX_TARGETS:
             # Named as the SAMPLE, not the file: under mosaic these targets came from four images
             # and blaming one of them would send the reader to the wrong place.
