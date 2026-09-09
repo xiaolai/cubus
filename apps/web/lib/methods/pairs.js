@@ -206,9 +206,11 @@ function f2lPosition(state, turns) {
  * The case, and how far to turn the top before it looks like the case.
  *
  * "Turn U until it matches" is not part of a case — it is what you do before you recognise one.
- * Folding the four alignments together is what takes the count from 287 positions down to the
- * 41 cases F2L is actually taught as, and it is verified to be faithful: no name covers two
- * different positions, only the four rotations of one.
+ * Folding the four alignments together is what turns the 150 REACHABLE configurations into 42
+ * names — the 41 cases F2L is taught as, plus the one where the pair is already placed. (The
+ * whole domain is 384; the other 234 have a piece buried in a protected slot and never reach a
+ * case at all. `f2l-configurations.test.mjs` enumerates both halves.) The fold is verified to be
+ * faithful: no name covers two different positions, only the four rotations of one.
  */
 export function f2lAlignment(state, turns) {
   let best = null;
@@ -233,80 +235,126 @@ export const f2lCaseName = (state, turns) => f2lAlignment(state, turns).name;
  * second copy of this loop would be two places for the fallback rule, the naming and the
  * slot-safety contract to drift apart.
  */
+/**
+ * Is a piece of this pair sitting somewhere the algorithm may not disturb?
+ *
+ * §7a finding F1: a corner in another pair's solved slot, or an edge in a cross slot or another
+ * pair's slot, cannot come out under a maneuver that leaves those slots alone. So the repertoire
+ * search cannot succeed, and running it is 912 candidate applications to discover that — on 234 of
+ * the 384 configurations, which `f2l-configurations.test.mjs` enumerates exhaustively and whose
+ * line is exactly this predicate. Asking first is not an optimisation of the search; it is
+ * declining to ask a question with a known answer.
+ */
+const buried = (state, pair, protectedCorners, protectedEdges) =>
+  protectedCorners.includes(cornerSlot(state, pair.corner))
+  || protectedEdges.includes(edgeSlot(state, pair.edge));
+
+/**
+ * Line the top up, then look for one case that places the pair.
+ *
+ * The alignment comes first because that is the order a learner works in, and because it is what
+ * makes the algorithm depend on the CASE rather than on where the top happened to be — the
+ * difference between something memorable and a different answer every time. It is not applied to
+ * the caller's state: if no case reaches this pair the fallback starts from where the learner
+ * actually is, not from a turn we made for a lookup that then failed.
+ */
+function searchPair(state, pair, slot, candidates, plies, done) {
+  const { turns, name: caseName } = f2lAlignment(state, slot);
+  const align = AUF[turns];
+  const aligned = align ? applyAlg(state, align) : state;
+  // Two nodes are the same when this pair is in the same place. Deduplicating on the WHOLE cube
+  // instead made the search's choice depend on the other 18 pieces, which is how one case ended
+  // up with three algorithms. The route's slot-safety used to be a third field here and was
+  // always 1 — it partitioned nothing, at the cost of a `slotSafe` call per node.
+  const keyOf = (s) => {
+    const c = cornerSlot(s, pair.corner);
+    const e = edgeSlot(s, pair.edge);
+    return `${c}.${s.co[c]}|${e}.${s.eo[e]}`;
+  };
+  // Rank in the front-right frame: the same case must get the same algorithm whichever slot
+  // it appears in, or there is nothing to learn.
+  const inFrontRightFrame = (alg) => rotateAlg(alg, (4 - slot) % 4);
+  const found = fromRepertoire(aligned, candidates, done, plies, keyOf, inFrontRightFrame);
+  return found ? { ...found, align, caseName } : null;
+}
+
+/**
+ * The pair as ONE step — the unit a learner recognises at this rung.
+ *
+ * The alignment is part of the step's algorithm, so it is part of the step's PARTS. Without it the
+ * two disagreed: a step whose alg was `R U R'` listed a single part of `U R U R'`, which does not
+ * solve the pair — and "open the step up to see how it is made" is the whole reason `parts`
+ * exists. It is named for what it is rather than folded into the trigger beside it, because
+ * turning the top until it matches is not one of the six triggers.
+ */
+function pairStep({ align, alg, used, caseName }, pair) {
+  const aligning = align ? [{ name: 'align', alg: align }] : [];
+  const parts = [...aligning, ...used].map((u) => ({ name: u.name, alg: u.alg }));
+  return {
+    stage: 'f2l',
+    kind: 'case',
+    target: pair.corner,
+    alg: [align, alg].filter(Boolean).join(' ').trim(),
+    caseName,
+    // The triggers stay attached: the case is what you recognise, the parts are how you get out of
+    // it, and a learner meeting the case for the first time needs both.
+    parts,
+    why: { key: 'f2l.pair', corner: pair.corner, edge: pair.edge },
+  };
+}
+
+/**
+ * The fallback: do the pair the way the rung below does — corner first, then its edge.
+ *
+ * Not a workaround. It is what a learner actually does with a case they have not met yet, and it
+ * keeps the step honest by saying which one it is. §7a finding F1 says this path is STRUCTURAL — a
+ * piece buried in another protected slot cannot leave it under `slotSafe` — so rung 2 shrinks it
+ * and cannot remove it.
+ *
+ * Only what is actually out of place. This used to lift and reinsert unconditionally, so a pair
+ * whose CORNER was already home cost two steps to put it back where it was — five steps where the
+ * rung below took three, on a cube the rung above was supposed to be better at. Checked per piece,
+ * in the order they are placed, because placing the corner can move the edge.
+ */
+function placeSeparately(state, pair, steps, protectedEdges, placedCorners) {
+  const intact = keeping(protectedEdges, placedCorners);
+  if (!(cornerSolved(state, pair.corner) && intact(state))) {
+    state = placeCorner(state, pair.corner, intact, steps, 'f2l');
+  }
+  const withCorner = keeping(protectedEdges, [...placedCorners, pair.corner]);
+  if (!(edgeSolved(state, pair.edge) && withCorner(state))) {
+    state = placeEdge(state, pair.edge, withCorner, steps, 'f2l');
+  }
+  return state;
+}
+
+/**
+ * Place every pair, from a repertoire and a ply budget.
+ *
+ * ONE function for both rungs, because the difference between them is genuinely only those two
+ * arguments: rung 1 composes up to three triggers, rung 2 applies one generated algorithm. A
+ * second copy of this loop would be two places for the fallback rule, the naming and the
+ * slot-safety contract to drift apart.
+ */
 const pairsFrom = (repertoires, plies) => function placePairs(state, steps) {
   const placedCorners = [];
   const placedEdges = [];
   for (const [slot, pair] of F2L_PAIRS.entries()) {
-    const intact = keeping([...CROSS, ...placedEdges], placedCorners);
+    const protectedEdges = [...CROSS, ...placedEdges];
     // The pair is placed, and nothing else moved. The second half is not asked here: every route
     // this search can build is slot-safe by construction, checked once on `SLOT_REPERTOIRE`.
     const done = (s) => cornerSolved(s, pair.corner) && edgeSolved(s, pair.edge);
-    if (done(state)) { placedCorners.push(pair.corner); placedEdges.push(pair.edge); continue; }
-
-    const candidates = repertoires[slot];
-    const { turns, name: caseName } = f2lAlignment(state, slot);
-    // Line the top up first, then solve the case. That is the order a learner works in, and it
-    // is also what makes the algorithm depend on the case rather than on where the top happened
-    // to be — the difference between something memorable and a different answer every time.
-    // Not applied to `state`: if no case reaches this pair we fall back to the rung below,
-    // and that path starts from where the learner actually is, not from a turn we made for a
-    // lookup that then failed.
-    const align = AUF[turns];
-    const aligned = align ? applyAlg(state, align) : state;
-    // Two nodes are the same when this pair is in the same place. Deduplicating on the WHOLE cube
-    // instead made the search's choice depend on the other 18 pieces, which is how one case ended
-    // up with three algorithms. The route's slot-safety used to be a third field here and was
-    // always 1 — it partitioned nothing, at the cost of a `slotSafe` call per node.
-    const keyOf = (s) => {
-      const c = cornerSlot(s, pair.corner);
-      const e = edgeSlot(s, pair.edge);
-      return `${c}.${s.co[c]}|${e}.${s.eo[e]}`;
-    };
-    // Rank in the front-right frame: the same case must get the same algorithm whichever slot
-    // it appears in, or there is nothing to learn.
-    const inFrontRightFrame = (alg) => rotateAlg(alg, (4 - slot) % 4);
-    const found = fromRepertoire(aligned, candidates, done, plies, keyOf, inFrontRightFrame);
-
-    if (!found) {
-      // No pair case reaches this one. Rather than fail, do the pair the way the rung below
-      // does — corner first, then its edge. This is not a workaround, it is what a learner
-      // actually does with a case they have not met yet, and it keeps the step honest: it
-      // says which one it is. §7a finding F1 says this fallback is STRUCTURAL — a piece buried
-      // in another protected slot cannot leave it under `slotSafe` — so rung 2 shrinks it and
-      // cannot remove it.
-      // Only what is actually out of place. The fallback used to lift and reinsert unconditionally,
-      // so a pair whose CORNER was already home cost two steps to put it back where it was — five
-      // steps where the rung below took three, on a cube the rung above was supposed to be better
-      // at. Checked per piece, in the order they are placed, because placing the corner can move
-      // the edge.
-      if (!(cornerSolved(state, pair.corner) && intact(state))) {
-        state = placeCorner(state, pair.corner, intact, steps, 'f2l');
+    if (!done(state)) {
+      const found = buried(state, pair, placedCorners, protectedEdges)
+        ? null
+        : searchPair(state, pair, slot, repertoires[slot], plies, done);
+      if (found) {
+        steps.push(pairStep(found, pair));
+        state = found.state;
+      } else {
+        state = placeSeparately(state, pair, steps, protectedEdges, placedCorners);
       }
-      const withCorner = keeping([...CROSS, ...placedEdges], [...placedCorners, pair.corner]);
-      if (!(edgeSolved(state, pair.edge) && withCorner(state))) {
-        state = placeEdge(state, pair.edge, withCorner, steps, 'f2l');
-      }
-      placedCorners.push(pair.corner);
-      placedEdges.push(pair.edge);
-      continue;
     }
-
-    // The alignment is part of the step's algorithm, so it is part of the step's PARTS. Without it
-    // the two disagreed: a step whose alg was `R U R'` listed a single part of `U R U R'`, which
-    // does not solve the pair — and "open the step up to see how it is made" is the whole reason
-    // `parts` exists. It is named for what it is rather than folded into the trigger beside it,
-    // because turning the top until it matches is not one of the six triggers.
-    const aligning = align ? [{ name: 'align', alg: align }] : [];
-    const used = [...aligning, ...found.used];
-    const alg = [align, found.alg].filter(Boolean).join(' ').trim();
-    state = found.state;
-    // One step, not three: the pair is the unit a learner recognises at this rung. The
-    // triggers stay attached so the step can be opened up when it is still unfamiliar.
-    steps.push({ stage: 'f2l', kind: 'case', target: pair.corner, alg, caseName,
-      // The triggers stay attached: the case is what you recognise, the parts are how you get
-      // out of it, and a learner meeting the case for the first time needs both.
-      parts: used.map((u) => ({ name: u.name, alg: u.alg })),
-      why: { key: 'f2l.pair', corner: pair.corner, edge: pair.edge } });
     placedCorners.push(pair.corner);
     placedEdges.push(pair.edge);
   }

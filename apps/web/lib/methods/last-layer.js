@@ -105,18 +105,48 @@ const look = ({ stage, target, algs, plies, options, reached, goal, why, names }
     candidates: Object.freeze(repertoire(algs, options ?? {})),
   });
 
-/** The pieces sitting in the U slots that fail `wrong`, by IDENTITY — the cubie, not the seat.
- *  Identity is what lets the highlight follow a piece through the turn. */
-const namedEdges = (wrong) => (s) => {
-  const picked = U_EDGES.filter((slot) => wrong(s, slot)).map((slot) => s.ep[slot]);
-  // A look only runs when something is wrong, so an empty set means the predicate and the goal
-  // disagree. Naming the whole layer is the honest fallback: it over-points rather than pointing
-  // at nothing, and the test below pins that it never happens on a real solve.
-  return picked.length ? picked : U_EDGES.map((slot) => s.ep[slot]);
-};
-const namedCorners = (wrong) => (s) => {
-  const picked = U_CORNERS.filter((slot) => wrong(s, slot)).map((slot) => s.cp[slot]);
-  return picked.length ? picked : U_CORNERS.map((slot) => s.cp[slot]);
+/**
+ * The pieces sitting in `slots` that fail `wrong`, by IDENTITY — the cubie, not the seat.
+ *
+ * Identity is what lets the highlight follow a piece through the turn. One selector, parameterized
+ * by the slot list and the permutation field: the corner and edge versions differed in exactly
+ * those two things and had to be kept in step by hand.
+ */
+const named = (slots, field) => (wrong) => (s) =>
+  slots.filter((slot) => wrong(s, slot)).map((slot) => s[field][slot]);
+
+const namedEdges = named(U_EDGES, 'ep');
+const namedCorners = named(U_CORNERS, 'cp');
+
+/** Every piece in the top layer, by identity — the fallback, and only ever the whole of it. */
+const wholeTopLayer = (s) => ({
+  corners: U_CORNERS.map((slot) => s.cp[slot]),
+  edges: U_EDGES.map((slot) => s.ep[slot]),
+});
+
+/**
+ * A look's highlight payload: the groups it is about, and only the ones with something in them.
+ *
+ * **The fallback belongs to the WHOLE selection, not to each group.** Each group used to name the
+ * entire top layer when nothing in it was wrong — which is right for a look that is about one
+ * group, and wrong for the one-look rungs, which are about both. Full OLL on the inverse of Sune
+ * has three twisted corners and four correctly oriented edges, and it pointed at all four edges;
+ * full PLL on the inverse of a U-perm pointed at four solved corners. A learner reading a pulse as
+ * "this is what the algorithm is for" was being told the wrong thing about half the layer.
+ *
+ * So an empty group is simply left out, and the fallback fires only when EVERY group is empty —
+ * which means the look's predicate and its goal disagree, and over-pointing beats pointing at
+ * nothing.
+ */
+const focus = (groups) => (s) => {
+  const picked = {};
+  for (const [key, pick] of Object.entries(groups)) {
+    const ids = pick(s);
+    if (ids.length) picked[key] = ids;
+  }
+  if (Object.keys(picked).length) return picked;
+  const all = wholeTopLayer(s);
+  return Object.fromEntries(Object.keys(groups).map((key) => [key, all[key]]));
 };
 
 /**
@@ -167,7 +197,7 @@ const TWO_LOOK_OLL = Object.freeze([
   look({
     stage: 'top-cross', target: 'edges', algs: EOLL, plies: 3,
     reached: topEdgesOriented, goal: guard(topEdgesOriented), why: 'topCross.orient',
-    names: (s) => ({ edges: namedEdges((st, slot) => st.eo[slot] !== 0)(s) }),
+    names: focus({ edges: namedEdges((st, slot) => st.eo[slot] !== 0) }),
   }),
   // 2. Orient the corners — the whole top face one colour. Edges must stay oriented.
   look({
@@ -175,7 +205,7 @@ const TWO_LOOK_OLL = Object.freeze([
     reached: topCornersOriented,
     goal: guard((s) => topCornersOriented(s) && topEdgesOriented(s)),
     why: 'topFace.orient',
-    names: (s) => ({ corners: namedCorners((st, slot) => st.co[slot] !== 0)(s) }),
+    names: focus({ corners: namedCorners((st, slot) => st.co[slot] !== 0) }),
   }),
 ]);
 
@@ -185,12 +215,12 @@ const TWO_LOOK_PLL = Object.freeze([
   look({
     stage: 'top-corners', target: 'permute', algs: [...CPLL, ...ALIGN], plies: 2, options: { post: AUF },
     reached: topCornersHome, goal: guard(topCornersHome), why: 'topCorners.permute',
-    names: (s) => ({ corners: namedCorners((st, slot) => st.cp[slot] !== slot)(s) }),
+    names: focus({ corners: namedCorners((st, slot) => st.cp[slot] !== slot) }),
   }),
   look({
     stage: 'top-edges', target: 'permute', algs: [...EPLL, ...ALIGN], plies: 2, options: { post: AUF },
     reached: wholeCubeSolved, goal: wholeCubeSolved, why: 'topEdges.permute',
-    names: (s) => ({ edges: namedEdges((st, slot) => st.ep[slot] !== slot)(s) }),
+    names: focus({ edges: namedEdges((st, slot) => st.ep[slot] !== slot) }),
   }),
 ]);
 
@@ -204,16 +234,21 @@ const topOriented = (s) => topCornersOriented(s) && topEdgesOriented(s);
 const FULL_OLL_LOOK = Object.freeze([
   look({
     stage: 'top-face', target: 'corners', algs: FULL_OLL, plies: 1,
-    // No y-rotations: the table is COMPLETE, so every rotated variant of an entry is another
-    // entry's case and the four copies buy nothing but four times the search.
-    options: { rotations: [0] },
+    // ALL FOUR ROTATIONS, and the argument against them was about the wrong thing. The table is
+    // complete, so a rotated variant of an entry is indeed another entry's case — coverage needs
+    // no rotations. LENGTH does: the case's own entry is minimal for the alignment the generator
+    // chose, and reaching that alignment costs a pre-AUF, while a y-rotated sibling may reach the
+    // same case needing none. Measured over 60 cubes: 22.45 moves per last layer without them and
+    // 21.22 with, for 2.3 ms a solve. The repertoire is built once at module load, so the four
+    // copies cost search time and nothing else.
+    options: {},
     reached: topOriented, goal: guard(topOriented), why: 'topFace.orient',
     // Both kinds, because a one-look OLL is about both — an edge that needs flipping and a corner
     // that needs twisting are the same step here, and pointing at only the corners would leave the
     // learner looking for what the algorithm was for.
-    names: (s) => ({
-      corners: namedCorners((st, slot) => st.co[slot] !== 0)(s),
-      edges: namedEdges((st, slot) => st.eo[slot] !== 0)(s),
+    names: focus({
+      corners: namedCorners((st, slot) => st.co[slot] !== 0),
+      edges: namedEdges((st, slot) => st.eo[slot] !== 0),
     }),
   }),
 ]);
@@ -222,11 +257,14 @@ const FULL_OLL_LOOK = Object.freeze([
 const FULL_PLL_LOOK = Object.freeze([
   look({
     stage: 'top-edges', target: 'permute', algs: [...FULL_PLL, ...ALIGN], plies: 1,
-    options: { rotations: [0], post: AUF },
+    // Rotations for the same reason as full OLL above: they do not widen the coverage a complete
+    // table already has, they shorten the answer. The inverse of `B2 U L' R B2 L R' U B2` came out
+    // at 11 moves without them and 9 with, using a rotated entry of the table it already had.
+    options: { post: AUF },
     reached: wholeCubeSolved, goal: wholeCubeSolved, why: 'lastLayer.permute',
-    names: (s) => ({
-      corners: namedCorners((st, slot) => st.cp[slot] !== slot)(s),
-      edges: namedEdges((st, slot) => st.ep[slot] !== slot)(s),
+    names: focus({
+      corners: namedCorners((st, slot) => st.cp[slot] !== slot),
+      edges: namedEdges((st, slot) => st.ep[slot] !== slot),
     }),
   }),
 ]);

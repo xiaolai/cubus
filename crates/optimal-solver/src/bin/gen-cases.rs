@@ -56,14 +56,13 @@
 //! support — reached the goal, broke nothing, strict HTM face turns, and no shorter algorithm
 //! exists to any acceptable goal.
 
-use optimal_solver::cases::{case_of, oll_states, pll_states, Kind};
+use optimal_solver::cases::{pll_states, representatives, Kind};
 use optimal_solver::cli::{self, Spec};
 use optimal_solver::coords::Coords;
 use optimal_solver::cubie::{all_moves, apply_alg, compose, inverse, Cubie, SOLVED};
 use optimal_solver::pdb::move_set_hash;
 use optimal_solver::search::{prove_all_counted, prove_counted, solution_string, SearchEnd};
 use optimal_solver::Tables;
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -76,35 +75,6 @@ const SPEC: Spec = Spec {
     flags: &[],
     positionals: 3..=3,
 };
-
-/// One representative state per case, in case-id order — so the table's rows, and the bytes of
-/// the file, are a function of the case set and of nothing else.
-fn representatives(kind: Kind) -> Vec<(String, Cubie)> {
-    let states = match kind {
-        Kind::Oll => oll_states(),
-        Kind::Pll => pll_states(),
-    };
-    let mut by_case: BTreeMap<String, Cubie> = BTreeMap::new();
-    for s in states {
-        let id = case_of(kind, &s).id();
-        // The SMALLEST state in the orbit, by its own projection, so "the representative" does not
-        // depend on the order `oll_states()` happens to yield.
-        by_case
-            .entry(id)
-            .and_modify(|held| {
-                if state_key(&s) < state_key(held) {
-                    *held = s.clone();
-                }
-            })
-            .or_insert(s);
-    }
-    by_case.into_iter().collect()
-}
-
-/// A total order on states, for choosing a representative deterministically.
-fn state_key(s: &Cubie) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
-    (s.cp.to_vec(), s.co.to_vec(), s.ep.to_vec(), s.eo.to_vec())
-}
 
 /// The four U-turn states, in the order everything here indexes them by.
 ///
@@ -445,6 +415,19 @@ fn main() {
     let pairs: Vec<(usize, usize)> = (0..alignments.len())
         .flat_map(|a| (0..goals.len()).map(move |g| (a, g)))
         .collect();
+    // THE LOOP CLOSED. `case_certificate` refuses a log whose declared goal set is not the one a
+    // claim of this kind is about, and these are the values it requires. Asserting them here means
+    // a change to what this binary generates fails at once rather than producing certificates the
+    // checker will reject — and a change to the checker's expectation fails here.
+    let expected_goal_set = match kind {
+        Kind::Oll => optimal_solver::case_certificate::OLL_GOAL_SET,
+        Kind::Pll => optimal_solver::case_certificate::PLL_GOAL_SET,
+    };
+    assert_eq!(
+        (goalset_id.as_str(), pairs.len() as u32),
+        expected_goal_set,
+        "{kind_arg}: the goal set generated is not the one case_certificate requires"
+    );
     let cases = representatives(kind);
     let expect = match kind {
         Kind::Oll => 58,

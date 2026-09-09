@@ -26,7 +26,8 @@
 //! other two are seconds. That asymmetry is why they are committed rather than regenerated on
 //! demand, and it compresses to under two hundred kilobytes in the object store.
 
-use optimal_solver::case_certificate::check_case_certificates;
+use optimal_solver::case_certificate::{check_case_certificates, Expect};
+use optimal_solver::table_json::read_table;
 use optimal_solver::pdb::move_set_hash;
 use std::path::PathBuf;
 
@@ -44,33 +45,19 @@ fn read(name: &str) -> String {
     })
 }
 
-/// The table's own rows, as `(case id, length, algorithm)` — parsed from the hand-rolled JSON the
-/// generators write, which is why this parse can be this small: every value is a number or a
-/// string over `[A-Za-z0-9:'/ ]`, and there is no escaping to get wrong.
-fn table_rows(json: &str) -> Vec<(String, u8, String)> {
-    let mut out = Vec::new();
-    for line in json.lines() {
-        let line = line.trim();
-        if !line.starts_with("{ \"case\"") {
-            continue;
-        }
-        let field = |key: &str| -> String {
-            let at = line
-                .find(&format!("\"{key}\": "))
-                .unwrap_or_else(|| panic!("no {key} in {line}"))
-                + key.len()
-                + 4;
-            let rest = &line[at..];
-            let end = rest.find([',', '}']).unwrap_or(rest.len());
-            rest[..end].trim().trim_matches('"').to_string()
-        };
-        out.push((
-            field("case"),
-            field("length").parse().expect("a numeric length"),
-            field("alg"),
-        ));
-    }
-    out
+/// The table's own rows, through the crate's strict reader.
+///
+/// This file used to carry a third improvised parser — a line-prefix match and a `find`/`trim`
+/// per field — beside the two in `case-cross-check` and `oll-compare`. Reading the artifact a
+/// check is ABOUT through a reader that accepts a truncated file is the wrong place to be lenient,
+/// and the three of them accepted different things.
+fn table_rows(json: &str, kind: &str) -> Vec<(String, u8, String)> {
+    read_table(json, kind)
+        .unwrap_or_else(|e| panic!("{kind}.json: {e}"))
+        .rows
+        .into_iter()
+        .map(|r| (r.case, r.length, r.alg))
+        .collect()
 }
 
 /// Every table, its certificate, and how many cases each must hold.
@@ -89,14 +76,20 @@ fn every_committed_table_is_covered_by_its_committed_certificate() {
         let cert = read(cert_file);
         let lines: Vec<&str> = cert.lines().collect();
         let hash: String = move_set_hash().iter().map(|b| format!("{b:02x}")).collect();
-        let proof = check_case_certificates(&lines, &hash, kind, cases)
+        // The expectation is derived from the case machinery, and the count beside it is the
+        // second opinion: `Expect::standard` says which case ids must appear, and the literal here
+        // says how many there should be. A change that quietly dropped a case would satisfy the
+        // first and fail the second.
+        let expect = Expect::standard(kind).expect("a known kind");
+        assert_eq!(expect.cases.len(), cases, "{kind}: this build enumerates a different number of cases");
+        let proof = check_case_certificates(&lines, &hash, &expect)
             .unwrap_or_else(|e| panic!("{cert_file}: {e}"));
         assert_eq!(proof.cases, cases, "{kind}: wrong number of cases");
 
         // And the certificate is about THIS table, not a table with the same name. The certificate
         // carries every case's chosen algorithm, so the two can disagree — which is exactly what a
         // hand-edit to the JSON, or a table copied from a different run, would look like.
-        let rows = table_rows(&read(table_file));
+        let rows = table_rows(&read(table_file), kind);
         assert_eq!(rows.len(), cases, "{table_file}: wrong number of rows");
         let certified: std::collections::BTreeMap<&str, (u8, &str)> = proof
             .table
@@ -136,15 +129,11 @@ fn the_f2l_table_is_what_regenerating_it_would_produce() {
     ball.validate()
         .expect("the goal ball must be a distance function");
     let cancel = AtomicBool::new(false);
-    let rows = table_rows(&read("f2l.json"));
+    let rows = table_rows(&read("f2l.json"), "f2l");
     let cases = all_cases();
     assert_eq!(rows.len(), cases.len());
     for (case, (id, length, alg)) in cases.iter().zip(rows.iter()) {
-        let want_id = format!(
-            "f2l:{:02x}{:02x}",
-            case.corner_slot * 3 + case.corner_twist as usize,
-            case.edge_slot * 2 + case.edge_flip as usize
-        );
+        let want_id = case.id();
         assert_eq!(
             *id, want_id,
             "the table is not in the generator's own order"

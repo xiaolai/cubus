@@ -30,7 +30,7 @@ import {
   MethodSolverError, algLength, fromRepertoire, repertoire, repertoiresBuilt, shortestTo,
   simplify, slotSafe, wholeCubeSolved,
 } from './methods/engine.js';
-import { crossTable, solveCrossWhole } from './methods/cross.js';
+import { crossTable, solveCrossWhole, warmCrossTable } from './methods/cross.js';
 import { f2lCaseName } from './methods/pairs.js';
 // `methodFor` alone: everything else from the ladder is re-exported below without being read here.
 import { methodFor } from './methods/index.js';
@@ -42,8 +42,14 @@ export { MethodSolverError } from './methods/engine.js';
  *
  * Exported so the app can pay 800 ms somewhere nobody is waiting. It is idempotent — the table is
  * built once and kept — so calling it early costs nothing and calling it twice costs nothing.
+ *
+ * **Asynchronous, and in slices.** The build explores 190,081 positions and measured 114 ms as one
+ * task; `setTimeout` moved when that task ran and not that it was one task, so it still landed as
+ * a single block of dropped frames. This yields between slices, so a warm-up is spread across the
+ * event loop instead of wedged into one turn of it. Nothing waits on the result: a solve that
+ * arrives first finishes the table synchronously and is no worse off than before.
  */
-export const warmCross = () => void crossTable();
+export const warmCross = () => warmCrossTable();
 
 export {
   CASE_NAMES, DEFAULT_RUNGS, LADDER, STAGE_IDS, TOP_RUNG, allRungCombinations, methodFor, rungKey,
@@ -119,7 +125,10 @@ export function solveByMethod(state, method = methodFor()) {
     // the next stage's `keep` begins from — so the rungs compose. Asserting that in prose is what
     // a per-method test cannot see; checking it here means a rung that quietly narrowed its
     // contract fails at the seam it broke, naming the stage, rather than 40 moves later.
-    if (!stage.keep(s)) throw new MethodSolverError(stage.id, 'keep', s);
+    // A FROZEN snapshot, not the live cube. A predicate is asked a question; one that answers by
+    // editing the state the replay is about to start from can make "before" equal to the state it
+    // wanted to claim, and the stage then emits nothing while every guard passes.
+    if (!stage.keep(frozenCube(s))) throw new MethodSolverError(stage.id, 'keep', s);
     // **The verification's inputs are the stage's, copied.** Both of these were aliases until the
     // audit of 2026-09-09, and the consequence was not subtle: a stage that overwrote the arrays
     // it was handed could make the "before" the replay starts from equal to the state it wanted to
@@ -132,21 +141,34 @@ export function solveByMethod(state, method = methodFor()) {
     const before = clone(s);
     const mine = [];
     const returned = stage.run(clone(s), mine);
+    // **The steps are ADOPTED: checked, deep-copied and frozen, before anything is replayed
+    // through them.** Two reasons, and both were live.
+    //
+    // `steps.push(...mine)` shared the stage's own objects, so a stage holding on to an array it
+    // filled could rewrite an earlier step after that stage had been verified — a lesson came back
+    // as `R R'` with the cross contract false behind it. The history now holds copies nobody else
+    // has a reference to.
+    //
+    // And a step was never checked for being one. A null entry, a missing `alg`, or a token the
+    // renderer cannot animate surfaced as a `TypeError` from inside `applyAlg` — an incidental
+    // error that throws away the stage name, the step index and the state the replay started
+    // from, which are the three things anyone debugging it needs.
+    const adopted = adopt(mine, stage, before);
     // **The contract is checked on the REPLAY, not on what the stage handed back.** Those are two
     // different claims, and only one of them is about the lesson: a stage could return a state its
     // own steps do not reach, and the assembly guard would not notice as long as a later stage's
     // moves happened to cancel the difference. Then the stage boundary the learner is shown — "the
     // cross is done here" — would be false while everything else passed. Replaying costs one pass
     // over the moves this stage just emitted.
-    s = mine.reduce((cube, step) => applyAlg(cube, step.alg), before);
+    s = adopted.reduce((cube, step) => applyAlg(cube, step.alg), before);
     // Shape-checked before it is compared. A stage that forgets to return, or returns something
     // that is not a cube, is a defect in the stage — and reporting it as an incidental TypeError
     // from inside `sameCube` throws away the stage name and the replay this driver exists to give.
     if (!isCube(returned) || !sameCube(s, returned)) {
       throw new MethodSolverError(stage.id, 'replay', before);
     }
-    if (!stage.contract(s)) throw new MethodSolverError(stage.id, 'contract', s);
-    steps.push(...mine);
+    if (!stage.contract(frozenCube(s))) throw new MethodSolverError(stage.id, 'contract', s);
+    steps.push(...adopted);
   }
 
   // Per step, never across them: a step is a thing the learner performs as a unit, and merging
@@ -172,6 +194,50 @@ export function solveByMethod(state, method = methodFor()) {
 
 /** The four arrays, copied — so nothing downstream can edit what a check is about to read. */
 const clone = (s) => ({ cp: [...s.cp], co: [...s.co], ep: [...s.ep], eo: [...s.eo] });
+
+/** A cube a predicate cannot write to. Copied first, so freezing is not imposed on the caller's. */
+const frozenCube = (s) => Object.freeze({
+  cp: Object.freeze([...s.cp]),
+  co: Object.freeze([...s.co]),
+  ep: Object.freeze([...s.ep]),
+  eo: Object.freeze([...s.eo]),
+});
+
+/** A deep copy that nobody can edit — arrays and plain objects all the way down. */
+const snapshot = (value) => {
+  if (Array.isArray(value)) return Object.freeze(value.map(snapshot));
+  if (value && typeof value === 'object') {
+    return Object.freeze(Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, snapshot(v)]),
+    ));
+  }
+  return value;
+};
+
+/** The only tokens the renderer, the 2D net and the move list speak. */
+const FACE_TURN = /^[URFDLB][2']?$/;
+
+/**
+ * Every step a stage emitted, checked and frozen — or a `MethodSolverError` naming which one.
+ *
+ * The check is not defensive padding: a step with a token nobody can animate is a lesson that
+ * shows a learner a move the cube will not make, and `applyAlg` reports it as a bare `TypeError`
+ * with none of the context this driver exists to attach.
+ */
+function adopt(steps, stage, before) {
+  const refuse = (i, why) => {
+    throw new MethodSolverError(stage.id, `step ${i}: ${why}`, before);
+  };
+  return steps.map((step, i) => {
+    if (!step || typeof step !== 'object') refuse(i, `is ${step === null ? 'null' : typeof step}, not a step`);
+    if (typeof step.alg !== 'string') refuse(i, 'carries no algorithm');
+    if (typeof step.stage !== 'string' || !step.stage) refuse(i, 'names no stage');
+    for (const move of step.alg.trim().split(/\s+/).filter(Boolean)) {
+      if (!FACE_TURN.test(move)) refuse(i, `carries "${move}", which is not a face turn`);
+    }
+    return snapshot(step);
+  });
+}
 
 /** Does this look like a cube at all? Shape only; `checkedCopy` is the boundary that checks
  *  values, and this is the cheap guard a stage's RETURN goes through. */

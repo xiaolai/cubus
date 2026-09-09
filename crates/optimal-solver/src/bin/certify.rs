@@ -13,7 +13,7 @@
 //! tuple — so shard outputs collected from different machines can be checked against each
 //! other before anyone calls nine lines a proof.
 
-use optimal_solver::case_certificate::check_case_certificates;
+use optimal_solver::case_certificate::{check_case_certificates, Expect};
 use optimal_solver::certificate::check_superflip_shards;
 use optimal_solver::coords::Coords;
 use optimal_solver::cubie::{apply_alg, SOLVED, SUPERFLIP_GEODESIC};
@@ -235,7 +235,22 @@ fn collect_report(lines: &[&str], hash: &str) -> Result<(String, Vec<String>), S
 fn check_cases(kind: &str, cases: usize, path: &str, hash: &str) {
     let text = read_input(path);
     let lines: Vec<&str> = text.lines().collect();
-    match check_case_certificates(&lines, hash, kind, cases) {
+    // The expectation comes from the case machinery — which cases must appear and which goal set
+    // the bounds are about — rather than from the log, which cannot establish either about itself.
+    // The count on the command line is a second opinion on the first of those: if the two disagree
+    // the caller is asking about a different table from the one this build enumerates.
+    let expect = Expect::standard(kind).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1)
+    });
+    if expect.cases.len() != cases {
+        eprintln!(
+            "check-cases {kind} {cases}: this build enumerates {} {kind} cases",
+            expect.cases.len()
+        );
+        std::process::exit(1);
+    }
+    match check_case_certificates(&lines, hash, &expect) {
         Ok(proof) => {
             for (case, length, alg) in &proof.table {
                 println!("{case} {length} {alg}");

@@ -285,32 +285,58 @@ impl GoalBall {
         self.radius
     }
 
-    /// The oracle is a distance function, checked rather than assumed.
+    /// The oracle is a distance function AND a complete one, checked rather than assumed.
     ///
-    /// BFS makes this true by construction, which is exactly the kind of claim that is worth an
+    /// BFS makes both true by construction, which is exactly the kind of claim that is worth an
     /// assertion anyway: a layer built from the wrong frontier, or a `step` that lost a move,
-    /// produces a map that is still internally tidy and quietly wrong. Bellman's condition is what
-    /// pins an entry to its place — every state at `d` must have a neighbour at `d - 1` and none
-    /// below that — and it is 9 M comparisons here, which is nothing.
+    /// produces a map that is still internally tidy and quietly wrong.
+    ///
+    /// **Two properties, and the second one was missing.** Bellman's condition pins an entry to
+    /// its place — every state at `d` must have a neighbour at `d - 1` and none below that. It
+    /// says nothing about states that are ABSENT, and absence is what makes the heuristic wrong
+    /// rather than merely incomplete: a state one move from the goal that never made it into the
+    /// map is answered `radius + 1`, which is larger than its true distance of 1, and an
+    /// inadmissible heuristic returns a length that is not the minimum, silently. A map missing
+    /// exactly that state passed every check here.
+    ///
+    /// So CLOSURE is checked too: every neighbour of every state at `d < radius` must be present,
+    /// because such a neighbour is at most `d + 1 <= radius` and therefore belongs to the ball.
+    /// Together with Bellman's condition and the per-layer counts, that is the whole of
+    /// "every state within `radius`, at its exact distance" — and THAT is what makes the
+    /// heuristic admissible, since a state the map does not hold is then genuinely further than
+    /// the radius, which is what `radius + 1` claims about it.
     pub fn validate(&self) -> Result<(), String> {
         if self.distance.get(&F2L_SOLVED) != Some(&0) {
             return Err("the goal is not at distance zero".into());
         }
         for (state, &d) in &self.distance {
-            if d == 0 {
-                if *state != F2L_SOLVED {
-                    return Err("a state other than the goal claims distance zero".into());
-                }
-                continue;
+            if d > self.radius {
+                return Err(format!(
+                    "a state claims distance {d}, which is beyond the ball's radius of {}",
+                    self.radius
+                ));
+            }
+            if d == 0 && *state != F2L_SOLVED {
+                return Err("a state other than the goal claims distance zero".into());
             }
             let mut best = u8::MAX;
             for m in 0..N_MOVES {
+                let neighbour = state.step(m);
+                // CLOSURE. Everything one move from an interior state is inside the ball, so an
+                // absent neighbour is a hole — and a hole is a state this heuristic overestimates.
+                if d < self.radius && !self.distance.contains_key(&neighbour) {
+                    return Err(format!(
+                        "a state at distance {d} has a neighbour the ball does not hold, so that \
+                         neighbour is bounded at {} when its true distance is at most {}",
+                        self.radius + 1,
+                        d + 1
+                    ));
+                }
                 // A neighbour outside the ball is at least `radius + 1`, which can never be
                 // `d - 1` for `d <= radius` — so absence needs no special case, only the bound.
-                let there = self.heuristic(&state.step(m));
-                best = best.min(there);
+                best = best.min(self.heuristic(&neighbour));
             }
-            if best != d - 1 {
+            if d > 0 && best != d - 1 {
                 return Err(format!(
                     "a state at distance {d} has {best} as its nearest neighbour, so it is not one \
                      move from anything at {}",
@@ -323,6 +349,17 @@ impl GoalBall {
             return Err(format!(
                 "the layers count {counted} states and the map holds {}",
                 self.distance.len()
+            ));
+        }
+        // The layers are indexed by distance, so their sizes must agree with the map's own tally.
+        let mut by_distance = vec![0u64; self.radius as usize + 1];
+        for &d in self.distance.values() {
+            by_distance[d as usize] += 1;
+        }
+        if by_distance != self.layers {
+            return Err(format!(
+                "the layer sizes {:?} are not the map's own distribution {by_distance:?}",
+                self.layers
             ));
         }
         Ok(())
@@ -362,8 +399,6 @@ struct Dfs<'a> {
     bound: u8,
     path: Vec<u8>,
     found: Vec<Vec<u8>>,
-    /// Set when only the existence of a solution is wanted, so the first one ends the walk.
-    first_only: bool,
     nodes: u64,
     cancel: &'a AtomicBool,
     since_check: u64,
@@ -387,8 +422,11 @@ impl Dfs<'_> {
         if g == self.bound {
             if s.is_solved() {
                 self.found.push(self.path.clone());
-                return self.first_only;
             }
+            // Never an early return. Every contour is walked to the end: the point of this search
+            // is EVERY canonical maneuver of the winning length, not the first one. A `first_only`
+            // field used to sit here, initialized to `false` at both of its two construction sites
+            // and never set — a mode that existed only as a branch a reader had to account for.
             return false;
         }
         if g + self.ball.heuristic(&s) > self.bound {
@@ -413,14 +451,26 @@ impl Dfs<'_> {
 ///
 /// Contours ascend and each is exhausted before the next begins, so the first contour to hold
 /// anything is the shallowest that could — that IS the proof, and the contour below it having
-/// been exhausted is the certificate. The collecting pass then re-walks the winning contour with
-/// the same admissible rule, which visits the same nodes rather than a subset of them.
+/// been exhausted is the certificate.
+///
+/// ONE walk per contour, not two. The winning contour is exhausted like every other one and the
+/// maneuvers are collected as it goes, so there is no second collecting pass here — `search.rs`
+/// has one because its proving pass stops at the first hit, and this one never does. The
+/// description of that pass used to be attached to this function.
 pub fn prove_all(
     ball: &GoalBall,
     start: &F2lState,
     cap: u8,
     cancel: &AtomicBool,
 ) -> Result<F2lProof, F2lEnd> {
+    // AT ENTRY, and again between contours. The DFS looks at the flag every `CANCEL_STRIDE`
+    // nodes and its counter starts at zero for each contour, so a three-move search — a few
+    // hundred nodes — never read the flag at all: an already-cancelled call returned a cheerful
+    // success. Cancellation is a promise about when work STOPS, and "before it starts" is the
+    // easiest case to keep.
+    if cancel.load(Ordering::Relaxed) {
+        return Err(F2lEnd::Cancelled);
+    }
     let mut nodes = 0u64;
     if start.is_solved() {
         return Ok(F2lProof {
@@ -438,12 +488,14 @@ pub fn prove_all(
     let mut bound = floor;
     let mut nodes_below = 0u64;
     while bound <= cap {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(F2lEnd::Cancelled);
+        }
         let mut dfs = Dfs {
             ball,
             bound,
             path: Vec::new(),
             found: Vec::new(),
-            first_only: false,
             nodes: 0,
             cancel,
             since_check: 0,
@@ -508,6 +560,21 @@ pub struct F2lCase {
 }
 
 impl F2lCase {
+    /// `f2l:0c11` — the case key, and it is the POSITION rather than a digest of it: two hex
+    /// bytes, the corner's slot and twist then the edge's slot and flip. A hash would be shorter
+    /// and would make a wrong entry unreadable, which is the opposite of what a key is for here.
+    ///
+    /// One definition. This `format!` used to appear in `gen-f2l`, in `f2l-cross-check` and in
+    /// `tests/committed_tables.rs` — three spellings of the identity that a table lookup, a
+    /// certificate and a regeneration diff all have to agree on.
+    pub fn id(&self) -> String {
+        format!(
+            "f2l:{:02x}{:02x}",
+            self.corner_slot * 3 + self.corner_twist as usize,
+            self.edge_slot * 2 + self.edge_flip as usize
+        )
+    }
+
     /// The projected position this case names, with everything else home.
     pub fn state(&self) -> F2lState {
         let mut s = F2L_SOLVED;
@@ -527,16 +594,24 @@ fn configuration_name(corner_slot: usize, twist: u8, edge_slot: usize, flip: u8)
 
 /// A single U turn applied to a slot, for the alignment fold. U moves neither twist a corner nor
 /// flip an edge in this convention, so folding by it moves positions and nothing else.
+///
+/// The two slot maps depend on nothing, so they are built once rather than on every call: the fold
+/// asks four times per configuration and there are 150 of them, and each call used to rebuild all
+/// eighteen move states to read one of them.
 fn turn_u(corner_slot: usize, edge_slot: usize) -> (usize, usize) {
-    let u = &all_moves()[0];
-    let mut corner_to = [0usize; 8];
-    for i in 0..8 {
-        corner_to[u.cp[i] as usize] = i;
-    }
-    let mut edge_to = [0usize; 12];
-    for i in 0..12 {
-        edge_to[u.ep[i] as usize] = i;
-    }
+    static SLOT_MAPS: std::sync::OnceLock<([usize; 8], [usize; 12])> = std::sync::OnceLock::new();
+    let (corner_to, edge_to) = SLOT_MAPS.get_or_init(|| {
+        let u = &all_moves()[0];
+        let mut corner_to = [0usize; 8];
+        for i in 0..8 {
+            corner_to[u.cp[i] as usize] = i;
+        }
+        let mut edge_to = [0usize; 12];
+        for i in 0..12 {
+            edge_to[u.ep[i] as usize] = i;
+        }
+        (corner_to, edge_to)
+    });
     (corner_to[corner_slot], edge_to[edge_slot])
 }
 
@@ -549,37 +624,52 @@ fn turn_u(corner_slot: usize, edge_slot: usize) -> (usize, usize) {
 pub fn all_cases() -> Vec<F2lCase> {
     let mut by_name: std::collections::BTreeMap<String, F2lCase> =
         std::collections::BTreeMap::new();
-    for &corner_slot in &CORNER_HOMES {
+    for (corner_slot, edge_slot) in configurations() {
         for twist in 0..3u8 {
-            for &edge_slot in &EDGE_HOMES {
-                for flip in 0..2u8 {
-                    // The orbit under the four alignments, named by its smallest member.
-                    let mut c = corner_slot;
-                    let mut e = edge_slot;
-                    let mut best = configuration_name(c, twist, e, flip);
-                    let mut best_at = (c, e);
-                    for _ in 0..3 {
-                        let (nc, ne) = turn_u(c, e);
-                        c = nc;
-                        e = ne;
-                        let name = configuration_name(c, twist, e, flip);
-                        if name < best {
-                            best = name;
-                            best_at = (c, e);
-                        }
-                    }
-                    by_name.entry(best.clone()).or_insert(F2lCase {
-                        name: best,
-                        corner_slot: best_at.0,
-                        corner_twist: twist,
-                        edge_slot: best_at.1,
-                        edge_flip: flip,
-                    });
-                }
+            for flip in 0..2u8 {
+                let case = canonical(corner_slot, twist, edge_slot, flip);
+                by_name.entry(case.name.clone()).or_insert(case);
             }
         }
     }
     by_name.into_values().collect()
+}
+
+/// The 25 slot pairs a case's corner and edge can occupy.
+fn configurations() -> impl Iterator<Item = (usize, usize)> {
+    CORNER_HOMES
+        .into_iter()
+        .flat_map(|c| EDGE_HOMES.into_iter().map(move |e| (c, e)))
+}
+
+/// One configuration's case: the orbit under the four alignments, named by its smallest member.
+///
+/// Its own function because it is the only part of the enumeration that is a DECISION. The loops
+/// around it enumerate; this chooses a representative, and the choice — the smallest name, which
+/// is the same rule `apps/web/lib/methods/pairs.js` applies — is what makes the app and the
+/// generator agree on which case is which without either being told.
+fn canonical(corner_slot: usize, twist: u8, edge_slot: usize, flip: u8) -> F2lCase {
+    let mut c = corner_slot;
+    let mut e = edge_slot;
+    let mut best = configuration_name(c, twist, e, flip);
+    let mut best_at = (c, e);
+    for _ in 0..3 {
+        let (nc, ne) = turn_u(c, e);
+        c = nc;
+        e = ne;
+        let name = configuration_name(c, twist, e, flip);
+        if name < best {
+            best = name;
+            best_at = (c, e);
+        }
+    }
+    F2lCase {
+        name: best,
+        corner_slot: best_at.0,
+        corner_twist: twist,
+        edge_slot: best_at.1,
+        edge_flip: flip,
+    }
 }
 
 /// Is this maneuver slot-safe for the front-right pair, read the way the app reads it — as a
@@ -606,6 +696,11 @@ pub fn slot_safe_on_solved(alg: &[u8]) -> bool {
         }
     }
     true
+}
+
+/// Every F2L case id, which is what a certificate's coverage is checked against.
+pub fn case_ids() -> std::collections::BTreeSet<String> {
+    all_cases().iter().map(F2lCase::id).collect()
 }
 
 #[cfg(test)]
@@ -660,11 +755,82 @@ mod tests {
         );
         let solved = configuration_name(4, 0, 8, 0);
         assert_eq!(cases.iter().filter(|c| c.name == solved).count(), 1);
-        // Every case really is a distinct position, and its own state round-trips its name.
-        let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), 42);
+
+        // NAME UNIQUENESS IS FREE and was the whole of this test. `all_cases` collects into a
+        // `BTreeMap` keyed by name, so distinct names is a property of the container rather than
+        // of the fold — the assertion could not fail. What has to be true and is not free:
+        //
+        //   - every case is a distinct POSITION, so no two entries send the same state to the
+        //     search under two names;
+        //   - every case id is distinct, since that is what a table and a certificate agree on;
+        //   - and a name really does round-trip its position, which is the promise a learner's
+        //     recognition rests on.
+        let mut states: Vec<_> = cases.iter().map(|c| c.state()).collect();
+        states.sort_by_key(|s| (s.corners, s.edges));
+        states.dedup();
+        assert_eq!(states.len(), 42, "two cases name the same position");
+        let ids: std::collections::BTreeSet<String> = cases.iter().map(F2lCase::id).collect();
+        assert_eq!(ids.len(), 42, "two cases share a case id");
+        assert_eq!(ids, case_ids());
+        for c in &cases {
+            assert_eq!(
+                c.name,
+                configuration_name(c.corner_slot, c.corner_twist, c.edge_slot, c.edge_flip),
+                "a case's name is not the one its own position produces"
+            );
+        }
+    }
+
+    /// The heuristic is ADMISSIBLE, checked against a search that has never heard of it.
+    ///
+    /// The check this replaces compared `ball.heuristic(state)` with `prove_all`'s answer — and
+    /// `prove_all` STARTS its contour ladder at that heuristic, so the answer is at least the
+    /// heuristic whatever the heuristic says. The inequality held by construction, including for
+    /// a heuristic that overestimates every state on the cube.
+    ///
+    /// This one is not circular: an unguided iterative-deepening search, no ball, no pruning but
+    /// the canonical move rule, run on the cases whose answers are short enough to afford. Six
+    /// moves is where the cost turns over (the nine-move cases are minutes each, which is what
+    /// `bin/f2l-cross-check` is for and why it is nightly rather than here).
+    #[test]
+    fn the_heuristic_never_exceeds_a_distance_found_without_it() {
+        fn unguided(start: F2lState, cap: u8) -> Option<u8> {
+            fn walk(s: F2lState, g: u8, bound: u8, prev: i8) -> bool {
+                if g == bound {
+                    return s.is_solved();
+                }
+                (0..N_MOVES).any(|m| {
+                    crate::search::move_allowed(prev, m) && walk(s.step(m), g + 1, bound, m as i8)
+                })
+            }
+            (0..=cap).find(|&bound| walk(start, 0, bound, -1))
+        }
+
+        let ball = GoalBall::build();
+        let cancel = AtomicBool::new(false);
+        let mut checked = 0;
+        for case in all_cases() {
+            let state = case.state();
+            let guided = prove_all(&ball, &state, 14, &cancel).expect("a proof").length;
+            if guided > 6 {
+                continue;
+            }
+            let truth = unguided(state, 6).expect("a case within six moves is found within six");
+            assert_eq!(
+                guided, truth,
+                "{}: the guided search says {guided} and an unguided one says {truth}",
+                case.name
+            );
+            assert!(
+                ball.heuristic(&state) <= truth,
+                "{}: the heuristic says {} and the true distance is {truth}",
+                case.name,
+                ball.heuristic(&state)
+            );
+            checked += 1;
+        }
+        // A test that silently checked nothing would look exactly like this one passing.
+        assert!(checked >= 12, "only {checked} cases were short enough to check");
     }
 
     #[test]
@@ -715,3 +881,4 @@ mod tests {
         );
     }
 }
+
