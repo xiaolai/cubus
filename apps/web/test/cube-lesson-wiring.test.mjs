@@ -83,8 +83,13 @@ test('both objects are offered, and neither stands where the other was', () => {
   // numbers under it, which is the 2026-08-29 failure exactly.
   assert.match(code, /solLabelEl\.textContent = lesson \?/, 'the heading must say which object this is');
   // And the count changes SHAPE, not just value: "93" and "20" are indistinguishable, "93 moves ·
-  // 20 steps" cannot be mistaken for a solution length.
-  assert.match(code, /moves · %2 steps/, 'the lesson count must name both numbers');
+  // 20 steps" cannot be mistaken for a solution length. Both numbers go through `plural`, because
+  // both can be 1 — a one-move lesson read "1 moves · 1 steps".
+  assert.match(code, /t\('%1 · %2',/, 'the lesson count must name both numbers');
+  assert.match(code, /plural\(total, \{ one: '%1 move', other: '%1 moves' \}\)/,
+    'the move count must be pluralised');
+  assert.match(code, /plural\(lesson\.steps\.length, \{ one: '%1 step', other: '%1 steps' \}\)/,
+    'the step count must be pluralised');
 });
 
 test('the lesson is worked out beside the solution, never instead of it', () => {
@@ -197,7 +202,7 @@ test('every sentence the lesson can say goes through t()', () => {
   // Back to English, so the rest of the process is unaffected.
   assert.equal(whyText(stepFor('cross.insert')), english.get('cross.insert'));
   // And the screen's own new strings.
-  for (const phrase of ['Solution', 'Lesson', 'Step %1 of %2 — %3', '%1 moves · %2 steps', '%1 steps · %2 moves']) {
+  for (const phrase of ['Solution', 'Lesson', 'Step %1 of %2 — %3', '%1 · %2', '%1 steps · %2 moves']) {
     assert.match(code, new RegExp(`t\\('${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`),
       `"${phrase}" reaches the screen without t()`);
   }

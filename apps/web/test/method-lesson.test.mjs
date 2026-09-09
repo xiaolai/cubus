@@ -17,6 +17,7 @@ import { registerLocale, setLocale } from '../lib/i18n.js';
 import { parseHighlight } from '../lib/cube-highlight.js';
 import {
   CASE_TEXT_KEYS, WHY_KEYS, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces,
+  stepAtMove,
   rungSummary, whyText,
 } from '../lib/method-lesson.js';
 import { wholeCubeSolved } from '../lib/methods/engine.js';
@@ -335,4 +336,35 @@ test('an empty solve has no sections and no cues', () => {
   assert.deepEqual(steps, []);
   assert.deepEqual(lessonSections(steps), []);
   assert.deepEqual(moveStepIndex(steps), []);
+});
+
+test('the cue is about the move about to happen, not the one just made', () => {
+  // Two questions of one index. `cubus-step` fires when `made` moves are DONE — the chip row fills
+  // to `made` and marks `made - 1` as current, which is the move just performed. The sentence and
+  // the highlight are about the move NEXT, and they used to read `map[made - 1]` as well: the
+  // first move of every teaching step therefore animated under the previous step's explanation.
+  //
+  // Three steps of two, three and one move: moves 0-1 belong to step 0, 2-4 to step 1, 5 to step 2.
+  const map = moveStepIndex([
+    { alg: "R U" },
+    { alg: "F R' U" },
+    { alg: "D" },
+  ]);
+  assert.deepEqual(map, [0, 0, 1, 1, 1, 2]);
+  // Nothing turned yet: the step about to happen.
+  assert.equal(stepAtMove(map, 0), 0);
+  assert.equal(stepAtMove(map, 1), 0);
+  // TWO moves made, and the third belongs to step 1 — this is the one that used to say 0.
+  assert.equal(stepAtMove(map, 2), 1);
+  assert.equal(stepAtMove(map, 4), 1);
+  // FIVE made, and the sixth is step 2's.
+  assert.equal(stepAtMove(map, 5), 2);
+  // The walk is over: the last step stays rather than the cue going blank.
+  assert.equal(stepAtMove(map, 6), 2);
+  assert.equal(stepAtMove(map, 99), 2);
+  // A seek backwards past the start is still the first step.
+  assert.equal(stepAtMove(map, -1), 0);
+  // And a lesson with no moves has no step to point at.
+  assert.equal(stepAtMove([], 0), undefined);
+  assert.equal(stepAtMove(undefined, 0), undefined);
 });

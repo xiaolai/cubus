@@ -10,8 +10,11 @@
 //!      case and a lookup cannot miss.
 //!   2. **A stated deterministic tie-break** — several algorithms are commonly minimal for one
 //!      case, and "whichever the search found" is not a choice, it is a race. (`search::prove_all`
-//!      is the third: it returns EVERY minimal solution, so there is something to break the tie
-//!      between.)
+//!      is the third: it returns every minimal CANONICAL maneuver, so there is something to break
+//!      the tie between. Canonical is a real restriction and `ProofAll` states it — of two
+//!      adjacent commuting turns only one order is enumerated — so a table entry is the smallest
+//!      minimal canonical maneuver, not the smallest of all minimal maneuvers. Deterministic
+//!      either way, which is the property a regenerable artifact needs.)
 //!
 //! ## The folding, computed rather than asserted
 //!
@@ -64,30 +67,30 @@ pub fn rotate_y(state: &Cubie) -> Cubie {
     compose(&compose(&inverse(&Y_STATE), state), &Y_STATE)
 }
 
-/// The U quarter turn, as a state.
-fn u_turn() -> Cubie {
-    all_moves()[0].clone()
+/// The four powers of the U quarter turn, built once.
+///
+/// `all_moves()` constructs all eighteen face turns, and both alignment helpers used to call it
+/// per invocation to read one of them — including for `n = 0`, where the answer is the state
+/// itself. `case_of` asks twenty times per PLL state, and there are 288 of them.
+fn u_powers() -> &'static [Cubie; 4] {
+    static POWERS: std::sync::OnceLock<[Cubie; 4]> = std::sync::OnceLock::new();
+    POWERS.get_or_init(|| {
+        let u = all_moves()[0].clone();
+        let u2 = compose(&u, &u);
+        let u3 = compose(&u2, &u);
+        [SOLVED, u, u2, u3]
+    })
 }
 
 /// `state` with `n` U turns applied AFTER it — the alignment a learner makes before recognising
 /// the case ("turn the top until it matches").
 pub fn auf_pre(state: &Cubie, n: u8) -> Cubie {
-    let u = u_turn();
-    let mut out = state.clone();
-    for _ in 0..(n % 4) {
-        out = compose(&out, &u);
-    }
-    out
+    compose(state, &u_powers()[(n % 4) as usize])
 }
 
 /// `state` with `n` U turns applied BEFORE it — the final alignment an algorithm ends with.
 pub fn auf_post(state: &Cubie, n: u8) -> Cubie {
-    let u = u_turn();
-    let mut out = state.clone();
-    for _ in 0..(n % 4) {
-        out = compose(&u, &out);
-    }
-    out
+    compose(&u_powers()[(n % 4) as usize], state)
 }
 
 /// Which family of last-layer case a key belongs to. Kept in the key itself so an OLL record and
@@ -168,26 +171,18 @@ pub fn case_of(kind: Kind, s: &Cubie) -> Case {
         Kind::Oll => &[0],
         Kind::Pll => &[0, 1, 2, 3],
     };
-    let mut best: Option<(Vec<u8>, u8, u8)> = None;
-    for pre in 0..4u8 {
-        let a = auf_pre(s, pre);
-        for &post in posts {
-            let b = auf_post(&a, post);
-            let p = project(&b);
-            let better = match &best {
-                None => true,
-                Some((bp, bpre, bpost)) => match p.cmp(bp) {
-                    Ordering::Less => true,
-                    Ordering::Greater => false,
-                    Ordering::Equal => (pre, post) < (*bpre, *bpost),
-                },
-            };
-            if better {
-                best = Some((p, pre, post));
-            }
-        }
-    }
-    let (key, pre, post) = best.expect("the folding is never empty");
+    // The candidate IS the comparison: smallest projection, ties broken by the smallest transform.
+    // Written as a tuple rather than as nested matches on `Ordering`, because that is exactly what
+    // a tuple's own ordering means and spelling it out gave the rule two statements.
+    let (key, pre, post) = (0..4u8)
+        .flat_map(|pre| {
+            let a = auf_pre(s, pre);
+            posts
+                .iter()
+                .map(move |&post| (project(&auf_post(&a, post)), pre, post))
+        })
+        .min()
+        .expect("the folding is never empty");
     Case {
         kind,
         key,
@@ -200,15 +195,19 @@ pub fn case_of(kind: Kind, s: &Cubie) -> Case {
 /// parity. An odd last layer on its own is unreachable by face turns, so counting those would be
 /// counting states no cube can be in — 288, not 576.
 pub fn pll_states() -> Vec<Cubie> {
+    // The 24 permutations and their parities, computed once rather than regenerated for every
+    // corner permutation — the inner loop used to rebuild the whole list and recompute the outer
+    // permutation's parity 24 times over.
+    let perms: Vec<([u8; 4], u32)> = permutations4().into_iter().map(|p| (p, parity4(&p))).collect();
     let mut out = Vec::with_capacity(288);
-    for cp in permutations4() {
-        for ep in permutations4() {
-            if parity4(&cp) != parity4(&ep) {
+    for (cp, cp_parity) in &perms {
+        for (ep, ep_parity) in &perms {
+            if cp_parity != ep_parity {
                 continue;
             }
             let mut s = SOLVED;
-            s.cp[0..4].copy_from_slice(&cp);
-            s.ep[0..4].copy_from_slice(&ep);
+            s.cp[0..4].copy_from_slice(cp);
+            s.ep[0..4].copy_from_slice(ep);
             out.push(s);
         }
     }
@@ -219,47 +218,64 @@ pub fn pll_states() -> Vec<Cubie> {
 /// each is forced — twists sum to 0 mod 3, flips to 0 mod 2 — so an unreachable pattern is never
 /// constructed rather than constructed and rejected.
 pub fn oll_states() -> Vec<Cubie> {
-    let mut out = Vec::with_capacity(216);
-    for a in 0..3u8 {
-        for b in 0..3u8 {
-            for c in 0..3u8 {
-                let co = [a, b, c, (9 - a - b - c) % 3];
-                for p in 0..2u8 {
-                    for q in 0..2u8 {
-                        for r in 0..2u8 {
-                            let eo = [p, q, r, (p + q + r) % 2];
-                            let mut s = SOLVED;
-                            s.co[0..4].copy_from_slice(&co);
-                            s.eo[0..4].copy_from_slice(&eo);
-                            out.push(s);
-                        }
-                    }
-                }
-            }
+    let twists = corner_twists();
+    let flips = edge_flips();
+    let mut out = Vec::with_capacity(twists.len() * flips.len());
+    for co in &twists {
+        for eo in &flips {
+            let mut s = SOLVED;
+            s.co[0..4].copy_from_slice(co);
+            s.eo[0..4].copy_from_slice(eo);
+            out.push(s);
         }
     }
     out
 }
 
+/// The 27 corner-twist patterns: three free, the fourth forced by "twists sum to 0 mod 3".
+fn corner_twists() -> Vec<[u8; 4]> {
+    (0..27u8)
+        .map(|n| {
+            let (a, b, c) = (n % 3, (n / 3) % 3, n / 9);
+            [a, b, c, (9 - a - b - c) % 3]
+        })
+        .collect()
+}
+
+/// The 8 edge-flip patterns: three free, the fourth forced by "flips sum to 0 mod 2".
+fn edge_flips() -> Vec<[u8; 4]> {
+    (0..8u8)
+        .map(|n| {
+            let (p, q, r) = (n & 1, (n >> 1) & 1, (n >> 2) & 1);
+            [p, q, r, (p + q + r) % 2]
+        })
+        .collect()
+}
+
+/// The 24 permutations of four elements, in lexicographic order.
+///
+/// Generated directly rather than filtered out of the 256 four-tuples by a side-effecting
+/// predicate whose `all` doubled as the "distinct" test — a construction where the invariant lived
+/// inside a closure's mutable state and the reader had to run it to see what it kept.
 fn permutations4() -> Vec<[u8; 4]> {
     let mut out = Vec::with_capacity(24);
-    for a in 0..4u8 {
-        for b in 0..4u8 {
-            for c in 0..4u8 {
-                for d in 0..4u8 {
-                    let p = [a, b, c, d];
-                    let mut seen = [false; 4];
-                    if p.iter().all(|&x| {
-                        let fresh = !seen[x as usize];
-                        seen[x as usize] = true;
-                        fresh
-                    }) {
-                        out.push(p);
-                    }
-                }
+    let mut current = [0u8; 4];
+    fn extend(used: &mut [bool; 4], current: &mut [u8; 4], at: usize, out: &mut Vec<[u8; 4]>) {
+        if at == 4 {
+            out.push(*current);
+            return;
+        }
+        for v in 0..4u8 {
+            if used[v as usize] {
+                continue;
             }
+            used[v as usize] = true;
+            current[at] = v;
+            extend(used, current, at + 1, out);
+            used[v as usize] = false;
         }
     }
+    extend(&mut [false; 4], &mut current, 0, &mut out);
     out
 }
 
@@ -273,6 +289,45 @@ fn parity4(p: &[u8; 4]) -> u32 {
         }
     }
     n % 2
+}
+
+/// One representative state per case, in case-id order — so a table's rows, and the bytes of the
+/// file, are a function of the case set and of nothing else.
+///
+/// The representative is the SMALLEST state in the orbit by its own projection, so it does not
+/// depend on the order `oll_states()` happens to yield.
+pub fn representatives(kind: Kind) -> Vec<(String, Cubie)> {
+    let states = match kind {
+        Kind::Oll => oll_states(),
+        Kind::Pll => pll_states(),
+    };
+    let mut by_case: std::collections::BTreeMap<String, Cubie> = std::collections::BTreeMap::new();
+    for s in states {
+        let id = case_of(kind, &s).id();
+        by_case
+            .entry(id)
+            .and_modify(|held| {
+                if state_key(&s) < state_key(held) {
+                    *held = s.clone();
+                }
+            })
+            .or_insert(s);
+    }
+    by_case.into_iter().collect()
+}
+
+/// A total order on states, for choosing a representative deterministically.
+fn state_key(s: &Cubie) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    (s.cp.to_vec(), s.co.to_vec(), s.ep.to_vec(), s.eo.to_vec())
+}
+
+/// Every case id of a kind — the set a table must claim, and no others.
+///
+/// A certificate that checks only how MANY cases it covers passes on a table where one case id has
+/// been replaced by another: the count is right and the case is missing. Coverage is a question
+/// about a set, so it is asked about the set.
+pub fn case_ids(kind: Kind) -> std::collections::BTreeSet<String> {
+    representatives(kind).into_iter().map(|(id, _)| id).collect()
 }
 
 /// **The tie-break, stated so two machines agree.**
@@ -511,11 +566,23 @@ mod tests {
     fn the_y_state_is_the_rotation_it_claims_to_be() {
         // Four quarter turns is the identity, and conjugating U leaves U alone while it sends R
         // to B — the relabelling `rotateAlg` performs. Derived, not remembered.
-        let mut s = SOLVED;
-        for _ in 0..4 {
-            s = rotate_y(&s);
+        //
+        // NOT from SOLVED. `rotate_y` is a conjugation, so it fixes the solved state after one
+        // application and the four-turn loop starting there could not tell a quarter turn from a
+        // half turn from the identity. The order is asserted on `Y_STATE` itself and on states
+        // the rotation actually moves.
+        let mut y = SOLVED;
+        for n in 1..=4 {
+            y = compose(&y, &Y_STATE);
+            assert_eq!(y == SOLVED, n == 4, "Y_STATE has order {n}, not 4");
         }
-        assert_eq!(s, SOLVED);
+        for s in pll_states().iter().take(8).chain(oll_states().iter().take(8)) {
+            let mut moved = s.clone();
+            for _ in 0..4 {
+                moved = rotate_y(&moved);
+            }
+            assert_eq!(&moved, s, "four y-conjugations are not the identity");
+        }
         let moves = all_moves();
         // Conjugating the R quarter turn by y gives the B quarter turn.
         assert_eq!(rotate_y(&moves[3]), moves[15]);

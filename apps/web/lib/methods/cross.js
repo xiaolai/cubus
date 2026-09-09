@@ -106,36 +106,107 @@ function crossAfter(places, move) {
   return next;
 }
 
-/** Distance to a solved cross for every reachable cross position, built once on first use. */
+/**
+ * Distance to a solved cross for every reachable cross position.
+ *
+ * PRIVATE, and it has to be: `solveCrossWhole` descends it, so an entry set to zero makes it
+ * return an empty algorithm for an unsolved cross — and go on doing so for every later solve in
+ * the process. It used to be handed out by `crossTable()`, which is the same defect the shipped
+ * case tables already had once and are frozen against.
+ */
 let crossDistance = null;
-export function crossTable() {
-  if (crossDistance) return crossDistance;
+
+/**
+ * The BFS in progress, so it can be built in pieces.
+ *
+ * 190,080 reachable positions, and the build measured 114 ms locally — one uninterruptible task on
+ * the main thread, which is a dropped frame or three in the middle of whatever the learner was
+ * doing. `setTimeout` moved WHEN it happens and not that it happens all at once; this makes the
+ * work resumable, so `warmCrossTable` can spend it between frames and `crossTable` can still
+ * finish it synchronously when a solve arrives first.
+ */
+let building = null;
+
+function startBuild() {
   const distance = new Uint8Array(CROSS_CODES).fill(0xff);
   const solved = [];
   for (let i = 0; i < 4; i++) { solved[i * 2] = CROSS[i]; solved[i * 2 + 1] = 0; }
   distance[crossCode(solved)] = 0;
-  let frontier = [solved];
-  for (let depth = 1; frontier.length; depth++) {
+  return { distance, frontier: [solved], depth: 1 };
+}
+
+/**
+ * Expand at most `budget` positions. Returns true when the table is finished.
+ *
+ * The budget is counted in POSITIONS EXPANDED rather than in milliseconds: a clock makes the
+ * amount of work done depend on the machine, and then a slow machine — the one that needed the
+ * yielding — does the least per slice and takes the most slices.
+ */
+function stepBuild(budget) {
+  if (crossDistance) return true;
+  if (!building) building = startBuild();
+  const { distance } = building;
+  let spent = 0;
+  while (building.frontier.length) {
     const next = [];
-    for (const places of frontier) {
+    for (let i = building.at ?? 0; i < building.frontier.length; i++) {
+      const places = building.frontier[i];
       for (const move of MOVE_NAMES) {
         const after = crossAfter(places, move);
         const code = crossCode(after);
         if (distance[code] !== 0xff) continue;
-        distance[code] = depth;
+        distance[code] = building.depth;
         next.push(after);
       }
+      spent += 1;
+      if (spent >= budget) {
+        // Mid-layer: remember where in it, and carry the successors found so far.
+        building.at = i + 1;
+        building.partial = [...(building.partial ?? []), ...next];
+        return false;
+      }
     }
-    frontier = next;
+    building.frontier = [...(building.partial ?? []), ...next];
+    building.partial = undefined;
+    building.at = 0;
+    building.depth += 1;
   }
   crossDistance = distance;
-  return distance;
+  building = null;
+  return true;
+}
+
+/** Finish the table now, however much of it is left. */
+function finishBuild() {
+  if (!crossDistance) stepBuild(Number.POSITIVE_INFINITY);
+  return crossDistance;
+}
+
+/**
+ * Build the table in slices, yielding to the event loop between them.
+ *
+ * Awaited by the app's warm-up, which runs on a screen that knows a solve is coming. A caller that
+ * does not await it loses nothing: `crossTable` finishes whatever is left.
+ */
+export async function warmCrossTable(slice = 4096) {
+  while (!stepBuild(slice)) {
+    // `scheduler.yield` where it exists — it resumes at a higher priority than a timeout, so the
+    // build does not lose its place behind every other pending task.
+    if (typeof globalThis.scheduler?.yield === 'function') await globalThis.scheduler.yield();
+    else await new Promise((resolve) => { setTimeout(resolve, 0); });
+  }
+  return true;
+}
+
+/** A COPY of the distance table, for a caller that wants to look at it. */
+export function crossTable() {
+  return finishBuild().slice();
 }
 
 /** The whole cross in one alg, shortest there is. Descends the exact distance table, so this
  *  is optimal by construction rather than by search budget. */
 export function solveCrossWhole(state) {
-  const distance = crossTable();
+  const distance = finishBuild();
   let places = crossPlaces(state);
   let remaining = distance[crossCode(places)];
   if (remaining === 0xff) throw new MethodSolverError('cross', 'whole', state);

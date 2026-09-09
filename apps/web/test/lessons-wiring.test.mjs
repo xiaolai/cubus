@@ -110,6 +110,11 @@ test('the cross table is warmed for a learner who raised the rung LATER', () => 
   const table = code.match(/function warmCrossTable\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
   assert.match(table, /settings\.rungs\?\.cross \?\? 0\) < 1/, 'rung 0 must not pay for rung 1');
   assert.match(table, /setTimeout\(/, 'the build must not run in the turn that triggered it');
+  // And it is not ONE task once it starts. `warmCross` expands a bounded number of positions per
+  // slice and yields between them; deferring a 114 ms block by one turn only moves which turn
+  // freezes.
+  assert.match(table, /warmCross\(\)\)?\s*\)?/, 'the build must go through warmCross');
+  assert.match(table, /\.catch\(/, 'a sliced build is a promise, and its failure must be caught');
 });
 
 test('the numbers the screen leans on are the module\'s, not a copy', () => {
