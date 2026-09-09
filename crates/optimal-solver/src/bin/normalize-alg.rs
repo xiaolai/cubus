@@ -23,15 +23,55 @@
 //! must state its coverage the way §7 makes the OLL comparison state "56 of 57".
 
 use optimal_solver::notation::normalize;
+use std::collections::BTreeMap;
 use std::io::{self, Write};
+
+/// The lengths seen, and the extremes — as a map rather than a fixed array.
+///
+/// A `[usize; 33]` silently dropped anything at 33 or more: a 34-turn input was counted in the
+/// mean and vanished from the histogram, so the summary read "mean 34, min 0, max 0". A published
+/// set's longest maneuver is not a number this program gets to assume, and the one thing it must
+/// not do is report a coverage figure it did not cover.
+#[derive(Default)]
+struct Lengths {
+    counts: BTreeMap<usize, usize>,
+    total: usize,
+}
+
+impl Lengths {
+    fn add(&mut self, htm: usize) {
+        *self.counts.entry(htm).or_insert(0) += 1;
+        self.total += htm;
+    }
+    fn accepted(&self) -> usize {
+        self.counts.values().sum()
+    }
+    fn min(&self) -> Option<usize> {
+        self.counts.keys().next().copied()
+    }
+    fn max(&self) -> Option<usize> {
+        self.counts.keys().next_back().copied()
+    }
+}
+
+/// Write a line, and treat a failed write as the failure it is.
+///
+/// The output used to go through a `BufWriter` that was never flushed explicitly, so the flush
+/// happened in `Drop` where its error is discarded by construction. Piping this into a closed
+/// `head` therefore printed a confident summary — "read 270, refused 6" — and exited 0 having
+/// lost most of what it claimed to have written.
+fn emit(out: &mut impl Write, line: &str) {
+    if let Err(e) = writeln!(out, "{line}") {
+        eprintln!("cannot write output: {e}");
+        std::process::exit(1);
+    }
+}
 
 fn main() {
     let stdin = io::BufRead::lines(io::stdin().lock());
     let mut out = io::BufWriter::new(io::stdout().lock());
-    let mut read = 0usize;
+    let mut lengths = Lengths::default();
     let mut refused = 0usize;
-    let mut total_htm = 0usize;
-    let mut histogram = [0usize; 33];
     for line in stdin {
         let line = line.expect("stdin is readable");
         let alg = line.trim();
@@ -40,40 +80,45 @@ fn main() {
         }
         match normalize(alg) {
             Ok(n) => {
-                read += 1;
-                total_htm += n.htm;
-                if n.htm < histogram.len() {
-                    histogram[n.htm] += 1;
-                }
+                lengths.add(n.htm);
                 let rot = if n.rotation.is_empty() {
                     String::new()
                 } else {
                     format!(" rot={:?}", n.rotation)
                 };
-                writeln!(out, "OK {} {}{}", n.htm, n.to_alg(), rot).expect("stdout");
+                emit(&mut out, &format!("OK {} {}{}", n.htm, n.to_alg(), rot));
             }
             Err(e) => {
                 refused += 1;
-                writeln!(out, "REFUSED {e}").expect("stdout");
+                emit(&mut out, &format!("REFUSED {e}"));
             }
         }
     }
+    if let Err(e) = out.flush() {
+        eprintln!("cannot write output: {e}");
+        std::process::exit(1);
+    }
+
     // The summary goes to stderr, so a pipeline can take the per-line output and a person still
     // sees the counts. A refusal count of zero is a claim in its own right and is printed either
     // way — a silent run that read nothing looks exactly like one that read everything.
-    eprintln!("\nread {read}, refused {refused}");
-    if read > 0 {
+    //
+    // The DENOMINATOR is named, because the old wording hid it: "read 1, refused 1" for two inputs
+    // used "read" to mean the accepted ones, so the coverage figure a Layer 4 report has to state
+    // ("270 of 276") had to be reconstructed by adding two numbers whose relationship was not
+    // said.
+    let accepted = lengths.accepted();
+    eprintln!("\n{} maneuvers in: {accepted} normalized, {refused} refused", accepted + refused);
+    if accepted > 0 {
         eprintln!(
             "htm mean {:.3}, min {}, max {}",
-            total_htm as f64 / read as f64,
-            histogram.iter().position(|&n| n > 0).unwrap_or(0),
-            histogram.iter().rposition(|&n| n > 0).unwrap_or(0),
+            lengths.total as f64 / accepted as f64,
+            lengths.min().expect("accepted is non-zero"),
+            lengths.max().expect("accepted is non-zero"),
         );
         eprint!("histogram");
-        for (len, n) in histogram.iter().enumerate() {
-            if *n > 0 {
-                eprint!(" {len}:{n}");
-            }
+        for (len, n) in &lengths.counts {
+            eprint!(" {len}:{n}");
         }
         eprintln!();
     }

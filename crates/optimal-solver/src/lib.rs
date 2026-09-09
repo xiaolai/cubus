@@ -19,6 +19,7 @@
 
 pub mod case_certificate;
 pub mod cases;
+pub mod cli;
 pub mod certificate;
 pub mod coords;
 pub mod cubie;
@@ -26,6 +27,7 @@ pub mod f2l;
 pub mod notation;
 pub mod pdb;
 pub mod search;
+pub mod table_json;
 
 use coords::MoveTables;
 use pdb::{Kind, Pdb};
@@ -99,7 +101,14 @@ pub struct Tables {
 /// The directory sync is INJECTED because an `fsync` leaves nothing behind for a test to look at:
 /// handing the function the call is the only way to assert that it happens, and the claim above
 /// needs a test that fails when it stops being true.
-fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+///
+/// **Public because the generators need exactly this and kept writing their own.** `gen-cases` and
+/// `gen-f2l` each carried a four-line `write_atomic` that put the temporary file at
+/// `<path>.tmp` — a FIXED name, so two runs writing the same table truncated each other's
+/// temporary file and one of them published a file the other was still writing. The version here
+/// was already correct; the defect was that it was private, so the second and third callers wrote
+/// their own instead of reaching for it.
+pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     write_atomic_with(path, bytes, &mut sync_dir)
 }
 
@@ -108,6 +117,46 @@ fn write_atomic_with(
     bytes: &[u8],
     sync: &mut dyn FnMut(&std::path::Path) -> std::io::Result<()>,
 ) -> Result<(), String> {
+    let staged = stage(path, bytes)?;
+    staged.commit(sync)
+}
+
+/// Bytes written and made durable under a temporary name, waiting for the rename that publishes
+/// them. Dropping one without committing removes it.
+struct Staged {
+    tmp: std::path::PathBuf,
+    final_path: std::path::PathBuf,
+}
+
+impl Staged {
+    fn commit(
+        self,
+        sync: &mut dyn FnMut(&std::path::Path) -> std::io::Result<()>,
+    ) -> Result<(), String> {
+        let dir = self
+            .final_path
+            .parent()
+            .ok_or("artifact path has no directory")?
+            .to_path_buf();
+        let result = std::fs::rename(&self.tmp, &self.final_path).and_then(|()| sync(&dir));
+        match result {
+            Ok(()) => {
+                std::mem::forget(self);
+                Ok(())
+            }
+            Err(e) => Err(format!("{}: {e}", self.final_path.display())),
+        }
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        // Leave nothing behind: a stray temp file is a plausible-looking fragment by another name.
+        let _ = std::fs::remove_file(&self.tmp);
+    }
+}
+
+fn stage(path: &std::path::Path, bytes: &[u8]) -> Result<Staged, String> {
     use std::io::Write as _;
     let dir = path.parent().ok_or("artifact path has no directory")?;
     let name = path
@@ -122,17 +171,100 @@ fn write_atomic_with(
         std::process::id(),
         u64::from_le_bytes(nonce)
     ));
+    let staged = Staged {
+        tmp: tmp.clone(),
+        final_path: path.to_path_buf(),
+    };
     let result = (|| -> std::io::Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
+        // `create_new`, not `create`: the nonce makes a collision vanishingly unlikely and this
+        // makes it impossible to be silent about. A temp name that already exists is somebody
+        // else's file, and truncating it is the failure mode this whole function is about.
+        let mut f = std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
         f.write_all(bytes)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)?;
-        sync(dir)
+        f.sync_all()
     })();
-    if let Err(e) = result {
-        // Leave nothing behind: a stray temp file is a plausible-looking fragment by another name.
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("{}: {e}", path.display()));
+    match result {
+        Ok(()) => Ok(staged),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// Publish several artifacts that only mean anything together — a table and the certificates that
+/// make its lengths checkable.
+///
+/// **The failure this narrows.** `gen-cases` wrote the table, then wrote the certificates. An
+/// interruption between the two — a full disk on the second write, ^C, a killed job — left a NEW
+/// table beside STALE certificates, which is worse than either being missing: the pair looks
+/// complete and the certificate is about a different run. Every file is written and `fsync`ed
+/// first, and only then are the renames done back to back.
+///
+/// **What that is and is not.** It is not a transaction; a crash in the microseconds between two
+/// renames still splits the pair. It removes the window that is actually wide — the one holding a
+/// whole file's worth of I/O, where every real interruption lands — and leaves one with no I/O in
+/// it at all. Making it truly atomic needs a directory swap or a manifest pointer, which is a
+/// bigger change than the risk warrants for artifacts that are committed to git and checked by
+/// `tests/committed_tables.rs` on every run.
+///
+/// The one rename failure that is PREDICTABLE — a destination that is already a directory, which
+/// no rename can ever replace — is checked before anything is staged, because finding it at commit
+/// time is exactly the split this function exists to avoid.
+pub fn write_all_atomic(artifacts: &[(&std::path::Path, &[u8])]) -> Result<(), String> {
+    for (path, _) in artifacts {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() => {
+                return Err(format!("{}: is a directory, not an artifact", path.display()))
+            }
+            Ok(_) | Err(_) => {}
+        }
+    }
+    let mut staged = Vec::with_capacity(artifacts.len());
+    for (path, bytes) in artifacts {
+        staged.push(stage(path, bytes)?);
+    }
+    for s in staged {
+        s.commit(&mut sync_dir)?;
+    }
+    Ok(())
+}
+
+/// The identity of a destination path, for asking whether two of them are the same file.
+///
+/// A generator writes two artifacts and they must not be one: `gen-cases pll t.json t.json` used
+/// to generate the table, write it, then write the CERTIFICATES over the top of it, and report
+/// success. Comparing the argument strings would not catch it — `tables/f2l.json` and
+/// `./tables/../tables/f2l.json` are the same file spelt twice — so the parent directory is
+/// canonicalized (which resolves `..` and every symlink along the way) and the file name is
+/// re-attached. The file itself need not exist yet; its directory must, which is true of any
+/// destination that could be written anyway.
+pub fn destination_key(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let parent = match path.parent() {
+        Some(p) if p.as_os_str().is_empty() => std::path::Path::new("."),
+        Some(p) => p,
+        None => return Err(format!("{}: not a file path", path.display())),
+    };
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{}: has no file name", path.display()))?;
+    let dir = parent
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", parent.display()))?;
+    Ok(dir.join(name))
+}
+
+/// Refuse a set of destinations that are not all distinct, naming the pair.
+pub fn destinations_differ(paths: &[&str]) -> Result<(), String> {
+    let mut seen: Vec<(std::path::PathBuf, &str)> = Vec::new();
+    for raw in paths {
+        let key = destination_key(std::path::Path::new(raw))?;
+        if let Some((_, first)) = seen.iter().find(|(k, _)| *k == key) {
+            return Err(format!(
+                "{raw} and {first} are the same file — the second artifact would overwrite the first"
+            ));
+        }
+        seen.push((key, raw));
     }
     Ok(())
 }
@@ -885,5 +1017,59 @@ mod write_atomic_tests {
             1,
             "only the blocking dir remains"
         );
+    }
+
+    /// A table and its certificates are one artifact in two files, and the pair is what has to
+    /// survive a failure. Writing them one after the other left a new table beside stale
+    /// certificates whenever the second write failed — the state that looks complete and is not.
+    #[test]
+    fn a_paired_publish_writes_both_or_leaves_both_alone() {
+        use super::write_all_atomic;
+        let d = scratch("pair");
+        let table = d.join("t.json");
+        let certs = d.join("t-certificates.txt");
+        std::fs::write(&table, b"old table").unwrap();
+        std::fs::write(&certs, b"old certificates").unwrap();
+
+        // The second destination cannot be written: staging it fails BEFORE the first is renamed.
+        let blocked = d.join("blocked");
+        std::fs::create_dir_all(&blocked).unwrap();
+        assert!(write_all_atomic(&[(&table, b"new table"), (&blocked, b"x")]).is_err());
+        assert_eq!(
+            std::fs::read(&table).unwrap(),
+            b"old table",
+            "the first artifact was published even though the second could not be"
+        );
+
+        // And the successful case publishes both, leaving no temporary behind.
+        write_all_atomic(&[(&table, b"new table"), (&certs, b"new certificates")]).unwrap();
+        assert_eq!(std::fs::read(&table).unwrap(), b"new table");
+        assert_eq!(std::fs::read(&certs).unwrap(), b"new certificates");
+        let leftovers: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+    }
+
+    /// Two spellings of one destination are one destination.
+    #[test]
+    fn a_generator_cannot_be_told_to_write_both_artifacts_to_one_file() {
+        use super::destinations_differ;
+        let d = scratch("distinct");
+        let a = d.join("t.json");
+        let a_text = a.to_str().unwrap().to_string();
+        let round_trip = d.join("sub").join("..").join("t.json");
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        let round_trip_text = round_trip.to_str().unwrap().to_string();
+        let b_text = d.join("c.txt").to_str().unwrap().to_string();
+
+        destinations_differ(&[&a_text, &b_text]).expect("two different files");
+        let e = destinations_differ(&[&a_text, &a_text]).expect_err("the same file twice");
+        assert!(e.contains("same file"), "{e}");
+        let e = destinations_differ(&[&a_text, &round_trip_text])
+            .expect_err("the same file spelt two ways");
+        assert!(e.contains("same file"), "{e}");
     }
 }

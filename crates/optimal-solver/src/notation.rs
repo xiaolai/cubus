@@ -22,10 +22,13 @@
 //! - *pushing rotations to the end* — a rotation in the middle relabels every later face, so an
 //!   expansion that left it in place would produce a maneuver that does not do what the original
 //!   did. This is the same conjugation `cube-pieces.js`'s `rotateAlg` performs.
-//! - *merging adjacent same-face turns* — seams appear where two expansions meet: `M2 M2` is
-//!   `L2 R2 L2 R2` before merging and nothing after it. Only ADJACENT turns are merged;
-//!   reordering commuting turns would shorten it further and would stop the maneuver being the
-//!   thing it said it was.
+//! - *merging adjacent same-face turns* — seams appear where two expansions meet: `L' L` between
+//!   two tokens is nothing, and merging it is what makes the count the count of the maneuver
+//!   rather than of the expansion. Only ADJACENT turns are merged, and the rule is deliberately
+//!   no cleverer than that: `M2 M2` is the identity as a cube and still costs 4, because it comes
+//!   out `L2 R2 L2 R2` and no two neighbours share a face. Reordering the commuting `R2 L2` pair
+//!   would collapse it — and would stop the maneuver being the thing it said it was. The
+//!   convention is at its least flattering here, and it is stated rather than smoothed over.
 //! - *rotations cost zero* — HTM counts face turns. This is why a normalized maneuver can be
 //!   SHORTER than the published token count, and it is why Layer 4's comparison is one-directional
 //!   (§7): a published 14-HTM maneuver refutes a claimed 15-move optimum; a longer one proves
@@ -60,8 +63,8 @@ use crate::cubie::{compose, inverse, Cubie, MOVE_NAMES, SOLVED};
 const ROT_FACES: [[usize; 6]; 3] = [
     // x turns the cube the way R goes: F->U, U->B, B->D, D->F; R and L are fixed.
     [5, 1, 0, 2, 4, 3],
-    // y turns the way U goes: F->R, R->B, B->L, L->F; U and D are fixed. `Y_FACES`, verbatim.
-    [0, 5, 1, 3, 2, 4],
+    // y turns the way U goes: R->F, F->L, L->B, B->R; U and D are fixed.
+    [0, 2, 4, 3, 5, 1],
     // z turns the way F goes: U->R, R->D, D->L, L->U; F and B are fixed.
     [1, 3, 2, 4, 0, 5],
 ];
@@ -98,12 +101,12 @@ fn face_index(c: char) -> Option<usize> {
     FACES.iter().position(|&f| f == c)
 }
 
-/// Strip the decoration published sets wrap their maneuvers in, and nothing else.
+/// The apostrophes a text editor produces, mapped onto the one the notation uses.
 ///
 /// Measured against a real set on 2026-09-09: its 276 OLL and PLL maneuvers use 88 distinct
-/// tokens, and the ones that are not moves are **finger-trick grouping** — `(R U R')`, which says
-/// how to hold the maneuver and changes nothing about it — and a **typographic apostrophe**
-/// (U+2019), which a text editor produced. Both are noise around the notation.
+/// tokens, and the ones that are not moves are **finger-trick grouping** — handled by
+/// `expand_groups` — and a **typographic apostrophe** (U+2019). Both are noise around the
+/// notation.
 ///
 /// Footnote markers like `*` and a bare `3` are NOT stripped. They are annotation whose meaning
 /// lives in the surrounding page, and a normalizer that dropped them silently would be reading a
@@ -112,12 +115,110 @@ fn face_index(c: char) -> Option<usize> {
 /// everywhere else.
 fn clean(tok: &str) -> String {
     tok.chars()
-        .filter(|c| *c != '(' && *c != ')')
         .map(|c| match c {
             '\u{2019}' | '\u{2032}' | '\u{00b4}' => '\'',
             other => other,
         })
         .collect()
+}
+
+/// A move token with its direction reversed — for expanding `(R U R')'`.
+fn invert_token(tok: &str) -> Result<String, String> {
+    let base = clean(tok);
+    if base.is_empty() {
+        return Err("an empty token cannot be inverted".to_string());
+    }
+    // Every suffix this notation admits, and its opposite. `2` is its own inverse.
+    Ok(match () {
+        _ if base.ends_with("2'") => base.trim_end_matches('\'').to_string(),
+        _ if base.ends_with('2') => base,
+        _ if base.ends_with('\'') => base.trim_end_matches('\'').to_string(),
+        _ => format!("{base}'"),
+    })
+}
+
+/// A group's contents repeated or inverted, per the suffix written after its `)`.
+fn repeat_group(group: &[String], suffix: &str) -> Result<Vec<String>, String> {
+    match suffix {
+        "" => Ok(group.to_vec()),
+        "2" | "2'" => Ok(group.iter().chain(group.iter()).cloned().collect()),
+        "3" => Ok(group
+            .iter()
+            .chain(group.iter())
+            .chain(group.iter())
+            .cloned()
+            .collect()),
+        "'" => group.iter().rev().map(|t| invert_token(t)).collect(),
+        other => Err(format!("(...){other}: unknown group suffix")),
+    }
+}
+
+/// Flatten a maneuver's parenthesised groups into a plain token list.
+///
+/// **Stripping the parentheses is not the same thing, and the difference is silent.** `(R U)2` is
+/// `R U R U`; dropping the brackets first makes it the token `U2`, so a four-move maneuver is read
+/// as a two-move one and reported as beating an optimum it never reaches. `(R U R')'` is
+/// `R U' R'`, and stripping made it `R U R''`, refused for the wrong reason. Grouping is a
+/// construct with meaning, so it is parsed rather than filtered out — and an unknown group suffix
+/// is an error, never a silent drop.
+///
+/// The overwhelmingly common case in a published set is a group with NO suffix — finger-trick
+/// grouping, which says how to hold the maneuver and changes nothing about it. That still costs
+/// nothing here: an empty suffix expands to the group's own tokens.
+fn expand_groups(alg: &str) -> Result<Vec<String>, String> {
+    let mut stack: Vec<Vec<String>> = vec![Vec::new()];
+    let mut buf = String::new();
+    let flush = |buf: &mut String, stack: &mut Vec<Vec<String>>| {
+        if !buf.is_empty() {
+            stack
+                .last_mut()
+                .expect("the outermost group is never popped")
+                .push(std::mem::take(buf));
+        }
+    };
+    for raw in alg.split_whitespace() {
+        let mut chars = raw.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '(' => {
+                    flush(&mut buf, &mut stack);
+                    stack.push(Vec::new());
+                }
+                ')' => {
+                    flush(&mut buf, &mut stack);
+                    let mut suffix = String::new();
+                    while let Some(&next) = chars.peek() {
+                        if next == '2' || next == '3' || next == '\'' || matches!(next, '\u{2019}' | '\u{2032}' | '\u{00b4}') {
+                            suffix.push(next);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    if stack.len() < 2 {
+                        return Err(format!("{alg}: a `)` with no `(` before it"));
+                    }
+                    let group = stack.pop().expect("checked just above");
+                    if group.is_empty() {
+                        // `()` is decoration with no move in it. Reading it as "nothing" would
+                        // mean reporting a length for a maneuver that was never understood.
+                        return Err(format!("{alg}: an empty group `()`"));
+                    }
+                    let expanded = repeat_group(&group, &clean(&suffix))?;
+                    stack
+                        .last_mut()
+                        .expect("the outermost group is never popped")
+                        .extend(expanded);
+                }
+                other => buf.push(other),
+            }
+        }
+        flush(&mut buf, &mut stack);
+    }
+    if stack.len() != 1 {
+        return Err(format!("{alg}: a `(` with no `)` after it"));
+    }
+    Ok(stack.pop().expect("the outermost group"))
 }
 
 /// Parse one token. Anything unrecognised is an error, never skipped — a set with a token we do
@@ -193,13 +294,74 @@ fn relabel_inv(face: usize, axis: usize, n: u8) -> usize {
     f
 }
 
+/// The frame a maneuver starts in: every face still called what it was called.
+const IDENTITY_FRAME: [usize; 6] = [0, 1, 2, 3, 4, 5];
+
+/// Fold `n` quarter turns of `axis` into a frame.
+///
+/// One helper rather than the same four lines in the rotation, wide and slice branches. They were
+/// three copies of a composition whose DIRECTION is the subtle part (`relabel_inv`, composed on
+/// the right — see its note), so a correction to one that missed the others would have been a
+/// maneuver that does not do what it said, in exactly one of the three token kinds.
+fn turn_frame(frame: [usize; 6], axis: usize, n: u8) -> [usize; 6] {
+    let mut next = frame;
+    for f in 0..6 {
+        next[f] = frame[relabel_inv(f, axis, n)];
+    }
+    next
+}
+
+/// Every net rotation, as the shortest canonical sequence of axis turns that reaches it.
+///
+/// The 24 orientations of a cube, flooded from the identity by the nine (axis, quarters)
+/// generators in a fixed order — so the sequence a frame maps to is the shortest, and among equally
+/// short ones the first in that order. Built once.
+type NetRotations = std::collections::BTreeMap<[usize; 6], Vec<(usize, u8)>>;
+
+fn net_rotations() -> &'static NetRotations {
+    static NETS: std::sync::OnceLock<NetRotations> = std::sync::OnceLock::new();
+    NETS.get_or_init(|| {
+        use std::collections::btree_map::Entry;
+        let mut out = NetRotations::new();
+        out.insert(IDENTITY_FRAME, Vec::new());
+        let mut frontier = vec![IDENTITY_FRAME];
+        while !frontier.is_empty() {
+            let mut next = Vec::new();
+            for frame in frontier {
+                let steps = out[&frame].clone();
+                for axis in 0..3usize {
+                    for q in 1..=3u8 {
+                        let moved = turn_frame(frame, axis, q);
+                        if let Entry::Vacant(slot) = out.entry(moved) {
+                            let mut path = steps.clone();
+                            path.push((axis, q));
+                            slot.insert(path);
+                            next.push(moved);
+                        }
+                    }
+                }
+            }
+            frontier = next;
+        }
+        debug_assert_eq!(out.len(), 24, "a cube has 24 orientations");
+        out
+    })
+}
+
 /// The normalized form of a published maneuver.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Normalized {
     /// Face turns only, as `MOVE_NAMES` indices — the maneuver as the app's grammar would have it.
     pub moves: Vec<u8>,
-    /// The net whole-cube rotation the original left behind, as (axis, quarters) steps in order.
-    /// Empty when the maneuver ends in the frame it started in.
+    /// The NET whole-cube rotation the original left behind, as (axis, quarters) steps.
+    /// Empty exactly when the maneuver ends in the frame it started in.
+    ///
+    /// **Net, not the history.** This used to be the list of rotation tokens encountered, so
+    /// `x x'` and `r r'` came back with two entries apiece despite ending in the original frame —
+    /// and every caller asking "did this maneuver leave the cube rotated?" with `is_empty()` got
+    /// the wrong answer. `case-cross-check` counted 102 of 192 published maneuvers as ending
+    /// rotated on that basis. The value is now derived from the accumulated frame, so the
+    /// question `is_empty()` asks is the question it answers.
     pub rotation: Vec<(usize, u8)>,
     /// The HTM cost under the convention stated at the top of this file.
     pub htm: usize,
@@ -227,73 +389,74 @@ pub fn normalize(alg: &str) -> Result<Normalized, String> {
     // The accumulated rotation, as a face relabelling. Composed rather than kept as a list of
     // axis turns, because two rotations about different axes are not a list, they are a
     // permutation — and a list would have to be replayed to relabel anything.
-    let mut frame: [usize; 6] = [0, 1, 2, 3, 4, 5];
-    let mut rotation: Vec<(usize, u8)> = Vec::new();
+    let mut frame: [usize; 6] = IDENTITY_FRAME;
 
     let emit = |face: usize, quarters: u8, frame: &[usize; 6], out: &mut Vec<u8>| {
         out.push(move_index(frame[face], quarters) as u8);
     };
 
-    for tok in alg.split_whitespace() {
-        match parse_token(tok)? {
+    for tok in expand_groups(alg)? {
+        match parse_token(&tok)? {
             Token::Face(f, q) => emit(f, q, &frame, &mut out),
             Token::Rotation(axis, q) => {
                 // The rotation applies to everything AFTER it, so it is folded into the frame and
-                // never emitted. Recorded, so a caller can say what orientation the maneuver ends
-                // the cube in — for a case algorithm that is a real fact, not a rounding error.
-                let mut next = frame;
-                for f in 0..6 {
-                    next[f] = frame[relabel_inv(f, axis, q)];
-                }
-                frame = next;
-                rotation.push((axis, q));
+                // never emitted. What the maneuver ends rotated BY is read off the finished frame,
+                // which is the only thing that answers it — for a case algorithm that is a real
+                // fact, not a rounding error.
+                frame = turn_frame(frame, axis, q);
             }
-            // A wide turn is the face turn plus the rotation that carries the slice with it: `r`
-            // is `R` then `x'`-ish depending on the face. Written per face rather than by a rule,
-            // because the rule has three signs in it and the tests below check every one.
-            // `r^q = x^q L^q`, and its five siblings. Derived rather than remembered: the whole
+            // A wide turn is the whole-cube rotation with the OPPOSITE layer turned back: `r`
+            // comes out `L` followed by `x`, not `R` followed by anything. Written per face rather
+            // than by a rule, because the rule has three signs in it and the tests below check
+            // every one.
+            // `r^q = L^q x^q` read left to right, and its five siblings. Derived rather than
+            // remembered: the whole
             // cube turned the way R goes moves the R layer, the M slice AND the L layer, so
             // turning L back leaves exactly the R layer and the slice — which is what a wide turn
             // is. The rotation therefore CARRIES the face layer; emitting the face turn as well
             // (as a first draft did) turns it twice, and the faithfulness check catches it.
             Token::Wide(f, q) => {
+                // `q` is 1, 2 or 3 — `parse_token` admits no other suffix — so both the rotation
+                // and the emitted turn always happen. The `if n != 0` and `if q % 4 != 0` guards
+                // that used to stand here could not reject anything, and a branch nothing can take
+                // is a branch nothing tests and every reader has to step over.
                 let (axis, dir) = wide_rotation(f);
-                let n = if dir > 0 { q % 4 } else { (4 - q % 4) % 4 };
-                if n != 0 {
-                    let mut next = frame;
-                    for k in 0..6 {
-                        next[k] = frame[relabel_inv(k, axis, n)];
-                    }
-                    frame = next;
-                    rotation.push((axis, n));
-                }
+                let n = if dir > 0 { q } else { 4 - q };
+                frame = turn_frame(frame, axis, n);
                 // The opposite face is fixed by this rotation, so it does not matter whether this
                 // is read in the frame before or after — but it is emitted after, because that is
                 // the order the identity is written in.
-                if q % 4 != 0 {
-                    emit(opposite_face(f), q, &frame, &mut out);
-                }
+                emit(opposite_face(f), q, &frame, &mut out);
             }
             // A slice is the rotation with both outer layers turned back.
             Token::Slice(letter, q) => {
+                // Which face the slice moves with, the axis it turns about, and whether that
+                // axis's generator already points the way that face goes.
+                //
+                // **`E` was `-1` and is `+1`, and nothing caught it for a long time.** With the
+                // wrong sign `E` expanded to `D' U y'`, whose net effect moves all eight corners
+                // — it is not a slice at all. Every test the module had was blind to it: the
+                // faithfulness check runs the token through a reference interpreter that reads
+                // this same table, and the inverse and order identities (`E E'` is nothing, four
+                // `E` is nothing) hold for a wrong rotation exactly as they do for the right one.
+                // The published sets are full of `M` and `r` and contain no `E` at all, so the
+                // one check with an outside opinion never exercised it either. What finds it is
+                // asking the physical question — a slice moves four edges and NOTHING else —
+                // which `the_wide_and_slice_letters_are_pinned_without_the_table_that_defines_them`
+                // now asks of all nine letters.
                 let (follows, axis, dir) = match letter {
                     'M' => (4usize, 0usize, -1i8), // M follows L, about the x axis
                     'E' => (3usize, 1usize, -1i8), // E follows D, about the y axis
                     'S' => (2usize, 2usize, 1i8),  // S follows F, about the z axis
                     _ => unreachable!("parse_token admits only M, E and S"),
                 };
-                let n = if dir > 0 { q } else { (4 - q % 4) % 4 };
+                let n = if dir > 0 { q } else { 4 - q };
                 // Turn the two outer layers the way the slice does NOT go, then rotate the cube:
                 // the net effect is the slice alone. `follows` is the face the slice moves with,
                 // so that one turns with the rotation and its opposite turns against it.
-                emit(follows, (4 - q % 4) % 4, &frame, &mut out);
+                emit(follows, 4 - q, &frame, &mut out);
                 emit(opposite_face(follows), q, &frame, &mut out);
-                let mut next = frame;
-                for k in 0..6 {
-                    next[k] = frame[relabel_inv(k, axis, n)];
-                }
-                frame = next;
-                rotation.push((axis, n));
+                frame = turn_frame(frame, axis, n);
             }
         }
     }
@@ -302,7 +465,12 @@ pub fn normalize(alg: &str) -> Result<Normalized, String> {
     let htm = merged.len();
     Ok(Normalized {
         moves: merged,
-        rotation,
+        // The NET rotation, read off the frame the maneuver finished in — so `x x'` and `r r'`
+        // come back empty, which is what "ends in the frame it started in" means.
+        rotation: net_rotations()
+            .get(&frame)
+            .cloned()
+            .expect("every frame a composition of rotations reaches is one of the 24"),
         htm,
     })
 }
@@ -378,19 +546,19 @@ pub fn rotation_state(steps: &[(usize, u8)]) -> Cubie {
 /// of them and there is nothing to check a typed constant against by inspection. What defines it
 /// is the CONJUGATION IDENTITY: `r⁻¹ · move[f] · r == move[π(f)]` for every face `f`, where π is
 /// the relabelling the rotation performs. That is a complete specification, so the values are
-/// solved for rather than remembered — the same discipline `cube-pieces.js` states for `Y_STATE`,
-/// and the derived `y` is asserted equal to it, which cross-checks this whole construction against
-/// a value a different codebase verified independently.
+/// solved for rather than remembered — the same discipline `cube-pieces.js` states for `Y_STATE`.
+/// The relationship to that value is stated exactly in
+/// `cube_pieces_y_state_is_this_modules_y_inverted_and_globally_edge_flipped`: it is this y's
+/// INVERSE, with a global edge flip on top. Reading it as equal is what put an inverted row in
+/// `ROT_FACES` and made `y`, `u`, `d` and `E` mean their opposites.
 fn rotation_generator(axis: usize) -> &'static Cubie {
     static ROTATIONS: std::sync::OnceLock<[Cubie; 3]> = std::sync::OnceLock::new();
     &ROTATIONS.get_or_init(|| [derive_rotation(0), derive_rotation(1), derive_rotation(2)])[axis]
 }
 
-/// The corner and edge slot names, in this crate's (cubejs's) order.
-const CORNER_NAMES: [&str; 8] = ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"];
-const EDGE_NAMES: [&str; 12] = [
-    "UR", "UF", "UL", "UB", "DR", "DF", "DL", "DB", "FR", "FL", "BL", "BR",
-];
+// The corner and edge slot names come from `cubie`, which already had them and is where the index
+// ORDER they define is the crate's own. This file used to carry its own copies.
+use crate::cubie::{CORNER_NAMES, EDGE_NAMES};
 
 /// Which slot is named by this set of face letters, whatever order they are written in.
 fn slot_named(names: &[&str], letters: &[usize]) -> usize {
@@ -636,10 +804,13 @@ mod tests {
         // place would produce a maneuver that does not do what the original did.
         let n = normalize("y R").unwrap();
         assert_eq!(n.htm, 1, "a rotation costs zero");
-        // `F`, not `B`. `y R` means "rotate, then turn the face now called R" — which is the
-        // physical F face. `rotateAlg` maps F to B for a different question, and reading one as
-        // the other is the swap this test exists to pin.
-        assert_eq!(n.to_alg(), "F", "y R is F y, not B y");
+        // `B`, not `F`. `y R` means "rotate, then turn the face now called R". `y` carries R to
+        // F, F to L, L to B and B to R — measured on this crate's own move table, where a solved
+        // cube after `U` reads `RRR` across the top of F — so the face standing at the R position
+        // afterwards is the physical B. `rotateAlg` in `cube-pieces.js` maps F to R because it
+        // answers the inverse question, and reading one as the other is the swap this test exists
+        // to pin. It used to assert `F`, which is that swap.
+        assert_eq!(n.to_alg(), "B", "y R is B y, not F y");
         assert_faithful("y R");
         assert_faithful("x R U R' U'");
         assert_faithful("z2 F R U");
@@ -744,28 +915,29 @@ mod tests {
         assert_ne!(end.ep, SOLVED.ep, "it does permute edges");
     }
 
-    /// The finding this module had to make before it could compose a rotation at all.
+    /// How this module's `y` relates to `cases::Y_STATE`, stated exactly — because for a long time
+    /// it was stated wrongly, and the wrong statement is what put the inverted row in `ROT_FACES`.
     ///
-    /// `cases::Y_STATE` is `cube-pieces.js`'s value, and that file calls it "the only" state whose
-    /// conjugation reproduces `rotateAlg`. There are six — three corner variants times two edge
-    /// variants — and they are indistinguishable under conjugation, which is all that file does
-    /// with it. So nothing there is wrong. But composing a rotation DIRECTLY, as this module must,
-    /// separates them, and the two edge variants differ by a global flip: `Y_STATE` reads the
-    /// eight U/D edges as flipped, the physically true rotation reads the four middle ones.
+    /// **They are inverses of each other, and they differ by a global edge flip on top of that.**
+    /// `Y_STATE` is `cube-pieces.js`'s value, and that file uses it for CONJUGATION only — where
+    /// neither difference can be seen. Six states conjugate alike (three corner variants times two
+    /// edge variants), so calling one of them "the only" such state is imprecise and harmless
+    /// there; and an orbit closed under a rotation is closed under its inverse, so
+    /// `cases::rotate_y` folds exactly the same orbits either way. Nothing in either file is
+    /// wrong.
     ///
-    /// Verified against cubejs on 2026-09-09 by reading a y-rotated solved cube's facelets through
-    /// an independent implementation, which is the check the derivation now performs itself.
+    /// What is not harmless is copying that value's face map into a table whose entries mean
+    /// "where the physical face goes". `Y_STATE` conjugates R to B; a rotation the way U goes
+    /// carries R to F. `ROT_FACES[1]` was the former, so `y`, `u`, `d` and `E` all came out
+    /// inverted — and `E` was not a slice at all, because its expansion turned the cube the wrong
+    /// way and the two outer layers no longer cancelled.
     #[test]
-    fn the_derived_y_and_cube_pieces_y_state_differ_by_a_global_edge_flip_and_conjugate_alike() {
+    fn cube_pieces_y_state_is_this_modules_y_inverted_and_globally_edge_flipped() {
         let derived = rotation_generator(1);
-        let pieces = &crate::cases::Y_STATE;
-        assert_eq!(derived.cp, pieces.cp, "the permutation is not in doubt");
+        let pieces = inverse(&crate::cases::Y_STATE);
+        assert_eq!(derived.cp, pieces.cp, "the permutation is the inverse, exactly");
         assert_eq!(derived.ep, pieces.ep);
         assert_eq!(derived.co, pieces.co);
-        assert_ne!(
-            derived.eo, pieces.eo,
-            "if these ever agree, one of the two moved"
-        );
         for i in 0..12 {
             assert_eq!(
                 derived.eo[i] ^ 1,
@@ -773,12 +945,24 @@ mod tests {
                 "they differ by more than a global flip"
             );
         }
-        // And the thing that makes both defensible: conjugation cannot tell them apart.
+        // And the direction, said out loud on both sides: this module's y carries R to F, and
+        // conjugating by `Y_STATE` carries it to B.
         let table = crate::cubie::all_moves();
-        for f in 0..6usize {
+        let faces = ["U", "R", "F", "D", "L", "B"];
+        let name = |s: &Cubie| {
+            (0..18)
+                .find(|&i| table[i] == *s)
+                .map(|i| MOVE_NAMES[i])
+                .expect("a conjugated face turn is a face turn")
+        };
+        for (f, want_derived, want_pieces) in [(1usize, "F", "B"), (2, "L", "R"), (0, "U", "U")] {
             let by_derived = compose(&compose(&inverse(derived), &table[f * 3]), derived);
-            let by_pieces = compose(&compose(&inverse(pieces), &table[f * 3]), pieces);
-            assert_eq!(by_derived, by_pieces);
+            let by_pieces = compose(
+                &compose(&inverse(&crate::cases::Y_STATE), &table[f * 3]),
+                &crate::cases::Y_STATE,
+            );
+            assert_eq!(name(&by_derived), want_derived, "y conjugates {}", faces[f]);
+            assert_eq!(name(&by_pieces), want_pieces, "Y_STATE conjugates {}", faces[f]);
         }
     }
 
@@ -805,10 +989,15 @@ mod tests {
             "x turns about the R-L axis, so R is fixed"
         );
         assert_eq!(ROT_FACES[0][L], L);
-        // y spins it the way a U turn goes: the front face ends up on the right. This is
-        // `cube-pieces.js`'s Y_FACES, which a different codebase derived and tests.
-        assert_eq!(ROT_FACES[1][F], R, "y must send F to R");
-        assert_eq!(ROT_FACES[1][R], B);
+        // y spins it the way a U turn goes, and THAT DIRECTION IS THE ONE THIS ROW GOT WRONG.
+        // Measured on this crate's own move table: a solved cube after `U` reads `RRR` across the
+        // top row of F, so U carries the R face's stickers onto F — R to F, F to L, L to B, B to
+        // R. The row here was `cube-pieces.js`'s `Y_FACES` copied verbatim, and that value answers
+        // the INVERSE question (see `relabel_inv`), so it made `y` mean `y'`. Nothing noticed
+        // because the only consumers of the y axis are `y`, `u`, `d` and `E`, and the published
+        // sets the module was tested against contain none of them.
+        assert_eq!(ROT_FACES[1][R], F, "y must send R to F, the way U carries it");
+        assert_eq!(ROT_FACES[1][F], L);
         assert_eq!(
             ROT_FACES[1][U], U,
             "y turns about the U-D axis, so U is fixed"
@@ -960,6 +1149,223 @@ mod tests {
                 apply_indices(&n.moves),
                 apply_alg(&SOLVED, alg).unwrap(),
                 "{alg}"
+            );
+        }
+    }
+
+    /// GROUPING IS A CONSTRUCT, and stripping the brackets is not the same as reading it.
+    ///
+    /// `(R U)2` is four moves. Filtering the parentheses out first made it the two tokens `R` and
+    /// `U2`, so the maneuver was read as two moves and compared against our optima at that
+    /// length — a published set could then "refute" an optimum with a maneuver it never contains.
+    #[test]
+    fn a_group_is_expanded_rather_than_having_its_brackets_dropped() {
+        let repeated = normalize("(R U)2").expect("a repeated group");
+        assert_eq!(repeated.to_alg(), "R U R U");
+        assert_eq!(repeated.htm, 4);
+        // The old behaviour, written out so the difference cannot be mistaken for a nuance.
+        assert_ne!(repeated.to_alg(), normalize("R U2").unwrap().to_alg());
+
+        let inverted = normalize("(R U R')'").expect("an inverted group");
+        assert_eq!(inverted.to_alg(), "R U' R'");
+        assert_eq!(normalize("(R U2 R')'").unwrap().to_alg(), "R U2 R'");
+        assert_eq!(normalize("(R U)3").unwrap().to_alg(), "R U R U R U");
+
+        // Finger-trick grouping — the overwhelmingly common case — still changes nothing.
+        assert_eq!(normalize("(R U R') U'").unwrap().to_alg(), "R U R' U'");
+        assert_eq!(normalize("((R U) R')").unwrap().to_alg(), "R U R'");
+
+        // A group is a construct, so its failures are named rather than swallowed.
+        for bad in ["(R U", "R U)", "(R U)4", "()"] {
+            assert!(normalize(bad).is_err(), "{bad} was accepted");
+        }
+        // A group's suffix is `2`, `3` or `'` and nothing else, so anything else after the `)`
+        // begins the next token — which is what makes `(R U R')(U R U')` work without a space.
+        assert_eq!(normalize("(R U)x").unwrap().to_alg(), normalize("R U x").unwrap().to_alg());
+        assert_eq!(normalize("(R U)(R' U')").unwrap().to_alg(), "R U R' U'");
+
+        // And an expanded group really is the maneuver it expands to — checked against the
+        // written-out form, since the reference interpreter reads plain tokens by design.
+        for (grouped, flat) in [
+            ("(R U)2", "R U R U"),
+            ("(R U R')'", "R U' R'"),
+            ("(r U)2", "r U r U"),
+            ("(x R)2", "x R x R"),
+            ("(R' U')'", "U R"),
+        ] {
+            assert_eq!(normalize(grouped).unwrap(), normalize(flat).unwrap(), "{grouped}");
+            assert_faithful(flat);
+        }
+    }
+
+    /// The rotation a maneuver leaves behind is its NET rotation, not the tokens it passed through.
+    ///
+    /// `x x'` ends where it started, and every caller asking "did this end rotated?" asks with
+    /// `is_empty()`. Reporting the history made that question unanswerable — `case-cross-check`
+    /// counted 102 of 192 published maneuvers as ending rotated on the strength of it.
+    #[test]
+    fn the_recorded_rotation_is_the_net_one_and_is_empty_for_the_identity() {
+        for round_trip in [
+            "x x'", "y y'", "z z'", "r r'", "M M'", "u u'", "S S'", "x x x x", "y2 y2",
+            "x y x' y'  y x y' x'",
+        ] {
+            let n = normalize(round_trip).unwrap_or_else(|e| panic!("{round_trip}: {e}"));
+            assert!(
+                n.rotation.is_empty(),
+                "{round_trip} ends in its own frame, and reported {:?}",
+                n.rotation
+            );
+        }
+        for rotated in ["x", "y2", "r", "M", "x y"] {
+            assert!(
+                !normalize(rotated).unwrap().rotation.is_empty(),
+                "{rotated} really does end rotated"
+            );
+        }
+
+        // The net rotation must be the SAME rotation, not merely a shorter description of one.
+        // Checked over every sequence of up to three rotation tokens — 9 + 81 + 729 of them.
+        let letters = ["x", "y", "z"];
+        let suffixes = ["", "2", "'"];
+        let mut tokens = Vec::new();
+        for l in letters {
+            for q in suffixes {
+                tokens.push(format!("{l}{q}"));
+            }
+        }
+        let mut checked = 0usize;
+        for a in &tokens {
+            for b in &tokens {
+                for c in &tokens {
+                    for alg in [a.clone(), format!("{a} {b}"), format!("{a} {b} {c}")] {
+                        let n = normalize(&alg).unwrap();
+                        assert_eq!(
+                            rotation_state(&n.rotation),
+                            reference_apply(&alg).unwrap(),
+                            "{alg} normalized to the rotation {:?}, which is a different one",
+                            n.rotation
+                        );
+                        assert!(n.rotation.len() <= 2, "{alg}: {:?} is not canonical", n.rotation);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 9 * 9 * 9 * 3);
+        // All 24 orientations are reachable, so the decomposition table is complete rather than
+        // complete-looking.
+        assert_eq!(net_rotations().len(), 24);
+    }
+
+    /// What the wide and slice letters are, checked WITHOUT `wide_rotation`.
+    ///
+    /// The faithfulness tests run each maneuver through a reference interpreter that shares
+    /// `wide_rotation` and `rotation_generator` with the code it checks — so an inverted entry
+    /// there is self-consistent and passes, which is exactly how two of the three `ROT_FACES` rows
+    /// stayed inverted for hours. The inverse and order identities have the same blind spot: they
+    /// hold for a letter and for its inverse alike.
+    ///
+    /// These do not. Each is a fact about which physical pieces a turn moves, or a relation
+    /// between two DIFFERENT branches of `normalize` (the wide branch, the slice branch and the
+    /// rotation branch each build their expansion from their own table):
+    ///
+    /// - a wide turn agrees with its face turn on that face's own layer, and fixes the opposite
+    ///   layer entirely — that is what "the face layer and the slice beside it" means;
+    /// - a slice moves the four edges of its slice and NOTHING else;
+    /// - `wide = face · slice`, the standard definition, which crosses the two branches;
+    /// - `x = r l'`, `y = u d'`, `z = f b'`, which ties the wide branch to `ROT_FACES` — and
+    ///   `ROT_FACES` is itself pinned against three physical facts in the test above.
+    ///
+    /// Together they determine each letter: a wrong axis, a wrong direction or a swapped pair
+    /// fails at least one of them. What they are NOT is an external oracle; the module has none,
+    /// and this comment says so rather than implying the checks are one.
+    #[test]
+    fn the_wide_and_slice_letters_are_pinned_without_the_table_that_defines_them() {
+        let state = |alg: &str| {
+            let n = normalize(alg).unwrap_or_else(|e| panic!("{alg}: {e}"));
+            compose(&apply_indices(&n.moves), &rotation_state(&n.rotation))
+        };
+        // Which cubie slots each face's layer owns, by NAME rather than by index arithmetic.
+        let layer = |face: char| -> (Vec<usize>, Vec<usize>) {
+            let corners = CORNER_NAMES
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.contains(face))
+                .map(|(i, _)| i)
+                .collect();
+            let edges = EDGE_NAMES
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.contains(face))
+                .map(|(i, _)| i)
+                .collect();
+            (corners, edges)
+        };
+
+        for (wide, face, opposite, slice) in [
+            ('u', 'U', 'D', "E'"),
+            ('d', 'D', 'U', "E"),
+            ('r', 'R', 'L', "M'"),
+            ('l', 'L', 'R', "M"),
+            ('f', 'F', 'B', "S"),
+            ('b', 'B', 'F', "S'"),
+        ] {
+            let w = state(&wide.to_string());
+            let f = state(&face.to_string());
+            // The wide turn does to its OWN layer exactly what the face turn does.
+            let (corners, edges) = layer(face);
+            for c in &corners {
+                assert_eq!(w.cp[*c], f.cp[*c], "{wide}: corner slot {c} is not {face}'s");
+                assert_eq!(w.co[*c], f.co[*c], "{wide}: corner twist {c} is not {face}'s");
+            }
+            for e in &edges {
+                assert_eq!(w.ep[*e], f.ep[*e], "{wide}: edge slot {e} is not {face}'s");
+                assert_eq!(w.eo[*e], f.eo[*e], "{wide}: edge flip {e} is not {face}'s");
+            }
+            // And it leaves the OPPOSITE layer exactly where it found it.
+            let (far_corners, far_edges) = layer(opposite);
+            for c in &far_corners {
+                assert_eq!(w.cp[*c], SOLVED.cp[*c], "{wide} moved a {opposite}-layer corner");
+                assert_eq!(w.co[*c], 0, "{wide} twisted a {opposite}-layer corner");
+            }
+            for e in &far_edges {
+                assert_eq!(w.ep[*e], SOLVED.ep[*e], "{wide} moved a {opposite}-layer edge");
+                assert_eq!(w.eo[*e], 0, "{wide} flipped a {opposite}-layer edge");
+            }
+            // wide = face + the slice beside it — the two branches, agreeing.
+            assert_eq!(
+                w,
+                state(&format!("{face} {slice}")),
+                "{wide} is not {face} {slice}"
+            );
+        }
+
+        // A slice moves its four edges and nothing else at all.
+        for (letter, between) in [('M', ('L', 'R')), ('E', ('D', 'U')), ('S', ('F', 'B'))] {
+            let s = state(&letter.to_string());
+            assert_eq!(s.cp, SOLVED.cp, "{letter} moved a corner");
+            assert_eq!(s.co, [0; 8], "{letter} twisted a corner");
+            let (left, right) = between;
+            let moved: Vec<usize> = (0..12)
+                .filter(|&e| s.ep[e] != SOLVED.ep[e] || s.eo[e] != 0)
+                .collect();
+            let expect: Vec<usize> = EDGE_NAMES
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| !n.contains(left) && !n.contains(right))
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(moved, expect, "{letter} does not move exactly its own slice");
+        }
+
+        // A wide turn plus the opposite FACE turned back is the whole-cube rotation — which ties
+        // the wide branch to `ROT_FACES`, itself pinned against physical facts above. (The
+        // opposite FACE, not the opposite wide turn: `r l'` would turn the M slice twice.)
+        for (rotation, wide, face) in [('x', "r", "L'"), ('y', "u", "D'"), ('z', "f", "B'")] {
+            assert_eq!(
+                state(&rotation.to_string()),
+                state(&format!("{wide} {face}")),
+                "{rotation} is not {wide} {face}"
             );
         }
     }
