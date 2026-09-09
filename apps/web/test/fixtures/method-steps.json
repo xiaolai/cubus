@@ -384,8 +384,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 6,
-                "edge": 10,
-                "ejected": false
+                "edge": 10
               }
             },
             {
@@ -415,8 +414,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -837,8 +835,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 6,
-                "edge": 10,
-                "ejected": false
+                "edge": 10
               }
             },
             {
@@ -864,8 +861,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -1245,8 +1241,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 4,
-                "edge": 8,
-                "ejected": false
+                "edge": 8
               }
             },
             {
@@ -1332,8 +1327,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -1695,8 +1689,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11,
-                "ejected": false
+                "edge": 11
               }
             },
             {
@@ -1726,8 +1719,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 6,
-                "edge": 10,
-                "ejected": false
+                "edge": 10
               }
             },
             {
@@ -1753,8 +1745,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -2144,8 +2135,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11,
-                "ejected": false
+                "edge": 11
               }
             },
             {
@@ -2171,8 +2161,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 6,
-                "edge": 10,
-                "ejected": false
+                "edge": 10
               }
             },
             {
@@ -2194,8 +2183,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -2528,8 +2516,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 4,
-                "edge": 8,
-                "ejected": false
+                "edge": 8
               }
             },
             {
@@ -2555,8 +2542,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11,
-                "ejected": false
+                "edge": 11
               }
             },
             {
@@ -2582,8 +2568,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 6,
-                "edge": 10,
-                "ejected": false
+                "edge": 10
               }
             },
             {
@@ -2605,8 +2590,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -3063,8 +3047,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -3527,8 +3510,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11,
-                "ejected": false
+                "edge": 11
               }
             },
             {
@@ -3597,8 +3579,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -3934,8 +3915,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 4,
-                "edge": 8,
-                "ejected": false
+                "edge": 8
               }
             },
             {
@@ -3961,8 +3941,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11,
-                "ejected": false
+                "edge": 11
               }
             },
             {
@@ -3984,8 +3963,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 6,
-                "edge": 10,
-                "ejected": false
+                "edge": 10
               }
             },
             {
@@ -4011,8 +3989,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -4437,8 +4414,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 7,
-                "edge": 11,
-                "ejected": false
+                "edge": 11
               }
             },
             {
@@ -4493,8 +4469,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -4961,8 +4936,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 6,
-                "edge": 10,
-                "ejected": false
+                "edge": 10
               }
             },
             {
@@ -4988,8 +4962,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {
@@ -5401,8 +5374,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 6,
-                "edge": 10,
-                "ejected": false
+                "edge": 10
               }
             },
             {
@@ -5428,8 +5400,7 @@
               "why": {
                 "key": "f2l.pair",
                 "corner": 5,
-                "edge": 9,
-                "ejected": false
+                "edge": 9
               }
             },
             {

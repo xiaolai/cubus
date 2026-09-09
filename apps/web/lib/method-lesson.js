@@ -33,9 +33,15 @@ const DIAL_OF = Object.freeze({
   'top-edges': 'pll',
 });
 
-/** Plain words, not CFOP jargon: this app's reader is eight. The rung's own label rides beside
- *  these on the screen, which is where "two-look" and "trigger pairs" belong. */
-const SECTION_NAME = Object.freeze({
+/**
+ * Plain words, not CFOP jargon: this app's reader is eight. The rung's own label rides beside
+ * these on the screen, which is where "two-look" and "trigger pairs" belong.
+ *
+ * Exported because the Lessons ladder names the same four stages and had its own copy. Two copies
+ * of a name are two names as soon as one of them is edited, and the two screens are next to each
+ * other: a stage called "Top face" on one and something else on the other reads as two stages.
+ */
+export const SECTION_NAME = Object.freeze({
   cross: () => t('Cross'),
   pairs: () => t('First two layers'),
   oll: () => t('Top face'),
@@ -68,9 +74,9 @@ const WHY_TEXT = Object.freeze({
   // The same algorithm ejects a wrong edge and inserts the right one. Captioning an ejection
   // "send this edge down" describes the opposite of what is about to happen on screen.
   'middleLayer.eject': () => t('Lift the wrong edge out of the slot first.'),
-  'f2l.pair': ({ ejected }) => (ejected
-    ? t('Take the pair out of the slot first, then join the corner to its edge and put them in together.')
-    : t('Join the corner to its edge, then put the pair in together.')),
+  // One sentence, not two. The second described an ejection first, and `pairs.js` proves that
+  // branch of the search could never run — so the caption was for a step nothing could produce.
+  'f2l.pair': () => t('Join the corner to its edge, then put the pair in together.'),
   // A look may take several applications, and only the last one reaches its goal. The `.step`
   // forms are what the ones before it say — the difference between describing a step and
   // describing the stage it belongs to.
@@ -83,11 +89,77 @@ const WHY_TEXT = Object.freeze({
   'lastLayer.align': () => t('Turn the top until it lines up.'),
   'topEdges.permute': () => t('Move the top edges home — this finishes the cube.'),
   'topEdges.permute.step': () => t('Start moving the top edges round; the cube is not finished yet.'),
+  // One-look PLL moves the corners AND the edges, so it does not borrow either two-look sentence.
+  // "Move the top edges home" over an algorithm that is mostly about corners is the same defect
+  // the middle-layer captions had: a sentence describing something other than what is happening.
+  'lastLayer.permute': () => t('Move the whole top layer into place — this finishes the cube.'),
 });
 
 /** Every reason key the solver can emit. A step whose key is missing here would caption as
  *  nothing and point at nothing, so the wiring test asserts the two lists match. */
 export const WHY_KEYS = Object.freeze(Object.keys(WHY_TEXT));
+
+/**
+ * What a named algorithm is called on screen, keyed by the name the solver emits.
+ *
+ * The name used to be pasted straight into the sentence, which made it the one piece of the
+ * caption that stayed English however the app was set — "把角块和棱块拼起来 (corner-cycle-back)".
+ * A table rather than `t(step.caseName)` because the solver's names are IDENTIFIERS: several are
+ * bare words a flat catalog would have to translate the same way everywhere they occur, and
+ * `corner-cycle-back` is a program's spelling rather than a reader's.
+ *
+ * The English side is the identifier read as English and nothing more — this table is where a
+ * name gets translated, not where it gets renamed. `method-lesson.test.mjs` holds it to the
+ * solver's own `CASE_NAMES`, both ways, so an algorithm added without a name here fails rather
+ * than appearing untranslated.
+ */
+const CASE_TEXT = Object.freeze({
+  'drop-in': () => t('drop in'),
+  'flip-in': () => t('flip in'),
+  'right-hand': () => t('right hand'),
+  'left-hand': () => t('left hand'),
+  'facing-up': () => t('facing up'),
+  'insert-right': () => t('insert right'),
+  'insert-left': () => t('insert left'),
+  // The six triggers say "trigger" out loud. They are the one group whose identifiers are bare
+  // direction words, and `right` on its own is a word a catalog has to answer for the whole app.
+  right: () => t('right trigger'),
+  'right-back': () => t('right trigger back'),
+  'right-half': () => t('right trigger half'),
+  left: () => t('left trigger'),
+  'left-back': () => t('left trigger back'),
+  'left-half': () => t('left trigger half'),
+  'edge-orient': () => t('edge orient'),
+  sune: () => t('sune'),
+  antisune: () => t('antisune'),
+  headlights: () => t('headlights'),
+  'double-sune': () => t('double sune'),
+  pi: () => t('pi'),
+  'corner-cycle': () => t('corner cycle'),
+  'corner-cycle-back': () => t('corner cycle back'),
+  diagonal: () => t('diagonal'),
+  'u-perm-a': () => t('U perm a'),
+  'u-perm-b': () => t('U perm b'),
+  align: () => t('align'),
+});
+
+/** A key from a generated table rather than a name — `oll:00120011`, `f2l:0c10`. Matched
+ *  narrowly on purpose: anything that is not this shape and not in `CASE_TEXT` is still a defect,
+ *  and still fails loudly. */
+const GENERATED_CASE_ID = /^(?:oll|pll|f2l):[0-9a-f]+$/;
+
+/** Every name this module can put on screen — held against the solver's own list by test. */
+export const CASE_TEXT_KEYS = Object.freeze(Object.keys(CASE_TEXT));
+
+/** A named algorithm in the reader's language. Loud on a name it does not know, for the reason
+ *  `whyText` is loud on a reason it cannot caption: printing the identifier looks like a label
+ *  rather than like the defect it is. */
+export function caseText(name) {
+  if (typeof name !== 'string' || !Object.hasOwn(CASE_TEXT, name)) {
+    throw new Error(`method-lesson: no name for case "${name}"`);
+  }
+  return CASE_TEXT[name]();
+}
 
 /** The sentence for a step, with the case name where the step is a named algorithm. */
 export function whyText(step) {
@@ -107,9 +179,13 @@ export function whyText(step) {
   const sentence = write ? write(step.why) : '';
   // A case name is what a learner recognises next time, so it is worth showing — but only for
   // named algorithms, never for a searched sequence, which has no case to name.
-  return step.kind === 'case' && step.caseName && !step.parts
-    ? t('%1 (%2)', sentence, step.caseName)
-    : sentence;
+  if (!(step.kind === 'case' && step.caseName && !step.parts)) return sentence;
+  // A generated case IDENTIFIER is carried on the step and never shown. `oll:1a2b3c4d` is this
+  // repository's key for a position; it is not the number a learner would find anywhere else, and
+  // our own numbering shown as if it were the world's would be worse than showing none. The step
+  // keeps it so a future screen can look the case up — see lib/data/case-tables.js.
+  if (GENERATED_CASE_ID.test(step.caseName)) return sentence;
+  return t('%1 (%2)', sentence, caseText(step.caseName));
 }
 
 /** A cubie index as its slot name, refusing anything that is not one.
@@ -220,5 +296,8 @@ export function moveStepIndex(steps) {
  */
 export function rungSummary(method) {
   if (!method?.stages) return '';
-  return method.stages.map((s) => `${SECTION_NAME[s.id]()}: ${t(s.label)}`).join(' · ');
+  // `t('%1: %2', …)` rather than a template literal with a colon in it. The colon and the order
+  // are both the sentence's, not the program's: a language that puts the rung first, or that
+  // spaces its punctuation differently, has nothing to edit if the two halves are glued here.
+  return method.stages.map((s) => t('%1: %2', SECTION_NAME[s.id](), t(s.label))).join(' · ');
 }

@@ -23,7 +23,9 @@
 // counts as an offer is here, where it can be tested.
 
 import { LADDER, STAGE_IDS, TOP_RUNG } from './method-solver.js';
-import { t } from './i18n.js';
+// The stage names are the LESSON's, not a second set. The two screens sit next to each other,
+// and a stage called one thing on the move list and another on the ladder reads as two stages.
+import { SECTION_NAME } from './method-lesson.js';
 
 /**
  * How many clean follows before a stage's next rung is offered.
@@ -168,14 +170,6 @@ export function declineOffer(progress, offer) {
   };
 }
 
-/** What a stage is called on the ladder — plain words, not CFOP jargon. */
-const STAGE_NAME = Object.freeze({
-  cross: () => t('Cross'),
-  pairs: () => t('First two layers'),
-  oll: () => t('Top face'),
-  pll: () => t('Last layer'),
-});
-
 /**
  * The whole ladder, as the Lessons screen draws it.
  *
@@ -188,7 +182,7 @@ export function ladderRows(rungs, progress = NO_PROGRESS) {
     const at = rungs?.[id] ?? 0;
     return {
       id,
-      name: STAGE_NAME[id](),
+      name: SECTION_NAME[id](),
       at,
       top: TOP_RUNG[id],
       follows: progress.follows?.[id] ?? 0,
@@ -206,13 +200,25 @@ export function ladderRows(rungs, progress = NO_PROGRESS) {
 /**
  * How far a stage is from its next offer, in follows — for the ladder's "not yet" line.
  *
- * Null when there is nothing above. Deliberately a COUNT and not a percentage: "two more solves"
- * is a thing a learner can hold, and a progress bar over a number this small is decoration.
+ * Three answers, because the screen has three things to say. `null`: there is nothing above this
+ * rung. A count: that many more solves. `Infinity`: the offer is not coming on its own.
+ *
+ * The last one is not a curiosity. Above the count ceiling the postponement watermark is
+ * DELIBERATELY unreachable — that is what `NEXT_AT_LIMIT` is for, and "not again" is the right
+ * answer for a record that has stopped counting. But a countdown cannot say it: subtracting a
+ * count that can no longer rise from a target above it gives a number that never falls, so the
+ * screen said "1,000,000 more solves at this rung" and would have said it forever. Wrong in both
+ * directions — it is not a wait, and it does not end.
+ *
+ * Deliberately a COUNT and not a percentage: "two more solves" is a thing a learner can hold, and
+ * a progress bar over a number this small is decoration.
  */
 export function followsUntilOffer(rungs, progress, id) {
   const at = rungs?.[id] ?? 0;
   if (at >= TOP_RUNG[id]) return null;
   // `offerAt` and nothing else — when this had its own copy of the threshold formula, the
   // countdown on the Lessons screen could disagree with when the offer actually fired.
-  return Math.max(0, offerAt(progress, id) - (progress.follows?.[id] ?? 0));
+  const target = offerAt(progress, id);
+  if (target > COUNT_LIMIT) return Infinity;
+  return Math.max(0, target - (progress.follows?.[id] ?? 0));
 }
