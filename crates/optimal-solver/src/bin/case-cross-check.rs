@@ -234,40 +234,22 @@ fn compare(ours: &BTreeMap<String, u8>, skip: &str, theirs: &Reference) -> Compa
     out
 }
 
-fn main() {
-    let args = cli::parse_or_exit(&SPEC);
-    let kind_arg = cli::or_exit(&SPEC, args.positional_one_of(0, "kind", &["oll", "pll"]));
-    let kind = if kind_arg == "oll" { Kind::Oll } else { Kind::Pll };
-    let path = args.positional(1).to_string();
-
-    // Our table, through the crate's strict reader: a truncated file, a fractional length and a
-    // duplicated case id are all refusals rather than a smaller table that looks fine.
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        cli::fail(&SPEC, &format!("cannot read {path}: {e}"));
-    });
-    let table = read_table(&text, kind.as_str())
-        .unwrap_or_else(|e| cli::fail(&SPEC, &format!("{path}: {e}")));
-    let ours: BTreeMap<String, u8> = table.lengths().map(|(c, l)| (c.to_string(), l)).collect();
-    let skip = case_of(kind, &SOLVED).id();
-
-    let theirs = read_reference(kind, io::stdin().lock());
-    let result = compare(&ours, &skip, &theirs);
-
+/// The per-case table, on stdout — our number, theirs, and the verdict.
+fn print_table(result: &Comparison) -> io::Result<()> {
     let mut out = io::BufWriter::new(io::stdout().lock());
-    writeln!(out, "case                    ours  published  verdict").expect("stdout");
+    writeln!(out, "case                    ours  published  verdict")?;
     for v in &result.verdicts {
         match v.theirs {
-            Some(best) => writeln!(
-                out,
-                "{:<22} {:>5}  {best:>9}  {}",
-                v.case, v.ours, v.text
-            ),
+            Some(best) => writeln!(out, "{:<22} {:>5}  {best:>9}  {}", v.case, v.ours, v.text),
             None => writeln!(out, "{:<22} {:>5}          -  {}", v.case, v.ours, v.text),
-        }
-        .expect("stdout");
+        }?;
     }
-    out.flush().expect("stdout");
+    out.flush()
+}
 
+/// What was read, what could not be, and what the structure check found — on stderr, so a pipeline
+/// takes the table and a person reads the account of it.
+fn print_account(ours: &BTreeMap<String, u8>, theirs: &Reference, result: &Comparison) {
     eprintln!(
         "\nread {} maneuvers ({} ended the cube rotated), refused {}, not a case {}",
         theirs.accepted,
@@ -310,51 +292,81 @@ fn main() {
         result.longer,
         result.refutations
     );
+}
 
-    // ONE exit decision, and every way the comparison can be incomplete reaches it. A refutation
-    // blocks the ship (§7, Layer 4): a published maneuver shorter than our proved optimum means
-    // one of the two is wrong, and it is not a thing to print and exit 0 over. Neither is a set
-    // half of which we could not read.
-    let mut blocked: Vec<String> = Vec::new();
+/// Every reason this comparison did not happen, or did not conclude what it claims to.
+///
+/// ONE list, built in one place, so the exit is one decision. A refutation blocks the ship (§7,
+/// Layer 4): a published maneuver shorter than our proved optimum means one of the two is wrong,
+/// and it is not a thing to print and exit 0 over. Neither is a set half of which we could not
+/// read — every entry here used to exit 0.
+fn blockers(theirs: &Reference, result: &Comparison) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
     if theirs.accepted == 0 {
-        blocked.push("no maneuvers were read at all — stdin held none this program could use".into());
+        out.push("no maneuvers were read at all — stdin held none this program could use".into());
     }
     if !theirs.refused.is_empty() {
-        blocked.push(format!(
+        out.push(format!(
             "{} maneuvers were in notation this program cannot read",
             theirs.refused.len()
         ));
     }
     if !theirs.not_a_case.is_empty() {
-        blocked.push(format!(
+        out.push(format!(
             "{} maneuvers do not leave the first two layers as they found them",
             theirs.not_a_case.len()
         ));
     }
     if !result.missing.is_empty() {
-        blocked.push(format!(
+        out.push(format!(
             "{} of our cases were never reached, so the comparison covers less than the set",
             result.missing.len()
         ));
     }
     if !result.unknown.is_empty() {
-        blocked.push(format!(
+        out.push(format!(
             "{} reached cases we do not enumerate",
             result.unknown.len()
         ));
     }
     if !result.duplicates.is_empty() {
-        blocked.push(format!(
+        out.push(format!(
             "{} case records are duplicates of one another",
             result.duplicates.len()
         ));
     }
     if result.refutations > 0 {
-        blocked.push(format!(
+        out.push(format!(
             "{} of our optima are REFUTED by a shorter published maneuver",
             result.refutations
         ));
     }
+    out
+}
+
+fn main() {
+    let args = cli::parse_or_exit(&SPEC);
+    let kind_arg = cli::or_exit(&SPEC, args.positional_one_of(0, "kind", &["oll", "pll"]));
+    let kind = if kind_arg == "oll" { Kind::Oll } else { Kind::Pll };
+    let path = args.positional(1).to_string();
+
+    // Our table, through the crate's strict reader: a truncated file, a fractional length and a
+    // duplicated case id are all refusals rather than a smaller table that looks fine.
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        cli::fail(&SPEC, &format!("cannot read {path}: {e}"));
+    });
+    let table = read_table(&text, kind.as_str())
+        .unwrap_or_else(|e| cli::fail(&SPEC, &format!("{path}: {e}")));
+    let ours: BTreeMap<String, u8> = table.lengths().map(|(c, l)| (c.to_string(), l)).collect();
+    let skip = case_of(kind, &SOLVED).id();
+
+    let theirs = read_reference(kind, io::stdin().lock());
+    let result = compare(&ours, &skip, &theirs);
+
+    print_table(&result).expect("stdout");
+    print_account(&ours, &theirs, &result);
+
+    let blocked = blockers(&theirs, &result);
     if !blocked.is_empty() {
         eprintln!("\nthis comparison did not pass:");
         for b in &blocked {

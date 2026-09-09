@@ -39,7 +39,7 @@
 //! proof that nothing shorter than `h` exists, so those contours were never searched and never
 //! needed to be. `bound=`/`nodes=` is the exhausted part above it. When the two meet — `floor` is
 //! already `L`, the answer was the first contour tried — `nodes=0` is a COMPLETE lower bound and
-//! not a missing one, which is thirteen of the forty-one cases. A checker that refused every zero
+//! not a missing one, which is thirteen of the F2L table's 42 rows. A checker that refused every zero
 //! would have forced the generator to search contours it had already ruled out, to produce
 //! evidence for something it had already proved.
 //!
@@ -521,9 +521,13 @@ fn check_exhaustion(case: &str, claim: &Claim, length: u8) -> Result<(), String>
 /// Check case certificates for ONE kind against the local move-set hash and a stated expectation.
 ///
 /// `expect` is what a log cannot establish about itself: which cases must appear, and which goal
-/// set the bounds are about. A set that is internally consistent but covers 40 of 41 cases is not
-/// a table, and neither is one whose 41st case is a case id nobody enumerates — "the checker did
-/// not notice" is precisely the operational mistake this exists for.
+/// set the bounds are about. A set that is internally consistent but covers 41 of the F2L table's
+/// 42 rows is not a table, and neither is one whose 42nd row is a case id nobody enumerates — "the
+/// checker did not notice" is precisely the operational mistake this exists for.
+///
+/// The counts, since they are easy to state a rung out: OLL is 57 cases and the skip, PLL is 21
+/// perms and the skip, F2L is 41 cases and the one where the pair is already placed. `Expect`
+/// derives all three from the case machinery rather than repeating them.
 pub fn check_case_certificates(
     lines: &[&str],
     local_hash_hex: &str,
