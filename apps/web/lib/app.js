@@ -5984,6 +5984,9 @@ SCREENS.lessons = () => {
   const note = (row) => {
     const left = untilOffer(row.id);
     if (left === null) return t('This is the highest rung there is.');
+    // Not a countdown: the follow count has stopped rising, so no number of solves reaches the
+    // offer. The rung is still there and still one tap away — it just arrives by being taken.
+    if (left === Infinity) return t('This rung will not be offered again — raise it here whenever you like.');
     if (left === 0) return t('Ready for the next rung — it will be offered after your next solve.');
     return plural(left, {
       one: 'One more solve at this rung before the next one is offered.',

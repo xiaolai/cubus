@@ -229,10 +229,35 @@ test('every algorithm in the repertoire is one some cube actually needs', () => 
       }
     }
   }
-  const unused = CASE_NAMES.filter((name) => !seen.has(name));
+  // The HAND-WRITTEN repertoire. The generated tables are excluded, and the reason is not that
+  // they are hard to cover — it is that sampling is the wrong instrument for them. 57 OLL cases,
+  // 21 PLL and 41 F2L are complete BY CONSTRUCTION, and completeness is the one property a sample
+  // cannot establish: it is the enumeration or it is nothing. `bench/method-solver-profile.mjs
+  // exhaustive` is that enumeration — all 62,208 reachable last-layer states, at every last-layer
+  // rung, with the per-algorithm counts printed — and it runs nightly in CI.
+  const GENERATED = /^(?:oll|pll|f2l):[0-9a-f]+$/;
+  const handWritten = CASE_NAMES.filter((n) => !GENERATED.test(n));
+  const unused = handWritten.filter((name) => !seen.has(name));
   assert.deepEqual(unused, [], `repertoire entries no state needed: ${unused.join(', ')}`);
   const unknown = [...seen].filter((name) => !CASE_NAMES.includes(name));
   assert.deepEqual(unknown, [], 'a step named a case that is not in the repertoire');
+  // And the sample DOES reach the generated tables — thinly, which is the point above, but a
+  // rung whose table was never touched at all would be a rung that is not wired.
+  const NAMED_RUNGS = [{ cross: 1, pairs: 2, oll: 1, pll: 1 }];
+  const generatedSeen = new Set();
+  for (const state of seededStates(12, 20260909)) {
+    for (const rungs of NAMED_RUNGS) {
+      for (const step of solveByMethod(state, methodFor(rungs)).steps) {
+        for (const name of step.parts ? step.parts.map((x) => x.name) : [step.caseName ?? '']) {
+          if (GENERATED.test(name)) generatedSeen.add(name);
+        }
+      }
+    }
+  }
+  for (const kind of ['oll', 'pll', 'f2l']) {
+    assert.ok([...generatedSeen].some((n) => n.startsWith(`${kind}:`)),
+      `no ${kind} case from the generated table was used — the rung is not reading it`);
+  }
 });
 
 test('every named method solves, and cubejs agrees on all of them', () => {

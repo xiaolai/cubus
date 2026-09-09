@@ -18,6 +18,10 @@ const CROSS_INSERTS = [
   { name: 'flip-in', alg: "U' R' F R" },
 ];
 
+/** Built once — see `last-layer.js` at `look`. Rebuilding it per edge rebuilt it four times a
+ *  solve, and `repertoire` is not cheap: it rotates and AUF-prefixes every entry. */
+const CROSS_REPERTOIRE = Object.freeze(repertoire(CROSS_INSERTS));
+
 export const CROSS_ALGS = CROSS_INSERTS;
 
 // ---- rung 0: one edge at a time ---------------------------------------------------------------
@@ -41,7 +45,7 @@ function edgeByEdge(state, steps) {
 
     // Algorithmic half: line it up over its home and drop it in.
     const home = (s) => edgeSolved(s, edge) && intact(s);
-    const found = fromRepertoire(state, repertoire(CROSS_INSERTS), home);
+    const found = fromRepertoire(state, CROSS_REPERTOIRE, home);
     if (!found) throw new MethodSolverError('cross', edge, state);
     state = found.state;
     steps.push({ stage: 'cross', kind: 'case', target: edge, alg: found.alg,
