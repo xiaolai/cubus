@@ -35,8 +35,12 @@ enum Command {
     },
     /// A case table's certificates — a DIFFERENT checker, and it has to be. `certificate.rs`
     /// skips every line whose `state=` is not `superflip` (§7a finding F4, confirmed at
-    /// `certificate.rs:60`), so case records would pass through it unread and an empty read is
-    /// not a refusal there.
+    /// `certificate.rs:60`), so a file of case records reaches its end having matched nothing.
+    /// It does refuse that — "no superflip shard certificates found" — so the failure would be
+    /// loud; it would just be the wrong question, answered about a file it never read. Case
+    /// records carry their own grammar (`case-goals`, `case-alg`, `case-lower`) and their own
+    /// obligations (a lower bound per goal, coverage against a declared case count), and none of
+    /// that has a shard checker to run through.
     CheckCases {
         kind: String,
         cases: usize,
@@ -66,11 +70,23 @@ fn parse(args: &[String]) -> Vec<Command> {
                 out.push(Command::SuperflipCollect { path });
             }
             "check-cases" => {
+                // The kind is checked HERE, with the rest of the command line, and not when the
+                // records are read. `certify superflip check-cases typo 22 log.txt` used to run
+                // the superflip's whole generation and search first and reject the typo after —
+                // which is the opposite of what this function exists for, as its own name says.
                 let kind = iter.next().cloned().unwrap_or_else(|| usage());
-                let cases = iter
+                if !["oll", "pll", "f2l"].contains(&kind.as_str()) {
+                    eprintln!("check-cases {kind}: the kind is one of oll, pll, f2l");
+                    usage();
+                }
+                let cases: usize = iter
                     .next()
                     .and_then(|a| a.parse().ok())
                     .unwrap_or_else(|| usage());
+                if cases == 0 {
+                    eprintln!("check-cases {kind} 0: a table of no cases is not a table");
+                    usage();
+                }
                 let path = iter.next().cloned().unwrap_or_else(|| usage());
                 out.push(Command::CheckCases { kind, cases, path });
             }
@@ -217,7 +233,7 @@ fn collect_report(lines: &[&str], hash: &str) -> Result<(String, Vec<String>), S
 /// certificate is, and a checker that reported a refusal on stdout and exited 0 would be exactly
 /// the quiet default this repository refuses.
 fn check_cases(kind: &str, cases: usize, path: &str, hash: &str) {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+    let text = read_input(path);
     let lines: Vec<&str> = text.lines().collect();
     match check_case_certificates(&lines, hash, kind, cases) {
         Ok(proof) => {
@@ -236,8 +252,21 @@ fn check_cases(kind: &str, cases: usize, path: &str, hash: &str) {
     }
 }
 
+/// Read a log or certificate file, reporting a failure the way every other refusal here does.
+///
+/// `unwrap_or_else(|| panic!(...))` printed a Rust panic and a backtrace hint for the ordinary
+/// case of a mistyped filename — a different exit status, a different stream, and a message that
+/// reads as a crash rather than as the CLI saying no. A missing or unreadable input is a normal
+/// refusal, and it now looks like one.
+fn read_input(path: &str) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("cannot read {path}: {e}");
+        std::process::exit(1)
+    })
+}
+
 fn collect(path: &str, hash: &str) {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+    let text = read_input(path);
     let lines: Vec<&str> = text.lines().collect();
     match collect_report(&lines, hash) {
         Ok((conclusion, warnings)) => {

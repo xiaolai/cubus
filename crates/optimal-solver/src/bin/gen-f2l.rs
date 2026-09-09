@@ -17,30 +17,35 @@
 //! argument: `slot_safe_on_solved` asks the question the app's `slotSafe` asks, of the algorithm,
 //! on a solved cube.
 
+use optimal_solver::cli::{self, Spec};
 use optimal_solver::f2l::{all_cases, prove_all, slot_safe_on_solved, GoalBall};
 use optimal_solver::pdb::move_set_hash;
 use optimal_solver::search::solution_string;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-fn usage() -> ! {
-    eprintln!("usage: gen-f2l <table.json> <certificates.txt> [--cap N]");
-    std::process::exit(1);
-}
+const SPEC: Spec = Spec {
+    usage: "usage: gen-f2l <table.json> <certificates.txt> [--cap N]",
+    value_options: &["--cap"],
+    flags: &[],
+    positionals: 2..=2,
+};
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    if positional.len() < 2 {
-        usage();
-    }
-    let (table_path, cert_path) = (positional[0].clone(), positional[1].clone());
-    let cap: u8 = args
-        .iter()
-        .position(|a| a == "--cap")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(14);
+    // Parsed by `cli`, which consumes an option WITH its value. The hand-rolled version filtered
+    // out anything starting with `--` and kept the rest as positionals, so `table.json --cap 8`
+    // published the certificates to a file named `8`; and an unparseable cap fell back to 14
+    // rather than being refused, so the run used a bound nobody asked for and said nothing.
+    let args = cli::parse_or_exit(&SPEC);
+    let table_path = args.positional(0).to_string();
+    let cert_path = args.positional(1).to_string();
+    let cap: u8 = cli::or_exit(&SPEC, args.parsed_in("--cap", 1..=20u8, 14));
+    // Two artifacts, and they must not be one file: writing the certificates over the table it
+    // just generated is a failure that reports success.
+    cli::or_exit(
+        &SPEC,
+        optimal_solver::destinations_differ(&[&table_path, &cert_path]),
+    );
 
     let t0 = Instant::now();
     let ball = GoalBall::build();
@@ -139,8 +144,15 @@ fn main() {
         "{{\n  \"kind\": \"f2l\",\n  \"moveset\": \"{hash}\",\n  \"scope\": \"f2l-projection\",\n  \"cases\": [\n{}\n  ]\n}}\n",
         rows.join(",\n")
     );
-    write_atomic(&table_path, &json);
-    write_atomic(&cert_path, &format!("{}\n", certificates.join("\n")));
+    // ONE publish for the pair. A table and the certificates that make its lengths checkable are
+    // one artifact in two files: writing them in sequence left a new table beside stale
+    // certificates whenever the second write did not finish.
+    publish_pair(
+        &table_path,
+        json.as_bytes(),
+        &cert_path,
+        format!("{}\n", certificates.join("\n")).as_bytes(),
+    );
 
     let solved: Vec<u8> = lengths.iter().copied().filter(|&l| l > 0).collect();
     let total: usize = solved.iter().map(|&l| l as usize).sum();
@@ -162,9 +174,17 @@ fn main() {
     eprintln!("\nwrote {table_path} and {cert_path}");
 }
 
-/// Write-then-rename, so an interruption leaves either the old file or none — never half a table.
-fn write_atomic(path: &str, body: &str) {
-    let tmp = format!("{path}.tmp");
-    std::fs::write(&tmp, body).unwrap_or_else(|e| panic!("cannot write {tmp}: {e}"));
-    std::fs::rename(&tmp, path).unwrap_or_else(|e| panic!("cannot publish {path}: {e}"));
+/// Publish the table and its certificates through the crate's own staged writer.
+///
+/// This binary used to carry a four-line `write_atomic` that wrote `<path>.tmp` — a FIXED name, so
+/// two runs writing the same table shared one temporary file and could publish each other's
+/// half-written bytes. The library's version was already correct (a random temp name, `sync_all`
+/// before the rename, the directory synced after it); the defect was that it was private and two
+/// callers wrote their own instead.
+fn publish_pair(table: &str, table_body: &[u8], certs: &str, cert_body: &[u8]) {
+    optimal_solver::write_all_atomic(&[
+        (std::path::Path::new(table), table_body),
+        (std::path::Path::new(certs), cert_body),
+    ])
+    .unwrap_or_else(|e| panic!("cannot publish {table} and {certs}: {e}"));
 }
