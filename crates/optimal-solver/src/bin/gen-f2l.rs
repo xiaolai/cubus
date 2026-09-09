@@ -31,6 +31,109 @@ const SPEC: Spec = Spec {
     positionals: 2..=2,
 };
 
+/// One case's result: the row, its certificate records, and what the search cost.
+struct Generated {
+    row: String,
+    certificates: Vec<String>,
+    length: u8,
+    minimal: usize,
+    nodes: u64,
+    floor: u8,
+    nodes_below: u64,
+}
+
+/// One case, proved and rendered.
+///
+/// Its own function because it makes three separate claims — the length is minimal, every minimal
+/// maneuver is slot-safe, and the row and the certificate say the same thing — and they were
+/// interleaved inside a 133-line `main` with the argument parsing, the ball, the publishing and
+/// the summary.
+fn generate(case: &optimal_solver::f2l::F2lCase, ball: &GoalBall, cap: u8, hash: &str, cancel: &AtomicBool) -> Generated {
+    // The case key, defined once in `f2l.rs` — a table lookup, a certificate and a regeneration
+    // diff all have to agree on it, and it used to be spelt out in three files.
+    let id = case.id();
+    let proof = prove_all(ball, &case.state(), cap, cancel)
+        .unwrap_or_else(|e| panic!("{}: {e:?}", case.name));
+
+    let alg = &proof.solutions[0];
+    // Every minimal maneuver, not just the chosen one. The equivalence this table rests on is
+    // that reaching the goal and being slot-safe are the same thing here; a single maneuver
+    // that reached the goal without being slot-safe would refute it, and would do so silently
+    // if only the chosen one were asked.
+    for (i, candidate) in proof.solutions.iter().enumerate() {
+        assert!(
+            slot_safe_on_solved(candidate),
+            "{}: minimal maneuver {i} reaches the goal but is not slot-safe — the projection \
+             and the app's slotSafe have come apart",
+            case.name
+        );
+    }
+
+    let mut certificates = Vec::new();
+    if proof.length == 0 {
+        // The SKIP: the pair is already placed, so there is no algorithm and nothing shorter
+        // to rule out. `case_certificate.rs` refuses a lower bound for it, and rightly.
+        certificates.push(format!(
+            "case-alg moveset={hash} kind=f2l case={id} length=0 alg="
+        ));
+    } else {
+        certificates.push(format!(
+            "case-alg moveset={hash} kind=f2l case={id} length={} alg={}",
+            proof.length,
+            solution_string(alg)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(".")
+        ));
+        certificates.push(format!(
+            "case-lower moveset={hash} kind=f2l case={id} scope=f2l-projection floor={} bound={} nodes={} result=NO-SOLUTION",
+            proof.floor,
+            proof.length - 1,
+            proof.nodes_below
+        ));
+    }
+
+    Generated {
+        row: format!(
+            "    {{ \"case\": \"{id}\", \"name\": \"{}\", \"cornerSlot\": {}, \"cornerTwist\": {}, \"edgeSlot\": {}, \"edgeFlip\": {}, \"length\": {}, \"alg\": \"{}\", \"minimal\": {} }}",
+            case.name,
+            case.corner_slot,
+            case.corner_twist,
+            case.edge_slot,
+            case.edge_flip,
+            proof.length,
+            solution_string(alg),
+            proof.solutions.len()
+        ),
+        certificates,
+        length: proof.length,
+        minimal: proof.solutions.len(),
+        nodes: proof.nodes,
+        floor: proof.floor,
+        nodes_below: proof.nodes_below,
+    }
+}
+
+/// What the run found, on stderr.
+fn report(lengths: &[u8], total_nodes: u64, elapsed: f64) {
+    let solved: Vec<u8> = lengths.iter().copied().filter(|&l| l > 0).collect();
+    let total: usize = solved.iter().map(|&l| l as usize).sum();
+    eprintln!(
+        "\n{} cases in {elapsed:.2}s | mean optimum {:.4} | longest {} | {total_nodes} nodes",
+        lengths.len(),
+        total as f64 / solved.len().max(1) as f64,
+        solved.iter().copied().max().unwrap_or(0),
+    );
+    eprint!("histogram");
+    for len in 0..=20u8 {
+        let n = lengths.iter().filter(|&&l| l == len).count();
+        if n > 0 {
+            eprint!(" {len}:{n}");
+        }
+    }
+    eprintln!();
+}
+
 fn main() {
     // Parsed by `cli`, which consumes an option WITH its value. The hand-rolled version filtered
     // out anything starting with `--` and kept the rest as positionals, so `table.json --cap 8`
@@ -69,70 +172,15 @@ fn main() {
     let run = Instant::now();
 
     for case in &cases {
-        // The case key, defined once in `f2l.rs` — a table lookup, a certificate and a
-        // regeneration diff all have to agree on it, and it used to be spelt out in three files.
-        let id = case.id();
-        let proof = prove_all(&ball, &case.state(), cap, &cancel)
-            .unwrap_or_else(|e| panic!("{}: {e:?}", case.name));
-        total_nodes += proof.nodes;
-        lengths.push(proof.length);
-
-        let alg = &proof.solutions[0];
-        // Every minimal maneuver, not just the chosen one. The equivalence this table rests on is
-        // that reaching the goal and being slot-safe are the same thing here; a single maneuver
-        // that reached the goal without being slot-safe would refute it, and would do so silently
-        // if only the chosen one were asked.
-        for (i, candidate) in proof.solutions.iter().enumerate() {
-            assert!(
-                slot_safe_on_solved(candidate),
-                "{}: minimal maneuver {i} reaches the goal but is not slot-safe — the projection \
-                 and the app's slotSafe have come apart",
-                case.name
-            );
-        }
-
-        if proof.length == 0 {
-            // The SKIP: the pair is already placed, so there is no algorithm and nothing shorter
-            // to rule out. `case_certificate.rs` refuses a lower bound for it, and rightly.
-            certificates.push(format!(
-                "case-alg moveset={hash} kind=f2l case={id} length=0 alg="
-            ));
-        } else {
-            certificates.push(format!(
-                "case-alg moveset={hash} kind=f2l case={id} length={} alg={}",
-                proof.length,
-                solution_string(alg)
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(".")
-            ));
-            certificates.push(format!(
-                "case-lower moveset={hash} kind=f2l case={id} scope=f2l-projection floor={} bound={} nodes={} result=NO-SOLUTION",
-                proof.floor,
-                proof.length - 1,
-                proof.nodes_below
-            ));
-        }
-
-        rows.push(format!(
-            "    {{ \"case\": \"{id}\", \"name\": \"{}\", \"cornerSlot\": {}, \"cornerTwist\": {}, \"edgeSlot\": {}, \"edgeFlip\": {}, \"length\": {}, \"alg\": \"{}\", \"minimal\": {} }}",
-            case.name,
-            case.corner_slot,
-            case.corner_twist,
-            case.edge_slot,
-            case.edge_flip,
-            proof.length,
-            solution_string(alg),
-            proof.solutions.len()
-        ));
+        let out = generate(case, &ball, cap, &hash, &cancel);
         eprintln!(
             "{:10} {:2} moves, {:4} minimal, floor {}, {} nodes below",
-            case.name,
-            proof.length,
-            proof.solutions.len(),
-            proof.floor,
-            proof.nodes_below
+            case.name, out.length, out.minimal, out.floor, out.nodes_below
         );
+        total_nodes += out.nodes;
+        lengths.push(out.length);
+        certificates.extend(out.certificates);
+        rows.push(out.row);
     }
 
     let json = format!(
@@ -149,24 +197,8 @@ fn main() {
         format!("{}\n", certificates.join("\n")).as_bytes(),
     );
 
-    let solved: Vec<u8> = lengths.iter().copied().filter(|&l| l > 0).collect();
-    let total: usize = solved.iter().map(|&l| l as usize).sum();
-    eprintln!(
-        "\n{} cases in {:.2}s | mean optimum {:.4} | longest {} | {} nodes",
-        cases.len(),
-        run.elapsed().as_secs_f64(),
-        total as f64 / solved.len().max(1) as f64,
-        solved.iter().copied().max().unwrap_or(0),
-        total_nodes
-    );
-    eprint!("histogram");
-    for len in 0..=20u8 {
-        let n = lengths.iter().filter(|&&l| l == len).count();
-        if n > 0 {
-            eprint!(" {len}:{n}");
-        }
-    }
-    eprintln!("\nwrote {table_path} and {cert_path}");
+    report(&lengths, total_nodes, run.elapsed().as_secs_f64());
+    eprintln!("wrote {table_path} and {cert_path}");
 }
 
 /// Publish the table and its certificates through the crate's own staged writer.

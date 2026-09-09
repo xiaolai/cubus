@@ -20,11 +20,28 @@ const code = app
   .replace(/^\s*\/\/[^\n]*$/gm, '')
   .replace(/([^:'"`])\/\/[^\n]*/g, '$1');
 
-/** The body of `SCREENS.lessons`, which is the whole of rule 2's surface. */
-const lessons = code.match(/SCREENS\.lessons = \(\) => \{[\s\S]*?\n\};/)?.[0] ?? '';
+/**
+ * Rule 2's whole surface: the screen, and the three functions it renders through.
+ *
+ * `ladderCard`, `rungLine` and `rungNote` were nested inside one template literal with four
+ * `.map`s, a dot-colour ternary and a four-branch progress sentence in it. Splitting them out did
+ * not move the ladder off the screen, so the assertions below are about the screen AND its
+ * renderers — reading only `SCREENS.lessons` would have turned every one of them green by looking
+ * somewhere the code no longer is.
+ */
+const named = (name) => code.match(new RegExp(`function ${name}\\([\\w, ]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0] ?? '';
+const lessons = [
+  code.match(/SCREENS\.lessons = \(\) => \{[\s\S]*?\n\};/)?.[0] ?? '',
+  named('ladderCard'),
+  named('rungLine'),
+  named('rungNote'),
+].join('\n');
 
 test('the Lessons screen draws the ladder rather than a syllabus', () => {
-  assert.ok(lessons, 'SCREENS.lessons is gone');
+  assert.ok(code.match(/SCREENS\.lessons = \(\) => \{/), 'SCREENS.lessons is gone');
+  for (const fn of ['ladderCard', 'rungLine', 'rungNote']) {
+    assert.ok(named(fn), `${fn} is gone — the screen renders through it`);
+  }
   assert.match(lessons, /ladderRows\(settings\.rungs, settings\.rungProgress\)/,
     'the ladder must be read from the learner\'s own rungs');
   // The placeholder it replaces. A chapter list is a plan; a ladder is a place you are standing.
@@ -35,7 +52,7 @@ test('the Lessons screen draws the ladder rather than a syllabus', () => {
 test('a rung not yet reached is described, not hidden', () => {
   // §3 rule 2, and the sentence the whole screen turns on: "a ladder you can see is a goal, a
   // dropdown is a chore." Drawing `row.rungs` and not a filtered subset is what makes that true.
-  assert.match(lessons, /row\.rungs\.map/, 'the screen must draw every rung of a stage');
+  assert.match(lessons, /row\.rungs\.map\(rungLine\)/, 'the screen must draw every rung of a stage');
   assert.doesNotMatch(lessons, /rungs\.filter\(\(r\) => r\.reached\)/, 'a filtered ladder hides the goal');
   assert.match(lessons, /r\.blurb/, 'and each rung must say what it is FOR');
   // Every rung really does carry a description, so "described" is not an empty promise.
@@ -56,10 +73,15 @@ test('the screen states measurements, never claims about a course nobody took', 
 test('raising a rung from the ladder is deliberate, and clears the lesson it invalidates', () => {
   const handler = lessons.match(/data-raise\]'\)\)[\s\S]*?\n {6}\}/)?.[0] ?? '';
   assert.ok(handler, 'the ladder must offer a way up');
-  assert.match(handler, /acceptOffer\(settings\.rungs, settings\.rungProgress/);
-  assert.match(handler, /state\.cube\.lesson = null/,
+  // Through the SHARED operation. The four steps — take the offer, write both halves back, throw
+  // the cached lesson away, persist — used to be spelt out here and again in the cube screen's
+  // `answerOffer`, and the one most easily forgotten is the third.
+  assert.match(handler, /raiseRung\(\{ id, to: at \+ 1 \}\)/);
+  const raise = code.match(/function raiseRung\(offer\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(raise, /acceptOffer\(settings\.rungs, settings\.rungProgress/);
+  assert.match(raise, /state\.cube\.lesson = null/,
     'the cached lesson was worked out at the OLD rungs and must not be relabelled');
-  assert.match(handler, /save\('cubusSettings', settings\)/, 'and the new rung must survive a reload');
+  assert.match(raise, /save\('cubusSettings', settings\)/, 'and the new rung must survive a reload');
 });
 
 test('the offer is on the cube screen, once per lesson, and answerable both ways', () => {
@@ -70,9 +92,10 @@ test('the offer is on the cube screen, once per lesson, and answerable both ways
   assert.match(code, /id="rungNot"/, 'an offer with no way to decline is an ask');
   const answer = code.match(/const answerOffer = \(yes\) => \{[\s\S]*?\n {6}\};/)?.[0] ?? '';
   assert.ok(answer, 'the offer must have a handler');
-  assert.match(answer, /acceptOffer\(/);
+  assert.match(answer, /raiseRung\(offer\)/, 'accepting must go through the shared operation');
   assert.match(answer, /declineOffer\(/);
-  assert.match(answer, /state\.cube\.lesson = null/, 'accepting invalidates the lesson on screen');
+  const raise = code.match(/function raiseRung\(offer\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(raise, /state\.cube\.lesson = null/, 'accepting invalidates the lesson on screen');
   // Once per WALK: sync() fires on every step and every seek, and a learner scrubbing back and
   // forth must not be credited with a dozen solves.
   assert.match(code, /creditedWalk !== walkGen/);
@@ -85,10 +108,21 @@ test('a follow is credited only for the stages the lesson actually contained', (
 });
 
 test('nothing is raised without an answer, and nothing is stored unrepaired', () => {
-  // The whole of "never ask": the only writers of `settings.rungs` are the two answers.
+  // The whole of "never ask": `settings.rungs` is written by ONE function, and by the repair that
+  // reads it back off untrusted storage. It used to be two — the cube screen's answered offer and
+  // the Lessons ladder each carried their own copy of "take the offer, write both halves, throw
+  // the cached lesson away, persist", which is four steps in two places and four chances to
+  // forget the third.
   const writes = [...code.matchAll(/settings\.rungs = ([^;]+);/g)].map((m) => m[1].trim());
-  assert.deepEqual(writes.sort(), ['next.rungs', 'next.rungs', 'repairRungs(settings.rungs)'].sort(),
+  assert.deepEqual(writes.sort(), ['next.rungs', 'repairRungs(settings.rungs)'].sort(),
     `settings.rungs is written from somewhere else: ${writes.join(' | ')}`);
+  // And that one function is reached from both answers, so neither screen grew its own again.
+  const raise = code.match(/function raiseRung\(offer\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  assert.ok(raise, 'the shared rung-raising operation is gone');
+  assert.match(raise, /state\.cube\.lesson = null/,
+    'raising a rung must throw away a lesson worked out at the old ones');
+  assert.equal([...code.matchAll(/raiseRung\(/g)].length, 3,
+    'raiseRung must be defined once and called from both the offer and the ladder');
   assert.match(code, /settings\.rungProgress = repairProgress\(settings\.rungProgress\)/,
     'localStorage is untrusted input');
 });
