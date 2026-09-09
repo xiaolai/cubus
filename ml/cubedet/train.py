@@ -131,6 +131,24 @@ class ModelEMA:
                 ema_v.copy_(model_v)
 
 
+def atomic_save(obj, path: Path) -> None:
+    """Write a checkpoint that a power loss cannot truncate.
+
+    `torch.save` streams into the destination, so a host that dies mid-write leaves a PARTIAL file
+    under the name everything downstream trusts. That is not hypothetical: the training box
+    hard-reset three times on 2026-09-09, and the third left `B_res896/last.pt` at exactly 0 bytes.
+    The auto-resume added that morning would have found it, tried to load it, and died with an
+    EOFError — turning a recoverable reset into a manual intervention, which is the opposite of what
+    resume is for.
+
+    Writing to a sibling and renaming fixes it: `os.replace` is atomic on POSIX, so a reader sees
+    either the previous complete checkpoint or the new complete one, never a half of either.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -280,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
             score = metrics["map50_95"]
             if score > best:
                 best = score
-                torch.save(
+                atomic_save(
                     {"model": ema.module.state_dict(), "width": cfg.width,
                      "imgsz": cfg.imgsz, "context": cfg.context,
                      "num_classes": NUM_CLASSES, "epoch": epoch, "metrics": metrics,
@@ -293,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"{record['seconds']:.0f}s | best {best:.4f}", flush=True)
 
         cfg.history.append(record)
-        torch.save(
+        atomic_save(
             {"model": model.state_dict(), "ema": ema.module.state_dict(),
              "optimiser": optimiser.state_dict(), "scheduler": scheduler.state_dict(),
              "epoch": epoch, "best": best, "history": cfg.history, "width": cfg.width,

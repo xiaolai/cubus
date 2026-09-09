@@ -107,7 +107,10 @@ docker rm -f "cubedet_${RUN}" >/dev/null 2>&1 || true
 #
 # CUBEDET_FRESH=1 forces a clean start; that is the flag to reach for when the RECIPE changed,
 # because resuming into different code silently mixes two experiments.
-if [ -f "$WORK/out/$RUN/last.pt" ] && [ "${CUBEDET_FRESH:-0}" != "1" ]; then
+# A checkpoint from a host that died mid-write can be zero bytes -- B_res896's was, on 2026-09-09.
+# `-s` requires non-empty, so a truncated file falls back to a fresh start instead of failing to
+# load. The trainer writes atomically now, so this is a belt on top of braces.
+if [ -s "$WORK/out/$RUN/last.pt" ] && [ "${CUBEDET_FRESH:-0}" != "1" ]; then
   EXTRA+=(--resume "/work/out/$RUN/last.pt")
   echo "resuming $RUN from its last checkpoint (CUBEDET_FRESH=1 to start over)"
 fi
