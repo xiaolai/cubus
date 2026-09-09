@@ -547,11 +547,97 @@ fn cancelling_during_collection_stops_the_collector() {
     // flag is a small fraction of a whole collection. It does not, at this scale, tell internal
     // polling apart from the entry guard.
     //
-    // What would: a bound deep enough that one opening is seconds of work, where a collector that
-    // ignored the flag would push `after_flag` up by whole subtrees. That is an `--ignored`-tier
-    // run and it is not attempted here. The reason to keep the cheap version anyway is that the
-    // failure it does catch — a cancel that is never seen inside collection at all — is the one
-    // that was actually present before 2026-09-09.
+    // What DOES discriminate is the same measurement at a bound where one opening is real work:
+    // `the_collector_stops_inside_an_opening_not_at_its_edge`, below, `--ignored` because it costs
+    // minutes. The reason to keep this cheap version too is that the failure it catches — a cancel
+    // never seen inside collection at all — is the one that was actually present before
+    // 2026-09-09, and it catches it in a second on every run.
+}
+
+/// The other half of the collector's cancellation promise: it stops INSIDE an opening.
+///
+/// The cheap test above cannot see the difference, and the reason is not that it is cheap. The
+/// parallel roots go four moves deep, so an opening is a small thing at ANY bound: measured on a
+/// fourteen-move state, 43,254 openings at ~3,915 nodes each against a stride bound of 49,152. A
+/// `Collector` that ignored the flag entirely and merely finished the opening it was in would post
+/// the same number as one that polls every stride. Going deeper does not help — it multiplies the
+/// openings, not their size — so the discrimination is not available through `prove_all` at all.
+/// That is what the audit of 2026-09-09 recorded as its one partial finding, and it is why
+/// `collect_one_opening` exists: ONE opening, one move deep, is millions of nodes, and there the
+/// two hypotheses are orders of magnitude apart.
+///
+/// The test asserts its own premise first. If the chosen opening is ever small enough that the
+/// stride bound would explain the saving on its own, that fails here rather than leaving a test
+/// that passes on the strength of its name.
+#[test]
+fn the_collector_stops_inside_an_opening_not_at_its_edge() {
+    use optimal_solver::search::{collect_one_opening, CANCEL_STRIDE};
+    use std::sync::Arc;
+
+    // One thread runs the collector, so the promise is the single-thread one: the stride it is
+    // inside when the flag lands, plus the stride it takes to reach the next poll.
+    let bound_after_cancel = 2 * CANCEL_STRIDE;
+
+    // A fourteen-move state under the single opening `R`. One move deep rather than four is the
+    // whole point: it is the same subtree the four-move roots partition into 2,403 pieces, walked
+    // as one, so the flag lands in the middle of real work instead of near the edge of a small
+    // piece. Twelve moves was tried first and gave 44,842 nodes — measured, and refused by the
+    // premise assertion below rather than passed on.
+    let moves_str: Vec<&str> = SUPERFLIP_GEODESIC.split_whitespace().collect();
+    let alg = moves_str[0..14].join(" ");
+    let s = apply_alg(&SOLVED, &alg).unwrap();
+    let coords = Coords::from_cubie(&s);
+    let opening = [3u8]; // R
+
+    // Generate the tables BEFORE the clock starts. Left inside the timed section they were most
+    // of it — 2.7 s of which about 0.1 s was the walk — so the cut landed after the collector had
+    // finished and the run looked exactly like one that ignores the flag. The measurement said
+    // 2 M nodes/s where this code does 50 M, which is what gave it away.
+    let _ = tables();
+    // What the opening costs when nobody interrupts it, and how long it takes. Both are measured
+    // rather than assumed: the first is the premise, the second sets where to cut.
+    let quiet = AtomicBool::new(false);
+    let started = std::time::Instant::now();
+    let (_, whole) = collect_one_opening(tables(), &coords, 14, &opening, &quiet);
+    let uninterrupted = started.elapsed();
+    assert!(
+        whole > 20 * bound_after_cancel,
+        "the opening is only {whole} nodes against a post-cancel bound of {bound_after_cancel} — \
+         at this scale a collector that ignored the flag would look the same as one that polls, so \
+         this test no longer separates them; deepen the state"
+    );
+
+    // Cut a tenth of the way in, so the flag lands with nine tenths of the subtree still to go on
+    // any machine — the wall clock chooses WHERE to interrupt, and nothing is asserted about it.
+    let cut = (uninterrupted / 10).max(std::time::Duration::from_millis(5));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = cancel.clone();
+    let waiter = std::thread::spawn(move || {
+        std::thread::sleep(cut);
+        flag.store(true, Ordering::Relaxed);
+    });
+    let (_, after) = collect_one_opening(tables(), &coords, 14, &opening, &cancel);
+    waiter.join().unwrap();
+
+    assert!(
+        cancel.load(Ordering::Relaxed),
+        "the flag never went up — the second run beat the timer, so nothing was interrupted"
+    );
+    eprintln!(
+        "one opening: {whole} nodes in {uninterrupted:?} uncancelled, {after} after a cancel at {cut:?}"
+    );
+    // The discriminating assertion, and it is a factor rather than a margin. A collector without
+    // the internal poll returns `whole` exactly — it has no other way to stop. One with it stops
+    // within a stride of wherever the flag found it, which a tenth of the way in is not close to
+    // the end. Orders of magnitude separate the two, so no threshold in between is delicate.
+    //
+    // Checked in both directions rather than only observed to pass: with `Collector`'s poll
+    // deleted the run returns 5,630,980 of 5,630,980 and this assertion fires; with it, 622,592.
+    assert!(
+        after < whole / 2,
+        "the cancelled run visited {after} nodes of {whole} — a collector that ignored the flag \
+         would visit all of them, and this is not far enough from that to tell the two apart"
+    );
 }
 
 #[test]
