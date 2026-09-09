@@ -172,7 +172,20 @@ export function stateKey(s) {
 }
 
 /** Every rotation of an algorithm, each with the AUF that lines the case up in front of it. */
+/**
+ * How many repertoires have been built since this module loaded.
+ *
+ * An INSTRUMENT, not a statistic. Building one rotates and AUF-prefixes every entry, so it belongs
+ * at module scope and nowhere near a solve — and it used to be inside one, in three places, where
+ * rung 0 turned 5 algorithms into 80 candidates per look per cube and rung 1 turned 57 into 912.
+ * A counter is how that stays fixed: `method-solver.test.mjs` solves at every rung and requires
+ * this number not to move. Timing it instead would measure the machine.
+ */
+let built = 0;
+export const repertoiresBuilt = () => built;
+
 export function repertoire(algs, { rotations = [0, 1, 2, 3], auf = AUF, post = [''] } = {}) {
+  built += 1;
   const out = [];
   for (const entry of algs) {
     for (const k of rotations) {

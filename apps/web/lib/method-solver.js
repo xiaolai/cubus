@@ -27,8 +27,8 @@
 
 import { applyAlg, rotateAlg } from './cube-pieces.js';
 import {
-  MethodSolverError, algLength, fromRepertoire, repertoire, shortestTo, simplify, slotSafe,
-  wholeCubeSolved,
+  MethodSolverError, algLength, fromRepertoire, repertoire, repertoiresBuilt, shortestTo,
+  simplify, slotSafe, wholeCubeSolved,
 } from './methods/engine.js';
 import { crossTable, solveCrossWhole } from './methods/cross.js';
 import { f2lCaseName } from './methods/pairs.js';
@@ -186,5 +186,5 @@ const sameCube = (a, b) => ['cp', 'co', 'ep', 'eo'].every(
 
 export const __testing = {
   rotateAlg, shortestTo, fromRepertoire, repertoire, simplify, solveCrossWhole, crossTable,
-  f2lCaseName, slotSafe,
+  f2lCaseName, slotSafe, repertoiresBuilt,
 };

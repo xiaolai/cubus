@@ -19,7 +19,10 @@ import {
   CASE_TEXT_KEYS, WHY_KEYS, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces,
   rungSummary, whyText,
 } from '../lib/method-lesson.js';
-import { CASE_NAMES, allRungCombinations, methodFor, solveByMethod } from '../lib/method-solver.js';
+import { wholeCubeSolved } from '../lib/methods/engine.js';
+import {
+  CASE_NAMES, allRungCombinations, methodFor, rungKey, solveByMethod,
+} from '../lib/method-solver.js';
 
 /** Deterministic scrambles — the same generator the rest of the suite uses. */
 function seededStates(count, seed) {
@@ -203,12 +206,16 @@ test('a last-layer step names the pieces THAT application is about, not the firs
 });
 
 test('the move list is cut into the stages the solve actually had', () => {
-  // "Actually had" is the whole claim, and it is why this does not demand four sections. A cube
-  // that arrives at the last layer already oriented has NO top-face steps, so it has no top-face
-  // heading — the same rule `recordCleanFollow` follows when it declines to credit a stage the
-  // lesson did not contain. It shows up at the one-look rungs, where a single algorithm can leave
-  // a last layer that the next stage finds finished; at two-look it is rarer, which is why the
-  // over-strict version of this passed for as long as it did.
+  // "Actually had" is the whole claim, and it is why this does not demand four sections. A stage
+  // whose work is already done produces no steps and therefore no heading — the same rule
+  // `recordCleanFollow` follows when it declines to credit a stage the lesson did not contain.
+  //
+  // **It is not a one-look effect, and the first version of this comment said it was.** Measured
+  // over 60 cubes: it happens at EVERY rung combination including `0,0,0,0`, on the same cube, and
+  // the missing stage is PLL — a last layer that came out already permuted once the top face was
+  // oriented. The over-strict version passed because it sampled five cubes and that one is the
+  // fifty-seventh, not because two-look is rarer. So the assertion was latently wrong before any
+  // of this work, and widening the sample is what found it.
   // The same fine-grained-stage-to-dial map `method-lesson.js` keeps privately. Written out rather
 // than exported: a test that borrowed the module's own table could not catch that table being
 // wrong, and this is the file that checks the cutting.
@@ -258,6 +265,28 @@ const dialsSeen = new Set();
   // Absent SOMEWHERE is correct; absent everywhere would mean a dial that never renders.
   assert.deepEqual([...dialsSeen].sort(), ['cross', 'oll', 'pairs', 'pll'],
     'a dial produced no section in any of the 24 rung combinations');
+});
+
+test('a stage with no heading is a stage with no work, and the cube is still solved', () => {
+  // The other side of the allowance above, and what keeps it from being a hole. A missing heading
+  // has to mean the stage had nothing to do — never that a section went missing from a solve that
+  // needed it. The cube below is the one that produces it: its last layer comes out already
+  // permuted after OLL, so PLL contributes no steps at every rung combination there is.
+  const [state] = seededStates(60, 31337).slice(56);
+  let sawShort = 0;
+  for (const rungs of allRungCombinations()) {
+    const { steps, alg } = solveByMethod(state, methodFor(rungs));
+    const ids = lessonSections(steps).map((s) => s.id);
+    if (ids.length === 4) continue;
+    sawShort += 1;
+    assert.ok(!ids.includes('pll'), `${rungKey(rungs)}: the missing stage is not the one expected`);
+    const pllSteps = steps.filter((s) => ['top-corners', 'top-edges'].includes(s.stage));
+    assert.deepEqual(pllSteps, [], 'PLL has no heading but produced steps');
+    // And the solve is a solve. A stage silently skipped on a cube that needed it would show up
+    // here and nowhere else.
+    assert.ok(wholeCubeSolved(applyAlg(state, alg)), `${rungKey(rungs)}: the cube is not solved`);
+  }
+  assert.ok(sawShort > 0, 'the short-section case no longer happens — this test is now vacuous');
 });
 
 test('an unknown stage is refused rather than silently folded into the previous section', () => {

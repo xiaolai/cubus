@@ -260,6 +260,26 @@ test('every algorithm in the repertoire is one some cube actually needs', () => 
   }
 });
 
+test('a solve builds no repertoires — they are built once, when the module loads', () => {
+  // COUNTED, not timed. `repertoire` rotates and AUF-prefixes every entry, and it used to run
+  // inside a solve in three places: `runLooks`, `placeCorner`/`placeEdge`, and the cross rung. At
+  // rung 0 that was 5 algorithms turned into 80 candidates per look per cube — wasteful and
+  // invisible. At rung 1 it is 57 turned into 912, and it stopped being invisible: a full solve
+  // measured 869 ms against the beginner method's 484, which is the wrong way round and a second
+  // of silence on the screen. Hoisted, both ends are about a quarter of that.
+  //
+  // A millisecond budget would measure the runner. A build count is a property of the code, holds
+  // on any machine, and fails by construction the moment someone puts a `repertoire()` back on the
+  // hot path — which is the only way this regresses.
+  const before = __testing.repertoiresBuilt();
+  for (const rungs of allRungCombinations()) {
+    const method = methodFor(rungs);
+    for (const state of seededStates(2, 5150)) solveByMethod(state, method);
+  }
+  assert.equal(__testing.repertoiresBuilt(), before,
+    'a solve built a repertoire — hoist it to module scope, as `look` and SLOT_REPERTOIRE do');
+});
+
 test('every named method solves, and cubejs agrees on all of them', () => {
   for (const state of seededStates(20, 424242)) {
     for (const [name, method] of NAMED) {
