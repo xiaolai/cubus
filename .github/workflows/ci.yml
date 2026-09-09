@@ -152,6 +152,10 @@ jobs:
 
       # THE COMPLETENESS PROOF THE METHOD SOLVER RESTS ON, nightly and on main.
       #
+      # Since 2026-09-09 it runs at EVERY last-layer rung combination, not only the default — the
+      # one-look rungs are a 57-case and a 21-case table, and "the table is complete" is exactly the
+      # claim a sample cannot make. That multiplies the step by four; it is nightly for that reason.
+      #
       # `bench/method-solver-profile.mjs exhaustive` enumerates all 62,208 reachable last-layer
       # states and checks the two-look repertoire finishes every one. Until 2026-09-09 that claim
       # lived only in a benchmark nobody ran — so a repertoire change could pass every sampled test
@@ -395,6 +399,19 @@ jobs:
       - name: optimal solver — the L=14..15 geodesic tier (nightly)
         if: needs.plan.outputs.full == 'true'
         run: cargo test -p optimal-solver --release --test plan_checks -- --ignored --exact geodesic_segments_prove_their_exact_depth_pll_tier
+
+      # THE REFUTATION PASS BEHIND THE F2L TABLE, nightly and on main. Every one of the 42 cases
+      # re-solved from scratch by brute force — no heuristic, no pattern database, nothing pruning
+      # but the canonical move order — and compared with the table's claim on both counts: that
+      # nothing shorter reaches the goal, and that the minimal SET is complete. It is the only
+      # check of that table which does not rest on the projection's own pruning, and a pattern
+      # database is exactly the thing whose failure is silent: an inadmissible entry does not
+      # crash, it returns a length that is not the minimum, and every check built on the same
+      # tables agrees with it. Measured 2026-09-09: about two minutes, nearly all of it the three
+      # nine-move cases.
+      - name: optimal solver — the F2L brute-force refutation (nightly)
+        if: needs.plan.outputs.full == 'true'
+        run: cargo run --release -p optimal-solver --bin f2l-cross-check
 
       # The memory-hungry rung, likewise nightly: the depth-7 HTM ball shell needs about 4.78 GiB
       # (§7a finding F7 — an earlier 1.9 GiB estimate omitted the frontier vectors). A runner
