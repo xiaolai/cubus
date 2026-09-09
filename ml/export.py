@@ -214,7 +214,7 @@ def export_onnx_cubedet(pt: Path, work: Path, out: Path) -> tuple[Path, Path]:
     fp32 = out / FP32
     torch.onnx.export(
         ExportWrapper(model),
-        torch.zeros(1, 3, IMGSZ, IMGSZ),
+        torch.zeros(1, 3, model.image_size, model.image_size),
         str(fp32),
         input_names=["images"],
         output_names=["output0"],
@@ -222,7 +222,7 @@ def export_onnx_cubedet(pt: Path, work: Path, out: Path) -> tuple[Path, Path]:
         do_constant_folding=True,
         dynamo=False,
     )
-    _assert_contract(fp32)
+    _assert_contract(fp32, model.image_size)
     int8 = out / INT8
     quantize_int8(fp32, int8)
     return fp32, int8
@@ -242,7 +242,7 @@ def export_coreml_cubedet(pt: Path, work: Path, out: Path) -> Path:
     from cubedet.model import ExportWrapper
 
     model = _load_cubedet(pt)
-    sample = torch.zeros(1, 3, IMGSZ, IMGSZ)
+    sample = torch.zeros(1, 3, model.image_size, model.image_size)
     traced = torch.jit.trace(ExportWrapper(model).eval(), sample, strict=False)
     converted = ct.convert(
         traced,
@@ -276,12 +276,22 @@ def _load_cubedet(pt: Path):
 
     state = torch.load(pt, map_location="cpu", weights_only=True)
     weights = state.get("model", state)
-    model = CubeDet(num_classes=state.get("num_classes", 6), width=state.get("width", 1.0))
-    model.load_state_dict(weights)
+    # EVERY ARCHITECTURAL SWITCH COMES FROM THE CHECKPOINT, not from this function's defaults.
+    # `--context` adds `head.context_mlp.*`, and a rebuild that ignores it fails on unexpected keys
+    # — which is at least loud. The dangerous version is the opposite: a switch that changes
+    # behaviour without changing the key set would export a DIFFERENT model in silence. So the
+    # checkpoint carries them and the load is strict.
+    model = CubeDet(
+        num_classes=state.get("num_classes", 6),
+        width=state.get("width", 1.0),
+        image_size=state.get("imgsz", IMGSZ),
+        context=state.get("context", False),
+    )
+    model.load_state_dict(weights, strict=True)
     return model.eval()
 
 
-def _assert_contract(onnx_path: Path) -> None:
+def _assert_contract(onnx_path: Path, imgsz: int = IMGSZ) -> None:
     """The exported graph must emit [1, 4 + classes, 8400], or nothing downstream can read it.
 
     Checked HERE as well as in `test_cubedet.py` because this is the file that writes the artefact
@@ -291,7 +301,8 @@ def _assert_contract(onnx_path: Path) -> None:
 
     graph = onnx.load_model(str(onnx_path)).graph
     shape = [d.dim_value for d in graph.output[0].type.tensor_type.shape.dim]
-    expected = [1, 4 + len(CLASS_NAMES), 8400]
+    anchors = sum((imgsz // stride) ** 2 for stride in (8, 16, 32))
+    expected = [1, 4 + len(CLASS_NAMES), anchors]
     if shape != expected:
         sys.exit(f"{onnx_path.name} emits {shape}, not the {expected} decodeDetections reads")
 

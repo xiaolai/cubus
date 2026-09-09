@@ -96,6 +96,21 @@ fi
 
 mkdir -p "$WORK/out/$RUN"
 docker rm -f "cubedet_${RUN}" >/dev/null 2>&1 || true
+
+# RESUME BY DEFAULT IF THERE IS SOMETHING TO RESUME FROM.
+#
+# On 2026-09-09 this box hard-reset at 03:34 and took A_baseline down at epoch 19 of 80. The
+# checkpoint was on disk the whole time -- `last.pt` carries the weights, the EMA, the optimiser
+# and the scheduler, written every epoch -- and restarting from zero would have thrown away two
+# hours for nothing. A long unattended run on hardware with a known reset mode should not need a
+# human to notice before it continues.
+#
+# CUBEDET_FRESH=1 forces a clean start; that is the flag to reach for when the RECIPE changed,
+# because resuming into different code silently mixes two experiments.
+if [ -f "$WORK/out/$RUN/last.pt" ] && [ "${CUBEDET_FRESH:-0}" != "1" ]; then
+  EXTRA+=(--resume "/work/out/$RUN/last.pt")
+  echo "resuming $RUN from its last checkpoint (CUBEDET_FRESH=1 to start over)"
+fi
 docker run -d --name "cubedet_${RUN}" --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -v "$WORK:/work" -v "$DATA:/data:ro" -w /work \
