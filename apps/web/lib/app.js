@@ -19,6 +19,19 @@ import { NO_CHALLENGES, loadIndex, provenAnswer } from './optimal-challenges.js'
 import { STARTUP_DELAY_MS, makeUpdater, progressLabel, selfUpdateSupported } from './app-update.js';
 import { hostPlatform, isDesktopHost } from './host.js';
 import { randomCube } from './random-state.js';
+// The explaining solver, returned 2026-09-08 (dev-docs/method-solver-return-plan.md). It answers
+// a different question from the two-phase solver — "why is this move right" rather than "how
+// short can this be" — so the two are two OBJECTS on this screen, never one standing where the
+// other was. That rule is what the first attempt broke; §3 of the plan is about it.
+import { fromCube, movesOf } from './cube-pieces.js';
+import { DEFAULT_RUNGS, STAGE_IDS, TOP_RUNG, methodFor, solveByMethod, warmCross } from './method-solver.js';
+import {
+  lessonCues, lessonSections, moveStepIndex, rungSummary, stepAtMove, whyText,
+} from './method-lesson.js';
+import {
+  acceptOffer, declineOffer, followsUntilOffer, ladderRows, nextOffer, recordCleanFollow,
+  repairProgress,
+} from './method-ladder.js';
 import { makeRouter } from './router.js';
 // The smart-cube strands, recovered from v0 (2026-08-27): the transport seam (Web Bluetooth in a
 // browser, native BLE events under Tauri), one durable record per cube, and the trust model that
@@ -187,6 +200,37 @@ settings.proveMinimum = settings.proveMinimum === true;
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
+// `teachLevel` was a Settings dropdown offering off / beginner / F2L. It was deleted with the
+// explaining solver on 2026-08-29 and it deserved deleting: the rung is a FACT ABOUT THE LEARNER,
+// not a preference, and four dropdowns would be a configuration screen inside a children's app.
+// The stored leftover goes the same way `inspection` did.
+delete settings.teachLevel;
+
+/**
+ * Which rung of each stage this learner is on — dev-docs/method-solver-return-plan.md §2/§3.
+ *
+ * Four independent dials, not one level: you learn to plan the cross long before you learn 57
+ * OLLs, and the removed design forced those onto one axis. The default is the bottom rung
+ * everywhere, so a new learner chooses nothing and is shown the beginner's method — the same
+ * discipline `DEFAULT_HIDDEN` already applies to the nav.
+ *
+ * localStorage is untrusted input, so this is repaired rather than believed: anything that is not
+ * an integer inside the ladder falls back to 0. A stored 9 would otherwise throw out of
+ * `methodFor` on the first solve and take the screen with it — the `language: 7` failure again.
+ */
+function repairRungs(stored) {
+  const out = { ...DEFAULT_RUNGS };
+  for (const id of STAGE_IDS) {
+    const want = stored?.[id];
+    if (Number.isInteger(want) && want >= 0 && want <= TOP_RUNG[id]) out[id] = want;
+  }
+  return out;
+}
+settings.rungs = repairRungs(settings.rungs);
+// How many times each stage has been followed to the end at its current rung, and how often its
+// next rung has been declined. §3 rule 3 — "offer, never ask" — is a rule about counting, so the
+// counts are stored; repaired on load for the same reason the rungs are.
+settings.rungProgress = repairProgress(settings.rungProgress);
 
 /** The themes, as stored. Auto is a policy rather than a theme: white while the system is light,
  * night while it is dark (tokens.css). Cream is the warm option you choose, not the default you
@@ -303,6 +347,12 @@ const state = {
   anchored: false,
   cube: {
     facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [], solveResult: null,
+    // The explaining solver's answer for THIS arrangement, or null while it has not been asked.
+    // A second object beside `solution`, never a replacement for it: the two answer different
+    // questions and the screen offers both (§3, "a lesson and a short solution are two different
+    // objects, and both stay reachable"). Cached per arrangement and per rung record, because it
+    // costs ~13 ms and the screen may switch back and forth.
+    lesson: null,
     // Has this arrangement been classified? Declared here rather than appearing on first write, so
     // the shape of `state.cube` is readable in one place — it was set by ingestFacelets and read
     // by deriveCube and existed in neither declaration.
@@ -400,7 +450,8 @@ const PROVE_COPY = {
  *  native prover's gated block). It is a named function rather than a slice of a ternary so
  *  the wording invariant in optimal.test.mjs can sanction it precisely instead of loosening
  *  to a pattern that would let a third source through unnoticed. Its guard is checked there
- *  too: the only call must sit behind `provenHere`. */
+ *  too: the only call must sit behind `showingProof` — the cube is proved AND the Solution is
+ *  the object on screen. */
 const provenMinimumLabel = (moves) => `${moves} — proved the minimum`;
 
 
@@ -492,11 +543,63 @@ function ingestFacelets(f) {
   const c = state.cube;
   c.facelets = f;
   c.solution = ''; c.moves = []; c.stepFacelets = []; c.solveResult = null;
+  // The lesson is about the arrangement it was worked out for. Carried across a new one it would
+  // caption a walk with another cube's steps — the exact failure that made the first attempt look
+  // like a broken solver.
+  c.lesson = null;
   c.setupAlg = ''; c.derived = false; c.unsolvable = false; c.crossChecked = false;
 }
 
-/** An algorithm string as its move list — the one tokenizer both solve paths share. */
-const movesOf = (alg) => (alg.trim() ? alg.trim().split(/\s+/) : []);
+// `movesOf` is imported from `cube-pieces.js`: the move list, the lesson's move counts and the
+// solver's own `algLength` all have to agree on what a move is, and they were three functions.
+
+/**
+ * The lesson for the current arrangement, at the rungs this learner is on.
+ *
+ * Synchronous, and on this thread on purpose: it needs no search worth moving off it, and it runs
+ * inside the "working…" the two-phase solve is already showing. **Measured on this machine,
+ * 2026-09-09** — the earlier "~13 ms" in this comment was the plan's 2026-08 figure for the
+ * removed solver and was not true of this code on this hardware:
+ *
+ *   rung 0 everywhere      33 ms
+ *   cross rung 1, warm     97 ms
+ *   cross rung 1, first   804 ms  — the 331,776-entry cross distance table, built once
+ *
+ * The first-call figure is why `warmCrossTable` exists. Cached against the arrangement AND the
+ * rung record, so raising a rung produces a new lesson rather than showing the old one under a
+ * new name.
+ *
+ * Returns null rather than throwing on a cube the method cannot finish: the Solution is still
+ * there, and a screen that lost both objects because one of them failed would be worse than one
+ * that quietly offers the other. `MethodSolverError` carries the stage, so the reason is logged
+ * rather than swallowed.
+ */
+function lessonFor(c = state.cube) {
+  const method = methodFor(settings.rungs);
+  if (c.lesson && c.lesson.facelets === c.facelets && c.lesson.method === method.id) return c.lesson;
+  let result;
+  try {
+    result = solveByMethod(fromCube(Cube.fromString(c.facelets)), method);
+  } catch (err) {
+    console.warn('method solver: no lesson for this cube', err);
+    return null;
+  }
+  const moves = movesOf(result.alg);
+  c.lesson = {
+    facelets: c.facelets,
+    method: method.id,
+    rungs: result.rungs,
+    summary: rungSummary(method),
+    steps: result.steps,
+    sections: lessonSections(result.steps),
+    // Which step each move belongs to, so the walk can point at what the move you are on is for.
+    moveStep: moveStepIndex(result.steps),
+    alg: result.alg,
+    moves,
+    stepFacelets: stepStates(c.facelets, moves),
+  };
+  return c.lesson;
+}
 
 /**
  * What the stored facelets ARE, before anything searches: a walk to make, nothing to do, or an
@@ -649,6 +752,12 @@ let solverWarmed = false;
  * that opens neither.
  */
 function warmSolver() {
+  // BEFORE the early return, and that is the whole point. `solverWarmed` is about the two-phase
+  // worker, which only ever needs warming once; the cross table is about a RUNG, and a learner who
+  // was on rung 0 the first time this ran and has since been offered rung 1 would otherwise never
+  // warm it — the early return swallowed the call, and the first lesson at the new rung paid the
+  // 804 ms this function exists to move. Found in verification, 2026-09-09.
+  warmCrossTable();
   if (solverWarmed) return;
   solverWarmed = true;
   try {
@@ -660,6 +769,46 @@ function warmSolver() {
     // where a user is actually waiting. Warming must never be the thing that breaks a screen.
   }
 }
+
+/**
+ * Build the whole-cross distance table off the critical path, if this learner will need it.
+ *
+ * Cross rung 1 solves the cross by descending an exact BFS distance table over 24^4 = 331,776
+ * codes, built lazily on first use. **Measured 2026-09-09: the first lesson at that rung costs
+ * 804 ms against 97 ms warm** — the table is nearly the whole of it. That happens on the main
+ * thread, inside `lessonFor`, during the "working…" a learner is already watching, so it is a
+ * slower wait rather than a frozen screen; it is still most of a second nobody needs to spend.
+ *
+ * Only when the rung is actually in play: a learner on rung 0 never touches the table, and
+ * building it for them would be paying the cost to avoid it.
+ *
+ * **It is still main-thread work, and now it is main-thread work IN SLICES.** `setTimeout(0)`
+ * deferred the build to a later turn of the event loop and left it a single 114 ms task there —
+ * so the turn that triggered the warm completed and the next one froze instead. `warmCross` now
+ * expands a bounded number of positions per slice and yields between them, so the browser gets its
+ * turn back regularly and the build competes with rendering rather than blocking it.
+ *
+ * Moving it off the thread entirely still means a worker, and the solver is synchronous by design
+ * (`stage.run` has nowhere to await), so that is a larger change than this warm-up is. What is
+ * bought here is that no single task is long. The cost is still paid once per session, and only by
+ * a learner on the rung that needs it. A failure here is never allowed to break a screen, same as
+ * above.
+ */
+function warmCrossTable() {
+  if (crossTableWarmed || (settings.rungs?.cross ?? 0) < 1) return;
+  crossTableWarmed = true;
+  // `setTimeout`, not a microtask: a microtask runs before the browser gets its turn at all, so
+  // the first slice would land inside the turn that triggered the warm. The slices after it yield
+  // on their own.
+  setTimeout(() => {
+    void Promise.resolve()
+      .then(() => warmCross())
+      .catch((err) => {
+        console.warn('cross table warm-up failed; the first lesson will build it', err);
+      });
+  }, 0);
+}
+let crossTableWarmed = false;
 
 /**
  * The setup alg, taken from the solution the pool already found — CHECKED, never trusted.
@@ -3673,7 +3822,34 @@ const cubeScreen = (screenMode) => {
              count is the heading's ANSWER and belongs at the right edge whether or not anything
              follows it; the buttons then sit beside it, each with a margin of its own. -->
         <div class="card-h bare"><b id="solLabel">${label}</b><span class="sub" id="moveCount" role="status" aria-live="polite" style="margin-left:auto">—</span><button class="pill" id="proveBtn" hidden style="margin-left:12px">${PROVE_COPY.button}</button><button class="pill" id="proveCancel" hidden style="margin-left:6px">stop</button></div>
+        ${scrambling ? '' : `<!-- Two objects, both reachable — dev-docs/method-solver-return-plan.md §3.
+             The first attempt at the explaining solver REPLACED the solution with the lesson: a
+             93-move "Lesson" appeared exactly where 20 moves used to be printed, and it read as a
+             solver that had broken. They are different questions with different answers, so they
+             are two labelled things you switch between, and the count beside the heading changes
+             with the label so the two numbers can never be mistaken for each other. -->
+        <!-- aria-pressed, not only the "on" class. Which of the two is showing was carried by a
+             CSS class alone, so a screen reader announced two identical buttons and no way to tell
+             which object was on screen — and the whole point of the pair is that they are two
+             different answers to two different questions. -->
+        <div class="wrap-row" id="walkKindRow" role="group" aria-label="${escHtml(t('Solution'))} / ${escHtml(t('Lesson'))}" style="gap:6px;padding:2px 18px 6px">
+          <button class="pill on" data-walk="solution" aria-pressed="true">${escHtml(t('Solution'))}</button>
+          <button class="pill" data-walk="lesson" aria-pressed="false">${escHtml(t('Lesson'))}</button>
+          <span class="sub" id="rungLine" style="color:var(--ink-4);margin-left:auto;text-align:right" hidden></span>
+        </div>`}
         <div class="list" id="solList" style="padding:6px 0"></div>
+        ${scrambling ? '' : '<div class="sub" id="whyLine" style="padding:0 18px 10px;color:var(--ink-4)" hidden></div>'}
+        ${scrambling ? '' : `<!-- Offer, never ask (§3 rule 3). Shown only after a lesson has been followed to the
+             end enough times, once, in one tap. Declining costs nothing: it postpones the offer
+             rather than disabling it, so nothing is ever silently raised and nothing is ever
+             permanently refused on a learner's behalf. -->
+        <div class="follow-note info" id="rungOffer" hidden>
+          <span id="rungOfferMsg" role="status" aria-live="polite"></span>
+          <div class="acts">
+            <button class="btn sm accent-outline" id="rungYes">${escHtml(t('Show me'))}</button>
+            <button class="btn sm outline" id="rungNot">${escHtml(t('Not yet'))}</button>
+          </div>
+        </div>`}
         <div class="follow-note" id="followNote" hidden>
           <span id="followMsg" role="status" aria-live="polite"></span>
           <div class="acts">
@@ -3945,6 +4121,13 @@ const cubeScreen = (screenMode) => {
       // closure, so loadWalk() can replace the walk underneath them without rebuilding anything.
       // A `const` here would put us straight back to needing a new screen for a new cube.
       let setup, alg, moves = [], steps = [], target = null, total = 0;
+      // Which of the two objects this screen is showing. `let`, and deliberately NOT a setting:
+      // it is a view of this screen, not a preference about every cube, so it lives as long as
+      // the screen does and is never written to storage. A learner who wants the lesson wants it
+      // for the next cube too, so it survives a retarget; it does not survive leaving.
+      let walkKind = 'solution';
+      /** The lesson on screen, or null while the Solution is showing. Read by sync(). */
+      let lesson = null;
       let chips = [];
       let at = 0;
       let playing = false;
@@ -4019,12 +4202,59 @@ const cubeScreen = (screenMode) => {
         };
       }
 
+      /**
+       * Point the cube at what the step under the transport head is about — plan §5.2.
+       *
+       * `focus` drains the hue from every piece the step does not name; `highlight` pulses the
+       * ones it does. The sentence stays, translated and short, but it is no longer the
+       * load-bearing channel: the first attempt had ONLY the sentence, and "join the corner to
+       * its edge" cannot say WHICH corner.
+       *
+       * **The cue is about the move ABOUT TO HAPPEN, and the chips are about the one just made.**
+       * They are two different questions asked of the same index and they used to share an answer:
+       * `cubus-step` fires when move `i` has finished, so reading the step of move `i - 1` meant
+       * the first move of every teaching step animated under the PREVIOUS step's sentence and
+       * highlight. On a lesson whose steps are three or four moves long that is a quarter of the
+       * walk pointing at the wrong pieces — and the sentence and the pulse are the whole of what
+       * makes a step a lesson rather than a move list.
+       *
+       * At 0 the step about to happen is the one described — that is the step you are looking at
+       * before you turn anything — and at the end the last step stays, because there is no move
+       * after it to describe. Silent entirely on the Solution, because a two-phase answer has no
+       * steps and inventing cues for it is exactly what this app does not do.
+       */
+      function pointAtStep(i) {
+        const whyLine = $('#whyLine', root);
+        if (!lesson || scrambling) {
+          cube.removeAttribute('focus');
+          cube.removeAttribute('highlight');
+          if (whyLine) { whyLine.hidden = true; whyLine.textContent = ''; }
+          return;
+        }
+        const step = lesson.steps[stepAtMove(lesson.moveStep, i)];
+        const { focus, highlight } = lessonCues(step);
+        // Whole-or-nothing at the renderer: an empty spec removes the channel rather than
+        // setting it to a selector that names nothing.
+        if (focus) cube.setAttribute('focus', focus); else cube.removeAttribute('focus');
+        if (highlight) cube.setAttribute('highlight', highlight); else cube.removeAttribute('highlight');
+        if (!whyLine) return;
+        const text = whyText(step);
+        whyLine.hidden = !text;
+        whyLine.textContent = text
+          ? t('Step %1 of %2 — %3', lesson.steps.indexOf(step) + 1, lesson.steps.length, text)
+          : '';
+      }
+
       function sync(i) {
+        // One move forward is one move followed. Anything else — a seek, a scrub, a reload — moves
+        // the head without the learner having watched what it passed over.
+        if (i === at + 1) followed.add(at);
         at = i;
         // The filled chip is the move just shown — the one you are on. At 0 / 22 nothing has been
         // shown, so nothing is filled. It used to mark the NEXT move, and a black first chip before
         // anything had happened read as a step already taken.
         chips.forEach((ch, k) => { ch.classList.toggle('played', k < i); ch.classList.toggle('cur', k === i - 1); });
+        pointAtStep(i);
         $('#stepLbl', root).textContent = `${i} / ${total}`;
         $('#progBar', root).style.width = total ? `${(i / total) * 100}%` : '0%';
         // A button that cannot do anything says so, rather than swallowing the press.
@@ -4035,6 +4265,27 @@ const cubeScreen = (screenMode) => {
         // A tick beside the count once the last move lands. It used to be a 46px badge over the
         // cube, saying "done" where the count beside it already read 22 / 22.
         $('#doneMark', root).hidden = i < total;
+        // The last move of a LESSON is one clean follow of every stage it contained — and once
+        // per walk, not once per arrival at the end.
+        //
+        // **FOLLOWED, not merely arrived at.** Reaching the last chip was the whole test, and a
+        // chip press seeks straight there: tapping the final chip credited every stage in the
+        // lesson as practised. So did switching Solution → Lesson, which starts a new walk and
+        // reset the once-per-walk guard with the head already at the end. A learner could earn a
+        // rung offer without watching a single move.
+        //
+        // What counts is a move STEPPED THROUGH: the head advancing by exactly one, forwards.
+        // Rewinding to re-watch something is still following — the moves already stepped stay
+        // counted — but a jump credits nothing, because nothing was shown.
+        if (lesson && total > 0 && i >= total && followed.size >= total && creditedWalk !== walkGen) {
+          creditedWalk = walkGen;
+          settings.rungProgress = recordCleanFollow(
+            settings.rungProgress,
+            lesson.sections.map((sec) => sec.id),
+          );
+          noteWrite(save('cubusSettings', settings));
+          showOffer();
+        }
         // And, on Scramble, the way onward — labelled for what is actually known at that moment.
         // Gated on the TARGET, not on the count: between beginWalk() and the roll landing, and
         // after a roll that failed, `total` is 0 and `i >= total` is trivially true — so the
@@ -4095,6 +4346,101 @@ const cubeScreen = (screenMode) => {
         setPlaying(false);
         cube.seek(Number(chip.dataset.i) + 1);
       };
+      // ---- offer, never ask ------------------------------------------------------------------
+      //
+      // A lesson followed to its last move is one clean follow of every stage that lesson actually
+      // contained — read off the solve, never assumed, because a cube whose cross was already
+      // solved taught nothing about the cross. Counted once per walk: `sync` fires on every step
+      // and on every seek, and a learner who scrubs back and forth would otherwise be credited
+      // with a dozen solves.
+      let creditedWalk = -1;
+      /** The moves this walk has been stepped through, one at a time and forwards. */
+      const followed = new Set();
+      /**
+       * Whether this learner's progress is actually reaching storage.
+       *
+       * A write can fail — a full quota, a private window with storage off — and `save` warns to
+       * the console, which nobody is reading. Progress that is not persisted means the follows
+       * never accumulate and the offer never comes, and the screen would look exactly like a
+       * learner who had not practised enough. So it is said, in the row that would otherwise be
+       * carrying the offer.
+       */
+      let progressUnsaved = false;
+      const noteWrite = (ok) => { if (!ok) progressUnsaved = true; };
+      const offerRow = $('#rungOffer', root);
+      /** The offer currently ON SCREEN — answered as shown, not recomputed on the way out. */
+      let shownOffer = null;
+      const showOffer = () => {
+        if (!offerRow) return;
+        const msg = $('#rungOfferMsg', root);
+        if (progressUnsaved) {
+          shownOffer = null;
+          offerRow.hidden = false;
+          msg.textContent = t('This device is not saving your progress, so rungs will not be offered.');
+          $('#rungYes', root).hidden = true;
+          $('#rungNot', root).hidden = true;
+          return;
+        }
+        shownOffer = nextOffer(settings.rungs, settings.rungProgress);
+        offerRow.hidden = !shownOffer;
+        if (!shownOffer) return;
+        $('#rungYes', root).hidden = false;
+        $('#rungNot', root).hidden = false;
+        msg.textContent =
+          t('You have followed this a few times. Ready for %1? %2', t(shownOffer.label), t(shownOffer.blurb));
+      };
+      const answerOffer = (yes) => {
+        // The offer the learner was LOOKING AT. Recomputing it here answered whatever `nextOffer`
+        // says now, which is not necessarily what the row said when they pressed the button.
+        const offer = shownOffer;
+        if (!offer) { if (offerRow) offerRow.hidden = true; return; }
+        if (yes) {
+          noteWrite(raiseRung(offer));
+        } else {
+          settings.rungProgress = declineOffer(settings.rungProgress, offer);
+          noteWrite(save('cubusSettings', settings));
+        }
+        shownOffer = null;
+        if (offerRow) offerRow.hidden = true;
+        if (progressUnsaved) showOffer();
+        // **Not when there is nothing left to solve.** The offer arrives at the END of a walk, and
+        // a learner following on a physical cube has by then actually solved it — so `state.cube`
+        // is the solved arrangement. Reloading asked the solver for a walk from solved to solved,
+        // got nothing, and replaced the lesson the learner had just finished with "could not work
+        // it out" — blaming the cube for a question nobody should have asked. The finished walk
+        // stays on screen; the raised rung applies to the next cube, which is the one it is for.
+        // `state.cube.lesson` is cleared above either way, so that next lesson is built at the new
+        // rungs rather than served from a cache made at the old ones.
+        if (yes && walkKind === 'lesson' && state.cube.facelets !== SOLVED) void loadWalk();
+      };
+      if (offerRow) {
+        $('#rungYes', root).onclick = () => answerOffer(true);
+        $('#rungNot', root).onclick = () => answerOffer(false);
+      }
+
+      /** The selected walk, said in both channels — the class for the eye, `aria-pressed` for the
+       *  screen reader that cannot see it. */
+      const setWalkPill = (pill, kind) => {
+        const on = pill.dataset.walk === kind;
+        pill.classList.toggle('on', on);
+        pill.setAttribute('aria-pressed', String(on));
+      };
+
+      // The two objects, and the switch between them (§3). Wired once per MOUNT, like every other
+      // control here: a retarget replaces the walk beneath these, not the buttons.
+      //
+      // Pressing the one already showing does nothing — re-solving to arrive at the same walk
+      // would throw away the transport position for no change on screen.
+      for (const pill of root.querySelectorAll('[data-walk]')) {
+        pill.onclick = () => {
+          const want = pill.dataset.walk;
+          if (want === walkKind) return;
+          walkKind = want;
+          for (const p of root.querySelectorAll('[data-walk]')) setWalkPill(p, walkKind);
+          void loadWalk();
+        };
+      }
+
       $('#repeatBtn', root).onclick = () => {
         takeOver();
         // Not merely belt-and-braces with the disabled attribute: stepBack() self-guards at step 0
@@ -4282,6 +4628,14 @@ const cubeScreen = (screenMode) => {
        */
       function beginWalk() {
         moves = []; steps = []; chips = []; total = 0; target = null;
+        // The lesson describes the walk that is being replaced. Cleared here, with everything
+        // else, so no cue survives into the gap: focus and highlight name PIECES, and pointing at
+        // a piece on a cube that has just changed is worse than pointing at nothing.
+        lesson = null;
+        pointAtStep(0);
+        if (offerRow) offerRow.hidden = true;
+        const rungLine = $('#rungLine', root);
+        if (rungLine) { rungLine.hidden = true; rungLine.textContent = ''; }
         midpoints.clear();
         solList.innerHTML = '';
         // The previous walk's prove button must not survive into the gap: its closure guards
@@ -4325,6 +4679,10 @@ const cubeScreen = (screenMode) => {
 
       async function loadWalk() {
         const mine = ++walkGen;
+        // A new walk has been followed nowhere yet. Without this, switching Solution → Lesson
+        // would inherit the moves the previous walk had stepped through and credit the new one on
+        // the strength of them.
+        followed.clear();
         // Two ways to become obsolete: the screen was replaced (screenGen), or another press
         // started a newer walk on this same screen (walkGen). Both must stop this one writing.
         const fresh = () => !stale() && mine === walkGen;
@@ -4345,6 +4703,7 @@ const cubeScreen = (screenMode) => {
         // until this load is known to still be the current one, so there is no window in which
         // that disagreement exists at all.
         let gotSetup = '', gotAlg = '', gotMoves = [], gotSteps = [], gotTarget = null, gotRoll = null;
+        let gotLesson = null;
         try {
           if (scrambling) {
             if (!solverReady && !(await loadSolver())) throw new Error('solver unavailable');
@@ -4396,6 +4755,26 @@ const cubeScreen = (screenMode) => {
             // Snapshotted: setFacelets() clears stepFacelets on every live update, and following a
             // physical cube needs the states to compare against to outlive the next turn.
             gotSteps = state.cube.stepFacelets.slice();
+            // The lesson is worked out AFTER the search and never instead of it, so both objects
+            // exist for this cube and switching between them costs nothing (§3). It reuses the
+            // setup alg the search produced: the two walks start from the same arrangement, and
+            // deriving it twice would be two Kociemba searches for one answer.
+            //
+            // A cube the method cannot finish DEGRADES to the solution rather than failing the
+            // screen. Losing both objects because one of them could not be built would be the
+            // worst of the three outcomes, and the pill goes back to Solution so the screen and
+            // the switch agree about what is showing.
+            if (walkKind === 'lesson') {
+              gotLesson = lessonFor(state.cube);
+              if (gotLesson) {
+                gotAlg = gotLesson.alg;
+                gotMoves = gotLesson.moves.slice();
+                gotSteps = gotLesson.stepFacelets.slice();
+              } else {
+                walkKind = 'solution';
+                for (const p of root.querySelectorAll('[data-walk]')) setWalkPill(p, 'solution');
+              }
+            }
           }
         } catch (err) {
           // A search this screen itself called off is not a failure to report: the subject it was
@@ -4411,6 +4790,7 @@ const cubeScreen = (screenMode) => {
         // against a scramble that is not the one on screen.
         putInPlay(gotRoll);
         setup = gotSetup; alg = gotAlg; moves = gotMoves; steps = gotSteps; target = gotTarget;
+        lesson = gotLesson;
         total = moves.length;
         if (scrambling) paintNet(target);
         // The Scramble side genuinely starts from solved, so an empty setup alg is its normal
@@ -4440,12 +4820,39 @@ const cubeScreen = (screenMode) => {
         // from an earlier solve — shown here it would caption a fresh scramble with an old
         // cube's shortfall.
         const verdict = scrambling ? null : state.cube.solveResult;
-        const provenHere = verdict?.key === 'solve.provenMinimum';
+        // Whether this arrangement has been PROVED minimal is a fact about the cube. Whether the
+        // screen is showing that proof is a fact about which object is selected. They were one
+        // expression, so an already-proved cube became eligible for the (hours-long) proof button
+        // again the moment the learner switched to Lesson — the proof it already had did not stop
+        // counting because a different object was on screen.
+        const proved = verdict?.key === 'solve.provenMinimum';
+        const showingProof = proved && !lesson;
+        // The heading and the count belong to the OBJECT on screen. A lesson under the heading
+        // "Solution" with a bare "93" beside it is the failure of 2026-08-29: it read as a solver
+        // that had broken, because it was standing exactly where a 20 used to be. So the label
+        // says which object this is, and the count leads with MOVES — the number a learner can
+        // compare — with the steps beside it, which is the number the ladder is actually measured
+        // in. Two shapes, and they cannot be mistaken for each other.
+        const solLabelEl = $('#solLabel', root);
+        if (solLabelEl) solLabelEl.textContent = lesson ? t('Lesson') : label;
+        const rungLine = $('#rungLine', root);
+        // The rungs in play, named on the cube screen (§3 rule 4), so it is never a mystery why
+        // today's solve has more steps than yesterday's.
+        if (rungLine) {
+          rungLine.hidden = !lesson;
+          rungLine.textContent = lesson ? lesson.summary : '';
+        }
         setStatus(
-          provenHere ? provenMinimumLabel(total)
-            : verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'
-              ? `${total} — couldn't get to ${verdict.target}`
-              : String(total),
+          // Both counts through `plural`, because both can be 1. A one-move lesson read
+          // "1 moves · 1 steps" — and this is the file whose i18n note says a hard-coded English
+          // plural is both untranslatable and wrong for most languages.
+          lesson ? t('%1 · %2',
+            plural(total, { one: '%1 move', other: '%1 moves' }),
+            plural(lesson.steps.length, { one: '%1 step', other: '%1 steps' }))
+            : showingProof ? provenMinimumLabel(total)
+              : verdict && verdict.key === 'solve.targetMissed' && verdict.stopped === 'exhausted'
+                ? `${total} — couldn't get to ${verdict.target}`
+                : String(total),
         );
 
         // The optimal seam's affordance (AGENTS.md, fourth seam): drawn only where the native
@@ -4455,9 +4862,12 @@ const cubeScreen = (screenMode) => {
         // mobile builds the button never appears and the wording above stands as the honest
         // answer: the shortest found, no claim of minimality. Re-wired per WALK: a retarget
         // replaced the subject, so the button must come back for the new one.
-        // `!provenHere`: the library already carries this state's proof, so there is nothing
-        // left to ask the native prover for — offering minutes of search to re-derive a fact
-        // we shipped would be the opposite of why the file exists.
+        // `!proved`: the library already carries this state's proof, so there is nothing left to
+        // ask the native prover for — offering minutes of search to re-derive a fact we shipped
+        // would be the opposite of why the file exists. It is `proved` and not `showingProof`
+        // because the proof is a fact about the CUBE: gating on the label made an already-proved
+        // arrangement eligible for hours of search again the moment the learner switched to
+        // Lesson, where the sentence is not shown.
         // `settings.proveMinimum`: off by default. Proving is minutes to hours on a typical cube
         // (optimal-solver-plan.md), so the affordance is not something to put in front of a
         // beginner who did not ask for it — it is opt-in from Settings, where the row explains
@@ -4465,7 +4875,7 @@ const cubeScreen = (screenMode) => {
         // a desktop must be behind them, and a state the library already proved has nothing left
         // to ask for.
         const proveBtn = $('#proveBtn', root);
-        if (proveBtn && optimalCapability() && !scrambling && !provenHere && settings.proveMinimum) {
+        if (proveBtn && optimalCapability() && !scrambling && !proved && settings.proveMinimum) {
           proveBtn.hidden = false;
           proveBtn.disabled = false;
           proveBtn.textContent = PROVE_COPY.button;
@@ -4495,17 +4905,29 @@ const cubeScreen = (screenMode) => {
           // cannot — itself — rather than leaving a press to end in an unhandled rejection.
           }).catch((err) => console.error('optimal: the proof controller failed', err));
         }
-        // One grid, no group headings, on both sides of the walk. The solve side used to cut its
-        // list at fixed 16 / 62 / 82% and head the pieces CROSS / F2L / OLL / PLL — proportional
-        // slices of a two-phase solution wearing the names of stages it does not have. That is
-        // invented structure on the screen a beginner trusts most, and a heading per group is what
-        // put the tail of a 20-move solve past the sheet's foot in portrait. The card header already
-        // says what the chips are and how many.
+        // ONE GRID for a Solution, SECTIONS for a Lesson — and the difference is not decoration.
+        //
+        // The solve side used to cut its list at fixed 16 / 62 / 82% and head the pieces CROSS /
+        // F2L / OLL / PLL: proportional slices of a two-phase solution wearing the names of stages
+        // it does not have. That was removed for being invented structure on the screen a beginner
+        // trusts most, and one flat grid is the honest rendering of an object with no stages.
+        //
+        // A lesson IS an object with stages, so it gets them — read off its own steps, never
+        // proportioned (§5.1). Each heading carries the step count for that stage, which is the
+        // unit the ladder is measured in.
+        //
         // escHtml on the move text. It comes from the solver or the validated library and
         // `reaches()` fails closed, so nothing hostile can be in it today — but it is a string
         // reaching innerHTML, and "this particular source is trusted" is exactly the reasoning
         // that stops being true when a source is added. Every other template here escapes.
-        solList.innerHTML = `<div style="padding:6px 18px 12px"><div class="move-chips">${moves.map((m, k) => `<button class="chip-m" data-i="${k}" title="${escHtml(t('Jump to this move'))}">${escHtml(m)}</button>`).join('')}</div></div>`;
+        const chipsFor = (from, to) => moves.slice(from, to)
+          .map((m, k) => `<button class="chip-m" data-i="${from + k}" title="${escHtml(t('Jump to this move'))}">${escHtml(m)}</button>`)
+          .join('');
+        solList.innerHTML = lesson
+          ? lesson.sections.map((s) => `<div style="padding:6px 18px 10px">
+              <div class="sub" style="color:var(--ink-4);font-weight:600;padding-bottom:4px">${escHtml(s.name)} <span style="font-weight:400">${escHtml(t('%1 steps · %2 moves', s.steps, s.moves))}</span></div>
+              <div class="move-chips">${chipsFor(s.from, s.to)}</div></div>`).join('')
+          : `<div style="padding:6px 18px 12px"><div class="move-chips">${chipsFor(0, moves.length)}</div></div>`;
         chips = [...solList.querySelectorAll('.chip-m')];
 
         // Nothing may survive from the previous walk. Each of these is a position ON a plan, and
@@ -5574,6 +5996,68 @@ SCREENS.stats = () => {
 // and the controls that would pretend to do something are disabled rather than silently inert.
 // A layout can be reviewed perfectly well with dashes in it. When one of these grows a real
 // engine, the dash is exactly the place the real number goes.
+/**
+ * Raise one dial, and everything that has to follow from it.
+ *
+ * Two screens raise a rung — the offer on the cube screen and the ladder on Lessons — and both
+ * had their own copy of the same four steps: take the offer, write both halves back, throw the
+ * cached lesson away, persist. Four steps in two places is four chances for one of them to be
+ * forgotten, and the one most easily forgotten is the third: a lesson worked out at the OLD rungs
+ * is no longer what this learner is being taught, and relabelling it would be worse than
+ * rebuilding it.
+ *
+ * Returns whether the write stuck, because a rung that is not persisted is one the next launch
+ * silently takes back.
+ */
+function raiseRung(offer) {
+  const next = acceptOffer(settings.rungs, settings.rungProgress, offer);
+  settings.rungs = next.rungs;
+  settings.rungProgress = next.progress;
+  state.cube.lesson = null;
+  return save('cubusSettings', settings);
+}
+
+/** How far along a stage is, in words a learner can act on — never a claim about a thing undone. */
+function rungNote(row) {
+  const left = followsUntilOffer(settings.rungs, settings.rungProgress, row.id);
+  if (left === null) return t('This is the highest rung there is.');
+  // Not a countdown: the follow count has stopped rising, so no number of solves reaches the
+  // offer. The rung is still there and still one tap away — it just arrives by being taken.
+  if (left === Infinity) return t('This rung will not be offered again — raise it here whenever you like.');
+  if (left === 0) return t('Ready for the next rung — it will be offered after your next solve.');
+  return plural(left, {
+    one: 'One more solve at this rung before the next one is offered.',
+    other: '%1 more solves at this rung before the next one is offered.',
+  });
+}
+
+/** One rung of one stage — reached, current, or described but not yet taken. */
+function rungLine(r) {
+  const dot = r.current
+    ? 'background:var(--accent)'
+    : r.reached ? 'background:var(--ink-4)' : 'background:transparent;box-shadow:inset 0 0 0 2px var(--ink-6)';
+  return `<div class="row" style="grid-template-columns:8px 1fr auto;gap:14px;align-items:start">
+    <div style="width:8px;height:8px;border-radius:50%;margin-top:6px;${dot}"></div>
+    <div><div style="color:${r.reached ? 'var(--ink)' : 'var(--ink-4)'}">${escHtml(t(r.label))}</div>
+      <div class="sub" style="color:var(--ink-4);line-height:1.45">${escHtml(t(r.blurb))}</div></div>
+    <div class="num sub" style="color:var(--ink-5)">${r.current ? escHtml(t('here')) : ''}</div></div>`;
+}
+
+/**
+ * One stage's card: every rung it has, where this learner is, and what moves them on.
+ *
+ * Its own function, with `rungLine` and `rungNote` beside it, because the screen was one template
+ * literal carrying four nested `.map`s, a dot-colour ternary, a four-branch progress sentence and
+ * the event wiring — and the thing it is easiest to get wrong in there is the one thing this
+ * screen must not get wrong, which is saying something true about a learner.
+ */
+function ladderCard(row) {
+  return `<div class="card tight"><div class="card-h"><div><div class="eyebrow">${escHtml(t('STAGE'))} · ${row.rungs.length} ${escHtml(t('RUNGS'))}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${escHtml(row.name)}</div></div><div class="num sub" style="color:var(--ink-4)">${escHtml(t('rung %1', row.at))}</div></div>
+    ${row.rungs.map(rungLine).join('')}
+    <div class="sub" style="color:var(--ink-4);padding:8px 0 2px">${escHtml(rungNote(row))}</div>
+    ${row.at < row.top ? `<div class="wrap-row" style="gap:6px;padding-top:6px"><button class="pill" data-raise="${escHtml(row.id)}">${escHtml(t('Try the next rung'))}</button></div>` : ''}</div>`;
+}
+
 const PREVIEW_NOTE = 'Preview — nothing here is measured yet';
 const previewBanner = () => `<div class="card" style="padding:12px 16px;display:flex;gap:10px;align-items:center">
   <span class="ico" style="color:var(--ink-5);flex:none">${icon('book', 16)}</span>
@@ -5631,19 +6115,44 @@ SCREENS.drill = () => {
 };
 
 SCREENS.lessons = () => {
-  // Titles and durations are the SYLLABUS — a plan, and plans are allowed to be written down.
-  // What went are the progress claims: "4/4", "1/3", four lessons marked Done and one Next, on a
-  // course nobody has taken a minute of. A tag that says where you are is a measurement.
-  const ch = [
-    ['CHAPTER 1', 'Beginner layer method', ['White cross', 'First layer corners', 'Middle layer', 'Last layer']],
-    ['CHAPTER 2', 'Getting under a minute', ['Efficient cross', 'Keyhole F2L', 'Look-ahead drills']],
-  ];
+  // THE LADDER — dev-docs/method-solver-return-plan.md §3 rule 2, and this screen is what that
+  // rule is for. It was a placeholder syllabus, which is exactly the thing it says a ladder should
+  // replace: a plan nobody can act on.
+  //
+  // Four stages, every rung of each, and **a rung not yet reached is DESCRIBED rather than
+  // hidden** — a ladder you can see is a goal, a dropdown is a chore. That is also why raising a
+  // rung is a button HERE and not a Settings row: the rung is a fact about the learner, and this
+  // is the screen about the learner.
+  //
+  // The counts are measurements, never claims. A stage shows how many solves it has been followed
+  // through at its current rung, and how many more before its next rung is offered. Nothing here
+  // says "Done" about a thing nobody has done — the failure the placeholder was written to avoid,
+  // and it survives.
+  const rows = ladderRows(settings.rungs, settings.rungProgress);
+  // NO PREVIEW BANNER. This screen used to carry one saying the figures are placeholders and the
+  // controls do nothing — and both halves are now false: the counts are this learner's own
+  // follows, and "Try the next rung" permanently raises a dial. A banner that disclaims a screen
+  // which does work is worse than no banner: it teaches a reader to disbelieve the one place the
+  // app is telling them something true about themselves. Trainer and Drill keep theirs, because
+  // they are still designs.
   return { html: `<div class="cols flow"><div class="col">
-    ${previewBanner()}
-    ${ch.map(([kick, title, ls]) => `<div class="card tight"><div class="card-h"><div><div class="eyebrow">${escHtml(kick)} · ${ls.length} ${escHtml(t('LESSONS'))}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${escHtml(title)}</div></div><div class="num sub" style="color:var(--ink-4)">—</div></div>
-      ${ls.map((name) => `<div class="row" style="grid-template-columns:8px 1fr auto;gap:14px"><div style="width:8px;height:8px;border-radius:50%;background:var(--ink-6)"></div><div style="color:var(--ink)">${escHtml(name)}</div><div class="num sub" style="color:var(--ink-5)">—</div></div>`).join('')}</div>`).join('')}</div>
-    <div class="aside"><div class="card"><div class="eyebrow">${escHtml(t('UP NEXT'))}</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('There is no next lesson until the lessons exist. The chapters above are the plan.'))}</div></div>
-      <div class="card"><div class="eyebrow">${escHtml(t('COACH VIEW'))}</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('The idea: share a read-only link so a parent or coach can follow progress. Nothing to share yet.'))}</div></div></div></div>`, mount() {} };
+    ${rows.map(ladderCard).join('')}</div>
+    <div class="aside"><div class="card"><div class="eyebrow">${escHtml(t('HOW THIS MOVES'))}</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('Nothing here changes on its own. Follow a lesson to the end a few times and the next rung is offered once, on the cube screen; saying no costs nothing and it comes back later.'))}</div></div>
+      <div class="card"><div class="eyebrow">${escHtml(t('COACH VIEW'))}</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('The idea: share a read-only link so a parent or coach can follow progress. Nothing to share yet.'))}</div></div></div></div>`,
+    mount(root) {
+      // Raising a rung HERE is the deliberate route — the learner asked, so nothing is being
+      // silently changed. The practice count for that stage starts again from the new rung,
+      // because follows at the rung below are not practice at this one.
+      for (const b of root.querySelectorAll('[data-raise]')) {
+        b.onclick = () => {
+          const id = b.dataset.raise;
+          const at = settings.rungs[id] ?? 0;
+          if (at >= TOP_RUNG[id]) return;
+          raiseRung({ id, to: at + 1 });
+          renderScreen();
+        };
+      }
+    } };
 };
 
 // ===============================================================================================

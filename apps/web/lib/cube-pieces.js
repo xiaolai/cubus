@@ -128,6 +128,23 @@ export function allSolved(state, { edges = [], corners = [] }) {
   return edges.every((e) => edgeSolved(state, e)) && corners.every((c) => cornerSolved(state, c));
 }
 
+/**
+ * An algorithm string as its list of move tokens — the one tokenizer everything shares.
+ *
+ * There were three: `algLength` in `methods/engine.js`, `movesOf` in `app.js`, and `movesIn` in
+ * `method-lesson.js`. They agreed, which is the point — a move COUNT decides what a lesson says
+ * it costs, and a move INDEX decides which move the animation is on, so two spellings of "what
+ * counts as a move" would put the caption and the playhead on different moves and neither would
+ * look wrong on its own.
+ */
+export const movesOf = (alg) => {
+  const text = String(alg ?? '').trim();
+  return text ? text.split(/\s+/) : [];
+};
+
+/** How many moves an algorithm is. */
+export const moveCount = (alg) => movesOf(alg).length;
+
 /** A whole-cube turn about U, as a face relabelling. `F` becomes `R`, and so on round. */
 const Y_FACES = { U: 'U', D: 'D', F: 'R', R: 'B', B: 'L', L: 'F' };
 

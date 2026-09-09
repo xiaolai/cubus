@@ -177,23 +177,44 @@ test('the stylesheet answers prefers-reduced-motion, and the renderer reads it t
 // 9 reps", "4/4 Done", a queue with due dates. One Advanced toggle away from a beginner who would
 // read them as their own, on an app whose central rule is that an uncomputable statistic is a
 // dash.
+//
+// LESSONS IS NO LONGER ONE OF THEM. It carries the ladder now: the counts are this learner's own
+// follows and "Try the next rung" permanently raises a dial, so the banner disclaiming both was
+// false. It has its own test below — the rule it has to keep is the same one, and only the banner
+// changed.
+const PREVIEW_SCREENS = ['trainer', 'drill'];
+
+/** Nothing on this screen may be a measurement of the person using it. */
+const noInventedFigure = (screen, id) => {
+  // Every text node on the screen, minus the ones that are legitimately numeric: a MOVE (R U2
+  // R' — facts about a cube, not about you), a case NAME (OLL 21), and the count of items the
+  // screen itself lists. What must not appear is a measurement: a percentage, a time, a
+  // score, an "n of m" progress claim.
+  const text = screen.textContent.replace(/\s+/g, ' ');
+  assert.doesNotMatch(text, /\d+\s*%/, `${id} shows a percentage of something`);
+  assert.doesNotMatch(text, /\b\d+\s*\/\s*\d+\b/, `${id} shows an n-of-m progress claim`);
+  assert.doesNotMatch(text, /\b\d+\.\d+\b/, `${id} shows a decimal — a time or an average`);
+};
+
 test('the preview screens carry no invented figure', async () => {
-  for (const id of ['trainer', 'drill', 'lessons']) {
+  for (const id of PREVIEW_SCREENS) {
     await go(id);
     const screen = $('#stage .screen.active');
     assert.match(screen.textContent, /Preview — nothing here is measured yet/,
       `${id} must say plainly that nothing here is measured`);
-
-    // Every text node on the screen, minus the ones that are legitimately numeric: a MOVE (R U2
-    // R' — facts about a cube, not about you), a case NAME (OLL 21), and the count of items the
-    // screen itself lists. What must not appear is a measurement: a percentage, a time, a
-    // score, an "n of m" progress claim.
-    const text = screen.textContent.replace(/\s+/g, ' ');
-    assert.doesNotMatch(text, /\d+\s*%/, `${id} shows a percentage of something`);
-    assert.doesNotMatch(text, /\b\d+\s*\/\s*\d+\b/, `${id} shows an n-of-m progress claim`);
-    assert.doesNotMatch(text, /\b\d+\.\d+\b/, `${id} shows a decimal — a time or an average`);
-    assert.doesNotMatch(text, /\b\d+\s*(reps|min|minutes|solves)\b/i, `${id} shows a count of something`);
+    noInventedFigure(screen, id);
+    assert.doesNotMatch(screen.textContent.replace(/\s+/g, ' '), /\b\d+\s*(reps|min|minutes|solves)\b/i,
+      `${id} shows a count of something`);
   }
+});
+
+test('the Lessons ladder measures rather than disclaims, so it carries no preview banner', async () => {
+  await go('lessons');
+  const screen = $('#stage .screen.active');
+  assert.doesNotMatch(screen.textContent, /Preview — nothing here is measured yet/,
+    'the ladder shows real follows and permanently raises rungs — a banner saying otherwise is false');
+  // The same rule still applies to it: what it shows must be measured, never invented.
+  noInventedFigure(screen, 'lessons');
 });
 
 test('a preview control that would pretend to work is disabled, not silently inert', async () => {
