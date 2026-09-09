@@ -8,12 +8,54 @@ use crate::coords::Coords;
 use crate::Tables;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+
+/// The two node counters a search keeps, incremented together.
+///
+/// Two rather than one because they answer different questions, and conflating them was wrong in
+/// two ways at once. `Proof.nodes` means THIS search's work, and it used to be read off the
+/// caller's counter with the value it held at entry subtracted — correct only while nothing else
+/// is adding to that counter. Two searches sharing one (which any caller measuring a batch of
+/// states does) each ended up claiming the other's nodes; and a counter that had reached
+/// `u64::MAX` turned the subtraction into a panic wherever overflow checks are on.
+///
+/// The caller's counter still has to be advanced by the WORKING THREADS rather than between
+/// contours: the cancellation promise `plan_checks.rs` measures is stated in nodes and read while
+/// the search is running. So both are flushed at the same poll points — one extra relaxed add per
+/// `CANCEL_STRIDE` nodes, which is nothing beside the 4,096 nodes that earned it.
+#[derive(Clone, Copy)]
+struct Nodes<'a> {
+    /// This search's own count, starting at zero. What a `Proof` reports.
+    own: &'a AtomicU64,
+    /// The caller's running total, when there is one — kept live for progress and cancellation.
+    shared: Option<&'a AtomicU64>,
+}
+
+impl Nodes<'_> {
+    fn add(&self, n: u64) {
+        if n == 0 {
+            return;
+        }
+        self.own.fetch_add(n, Ordering::Relaxed);
+        if let Some(shared) = self.shared {
+            shared.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+    /// This search's own count.
+    fn mine(&self) -> u64 {
+        self.own.load(Ordering::Relaxed)
+    }
+    /// What a progress callback is told: the caller's running total where one was supplied, so a
+    /// caller watching a batch sees the batch, and this search's own where none was.
+    fn reported(&self) -> u64 {
+        self.shared.unwrap_or(self.own).load(Ordering::Relaxed)
+    }
+}
 
 /// Same face twice never helps; of a commuting opposite-face pair, keep one order only —
 /// the same canonicalisation apps/web/lib/two-phase.js uses, checked by the ball shells.
 #[inline]
-fn move_allowed(prev: i8, m: usize) -> bool {
+pub(crate) fn move_allowed(prev: i8, m: usize) -> bool {
     if prev < 0 {
         return true;
     }
@@ -64,12 +106,12 @@ struct Dfs<'a> {
     /// active subtrees unwind within a stride instead of finishing enormous root branches
     /// nobody will read.
     stop: &'a AtomicBool,
-    /// The search-wide counter, flushed at every poll point rather than once per opening. A
+    /// The search-wide counters, flushed at every poll point rather than once per opening. A
     /// thread deep in a root branch used to hold millions of nodes locally until it finished,
     /// so a reader of the total — the progress callback, and the cancellation test — saw a
     /// number that lagged the work by whole subtrees. One atomic add per CANCEL_STRIDE nodes
     /// is the cost, which is nothing.
-    total_nodes: &'a AtomicU64,
+    counters: Nodes<'a>,
     nodes: u64,
     since_check: u64,
     path: Vec<u8>,
@@ -85,7 +127,7 @@ enum DfsOut {
 impl Dfs<'_> {
     /// Publish the nodes counted since the last flush.
     fn flush(&mut self) {
-        self.total_nodes.fetch_add(self.nodes, Ordering::Relaxed);
+        self.counters.add(self.nodes);
         self.nodes = 0;
     }
 
@@ -140,7 +182,7 @@ fn search_prefix(
     prefix: &[u8],
     cancel: &AtomicBool,
     stop: &AtomicBool,
-    total_nodes: &AtomicU64,
+    counters: Nodes<'_>,
 ) -> Option<(DfsOut, Vec<u8>)> {
     let g = prefix.len() as u8;
     if g > bound {
@@ -154,7 +196,7 @@ fn search_prefix(
         tables,
         cancel,
         stop,
-        total_nodes,
+        counters,
         nodes: 0,
         since_check: 0,
         path: prefix.to_vec(),
@@ -171,7 +213,7 @@ fn search_prefix(
 
 /// One contour, run root-parallel over the given openings (each a canonical move prefix).
 /// Returns the found path if any thread found a solution at exactly this bound, and whether a
-/// cancel landed. (Nodes are not returned: they accumulate in the caller's `total_nodes`, which is
+/// cancel landed. (Nodes are not returned: they accumulate in the caller's counters, which is
 /// what a progress callback reads. An earlier version of this sentence said otherwise.) A contour
 /// with no find and no cancel was FULLY exhausted: the early-stop flag is only ever set by a find
 /// or a cancel.
@@ -181,7 +223,7 @@ fn run_contour(
     bound: u8,
     openings: &[Vec<u8>],
     cancel: &AtomicBool,
-    total_nodes: &AtomicU64,
+    counters: Nodes<'_>,
 ) -> (Option<Vec<u8>>, bool) {
     let found: Mutex<Option<Vec<u8>>> = Mutex::new(None);
     let stop = AtomicBool::new(false);
@@ -206,7 +248,7 @@ fn run_contour(
             return;
         }
         let Some((out, path)) =
-            search_prefix(tables, start, bound, prefix, cancel, &stop, total_nodes)
+            search_prefix(tables, start, bound, prefix, cancel, &stop, counters)
         else {
             return;
         };
@@ -259,12 +301,43 @@ fn expand_openings(openings: Vec<Vec<u8>>, target: usize) -> Vec<Vec<u8>> {
     out
 }
 
+/// The canonical prefixes at each ply, expanded once per process.
+///
+/// There are only five: `root_ply` caps at four, so a whole run of contours — and every state a
+/// caller ever asks about — draws from the same five lists. Building them was cheap and building
+/// them repeatedly was not free: the deepest is 43,254 prefixes, each an allocation, and
+/// `prove_all` built it twice over for one state because the collecting pass could not see what
+/// the proving pass had just made. Held here instead, which is where a value that depends on
+/// nothing belongs.
+fn canonical_roots(ply: usize) -> &'static [Vec<u8>] {
+    static ROOTS: OnceLock<Vec<Vec<Vec<u8>>>> = OnceLock::new();
+    let all = ROOTS.get_or_init(|| {
+        (0..=MAX_ROOT_PLY)
+            .map(|p| expand_openings(root_openings(), p.max(1)))
+            .collect()
+    });
+    &all[ply.min(MAX_ROOT_PLY)]
+}
+
+/// Where a run of contours gets its parallel roots.
+///
+/// The distinction is real and not a mode flag: the canonical set is the same list for every
+/// state and every contour at a given ply, so it is shared; a shard's is a subset picked out by
+/// the shard tuple, so it is that shard's own and is expanded per run.
+enum Roots<'a> {
+    Canonical,
+    Shard(&'a [Vec<u8>]),
+}
+
+/// The deepest the parallel roots go — see `root_ply`.
+const MAX_ROOT_PLY: usize = 4;
+
 /// How deep the parallel roots go at a given contour: as deep as four moves, never past the
 /// bound itself (a maneuver of exactly the bound's length must surface as a prefix whose end
 /// state is checked directly). Lengths below the ladder's first bound need no coverage — an
 /// admissible heuristic above them IS the proof they hold no solution.
 fn root_ply(bound: u8) -> usize {
-    (bound as usize).min(4)
+    (bound as usize).min(MAX_ROOT_PLY)
 }
 
 /// The partition's whole universe: the canonical two-move openings a shard is a subset of.
@@ -317,9 +390,9 @@ fn run_contours(
     tables: &Tables,
     start: &Coords,
     bounds: std::ops::RangeInclusive<u8>,
-    base_openings: &[Vec<u8>],
+    roots: Roots<'_>,
     cancel: &AtomicBool,
-    total_nodes: &AtomicU64,
+    counters: Nodes<'_>,
     progress: &mut dyn FnMut(u8, u64),
 ) -> Result<ContourEnd, SearchEnd> {
     let max_bound = *bounds.end();
@@ -338,18 +411,23 @@ fn run_contours(
         // exactly and `root_ply` never goes below the base openings' own length, so the maneuvers
         // covered — and a shard's partition identity — are untouched.
         let ply = root_ply(bound);
-        if cached.as_ref().is_none_or(|(at, _)| *at != ply) {
-            cached = Some((ply, expand_openings(base_openings.to_vec(), ply)));
-        }
-        let roots = &cached.as_ref().expect("just filled").1;
-        let (found, cancelled) = run_contour(tables, start, bound, roots, cancel, total_nodes);
+        let at_ply: &[Vec<u8>] = match roots {
+            Roots::Canonical => canonical_roots(ply),
+            Roots::Shard(base) => {
+                if cached.as_ref().is_none_or(|(at, _)| *at != ply) {
+                    cached = Some((ply, expand_openings(base.to_vec(), ply)));
+                }
+                &cached.as_ref().expect("just filled").1
+            }
+        };
+        let (found, cancelled) = run_contour(tables, start, bound, at_ply, cancel, counters);
         if let Some(solution) = found {
             return Ok(ContourEnd::Found { bound, solution });
         }
         if cancelled {
             return Err(SearchEnd::Cancelled);
         }
-        progress(bound, total_nodes.load(Ordering::Relaxed));
+        progress(bound, counters.reported());
         bound += 1;
     }
     Ok(ContourEnd::Exhausted)
@@ -393,11 +471,16 @@ pub fn prove_counted(
     // What `nodes` MEANS is this search's own work, not the counter's running total. The two
     // differed: the solved branch reported 1 while the searching branch reported whatever the
     // caller's counter already held plus its own — so a caller reusing one counter across states
-    // saw each proof claim every earlier proof's nodes as well. The baseline is subtracted at the
-    // end, and the shared counter still accumulates for the progress callback that reads it.
-    let baseline = total_nodes.load(Ordering::Relaxed);
+    // saw each proof claim every earlier proof's nodes as well. Counted in a counter this call
+    // OWNS, and relayed into the caller's; see `Nodes` for why subtracting an entry baseline from
+    // a shared counter fixed only the sequential half of that.
+    let own = AtomicU64::new(0);
+    let counters = Nodes {
+        own: &own,
+        shared: Some(total_nodes),
+    };
     if start.is_solved() {
-        total_nodes.fetch_add(1, Ordering::Relaxed);
+        counters.add(1);
         return Ok(Proof {
             length: 0,
             solution: Vec::new(),
@@ -409,9 +492,9 @@ pub fn prove_counted(
         tables,
         start,
         first..=cap,
-        &root_openings(),
+        Roots::Canonical,
         cancel,
-        total_nodes,
+        counters,
         progress,
     )? {
         // The first contour to find anything is the shallowest that could: every shallower one
@@ -419,7 +502,7 @@ pub fn prove_counted(
         ContourEnd::Found { bound, solution } => Ok(Proof {
             length: bound,
             solution,
-            nodes: total_nodes.load(Ordering::Relaxed) - baseline,
+            nodes: counters.mine(),
         }),
         ContourEnd::Exhausted => Err(SearchEnd::BeyondCap),
     }
@@ -574,7 +657,16 @@ pub fn prove_all_reporting(
     // schedule. Without this the set would be right and its order would still be a race — and the
     // order is what a byte-for-byte regeneration diff reads.
     solutions.sort_by(|a, b| crate::cases::tie_break(a, b));
-    solutions.dedup();
+    // An ASSERTION, not a `dedup()`. There is nothing here to remove: the canonical prefixes
+    // partition the contour exactly, so two of them cannot enumerate the same maneuver, and a
+    // collector walks each subtree once. Removing duplicates would therefore have removed
+    // nothing — while silently absorbing the one thing it could ever have removed, a
+    // double-enumeration bug, which is exactly what a byte-for-byte regeneration diff exists to
+    // catch and would then no longer see.
+    debug_assert!(
+        solutions.windows(2).all(|w| w[0] != w[1]),
+        "the collecting pass enumerated the same maneuver twice — the root partition is broken"
+    );
     debug_assert!(
         !solutions.is_empty(),
         "prove found a {bound}-move maneuver, so the collecting pass must find at least that one"
@@ -592,6 +684,46 @@ pub fn prove_all_reporting(
 /// Its own function because it is its own job: `prove_all_reporting` decides WHICH contour and what
 /// to do with the answer, and this walks it. `report` is called once per opening finished, with the
 /// running node total — the hook a cancel can be raised from while collectors are still running.
+/// Collect ONE opening's subtree, and say how many nodes it cost — the seam the collector's
+/// cancellation promise is tested through.
+///
+/// It exists because that promise cannot be tested through `prove_all` at any bound anyone can
+/// afford, and the reason is `root_ply`: the parallel roots go four moves deep, so at a fourteen-
+/// move state an average opening is 3,915 nodes against a stride bound of 49,152 (measured,
+/// 2026-09-09). A `Collector` that ignored the flag entirely and simply finished the opening it
+/// was in would post the same number as one that polls, and the cheap test could not tell them
+/// apart — which is what the audit recorded as its one partial finding. One opening at ONE move
+/// deep is millions of nodes, and the two hypotheses separate immediately.
+///
+/// Not a solving entry point. `prove_all` chooses the contour and the openings; a caller that
+/// chooses its own gets an answer about the openings it chose rather than about the state.
+#[doc(hidden)]
+pub fn collect_one_opening(
+    tables: &Tables,
+    start: &Coords,
+    bound: u8,
+    prefix: &[u8],
+    cancel: &AtomicBool,
+) -> (Vec<Vec<u8>>, u64) {
+    let mut at = *start;
+    for &m in prefix {
+        at = at.step(&tables.moves, m as usize);
+    }
+    let mut collector = Collector {
+        tables,
+        cancel,
+        bound,
+        path: prefix.to_vec(),
+        out: Vec::new(),
+        nodes: 0,
+        since_check: 0,
+        aborted: false,
+    };
+    let prev = *prefix.last().expect("an opening is non-empty") as i8;
+    collector.run(at, prefix.len() as u8, prev);
+    (collector.out, collector.nodes)
+}
+
 fn collect_contour(
     tables: &Tables,
     start: &Coords,
@@ -599,7 +731,8 @@ fn collect_contour(
     cancel: &AtomicBool,
     report: &(dyn Fn(u64) + Sync),
 ) -> (Vec<Vec<u8>>, u64) {
-    let roots = expand_openings(root_openings(), root_ply(bound));
+    // The same list the proving pass just used, not a second copy of it.
+    let roots = canonical_roots(root_ply(bound));
     let found: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
     let nodes = AtomicU64::new(0);
     roots.par_iter().for_each(|prefix| {
@@ -686,9 +819,14 @@ pub fn certify_no_solution_within(
         tables,
         start,
         first..=max_bound,
-        &mine,
+        Roots::Shard(&mine),
         cancel,
-        &total_nodes,
+        // No caller counter: a certification reports a verdict, not a node count, so its own is
+        // the only one there is and the progress callback reads that.
+        Nodes {
+            own: &total_nodes,
+            shared: None,
+        },
         progress,
     )? {
         ContourEnd::Found { bound, .. } => Ok(Certification::FoundAt(bound)),
