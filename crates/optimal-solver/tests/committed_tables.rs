@@ -27,8 +27,8 @@
 //! demand, and it compresses to under two hundred kilobytes in the object store.
 
 use optimal_solver::case_certificate::{check_case_certificates, Expect};
-use optimal_solver::table_json::read_table;
 use optimal_solver::pdb::move_set_hash;
+use optimal_solver::table_json::read_table;
 use std::path::PathBuf;
 
 fn tables_dir() -> PathBuf {
@@ -81,7 +81,11 @@ fn every_committed_table_is_covered_by_its_committed_certificate() {
         // says how many there should be. A change that quietly dropped a case would satisfy the
         // first and fail the second.
         let expect = Expect::standard(kind).expect("a known kind");
-        assert_eq!(expect.cases.len(), cases, "{kind}: this build enumerates a different number of cases");
+        assert_eq!(
+            expect.cases.len(),
+            cases,
+            "{kind}: this build enumerates a different number of cases"
+        );
         let proof = check_case_certificates(&lines, &hash, &expect)
             .unwrap_or_else(|e| panic!("{cert_file}: {e}"));
         assert_eq!(proof.cases, cases, "{kind}: wrong number of cases");

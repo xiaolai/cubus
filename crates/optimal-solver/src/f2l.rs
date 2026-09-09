@@ -811,7 +811,9 @@ mod tests {
         let mut checked = 0;
         for case in all_cases() {
             let state = case.state();
-            let guided = prove_all(&ball, &state, 14, &cancel).expect("a proof").length;
+            let guided = prove_all(&ball, &state, 14, &cancel)
+                .expect("a proof")
+                .length;
             if guided > 6 {
                 continue;
             }
@@ -830,7 +832,10 @@ mod tests {
             checked += 1;
         }
         // A test that silently checked nothing would look exactly like this one passing.
-        assert!(checked >= 12, "only {checked} cases were short enough to check");
+        assert!(
+            checked >= 12,
+            "only {checked} cases were short enough to check"
+        );
     }
 
     #[test]
@@ -881,4 +886,3 @@ mod tests {
         );
     }
 }
-

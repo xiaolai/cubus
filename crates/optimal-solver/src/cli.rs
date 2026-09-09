@@ -89,7 +89,12 @@ impl Args {
     }
 
     /// An option parsed into `T` and required to lie inside `range`.
-    pub fn parsed_in<T>(&self, name: &str, range: RangeInclusive<T>, default: T) -> Result<T, String>
+    pub fn parsed_in<T>(
+        &self,
+        name: &str,
+        range: RangeInclusive<T>,
+        default: T,
+    ) -> Result<T, String>
     where
         T: FromStr + PartialOrd + Display + Copy,
         T::Err: Display,
@@ -111,19 +116,30 @@ impl Args {
         T: FromStr,
         T::Err: Display,
     {
-        self.positional[i]
-            .parse()
-            .map_err(|e: T::Err| format!("{name}: `{}` is not a valid value ({e})", self.positional[i]))
+        self.positional[i].parse().map_err(|e: T::Err| {
+            format!(
+                "{name}: `{}` is not a valid value ({e})",
+                self.positional[i]
+            )
+        })
     }
 
     /// A required positional restricted to a named set — the `oll|pll|f2l` shape, refused at
     /// PARSE time rather than after the expensive work has already been done.
-    pub fn positional_one_of(&self, i: usize, name: &str, allowed: &[&str]) -> Result<String, String> {
+    pub fn positional_one_of(
+        &self,
+        i: usize,
+        name: &str,
+        allowed: &[&str],
+    ) -> Result<String, String> {
         let got = &self.positional[i];
         if allowed.contains(&got.as_str()) {
             Ok(got.clone())
         } else {
-            Err(format!("{name}: `{got}` is not one of {}", allowed.join(", ")))
+            Err(format!(
+                "{name}: `{got}` is not one of {}",
+                allowed.join(", ")
+            ))
         }
     }
 }
@@ -159,7 +175,9 @@ where
                 let value = match inline {
                     Some(v) => v,
                     None => {
-                        let next = argv.get(i + 1).ok_or_else(|| format!("{full} needs a value"))?;
+                        let next = argv
+                            .get(i + 1)
+                            .ok_or_else(|| format!("{full} needs a value"))?;
                         // A value that looks like the next option means the value is missing —
                         // and swallowing the next option is how `--only` followed by a flag
                         // became "check nothing, exit 0".
@@ -264,19 +282,30 @@ mod tests {
     fn a_default_applies_only_when_the_option_is_absent() {
         assert_eq!(ok(&["a", "b"]).parsed::<u8>("--cap", 14).unwrap(), 14);
         // Present but unparseable is an ERROR, not the default. This is the whole distinction.
-        let e = ok(&["a", "b", "--cap", "x"]).parsed::<u8>("--cap", 14).unwrap_err();
+        let e = ok(&["a", "b", "--cap", "x"])
+            .parsed::<u8>("--cap", 14)
+            .unwrap_err();
         assert!(e.contains("--cap"), "{e}");
         // Overflow is unparseable too, rather than wrapping to something plausible.
-        assert!(ok(&["a", "b", "--cap", "300"]).parsed::<u8>("--cap", 14).is_err());
-        assert!(ok(&["a", "b", "--cap", "-1"]).parsed::<u8>("--cap", 14).is_err());
+        assert!(ok(&["a", "b", "--cap", "300"])
+            .parsed::<u8>("--cap", 14)
+            .is_err());
+        assert!(ok(&["a", "b", "--cap", "-1"])
+            .parsed::<u8>("--cap", 14)
+            .is_err());
     }
 
     #[test]
     fn a_range_is_checked_and_zero_is_not_quietly_allowed() {
         let a = ok(&["a", "b", "--cap", "0"]);
-        assert!(a.parsed_in("--cap", 1..=57u8, 6).is_err(), "0 samples passed");
+        assert!(
+            a.parsed_in("--cap", 1..=57u8, 6).is_err(),
+            "0 samples passed"
+        );
         assert_eq!(ok(&["a", "b"]).parsed_in("--cap", 1..=57u8, 6).unwrap(), 6);
-        assert!(ok(&["a", "b", "--cap", "58"]).parsed_in("--cap", 1..=57u8, 6).is_err());
+        assert!(ok(&["a", "b", "--cap", "58"])
+            .parsed_in("--cap", 1..=57u8, 6)
+            .is_err());
     }
 
     #[test]
@@ -310,9 +339,13 @@ mod tests {
     #[test]
     fn a_named_set_is_checked_where_it_is_cheap_rather_than_after_the_work() {
         let a = ok(&["typo", "b"]);
-        assert!(a.positional_one_of(0, "kind", &["oll", "pll", "f2l"]).is_err());
+        assert!(a
+            .positional_one_of(0, "kind", &["oll", "pll", "f2l"])
+            .is_err());
         assert_eq!(
-            ok(&["oll", "b"]).positional_one_of(0, "kind", &["oll", "pll", "f2l"]).unwrap(),
+            ok(&["oll", "b"])
+                .positional_one_of(0, "kind", &["oll", "pll", "f2l"])
+                .unwrap(),
             "oll"
         );
     }
@@ -327,6 +360,9 @@ mod tests {
             positionals: 1..=1,
         };
         assert_eq!(parse(["-"], &NUMBERS).unwrap().positional(0), "-");
-        assert!(parse(["-1"], &NUMBERS).is_err(), "`-1` reads as an option, and that is stated");
+        assert!(
+            parse(["-1"], &NUMBERS).is_err(),
+            "`-1` reads as an option, and that is stated"
+        );
     }
 }

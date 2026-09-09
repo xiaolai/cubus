@@ -135,7 +135,10 @@ impl<'a> Parser<'a> {
                 self.at - 1,
                 format!("expected `{}`, found `{}`", want as char, c as char),
             ),
-            None => err(self.at, format!("expected `{}`, found the end of the file", want as char)),
+            None => err(
+                self.at,
+                format!("expected `{}`, found the end of the file", want as char),
+            ),
         }
     }
 
@@ -177,7 +180,10 @@ impl<'a> Parser<'a> {
             let key_at = self.at;
             let key = self.string()?;
             if pairs.iter().any(|(k, _)| *k == key) {
-                return err(key_at, format!("the key `{key}` appears twice in one object"));
+                return err(
+                    key_at,
+                    format!("the key `{key}` appears twice in one object"),
+                );
             }
             self.expect(b':')?;
             let value = self.value()?;
@@ -186,7 +192,12 @@ impl<'a> Parser<'a> {
             match self.bump() {
                 Some(b',') => continue,
                 Some(b'}') => return Ok(Json::Object(pairs)),
-                Some(c) => return err(self.at - 1, format!("expected `,` or `}}`, found `{}`", c as char)),
+                Some(c) => {
+                    return err(
+                        self.at - 1,
+                        format!("expected `,` or `}}`, found `{}`", c as char),
+                    )
+                }
                 None => return err(self.at, "the file ended inside an object"),
             }
         }
@@ -206,7 +217,12 @@ impl<'a> Parser<'a> {
             match self.bump() {
                 Some(b',') => continue,
                 Some(b']') => return Ok(Json::Array(items)),
-                Some(c) => return err(self.at - 1, format!("expected `,` or `]`, found `{}`", c as char)),
+                Some(c) => {
+                    return err(
+                        self.at - 1,
+                        format!("expected `,` or `]`, found `{}`", c as char),
+                    )
+                }
                 None => return err(self.at, "the file ended inside an array"),
             }
         }
@@ -232,12 +248,17 @@ impl<'a> Parser<'a> {
                         Some(b'r') => out.push('\r'),
                         Some(b't') => out.push('\t'),
                         Some(b'u') => out.push(self.unicode_escape(escape_at)?),
-                        Some(c) => return err(escape_at, format!("`\\{}` is not an escape", c as char)),
+                        Some(c) => {
+                            return err(escape_at, format!("`\\{}` is not an escape", c as char))
+                        }
                         None => return err(escape_at, "the file ended inside an escape"),
                     }
                 }
                 Some(c) if c < 0x20 => {
-                    return err(at, format!("a raw control byte {c:#04x} is not allowed in a string"))
+                    return err(
+                        at,
+                        format!("a raw control byte {c:#04x} is not allowed in a string"),
+                    )
                 }
                 Some(c) => {
                     // UTF-8 continuation bytes are copied through untouched; the source is checked
@@ -261,14 +282,24 @@ impl<'a> Parser<'a> {
         let hex = self
             .src
             .get(self.at..self.at + 4)
-            .ok_or_else(|| TableError { at, message: "a truncated `\\u` escape".into() })?;
-        let text = std::str::from_utf8(hex).map_err(|_| TableError { at, message: "a `\\u` escape that is not hex".into() })?;
-        let code = u32::from_str_radix(text, 16)
-            .map_err(|_| TableError { at, message: format!("`\\u{text}` is not hex") })?;
+            .ok_or_else(|| TableError {
+                at,
+                message: "a truncated `\\u` escape".into(),
+            })?;
+        let text = std::str::from_utf8(hex).map_err(|_| TableError {
+            at,
+            message: "a `\\u` escape that is not hex".into(),
+        })?;
+        let code = u32::from_str_radix(text, 16).map_err(|_| TableError {
+            at,
+            message: format!("`\\u{text}` is not hex"),
+        })?;
         self.at += 4;
         char::from_u32(code).ok_or_else(|| TableError {
             at,
-            message: format!("`\\u{text}` is not a character (a lone surrogate has no place in a case table)"),
+            message: format!(
+                "`\\u{text}` is not a character (a lone surrogate has no place in a case table)"
+            ),
         })
     }
 
@@ -364,10 +395,10 @@ pub struct Row {
 impl Row {
     /// A named integer column, refused if it is absent, fractional, negative or out of range.
     pub fn integer(&self, key: &str) -> Result<u64, TableError> {
-        let value = self
-            .extra
-            .get(key)
-            .ok_or_else(|| TableError { at: 0, message: format!("case {}: no `{key}` column", self.case) })?;
+        let value = self.extra.get(key).ok_or_else(|| TableError {
+            at: 0,
+            message: format!("case {}: no `{key}` column", self.case),
+        })?;
         integer(value, u64::MAX).map_err(|e| TableError {
             at: e.at,
             message: format!("case {}: `{key}` {}", self.case, e.message),
@@ -378,7 +409,14 @@ impl Row {
     pub fn text(&self, key: &str) -> Result<&str, TableError> {
         match self.extra.get(key) {
             Some(Json::String(s)) => Ok(s),
-            Some(other) => err(0, format!("case {}: `{key}` is {}, not a string", self.case, other.type_name())),
+            Some(other) => err(
+                0,
+                format!(
+                    "case {}: `{key}` is {}, not a string",
+                    self.case,
+                    other.type_name()
+                ),
+            ),
             None => err(0, format!("case {}: no `{key}` column", self.case)),
         }
     }
@@ -418,9 +456,10 @@ fn integer(value: &Json, max: u64) -> Result<u64, TableError> {
             if text.starts_with('-') {
                 return err(0, format!("`{text}` is negative"));
             }
-            let n: u64 = text
-                .parse()
-                .map_err(|_| TableError { at: 0, message: format!("`{text}` does not fit in a 64-bit integer") })?;
+            let n: u64 = text.parse().map_err(|_| TableError {
+                at: 0,
+                message: format!("`{text}` does not fit in a 64-bit integer"),
+            })?;
             if n > max {
                 return err(0, format!("{n} is above the permitted maximum of {max}"));
             }
@@ -445,11 +484,17 @@ fn string_field<'a>(doc: &'a Json, key: &str) -> Result<&'a str, TableError> {
 pub fn read_table(text: &str, expect_kind: &str) -> Result<CaseTable, TableError> {
     let document = parse(text)?;
     if !matches!(document, Json::Object(_)) {
-        return err(0, format!("a case table is an object, not {}", document.type_name()));
+        return err(
+            0,
+            format!("a case table is an object, not {}", document.type_name()),
+        );
     }
     let kind = string_field(&document, "kind")?.to_string();
     if kind != expect_kind {
-        return err(0, format!("this is a `{kind}` table, and a `{expect_kind}` one was asked for"));
+        return err(
+            0,
+            format!("this is a `{kind}` table, and a `{expect_kind}` one was asked for"),
+        );
     }
     let moveset = string_field(&document, "moveset")?.to_string();
     let Some(Json::Array(cases)) = document.get("cases") else {
@@ -462,13 +507,18 @@ pub fn read_table(text: &str, expect_kind: &str) -> Result<CaseTable, TableError
     let mut rows = Vec::with_capacity(cases.len());
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for (i, entry) in cases.iter().enumerate() {
-        let at = |m: String| TableError { at: 0, message: format!("case {i}: {m}") };
+        let at = |m: String| TableError {
+            at: 0,
+            message: format!("case {i}: {m}"),
+        };
         if !matches!(entry, Json::Object(_)) {
             return Err(at(format!("is {}, not an object", entry.type_name())));
         }
         let case = match entry.get("case") {
             Some(Json::String(s)) => s.clone(),
-            Some(other) => return Err(at(format!("`case` is {}, not a string", other.type_name()))),
+            Some(other) => {
+                return Err(at(format!("`case` is {}, not a string", other.type_name())))
+            }
             None => return Err(at("has no `case` id".into())),
         };
         if !seen.insert(case.clone()) {
@@ -483,7 +533,12 @@ pub fn read_table(text: &str, expect_kind: &str) -> Result<CaseTable, TableError
             .map_err(|e| at(format!("`{case}` length: {}", e.message)))? as u8;
         let alg = match entry.get("alg") {
             Some(Json::String(s)) => s.clone(),
-            Some(other) => return Err(at(format!("`{case}` alg is {}, not a string", other.type_name()))),
+            Some(other) => {
+                return Err(at(format!(
+                    "`{case}` alg is {}, not a string",
+                    other.type_name()
+                )))
+            }
             None => return Err(at(format!("`{case}` has no `alg`"))),
         };
         // THE CHECK NOTHING WAS MAKING. The length and the maneuver are two spellings of one fact,
@@ -538,7 +593,10 @@ mod tests {
         assert_eq!(t.rows[1].integer("goalsAtOptimum").unwrap(), 4);
         assert_eq!(t.rows[1].text("facelets").unwrap(), "U");
         assert_eq!(t.row("pll:01230123").map(|r| r.length), Some(0));
-        assert_eq!(integer(t.document.get("goals").unwrap(), u64::MAX).unwrap(), 16);
+        assert_eq!(
+            integer(t.document.get("goals").unwrap(), u64::MAX).unwrap(),
+            16
+        );
     }
 
     /// The four reads that used to succeed on something that is not a table.
@@ -546,7 +604,10 @@ mod tests {
     fn the_four_ways_a_split_based_read_used_to_be_fooled_are_all_refused() {
         // 1. A truncated file — no closing brace.
         let truncated = &PLL[..PLL.len() - 3];
-        assert!(read_table(truncated, "pll").is_err(), "a truncated table parsed");
+        assert!(
+            read_table(truncated, "pll").is_err(),
+            "a truncated table parsed"
+        );
 
         // 2. A fractional length silently floored to 9.
         let fractional = PLL.replace("\"length\": 3", "\"length\": 3.9");
@@ -560,18 +621,34 @@ mod tests {
 
         // 4. Compact JSON, which a `"length": ` split reads as an empty table. It is valid JSON
         //    and must READ, not fail — the old readers failed on it for the wrong reason.
-        let compact = r#"{"kind":"pll","moveset":"abc","cases":[{"case":"pll:0","length":1,"alg":"R"}]}"#;
-        assert_eq!(read_table(compact, "pll").expect("compact is valid").rows.len(), 1);
+        let compact =
+            r#"{"kind":"pll","moveset":"abc","cases":[{"case":"pll:0","length":1,"alg":"R"}]}"#;
+        assert_eq!(
+            read_table(compact, "pll")
+                .expect("compact is valid")
+                .rows
+                .len(),
+            1
+        );
     }
 
     #[test]
     fn a_length_that_disagrees_with_its_maneuver_is_refused() {
-        let edited = PLL.replace("\"length\": 3, \"alg\": \"R U R'\"", "\"length\": 2, \"alg\": \"R U R'\"");
+        let edited = PLL.replace(
+            "\"length\": 3, \"alg\": \"R U R'\"",
+            "\"length\": 2, \"alg\": \"R U R'\"",
+        );
         let e = read_table(&edited, "pll").expect_err("a hand-edited length parsed");
         assert!(e.message.contains("claims 2 moves and carries 3"), "{e}");
 
-        let skip = PLL.replace("\"length\": 0, \"alg\": \"\"", "\"length\": 0, \"alg\": \"R\"");
-        assert!(read_table(&skip, "pll").is_err(), "a skip with an algorithm parsed");
+        let skip = PLL.replace(
+            "\"length\": 0, \"alg\": \"\"",
+            "\"length\": 0, \"alg\": \"R\"",
+        );
+        assert!(
+            read_table(&skip, "pll").is_err(),
+            "a skip with an algorithm parsed"
+        );
     }
 
     #[test]

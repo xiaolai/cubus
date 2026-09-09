@@ -77,9 +77,7 @@ fn oll_representatives() -> Vec<(String, Cubie)> {
 /// that the cheap cases and the expensive ones are both represented at every sample size.
 fn stride_sample<T>(cases: &[T], want: usize) -> Vec<&T> {
     assert!(want >= 1 && want <= cases.len());
-    (0..want)
-        .map(|i| &cases[i * cases.len() / want])
-        .collect()
+    (0..want).map(|i| &cases[i * cases.len() / want]).collect()
 }
 
 /// What measuring one case cost.
@@ -100,7 +98,13 @@ struct Measurement {
 /// case once a short solution has been found, and each of them can be substantial work; totalling
 /// only the successful proofs reported a fraction of what the run actually did, which is the one
 /// number a cost benchmark exists to produce.
-fn measure(tables: &Tables, id: &str, state: &Cubie, goals: &[Cubie], cancel: &AtomicBool) -> Measurement {
+fn measure(
+    tables: &Tables,
+    id: &str,
+    state: &Cubie,
+    goals: &[Cubie],
+    cancel: &AtomicBool,
+) -> Measurement {
     let t = Instant::now();
     let nodes = AtomicU64::new(0);
     let mut best = u8::MAX;
@@ -172,7 +176,9 @@ fn report(measured: &[Measurement], threads: usize) {
     eprintln!("\n--- the direct route: NOT measured here ---");
     eprintln!("The reduction proves 288 states of optimal mean 13.15082 per case (Miller p.22).");
     eprintln!("A goal-set search would prove ONE state per case, of optimal mean 9.2 (OLL's own).");
-    eprintln!("How much cheaper that is depends on a search this crate does not have — a different");
+    eprintln!(
+        "How much cheaper that is depends on a search this crate does not have — a different"
+    );
     eprintln!("heuristic and a different goal test — so no ratio is stated. The numbers above are");
     eprintln!("what a goal-set implementation would have to be benchmarked against.");
 }

@@ -48,7 +48,13 @@ struct Generated {
 /// maneuver is slot-safe, and the row and the certificate say the same thing — and they were
 /// interleaved inside a 133-line `main` with the argument parsing, the ball, the publishing and
 /// the summary.
-fn generate(case: &optimal_solver::f2l::F2lCase, ball: &GoalBall, cap: u8, hash: &str, cancel: &AtomicBool) -> Generated {
+fn generate(
+    case: &optimal_solver::f2l::F2lCase,
+    ball: &GoalBall,
+    cap: u8,
+    hash: &str,
+    cancel: &AtomicBool,
+) -> Generated {
     // The case key, defined once in `f2l.rs` — a table lookup, a certificate and a regeneration
     // diff all have to agree on it, and it used to be spelt out in three files.
     let id = case.id();

@@ -643,7 +643,15 @@ pub fn prove_all_counted(
     total_nodes: &AtomicU64,
     progress: &mut dyn FnMut(u8, u64),
 ) -> Result<ProofAll, SearchEnd> {
-    prove_all_inner(tables, start, cap, cancel, total_nodes, progress, &|_, _| {})
+    prove_all_inner(
+        tables,
+        start,
+        cap,
+        cancel,
+        total_nodes,
+        progress,
+        &|_, _| {},
+    )
 }
 
 /// [prove_all], with a separate callback for the COLLECTING half.
@@ -825,20 +833,29 @@ fn collect_contour(
         );
         let (out, nodes) = collect_from_prefix(tables, start, bound, prefix, cancel);
         if !out.is_empty() {
-            found.lock().expect("the collector lock is never poisoned").extend(out);
+            found
+                .lock()
+                .expect("the collector lock is never poisoned")
+                .extend(out);
         }
         // Reported after the work, so a callback that cancels stops the openings that have not
         // started AND every collector already running — the flag is one for both. Counting and
         // reporting happen together so the totals a consumer sees never go backwards.
         {
-            let mut total = progress.lock().expect("the progress lock is never poisoned");
+            let mut total = progress
+                .lock()
+                .expect("the progress lock is never poisoned");
             *total += nodes;
             report(*total);
         }
     });
-    let total = *progress.lock().expect("the progress lock is never poisoned");
+    let total = *progress
+        .lock()
+        .expect("the progress lock is never poisoned");
     (
-        found.into_inner().expect("the collector lock is never poisoned"),
+        found
+            .into_inner()
+            .expect("the collector lock is never poisoned"),
         total,
     )
 }
