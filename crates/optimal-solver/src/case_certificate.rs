@@ -194,7 +194,10 @@ impl Fields<'_> {
             .filter_map(|w| w.strip_prefix(key).map(str::to_string));
         let first = hits.next();
         if hits.next().is_some() {
-            return Err(format!("line {}: {key} appears more than once", self.lineno));
+            return Err(format!(
+                "line {}: {key} appears more than once",
+                self.lineno
+            ));
         }
         Ok(first)
     }
@@ -241,9 +244,7 @@ fn check_alg(alg: &str, length: u64, lineno: usize) -> Result<(), String> {
         return Ok(());
     }
     if alg.is_empty() {
-        return Err(format!(
-            "line {lineno}: length {length} with no algorithm"
-        ));
+        return Err(format!("line {lineno}: length {length} with no algorithm"));
     }
     let moves: Vec<&str> = alg.split('.').collect();
     if moves.len() as u64 != length {
@@ -334,7 +335,13 @@ fn read_alg(f: &Fields, kind: &str, state: &mut Read) -> Result<(), String> {
 }
 
 /// `case-lower` for OLL and PLL: one goal's exhausted contour.
-fn read_goal_bound(f: &Fields, kind: &str, case: String, bound: u8, state: &mut Read) -> Result<(), String> {
+fn read_goal_bound(
+    f: &Fields,
+    kind: &str,
+    case: String,
+    bound: u8,
+    state: &mut Read,
+) -> Result<(), String> {
     if f.optional("scope=")?.is_some() {
         return Err(format!(
             "line {}: scope= is the F2L shape; a {kind} bound is per goal",
@@ -734,7 +741,10 @@ mod tests {
     fn deleting_one_goals_evidence_is_refused() {
         let mut lines = vec![goals_line()];
         lines.extend(complete_case("00", 7));
-        assert!(check(&lines, &["00"]).is_ok(), "the complete set must pass first");
+        assert!(
+            check(&lines, &["00"]).is_ok(),
+            "the complete set must pass first"
+        );
         for drop in 0..GOALS {
             let mut short = vec![goals_line()];
             short.extend(
@@ -760,7 +770,9 @@ mod tests {
         // A bound one short of L-1 rules out less than the claim needs.
         let mut weak = base();
         weak[2] = lower_line("00", 0, 5);
-        assert!(check(&weak, &["00"]).unwrap_err().contains("only exhausted to 5"));
+        assert!(check(&weak, &["00"])
+            .unwrap_err()
+            .contains("only exhausted to 5"));
         // A goal outside the declared set is evidence about something else.
         let mut stray = base();
         stray.push(lower_line("00", GOALS + 3, 6));
@@ -770,7 +782,9 @@ mod tests {
         // The same goal twice is not two goals.
         let mut twice = base();
         twice.push(lower_line("00", 0, 6));
-        assert!(check(&twice, &["00"]).unwrap_err().contains("already certified"));
+        assert!(check(&twice, &["00"])
+            .unwrap_err()
+            .contains("already certified"));
         // No goal set declared at all: a lower bound is a claim ABOUT one.
         let undeclared: Vec<String> = base().into_iter().skip(1).collect();
         assert!(check(&undeclared, &["00"])
@@ -785,10 +799,14 @@ mod tests {
         // A foreign move set — the stale-binary mistake.
         let mut foreign = base();
         foreign[1] = foreign[1].replace(HASH, &HASH.replace('a', "b"));
-        assert!(check(&foreign, &["00"]).unwrap_err().contains("does not match"));
+        assert!(check(&foreign, &["00"])
+            .unwrap_err()
+            .contains("does not match"));
         // Lower bounds with no algorithm: evidence for a claim nobody made.
         let orphan = vec![goals_line(), lower_line("22", 0, 6)];
-        assert!(check(&orphan, &["22"]).unwrap_err().contains("no algorithm"));
+        assert!(check(&orphan, &["22"])
+            .unwrap_err()
+            .contains("no algorithm"));
         // An algorithm whose move count and stated length disagree.
         let mut miscounted = base();
         miscounted[1] = miscounted[1].replace("length=7", "length=6");
@@ -798,15 +816,21 @@ mod tests {
         // Two algorithms for one case is exactly the ambiguity the tie-break exists to remove.
         let mut doubled = base();
         doubled.push(alg_line("00", 7));
-        assert!(check(&doubled, &["00"]).unwrap_err().contains("two algorithms"));
+        assert!(check(&doubled, &["00"])
+            .unwrap_err()
+            .contains("two algorithms"));
         // A duplicated proof-critical field is ambiguity, and ambiguity is refusal.
         let mut smuggled = base();
         smuggled[2] = format!("{} result=FOUND", smuggled[2]);
-        assert!(check(&smuggled, &["00"]).unwrap_err().contains("more than once"));
+        assert!(check(&smuggled, &["00"])
+            .unwrap_err()
+            .contains("more than once"));
         // A key of the wrong kind on this record.
         let mut wrong_kind = base();
         wrong_kind[1] = wrong_kind[1].replace("case=oll:00", "case=pll:00");
-        assert!(check(&wrong_kind, &["00"]).unwrap_err().contains("is a pll key"));
+        assert!(check(&wrong_kind, &["00"])
+            .unwrap_err()
+            .contains("is a pll key"));
         // An incomplete TABLE, not merely an incomplete case.
         let e = check(&base(), &["00", "11", "22"]).unwrap_err();
         assert!(e.contains("1 of 3") && e.contains("2 missing"), "{e}");
@@ -851,7 +875,10 @@ mod tests {
         };
         let mut full = vec![goals_line()];
         full.extend(complete_case("00", 7));
-        assert!(check(&full, &["00"]).is_ok(), "the complete set must pass first");
+        assert!(
+            check(&full, &["00"]).is_ok(),
+            "the complete set must pass first"
+        );
 
         let e = check(&shrink(full.clone(), 1), &["00"]).expect_err("size=1 is not the claim");
         assert!(e.contains("declares goal set deadbeef/1"), "{e}");
@@ -876,7 +903,10 @@ mod tests {
         assert_eq!(pll.goal_set, Some((PLL_GOAL_SET.0.to_string(), 16)));
         let f2l = Expect::standard("f2l").expect("f2l is a kind");
         assert_eq!(f2l.cases.len(), 42, "41 cases and the one already placed");
-        assert_eq!(f2l.goal_set, None, "f2l's obligation is not over a goal set");
+        assert_eq!(
+            f2l.goal_set, None,
+            "f2l's obligation is not over a goal set"
+        );
         assert!(Expect::standard("typo").is_err());
     }
 

@@ -342,7 +342,13 @@ impl Run<'_> {
 /// Hand-rolled JSON, as `gen-library.rs` does: every field is a move string over [URFDLB'2 ], a
 /// facelet string, or a number — no escaping exists to get wrong. `table_json::read_table` is the
 /// other half, and it refuses everything this cannot produce.
-fn render_table(kind_arg: &str, hash: &str, goalset_id: &str, pairs: usize, entries: &[Entry]) -> String {
+fn render_table(
+    kind_arg: &str,
+    hash: &str,
+    goalset_id: &str,
+    pairs: usize,
+    entries: &[Entry],
+) -> String {
     let rows: Vec<String> = entries
         .iter()
         .map(|e| {

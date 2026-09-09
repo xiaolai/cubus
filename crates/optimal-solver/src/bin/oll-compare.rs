@@ -182,7 +182,10 @@ fn main() {
         .collect();
     assert_eq!(mine.len(), 57);
     assert_eq!(theirs.len(), 56);
-    debug_assert!(mine.windows(2).all(|w| w[0] <= w[1]), "the histogram is ascending");
+    debug_assert!(
+        mine.windows(2).all(|w| w[0] <= w[1]),
+        "the histogram is ascending"
+    );
 
     match compare(&mine, &theirs) {
         Some(result) => {

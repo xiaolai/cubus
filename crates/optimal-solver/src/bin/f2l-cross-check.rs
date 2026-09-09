@@ -114,12 +114,7 @@ struct Outcome {
 }
 
 /// Brute-force one case, and compare the result with the table's own row for it.
-fn check_case(
-    case: &F2lCase,
-    ball: &GoalBall,
-    table: &CaseTable,
-    cancel: &AtomicBool,
-) -> Outcome {
+fn check_case(case: &F2lCase, ball: &GoalBall, table: &CaseTable, cancel: &AtomicBool) -> Outcome {
     let at = Instant::now();
     let claim = prove_all(ball, &case.state(), 14, cancel).expect("a proof");
     let mut refutations = Vec::new();
@@ -202,13 +197,19 @@ fn main() {
         if !cases.iter().any(|c| c.name == *name) {
             cli::fail(
                 &SPEC,
-                &format!("--only {name}: no such case (there are {} of them)", cases.len()),
+                &format!(
+                    "--only {name}: no such case (there are {} of them)",
+                    cases.len()
+                ),
             );
         }
     }
     // An unparseable `--max-length` used to become "no limit", so a run asked to stop at six moves
     // silently checked all nine.
-    let max_length: u8 = cli::or_exit(&SPEC, args.parsed_in("--max-length", 0..=NO_LIMIT, NO_LIMIT));
+    let max_length: u8 = cli::or_exit(
+        &SPEC,
+        args.parsed_in("--max-length", 0..=NO_LIMIT, NO_LIMIT),
+    );
     let table_path = args.value("--table").unwrap_or(COMMITTED).to_string();
     let text = std::fs::read_to_string(&table_path)
         .unwrap_or_else(|e| cli::fail(&SPEC, &format!("cannot read {table_path}: {e}")));
@@ -272,7 +273,10 @@ fn main() {
         }
     }
 
-    let refuted = outcomes.iter().filter(|o| !o.refutations.is_empty()).count();
+    let refuted = outcomes
+        .iter()
+        .filter(|o| !o.refutations.is_empty())
+        .count();
     eprintln!(
         "{} cases checked against {table_path}, {skipped} skipped, {refuted} refuted",
         outcomes.len()
