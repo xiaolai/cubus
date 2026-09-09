@@ -141,8 +141,13 @@ pub const SUPERFLIP_GEODESIC: &str = "U R2 F B R B2 R U2 L B2 R U' D' R2 F R' L 
 // The 54-character URFDLB string, exactly apps/web/lib/two-phase.js's convention (which a test
 // pins to cubejs at the cubie level). Needed at the seam: Tauri commands take facelets.
 
-const CORNER_NAMES: [&str; 8] = ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"];
-const EDGE_NAMES: [&str; 12] = [
+/// The slot names, in this crate's (cubejs's) order — the ORDER every index in this crate means.
+///
+/// `pub(crate)` because `notation.rs` needs exactly these to name a slot, and had a second copy of
+/// both arrays. A correctness-critical ordering with two definitions is one that can disagree, and
+/// a disagreement would look like a rotation being wrong rather than like a table being stale.
+pub(crate) const CORNER_NAMES: [&str; 8] = ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"];
+pub(crate) const EDGE_NAMES: [&str; 12] = [
     "UR", "UF", "UL", "UB", "DR", "DF", "DL", "DB", "FR", "FL", "BL", "BR",
 ];
 const CORNER_FACELETS: [[usize; 3]; 8] = [

@@ -389,7 +389,7 @@ test('the app can say "proved" from exactly three places, and nowhere else', () 
   const calls = [...stripComments(app).matchAll(/provenMinimumLabel\(/g)];
   assert.equal(calls.length, 1, 'the library sentence is used exactly once');
   const line = stripComments(app).slice(0, calls[0].index).split('\n').pop();
-  assert.match(line, /provenHere \?/, 'the library sentence must sit behind the proven-state guard');
+  assert.match(line, /showingProof \?/, 'the library sentence must sit behind the proven-state guard');
 });
 
 test('the wording scanner cannot be walked past — the two ways it could be, pinned', () => {
