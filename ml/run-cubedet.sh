@@ -34,64 +34,43 @@ CLOCK_CEILING=2250   # the cap is 2200; allow a little headroom for sampling jit
 
 [ -d "$DATA/images/train" ] || { echo "no training images at $DATA/images/train" >&2; exit 1; }
 
-# THE GB10 HARD-RESETS UNDER SUSTAINED LOAD UNLESS THE GRAPHICS CLOCK IS CAPPED (ml/MODEL_CARD.md,
-# §Reproduce: it is power spikes, not average temperature). This box also runs other services, so a
-# reset takes them with it — worth refusing a multi-hour run rather than finding out at hour four.
+# THE GB10 HARD-RESETS UNDER SUSTAINED LOAD UNLESS THE GRAPHICS CLOCK IS CAPPED, and the check for
+# that is the IDLE FLOOR, not the ceiling.
 #
-# THE CHECK IS A MEASUREMENT, NOT A FIELD READ, and the first draft got that wrong.
-# `clocks.max.graphics` reports the HARDWARE maximum (3003 MHz here) and does not move when
-# `nvidia-smi -lgc` applies a cap — so a guard reading it refuses forever, including after the cap
-# has been correctly applied. Reading the current clock instead is worse: an idle GPU sits at
-# ~208 MHz and sails past any ceiling, so the guard would pass on an uncapped box.
+# `-lgc 300,2200` sets a floor as well as a ceiling. The floor is the positive control: a locked
+# GB10 idles at ~305 MHz, an unlocked one drops to ~208. The CEILING cannot be used as a check at
+# all, because this workload never asks for more than 2200 — an uncapped GPU running it peaks at
+# 2190, which is indistinguishable from a capped one. The first version of this guard probed the
+# peak under load and therefore passed on an uncapped box, twice, before two hard resets.
 #
-# So: put the GPU under load for a few seconds and sample what it actually reaches. That answers
-# the only question that matters — will this GPU boost past the cap — regardless of which fields
-# the driver chooses to expose.
-probe_peak_clock() {
-  docker run --rm --gpus all --ipc=host "$IMAGE" python -c "
-import subprocess, threading, time, torch
-peak = 0
-stop = threading.Event()
-def sample():
-    global peak
-    while not stop.is_set():
-        try:
-            mhz = int(subprocess.run(['nvidia-smi','--query-gpu=clocks.gr','--format=csv,noheader,nounits'],
-                                     capture_output=True, text=True, timeout=5).stdout.strip().split()[0])
-            peak = max(peak, mhz)
-        except Exception:
-            pass
-        time.sleep(0.25)
-t = threading.Thread(target=sample, daemon=True); t.start()
-a = torch.randn(4096, 4096, device='cuda')
-deadline = time.time() + 8
-while time.time() < deadline:
-    a = (a @ a).sigmoid()
-torch.cuda.synchronize()
-stop.set(); t.join(timeout=2)
-print(peak)
-" 2>/dev/null | tail -1
-}
-
+# systemctl is NOT evidence either. The unit is RemainAfterExit=yes, so it reports `active` forever
+# after running once, whether or not the lock still holds. Measured 2026-09-09: the service read
+# `active` while the GPU idled at 208 MHz — the lock had been lost since boot, and a run was
+# started on an uncapped GPU on the strength of that `active`.
+#
+# So: read the idle clock, and refuse if it is not locked. Requires the GPU to actually be idle,
+# which it is before a run starts.
+IDLE_FLOOR_MIN=280
 if [ "${CUBEDET_ALLOW_UNCAPPED:-0}" != "1" ]; then
-  echo "probing the GPU clock under load (about 15s)..." >&2
-  PEAK="$(probe_peak_clock || echo 0)"
-  case "$PEAK" in ''|*[!0-9]*) PEAK=0 ;; esac
-  if [ "$PEAK" -eq 0 ]; then
-    echo "REFUSING: could not measure the GPU clock under load." >&2
-    echo "  A guard that cannot measure has not checked anything — it must not pass silently." >&2
+  if nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits | awk '{exit ($1 > 10)}'; then
+    IDLE=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | head -1)
+    case "$IDLE" in ''|*[!0-9]*) IDLE=0 ;; esac
+    if [ "$IDLE" -lt "$IDLE_FLOOR_MIN" ]; then
+      echo "REFUSING: GPU idles at ${IDLE} MHz; a locked GB10 holds ~305 (unlocked drops to ~208)." >&2
+      echo "  The clock lock is NOT engaged, whatever gpu-clock-cap.service reports." >&2
+      echo "  Reapply on this host:  sudo nvidia-smi -lgc 300,2200" >&2
+      echo "  Override:  CUBEDET_ALLOW_UNCAPPED=1 $0 $*" >&2
+      exit 1
+    fi
+    echo "clock lock verified: idle floor ${IDLE} MHz." >&2
+  else
+    echo "GPU is busy; cannot read the idle floor. Refusing rather than guessing." >&2
+    echo "  This box runs ONE job at a time by design — the only reset that got through a" >&2
+    echo "  verified cap (2026-09-09 12:56) was two concurrent jobs." >&2
     exit 1
   fi
-  if [ "$PEAK" -gt "$CLOCK_CEILING" ]; then
-    echo "REFUSING: the GPU reached ${PEAK} MHz under load, above the ${CLOCK_CEILING} MHz ceiling." >&2
-    echo "  This box hard-resets on power spikes at full clock. Run, on this host:" >&2
-    echo "      sudo nvidia-smi -lgc 300,2200" >&2
-    echo "  then start this again. To override:  CUBEDET_ALLOW_UNCAPPED=1 $0 $*" >&2
-    exit 1
-  fi
-  echo "GPU peaked at ${PEAK} MHz under load — within the cap. Starting." >&2
 else
-  echo "CUBEDET_ALLOW_UNCAPPED=1 — skipping the clock check." >&2
+  echo "CUBEDET_ALLOW_UNCAPPED=1 — skipping the clock-lock check." >&2
 fi
 
 mkdir -p "$WORK/out/$RUN"
