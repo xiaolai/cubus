@@ -301,22 +301,26 @@ fn expand_openings(openings: Vec<Vec<u8>>, target: usize) -> Vec<Vec<u8>> {
     out
 }
 
-/// The canonical prefixes at each ply, expanded once per process.
+/// The canonical prefixes at one ply, expanded once per process and only for the plies asked for.
 ///
-/// There are only five: `root_ply` caps at four, so a whole run of contours — and every state a
-/// caller ever asks about — draws from the same five lists. Building them was cheap and building
-/// them repeatedly was not free: the deepest is 43,254 prefixes, each an allocation, and
-/// `prove_all` built it twice over for one state because the collecting pass could not see what
-/// the proving pass had just made. Held here instead, which is where a value that depends on
-/// nothing belongs.
+/// There are only four distinct lists: `root_ply` caps at four and clamps to at least one, so a
+/// whole run of contours — and every state a caller ever asks about — draws from the same few.
+/// Building them was cheap and building them repeatedly was not free: the deepest is 43,254
+/// prefixes, each an allocation, and `prove_all` built it twice over for one state because the
+/// collecting pass could not see what the proving pass had just made. Held here instead, which is
+/// where a value that depends on nothing belongs.
+///
+/// **One cell per ply, not one list of five.** A single `OnceLock` around the whole vector meant
+/// the first lookup at ANY depth built every depth: a three-move state paid for the 43,254-prefix
+/// list it would never read, and the process then held all 46,773 prefixes for the rest of its
+/// life. The plies are independent, so they are initialized independently. The old shape also
+/// carried plies 0 and 1 as two copies of the same list, because `p.max(1)` collapsed them —
+/// indexing by `ply.clamp(1, MAX)` says that once instead.
 fn canonical_roots(ply: usize) -> &'static [Vec<u8>] {
-    static ROOTS: OnceLock<Vec<Vec<Vec<u8>>>> = OnceLock::new();
-    let all = ROOTS.get_or_init(|| {
-        (0..=MAX_ROOT_PLY)
-            .map(|p| expand_openings(root_openings(), p.max(1)))
-            .collect()
-    });
-    &all[ply.min(MAX_ROOT_PLY)]
+    static ROOTS: [OnceLock<Vec<Vec<u8>>>; MAX_ROOT_PLY] =
+        [const { OnceLock::new() }; MAX_ROOT_PLY];
+    let p = ply.clamp(1, MAX_ROOT_PLY);
+    ROOTS[p - 1].get_or_init(|| expand_openings(root_openings(), p))
 }
 
 /// Where a run of contours gets its parallel roots.
@@ -621,7 +625,25 @@ pub fn prove_all(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u8, u64),
 ) -> Result<ProofAll, SearchEnd> {
-    prove_all_reporting(tables, start, cap, cancel, progress, &|_, _| {})
+    let own = AtomicU64::new(0);
+    prove_all_inner(tables, start, cap, cancel, &own, progress, &|_, _| {})
+}
+
+/// [prove_all], with the node counter supplied by the caller — the same relationship
+/// [prove_counted] has to [prove], and for the same reason.
+///
+/// A caller totalling the work of many searches cannot get it from the returned `ProofAll`, which
+/// only exists when a proof was found: a search that ends `BeyondCap` can visit a great many nodes
+/// and returns none of them. `gen-cases` totalled its passes that way and understated every run.
+pub fn prove_all_counted(
+    tables: &Tables,
+    start: &Coords,
+    cap: u8,
+    cancel: &AtomicBool,
+    total_nodes: &AtomicU64,
+    progress: &mut dyn FnMut(u8, u64),
+) -> Result<ProofAll, SearchEnd> {
+    prove_all_inner(tables, start, cap, cancel, total_nodes, progress, &|_, _| {})
 }
 
 /// [prove_all], with a separate callback for the COLLECTING half.
@@ -638,7 +660,20 @@ pub fn prove_all_reporting(
     progress: &mut dyn FnMut(u8, u64),
     collected: &(dyn Fn(u8, u64) + Sync),
 ) -> Result<ProofAll, SearchEnd> {
-    let proof = prove(tables, start, cap, cancel, progress)?;
+    let own = AtomicU64::new(0);
+    prove_all_inner(tables, start, cap, cancel, &own, progress, collected)
+}
+
+fn prove_all_inner(
+    tables: &Tables,
+    start: &Coords,
+    cap: u8,
+    cancel: &AtomicBool,
+    total_nodes: &AtomicU64,
+    progress: &mut dyn FnMut(u8, u64),
+    collected: &(dyn Fn(u8, u64) + Sync),
+) -> Result<ProofAll, SearchEnd> {
+    let proof = prove_counted(tables, start, cap, cancel, total_nodes, progress)?;
     if proof.length == 0 {
         return Ok(ProofAll {
             length: 0,
@@ -650,6 +685,9 @@ pub fn prove_all_reporting(
     let (mut solutions, extra) = collect_contour(tables, start, bound, cancel, &|nodes| {
         collected(bound, proof.nodes + nodes)
     });
+    // The collecting pass is search too, so a caller's counter sees it — including when the
+    // cancellation below throws the result away.
+    total_nodes.fetch_add(extra, Ordering::Relaxed);
     if cancel.load(Ordering::Relaxed) {
         return Err(SearchEnd::Cancelled);
     }
@@ -678,33 +716,20 @@ pub fn prove_all_reporting(
     })
 }
 
-/// Exhaust one contour and return every maneuver of exactly `bound` moves it holds, with the nodes
-/// spent. Root-parallel over the same canonical openings the proving contour uses.
+/// Walk one opening's subtree at `bound`, and say how many nodes it cost.
 ///
-/// Its own function because it is its own job: `prove_all_reporting` decides WHICH contour and what
-/// to do with the answer, and this walks it. `report` is called once per opening finished, with the
-/// running node total — the hook a cancel can be raised from while collectors are still running.
-/// Collect ONE opening's subtree, and say how many nodes it cost — the seam the collector's
-/// cancellation promise is tested through.
-///
-/// It exists because that promise cannot be tested through `prove_all` at any bound anyone can
-/// afford, and the reason is `root_ply`: the parallel roots go four moves deep, so at a fourteen-
-/// move state an average opening is 3,915 nodes against a stride bound of 49,152 (measured,
-/// 2026-09-09). A `Collector` that ignored the flag entirely and simply finished the opening it
-/// was in would post the same number as one that polls, and the cheap test could not tell them
-/// apart — which is what the audit recorded as its one partial finding. One opening at ONE move
-/// deep is millions of nodes, and the two hypotheses separate immediately.
-///
-/// Not a solving entry point. `prove_all` chooses the contour and the openings; a caller that
-/// chooses its own gets an answer about the openings it chose rather than about the state.
-#[doc(hidden)]
-pub fn collect_one_opening(
+/// The ONE implementation of "replay a prefix, then collect from there", used by the contour walk
+/// and by the test seam below. They were two copies of the same eight lines, free to drift — and
+/// the production path is the one a drift would break silently, because the seam is what the
+/// cancellation test watches.
+fn collect_from_prefix(
     tables: &Tables,
     start: &Coords,
     bound: u8,
     prefix: &[u8],
     cancel: &AtomicBool,
 ) -> (Vec<Vec<u8>>, u64) {
+    let depth = u8::try_from(prefix.len()).expect("a prefix is at most MAX_ROOT_PLY moves");
     let mut at = *start;
     for &m in prefix {
         at = at.step(&tables.moves, m as usize);
@@ -720,10 +745,62 @@ pub fn collect_one_opening(
         aborted: false,
     };
     let prev = *prefix.last().expect("an opening is non-empty") as i8;
-    collector.run(at, prefix.len() as u8, prev);
+    collector.run(at, depth, prev);
     (collector.out, collector.nodes)
 }
 
+/// Collect ONE opening's subtree — the seam the collector's cancellation promise is tested
+/// through.
+///
+/// It exists because that promise cannot be tested through `prove_all` at any bound anyone can
+/// afford, and the reason is `root_ply`: the parallel roots go four moves deep, so at a fourteen-
+/// move state an average opening is 3,915 nodes against a stride bound of 49,152 (measured,
+/// 2026-09-09). A `Collector` that ignored the flag entirely and simply finished the opening it
+/// was in would post the same number as one that polls, and the cheap test could not tell them
+/// apart — which is what the audit recorded as its one partial finding. One opening at ONE move
+/// deep is millions of nodes, and the two hypotheses separate immediately.
+///
+/// Not a solving entry point. `prove_all` chooses the contour and the openings; a caller that
+/// chooses its own gets an answer about the openings it chose rather than about the state.
+///
+/// **The prefix is CHECKED, because this one is a caller's and not `root_ply`'s.** A prefix longer
+/// than the bound describes a maneuver the contour does not contain, and `prefix.len() as u8`
+/// wrapped a 256-move prefix to depth 0 — which reported the start state as a solution at bound 0.
+/// Both are refused here rather than answered.
+#[doc(hidden)]
+pub fn collect_one_opening(
+    tables: &Tables,
+    start: &Coords,
+    bound: u8,
+    prefix: &[u8],
+    cancel: &AtomicBool,
+) -> (Vec<Vec<u8>>, u64) {
+    assert!(
+        !prefix.is_empty(),
+        "an opening is at least one move; the empty prefix is the whole contour"
+    );
+    let depth = u8::try_from(prefix.len())
+        .unwrap_or_else(|_| panic!("a prefix of {} moves is not a search opening", prefix.len()));
+    assert!(
+        depth <= bound,
+        "a {depth}-move opening cannot be a prefix of a {bound}-move maneuver"
+    );
+    collect_from_prefix(tables, start, bound, prefix, cancel)
+}
+
+/// Exhaust one contour and return every maneuver of exactly `bound` moves it holds, with the nodes
+/// spent. Root-parallel over the same canonical openings the proving contour uses.
+///
+/// Its own function because it is its own job: `prove_all_reporting` decides WHICH contour and what
+/// to do with the answer, and this walks it. `report` is called once per opening finished, with the
+/// running node total — the hook a cancel can be raised from while collectors are still running.
+///
+/// **The total and the report are one operation.** They used to be two — an atomic `fetch_add`,
+/// then a call — so two workers finishing at once could compute 100 and 180 and then deliver them
+/// in the other order. A consumer that stores the latest report (which is what a progress display
+/// is) would show the count going backwards. The pair is taken under one lock, so what arrives is
+/// non-decreasing; the lock costs one acquisition per opening against thousands of nodes of work
+/// inside it.
 fn collect_contour(
     tables: &Tables,
     start: &Coords,
@@ -734,44 +811,36 @@ fn collect_contour(
     // The same list the proving pass just used, not a second copy of it.
     let roots = canonical_roots(root_ply(bound));
     let found: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
-    let nodes = AtomicU64::new(0);
+    let progress: Mutex<u64> = Mutex::new(0);
     roots.par_iter().for_each(|prefix| {
         if cancel.load(Ordering::Relaxed) {
             return;
         }
-        let g = prefix.len() as u8;
         // `root_ply` caps the prefix at `min(bound, 4)`, so a prefix longer than the bound cannot
-        // occur — no `g > bound` guard here, because a branch that cannot be taken is a branch
-        // nothing tests and everything has to read past.
+        // occur — a debug assertion rather than a branch, because a branch that cannot be taken is
+        // a branch nothing tests and everything has to read past.
         debug_assert!(
-            g <= bound,
+            prefix.len() as u8 <= bound,
             "root_ply never produces a prefix longer than the bound"
         );
-        let mut at = *start;
-        for &m in prefix {
-            at = at.step(&tables.moves, m as usize);
-        }
-        let mut collector = Collector {
-            tables,
-            cancel,
-            bound,
-            path: prefix.to_vec(),
-            out: Vec::new(),
-            nodes: 0,
-            since_check: 0,
-            aborted: false,
-        };
-        let prev = *prefix.last().expect("openings are non-empty") as i8;
-        collector.run(at, g, prev);
-        let so_far = nodes.fetch_add(collector.nodes, Ordering::Relaxed) + collector.nodes;
-        if !collector.out.is_empty() {
-            found.lock().unwrap().extend(collector.out);
+        let (out, nodes) = collect_from_prefix(tables, start, bound, prefix, cancel);
+        if !out.is_empty() {
+            found.lock().expect("the collector lock is never poisoned").extend(out);
         }
         // Reported after the work, so a callback that cancels stops the openings that have not
-        // started AND every collector already running — the flag is one for both.
-        report(so_far);
+        // started AND every collector already running — the flag is one for both. Counting and
+        // reporting happen together so the totals a consumer sees never go backwards.
+        {
+            let mut total = progress.lock().expect("the progress lock is never poisoned");
+            *total += nodes;
+            report(*total);
+        }
     });
-    (found.into_inner().unwrap(), nodes.load(Ordering::Relaxed))
+    let total = *progress.lock().expect("the progress lock is never poisoned");
+    (
+        found.into_inner().expect("the collector lock is never poisoned"),
+        total,
+    )
 }
 
 /// Certify that `start` has NO solution within `max_bound` moves, over one shard of the

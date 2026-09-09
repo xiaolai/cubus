@@ -4,7 +4,7 @@
   "goalSet": "auf4xauf4",
   "goals": 16,
   "cases": [
-    { "case": "pll:01230123", "facelets": "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB", "length": 0, "alg": "", "alignment": 0, "goalsAtOptimum": 1 },
+    { "case": "pll:01230123", "facelets": "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB", "length": 0, "alg": "", "alignment": 0, "goalsAtOptimum": 4 },
     { "case": "pll:01230231", "facelets": "UUUUUUUUURRRRRRRRRFLFFFFFFFDDDDDDDDDLBLLLLLLLBFBBBBBBB", "length": 9, "alg": "R2 U B' F R2 B F' U R2", "alignment": 2, "goalsAtOptimum": 4 },
     { "case": "pll:01230312", "facelets": "UUUUUUUUURRRRRRRRRFBFFFFFFFDDDDDDDDDLFLLLLLLLBLBBBBBBB", "length": 9, "alg": "R2 U' B' F R2 B F' U' R2", "alignment": 2, "goalsAtOptimum": 4 },
     { "case": "pll:01231032", "facelets": "UUUUUUUUURFRRRRRRRFRFFFFFFFDDDDDDDDDLBLLLLLLLBLBBBBBBB", "length": 12, "alg": "R B' R' B F R' B' F R' B R F2", "alignment": 0, "goalsAtOptimum": 16 },
