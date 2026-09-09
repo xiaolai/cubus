@@ -29,6 +29,39 @@ const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 let proc;
 let base;
 
+// THIS IS THE ONE SUITE IN THE REPOSITORY THAT OPENS A REAL BROWSER WINDOW, and on a developer's
+// machine that window takes the screen and the keyboard focus away from whatever they were doing —
+// several times, since each case launches its own Chromium. So it runs where a stolen focus costs
+// nothing (CI, and anyone who asks for it by name) and reports itself as UNCHECKED elsewhere.
+//
+// It is NOT made headless to achieve that, and must not be: headless Chromium's software adapter
+// is ~500x slower than a real GPU (7320 ms a frame against 15), so a headless run would either
+// time out or "prove" the GPU path is a catastrophe. The measurement is the whole point of the
+// suite; the window is an unfortunate consequence of it.
+//
+// Positioning the window off-screen was tried first and does not work: Playwright manages the
+// browser window itself and overrides `--window-position`/`--window-size`, so a launch asking for
+// (-3000, -3000) at 800×600 came up at (0, 30) at 1282×800 — measured, 2026-09-08.
+//
+// Skipped, never passed — the same rule csp.test.mjs follows for its gitignored half. A run that
+// did not happen must not read as a run that succeeded.
+const HEADED_ALLOWED = process.env.CI === 'true' || process.env.CUBUS_GPU_TEST === '1';
+
+/** True when the case must not run here; marks it SKIPPED, so the gap is visible in the counts.
+ *
+ * `t.skip()` and not a bare `t.diagnostic()` return: a diagnostic alone still tallies the case
+ * under `pass`, and four cases reading green when none of them ran is precisely the thing this
+ * repository refuses to do elsewhere. Skipped is a third state, and it is the honest one.
+ */
+function headedNotAllowed(t) {
+  if (HEADED_ALLOWED) return false;
+  t.skip(
+    'opens a real Chromium window and would take focus — '
+    + 'run with CUBUS_GPU_TEST=1, or let CI run it (it does, on every full-tier run)',
+  );
+  return true;
+}
+
 before(async () => {
   const port = await freePort();
   base = `http://127.0.0.1:${port}`;
@@ -170,7 +203,8 @@ async function adapterKind() {
   });
 }
 
-test('the vendored runtime can actually reach a GPU', async () => {
+test('the vendored runtime can actually reach a GPU', async (t) => {
+  if (headedNotAllowed(t)) return;
   const kind = await adapterKind();
   // Reported rather than skipped: on a box with no GPU this is a fact about the box, and the rest
   // of the file still asserts the wasm path. A silent skip is how a gate stops being one.
@@ -207,7 +241,8 @@ test('the vendored runtime can actually reach a GPU', async () => {
 // This is the same claim `onnx-threads.test.ts` pins against a stubbed adapter. It is worth having
 // twice: the unit test proves the RULE, and this proves the browser really does answer this way
 // and that the rule reads the fields it actually populates.
-test('a software adapter is refused, however real it says it is', async () => {
+test('a software adapter is refused, however real it says it is', async (t) => {
+  if (headedNotAllowed(t)) return;
   const seen = await withBrowser(
     async (browser) => {
       const page = await browser.newPage();
@@ -249,7 +284,8 @@ test('a software adapter is refused, however real it says it is', async () => {
 // run this model inside the budget loses to wasm. Driven through `gpuBudgetMs` rather than by
 // finding hardware slow enough — the seam exists for exactly this, the same way
 // `executionProviders` does — so the branch is exercised on the machine that has a working GPU.
-test('a GPU that runs slower than the budget is handed back for wasm', async () => {
+test('a GPU that runs slower than the budget is handed back for wasm', async (t) => {
+  if (headedNotAllowed(t)) return;
   const out = await withBrowser(async (browser) => {
     const page = await browser.newPage();
     await page.goto(`${base}/index.html`);
@@ -282,7 +318,8 @@ test('a GPU that runs slower than the budget is handed back for wasm', async () 
   assert.equal(out.anchors, 8400, 'the runner rebuilt on wasm does not produce the tensor');
 });
 
-test('both providers read the same frame the same way', async () => {
+test('both providers read the same frame the same way', async (t) => {
+  if (headedNotAllowed(t)) return;
   const wasm = await runUnder(['wasm']);
   assert.equal(wasm.anchors, 8400, 'the wasm path is the floor and must always work');
 
