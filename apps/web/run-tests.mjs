@@ -80,11 +80,34 @@ export function resolveTier(tier, root = WEB) {
   return files.filter((f) => !seen.has(f) && seen.add(f));
 }
 
+/**
+ * How many suites run at once, and why it is not one number.
+ *
+ * A node-only suite costs a process. A suite under `test/browser/` costs a WHOLE BROWSER, and on a
+ * two-core CI runner six of those at once is more memory than the box has. On 2026-09-09 that
+ * starved `screen-swap`'s `page.goto` for the full 120 s Playwright allows, on a run where the same
+ * test passes in about 200 ms alone and 3/3 locally — a timeout caused by the neighbours, reported
+ * as a fault in the test.
+ *
+ * The trigger was arithmetic: two merges took the browser tier from 11 suites to 13, and the sixth
+ * concurrent WebKit is where the runner ran out. Nothing about `screen-swap` changed.
+ *
+ * Raising the timeout would have hidden it, and a retry would have hidden it twice. The cause is
+ * contention, so the fix is to stop contending: browser suites run three at a time, node-only
+ * suites keep six. `all` takes the lower number because it contains the browser ones.
+ *
+ * The repository already knew this hazard — `scanner-gpu.test.mjs` documents a headed Chromium
+ * going red at 2.5 s under `--test-concurrency=6` "with a dozen other browsers alive" and passing
+ * at 6.8 s alone — but the lesson was written into one suite's retry rather than into the runner.
+ */
+const CONCURRENCY = { fast: 6, browser: 3, all: 3 };
+
 function main(argv) {
   const [tier = 'all'] = argv;
   const files = resolveTier(tier);
-  console.log(`test tier "${tier}": ${files.length} files`);
-  const result = spawnSync(process.execPath, ['--test', '--test-concurrency=6', ...files], {
+  const concurrency = CONCURRENCY[tier] ?? 3;
+  console.log(`test tier "${tier}": ${files.length} files, concurrency ${concurrency}`);
+  const result = spawnSync(process.execPath, ['--test', `--test-concurrency=${concurrency}`, ...files], {
     cwd: WEB,
     stdio: 'inherit',
   });
