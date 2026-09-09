@@ -201,10 +201,15 @@ test('the 62,208-state sweep has a job of its own, sized for what it costs', () 
   // fail-fast off: one combination failing must not cancel the others, because WHICH combinations
   // fail is the finding.
   assert.match(sweep, /fail-fast: false/, 'a failing shard must not cancel the ones still proving');
-  // A timeout with headroom over the measured per-combination cost. This is a LIVENESS bound —
-  // "something is wedged" — and not a performance assertion.
+  // A timeout with headroom over the MEASURED per-combination cost, not over a guess at it.
+  // Measured 2026-09-10 on an M-series laptop: ~950 s for the slowest combination (two-look, which
+  // searches deepest) and ~490 s for the fastest. A CI runner is slower than a laptop, so the
+  // bound has to clear ~16 minutes by a wide margin — the first draft of this job said 25, which
+  // is 1.6x the fastest machine available and is how a proof gets cancelled for running.
   const timeout = Number(/timeout-minutes: (\d+)/.exec(sweep)?.[1]);
-  assert.ok(timeout >= 20, `the sweep's timeout is ${timeout} minutes, which is under what one combination costs`);
+  assert.ok(timeout >= 40,
+    `the sweep's timeout is ${timeout} minutes; the slowest combination measures ~16 on a laptop, `
+    + 'and a runner is slower than that');
   assert.match(sweep, /needs\.plan\.outputs\.full == 'true'/, 'the sweep is nightly, not per-push');
 });
 
