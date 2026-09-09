@@ -150,6 +150,19 @@ jobs:
         if: needs.plan.outputs.full != 'true'
         run: pnpm --filter cubus-web test:fast
 
+      # THE COMPLETENESS PROOF THE METHOD SOLVER RESTS ON, nightly and on main.
+      #
+      # `bench/method-solver-profile.mjs exhaustive` enumerates all 62,208 reachable last-layer
+      # states and checks the two-look repertoire finishes every one. Until 2026-09-09 that claim
+      # lived only in a benchmark nobody ran — so a repertoire change could pass every sampled test
+      # while leaving a learner's cube unfinishable six months later, which is the exact failure
+      # the sweep exists to rule out. ~50 minutes on a loaded laptop, so it is nightly rather than
+      # per-push; the sampled suites in the fast tier are what a pull request gets.
+      - name: method solver — the 62,208-state completeness sweep (nightly)
+        if: needs.plan.outputs.full == 'true'
+        working-directory: apps/web
+        run: node bench/method-solver-profile.mjs exhaustive
+
       # TWO ENGINES, because two suites need different things from a browser.
       #
       # WebKit for the geometry test (apps/web/test/browser/geometry.test.mjs): it measures the
@@ -362,11 +375,34 @@ jobs:
         run: cargo test -p cube-ble
 
       # The optimal solver's §7 verification bar (histograms, Bellman over all 173M entries,
-      # superflip triple, metric contract, ball shells, geodesic fixtures to L=9, cancellation,
-      # artifact corruption). Release profile because table generation is BFS over 88M entries —
-      # debug would turn ~90 s into many minutes.
+      # superflip triple, metric contract, ball shells to depth 6, geodesic fixtures to L=13,
+      # the generator's determinism across core counts, cancellation, artifact corruption).
+      # Release profile because table generation is BFS over 88M entries — debug would turn
+      # ~90 s into many minutes.
+      #
+      # The geodesic L=10..=13 tier moved in here on 2026-09-09 (return plan B4). It had been
+      # behind `--ignored` with the label "minutes"; measured, the whole tier is 10.6 s, so it
+      # was costing nothing to run and was not being run — which left the prover verified up to
+      # depth 9 while the case tables it will produce live at 7..=15.
       - name: optimal solver plan checks (release)
         run: cargo test -p optimal-solver --release
+
+      # THE DEPTH PLL ACTUALLY REACHES, nightly and on main. The per-state PLL maximum is 15 face
+      # turns and the geodesic fixtures used to stop at 13, so the prover was verified in a range
+      # that nearly covered the case tables and stopped just short. Measured 2026-09-09: seven
+      # L=14 segments and six L=15 segments, 2 min 18 s in total. Named explicitly, so a new
+      # ignored test cannot silently join a step whose cost was measured for these two.
+      - name: optimal solver — the L=14..15 geodesic tier (nightly)
+        if: needs.plan.outputs.full == 'true'
+        run: cargo test -p optimal-solver --release --test plan_checks -- --ignored --exact geodesic_segments_prove_their_exact_depth_pll_tier
+
+      # The memory-hungry rung, likewise nightly: the depth-7 HTM ball shell needs about 4.78 GiB
+      # (§7a finding F7 — an earlier 1.9 GiB estimate omitted the frontier vectors). A runner
+      # without that memory does not fail this test, it is killed, and a job that vanishes reads
+      # as a job that never mattered.
+      - name: optimal solver — the depth-7 ball shell (nightly)
+        if: needs.plan.outputs.full == 'true'
+        run: cargo test -p optimal-solver --release --test plan_checks -- --ignored --exact htm_ball_shell_at_depth_7_is_exact
 
   # THE ANDROID SHELL'S KOTLIN, on every push. Its unit tests cover the pure halves of the two
   # plugins (`letterboxFrom`, `uuid`, `hex`, `matches`) — the part that had no verification at all
