@@ -22,6 +22,7 @@ pub mod cases;
 pub mod certificate;
 pub mod coords;
 pub mod cubie;
+pub mod f2l;
 pub mod notation;
 pub mod pdb;
 pub mod search;

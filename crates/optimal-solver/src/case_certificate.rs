@@ -17,13 +17,28 @@
 //! it *unread* and an empty read is not a refusal there. An earlier revision of the plan called
 //! the retrofit free. It is not, and this module is the cost.
 //!
-//! **F2L does not fit the shape at all, and says so.** Its constraint is slot-safety — a property
-//! of the ALGORITHM on a solved cube, not a distance to a goal state — so `prove` does not apply
-//! and no lower-bound-per-goal record can express it. Its obligation is an ENUMERATION: every
-//! algorithm shorter than `L` that reaches the case was examined, and none of them was slot-safe.
-//! A record that claims a distance where the constraint is algorithm-level would be a claim the
-//! evidence cannot support, so the grammar makes the two shapes distinct and the checker refuses
-//! to read one as the other.
+//! **F2L is a distance, but not in this cube.** This module's first revision said F2L could not be
+//! a distance at all — its constraint is slot-safety, a property of the ALGORITHM on a solved cube
+//! — and required an ENUMERATION instead: every shorter algorithm examined, none of them
+//! slot-safe. That was wrong, and `f2l.rs` records the argument that replaces it. For a case whose
+//! other slots are already home, "slot-safe and places the pair" and "every piece below the top
+//! layer is home afterwards" are the same statement, and the second IS a distance — to a single
+//! state, in the twelve-piece projection where the top layer does not exist.
+//!
+//! So F2L's obligation is a distance after all: nothing shorter than `L` reaches the goal. It
+//! still does not carry a goal set, because there is exactly one goal and a set of one declared as
+//! a set would be ceremony. The shape stays distinct from OLL's and PLL's, and `scope=` still says
+//! which space the bound is in — a bound that did not say would be indistinguishable from a claim
+//! about the whole cube, which is a different and much larger number.
+//!
+//! **The bound has two sources, and the record names both.** `floor=` is where the contour ladder
+//! started, which is the heuristic's value at the case: an ADMISSIBLE heuristic of `h` is itself a
+//! proof that nothing shorter than `h` exists, so those contours were never searched and never
+//! needed to be. `bound=`/`nodes=` is the exhausted part above it. When the two meet — `floor` is
+//! already `L`, the answer was the first contour tried — `nodes=0` is a COMPLETE lower bound and
+//! not a missing one, which is thirteen of the forty-one cases. A checker that refused every zero
+//! would have forced the generator to search contours it had already ruled out, to produce
+//! evidence for something it had already proved.
 //!
 //! ## The grammar
 //!
@@ -35,7 +50,7 @@
 //! case-goals moveset=<hex> kind=oll goalset=<hex> size=288
 //! case-alg   moveset=<hex> kind=oll case=oll:00112233 length=11 alg=R.U.R'.U.R.U2.R'
 //! case-lower moveset=<hex> kind=oll case=oll:00112233 goal=17 bound=10 result=NO-SOLUTION
-//! case-lower moveset=<hex> kind=f2l case=f2l:0a1b2c3d scope=slot-safe bound=6 enumerated=41310 result=NONE-SLOT-SAFE
+//! case-lower moveset=<hex> kind=f2l case=f2l:0a1b2c3d scope=f2l-projection floor=5 bound=6 nodes=41310 result=NO-SOLUTION
 //! ```
 //!
 //! `alg` is dot-separated so it stays ONE token: a space-separated maneuver would break the
@@ -79,7 +94,7 @@ struct Claim {
     alg_line: usize,
     /// Goal indices with a NO-SOLUTION record, and the bound each was taken at.
     lower: BTreeMap<u32, (u8, usize)>,
-    /// The F2L shape: bound, how many algorithms were enumerated, the line.
+    /// The F2L shape: the exhausted bound, the nodes that exhausting it cost, the line.
     exhausted: Option<(u8, u64, usize)>,
 }
 
@@ -227,37 +242,52 @@ pub fn check_case_certificates(
                     }
                     claim.lower.insert(goal, (bound, lineno));
                 } else {
-                    // F2L: one enumeration record per case, and it must say how much it looked at.
-                    // Missing and wrong are ONE refusal here on purpose: both mean the record
-                    // does not say which claim it is making, and a distance-shaped f2l record is
-                    // the exact confusion F3 is about.
-                    if field("scope=")?.as_deref() != Some("slot-safe") {
+                    // F2L: one exhaustion record per case, and it must name the space it is in.
+                    // Missing and wrong are ONE refusal here on purpose: both mean the record does
+                    // not say which claim it is making, and a bound that could be read as a
+                    // distance in the WHOLE cube is a much weaker statement wearing the same
+                    // number.
+                    if field("scope=")?.as_deref() != Some("f2l-projection") {
                         return Err(format!(
-                            "line {lineno}: an f2l bound must state scope=slot-safe — its constraint is algorithm-level, not a distance"
+                            "line {lineno}: an f2l bound must state scope=f2l-projection — the space it is a distance in is the claim"
                         ));
                     }
                     if field("goal=")?.is_some() {
                         return Err(format!(
-                            "line {lineno}: an f2l bound has no goal index; slot-safety is not a goal state"
+                            "line {lineno}: an f2l bound has no goal index; its projection has exactly one goal"
                         ));
                     }
-                    if result != "NONE-SLOT-SAFE" {
+                    if result != "NO-SOLUTION" {
                         return Err(format!(
-                            "line {lineno}: case {case} says {result}, not NONE-SLOT-SAFE"
+                            "line {lineno}: case {case} says {result}, not NO-SOLUTION"
                         ));
                     }
-                    let enumerated = number("enumerated=")?;
-                    if enumerated == 0 {
+                    let nodes = number("nodes=")?;
+                    let floor = number("floor=")? as u8;
+                    if floor == 0 {
                         return Err(format!(
-                            "line {lineno}: case {case} enumerated nothing, which rules out nothing"
+                            "line {lineno}: case {case} has floor 0 — a heuristic of zero bounds nothing"
+                        ));
+                    }
+                    if floor > bound + 1 {
+                        return Err(format!(
+                            "line {lineno}: case {case} claims a floor of {floor} above its own bound of {bound}"
+                        ));
+                    }
+                    // The one place a zero is allowed, and exactly there: contours were skipped
+                    // only when the heuristic had already ruled them out. A record that skipped
+                    // them AND had no floor to justify it is a bound with nothing behind it.
+                    if nodes == 0 && floor != bound + 1 {
+                        return Err(format!(
+                            "line {lineno}: case {case} searched nothing from a floor of {floor}, so contours {floor}..={bound} are unaccounted for"
                         ));
                     }
                     if let Some((_, _, prev)) = claim.exhausted {
                         return Err(format!(
-                            "line {lineno}: case {case} already enumerated on line {prev}"
+                            "line {lineno}: case {case} already exhausted on line {prev}"
                         ));
                     }
-                    claim.exhausted = Some((bound, enumerated, lineno));
+                    claim.exhausted = Some((bound, nodes, lineno));
                 }
             }
             _ => unreachable!("the match above admits exactly these three records"),
@@ -286,7 +316,7 @@ pub fn check_case_certificates(
         // shape of evidence and is refused rather than read charitably.
         (Some((_, _, lineno)), false) => {
             return Err(format!(
-                "line {lineno}: f2l carries no goal set — its constraint is slot-safety, not a distance"
+                "line {lineno}: f2l carries no goal set — its projection has exactly one goal, and a set of one is not a set"
             ))
         }
         (None, false) => (String::from("none"), 0),
@@ -334,14 +364,14 @@ pub fn check_case_certificates(
                 ));
             }
         } else {
-            let Some((bound, _enumerated, lineno)) = claim.exhausted else {
+            let Some((bound, _nodes, lineno)) = claim.exhausted else {
                 return Err(format!(
-                    "case {case} claims length {length} with no enumeration — slot-safety cannot be inferred from a distance"
+                    "case {case} claims length {length} with no exhausted contour — a length nobody ruled anything out for"
                 ));
             };
             if bound != want_bound {
                 return Err(format!(
-                    "line {lineno}: case {case} claims length {length} but enumerated only to {bound}"
+                    "line {lineno}: case {case} claims length {length} but exhausted only to {bound}"
                 ));
             }
         }
@@ -567,10 +597,10 @@ mod tests {
     }
 
     #[test]
-    fn f2l_carries_an_enumeration_and_never_a_goal_set() {
+    fn f2l_carries_an_exhausted_contour_and_never_a_goal_set() {
         let alg =
             format!("case-alg moveset={HASH} kind=f2l case=f2l:0a length=7 alg=R.U.R.U.R.U.R");
-        let ex = format!("case-lower moveset={HASH} kind=f2l case=f2l:0a scope=slot-safe bound=6 enumerated=41310 result=NONE-SLOT-SAFE");
+        let ex = format!("case-lower moveset={HASH} kind=f2l case=f2l:0a scope=f2l-projection floor=4 bound=6 nodes=41310 result=NO-SOLUTION");
         let proof = f2l(&[alg.clone(), ex.clone()], 1).expect("a complete f2l claim");
         assert_eq!(proof.goals, 0, "f2l's obligation is not over a goal set");
         assert_eq!(proof.goalset, "none");
@@ -588,27 +618,45 @@ mod tests {
         // A per-goal bound is likewise the wrong shape.
         let per_goal = vec![
             alg.clone(),
-            format!("case-lower moveset={HASH} kind=f2l case=f2l:0a goal=0 bound=6 result=NONE-SLOT-SAFE"),
+            format!(
+                "case-lower moveset={HASH} kind=f2l case=f2l:0a goal=0 bound=6 result=NO-SOLUTION"
+            ),
         ];
         assert!(f2l(&per_goal, 1)
             .unwrap_err()
-            .contains("must state scope=slot-safe"));
+            .contains("must state scope=f2l-projection"));
 
-        // An algorithm with no enumeration: slot-safety cannot be inferred from a distance.
+        // An algorithm with no exhausted contour: a length nobody ruled anything out for.
         assert!(f2l(std::slice::from_ref(&alg), 1)
             .unwrap_err()
-            .contains("no enumeration"));
+            .contains("no exhausted contour"));
 
         // Enumerating nothing rules out nothing.
-        let empty = ex.replace("enumerated=41310", "enumerated=0");
+        // A search that visited nothing, from a floor that does not reach the bound: the contours
+        // between are simply unaccounted for. The SAME zero with `floor=8` is accepted below,
+        // because then there was nothing between to account for.
+        let empty = ex.replace("nodes=41310", "nodes=0");
         assert!(f2l(&[alg.clone(), empty], 1)
             .unwrap_err()
-            .contains("enumerated nothing"));
+            .contains("searched nothing"));
+        // The heuristic reaching the answer on its own IS the lower bound, and costs no contour.
+        let by_floor = ex
+            .replace("nodes=41310", "nodes=0")
+            .replace("floor=4", "floor=7");
+        assert!(
+            f2l(&[alg.clone(), by_floor], 1).is_ok(),
+            "a bound established entirely by an admissible heuristic must be accepted"
+        );
+        // But a floor cannot be higher than the bound it is meant to help establish.
+        let overshoot = ex.replace("floor=4", "floor=9");
+        assert!(f2l(&[alg.clone(), overshoot], 1)
+            .unwrap_err()
+            .contains("above its own bound"));
 
         // And an enumeration that stopped short of L-1.
         let short = ex.replace("bound=6", "bound=4");
         assert!(f2l(&[alg, short], 1)
             .unwrap_err()
-            .contains("enumerated only to 4"));
+            .contains("exhausted only to 4"));
     }
 }
