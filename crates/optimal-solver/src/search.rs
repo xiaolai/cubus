@@ -170,9 +170,11 @@ fn search_prefix(
 }
 
 /// One contour, run root-parallel over the given openings (each a canonical move prefix).
-/// Returns the found path if any thread found a solution at exactly this bound, whether a
-/// cancel landed, and the nodes spent. A contour with no find and no cancel was FULLY
-/// exhausted: the early-stop flag is only ever set by a find or a cancel.
+/// Returns the found path if any thread found a solution at exactly this bound, and whether a
+/// cancel landed. (Nodes are not returned: they accumulate in the caller's `total_nodes`, which is
+/// what a progress callback reads. An earlier version of this sentence said otherwise.) A contour
+/// with no find and no cancel was FULLY exhausted: the early-stop flag is only ever set by a find
+/// or a cancel.
 fn run_contour(
     tables: &Tables,
     start: &Coords,
@@ -322,15 +324,25 @@ fn run_contours(
 ) -> Result<ContourEnd, SearchEnd> {
     let max_bound = *bounds.end();
     let mut bound = *bounds.start();
+    // The expansion depends only on `root_ply(bound)`, which is `min(bound, 4)` — so it stops
+    // changing at bound 4 and every contour above that was rebuilding the identical 43,254
+    // prefixes, cloning each one to push a single move onto it. Kept and reused instead; the deep
+    // contours are where a proof spends nearly all of its time, and they are exactly the ones that
+    // were paying for it.
+    let mut cached: Option<(usize, Vec<Vec<u8>>)> = None;
     while bound <= max_bound {
         if cancel.load(Ordering::Relaxed) {
             return Err(SearchEnd::Cancelled);
         }
-        // Expanded per contour for scheduling only: the expansion partitions each opening's
-        // subtree exactly and `root_ply` never goes below the base openings' own length, so the
-        // maneuvers covered — and a shard's partition identity — are untouched.
-        let roots = expand_openings(base_openings.to_vec(), root_ply(bound));
-        let (found, cancelled) = run_contour(tables, start, bound, &roots, cancel, total_nodes);
+        // Expanded per PLY for scheduling only: the expansion partitions each opening's subtree
+        // exactly and `root_ply` never goes below the base openings' own length, so the maneuvers
+        // covered — and a shard's partition identity — are untouched.
+        let ply = root_ply(bound);
+        if cached.as_ref().is_none_or(|(at, _)| *at != ply) {
+            cached = Some((ply, expand_openings(base_openings.to_vec(), ply)));
+        }
+        let roots = &cached.as_ref().expect("just filled").1;
+        let (found, cancelled) = run_contour(tables, start, bound, roots, cancel, total_nodes);
         if let Some(solution) = found {
             return Ok(ContourEnd::Found { bound, solution });
         }
@@ -378,6 +390,12 @@ pub fn prove_counted(
     total_nodes: &AtomicU64,
     progress: &mut dyn FnMut(u8, u64),
 ) -> Result<Proof, SearchEnd> {
+    // What `nodes` MEANS is this search's own work, not the counter's running total. The two
+    // differed: the solved branch reported 1 while the searching branch reported whatever the
+    // caller's counter already held plus its own — so a caller reusing one counter across states
+    // saw each proof claim every earlier proof's nodes as well. The baseline is subtracted at the
+    // end, and the shared counter still accumulates for the progress callback that reads it.
+    let baseline = total_nodes.load(Ordering::Relaxed);
     if start.is_solved() {
         total_nodes.fetch_add(1, Ordering::Relaxed);
         return Ok(Proof {
@@ -401,10 +419,226 @@ pub fn prove_counted(
         ContourEnd::Found { bound, solution } => Ok(Proof {
             length: bound,
             solution,
-            nodes: total_nodes.load(Ordering::Relaxed),
+            nodes: total_nodes.load(Ordering::Relaxed) - baseline,
         }),
         ContourEnd::Exhausted => Err(SearchEnd::BeyondCap),
     }
+}
+
+/// Every minimal CANONICAL maneuver for a state, not merely one of them.
+pub struct ProofAll {
+    /// The proven minimal length.
+    pub length: u8,
+    /// Every maneuver of that length **that the canonical move rule admits**, sorted by
+    /// `cases::tie_break` — so this is a function of the state and of nothing else.
+    ///
+    /// **"Canonical" is a real restriction and it is stated rather than glossed.** `move_allowed`
+    /// keeps one order of each commuting opposite-face pair, so for the state `U D` this returns
+    /// `D' U'` and not `U' D'`. The two are the same maneuver with two adjacent commuting turns
+    /// swapped — identical to hold, identical to execute, identical in length — and the whole
+    /// search, including the shard partition every distributed certificate depends on, is defined
+    /// over that canonicalisation. Enumerating both orders here would make this function disagree
+    /// with the search it is a sibling of.
+    ///
+    /// What the restriction costs is worth being precise about: `cases::tie_break` therefore ranks
+    /// within the canonical set, so a table entry is "the smallest canonical minimal maneuver",
+    /// not "the smallest of all minimal maneuvers". Deterministic either way, which is the
+    /// property that matters for a regenerable artifact.
+    pub solutions: Vec<Vec<u8>>,
+    /// Search nodes visited, including the collecting pass.
+    pub nodes: u64,
+}
+
+/// Every solution of exactly `bound` moves under one opening. No early stop on a FIND — but it
+/// still honours a cancel.
+///
+/// A separate walker rather than a mode on `Dfs`: that one is the hot path of every proof this
+/// crate makes, and threading a "keep going after a find" flag through it would put a branch in
+/// the innermost loop for the benefit of a pass that runs once per case.
+///
+/// **It does NOT visit a subset of the proving contour's nodes**, and an earlier version of this
+/// comment claimed it did. Proving stops at its first find and abandons the rest of the contour;
+/// collecting exhausts it. The pruning rule is the same admissible one, so the collector's nodes
+/// are a subset of what a FULLY EXHAUSTED contour at this bound would visit — which is more work
+/// than `prove` did, not less.
+///
+/// **Cancellation is polled every `CANCEL_STRIDE` nodes**, the same promise `Dfs` makes. Without
+/// it a cancel landing inside a large subtree waited for that subtree to finish, which at a deep
+/// bound is minutes — the cancellation contract `plan_checks.rs` measures in nodes would have been
+/// silently untrue for this half of the API.
+struct Collector<'a> {
+    tables: &'a Tables,
+    cancel: &'a AtomicBool,
+    bound: u8,
+    path: Vec<u8>,
+    out: Vec<Vec<u8>>,
+    nodes: u64,
+    since_check: u64,
+    aborted: bool,
+}
+
+impl Collector<'_> {
+    fn run(&mut self, c: Coords, g: u8, prev: i8) {
+        self.nodes += 1;
+        self.since_check += 1;
+        if self.since_check >= CANCEL_STRIDE {
+            self.since_check = 0;
+            if self.cancel.load(Ordering::Relaxed) {
+                self.aborted = true;
+            }
+        }
+        if self.aborted {
+            return;
+        }
+        if g == self.bound {
+            if c.is_solved() {
+                self.out.push(self.path.clone());
+            }
+            return;
+        }
+        if g + self.tables.heuristic(&c) > self.bound {
+            return;
+        }
+        for m in 0..18usize {
+            if !move_allowed(prev, m) {
+                continue;
+            }
+            self.path.push(m as u8);
+            self.run(c.step(&self.tables.moves, m), g + 1, m as i8);
+            self.path.pop();
+            if self.aborted {
+                return;
+            }
+        }
+    }
+}
+
+/// [prove], then every other minimal CANONICAL maneuver of the same length — see [ProofAll].
+///
+/// **Why this exists.** `prove` runs root branches in parallel and a find stops the siblings, so
+/// WHICH minimal maneuver comes back depends on which thread won — verified at `search.rs:198`,
+/// and §7a upheld it as finding D. That changes nothing about the LENGTH and everything about the
+/// ALGORITHM, which is fatal for a table meant to be memorised: regenerating it a year later would
+/// diff dirty with no way to tell a real regression from a reshuffle. The fix is not to make the
+/// race deterministic — it is to remove the race by taking the whole contour, and then to CHOOSE
+/// with a stated rule (`cases::tie_break`).
+///
+/// **The cost is one contour, not one search.** Every contour below the answer is exhausted either
+/// way; only the winning one is now exhausted rather than abandoned at the first find.
+///
+/// `progress` reports the proving half, per exhausted contour. The collecting half is silent here;
+/// [prove_all_reporting] is the form that reports it, and the reason it exists is that the
+/// collecting half of a shallow state is 14 to 36 ms — far too narrow a window for a test to land
+/// a cancel in by sleeping. A deterministic hook is the only way to exercise `Collector`'s own
+/// polling rather than the cancel check that brackets it.
+pub fn prove_all(
+    tables: &Tables,
+    start: &Coords,
+    cap: u8,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u8, u64),
+) -> Result<ProofAll, SearchEnd> {
+    prove_all_reporting(tables, start, cap, cancel, progress, &|_, _| {})
+}
+
+/// [prove_all], with a separate callback for the COLLECTING half.
+///
+/// Two callbacks rather than one because they run in different places: `progress` is called from
+/// this thread between contours, `collected` from rayon's, so only the second needs `Sync`.
+/// Widening `prove`'s signature to satisfy the second would have put a thread-safety bound on
+/// every caller of the crate's main entry point for the benefit of one test hook.
+pub fn prove_all_reporting(
+    tables: &Tables,
+    start: &Coords,
+    cap: u8,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u8, u64),
+    collected: &(dyn Fn(u8, u64) + Sync),
+) -> Result<ProofAll, SearchEnd> {
+    let proof = prove(tables, start, cap, cancel, progress)?;
+    if proof.length == 0 {
+        return Ok(ProofAll {
+            length: 0,
+            solutions: vec![Vec::new()],
+            nodes: proof.nodes,
+        });
+    }
+    let bound = proof.length;
+    let (mut solutions, extra) = collect_contour(tables, start, bound, cancel, &|nodes| {
+        collected(bound, proof.nodes + nodes)
+    });
+    if cancel.load(Ordering::Relaxed) {
+        return Err(SearchEnd::Cancelled);
+    }
+    // Sorted by the STATED rule, so the vector is a function of the state and not of the thread
+    // schedule. Without this the set would be right and its order would still be a race — and the
+    // order is what a byte-for-byte regeneration diff reads.
+    solutions.sort_by(|a, b| crate::cases::tie_break(a, b));
+    solutions.dedup();
+    debug_assert!(
+        !solutions.is_empty(),
+        "prove found a {bound}-move maneuver, so the collecting pass must find at least that one"
+    );
+    Ok(ProofAll {
+        length: bound,
+        solutions,
+        nodes: proof.nodes + extra,
+    })
+}
+
+/// Exhaust one contour and return every maneuver of exactly `bound` moves it holds, with the nodes
+/// spent. Root-parallel over the same canonical openings the proving contour uses.
+///
+/// Its own function because it is its own job: `prove_all_reporting` decides WHICH contour and what
+/// to do with the answer, and this walks it. `report` is called once per opening finished, with the
+/// running node total — the hook a cancel can be raised from while collectors are still running.
+fn collect_contour(
+    tables: &Tables,
+    start: &Coords,
+    bound: u8,
+    cancel: &AtomicBool,
+    report: &(dyn Fn(u64) + Sync),
+) -> (Vec<Vec<u8>>, u64) {
+    let roots = expand_openings(root_openings(), root_ply(bound));
+    let found: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+    let nodes = AtomicU64::new(0);
+    roots.par_iter().for_each(|prefix| {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let g = prefix.len() as u8;
+        // `root_ply` caps the prefix at `min(bound, 4)`, so a prefix longer than the bound cannot
+        // occur — no `g > bound` guard here, because a branch that cannot be taken is a branch
+        // nothing tests and everything has to read past.
+        debug_assert!(
+            g <= bound,
+            "root_ply never produces a prefix longer than the bound"
+        );
+        let mut at = *start;
+        for &m in prefix {
+            at = at.step(&tables.moves, m as usize);
+        }
+        let mut collector = Collector {
+            tables,
+            cancel,
+            bound,
+            path: prefix.to_vec(),
+            out: Vec::new(),
+            nodes: 0,
+            since_check: 0,
+            aborted: false,
+        };
+        let prev = *prefix.last().expect("openings are non-empty") as i8;
+        collector.run(at, g, prev);
+        let so_far = nodes.fetch_add(collector.nodes, Ordering::Relaxed) + collector.nodes;
+        if !collector.out.is_empty() {
+            found.lock().unwrap().extend(collector.out);
+        }
+        // Reported after the work, so a callback that cancels stops the openings that have not
+        // started AND every collector already running — the flag is one for both.
+        report(so_far);
+    });
+    (found.into_inner().unwrap(), nodes.load(Ordering::Relaxed))
 }
 
 /// Certify that `start` has NO solution within `max_bound` moves, over one shard of the
@@ -481,6 +715,7 @@ pub fn solution_string(solution: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cubie::MOVE_NAMES;
 
     #[test]
     fn canonical_rule_keeps_exactly_one_order_of_a_commuting_pair() {
@@ -516,7 +751,10 @@ mod tests {
             "the openings are in ascending (m1, m2) order, no duplicates"
         );
         // The ends, so a silent reordering cannot pass the properties above.
-        assert_eq!(out.first(), Some(&vec![0u8, 3]), "U then the first legal F");
+        // Move index 3 is `R`, not `F` — `MOVE_NAMES` is U U2 U' R R2 R' F …, so the first legal
+        // second move after `U` is `R`. The comment here said F until 2026-09-09.
+        assert_eq!(MOVE_NAMES[3], "R");
+        assert_eq!(out.first(), Some(&vec![0u8, 3]), "U then the first legal R");
         assert_eq!(out.last(), Some(&vec![17u8, 14]));
     }
 

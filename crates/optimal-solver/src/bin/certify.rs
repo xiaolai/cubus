@@ -7,11 +7,13 @@
 //!   cargo run --release -p optimal-solver --bin certify -- superflip
 //!   cargo run --release -p optimal-solver --bin certify -- superflip-shard 3 9
 //!   cargo run --release -p optimal-solver --bin certify -- superflip-collect shards.log
+//!   cargo run --release -p optimal-solver --bin certify -- check-cases pll 22 pll-certificates.txt
 //!
 //! Every result line carries the move-set hash prefix, the bound, and (for shards) the shard
 //! tuple — so shard outputs collected from different machines can be checked against each
 //! other before anyone calls nine lines a proof.
 
+use optimal_solver::case_certificate::check_case_certificates;
 use optimal_solver::certificate::check_superflip_shards;
 use optimal_solver::coords::Coords;
 use optimal_solver::cubie::{apply_alg, SOLVED, SUPERFLIP_GEODESIC};
@@ -24,13 +26,27 @@ use std::time::Instant;
 enum Command {
     Segments(usize),
     Superflip,
-    SuperflipShard { index: u32, count: u32 },
-    SuperflipCollect { path: String },
+    SuperflipShard {
+        index: u32,
+        count: u32,
+    },
+    SuperflipCollect {
+        path: String,
+    },
+    /// A case table's certificates — a DIFFERENT checker, and it has to be. `certificate.rs`
+    /// skips every line whose `state=` is not `superflip` (§7a finding F4, confirmed at
+    /// `certificate.rs:60`), so case records would pass through it unread and an empty read is
+    /// not a refusal there.
+    CheckCases {
+        kind: String,
+        cases: usize,
+        path: String,
+    },
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: certify <segment-length 1..=20>... | superflip | superflip-shard <i> <n> | superflip-collect <file>"
+        "usage: certify <segment-length 1..=20>... | superflip | superflip-shard <i> <n> | superflip-collect <file> | check-cases <oll|pll|f2l> <count> <file>"
     );
     std::process::exit(1);
 }
@@ -48,6 +64,15 @@ fn parse(args: &[String]) -> Vec<Command> {
             "superflip-collect" => {
                 let path = iter.next().cloned().unwrap_or_else(|| usage());
                 out.push(Command::SuperflipCollect { path });
+            }
+            "check-cases" => {
+                let kind = iter.next().cloned().unwrap_or_else(|| usage());
+                let cases = iter
+                    .next()
+                    .and_then(|a| a.parse().ok())
+                    .unwrap_or_else(|| usage());
+                let path = iter.next().cloned().unwrap_or_else(|| usage());
+                out.push(Command::CheckCases { kind, cases, path });
             }
             "superflip-shard" => {
                 let index = iter
@@ -184,6 +209,33 @@ fn collect_report(lines: &[&str], hash: &str) -> Result<(String, Vec<String>), S
     Ok((line, warnings))
 }
 
+/// Check a case table's certificates and print what they support.
+///
+/// The whole table is printed, not merely a verdict: "the certificates check out" and "this is the
+/// table they check out FOR" are different statements, and a regeneration diff is read against the
+/// second. A refusal exits non-zero — the plan's rule is that no table is committed before its
+/// certificate is, and a checker that reported a refusal on stdout and exited 0 would be exactly
+/// the quiet default this repository refuses.
+fn check_cases(kind: &str, cases: usize, path: &str, hash: &str) {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+    let lines: Vec<&str> = text.lines().collect();
+    match check_case_certificates(&lines, hash, kind, cases) {
+        Ok(proof) => {
+            for (case, length, alg) in &proof.table {
+                println!("{case} {length} {alg}");
+            }
+            println!(
+                "CASES-COMPLETE kind={} cases={} goalset={} goals={}",
+                proof.kind, proof.cases, proof.goalset, proof.goals
+            );
+        }
+        Err(e) => {
+            eprintln!("NOT A CASE PROOF: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn collect(path: &str, hash: &str) {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
     let lines: Vec<&str> = text.lines().collect();
@@ -214,9 +266,12 @@ fn main() {
     let hash = hex_prefix(&move_set_hash());
     // Collecting checks text against the move-set hash — a whole table generation would be
     // pure ceremony, so it only happens when a command actually searches.
-    let searches = commands
-        .iter()
-        .any(|c| !matches!(c, Command::SuperflipCollect { .. }));
+    let searches = commands.iter().any(|c| {
+        !matches!(
+            c,
+            Command::SuperflipCollect { .. } | Command::CheckCases { .. }
+        )
+    });
     let tables = searches.then(|| {
         eprintln!("generating tables (histograms + Bellman asserted inside)…");
         let t0 = Instant::now();
@@ -235,6 +290,7 @@ fn main() {
                 superflip_shard(searching(), &cancel, &hash, index, count)
             }
             Command::SuperflipCollect { path } => collect(&path, &hash),
+            Command::CheckCases { kind, cases, path } => check_cases(&kind, cases, &path, &hash),
             Command::Segments(len) => segments(searching(), &cancel, &hash, &moves_str, len),
         }
     }

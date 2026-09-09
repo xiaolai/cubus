@@ -17,9 +17,12 @@
 //! armored instead (private fields, validated construction), because a wrong table corrupts
 //! silently where a wrong state panics loudly.
 
+pub mod case_certificate;
+pub mod cases;
 pub mod certificate;
 pub mod coords;
 pub mod cubie;
+pub mod notation;
 pub mod pdb;
 pub mod search;
 
