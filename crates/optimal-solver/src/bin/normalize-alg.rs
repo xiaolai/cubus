@@ -108,7 +108,10 @@ fn main() {
     // ("270 of 276") had to be reconstructed by adding two numbers whose relationship was not
     // said.
     let accepted = lengths.accepted();
-    eprintln!("\n{} maneuvers in: {accepted} normalized, {refused} refused", accepted + refused);
+    eprintln!(
+        "\n{} maneuvers in: {accepted} normalized, {refused} refused",
+        accepted + refused
+    );
     if accepted > 0 {
         eprintln!(
             "htm mean {:.3}, min {}, max {}",

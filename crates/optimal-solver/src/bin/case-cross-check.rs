@@ -347,7 +347,11 @@ fn blockers(theirs: &Reference, result: &Comparison) -> Vec<String> {
 fn main() {
     let args = cli::parse_or_exit(&SPEC);
     let kind_arg = cli::or_exit(&SPEC, args.positional_one_of(0, "kind", &["oll", "pll"]));
-    let kind = if kind_arg == "oll" { Kind::Oll } else { Kind::Pll };
+    let kind = if kind_arg == "oll" {
+        Kind::Oll
+    } else {
+        Kind::Pll
+    };
     let path = args.positional(1).to_string();
 
     // Our table, through the crate's strict reader: a truncated file, a fractional length and a

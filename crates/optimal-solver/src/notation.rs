@@ -188,7 +188,11 @@ fn expand_groups(alg: &str) -> Result<Vec<String>, String> {
                     flush(&mut buf, &mut stack);
                     let mut suffix = String::new();
                     while let Some(&next) = chars.peek() {
-                        if next == '2' || next == '3' || next == '\'' || matches!(next, '\u{2019}' | '\u{2032}' | '\u{00b4}') {
+                        if next == '2'
+                            || next == '3'
+                            || next == '\''
+                            || matches!(next, '\u{2019}' | '\u{2032}' | '\u{00b4}')
+                        {
                             suffix.push(next);
                             chars.next();
                         } else {
@@ -961,7 +965,10 @@ mod tests {
     fn cube_pieces_y_state_is_this_modules_y_inverted_and_globally_edge_flipped() {
         let derived = rotation_generator(1);
         let pieces = inverse(&crate::cases::Y_STATE);
-        assert_eq!(derived.cp, pieces.cp, "the permutation is the inverse, exactly");
+        assert_eq!(
+            derived.cp, pieces.cp,
+            "the permutation is the inverse, exactly"
+        );
         assert_eq!(derived.ep, pieces.ep);
         assert_eq!(derived.co, pieces.co);
         for i in 0..12 {
@@ -988,7 +995,12 @@ mod tests {
                 &crate::cases::Y_STATE,
             );
             assert_eq!(name(&by_derived), want_derived, "y conjugates {}", faces[f]);
-            assert_eq!(name(&by_pieces), want_pieces, "Y_STATE conjugates {}", faces[f]);
+            assert_eq!(
+                name(&by_pieces),
+                want_pieces,
+                "Y_STATE conjugates {}",
+                faces[f]
+            );
         }
     }
 
@@ -1022,7 +1034,10 @@ mod tests {
         // the INVERSE question (see `relabel_inv`), so it made `y` mean `y'`. Nothing noticed
         // because the only consumers of the y axis are `y`, `u`, `d` and `E`, and the published
         // sets the module was tested against contain none of them.
-        assert_eq!(ROT_FACES[1][R], F, "y must send R to F, the way U carries it");
+        assert_eq!(
+            ROT_FACES[1][R], F,
+            "y must send R to F, the way U carries it"
+        );
         assert_eq!(ROT_FACES[1][F], L);
         assert_eq!(
             ROT_FACES[1][U], U,
@@ -1207,7 +1222,10 @@ mod tests {
         }
         // A group's suffix is `2`, `3` or `'` and nothing else, so anything else after the `)`
         // begins the next token — which is what makes `(R U R')(U R U')` work without a space.
-        assert_eq!(normalize("(R U)x").unwrap().to_alg(), normalize("R U x").unwrap().to_alg());
+        assert_eq!(
+            normalize("(R U)x").unwrap().to_alg(),
+            normalize("R U x").unwrap().to_alg()
+        );
         assert_eq!(normalize("(R U)(R' U')").unwrap().to_alg(), "R U R' U'");
 
         // And an expanded group really is the maneuver it expands to — checked against the
@@ -1219,7 +1237,11 @@ mod tests {
             ("(x R)2", "x R x R"),
             ("(R' U')'", "U R"),
         ] {
-            assert_eq!(normalize(grouped).unwrap(), normalize(flat).unwrap(), "{grouped}");
+            assert_eq!(
+                normalize(grouped).unwrap(),
+                normalize(flat).unwrap(),
+                "{grouped}"
+            );
             assert_faithful(flat);
         }
     }
@@ -1232,7 +1254,15 @@ mod tests {
     #[test]
     fn the_recorded_rotation_is_the_net_one_and_is_empty_for_the_identity() {
         for round_trip in [
-            "x x'", "y y'", "z z'", "r r'", "M M'", "u u'", "S S'", "x x x x", "y2 y2",
+            "x x'",
+            "y y'",
+            "z z'",
+            "r r'",
+            "M M'",
+            "u u'",
+            "S S'",
+            "x x x x",
+            "y2 y2",
             "x y x' y'  y x y' x'",
         ] {
             let n = normalize(round_trip).unwrap_or_else(|e| panic!("{round_trip}: {e}"));
@@ -1271,7 +1301,11 @@ mod tests {
                             "{alg} normalized to the rotation {:?}, which is a different one",
                             n.rotation
                         );
-                        assert!(n.rotation.len() <= 2, "{alg}: {:?} is not canonical", n.rotation);
+                        assert!(
+                            n.rotation.len() <= 2,
+                            "{alg}: {:?} is not canonical",
+                            n.rotation
+                        );
                         checked += 1;
                     }
                 }
@@ -1341,8 +1375,14 @@ mod tests {
             // The wide turn does to its OWN layer exactly what the face turn does.
             let (corners, edges) = layer(face);
             for c in &corners {
-                assert_eq!(w.cp[*c], f.cp[*c], "{wide}: corner slot {c} is not {face}'s");
-                assert_eq!(w.co[*c], f.co[*c], "{wide}: corner twist {c} is not {face}'s");
+                assert_eq!(
+                    w.cp[*c], f.cp[*c],
+                    "{wide}: corner slot {c} is not {face}'s"
+                );
+                assert_eq!(
+                    w.co[*c], f.co[*c],
+                    "{wide}: corner twist {c} is not {face}'s"
+                );
             }
             for e in &edges {
                 assert_eq!(w.ep[*e], f.ep[*e], "{wide}: edge slot {e} is not {face}'s");
@@ -1351,11 +1391,17 @@ mod tests {
             // And it leaves the OPPOSITE layer exactly where it found it.
             let (far_corners, far_edges) = layer(opposite);
             for c in &far_corners {
-                assert_eq!(w.cp[*c], SOLVED.cp[*c], "{wide} moved a {opposite}-layer corner");
+                assert_eq!(
+                    w.cp[*c], SOLVED.cp[*c],
+                    "{wide} moved a {opposite}-layer corner"
+                );
                 assert_eq!(w.co[*c], 0, "{wide} twisted a {opposite}-layer corner");
             }
             for e in &far_edges {
-                assert_eq!(w.ep[*e], SOLVED.ep[*e], "{wide} moved a {opposite}-layer edge");
+                assert_eq!(
+                    w.ep[*e], SOLVED.ep[*e],
+                    "{wide} moved a {opposite}-layer edge"
+                );
                 assert_eq!(w.eo[*e], 0, "{wide} flipped a {opposite}-layer edge");
             }
             // wide = face + the slice beside it — the two branches, agreeing.
@@ -1381,7 +1427,10 @@ mod tests {
                 .filter(|(_, n)| !n.contains(left) && !n.contains(right))
                 .map(|(i, _)| i)
                 .collect();
-            assert_eq!(moved, expect, "{letter} does not move exactly its own slice");
+            assert_eq!(
+                moved, expect,
+                "{letter} does not move exactly its own slice"
+            );
         }
 
         // A wide turn plus the opposite FACE turned back is the whole-cube rotation — which ties

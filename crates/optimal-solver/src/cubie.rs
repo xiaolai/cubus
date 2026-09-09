@@ -146,8 +146,7 @@ pub const SUPERFLIP_GEODESIC: &str = "U R2 F B R B2 R U2 L B2 R U' D' R2 F R' L 
 /// `pub(crate)` because `notation.rs` needs exactly these to name a slot, and had a second copy of
 /// both arrays. A correctness-critical ordering with two definitions is one that can disagree, and
 /// a disagreement would look like a rotation being wrong rather than like a table being stale.
-pub(crate) const CORNER_NAMES: [&str; 8] =
-    ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"];
+pub(crate) const CORNER_NAMES: [&str; 8] = ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"];
 pub(crate) const EDGE_NAMES: [&str; 12] = [
     "UR", "UF", "UL", "UB", "DR", "DF", "DL", "DB", "FR", "FL", "BL", "BR",
 ];

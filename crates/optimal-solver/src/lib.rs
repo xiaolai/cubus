@@ -19,8 +19,8 @@
 
 pub mod case_certificate;
 pub mod cases;
-pub mod cli;
 pub mod certificate;
+pub mod cli;
 pub mod coords;
 pub mod cubie;
 pub mod f2l;
@@ -215,7 +215,10 @@ pub fn write_all_atomic(artifacts: &[(&std::path::Path, &[u8])]) -> Result<(), S
     for (path, _) in artifacts {
         match std::fs::symlink_metadata(path) {
             Ok(meta) if meta.is_dir() => {
-                return Err(format!("{}: is a directory, not an artifact", path.display()))
+                return Err(format!(
+                    "{}: is a directory, not an artifact",
+                    path.display()
+                ))
             }
             Ok(_) | Err(_) => {}
         }
@@ -1050,7 +1053,10 @@ mod write_atomic_tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .filter(|n| n.ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
     }
 
     /// Two spellings of one destination are one destination.

@@ -198,7 +198,10 @@ pub fn pll_states() -> Vec<Cubie> {
     // The 24 permutations and their parities, computed once rather than regenerated for every
     // corner permutation — the inner loop used to rebuild the whole list and recompute the outer
     // permutation's parity 24 times over.
-    let perms: Vec<([u8; 4], u32)> = permutations4().into_iter().map(|p| (p, parity4(&p))).collect();
+    let perms: Vec<([u8; 4], u32)> = permutations4()
+        .into_iter()
+        .map(|p| (p, parity4(&p)))
+        .collect();
     let mut out = Vec::with_capacity(288);
     for (cp, cp_parity) in &perms {
         for (ep, ep_parity) in &perms {
@@ -327,7 +330,10 @@ fn state_key(s: &Cubie) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
 /// been replaced by another: the count is right and the case is missing. Coverage is a question
 /// about a set, so it is asked about the set.
 pub fn case_ids(kind: Kind) -> std::collections::BTreeSet<String> {
-    representatives(kind).into_iter().map(|(id, _)| id).collect()
+    representatives(kind)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// **The tie-break, stated so two machines agree.**
@@ -576,7 +582,11 @@ mod tests {
             y = compose(&y, &Y_STATE);
             assert_eq!(y == SOLVED, n == 4, "Y_STATE has order {n}, not 4");
         }
-        for s in pll_states().iter().take(8).chain(oll_states().iter().take(8)) {
+        for s in pll_states()
+            .iter()
+            .take(8)
+            .chain(oll_states().iter().take(8))
+        {
             let mut moved = s.clone();
             for _ in 0..4 {
                 moved = rotate_y(&moved);
