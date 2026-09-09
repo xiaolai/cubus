@@ -18,7 +18,7 @@
 // browser test that proves the focus divide lands where it should needs to ask it without
 // mounting a screen.
 
-import { CORNERS, EDGES } from './cube-pieces.js';
+import { CORNERS, EDGES, moveCount } from './cube-pieces.js';
 import { plural, t } from './i18n.js';
 
 /** The four dials a fine-grained stage name belongs to, and what a learner sees them called. */
@@ -241,8 +241,8 @@ export function lessonCues(step) {
   return { highlight: pieces.join(','), focus: ['centers', ...pieces].join(',') };
 }
 
-/** How many moves are in an alg. */
-const movesIn = (alg) => (String(alg ?? '').trim() ? String(alg).trim().split(/\s+/).length : 0);
+/** How many moves are in an alg — the shared tokenizer, not a third spelling of it. */
+const movesIn = moveCount;
 
 /**
  * The move list, cut into the four stages — §5.1.
@@ -286,6 +286,23 @@ export function lessonSections(steps) {
 /** Which step each move belongs to, so the walk can say why the move you are on is there. */
 export function moveStepIndex(steps) {
   return (steps ?? []).flatMap((step, i) => Array.from({ length: movesIn(step.alg) }, () => i));
+}
+
+/**
+ * Which step the CUE is about when `made` moves have been made — the step about to happen.
+ *
+ * Its own function because it answers a different question from the one the chip row answers, and
+ * they used to share an answer. The transport announces "`made` moves are done"; the chips fill up
+ * to `made` and mark `made - 1` as current, which is about the move just performed. The sentence
+ * and the highlight are about the move NEXT, so they read `map[made]` — and reading `map[made - 1]`
+ * meant the first move of every teaching step animated under the previous step's explanation.
+ *
+ * Clamped at the end: after the last move there is no next one, so the last step's cue stays
+ * rather than the screen going blank on the move that finished the cube.
+ */
+export function stepAtMove(map, made) {
+  if (!map?.length) return undefined;
+  return map[Math.min(Math.max(made, 0), map.length - 1)];
 }
 
 /**

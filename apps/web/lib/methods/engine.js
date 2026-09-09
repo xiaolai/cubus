@@ -24,7 +24,7 @@
 // slot" and "the cubie that belongs there".
 
 import {
-  CORNER, EDGE, MOVE_NAMES, allSolved, applyAlg, applyMove, rotateAlg,
+  CORNER, EDGE, MOVE_NAMES, SOLVED, allSolved, applyAlg, applyMove, moveCount, rotateAlg,
 } from '../cube-pieces.js';
 
 /** U-layer slots. "In the top layer" is the staging area every stage lifts pieces into. */
@@ -52,22 +52,36 @@ export const AUF = Object.freeze(['', 'U', 'U2', "U'"]);
 export const ALL_EDGES = Object.freeze([...Array(12).keys()]);
 export const ALL_CORNERS = Object.freeze([...Array(8).keys()]);
 
-/** A solved cube, for asking questions about an algorithm rather than about a position. */
+/**
+ * A solved cube, for asking questions about an algorithm rather than about a position.
+ *
+ * DERIVED from `cube-pieces.js`'s `SOLVED` rather than written out again — it was a second copy of
+ * the same literal — and frozen all the way down. `Object.freeze` is shallow, so the arrays inside
+ * the old one were writable: `SOLVED_STATE.eo[0] = 1` corrupted every later `slotSafe` answer in
+ * the process, which is the same defect `case-tables.test.mjs` pins for the shipped tables.
+ */
 export const SOLVED_STATE = Object.freeze({
-  cp: [0, 1, 2, 3, 4, 5, 6, 7], co: [0, 0, 0, 0, 0, 0, 0, 0],
-  ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  cp: Object.freeze([...SOLVED.cp]),
+  co: Object.freeze([...SOLVED.co]),
+  ep: Object.freeze([...SOLVED.ep]),
+  eo: Object.freeze([...SOLVED.eo]),
 });
 
 export const joinAlg = (...parts) => parts.filter(Boolean).join(' ').trim();
-export const algLength = (alg) => (alg.trim() ? alg.trim().split(/\s+/).length : 0);
+/** How many moves an algorithm is — `cube-pieces.js`'s tokenizer, not a fourth copy of it. */
+export const algLength = moveCount;
 
 /**
  * Merge consecutive turns of the same face.
  *
  * Steps are built by stringing triggers together, and where two of them meet the seam shows:
- * `R U R'` then `R U' R'` really means `R U R2 U' R'`, and `L L` is not a move anybody
- * makes. Only adjacent faces are merged — reordering commuting turns would shorten it further
- * but would also stop the alg being the thing the step said it was doing.
+ * `R U R'` followed by `R2 U'` really means `R U R U'`, and `L L` is not a move anybody makes.
+ * Only adjacent faces are merged — reordering commuting turns would shorten it further but would
+ * also stop the alg being the thing the step said it was doing.
+ *
+ * (The example this comment used to give was `R U R'` then `R U' R'` becoming `R U R2 U' R'`.
+ * That pair cancels COMPLETELY — the seam is `R' R`, then `U U'`, then `R R'` — so it was an
+ * example of the opposite of what it was illustrating.)
  */
 export function simplify(alg) {
   const runs = [];
@@ -126,6 +140,22 @@ function descend(state, goal, depth, lastFace) {
  * over raw moves, so whatever it finds is still a sequence of things a learner was taught.
  */
 export function fromRepertoire(state, candidates, goal, plies = 1, keyOf = stateKey, rank = (alg) => alg) {
+  // Shortest first, then by the caller's rank. Compared NUMERICALLY: the length used to be
+  // stringified and zero-padded to three digits, so a 1,000-move route sorted ahead of a 104-move
+  // one. Nothing here produces four-digit algorithms today, which is what made it a defect worth
+  // fixing rather than a bug worth waiting for.
+  const precedes = (a, b) => (a.length !== b.length ? a.length < b.length : a.rank < b.rank);
+  // The comparison values are computed ONCE per route. They used to be recomputed inside a
+  // comparator, so `rank` — which rotates a whole algorithm into a common frame — ran O(n log n)
+  // times over a list from which exactly one element was ever read.
+  const route = (node, candidate, after, alg) => ({
+    state: after,
+    alg,
+    used: [...node.used, candidate],
+    length: algLength(alg),
+    rank: rank(alg),
+  });
+
   let frontier = [{ state, alg: '', used: [] }];
   // Different runs of triggers land on the same cube constantly — `R U R'` then `R U' R'` is
   // where it started. Without this the frontier squares every ply and the budget is spent
@@ -133,34 +163,41 @@ export function fromRepertoire(state, candidates, goal, plies = 1, keyOf = state
   // when it was merely wasteful.
   const seen = new Set([keyOf(state, '')]);
   for (let ply = 0; ply < plies; ply++) {
-    const next = [];
-    const hits = [];
+    // On the last permitted ply neither collection is read again, so nothing is put in them.
+    const lastPly = ply === plies - 1;
+    const next = new Map();
+    let best = null;
     for (const node of frontier) {
       for (const candidate of candidates) {
         const after = applyAlg(node.state, candidate.alg);
         const alg = joinAlg(node.alg, candidate.alg);
         if (goal(after, alg)) {
-          hits.push({ state: after, alg, used: [...node.used, candidate] });
+          // Finish the ply before choosing, and choose by the algorithm rather than by whichever
+          // branch happened to be reached first. Returning the first hit made the answer depend on
+          // the order the frontier was built in — which is not the same order in every working
+          // slot, so one F2L case came out with a different algorithm depending on which slot it
+          // turned up in. `rank` is what lets the caller compare candidates in ONE frame; the
+          // default compares them as written.
+          const hit = route(node, candidate, after, alg);
+          if (best === null || precedes(hit, best)) best = hit;
           continue;
         }
+        if (lastPly) continue;
         const key = keyOf(after, alg);
         if (seen.has(key)) continue;
-        seen.add(key);
-        next.push({ state: after, alg, used: [...node.used, candidate] });
+        // THE BEST ROUTE TO A STATE, not the first one found. Deduplicating on arrival kept
+        // whichever route the candidate order happened to produce first, so reordering two
+        // equally-ranked candidates changed what the NEXT ply was expanded from — `U D` and `D U`
+        // reach the same cube, and which one was retained decided between `U D R` and `D U R`
+        // under a ranking function that cannot tell them apart.
+        const held = next.get(key);
+        const successor = route(node, candidate, after, alg);
+        if (held === undefined || precedes(successor, held)) next.set(key, successor);
       }
     }
-    // Finish the ply before choosing, and choose by the algorithm rather than by whichever
-    // branch happened to be reached first. Returning the first hit made the answer depend on the
-    // order the frontier was built in — which is not the same order in every working slot, so
-    // one F2L case came out with a different algorithm depending on which slot it turned up in.
-    // `rank` is what lets the caller compare candidates in ONE frame; the default compares them
-    // as written.
-    if (hits.length) {
-      const key = (h) => `${String(algLength(h.alg)).padStart(3, '0')} ${rank(h.alg)}`;
-      hits.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
-      return hits[0];
-    }
-    frontier = next;
+    if (best !== null) return { state: best.state, alg: best.alg, used: best.used };
+    for (const key of next.keys()) seen.add(key);
+    frontier = [...next.values()];
   }
   return null;
 }
@@ -213,13 +250,17 @@ export function repertoire(algs, { rotations = [0, 1, 2, 3], auf = AUF, post = [
  */
 const slotSafeCache = new Map();
 export function slotSafe(alg, keepCorners, keepEdges, cacheKey) {
-  const key = `${cacheKey}|${alg}`;
+  // THE PROTECTED PIECES ARE PART OF THE QUESTION, so they are part of the cache identity. The key
+  // used to be `cacheKey|alg`, and `cacheKey` is a caller's label rather than a description of the
+  // sets — so asking about `R` with nothing protected and then about `R` with the DR edge
+  // protected returned the first answer twice. A cache that answers a question it was not asked is
+  // worse than no cache.
+  const key = `${cacheKey}|${keepCorners.join(',')}|${keepEdges.join(',')}|${alg}`;
   const cached = slotSafeCache.get(key);
   if (cached !== undefined) return cached;
-  const after = applyAlg(SOLVED_STATE, alg);
-  let safe = true;
-  for (const slot of keepCorners) if (after.cp[slot] !== slot || after.co[slot] !== 0) { safe = false; break; }
-  if (safe) for (const slot of keepEdges) if (after.ep[slot] !== slot || after.eo[slot] !== 0) { safe = false; break; }
+  // `allSolved` asks exactly this question and is what every other predicate here is built from;
+  // the two loops that used to sit here were a third spelling of `edgeSolved` and `cornerSolved`.
+  const safe = allSolved(applyAlg(SOLVED_STATE, alg), { corners: keepCorners, edges: keepEdges });
   slotSafeCache.set(key, safe);
   return safe;
 }

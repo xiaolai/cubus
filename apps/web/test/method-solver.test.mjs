@@ -603,10 +603,17 @@ test('the A5 focus payload is the only thing added, and it is added everywhere i
         const allowed = ADDED_WHY_FIELDS[step.why.key];
         if (!allowed) continue;
         seen.add(step.why.key);
+        // A group with nothing wrong in it is OMITTED rather than filled with the whole layer —
+        // see `focus` in methods/last-layer.js. So the requirement is that the step points at
+        // SOMETHING, and that everything it points at is real; a declared field that is absent
+        // means "this step is not about those pieces", which is a thing a step is allowed to say.
+        assert.ok(allowed.some((field) => step.why[field] !== undefined),
+          `${step.why.key} carries none of ${allowed.join(', ')} — a step that points at nothing`);
         for (const field of allowed) {
           const named = step.why[field];
+          if (named === undefined) continue;
           assert.ok(Array.isArray(named) && named.length > 0,
-            `${step.why.key} named no ${field} — a step that points at nothing`);
+            `${step.why.key} named an empty ${field} — omit the group instead`);
           const limit = field === 'edges' ? 12 : 8;
           for (const id of named) {
             assert.ok(Number.isInteger(id) && id >= 0 && id < limit,
@@ -619,6 +626,50 @@ test('the A5 focus payload is the only thing added, and it is added everywhere i
   }
   assert.deepEqual([...seen].sort(), Object.keys(ADDED_WHY_FIELDS).sort(),
     'the fixture does not exercise every reason key that carries a focus payload');
+});
+
+/** A maneuver undone: the moves backwards, each one reversed. */
+const invertAlg = (alg) => alg.trim().split(/\s+/).reverse()
+  .map((m) => (m.endsWith('2') ? m : m.endsWith("'") ? m.slice(0, -1) : `${m}'`))
+  .join(' ');
+
+test('a one-look step points at what its algorithm is FOR, and never at pieces already right', () => {
+  // The defect: each highlight group fell back to naming the WHOLE top layer when nothing in it
+  // was wrong. That is right for a look about one group and wrong for the one-look rungs, which
+  // are about both — so full OLL on a case with only twisted corners pulsed four correctly
+  // oriented edges, and full PLL on a case with only permuted edges pulsed four solved corners.
+  // A pulse reads as "this is what the algorithm is for", and it was saying so about half the
+  // layer that needed nothing.
+  const cases = [
+    {
+      what: 'full OLL on a corners-only case',
+      rungs: { cross: 0, pairs: 0, oll: 1, pll: 0 },
+      // Sune undone: three corners twisted, every edge already oriented.
+      setup: invertAlg("R U R' U R U2 R'"),
+      stage: 'top-face',
+      wants: 'corners',
+      forbids: 'edges',
+    },
+    {
+      what: 'full PLL on an edges-only case',
+      rungs: { cross: 0, pairs: 0, oll: 0, pll: 1 },
+      // A U-perm undone: the corners are home, three edges are not.
+      setup: invertAlg("R U' R U R U R U' R' U' R2"),
+      stage: 'top-edges',
+      wants: 'edges',
+      forbids: 'corners',
+    },
+  ];
+  for (const { what, rungs, setup, stage, wants, forbids } of cases) {
+    const state = applyAlg(SOLVED, setup);
+    const steps = solveByMethod(state, methodFor(rungs)).steps.filter((s) => s.stage === stage);
+    assert.equal(steps.length, 1, `${what}: expected one step, got ${steps.length}`);
+    const { why } = steps[0];
+    assert.ok(Array.isArray(why[wants]) && why[wants].length > 0,
+      `${what}: named no ${wants}, and that is what the algorithm is for`);
+    assert.equal(why[forbids], undefined,
+      `${what}: named ${forbids} ${JSON.stringify(why[forbids])}, which are already correct`);
+  }
 });
 
 test('the split keys say what the step actually did, checked against the cube', () => {
@@ -780,6 +831,92 @@ test('the exported algorithm tables are copies, not the solver\'s own', () => {
   }
   assert.equal(solveByMethod(seededStates(1, 4242)[0]).alg, before,
     'reading the exported tables changed what the solver does');
+});
+
+/**
+ * What a stage hands back is checked, copied and frozen — the seam, from the stage's side.
+ *
+ * `solveByMethod`'s own comments record two versions of this already fixed: aliasing the cube it
+ * hands a stage, and aliasing the step history. These are the two that were left. A stage's step
+ * objects were pushed into the history BY REFERENCE, so a stage that kept the array it filled
+ * could rewrite a step after the stage was verified; and no step was ever checked for being one,
+ * so a token the renderer cannot animate arrived as a `TypeError` from inside `applyAlg` with the
+ * stage name, the step index and the starting state all thrown away.
+ *
+ * A hand-built method, because the real stages do none of this — which is the point: the driver's
+ * guarantees have to hold against a stage that is wrong, since a stage that is right needs no
+ * driver.
+ */
+test('a stage cannot edit the history it has already been verified against', () => {
+  const scramble = "R U R' U'";
+  const state = applyAlg(SOLVED, scramble);
+  const solvingAlg = "U R U' R'";
+  let kept = null;
+  const method = {
+    id: 'test', rungs: {},
+    stages: [{
+      id: 'only',
+      keep: () => true,
+      contract: () => true,
+      run: (cube, steps) => {
+        steps.push({ stage: 'only', kind: 'case', alg: solvingAlg, why: { key: 'test' } });
+        // The array the stage keeps a reference to — the attack this guards against.
+        kept = steps;
+        return applyAlg(cube, solvingAlg);
+      },
+    }],
+  };
+  const solved = solveByMethod(state, method);
+  assert.equal(solved.alg, solvingAlg);
+  // The history does not hold the stage's objects, so editing them afterwards changes nothing.
+  kept[0].alg = 'X';
+  kept[0].why.key = 'vandalised';
+  assert.equal(solved.steps[0].alg, solvingAlg);
+  assert.equal(solved.steps[0].why.key, 'test');
+});
+
+test('a step that is not a step is refused by name, not by TypeError', () => {
+  const state = applyAlg(SOLVED, 'R');
+  const stageWith = (emit) => ({
+    id: 'only',
+    keep: () => true,
+    contract: () => true,
+    run: (cube, steps) => { emit(steps); return cube; },
+  });
+  const cases = [
+    [(steps) => steps.push(null), /step 0: is null/],
+    [(steps) => steps.push({ stage: 'only' }), /step 0: carries no algorithm/],
+    [(steps) => steps.push({ stage: 'only', alg: "R x U" }), /step 0: carries "x"/],
+    [(steps) => steps.push({ stage: 'only', alg: "M2" }), /step 0: carries "M2"/],
+    [(steps) => steps.push({ alg: 'R' }), /step 0: names no stage/],
+  ];
+  for (const [emit, message] of cases) {
+    assert.throws(
+      () => solveByMethod(state, { id: 'test', rungs: {}, stages: [stageWith(emit)] }),
+      (e) => e.name === 'MethodSolverError' && message.test(e.target),
+      String(message),
+    );
+  }
+});
+
+test('a predicate cannot edit the cube it is asked about', () => {
+  // A `keep` or `contract` that writes to the state it is handed can make the replay's starting
+  // point equal to the state it wants to claim — and the stage then emits nothing while every
+  // guard passes. The snapshot is frozen, so the attempt raises instead.
+  const state = applyAlg(SOLVED, 'R');
+  const vandal = (which) => ({
+    id: 'only',
+    keep: (s) => { if (which === 'keep') s.cp[0] = 0; return true; },
+    contract: (s) => { if (which === 'contract') s.ep[0] = 0; return true; },
+    run: (cube, steps) => { steps.push({ stage: 'only', kind: 'case', alg: "R'" }); return applyAlg(cube, "R'"); },
+  });
+  for (const which of ['keep', 'contract']) {
+    assert.throws(
+      () => solveByMethod(state, { id: 'test', rungs: {}, stages: [vandal(which)] }),
+      TypeError,
+      `${which} was handed a writable cube`,
+    );
+  }
 });
 
 test('a solve says which method produced it', () => {

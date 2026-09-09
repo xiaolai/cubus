@@ -150,11 +150,7 @@ fn check_case(
 
     // AND THE COMMITTED ROW. The two checks above compare brute force with a search run just now;
     // this compares both with the file.
-    let id = format!(
-        "f2l:{:02x}{:02x}",
-        case.corner_slot * 3 + case.corner_twist as usize,
-        case.edge_slot * 2 + case.edge_flip as usize
-    );
+    let id = case.id();
     match table.row(&id) {
         None => refutations.push(format!("the table has no row for {id}")),
         Some(row) => {
@@ -264,16 +260,7 @@ fn main() {
     // case with no row, and neither shows up case by case.
     let mut extra: Vec<&str> = Vec::new();
     if only.is_none() && skipped == 0 {
-        let expected: BTreeSet<String> = cases
-            .iter()
-            .map(|c| {
-                format!(
-                    "f2l:{:02x}{:02x}",
-                    c.corner_slot * 3 + c.corner_twist as usize,
-                    c.edge_slot * 2 + c.edge_flip as usize
-                )
-            })
-            .collect();
+        let expected: BTreeSet<String> = cases.iter().map(F2lCase::id).collect();
         extra = table
             .rows
             .iter()

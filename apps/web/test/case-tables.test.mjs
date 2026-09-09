@@ -10,8 +10,10 @@
 // face-turn maneuver of its stated length, every key unique, and the counts the tables claim.
 
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { SOLVED, applyAlg } from '../lib/cube-pieces.js';
 import { F2L_CASES, FULL_OLL, FULL_PLL } from '../lib/data/case-tables.js';
@@ -26,6 +28,45 @@ test('the shipped module is exactly what regenerating it produces', () => {
   assert.ok(existsSync(ARTIFACTS), 'crates/optimal-solver/tables/ is missing — it is committed');
   assert.equal(readFileSync(SHIPPED, 'utf8'), render(),
     'lib/data/case-tables.js has drifted from the proved tables — run `node regen-case-tables.mjs`');
+});
+
+// THE GUARD THAT MAKES THE TEST ABOVE MEAN ANYTHING.
+//
+// `render` is imported from the generator, and the generator used to write `case-tables.js` at
+// module scope — so importing it REWROTE the file the diff was about to read. The drift test
+// passed on a hand-edited module and left no trace: verified by corrupting an algorithm, running
+// the suite, and finding the test green and the corruption gone.
+//
+// Checked from a separate process, because this one has already imported the module and an import
+// happens once. The file's mtime is the observation: `writeFileSync` moves it even when the bytes
+// are identical, so this fails the moment the side effect comes back.
+test('importing the generator does not write the file the diff is about', () => {
+  const generator = new URL('../regen-case-tables.mjs', import.meta.url).href;
+  const before = statSync(SHIPPED).mtimeMs;
+  const run = spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', `await import(${JSON.stringify(generator)});`],
+    { encoding: 'utf8' },
+  );
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(
+    statSync(SHIPPED).mtimeMs,
+    before,
+    'importing regen-case-tables.mjs wrote lib/data/case-tables.js — the drift test above cannot fail while that is true',
+  );
+});
+
+test('--check reports the difference and writes nothing', () => {
+  const generator = fileURLToPath(new URL('../regen-case-tables.mjs', import.meta.url));
+  const before = statSync(SHIPPED).mtimeMs;
+  const run = spawnSync(process.execPath, [generator, '--check'], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  // The content on stdout, as the usage line promises, and the verdict on stderr.
+  assert.equal(run.stdout, readFileSync(SHIPPED, 'utf8'));
+  assert.match(run.stderr, /is identical$/m);
+  // The byte count is UTF-8 bytes, not UTF-16 code units — the header has non-ASCII in it.
+  assert.match(run.stderr, new RegExp(`^${Buffer.byteLength(run.stdout, 'utf8')} bytes`, 'm'));
+  assert.equal(statSync(SHIPPED).mtimeMs, before, '--check wrote the file');
 });
 
 test('the tables are the sizes the method claims, and every key is distinct', () => {

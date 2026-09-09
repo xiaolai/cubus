@@ -574,47 +574,41 @@ fn slot_named(names: &[&str], letters: &[usize]) -> usize {
         .expect("every relabelled slot name is a slot")
 }
 
-fn derive_rotation(axis: usize) -> Cubie {
-    // π⁻¹, as a face map: the piece now in slot `i` is the one that used to be in the slot whose
-    // name is π⁻¹(name(i)).
-    let mut inv = [0usize; 6];
-    for f in 0..6 {
-        inv[ROT_FACES[axis][f]] = f;
-    }
+/// The slot PERMUTATION a rotation performs, read off the face map.
+///
+/// The piece now in slot `i` is the one that used to be in the slot whose name is `π⁻¹(name(i))`.
+/// Orientations are not determined by this and are solved for separately.
+fn rotation_permutation(inv: &[usize; 6]) -> Cubie {
     let mut r = SOLVED;
-    for (i, name) in CORNER_NAMES.iter().enumerate() {
-        let letters: Vec<usize> = name
-            .chars()
+    let letters = |name: &str| -> Vec<usize> {
+        name.chars()
             .map(|c| inv[face_index(c).expect("a slot name is face letters")])
-            .collect();
-        r.cp[i] = slot_named(&CORNER_NAMES, &letters) as u8;
+            .collect()
+    };
+    for (i, name) in CORNER_NAMES.iter().enumerate() {
+        r.cp[i] = slot_named(&CORNER_NAMES, &letters(name)) as u8;
     }
     for (i, name) in EDGE_NAMES.iter().enumerate() {
-        let letters: Vec<usize> = name
-            .chars()
-            .map(|c| inv[face_index(c).expect("a slot name is face letters")])
-            .collect();
-        r.ep[i] = slot_named(&EDGE_NAMES, &letters) as u8;
+        r.ep[i] = slot_named(&EDGE_NAMES, &letters(name)) as u8;
     }
-    // Orientations are the only unknowns left, and corners and edges are independent under
-    // `compose` — `co` reads only corner data, `eo` only edge data — so they are enumerated
-    // separately. 6561 and 4096 candidates, both exhaustive.
-    //
-    // **The conjugation identity does not determine them, and the six survivors are not a
-    // rounding error.** Adding the same twist to every corner, or flipping every edge, cancels
-    // between `r` and `r⁻¹` — so those variants conjugate exactly as the true rotation does.
-    // Measured: three corner solutions and two edge solutions, six states in all.
-    //
-    // That matters here and does not matter in `cases::rotate_y`, and the difference is worth
-    // stating. Conjugation is all `rotate_y` does, so any of the six gives it the same answer;
-    // `cube-pieces.js` picks one on that basis and its comment calls it "the only" such state,
-    // which is imprecise but harmless for what it is used for. This module composes the rotation
-    // DIRECTLY — the final cube after `x R U R'` really is rotated — and there the six differ.
-    //
-    // So the discriminator is physical rather than algebraic: **turning a solved cube leaves it
-    // solved**, and reading it in the fixed frame gives one definite facelet string. Verified
-    // against cubejs, the independent oracle, on 2026-09-09: for `y` it picks the state whose
-    // FOUR MIDDLE edges read as flipped, not the eight U/D ones.
+    r
+}
+
+/// Every orientation assignment that satisfies the conjugation identity.
+///
+/// **The conjugation identity does not determine them, and the survivors are not a rounding
+/// error.** Adding the same twist to every corner, or flipping every edge, cancels between `r` and
+/// `r⁻¹` — so those variants conjugate exactly as the true rotation does. Measured: three corner
+/// solutions and two edge solutions, six states in all.
+///
+/// That matters here and does not matter in `cases::rotate_y`, and the difference is worth
+/// stating. Conjugation is all `rotate_y` does, so any of the six gives it the same answer; this
+/// module composes the rotation DIRECTLY — the final cube after `x R U R'` really is rotated — and
+/// there the six differ.
+///
+/// Corners and edges are enumerated separately because they are independent under `compose`: `co`
+/// reads only corner data, `eo` only edge data. 6561 and 4096 candidates, both exhaustive.
+fn orientation_candidates(axis: usize, r: &Cubie) -> (Vec<[u8; 8]>, Vec<[u8; 12]>) {
     let table = crate::cubie::all_moves();
     let conjugates = |cand: &Cubie, corners: bool| -> bool {
         let ci = inverse(cand);
@@ -650,11 +644,22 @@ fn derive_rotation(axis: usize) -> Cubie {
             edge_options.push(cand.eo);
         }
     }
-    assert!(
-        !corner_options.is_empty() && !edge_options.is_empty(),
-        "rotation {axis}: the conjugation identity has no solution, so the face map is wrong"
-    );
+    (corner_options, edge_options)
+}
 
+/// The one candidate that reads as a rotated SOLVED CUBE — the physical discriminator.
+///
+/// Conjugation cannot separate the six, so the question is asked of the cube instead: **turning a
+/// solved cube leaves it solved**, and reading it in the fixed frame gives one definite facelet
+/// string. Verified against cubejs, the independent oracle, on 2026-09-09: for `y` it picks the
+/// state whose FOUR MIDDLE edges read as flipped, not the eight U/D ones.
+fn physical_state(
+    axis: usize,
+    r: &Cubie,
+    inv: &[usize; 6],
+    corner_options: &[[u8; 8]],
+    edge_options: &[[u8; 12]],
+) -> Cubie {
     // The solved cube after this rotation, read in the FIXED frame: every facelet of face `f` now
     // shows the colour of the physical face that moved there, which is `π⁻¹(f)`.
     let target: Vec<char> = (0..6)
@@ -668,8 +673,8 @@ fn derive_rotation(axis: usize) -> Cubie {
         (0..54).all(|p| p % 9 == 4 || got[p] == target[p])
     };
     let mut solutions = Vec::new();
-    for co in &corner_options {
-        for eo in &edge_options {
+    for co in corner_options {
+        for eo in edge_options {
             let mut cand = r.clone();
             cand.co = *co;
             cand.eo = *eo;
@@ -685,7 +690,28 @@ fn derive_rotation(axis: usize) -> Cubie {
         solutions.len(),
         corner_options.len() * edge_options.len()
     );
-    let r = solutions.into_iter().next().expect("exactly one");
+    solutions.into_iter().next().expect("exactly one")
+}
+
+/// The rotation about `axis`, solved for from its face map.
+///
+/// Three steps, each its own claim: the slot permutation the face map forces, the orientation
+/// assignments the conjugation identity admits, and the one of those that reads as a rotated
+/// solved cube. They were one 121-line function, and the middle step's "the identity does not
+/// determine this" is the subtlety the whole construction turns on.
+fn derive_rotation(axis: usize) -> Cubie {
+    // π⁻¹, as a face map.
+    let mut inv = [0usize; 6];
+    for f in 0..6 {
+        inv[ROT_FACES[axis][f]] = f;
+    }
+    let r = rotation_permutation(&inv);
+    let (corner_options, edge_options) = orientation_candidates(axis, &r);
+    assert!(
+        !corner_options.is_empty() && !edge_options.is_empty(),
+        "rotation {axis}: the conjugation identity has no solution, so the face map is wrong"
+    );
+    let r = physical_state(axis, &r, &inv, &corner_options, &edge_options);
     // Order 4, because a quarter turn four times is where you started. Free, and it catches a face
     // map that permutes the faces in a cycle of the wrong length.
     let mut back = SOLVED;

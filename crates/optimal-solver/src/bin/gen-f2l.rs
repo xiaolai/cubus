@@ -69,14 +69,9 @@ fn main() {
     let run = Instant::now();
 
     for case in &cases {
-        // The case key, and it is the position rather than a digest of it: two hex bytes, the
-        // corner's slot and twist then the edge's slot and flip. A hash would be shorter and would
-        // make a wrong entry unreadable, which is the opposite of what a key is for here.
-        let id = format!(
-            "f2l:{:02x}{:02x}",
-            case.corner_slot * 3 + case.corner_twist as usize,
-            case.edge_slot * 2 + case.edge_flip as usize
-        );
+        // The case key, defined once in `f2l.rs` — a table lookup, a certificate and a
+        // regeneration diff all have to agree on it, and it used to be spelt out in three files.
+        let id = case.id();
         let proof = prove_all(&ball, &case.state(), cap, &cancel)
             .unwrap_or_else(|e| panic!("{}: {e:?}", case.name));
         total_nodes += proof.nodes;
