@@ -7,14 +7,20 @@
 // is the length of an array, and the engine never learns which it got.
 //
 //   OLL rung 0  two-look: orient the edges, then the corners. 6 algs, 2 steps.
-//   OLL rung 1  full OLL — 57 algs, 1 step. Phase C; the table does not exist yet.
+//   OLL rung 1  full OLL — 57 algs, 1 step. The table is generated and proved; see
+//               lib/data/case-tables.js and crates/optimal-solver.
 //   PLL rung 0  two-look: permute the corners, then the edges. 5 algs, 2 steps.
-//   PLL rung 1  full PLL — 21 algs, 1 step. Phase C.
+//   PLL rung 1  full PLL — 21 algs, 1 step. Likewise.
+//
+// **Rung 1 of each is the same `look`, with a longer array and one ply.** No new mechanism, which
+// is the claim the two-rung design was written to be able to make: the engine still does not know
+// which rung it got.
 //
 // Completeness at rung 0 is PROVED, not sampled: bench/method-solver-profile.mjs enumerates all
 // 62,208 reachable last-layer states and every one of them is reached by these tables.
 
 import { applyAlg } from '../cube-pieces.js';
+import { FULL_OLL, FULL_PLL } from '../data/case-tables.js';
 import {
   AUF, MethodSolverError, U_CORNERS, U_EDGES, firstTwoLayers, fromRepertoire, repertoire,
   topCornersHome, topCornersOriented, topEdgesOriented, wholeCubeSolved,
@@ -89,7 +95,15 @@ export const LAST_LAYER_EXTRAS = detach(ALIGN);
  * §5.2 is the claim that pointing is the load-bearing channel and the sentence is the assistant.
  */
 const look = ({ stage, target, algs, plies, options, reached, goal, why, names }) =>
-  Object.freeze({ stage, target, algs, plies, options: options ?? {}, reached, goal, why, names });
+  // The repertoire is built ONCE, here, not on every solve. `repertoire` rotates and prefixes
+  // every entry, so at rung 0 that was 5 algorithms turned into 80 candidates per look per solve —
+  // wasteful but invisible. At rung 1 it is 57 turned into 912, and it stopped being invisible:
+  // a full-OLL-and-PLL solve measured 869 ms against 484 ms for the beginner's method, which is
+  // the wrong way round and a second of silence on the screen. Hoisted, it is 6 ms.
+  Object.freeze({
+    stage, target, plies, reached, goal, why, names,
+    candidates: Object.freeze(repertoire(algs, options ?? {})),
+  });
 
 /** The pieces sitting in the U slots that fail `wrong`, by IDENTITY — the cubie, not the seat.
  *  Identity is what lets the highlight follow a piece through the turn. */
@@ -116,7 +130,7 @@ const namedCorners = (wrong) => (s) => {
 const runLooks = (looks) => (state, steps) => {
   for (const l of looks) {
     if (l.reached(state)) continue;
-    const found = fromRepertoire(state, repertoire(l.algs, l.options), l.goal, l.plies);
+    const found = fromRepertoire(state, l.candidates, l.goal, l.plies);
     if (!found) throw new MethodSolverError(l.stage, l.target, state);
     // ONE replay, not two. The pieces each application is about are read BEFORE it runs — so three
     // edge-orient steps name three different sets rather than three copies of the first — and
@@ -180,6 +194,43 @@ const TWO_LOOK_PLL = Object.freeze([
   }),
 ]);
 
+/** The whole top face one colour — what both OLL rungs are for, asked of the cube. */
+const topOriented = (s) => topCornersOriented(s) && topEdgesOriented(s);
+
+/** One look, 57 algorithms: recognise the case and finish the top face in one go.
+ *
+ *  The algorithms are proved minimal, so this rung is not merely fewer STEPS than two-look — it is
+ *  fewer moves as well, which is the thing a flat ladder would fail (§10). */
+const FULL_OLL_LOOK = Object.freeze([
+  look({
+    stage: 'top-face', target: 'corners', algs: FULL_OLL, plies: 1,
+    // No y-rotations: the table is COMPLETE, so every rotated variant of an entry is another
+    // entry's case and the four copies buy nothing but four times the search.
+    options: { rotations: [0] },
+    reached: topOriented, goal: guard(topOriented), why: 'topFace.orient',
+    // Both kinds, because a one-look OLL is about both — an edge that needs flipping and a corner
+    // that needs twisting are the same step here, and pointing at only the corners would leave the
+    // learner looking for what the algorithm was for.
+    names: (s) => ({
+      corners: namedCorners((st, slot) => st.co[slot] !== 0)(s),
+      edges: namedEdges((st, slot) => st.eo[slot] !== 0)(s),
+    }),
+  }),
+]);
+
+/** One look, 21 algorithms: the whole last layer into place, plus the turn that lines it up. */
+const FULL_PLL_LOOK = Object.freeze([
+  look({
+    stage: 'top-edges', target: 'permute', algs: [...FULL_PLL, ...ALIGN], plies: 1,
+    options: { rotations: [0], post: AUF },
+    reached: wholeCubeSolved, goal: wholeCubeSolved, why: 'lastLayer.permute',
+    names: (s) => ({
+      corners: namedCorners((st, slot) => st.cp[slot] !== slot)(s),
+      edges: namedEdges((st, slot) => st.ep[slot] !== slot)(s),
+    }),
+  }),
+]);
+
 /** The top face one colour, with the first two layers still there. OLL's contract, PLL's keep. */
 export const topFaceOriented = (s) => firstTwoLayers(s) && topEdgesOriented(s) && topCornersOriented(s);
 
@@ -196,6 +247,17 @@ export const OLL_RUNGS = Object.freeze([
     why: 'stage.oll',
     run: runLooks(TWO_LOOK_OLL),
   }),
+  Object.freeze({
+    id: 'oll',
+    rung: 1,
+    label: 'full OLL',
+    blurb: 'The whole top face in one algorithm — 57 of them, each the shortest there is',
+    targets: Object.freeze({ edges: Object.freeze([]), corners: Object.freeze([]) }),
+    keep: firstTwoLayers,
+    contract: topFaceOriented,
+    why: 'stage.oll',
+    run: runLooks(FULL_OLL_LOOK),
+  }),
 ]);
 
 /** @type {ReadonlyArray<import('./index.js').Stage>} */
@@ -210,5 +272,16 @@ export const PLL_RUNGS = Object.freeze([
     contract: wholeCubeSolved,
     why: 'stage.pll',
     run: runLooks(TWO_LOOK_PLL),
+  }),
+  Object.freeze({
+    id: 'pll',
+    rung: 1,
+    label: 'full PLL',
+    blurb: 'The whole last layer in one algorithm — 21 of them, each the shortest there is',
+    targets: Object.freeze({ edges: Object.freeze([]), corners: Object.freeze([]) }),
+    keep: topFaceOriented,
+    contract: wholeCubeSolved,
+    why: 'stage.pll',
+    run: runLooks(FULL_PLL_LOOK),
   }),
 ]);

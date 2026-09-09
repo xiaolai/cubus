@@ -13,11 +13,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { CORNERS, EDGES, SOLVED, applyAlg } from '../lib/cube-pieces.js';
+import { registerLocale, setLocale } from '../lib/i18n.js';
 import { parseHighlight } from '../lib/cube-highlight.js';
 import {
-  WHY_KEYS, lessonCues, lessonSections, moveStepIndex, namedPieces, rungSummary, whyText,
+  CASE_TEXT_KEYS, WHY_KEYS, caseText, lessonCues, lessonSections, moveStepIndex, namedPieces,
+  rungSummary, whyText,
 } from '../lib/method-lesson.js';
-import { allRungCombinations, methodFor, solveByMethod } from '../lib/method-solver.js';
+import { CASE_NAMES, allRungCombinations, methodFor, solveByMethod } from '../lib/method-solver.js';
 
 /** Deterministic scrambles — the same generator the rest of the suite uses. */
 function seededStates(count, seed) {
@@ -77,7 +79,7 @@ test('every reason the solver can emit has a sentence — none renders as nothin
   // The exception must still be a real key with a real sentence behind it.
   for (const k of RARE) {
     assert.ok(WHY_KEYS.includes(k), `${k} is listed as rare but has no sentence at all`);
-    assert.ok(whyText({ kind: 'case', caseName: 'x', why: { key: k, corners: [0] } }).length > 0);
+    assert.ok(whyText({ kind: 'case', caseName: 'sune', why: { key: k, corners: [0] } }).length > 0);
   }
   for (const step of STEPS) assert.ok(whyText(step).length > 0, `${step.why.key} captions as nothing`);
 });
@@ -86,12 +88,52 @@ test('a named algorithm says which case it is; a searched sequence does not', ()
   // Naming a case a learner can look up is worth doing. Naming one for a sequence the solver
   // searched for would be inventing a case, which is the thing this whole solver refuses.
   const named = STEPS.find((s) => s.kind === 'case' && s.caseName && !s.parts);
-  assert.match(whyText(named), new RegExp(`\\(${named.caseName}\\)$`));
+  // The name in the READER's words, not the solver's identifier. `corner-cycle-back` is a
+  // program's spelling; the sentence ends with whatever `caseText` renders that as, which is
+  // also the only form a catalog can translate.
+  assert.match(whyText(named), new RegExp(`\\(${caseText(named.caseName)}\\)$`));
+  assert.throws(() => whyText({ ...named, caseName: 'no-such-case' }), /no name for case/,
+    'an algorithm with no name in the table must fail loudly, not print its identifier');
   const searched = STEPS.find((s) => s.kind === 'goal');
   assert.ok(!/\(/.test(whyText(searched)), 'an intuitive step must not claim a case');
   const pair = STEPS.find((s) => s.parts);
   assert.ok(!/\)$/.test(whyText(pair)),
     'a pair step is named after a POSITION, not an algorithm, so the raw case name is not shown');
+});
+
+test('every algorithm the solver can name has a name in the reader\'s language', () => {
+  // The case name used to be pasted into the sentence as the solver spells it, so it stayed
+  // English however the app was set — the one untranslated fragment inside a translated caption.
+  // Both directions, because both are defects: a name with no entry throws where a learner would
+  // have seen it, and an entry for a name no table holds is a word nobody will ever read.
+  // The NAMED half of the repertoire. The generated tables are keys rather than names — a case
+  // this repository numbered itself, which is not the number a learner would find anywhere else —
+  // so they are carried on a step and never shown, and a display entry for one would be a word
+  // nobody could read.
+  const GENERATED = /^(?:oll|pll|f2l):[0-9a-f]+$/;
+  const named = CASE_NAMES.filter((n) => !GENERATED.test(n));
+  assert.ok(named.length > 20 && named.length < CASE_NAMES.length, 'the split is not what it was');
+  assert.deepEqual([...CASE_TEXT_KEYS].sort(), [...named].sort(),
+    'the case-name table and the solver\'s named repertoire have drifted apart');
+  for (const name of named) {
+    assert.ok(caseText(name).length > 0, `${name} renders as nothing`);
+  }
+  for (const key of CASE_NAMES.filter((n) => GENERATED.test(n))) {
+    assert.throws(() => caseText(key), /no name for case/, `${key} is a key and must not be shown`);
+  }
+  // And it really is `t()`, not a lookup that happens to return English. A catalog is registered
+  // over the rendered names and each one asked for again — a name that never reached `t()` comes
+  // back unchanged, and the assertion says which.
+  const english = new Map(named.map((n) => [n, caseText(n)]));
+  registerLocale('qa-cases', Object.fromEntries([...english.values()].map((v, i) => [v, `«${i}»`])));
+  try {
+    setLocale('qa-cases');
+    for (const [name, was] of english) {
+      assert.notEqual(caseText(name), was, `the name for ${name} did not go through t()`);
+    }
+  } finally {
+    setLocale('en');
+  }
 });
 
 test('every step names at least one piece, and every name is a piece that exists', () => {
@@ -161,12 +203,32 @@ test('a last-layer step names the pieces THAT application is about, not the firs
 });
 
 test('the move list is cut into the stages the solve actually had', () => {
+  // "Actually had" is the whole claim, and it is why this does not demand four sections. A cube
+  // that arrives at the last layer already oriented has NO top-face steps, so it has no top-face
+  // heading — the same rule `recordCleanFollow` follows when it declines to credit a stage the
+  // lesson did not contain. It shows up at the one-look rungs, where a single algorithm can leave
+  // a last layer that the next stage finds finished; at two-look it is rarer, which is why the
+  // over-strict version of this passed for as long as it did.
+  // The same fine-grained-stage-to-dial map `method-lesson.js` keeps privately. Written out rather
+// than exported: a test that borrowed the module's own table could not catch that table being
+// wrong, and this is the file that checks the cutting.
+const SECTION_OF = {
+  cross: 'cross',
+  'first-layer': 'pairs',
+  'middle-layer': 'pairs',
+  f2l: 'pairs',
+  'top-cross': 'oll',
+  'top-face': 'oll',
+  'top-corners': 'pll',
+  'top-edges': 'pll',
+};
+const dialsSeen = new Set();
   for (const rungs of allRungCombinations()) {
     const method = methodFor(rungs);
     for (const state of seededStates(5, 31337)) {
       const { steps, moveCount } = solveByMethod(state, method);
       const sections = lessonSections(steps);
-      assert.ok(sections.length >= 4, `only ${sections.length} sections — a stage went missing`);
+      assert.ok(sections.length > 0, 'a scrambled cube produced no sections at all');
       // Contiguous, gapless, and covering exactly the moves in the solution. A section boundary
       // that drifted would put a chip under the wrong heading, which is the invented structure
       // this replaced.
@@ -178,11 +240,24 @@ test('the move list is cut into the stages the solve actually had', () => {
         assert.ok(s.steps > 0 && s.name.length > 0);
       }
       assert.equal(sections.reduce((n, s) => n + s.steps, 0), steps.length);
-      // The four dials appear in order, however many times the solve returns to one.
+      // The dials appear IN ORDER, however many times the solve returns to one — and a dial that
+      // is absent must be absent because the solve had no steps for it, never because a section
+      // went missing.
+      const DIALS = ['cross', 'pairs', 'oll', 'pll'];
       const order = [...new Set(sections.map((s) => s.id))];
-      assert.deepEqual(order, ['cross', 'pairs', 'oll', 'pll']);
+      const inOrder = DIALS.filter((d) => order.includes(d));
+      assert.deepEqual(order, inOrder, `the stages came out in the wrong order: ${order.join(' ')}`);
+      for (const dial of DIALS) {
+        const had = steps.some((st) => SECTION_OF[st.stage] === dial);
+        assert.equal(order.includes(dial), had,
+          `${dial} ${had ? 'has steps but no heading' : 'has a heading but no steps'}`);
+      }
+      for (const d of order) dialsSeen.add(d);
     }
   }
+  // Absent SOMEWHERE is correct; absent everywhere would mean a dial that never renders.
+  assert.deepEqual([...dialsSeen].sort(), ['cross', 'oll', 'pairs', 'pll'],
+    'a dial produced no section in any of the 24 rung combinations');
 });
 
 test('an unknown stage is refused rather than silently folded into the previous section', () => {

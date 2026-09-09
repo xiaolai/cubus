@@ -215,7 +215,26 @@ function exhaustive() {
     flips.push([a, b, c, (a + b + c) % 2]);
   }
 
-  const method = methodFor();
+  // Every last-layer rung combination, not just the default. The one-look rungs are a 57-case and
+  // a 21-case table, and "the table is complete" is precisely the claim a sample cannot make: it
+  // is the enumeration or it is nothing. Rung 0's completeness was already proved this way; the
+  // generated tables get the same treatment rather than a promise from the generator.
+  // `exhaustive 1 1` runs one combination — the whole set is four sweeps and is the nightly job.
+  const [wantOll, wantPll] = process.argv.slice(3).map(Number);
+  const combinations = [];
+  for (const oll of LADDER.oll) {
+    for (const pll of LADDER.pll) {
+      if (Number.isInteger(wantOll) && (oll.rung !== wantOll || pll.rung !== wantPll)) continue;
+      combinations.push({ cross: 0, pairs: 0, oll: oll.rung, pll: pll.rung });
+    }
+  }
+  if (combinations.length === 0) throw new Error('no such last-layer rung combination');
+  for (const rungs of combinations) exhaustiveAt(rungs, { P4, twists, flips });
+}
+
+/** The sweep at one rung combination. Separated so the loop above reads as what it is. */
+function exhaustiveAt(rungs, { P4, twists, flips }) {
+  const method = methodFor(rungs);
   let total = 0;
   let failed = 0;
   let moves = 0;
@@ -247,7 +266,7 @@ function exhaustive() {
     }
   }
 
-  console.log(`\n[exhaustive] every reachable last-layer state, ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  console.log(`\n[exhaustive ${rungKey(rungs)}] every reachable last-layer state, ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   console.log(`  states ${total} | failures ${failed} | mean ${(moves / (total - failed)).toFixed(1)} moves`);
   console.log('  each algorithm, and how many of those states needed it:');
   for (const [name, count] of [...cases].sort((a, b) => b[1] - a[1])) {

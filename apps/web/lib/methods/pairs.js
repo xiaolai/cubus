@@ -5,8 +5,9 @@
 //
 //   rung 0  the corner, then the edge that belongs beside it. Two separate journeys per slot.
 //   rung 1  the pair, joined and inserted together, built out of six triggers.
-//   rung 2  the 41-case F2L table. Not here yet — it is Phase C, and it cannot be complete
-//           (§7a finding F1), so rung 1's behaviour stays the floor beneath it.
+//   rung 2  the 41-case F2L table, generated and proved (lib/data/case-tables.js). It cannot be
+//           complete (§7a finding F1), so rung 1's fallback stays the floor beneath it — rung 2
+//           reaches exactly the same 150 configurations, in fewer moves.
 //
 // Rung 0 is where rung 1 falls back to when no trigger sequence reaches a pair, which is why
 // `placeCorner` and `placeEdge` live here rather than inside either rung.
@@ -15,8 +16,9 @@ import {
   applyAlg, applyMove, cornerSlot, cornerSolved, edgeSlot, edgeSolved, rotateAlg, rotateState,
   CORNERS, EDGES, CORNER, EDGE,
 } from '../cube-pieces.js';
+import { F2L_CASES } from '../data/case-tables.js';
 import {
-  AUF, CROSS, F1L, F2L_PAIRS, MIDDLE, MethodSolverError, U_CORNERS, U_EDGES,
+  AUF, CROSS, F1L, F2L_PAIRS, MIDDLE, MethodSolverError, U_CORNERS,
   crossSolved, firstTwoLayers, fromRepertoire, keeping, repertoire, shortestTo, slotSafe,
 } from './engine.js';
 
@@ -46,6 +48,55 @@ const F2L_TRIGGERS = [
 
 export const PAIRS_ALGS = [...F1L_INSERTS, ...MIDDLE_INSERTS, ...F2L_TRIGGERS];
 
+/** Built once, for the reason `last-layer.js` gives at `look`: `repertoire` rotates and prefixes
+ *  every entry, so rebuilding it inside a solve pays that for each of the four slots, every time. */
+const F1L_REPERTOIRE = Object.freeze(repertoire(F1L_INSERTS));
+const MIDDLE_REPERTOIRE = Object.freeze(repertoire(MIDDLE_INSERTS));
+
+/** The pieces a pair's algorithm may not disturb: every OTHER first-layer corner and every cross
+ *  and middle edge but its own. Whether they happen to be solved yet is deliberately not asked —
+ *  see `slotSafe`, and the F2L case that had ten answers before it was asked this way. */
+const protectedCorners = (pair) => F1L.filter((c) => c !== pair.corner);
+const protectedEdges = (pair) => [...CROSS, ...MIDDLE.filter((e) => e !== pair.edge)];
+
+/**
+ * The six triggers turned into each slot's frame, with every AUF in front — the whole search
+ * space of rung 1, built once instead of once per solve.
+ *
+ * **Slot-safety is checked HERE, and that is why the search does not check it.** It is a property
+ * of an algorithm on a solved cube, so an algorithm that leaves the protected slots holding their
+ * own cubies untwisted still does after another one that also does — the property survives
+ * composition. Every route the search can build is therefore slot-safe because every step of it
+ * is, which made the per-node `slotSafe` call a constant computed 24 times a ply and the
+ * slot-safety bit in the dedup key a partition into one part.
+ *
+ * A seventh trigger that broke the property would not fail a test; it would quietly widen what
+ * this rung claims to teach, and the widening would only show up as an F2L case with two answers.
+ * So it fails here, at load, naming the algorithm.
+ */
+const SLOT_REPERTOIRE = Object.freeze(F2L_PAIRS.map((pair, slot) => rotatedInto(F2L_TRIGGERS, pair, slot)));
+
+/**
+ * The 41 generated cases, rotated into each slot's frame — rung 2's whole repertoire.
+ *
+ * Checked for slot-safety exactly as the triggers are, and that check is not a formality here: the
+ * table was searched in a projection that ignores the top layer, and "reaches the goal in that
+ * projection" and "leaves the other slots alone" being the same statement is the argument the
+ * whole table rests on. It is proved in `f2l.rs`, asserted by the generator, replayed by
+ * `f2l-table.test.mjs` — and asked once more here, on the algorithms this rung will actually run.
+ */
+const SLOT_CASES = Object.freeze(F2L_PAIRS.map((pair, slot) => rotatedInto(F2L_CASES, pair, slot)));
+
+/** A table of algorithms in one slot's frame, refused if any of them disturbs a protected slot. */
+function rotatedInto(algs, pair, slot) {
+  const candidates = repertoire(algs, { rotations: [slot] });
+  const unsafe = candidates.find((c) => !slotSafe(c.alg, protectedCorners(pair), protectedEdges(pair), slot));
+  if (unsafe) {
+    throw new Error(`pairs: "${unsafe.name}" ("${unsafe.alg}") disturbs a slot it must not`);
+  }
+  return Object.freeze(candidates);
+}
+
 // ---- the two shared journeys ------------------------------------------------------------------
 
 /** Lift a corner to the top and drop it into its slot: two steps, the beginner's way. Shared
@@ -59,7 +110,7 @@ export function placeCorner(state, corner, intact, steps, stage) {
     steps.push({ stage, kind: 'goal', target: corner, alg: lift, why: { key: 'firstLayer.lift', corner } });
   }
   const home = (s) => cornerSolved(s, corner) && intact(s);
-  const found = fromRepertoire(state, repertoire(F1L_INSERTS), home);
+  const found = fromRepertoire(state, F1L_REPERTOIRE, home);
   if (!found) throw new MethodSolverError(stage, corner, state);
   steps.push({ stage, kind: 'case', target: corner, alg: found.alg,
     caseName: found.used[0].name, why: { key: 'firstLayer.insert', corner } });
@@ -70,7 +121,7 @@ export function placeCorner(state, corner, intact, steps, stage) {
  *  right one, which is why this may take two of them. */
 export function placeEdge(state, edge, intact, steps, stage) {
   const home = (s) => edgeSolved(s, edge) && intact(s);
-  const found = fromRepertoire(state, repertoire(MIDDLE_INSERTS), home, 2);
+  const found = fromRepertoire(state, MIDDLE_REPERTOIRE, home, 2);
   if (!found) throw new MethodSolverError(stage, edge, state);
   // The SAME algorithm ejects a wrong edge and inserts the right one, which is why this may take
   // two of them — and why one caption cannot serve both. A step that lifts the edge OUT of the
@@ -116,6 +167,16 @@ function cornerThenEdge(state, steps) {
 // uses, and the step is whichever short sequence of them provably places the pair. That keeps the
 // reason intact — pair them up, then insert the pair — and keeps the table from being a list of
 // 41 algorithms nobody checked. Rung 2 is that list, generated and proved; it is Phase C.
+//
+// **There used to be an ejection branch here, and it could never run.** When the direct search
+// failed it tried to lift the pair loose first, then place it. `f2l-configurations.test.mjs`
+// enumerates the search's ENTIRE input space — the 384 places the corner and its edge can be,
+// which is exhaustive because the search reads nothing else about the cube — and the split is
+// 150 solved directly, 234 falling back, none ejected. The reason is not the sample: a slot-safe
+// algorithm fixes the protected slots as POSITIONS, so a piece sitting in one can never leave it,
+// and the ejection goal — both pieces up in the top layer — is unsatisfiable in exactly the cases
+// that reach the branch. The 150 are every configuration with neither piece buried elsewhere, and
+// they are the 41 taught cases once the four top-layer alignments are folded together.
 
 /**
  * The name of the F2L case: where the corner and its edge are, seen from the working slot.
@@ -130,9 +191,11 @@ function cornerThenEdge(state, steps) {
  * against the F/B axis and is not invariant under the turn (see `rotateState`). That is exactly
  * why one case used to come out with a different algorithm depending on which slot it was in.
  */
-function f2lPosition(state, pair, turns) {
+function f2lPosition(state, turns) {
   // Turning the cube `4 - turns` brings slot `turns` to the front right, and carries the pair's
-  // own cubies onto the front-right pair: corner DFR, edge FR.
+  // own cubies onto the front-right pair: corner DFR, edge FR. Which pair it is therefore does
+  // not need to be passed — the rotation is what identifies it, and a `pair` argument alongside
+  // was a second way to say the same thing that nothing read and nothing kept in step.
   const inFrame = rotateState(state, (4 - (turns % 4)) % 4);
   const cornerAt = cornerSlot(inFrame, CORNER.DFR);
   const edgeAt = edgeSlot(inFrame, EDGE.FR);
@@ -147,12 +210,12 @@ function f2lPosition(state, pair, turns) {
  * 41 cases F2L is actually taught as, and it is verified to be faithful: no name covers two
  * different positions, only the four rotations of one.
  */
-export function f2lAlignment(state, pair, turns) {
+export function f2lAlignment(state, turns) {
   let best = null;
   let bestTurns = 0;
   let aligned = state;
   for (let u = 0; u < 4; u++) {
-    const name = f2lPosition(aligned, pair, turns);
+    const name = f2lPosition(aligned, turns);
     if (best === null || name < best) { best = name; bestTurns = u; }
     aligned = applyMove(aligned, 'U');
   }
@@ -160,24 +223,28 @@ export function f2lAlignment(state, pair, turns) {
 }
 
 /** The case name alone, for tests and for anything that only wants to know which one it is. */
-export const f2lCaseName = (state, pair, turns) => f2lAlignment(state, pair, turns).name;
+export const f2lCaseName = (state, turns) => f2lAlignment(state, turns).name;
 
-function triggerPairs(state, steps) {
+/**
+ * Place every pair, from a repertoire and a ply budget.
+ *
+ * ONE function for both rungs, because the difference between them is genuinely only those two
+ * arguments: rung 1 composes up to three triggers, rung 2 applies one generated algorithm. A
+ * second copy of this loop would be two places for the fallback rule, the naming and the
+ * slot-safety contract to drift apart.
+ */
+const pairsFrom = (repertoires, plies) => function placePairs(state, steps) {
   const placedCorners = [];
   const placedEdges = [];
   for (const [slot, pair] of F2L_PAIRS.entries()) {
     const intact = keeping([...CROSS, ...placedEdges], placedCorners);
-    // Every slot but this pair's, whether or not it happens to be solved yet.
-    const otherCorners = F1L.filter((c) => c !== pair.corner);
-    const otherEdges = [...CROSS, ...MIDDLE.filter((e) => e !== pair.edge)];
-    const done = (s, alg) =>
-      cornerSolved(s, pair.corner) && edgeSolved(s, pair.edge) &&
-      slotSafe(alg, otherCorners, otherEdges, slot);
-    // The empty algorithm is trivially slot-safe, so an already-placed pair short-circuits.
-    if (done(state, '')) { placedCorners.push(pair.corner); placedEdges.push(pair.edge); continue; }
+    // The pair is placed, and nothing else moved. The second half is not asked here: every route
+    // this search can build is slot-safe by construction, checked once on `SLOT_REPERTOIRE`.
+    const done = (s) => cornerSolved(s, pair.corner) && edgeSolved(s, pair.edge);
+    if (done(state)) { placedCorners.push(pair.corner); placedEdges.push(pair.edge); continue; }
 
-    const candidates = repertoire(F2L_TRIGGERS, { rotations: [slot] });
-    const { turns, name: caseName } = f2lAlignment(state, pair, slot);
+    const candidates = repertoires[slot];
+    const { turns, name: caseName } = f2lAlignment(state, slot);
     // Line the top up first, then solve the case. That is the order a learner works in, and it
     // is also what makes the algorithm depend on the case rather than on where the top happened
     // to be — the difference between something memorable and a different answer every time.
@@ -186,31 +253,19 @@ function triggerPairs(state, steps) {
     // lookup that then failed.
     const align = AUF[turns];
     const aligned = align ? applyAlg(state, align) : state;
-    // Two nodes are the same when this pair is in the same place and the route so far is
-    // equally slot-safe. Deduplicating on the WHOLE cube instead made the search's choice
-    // depend on the other 18 pieces, which is how one case ended up with three algorithms.
-    const keyOf = (s, alg) => {
+    // Two nodes are the same when this pair is in the same place. Deduplicating on the WHOLE cube
+    // instead made the search's choice depend on the other 18 pieces, which is how one case ended
+    // up with three algorithms. The route's slot-safety used to be a third field here and was
+    // always 1 — it partitioned nothing, at the cost of a `slotSafe` call per node.
+    const keyOf = (s) => {
       const c = cornerSlot(s, pair.corner);
       const e = edgeSlot(s, pair.edge);
-      return `${c}.${s.co[c]}|${e}.${s.eo[e]}|${slotSafe(alg, otherCorners, otherEdges, slot) ? 1 : 0}`;
+      return `${c}.${s.co[c]}|${e}.${s.eo[e]}`;
     };
-    // Fast path: the pair is already loose, so a short run of triggers places it.
     // Rank in the front-right frame: the same case must get the same algorithm whichever slot
     // it appears in, or there is nothing to learn.
     const inFrontRightFrame = (alg) => rotateAlg(alg, (4 - slot) % 4);
-    let found = fromRepertoire(aligned, candidates, done, 3, keyOf, inFrontRightFrame);
-    let ejected = null;
-    if (!found) {
-      // One or both pieces are buried in a slot. Taking them out first is the thing a learner
-      // is taught before any pair case, and it is also what turns one unreachable search into
-      // two reachable ones.
-      const loose = (s, alg) =>
-        U_CORNERS.includes(cornerSlot(s, pair.corner)) && U_EDGES.includes(edgeSlot(s, pair.edge)) &&
-        slotSafe(alg, otherCorners, otherEdges, slot);
-      ejected = fromRepertoire(aligned, candidates, loose, 2, keyOf, inFrontRightFrame);
-      // Both halves slot-safe means the whole thing is, so the pair still has one answer.
-      if (ejected) found = fromRepertoire(ejected.state, candidates, done, 3, keyOf, inFrontRightFrame);
-    }
+    const found = fromRepertoire(aligned, candidates, done, plies, keyOf, inFrontRightFrame);
 
     if (!found) {
       // No pair case reaches this one. Rather than fail, do the pair the way the rung below
@@ -242,8 +297,8 @@ function triggerPairs(state, steps) {
     // `parts` exists. It is named for what it is rather than folded into the trigger beside it,
     // because turning the top until it matches is not one of the six triggers.
     const aligning = align ? [{ name: 'align', alg: align }] : [];
-    const used = [...aligning, ...(ejected ? [...ejected.used, ...found.used] : found.used)];
-    const alg = [align, ejected ? `${ejected.alg} ${found.alg}` : found.alg].filter(Boolean).join(' ').trim();
+    const used = [...aligning, ...found.used];
+    const alg = [align, found.alg].filter(Boolean).join(' ').trim();
     state = found.state;
     // One step, not three: the pair is the unit a learner recognises at this rung. The
     // triggers stay attached so the step can be opened up when it is still unfamiliar.
@@ -251,12 +306,12 @@ function triggerPairs(state, steps) {
       // The triggers stay attached: the case is what you recognise, the parts are how you get
       // out of it, and a learner meeting the case for the first time needs both.
       parts: used.map((u) => ({ name: u.name, alg: u.alg })),
-      why: { key: 'f2l.pair', corner: pair.corner, edge: pair.edge, ejected: Boolean(ejected) } });
+      why: { key: 'f2l.pair', corner: pair.corner, edge: pair.edge } });
     placedCorners.push(pair.corner);
     placedEdges.push(pair.edge);
   }
   return state;
-}
+};
 
 // ---- the rungs, as data ----------------------------------------------------------------------
 
@@ -282,6 +337,17 @@ export const PAIRS_RUNGS = Object.freeze([
     keep: crossSolved,
     contract: firstTwoLayers,
     why: 'stage.pairs',
-    run: triggerPairs,
+    run: pairsFrom(SLOT_REPERTOIRE, 3),
+  }),
+  Object.freeze({
+    id: 'pairs',
+    rung: 2,
+    label: 'the F2L cases',
+    blurb: 'One algorithm per case — 41 of them, each the shortest maneuver that places the pair',
+    targets: Object.freeze({ edges: MIDDLE, corners: F1L }),
+    keep: crossSolved,
+    contract: firstTwoLayers,
+    why: 'stage.pairs',
+    run: pairsFrom(SLOT_CASES, 1),
   }),
 ]);

@@ -61,7 +61,7 @@ const PAYLOAD = {
   'firstLayer.lift': { corner: 4 },
   'firstLayer.insert': { corner: 4 },
   'middleLayer.insert': { edge: 8 },
-  'f2l.pair': { corner: 4, edge: 8, ejected: false },
+  'f2l.pair': { corner: 4, edge: 8 },
   'topCross.orient': { edges: [0, 1] },
   'topFace.orient': { corners: [0, 1] },
   'topCorners.permute': { corners: [0, 1] },

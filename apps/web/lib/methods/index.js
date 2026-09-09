@@ -18,6 +18,7 @@
 // @property {string} why                           the stage's reason key, for the move list heading
 // @property {(state, steps) => object} run         the stage itself
 
+import { F2L_CASES, FULL_OLL, FULL_PLL } from '../data/case-tables.js';
 import { CROSS_ALGS, CROSS_RUNGS } from './cross.js';
 import { LAST_LAYER_EXTRAS, OLL_ALGS, OLL_RUNGS, PLL_ALGS, PLL_RUNGS } from './last-layer.js';
 import { PAIRS_ALGS, PAIRS_RUNGS } from './pairs.js';
@@ -89,6 +90,13 @@ export const CASE_NAMES = Object.freeze(
   // `LAST_LAYER_EXTRAS` is in the list because a step can be named after it, and a step naming
   // something outside this list is the defect the check exists to catch. It is NOT in `PLL_ALGS`,
   // because that is the set of algorithms a learner memorises and an alignment is not one.
-  [...CROSS_ALGS, ...PAIRS_ALGS, ...OLL_ALGS, ...PLL_ALGS, ...LAST_LAYER_EXTRAS]
-    .map((entry) => entry.name),
+  //
+  // The generated tables are here too, for the same reason and with one difference: their entries
+  // are KEYS rather than names — `oll:00120011` — so they can be emitted on a step and must be
+  // accounted for, but they are never shown. `method-lesson.js` carries the distinction, and its
+  // display table is held against exactly the non-generated part of this list.
+  [
+    ...CROSS_ALGS, ...PAIRS_ALGS, ...OLL_ALGS, ...PLL_ALGS, ...LAST_LAYER_EXTRAS,
+    ...FULL_OLL, ...FULL_PLL, ...F2L_CASES,
+  ].map((entry) => entry.name),
 );
