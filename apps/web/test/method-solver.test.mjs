@@ -260,6 +260,94 @@ test('every algorithm in the repertoire is one some cube actually needs', () => 
   }
 });
 
+/** The fine-grained stages each dial owns, for measuring a rung against the rung below it. */
+const STAGES_OF = Object.freeze({
+  cross: ['cross'],
+  pairs: ['f2l', 'first-layer', 'middle-layer'],
+  oll: ['top-cross', 'top-face'],
+  pll: ['top-corners', 'top-edges'],
+});
+
+/**
+ * §10's first kill-criterion, as the table it became on 2026-09-09.
+ *
+ * "A rung must move a NAMED axis it is able to move, by a floor stated before it is built." The
+ * axis is per rung because they are not interchangeable: a rung that halves the step count and one
+ * that changes what a single step is made of are both real, and judging the second on steps is a
+ * criterion that is not measuring the rung.
+ *
+ * Floors sit under the measured values with margin — the point is to catch a rung that moves
+ * NOTHING, not to pin a number that any improvement would break. Measured over 120 cubes:
+ * cross 5.10 steps, pairs 0→1 2.73 steps, pairs 1→2 1.0038 parts, oll 2.01 steps, pll 1.05 steps.
+ */
+const RUNGS_EARN_THEIR_PLACE = Object.freeze([
+  { dial: 'cross', from: 0, to: 1, axis: 'steps', floor: 4 },
+  { dial: 'pairs', from: 0, to: 1, axis: 'steps', floor: 2 },
+  { dial: 'pairs', from: 1, to: 2, axis: 'parts', floor: 0.75 },
+  { dial: 'oll', from: 0, to: 1, axis: 'steps', floor: 1.5 },
+  { dial: 'pll', from: 0, to: 1, axis: 'steps', floor: 0.9 },
+]);
+
+test('every rung moves the axis it is judged on, and no rung is invention', () => {
+  // Counted only on solves where the stage actually RAN at both rungs. A cube whose cross was
+  // already done says nothing about the cross rung, and letting those in dilutes every delta
+  // toward zero — which is how a rung that does nothing could look like one that does a little.
+  const states = seededStates(120, 20260909);
+  const BOTTOM = { cross: 0, pairs: 0, oll: 0, pll: 0 };
+  for (const { dial, from, to, axis, floor } of RUNGS_EARN_THEIR_PLACE) {
+    const below = methodFor({ ...BOTTOM, [dial]: from });
+    const above = methodFor({ ...BOTTOM, [dial]: to });
+    const mine = (m, state) => solveByMethod(state, m).steps.filter((s) => STAGES_OF[dial].includes(s.stage));
+    const measure = (steps) => ({
+      steps: steps.length,
+      moves: steps.reduce((n, s) => n + s.alg.trim().split(/\s+/).length, 0),
+      parts: steps.reduce((n, s) => n + (s.parts?.length ?? 0), 0) / Math.max(1, steps.filter((s) => s.parts).length),
+    });
+    let compared = 0;
+    let delta = 0;
+    for (const state of states) {
+      const a = mine(below, state);
+      const b = mine(above, state);
+      if (!a.length || !b.length) continue;
+      compared += 1;
+      delta += measure(a)[axis] - measure(b)[axis];
+    }
+    assert.ok(compared > 100, `${dial} ${from}->${to}: only ${compared} comparable cubes`);
+    const moved = delta / compared;
+    assert.ok(moved >= floor,
+      `${dial} rung ${to} moves ${moved.toFixed(4)} ${axis} against a floor of ${floor} — `
+      + 'a rung that moves nothing its learner can measure is invention (plan §10)');
+  }
+});
+
+test('the F2L rung is one recalled case, never a chain — which is what it is FOR', () => {
+  // The structural half of the decision to keep pairs rung 2, and the reason it is kept: not the
+  // 1.17 moves, which would be thin for 41 algorithms, but what the step BECOMES. At rung 1 a pair
+  // step is three or four pieces assembled out of triggers; at rung 2 it is one algorithm after an
+  // optional alignment and never anything else, because the search runs at one ply over a complete
+  // table. Measured rather than asserted about pedagogy.
+  const states = seededStates(60, 20260909);
+  const counts = (rung) => {
+    const method = methodFor({ cross: 1, pairs: rung, oll: 0, pll: 0 });
+    const sizes = [];
+    for (const state of states) {
+      for (const s of solveByMethod(state, method).steps) {
+        if (s.stage === 'f2l' && s.parts) sizes.push(s.parts.length);
+      }
+    }
+    return sizes;
+  };
+  const chained = counts(1);
+  const recalled = counts(2);
+  assert.ok(chained.length > 100 && recalled.length > 100, 'too few pair steps to compare');
+  assert.deepEqual(recalled.filter((n) => n > 2), [],
+    'a rung-2 pair step has more than the alignment and one algorithm in it');
+  const longAtRung1 = chained.filter((n) => n > 2).length / chained.length;
+  assert.ok(longAtRung1 > 0.5,
+    `only ${(longAtRung1 * 100).toFixed(1)}% of rung-1 pair steps are chains — the two rungs have `
+    + 'converged, and rung 2 no longer teaches anything rung 1 does not');
+});
+
 test('a solve builds no repertoires — they are built once, when the module loads', () => {
   // COUNTED, not timed. `repertoire` rotates and AUF-prefixes every entry, and it used to run
   // inside a solve in three places: `runLooks`, `placeCorner`/`placeEdge`, and the cross rung. At
