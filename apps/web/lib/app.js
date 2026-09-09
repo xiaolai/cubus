@@ -6017,6 +6017,47 @@ function raiseRung(offer) {
   return save('cubusSettings', settings);
 }
 
+/** How far along a stage is, in words a learner can act on — never a claim about a thing undone. */
+function rungNote(row) {
+  const left = followsUntilOffer(settings.rungs, settings.rungProgress, row.id);
+  if (left === null) return t('This is the highest rung there is.');
+  // Not a countdown: the follow count has stopped rising, so no number of solves reaches the
+  // offer. The rung is still there and still one tap away — it just arrives by being taken.
+  if (left === Infinity) return t('This rung will not be offered again — raise it here whenever you like.');
+  if (left === 0) return t('Ready for the next rung — it will be offered after your next solve.');
+  return plural(left, {
+    one: 'One more solve at this rung before the next one is offered.',
+    other: '%1 more solves at this rung before the next one is offered.',
+  });
+}
+
+/** One rung of one stage — reached, current, or described but not yet taken. */
+function rungLine(r) {
+  const dot = r.current
+    ? 'background:var(--accent)'
+    : r.reached ? 'background:var(--ink-4)' : 'background:transparent;box-shadow:inset 0 0 0 2px var(--ink-6)';
+  return `<div class="row" style="grid-template-columns:8px 1fr auto;gap:14px;align-items:start">
+    <div style="width:8px;height:8px;border-radius:50%;margin-top:6px;${dot}"></div>
+    <div><div style="color:${r.reached ? 'var(--ink)' : 'var(--ink-4)'}">${escHtml(t(r.label))}</div>
+      <div class="sub" style="color:var(--ink-4);line-height:1.45">${escHtml(t(r.blurb))}</div></div>
+    <div class="num sub" style="color:var(--ink-5)">${r.current ? escHtml(t('here')) : ''}</div></div>`;
+}
+
+/**
+ * One stage's card: every rung it has, where this learner is, and what moves them on.
+ *
+ * Its own function, with `rungLine` and `rungNote` beside it, because the screen was one template
+ * literal carrying four nested `.map`s, a dot-colour ternary, a four-branch progress sentence and
+ * the event wiring — and the thing it is easiest to get wrong in there is the one thing this
+ * screen must not get wrong, which is saying something true about a learner.
+ */
+function ladderCard(row) {
+  return `<div class="card tight"><div class="card-h"><div><div class="eyebrow">${escHtml(t('STAGE'))} · ${row.rungs.length} ${escHtml(t('RUNGS'))}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${escHtml(row.name)}</div></div><div class="num sub" style="color:var(--ink-4)">${escHtml(t('rung %1', row.at))}</div></div>
+    ${row.rungs.map(rungLine).join('')}
+    <div class="sub" style="color:var(--ink-4);padding:8px 0 2px">${escHtml(rungNote(row))}</div>
+    ${row.at < row.top ? `<div class="wrap-row" style="gap:6px;padding-top:6px"><button class="pill" data-raise="${escHtml(row.id)}">${escHtml(t('Try the next rung'))}</button></div>` : ''}</div>`;
+}
+
 const PREVIEW_NOTE = 'Preview — nothing here is measured yet';
 const previewBanner = () => `<div class="card" style="padding:12px 16px;display:flex;gap:10px;align-items:center">
   <span class="ico" style="color:var(--ink-5);flex:none">${icon('book', 16)}</span>
@@ -6088,22 +6129,6 @@ SCREENS.lessons = () => {
   // says "Done" about a thing nobody has done — the failure the placeholder was written to avoid,
   // and it survives.
   const rows = ladderRows(settings.rungs, settings.rungProgress);
-  const untilOffer = (id) => followsUntilOffer(settings.rungs, settings.rungProgress, id);
-  const dot = (r) => (r.current
-    ? 'background:var(--accent)'
-    : r.reached ? 'background:var(--ink-4)' : 'background:transparent;box-shadow:inset 0 0 0 2px var(--ink-6)');
-  const note = (row) => {
-    const left = untilOffer(row.id);
-    if (left === null) return t('This is the highest rung there is.');
-    // Not a countdown: the follow count has stopped rising, so no number of solves reaches the
-    // offer. The rung is still there and still one tap away — it just arrives by being taken.
-    if (left === Infinity) return t('This rung will not be offered again — raise it here whenever you like.');
-    if (left === 0) return t('Ready for the next rung — it will be offered after your next solve.');
-    return plural(left, {
-      one: 'One more solve at this rung before the next one is offered.',
-      other: '%1 more solves at this rung before the next one is offered.',
-    });
-  };
   // NO PREVIEW BANNER. This screen used to carry one saying the figures are placeholders and the
   // controls do nothing — and both halves are now false: the counts are this learner's own
   // follows, and "Try the next rung" permanently raises a dial. A banner that disclaims a screen
@@ -6111,14 +6136,7 @@ SCREENS.lessons = () => {
   // app is telling them something true about themselves. Trainer and Drill keep theirs, because
   // they are still designs.
   return { html: `<div class="cols flow"><div class="col">
-    ${rows.map((row) => `<div class="card tight"><div class="card-h"><div><div class="eyebrow">${escHtml(t('STAGE'))} · ${row.rungs.length} ${escHtml(t('RUNGS'))}</div><div class="num" style="font-size:var(--fs-title);font-weight:600;margin-top:2px">${escHtml(row.name)}</div></div><div class="num sub" style="color:var(--ink-4)">${escHtml(t('rung %1', row.at))}</div></div>
-      ${row.rungs.map((r) => `<div class="row" style="grid-template-columns:8px 1fr auto;gap:14px;align-items:start">
-        <div style="width:8px;height:8px;border-radius:50%;margin-top:6px;${dot(r)}"></div>
-        <div><div style="color:${r.reached ? 'var(--ink)' : 'var(--ink-4)'}">${escHtml(t(r.label))}</div>
-          <div class="sub" style="color:var(--ink-4);line-height:1.45">${escHtml(t(r.blurb))}</div></div>
-        <div class="num sub" style="color:var(--ink-5)">${r.current ? escHtml(t('here')) : ''}</div></div>`).join('')}
-      <div class="sub" style="color:var(--ink-4);padding:8px 0 2px">${escHtml(note(row))}</div>
-      ${row.at < row.top ? `<div class="wrap-row" style="gap:6px;padding-top:6px"><button class="pill" data-raise="${escHtml(row.id)}">${escHtml(t('Try the next rung'))}</button></div>` : ''}</div>`).join('')}</div>
+    ${rows.map(ladderCard).join('')}</div>
     <div class="aside"><div class="card"><div class="eyebrow">${escHtml(t('HOW THIS MOVES'))}</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('Nothing here changes on its own. Follow a lesson to the end a few times and the next rung is offered once, on the cube screen; saying no costs nothing and it comes back later.'))}</div></div>
       <div class="card"><div class="eyebrow">${escHtml(t('COACH VIEW'))}</div><div class="sub" style="color:var(--ink-3);margin-top:8px;line-height:1.5">${escHtml(t('The idea: share a read-only link so a parent or coach can follow progress. Nothing to share yet.'))}</div></div></div></div>`,
     mount(root) {

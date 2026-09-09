@@ -17,6 +17,8 @@ import {
 } from '../lib/method-solver.js';
 import { OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
 import { BASELINES, capture, seededStates as baselineStates } from './fixtures/regen-method-steps.mjs';
+import { RUNG_CRITERIA, UsageError, parseArgs, rungDelta } from '../bench/method-solver-profile.mjs';
+import { seededStates } from './fixtures/seeded-scrambles.mjs';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
 Cube.initSolver();
@@ -192,28 +194,6 @@ test('every step is an algorithm a learner could be shown', () => {
   }
 });
 
-/** Deterministic states, so the coverage claim below is a fact about this file and not a
- *  probability. Random-state scrambles cannot be seeded through cubejs. */
-function seededStates(count, seed) {
-  let x = seed >>> 0;
-  const rnd = () => ((x = (x * 1664525 + 1013904223) >>> 0) / 4294967296);
-  const faces = ['U', 'R', 'F', 'D', 'L', 'B'];
-  const suffix = ['', "'", '2'];
-  const out = [];
-  for (let i = 0; i < count; i++) {
-    const alg = [];
-    let prev = -1;
-    while (alg.length < 30) {
-      const f = Math.floor(rnd() * 6);
-      if (f === prev) continue;
-      prev = f;
-      alg.push(faces[f] + suffix[Math.floor(rnd() * 3)]);
-    }
-    out.push(applyAlg(SOLVED, alg.join(' ')));
-  }
-  return out;
-}
-
 test('every algorithm in the repertoire is one some cube actually needs', () => {
   // A table entry nothing reaches is a case we would claim to teach and never show. Four
   // entries failed this check when it was first written and were deleted; the exhaustive
@@ -261,59 +241,32 @@ test('every algorithm in the repertoire is one some cube actually needs', () => 
 });
 
 /** The fine-grained stages each dial owns, for measuring a rung against the rung below it. */
-const STAGES_OF = Object.freeze({
-  cross: ['cross'],
-  pairs: ['f2l', 'first-layer', 'middle-layer'],
-  oll: ['top-cross', 'top-face'],
-  pll: ['top-corners', 'top-edges'],
-});
-
 /**
- * §10's first kill-criterion, as the table it became on 2026-09-09.
+ * §10's first kill-criterion — the table now lives in the bench, and this imports it.
  *
  * "A rung must move a NAMED axis it is able to move, by a floor stated before it is built." The
  * axis is per rung because they are not interchangeable: a rung that halves the step count and one
  * that changes what a single step is made of are both real, and judging the second on steps is a
  * criterion that is not measuring the rung.
  *
- * Floors sit under the measured values with margin — the point is to catch a rung that moves
- * NOTHING, not to pin a number that any improvement would break. Measured over 120 cubes:
- * cross 5.10 steps, pairs 0→1 2.73 steps, pairs 1→2 1.0038 parts, oll 2.01 steps, pll 1.05 steps.
+ * ONE table, because the bench prints a verdict from it and this file gates on it, and two copies
+ * of a product decision is two decisions. Floors sit under the measured values with margin — the
+ * point is to catch a rung that moves NOTHING, not to pin a number that any improvement would
+ * break. Measured over 120 cubes: cross 5.10 steps, pairs 0→1 2.73 steps, pairs 1→2 1.0038 parts,
+ * oll 2.01 steps, pll 1.05 steps.
  */
-const RUNGS_EARN_THEIR_PLACE = Object.freeze([
-  { dial: 'cross', from: 0, to: 1, axis: 'steps', floor: 4 },
-  { dial: 'pairs', from: 0, to: 1, axis: 'steps', floor: 2 },
-  { dial: 'pairs', from: 1, to: 2, axis: 'parts', floor: 0.75 },
-  { dial: 'oll', from: 0, to: 1, axis: 'steps', floor: 1.5 },
-  { dial: 'pll', from: 0, to: 1, axis: 'steps', floor: 0.9 },
-]);
+const RUNGS_EARN_THEIR_PLACE = RUNG_CRITERIA;
 
 test('every rung moves the axis it is judged on, and no rung is invention', () => {
-  // Counted only on solves where the stage actually RAN at both rungs. A cube whose cross was
-  // already done says nothing about the cross rung, and letting those in dilutes every delta
-  // toward zero — which is how a rung that does nothing could look like one that does a little.
+  // `rungDelta` is the bench's own function, so the number the bench PRINTS and the number this
+  // file GATES on are the same computation over the same cubes. They were two, and they disagreed:
+  // the bench measured whole-solve step counts, which include cubes whose last layer was already
+  // oriented, so it printed "not a lesson" about full OLL while this test was content.
   const states = seededStates(120, 20260909);
-  const BOTTOM = { cross: 0, pairs: 0, oll: 0, pll: 0 };
-  for (const { dial, from, to, axis, floor } of RUNGS_EARN_THEIR_PLACE) {
-    const below = methodFor({ ...BOTTOM, [dial]: from });
-    const above = methodFor({ ...BOTTOM, [dial]: to });
-    const mine = (m, state) => solveByMethod(state, m).steps.filter((s) => STAGES_OF[dial].includes(s.stage));
-    const measure = (steps) => ({
-      steps: steps.length,
-      moves: steps.reduce((n, s) => n + s.alg.trim().split(/\s+/).length, 0),
-      parts: steps.reduce((n, s) => n + (s.parts?.length ?? 0), 0) / Math.max(1, steps.filter((s) => s.parts).length),
-    });
-    let compared = 0;
-    let delta = 0;
-    for (const state of states) {
-      const a = mine(below, state);
-      const b = mine(above, state);
-      if (!a.length || !b.length) continue;
-      compared += 1;
-      delta += measure(a)[axis] - measure(b)[axis];
-    }
+  for (const criterion of RUNGS_EARN_THEIR_PLACE) {
+    const { dial, from, to, axis, floor } = criterion;
+    const { moved, compared } = rungDelta(states, criterion);
     assert.ok(compared > 100, `${dial} ${from}->${to}: only ${compared} comparable cubes`);
-    const moved = delta / compared;
     assert.ok(moved >= floor,
       `${dial} rung ${to} moves ${moved.toFixed(4)} ${axis} against a floor of ${floor} — `
       + 'a rung that moves nothing its learner can measure is invention (plan §10)');
@@ -925,4 +878,31 @@ test('a solve says which method produced it', () => {
   const result = solveByMethod(seededStates(1, 7)[0], INTERMEDIATE);
   assert.equal(result.method, '1,1,0,0');
   assert.deepEqual(result.rungs, { cross: 1, pairs: 1, oll: 0, pll: 0 });
+});
+
+test('the bench refuses a command line it cannot mean, rather than doing something else', () => {
+  // `all 2` used to read the 2 as an OLL rung selector — because `exhaustive` reached into
+  // `process.argv` for its own arguments instead of being handed them — so the one command that
+  // runs everything failed at the last of the three, after the first two had spent their minutes.
+  assert.deepEqual(parseArgs(['all', '2']), { command: 'all', n: 2, selector: null });
+  assert.deepEqual(parseArgs([]), { command: 'profile', n: 400, selector: null });
+  assert.deepEqual(parseArgs(['ladder']), { command: 'ladder', n: 60, selector: null });
+  assert.deepEqual(parseArgs(['exhaustive']), { command: 'exhaustive', selector: null });
+  assert.deepEqual(parseArgs(['exhaustive', '1', '1']), { command: 'exhaustive', selector: { oll: 1, pll: 1 } });
+
+  const refused = [
+    ['typo'],                    // silently exited 0 having run nothing
+    ['ladder', '0'],             // NaN statistics from a zero denominator
+    ['ladder', '1.5'],           // a fractional per-solve denominator
+    ['ladder', 'Infinity'],      // a loop with no end
+    ['ladder', '-3'],
+    ['profile', 'lots'],
+    ['profile', '10', '20'],
+    ['exhaustive', '1'],         // half a selector is not a selector
+    ['exhaustive', 'bad', '1'],  // and an unknown rung silently selected everything
+    ['exhaustive', '9', '9'],
+  ];
+  for (const argv of refused) {
+    assert.throws(() => parseArgs(argv), (e) => e instanceof UsageError, argv.join(' '));
+  }
 });

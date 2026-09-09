@@ -23,6 +23,7 @@ import { writeFileSync } from 'node:fs';
 
 import { applyAlg, SOLVED } from '../../lib/cube-pieces.js';
 import { methodFor, solveByMethod } from '../../lib/method-solver.js';
+import { seededPairs } from './seeded-scrambles.mjs';
 
 /** The seeds, and what each combination of rungs was called before the split. */
 export const BASELINES = Object.freeze([
@@ -30,26 +31,8 @@ export const BASELINES = Object.freeze([
   { name: 'intermediate', rungs: { cross: 1, pairs: 1, oll: 0, pll: 0 } },
 ]);
 
-/** The seeded scrambles. Same generator as the test file's, so the states are the same cubes. */
-export function seededStates(count, seed) {
-  let x = seed >>> 0;
-  const rnd = () => ((x = (x * 1664525 + 1013904223) >>> 0) / 4294967296);
-  const faces = ['U', 'R', 'F', 'D', 'L', 'B'];
-  const suffix = ['', "'", '2'];
-  const out = [];
-  for (let i = 0; i < count; i++) {
-    const alg = [];
-    let prev = -1;
-    while (alg.length < 30) {
-      const f = Math.floor(rnd() * 6);
-      if (f === prev) continue;
-      prev = f;
-      alg.push(faces[f] + suffix[Math.floor(rnd() * 3)]);
-    }
-    out.push({ scramble: alg.join(' '), state: applyAlg(SOLVED, alg.join(' ')) });
-  }
-  return out;
-}
+/** The seeded scrambles — the shared generator, so the states really are the same cubes. */
+export const seededStates = seededPairs;
 
 export const SEED = 20260908;
 export const COUNT = 12;

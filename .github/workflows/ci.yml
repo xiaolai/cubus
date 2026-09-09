@@ -150,23 +150,6 @@ jobs:
         if: needs.plan.outputs.full != 'true'
         run: pnpm --filter cubus-web test:fast
 
-      # THE COMPLETENESS PROOF THE METHOD SOLVER RESTS ON, nightly and on main.
-      #
-      # Since 2026-09-09 it runs at EVERY last-layer rung combination, not only the default — the
-      # one-look rungs are a 57-case and a 21-case table, and "the table is complete" is exactly the
-      # claim a sample cannot make. That multiplies the step by four; it is nightly for that reason.
-      #
-      # `bench/method-solver-profile.mjs exhaustive` enumerates all 62,208 reachable last-layer
-      # states and checks the two-look repertoire finishes every one. Until 2026-09-09 that claim
-      # lived only in a benchmark nobody ran — so a repertoire change could pass every sampled test
-      # while leaving a learner's cube unfinishable six months later, which is the exact failure
-      # the sweep exists to rule out. ~50 minutes on a loaded laptop, so it is nightly rather than
-      # per-push; the sampled suites in the fast tier are what a pull request gets.
-      - name: method solver — the 62,208-state completeness sweep (nightly)
-        if: needs.plan.outputs.full == 'true'
-        working-directory: apps/web
-        run: node bench/method-solver-profile.mjs exhaustive
-
       # TWO ENGINES, because two suites need different things from a browser.
       #
       # WebKit for the geometry test (apps/web/test/browser/geometry.test.mjs): it measures the
@@ -221,6 +204,64 @@ jobs:
           pip install --quiet pillow==12.3.0
           python scripts/verify-icons.py
 
+  # THE COMPLETENESS PROOF THE METHOD SOLVER RESTS ON — its OWN job, sharded by rung combination.
+  #
+  # `bench/method-solver-profile.mjs exhaustive` enumerates all 62,208 reachable last-layer states
+  # and checks the repertoire finishes every one. Until 2026-09-09 that claim lived only in a
+  # benchmark nobody ran — so a repertoire change could pass every sampled test while leaving a
+  # learner's cube unfinishable six months later, which is the exact failure the sweep exists to
+  # rule out. Since then it runs at EVERY last-layer rung combination, because the one-look rungs
+  # are a 57-case and a 21-case table and "the table is complete" is precisely the claim a sample
+  # cannot make.
+  #
+  # **It was a step inside `ts`, and it could not fit there.** Four combinations measured at ~50
+  # minutes in total, in a job whose timeout is 45 — shared with install, two package checks, the
+  # vendored-bundle rebuild, two browser downloads and the browser suites. A full-tier run was one
+  # slow runner away from being cancelled mid-sweep, and a cancelled job is a job that says nothing
+  # about the thing it was proving. Nothing had failed yet, which is the only reason it had not
+  # been noticed.
+  #
+  # Sharded rather than merely moved: each combination is its own runner, so the wall time is one
+  # sweep and not four, and a failure names the rung combination it happened at. 25 minutes is
+  # roughly double the measured per-combination cost — a LIVENESS bound, not a performance
+  # assertion, which is what a timeout is for.
+  last-layer-sweep:
+    name: method solver — the 62,208-state completeness sweep (nightly)
+    needs: [plan]
+    if: needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        oll: [0, 1]
+        pll: [0, 1]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: sweep every last-layer state at oll ${{ matrix.oll }} · pll ${{ matrix.pll }}
+        working-directory: apps/web
+        run: node bench/method-solver-profile.mjs exhaustive ${{ matrix.oll }} ${{ matrix.pll }}
+
+  # THE PLATFORM BRANCHES THE LINUX JOB CANNOT SEE.
+  #
+  # `cargo check` on ubuntu compiles cube-vision's INERT branch — the one that registers no
+  # commands. So `windows.rs` and the Android `android_ble.rs` could break, drift, or (as happened)
+  # be dead on arrival, and every gate stayed green: a cfg'd-out module is not compiled, and code
+  # that is not compiled cannot fail. Windows' native path was in fact unreachable in every build
+  # for as long as it existed, because nothing bundled its model, and nothing here would have said
+  # so.
+  #
+  # Compile-only, deliberately. These runners have no camera, no cube and no GPU, so they cannot
+  # tell whether the paths WORK — only that they still build and that their command surfaces still
+  # typecheck against the seam. That is the honest limit of what CI can assert here, and it is
+  # strictly more than zero.
   # THE PLATFORM BRANCHES THE LINUX JOB CANNOT SEE.
   #
   # `cargo check` on ubuntu compiles cube-vision's INERT branch — the one that registers no
