@@ -7,13 +7,14 @@
 //! `-- --ignored` adds the deeper geodesic certifications. The deepest (L ≥ 14 and the
 //! superflip's exact 20) run through `src/bin/certify.rs`, recorded in the plan's stamps.
 
+use optimal_solver::cases::{case_of, pick, tie_break, Kind};
 use optimal_solver::coords::Coords;
 use optimal_solver::cubie::{
     all_moves, apply_alg, apply_move, inverse, parse_facelets, to_facelets, MOVE_NAMES, SOLVED,
     SUPERFLIP_GEODESIC,
 };
 use optimal_solver::pdb;
-use optimal_solver::search::{prove, solution_string, SearchEnd};
+use optimal_solver::search::{prove, prove_all, prove_all_reporting, solution_string, SearchEnd};
 use optimal_solver::Tables;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -86,9 +87,15 @@ fn u_then_d_is_depth_2_so_pruning_deleted_no_optimal_path() {
 }
 
 #[test]
-fn htm_ball_shells_to_depth_5_are_exact() {
-    // §7: 18, 243, 3240, 43239, 574908 — an independently generated ball. Counted over real
-    // states (coordinate 6-tuples are a faithful key: together they determine the cube).
+fn htm_ball_shells_to_depth_6_are_exact() {
+    // §7: 18, 243, 3240, 43239, 574908, 7618438 — an independently generated ball, against the
+    // published counts. Counted over real states (coordinate 6-tuples are a faithful key:
+    // together they determine the cube).
+    //
+    // Depth 7 is 100,803,036 and depth 8 is 1,332,343,288. Seven is feasible as an ignored test
+    // and needs ~4.78 GiB — §7a finding F7 corrected an earlier 1.9 GiB estimate, which had
+    // omitted the frontier vectors. Eight needs a compact encoding rather than a HashSet, and is
+    // not attempted.
     use std::collections::HashSet;
     let t = tables();
     let key = |c: &Coords| -> u128 {
@@ -99,7 +106,86 @@ fn htm_ball_shells_to_depth_5_are_exact() {
             | (c.pos_b as u128) << 80
             | (c.flip_b as u128) << 104
     };
-    let expected = [18u64, 243, 3240, 43239, 574908];
+    // Depth 6 = 7,618,438 is plan B4's addition: the exact shells stopped at 5, four plies short
+    // of where OLL and PLL algorithms live. Counting it costs seconds and ~0.5 GiB.
+    let expected = [18u64, 243, 3240, 43239, 574908, 7618438];
+    let mut seen: HashSet<u128> = HashSet::new();
+    let start = Coords::from_cubie(&SOLVED);
+    seen.insert(key(&start));
+    let mut frontier = vec![start];
+    for (depth, &want) in expected.iter().enumerate() {
+        let mut next = Vec::new();
+        for c in &frontier {
+            for m in 0..18 {
+                let n = c.step(t.moves(), m);
+                if seen.insert(key(&n)) {
+                    next.push(n);
+                }
+            }
+        }
+        assert_eq!(next.len() as u64, want, "shell {} moved", depth + 1);
+        frontier = next;
+    }
+}
+
+/// L=14 and L=15 — **the depths PLL actually reaches**, and until 2026-09-09 nothing covered them.
+///
+/// Plan B4 calls this mandatory, and §7's research note says why: the per-STATE PLL maximum is 15
+/// face turns, not the per-case 14, and `optimal-solver-plan.md` §7 independently picked a 15-move
+/// prefix as the counterexample that defeated its original verification. The depth that defeats
+/// our verification and the depth of the hardest PLL state are one number.
+///
+/// **The plan costed this as hours and it is minutes.** Measured 2026-09-09 through
+/// `bin/certify -- 14 15`: seven L=14 segments and six L=15 segments, every one proved at its
+/// exact depth, 2 minutes 18 seconds in total including table generation. The worst single
+/// segment was L15@4 at 1.13e9 nodes and 46 s. So this is an ignored tier for the nightly runner
+/// rather than a distributed job, and the plan's "run certify at 14–15" is now a standing gate
+/// instead of a log somebody has to remember to re-run.
+#[test]
+#[ignore = "~2 min: the L=14..=15 geodesic tier, where PLL optima live — run with --ignored"]
+fn geodesic_segments_prove_their_exact_depth_pll_tier() {
+    let moves_str: Vec<&str> = SUPERFLIP_GEODESIC.split_whitespace().collect();
+    for len in 14..=15usize {
+        for start in 0..=(20 - len) {
+            let alg = moves_str[start..start + len].join(" ");
+            let s = apply_alg(&SOLVED, &alg).unwrap();
+            let (proved, sol, nodes) = prove_state(&s, len as u8);
+            assert_eq!(
+                proved as usize,
+                len,
+                "segment [{start}..{}) — {nodes} nodes",
+                start + len
+            );
+            let solved = apply_alg(&s, &solution_string(&sol)).unwrap();
+            assert_eq!(solved, SOLVED, "solution does not solve '{alg}'");
+        }
+    }
+}
+
+/// Depth 7 = 100,803,036, the last shell a `HashSet` can hold.
+///
+/// Plan B4's optional rung. Ignored not because it is slow — it is minutes — but because it needs
+/// about **4.78 GiB**: 1e8 keys of 16 bytes plus the frontier vectors, which §7a finding F7
+/// corrected upward from an earlier 1.9 GiB estimate that had counted only the set. A runner with
+/// less than that does not fail this, it is killed by the OOM killer, and a job that disappears is
+/// worse than one that was never asked to run. CI runs it on the nightly tier, where the runner is
+/// known.
+///
+/// Depth 8 = 1,332,343,288 needs a compact encoding rather than a set, and is not attempted here.
+#[test]
+#[ignore = "~4.78 GiB: the depth-7 HTM shell — run with --ignored on a runner that has the memory"]
+fn htm_ball_shell_at_depth_7_is_exact() {
+    use std::collections::HashSet;
+    let t = tables();
+    let key = |c: &Coords| -> u128 {
+        (c.cperm as u128)
+            | (c.twist as u128) << 32
+            | (c.pos_a as u128) << 48
+            | (c.flip_a as u128) << 72
+            | (c.pos_b as u128) << 80
+            | (c.flip_b as u128) << 104
+    };
+    let expected = [18u64, 243, 3240, 43239, 574908, 7618438, 100803036];
     let mut seen: HashSet<u128> = HashSet::new();
     let start = Coords::from_cubie(&SOLVED);
     seen.insert(key(&start));
@@ -144,8 +230,16 @@ fn geodesic_segments_prove_their_exact_depth_shallow_tier() {
     }
 }
 
+/// The L=10..=13 tier, and it is NOT ignored.
+///
+/// Plan B4 (dev-docs/method-solver-return-plan.md §9, §7 Layer 3): case algorithms live at depth
+/// ~7–15, and the fixtures that verify the prover stopped at 9 in CI with 10–13 behind
+/// `--ignored`. So the prover was best verified in a range that NEARLY covers case tables and
+/// stopped just short — and the range it stopped short of is where the tables live.
+///
+/// The `#[ignore = "minutes"]` this replaces was stale: measured 2026-09-09, the whole tier is
+/// **10.6 seconds** in release. It was costing nothing to run and was not being run.
 #[test]
-#[ignore = "minutes: the L=10..=13 geodesic tier — run with --ignored"]
 fn geodesic_segments_prove_their_exact_depth_deep_tier() {
     let moves_str: Vec<&str> = SUPERFLIP_GEODESIC.split_whitespace().collect();
     for len in 10..=13usize {
@@ -161,6 +255,420 @@ fn geodesic_segments_prove_their_exact_depth_deep_tier() {
             );
         }
     }
+}
+
+// ---- the generator's contract (return plan B1) -------------------------------------------------
+//
+// A case table is memorised by humans, so a rebuild that reshuffled equally-minimal algorithms
+// would diff dirty with no way to tell a regression from noise. `prove` cannot supply that: it
+// runs root branches in parallel and a find stops the siblings, so WHICH minimal maneuver comes
+// back is decided by which thread won (§7a finding D, upheld). These are the checks that the
+// replacement — exhaust the winning contour, then choose by a stated rule — actually removes the
+// race rather than moving it.
+
+/// Every minimal maneuver, under a rayon pool of exactly `threads`.
+fn all_solutions_with_threads(
+    state: &optimal_solver::cubie::Cubie,
+    cap: u8,
+    threads: usize,
+) -> Vec<String> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("a pool of the requested size");
+    pool.install(|| {
+        let cancel = AtomicBool::new(false);
+        let out = prove_all(
+            tables(),
+            &Coords::from_cubie(state),
+            cap,
+            &cancel,
+            &mut |_, _| {},
+        )
+        .expect("within cap");
+        out.solutions.iter().map(|s| solution_string(s)).collect()
+    })
+}
+
+#[test]
+fn the_generator_is_deterministic_across_core_counts() {
+    // Plan B1's verification, in the form it asks for: the same small set generated twice on
+    // DIFFERENT core counts, diffed byte for byte. One thread against many is the sharpest form
+    // of it — with one thread there are no siblings to race at all, so any disagreement is the
+    // race the whole mechanism exists to remove.
+    let moves_str: Vec<&str> = SUPERFLIP_GEODESIC.split_whitespace().collect();
+    for len in 1..=6usize {
+        for start in 0..=(20 - len) {
+            let alg = moves_str[start..start + len].join(" ");
+            let s = apply_alg(&SOLVED, &alg).unwrap();
+            let one = all_solutions_with_threads(&s, len as u8, 1);
+            let many = all_solutions_with_threads(&s, len as u8, 8);
+            assert_eq!(
+                one, many,
+                "segment '{alg}' generated differently on 1 and 8 threads"
+            );
+            assert!(
+                !one.is_empty(),
+                "segment '{alg}' has no minimal maneuver at all"
+            );
+            // And the pick is a function of the set, so a table entry is too.
+            let picked_one = all_solutions_with_threads(&s, len as u8, 1);
+            let picked_many = all_solutions_with_threads(&s, len as u8, 3);
+            assert_eq!(picked_one.first(), picked_many.first());
+        }
+    }
+}
+
+#[test]
+fn every_maneuver_prove_all_returns_is_minimal_and_actually_solves() {
+    // The set has to be the WHOLE set and nothing but it. Two failure modes, opposite in shape:
+    // a collector that stopped early would return a subset (and the tie-break would then pick
+    // whichever survivor happened to be there), and one whose pruning was wrong would return
+    // maneuvers that do not solve.
+    let moves_str: Vec<&str> = SUPERFLIP_GEODESIC.split_whitespace().collect();
+    for len in 1..=7usize {
+        for start in 0..=(20 - len) {
+            let alg = moves_str[start..start + len].join(" ");
+            let s = apply_alg(&SOLVED, &alg).unwrap();
+            let cancel = AtomicBool::new(false);
+            let out = prove_all(
+                tables(),
+                &Coords::from_cubie(&s),
+                len as u8,
+                &cancel,
+                &mut |_, _| {},
+            )
+            .expect("within cap");
+            assert_eq!(out.length as usize, len, "'{alg}' is not depth {len}");
+            for sol in &out.solutions {
+                assert_eq!(sol.len(), len, "'{alg}': a maneuver of the wrong length");
+                let solved = apply_alg(&s, &solution_string(sol)).unwrap();
+                assert_eq!(solved, SOLVED, "'{alg}': a maneuver that does not solve");
+            }
+            // The single-solution API must be consistent with the set: `prove` returns SOME
+            // minimal maneuver, so it has to be one of these.
+            let (_, one, _) = prove_state(&s, len as u8);
+            assert!(
+                out.solutions.contains(&one),
+                "'{alg}': prove returned a maneuver prove_all missed"
+            );
+            // Sorted by the stated rule, with no duplicates — that is what makes the vector a
+            // function of the state rather than of the thread schedule.
+            for w in out.solutions.windows(2) {
+                assert_eq!(
+                    tie_break(&w[0], &w[1]),
+                    std::cmp::Ordering::Less,
+                    "'{alg}': unsorted or duplicated"
+                );
+            }
+            assert_eq!(pick(&out.solutions), out.solutions[0].as_slice());
+        }
+    }
+}
+
+/// The collected set is complete against an enumeration that shares none of its pruning.
+///
+/// The audit's point, and it is a fair one: `every_maneuver_prove_all_returns_is_minimal_and_
+/// actually_solves` checks that what comes back is right and that `prove`'s own answer is in it —
+/// but both searches use the same heuristic and the same canonical rule, so a pruning bug would
+/// hide from both. This enumerates every canonical maneuver of the target length by brute force,
+/// with no heuristic at all, and demands the two sets be EQUAL.
+///
+/// Shallow on purpose: 13.35^5 is about 400,000 maneuvers, which is seconds. Depth is not what
+/// this test is for — agreement with something that cannot share the defect is.
+#[test]
+fn the_collected_set_equals_a_brute_force_enumeration_that_shares_no_pruning() {
+    fn move_allowed(prev: i8, m: usize) -> bool {
+        if prev < 0 {
+            return true;
+        }
+        let (face, pf) = (m / 3, prev as usize / 3);
+        face != pf && (face % 3 != pf % 3 || face < pf)
+    }
+    /// Every canonical maneuver of exactly `len` moves that solves `state`. No heuristic, no
+    /// tables, no shared code with the search — just the cubie model and the canonical rule.
+    ///
+    /// It DOES re-state the canonical rule, and that is not an accident to be apologised for:
+    /// `ProofAll` promises the canonical set, so an enumeration over a different set would be
+    /// comparing against a different claim. What this shares with the search is four lines of
+    /// move-ordering; what it does not share is the heuristic, the tables, the contour ladder and
+    /// the parallelism — which is where a completeness bug would live.
+    fn brute_force(state: &optimal_solver::cubie::Cubie, len: usize) -> Vec<Vec<u8>> {
+        let table = all_moves();
+        let mut out = Vec::new();
+        let mut path = Vec::with_capacity(len);
+        fn walk(
+            table: &[optimal_solver::cubie::Cubie; 18],
+            at: &optimal_solver::cubie::Cubie,
+            len: usize,
+            prev: i8,
+            path: &mut Vec<u8>,
+            out: &mut Vec<Vec<u8>>,
+        ) {
+            if path.len() == len {
+                if *at == SOLVED {
+                    out.push(path.clone());
+                }
+                return;
+            }
+            for m in 0..18usize {
+                if !move_allowed(prev, m) {
+                    continue;
+                }
+                path.push(m as u8);
+                walk(table, &apply_move(at, &table[m]), len, m as i8, path, out);
+                path.pop();
+            }
+        }
+        walk(&table, state, len, -1, &mut path, &mut out);
+        out
+    }
+
+    let moves_str: Vec<&str> = SUPERFLIP_GEODESIC.split_whitespace().collect();
+    let cancel = AtomicBool::new(false);
+    let mut checked = 0;
+    for len in 1..=5usize {
+        for start in 0..=(20 - len) {
+            let alg = moves_str[start..start + len].join(" ");
+            let s = apply_alg(&SOLVED, &alg).unwrap();
+            let out = prove_all(
+                tables(),
+                &Coords::from_cubie(&s),
+                len as u8,
+                &cancel,
+                &mut |_, _| {},
+            )
+            .expect("within cap");
+            assert_eq!(out.length as usize, len);
+            let mut want = brute_force(&s, len);
+            want.sort_by(|a, b| tie_break(a, b));
+            want.dedup();
+            assert_eq!(
+                out.solutions, want,
+                "'{alg}': the collected set is not the whole canonical set"
+            );
+            assert!(!want.is_empty());
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 60,
+        "only {checked} states compared — the sample is thin"
+    );
+}
+
+/// A cancel lands inside the COLLECTING pass, and the collector stops.
+///
+/// The cancellation contract is measured in nodes rather than in milliseconds, and it used to hold
+/// for `prove` alone: the collector polled nothing, so a cancel arriving mid-subtree waited for
+/// that subtree to finish. At a deep bound that is minutes of work after the caller asked to stop.
+///
+/// **Two earlier versions of this test did not test that**, and both were caught rather than
+/// shipped. The first cancelled from the proving callback, so the flag was already set before
+/// collection began. The second slept and cancelled by wall clock — but the collecting half of a
+/// state this shallow is 14 to 36 ms (measured), which is not a window anything can aim at. The
+/// deterministic hook is `prove_all_reporting`, whose second callback fires from INSIDE the
+/// collecting pass: cancelling from it puts the flag up while collectors are running, every time,
+/// on any machine.
+#[test]
+fn cancelling_during_collection_stops_the_collector() {
+    use std::sync::atomic::AtomicU64;
+    let moves_str: Vec<&str> = SUPERFLIP_GEODESIC.split_whitespace().collect();
+    let alg = moves_str[0..11].join(" ");
+    let s = apply_alg(&SOLVED, &alg).unwrap();
+    let coords = Coords::from_cubie(&s);
+
+    // What the whole thing does uncancelled, for the comparison below.
+    let quiet = AtomicBool::new(false);
+    let full = prove_all(tables(), &coords, 11, &quiet, &mut |_, _| {}).expect("within cap");
+    assert!(
+        !full.solutions.is_empty(),
+        "the uncancelled run found nothing to collect"
+    );
+
+    // Now cancel from the first opening that finishes collecting — so the flag goes up with the
+    // pass demonstrably under way, and the openings still running have to notice it themselves.
+    let cancel = AtomicBool::new(false);
+    let openings = AtomicU64::new(0);
+    let first_nodes = AtomicU64::new(0);
+    let last_nodes = AtomicU64::new(0);
+    let out = prove_all_reporting(
+        tables(),
+        &coords,
+        11,
+        &cancel,
+        &mut |_, _| {},
+        &|_, nodes| {
+            openings.fetch_add(1, Ordering::Relaxed);
+            // The first report is the moment the flag goes up; everything counted after it is
+            // work done by collectors that were already running.
+            let _ = first_nodes.compare_exchange(0, nodes, Ordering::Relaxed, Ordering::Relaxed);
+            last_nodes.fetch_max(nodes, Ordering::Relaxed);
+            cancel.store(true, Ordering::Relaxed);
+        },
+    );
+    assert!(
+        openings.load(Ordering::Relaxed) > 0,
+        "the collecting pass never reported — the cancel was never inside it"
+    );
+    assert_eq!(
+        out.err(),
+        Some(SearchEnd::Cancelled),
+        "a cancelled prove_all must refuse, never return a partial set as if it were complete"
+    );
+    // Nodes, and specifically the nodes visited AFTER the flag went up.
+    //
+    // The total alone proves less than it looks: skipping openings that never started would drive
+    // it down on its own, with or without `Collector`'s internal polling. What separates the two
+    // is the DELTA between the first report (the moment the flag was raised) and the last — that
+    // is the work done by collectors which were already running when it was raised, and internal
+    // polling is the only thing that can cut it short.
+    let first = first_nodes.load(Ordering::Relaxed);
+    let last = last_nodes.load(Ordering::Relaxed);
+    assert!(first > 0, "no nodes were reported from the collecting pass");
+    assert!(last >= first);
+    assert!(
+        last < full.nodes,
+        "the cancelled run visited {last} nodes against {} uncancelled — it did not stop at all",
+        full.nodes
+    );
+    let after_flag = last - first;
+    assert!(
+        after_flag < full.nodes / 2,
+        "{after_flag} nodes ran after the cancel, out of {} for a whole collection — the openings \
+         already in flight ran to completion",
+        full.nodes
+    );
+
+    // **What this does NOT discriminate, stated accurately rather than favourably.** At bound 11 a
+    // single opening's subtree is small, so `after_flag` would also be small with the internal
+    // polling deleted — the entry guard alone would nearly account for it. This test pins that the
+    // flag is raised INSIDE the collecting pass, that the pass stops, and that the work after the
+    // flag is a small fraction of a whole collection. It does not, at this scale, tell internal
+    // polling apart from the entry guard.
+    //
+    // What DOES discriminate is the same measurement at a bound where one opening is real work:
+    // `the_collector_stops_inside_an_opening_not_at_its_edge`, below, `--ignored` because it costs
+    // minutes. The reason to keep this cheap version too is that the failure it catches — a cancel
+    // never seen inside collection at all — is the one that was actually present before
+    // 2026-09-09, and it catches it in a second on every run.
+}
+
+/// The other half of the collector's cancellation promise: it stops INSIDE an opening.
+///
+/// The cheap test above cannot see the difference, and the reason is not that it is cheap. The
+/// parallel roots go four moves deep, so an opening is a small thing at ANY bound: measured on a
+/// fourteen-move state, 43,254 openings at ~3,915 nodes each against a stride bound of 49,152. A
+/// `Collector` that ignored the flag entirely and merely finished the opening it was in would post
+/// the same number as one that polls every stride. Going deeper does not help — it multiplies the
+/// openings, not their size — so the discrimination is not available through `prove_all` at all.
+/// That is what the audit of 2026-09-09 recorded as its one partial finding, and it is why
+/// `collect_one_opening` exists: ONE opening, one move deep, is millions of nodes, and there the
+/// two hypotheses are orders of magnitude apart.
+///
+/// The test asserts its own premise first. If the chosen opening is ever small enough that the
+/// stride bound would explain the saving on its own, that fails here rather than leaving a test
+/// that passes on the strength of its name.
+#[test]
+fn the_collector_stops_inside_an_opening_not_at_its_edge() {
+    use optimal_solver::search::{collect_one_opening, CANCEL_STRIDE};
+    use std::sync::Arc;
+
+    // One thread runs the collector, so the promise is the single-thread one: the stride it is
+    // inside when the flag lands, plus the stride it takes to reach the next poll.
+    let bound_after_cancel = 2 * CANCEL_STRIDE;
+
+    // A fourteen-move state under the single opening `R`. One move deep rather than four is the
+    // whole point: it is the same subtree the four-move roots partition into 2,403 pieces, walked
+    // as one, so the flag lands in the middle of real work instead of near the edge of a small
+    // piece. Twelve moves was tried first and gave 44,842 nodes — measured, and refused by the
+    // premise assertion below rather than passed on.
+    let moves_str: Vec<&str> = SUPERFLIP_GEODESIC.split_whitespace().collect();
+    let alg = moves_str[0..14].join(" ");
+    let s = apply_alg(&SOLVED, &alg).unwrap();
+    let coords = Coords::from_cubie(&s);
+    let opening = [3u8]; // R
+
+    // Generate the tables BEFORE the clock starts. Left inside the timed section they were most
+    // of it — 2.7 s of which about 0.1 s was the walk — so the cut landed after the collector had
+    // finished and the run looked exactly like one that ignores the flag. The measurement said
+    // 2 M nodes/s where this code does 50 M, which is what gave it away.
+    let _ = tables();
+    // What the opening costs when nobody interrupts it, and how long it takes. Both are measured
+    // rather than assumed: the first is the premise, the second sets where to cut.
+    let quiet = AtomicBool::new(false);
+    let started = std::time::Instant::now();
+    let (_, whole) = collect_one_opening(tables(), &coords, 14, &opening, &quiet);
+    let uninterrupted = started.elapsed();
+    assert!(
+        whole > 20 * bound_after_cancel,
+        "the opening is only {whole} nodes against a post-cancel bound of {bound_after_cancel} — \
+         at this scale a collector that ignored the flag would look the same as one that polls, so \
+         this test no longer separates them; deepen the state"
+    );
+
+    // Cut a tenth of the way in, so the flag lands with nine tenths of the subtree still to go on
+    // any machine — the wall clock chooses WHERE to interrupt, and nothing is asserted about it.
+    let cut = (uninterrupted / 10).max(std::time::Duration::from_millis(5));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = cancel.clone();
+    let waiter = std::thread::spawn(move || {
+        std::thread::sleep(cut);
+        flag.store(true, Ordering::Relaxed);
+    });
+    let (_, after) = collect_one_opening(tables(), &coords, 14, &opening, &cancel);
+    waiter.join().unwrap();
+
+    assert!(
+        cancel.load(Ordering::Relaxed),
+        "the flag never went up — the second run beat the timer, so nothing was interrupted"
+    );
+    eprintln!(
+        "one opening: {whole} nodes in {uninterrupted:?} uncancelled, {after} after a cancel at {cut:?}"
+    );
+    // The discriminating assertion, and it is a factor rather than a margin. A collector without
+    // the internal poll returns `whole` exactly — it has no other way to stop. One with it stops
+    // within a stride of wherever the flag found it, which a tenth of the way in is not close to
+    // the end. Orders of magnitude separate the two, so no threshold in between is delicate.
+    //
+    // Checked in both directions rather than only observed to pass: with `Collector`'s poll
+    // deleted the run returns 5,630,980 of 5,630,980 and this assertion fires; with it, 622,592.
+    assert!(
+        after < whole / 2,
+        "the cancelled run visited {after} nodes of {whole} — a collector that ignored the flag \
+         would visit all of them, and this is not far enough from that to tell the two apart"
+    );
+}
+
+#[test]
+fn a_case_key_is_a_fact_about_the_orbit_and_the_counts_are_the_published_ones() {
+    // The identity half of B1, checked through the public API rather than only in the module's
+    // own tests: 21 PLLs + the skip, 57 OLLs + the skip, and every alignment of a state landing
+    // on one key. A key that moved with the alignment would make a table lookup miss for three
+    // states out of four.
+    use optimal_solver::cases::{auf_post, auf_pre, oll_states, pll_states, rotate_y};
+    use std::collections::HashSet;
+    let pll: HashSet<String> = pll_states()
+        .iter()
+        .map(|s| case_of(Kind::Pll, s).id())
+        .collect();
+    assert_eq!(pll.len(), 22, "21 named perms and the skip");
+    let oll: HashSet<String> = oll_states()
+        .iter()
+        .map(|s| case_of(Kind::Oll, s).id())
+        .collect();
+    assert_eq!(oll.len(), 58, "57 named orientations and the skip");
+    for s in pll_states() {
+        let base = case_of(Kind::Pll, &s).id();
+        for n in 0..4u8 {
+            assert_eq!(case_of(Kind::Pll, &auf_pre(&s, n)).id(), base);
+            assert_eq!(case_of(Kind::Pll, &auf_post(&s, n)).id(), base);
+        }
+        assert_eq!(case_of(Kind::Pll, &rotate_y(&s)).id(), base);
+    }
+    // And a PLL key is never mistaken for an OLL one, whatever the bytes underneath.
+    assert!(pll.iter().all(|k| k.starts_with("pll:")));
+    assert!(oll.iter().all(|k| k.starts_with("oll:")));
 }
 
 #[test]

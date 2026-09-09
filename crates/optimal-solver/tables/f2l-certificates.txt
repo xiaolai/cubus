@@ -1,0 +1,83 @@
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0c10 length=0 alg=
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0c11 length=9 alg=R.U'.R.U2.F.R2.F'.U2.R2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0c11 scope=f2l-projection floor=6 bound=8 nodes=3783 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0c06 length=7 alg=R.U2.B.U.B'.U2.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0c06 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0c07 length=7 alg=F.U2.L.F2.L'.U2.F'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0c07 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0d10 length=9 alg=R.U2.R.U2.F.R.F'.U2.R2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0d10 scope=f2l-projection floor=6 bound=8 nodes=3783 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0d11 length=8 alg=R.U2.B.U.B2.R.B.R2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0d11 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0d06 length=6 alg=R.B.U2.B'.U.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0d06 scope=f2l-projection floor=6 bound=5 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0d07 length=6 alg=R.U'.R'.F'.U'.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0d07 scope=f2l-projection floor=6 bound=5 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0e10 length=9 alg=R.U2.R.U.R'.U.R.U2.R2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0e10 scope=f2l-projection floor=6 bound=8 nodes=3783 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0e11 length=8 alg=R.U'.R'.F'.L'.U2.L.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0e11 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0e06 length=6 alg=R.U'.B.U2.B'.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0e06 scope=f2l-projection floor=6 bound=5 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0e07 length=7 alg=U2.R.U2.R'.F'.U2.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0e07 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0910 length=7 alg=F'.U.L'.U2.L.U'.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0910 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0911 length=6 alg=F'.U2.F.R.U.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0911 scope=f2l-projection floor=6 bound=5 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0906 length=8 alg=U.R.U2.R'.U'.R.U.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0906 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0907 length=8 alg=U'.R.B.U.B2.R.B.R2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0907 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0902 length=6 alg=U.R.B.U2.B'.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0902 scope=f2l-projection floor=6 bound=5 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0903 length=6 alg=F'.U2.F2.R'.F'.R
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0903 scope=f2l-projection floor=6 bound=5 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0904 length=7 alg=U2.R.U.B'.R.B.R2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0904 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0905 length=6 alg=U.F'.L'.U2.L.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0905 scope=f2l-projection floor=6 bound=5 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0900 length=8 alg=U'.R2.U2.R'.U'.R.U'.R2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0900 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0901 length=8 alg=U.F'.U2.F.U.F'.U'.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0901 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a10 length=7 alg=U2.R.U2.B.U2.B'.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a10 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a11 length=8 alg=U2.F'.U'.F.U'.R.U.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a11 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a06 length=7 alg=R.U'.R'.U.R.U.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a06 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a07 length=8 alg=U.R.U'.R'.U2.F'.U'.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a07 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a02 length=7 alg=U.F2.U'.L'.U.L.F2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a02 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a03 length=7 alg=U.R2.B.U.B'.U'.R2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a03 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a04 length=4 alg=U.R.U.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a04 scope=f2l-projection floor=4 bound=3 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a05 length=7 alg=F'.U'.L'.U2.L.U2.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a05 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a00 length=8 alg=U.R.U'.B.U2.B'.U2.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a00 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a01 length=3 alg=F'.U.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0a01 scope=f2l-projection floor=3 bound=2 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b10 length=6 alg=F'.U2.L'.U2.L.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b10 scope=f2l-projection floor=6 bound=5 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b11 length=7 alg=R.U.R'.U.F'.U'.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b11 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b06 length=4 alg=U2.R.U'.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b06 scope=f2l-projection floor=4 bound=3 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b07 length=7 alg=R.U2.R'.U.F'.U'.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b07 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b02 length=7 alg=R.U2.R'.U2.R.U'.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b02 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b03 length=4 alg=U.F'.U'.F
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b03 scope=f2l-projection floor=4 bound=3 nodes=0 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b04 length=7 alg=U.F2.L'.U'.L.U.F2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b04 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b05 length=7 alg=U.R2.U.B.U'.B'.R2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b05 scope=f2l-projection floor=6 bound=6 nodes=19 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b00 length=8 alg=U.R.U2.B.U.B'.U.R'
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b00 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION
+case-alg moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b01 length=8 alg=U2.F2.D'.F.U'.F'.D.F2
+case-lower moveset=a11b14b29ffc3798e8b40b51a56452058ef5daa610a3469283b634e9c0f1cfb9 kind=f2l case=f2l:0b01 scope=f2l-projection floor=6 bound=7 nodes=281 result=NO-SOLUTION

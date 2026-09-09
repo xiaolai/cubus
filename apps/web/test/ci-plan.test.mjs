@@ -15,6 +15,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { FILTERS, FULL_TIER_LABEL, format, plan } from '../../../scripts/ci-plan.mjs';
+import { LADDER } from '../lib/method-solver.js';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const CI = readFileSync(`${ROOT}.github/workflows/ci.yml`, 'utf8');
@@ -160,6 +161,56 @@ test('every skippable CI job is gated on an output the plan emits, and the alway
       assert.match(s, /needs\.plan\.outputs\.full != 'true'/, `a step containing "${needle}" is not fast-tier only:\n${s}`);
     }
   }
+});
+
+test('the 62,208-state sweep has a job of its own, sized for what it costs', () => {
+  // It was a STEP in `ts`, whose timeout is 45 minutes — shared with install, two package checks,
+  // the vendored-bundle rebuild, two browser downloads and the browser suites. The sweep alone was
+  // measured at ~50 minutes across its four rung combinations, so a full-tier run was one slow
+  // runner away from being cancelled mid-proof. A cancelled job says nothing about the thing it
+  // was proving, and nothing had failed yet, which is the only reason it had not been noticed.
+  const jobsText = CI.slice(CI.indexOf('\njobs:\n') + 7);
+  const blocks = new Map();
+  let current = null;
+  for (const line of jobsText.split('\n')) {
+    const m = /^  ([a-z][\w-]*):\s*$/.exec(line);
+    if (m) { current = m[1]; blocks.set(current, ''); } else if (current) blocks.set(current, `${blocks.get(current)}${line}\n`);
+  }
+  const sweep = blocks.get('last-layer-sweep');
+  assert.ok(sweep, 'the sweep must have a job of its own');
+  // Not a STEP of `ts` any more — the whole point. Read as steps with comments stripped, the same
+  // way the tier assertions above are, so prose about the sweep does not count as running it.
+  const tsSteps = blocks
+    .get('ts')
+    .split(/\n(?=      - )/)
+    .map((chunk) => chunk.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n'))
+    .filter((chunk) => /^\s*- /.test(chunk));
+  assert.equal(
+    tsSteps.filter((step) => step.includes('method-solver-profile.mjs exhaustive')).length,
+    0,
+    'the sweep is back inside the ts job, whose timeout it does not fit in',
+  );
+  assert.match(sweep, /method-solver-profile\.mjs exhaustive \$\{\{ matrix\.oll \}\} \$\{\{ matrix\.pll \}\}/,
+    'each shard must run ONE rung combination, or sharding buys nothing');
+  // Every last-layer rung the ladder has, so "every combination" stays true as rungs are added.
+  for (const dial of ['oll', 'pll']) {
+    const rungs = LADDER[dial].map((r) => r.rung);
+    assert.match(sweep, new RegExp(`${dial}: \\[${rungs.join(', ')}\\]`),
+      `the sweep matrix does not cover every ${dial} rung (${rungs.join(', ')})`);
+  }
+  // fail-fast off: one combination failing must not cancel the others, because WHICH combinations
+  // fail is the finding.
+  assert.match(sweep, /fail-fast: false/, 'a failing shard must not cancel the ones still proving');
+  // A timeout with headroom over the MEASURED per-combination cost, not over a guess at it.
+  // Measured 2026-09-10 on an M-series laptop: ~950 s for the slowest combination (two-look, which
+  // searches deepest) and ~490 s for the fastest. A CI runner is slower than a laptop, so the
+  // bound has to clear ~16 minutes by a wide margin — the first draft of this job said 25, which
+  // is 1.6x the fastest machine available and is how a proof gets cancelled for running.
+  const timeout = Number(/timeout-minutes: (\d+)/.exec(sweep)?.[1]);
+  assert.ok(timeout >= 40,
+    `the sweep's timeout is ${timeout} minutes; the slowest combination measures ~16 on a laptop, `
+    + 'and a runner is slower than that');
+  assert.match(sweep, /needs\.plan\.outputs\.full == 'true'/, 'the sweep is nightly, not per-push');
 });
 
 test('the triggers carry the three ways to ask for the full tier, and the plan sees the label', () => {
