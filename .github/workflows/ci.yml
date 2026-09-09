@@ -222,15 +222,28 @@ jobs:
   # been noticed.
   #
   # Sharded rather than merely moved: each combination is its own runner, so the wall time is one
-  # sweep and not four, and a failure names the rung combination it happened at. 25 minutes is
-  # roughly double the measured per-combination cost — a LIVENESS bound, not a performance
-  # assertion, which is what a timeout is for.
+  # sweep and not four, and a failure names the rung combination it happened at.
+  #
+  # **The timeout is sized from a measurement, which is the half the old arrangement got wrong.**
+  # Measured 2026-09-10 on an M-series laptop: the two-look combination (0,0) is the slowest at
+  # ~950 s and the one-look one (1,1) the fastest at ~490 s, so all four together are ~47 minutes —
+  # which is where the "~50 minutes" in the old comment came from, and why it never fitted in a
+  # 45-minute job it shared with everything else. 45 minutes PER SHARD is roughly 2.8x the slowest
+  # measured combination, which is the headroom a runner slower than a laptop needs. It is a
+  # LIVENESS bound — "something is wedged" — and not a performance assertion; a proof that is
+  # merely running must never be cancelled, because a cancelled job says nothing about the thing
+  # it was proving.
+  #
+  # A first draft of this job said 25 minutes, on the reasoning that it was "roughly double the
+  # per-combination cost" — reasoning, not measurement, and the measurement then said 16 minutes
+  # for the slowest shard on the fastest machine available. That is the same mistake one rung
+  # down.
   last-layer-sweep:
     name: method solver — the 62,208-state completeness sweep (nightly)
     needs: [plan]
     if: needs.plan.outputs.full == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
