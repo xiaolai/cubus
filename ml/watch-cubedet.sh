@@ -30,8 +30,10 @@ set -u
 
 POLL=300
 HEARTBEAT_TICKS=24        # every 2h, so a quiet watch still proves it is alive
-TARGET_EPOCHS=80
-ARMS="trainer-a:P_large trainer-b:P_small"
+# Overridable, because the arms and the schedule change per experiment and a watcher that needs
+# editing to be reused is a watcher that gets skipped.
+TARGET_EPOCHS="${CUBEDET_TARGET_EPOCHS:-80}"
+ARMS="${CUBEDET_ARMS:-trainer-a:P_large trainer-b:P_small}"
 
 ssh_q() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$1" "$2" 2>/dev/null; }
 
@@ -44,7 +46,9 @@ arm_state() {   # host run -> "<status> <exitcode> <restarts> <epochs>"
   echo "$raw $ep"
 }
 
-for r in P_large P_small; do eval "done_${r}=''; miss_${r}=0; exited_${r}=0; rc_${r}=-1"; done
+# Derived from ARMS, not hardcoded: with `set -u` an arm the loop forgot dies on its first
+# poll with 'unbound variable', which is how making ARMS configurable broke this the first time.
+for pair in $ARMS; do r=${pair##*:}; eval "done_${r}=''; miss_${r}=0; exited_${r}=0; rc_${r}=-1; ep_${r}=-1; loop_${r}=0"; done
 ticks=0
 
 while :; do
@@ -72,16 +76,41 @@ while :; do
       continue
     fi
 
-    eval "prev_rc=\$rc_${run}"
+    # A CRASH LOOP IS "RESTARTS CLIMBING WHILE EPOCHS STAND STILL", and it has to be detected that
+    # way rather than by counting consecutive bad statuses. A fast loop oscillates through
+    # restarting / exited / briefly running, so any consecutive-status counter keeps resetting and
+    # never fires -- measured 2026-09-10 against a deliberately seeded crash-looper, which the
+    # status-based version watched for 40 seconds and never called broken. Restart count is
+    # monotonic and epoch progress is the discriminator that separates a loop from a healthy
+    # resume after a host reset.
+    eval "prev_rc=\$rc_${run}; prev_ep=\$ep_${run}; loops=\$loop_${run}"
     if [ "$prev_rc" != "-1" ] && [ "$restarts" -gt "$prev_rc" ]; then
-      echo "$run on $host was RESTARTED (restart #$restarts) and is resuming from epoch $ep"
+      if [ "$ep" -gt "$prev_ep" ]; then
+        loops=0
+        echo "$run on $host was RESTARTED (#$restarts) and resumed, now at epoch $ep"
+      else
+        loops=$((loops + 1))
+        echo "$run on $host was RESTARTED (#$restarts) with no progress past epoch $ep"
+      fi
+    elif [ "$ep" -gt "$prev_ep" ]; then
+      loops=0
     fi
-    eval "rc_${run}=$restarts"
+    eval "rc_${run}=$restarts; ep_${run}=$ep; loop_${run}=$loops"
+    if [ "$loops" -ge 3 ]; then
+      echo "$run on $host FAILED: restarting repeatedly without progressing past epoch $ep/$TARGET_EPOCHS"
+      eval "done_${run}=1"
+      continue
+    fi
 
-    if [ "$status" = "exited" ] && [ "$code" != "0" ]; then
+    # `restarting` counts as failing, not as running. unless-stopped restarts a container forever,
+    # so a PERSISTENT fault -- a missing data file, a bad path -- presents as a container that is
+    # always about to start and never progresses. Without this it heartbeats "restarting" for the
+    # life of the watch and nothing ever calls it broken. Cost this exactly once, on 2026-09-10,
+    # when a real-only dataset built from symlinks pointed outside the container's mount.
+    if { [ "$status" = "exited" ] && [ "$code" != "0" ]; } || [ "$status" = "restarting" ]; then
       eval "x=\$((exited_${run} + 1)); exited_${run}=\$x"
       if [ "$x" -ge 3 ]; then
-        echo "$run on $host FAILED: exited $code at epoch $ep/$TARGET_EPOCHS and nothing restarted it after three checks"
+        echo "$run on $host FAILED: $status (exit $code, $restarts restarts) stuck at epoch $ep/$TARGET_EPOCHS across three checks"
         eval "done_${run}=1"
       fi
     elif [ "$status" = "exited" ] && [ "$code" = "0" ]; then
