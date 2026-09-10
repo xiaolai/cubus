@@ -109,21 +109,53 @@ fi
 # hours for nothing. A long unattended run on hardware with a known reset mode should not need a
 # human to notice before it continues.
 #
+# THE DECISION ITSELF NOW LIVES IN THE CONTAINER (see the docker run below), so that an automatic
+# restart re-makes it. What is left here is the announcement and the one thing the container
+# cannot do for itself: honour CUBEDET_FRESH.
+#
 # CUBEDET_FRESH=1 forces a clean start; that is the flag to reach for when the RECIPE changed,
-# because resuming into different code silently mixes two experiments.
-# A checkpoint from a host that died mid-write can be zero bytes -- B_res896's was, on 2026-09-09.
-# `-s` requires non-empty, so a truncated file falls back to a fresh start instead of failing to
-# load. The trainer writes atomically now, so this is a belt on top of braces.
-if [ -s "$WORK/out/$RUN/last.pt" ] && [ "${CUBEDET_FRESH:-0}" != "1" ]; then
-  EXTRA+=(--resume "/work/out/$RUN/last.pt")
+# because resuming into different code silently mixes two experiments. It is honoured by moving
+# the checkpoint aside rather than by a flag the
+# container reads. A flag would be baked into the container's environment and so would apply to
+# every automatic restart too -- turning "start this run over" into "start over after every host
+# reset", which is the opposite of what it means.
+if [ "${CUBEDET_FRESH:-0}" = "1" ] && [ -e "$WORK/out/$RUN/last.pt" ]; then
+  mv "$WORK/out/$RUN/last.pt" "$WORK/out/$RUN/last.pt.superseded.$(date +%s)"
+  echo "CUBEDET_FRESH=1 -- previous checkpoint moved aside, starting over"
+elif [ -s "$WORK/out/$RUN/last.pt" ]; then
   echo "resuming $RUN from its last checkpoint (CUBEDET_FRESH=1 to start over)"
 fi
+# A HOST RESET MUST NOT COST THE RUN, and until 2026-09-10 it always did.
+#
+# This box has now hard-reset six times during this work. The container carried no restart policy,
+# so every reset left it stopped and the run simply stopped advancing -- indistinguishable, to
+# anything not looking closely, from a run still training. P_small died that way at epoch 15 of 80
+# after 83 minutes, and it was the LIGHTEST arm yet run: 640px, 2.97M parameters, clock lock
+# verified at launch, keep-warm holding the floor. That falsifies the standing explanation, which
+# was that the 896px arm is what resets this box and a capped 640px load is safe.
+#
+# The cause is not understood and this does not claim to fix it. What it fixes is the CONSEQUENCE:
+#
+#   --restart on-failure:10  brings the container back after a reset. `on-failure` and not
+#                            `unless-stopped` on purpose: a finished run exits 0, and
+#                            `unless-stopped` would restart that too, into an empty epoch range,
+#                            exiting 0 forever in a tight loop.
+#   the in-container guard   re-decides --resume on EVERY start, which is what makes the restart
+#                            worth having. Deciding it once on the host would mean the restart
+#                            began again from epoch 0, quietly losing the very checkpoint that
+#                            makes a reset survivable.
 docker run -d --name "cubedet_${RUN}" --gpus all --ipc=host \
+  --restart on-failure:10 \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -v "$WORK:/work" -v "$DATA:/data:ro" -w /work \
-  -e TORCH_HOME=/work/.torch \
+  -e TORCH_HOME=/work/.torch -e CUBEDET_RUN="$RUN" \
   "$IMAGE" \
-  python /work/cubedet/train.py \
+  bash -c 'ARGS=("$@")
+           LAST="/work/out/$CUBEDET_RUN/last.pt"
+           # -s, not -e: a checkpoint from a host that died mid-write can be zero bytes, and
+           # resuming from one of those fails where starting over would have worked.
+           if [ -s "$LAST" ]; then ARGS+=(--resume "$LAST"); echo "restart: resuming from $LAST"; fi
+           exec python /work/cubedet/train.py "${ARGS[@]}"' _ \
     --data /data --out "/work/out/$RUN" \
     --epochs "$EPOCHS" --batch "$BATCH" --width "$WIDTH" --workers 12 "${EXTRA[@]}"
 
