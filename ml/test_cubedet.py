@@ -28,14 +28,19 @@ from cubedet.assign import TaskAlignedAssigner, box_iou_pairwise, points_in_boxe
 from cubedet.data import _affine, _clip_and_drop, _photometric, _to_canvas, collate  # noqa: E402
 from cubedet.loss import DetectionLoss, complete_iou  # noqa: E402
 from cubedet.model import (  # noqa: E402
+    CSP_BACKBONE,
     NUM_CLASSES,
     REG_MAX,
+    STRIDES,
     CubeDet,
     ExportWrapper,
+    PretrainedBackbone,
     boxes_to_distances,
     count_parameters,
+    detection_widths,
     distances_to_boxes,
     make_anchors,
+    stride_cuts,
 )
 
 
@@ -595,3 +600,134 @@ def test_parameter_count_stays_near_the_model_it_replaces():
     """10.6 MB was an accepted download cost; this keeps a redesign from quietly doubling it."""
     params = count_parameters(CubeDet())
     assert 2.0e6 < params < 3.4e6, params
+
+
+# ---------------------------------------------------------------- the pretrained backbone
+#
+# These exist because swapping the backbone is the one change that can silently produce a model
+# which trains, exports and ships while being wrong: a wrong feature level still has a shape, and a
+# damaged BatchNorm still has weights. Every test below is aimed at a failure with no symptom.
+
+PRETRAINED_UNDER_TEST = "mobilenet_v3_small"
+
+
+def test_pretrained_backbone_keeps_the_output_contract():
+    """A different backbone must not move one byte of the tensor the app reads.
+
+    The whole case for `PretrainedBackbone` being a substitution rather than a redesign rests on
+    this: same shape, same row meanings, same probability range.
+    """
+    model = CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False).eval()
+    out = model.forward_export(torch.zeros(1, 3, IMG_SIZE, IMG_SIZE))
+    assert out.shape == (1, 4 + NUM_CLASSES, 8400), out.shape
+    scores = out[0, 4:, :]
+    assert float(scores.min()) >= 0.0 and float(scores.max()) <= 1.0
+
+
+def test_pretrained_backbone_hands_the_neck_the_widths_it_was_built_for():
+    """`PANNeck` and `DetectHead` are built for `detection_widths`; the reduction is what guarantees it."""
+    backbone = PretrainedBackbone(PRETRAINED_UNDER_TEST, pretrained=False)
+    assert (backbone.c1, backbone.c2, backbone.c3) == detection_widths()
+    p3, p4, p5 = backbone(torch.zeros(1, 3, IMG_SIZE, IMG_SIZE))
+    for feat, stride, channels in zip((p3, p4, p5), STRIDES, detection_widths()):
+        assert feat.shape[1] == channels, (feat.shape, channels)
+        assert feat.shape[-1] == IMG_SIZE // stride, (feat.shape, stride)
+
+
+def test_stride_cuts_does_not_disturb_the_pretrained_batchnorm_statistics():
+    """The probe runs a forward pass, and a forward pass in training mode REWRITES running stats.
+
+    This is the silent one. A probe that left BatchNorm in training mode would corrupt the very
+    weights it was called to measure — before step one, with no error and no symptom beyond a run
+    that trains to a slightly worse model than it should have.
+    """
+    import torchvision
+
+    features = torchvision.models.get_model(PRETRAINED_UNDER_TEST, weights=None).features
+    features.train()
+    norms = [m for m in features.modules() if isinstance(m, torch.nn.BatchNorm2d)]
+    assert norms, "expected BatchNorm layers to protect"
+    before = [(m.running_mean.clone(), m.running_var.clone(), int(m.num_batches_tracked)) for m in norms]
+
+    stride_cuts(features)
+
+    assert features.training, "the probe must restore the mode it found"
+    for module, (mean, var, batches) in zip(norms, before):
+        assert torch.equal(module.running_mean, mean)
+        assert torch.equal(module.running_var, var)
+        assert int(module.num_batches_tracked) == batches
+
+
+def test_stride_cuts_refuses_a_backbone_that_lacks_a_level():
+    """Loud, not a guess: a backbone with no stride-32 output cannot serve a three-level head."""
+    shallow = torch.nn.Sequential(
+        torch.nn.Conv2d(3, 8, 3, stride=2, padding=1),
+        torch.nn.Conv2d(8, 16, 3, stride=2, padding=1),
+        torch.nn.Conv2d(16, 32, 3, stride=2, padding=1),
+    )  # reaches stride 8 and stops
+    with pytest.raises(ValueError, match="stride"):
+        stride_cuts(shallow)
+
+
+def test_the_size_matched_arm_really_is_size_matched():
+    """`mobilenet_v3_small` is the arm that isolates pretraining, and it can only do that at equal size.
+
+    If this drifts, the comparison against `A_baseline` stops being a test of pretraining and
+    silently becomes a test of capacity — which the D_wide run already answered separately.
+    """
+    control = count_parameters(CubeDet(backbone=CSP_BACKBONE))
+    matched = count_parameters(CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False))
+    assert abs(matched - control) / control < 0.10, (control, matched)
+
+
+def test_backbone_choice_round_trips_through_a_checkpoint(tmp_path):
+    """The switch travels with the weights, and a rebuild on the wrong one fails rather than exports.
+
+    `export.py::_load_cubedet` rebuilds from the checkpoint and loads strictly. That is only safe
+    while the checkpoint actually carries the backbone name, so this asserts both halves: the right
+    name loads, and the wrong one raises instead of producing an artefact.
+    """
+    trained = CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False)
+    path = tmp_path / "best.pt"
+    torch.save(
+        {"model": trained.state_dict(), "width": 1.0, "imgsz": IMG_SIZE,
+         "context": False, "backbone": PRETRAINED_UNDER_TEST, "num_classes": NUM_CLASSES},
+        path,
+    )
+    state = torch.load(path, map_location="cpu", weights_only=True)
+
+    rebuilt = CubeDet(
+        num_classes=state["num_classes"], width=state["width"], image_size=state["imgsz"],
+        context=state["context"], backbone=state["backbone"], pretrained=False,
+    )
+    rebuilt.load_state_dict(state["model"], strict=True)
+
+    wrong = CubeDet(num_classes=state["num_classes"], width=state["width"], backbone=CSP_BACKBONE)
+    with pytest.raises(RuntimeError):
+        wrong.load_state_dict(state["model"], strict=True)
+
+
+def test_pretrained_export_survives_the_opset_the_shipped_lineage_pins():
+    """opset 12 is not negotiable — it is what every downstream consumer was built against.
+
+    MobileNet's hardswish has no ONNX operator before opset 14, so this is a real question rather
+    than a formality: it passes because the exporter decomposes it into Mul and HardSigmoid.
+    """
+    onnx = pytest.importorskip("onnx")
+    import io
+
+    model = CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False).eval()
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        ExportWrapper(model),
+        torch.zeros(1, 3, IMG_SIZE, IMG_SIZE),
+        buffer,
+        input_names=["images"],
+        output_names=["output0"],
+        opset_version=12,
+        dynamo=False,
+    )
+    buffer.seek(0)
+    graph = onnx.load_model(buffer).graph
+    shape = [d.dim_value for d in graph.output[0].type.tensor_type.shape.dim]
+    assert shape == [1, 4 + NUM_CLASSES, 8400], shape

@@ -29,7 +29,7 @@ becomes the project's own choice again.
 | Dependency | Licence | Used for |
 |---|---|---|
 | PyTorch | BSD-3-Clause | tensors, autograd, optimiser |
-| torchvision | BSD-3-Clause | `ops.nms` in the evaluator only |
+| torchvision | BSD-3-Clause | `ops.nms` in the evaluator; the optional pretrained backbone (below) |
 | NumPy | BSD-3-Clause | label and metric arithmetic |
 | Pillow | MIT-CMU | image decode and resize |
 
@@ -44,12 +44,43 @@ published under **CC BY 4.0**, attributed in `ml/MODEL_CARD.md` §Attribution an
 `apps/web/THIRD_PARTY_NOTICES.md`. CC BY requires attribution and nothing more; it places no
 condition on the licence of a model trained on the images.
 
+## The pretrained backbone, added 2026-09-10, and what it changes about the claim above
+
+`--backbone <torchvision model>` starts the feature extractor from torchvision's ImageNet weights
+instead of from noise (`cubedet/model.py::PretrainedBackbone`). It was added because of a
+measurement, recorded in that class's docstring: scored on the 207 held-out photographs by one
+evaluator, the from-scratch model reached **0.9757 colour-correct-when-found against the shipped
+model's 0.9928**, while its detection was within 1.2 points of mAP50 and its per-sticker recall was
+ahead. Pretraining is the one input the shipped model had and this one did not.
+
+**This narrows the clean-room claim, and the narrowing is stated rather than glossed.** With
+`--backbone csp` — still the default — nothing below changes. With a torchvision backbone, the
+feature extractor is *torchvision's* implementation and *torchvision's* weights, not this
+project's. What remains ours from the papers is everything that makes it a detector: the neck, the
+head, the assigner, the losses and the exported tensor.
+
+That is not a retreat from the objective, because the objective was never clean-room for its own
+sake — it was that **no dependency gets to dictate this project's licence**. torchvision is
+BSD-3-Clause and so are the weights it publishes, so a model built this way can still be licensed
+however the owner chooses.
+
+**On ImageNet itself, plainly.** The images ImageNet is built from carry their own
+research-oriented terms, and this project does not redistribute them or claim otherwise; what ships
+is a set of parameters, and the parameters we ship have been trained further on our own data. The
+distinction from the Detlib situation is not that one is copyleft-free by luck. It is that
+Detlib *actively asserts* its licence reaches models trained with its software, and neither
+torchvision nor PyTorch asserts anything of the kind about ImageNet-pretrained weights. A claim
+someone makes is a risk; a claim nobody makes is not the same thing as a guarantee, and this
+paragraph exists so that a future reader can weigh that for themselves rather than inherit an
+assurance nobody checked.
+
 ## Method, and what was read
 
 Every component is a published method, implemented here from the paper. No detector
 implementation's source was opened while writing this code — not Detlib's, and not a permissive
 one either, because a clean-room claim that quietly leans on a reimplementation of an MIT codebase
-is worth less than no claim at all.
+is worth less than no claim at all. (The one deliberate exception is the optional pretrained
+backbone described in the section above, which is torchvision's code and weights by design.)
 
 | Component | Source read | File |
 |---|---|---|
@@ -95,9 +126,45 @@ as the old one.
 ## Status
 
 - [x] Model, assigner, loss, data pipeline, trainer, evaluator written
-- [x] `ml/test_cubedet.py` green (15 tests, including a single-batch overfit)
-- [ ] Trained on the 30,738-image combined set
-- [ ] Scored against the old model by one evaluator (`ml/compare_detectors.py`)
+- [x] `ml/test_cubedet.py` green (28 tests, including a single-batch overfit)
+- [x] Trained on the 30,738-image combined set — four arms, 80 epochs each
+- [x] Scored against the old model by one evaluator (`ml/compare_detectors.py`, 2026-09-10)
+- [ ] **A checkpoint that is actually good enough to ship** — see the table below; none is yet
 - [ ] Four artefacts exported and `ml/golden_frames.py` re-pinned with a stated reason
 - [ ] `MODEL_CARD.md`, `LICENSE-COMMERCIAL.md` and `THIRD_PARTY_NOTICES.md` updated
 - [ ] Licence changed from MIT — **the owner's call, and not implied by this work**
+
+### Where it stands, on the 207 held-out photographs
+
+One evaluator, one letterbox, one decode, for all four columns — so the differences mean something
+even though none of these absolute numbers is comparable to `MODEL_CARD.md`'s, which came from
+Detlib's validator.
+
+| | v3 (shipped) | A_baseline | C_context | D_wide |
+|---|---|---|---|---|
+| mAP50 | 0.8755 | 0.7925 | 0.8632 | 0.7881 |
+| per-sticker recall | 0.8519 | 0.8004 | **0.8559** | 0.7266 |
+| colour-correct when found | **0.9928** | 0.9757 | 0.9718 | 0.9727 |
+| red→orange / orange→red | 14 / 1 | 8 / 11 | 7 / 28 | 6 / 17 |
+| parameters | 2.65 M | 2.99 M | 3.01 M | 6.38 M |
+
+**The honest reading: the licence is clean and the model is not yet good enough.** Detection is
+close — C_context is within 1.2 points of mAP50 and is the only model here that finds MORE stickers
+than the shipped one. The gap is colour, and by the arithmetic in `dev-docs/misread-decoding.md`
+colour is what costs a user a scan.
+
+Three things this run settled, none of them by opinion:
+
+1. **Capacity is not the constraint.** D_wide doubled the parameters and produced the worst recall
+   of the four with no colour gain. `dev-docs/detector-stack-replacement.md` §3 predicted exactly
+   this, and it is now measured here rather than inferred.
+2. **Image-level context did not fix red/orange.** C_context was built for it and has the worst
+   colour accuracy per sticker found of any model in the table.
+3. **The 80-epoch flatline is not convergence.** The learning rate is cosine-annealed to
+   `min_lr_fraction` over exactly `--epochs`, so every run ends flat whatever it had left to give.
+   Reading those last twelve epochs as "the model has saturated" would be reading the schedule.
+
+Launched 2026-09-10 against the colour gap, same recipe as A_baseline in every respect but the
+backbone, so only the named variable differs: **P_small** (`mobilenet_v3_small`, 2.97 M — matched
+to A_baseline's size, so it isolates pretraining from capacity) and **P_large**
+(`mobilenet_v3_large`, 5.12 M).
