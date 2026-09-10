@@ -30,7 +30,10 @@ IMAGE='nvcr.io/nvidia/pytorch:26.01-py3'
 DATASET_NAME="${DATASET_NAME:-synth_v3}"
 DATA="$HOME/datasets/$DATASET_NAME/dataset"
 WORK="$HOME/cubus-ml"
-CLOCK_CEILING=2250   # the cap is 2200; allow a little headroom for sampling jitter
+# CLOCK_CEILING lived here until the guard below stopped probing the peak clock. It is gone rather
+# than kept for reference: the check it served cannot fail (see the guard's own comment), so a
+# reader finding the constant would be finding the discredited half of the idea.
+CSP_NAME='csp'       # must match cubedet.model.CSP_BACKBONE — the one backbone needing no weights
 
 [ -d "$DATA/images/train" ] || { echo "no training images at $DATA/images/train" >&2; exit 1; }
 
@@ -76,6 +79,28 @@ fi
 mkdir -p "$WORK/out/$RUN"
 docker rm -f "cubedet_${RUN}" >/dev/null 2>&1 || true
 
+# A PRETRAINED BACKBONE NEEDS ITS WEIGHTS ON DISK BEFORE THE RUN, NOT DURING IT.
+#
+# torchvision fetches ImageNet weights from download.pytorch.org on first use and caches them under
+# $TORCH_HOME. Neither half of that works here unattended: this box reaches the internet through a
+# slow US proxy, and the cache would land inside the container and die with it -- so every run
+# would re-download, and a run started while the proxy is down would fail minutes in, after the
+# launch looked fine. TORCH_HOME therefore points at the mounted volume, and the weights are seeded
+# there beforehand (copy them from a machine with fast internet:
+#   scp ~/.cache/torch/hub/checkpoints/mobilenet_v3_*.pth <host>:cubus-ml/.torch/hub/checkpoints/ )
+CHECKPOINT_CACHE="$WORK/.torch/hub/checkpoints"
+mkdir -p "$CHECKPOINT_CACHE"
+BACKBONE="$CSP_NAME"
+for i in "${!EXTRA[@]}"; do
+  if [ "${EXTRA[$i]}" = "--backbone" ]; then BACKBONE="${EXTRA[$((i + 1))]:-$CSP_NAME}"; fi
+done
+if [ "$BACKBONE" != "$CSP_NAME" ] && ! compgen -G "$CHECKPOINT_CACHE/*.pth" >/dev/null; then
+  echo "REFUSING: --backbone $BACKBONE needs ImageNet weights, and $CHECKPOINT_CACHE is empty." >&2
+  echo "  Seed it from a machine with fast internet, then re-run:" >&2
+  echo "    scp ~/.cache/torch/hub/checkpoints/${BACKBONE}-*.pth $(hostname):cubus-ml/.torch/hub/checkpoints/" >&2
+  exit 1
+fi
+
 # RESUME BY DEFAULT IF THERE IS SOMETHING TO RESUME FROM.
 #
 # On 2026-09-09 this box hard-reset at 03:34 and took A_baseline down at epoch 19 of 80. The
@@ -96,6 +121,7 @@ fi
 docker run -d --name "cubedet_${RUN}" --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -v "$WORK:/work" -v "$DATA:/data:ro" -w /work \
+  -e TORCH_HOME=/work/.torch \
   "$IMAGE" \
   python /work/cubedet/train.py \
     --data /data --out "/work/out/$RUN" \

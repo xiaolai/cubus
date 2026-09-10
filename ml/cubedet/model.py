@@ -41,6 +41,11 @@ NUM_CLASSES = 6
 # Strides of the three detection levels. 640 / (8, 16, 32) gives 80, 40 and 20.
 STRIDES = (8, 16, 32)
 
+# The name of the from-scratch backbone, as it appears in a checkpoint and on the command line.
+# Anything else is read as a torchvision model name and handed to `PretrainedBackbone`, so the set
+# of options is torchvision's rather than a list here that would go stale.
+CSP_BACKBONE = "csp"
+
 # Distribution Focal Loss bins (Li et al., "Generalized Focal Loss", 2020). The box branch predicts
 # a distribution over REG_MAX + 1 discrete distances per side rather than one number, and the
 # expectation of that distribution is the distance. It costs four 17-wide softmaxes per anchor and
@@ -139,23 +144,44 @@ class SPPF(nn.Module):
         return self.fuse(torch.cat((x, p1, p2, p3), dim=1))
 
 
+def scaled_channels(n: int, width: float = 1.0) -> int:
+    """Scale a channel count and round it to a multiple of 8.
+
+    Multiples of 8 keep every convolution friendly to SIMD and to the CoreML / TFLite converters,
+    which pad odd channel counts anyway.
+    """
+    return max(8, int(round(n * width / 8)) * 8)
+
+
+def detection_widths(width: float = 1.0) -> tuple[int, int, int]:
+    """The (P3, P4, P5) channel widths every backbone must hand to `PANNeck`.
+
+    Stated once, here, because there are now two backbones. `PANNeck` and `DetectHead` are built
+    for these three numbers, so a backbone whose own widths differ reduces to them rather than the
+    neck learning to accept anything — which is what keeps the swap a substitution instead of a
+    redesign.
+    """
+    return scaled_channels(64, width), scaled_channels(128, width), scaled_channels(256, width)
+
+
 class Backbone(nn.Module):
     """Five downsampling stages; the last three are returned as P3, P4 and P5.
 
     Widths are chosen to land the whole network near the 2.6 M parameters of the model this
     replaces, so the shipped fp32 ONNX stays around 10 MB and the browser's download does not
     regress. `width` scales every channel count if that trade needs revisiting.
+
+    This one trains from random initialisation. `PretrainedBackbone` below is the alternative, and
+    the measurement that motivated it is in that class's docstring.
     """
 
     def __init__(self, width: float = 1.0):
         super().__init__()
 
         def ch(n: int) -> int:
-            # Round to a multiple of 8: keeps every convolution friendly to SIMD and to the
-            # CoreML / TFLite converters, which pad odd channel counts anyway.
-            return max(8, int(round(n * width / 8)) * 8)
+            return scaled_channels(n, width)
 
-        self.c1, self.c2, self.c3 = ch(64), ch(128), ch(256)
+        self.c1, self.c2, self.c3 = detection_widths(width)
         self.stem = ConvBNAct(3, ch(16), 3, stride=2)          # 320
         self.down1 = ConvBNAct(ch(16), ch(32), 3, stride=2)    # 160
         self.stage1 = CSPStage(ch(32), ch(32), n=1)
@@ -173,6 +199,95 @@ class Backbone(nn.Module):
         p4 = self.stage3(self.down3(p3))
         p5 = self.sppf(self.stage4(self.down4(p4)))
         return p3, p4, p5
+
+
+def stride_cuts(features: nn.Sequential, probe: int = 256) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Find the LAST module index at each of `STRIDES`, and the channel count it emits.
+
+    MEASURED, NOT TABULATED, and that is the point. A table of indices copied from a torchvision
+    revision keeps producing a model that builds, trains and exports after upstream re-cuts its
+    stages — it would just be reading the wrong feature levels, silently and for the whole run.
+    Deriving them from a forward pass makes that failure impossible rather than unlikely.
+
+    Runs under `eval()` and `no_grad()` and restores the previous mode: a probe in training mode
+    would update every BatchNorm's running statistics, which on a pretrained backbone means
+    damaging the weights before the first step of training.
+    """
+    was_training = features.training
+    features.eval()
+    seen: dict[int, tuple[int, int]] = {}
+    try:
+        with torch.no_grad():
+            x = torch.zeros(1, 3, probe, probe)
+            for index, module in enumerate(features):
+                x = module(x)
+                seen[probe // x.shape[-1]] = (index, x.shape[1])
+    finally:
+        features.train(was_training)
+    missing = [s for s in STRIDES if s not in seen]
+    if missing:
+        raise ValueError(f"backbone has no feature level at stride(s) {missing}; found {sorted(seen)}")
+    return tuple(seen[s][0] for s in STRIDES), tuple(seen[s][1] for s in STRIDES)
+
+
+class PretrainedBackbone(nn.Module):
+    """A torchvision ImageNet backbone in `Backbone`'s place, reduced to the same three widths.
+
+    WHY THIS EXISTS, and it is a measurement rather than a preference. The detector this project
+    replaces was fine-tuned from COCO-pretrained weights; `Backbone` starts from noise. Scored on
+    the 207 held-out photographs by one evaluator (`ml/compare_detectors.py`, 2026-09-10), that is
+    exactly where the difference landed:
+
+        colour-correct when found   0.9757  (cubedet A_baseline)  vs  0.9928  (shipped v3)
+        mAP50                       0.8632  (cubedet C_context)   vs  0.8755
+        per-sticker recall          0.8559  (cubedet C_context)   vs  0.8519   ← ahead
+
+    Detection was never the gap. NAMING THE COLOUR was, and pretraining is the one input the
+    shipped model had that this one did not. Note also what the same run refuted: doubling capacity
+    (`--width 1.5`, 6.38 M parameters) gave the WORST recall of the four and no colour gain, so
+    this is not a capacity problem being solved by a bigger backbone.
+
+    LICENCE, since that is the whole reason this package exists. torchvision and its published
+    weights are BSD-3-Clause. What `PERMISSIVE_DETECTOR_PROVENANCE.md` claims and does not claim
+    about the ImageNet images underneath them is written out there, not glossed here.
+
+    WHAT DOES NOT CHANGE. Three 1×1 convolutions bring the backbone's own widths to
+    `detection_widths(width)`, so `PANNeck`, `DetectHead`, the assigner, the losses and the
+    exported tensor are untouched. SPPF stays at the deepest level, after the reduction, where it
+    was. This is a substitution.
+    """
+
+    def __init__(self, name: str = "mobilenet_v3_large", width: float = 1.0, pretrained: bool = True):
+        super().__init__()
+        import torchvision
+
+        net = torchvision.models.get_model(name, weights="DEFAULT" if pretrained else None)
+        features = getattr(net, "features", None)
+        if not isinstance(features, nn.Sequential):
+            # Restricting to `.features`-style backbones is deliberate: it is the one torchvision
+            # convention that makes `stride_cuts` applicable without per-model special cases, and a
+            # per-model case is where a wrong feature level would hide.
+            raise ValueError(f"{name} has no `.features` Sequential; this class supports only those that do")
+        self.name = name
+        self.cuts, source = stride_cuts(features)
+        # Drop everything after the deepest level used: a classifier's trailing layers are dead
+        # weight here, and dead weight still ships in the ONNX.
+        self.features = nn.Sequential(*list(features)[: self.cuts[-1] + 1])
+        self.c1, self.c2, self.c3 = detection_widths(width)
+        self.reduce3 = ConvBNAct(source[0], self.c1, 1)
+        self.reduce4 = ConvBNAct(source[1], self.c2, 1)
+        self.reduce5 = ConvBNAct(source[2], self.c3, 1)
+        self.sppf = SPPF(self.c3, self.c3)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        p3 = p4 = None
+        for index, module in enumerate(self.features):
+            x = module(x)
+            if index == self.cuts[0]:
+                p3 = x
+            elif index == self.cuts[1]:
+                p4 = x
+        return self.reduce3(p3), self.reduce4(p4), self.sppf(self.reduce5(x))
 
 
 class PANNeck(nn.Module):
@@ -363,13 +478,21 @@ class CubeDet(nn.Module):
     """
 
     def __init__(self, num_classes: int = NUM_CLASSES, width: float = 1.0, image_size: int = 640,
-                 context: bool = False):
+                 context: bool = False, backbone: str = CSP_BACKBONE, pretrained: bool = True):
         super().__init__()
         self.num_classes = num_classes
         self.image_size = image_size
         self.width = width
         self.context = context
-        self.backbone = Backbone(width)
+        self.backbone_name = backbone
+        # `pretrained` is NOT recorded on the model and NOT part of the checkpoint, deliberately:
+        # it decides where the initial weights come from, and after a single training step the
+        # answer is "from training" either way. A rebuild for export passes pretrained=False and
+        # then loads the checkpoint, so no export ever waits on a download.
+        self.backbone = (
+            Backbone(width) if backbone == CSP_BACKBONE
+            else PretrainedBackbone(backbone, width=width, pretrained=pretrained)
+        )
         self.neck = PANNeck(self.backbone.c1, self.backbone.c2, self.backbone.c3)
         self.head = DetectHead(self.neck.out_channels, num_classes, context=context)
 

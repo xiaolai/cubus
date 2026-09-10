@@ -272,7 +272,7 @@ def _load_cubedet(pt: Path):
     import torch
 
     sys.path.insert(0, str(HERE))
-    from cubedet.model import CubeDet
+    from cubedet.model import CSP_BACKBONE, CubeDet
 
     state = torch.load(pt, map_location="cpu", weights_only=True)
     weights = state.get("model", state)
@@ -286,6 +286,11 @@ def _load_cubedet(pt: Path):
         width=state.get("width", 1.0),
         image_size=state.get("imgsz", IMGSZ),
         context=state.get("context", False),
+        backbone=state.get("backbone", CSP_BACKBONE),
+        # Never fetch ImageNet weights in order to export: the checkpoint is about to overwrite
+        # every one of them, and an exporter that reaches for the network is an exporter that
+        # fails on a machine without one.
+        pretrained=False,
     )
     model.load_state_dict(weights, strict=True)
     return model.eval()

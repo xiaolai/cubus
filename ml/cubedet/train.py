@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from cubedet.data import CubeDataset, collate  # noqa: E402
 from cubedet.loss import DetectionLoss  # noqa: E402
-from cubedet.model import NUM_CLASSES, CubeDet, count_parameters  # noqa: E402
+from cubedet.model import CSP_BACKBONE, NUM_CLASSES, CubeDet, count_parameters  # noqa: E402
 from cubedet.val import evaluate  # noqa: E402
 
 # Packages whose presence in the training environment would undo the reason this file exists.
@@ -97,6 +97,7 @@ class Config:
     val_every: int = 1
     imgsz: int = 640
     context: bool = False
+    backbone: str = CSP_BACKBONE
     history: list = field(default_factory=list)
 
 
@@ -185,6 +186,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--context", action="store_true",
                         help="give the colour head a pooled image-level summary — the relative-signal "
                              "hypothesis from ml/redorange_separability.py")
+    parser.add_argument("--backbone", default=CSP_BACKBONE,
+                        help=f"'{CSP_BACKBONE}' for the from-scratch CSP stack, or a torchvision model "
+                             "name (e.g. mobilenet_v3_large) to start from its BSD-3 ImageNet weights; "
+                             "measured motivation in cubedet/model.py::PretrainedBackbone")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--no-amp", action="store_true")
@@ -199,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     cfg.imgsz = args.imgsz
     cfg.context = args.context
+    cfg.backbone = args.backbone
     cfg.out.mkdir(parents=True, exist_ok=True)
     seed_everything(cfg.seed)
 
@@ -223,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     model = CubeDet(num_classes=NUM_CLASSES, width=cfg.width, image_size=cfg.imgsz,
-                    context=cfg.context).to(device)
+                    context=cfg.context, backbone=cfg.backbone).to(device)
     criterion = DetectionLoss(NUM_CLASSES)
     # No weight decay on norms and biases: decaying a BatchNorm scale pulls it towards zero, which
     # is a different and worse regulariser than the one intended.
@@ -300,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
                 best = score
                 atomic_save(
                     {"model": ema.module.state_dict(), "width": cfg.width,
-                     "imgsz": cfg.imgsz, "context": cfg.context,
+                     "imgsz": cfg.imgsz, "context": cfg.context, "backbone": cfg.backbone,
                      "num_classes": NUM_CLASSES, "epoch": epoch, "metrics": metrics,
                      "environment": environment},
                     cfg.out / "best.pt",
@@ -312,9 +318,16 @@ def main(argv: list[str] | None = None) -> int:
 
         cfg.history.append(record)
         atomic_save(
+            # `imgsz`, `context` and `backbone` are recorded here as well as in best.pt, and the
+            # reason is a silent failure rather than tidiness: `export.py::_load_cubedet` rebuilds
+            # from whatever the checkpoint says and defaults each of these when it is absent. A
+            # `--context` run at least fails loudly on unexpected state-dict keys, but `imgsz` is
+            # not in the state dict at all — so exporting last.pt from an 896 run would have built
+            # a 640 model, loaded cleanly, and shipped anchors for the wrong resolution.
             {"model": model.state_dict(), "ema": ema.module.state_dict(),
              "optimiser": optimiser.state_dict(), "scheduler": scheduler.state_dict(),
              "epoch": epoch, "best": best, "history": cfg.history, "width": cfg.width,
+             "imgsz": cfg.imgsz, "context": cfg.context, "backbone": cfg.backbone,
              "num_classes": NUM_CLASSES, "environment": environment},
             cfg.out / "last.pt",
         )
