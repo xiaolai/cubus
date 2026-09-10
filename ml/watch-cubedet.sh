@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Per-arm state is held in variables named after the arm and reached through eval, so adding an arm
+# needs no new code. shellcheck cannot see through eval and reports every one as unassigned; the
+# alternative spellings (associative arrays, temp files) cost more than the noise is worth.
+# shellcheck disable=SC2154
+# Watch both cubedet arms to a terminal state. One stdout line per state CHANGE only.
+#
+# SILENCE IS NOT SUCCESS HERE. A GB10 hard reset has taken this work down six times, and it kills
+# a run without any error the trainer can print. A watcher that only greps for completion would be
+# silent in exactly that case, and silence looks identical to "still training". So every outcome
+# emits: finished, crashed, restarted, and host-unreachable alike.
+#
+# WHAT COUNTS AS TERMINAL CHANGED when the containers gained --restart on-failure:10. An exited
+# container is now usually a RECOVERING one, so exit alone must not end the watch:
+#   finished  epochs reached the target -- the only definition that does not depend on container
+#             state, which is what makes it right for a container that restarts under us
+#   failed    exited non-zero and STILL exited three polls later, so nothing is restarting it
+#             (P_large predates the policy and is genuinely terminal on first exit; the same rule
+#             covers both without special-casing, just three polls slower for one of them)
+#   a reset   is reported and then WATCHED THROUGH, because it is now survivable
+#
+# NEVER READ PROGRESS FROM `docker logs`, which is why this counts epochs in history.json.
+# An unclean shutdown leaves a partial line in the container's json log, and `docker logs` parses
+# from the start and stops SILENTLY at the corruption -- so after a host reset it reads as frozen
+# at the moment of death while the container is running perfectly. Measured 2026-09-10: P_small,
+# restarted after a reset, reported epoch 43 by that route against a true 60, while P_large, never
+# restarted, reported 55 against a true 56. `docker logs --tail N` seeks from the end and is
+# unaffected, but the file the trainer writes is the only source that cannot drift.
+set -u
+
+POLL=300
+HEARTBEAT_TICKS=24        # every 2h, so a quiet watch still proves it is alive
+TARGET_EPOCHS=80
+ARMS="trainer-a:P_large trainer-b:P_small"
+
+ssh_q() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$1" "$2" 2>/dev/null; }
+
+arm_state() {   # host run -> "<status> <exitcode> <restarts> <epochs>"
+  local host=$1 run=$2 raw ep
+  raw=$(ssh_q "$host" "docker inspect cubedet_${run} --format '{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}}'")
+  [ -z "$raw" ] && { echo "unreachable - - -"; return; }
+  ep=$(ssh_q "$host" "grep -o '\"epoch\"' ~/cubus-ml/out/${run}/history.json 2>/dev/null | wc -l | tr -d ' '")
+  [ -z "$ep" ] && ep=0
+  echo "$raw $ep"
+}
+
+for r in P_large P_small; do eval "done_${r}=''; miss_${r}=0; exited_${r}=0; rc_${r}=-1"; done
+ticks=0
+
+while :; do
+  live=0
+  for pair in $ARMS; do
+    host=${pair%%:*}; run=${pair##*:}
+    eval "fin=\$done_${run}"
+    [ -n "$fin" ] && continue
+    live=1
+
+    read -r status code restarts ep <<<"$(arm_state "$host" "$run")"
+
+    if [ "$status" = "unreachable" ]; then
+      eval "m=\$((miss_${run} + 1)); miss_${run}=\$m"
+      # Two consecutive misses ten minutes apart is a host down, not a network blip. Reported and
+      # then watched through: the restart policy is expected to resume it when the box returns.
+      [ "$m" = "2" ] && echo "$run on $host is UNREACHABLE -- host looks down; the restart policy should resume it from last.pt when it returns"
+      continue
+    fi
+    eval "miss_${run}=0"
+
+    if [ "$ep" -ge "$TARGET_EPOCHS" ]; then
+      echo "$run on $host FINISHED: $ep/$TARGET_EPOCHS epochs"
+      eval "done_${run}=1"
+      continue
+    fi
+
+    eval "prev_rc=\$rc_${run}"
+    if [ "$prev_rc" != "-1" ] && [ "$restarts" -gt "$prev_rc" ]; then
+      echo "$run on $host was RESTARTED (restart #$restarts) and is resuming from epoch $ep"
+    fi
+    eval "rc_${run}=$restarts"
+
+    if [ "$status" = "exited" ] && [ "$code" != "0" ]; then
+      eval "x=\$((exited_${run} + 1)); exited_${run}=\$x"
+      if [ "$x" -ge 3 ]; then
+        echo "$run on $host FAILED: exited $code at epoch $ep/$TARGET_EPOCHS and nothing restarted it after three checks"
+        eval "done_${run}=1"
+      fi
+    elif [ "$status" = "exited" ] && [ "$code" = "0" ]; then
+      echo "$run on $host exited cleanly at epoch $ep/$TARGET_EPOCHS, short of the target -- treating as done"
+      eval "done_${run}=1"
+    else
+      eval "exited_${run}=0"
+    fi
+  done
+
+  [ "$live" = "0" ] && { echo "both arms reached a terminal state"; exit 0; }
+
+  ticks=$((ticks + 1))
+  if [ $((ticks % HEARTBEAT_TICKS)) -eq 0 ]; then
+    line=""
+    for p in $ARMS; do
+      h=${p%%:*}; r=${p##*:}
+      # Splitting the four fields is the point here, so the lack of quotes is deliberate.
+      # shellcheck disable=SC2046
+      set -- $(arm_state "$h" "$r")
+      line="$line $r=$1@${4}/${TARGET_EPOCHS}"
+    done
+    echo "still training:$line"
+  fi
+  sleep "$POLL"
+done
