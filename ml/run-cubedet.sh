@@ -121,6 +121,7 @@ fi
 # reset", which is the opposite of what it means.
 if [ "${CUBEDET_FRESH:-0}" = "1" ] && [ -e "$WORK/out/$RUN/last.pt" ]; then
   mv "$WORK/out/$RUN/last.pt" "$WORK/out/$RUN/last.pt.superseded.$(date +%s)"
+  rm -f "$WORK/out/$RUN/COMPLETE"   # or a restarted run would idle on the old completion marker
   echo "CUBEDET_FRESH=1 -- previous checkpoint moved aside, starting over"
 elif [ -s "$WORK/out/$RUN/last.pt" ]; then
   echo "resuming $RUN from its last checkpoint (CUBEDET_FRESH=1 to start over)"
@@ -136,26 +137,53 @@ fi
 #
 # The cause is not understood and this does not claim to fix it. What it fixes is the CONSEQUENCE:
 #
-#   --restart on-failure:10  brings the container back after a reset. `on-failure` and not
-#                            `unless-stopped` on purpose: a finished run exits 0, and
-#                            `unless-stopped` would restart that too, into an empty epoch range,
-#                            exiting 0 forever in a tight loop.
+#   --restart unless-stopped brings the container back after a reset. It MUST be this and not
+#                            `on-failure`, which was tried first and is documented not to do the
+#                            job: "the on-failure policy ... doesn't restart the container if the
+#                            daemon restarts". A host reset restarts the daemon, so on-failure
+#                            covers a crashing trainer and misses the only failure this box
+#                            actually has. Falsified on trainer-b's seventh reset, 2026-09-10 08:40.
+#
+#                            The reason on-failure looked attractive is real and is handled below
+#                            instead: a finished run exits 0, and unless-stopped would restart THAT
+#                            too, into an empty epoch range, exiting 0 forever in a tight loop. So
+#                            a completed run leaves a marker and the entrypoint idles on it rather
+#                            than exiting. The watcher is unaffected either way -- it calls a run
+#                            finished on EPOCH COUNT, never on container state, precisely so that a
+#                            container restarting underneath it cannot be misread.
 #   the in-container guard   re-decides --resume on EVERY start, which is what makes the restart
 #                            worth having. Deciding it once on the host would mean the restart
 #                            began again from epoch 0, quietly losing the very checkpoint that
 #                            makes a reset survivable.
 docker run -d --name "cubedet_${RUN}" --gpus all --ipc=host \
-  --restart on-failure:10 \
+  --restart unless-stopped \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -v "$WORK:/work" -v "$DATA:/data:ro" -w /work \
   -e TORCH_HOME=/work/.torch -e CUBEDET_RUN="$RUN" \
   "$IMAGE" \
-  bash -c 'ARGS=("$@")
+  bash -c 'DONE="/work/out/$CUBEDET_RUN/COMPLETE"
+           if [ -f "$DONE" ]; then
+             echo "run already complete; idling so unless-stopped does not loop on a clean exit"
+             exec sleep infinity
+           fi
+           ARGS=("$@")
            LAST="/work/out/$CUBEDET_RUN/last.pt"
            # -s, not -e: a checkpoint from a host that died mid-write can be zero bytes, and
            # resuming from one of those fails where starting over would have worked.
            if [ -s "$LAST" ]; then ARGS+=(--resume "$LAST"); echo "restart: resuming from $LAST"; fi
-           exec python /work/cubedet/train.py "${ARGS[@]}"' _ \
+           # Status captured from the trainer DIRECTLY, not after an if. A bash `if` whose
+           # condition fails and which has no else leaves $? at 0, so the obvious spelling
+           # reported every crash as a clean exit -- and the watcher reads that exit code to tell
+           # "failed" from "finished".
+           python /work/cubedet/train.py "${ARGS[@]}"
+           rc=$?
+           if [ "$rc" -eq 0 ]; then
+             touch "$DONE"
+             echo "run complete; idling so unless-stopped does not loop on a clean exit"
+             exec sleep infinity
+           fi
+           echo "trainer exited $rc; unless-stopped will bring it back and it will resume from last.pt" >&2
+           exit "$rc"' _ \
     --data /data --out "/work/out/$RUN" \
     --epochs "$EPOCHS" --batch "$BATCH" --width "$WIDTH" --workers 12 "${EXTRA[@]}"
 
