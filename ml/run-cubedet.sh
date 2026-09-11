@@ -89,7 +89,12 @@ docker rm -f "cubedet_${RUN}" >/dev/null 2>&1 || true
 # there beforehand (copy them from a machine with fast internet:
 #   scp ~/.cache/torch/hub/checkpoints/mobilenet_v3_*.pth <host>:cubus-ml/.torch/hub/checkpoints/ )
 CHECKPOINT_CACHE="$WORK/.torch/hub/checkpoints"
-mkdir -p "$CHECKPOINT_CACHE"
+mkdir -p "$CHECKPOINT_CACHE" "$WORK/.hf/hub"
+# A timm backbone (anything not in torchvision) reads its weights from HF_HOME instead, and
+# HF_HUB_OFFLINE=1 makes a missing one fail LOUDLY at startup rather than hang on a slow proxy.
+# timm itself is seeded the same way, into /work/.pylibs on PYTHONPATH, rather than pip-installed
+# at launch: a training run that needs the network before it can start is a run that fails at 3am
+# for a reason unrelated to training.
 BACKBONE="$CSP_NAME"
 for i in "${!EXTRA[@]}"; do
   if [ "${EXTRA[$i]}" = "--backbone" ]; then BACKBONE="${EXTRA[$((i + 1))]:-$CSP_NAME}"; fi
@@ -159,7 +164,8 @@ docker run -d --name "cubedet_${RUN}" --gpus all --ipc=host \
   --restart unless-stopped \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -v "$WORK:/work" -v "$DATA:/data:ro" -w /work \
-  -e TORCH_HOME=/work/.torch -e CUBEDET_RUN="$RUN" \
+  -e TORCH_HOME=/work/.torch -e HF_HOME=/work/.hf -e HF_HUB_OFFLINE=1 \
+  -e PYTHONPATH=/work/.pylibs -e CUBEDET_RUN="$RUN" \
   "$IMAGE" \
   bash -c 'DONE="/work/out/$CUBEDET_RUN/COMPLETE"
            if [ -f "$DONE" ]; then
