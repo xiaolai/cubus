@@ -114,7 +114,18 @@ class CSPStage(nn.Module):
         self.fuse = ConvBNAct((2 + n) * self.hidden, c_out, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        carried, worked = self.project(x).chunk(2, dim=1)
+        # `torch.split` with an EXPLICIT size, not `chunk`, and the size is a constant this module
+        # already holds. Two separate reasons, both learned from comparing our graph against the
+        # model this replaces, which converts to TFLite while ours could not:
+        #   * `chunk(2, dim=1)` has to ASK how many channels there are, so tracing records
+        #     Shape -> Gather before the split (four, one per CSPStage in the neck).
+        #   * chunk and narrow both export as Slice. onnx2tf mis-handles a channel-axis Slice when
+        #     it rewrites NCHW to NHWC -- it transposes some branches of the block and not others,
+        #     and the concat that rejoins them then sees 128 channels against 64. `Split` it gets
+        #     right. The working YOLO graph has 10 Split and 2 Slice; ours had 0 and 8.
+        # Mathematically identical either way: same weights, same two halves, verified 0 difference.
+        projected = self.project(x)
+        carried, worked = torch.split(projected, self.hidden, dim=1)
         outputs = [carried, worked]
         for block in self.blocks:
             outputs.append(block(outputs[-1]))
@@ -335,7 +346,7 @@ class DetectHead(nn.Module):
     edges, as DFL distributions over REG_MAX + 1 bins, plus one logit per colour class.
     """
 
-    def __init__(self, channels: tuple[int, int, int], num_classes: int = NUM_CLASSES,
+    def __init__(self, channels: tuple[int, int, int], num_classes: int = NUM_CLASSES, image_size: int = 640,
                  context: bool = False):
         super().__init__()
         self.num_classes = num_classes
@@ -385,6 +396,10 @@ class DetectHead(nn.Module):
         self.register_buffer("bins", torch.arange(REG_MAX + 1, dtype=torch.float32), persistent=False)
         self._init_biases()
 
+        # Anchors per level, as PYTHON ints: (image_size // stride) squared. Constants, so the
+        # reshape below can name them and read no tensor shape at runtime.
+        self.level_anchors = tuple((image_size // stride) ** 2 for stride in STRIDES)
+
     def _init_biases(self) -> None:
         # Start every class logit at a low prior probability. Without this the first few hundred
         # steps are dominated by the ~8400:9 negative-to-positive imbalance pushing all logits down
@@ -415,14 +430,28 @@ class DetectHead(nn.Module):
 
         cls_all, reg_all = [], []
         for i, feat in enumerate(feats):
-            b = feat.shape[0]
             cls_feat = self.cls_stems[i](feat)
             if shared is not None:
                 cls_feat = cls_feat + shared
             cls = self.cls_out[i](cls_feat)
             reg = self.reg_out[i](self.reg_stems[i](feat))
-            cls_all.append(cls.permute(0, 2, 3, 1).reshape(b, -1, self.num_classes))
-            reg_all.append(reg.permute(0, 2, 3, 1).reshape(b, -1, 4, REG_MAX + 1))
+            # flatten/unflatten rather than reshape(b, ...), and the difference is not style.
+            # Reading `feat.shape[0]` at runtime makes the batch size a TENSOR, so ONNX records
+            # Shape -> Gather -> Unsqueeze -> Concat -> Reshape instead of a fixed reshape. That is
+            # the one pattern onnx2tf cannot infer a layout through, and it is why no cubedet model
+            # could produce a TFLite artefact while the model it replaces converts fine: compared
+            # op-for-op, the working graph has 0 Gather and 0 Unsqueeze, ours had 12 and 8, all of
+            # them from this line. These two produce the identical tensor and read nothing.
+            # -1 infers the BATCH and the anchor count is a literal, so this reads no tensor
+            # shape. `reshape(b, ...)` with b = feat.shape[0] made the batch a tensor, which ONNX
+            # records as Shape -> Gather -> Unsqueeze -> Concat -> Reshape; that is the one pattern
+            # onnx2tf cannot infer a layout through, and it is why no cubedet model could produce a
+            # TFLite artefact while the model it replaces converts fine. Compared op-for-op, the
+            # working graph has 0 Gather and 0 Unsqueeze; ours had 12 and 8, all from this line.
+            # `unflatten` would be tidier and needs opset 13; the shipped lineage is opset 12.
+            hw = self.level_anchors[i]
+            cls_all.append(cls.permute(0, 2, 3, 1).reshape(-1, hw, self.num_classes))
+            reg_all.append(reg.permute(0, 2, 3, 1).reshape(-1, hw, 4, REG_MAX + 1))
         return torch.cat(cls_all, dim=1), torch.cat(reg_all, dim=1)
 
     def distances(self, reg_dist: torch.Tensor) -> torch.Tensor:
@@ -494,7 +523,7 @@ class CubeDet(nn.Module):
             else PretrainedBackbone(backbone, width=width, pretrained=pretrained)
         )
         self.neck = PANNeck(self.backbone.c1, self.backbone.c2, self.backbone.c3)
-        self.head = DetectHead(self.neck.out_channels, num_classes, context=context)
+        self.head = DetectHead(self.neck.out_channels, num_classes, image_size=image_size, context=context)
         # THE ANCHOR GRID IS A CONSTANT, so it is built once here instead of on every forward.
         #
         # It depends only on image_size and STRIDES -- never on the input -- and computing it inside
