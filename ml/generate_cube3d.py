@@ -33,6 +33,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--res", type=int, default=640)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", choices=["cpu", "gpu"], default="gpu")
+    # LIGHTING KNOBS, exposed so the randomisation can be SWEPT and measured rather than guessed.
+    # Their defaults are the values that produced synth_v3, so an unflagged run is unchanged.
+    # Why they exist: measured 2026-09-11, a cube rendered with ONE pigment per colour still shows
+    # 43.7 deg of within-cube red hue spread against 7.9 deg in real photographs, and 25% of frames
+    # end up with a red sticker hue-oranger than an orange one in the same frame. That is not the
+    # pigment draw (cube_colors.shade_sticker provably preserves hue); it is this lighting, which
+    # is wide enough to invert the one relation the app can exploit. Randomisation that changes the
+    # answer is label noise, not augmentation.
+    p.add_argument("--key-prob", type=float, default=0.6, help="chance of a coloured key light")
+    p.add_argument("--key-energy", type=float, nargs=2, default=[2.0, 8.0], metavar=("MIN", "MAX"))
+    p.add_argument("--key-types", default="SUN,AREA,POINT",
+                   help="comma-separated; SUN is directional so its cast lands evenly across a cube, "
+                        "while POINT/AREA fall off per face and are the likelier inverters")
+    p.add_argument("--hdri-strength", type=float, nargs=2, default=[0.15, 2.6], metavar=("MIN", "MAX"))
     return p.parse_args(argv)
 
 
@@ -139,12 +153,14 @@ def build_scene(rng: random.Random) -> np.ndarray:
     return np.array([0.0, 0.0, 0.0])
 
 
-def setup_light(rng: random.Random, hdri_dir: str) -> None:
+def setup_light(rng: random.Random, hdri_dir: str, key_prob: float = 0.6,
+                key_energy=(2.0, 8.0), key_types=("SUN", "AREA", "POINT"),
+                hdri_strength=(0.15, 2.6)) -> None:
     """HDRI environment (varied strength = exposure) plus an optional coloured key light for
     warm indoor / cool LED / mixed casts — the illumination that shifts white<->yellow, red<->orange."""
     hdris = glob.glob(os.path.join(hdri_dir, "*.hdr")) + glob.glob(os.path.join(hdri_dir, "*.exr"))
     if hdris:
-        bproc.world.set_world_background_hdr_img(rng.choice(hdris), strength=rng.uniform(0.15, 2.6))
+        bproc.world.set_world_background_hdr_img(rng.choice(hdris), strength=rng.uniform(*hdri_strength))
     else:
         # No environment map: the key light below is forced on and is the ONLY illumination, so
         # the render is lit but has no background. Fine for a smoke test; shouted about so a
@@ -153,14 +169,14 @@ def setup_light(rng: random.Random, hdri_dir: str) -> None:
         # follow this print was a bare attribute expression — a no-op that named "sun fallback"
         # without doing anything; the fallback is the block below, whose light type is random.
         print(f"WARNING: no .hdr/.exr in '{hdri_dir}'; no environment map — key light only", file=sys.stderr)
-    if not hdris or rng.random() < 0.6:
+    if not hdris or rng.random() < key_prob:
         # coloured cast: warm (>1 R), cool (>1 B), or neutral-bright
         temp = rng.choice(["warm", "cool", "neutral"])
         color = {"warm": [1.0, 0.75, 0.5], "cool": [0.6, 0.8, 1.0], "neutral": [1.0, 1.0, 1.0]}[temp]
         light = bproc.types.Light()
-        light.set_type(rng.choice(["SUN", "AREA", "POINT"]))
+        light.set_type(rng.choice(key_types))
         light.set_color(color)
-        light.set_energy(rng.uniform(2.0, 8.0))
+        light.set_energy(rng.uniform(*key_energy))
         light.set_location([rng.uniform(-4, 4), rng.uniform(-4, 4), rng.uniform(3, 7)])
 
 
@@ -172,7 +188,10 @@ def main() -> None:
     bproc.renderer.set_render_devices(use_only_cpu=(args.device == "cpu"))
 
     poi_base = build_scene(rng)
-    setup_light(rng, args.hdri_dir)
+    setup_light(rng, args.hdri_dir, key_prob=args.key_prob,
+                key_energy=tuple(args.key_energy),
+                key_types=tuple(t.strip() for t in args.key_types.split(",") if t.strip()),
+                hdri_strength=tuple(args.hdri_strength))
 
     bproc.camera.set_resolution(args.res, args.res)
     for _ in range(args.num_poses):
