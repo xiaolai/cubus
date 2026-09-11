@@ -270,8 +270,40 @@ class PretrainedBackbone(nn.Module):
 
     def __init__(self, name: str = "mobilenet_v3_large", width: float = 1.0, pretrained: bool = True):
         super().__init__()
+        self.name = name
+        self.c1, self.c2, self.c3 = detection_widths(width)
+
+        # TIMM FIRST when the name is not torchvision's, because timm publishes backbones
+        # torchvision does not -- MobileNetV4 among them, which is 1.26M parameters against
+        # MobileNetV3-large's 2.97M and exports at opset 12 with none of the Shape/Slice/Expand ops
+        # that cost this project its Android artefact. timm is Apache-2.0, as are the ImageNet
+        # weights it serves, so the licence position is unchanged.
+        #
+        # `features_only=True` hands back the multi-scale pyramid WITH its strides declared, so the
+        # stride probe below is unnecessary for this path: timm states what torchvision made us
+        # measure.
         import torchvision
 
+        if not hasattr(torchvision.models, name):
+            import timm
+
+            net = timm.create_model(name, pretrained=pretrained, features_only=True)
+            reductions = net.feature_info.reduction()
+            channels = net.feature_info.channels()
+            missing = [s for s in STRIDES if s not in reductions]
+            if missing:
+                raise ValueError(f"{name} has no feature level at stride(s) {missing}; got {reductions}")
+            self.timm_indices = tuple(reductions.index(s) for s in STRIDES)
+            source = tuple(channels[i] for i in self.timm_indices)
+            self.features = net
+            self.cuts = None
+            self.reduce3 = ConvBNAct(source[0], self.c1, 1)
+            self.reduce4 = ConvBNAct(source[1], self.c2, 1)
+            self.reduce5 = ConvBNAct(source[2], self.c3, 1)
+            self.sppf = SPPF(self.c3, self.c3)
+            return
+
+        self.timm_indices = None
         net = torchvision.models.get_model(name, weights="DEFAULT" if pretrained else None)
         features = getattr(net, "features", None)
         if not isinstance(features, nn.Sequential):
@@ -279,18 +311,20 @@ class PretrainedBackbone(nn.Module):
             # convention that makes `stride_cuts` applicable without per-model special cases, and a
             # per-model case is where a wrong feature level would hide.
             raise ValueError(f"{name} has no `.features` Sequential; this class supports only those that do")
-        self.name = name
         self.cuts, source = stride_cuts(features)
         # Drop everything after the deepest level used: a classifier's trailing layers are dead
         # weight here, and dead weight still ships in the ONNX.
         self.features = nn.Sequential(*list(features)[: self.cuts[-1] + 1])
-        self.c1, self.c2, self.c3 = detection_widths(width)
         self.reduce3 = ConvBNAct(source[0], self.c1, 1)
         self.reduce4 = ConvBNAct(source[1], self.c2, 1)
         self.reduce5 = ConvBNAct(source[2], self.c3, 1)
         self.sppf = SPPF(self.c3, self.c3)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.timm_indices is not None:
+            feats = self.features(x)
+            a, b, c = (feats[i] for i in self.timm_indices)
+            return self.reduce3(a), self.reduce4(b), self.sppf(self.reduce5(c))
         p3 = p4 = None
         for index, module in enumerate(self.features):
             x = module(x)
