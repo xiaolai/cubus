@@ -196,17 +196,26 @@ def face_groups(items, seed=0):
 
 
 def main() -> None:
+    global S_MIN, V_MIN, V_MAX
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
     ap.add_argument("--format", choices=["coco", "detector"], default="coco")
     ap.add_argument("--sample", type=int, default=400)
     ap.add_argument("--box", choices=["centre", "full"], default="centre")
     ap.add_argument("--seed", type=int, default=0)
+    # Two datasets that pass DIFFERENT fractions of their stickers cannot be compared on hue
+    # spread at the default gate: the one that admits more of the marginal, dim stickers looks
+    # worse without having moved anything. Raising the gate for BOTH is the way to ask "among
+    # stickers whose colour is unambiguous, do a cube's nine reds agree?" when the sets do not
+    # share scenes and so cannot be paired.
+    ap.add_argument("--gate", type=float, nargs=3, default=[0.30, 0.15, 0.97],
+                    metavar=("S_MIN", "V_MIN", "V_MAX"))
     ap.add_argument("--faces", action="store_true",
                     help="decompose the within-cube spread into between-face and within-face")
     args = ap.parse_args()
 
     rng = random.Random(args.seed)
+    S_MIN, V_MIN, V_MAX = args.gate
     source = load_coco if args.format == "coco" else load_labels
 
     per_image = []
@@ -215,6 +224,7 @@ def main() -> None:
     clipped = total = gated = 0
     why = __import__('collections').Counter()
     inverted = frames_with_pair = 0
+    matched_inverted = matched_pair = median_inverted = 0
 
     face_between, face_within = [], []
     for path, boxes in source(args.root, args.sample, rng):
@@ -252,6 +262,18 @@ def main() -> None:
             # indistinguishable colour, which is label noise no network can resolve.
             if max(reds) > min(oranges):
                 inverted += 1
+            # The rate above is NOT comparable between two datasets that pass different numbers
+            # of stickers per frame: it is an extreme-order statistic, so drawing more readable
+            # tiles raises it even when nothing about the colour has changed. A set that got
+            # BETTER at readability therefore looks worse at inversion. Two count-free readings
+            # go beside it: the same test on a fixed eight of each, and the pigment-level
+            # question of whether the cube's median red sits below its median orange at all.
+            if len(reds) >= 8 and len(oranges) >= 8:
+                matched_pair += 1
+                if max(sorted(reds)[:8]) > min(sorted(oranges)[-8:]):
+                    matched_inverted += 1
+            if float(np.median(reds)) > float(np.median(oranges)):
+                median_inverted += 1
         for cid, lst in groups.items():
             if len(lst) >= 4:
                 per_image.append((cid, lst))
@@ -277,6 +299,9 @@ def main() -> None:
           f"a channel at 254+ {100 * clipped / max(total, 1):.1f}%")
     print(f"frames with both red and orange readable: {frames_with_pair}   "
           f"of those, INVERTED: {100 * inverted / max(frames_with_pair, 1):.1f}%")
+    print(f"    on a matched EIGHT of each: {100 * matched_inverted / max(matched_pair, 1):.1f}% "
+          f"of {matched_pair} frames; by MEDIAN hue: "
+          f"{100 * median_inverted / max(frames_with_pair, 1):.1f}%")
     for reason, count in why.most_common():
         print(f"    {reason:22} {100 * count / max(total, 1):5.1f}%")
     print()
