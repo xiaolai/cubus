@@ -1,0 +1,322 @@
+"""Where does the synthetic red/orange hue spread come from, and is it really there?
+
+A rendered cube's nine reds are ONE pigment: cube_colors.py draws hue per CUBE, and a pure-python
+probe over 3000 palettes confirms a within-cube spread of 0.00 deg before any light touches it.
+So every degree of spread measured in a render was put there by the render -- or by the probe.
+
+"The light" is three mechanisms with three different fixes, and max-minus-min cannot tell them
+apart:
+
+  blow-out   a pixel clipped at the top: hue becomes whichever channel clipped first
+  specular   a glossy tile catching a highlight: a few extreme outliers, the rest clean
+  face cast  each visible face has a different normal and samples a different part of the
+             environment map -- a SYSTEMATIC per-face offset, not outliers
+
+So this reports a robust spread beside max-min (outliers inflate the second and leave the first
+alone) and the deviation binned by rendered value and saturation (blow-out concentrates at the
+top, shadow noise at the bottom). Whatever survives both is face cast, and that one is fixed in
+the HDRI set rather than in the exposure ranges.
+
+--box is the fourth mechanism, and it is the PROBE's rather than the render's. A sticker box
+includes the black plastic between tiles; averaging the whole box mixes pigment with body and
+moves the measured hue by an amount that depends on the pose. `centre` takes the median of the
+box's central half, `full` reproduces a whole-box mean. Running both on one dataset separates a
+finding from an artefact, which is why the flag exists rather than the better method simply
+replacing the worse one.
+
+Reads BlenderProc COCO (--coco) or YOLO txt (--yolo), so synthetic and real photographs go
+through ONE evaluator. They previously did not, and the numbers were compared anyway.
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import colorsys
+import glob
+import json
+import math
+import os
+import random
+
+import numpy as np
+from PIL import Image
+
+NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
+# Outside this gate hue carries no information, so a sticker is reported as unreadable rather
+# than contributing a meaningless angle.
+S_MIN, V_MIN, V_MAX = 0.30, 0.15, 0.97
+
+
+def signed(h: float) -> float:
+    return h - 1.0 if h > 0.5 else h
+
+
+def circ_deg(a: float, b: float) -> float:
+    """Smallest signed angle a-b, in degrees, on the hue circle."""
+    d = (a - b) * 360.0
+    while d > 180:
+        d -= 360
+    while d < -180:
+        d += 360
+    return d
+
+
+def sticker_colour(arr, x, y, w, h, mode):
+    if mode == "centre":
+        cx, cy = x + w / 2, y + h / 2
+        hw, hh = max(w * 0.25, 1.0), max(h * 0.25, 1.0)
+        x0, x1 = int(cx - hw), int(math.ceil(cx + hw))
+        y0, y1 = int(cy - hh), int(math.ceil(cy + hh))
+    else:
+        x0, y0, x1, y1 = int(x), int(y), int(math.ceil(x + w)), int(math.ceil(y + h))
+    x0, y0 = max(x0, 0), max(y0, 0)
+    x1, y1 = min(x1, arr.shape[1]), min(y1, arr.shape[0])
+    if x1 <= x0 or y1 <= y0:
+        return None
+    patch = arr[y0:y1, x0:x1].reshape(-1, 3).astype(np.float64)
+    agg = np.median(patch, axis=0) if mode == "centre" else patch.mean(axis=0)
+    return agg / 255.0
+
+
+def load_coco(root, budget, rng):
+    """Yield (image_path, [(class, bbox)]) from BlenderProc COCO parts."""
+    parts = sorted(glob.glob(os.path.join(root, "part_*", "coco", "coco_annotations.json")))
+    if not parts:
+        parts = sorted(glob.glob(os.path.join(root, "**", "coco_annotations.json"), recursive=True))
+    for idx, pj in enumerate(parts):
+        if budget <= 0:
+            return
+        with open(pj) as f:
+            coco = json.load(f)
+        base = os.path.dirname(pj)
+        by_img = collections.defaultdict(list)
+        for a in coco["annotations"]:
+            by_img[a["image_id"]].append(a)
+        images = {im["id"]: im for im in coco["images"]}
+        ids = list(by_img)
+        rng.shuffle(ids)
+        share = max(1, budget // max(1, len(parts) - idx))
+        for iid in ids[:share]:
+            if budget <= 0:
+                return
+            path = images[iid]["file_name"]
+            if not os.path.isabs(path):
+                path = os.path.join(base, path)
+            if not os.path.exists(path):
+                path = os.path.join(base, "images", os.path.basename(path))
+                if not os.path.exists(path):
+                    continue
+            boxes = []
+            for a in by_img[iid]:
+                # BlenderProc reserves category_id 0 for background, so the generator stores
+                # white=1..blue=6 and the cube BODY as 7 -- the same shift coco_to_yolo.py makes.
+                cid = a["category_id"] - 1
+                if 0 <= cid <= 5:
+                    boxes.append((cid, a["bbox"]))
+            budget -= 1
+            yield path, boxes
+
+
+def load_yolo(root, budget, rng):
+    """Yield (image_path, [(class, bbox)]) from a YOLO tree, converting normalised xywh."""
+    labels = sorted(glob.glob(os.path.join(root, "labels", "**", "*.txt"), recursive=True))
+    rng.shuffle(labels)
+    for lp in labels:
+        if budget <= 0:
+            return
+        stem = os.path.splitext(os.path.basename(lp))[0]
+        split = os.path.basename(os.path.dirname(lp))
+        ip = None
+        for ext in (".jpg", ".jpeg", ".png", ".JPG", ".PNG"):
+            cand = os.path.join(root, "images", split, stem + ext)
+            if os.path.exists(cand):
+                ip = cand
+                break
+        if ip is None:
+            continue
+        with Image.open(ip) as im:
+            W, H = im.size
+        boxes = []
+        with open(lp) as f:
+            for line in f:
+                bits = line.split()
+                if len(bits) < 5:
+                    continue
+                cid = int(bits[0])
+                if not 0 <= cid <= 5:
+                    continue
+                cx, cy, nw, nh = (float(v) for v in bits[1:5])
+                boxes.append((cid, [(cx - nw / 2) * W, (cy - nh / 2) * H, nw * W, nh * H]))
+        budget -= 1
+        yield ip, boxes
+
+
+def _kmeans(points, k, seed=0):
+    """Tiny deterministic k-means, so a face grouping needs no scipy on the render host."""
+    rng = np.random.default_rng(seed)
+    pts = np.asarray(points, dtype=float)
+    if k <= 1 or len(pts) <= k:
+        return np.zeros(len(pts), dtype=int)
+    best, best_cost = None, None
+    for _ in range(8):
+        centres = pts[rng.choice(len(pts), k, replace=False)]
+        labels = np.zeros(len(pts), dtype=int)
+        for _it in range(25):
+            d = ((pts[:, None, :] - centres[None, :, :]) ** 2).sum(axis=2)
+            new = d.argmin(axis=1)
+            if (new == labels).all() and _it:
+                break
+            labels = new
+            for c in range(k):
+                sel = pts[labels == c]
+                if len(sel):
+                    centres[c] = sel.mean(axis=0)
+        cost = float(((pts - centres[labels]) ** 2).sum())
+        if best_cost is None or cost < best_cost:
+            best, best_cost = labels.copy(), cost
+    return best
+
+
+def face_groups(items, seed=0):
+    """Split one frame's stickers into visible FACES by position.
+
+    A cube shows at most three faces and each carries at most nine tiles, so the count sets k
+    rather than a guess does. Faces are spatially separate parallelograms, which is why position
+    alone recovers them; this is a measurement aid, not the app's fitFace, and it never has to be
+    right about a particular tile -- only about the grouping on average.
+    """
+    if not items:
+        return []
+    k = max(1, min(3, int(round(len(items) / 9.0))))
+    labels = _kmeans([(x, y) for x, y, _c, _h in items], k, seed)
+    out = collections.defaultdict(list)
+    for lab, (_x, _y, c, h) in zip(labels, items):
+        out[int(lab)].append((c, h))
+    return list(out.values())
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("root")
+    ap.add_argument("--format", choices=["coco", "yolo"], default="coco")
+    ap.add_argument("--sample", type=int, default=400)
+    ap.add_argument("--box", choices=["centre", "full"], default="centre")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--faces", action="store_true",
+                    help="decompose the within-cube spread into between-face and within-face")
+    args = ap.parse_args()
+
+    rng = random.Random(args.seed)
+    source = load_coco if args.format == "coco" else load_yolo
+
+    per_image = []
+    dev_by_v = collections.defaultdict(list)
+    dev_by_s = collections.defaultdict(list)
+    clipped = total = gated = 0
+    why = __import__('collections').Counter()
+    inverted = frames_with_pair = 0
+
+    face_between, face_within = [], []
+    for path, boxes in source(args.root, args.sample, rng):
+        arr = np.asarray(Image.open(path).convert("RGB"))
+        if arr.ndim != 3:
+            continue
+        groups = collections.defaultdict(list)
+        placed = []
+        for cid, bbox in boxes:
+            col = sticker_colour(arr, *bbox, args.box)
+            if col is None:
+                continue
+            total += 1
+            if col.max() >= 254.0 / 255.0:
+                clipped += 1
+            hh, ss, vv = colorsys.rgb_to_hsv(*col)
+            if ss < S_MIN or not (V_MIN < vv < V_MAX):
+                gated += 1
+                # WHICH branch rejects is the whole fix: too dark and too bright are opposite
+                # knobs, and "too grey" is neither -- it is the pigment or the body bleeding in.
+                if vv <= V_MIN:
+                    why["too dark (v<=0.15)"] += 1
+                elif vv >= V_MAX:
+                    why["too bright (v>=0.97)"] += 1
+                else:
+                    why["too grey (s<0.30)"] += 1
+                continue
+            groups[cid].append((signed(hh), ss, vv))
+            placed.append((bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2, cid, signed(hh)))
+        reds = [h for h, _, _ in groups.get(1, [])]
+        oranges = [h for h, _, _ in groups.get(4, [])]
+        if reds and oranges:
+            frames_with_pair += 1
+            # A red hue-oranger than an orange in the SAME frame: two opposite labels on
+            # indistinguishable colour, which is label noise no network can resolve.
+            if max(reds) > min(oranges):
+                inverted += 1
+        for cid, lst in groups.items():
+            if len(lst) >= 4:
+                per_image.append((cid, lst))
+        if args.faces and len(placed) >= 12:
+            faces = face_groups(placed, args.seed)
+            if len(faces) >= 2:
+                for cid in range(6):
+                    means, withins = [], []
+                    for face in faces:
+                        hs = [h for c, h in face if c == cid]
+                        if len(hs) >= 2:
+                            means.append(float(np.mean(hs)))
+                            withins.append(float(np.std(hs)) * 360.0)
+                    if len(means) >= 2:
+                        # Between: how far apart the FACES sit. Within: the scatter inside one
+                        # face. Same pigment throughout, so both are lighting -- but only the
+                        # first is fixed by changing the environment map.
+                        face_between.append(float(np.std(means)) * 360.0)
+                        face_within.append(float(np.mean(withins)))
+
+    print(f"{args.root}  [{args.format}, box={args.box}]")
+    print(f"stickers {total}   unreadable (gated out) {100 * gated / max(total, 1):.1f}%   "
+          f"a channel at 254+ {100 * clipped / max(total, 1):.1f}%")
+    print(f"frames with both red and orange readable: {frames_with_pair}   "
+          f"of those, INVERTED: {100 * inverted / max(frames_with_pair, 1):.1f}%")
+    for reason, count in why.most_common():
+        print(f"    {reason:22} {100 * count / max(total, 1):5.1f}%")
+    print()
+    print(f"{'class':8} {'cubes':>6} {'max-min':>8} {'IQR':>7} {'MAD':>7} {'>15deg':>8}")
+    for cid in range(6):
+        rows = [lst for c, lst in per_image if c == cid]
+        if not rows:
+            continue
+        mm, iqr, mad, far, n = [], [], [], 0, 0
+        for lst in rows:
+            hs = np.array([h for h, _, _ in lst])
+            med = float(np.median(hs))
+            d = np.array([circ_deg(h, med) for h in hs])
+            mm.append(d.max() - d.min())
+            iqr.append(float(np.percentile(d, 75) - np.percentile(d, 25)))
+            mad.append(float(np.median(np.abs(d))))
+            far += int((np.abs(d) > 15).sum())
+            n += len(d)
+            for (_h, s, v), dv in zip(lst, d):
+                dev_by_v[min(int(v * 10), 9)].append(abs(dv))
+                dev_by_s[min(int(s * 10), 9)].append(abs(dv))
+        print(f"{NAMES[cid]:8} {len(rows):6d} {np.mean(mm):8.1f} {np.mean(iqr):7.1f} "
+              f"{np.mean(mad):7.1f} {100 * far / max(n, 1):7.1f}%")
+
+    print()
+    print("mean |deviation from the cube's median hue for that colour|, by rendered value:")
+    for b in sorted(dev_by_v):
+        vals = dev_by_v[b]
+        print(f"  v {b / 10:.1f}-{b / 10 + 0.1:.1f}  n={len(vals):6d}  {np.mean(vals):6.1f} deg")
+    if args.faces and face_between:
+        print()
+        print(f"face decomposition over {len(face_between)} (frame, colour) groups:")
+        print(f"  between-face hue sd  {np.mean(face_between):6.2f} deg")
+        print(f"  within-face hue sd   {np.mean(face_within):6.2f} deg")
+        print()
+    print("by rendered saturation:")
+    for b in sorted(dev_by_s):
+        vals = dev_by_s[b]
+        print(f"  s {b / 10:.1f}-{b / 10 + 0.1:.1f}  n={len(vals):6d}  {np.mean(vals):6.1f} deg")
+
+
+if __name__ == "__main__":
+    main()
