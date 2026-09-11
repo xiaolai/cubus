@@ -16,9 +16,9 @@ import {
   methodFor, rungKey, solveByMethod,
 } from '../lib/method-solver.js';
 import { OLL_ALGS, PLL_ALGS } from '../lib/methods/last-layer.js';
-import { BASELINES, capture, seededStates as baselineStates } from './fixtures/regen-method-steps.mjs';
+import { BASELINES, capture } from './fixtures/regen-method-steps.mjs';
 import { RUNG_CRITERIA, UsageError, parseArgs, rungDelta } from '../bench/method-solver-profile.mjs';
-import { seededStates } from './fixtures/seeded-scrambles.mjs';
+import { seededPairs, seededScrambles, seededStates } from './fixtures/seeded-scrambles.mjs';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
 Cube.initSolver();
@@ -691,12 +691,19 @@ test('the fixture covers both pre-split methods and enough cubes to be worth tru
     ['cross', 'f2l', 'first-layer', 'middle-layer', 'top-corners', 'top-cross', 'top-edges', 'top-face']);
 });
 
-test('the fixture generator and the test agree on which cubes they are talking about', () => {
-  // The two `seededStates` are separate functions on purpose — the fixture module must stand
-  // alone — so they are checked against each other rather than assumed equal.
-  const mine = seededStates(3, 20260908);
-  const theirs = baselineStates(3, 20260908);
-  for (const [i, state] of mine.entries()) assert.deepEqual(theirs[i].state, state);
+test('the pinned baseline is about the cubes this suite draws', () => {
+  // A CASE THAT COULD NOT FAIL, until 2026-09-12. It compared the fixture module's `seededStates`
+  // with `regen-method-steps.mjs`'s re-export of `seededPairs` — one function against itself, under
+  // a comment claiming they were "separate functions on purpose" that had stopped being true when
+  // the generator was consolidated. What is worth checking is the claim every case above rests on:
+  // that the scrambles recorded in `method-steps.json` are the ones the draw produces today.
+  const expected = JSON.parse(readFileSync(new URL('./fixtures/method-steps.json', import.meta.url), 'utf8'));
+  assert.deepEqual(expected.cases.map((c) => c.scramble), seededScrambles(expected.count, expected.seed),
+    'method-steps.json was captured from a different draw than the one running now');
+  // And that the pairs the regenerator feeds `solveByMethod` really are those scrambles applied.
+  const pairs = seededPairs(expected.count, expected.seed);
+  assert.deepEqual(pairs.map((p) => p.scramble), expected.cases.map((c) => c.scramble));
+  assert.deepEqual(pairs.map((p) => p.state), seededStates(expected.count, expected.seed));
 });
 
 // ---- the ladder ------------------------------------------------------------------------------

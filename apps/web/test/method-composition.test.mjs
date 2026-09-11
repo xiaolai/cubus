@@ -19,6 +19,7 @@ import { CORNER, EDGE, SOLVED, allSolved, applyAlg, cornerSolved, edgeSolved } f
 import {
   LADDER, MethodSolverError, STAGE_IDS, allRungCombinations, methodFor, rungKey, solveByMethod,
 } from '../lib/method-solver.js';
+import { seededScrambles } from './fixtures/seeded-scrambles.mjs';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
 
@@ -33,28 +34,10 @@ const MIDDLE = [EDGE.FR, EDGE.BR, EDGE.BL, EDGE.FL];
 /** The corner each pair is named after, in slot order — a pair step's `target`. */
 const PAIR_CORNERS = F1L;
 
-/** Deterministic scrambles. Random-state cubes cannot be seeded through cubejs, and a
- *  composition claim that moved with the shuffle would not be a claim. */
-function seededScrambles(count, seed) {
-  let x = seed >>> 0;
-  const rnd = () => ((x = (x * 1664525 + 1013904223) >>> 0) / 4294967296);
-  const faces = ['U', 'R', 'F', 'D', 'L', 'B'];
-  const suffix = ['', "'", '2'];
-  const out = [];
-  for (let i = 0; i < count; i++) {
-    const alg = [];
-    let prev = -1;
-    while (alg.length < 30) {
-      const f = Math.floor(rnd() * 6);
-      if (f === prev) continue;
-      prev = f;
-      alg.push(faces[f] + suffix[Math.floor(rnd() * 3)]);
-    }
-    out.push(alg.join(' '));
-  }
-  return out;
-}
-
+// Deterministic scrambles, from the one generator. This file had its own byte-identical copy until
+// 2026-09-11, which is the fourth one `fixtures/seeded-scrambles.mjs` was consolidated to prevent:
+// its header says a change to any copy makes the comparison quietly meaningless rather than loudly
+// wrong, and a copy that has drifted is indistinguishable from one that has not until it matters.
 const SCRAMBLES = seededScrambles(N, SEED);
 const STATES = SCRAMBLES.map((s) => applyAlg(SOLVED, s));
 

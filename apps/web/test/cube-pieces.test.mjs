@@ -12,27 +12,12 @@ import {
   applyAlg, applyMove, cornerSlot, cornerSolved, edgeSlot, edgeSolved, fromCube, invert,
   rotateAlg, rotateState,
 } from '../lib/cube-pieces.js';
+// The one seeded generator (test/fixtures/seeded-scrambles.mjs). `lcg` and `randomAlg` used to be
+// retyped here; a copy of a draw is a copy of a sample, and two samples that agree by hand are the
+// thing that fixture exists to stop.
+import { lcg, randomAlg } from './fixtures/seeded-scrambles.mjs';
 
 const Cube = (await import(new URL('../vendor/cubejs.js', import.meta.url))).default;
-
-/** A deterministic pseudo-random alg, so a failure is reproducible from its seed alone. */
-function lcg(seed) {
-  let s = seed >>> 0;
-  return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
-}
-function randomAlg(rnd, n) {
-  const out = [];
-  let prev = -1;
-  const faces = ['U', 'R', 'F', 'D', 'L', 'B'];
-  const suffix = ['', "'", '2'];
-  while (out.length < n) {
-    const f = Math.floor(rnd() * 6);
-    if (f === prev) continue;
-    prev = f;
-    out.push(faces[f] + suffix[Math.floor(rnd() * 3)]);
-  }
-  return out.join(' ');
-}
 
 test('cubejs still stores the state we read, in the order we assume', () => {
   const c = new Cube();
