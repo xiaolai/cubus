@@ -35,7 +35,12 @@ HEARTBEAT_TICKS=24        # every 2h, so a quiet watch still proves it is alive
 TARGET_EPOCHS="${CUBEDET_TARGET_EPOCHS:-80}"
 ARMS="${CUBEDET_ARMS:-trainer-a:P_large trainer-b:P_small}"
 
-ssh_q() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$1" "$2" 2>/dev/null; }
+# Extra ssh options, so a broken direct route does not end the watch. On 2026-09-11 this laptop
+# lost its path to trainer-a while trainer-b and render-box could both still reach it and the box was
+# up 32 days -- the host was fine and only the route was not. CUBEDET_SSH_OPTS="-J trainer-b" keeps
+# the watch alive through a jump rather than reporting a healthy run as a dead host.
+# shellcheck disable=SC2086
+ssh_q() { ssh -o BatchMode=yes -o ConnectTimeout=15 ${CUBEDET_SSH_OPTS:-} "$1" "$2" 2>/dev/null; }
 
 arm_state() {   # host run -> "<status> <exitcode> <restarts> <epochs>"
   local host=$1 run=$2 raw ep
