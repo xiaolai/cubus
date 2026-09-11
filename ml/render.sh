@@ -35,6 +35,10 @@ RES="${RES:-640}"
 HDRI_DIR="${HDRI_DIR:?set HDRI_DIR to a folder of .hdr/.exr environment maps}"
 OUT="${OUT:?set OUT to the dataset output dir (on fast scratch)}"
 VAL_FRACTION="${VAL_FRACTION:-0.1}"
+# Extra generator flags, verbatim. A sweep arm belongs here rather than in a second copy of this
+# script: the production path and the arm being compared to it must differ in the flags and in
+# nothing else, or the comparison is measuring the script.
+GEN_ARGS="${GEN_ARGS:-}"
 
 # A leading ~ passed as an `env VAR=~/x` argument is NOT tilde-expanded by the shell — it stays
 # a literal "~", yielding a bogus "~" directory (paths) or a not-found binary (executables).
@@ -56,6 +60,9 @@ fi
 echo "Found ${#_hdris[@]} HDRIs in $HDRI_DIR"
 
 echo "Generator: $GEN"   # named loudly: picking the wrong one is invisible in the output
+# An `if`, not `[ … ] && echo`: that form returns non-zero when the test fails, which under
+# `set -e` aborts the script if it is ever the last statement in a block.
+if [ -n "$GEN_ARGS" ]; then echo "Generator args: $GEN_ARGS"; fi
 echo "Rendering $SCENES scenes x $POSES poses (~$((SCENES * POSES)) images) across $WORKERS workers -> $OUT"
 mkdir -p "$OUT"
 
@@ -65,9 +72,10 @@ render_worker() {
   local w="$1" part="$OUT/part_$1"
   mkdir -p "$part"
   for ((s = w; s < SCENES; s += WORKERS)); do
+    # shellcheck disable=SC2086  # GEN_ARGS is a deliberate word-split of caller-supplied flags
     "$BLENDERPROC" run "$HERE/$GEN" -- \
       --output_dir "$part" --hdri_dir "$HDRI_DIR" --num_poses "$POSES" --res "$RES" \
-      --seed "$((SEED_BASE + s))" --device "$DEVICE"
+      --seed "$((SEED_BASE + s))" --device "$DEVICE" $GEN_ARGS
   done
   echo "  worker $w done"
 }
