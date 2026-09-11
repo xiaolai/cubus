@@ -22,8 +22,13 @@ PYTHON="${PYTHON:-python3}"        # for the pure merge/split steps (any python3
 # hours of v1 data: single faces, exactly 9 boxes in every image, and none of the 3D generator's
 # colour code. It looked like a working render the whole time. Defaults must name what ships.
 GEN="${GEN:-generate_cube3d.py}"   # legacy single-face set: GEN=generate_cube_dataset.py
-DEVICE="${DEVICE:-gpu}"            # gpu (METAL/CUDA) is fastest here — but there's one GPU, so…
-WORKERS="${WORKERS:-1}"            # …keep WORKERS=1 for gpu. WORKERS>1 only helps with DEVICE=cpu.
+DEVICE="${DEVICE:-gpu}"            # gpu (METAL/CUDA) is fastest here
+# WORKERS>1 HELPS ON GPU TOO, and the line here used to say it did not. Measured 2026-09-12 on an
+# M2 Ultra at 40 poses/scene: 0.84 img/s with one worker, 1.61 with three, 2.26 with six. The old
+# reasoning — one GPU, so one worker — counted only the render; roughly half of a scene's wall
+# time is Blender starting up and building the scene on the CPU, and that part parallelises. Six
+# is not a ceiling, it is where this was measured.
+WORKERS="${WORKERS:-6}"
 SCENES="${SCENES:-1000}"
 # SEED_BASE offsets the scene seeds so a second render is DISJOINT from an earlier one rather than
 # a re-run of it. synth_v3 used seeds 0..999; without this, any top-up render reproduces the same
