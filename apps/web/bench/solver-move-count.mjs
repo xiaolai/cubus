@@ -34,6 +34,7 @@ import { createRequire } from 'node:module';
 import { DEFAULT_PROBE_BUDGET, TIERS, refine } from '../lib/solve-target.js';
 import { LOOSEST_BOUND, VIEW_COUNT, createSolver, movesIn } from '../lib/solver-engine.js';
 import { shareBudget, sliceViews } from '../lib/solve-client.js';
+import { lcg } from '../test/fixtures/seeded-scrambles.mjs';
 
 const require = createRequire(import.meta.url);
 const Cube = require('cubejs');
@@ -74,14 +75,13 @@ function percentile(sample, p) {
 }
 const shown = (ms) => (ms === null ? '—' : ms.toFixed(0));
 
+// NOT `randomAlg` from the fixture, and the difference is one line: the face order here is
+// UDLRFB and the fixture's is URFDLB, so the same seed draws a DIFFERENT walk. The shallow table
+// in dev-docs/solver-move-count.md is captured against this order, and a sample swapped for a
+// tidier import would move every number in it while looking like a no-op. The draw arithmetic is
+// shared (`lcg`); the walk is not, on purpose.
 const FACES = ['U', 'D', 'L', 'R', 'F', 'B'];
 const SUFFIX = ['', "'", '2'];
-
-// Seeded so the shallow table reproduces exactly.
-function lcg(seed) {
-  let s = seed >>> 0;
-  return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
-}
 
 /** A k-move random walk with no same-face repeat. NOTE: its true minimal length is
  *  often BELOW k — cancellations and coincidences collapse it. Measure, never assume. */

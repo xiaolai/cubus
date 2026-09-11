@@ -21,7 +21,6 @@
 
 import { writeFileSync } from 'node:fs';
 
-import { applyAlg, SOLVED } from '../../lib/cube-pieces.js';
 import { methodFor, solveByMethod } from '../../lib/method-solver.js';
 import { seededPairs } from './seeded-scrambles.mjs';
 
@@ -30,9 +29,6 @@ export const BASELINES = Object.freeze([
   { name: 'beginner', rungs: { cross: 0, pairs: 0, oll: 0, pll: 0 } },
   { name: 'intermediate', rungs: { cross: 1, pairs: 1, oll: 0, pll: 0 } },
 ]);
-
-/** The seeded scrambles — the shared generator, so the states really are the same cubes. */
-export const seededStates = seededPairs;
 
 export const SEED = 20260908;
 export const COUNT = 12;
@@ -51,7 +47,7 @@ const shape = (step) => ({
 
 export function capture() {
   const cases = [];
-  for (const { scramble, state } of seededStates(COUNT, SEED)) {
+  for (const { scramble, state } of seededPairs(COUNT, SEED)) {
     const entry = { scramble, methods: {} };
     for (const { name, rungs } of BASELINES) {
       const { steps, alg, moveCount } = solveByMethod(state, methodFor(rungs));
