@@ -495,11 +495,29 @@ class CubeDet(nn.Module):
         )
         self.neck = PANNeck(self.backbone.c1, self.backbone.c2, self.backbone.c3)
         self.head = DetectHead(self.neck.out_channels, num_classes, context=context)
+        # THE ANCHOR GRID IS A CONSTANT, so it is built once here instead of on every forward.
+        #
+        # It depends only on image_size and STRIDES -- never on the input -- and computing it inside
+        # forward made `torch.meshgrid` part of the traced graph, which exports as six Expand ops.
+        # onnx2tf cannot convert those ("Output tensors of a Functional model must be the output of
+        # a TensorFlow Layer"), so the TFLite artefact could not be produced AT ALL for any cubedet
+        # model, and Android's build needs it. Building them in __init__ puts the finished grid in
+        # the graph as an initializer and the Expand ops disappear.
+        #
+        # persistent=False is load-bearing: a persistent buffer would join the state_dict, and
+        # `export.py::_load_cubedet` loads strictly, so every checkpoint trained before this change
+        # would stop loading. They are derived values, not learned ones, and do not belong in a
+        # checkpoint anyway.
+        points, strides = make_anchors(image_size)
+        self.register_buffer("anchor_points", points, persistent=False)
+        self.register_buffer("anchor_strides", strides, persistent=False)
 
     def forward(self, x: torch.Tensor):
         feats = self.neck(*self.backbone(x))
         cls_logits, reg_dist = self.head(feats)
-        points, strides = make_anchors(self.image_size, device=x.device, dtype=x.dtype)
+        # `.to` only casts; under autocast x may be bf16 while the buffer is fp32.
+        points = self.anchor_points.to(dtype=x.dtype)
+        strides = self.anchor_strides.to(dtype=x.dtype)
         return cls_logits, reg_dist, points, strides
 
     @torch.no_grad()
