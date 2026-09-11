@@ -68,11 +68,13 @@ export function assignNineOfEach(scores: readonly (readonly number[])[]): NineOf
     throw new Error(`expected ${STICKERS} stickers, got ${scores.length}`);
   }
   for (const [i, row] of scores.entries()) {
-    if (row.length !== NUM_COLORS) throw new Error(`sticker ${i} has ${row.length} scores, expected ${NUM_COLORS}`);
+    if (row.length !== NUM_COLORS)
+      throw new Error(`sticker ${i} has ${row.length} scores, expected ${NUM_COLORS}`);
     for (const v of row) {
       // A NaN would propagate silently through the matching and produce an arbitrary assignment that
       // looks like a considered answer. Refuse at the boundary instead.
-      if (!Number.isFinite(v) || v < 0) throw new Error(`sticker ${i} has a non-finite or negative score`);
+      if (!Number.isFinite(v) || v < 0)
+        throw new Error(`sticker ${i} has a non-finite or negative score`);
     }
   }
 
@@ -97,7 +99,8 @@ export function assignNineOfEach(scores: readonly (readonly number[])[]): NineOf
   });
   const changed = colors.map((_, i) => i).filter((i) => colors[i] !== argmax[i]);
   let cost_ = 0;
-  for (let i = 0; i < STICKERS; i++) cost_ += logp(scores[i]![argmax[i]!]!) - logp(scores[i]![colors[i]!]!);
+  for (let i = 0; i < STICKERS; i++)
+    cost_ += logp(scores[i]![argmax[i]!]!) - logp(scores[i]![colors[i]!]!);
   // Floating-point summation can land a hair below zero on an unchanged reading; the quantity is a
   // likelihood given up and cannot really be negative.
   return { colors, changed, cost: Math.max(0, cost_) };
@@ -143,10 +146,10 @@ function hungarian(cost: readonly (readonly number[])[]): number[] {
       }
       for (let j = 0; j <= n; j++) {
         if (used[j]) {
-          u[p[j]!] += delta;
-          v[j] -= delta;
+          u[p[j]!] = u[p[j]!]! + delta;
+          v[j] = v[j]! - delta;
         } else {
-          minv[j] -= delta;
+          minv[j] = minv[j]! - delta;
         }
       }
       j0 = j1;
