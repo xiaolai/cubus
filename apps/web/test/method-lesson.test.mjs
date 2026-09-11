@@ -24,27 +24,7 @@ import { wholeCubeSolved } from '../lib/methods/engine.js';
 import {
   CASE_NAMES, allRungCombinations, methodFor, rungKey, solveByMethod,
 } from '../lib/method-solver.js';
-
-/** Deterministic scrambles — the same generator the rest of the suite uses. */
-function seededStates(count, seed) {
-  let x = seed >>> 0;
-  const rnd = () => ((x = (x * 1664525 + 1013904223) >>> 0) / 4294967296);
-  const faces = ['U', 'R', 'F', 'D', 'L', 'B'];
-  const suffix = ['', "'", '2'];
-  const out = [];
-  for (let i = 0; i < count; i++) {
-    const alg = [];
-    let prev = -1;
-    while (alg.length < 30) {
-      const f = Math.floor(rnd() * 6);
-      if (f === prev) continue;
-      prev = f;
-      alg.push(faces[f] + suffix[Math.floor(rnd() * 3)]);
-    }
-    out.push(applyAlg(SOLVED, alg.join(' ')));
-  }
-  return out;
-}
+import { seededStates } from './fixtures/seeded-scrambles.mjs';
 
 /** Every step every rung combination can produce, over a fixed sample. */
 function everyStep(n = 12, seed = 4242) {

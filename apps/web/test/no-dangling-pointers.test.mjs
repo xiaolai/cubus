@@ -21,10 +21,16 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
-/** Directories whose comments must not point at anything missing. */
+/** Directories whose comments must not point at anything missing.
+ *
+ *  `apps/web/bench` joined on 2026-09-12. It was left out when this gate was written, on the
+ *  reasoning that a benchmark is not shipped — but a benchmark is where the measurements behind a
+ *  design note live, and its comments cite more files than any other directory here. Nothing in it
+ *  was stale when it was added, which is the only moment adding a directory is cheap. */
 const LIVING = [
   'apps/web/lib',
   'apps/web/test',
+  'apps/web/bench',
   'crates/cube-ble/src',
   'crates/cube-ble/tests',
   'apps/desktop/src-tauri/src',
