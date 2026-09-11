@@ -90,6 +90,91 @@ def test_one_cube_has_one_pigment_per_colour() -> None:
     print("PASS cube_colors: one pigment per colour per cube — shading varies, hue does not")
 
 
+def test_one_pigment_survives_a_COLOURED_light() -> None:
+    """The test above asserts hue agreement in HSV, where this defect cannot appear.
+
+    A renderer does not stop at HSV. A rendered pixel is albedo times light, channel by channel,
+    and that product's hue depends on how saturated the albedo was: the greyer the tile, the
+    further the light's own hue pulls it. So a per-sticker SATURATION draw hands nine tiles of
+    one pigment nine different rendered hues while every assertion made in HSV still passes.
+
+    Measured, this is the whole of the gap. Through one probe (hue_decompose.py --faces), over
+    tiles that share a face and therefore share a normal and a light:
+
+                            within-face hue sd
+        synth_v5                  8.58 deg
+        real photographs          2.91 deg
+
+    and the saturation draw ALONE, with no renderer involved, produces a within-cube red spread
+    of 9.90 deg under the generator's warm key and 28.24 deg under its cool one. Under a neutral
+    light it produces exactly 0.00, which is the signature: hue is invariant to scaling all three
+    channels together, so per-sticker VALUE jitter is safe and per-sticker saturation is not.
+
+    The control arm is part of the test. An assertion about a defect is worth what it costs to
+    make it fail, and this one was written against a module that still had the defect.
+    """
+    lights = {"warm": (1.0, 0.75, 0.5), "cool": (0.6, 0.8, 1.0)}
+
+    def lit_spread(scope: str, seed: int) -> float:
+        rng = random.Random(seed)
+        worst = 0.0
+        for _ in range(150):
+            wide = rng.random() < 0.6
+            palette = cube_palette(rng, wide, sat_scope=scope, sat_rng=rng)
+            for colour in (RED, ORANGE, 2, 5):
+                tiles = [
+                    tuple(shade_sticker(palette[colour], rng, wide, sat_scope=scope)[:3])
+                    for _ in range(9)
+                ]
+                for light in lights.values():
+                    lit = [(r * light[0], g * light[1], b * light[2]) for r, g, b in tiles]
+                    # Hue is UNDEFINED on an achromatic tile, and a spread computed against one
+                    # is not a disagreement about colour. The test above guards the same way.
+                    hues = [
+                        hue_of(rgb) for rgb in lit if colorsys.rgb_to_hsv(*rgb)[1] >= 0.02
+                    ]
+                    if len(hues) < 2:
+                        continue
+                    # Hue is CIRCULAR, and blue sits near the wrap in the signed representation,
+                    # so max-minus-min reports a whole circle for tiles that in fact agree. The
+                    # control arm read 358.8 deg that way -- a number that would have looked like
+                    # a very strong result and meant nothing.
+                    angles = [h * 2 * math.pi for h in hues]
+                    mean = math.atan2(
+                        sum(math.sin(a) for a in angles) / len(angles),
+                        sum(math.cos(a) for a in angles) / len(angles),
+                    )
+                    off = [abs(math.atan2(math.sin(a - mean), math.cos(a - mean))) for a in angles]
+                    worst = max(worst, 2 * max(off) * 180.0 / math.pi)
+        return worst
+
+    per_cube = lit_spread("cube", 5)
+    per_sticker = lit_spread("sticker", 5)
+    # And the DEFAULT must be the fixed one, in both functions. Asserting only the named scope
+    # would leave a default that is the defect, which is how it got shipped the first time: the
+    # generator named the right thing and the module's default was never the question.
+    defaults = {
+        "cube_palette": cube_palette.__defaults__,
+        "shade_sticker": shade_sticker.__defaults__,
+    }
+    for name, got in defaults.items():
+        assert "cube" in got and "sticker" not in got, (
+            f"{name} still defaults to the per-sticker saturation draw: {got}"
+        )
+    assert per_cube < 1e-6, (
+        f"a cube's tiles rendered {per_cube:.2f} deg apart under a coloured light; "
+        "saturation is a pigment property and must not be drawn per sticker"
+    )
+    assert per_sticker > 5.0, (
+        "the control arm did not reproduce the defect this test exists to catch "
+        f"(per-sticker spread {per_sticker:.2f} deg) — the test can no longer fail"
+    )
+    print(
+        f"PASS cube_colors: one pigment survives a coloured light "
+        f"(per-cube {per_cube:.2f} deg; the per-sticker control still spreads {per_sticker:.1f})"
+    )
+
+
 def test_orange_is_never_redder_than_red() -> None:
     """No real cube's orange is hue-redder than its red, so no rendered one may be either.
 
@@ -206,6 +291,7 @@ def test_manifest_labels_match_export_py() -> None:
 if __name__ == "__main__":
     test_cube_geometry()
     test_one_cube_has_one_pigment_per_colour()
+    test_one_pigment_survives_a_COLOURED_light()
     test_orange_is_never_redder_than_red()
     test_coco_to_labels()
     test_split_order_is_the_same_in_every_process()
