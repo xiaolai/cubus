@@ -731,3 +731,40 @@ def test_pretrained_export_survives_the_opset_the_shipped_lineage_pins():
     graph = onnx.load_model(buffer).graph
     shape = [d.dim_value for d in graph.output[0].type.tensor_type.shape.dim]
     assert shape == [1, 4 + NUM_CLASSES, 8400], shape
+
+
+def test_export_graph_reads_no_tensor_shapes():
+    """The exported graph must contain no Shape/Gather shape arithmetic and no channel-axis Slice.
+
+    Not a style rule -- it is the difference between having an Android artefact and not having one.
+    onnx2tf cannot infer a tensor layout through runtime shape arithmetic, and it mis-handles a
+    channel-axis Slice when rewriting NCHW to NHWC: it transposes some branches of a CSP block and
+    not others, so the concat that rejoins them sees 128 channels against 64. Measured 2026-09-11,
+    no cubedet model could produce a TFLite file at all while the YOLO model it replaces converted
+    fine from the same venv; op-for-op the working graph had 0 Shape and 10 Split, ours had 4 Shape
+    and 0 Split.
+
+    Two lines put them there and either would come back unnoticed: `b = feat.shape[0]` before the
+    head's reshape, and `chunk(2, dim=1)` in CSPStage, which must ask how many channels it is
+    splitting. `torch.split` with an explicit size and a reshape with a literal anchor count are
+    the spellings that read nothing.
+    """
+    onnx = pytest.importorskip("onnx")
+    import io
+    from collections import Counter
+
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        ExportWrapper(CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False).eval()),
+        torch.zeros(1, 3, IMG_SIZE, IMG_SIZE),
+        buffer,
+        input_names=["images"],
+        output_names=["output0"],
+        opset_version=12,
+        dynamo=False,
+    )
+    buffer.seek(0)
+    ops = Counter(n.op_type for n in onnx.load_model(buffer).graph.node)
+    assert ops["Shape"] == 0, f"{ops['Shape']} Shape op(s): something reads a tensor shape at runtime"
+    assert ops["Slice"] == 0, f"{ops['Slice']} Slice op(s): use torch.split for a channel-axis split"
+    assert ops["Expand"] == 0, f"{ops['Expand']} Expand op(s): the anchor grid must stay a constant"
