@@ -163,6 +163,14 @@ jobs:
       #
       # Playwright is an exact-pinned dev dep of apps/web; this fetches the matching builds. Missing
       # either fails the tests, loudly.
+      # `--with-deps` below, and the icons step further down, both shell out to apt. This leaves
+      # apt reading the Ubuntu archive alone, so an index mismatch on a third-party source nothing
+      # here installs from cannot decide whether this job runs. Conditioned on the same tiers as
+      # the two steps that need it: a fast-tier run touches apt at all, and must not gain a way
+      # to fail that it did not have.
+      - uses: ./.github/actions/apt-ubuntu-only
+        if: needs.plan.outputs.full == 'true' || needs.plan.outputs.icons == 'true'
+
       - name: cubus-web — browser engines for the geometry and scanner suites
         if: needs.plan.outputs.full == 'true'
         run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
@@ -197,7 +205,7 @@ jobs:
           # compares it against a fresh render of the same source, which needs a renderer.
           # Without it the verifier raised before reporting a single gated check — and the
           # skip path is only a floor, not a substitute for actually running the check.
-          sudo apt-get update -qq && sudo apt-get install -y -qq librsvg2-bin
+          sudo apt-get install -y -qq librsvg2-bin
           # The Pillow the golden harness pins (ml/requirements-golden.txt). Unpinned, the icon
           # measurements could move on a Pillow release while the golden job stayed put, and
           # nothing would say which of the two had actually changed.
@@ -387,9 +395,10 @@ jobs:
 
       # Tauri's Linux backend (webkit2gtk / appindicator / rsvg), plus dbus for btleplug — the
       # BLE bridge is back (2026-08-27, recovered from v0 for the smart-cube return).
+      - uses: ./.github/actions/apt-ubuntu-only
+
       - name: Install Linux system deps
         run: |
-          sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libdbus-1-dev pkg-config \
