@@ -54,8 +54,12 @@ export const FILTERS = Object.freeze({
   ]),
 });
 
-/** Files whose change means the plan itself is under test, so nothing may be skipped. */
-const PLAN_INPUTS = ['.github/workflows/', 'scripts/ci-plan.mjs'];
+/** Files whose change means the plan itself is under test, so nothing may be skipped.
+ *
+ *  `.github/actions/` is in the list because a composite action is workflow, only in another file.
+ *  `apt-ubuntu-only` runs before every apt call in the Linux jobs, and a change to it that were
+ *  merely a fast-tier pull request would reach `main` having never run in the job it exists for. */
+const PLAN_INPUTS = ['.github/workflows/', '.github/actions/', 'scripts/ci-plan.mjs'];
 
 const matches = (path, entry) =>
   entry.endsWith('/') ? path.startsWith(entry) : path === entry || path.endsWith(`/${entry}`);
