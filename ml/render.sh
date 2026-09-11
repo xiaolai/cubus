@@ -25,6 +25,11 @@ GEN="${GEN:-generate_cube3d.py}"   # legacy single-face set: GEN=generate_cube_d
 DEVICE="${DEVICE:-gpu}"            # gpu (METAL/CUDA) is fastest here — but there's one GPU, so…
 WORKERS="${WORKERS:-1}"            # …keep WORKERS=1 for gpu. WORKERS>1 only helps with DEVICE=cpu.
 SCENES="${SCENES:-1000}"
+# SEED_BASE offsets the scene seeds so a second render is DISJOINT from an earlier one rather than
+# a re-run of it. synth_v3 used seeds 0..999; without this, any top-up render reproduces the same
+# scenes with the same HDRIs, scrambles and cameras, and adds no information at all while looking
+# like it added thousands of images.
+SEED_BASE="${SEED_BASE:-0}"
 POSES="${POSES:-40}"
 RES="${RES:-640}"
 HDRI_DIR="${HDRI_DIR:?set HDRI_DIR to a folder of .hdr/.exr environment maps}"
@@ -62,7 +67,7 @@ render_worker() {
   for ((s = w; s < SCENES; s += WORKERS)); do
     "$BLENDERPROC" run "$HERE/$GEN" -- \
       --output_dir "$part" --hdri_dir "$HDRI_DIR" --num_poses "$POSES" --res "$RES" \
-      --seed "$s" --device "$DEVICE"
+      --seed "$((SEED_BASE + s))" --device "$DEVICE"
   done
   echo "  worker $w done"
 }
