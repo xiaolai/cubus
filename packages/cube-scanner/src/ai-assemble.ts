@@ -94,6 +94,7 @@ import {
   diagnoseMisread,
   type MisreadDiagnosis,
 } from './misread-decode.js';
+import { assignNineOfEach, NUM_COLORS, STICKERS } from './nine-of-each.js';
 import {
   type Colour,
   colourOfSlot,
@@ -116,6 +117,12 @@ export { rotateFace };
 export interface ColorFace {
   colors: number[]; // 9 colour-class indices (0..5)
   confidence: number[]; // 9 per-sticker detector confidences (0..1)
+  /**
+   * 9 x 6 scores per sticker, when the detector supplied them. OPTIONAL, and every existing
+   * consumer ignores it: `repairByCounts` below is the only reader, and it runs only after the
+   * normal path has already refused.
+   */
+  scores?: number[][];
 }
 
 /**
@@ -933,6 +940,49 @@ function symmetricRefusal(
  *   each with the `up` it was held with. These only narrow the candidates the search already
  *   validated.
  */
+/**
+ * A last resort before refusing: the cheapest recolouring that gives the cube nine of each colour.
+ *
+ * WHY IT SITS HERE AND NOT EARLIER. Applied to every scan it would MOVE stickers on cubes that were
+ * already read correctly -- `ml/assign_sim.py` measured that breaking 0.5% of the shipped model's
+ * cubes and 3.2% of a weaker model's. It amplifies a good detector and endangers a bad one. Run
+ * only after `solvableReadings` has found nothing, it cannot damage a scan that was going to
+ * succeed: the alternative at this point is a refusal.
+ *
+ * The gain it is here for, same measurement: whole cubes read perfectly 80.0% -> 98.7%, repairing
+ * 592 of 636 sticker errors.
+ *
+ * Returns null when the detector gave no scores, when the repair changes nothing, or when it would
+ * have to overrule the detector so hard that the reading is better refused than rewritten --
+ * `MAX_REPAIR_COST` is that line, and a reading past it is not one misread but a bad capture.
+ */
+const MAX_REPAIR_COST = 12;
+
+function repairByCounts(faces: Record<Face, ColorFace>): Record<Face, ColorFace> | null {
+  const scores: number[][] = [];
+  for (const face of FACES) {
+    const s = faces[face]?.scores;
+    if (s?.length !== 9 || s.some((row) => row.length !== NUM_COLORS)) return null;
+    for (const row of s) scores.push(row);
+  }
+  if (scores.length !== STICKERS) return null;
+  let result: ReturnType<typeof assignNineOfEach>;
+  try {
+    result = assignNineOfEach(scores);
+  } catch {
+    return null; // malformed scores are the detector's problem, not something to guess through
+  }
+  if (result.changed.length === 0 || result.cost > MAX_REPAIR_COST) return null;
+  const out = {} as Record<Face, ColorFace>;
+  FACES.forEach((face, i) => {
+    out[face] = {
+      ...faces[face]!,
+      colors: result.colors.slice(i * 9, i * 9 + 9),
+    };
+  });
+  return out;
+}
+
 export function assembleColors(
   faces: Record<Face, ColorFace>,
   threshold = LOW_CONFIDENCE_THRESHOLD,
@@ -945,6 +995,20 @@ export function assembleColors(
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
 
   if (all.length === 0) {
+    // The reading is not solvable as read. Before refusing, try the one repair that is justified
+    // here and nowhere else: the cheapest recolouring with nine of each colour. Accepted ONLY if
+    // the repaired reading is itself solvable, so this can turn a refusal into a scan and can
+    // never turn a scan into something worse.
+    const repaired = repairByCounts(faces);
+    if (repaired) {
+      const bySlotRepaired = checkedBySlot(repaired);
+      if (!('valid' in bySlotRepaired)) {
+        const afterRepair = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepaired, scheme));
+        if (afterRepair.length > 0) {
+          return assembleColors(repaired, threshold, confirmed, options);
+        }
+      }
+    }
     // Before refusing, do the diagnosis a refusal makes possible: how many stickers are wrong is
     // always answerable, and when it is exactly one, WHICH one is answerable too. Under every
     // scheme, because the refused reading says nothing about which the cube has.

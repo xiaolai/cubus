@@ -27,11 +27,28 @@ export interface Detection {
   h: number;
   classId: number; // 0..5 colour class
   confidence: number;
+  /**
+   * All `numClasses` scores, not just the winning one. OPTIONAL because a Detection can be built
+   * by hand -- tests do it constantly -- and a partial set is worse than none: the repair in
+   * `ai-assemble` needs all 54 or it cannot satisfy the counts at all.
+   *
+   * The argmax above throws five of six away, and the discarded five are what a whole-cube repair
+   * needs: a cube has nine stickers of each colour, so a misread breaks the count, and the cheapest
+   * repair is decided by how sure the detector was about each ALTERNATIVE. See `nine-of-each.ts`,
+   * which measured this lifting simulated whole-cube reads from 80.0% to 98.7%.
+   */
+  scores?: number[];
 }
 
 export interface FaceFit {
   colors: number[]; // 9 colour classes, reading order (row-major)
   confidence: number[]; // 9 per-sticker confidences
+  /**
+   * 9 x numClasses scores in the same reading order. OPTIONAL on purpose: every existing consumer
+   * reads `colors` and `confidence` and must keep working untouched, so this is added evidence
+   * rather than a changed contract.
+   */
+  scores?: number[][];
 }
 
 export type FitResult = { ok: true; face: FaceFit } | { ok: false; reason: FitReason };
@@ -65,6 +82,8 @@ export function decodeDetections(
       }
     }
     if (bestScore >= confThreshold) {
+      const scores = new Array<number>(numClasses);
+      for (let c = 0; c < numClasses; c++) scores[c] = at(4 + c, a);
       out.push({
         cx: at(0, a),
         cy: at(1, a),
@@ -72,6 +91,7 @@ export function decodeDetections(
         h: at(3, a),
         classId: best,
         confidence: bestScore,
+        scores,
       });
     }
   }
@@ -193,6 +213,13 @@ export function fitFace(dets: Detection[], minConf = MIN_STICKER_CONFIDENCE): Fi
   if (!grid) return { ok: false, reason: 'BAD_GEOMETRY' };
   return {
     ok: true,
-    face: { colors: grid.map((d) => d.classId), confidence: grid.map((d) => d.confidence) },
+    face: {
+      colors: grid.map((d) => d.classId),
+      confidence: grid.map((d) => d.confidence),
+      // Only when EVERY sticker has them. Nine-of-each is a whole-cube constraint; a face with
+      // eight score vectors and one gap cannot contribute to it, and silently passing a short
+      // array would fail much further away from the cause.
+      scores: grid.every((d) => d.scores) ? grid.map((d) => d.scores as number[]) : undefined,
+    },
   };
 }

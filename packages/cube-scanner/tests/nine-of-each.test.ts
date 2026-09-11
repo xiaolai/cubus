@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { NUM_COLORS, PER_COLOR, STICKERS, assignNineOfEach } from '../src/nine-of-each';
+import { assignNineOfEach, NUM_COLORS, PER_COLOR, STICKERS } from '../src/nine-of-each';
 
 /** A legal cube: nine of each colour, shuffled deterministically so failures are reproducible. */
 function legalCube(): number[] {
   const cube: number[] = [];
   for (let c = 0; c < NUM_COLORS; c++) for (let k = 0; k < PER_COLOR; k++) cube.push(c);
   let seed = 12345;
-  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const rnd = (): number => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
   for (let i = cube.length - 1; i > 0; i--) {
     const j = Math.floor(rnd() * (i + 1));
     [cube[i], cube[j]] = [cube[j]!, cube[i]!];
@@ -16,7 +19,9 @@ function legalCube(): number[] {
 
 /** Scores a confident detector would emit for a known colouring. */
 const confident = (classes: number[], conf = 0.95): number[][] =>
-  classes.map((c) => Array.from({ length: NUM_COLORS }, (_, k) => (k === c ? conf : (1 - conf) / 5)));
+  classes.map((c) =>
+    Array.from({ length: NUM_COLORS }, (_, k) => (k === c ? conf : (1 - conf) / 5)),
+  );
 
 const countsOf = (colors: number[]): number[] => {
   const k = new Array<number>(NUM_COLORS).fill(0);
@@ -54,12 +59,17 @@ describe('assignNineOfEach', () => {
     // This is the property the whole file exists for, so it is asserted on noise rather than on
     // tidy inputs: no reading it can produce may be an illegal cube.
     let seed = 999;
-    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const rnd = (): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
     for (let trial = 0; trial < 200; trial++) {
       const scores = Array.from({ length: STICKERS }, () =>
         Array.from({ length: NUM_COLORS }, () => rnd()),
       );
-      expect(countsOf(assignNineOfEach(scores).colors)).toEqual(new Array(NUM_COLORS).fill(PER_COLOR));
+      expect(countsOf(assignNineOfEach(scores).colors)).toEqual(
+        new Array(NUM_COLORS).fill(PER_COLOR),
+      );
     }
   });
 
