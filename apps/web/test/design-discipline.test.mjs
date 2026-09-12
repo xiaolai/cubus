@@ -106,7 +106,7 @@ test('transitions and animations take their time from the motion tokens', () => 
  *  motion rule in index.html AND here — the pair is what keeps the claim and the sheet aligned. */
 const EASED = [
   '.btn', '.pill', '.nav-item', '.tb-ctl', '.tbtn', '.tb-cap', '.menu > button',
-  '.card-tools > button', '.eyebrow-row > button', '.chip-m', '.swatches > button',
+  '.card-tools > button', '.eyebrow-row > button', '.chip-m', '.stage-chip', '.swatches > button',
   '.field', '.link', '.toggle', '.tgrid > .cell',
 ];
 
