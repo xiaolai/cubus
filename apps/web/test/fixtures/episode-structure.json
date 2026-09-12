@@ -1,0 +1,571 @@
+{
+ "note": "Real cue STRUCTURE from a built cubus-im episode, narration replaced. See the suite.",
+ "source": "cubus-im lesson 11, the middle layer",
+ "cues": [
+  {
+   "say": "line 0",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "section": "section at 0",
+   "hold": "DRBULF",
+   "camUp": "D",
+   "setup": "U F2 D2 U2 B2 U",
+   "start": 0.0,
+   "end": 10.15
+  },
+  {
+   "say": "line 1",
+   "hl": "layer:U",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "setup": "U F2 D2 U2 B2 U",
+   "start": 10.65,
+   "end": 20.25
+  },
+  {
+   "say": "line 2",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 20.75,
+   "end": 35.75
+  },
+  {
+   "say": "line 3",
+   "hl": "edges",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "section": "section at 3",
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 36.25,
+   "end": 44.75
+  },
+  {
+   "say": "line 4",
+   "hl": "piece:BR,piece:BL,piece:FR,piece:FL",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 45.25,
+   "end": 54.6
+  },
+  {
+   "say": "line 5",
+   "hl": "piece:BR,piece:BL,piece:FR,piece:FL",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 55.1,
+   "end": 76.65
+  },
+  {
+   "say": "line 6",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 77.15,
+   "end": 89.7
+  },
+  {
+   "say": "line 7",
+   "hl": "piece:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "section": "section at 7",
+   "hold": "DRBULF",
+   "camUp": "D",
+   "setup": "U' D2 B' D' B U F D F' D'",
+   "start": 90.2,
+   "end": 99.0
+  },
+  {
+   "say": "line 8",
+   "hl": "piece:BR,slot:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 99.5,
+   "end": 103.2
+  },
+  {
+   "say": "line 9",
+   "hl": "piece:BR,slot:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 103.7,
+   "end": 116.2
+  },
+  {
+   "say": "line 10",
+   "hl": "piece:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "quarters": [
+    "D"
+   ],
+   "move": "U",
+   "start": 116.7,
+   "end": 124.2
+  },
+  {
+   "say": "line 11",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 125.25,
+   "end": 140.85
+  },
+  {
+   "say": "line 12",
+   "hl": "piece:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "section": "section at 12",
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 141.35,
+   "end": 160.25
+  },
+  {
+   "say": "line 13",
+   "hl": "piece:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 160.75,
+   "end": 175.2
+  },
+  {
+   "say": "line 14",
+   "hl": "piece:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 175.7,
+   "end": 182.1
+  },
+  {
+   "say": "line 15",
+   "hl": "piece:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 182.6,
+   "end": 189.2
+  },
+  {
+   "say": "line 16",
+   "hl": "piece:BR,slot:R",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 189.7,
+   "end": 200.95
+  },
+  {
+   "say": "line 17",
+   "hl": "piece:BR,slot:R",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 201.45,
+   "end": 208.7
+  },
+  {
+   "say": "line 18",
+   "hl": "piece:BR,slot:R",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 209.2,
+   "end": 222.5
+  },
+  {
+   "say": "line 19",
+   "hl": "piece:BR,slot:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "section": "section at 19",
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 223.0,
+   "end": 235.1
+  },
+  {
+   "say": "line 20",
+   "hl": "piece:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "quarters": [
+    "D",
+    "R",
+    "D'",
+    "R'"
+   ],
+   "move": "U R U' R'",
+   "start": 235.6,
+   "end": 251.95
+  },
+  {
+   "say": "line 21",
+   "hl": "piece:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "quarters": [
+    "D'",
+    "B'",
+    "D",
+    "B"
+   ],
+   "move": "U' F' U F",
+   "start": 254.65,
+   "end": 267.3
+  },
+  {
+   "say": "line 22",
+   "hl": "piece:BR,slot:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 270.0,
+   "end": 273.55
+  },
+  {
+   "say": "line 23",
+   "hl": "piece:BR,slot:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 274.05,
+   "end": 282.6
+  },
+  {
+   "say": "line 24",
+   "hl": "piece:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 283.1,
+   "end": 298.95
+  },
+  {
+   "say": "line 25",
+   "hl": "piece:BR",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 299.45,
+   "end": 309.25
+  },
+  {
+   "say": "line 26",
+   "hl": "piece:BL",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "section": "section at 26",
+   "hold": "DRBULF",
+   "camUp": "D",
+   "setup": "D2 R2 F' D B2 U D' R2 U' F R2",
+   "start": 309.75,
+   "end": 316.5
+  },
+  {
+   "say": "line 27",
+   "hl": "piece:BL",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "quarters": [
+    "D2"
+   ],
+   "move": "U2",
+   "start": 317.0,
+   "end": 324.15
+  },
+  {
+   "say": "line 28",
+   "hl": "piece:BL,slot:L",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 325.2,
+   "end": 332.6
+  },
+  {
+   "say": "line 29",
+   "hl": "piece:BL",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "quarters": [
+    "D'",
+    "L'",
+    "D",
+    "L",
+    "D",
+    "B",
+    "D'",
+    "B'"
+   ],
+   "move": "U'\u2026 (8)",
+   "start": 333.1,
+   "end": 340.45
+  },
+  {
+   "say": "line 30",
+   "hl": "piece:BL,slot:BL",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 345.35,
+   "end": 347.65
+  },
+  {
+   "say": "line 31",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 348.15,
+   "end": 358.5
+  },
+  {
+   "say": "line 32",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 359.0,
+   "end": 371.5
+  },
+  {
+   "say": "line 33",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 372.0,
+   "end": 379.15
+  },
+  {
+   "say": "line 34",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "section": "section at 34",
+   "hold": "DRBULF",
+   "camUp": "D",
+   "setup": "L D' L' D' F' D F D F D' F' D' R' D R",
+   "start": 379.65,
+   "end": 387.35
+  },
+  {
+   "say": "line 35",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 387.85,
+   "end": 403.4
+  },
+  {
+   "say": "line 36",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 403.9,
+   "end": 409.8
+  },
+  {
+   "say": "line 37",
+   "hl": "slot:BR,slot:BL",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 410.3,
+   "end": 417.05
+  },
+  {
+   "say": "line 38",
+   "hl": "slot:FR,slot:FL",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 417.55,
+   "end": 435.9
+  },
+  {
+   "say": "line 39",
+   "hl": "none",
+   "ghosts": true,
+   "cam": [
+    -35.0,
+    135.0
+   ],
+   "hold": "DRBULF",
+   "camUp": "D",
+   "start": 436.4,
+   "end": 442.8
+  }
+ ]
+}
