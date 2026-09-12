@@ -12,10 +12,12 @@ export {
   type AiScanResult,
   assembleColors,
   assemblePainted,
+  type CentreResolution,
   type ColorFace,
   type Confirmation,
   type ConfirmRequest,
   LOW_CONFIDENCE_THRESHOLD,
+  resolveCentreCollision,
   type StickerSuspect,
 } from './ai-assemble.js';
 export {

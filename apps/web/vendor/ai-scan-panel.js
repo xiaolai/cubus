@@ -2471,6 +2471,94 @@ function diagnoseAcrossSchemes(bySlot, options = {}, schemes = SCHEMES) {
   };
 }
 
+// src/nine-of-each.ts
+var NUM_COLORS = 6;
+var PER_COLOR = 9;
+var STICKERS = NUM_COLORS * PER_COLOR;
+var LOG_FLOOR = 1e-9;
+var logp = (p) => Math.log(Math.max(p, LOG_FLOOR));
+function assignNineOfEach(scores) {
+  if (scores.length !== STICKERS) {
+    throw new Error(`expected ${STICKERS} stickers, got ${scores.length}`);
+  }
+  for (const [i, row] of scores.entries()) {
+    if (row.length !== NUM_COLORS)
+      throw new Error(`sticker ${i} has ${row.length} scores, expected ${NUM_COLORS}`);
+    for (const v of row) {
+      if (!Number.isFinite(v) || v < 0)
+        throw new Error(`sticker ${i} has a non-finite or negative score`);
+    }
+  }
+  const cost = scores.map((row) => {
+    const out = new Array(STICKERS);
+    for (let c = 0; c < NUM_COLORS; c++) {
+      const v = -logp(row[c]);
+      for (let k = 0; k < PER_COLOR; k++) out[c * PER_COLOR + k] = v;
+    }
+    return out;
+  });
+  const slotOf2 = hungarian(cost);
+  const colors = slotOf2.map((slot) => Math.floor(slot / PER_COLOR));
+  const argmax = scores.map((row) => {
+    let best = 0;
+    for (let c = 1; c < NUM_COLORS; c++) if (row[c] > row[best]) best = c;
+    return best;
+  });
+  const changed = colors.map((_, i) => i).filter((i) => colors[i] !== argmax[i]);
+  let cost_ = 0;
+  for (let i = 0; i < STICKERS; i++)
+    cost_ += logp(scores[i][argmax[i]]) - logp(scores[i][colors[i]]);
+  return { colors, changed, cost: Math.max(0, cost_) };
+}
+function hungarian(cost) {
+  const n = cost.length;
+  const u = new Float64Array(n + 1);
+  const v = new Float64Array(n + 1);
+  const p = new Int32Array(n + 1).fill(0);
+  const way = new Int32Array(n + 1).fill(0);
+  for (let i = 1; i <= n; i++) {
+    p[0] = i;
+    let j0 = 0;
+    const minv = new Float64Array(n + 1).fill(Infinity);
+    const used = new Uint8Array(n + 1);
+    do {
+      used[j0] = 1;
+      const i0 = p[j0];
+      let delta = Infinity;
+      let j1 = 0;
+      for (let j = 1; j <= n; j++) {
+        if (used[j]) continue;
+        const cur = cost[i0 - 1][j - 1] - u[i0] - v[j];
+        if (cur < minv[j]) {
+          minv[j] = cur;
+          way[j] = j0;
+        }
+        if (minv[j] < delta) {
+          delta = minv[j];
+          j1 = j;
+        }
+      }
+      for (let j = 0; j <= n; j++) {
+        if (used[j]) {
+          u[p[j]] = u[p[j]] + delta;
+          v[j] = v[j] - delta;
+        } else {
+          minv[j] = minv[j] - delta;
+        }
+      }
+      j0 = j1;
+    } while (p[j0] !== 0);
+    do {
+      const j1 = way[j0];
+      p[j0] = p[j1];
+      j0 = j1;
+    } while (j0);
+  }
+  const col = new Array(n);
+  for (let j = 1; j <= n; j++) col[p[j] - 1] = j - 1;
+  return col;
+}
+
 // src/ai-assemble.ts
 var CONFIRM_TOLERANCE = 2;
 var LOW_CONFIDENCE_THRESHOLD = 0.15;
@@ -2735,11 +2823,49 @@ function symmetricRefusal(survivors, alternatives) {
     { ambiguous: true }
   );
 }
+var MAX_REPAIR_COST = 12;
+function repairByCounts(faces, maxCost) {
+  const scores = [];
+  for (const face of FACES) {
+    const s = faces[face]?.scores;
+    if (s?.length !== 9 || s.some((row) => row.length !== NUM_COLORS)) return null;
+    for (const row of s) scores.push(row);
+  }
+  if (scores.length !== STICKERS) return null;
+  let result;
+  try {
+    result = assignNineOfEach(scores);
+  } catch {
+    return null;
+  }
+  if (result.changed.length === 0 || result.cost > maxCost) return null;
+  const out = {};
+  FACES.forEach((face, i) => {
+    out[face] = {
+      ...faces[face],
+      colors: result.colors.slice(i * 9, i * 9 + 9)
+    };
+  });
+  return out;
+}
 function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed = {}, options = {}) {
+  return assembleWithin(faces, threshold, confirmed, options, MAX_REPAIR_COST);
+}
+function assembleWithin(faces, threshold, confirmed, options, maxRepairCost) {
   const bySlot = checkedBySlot(faces);
   if ("valid" in bySlot) return bySlot;
   const all = SCHEMES.flatMap((scheme) => solvableReadings(bySlot, scheme));
   if (all.length === 0) {
+    const repaired = repairByCounts(faces, maxRepairCost);
+    if (repaired) {
+      const bySlotRepaired = checkedBySlot(repaired);
+      if (!("valid" in bySlotRepaired)) {
+        const afterRepair = SCHEMES.flatMap((scheme) => solvableReadings(bySlotRepaired, scheme));
+        if (afterRepair.length > 0) {
+          return assembleWithin(repaired, threshold, confirmed, options, maxRepairCost);
+        }
+      }
+    }
     return reject(
       "no orientation of the faces is solvable \u2014 a colour was misread",
       options.diagnose === false ? { misreadCount: null } : diagnoseAcrossSchemes(bySlot)
@@ -2783,6 +2909,55 @@ function assembleColors(faces, threshold = LOW_CONFIDENCE_THRESHOLD, confirmed =
     rotations: [...chosen]
   };
 }
+function resolveCentreCollision(filed, newcomer, threshold = LOW_CONFIDENCE_THRESHOLD, options = {}) {
+  const centre = newcomer.colors[4];
+  if (centre === void 0 || !isColour(centre)) {
+    return { result: reject(`the new capture's centre colour ${centre} is not one of the six`) };
+  }
+  const shared = slotOf(centre);
+  const holder = filed[shared];
+  const unclaimed = FACES.filter((face) => !filed[face]);
+  if (!holder || unclaimed.length !== 1) {
+    return {
+      result: reject(
+        "a centre collision needs five filed sides, one of them sharing the new capture's centre"
+      )
+    };
+  }
+  const missing = unclaimed[0];
+  const colour = colourOfSlot(missing);
+  const asMissing = (capture) => {
+    const colors = [...capture.colors];
+    colors[4] = colour;
+    if (!capture.scores) return { ...capture, colors };
+    const scores = capture.scores.map((row) => [...row]);
+    scores[4] = scores[4].map((_, c) => c === colour ? 1 : 0);
+    return { ...capture, colors, scores };
+  };
+  const filings = [
+    { ...filed, [missing]: asMissing(newcomer) },
+    { ...filed, [shared]: newcomer, [missing]: asMissing(holder) }
+  ];
+  const fits = filings.map((faces) => ({
+    faces,
+    result: assembleWithin(
+      faces,
+      threshold,
+      {},
+      { ...options, diagnose: false },
+      Number.POSITIVE_INFINITY
+    )
+  })).filter(
+    ({ result }) => result.valid || result.ambiguous === true || result.confirm !== void 0
+  );
+  if (fits.length === 1) return fits[0];
+  return {
+    result: reject(
+      fits.length === 0 ? "two sides read with the same centre colour, and neither way of filing them is a legal cube" : "two sides read with the same centre colour, and both ways of filing them are legal cubes",
+      { centreConflict: { shared, missing, legalFilings: fits.length === 0 ? 0 : 2 } }
+    )
+  };
+}
 
 // src/onnx-postprocess.ts
 var MIN_STICKER_CONFIDENCE = 0.25;
@@ -2804,13 +2979,16 @@ function decodeDetections(data, numClasses, numAnchors, confThreshold = 0.25) {
       }
     }
     if (bestScore >= confThreshold) {
+      const scores = new Array(numClasses);
+      for (let c = 0; c < numClasses; c++) scores[c] = at(4 + c, a);
       out.push({
         cx: at(0, a),
         cy: at(1, a),
         w: at(2, a),
         h: at(3, a),
         classId: best,
-        confidence: bestScore
+        confidence: bestScore,
+        scores
       });
     }
   }
@@ -2879,7 +3057,14 @@ function fitFace(dets, minConf = MIN_STICKER_CONFIDENCE) {
   if (!grid) return { ok: false, reason: "BAD_GEOMETRY" };
   return {
     ok: true,
-    face: { colors: grid.map((d) => d.classId), confidence: grid.map((d) => d.confidence) }
+    face: {
+      colors: grid.map((d) => d.classId),
+      confidence: grid.map((d) => d.confidence),
+      // Only when EVERY sticker has them. Nine-of-each is a whole-cube constraint; a face with
+      // eight score vectors and one gap cannot contribute to it, and silently passing a short
+      // array would fail much further away from the cause.
+      scores: grid.every((d) => d.scores) ? grid.map((d) => d.scores) : void 0
+    }
   };
 }
 
@@ -4632,6 +4817,17 @@ var AiScanPanel = class extends HTMLElement {
    * camera does, and a tap on a sticker changes the reading without touching the camera at all.
    */
   diagnosisEpoch = 0;
+  /**
+   * A side held back because its centre reads as a colour another side already claims — at most one.
+   *
+   * It used to be turned away with "Already have the BLUE side — still need WHITE", and when the
+   * cause is a blue logo printed on the white centre that sentence is a dead end: the user is holding
+   * the white side, it reads blue every time, and six sides can never be collected. Measured on real
+   * cubes, logos caused four of seven such collisions. So a DIFFERENT side is kept here, counted
+   * towards six, and `resolveCentreCollision` decides at check time which of the two is really the
+   * unclaimed colour — by legality, never by reading the centre again.
+   */
+  contested = null;
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
@@ -4943,6 +5139,7 @@ var AiScanPanel = class extends HTMLElement {
     this.settled.clear();
     this.pendingOpening = null;
     for (const f of FACES) delete this.faces[f];
+    this.contested = null;
     this.scheme = null;
     this.buildDots();
   }
@@ -5166,6 +5363,10 @@ var AiScanPanel = class extends HTMLElement {
         this.scheduleCheck(this.tinted("ok", `Re-read the ${GUIDE[face].color} side \u2014 checking\u2026`));
         return;
       }
+      if (this.contested === null && matchingRotations(this.faces[face], read).size === 0) {
+        this.hold(face, read);
+        return;
+      }
       const named = this.missingSides();
       this.report(
         "scanning",
@@ -5177,6 +5378,33 @@ var AiScanPanel = class extends HTMLElement {
     }
     this.capture(face, read);
   }
+  /**
+   * Keep a side whose centre reads as the colour of a side already filed. See `contested`.
+   *
+   * The words do not claim to know which of the two is which — that is decided at check time — only
+   * that one of them must be a different colour, which a cube with one centre of each guarantees.
+   */
+  hold(shared, read) {
+    this.contested = read;
+    this.still.reset();
+    this.flash();
+    const held = this.sidesHeld();
+    if (held >= FACES.length) {
+      this.scheduleCheck(
+        this.tinted(
+          "ok",
+          `Two sides read with a ${GUIDE[shared].color} centre \u2014 working out which is which\u2026`
+        )
+      );
+      return;
+    }
+    this.report(
+      "scanning",
+      "That side also reads with a ",
+      this.bold(GUIDE[shared].color),
+      ` centre \u2014 kept; a logo printed on a centre often does this. ${held}/6. Show another side\u2026`
+    );
+  }
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
   capture(face, read) {
     this.faces[face] = read;
@@ -5184,7 +5412,7 @@ var AiScanPanel = class extends HTMLElement {
     this.still.reset();
     this.buildDots();
     this.flash();
-    const done = this.capturedFaces().length;
+    const done = this.sidesHeld();
     if (done >= FACES.length) {
       this.scheduleCheck(this.tinted("ok", "All six sides captured \u2014 checking\u2026"));
       return;
@@ -5238,6 +5466,10 @@ var AiScanPanel = class extends HTMLElement {
       if (read) out.push({ face, colors: [...read.colors] });
     }
     return out;
+  }
+  /** Sides in hand: those filed, plus the one held back because its centre collided. */
+  sidesHeld() {
+    return this.capturedFaces().length + (this.contested ? 1 : 0);
   }
   /**
    * Correct one sticker of an already-captured side, and re-check the cube. The detector is good,
@@ -5493,6 +5725,7 @@ var AiScanPanel = class extends HTMLElement {
   }
   /** "YELLOW and BLUE" — the sides still to show, named once there are few enough to name. */
   missingSides() {
+    if (this.contested) return null;
     const missing = FACES.filter((f) => !this.faces[f]);
     if (missing.length === 0 || missing.length > 2) return null;
     return missing.map((f) => GUIDE[f].color).join(" and ");
@@ -5564,17 +5797,31 @@ var AiScanPanel = class extends HTMLElement {
       this.finish(checked);
       return;
     }
+    if (this.contested) {
+      const newcomer = this.contested;
+      this.contested = null;
+      let resolution;
+      try {
+        resolution = resolveCentreCollision(this.faces, newcomer, void 0, { diagnose: false });
+      } catch (err) {
+        this.checkFailed(err);
+        return;
+      }
+      if (resolution.faces) {
+        for (const f of FACES) {
+          if (this.faces[f] !== resolution.faces[f]) this.settled.delete(f);
+          this.faces[f] = resolution.faces[f];
+        }
+        this.buildDots();
+      }
+      this.finish(resolution.result);
+      return;
+    }
     for (let round = 0; ; round++) {
       try {
         result = assembleColors(this.faces, void 0, this.confirmed, { diagnose: false });
       } catch (err) {
-        const why = String(err?.message ?? err);
-        this.notice = {
-          title: "Something went wrong",
-          tone: "err",
-          body: `Couldn't check the scan (${why}). Show a side again to retry, or start the scan over.`
-        };
-        this.loop("scanning", this.tinted("err", "Couldn\u2019t check the scan \u2014 see the note."));
+        this.checkFailed(err);
         return;
       }
       const face = result.reread;
@@ -5585,6 +5832,20 @@ var AiScanPanel = class extends HTMLElement {
       }
       this.faces[face] = fresh;
     }
+  }
+  /**
+   * A check threw. Six well-formed faces should never throw — but if they do, never freeze on
+   * "checking…" and never destroy the captures over it: say so and keep scanning. Shared by both
+   * ways a check runs, so the two cannot come to say different things about the same failure.
+   */
+  checkFailed(err) {
+    const why = String(err?.message ?? err);
+    this.notice = {
+      title: "Something went wrong",
+      tone: "err",
+      body: `Couldn't check the scan (${why}). Show a side again to retry, or start the scan over.`
+    };
+    this.loop("scanning", this.tinted("err", "Couldn\u2019t check the scan \u2014 see the note."));
   }
   /**
    * Turn a refused reading into words. ONE implementation, for the camera and for painting.
@@ -5796,6 +6057,16 @@ var AiScanPanel = class extends HTMLElement {
       if (camera.action) {
         line = "That isn't a solvable cube yet \u2014 start the scan over, or show one side again.";
       }
+    } else if (result.centreConflict) {
+      const { shared, missing, legalFilings } = result.centreConflict;
+      this.notice = {
+        title: "Two sides read the same centre",
+        tone: "err",
+        body: legalFilings === 0 ? "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. Neither way of filing them makes a real cube, so something else was misread too. Start the scan over, with more light and each side held flat." : "Two sides read with a %1 centre, so one of them must really be the %2 side \u2014 a logo printed on a centre often does this. Both ways make a real cube and nothing in the photos says which. Turn any one face a quarter turn, then start the scan over.",
+        params: [GUIDE[shared].color, GUIDE[missing].color],
+        action: { label: "Start over", kind: "restart" }
+      };
+      line = "Two sides read with the same centre colour \u2014 start the scan over.";
     } else if (result.schemeAmbiguous) {
       this.notice = {
         title: "Which colour is under white?",
