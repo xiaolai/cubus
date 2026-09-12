@@ -275,6 +275,23 @@ export const topEdgesOriented = (s) => U_EDGES.every((slot) => s.eo[slot] === 0)
 export const topCornersOriented = (s) => U_CORNERS.every((slot) => s.co[slot] === 0);
 /** The top corners home and untwisted — what two-look PLL's first half reaches. */
 export const topCornersHome = (s) => U_CORNERS.every((c) => s.cp[c] === c && s.co[c] === 0);
+/**
+ * The top corners each in their OWN slot, twist ignored — the owner's stage 5, and NOT a checkpoint
+ * this app's method route has.
+ *
+ * `topCornersHome` above is the app's own last-layer boundary and is strictly stronger: PLL's
+ * contract is `topFaceOriented` (`last-layer.js`), so the app orients the top corners and only then
+ * permutes them. Most beginner books teach the other order — corners home first, twists fixed last —
+ * and this is that checkpoint. The gap between the two is not a detail: a cube with all four top
+ * corners in their own slots and two of them twisted satisfies this and fails `topCornersHome`.
+ * `test/stage-targets.test.mjs` asserts the gap rather than describing it.
+ *
+ * STRICT, and deliberately: each corner in its own slot, not merely correct up to a U turn. The
+ * bottom two layers are solved by then, so the side colours are fixed and a corner is home or it is
+ * not — which is also how a child is taught to check it, so the weaker reading would mark a cube
+ * done that the child's own check calls wrong.
+ */
+export const topCornersPlaced = (s) => U_CORNERS.every((c) => s.cp[c] === c);
 /** The whole cube. */
 export const wholeCubeSolved = (s) => allSolved(s, { edges: ALL_EDGES, corners: ALL_CORNERS });
 /** Cross solved; first two layers solved. The stage contracts of §2, as predicates. */
