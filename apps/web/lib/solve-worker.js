@@ -8,12 +8,26 @@
 // run on the main thread under `node --test`. This file is the postMessage plumbing, the view
 // slice each request carries, and the one shared word that lets a search be called off.
 
-import { ADOPT_TABLES, PREPARE_TABLES, handleSolveRequest, handleTableRequest, shouldStop, stopWord } from './solve-client.js';
+import {
+  ADOPT_TABLES, PREPARE_TABLES, SOLVE_TO_STATE,
+  handleSolveRequest, handleStageRequest, handleTableRequest, shouldStop, stopWord,
+} from './solve-client.js';
 import { createSolver } from './solver-engine.js';
 import * as twoPhase from './two-phase.js';
+import { lowerBounds, solveToState } from './stage-distance.js';
 
 const solve = createSolver(twoPhase);
 const readStats = () => twoPhase.searchStats;
+
+/**
+ * The repair engine, as three functions handed to a handler that lives on the testable side.
+ *
+ * `stage-distance.js` builds its tables LAZILY, so importing it here costs nothing until the first
+ * repair is asked for — which is what makes it acceptable to put on a worker whose day job is
+ * solving cubes. Only this worker ever gets a repair request (`solve-client.js`'s `stageRoute`
+ * always addresses `clients[0]`), so the tables exist once in the pool rather than six times.
+ */
+const stageEngine = { parseFacelets: twoPhase.parseFacelets, solveToState, lowerBounds };
 
 /**
  * The stop channel, and why it is a SharedArrayBuffer rather than a message.
@@ -46,6 +60,14 @@ self.addEventListener('message', (event) => {
   // is delivered, which is what makes re-pointing the engine's tables here safe with no locking.
   if (data.kind === PREPARE_TABLES || data.kind === ADOPT_TABLES) {
     self.postMessage(handleTableRequest(twoPhase, data));
+    return;
+  }
+  // A repair is not a two-phase search and must not be validated as one — its reply carries a move
+  // count and a claim rather than an algorithm alone. Same control channel as the table handshake,
+  // and the same reason it is safe to handle here: a search is synchronous, so this thread is never
+  // inside one when a message is delivered.
+  if (data.kind === SOLVE_TO_STATE) {
+    self.postMessage(handleStageRequest(stageEngine, data));
     return;
   }
   // `shared` is this request's word, or null when the page cannot make one. Cleared in the
