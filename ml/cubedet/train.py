@@ -328,7 +328,11 @@ def main(argv: list[str] | None = None) -> int:
         # the scanner is actually shown.
         train_set.set_epoch(epoch, cfg.epochs)
         started = time.time()
-        running = {"total": 0.0, "cls": 0.0, "box": 0.0, "dfl": 0.0}
+        # `emb` is listed here or it is computed and never seen. The contrastive term contributes
+        # to the gradient either way, but a run whose embedding is learning nothing would look
+        # identical in history.json to one where it is working, and the only place that showed up
+        # would be the evaluation hours later. A term you cannot watch is a term you cannot debug.
+        running = {"total": 0.0, "cls": 0.0, "box": 0.0, "dfl": 0.0, "emb": 0.0}
         for step, (images, targets) in enumerate(train_loader):
             images = images.to(device, non_blocking=True)
             targets = {k: v.to(device, non_blocking=True) for k, v in targets.items()}
