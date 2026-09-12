@@ -381,9 +381,10 @@ class DetectHead(nn.Module):
     """
 
     def __init__(self, channels: tuple[int, int, int], num_classes: int = NUM_CLASSES, image_size: int = 640,
-                 context: bool = False):
+                 context: bool = False, embed_dim: int = 0):
         super().__init__()
         self.num_classes = num_classes
+        self.embed_dim = embed_dim
         self.reg_channels = 4 * (REG_MAX + 1)
         hidden_c = max(channels[0], 64)
         hidden_r = max(channels[0] // 2, 64)
@@ -420,6 +421,35 @@ class DetectHead(nn.Module):
             nn.Sequential(ConvBNAct(c, hidden_c, 3), ConvBNAct(hidden_c, hidden_c, 3)) for c in channels
         )
         self.cls_out = nn.ModuleList(nn.Conv2d(hidden_c, num_classes, 1) for _ in channels)
+        # THE COLOUR-EMBEDDING BRANCH: it answers a different question from cls_out, and the
+        # difference is the whole point.
+        #
+        # cls_out answers "what colour is this sticker", which under an unknown illuminant is not
+        # always a well-posed question: a rendered pixel is paint times light, and one observation
+        # of a product does not determine its factors. Red under warm light and orange under cool
+        # light produce the same pixel, and both occur. That is an INFORMATION shortage, so no
+        # amount of capacity or training data closes it.
+        #
+        # This branch answers "which stickers carry the same paint", which IS well-posed, because
+        # the stickers of one frame share an illuminant and it cancels in any comparison between
+        # them. Measured on the 89 held-out photographs with no model at all — plain median LAB —
+        # the relative question on red/orange pairs is answered correctly 98.6% of the time, while
+        # the best global absolute hue threshold fitted on that same set reaches 93.6%.
+        #
+        # WHY THIS IS NOT THE `context` BRANCH ABOVE, WHICH WAS TRIED AND FAILED. That one pools an
+        # image-level vector and adds it to the classifier stem, then hopes the network learns to
+        # use the relation; the loss stays absolute cross-entropy, so nothing ever requires it to.
+        # It measured as the worst colour accuracy of its cohort. Here the LOSS is relational (see
+        # loss.py, within-image supervised contrastive), so using the relation is not optional.
+        #
+        # It is deliberately absent from forward_export: the app's tensor contract is [1, 4+6, A]
+        # at fixed row offsets and nothing here may disturb it. embed_dim=0 is off, and off is the
+        # default, so an unflagged model is byte-identical to the one before this existed.
+        if embed_dim:
+            self.emb_stems = nn.ModuleList(
+                nn.Sequential(ConvBNAct(c, hidden_c, 3), ConvBNAct(hidden_c, hidden_c, 3)) for c in channels
+            )
+            self.emb_out = nn.ModuleList(nn.Conv2d(hidden_c, embed_dim, 1) for _ in channels)
         self.reg_stems = nn.ModuleList(
             nn.Sequential(ConvBNAct(c, hidden_r, 3), ConvBNAct(hidden_r, hidden_r, 3)) for c in channels
         )
@@ -462,13 +492,16 @@ class DetectHead(nn.Module):
             pooled = feats[-1].mean(dim=(2, 3))                  # [B, C5]
             shared = self.context_mlp(pooled)[:, :, None, None]  # [B, hidden_c, 1, 1]
 
-        cls_all, reg_all = [], []
+        cls_all, reg_all, emb_all = [], [], []
         for i, feat in enumerate(feats):
             cls_feat = self.cls_stems[i](feat)
             if shared is not None:
                 cls_feat = cls_feat + shared
             cls = self.cls_out[i](cls_feat)
             reg = self.reg_out[i](self.reg_stems[i](feat))
+            if self.embed_dim:
+                emb = self.emb_out[i](self.emb_stems[i](feat))
+                emb_all.append(emb.permute(0, 2, 3, 1).reshape(-1, self.level_anchors[i], self.embed_dim))
             # flatten/unflatten rather than reshape(b, ...), and the difference is not style.
             # Reading `feat.shape[0]` at runtime makes the batch size a TENSOR, so ONNX records
             # Shape -> Gather -> Unsqueeze -> Concat -> Reshape instead of a fixed reshape. That is
@@ -486,7 +519,8 @@ class DetectHead(nn.Module):
             hw = self.level_anchors[i]
             cls_all.append(cls.permute(0, 2, 3, 1).reshape(-1, hw, self.num_classes))
             reg_all.append(reg.permute(0, 2, 3, 1).reshape(-1, hw, 4, REG_MAX + 1))
-        return torch.cat(cls_all, dim=1), torch.cat(reg_all, dim=1)
+        embeddings = torch.cat(emb_all, dim=1) if emb_all else None
+        return torch.cat(cls_all, dim=1), torch.cat(reg_all, dim=1), embeddings
 
     def distances(self, reg_dist: torch.Tensor) -> torch.Tensor:
         """DFL expectation: softmax over the bins, then the mean bin index. [B, A, 4]."""
@@ -541,6 +575,7 @@ class CubeDet(nn.Module):
     """
 
     def __init__(self, num_classes: int = NUM_CLASSES, width: float = 1.0, image_size: int = 640,
+                 embed_dim: int = 0,
                  context: bool = False, backbone: str = CSP_BACKBONE, pretrained: bool = True):
         super().__init__()
         self.num_classes = num_classes
@@ -557,7 +592,8 @@ class CubeDet(nn.Module):
             else PretrainedBackbone(backbone, width=width, pretrained=pretrained)
         )
         self.neck = PANNeck(self.backbone.c1, self.backbone.c2, self.backbone.c3)
-        self.head = DetectHead(self.neck.out_channels, num_classes, image_size=image_size, context=context)
+        self.head = DetectHead(self.neck.out_channels, num_classes, image_size=image_size,
+                               context=context, embed_dim=embed_dim)
         # THE ANCHOR GRID IS A CONSTANT, so it is built once here instead of on every forward.
         #
         # It depends only on image_size and STRIDES -- never on the input -- and computing it inside
@@ -577,11 +613,11 @@ class CubeDet(nn.Module):
 
     def forward(self, x: torch.Tensor):
         feats = self.neck(*self.backbone(x))
-        cls_logits, reg_dist = self.head(feats)
+        cls_logits, reg_dist, embeddings = self.head(feats)
         # `.to` only casts; under autocast x may be bf16 while the buffer is fp32.
         points = self.anchor_points.to(dtype=x.dtype)
         strides = self.anchor_strides.to(dtype=x.dtype)
-        return cls_logits, reg_dist, points, strides
+        return cls_logits, reg_dist, points, strides, embeddings
 
     @torch.no_grad()
     def forward_export(self, x: torch.Tensor) -> torch.Tensor:
@@ -591,7 +627,7 @@ class CubeDet(nn.Module):
         NOT here: it stays in TypeScript, where one implementation serves every runtime, and where
         it is already tested.
         """
-        cls_logits, reg_dist, points, strides = self.forward(x)
+        cls_logits, reg_dist, points, strides, _ = self.forward(x)
         boxes = distances_to_boxes(points, self.head.distances(reg_dist), strides)
         cx = (boxes[..., 0] + boxes[..., 2]) * 0.5
         cy = (boxes[..., 1] + boxes[..., 3]) * 0.5

@@ -183,6 +183,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--imgsz", type=int, default=640,
                         help="input resolution; dev-docs detector-stack-replacement.md §7 names this "
                              "the cheapest unrun experiment for red/orange")
+    parser.add_argument("--embed-dim", type=int, default=0,
+                        help="size of the per-sticker colour embedding; 0 disables the branch. "
+                             "Training-only -- forward_export and the app's tensor contract are "
+                             "untouched at any value.")
     parser.add_argument("--context", action="store_true",
                         help="give the colour head a pooled image-level summary — the relative-signal "
                              "hypothesis from ml/redorange_separability.py")
@@ -208,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg.imgsz = args.imgsz
     cfg.context = args.context
     cfg.backbone = args.backbone
+    cfg.embed_dim = args.embed_dim
     cfg.out.mkdir(parents=True, exist_ok=True)
     seed_everything(cfg.seed)
 
@@ -232,8 +237,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     model = CubeDet(num_classes=NUM_CLASSES, width=cfg.width, image_size=cfg.imgsz,
-                    context=cfg.context, backbone=cfg.backbone).to(device)
-    criterion = DetectionLoss(NUM_CLASSES)
+                    context=cfg.context, backbone=cfg.backbone,
+                    embed_dim=cfg.embed_dim).to(device)
+    criterion = DetectionLoss(NUM_CLASSES, embed_dim=cfg.embed_dim)
     # No weight decay on norms and biases: decaying a BatchNorm scale pulls it towards zero, which
     # is a different and worse regulariser than the one intended.
     decay, no_decay = [], []
@@ -267,15 +273,32 @@ def main(argv: list[str] | None = None) -> int:
         # quietly wrong -- the same failure mode the stride-cut probe exists to prevent.
         for key, mine in (("backbone", cfg.backbone), ("width", cfg.width),
                           ("imgsz", cfg.imgsz), ("num_classes", NUM_CLASSES),
-                          ("context", cfg.context)):
+                          ("context", cfg.context), ("embed_dim", cfg.embed_dim)):
             theirs = state.get(key)
             if theirs is not None and theirs != mine:
                 raise SystemExit(
                     f"--init-from {args.init_from}: checkpoint {key}={theirs!r} but this run is "
                     f"{key}={mine!r}. Fine-tuning across architectures is not what this flag does."
                 )
-        model.load_state_dict(state["model"])
-        ema.module.load_state_dict(state["model"])
+        # A checkpoint from before the embedding branch existed has no head.emb_* keys, and a
+        # strict load rejects it on MISSING keys. That is a legitimate case -- adding a head and
+        # warm-starting the rest is the whole point of this flag -- so it is allowed and then
+        # checked, rather than waved through with strict=False and a hope. Anything missing that
+        # is NOT the new branch, or anything unexpected at all, still refuses: those mean the
+        # checkpoint and the run disagree about the model, which is the silent-wrong-model failure
+        # this flag's architecture check already exists to prevent.
+        report = model.load_state_dict(state["model"], strict=False)
+        stray = [k for k in report.missing_keys if ".emb_" not in k]
+        if stray or report.unexpected_keys:
+            raise SystemExit(
+                f"--init-from {args.init_from}: state dict does not match this model.\n"
+                f"  missing (not the embedding branch): {stray}\n"
+                f"  unexpected: {list(report.unexpected_keys)}"
+            )
+        if report.missing_keys:
+            print(f"  embedding branch initialised fresh ({len(report.missing_keys)} tensors); "
+                  "everything else warm-started")
+        ema.module.load_state_dict(state["model"], strict=False)
         print(f"initialised weights from {args.init_from} (epoch {state.get('epoch')}); "
               f"fresh optimiser and schedule over {cfg.epochs} epochs at lr={cfg.lr}")
     if args.resume and args.resume.exists():
@@ -292,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"resumed from {args.resume} at epoch {start_epoch}")
 
     print(f"device={device} bf16={use_bf16} params={count_parameters(model):,} "
-          f"imgsz={cfg.imgsz} context={cfg.context} width={cfg.width} "
+          f"imgsz={cfg.imgsz} context={cfg.context} embed_dim={cfg.embed_dim} width={cfg.width} "
           f"train={len(train_set)} val={len(val_set)} batches/epoch={len(train_loader)}")
     print(f"environment: {environment}")
 
@@ -338,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
                 atomic_save(
                     {"model": ema.module.state_dict(), "width": cfg.width,
                      "imgsz": cfg.imgsz, "context": cfg.context, "backbone": cfg.backbone,
+             "embed_dim": cfg.embed_dim,
                      "num_classes": NUM_CLASSES, "epoch": epoch, "metrics": metrics,
                      "environment": environment},
                     cfg.out / "best.pt",
@@ -359,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
              "optimiser": optimiser.state_dict(), "scheduler": scheduler.state_dict(),
              "epoch": epoch, "best": best, "history": cfg.history, "width": cfg.width,
              "imgsz": cfg.imgsz, "context": cfg.context, "backbone": cfg.backbone,
+             "embed_dim": cfg.embed_dim,
              "num_classes": NUM_CLASSES, "environment": environment},
             cfg.out / "last.pt",
         )

@@ -286,6 +286,11 @@ def _load_cubedet(pt: Path):
         width=state.get("width", 1.0),
         image_size=state.get("imgsz", IMGSZ),
         context=state.get("context", False),
+        # A checkpoint trained with the embedding branch carries head.emb_* keys. Rebuilding
+        # without them fails on unexpected state-dict keys, which is the loud failure we want --
+        # but the branch is training-only, so an export must RECREATE it to load, then simply not
+        # trace it: forward_export never touches it.
+        embed_dim=state.get("embed_dim", 0),
         backbone=state.get("backbone", CSP_BACKBONE),
         # Never fetch ImageNet weights in order to export: the checkpoint is about to overwrite
         # every one of them, and an exporter that reaches for the network is an exporter that
