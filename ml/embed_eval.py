@@ -23,10 +23,8 @@ embeddings.
 from __future__ import annotations
 
 import argparse
-import colorsys  # noqa: F401  (kept: hue is printed in the per-class breakdown below)
 import glob
 import itertools
-import os
 from pathlib import Path
 
 import numpy as np
@@ -39,7 +37,6 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from cube_infer import letterbox, letterbox_geometry  # noqa: E402
-from cubedet.model import make_anchors  # noqa: E402
 
 NAMES = ["white", "red", "green", "yellow", "orange", "blue"]
 RED, ORANGE = 1, 4
