@@ -267,8 +267,8 @@ describe('decodeMisread', () => {
         }
       }
     }
-    // AN EXPLICIT BUDGET, because vitest's 5 s default is a hang detector and not a budget for
-    // this. Thirty-six full 4^6-rotation decodes is what the claim costs to check: 0.7 s here
+    // WHAT THIS COSTS, kept because the numbers are the justification for the package's budget and
+    // this is one of the two cases that set it. Thirty-six full 4^6-rotation decodes: 0.7 s here
     // uncontended, 3.4 s under v8 coverage instrumentation, and 9.4 s when the coverage run's
     // other files are competing for the same four cores — a number that says how busy the machine
     // is and nothing about the decoder. Measured on 2026-09-05, when adding a sibling test file
@@ -276,12 +276,15 @@ describe('decodeMisread', () => {
     //
     // And 180 s, later the same day, when the root `pnpm check` ran this package's coverage run
     // CONCURRENTLY with gan-driver's and with the web app's browser suites — 44x the figure with
-    // coverage alone. That is not this budget's to absorb: each package's runner already fills
-    // every core, so running the packages side by side adds contention and no throughput, and
-    // the root scripts now run them one at a time (`--workspace-concurrency=1`). The budget stays
-    // a hang detector with an order of magnitude of headroom over what the test costs when it has
-    // the machine.
-  }, 60_000);
+    // coverage alone. That is not a budget's to absorb: each package's runner already fills every
+    // core, so running the packages side by side adds contention and no throughput, and the root
+    // scripts now run them one at a time (`--workspace-concurrency=1`).
+    //
+    // THE EXPLICIT 60 s IS GONE (2026-09-12). vitest.config.ts carries one budget for this class and
+    // says so; an argument here overrode it, so "one budget for the class" was not true of the two
+    // tests that had grown their own first. Found by an audit after the class bound moved and these
+    // two did not.
+  });
 
   it('the distance is never an overstatement — the true cube is always a legal repair', () => {
     // The property that makes "at least N stickers were misread" honest. A single overstatement
@@ -342,7 +345,11 @@ describe('decodeMisread', () => {
     // day's decoder refactor — and 6.8 s inside the full coverage run, where sixteen test files
     // compete for four cores. The neighbour's comment predicted this exactly ("adding a sibling
     // test file was enough to tip it over"), and adding `web-detector.test.ts` is what did.
-  }, 60_000);
+    //
+    // THE EXPLICIT 60 s IS GONE (2026-09-12), for the reason the sibling above gives: the package
+    // carries one budget for this class. This case is also the one that crossed 60 s in a full gate
+    // run and set the new value, so it is the last place that should have been overriding it.
+  });
 
   it('a balanced red/orange swap — invisible to colour counting — is found', () => {
     // One red read as orange AND one orange read as red leaves all six counts at exactly 9, so
@@ -592,6 +599,28 @@ describe('diagnoseAcrossSchemes — the floor a refused CAMERA reading is told, 
     const one = diagnoseAcrossSchemes(f, {}, ['japanese']);
     expect(one.misreadCount).toBe(1);
     expect(one.misreadScheme).toBe('japanese');
+  });
+
+  it('a cap that cannot mean anything is refused without throwing, as it always was', () => {
+    // `decodeMisread` THROWS on a nonsense cap and `diagnoseMisread` catches, logs and claims
+    // nothing — so every caller of this function is on a path that never sees an exception, which
+    // matters because they are all on a path that has already refused a scan and is about to put a
+    // sentence in front of a child.
+    //
+    // This became worth pinning on 2026-09-12, when `diagnoseAcrossSchemes` started deepening a cap
+    // of its own: reading `options.maxDistance` to drive a loop is exactly how a function grows a
+    // throw it did not have. A bad cap takes the single-call path instead, which logs and returns
+    // nothing, so the behaviour is the one the callers were written against.
+    const f = capturesOf(DEEP, 'western');
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const bad of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY]) {
+        expect(diagnoseAcrossSchemes(f, { maxDistance: bad })).toEqual({});
+      }
+      expect(quiet).toHaveBeenCalled();
+    } finally {
+      quiet.mockRestore();
+    }
   });
 
   it('a correct reading of either kind of cube has a floor of zero under its own scheme', () => {

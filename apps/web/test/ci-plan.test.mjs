@@ -46,8 +46,29 @@ test('the e2e label asks for the full tier on a pull request', () => {
 });
 
 test('a change to the workflow or the plan runs everything — the plan is what is under test', () => {
-  for (const path of ['.github/workflows/ci.yml', '.github/workflows/release.yml', 'scripts/ci-plan.mjs']) {
+  // The composite action is in this list for the same reason the workflows are: it IS workflow,
+  // living in another file. It runs before every apt call in the Linux jobs, so a change to it
+  // that only ever saw the fast tier would reach `main` having never run where it matters.
+  for (const path of [
+    '.github/workflows/ci.yml',
+    '.github/workflows/release.yml',
+    '.github/actions/apt-ubuntu-only/action.yml',
+    'scripts/ci-plan.mjs',
+  ]) {
     assert.deepEqual(plan({ event: 'pull_request', changed: [path] }), everything, path);
+  }
+});
+
+test('every local action a workflow uses is on the plan-inputs list, and exists', () => {
+  // A `uses: ./...` that nothing on PLAN_INPUTS covers is a piece of CI that a pull request can
+  // change without running. Both workflows are read, so adding a second local action to either
+  // one and forgetting the plan is a red here rather than a surprise on `main`.
+  const used = [...`${CI}\n${RELEASE}`.matchAll(/uses:\s+\.\/(\S+)/g)].map((m) => m[1]);
+  assert.ok(used.length > 0, 'no local action found — this test is checking nothing');
+  for (const dir of new Set(used)) {
+    assert.ok(existsSync(`${ROOT}${dir}/action.yml`), `${dir} has no action.yml`);
+    assert.deepEqual(plan({ event: 'pull_request', changed: [`${dir}/action.yml`] }), everything,
+      `${dir} is not on PLAN_INPUTS, so a pull request could change it without running it`);
   }
 });
 

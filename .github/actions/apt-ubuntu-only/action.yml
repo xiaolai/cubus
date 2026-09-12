@@ -1,0 +1,58 @@
+name: apt, the Ubuntu archive only
+description: >-
+  Drop the third-party apt sources a GitHub runner image ships, so every apt-get later in the job
+  reads only the archive its packages actually come from — and go red, by name, if a new one appears.
+
+runs:
+  using: composite
+  steps:
+    - name: leave apt reading the Ubuntu archive and nothing else
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # A runner with no apt is not a runner this is about. macOS and Windows jobs can call this
+        # unconditionally and get nothing, which is what they want.
+        if ! command -v apt-get >/dev/null; then
+          echo "no apt on this runner — nothing to do"
+          exit 0
+        fi
+
+        # WHY THIS STEP EXISTS. `apt-get update` reads EVERY configured source and exits 100 when
+        # ANY index fails to verify, whatever that index was for. The ubuntu-latest image ships two
+        # sources this repository installs nothing from, and on 2026-09-09 one of them decided a
+        # pull request: Google's chrome-stable index came back with a hash-sum mismatch mid-publish
+        # and took `playwright install --with-deps` down with it (CI run 34385649701 on PR #11, a
+        # dependency bump that was red for a reason having nothing to do with the dependency).
+        #
+        # Nothing is lost by removing them. Playwright's system libraries, Tauri's webkit2gtk and
+        # librsvg, dbus, pipewire and libclang are all Ubuntu packages; neither dl.google.com nor
+        # packages.microsoft.com supplies one of them. /etc/apt/sources.list — where the image puts
+        # the Ubuntu archive itself, via the mirrorlist — is not touched.
+        sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                   /etc/apt/sources.list.d/microsoft-prod.list
+
+        sudo apt-get update | tee /tmp/apt-ubuntu-only.log
+
+        # LOUD, NOT QUIET. Removing two files by name goes stale the moment the image adds a third,
+        # and the failure that causes is a random red on somebody else's pull request months later
+        # with none of this context attached. So the update's own output is read back: any source
+        # outside the Ubuntu archive is named HERE, with the line to add above, at the moment the
+        # image changes rather than the moment a mirror hiccups.
+        # TWO BUGS AN AUDIT FOUND IN THIS PATTERN, both in the direction that matters:
+        #   * the mirrorlist alternative had no end boundary, so a source at
+        #     `file:/etc/apt/apt-mirrors.txt.extra` was accepted as the mirrorlist itself;
+        #   * the host alternative demanded `/` straight after `ubuntu.com`, so
+        #     `http://archive.ubuntu.com:80/ubuntu` was reported as foreign.
+        # Both are fixed by saying what was meant: the mirrorlist exactly, or a host under
+        # ubuntu.com with an optional port, then a path.
+        foreign="$(awk '/^(Get|Hit|Ign|Err):[0-9]+ /{print $2}' /tmp/apt-ubuntu-only.log \
+          | grep -vE '^(file:/etc/apt/apt-mirrors\.txt$|https?://([a-z0-9-]+\.)*ubuntu\.com(:[0-9]+)?/)' \
+          | sort -u || true)"
+        if [ -n "$foreign" ]; then
+          echo "::error::apt is still configured with a source outside the Ubuntu archive:" \
+            "$(echo "$foreign" | tr '\n' ' ')— add its list file to the rm above, or add the host" \
+            "to the allowed pattern if this repository genuinely installs from it."
+          exit 1
+        fi
+        echo "apt reads the Ubuntu archive only"
