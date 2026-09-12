@@ -95,15 +95,33 @@ test('both objects are offered, and neither stands where the other was', () => {
 test('the lesson is worked out beside the solution, never instead of it', () => {
   // If the lesson replaced the search, switching back to Solution would need a new one — and a
   // cube whose lesson failed would have no walk at all.
-  const load = code.match(/if \(walkKind === 'lesson'\) \{[\s\S]*?\n {12}\}/)?.[0] ?? '';
+  const load = code.match(/if \(!stageAnswered && !stageTarget && walkKind === 'lesson'\) \{[\s\S]*?\n {12}\}/)?.[0] ?? '';
   assert.ok(load, 'loadWalk must have a lesson branch');
   assert.match(load, /gotLesson = lessonFor\(state\.cube\)/);
   assert.match(load, /walkKind = 'solution'/, 'a cube with no lesson must fall back rather than fail the screen');
   // The search runs first, unconditionally: `gotAlg` is assigned from the solution above this
   // branch and only then overridden.
   const before = code.indexOf('gotSetup = state.cube.setupAlg;');
-  assert.ok(before > 0 && before < code.indexOf("if (walkKind === 'lesson')"),
+  // The FULL condition, not a fragment of it: `walkKind === 'lesson'` also appears in the rung
+  // offer's handler, several thousand characters earlier, so the loose form found that one and
+  // compared against the wrong position.
+  assert.ok(before > 0 && before < code.indexOf("if (!stageAnswered && !stageTarget && walkKind === 'lesson')"),
     'the two-phase search must run before the lesson branch, so both objects exist');
+});
+
+test('a STAGE route has no lesson, and the switch goes with it', () => {
+  // dev-docs/solve-to-state-plan.md §9.4, and it is a product fact rather than a shortcut: the app
+  // orients the top corners before permuting them, so it cannot resume a lesson at "corners home".
+  // The screen offers the repair and then the solve, never the next lesson step.
+  //
+  // Two halves, and only together do they mean anything. The lesson must not be COMPUTED for a
+  // stage target — it would overwrite the route, since the branch runs after it — and the pair of
+  // pills must not be SHOWN, or the switch would point at an object the screen cannot produce.
+  assert.match(code, /if \(!stageAnswered && !stageTarget && walkKind === 'lesson'\)/,
+    'the lesson branch must be skipped for a stage target, or it overwrites the repair — and for a'
+    + ' repair that answered, whose whole-cube locals were never even read');
+  assert.match(code, /kindRow\.hidden = Boolean\(route\)/,
+    'the Solution / Lesson switch must be hidden while a repair is showing');
 });
 
 test('the lesson is thrown away with the arrangement it was about', () => {

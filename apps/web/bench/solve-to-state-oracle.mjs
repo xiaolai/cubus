@@ -29,6 +29,10 @@
 //      against the full cubie model separately. `test/solve-to-state.test.mjs` does that pinning
 //      here, and oracle A is the part that needs no pinning at all.
 //
+// The projections and the engine are `lib/stage-targets.js` and `lib/stage-distance.js` since
+// Phase C. They were the Phase 0 spike, now deleted, while it was the only engine there was; the
+// sharing is the same sharing and the pinning that pays for it is the same test.
+//
 // The fixture is FROZEN because a sample redrawn on every run cannot catch a regression. It records
 // the scramble rather than the facelets so it is readable, the distance per target, and which oracle
 // established each one.
@@ -36,22 +40,19 @@
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { MOVE_NAMES, SOLVED, applyAlg, applyMove } from '../lib/cube-pieces.js';
-import * as eng from '../lib/methods/engine.js';
-import { P, TARGETS, searchExact } from './solve-to-state-spike.mjs';
+import { TARGETS } from '../lib/stage-targets.js';
+import { solveToState } from '../lib/stage-distance.js';
 import { seededScrambles } from '../test/fixtures/seeded-scrambles.mjs';
+import { INDEPENDENT_PREDICATE } from '../test/fixtures/independent-predicates.mjs';
 
 // ---- the app's own predicates, as a second definition of every target --------------------------
+//
+// SHARED, not spelled again. This composition had been written twice — here and in
+// `test/stage-targets.test.mjs` — and two spellings of "what the top cross is" is the drift this
+// repository keeps consolidating out of its seeded generators. `test/fixtures/independent-predicates.mjs`
+// holds it, and holds the reason it may never import `lib/stage-targets.js`.
 
-export const PREDICATE = {
-  cross: eng.crossSolved,
-  'first-layer': eng.keeping(eng.CROSS, eng.F1L),
-  'two-layers': eng.firstTwoLayers,
-  'top-cross': (s) => eng.firstTwoLayers(s) && eng.topEdgesOriented(s),
-  'corners-home': (s) => eng.firstTwoLayers(s) && eng.topEdgesOriented(s)
-    && eng.U_CORNERS.every((c) => s.cp[c] === c),
-  'six-cross': (s) => s.ep.every((v, i) => v === i) && s.eo.every((v) => v === 0),
-  solved: eng.wholeCubeSolved,
-};
+export const PREDICATE = INDEPENDENT_PREDICATE;
 
 // ---- oracle A: full cubes, the app's predicates, nothing shared --------------------------------
 
@@ -90,13 +91,13 @@ function tupleKey(codes) {
 
 /** Backwards ball of radius `r` around a target's projected goal set. */
 export function goalBall(target, r) {
-  const parts = target.parts.map((p) => P[p]);
+  const parts = [...target.projections];
   // The goal tuples are the cross product of each part's goal codes. Every part here has either one
   // goal code or 81 of them, so the product stays small.
   let tuples = [[]];
   for (const part of parts) {
     const next = [];
-    for (const prefix of tuples) for (const g of part.goalCodes) next.push([...prefix, g]);
+    for (const prefix of tuples) for (const g of part.goals) next.push([...prefix, g]);
     tuples = next;
   }
   const ball = new Map();
@@ -275,7 +276,7 @@ if (!RUN_DIRECTLY) {
     const state = applyAlg(SOLVED, row.scramble);
     for (const target of TARGETS) {
       const want = row.d[target.id];
-      const got = searchExact(target, state);
+      const got = solveToState(target, state, { nodeBudget: 4_000_000, maxDepth: 14 });
       const ok = want === null ? got.moves === null || got.moves > 10 : got.moves === want;
       if (ok) pass++;
       else { fail++; console.log(`FAIL ${target.id} ${row.scramble}: frozen ${want}, engine ${got.moves}`); }

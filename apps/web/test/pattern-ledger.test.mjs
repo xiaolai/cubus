@@ -22,7 +22,7 @@ import { FACE_ORDER, canonicalDesign, canonicalLook, symmetryOrder, verify } fro
 import { LEDGER_DEPTH, SET_PATTERNS, STATE_PATTERNS } from './fixtures/pattern-ledger.mjs';
 import { SOLVER_PHASES } from '../bench/solver-phases.mjs';
 import { PREDICATE, fullCubeDistance, goalBall, meetInTheMiddle } from '../bench/solve-to-state-oracle.mjs';
-import { TARGETS } from '../bench/solve-to-state-spike.mjs';
+import { TARGETS } from '../lib/stage-targets.js';
 import { solveByMethod } from '../lib/method-solver.js';
 import { lcg, seededScrambles } from './fixtures/seeded-scrambles.mjs';
 
