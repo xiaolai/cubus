@@ -30,6 +30,12 @@ from .model import REG_MAX, boxes_to_distances, distances_to_boxes
 W_CLS = 0.5
 W_BOX = 7.5
 W_DFL = 1.5
+# The contrastive term's weight. Small on purpose: this branch must sharpen an extra, relational
+# view of colour, never outvote the detector that has to keep finding stickers at all.
+W_EMB = 0.5
+# Temperature for the within-image supervised contrastive loss (Khosla et al., 2020). 0.1 is that
+# paper's regime; nothing here has been swept, so it is a starting value and is recorded as one.
+EMB_TAU = 0.1
 
 
 def complete_iou(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -80,14 +86,15 @@ def distribution_focal_loss(pred_bins: torch.Tensor, target: torch.Tensor) -> to
 
 
 class DetectionLoss(nn.Module):
-    def __init__(self, num_classes: int):
+    def __init__(self, num_classes: int, embed_dim: int = 0):
         super().__init__()
         self.num_classes = num_classes
+        self.embed_dim = embed_dim
         self.assigner = TaskAlignedAssigner(num_classes)
 
     def forward(self, outputs, targets) -> tuple[torch.Tensor, dict[str, float]]:
         """`outputs` is CubeDet.forward's tuple; `targets` is the collated batch from data.py."""
-        cls_logits, reg_dist, points, strides = outputs
+        cls_logits, reg_dist, points, strides, embeddings = outputs
         head_distances = (reg_dist.softmax(dim=-1) * torch.arange(
             REG_MAX + 1, device=reg_dist.device, dtype=reg_dist.dtype
         )).sum(dim=-1)
@@ -131,11 +138,68 @@ class DetectionLoss(nn.Module):
             loss_box = cls_logits.sum() * 0.0
             loss_dfl = cls_logits.sum() * 0.0
 
-        total = W_CLS * loss_cls + W_BOX * loss_box + W_DFL * loss_dfl
+        loss_emb = self._embedding_loss(embeddings, positive, target_scores)
+
+        total = W_CLS * loss_cls + W_BOX * loss_box + W_DFL * loss_dfl + W_EMB * loss_emb
         return total, {
             "cls": float(loss_cls.detach()),
             "box": float(loss_box.detach()),
             "dfl": float(loss_dfl.detach()),
+            "emb": float(loss_emb.detach()),
             "total": float(total.detach()),
             "positives": int(positive.sum()),
         }
+
+    def _embedding_loss(self, embeddings, positive, target_scores):
+        """Supervised contrastive loss over positive anchors, computed WITHIN EACH IMAGE.
+
+        Within-image is the entire mechanism and is not an optimisation detail. Pooling pairs
+        across the batch would let the network satisfy the loss by learning absolute colour again
+        -- "all oranges everywhere are near each other" -- which is the very thing that does not
+        survive a change of illuminant. Restricted to one image, the only way to pull two stickers
+        together and push a third away is to use cues that are invariant to the light THAT image
+        was taken under, because every anchor in the image shares it. The shared illuminant
+        cancels, and what is left is the paint.
+
+        This is why it succeeds where the `context` branch in model.py did not. That one handed the
+        classifier an image-level summary and hoped it would be used; the loss remained absolute
+        cross-entropy, so nothing required it. Here the objective is itself relational, so the
+        relation is not optional.
+
+        Anchors come from the assigner's positives, so they are already the ones that own a
+        sticker, and their target colour is the argmax of the assigned score row.
+        """
+        if embeddings is None or not bool(positive.any()):
+            zero = embeddings.sum() * 0.0 if embeddings is not None else None
+            return zero if zero is not None else torch.zeros((), device=positive.device)
+
+        feats = F.normalize(embeddings, dim=-1)
+        labels = target_scores.argmax(dim=-1)
+        terms = []
+        for b in range(feats.shape[0]):
+            sel = positive[b].nonzero(as_tuple=True)[0]
+            if sel.numel() < 2:
+                continue
+            f, y = feats[b, sel], labels[b, sel]
+            same = y[:, None] == y[None, :]
+            eye = torch.eye(len(sel), dtype=torch.bool, device=f.device)
+            # A positive pair needs a partner that is not itself; an anchor whose colour appears
+            # once in this image has no positive and must be dropped, or its row contributes a
+            # log of zero. A uniform face is the opposite case and is fine: every pair is positive.
+            valid = (same & ~eye).any(dim=1)
+            if not bool(valid.any()):
+                continue
+            logits = f @ f.t() / EMB_TAU
+            logits = logits.masked_fill(eye, float("-inf"))
+            log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+            # The diagonal is -inf so an anchor cannot be its own positive, and the mask below is
+            # zero there. 0 * -inf is NaN, not 0 -- so the diagonal must be zeroed in the VALUE,
+            # not merely weighted to zero. Left as it was, every batch returned a NaN loss from
+            # the first step, and the detection terms beside it stayed perfectly finite.
+            log_prob = log_prob.masked_fill(eye, 0.0)
+            pos = (same & ~eye).float()
+            per_anchor = -(pos * log_prob).sum(dim=1) / pos.sum(dim=1).clamp(min=1.0)
+            terms.append(per_anchor[valid].mean())
+        if not terms:
+            return embeddings.sum() * 0.0
+        return torch.stack(terms).mean()
