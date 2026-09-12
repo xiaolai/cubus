@@ -2,13 +2,45 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    // The decoder tests do real work: a misread decode on a solved cube with one wrong sticker is
-    // ~1 s alone, ~2.7 s under v8 coverage instrumentation, and 7 s when the package's parallel
-    // workers share the machine with the WebKit suite (measured 2026-09-05, load average 12 on 10
-    // cores). vitest's 5 s default is a hang detector, and it was firing on legitimate work: two
-    // tests had already grown explicit 60 s budgets one at a time before the gate found two more.
-    // One budget for the class, sized so a genuine hang still fails.
-    testTimeout: 60_000,
+    // ONE BUDGET FOR THE DECODER TESTS, and what it is and is not.
+    //
+    // WHAT IT IS. vitest's 5 s default is a hang detector, and these tests do seconds of real search,
+    // so it fires on legitimate work. This is the budget for that class. It is NOT a performance
+    // assertion: nothing here is trying to hold the decoder to a speed.
+    //
+    // WHAT IT CANNOT DO, corrected 2026-09-12 after an audit checked it. The comment here used to say
+    // a hang is an infinite loop in a synchronous call and that this catches it. It does not. These
+    // tests are synchronous, the deadline is a timer on the same thread, and a timer cannot run while
+    // a synchronous call is on the stack — so a wedged loop is never interrupted, and an overrun is
+    // reported only once control comes back. What this bound actually buys is a report that a test
+    // took too long, plus a real interrupt for anything asynchronous. A genuinely wedged loop is the
+    // pool's problem, not this number's.
+    //
+    // WHY 180 s, from measurements and not from an estimate. It was 60 s against figures from
+    // 2026-09-05 (~1 s alone, ~2.7 s under v8 coverage, 7 s under contention). Two things then moved.
+    //
+    //   ADR 0001's colour-scheme dimension made the heaviest `ai-assemble` cases search both filings,
+    //   taking them to 7.1 s and 11.2 s alone. That WAS a cause rather than a bound, and it is fixed:
+    //   `diagnoseAcrossSchemes` now deepens one shared cap across the schemes instead of asking each
+    //   for a full-depth answer, which is 5x on those two cases and halves the file (27.9 s to 14.9 s,
+    //   same machine, same minute). The bound is not carrying that any more.
+    //
+    //   What remains is machine variance, and it is large: the same package's coverage run measures
+    //   between 151 s and 277 s here, and the same file between 27.9 s and 57.5 s, with no code
+    //   changing in between. In the slow regime `misread-decode.test.ts`'s overstatement case — 5.7 s
+    //   alone, untouched by the optimisation above — passed 60 s and failed the gate. That case is now
+    //   the binding one, and a bound it can cross on a quiet laptop is not a bound.
+    //
+    // 180 s is roughly 30x the binding case's uncontended cost and about 4.5x the worst single-case
+    // figure ever measured here (40 s, in the slow regime under coverage). The cost of the headroom is
+    // a couple of extra minutes before a slow test is reported, once.
+    //
+    // NO AUTOMATIC GUARD ON THE MARGIN, deliberately. What rots is the relationship between the bound
+    // and the cost, and any check on it would be a wall-clock assertion on a machine that varies by
+    // 1.8x — it would fail for the reason this bound did. The figures above are the guard: they say
+    // what the bound is a multiple of, so the next person to make the decoder slower can see whether
+    // the margin has been spent.
+    testTimeout: 180_000,
     coverage: {
       provider: 'v8',
       // Everything that can be driven without a webcam. camera.ts (getUserMedia) and the two files

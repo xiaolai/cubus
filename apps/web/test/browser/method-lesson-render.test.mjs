@@ -23,6 +23,7 @@ import { SOLVED as SOLVED_STATE, applyAlg } from '../../lib/cube-pieces.js';
 import { lessonCues, namedPieces } from '../../lib/method-lesson.js';
 import { methodFor, solveByMethod } from '../../lib/method-solver.js';
 import { freePort } from '../free-port.mjs';
+import { lcg, randomAlg } from '../fixtures/seeded-scrambles.mjs';
 
 const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 const Cube = (await import(new URL('../../vendor/cubejs.js', import.meta.url))).default;
@@ -47,20 +48,9 @@ const EVERY_STAGE = ['cross', 'first-layer', 'middle-layer', 'top-cross', 'top-f
  * for, and the search failing is itself a finding.
  */
 function findSample() {
-  const faces = ['U', 'R', 'F', 'D', 'L', 'B'];
-  const suffix = ['', "'", '2'];
-  let x = 20260908 >>> 0;
-  const rnd = () => ((x = (x * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const rnd = lcg(20260908);
   for (let i = 0; i < 400; i++) {
-    const alg = [];
-    let prev = -1;
-    while (alg.length < 25) {
-      const f = Math.floor(rnd() * 6);
-      if (f === prev) continue;
-      prev = f;
-      alg.push(faces[f] + suffix[Math.floor(rnd() * 3)]);
-    }
-    const scramble = alg.join(' ');
+    const scramble = randomAlg(rnd, 25);
     const lesson = solveByMethod(applyAlg(SOLVED_STATE, scramble), methodFor());
     const stages = new Set(lesson.steps.map((s) => s.stage));
     if (!EVERY_STAGE.every((w) => stages.has(w))) continue;

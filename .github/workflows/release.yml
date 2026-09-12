@@ -202,6 +202,12 @@ jobs:
       #
       # The two workflows state this separately because they are separate workflows, not because
       # the requirement differs. If a third ever runs the web suites, it needs both lines too.
+      # `--with-deps` shells out to apt, so the same hygiene the desktop job below gets. An audit
+      # found this job missing it: the class was fixed at three call sites and this was the fourth,
+      # which is how one defect costs two passes. A release gate is the worst place to leave it —
+      # a third party's index mismatch would block a tagged build.
+      - uses: ./.github/actions/apt-ubuntu-only
+
       - name: Browser engines for the web suites
         run: pnpm --filter cubus-web exec playwright install --with-deps webkit chromium
 
@@ -239,10 +245,12 @@ jobs:
 
       # 22.04, not latest: the AppImage/deb produced on a newer glibc will not start on an older
       # distro, and the runner's glibc is the floor every Linux user inherits.
+      - uses: ./.github/actions/apt-ubuntu-only
+        if: runner.os == 'Linux'
+
       - name: Install Linux system deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libdbus-1-dev patchelf pkg-config
