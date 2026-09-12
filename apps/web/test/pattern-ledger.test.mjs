@@ -5,11 +5,13 @@
 // views, this many stickers read wrong. None of that is worth having unless it is checked, because a
 // generated file that drifted from its generator looks exactly like one that did not.
 //
-// The expensive half of the claim — that a row's `moves` is MINIMAL — cannot be rechecked here; it
-// rests on the search having been exhaustive for its radius, which is the generator's business and
-// takes five minutes. What is checked here is everything else, and one anchor on minimality: the three
-// named patterns whose minima were independently proved by meet-in-the-middle in
-// `bench/solve-to-state-oracle.mjs` must appear at exactly those lengths.
+// The expensive half of the claim — that a row's `moves` is MINIMAL — used to rest entirely on the
+// search having been exhaustive for its radius, with three named patterns as the only anchor. It does
+// not any more. Every row is now graded against the oracles in `bench/solve-to-state-oracle.mjs`, and
+// the trade goes both ways: the ledger is the only corpus in this repository that supplies PROVED
+// distances at depths 6 and 7, which is past the reach of the breadth-first oracle that was the
+// meet-in-the-middle oracle's only check. Two derivations that share nothing but the cube model, each
+// grading the other, and a disagreement would condemn both until it was resolved.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -19,7 +21,8 @@ import { toFacelets } from '../lib/two-phase.js';
 import { FACE_ORDER, canonicalDesign, canonicalLook, symmetryOrder, verify } from '../bench/cube-look.mjs';
 import { LEDGER_DEPTH, SET_PATTERNS, STATE_PATTERNS } from './fixtures/pattern-ledger.mjs';
 import { SOLVER_PHASES } from '../bench/solver-phases.mjs';
-import { PREDICATE } from '../bench/solve-to-state-oracle.mjs';
+import { PREDICATE, fullCubeDistance, goalBall, meetInTheMiddle } from '../bench/solve-to-state-oracle.mjs';
+import { TARGETS } from '../bench/solve-to-state-spike.mjs';
 import { solveByMethod } from '../lib/method-solver.js';
 import { lcg, seededScrambles } from './fixtures/seeded-scrambles.mjs';
 
@@ -45,8 +48,9 @@ const familyKey = (alg) => {
 
 test('each row is a FAMILY: its variants are the same pattern, and no two rows are', () => {
   // The correction the owner caught. Deduplicating only by the 24 rotations counted mirrors and
-  // inverses twice: 213 rows where there are 95 patterns. A row now carries its variants, and this is
-  // what stops the merge being a claim in a comment.
+  // inverses twice — today that is 141 rotation classes for 73 patterns, and when the owner found it
+  // the numbers were 213 and 95. A row carries its variants, which is what stops the merge being a
+  // claim in a comment.
   const keys = new Set();
   let rotationClasses = 0;
   for (const row of STATE_PATTERNS) {
@@ -118,26 +122,98 @@ test('the three independently proved minima appear at exactly those lengths', ()
   }
 });
 
+test('every maneuver in the ledger leaves every piece turned the right way up', () => {
+  // THE TWIST CUT, asserted rather than trusted (owner's call, 2026-09-12). A permuted piece reads as
+  // design, because the whole piece moved. A twisted corner or a flipped edge shows ONE sticker of the
+  // wrong colour inside an otherwise clean block, which a child cannot tell from a misscramble.
+  //
+  // Every maneuver, not only the row's own: a variant is something a reader may perform instead, so a
+  // twisted variant would hand them the cube this cut exists to remove. The generator drops a picture
+  // only when NO route to it inside the radius is straight, so the rows that survive have straight
+  // variants too, and this is what says so.
+  //
+  // Measured against the cube's own centres, which is the only frame a child has. The fixture's header
+  // says why that matters: `canonicalLook` renames colours as it rotates, so twist is not a property of
+  // the picture, and the first version of the cut assumed it was.
+  let checked = 0;
+  for (const row of STATE_PATTERNS) {
+    for (const alg of [row.alg, ...row.variants]) {
+      const s = applyAlg(SOLVED, alg);
+      assert.deepEqual([...s.co], new Array(8).fill(0), `${alg}: a corner is twisted`);
+      assert.deepEqual([...s.eo], new Array(12).fill(0), `${alg}: an edge is flipped`);
+      checked++;
+    }
+  }
+  assert.ok(checked > STATE_PATTERNS.length, 'the variants were not reached, so this checked only the heads');
+});
+
+test("the ledger grades the oracle past the reach of the oracle's own check", () => {
+  // WHAT THIS IS FOR, and it is not the ledger. `meetInTheMiddle` claims to be exact to ten moves, and
+  // until now the only independent thing it was graded against was `fullCubeDistance`, a plain
+  // breadth-first search over real cubes that runs out of memory past five. So half its claimed range
+  // had nothing checking it.
+  //
+  // The ledger closes that. Its `moves` comes from an exhaustive enumeration of every canonical
+  // maneuver to depth 7, keyed by picture — a derivation that shares no search, no table and no
+  // projection with the oracle, only the cube model underneath both. Depths 6 and 7 are the rows that
+  // matter, because that is exactly where the breadth-first oracle cannot go.
+  //
+  // A ball of radius 5 and a forward search of 2 is exact to 7, which covers every row. The forward
+  // radius is a property of the corpus, not of any row's answer: nothing here tells the oracle what to
+  // look for.
+  const solved = TARGETS.find((t) => t.id === 'solved');
+  const ball = goalBall(solved, 5);
+  const byDepth = new Map();
+  for (const row of STATE_PATTERNS) {
+    const state = applyAlg(SOLVED, row.alg);
+    const got = meetInTheMiddle(state, solved, ball, 2);
+    assert.equal(got, row.moves,
+      `${row.alg}: the ledger proves ${row.moves} moves and the oracle says ${got}`);
+    byDepth.set(row.moves, (byDepth.get(row.moves) ?? 0) + 1);
+  }
+  // The corpus has to reach past five or this case is only re-checking what was already checked.
+  const past = [...byDepth.entries()].filter(([d]) => d > 5).reduce((a, [, n]) => a + n, 0);
+  assert.ok(past >= 40,
+    `only ${past} rows are deeper than five moves — this case exists to grade the range that nothing else does`);
+  assert.ok(byDepth.has(7), 'no row at the search radius itself, which is the hardest case for the oracle');
+
+  // And where the breadth-first oracle CAN reach, it must agree too — the third derivation, over real
+  // cubes through the app's own `wholeCubeSolved` rather than through any projection. Capped at the
+  // claimed distance, so a row at four moves costs a depth-4 search and not a depth-5 one; a `null`
+  // from the cap is a failure here, which is what makes the cap safe.
+  let shallow = 0;
+  for (const row of STATE_PATTERNS) {
+    if (row.moves > 5) continue;
+    const got = fullCubeDistance(applyAlg(SOLVED, row.alg), PREDICATE.solved, row.moves);
+    assert.equal(got, row.moves,
+      `${row.alg}: the ledger proves ${row.moves} moves and the full-cube oracle says ${got}`);
+    shallow++;
+  }
+  assert.ok(shallow >= 8, `only ${shallow} rows were in the breadth-first oracle's range`);
+});
+
 test('the ledger spans more than one symmetry order, or the search found nothing', () => {
-  // A ledger of 213 rows all at the same order would pass every assertion above while being the
-  // output of a broken criterion. The measured distribution at depth 7 is 1 at order 24, 25 at 8 and
-  // 187 at 4; this asserts the shape rather than the exact counts, which move with the radius.
+  // A ledger of rows all at the same order would pass every assertion above while being the output of
+  // a broken criterion. The measured distribution at depth 7 is 1 family at order 24, 13 at 8 and 59
+  // at 4; this asserts the shape rather than the exact counts, which move with the radius.
   const orders = new Set(STATE_PATTERNS.map((r) => r.order));
   assert.ok(orders.size >= 3, `only ${orders.size} distinct symmetry orders in the ledger`);
   assert.ok(orders.has(24), 'no picture that looks the same from every angle — the Checkerboard is one');
   // Sizes pinned, because every assertion in this file is about rows that SURVIVED. An audit showed a
   // truncated ledger passing everything: delete a family and nothing noticed. These two numbers move
   // only when the search radius or the dedup rule moves, and both are deliberate acts.
-  assert.equal(STATE_PATTERNS.length, 95,
+  // 73 since the twist cut of 2026-09-12, which took 72 of the 213 pictures above the order cut; the
+  // generated fixture's header records what went and why.
+  assert.equal(STATE_PATTERNS.length, 73,
     'the family count changed — regenerate at the same depth, or say why the number moved');
   // DISTINCT pictures, not array entries. Counting entries let a distinct rotation class disappear
   // behind a duplicated variant: set one row's `variants[0]` to its own `alg` and the array still
-  // holds 213 strings while the ledger accounts for 212 pictures. Found by audit.
+  // holds its full count of strings while accounting for one picture fewer. Found by audit.
   const everyAlg = STATE_PATTERNS.flatMap((r) => [r.alg, ...r.variants]);
-  assert.equal(everyAlg.length, 213, 'the ledger no longer lists 213 maneuvers');
+  assert.equal(everyAlg.length, 141, 'the ledger no longer lists 141 maneuvers');
   const distinctLooks = new Set(everyAlg.map((alg) => canonicalLook(toFacelets(applyAlg(SOLVED, alg)))));
-  assert.equal(distinctLooks.size, 213,
-    `the ledger's 213 maneuvers reach only ${distinctLooks.size} distinct pictures — a class has been lost behind a duplicate`);
+  assert.equal(distinctLooks.size, 141,
+    `the ledger's 141 maneuvers reach only ${distinctLooks.size} distinct pictures — a class has been lost behind a duplicate`);
   const maxWrong = Math.max(...STATE_PATTERNS.map((r) => r.wrong));
   assert.ok(maxWrong >= 24, `the busiest picture only has ${maxWrong} stickers wrong`);
 });

@@ -103,6 +103,35 @@ function blankFaces(f) {
   return n;
 }
 
+/**
+ * Is every piece turned the right way up — no twisted corner, no flipped edge?
+ *
+ * THE OWNER'S CUT, 2026-09-12: a twisted pattern is not a pattern. A permuted piece reads as design,
+ * because the whole piece moved. A twisted corner or a flipped edge shows ONE sticker of the wrong
+ * colour inside an otherwise clean block, and a child cannot tell that from a misscramble. A flipped
+ * edge is the same defect on a different piece type, so it goes with the twists.
+ *
+ * MEASURED AGAINST THE CUBE'S OWN CENTRES, and that is the whole subtlety. The first version of this
+ * cut assumed "twisted" was a property of the PICTURE, so it asserted that every maneuver reaching one
+ * canonical look agrees about it — and the assertion fired immediately: `U R2 F2 L2 R2 F2 L2` leaves
+ * every piece straight and `U2 R2 D2 U2 R2 D2 F` does not, yet the two reach the same look.
+ *
+ * The reason is that `canonicalLook` rotates the cube AND RENAMES THE COLOURS, which is the right
+ * notion for "is this the same design" and the wrong one for "is a piece twisted": renaming is not
+ * something a cube does. Measured, because it was worth knowing rather than assuming: of 720
+ * picture-and-view pairs, 192 read differently about orientation depending on the view. A child cannot
+ * use any of those views. The centres never move, so the face a white centre is on IS which face it
+ * is, and the standard frame is the child's frame.
+ *
+ * So the cut is on ROUTES, not on pictures: a look is kept when SOME maneuver within the radius
+ * reaches it with every piece straight, and the row stores the shortest such maneuver. `moves` is
+ * therefore the proved minimum among untwisted routes, which can be longer than the proved minimum
+ * overall; the report prints how often and by how much.
+ */
+function oriented(s) {
+  return s.co.every((v) => v === 0) && s.eo.every((v) => v === 0);
+}
+
 /** How many of the 54 stickers read differently from a solved cube. */
 function stickersWrong(f) {
   let n = 0;
@@ -145,9 +174,22 @@ function walk(state, left, lastFace, lastAxis) {
     if (order >= STORE_MIN_ORDER) {
       const look = canonicalLook(f);
       const prior = found.get(look);
-      if (!prior || path.length < prior.depth) {
-        found.set(look, { order, depth: path.length, alg: path.join(' '), figures: figures(f),
-          wrong: stickersWrong(f), blank: blankFaces(f) });
+      const ori = oriented(state);
+      // TWO candidates per picture, because the twist cut is a cut on routes. `best` is the shortest
+      // maneuver of any kind and exists only so the report can price the cut; `clean` is the shortest
+      // one that leaves every piece straight, and it is what the ledger stores.
+      //
+      // The measurements are built only when one of the two is actually being replaced. Building them
+      // eagerly is correct and wasteful: 4,332 of the 4,720 maneuvers at or above the order cut reach a
+      // picture already seen at the same depth or shallower, and `figures` is ~200 operations.
+      const measure = () => ({ order, depth: path.length, alg: path.join(' '), figures: figures(f),
+        wrong: stickersWrong(f), blank: blankFaces(f) });
+      if (!prior) {
+        const entry = measure();
+        found.set(look, { best: entry, clean: ori ? entry : null });
+      } else {
+        if (path.length < prior.best.depth) prior.best = measure();
+        if (ori && (!prior.clean || path.length < prior.clean.depth)) prior.clean = measure();
       }
     }
   }
@@ -170,6 +212,27 @@ const walkMs = Date.now() - t0;
 // are measured from, and leaving it in would make the ledger's first row a lie about the game.
 const SOLVED_LOOK = canonicalLook(toFacelets(SOLVED));
 found.delete(SOLVED_LOOK);
+
+// THE TWIST CUT — see `oriented` above for what it is measured against and why. Counted by symmetry
+// order before it is applied, so the ledger says what it threw away instead of merely being smaller
+// than it was. A picture here can be perfectly symmetric and still show one corner sticker rotated out
+// of an otherwise solid block, which is the thing being removed.
+const twistedLooks = new Set();
+const twistedByOrder = new Map();
+const looksBeforeTwistCut = found.size;
+/** Pictures whose shortest untwisted route is LONGER than their shortest route of any kind. */
+const twistPrice = [];
+for (const [look, v] of found) {
+  if (v.clean === null) {
+    twistedLooks.add(look);
+    twistedByOrder.set(v.best.order, (twistedByOrder.get(v.best.order) ?? 0) + 1);
+    continue;
+  }
+  if (v.clean.depth > v.best.depth) twistPrice.push({ look, cost: v.clean.depth - v.best.depth });
+}
+for (const look of twistedLooks) found.delete(look);
+// From here the ledger sees one entry per picture again, and it is the untwisted one.
+for (const [look, v] of found) found.set(look, v.clean);
 
 // ---- deduplication, corrected -------------------------------------------------------------------
 //
@@ -255,7 +318,8 @@ const bookRows = BOOK.map(([name, alg]) => {
   const order = orderOf(f);
   const hit = found.get(look);
   if (hit) NAMED.set(look, name);
-  return { name, bookMoves: alg.trim().split(/\s+/).length, order, look, inLedger: Boolean(hit), depth: hit?.depth ?? null };
+  return { name, bookMoves: alg.trim().split(/\s+/).length, order, look, inLedger: Boolean(hit),
+    twisted: twistedLooks.has(look), oriented: oriented(state), depth: hit?.depth ?? null };
 });
 
 // ---- the set patterns ---------------------------------------------------------------------------
@@ -292,7 +356,12 @@ const num = (s, n) => String(s).padStart(n);
 
 console.log(`=== exhaustive symmetry search to ${DEPTH} moves ===================================`);
 console.log(`${visited.toLocaleString()} canonical maneuvers in ${(walkMs / 1000).toFixed(1)} s`);
-console.log(`kept: fixed by at least ${STORE_MIN_ORDER} of the 24 views, then deduplicated properly`);
+console.log(`kept: fixed by at least ${STORE_MIN_ORDER} of the 24 views, untwisted, then deduplicated`);
+console.log(`  ${num(looksBeforeTwistCut, 5)} pictures at or above the order cut`);
+console.log(`  ${num(twistedLooks.size, 5)} reachable no other way than with a twisted corner or a flipped edge — CUT`
+  + `   (by order: ${[...twistedByOrder.entries()].sort((a, b) => b[0] - a[0]).map(([o, n]) => `${o}:${n}`).join(' ')})`);
+console.log(`  ${num(twistPrice.length, 5)} kept, but their shortest UNTWISTED route is longer`
+  + `${twistPrice.length ? ` (by ${[...new Set(twistPrice.map((x) => x.cost))].sort((a, b) => a - b).join(' and ')} moves)` : ''}`);
 console.log(`  ${num(rotationCount, 5)} up to the 24 rotations   (a picture held differently)`);
 console.log(`  ${num(designCount, 5)} up to the 48 symmetries   (mirrors merged)`);
 console.log(`  ${num(states.length, 5)} up to symmetry and inverse — what the ledger stores\n`);
@@ -316,8 +385,9 @@ console.log('\n=== the book\'s fourteen, against the search ====================
 console.log(`  ${pad('pattern', 26)} ${pad('book', 5)} ${pad('order', 6)} ${pad('found', 6)} note`);
 for (const r of bookRows) {
   const note = r.inLedger ? 'in the ledger'
-    : r.order < STORE_MIN_ORDER ? `order ${r.order} is below the cut of ${STORE_MIN_ORDER}`
-      : `order ${r.order}, but further than ${DEPTH} moves`;
+    : r.twisted ? `order ${r.order} at ${r.depth}, but CUT: a piece is turned the wrong way`
+      : r.order < STORE_MIN_ORDER ? `order ${r.order} is below the cut of ${STORE_MIN_ORDER}`
+        : `order ${r.order}, but further than ${DEPTH} moves`;
   console.log(`  ${pad(r.name, 26)} ${pad(r.bookMoves, 5)} ${pad(r.order, 6)} ${pad(r.depth ?? '-', 6)} ${note}`);
 }
 
@@ -340,15 +410,33 @@ if (EMIT) {
 //   re-verify:  node --test apps/web/test/pattern-ledger.test.mjs
 //
 // Every picture within ${DEPTH} moves of solved that is fixed by at least ${STORE_MIN_ORDER} of the 24
-// whole-cube rotations — which is what "pretty" means once it is made mechanical, and is the property
-// a checkerboard, a ring of dots and a cube-in-a-cube all share. The search was exhaustive for that
-// radius, so an entry's \`moves\` is a proved minimum over the whole radius and not a best effort.
+// whole-cube rotations AND leaves every piece turned the right way up — which is what "pretty" means
+// once it is made mechanical, and is the property a checkerboard, a ring of dots and a cube-in-a-cube
+// all share. The search was exhaustive for that radius, so an entry's \`moves\` is a proved minimum
+// over the whole radius and not a best effort.
 //
-// THE CUT IS PART OF THE CLAIM. Pictures fixed by exactly two of the 24 are found and COUNTED and not
-// kept — at depth ${DEPTH} there are over a hundred thousand such maneuvers, and a ledger of them is a
-// database rather than a list. So this file is complete for order ${STORE_MIN_ORDER} and above, and
-// says nothing about order 2. The first version of this header said "more than one", which claimed a
-// completeness it does not have.
+// TWO CUTS, AND BOTH ARE PART OF THE CLAIM.
+//
+// ORDER. Pictures fixed by exactly two of the 24 are found and COUNTED and not kept — at depth
+// ${DEPTH} there are over a hundred thousand such maneuvers, and a ledger of them is a database rather
+// than a list. So this file is complete for order ${STORE_MIN_ORDER} and above, and says nothing about
+// order 2. The first version of this header said "more than one", which claimed a completeness it does
+// not have.
+//
+// TWIST. ${twistedLooks.size} of the ${looksBeforeTwistCut} pictures above the order cut cannot be
+// reached inside the radius without leaving a corner twisted or an edge flipped, and are cut too
+// (owner's call, 2026-09-12). A permuted piece reads as design, because the whole piece moved; a
+// twisted corner shows ONE sticker of the wrong colour inside an otherwise clean block, and a child
+// cannot tell that from a misscramble.
+//
+// \`moves\` is the proved minimum among UNTWISTED routes, which could in principle be longer than the
+// proved minimum over all routes. ${twistPrice.length === 0 ? 'Measured: for every picture kept here it is not — the shortest route to a\n// picture that can be reached straight at all is already a straight one.' : `For ${twistPrice.length} of the pictures kept here it is longer.`}
+//
+// The cut is on ROUTES and not on pictures, which is the opposite of how it was first written. Twist is
+// measured against the cube's own CENTRES, the only frame a child has, while \`canonicalLook\` renames
+// colours as it rotates — so two maneuvers can reach one look and disagree about whether a piece is
+// twisted. Of 720 picture-and-view pairs, 192 read differently about orientation under that renaming.
+// An assertion in the generator caught the wrong version on its first run; the notes there say why.
 //
 // \`look\` is the canonical facelet string: the smallest of the picture's 24 views, so two cubes that
 // are the same picture held differently are one entry. \`order\` is how many views leave it unchanged.
