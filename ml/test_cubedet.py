@@ -13,6 +13,7 @@ Run: ml/venv/bin/python -m pytest ml/test_cubedet.py -q
 
 from __future__ import annotations
 
+import math
 import random
 import sys
 from pathlib import Path
@@ -768,3 +769,88 @@ def test_export_graph_reads_no_tensor_shapes():
     assert ops["Shape"] == 0, f"{ops['Shape']} Shape op(s): something reads a tensor shape at runtime"
     assert ops["Slice"] == 0, f"{ops['Slice']} Slice op(s): use torch.split for a channel-axis split"
     assert ops["Expand"] == 0, f"{ops['Expand']} Expand op(s): the anchor grid must stay a constant"
+
+
+def _contrastive_batch(labels):
+    """Two images, four stickers each, at fixed positions. `labels` gives each image's colours."""
+    boxes = torch.tensor(
+        [[[100.0, 100.0, 140.0, 140.0], [200.0, 100.0, 240.0, 140.0],
+          [100.0, 200.0, 140.0, 240.0], [200.0, 200.0, 240.0, 240.0]]] * 2
+    )
+    return {"labels": torch.tensor(labels), "boxes": boxes, "mask": torch.ones(2, 4, dtype=torch.bool)}
+
+
+def test_embedding_branch_leaves_the_exported_tensor_alone():
+    """The colour-embedding branch is training-only, and the app must not be able to tell.
+
+    `forward_export` is the app's contract — [1, 4 + 6, 8400] read at fixed row offsets by
+    `decodeDetections`, and by both native plugins and the golden gate. A new head that changed it
+    would turn a model experiment into a cross-platform migration.
+    """
+    plain = CubeDet().eval()
+    with_emb = CubeDet(embed_dim=16).eval()
+    x = torch.zeros(1, 3, IMG_SIZE, IMG_SIZE)
+    assert with_emb.forward_export(x).shape == plain.forward_export(x).shape
+    assert with_emb.forward_export(x).shape == (1, 4 + NUM_CLASSES, 8400)
+    # And it is genuinely absent by default, so an unflagged model carries no extra parameters.
+    assert plain.head.embed_dim == 0
+    assert not any("emb_" in n for n, _ in plain.named_parameters())
+    assert any("emb_" in n for n, _ in with_emb.named_parameters())
+
+
+def test_embedding_loss_is_finite_and_is_computed_WITHIN_each_image():
+    """Two assertions, and the second one is the entire mechanism.
+
+    FINITE: the diagonal of the similarity matrix is masked to -inf so an anchor cannot be its own
+    positive, and the pair mask is zero there. 0 * -inf is NaN, so the diagonal has to be zeroed in
+    the VALUE and not merely weighted out. The first version was not, and every batch returned a
+    NaN total from step one while the three detection terms beside it stayed perfectly finite.
+
+    WITHIN-IMAGE: pooling pairs across the batch would let the network satisfy the loss by learning
+    absolute colour again -- "every orange anywhere sits near every other orange" -- which is
+    exactly what stops surviving a change of illuminant, and is the thing this branch exists to
+    avoid.
+
+    The check is DECOMPOSITION, not a permutation. A within-image loss over a batch is the mean of
+    the per-image losses, exactly; a batch-pooled one is not, because it also counts cross-image
+    pairs that neither single-image run can see. The model runs in eval() so BatchNorm cannot make
+    a batch of two differ from two batches of one for unrelated reasons.
+
+    The first version of this test compared two label GROUPINGS and asserted the loss moved. It
+    passed against a deliberately batch-pooled mutation of the loss -- because regrouping changes
+    which embeddings pair up under pooling too -- so it asserted nothing. Written down because a
+    test that cannot fail is worse than no test: it reports the property as checked.
+    """
+    torch.manual_seed(0)
+    model = CubeDet(embed_dim=16, backbone=CSP_BACKBONE).eval()
+    x = torch.rand(2, 3, IMG_SIZE, IMG_SIZE)
+    criterion = DetectionLoss(NUM_CLASSES, embed_dim=16)
+
+    labels = [[1, 1, 4, 4], [1, 1, 4, 4]]
+    with torch.no_grad():
+        _, both = criterion(model(x), _contrastive_batch(labels))
+        singles = []
+        for i in (0, 1):
+            batch = _contrastive_batch(labels)
+            one = {k: v[i : i + 1] for k, v in batch.items()}
+            _, parts = criterion(model(x[i : i + 1]), one)
+            singles.append(parts["emb"])
+
+    assert math.isfinite(both["emb"]), "contrastive term is NaN — the 0 * -inf diagonal is back"
+    mean_of_singles = sum(singles) / 2
+    assert abs(both["emb"] - mean_of_singles) < 1e-4, (
+        f"batch loss {both['emb']:.6f} is not the mean of the per-image losses "
+        f"{mean_of_singles:.6f}, so pairs are being formed ACROSS images and the illuminant no "
+        "longer cancels"
+    )
+
+
+def test_embedding_loss_contributes_exactly_nothing_when_the_branch_is_off():
+    """Off must be free, not merely small: the default model's training is unchanged."""
+    torch.manual_seed(0)
+    model = CubeDet(backbone=CSP_BACKBONE)
+    model.train()
+    criterion = DetectionLoss(NUM_CLASSES, embed_dim=0)
+    _, parts = criterion(model(torch.rand(2, 3, IMG_SIZE, IMG_SIZE)),
+                         _contrastive_batch([[1, 1, 4, 4], [3, 3, 0, 0]]))
+    assert parts["emb"] == 0.0
