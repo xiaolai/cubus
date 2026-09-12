@@ -192,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
                              "measured motivation in cubedet/model.py::PretrainedBackbone")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument("--init-from", type=Path, default=None,
+                        help="load WEIGHTS from a checkpoint and start a fresh schedule "
+                             "(sim-to-real fine-tuning). --resume wins if both are given.")
     parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--allow-agpl-in-env", action="store_true",
                         help="train even if ultralytics is importable; warns and records it")
@@ -247,6 +250,34 @@ def main(argv: list[str] | None = None) -> int:
     ema = ModelEMA(model, cfg.ema_decay)
 
     start_epoch, best = 0, -1.0
+    if args.init_from and args.init_from.exists() and not (args.resume and args.resume.exists()):
+        # WEIGHTS ONLY, FRESH SCHEDULE. --resume restores the optimiser, the scheduler and the
+        # epoch counter, which is exactly right for picking a crashed run back up and exactly
+        # wrong for fine-tuning: the point of a fine-tune is a NEW, short, low-LR schedule over a
+        # different dataset. best.pt cannot be resumed from in any case -- it carries `model` and
+        # metadata and no `ema`, `optimiser` or `scheduler` -- so without this the standard
+        # sim-to-real recipe could not be expressed at all.
+        #
+        # --resume takes precedence deliberately. run-cubedet.sh appends --resume last.pt when
+        # one exists, so an automatic container restart mid-fine-tune must CONTINUE the fine-tune
+        # rather than silently begin it again from the base weights every time the box resets.
+        state = torch.load(args.init_from, map_location=device, weights_only=True)
+        # Refuse a mismatch rather than let load_state_dict paper over it. A checkpoint whose
+        # backbone or resolution differs builds a model that loads, trains and exports, and is
+        # quietly wrong -- the same failure mode the stride-cut probe exists to prevent.
+        for key, mine in (("backbone", cfg.backbone), ("width", cfg.width),
+                          ("imgsz", cfg.imgsz), ("num_classes", NUM_CLASSES),
+                          ("context", cfg.context)):
+            theirs = state.get(key)
+            if theirs is not None and theirs != mine:
+                raise SystemExit(
+                    f"--init-from {args.init_from}: checkpoint {key}={theirs!r} but this run is "
+                    f"{key}={mine!r}. Fine-tuning across architectures is not what this flag does."
+                )
+        model.load_state_dict(state["model"])
+        ema.module.load_state_dict(state["model"])
+        print(f"initialised weights from {args.init_from} (epoch {state.get('epoch')}); "
+              f"fresh optimiser and schedule over {cfg.epochs} epochs at lr={cfg.lr}")
     if args.resume and args.resume.exists():
         # weights_only=True: the checkpoint holds tensors, numbers and strings and nothing else, so
         # the permissive unpickler has no reason to be used. A training checkpoint is a file that
