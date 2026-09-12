@@ -315,6 +315,24 @@ const stringLiterals = (src) => walk(src).literals;
  *  `}` inside the block and silently sanctioned the 66 lines between there and the real close;
  *  re-indenting the block by two spaces would equally have made it match nothing at all, and
  *  `assert.ok(gated)` was the only thing standing between that and a vacuous pass. */
+/**
+ * THE VOCABULARY OF A MINIMALITY CLAIM — every phrasing this app is allowed to make one in.
+ *
+ * A regex, and it is the weak point of the whole invariant: a claim worded a fourth way slips
+ * past. That is a known limit rather than an oversight, and it is why the SOURCES are counted by
+ * region as well: a new sentence has to live somewhere, and a fourth region fails the case below
+ * whatever words it chose. Adding a phrasing to the app means adding it here, which is the point.
+ *
+ * `the shortest way` joined it with the stage-repair feature (dev-docs/solve-to-state-plan.md §6).
+ * The bare word `shortest` was NOT used: `TIER_LABEL.shortest` is a tier's name and
+ * "Keeps looking for a shorter one" is a description of a search, and neither is a claim about a
+ * cube — flagging them would have taught the next reader to add exceptions rather than to think.
+ */
+const CLAIM = /proved|the minimum|the shortest way/i;
+
+/** How many of a source's string literals make a claim. One counter, used by every case here. */
+const claimsIn = (src) => stringLiterals(src).filter((lit) => CLAIM.test(lit)).length;
+
 const PROVE_ANCHOR = 'if (proveBtn && optimalCapability()';
 function gatedProveBlock(src) {
   const at = src.indexOf(PROVE_ANCHOR);
@@ -329,9 +347,13 @@ function gatedProveBlock(src) {
   return src.slice(at, walk(src, { from: brace, balanced: true }).end);
 }
 
-test('the app can say "proved" from exactly three places, and nowhere else', () => {
-  // Three sanctioned regions, in two categories — and the categories are what keep this test
-  // meaningful as the feature grows, rather than accumulating one exception per string.
+test('the app can claim a minimum from exactly three places, and nowhere else', () => {
+  // Three sanctioned regions IN app.js, in two categories — and the categories are what keep this
+  // test meaningful as the feature grows, rather than accumulating one exception per string.
+  // A FOURTH source exists and is not in this file at all: the stage repair's `STAGE_COPY`, in
+  // lib/stage-report.js, which the case below owns. It is deliberately somewhere else — the
+  // sentence belongs beside the five chip states it is one of — and the split is why this case
+  // asserts that app.js itself carries no claim outside its three.
   //
   // A CLAIM about a particular cube. Exactly two ways to hold one, and both are gated on
   // actually holding it:
@@ -353,8 +375,7 @@ test('the app can say "proved" from exactly three places, and nowhere else', () 
   const setting = app.match(/const PROVE_COPY = \{[\s\S]*?\n\};/)?.[0] ?? '';
   assert.ok(setting, 'the feature\'s own wording must exist, and be named');
 
-  const claims = (text) =>
-    stringLiterals(text).filter((lit) => /proved|the minimum/i.test(lit)).length;
+  const claims = claimsIn;
   assert.ok(claims(gated) >= 1, 'the gated block is where the native proof wording lives');
   assert.equal(claims(label), 1, 'the library\'s claim is one sentence, in one place');
   assert.ok(claims(setting) >= 1, 'PROVE_COPY is where the feature names itself');
@@ -392,6 +413,44 @@ test('the app can say "proved" from exactly three places, and nowhere else', () 
   assert.match(line, /showingProof \?/, 'the library sentence must sit behind the proven-state guard');
 });
 
+test('the stage repair claims a minimum from ONE named sentence, and only for a proved route', () => {
+  // THE THIRD SOURCE, registered (dev-docs/solve-to-state-plan.md Phase D, and AGENTS.md's
+  // amendment). The first two are about a whole cube: the native prover, and the shipped library.
+  // This one is about a STAGE — "the shortest way back to the top cross" — and it is backed by a
+  // different argument: iterative-deepening A* over an admissible heuristic with an EXHAUSTED
+  // contour, which is the standard minimality guarantee, plus a runtime replay against the
+  // target's independent predicate so a wrong route is refused rather than shown.
+  //
+  // What it may NOT do is claim a whole cube's minimum. The `solved` chip is answered by the
+  // two-phase pool, whose answer is an upper bound by construction, and §9.5 leaves the
+  // whole-cube proof this mechanism could give as an open decision for the owner.
+  const report = readFileSync(new URL('../lib/stage-report.js', import.meta.url), 'utf8');
+  const stageCopy = report.match(/export const STAGE_COPY = Object\.freeze\(\{[\s\S]*?\n\}\);/)?.[0] ?? '';
+  assert.ok(stageCopy, 'the stage wording must exist, and be named, so there is one region to sanction');
+  assert.equal(claimsIn(stageCopy), 1, 'one claim, in one sentence, in one object');
+  assert.equal(
+    claimsIn(report.replace(stageCopy, '')),
+    0,
+    'no other sentence in the module may claim a minimum',
+  );
+
+  // And the gate: the claim is reachable only from a route that says it is minimal. A fallback of
+  // the same length must reach the other branch, which is the whole reason the two are worded
+  // differently. Asserted on the SOURCE of the function, because that is where the branch is.
+  const sentence = report.match(/export function routeSentence\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.ok(sentence, 'routeSentence must exist — it is the only caller of the claim');
+  assert.match(sentence, /route\.minimal \? STAGE_COPY\.shortest/,
+    'the claim must be gated on the route calling itself minimal');
+
+  // The app must reach it ONLY through that function. A template that spelled the sentence out
+  // would be a claim nobody could find, which is the failure the naming exists to expose.
+  const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+  assert.equal(claimsIn(app.replace(gatedProveBlock(app), '')
+    .replace(app.match(/const provenMinimumLabel = [^\n]*\n/)?.[0] ?? '~', '')
+    .replace(app.match(/const PROVE_COPY = \{[\s\S]*?\n\};/)?.[0] ?? '~', '')), 0,
+  'app.js may not spell a stage claim out — it calls routeSentence, which is the one that may');
+});
+
 test('the wording scanner cannot be walked past — the two ways it could be, pinned', () => {
   // Negative fixtures, as source strings: the point is to prove the SCANNER, and doing that by
   // editing app.js would be putting a claim in the app to see whether the app notices.
@@ -400,9 +459,9 @@ test('the wording scanner cannot be walked past — the two ways it could be, pi
   // rather than asserted. Both of these pass against it, which is the whole finding.
   const naiveLiterals = (src) =>
     [...src.matchAll(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g)].map((m) => m[0]);
-  const claimsIn = (scan) => (src) => scan(src).filter((lit) => /proved|the minimum/i.test(lit)).length;
-  const claims = claimsIn(stringLiterals);
-  const naiveClaims = claimsIn(naiveLiterals);
+  const withScan = (scan) => (src) => scan(src).filter((lit) => CLAIM.test(lit)).length;
+  const claims = claimsIn;
+  const naiveClaims = withScan(naiveLiterals);
 
   // 1. A claim inside a NESTED template. The naive pairing closes the outer template on the
   //    inner one's opening backtick, so the sentence falls between two matches.
@@ -415,6 +474,14 @@ test('the wording scanner cannot be walked past — the two ways it could be, pi
   const afterRegex = 'const esc = (s) => s.replace(/[&<>"\']/g, e); const t = "proved the minimum";';
   assert.equal(naiveClaims(afterRegex), 0, 'the fixture must actually bypass the old scanner');
   assert.equal(claims(afterRegex), 1, 'a claim after a regex containing a quote must still be seen');
+
+  // 2b. The stage repair's phrasing is in the vocabulary, and the words that merely LOOK like it
+  //     are not. `TIER_LABEL.shortest` is a tier's name and "a shorter one" describes a search;
+  //     flagging either would teach the next reader to add exceptions rather than to think.
+  assert.equal(claims("const s = 'the shortest way back — %1';"), 1, 'the stage claim must be seen');
+  assert.equal(claims("const l = { shortest: 'shortest' };"), 0, 'a tier NAME is not a claim');
+  assert.equal(claims("const b = 'Keeps looking for a shorter one until you move on';"), 0,
+    'a description of a search is not a claim about a cube');
 
   // 3. A scan that cannot be completed must THROW rather than return a short list: a quietly
   //    incomplete scan is how the invariant stopped holding without ever failing.
