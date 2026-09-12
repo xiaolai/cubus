@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import colorsys
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -23,8 +24,12 @@ sys.path.insert(0, str(HERE))  # runnable from any cwd: `python ml/test_pipeline
 from coco_to_yolo import DEFAULT_MAP, coco_to_yolo_lines  # noqa: E402
 from cube_colors import (  # noqa: E402
     MIN_RED_ORANGE_SEPARATION,
+    MIN_YELLOW_ORANGE_SEPARATION,
+    BLUE,
+    GREEN,
     ORANGE,
     RED,
+    YELLOW,
     cube_palette,
     hue_of,
     shade_sticker,
@@ -199,6 +204,39 @@ def test_orange_is_never_redder_than_red() -> None:
     print(f"PASS cube_colors: orange never redder than red (worst margin {worst * 360:.1f} deg)")
 
 
+def test_no_two_pigments_are_closer_than_the_pair_we_floored() -> None:
+    """Separating red from orange moved orange toward YELLOW, and nothing was watching that.
+
+    The module floors red/orange at 18 deg because red/orange was the measured weakness, and it
+    does it by pushing the pair apart about their midpoint. Orange sits between red and yellow on
+    the hue circle, so that push moves orange up. Measured over 4000 palettes, yellow/orange then
+    became the CLOSEST pair in the palette at a minimum of 2.7 deg -- two labels on one colour,
+    which is the defect this module exists to prevent, recreated one pair over. It was a real
+    error before it was a measurement: on 60 rendered fixtures neither shipped model trained on,
+    the candidate's dominant mistake was orange read as yellow.
+
+    So this asserts the PALETTE, not one pair: no two chromatic pigments may sit closer than the
+    floor we were willing to accept for the pair we already knew about. Written this way on
+    purpose -- a test naming only yellow/orange would be the same mistake a third time, and would
+    pass while some future change closed green/yellow instead.
+    """
+    rng = random.Random(17)
+    worst = (360.0, None)
+    for _ in range(1500):
+        wide = rng.random() < 0.6
+        palette = cube_palette(rng, wide, sat_rng=rng)
+        for a, b in itertools.combinations((RED, GREEN, YELLOW, ORANGE, BLUE), 2):
+            gap = abs(palette[a][0] - palette[b][0]) * 360.0
+            gap = min(gap, 360.0 - gap)
+            if gap < worst[0]:
+                worst = (gap, (a, b))
+    floor = MIN_YELLOW_ORANGE_SEPARATION * 360.0
+    assert worst[0] >= floor - 1e-9, (
+        f"pigments {worst[1]} came within {worst[0]:.2f} deg, under the {floor:.1f} deg floor"
+    )
+    print(f"PASS cube_colors: no two pigments closer than {worst[0]:.1f} deg (floor {floor:.0f})")
+
+
 def test_coco_to_yolo() -> None:
     # COCO ids are 1-indexed (white=1..blue=6, body=7); DEFAULT_MAP shifts 1..6 → classes 0..5.
     # A 100x200 image: one white (cat 1 → class 0), one red (cat 2 → class 1), one tiny (dropped).
@@ -293,6 +331,7 @@ if __name__ == "__main__":
     test_one_cube_has_one_pigment_per_colour()
     test_one_pigment_survives_a_COLOURED_light()
     test_orange_is_never_redder_than_red()
+    test_no_two_pigments_are_closer_than_the_pair_we_floored()
     test_coco_to_yolo()
     test_split_order_is_the_same_in_every_process()
     test_shipped_int8_is_derived_from_the_shipped_fp32()
