@@ -2438,6 +2438,20 @@ function diagnoseMisread(faces, options = {}) {
   };
 }
 function diagnoseAcrossSchemes(bySlot, options = {}, schemes = SCHEMES) {
+  const given = options.maxDistance;
+  if (given !== void 0 && (!Number.isInteger(given) || given < 0)) {
+    return diagnoseAtCap(bySlot, options, schemes);
+  }
+  const cap = given ?? DEFAULT_MAX_DISTANCE;
+  let answer = {};
+  for (let d = 0; d <= cap; d++) {
+    answer = diagnoseAtCap(bySlot, { ...options, maxDistance: d }, schemes);
+    if (typeof answer.misreadCount !== "number") return answer;
+    if (answer.misreadCount <= d) return answer;
+  }
+  return answer;
+}
+function diagnoseAtCap(bySlot, options, schemes) {
   const toSlot = (position, scheme) => slotOf(colourOf(position, scheme));
   const results = [];
   for (const scheme of schemes) {
