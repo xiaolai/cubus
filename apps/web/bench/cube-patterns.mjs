@@ -26,7 +26,7 @@ import { MOVE_NAMES, SOLVED, applyAlg, movesOf } from '../lib/cube-pieces.js';
 import * as tp from '../lib/two-phase.js';
 import { createSolver } from '../lib/solver-engine.js';
 import { refine } from '../lib/solve-target.js';
-import { TARGETS } from './solve-to-state-spike.mjs';
+import { PROJECTIONS, TARGETS } from '../lib/stage-targets.js';
 import { goalBall, meetInTheMiddle } from './solve-to-state-oracle.mjs';
 import { seededScrambles } from '../test/fixtures/seeded-scrambles.mjs';
 
@@ -131,7 +131,7 @@ const SETS = [
 
 // Measured against what the app shows today for the same cube.
 console.log(`${pad('picture', 22)} ${num('n', 4)} ${num('mean set', 9)} ${num('mean solve', 11)} ${num('mean saved', 11)}`);
-const { P } = await import('./solve-to-state-spike.mjs');
+const P = PROJECTIONS;
 const AXIS = { U: 0, D: 0, R: 1, L: 1, F: 2, B: 2 };
 const FACE = MOVE_NAMES.map((m) => m[0]);
 
@@ -139,7 +139,7 @@ const FACE = MOVE_NAMES.map((m) => m[0]);
 function searchSet(parts, state, { maxDepth = 12, nodeBudget = 3_000_000 } = {}) {
   const ps = parts.map((p) => P[p]);
   const start = ps.map((p) => p.codeOf(state));
-  const at = (codes) => ps.every((p, i) => p.goalCodes.has(codes[i]));
+  const at = (codes) => ps.every((p, i) => p.isGoal(codes[i]));
   const h = (codes) => { let m = 0; for (let i = 0; i < ps.length; i++) { const d = ps[i].dist[codes[i]]; if (d > m) m = d; } return m; };
   if (at(start)) return { alg: '', moves: 0 };
   let nodes = 0;

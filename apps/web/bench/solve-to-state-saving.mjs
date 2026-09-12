@@ -17,7 +17,8 @@ import * as tp from '../lib/two-phase.js';
 import { createSolver } from '../lib/solver-engine.js';
 import { refine } from '../lib/solve-target.js';
 import { solveByMethod } from '../lib/method-solver.js';
-import { TARGETS, searchExact } from './solve-to-state-spike.mjs';
+import { TARGETS } from '../lib/stage-targets.js';
+import { solveToState } from '../lib/stage-distance.js';
 import { PREDICATE } from './solve-to-state-oracle.mjs';
 import { STAGE_TARGET_CASES } from '../test/fixtures/stage-targets.mjs';
 import { lcg, seededScrambles } from '../test/fixtures/seeded-scrambles.mjs';
@@ -56,7 +57,7 @@ for (const target of TARGETS) {
     if (want === null) continue;                   // outside the exact radius; the fallback answers
     const app = baseline.get(row.scramble);
     if (app === null) continue;
-    const got = searchExact(target, row.state);
+    const got = solveToState(target, row.state);
     if (got.moves === null) continue;
     if (got.moves > app) {
       throw new Error(`${target.id} / ${row.scramble}: route to the target is ${got.moves}, longer than`
@@ -127,7 +128,7 @@ for (const target of TARGETS) {
     for (const k of MISTAKES) {
       const mistake = Array.from({ length: k }, () => MOVE_NAMES[Math.floor(rnd() * 18)]).join(' ');
       const state = applyAlg(base, mistake);
-      const got = searchExact(target, state);
+      const got = solveToState(target, state);
       if (got.moves === null) continue;          // outside the exact radius; the fallback answers
       const app = await appAnswer(tp.toFacelets(state));
       if (!app || app.moves === null) continue;
