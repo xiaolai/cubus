@@ -3817,15 +3817,15 @@ var Texture = class _Texture extends EventDispatcher {
    * @param {Object} values - A container with texture parameters.
    */
   setValues(values) {
-    for (const key in values) {
-      const newValue = values[key];
+    for (const key2 in values) {
+      const newValue = values[key2];
       if (newValue === void 0) {
-        warn(`Texture.setValues(): parameter '${key}' has value of undefined.`);
+        warn(`Texture.setValues(): parameter '${key2}' has value of undefined.`);
         continue;
       }
-      const currentValue = this[key];
+      const currentValue = this[key2];
       if (currentValue === void 0) {
-        warn(`Texture.setValues(): property '${key}' does not exist.`);
+        warn(`Texture.setValues(): property '${key2}' does not exist.`);
         continue;
       }
       if (currentValue && newValue && (currentValue.isVector2 && newValue.isVector2)) {
@@ -3835,7 +3835,7 @@ var Texture = class _Texture extends EventDispatcher {
       } else if (currentValue && newValue && (currentValue.isMatrix3 && newValue.isMatrix3)) {
         currentValue.copy(newValue);
       } else {
-        this[key] = newValue;
+        this[key2] = newValue;
       }
     }
   }
@@ -7368,8 +7368,8 @@ var Object3D = class _Object3D extends EventDispatcher {
     return output;
     function extractFromCache(cache) {
       const values = [];
-      for (const key in cache) {
-        const data = cache[key];
+      for (const key2 in cache) {
+        const data = cache[key2];
         delete data.metadata;
         values.push(data);
       }
@@ -10783,8 +10783,8 @@ var BufferGeometry = class _BufferGeometry extends EventDispatcher {
     if (Object.keys(this.userData).length > 0) data.userData = this.userData;
     if (this.parameters !== void 0 && this._transformed !== true) {
       const parameters = this.parameters;
-      for (const key in parameters) {
-        if (parameters[key] !== void 0) data[key] = parameters[key];
+      for (const key2 in parameters) {
+        if (parameters[key2] !== void 0) data[key2] = parameters[key2];
       }
       return data;
     }
@@ -10797,21 +10797,21 @@ var BufferGeometry = class _BufferGeometry extends EventDispatcher {
       };
     }
     const attributes = this.attributes;
-    for (const key in attributes) {
-      const attribute = attributes[key];
-      data.data.attributes[key] = attribute.toJSON(data.data);
+    for (const key2 in attributes) {
+      const attribute = attributes[key2];
+      data.data.attributes[key2] = attribute.toJSON(data.data);
     }
     const morphAttributes = {};
     let hasMorphAttributes = false;
-    for (const key in this.morphAttributes) {
-      const attributeArray = this.morphAttributes[key];
+    for (const key2 in this.morphAttributes) {
+      const attributeArray = this.morphAttributes[key2];
       const array = [];
       for (let i = 0, il = attributeArray.length; i < il; i++) {
         const attribute = attributeArray[i];
         array.push(attribute.toJSON(data.data));
       }
       if (array.length > 0) {
-        morphAttributes[key] = array;
+        morphAttributes[key2] = array;
         hasMorphAttributes = true;
       }
     }
@@ -11023,15 +11023,15 @@ var Material = class extends EventDispatcher {
    */
   setValues(values) {
     if (values === void 0) return;
-    for (const key in values) {
-      const newValue = values[key];
+    for (const key2 in values) {
+      const newValue = values[key2];
       if (newValue === void 0) {
-        warn(`Material: parameter '${key}' has value of undefined.`);
+        warn(`Material: parameter '${key2}' has value of undefined.`);
         continue;
       }
-      const currentValue = this[key];
+      const currentValue = this[key2];
       if (currentValue === void 0) {
-        warn(`Material: '${key}' is not a property of THREE.${this.type}.`);
+        warn(`Material: '${key2}' is not a property of THREE.${this.type}.`);
         continue;
       }
       if (currentValue && currentValue.isColor) {
@@ -11039,7 +11039,7 @@ var Material = class extends EventDispatcher {
       } else if (currentValue && currentValue.isVector2 && (newValue && newValue.isVector2) || currentValue && currentValue.isEuler && (newValue && newValue.isEuler) || currentValue && currentValue.isVector3 && (newValue && newValue.isVector3)) {
         currentValue.copy(newValue);
       } else {
-        this[key] = newValue;
+        this[key2] = newValue;
       }
     }
   }
@@ -11215,8 +11215,8 @@ var Material = class extends EventDispatcher {
     if (Object.keys(this.userData).length > 0) data.userData = this.userData;
     function extractFromCache(cache) {
       const values = [];
-      for (const key in cache) {
-        const data2 = cache[key];
+      for (const key2 in cache) {
+        const data2 = cache[key2];
         delete data2.metadata;
         values.push(data2);
       }
@@ -13118,9 +13118,9 @@ var EdgesGeometry = class extends BufferGeometry {
           }
         }
       }
-      for (const key in edgeData) {
-        if (edgeData[key]) {
-          const { index0, index1 } = edgeData[key];
+      for (const key2 in edgeData) {
+        if (edgeData[key2]) {
+          const { index0, index1 } = edgeData[key2];
           _v0.fromBufferAttribute(positionAttr, index0);
           _v1$1.fromBufferAttribute(positionAttr, index1);
           vertices.push(_v0.x, _v0.y, _v0.z);
@@ -13387,8 +13387,8 @@ var ShaderMaterial = class extends Material {
     data.lights = this.lights;
     data.clipping = this.clipping;
     const extensions = {};
-    for (const key in this.extensions) {
-      if (this.extensions[key] === true) extensions[key] = true;
+    for (const key2 in this.extensions) {
+      if (this.extensions[key2] === true) extensions[key2] = true;
     }
     if (Object.keys(extensions).length > 0) data.extensions = extensions;
     return data;
@@ -13438,8 +13438,8 @@ var ShaderMaterial = class extends Material {
     if (json.fragmentShader !== void 0) this.fragmentShader = json.fragmentShader;
     if (json.glslVersion !== void 0) this.glslVersion = json.glslVersion;
     if (json.extensions !== void 0) {
-      for (const key in json.extensions) {
-        this.extensions[key] = json.extensions[key];
+      for (const key2 in json.extensions) {
+        this.extensions[key2] = json.extensions[key2];
       }
     }
     if (json.lights !== void 0) this.lights = json.lights;
@@ -21238,8 +21238,8 @@ function WebGLProperties() {
   function remove(object) {
     properties.delete(object);
   }
-  function update(object, key, value) {
-    properties.get(object)[key] = value;
+  function update(object, key2, value) {
+    properties.get(object)[key2] = value;
   }
   function dispose() {
     properties = /* @__PURE__ */ new WeakMap();
@@ -24566,8 +24566,8 @@ var WebXRManager = class extends EventDispatcher {
       _currentDepthNear = null;
       _currentDepthFar = null;
       depthSensing.reset();
-      for (const key in cameraAccessTextures) {
-        delete cameraAccessTextures[key];
+      for (const key2 in cameraAccessTextures) {
+        delete cameraAccessTextures[key2];
       }
       renderer.setRenderTarget(initialRenderTarget);
       glBaseLayer = null;
@@ -28752,6 +28752,88 @@ function fitDistanceStable({ points, vfovDeg, aspect: aspect2, margin = 0.06 }) 
   return r * Math.max(Math.sqrt(1 + 1 / (tanV * tanV)), Math.sqrt(1 + 1 / (tanH * tanH)));
 }
 
+// lib/cube-orientation.js
+var FACE_LETTERS = "URFDLB";
+var NORMAL = Object.freeze({
+  U: Object.freeze([0, 1, 0]),
+  R: Object.freeze([1, 0, 0]),
+  F: Object.freeze([0, 0, 1]),
+  D: Object.freeze([0, -1, 0]),
+  L: Object.freeze([-1, 0, 0]),
+  B: Object.freeze([0, 0, -1])
+});
+function isFace(letter) {
+  return typeof letter === "string" && letter.length === 1 && FACE_LETTERS.includes(letter);
+}
+function normalOf(letter) {
+  return isFace(letter) ? NORMAL[letter] : null;
+}
+var READ = Object.freeze({
+  U: { right: [1, 0, 0], up: [0, 0, -1] },
+  R: { right: [0, 0, -1], up: [0, 1, 0] },
+  F: { right: [1, 0, 0], up: [0, 1, 0] },
+  D: { right: [1, 0, 0], up: [0, 0, 1] },
+  L: { right: [0, 0, 1], up: [0, 1, 0] },
+  B: { right: [-1, 0, 0], up: [0, 1, 0] }
+});
+var cross2 = (a, b) => Object.freeze([
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0]
+]);
+var key = (v) => v.map((n) => Math.round(n)).join(",");
+var STICKERS = (() => {
+  const out = new Array(54);
+  for (let f = 0; f < 6; f++) {
+    const letter = FACE_LETTERS[f];
+    const n = normalOf(letter);
+    const { right, up } = READ[letter];
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 3; col++) {
+        const c = col - 1;
+        const r = 1 - row;
+        out[f * 9 + row * 3 + col] = {
+          pos: [
+            n[0] + right[0] * c + up[0] * r,
+            n[1] + right[1] * c + up[1] * r,
+            n[2] + right[2] * c + up[2] * r
+          ],
+          normal: n
+        };
+      }
+    }
+  }
+  return out;
+})();
+var INDEX_OF = new Map(STICKERS.map((s, i) => [`${key(s.pos)}|${key(s.normal)}`, i]));
+var ORIENTATIONS = Object.freeze(
+  [...FACE_LETTERS].flatMap(
+    (up) => [...FACE_LETTERS].filter((front) => !sameAxis(up, front)).map((front) => Object.freeze([up, front]))
+  )
+);
+function sameAxis(a, b) {
+  const u = normalOf(a);
+  const v = normalOf(b);
+  if (!u || !v) return false;
+  return Math.abs(u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) === 1;
+}
+function checkPair(up, front) {
+  if (!normalOf(up) || !normalOf(front)) {
+    throw new Error(`cube-orientation: expected two of URFDLB, got "${up}" and "${front}"`);
+  }
+  if (sameAxis(up, front)) {
+    throw new Error(
+      `cube-orientation: "${up} ${front}" names one axis twice \u2014 up and front must be perpendicular`
+    );
+  }
+}
+function orientationMatrix(up, front) {
+  checkPair(up, front);
+  const u = normalOf(up);
+  const f = normalOf(front);
+  return Object.freeze([cross2(u, f), Object.freeze([...u]), Object.freeze([...f])]);
+}
+
 // lib/cube-highlight.js
 var FACE_AXIS = { R: [0, 1], L: [0, -1], U: [1, 1], D: [1, -1], F: [2, 1], B: [2, -1] };
 var KIND = Object.freeze({ centers: 1, edges: 2, corners: 3 });
@@ -28786,8 +28868,8 @@ function parseToken(tok) {
     const pos = slotVector(arg);
     return pos && { slot: pos, token: tok };
   }
-  const key = pieceKey(arg);
-  return key && { piece: key, token: tok };
+  const key2 = pieceKey(arg);
+  return key2 && { piece: key2, token: tok };
 }
 function parseHighlight(spec) {
   const raw = String(spec ?? "").trim();
@@ -28887,6 +28969,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     "camerafit",
     "camera-up",
     "cameraup",
+    "orientation",
     "facelet-scale",
     "faceletscale",
     "tempo-scale",
@@ -28938,6 +29021,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
   set cameraUp(v) {
     this._set("camera-up", v);
   }
+  set orientation(v) {
+    this._set("orientation", v);
+  }
+  get orientation() {
+    return this._attrs.orientation;
+  }
   set faceletScale(v) {
     this._set("facelet-scale", v);
   }
@@ -28956,6 +29045,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
   constructor() {
     super();
     this._attrs = { ..._CubusCube.DEFAULTS };
+    this._turn = { from: "U F", to: "U F", phase: 1 };
+    this._spin = 0;
+    this._turning = null;
   }
   /** Attribute defaults. Also what a REMOVED attribute falls back to — see _set(). */
   static DEFAULTS = {
@@ -28976,6 +29068,18 @@ var CubusCube = class _CubusCube extends HTMLElement {
     // express it: they place the eye and leave the roll fixed at +Y, so the picture arrives
     // vertically mirrored — worse than not moving the camera, because it looks deliberate.
     "camera-up": "U",
+    // WHICH WAY THE CUBE IS HELD — two face letters, "<up> <front>". A different statement from
+    // the camera's, and it needs a different mechanism: `camera-up` moves the OBSERVER, and
+    // `_placeLights` bolts the lighting rig to the camera, so rolling the eye rolls the sun.
+    // Turning the OBJECT leaves the lamp where it is, which is what "you turned it over in your
+    // hands" looks like. Absolute, never relative: "D B" is idempotent and reads the same in a
+    // still picture as in an animated one, where a relative `y` accumulates and cannot be
+    // asserted without replaying the history that produced it.
+    //
+    // NOT part of `alg`, ever. If `alg` took `y`, an `R` after it would mean the new right or the
+    // old right, and a letter that sometimes names a fixed face and sometimes a moving one is the
+    // exact defect the fixed frame exists to prevent.
+    orientation: "U F",
     // 'view' fits the silhouette THIS angle draws — tightest framing, and what a view that never
     // moves programmatically wants. 'stable' fits every angle at once, so swinging the camera
     // rotates the cube without resizing it. Default stays 'view': stable costs ~11% of apparent
@@ -29012,6 +29116,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._applyScale();
       this._applyCamera();
     } else if (name === "camera-latitude" || name === "camera-longitude" || name === "camera-fit" || name === "camera-up") this._applyCamera();
+    else if (name === "orientation") this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
     else if (name === "back-view") this._dirty = true;
     else if (name === "orbit") this._applyOrbit();
     else if (name === "facelets" || name === "scramble") this.reset();
@@ -29052,13 +29157,13 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._applyCamera();
     this._applyOrbit();
     const hemi = new HemisphereLight(16775920, 4866096, 1);
-    const key = new DirectionalLight(16777215, 0.95);
+    const key2 = new DirectionalLight(16777215, 0.95);
     const fill = new DirectionalLight(14673663, 0.45);
-    scene.add(hemi, key, fill);
+    scene.add(hemi, key2, fill);
     const inv = camera.quaternion.clone().invert();
     this._lights = [
       [hemi, new Vector3(0, 1, 0).applyQuaternion(inv)],
-      [key, new Vector3(5, 8, 6).applyQuaternion(inv)],
+      [key2, new Vector3(5, 8, 6).applyQuaternion(inv)],
       [fill, new Vector3(-6, 2, -4).applyQuaternion(inv)]
     ];
     this._placeLights();
@@ -29122,6 +29227,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._readHighlight();
     this._readFocus();
     this._ghostVisible();
+    this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
     this.reset();
     this._resize = () => {
       const w = this.clientWidth || 1, h = this.clientHeight || 1;
@@ -29165,9 +29271,19 @@ var CubusCube = class _CubusCube extends HTMLElement {
           this._dirty = true;
         }
       }
-      if (this._attrs.autorotate != null) {
-        root.rotation.y += 35e-4;
+      if (this._turning) {
+        const t = this._turning;
+        const k = Math.min(1, (performance.now() - t.t0) / t.ms);
+        this._setTurn(t.from, t.to, EASE(k));
+        if (k >= 1) {
+          this._setTurn(t.to, t.to, 1);
+          this._settleTurn(true);
+        }
         this._dirty = true;
+      }
+      if (this._attrs.autorotate != null) {
+        this._spin += 35e-4;
+        this._applyRoot();
       }
       const moving = this.controls.update();
       if (moving) this._placeLights();
@@ -29206,6 +29322,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
   /** Release the GPU. The element is spent afterwards — connecting it again builds a new one. */
   dispose() {
     this._stop();
+    this._settleTurn(false);
     clearTimeout(this._release);
     const canvas = this.controls?.domElement ?? this.renderer?.domElement;
     const root = this._controlsRoot;
@@ -29238,7 +29355,11 @@ var CubusCube = class _CubusCube extends HTMLElement {
    */
   recycle() {
     for (const name of _CubusCube.observedAttributes) this.removeAttribute(name);
-    this.root?.rotation.set(0, 0, 0);
+    this._settleTurn(false);
+    this._spin = 0;
+    this._turn = { from: "U F", to: "U F", phase: 1 };
+    this._fitTurned = void 0;
+    this.root?.quaternion.identity();
     this.reset();
     this._applyCamera();
   }
@@ -29269,6 +29390,144 @@ var CubusCube = class _CubusCube extends HTMLElement {
    *  it to `minDistance` with no way back, because the drag that would restore the view is the
    *  thing that was disabled (found by audit, 2026-09-04). Pan was already off in both states:
    *  the camera is fitted to the slot (lib/cube-frame.js), so a panned cube is a clipped one. */
+  /**
+   * Parse `"<up> <front>"` into a quaternion, or null if it does not name an orientation.
+   *
+   * Refuses a pair on one axis rather than picking some third thing: `U D` and `F F` are not
+   * orientations, and a renderer that resolved them to something would be inventing a cube.
+   */
+  _pose(spec) {
+    const parts = String(spec ?? "").trim().toUpperCase().split(/\s+/);
+    const [up, front] = parts;
+    if (parts.length !== 2 || !up || !front) return null;
+    if (!isFace(up) || !isFace(front) || sameAxis(up, front)) return null;
+    const m = orientationMatrix(up, front);
+    const basis = new Matrix4().set(
+      m[0][0],
+      m[0][1],
+      m[0][2],
+      0,
+      m[1][0],
+      m[1][1],
+      m[1][2],
+      0,
+      m[2][0],
+      m[2][1],
+      m[2][2],
+      0,
+      0,
+      0,
+      0,
+      1
+    );
+    return { q: new Quaternion().setFromRotationMatrix(basis), spec: `${up} ${front}` };
+  }
+  /**
+   * Hold the cube at `phase` of a turn from one orientation to another. THE PRIMITIVE.
+   *
+   * Synchronous, idempotent, and a pure function of its three arguments — which is what a lesson
+   * scrubber needs: the same `t` gives the same pose whether it was reached by playing forwards,
+   * seeking backwards, or landing on it while paused.
+   *
+   * The path between two poses is the shortest arc, which is deterministic because three.js's
+   * slerp flips the sign of the far quaternion when the dot product is negative. Two orientations
+   * a half-turn apart have no unique shortest arc; they get a consistent one, which is the
+   * property that matters here.
+   */
+  showTurn(from, to, phase) {
+    if (!this._pose(from) || !this._pose(to)) return this._setTurn(from, to, phase);
+    this._settleTurn(false);
+    return this._setTurn(from, to, phase);
+  }
+  /** Set the pose without touching an animation in flight. The tick's path. */
+  _setTurn(from, to, phase) {
+    const a = this._pose(from);
+    const b = this._pose(to);
+    if (!a || !b) {
+      console.warn(`<cubus-cube> refusing orientation "${!a ? from : to}" \u2014 expected two perpendicular faces of URFDLB, as in "U F"`);
+      return false;
+    }
+    const p = Number(phase);
+    this._turn = {
+      from: a.spec,
+      to: b.spec,
+      phase: Number.isFinite(p) ? Math.min(1, Math.max(0, p)) : 1
+    };
+    this._applyRoot(a.q, b.q);
+    const turned = this._turned();
+    if (turned !== this._fitTurned) {
+      this._fitTurned = turned;
+      this._applyCamera();
+    }
+    return true;
+  }
+  /**
+   * Turn the cube to `up`/`front` over `ms`, resolving when it settles. Sugar over `showTurn`.
+   *
+   * Resolves rather than rejects when it is superseded, recycled or disposed: the caller asked to
+   * be told when the turn is over, and a promise left pending forever is the leak. Callers that
+   * need to know whether they were interrupted get `false`.
+   */
+  turnTo(up, front, { ms = 400 } = {}) {
+    const to = `${up} ${front}`;
+    if (!this._pose(to)) {
+      console.warn(`<cubus-cube> refusing turnTo("${up}", "${front}") \u2014 expected two perpendicular faces of URFDLB`);
+      return Promise.resolve(false);
+    }
+    const from = this._nearestSpec();
+    this._settleTurn(false);
+    if (!Number.isFinite(ms) || reducedMotion() || ms <= 0) {
+      this.showTurn(to, to, 1);
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+      this._turning = { from, to, t0: performance.now(), ms, settle: resolve };
+      this._setTurn(from, to, 0);
+      this._dirty = true;
+    });
+  }
+  /** The named orientation the cube is nearest to — its own when settled, the closer end mid-turn. */
+  _nearestSpec() {
+    return this._turn.phase >= 0.5 ? this._turn.to : this._turn.from;
+  }
+  /** Finish an in-flight turnTo without moving the cube, telling its caller what happened. */
+  _settleTurn(completed) {
+    const t = this._turning;
+    this._turning = null;
+    t?.settle(completed);
+  }
+  /** Write the root's rotation: the held pose, with the autorotate spin on top of it. */
+  _applyRoot(a = this._pose(this._turn.from)?.q, b = this._pose(this._turn.to)?.q) {
+    if (!this.root || !a || !b) return;
+    const q = this._q0 ||= new Quaternion();
+    if (this._turn.phase >= 1) q.copy(b);
+    else if (this._turn.phase <= 0) q.copy(a);
+    else q.copy(a).slerp(b, this._turn.phase);
+    if (this._spin) {
+      const s = this._qs ||= new Quaternion();
+      s.setFromAxisAngle(AXES.y, this._spin);
+      q.premultiply(s);
+    }
+    this.root.quaternion.copy(q);
+    this._dirty = true;
+  }
+  /**
+   * Is the cube held any way other than the way `silhouette()` assumes?
+   *
+   * Mid-turn is the obvious case — a pose partway between two orientations has an outline that is
+   * not a cube's at all. But a SETTLED turn counts too, and that was not obvious: the 24
+   * orientations are the cube's own symmetries, so the full point set is unchanged, yet the `view`
+   * fit does not use the full set. It culls to the ghosts THIS eye would see, and which ghosts
+   * those are depends on how the cube is held — a fact `silhouette()` is never told. So a settled
+   * quarter turn under `view` was measured fitting the wrong ghosts and pushing a corner 27% past
+   * the frame edge.
+   */
+  _turned() {
+    const { from, to, phase } = this._turn;
+    if (from === to || phase >= 1) return to !== "U F";
+    if (phase <= 0) return from !== "U F";
+    return true;
+  }
   _applyOrbit() {
     if (!this.controls) return;
     const free = this._attrs.orbit !== "locked";
@@ -29281,7 +29540,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const lon = this._num("camera-longitude", 45);
     const eye = eyeDirection(lat, lon);
     const worldUp = this._cameraUp();
-    const stable = this._attrs["camera-fit"] === "stable";
+    const stable = this._attrs["camera-fit"] === "stable" || this._turned();
     const points = silhouette({
       eye,
       elevation: this._ghostsEnabled() ? this._num("ghost-elevation", 4) : null,
