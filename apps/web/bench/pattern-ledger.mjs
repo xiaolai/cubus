@@ -327,6 +327,11 @@ const bookRows = BOOK.map(([name, alg]) => {
 // Defined by what they leave free, so they cannot be walked to. Each is a piece-class predicate, each
 // is checked against the app's own model, and each has its reachable size derived rather than guessed.
 
+// THE TWIST CUT DOES NOT TOUCH THESE, and the reason is in the predicates rather than in a judgement.
+// Each set requires the pieces it NAMES to be home AND turned the right way up — `eo` all zero for the
+// plus, `co` all zero for the X — so the part of the picture a child is looking at cannot contain a
+// twist. The pieces left free show assorted colours whatever they do, and a twisted free piece is
+// indistinguishable from a permuted one there. So a set pattern is never a twisted pattern.
 const EDGES_HOME = (s) => s.ep.every((v, i) => v === i) && s.eo.every((v) => v === 0);
 const CORNERS_HOME = (s) => s.cp.every((v, i) => v === i) && s.co.every((v) => v === 0);
 const SETS = [
