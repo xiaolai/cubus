@@ -356,20 +356,52 @@ test('the ORACLES are exercised, not just the answers they once produced', () =>
 
 const REPO = new URL('../../../', import.meta.url);
 const PLAN = fileURLToPath(new URL('dev-docs/solve-to-state-plan.md', REPO));
+const DEV_DOCS = fileURLToPath(new URL('dev-docs', REPO));
 const ANCHOR = fileURLToPath(new URL('apps/web/lib/cube-pieces.js', REPO));
 if (!existsSync(ANCHOR)) {
   throw new Error(`this test's path arithmetic is wrong: ${ANCHOR} does not exist, so ${PLAN} proves nothing`);
 }
 
-test("the plan's Phase 0 stamp states the number of cases this file actually has", (t) => {
-  if (!existsSync(PLAN)) {
-    t.skip('dev-docs/solve-to-state-plan.md is absent — gitignored, so a clean clone cannot check it');
-    return;
+/**
+ * A MISSPELLED FILENAME MUST FAIL, and the repo-root anchor above does not make it.
+ *
+ * An audit changed `solve-to-state-plan.md` to `solve-to-state-plna.md` and this case SKIPPED, with
+ * the skip saying the note was gitignored. That is exactly the confusion the anchor was added to
+ * prevent, one level down: the anchor proves the arithmetic reaches the repository, and says nothing
+ * about the filename inside it.
+ *
+ * The discriminator is the directory. `dev-docs/` absent means a clean clone and a legitimate skip;
+ * `dev-docs/` present with the named file missing means the name is wrong, or the note was deleted
+ * while a test still claimed to check it. Both of those are defects and both now throw.
+ */
+function planOrSkip(t) {
+  if (!existsSync(DEV_DOCS)) {
+    t.skip('dev-docs is absent — gitignored, so a clean clone cannot check the plan');
+    return null;
   }
-  const mine = readFileSync(fileURLToPath(import.meta.url), 'utf8').match(/^test\(/gm)?.length;
-  assert.ok(mine > 0, 'this file declares no top-level cases, so the count below would be meaningless');
+  if (!existsSync(PLAN)) {
+    throw new Error(`dev-docs exists but ${PLAN} does not: the filename is wrong, or the note this `
+      + 'test checks has been deleted. Either way this is not the clean-clone case.');
+  }
+  return readFileSync(PLAN, 'utf8');
+}
 
-  const plan = readFileSync(PLAN, 'utf8');
+test("the plan's Phase 0 stamp states the number of cases this file actually has", (t) => {
+  const plan = planOrSkip(t);
+  if (plan === null) return;
+
+  // EVERY REGISTRATION, not every line that happens to start with `test(`. An audit appended
+  // `test.skip('…')` and this case passed while the stamp still said 13 against 14 registrations.
+  const own = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+  const mine = own.match(/^test(?:\.\w+)?\(/gm)?.length;
+  assert.ok(mine > 0, 'this file declares no top-level cases, so the count below would be meaningless');
+  // And the stamp records a case count AND a pass count as the same number, which is only true while
+  // every case runs and passes. A skipped or todo case makes those two numbers differ, so it has to
+  // be a red here rather than a silent divergence between the stamp and the runner.
+  assert.equal(own.match(/^test\.(?:skip|todo)\(/gm), null,
+    'a skipped or todo case makes the stamp\'s "N cases" and "N pass" different numbers — '
+      + 'say both in the plan and teach this case to read them separately');
+
   const declared = plan.match(/`test\/solve-to-state\.test\.mjs` \((\d+) cases/);
   assert.ok(declared, "the plan no longer states this suite's case count in the form this test reads");
   assert.equal(Number(declared[1]), mine,
