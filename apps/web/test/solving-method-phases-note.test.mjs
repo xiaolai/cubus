@@ -35,6 +35,26 @@ if (!existsSync(anchor)) {
   throw new Error(`this test's path arithmetic is wrong: ${anchor} does not exist, so ${NOTE} proves nothing`);
 }
 
+/**
+ * The anchor above proves the arithmetic reaches the repository. It says nothing about the FILENAME,
+ * and an audit showed the same weakness in the sibling test this one is the model for: misspell the
+ * note and both cases skip, reporting the misspelling as "gitignored". The directory is the
+ * discriminator — absent means a clean clone, present-without-the-file means the name is wrong or the
+ * note has been deleted while a test still claimed to check it.
+ */
+const DEV_DOCS = fileURLToPath(new URL('dev-docs', ROOT));
+function noteOrSkip(t, why) {
+  if (!existsSync(DEV_DOCS)) {
+    t.skip(why);
+    return null;
+  }
+  if (!existsSync(NOTE)) {
+    throw new Error(`dev-docs exists but ${NOTE} does not: the filename is wrong, or the note this `
+      + 'test checks has been deleted. Either way this is not the clean-clone case.');
+  }
+  return readFileSync(NOTE, 'utf8');
+}
+
 /** The phase table's rows, as `{ method, phase, settled, narrowed, free }`. */
 function readTable(text) {
   const rows = [];
@@ -58,11 +78,8 @@ const strip = (s) => s.replace(/\*\*/g, '').replace(/\(.*?\)/g, '').trim();
 const firstWord = (s) => strip(s).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').trim().split(/\s+/)[0];
 
 test('the solving-methods note\'s table matches the phases it describes', (t) => {
-  if (!existsSync(NOTE)) {
-    t.skip('dev-docs/solving-method-phases.md is absent — gitignored, so a clean clone cannot check it');
-    return;
-  }
-  const text = readFileSync(NOTE, 'utf8');
+  const text = noteOrSkip(t, 'dev-docs is absent — gitignored, so a clean clone cannot check the note');
+  if (text === null) return;
   const rows = readTable(text);
 
   assert.equal(rows.length, SOLVER_PHASES.length,
@@ -82,11 +99,8 @@ test('the solving-methods note\'s table matches the phases it describes', (t) =>
 });
 
 test('the note\'s prose counts match too', (t) => {
-  if (!existsSync(NOTE)) {
-    t.skip('dev-docs/solving-method-phases.md is absent — gitignored');
-    return;
-  }
-  const text = readFileSync(NOTE, 'utf8');
+  const text = noteOrSkip(t, 'dev-docs is absent — gitignored');
+  if (text === null) return;
   const methods = new Set(SOLVER_PHASES.map((p) => p.method));
   assert.match(text, new RegExp(`${SOLVER_PHASES.length} phases across ${methods.size} methods`),
     `the note should say "${SOLVER_PHASES.length} phases across ${methods.size} methods"`);

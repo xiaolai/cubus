@@ -52,14 +52,34 @@ test('the draw exists in exactly one file under apps/web', () => {
   // The multiplier's digits, because that is what a copy would carry. Assembled from parts that do
   // not spell it, so the needle is absent from this file even before SELF is excluded — an exclusion
   // by name is a thing another file could imitate, and arithmetic is not.
-  const needle = String(1664 * 1000 + 525);
+  //
+  // UNDERSCORES STRIPPED FIRST, and hex searched too. An audit defeated the first version with
+  // `1_664_525`: a legal numeric separator, the identical constant, and a plain `includes` walked
+  // straight past it. Both spellings of the multiplier are now looked for in text whose digit
+  // separators have been removed.
+  const decimal = String(1664 * 1000 + 525);
+  // The hex DIGITS without the `0x`, and the comparison is case-folded on both sides. Written with
+  // the prefix it failed its own check: folding the text turned `0x19660D` into `0X19660D` while the
+  // needle still said `0x`, so a hex copy passed. Caught by planting one.
+  const hex = (1664 * 1000 + 525).toString(16).toUpperCase();
+  const plain = (s) => s.replace(/(?<=[0-9a-fA-F])_(?=[0-9a-fA-F])/g, '');
   const carriers = sources()
     .filter((f) => f !== SELF)
-    .filter((f) => readFileSync(WEB + f, 'utf8').includes(needle));
+    .filter((f) => {
+      const text = plain(readFileSync(WEB + f, 'utf8'));
+      return text.includes(decimal) || text.toUpperCase().includes(hex);
+    });
   assert.deepEqual(carriers, [HOME],
     'a second copy of the seeded draw has appeared. Import `lcg`, `randomAlg` or `seededScrambles` '
       + `from ${HOME} instead — a copy makes two fixtures describe different cubes the day one is edited.`);
 });
+
+// WHAT THIS CANNOT CATCH, stated because the first version of the line above understated it. The
+// fingerprint is the multiplier, in two spellings, with digit separators removed. A copy that wrote
+// the constant some third way — an expression, a string, a different generator entirely — would pass
+// and has to be caught in review. The case below is the other half: it pins the DRAW, so a second
+// generator that does not agree with this one is caught by its output even when its source is
+// unrecognisable.
 
 test('the draw is frozen: the scrambles the committed fixtures were captured against', () => {
   // `method-steps.json` names its own seed and count, so the golden below is checkable against the
@@ -78,12 +98,23 @@ test('the draw is frozen: the scrambles the committed fixtures were captured aga
 
 test('the length parameter shortens the walk without disturbing the stream', () => {
   // A shallow sample must be the SAME draw read less far, not a different one: the stage-target
-  // fixtures and `method-steps.json` are then talking about the same stream. Held by the first alg
-  // being a prefix — which is exactly what breaks if the length is ever applied by trimming after
-  // the fact, or by re-seeding per alg.
+  // fixtures and `method-steps.json` are then talking about the same stream.
+  //
+  // THE FIRST ALG IS A PREFIX, and only the first — later algs start at different stream positions,
+  // so a prefix test on alg 0 says nothing about alg 1. An audit defeated the first version of this
+  // case with exactly that: draw 30 turns and slice to `length`, which leaves alg 0 identical and
+  // moves every later one. So the prefix is checked first, and then the general property it was
+  // standing in for — `count` algs of length L are L-turn draws taken in order from one stream.
   const long = seededScrambles(1, 20260908)[0];
   const short = seededScrambles(1, 20260908, 25)[0];
   assert.equal(short, long.split(' ').slice(0, 25).join(' '));
+
+  for (const length of [7, 25]) {
+    const rnd = lcg(20260908);
+    const byHand = Array.from({ length: 6 }, () => randomAlg(rnd, length));
+    assert.deepEqual(seededScrambles(6, 20260908, length), byHand,
+      `at length ${length} the list is not the primitive drawn repeatedly from one stream`);
+  }
 });
 
 test('the primitives and the aggregates are one draw, not three', () => {
