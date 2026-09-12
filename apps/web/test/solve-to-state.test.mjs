@@ -25,6 +25,8 @@
 // produces NO answer rather than a wrong one.
 
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { MOVE_NAMES, SOLVED, applyAlg, applyMove } from '../lib/cube-pieces.js';
@@ -332,4 +334,43 @@ test('the ORACLES are exercised, not just the answers they once produced', () =>
   const other = TARGETS.find((t2) => t2.id === 'solved');
   assert.throws(() => meetInTheMiddle(SOLVED, other, ball, 5), /built for/,
     'a mismatched ball must be refused, not silently used');
+});
+
+// ---- the plan's own stamp, checked against this file ---------------------------------------------
+//
+// Phase 0's stamp in dev-docs/solve-to-state-plan.md says how many cases this suite has, and on
+// 2026-09-12 it said eleven when there were twelve. The twelfth was added the same day the stamp was
+// written, by the break-test that found a wrong-high heuristic sailing past every graded answer — so
+// the number was stale within the hour, and nothing would ever have said so.
+//
+// Both sides are READ. Neither is typed into this file, which is the difference between a check and a
+// second place to be wrong. dev-docs is gitignored (AGENTS.md), so this skips on a clean clone and
+// never passes there; the anchor below makes a wrong PATH fail instead of skipping, the distinction
+// solving-method-phases-note.test.mjs exists to draw.
+
+const REPO = new URL('../../../', import.meta.url);
+const PLAN = fileURLToPath(new URL('dev-docs/solve-to-state-plan.md', REPO));
+const ANCHOR = fileURLToPath(new URL('apps/web/lib/cube-pieces.js', REPO));
+if (!existsSync(ANCHOR)) {
+  throw new Error(`this test's path arithmetic is wrong: ${ANCHOR} does not exist, so ${PLAN} proves nothing`);
+}
+
+test("the plan's Phase 0 stamp states the number of cases this file actually has", (t) => {
+  if (!existsSync(PLAN)) {
+    t.skip('dev-docs/solve-to-state-plan.md is absent — gitignored, so a clean clone cannot check it');
+    return;
+  }
+  const mine = readFileSync(fileURLToPath(import.meta.url), 'utf8').match(/^test\(/gm)?.length;
+  assert.ok(mine > 0, 'this file declares no top-level cases, so the count below would be meaningless');
+
+  const plan = readFileSync(PLAN, 'utf8');
+  const declared = plan.match(/`test\/solve-to-state\.test\.mjs` \((\d+) cases/);
+  assert.ok(declared, "the plan no longer states this suite's case count in the form this test reads");
+  assert.equal(Number(declared[1]), mine,
+    `the plan's Phase 0 stamp says ${declared[1]} cases and this file has ${mine}`);
+
+  const verified = plan.match(/`node --test test\/solve-to-state\.test\.mjs` — (\d+) pass/);
+  assert.ok(verified, 'the plan no longer records a run of this suite in the form this test reads');
+  assert.equal(Number(verified[1]), mine,
+    `the plan's Verified line says ${verified[1]} passed and this file has ${mine} cases`);
 });
