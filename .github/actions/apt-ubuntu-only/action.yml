@@ -39,8 +39,15 @@ runs:
         # with none of this context attached. So the update's own output is read back: any source
         # outside the Ubuntu archive is named HERE, with the line to add above, at the moment the
         # image changes rather than the moment a mirror hiccups.
+        # TWO BUGS AN AUDIT FOUND IN THIS PATTERN, both in the direction that matters:
+        #   * the mirrorlist alternative had no end boundary, so a source at
+        #     `file:/etc/apt/apt-mirrors.txt.extra` was accepted as the mirrorlist itself;
+        #   * the host alternative demanded `/` straight after `ubuntu.com`, so
+        #     `http://archive.ubuntu.com:80/ubuntu` was reported as foreign.
+        # Both are fixed by saying what was meant: the mirrorlist exactly, or a host under
+        # ubuntu.com with an optional port, then a path.
         foreign="$(awk '/^(Get|Hit|Ign|Err):[0-9]+ /{print $2}' /tmp/apt-ubuntu-only.log \
-          | grep -vE '^(file:/etc/apt/apt-mirrors\.txt|https?://([a-z0-9-]+\.)*ubuntu\.com/)' \
+          | grep -vE '^(file:/etc/apt/apt-mirrors\.txt$|https?://([a-z0-9-]+\.)*ubuntu\.com(:[0-9]+)?/)' \
           | sort -u || true)"
         if [ -n "$foreign" ]; then
           echo "::error::apt is still configured with a source outside the Ubuntu archive:" \
