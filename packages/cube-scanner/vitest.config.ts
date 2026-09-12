@@ -2,13 +2,36 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    // The decoder tests do real work: a misread decode on a solved cube with one wrong sticker is
-    // ~1 s alone, ~2.7 s under v8 coverage instrumentation, and 7 s when the package's parallel
-    // workers share the machine with the WebKit suite (measured 2026-09-05, load average 12 on 10
-    // cores). vitest's 5 s default is a hang detector, and it was firing on legitimate work: two
-    // tests had already grown explicit 60 s budgets one at a time before the gate found two more.
-    // One budget for the class, sized so a genuine hang still fails.
-    testTimeout: 60_000,
+    // A LIVENESS BOUND, not a performance assertion. The decoder tests do real work, so vitest's 5 s
+    // default is a hang detector that fires on legitimate work; one budget for the class, sized so a
+    // genuine hang still fails. Two tests had grown explicit 60 s budgets one at a time before the
+    // gate found two more, which is why it is one number here and not four.
+    //
+    // RE-SIZED 2026-09-12, because the old value's own justification had gone stale. It was 60 s
+    // against measurements of ~1 s alone, ~2.7 s under v8 coverage and 7 s under contention
+    // (2026-09-05) — a margin of about 8x. ADR 0001's colour-scheme dimension then made the heaviest
+    // cases try both filings, and they now cost far more than the number the bound was a multiple of:
+    //
+    //   a one-sticker misread on a Japanese cube     7.1 s alone · 26.3 s under coverage
+    //   the same misread on a Western cube          11.2 s alone · 20.7 s under coverage
+    //
+    // So the margin had fallen to about 2.3x without anyone choosing that, and on 2026-09-12 it went
+    // negative: inside a full `pnpm check` the heaviest case passed 60 s and failed the gate. That run
+    // was about 2.6x slower than any other measurement of the same work on this machine — the same
+    // file took 241 s where it takes 71 s to 91 s — and the cause of the excursion is NOT known. It was
+    // not a second gate running: the deliberate reproduction, web tier first and the scanner
+    // immediately after, came in at 91 s with the heaviest case at 17.6 s.
+    //
+    // 180 s is about 7x the heaviest instrumented measurement, which restores the margin the bound was
+    // chosen with, and covers the 2.6x excursion that actually happened with room to spare. The cost of
+    // the extra headroom is two more minutes before a genuine hang is reported, once.
+    //
+    // THERE IS NO AUTOMATIC GUARD ON THIS, and that is deliberate. The thing that rotted is the
+    // RELATIONSHIP between the bound and the cost, and any check on it would be a wall-clock assertion
+    // on a machine that has just been shown to vary by 2.6x — it would fail for the same reason this
+    // bound did. The numbers above are the guard: they say what the bound is a multiple of, so the next
+    // person to make the decoder three times slower can see that they have spent the margin.
+    testTimeout: 180_000,
     coverage: {
       provider: 'v8',
       // Everything that can be driven without a webcam. camera.ts (getUserMedia) and the two files
