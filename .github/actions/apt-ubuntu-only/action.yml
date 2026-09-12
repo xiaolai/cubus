@@ -29,8 +29,17 @@ runs:
         # librsvg, dbus, pipewire and libclang are all Ubuntu packages; neither dl.google.com nor
         # packages.microsoft.com supplies one of them. /etc/apt/sources.list — where the image puts
         # the Ubuntu archive itself, via the mirrorlist — is not touched.
+        #
+        # BOTH SPELLINGS, because the image changed underneath this and the check below is what
+        # said so (CI 34701195357, 2026-09-12, on the 0.5.0 release commit). Ubuntu 24.04 "noble"
+        # ships these as deb822 `.sources` files; removing only the one-line `.list` form left
+        # Chrome's index configured and every apt-using job red. Named individually rather than
+        # globbed: a wildcard over sources.list.d would also swallow a genuinely new third-party
+        # source, which is the thing this step exists to REPORT rather than to hide.
         sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-                   /etc/apt/sources.list.d/microsoft-prod.list
+                   /etc/apt/sources.list.d/google-chrome.sources \
+                   /etc/apt/sources.list.d/microsoft-prod.list \
+                   /etc/apt/sources.list.d/microsoft-prod.sources
 
         sudo apt-get update | tee /tmp/apt-ubuntu-only.log
 
