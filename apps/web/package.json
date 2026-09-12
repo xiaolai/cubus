@@ -4,6 +4,11 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "exports": {
+    "./cube-kit": "./lib/cube-kit.js",
+    "./element": "./vendor/cubus-cube.js",
+    "./element-manifest": "./vendor/cubus-cube.manifest.json"
+  },
   "description": "Cubus SPA \u2014 camera (YOLO) cube scanner and solver. Served as a static site; the only build steps are self-contained vendor bundles.",
   "scripts": {
     "copy-ort": "node copy-ort.mjs",
