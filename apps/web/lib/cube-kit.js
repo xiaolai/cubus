@@ -1,0 +1,100 @@
+// THE SUPPORTED SURFACE. What another project may depend on, stated in one place.
+//
+// Not a convenience. Every module under `apps/web/lib/` is equally reachable by a relative path,
+// so today there is no such thing as a private one and no way to know whether renaming an export
+// breaks somebody. cubus-im — the lesson course — reaches into five files by hardcoded path and
+// one by regular expression, and nothing in THIS repository goes red when any of them moves.
+// `test/cube-kit-surface.test.mjs` is what closes that, and this file is what it can be written
+// against.
+//
+// WHAT THIS FILE IS NOT. It does not make a relocated checkout work: an import specifier must be
+// a literal, so a consumer still cannot put an environment variable in one — a barrel just moves
+// that problem into a single import instead of five. Resolution is a separate job, done by the
+// `exports` map in `package.json` plus a link, or by a resolver on the consumer's side using
+// dynamic `import()`. Anyone reaching for this file to fix a path is in the wrong place.
+//
+// Adding an export here is free. REMOVING or renaming one is a breaking change to a downstream
+// project, which is exactly what the surface test makes visible before it ships.
+
+// The move tables — the app's model of a cube's pieces, replayed by every check the course runs.
+export {
+  CORNER,
+  CORNERS,
+  EDGE,
+  EDGES,
+  MOVE_NAMES,
+  MOVES,
+  SOLVED,
+  allSolved,
+  applyAlg,
+  applyMove,
+  cornerSlot,
+  cornerSolved,
+  edgeSlot,
+  edgeSolved,
+  fromCube,
+  invert,
+  moveCount,
+  movesOf,
+  rotateAlg,
+  rotateState,
+} from './cube-pieces.js';
+
+// The camera's own geometry — where the eye is, what the cube's outline is, and how far back the
+// camera has to sit for the whole of it to land inside a frame of a given shape.
+export {
+  cameraAxes,
+  eyeDirection,
+  fitDistance,
+  fitDistanceStable,
+  project,
+  silhouette,
+} from './cube-frame.js';
+
+// The selector grammar: `slot:UF`, `layer:U`, `piece:BL` — how a lesson says "these pieces".
+export {
+  KIND,
+  parseHighlight,
+  pieceKey,
+  resolveHighlight,
+  selects,
+  slotVector,
+} from './cube-highlight.js';
+
+// The 24 orientations, as a facelet operation and as a rotation. Both halves of a turn: the
+// stickers move AND the letters are renamed to the faces they now sit on.
+export {
+  FACE_LETTERS,
+  ORIENTATIONS,
+  determinant,
+  orientationMatrix,
+  orientationPerm,
+  orientationRelabel,
+  sameAxis,
+  turnFacelets,
+} from './cube-orientation.js';
+
+// The view the app draws its own cubes at, so a consumer's cubes can look like the app's without
+// keeping a hand-copied set of numbers that goes stale in silence.
+export { CUBE_VIEW, CUBE_VIEW_ATTRS } from './cube-view.js';
+
+// The episode runtime. cubus-im authors the scores, measures the speech and builds the artifacts;
+// the RUNTIME — what the cube is doing at time `t`, and writing that onto an element — is the same
+// question the app has to answer, so it is answered once here. `spanning` resolution is part of it
+// rather than part of a build script, because a schedule that resolves it differently is a
+// different schedule with nothing to say so.
+export { checkEpisode, MIN_PER_MOVE, resolveSpanning, SPAN_LEAD } from './lesson-format.js';
+export {
+  CAM_DEFAULT,
+  CAM_EASE,
+  GHOST_ELEV,
+  GHOST_REVEAL,
+  QUARTER_GAP,
+  buildSchedule,
+  cameraAt,
+  lineAt,
+  numberAt,
+  segmentAt,
+  viewAt,
+} from './lesson-schedule.js';
+export { createLessonPlayer } from './lesson-player.js';
