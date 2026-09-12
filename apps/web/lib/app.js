@@ -24,6 +24,7 @@ import { randomCube } from './random-state.js';
 // short can this be" — so the two are two OBJECTS on this screen, never one standing where the
 // other was. That rule is what the first attempt broke; §3 of the plan is about it.
 import { fromCube, movesOf } from './cube-pieces.js';
+import { CUBE_VIEW } from './cube-view.js';
 import { DEFAULT_RUNGS, STAGE_IDS, TOP_RUNG, methodFor, solveByMethod, warmCross } from './method-solver.js';
 import {
   lessonCues, lessonSections, moveStepIndex, rungSummary, stepAtMove, whyText,
@@ -3686,7 +3687,10 @@ const cubeScreen = (screenMode) => {
   // full-bleed at 1 — see the scan screen's mount) is the reference the walking screens must
   // match, and a wiped localStorage once reverted them to a look nobody had chosen. A tuning
   // that lives only in storage is a tuning waiting to be lost.
-  const v = load('cubeView', { hintElev: 9, camLat: 35, camLon: 45, facScale: 1, ghosts: true });
+  // `CUBE_VIEW` is frozen, and `load()` spreads its fallback into a fresh object, so the `delete`
+  // below cannot reach the constant. Lifted to `lib/cube-view.js` because a second consumer was
+  // reading these five numbers out of THIS FILE with a regular expression.
+  const v = load('cubeView', CUBE_VIEW);
   // The camera's distance is no longer a tuning: the renderer fits the picture to its slot
   // (lib/cube-frame.js) — a distance right for one slot shape clipped the ghost faces on every
   // other. A stored camDist is dropped rather than left for save() to keep rewriting.
