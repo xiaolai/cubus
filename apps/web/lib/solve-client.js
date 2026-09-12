@@ -12,6 +12,11 @@
 // `undefined` — which is how an omitted budget became 1 node per worker in an earlier draft.
 // A constant, not the engine: the solver itself is still injected.
 import { DEFAULT_NODE_BUDGET } from './solver-engine.js';
+// The one tokenizer. A stage reply carries an algorithm AND its length, and they are checked
+// against each other with the same function the walk will count with — `cube-pieces.js` exists so
+// that "what counts as a move" has one answer.
+import { movesOf } from './cube-pieces.js';
+import { OFFERED_TARGETS } from './stage-targets.js';
 
 /** How a whole client is abandoned. The solver cannot be interrupted between messages — it is a
  *  synchronous search loop — so the only way to stop one already running with nothing shared is
@@ -149,6 +154,187 @@ export function handleSolveRequest(solve, request, readStats = () => ({})) {
  */
 export const PREPARE_TABLES = 'prepare-tables';
 export const ADOPT_TABLES = 'adopt-tables';
+/**
+ * The repair request: how far is this cube from a named state, and what is the shortest way back.
+ *
+ * WHY IT IS A REQUEST KIND ON THIS POOL RATHER THAN A WORKER OF ITS OWN, decided by plan §7.6's
+ * measurement rather than by argument. The two costs were:
+ *
+ *   sharing   a repair queues behind a running solve, because `createParallelSolveClient` splits
+ *             ONE cube across every worker — the views are slices of the same search, so while a
+ *             solve runs there is no idle thread to take. Measured over 13 cubes (the frozen
+ *             30-turn rows plus the release-gate fixtures): p50 317 ms, p95 1,573 ms,
+ *             single-threaded, which is an UPPER bound on the real wait since the shipped pool
+ *             searches one cube on up to six threads.
+ *   a worker  ~14 MiB steady and a ~23 MiB peak for the seven distance tables, measured after a
+ *             forced collection — plus a thread, and a second cancellation word, and a second
+ *             stats channel.
+ *
+ * A second and a half of waiting, on a screen that already has instant lower bounds to show, is
+ * cheaper than 14 MiB and a duplicate of every mechanism this file already has. So it goes here,
+ * and it goes to ONE client — `clients[0]` — because the tables are per-thread: routing it round
+ * the pool would build them six times over for a question only ever asked once at a time.
+ */
+export const SOLVE_TO_STATE = 'solve-to-state';
+
+/** The tag every stage reply carries. Checked on arrival — see `stageRequest`. */
+const STAGE_REPLY = 'stage';
+
+/** One face turn: a face letter and an optional modifier. The app's whole move vocabulary. */
+const MOVE_TOKEN = /^[URFDLB][2']?$/;
+/** The largest value a max over the projection tables can take — the largest diameter is 8. */
+const MAX_BOUND = 8;
+/**
+ * The targets a bounds reply must carry, sorted — every one, and nothing else.
+ *
+ * Read from `stage-targets.js` rather than typed, so adding a chip cannot leave this behind. That
+ * module is pure data with no tables and no search, which is what makes it safe to import into the
+ * client both threads load.
+ */
+const BOUNDED_TARGET_IDS = OFFERED_TARGETS.map((t) => t.id).sort();
+
+/**
+ * A stage reply, or a throw.
+ *
+ * WHY A REPLY NEEDS VALIDATING AT ALL, when the control channel already checks `ok`. Because `ok`
+ * is a tag on the ENVELOPE and says nothing about what is inside it. A worker that does not know
+ * this request kind can answer `{ ok: true, alg: '…' }` — the inline fallback did exactly that,
+ * treating a repair as an ordinary two-phase solve and returning a WHOLE-CUBE solution. Every
+ * downstream check then passed: the algorithm is real, it replays correctly, and it reaches the
+ * target (solved is inside every target), so it was accepted as an EXACT answer and the screen
+ * would have said "the shortest way back — 18 moves" about a whole-cube solve. A false minimality
+ * claim, from a reply nobody checked the shape of. Found by an audit; reproduced.
+ */
+function stageReply(reply, want, target) {
+  if (reply?.kind !== STAGE_REPLY) {
+    throw new Error(`stage route: the worker answered with "${String(reply?.kind)}" rather than a repair`);
+  }
+  if (reply.want !== want) {
+    throw new Error(`stage route: asked for "${want}" and was answered "${String(reply.want)}"`);
+  }
+  return want === 'bounds' ? boundsReply(reply) : routeReply(reply, target);
+}
+
+/**
+ * A bounds reply: THE EXACT SET of offered targets, each a distance a cube can actually be at.
+ *
+ * Checking only the values that happen to be present let an empty object, an unknown key, an array
+ * and a distance of 999 all through. The missing key is the quiet one: that chip silently loses its
+ * search and sits on its waiting state for ever.
+ */
+function boundsReply(reply) {
+  const bounds = reply.bounds;
+  if (bounds === null || typeof bounds !== 'object' || Array.isArray(bounds)) {
+    throw new Error('stage route: a bounds reply carries no bounds');
+  }
+  const expected = BOUNDED_TARGET_IDS;
+  const got = Object.keys(bounds).sort();
+  if (got.length !== expected.length || got.some((id, i) => id !== expected[i])) {
+    throw new Error(`stage route: bounds for ${got.join(', ') || '(nothing)'} — expected ${expected.join(', ')}`);
+  }
+  for (const [id, d] of Object.entries(bounds)) {
+    // The largest projection diameter is 8, so a max over them cannot exceed it. A bound past that
+    // is a corrupted table or a worker answering a different question.
+    if (!Number.isInteger(d) || d < 0 || d > MAX_BOUND) {
+      throw new Error(`stage route: "${id}" came back as ${String(d)}, which is not a distance`);
+    }
+  }
+  return reply;
+}
+
+/**
+ * A route reply: about the target that was asked, and either an exact answer or a refusal.
+ *
+ * EXACTNESS IS PART OF THE ANSWER, and leaving it unchecked was the same defect twice.
+ * `{ alg: 'R R R', moves: 3, exact: false }` passed, and `stage-route.js` labels anything from the
+ * exact source `minimal: true` — so a three-move route to a target one move away would have been
+ * called the shortest there is. Reproduced by an audit.
+ */
+function routeReply(reply, target) {
+  if (reply.target !== target) {
+    throw new Error(`stage route: asked about "${target}" and was answered about "${String(reply.target)}"`);
+  }
+  if (reply.alg === null && reply.moves === null) {
+    if (reply.exact !== false) throw new Error('stage route: a refusal must say it is not exact');
+    return reply;
+  }
+  if (typeof reply.alg !== 'string' || !Number.isInteger(reply.moves) || reply.moves < 0) {
+    throw new Error('stage route: the reply is neither an answer nor a refusal');
+  }
+  if (reply.exact !== true) {
+    throw new Error('stage route: an answer that does not claim exactness cannot be used as one');
+  }
+  // AND THE ALGORITHM MUST BE ONE. `movesOf` counts whitespace-separated tokens and validates
+  // nothing, so `{ alg: '?', moves: 1 }` agreed with itself perfectly — and the Restore chip prints
+  // that count with no replay behind it, which is the one path where a bogus answer is not caught
+  // downstream.
+  const tokens = movesOf(reply.alg);
+  if (!tokens.every((m) => MOVE_TOKEN.test(m))) {
+    throw new Error(`stage route: "${reply.alg}" is not a sequence of face turns`);
+  }
+  // AND THE COUNT MUST BE THE ALGORITHM'S. A screen shows the count while a child follows the
+  // moves; a mismatch is the two disagreeing in front of them. `movesOf` is the app's one
+  // tokenizer, so this cannot drift from what the walk will count.
+  if (reply.moves !== tokens.length) {
+    throw new Error(`stage route: the reply says ${reply.moves} moves and carries ${tokens.length}`);
+  }
+  return reply;
+}
+
+/**
+ * Send one stage request on `client`, and believe the answer only if it is one.
+ *
+ * PROTOCOL FIELDS ARE ASSIGNED LAST. `{ kind, ...payload }` let a caller's payload overwrite the
+ * request kind, and `control`'s `{ id, ...message }` let it overwrite the generated id — passing
+ * `id: 77` posted 77 while the pending map held 1, so the reply was discarded and the promise never
+ * settled. Reproduced by an audit. The whitelist below is the other half: only these fields cross.
+ */
+async function stageRequest(client, payload = {}) {
+  const worker = client.ensureWorker?.();
+  // §8 IS NOT NEGOTIABLE: no search and no distance table on the UI thread. `spawnSolveWorker`
+  // answers with a main-thread worker where it cannot build a real one, and a repair on one of
+  // those is a two-second block of the page — measured at 2.3 s for a request that should be a
+  // table read. Refused here rather than sent, so a page with no `Worker` shows dashes and the
+  // offer to solve the whole cube, which is a state the screens already have.
+  if (worker?.inline === true) {
+    throw new Error('stage route: this page has no worker, and a repair may not run on the UI thread');
+  }
+  const { want = 'route', target = null, facelets = null, nodeBudget, maxDepth } = payload;
+  const reply = await client.control({
+    want, target, facelets, nodeBudget, maxDepth, kind: SOLVE_TO_STATE,
+  });
+  return stageReply(reply, want, target);
+}
+
+/**
+ * The repair, on the worker's side of the boundary.
+ *
+ * `engine` is injected for exactly the reason `solve` is in `handleSolveRequest`: this runs only on
+ * a thread `node --test` cannot drive, so everything with a decision in it lives on this side where
+ * a test can hand in a fake and check what comes back.
+ *
+ * Two shapes, because plan §3's split runs all the way out to the wire. `bounds` is a table read
+ * per offered target and is instant; `route` is a budgeted search and is not. A caller that wants a
+ * chip row asks for the first, and a caller that wants a walk asks for the second — never both in
+ * one message, so nothing can present a bound as an answer by accident.
+ */
+export function handleStageRequest(engine, request) {
+  const { id, target, facelets, nodeBudget, maxDepth, want = 'route' } = request ?? {};
+  try {
+    const state = engine.parseFacelets(facelets);
+    // A cube the app could not parse is not a search that failed — it is a question that cannot be
+    // asked. Said as an error rather than as a null answer, because a null answer means "the
+    // search found nothing", and those must never be the same reply.
+    if (state === null) return { id, ok: false, error: 'stage route: that is not a cube this app can read' };
+    if (want === 'bounds') {
+      return { id, ok: true, kind: STAGE_REPLY, want, bounds: engine.lowerBounds(state) };
+    }
+    const got = engine.solveToState(target, state, { nodeBudget, maxDepth });
+    return { id, ok: true, kind: STAGE_REPLY, want, target, ...got };
+  } catch (err) {
+    return { id, ok: false, error: errorText(err) };
+  }
+}
 
 export function handleTableRequest(engine, request) {
   const { id, kind } = request ?? {};
@@ -249,6 +435,16 @@ export function createSolveClient({ spawn } = {}) {
       }
       // The reply is validated, not trusted: `ok` is the tag (an empty error string must not
       // read as success), and a success carries an algorithm string or null, nothing else.
+      //
+      // AND IT MUST NOT BE A CONTROL REPLY. The isolation was one-way: `stageReply` refuses a
+      // solve's answer, but nothing stopped a TAGGED reply carrying a pending solve's id from
+      // being read as that solve's algorithm. Unique ids make the collision unlikely rather than
+      // impossible, and "unlikely" is not what the two kinds of answer being different questions
+      // deserves. A worker that answers the wrong question is refused in both directions now.
+      if (data.kind !== undefined) {
+        waiting.reject(new Error(`solver worker answered a search with a "${String(data.kind)}" reply`));
+        return;
+      }
       if (data.ok === true && (typeof data.alg === 'string' || data.alg === null)) {
         // The resume point rides with THIS reply too, and is written before the promise settles —
         // a caller that awaits the answer and then reads its carrier must never see the point the
@@ -420,6 +616,10 @@ export function createSolveClient({ spawn } = {}) {
     solve,
     cancel,
     control,
+    /** A repair, on this client's worker. Rides the control channel because it is not a search of
+     *  the two-phase engine and must not be validated as one — `stageRequest` is what validates it
+     *  instead, and what refuses to put one on a main-thread worker at all. */
+    stageRoute: (payload) => stageRequest({ ensureWorker: () => attach(), control }, payload),
     /** Make the worker now, and hand it back, so a caller can see WHAT it got before committing
      *  work to it. The pool needs exactly that: `spawnSolveWorker` answers with a main-thread
      *  worker where it cannot build a real one, and dividing a budget between several of those
@@ -805,6 +1005,15 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
   return {
     solve,
     cancel,
+    /**
+     * A repair, on ONE worker of the pool.
+     *
+     * Always `clients[0]` — or the lone fallback where the pool gave up — because the seven
+     * distance tables are per-thread and about 14 MiB steady. Dealing this round the pool the way
+     * a solve's views are dealt would build them on every thread for a question asked one at a
+     * time, which is the arithmetic that killed the scramble worker.
+     */
+    stageRoute: (payload) => (lone ?? clients[0]).stageRoute(payload),
     // The fallback counts for both: a solve running on it is not idle, and a pool that has
     // fallen back reports the one worker it actually has rather than the six it wanted.
     get idle() { return clients.every((c) => c.idle) && (lone?.idle ?? true); },
@@ -860,6 +1069,17 @@ function inlineWorker() {
           // search from ever starting — a synchronous search cannot be interrupted, so not
           // starting it is the only cancellation this thread-less worker can honour.
           if (closed) return;
+          // ONLY A SOLVE. This worker is the calling thread, and every other request kind this
+          // protocol has is one that must not run here: a table handshake has nobody to share
+          // with, and a repair is a search plus 18 MiB of tables on the page. Answering them as
+          // if they were solves is what it used to do, and it returned a whole-cube algorithm to
+          // a caller that believed it was a proved minimum. Refused by name instead.
+          const { id, kind } = request ?? {};
+          if (kind !== undefined) {
+            listeners.get('message')?.({ data: { id, ok: false,
+              error: `there is no worker here, so "${String(kind)}" cannot be served off the main thread` } });
+            return;
+          }
           listeners.get('message')?.({ data: handleSolveRequest(solve, request, readStats) });
         },
         (err) => {

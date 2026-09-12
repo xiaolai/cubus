@@ -110,7 +110,7 @@
          progress bar's width). design-discipline.test.mjs holds this list against the sheet's
          :hover selectors: a new hoverable control joins it or the test names it. */
       :is(.btn, .pill, .nav-item, .tb-ctl, .tbtn, .tb-cap, .menu > button, .card-tools > button,
-          .eyebrow-row > button, .chip-m, .swatches > button, .field, .link, .toggle,
+          .eyebrow-row > button, .chip-m, .stage-chip, .swatches > button, .field, .link, .toggle,
           .scan-face .tgrid > .cell) {
         transition: background var(--fade), color var(--fade), border-color var(--fade),
           box-shadow var(--fade), opacity var(--fade), transform var(--fade);
@@ -875,6 +875,11 @@
       .net .sticker.D { background: var(--net-D); }
       .net .sticker.L { background: var(--net-L); }
       .net .sticker.B { background: var(--net-B); }
+      /* A sticker the picture does NOT fix — the "doesn't matter yet" of a stage target
+         (dev-docs/solve-to-state-plan.md §6). Drawn as an empty well rather than as a colour,
+         because the one thing it must never do is look like a sixth colour: the whole point of
+         drawing a target is that a child can tell what they are aiming at from what is free. */
+      .net .sticker.free { background: var(--facelet-off); opacity: .35; }
       /* A grid of fixed --chip tracks, as many as fit, justified edge-to-edge — so the first
          column sits flush with the heading and the last column flush with the count above, and a
          column can never be clipped: auto-fill computes what fits instead of letting wrap guess. */
@@ -882,6 +887,25 @@
          chips can never pack edge-to-edge; space-between then distributes whatever is left on top,
          keeping the first column flush left and the last flush right. row-gap alone was the bug:
          with no column-gap, auto-fill fit an extra column and left ~2px between chips. */
+      /* ---- stage chips: how far this cube is from each named stage ----------------------
+         FIVE STATES, VISUALLY DISTINCT, because no two of them are the same kind of fact
+         (dev-docs/solve-to-state-plan.md §6). `done` is an encouragement; `exact` is a proved
+         minimum; `bound` is a lower bound that may still improve, and is drawn lighter and with a
+         `≥` so it can never be read as a distance; `route` is a length with no minimality claim;
+         `dash` is a statistic that could not be computed. Colour alone does not carry any of it —
+         every chip's accessible name says which kind it is in words. */
+      .stage-chip { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px;
+        border: 1px solid var(--line); border-radius: var(--r-2); padding: 5px 10px; text-align: left; }
+      .stage-chip .who { font-size: var(--fs-body-s); color: var(--ink-4); font-weight: 600; white-space: nowrap; }
+      .stage-chip .howfar { font-family: var(--font-num); font-size: var(--fs-body-l); font-weight: 600; color: var(--ink); }
+      .stage-chip:hover { border-color: var(--ink-5); }
+      .stage-chip.done { border-color: var(--accent); }
+      .stage-chip.done .howfar { color: var(--accent); font-family: inherit; font-size: var(--fs-body); }
+      .stage-chip.bound .howfar { color: var(--ink-4); font-weight: 400; }
+      .stage-chip.dash .howfar { color: var(--ink-4); }
+      .stage-chip.on { background: var(--invert-bg); border-color: var(--invert-bg); }
+      .stage-chip.on .who, .stage-chip.on .howfar { color: var(--invert-fg); }
+      .stage-row { display: flex; flex-wrap: wrap; gap: 6px; }
       .move-chips { display: grid; grid-template-columns: repeat(auto-fill, var(--chip)); justify-content: space-between; gap: 6px; }
       /* One shape for every move: a SQUARE, text centred both ways at body size. 36px with a
          mouse — the size that lets a whole solution sit on the sheet at the reference minimums

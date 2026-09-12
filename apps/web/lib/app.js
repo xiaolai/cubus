@@ -53,6 +53,15 @@ import { classifyReconnect, confirmCheck } from './cube-reconnect.js';
 // Settings) and is an identity function until a catalog registers — see dev-docs/i18n.md for the
 // convention and for the surfaces still to be converted.
 import { t, initLocale, locale, plural } from './i18n.js';
+import { OFFERED_TARGETS, TARGET_BY_ID } from './stage-targets.js';
+import { targetPicture } from './stage-picture.js';
+import { CHIP, STAGE_COPY, chipFor, chipLabel, routeSentence } from './stage-report.js';
+import { routesToTarget } from './stage-route.js';
+// The BUDGET only. `stage-distance.js` builds nothing at import — its tables are lazy — but this
+// thread must never call its search: §8 is not negotiable and a table build of a few hundred
+// milliseconds is exactly the 723 ms block that was removed from `loadSolver`. The search runs on
+// a worker, through `stageAsk`.
+import { NODE_BUDGET as STAGE_NODE_BUDGET } from './stage-distance.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 /** The app's version — written HERE and nowhere else by hand. The About card renders it, and a
@@ -337,6 +346,16 @@ if (settings.navDefaults < NAV_DEFAULTS_VERSION) {
 const navHidden = (id) => HIDEABLE_IDS.has(id) && settings.navHidden.includes(id);
 const state = {
   screen: 'home',
+  /**
+   * Which named state the cube screen is walking TO.
+   *
+   * `'solved'` by default, so nothing changes for somebody who only wants their cube solved. It is
+   * a fact about this cube right now rather than a preference, which is why it is here and not in
+   * Settings — the same argument the ladder makes about rungs. A chip on Restore sets it; the
+   * selector on the cube screen changes it; a retarget is what carries the change onto the screen
+   * already standing (plan §6).
+   */
+  stageTarget: 'solved',
   // ---- smart cube (recovered from v0) ---------------------------------------------------------
   connected: false,
   cubeName: '',
@@ -729,6 +748,55 @@ const solverWorker = () => (solveClient ??= (() => {
   });
 })());
 
+/**
+ * The repair, asked of the solver pool — never of this thread.
+ *
+ * §8 is not negotiable and was measured: zero searches on the UI thread, and a table build of a
+ * few hundred milliseconds is exactly the 723 ms block that was removed from `loadSolver`. The
+ * seven distance tables cost 460 ms cold and about 18 MiB steady, so they live on one worker of
+ * the pool and this function is the only door to them.
+ *
+ * Returns null rather than throwing on every way the pool can be unavailable — no worker, a
+ * cancelled client, an inline fallback that has no `stageRoute`. A screen that cannot get a
+ * number shows a dash, which is a state it already has; a screen that gets an exception shows
+ * nothing at all.
+ */
+async function stageAsk(payload) {
+  try {
+    const client = solverWorker();
+    if (typeof client?.stageRoute !== 'function') return null;
+    const reply = await client.stageRoute(payload);
+    return reply?.ok === true ? reply : null;
+  } catch (err) {
+    // A repair nobody can compute is not an error worth a banner: the chip says so in its own
+    // words. Logged, because a pool that cannot answer at all is worth knowing about.
+    console.warn('stage route unavailable', err);
+    return null;
+  }
+}
+
+/**
+ * The budget a Restore chip is allowed, as against the cube screen's.
+ *
+ * SIX CHIPS AT THE FULL BUDGET IS TWELVE SECONDS OF WORKER TIME on a scrambled cube, arriving
+ * exactly when the user is about to press "Solve this cube" and needs that same pool. So the chips
+ * get a tenth of it: measured over plan §7.2's corpus, 400,000 nodes answers 99% of "a stage was
+ * finished and then broken by a few turns" and 98% of "a real algorithm with the wrong AUF" —
+ * which is the population a child hands over. Anything deeper stays a labelled bound, and pressing
+ * the chip runs the full search on the cube screen.
+ */
+const CHIP_NODE_BUDGET = 400_000;
+
+/**
+ * The targets whose work is on the BOTTOM of the cube, and which are therefore drawn from below.
+ *
+ * The app's convention puts the cross on D (`methods/engine.js`), so a child building it is
+ * looking at the face the renderer would otherwise hide. Named rather than inlined because it is
+ * a claim about the METHOD — change the convention and this list is one of the things that has to
+ * move with it.
+ */
+const BOTTOM_LAYER_TARGETS = new Set(['cross', 'first-layer']);
+
 let solverWarmed = false;
 /**
  * Build the pool's pruning tables before a user is waiting on them.
@@ -1054,7 +1122,13 @@ function buildNet(root) {
     for (let i = 0; i < 9; i++) { const s = document.createElement('div'); s.className = 'sticker'; d.appendChild(s); cells.push(s); }
     root.appendChild(d);
   }
-  return (facelets) => { for (let i = 0; i < 54; i++) cells[i].className = 'sticker ' + facelets[i]; };
+  // `?` means "this target does not fix this sticker" (lib/stage-picture.js) and becomes `free`,
+  // which the stylesheet draws as an empty well. Mapped HERE rather than at the call site because
+  // `?` is not a valid class token: `class="sticker ?"` matches no rule and renders as a plain
+  // outline, which is what an unpainted net looks like — the failure would be invisible.
+  return (facelets) => {
+    for (let i = 0; i < 54; i++) cells[i].className = `sticker ${facelets[i] === '?' ? 'free' : facelets[i]}`;
+  };
 }
 // Net sticker colours track the selected palette (puzzle data lives in cubus-cube's PALETTES; we
 // mirror the muted set here for the flat net).
@@ -2703,6 +2777,20 @@ SCREENS.scan = () => {
           <div class="sub scan-say" id="scanHow" role="status" aria-live="polite" style="margin-top:4px">${registered ? 'Opening the camera…' : 'Loading the scanner…'}</div>
           <div class="sub scan-hint" id="scanHint" hidden></div>
           <button class="btn sm outline" id="scanAction" hidden style="margin-top:10px"></button></div>
+        <!-- HOW FAR BACK: one chip per named stage, plus the whole cube. Shown after a scan the
+             app believed, and never before — a number about a cube nobody has read is a number
+             about nothing. §9.2 decided they appear unasked: a chip reading "done" is an
+             encouragement, not a chore, and six numbers is the most useful single screen this app
+             has for a parent watching.
+             The chips report DISTANCES. They never report what the child was doing — a cube
+             carries no history, and SOLVED then U satisfies the top cross whether it came from a
+             finished stage or from somebody's opening scramble (§1).
+             (No backticks in here: this comment lives inside a template literal, and one would
+             end the template two hundred lines early.) -->
+        <div class="card tight" id="stageCard" hidden style="margin-top:12px">
+          <div class="card-h bare"><b>${escHtml(t('How far back'))}</b><span class="sub" id="stageSay" role="status" aria-live="polite" style="margin-left:auto;color:var(--ink-4)"></span></div>
+          <div class="stage-row" id="stageChips" style="padding:2px 18px 12px"></div>
+        </div>
         <button class="btn primary block" id="scanSolveBtn" data-go="home" style="margin-top:auto" disabled>Solve this cube</button>
       </div>
     </div></div>`,
@@ -3204,6 +3292,132 @@ SCREENS.scan = () => {
         }
       };
 
+      /**
+       * The chip row, painted from the cube a scan just established.
+       *
+       * TWO PASSES, and the split is plan §3's: a LOOKUP IS A LOWER BOUND, AN ANSWER IS A SEARCH.
+       * The first pass is one message and is instant — every offered target's table read at once —
+       * so the row appears the moment the scan lands rather than after six searches. The second
+       * pass runs a budgeted search per target and upgrades each chip as its answer arrives, or
+       * leaves it as a labelled bound.
+       *
+       * A GENERATION COUNTER, because a late answer is about the cube it was asked about and not
+       * about whichever cube is on screen when it lands. A correction to one sticker re-scans and
+       * re-paints; without this, the previous cube's fifth chip would arrive and overwrite the new
+       * cube's. Same defect the cube screen's `walkGen` exists for, one screen along.
+       */
+      let stageGen = 0;
+      /** Stop believing anything in flight, and take the row away. One helper, three callers. */
+      function dropStageChips() {
+        stageGen += 1;
+        const card = $('#stageCard', root);
+        if (card) card.hidden = true;
+      }
+      async function paintStageChips(facelets) {
+        const mine = ++stageGen;
+        const card = $('#stageCard', root);
+        const row = $('#stageChips', root);
+        const say = $('#stageSay', root);
+        if (!card || !row) return;
+        // THE CUBE, not only the generation. A smart-cube snapshot can replace the subject without
+        // touching either the generation or the DOM, and an answer about the cube that was scanned
+        // would then repaint over a cube that has since been turned — reproduced by an audit: scan
+        // `R`, report `R F`, and the cross chip still reads 1 where the distance is now 2.
+        const fresh = () => root.isConnected && mine === stageGen && state.cube.facelets === facelets;
+
+        const drawn = new Map();
+        const draw = (target, chip) => {
+          drawn.set(target.id, chip);
+          const el = row.querySelector(`[data-target="${target.id}"]`);
+          if (!el) return;
+          el.className = `stage-chip ${chip.state}`;
+          el.querySelector('.howfar').textContent = chip.text;
+          el.setAttribute('aria-label', chipLabel(chip));
+        };
+
+        // The row itself, drawn once with every chip in its waiting state, so the layout does not
+        // move under the user as answers land.
+        card.dataset.about = facelets;
+        row.innerHTML = OFFERED_TARGETS.map((target) => `<button type="button" class="stage-chip bound"
+          data-target="${escHtml(target.id)}" title="${escHtml(t('Take this cube back to the %1', target.name))}">
+          <span class="who">${escHtml(target.name)}</span><span class="howfar">…</span></button>`).join('');
+        card.hidden = false;
+        if (say) say.textContent = '';
+
+        const bounds = await stageAsk({ want: 'bounds', facelets });
+        if (!fresh()) {
+          if (root.isConnected && mine === stageGen) dropStageChips();
+          return;
+        }
+        if (!bounds) {
+          // No pool, no tables, no numbers. A dash each, and the offer that stands in for them.
+          for (const target of OFFERED_TARGETS) draw(target, chipFor({ target, answer: { moves: null } }));
+          if (say) say.textContent = STAGE_COPY.offerSolve();
+          return;
+        }
+        for (const target of OFFERED_TARGETS) {
+          const bound = bounds.bounds?.[target.id] ?? null;
+          draw(target, chipFor({ target, bound, atTarget: bound === 0 }));
+        }
+
+        // Then the searches, cheapest first so the shallow chips settle while the deep ones run.
+        // `solved` is deliberately NOT searched: plan §6 gives its chip the "a route, not a
+        // distance" state and §9.5 leaves the whole-cube minimum an open decision for the owner.
+        // The pool answers that one when the child presses it.
+        const ordered = OFFERED_TARGETS
+          .filter((target) => target.id !== 'solved' && (bounds.bounds?.[target.id] ?? 0) > 0)
+          .sort((a, b) => (bounds.bounds[a.id] ?? 0) - (bounds.bounds[b.id] ?? 0));
+        for (const target of ordered) {
+          const answer = await stageAsk({
+            want: 'route', target: target.id, facelets, nodeBudget: CHIP_NODE_BUDGET, maxDepth: 12,
+          });
+          // NOT MERELY "STOP ANSWERING" — TAKE THE ROW AWAY. Discarding later replies left the
+          // distances already painted standing over a cube that has since been turned: the cross
+          // chip read 1 for `R` while the cube reported `R F`, and pressing it walked a route for
+          // a cube nobody was holding. A number about the wrong cube is worse than no number.
+          if (!fresh()) {
+            if (root.isConnected && mine === stageGen) dropStageChips();
+            return;
+          }
+          // A null reply is the pool going away, not a search that finished with nothing — the
+          // chip keeps its bound rather than claiming a dash the search never earned.
+          if (!answer) return;
+          draw(target, chipFor({
+            target,
+            bound: bounds.bounds?.[target.id] ?? null,
+            // The engine's answer carries no `minimal` field: an exact answer IS minimal, and a
+            // refusal has `moves: null`. Translated here rather than in the worker, so the claim
+            // is made in one place.
+            answer: { moves: answer.moves, minimal: answer.moves !== null },
+          }));
+        }
+        // AND ONCE MORE AFTER THE LAST ONE. The checks above fire when the NEXT reply arrives, so a
+        // subject that moved after the final answer left the row standing: `R` then `R F` left the
+        // cross chip reading 1 where the distance had become 2. Reproduced by an audit.
+        if (!fresh() && root.isConnected && mine === stageGen) dropStageChips();
+      }
+
+      // A chip press takes its target to the cube screen — which is where a walk lives. Delegated
+      // to the row, because the chips are replaced as answers arrive and a listener per chip would
+      // be re-attached on every upgrade.
+      $('#stageChips', root)?.addEventListener('click', (e) => {
+        const chip = e.target.closest?.('[data-target]');
+        if (!chip) return;
+        // The card is hidden on a refusal, so this is the second lock rather than the first — and
+        // it is here because hiding is a fact about the DOM and refusal is a fact about the scan.
+        if (refused) return;
+        // AND THE ROW MUST STILL BE ABOUT THE CUBE IN FRONT OF US. A number that lingers over a
+        // cube that has since been turned is cosmetic; PRESSING it walks a route for a cube nobody
+        // is holding, which is not. The row records what it was painted for, so the press can ask.
+        const card = $('#stageCard', root);
+        if (card && card.dataset.about !== state.cube.facelets) {
+          dropStageChips();
+          return;
+        }
+        state.stageTarget = chip.dataset.target;
+        go('home');
+      }, { signal });
+
       panel.addEventListener('scan-progress', (e) => {
         const p = e.detail;
         // Anything other than a finished scan means the orientation is open again — a correction
@@ -3222,6 +3436,16 @@ SCREENS.scan = () => {
         // verdict — and by the next accepted scan-complete.
         if (!p.complete) refused = false;
         solveBtn.disabled = !p.complete || refused;
+        // A scan that is no longer complete — or one this screen refused — has taken its cube back,
+        // and numbers about it stop being about anything. Bumping the generation is what stops a
+        // search already in flight painting over the row after it has gone.
+        //
+        // BOTH CONDITIONS, and the second was missing: a refusal arrives with `complete` still
+        // standing from the previous accepted scan, so the card stayed on screen and its chips
+        // stayed pressable over a cube the screen had just said it did not believe. That is the
+        // same defect the Solve button's `refused` flag exists for, one card along, and an audit
+        // reproduced it — Solve disabled, the repair card still offering routes.
+        if (!p.complete || refused) dropStageChips();
         // What the scan has ESTABLISHED about the cube's colours. A real scheme moves the tiles
         // and is remembered; `'undetermined'` and null leave the assumption where it was, because
         // neither is evidence (ADR 0001 §8.3). A refusal never reports one at all.
@@ -3278,7 +3502,13 @@ SCREENS.scan = () => {
       // events, or reading `misreadCount` as a number, would not be. What the count is FOR is the
       // panel's pinned notice, which arrives on scan-progress and is rendered above with its
       // params, so the "at least N stickers were misread" wording stays the scanner's to prove.
-      panel.addEventListener('scan-invalid', () => { refused = true; solveBtn.disabled = true; }, { signal });
+      panel.addEventListener('scan-invalid', () => {
+        refused = true;
+        solveBtn.disabled = true;
+        // …and no repair over a read the scanner refused (§9a: the feature inherits the scan's
+        // refusal rather than forming an opinion of its own).
+        dropStageChips();
+      }, { signal });
       // Only a validated cube leaves this screen.
       panel.addEventListener('scan-complete', (e) => {
         // The panel is torn down on navigation, but an event already in flight still lands. Without
@@ -3320,6 +3550,7 @@ SCREENS.scan = () => {
           markStale('a scan disagreed with what the cube reports, and neither could be confirmed');
           refused = true;
           solveBtn.disabled = true;
+          dropStageChips();
         } else {
           refused = false;
           // A completed scan answers the reconnect question outright — six sides ESTABLISH what
@@ -3331,6 +3562,11 @@ SCREENS.scan = () => {
           // The moment the chain became trusted is a moment worth remembering: truth from the
           // scan, the cube's own raw claim beside it.
           if (state.connected && state.reported) rememberLastSeen('camera', { force: true });
+          // …and how far this cube is from each named stage. AFTER the adoption, because the
+          // chips are about the cube the app now believes in — and only on a scan it BELIEVED:
+          // no repair runs on a read the scanner did not accept (plan §9a), so the feature
+          // inherits the scan's refusal rather than forming an opinion of its own.
+          void paintStageChips(fl);
         }
         if (repaired) {
           sayTitle.textContent = repaired.ok ? 'Tracking repaired' : 'These do not match';
@@ -3811,7 +4047,26 @@ const cubeScreen = (screenMode) => {
              Solution header's 14px pad, with this card's own bottom padding zeroed) — the two
              breathing spaces the eye compares, made equal. The margin is the stylesheet's
              (.state-card .net): beside the cube in portrait the net centres instead. -->
-        <div class="net" id="viewNet"></div></div>
+        <div class="net" id="viewNet"></div>
+        <!-- THE TARGET, WITH THE FREE PIECES GHOSTED, and it is what makes a minimal route
+             acceptable rather than alarming: a repair to the top cross may break the cross on the
+             way, and a child who can see what they are aiming at — with "doesn't matter yet" drawn
+             as an empty well — follows it. Without this the first alarming route costs the feature
+             its credibility, and no amount of correct arithmetic buys that back (§6). Hidden while
+             the target is the whole cube, where the picture would be a solved cube beside a
+             scrambled one and say nothing.
+             (This comment lives inside a template literal, so optimal.test.mjs's scanner reads it
+             as a string that could reach a screen. It therefore avoids the claim vocabulary — and
+             that is the scanner being right rather than a nuisance: it cannot tell markup from
+             copy, and the day it tries is the day it can be walked past.) -->
+        <div id="stageAim" hidden style="margin-top:10px">
+          <div class="sub" style="color:var(--ink-4);text-align:center;padding-bottom:4px" id="stageAimSay"></div>
+          <div class="net" id="stageAimNet"></div>
+          <!-- HOW FAR THE CUBE IN YOUR HAND IS, right now. Its own line and never the route's
+               count: #moveCount reports progress against THIS route's total, and a live distance
+               written into it would make one label silently mean two things (§5.5). -->
+          <div class="sub" id="stageLive" role="status" aria-live="polite" style="text-align:center;padding-top:6px;color:var(--ink-4)"></div>
+        </div></div>
       ${unsolvable ? `<div class="card sheet unsolvable-card">
         <div class="follow-note" id="unsolvableNote" style="border-top:0">
           <b>${escHtml(t('This arrangement is not one a cube can be turned into.'))}</b>
@@ -3836,6 +4091,14 @@ const cubeScreen = (screenMode) => {
              CSS class alone, so a screen reader announced two identical buttons and no way to tell
              which object was on screen — and the whole point of the pair is that they are two
              different answers to two different questions. -->
+        <!-- WHERE THIS WALK IS GOING. Not a setting and not in Settings: the target is a fact
+             about this cube right now, which is the same argument the ladder makes about rungs
+             (dev-docs/solve-to-state-plan.md §6). The default stays "solved", so nothing changes
+             for somebody who only wants their cube solved. Changing it is a WALK REPLACEMENT and
+             goes through retarget(), which is exactly what that path is for. -->
+        <div class="stage-row" id="stageTargetRow" role="group" aria-label="${escHtml(t('Where to take this cube'))}" style="padding:2px 18px 6px">
+          ${OFFERED_TARGETS.map((tg) => `<button class="pill${state.stageTarget === tg.id ? ' on' : ''}" data-stage="${escHtml(tg.id)}" aria-pressed="${state.stageTarget === tg.id}">${escHtml(tg.id === 'solved' ? t('Solved') : tg.name)}</button>`).join('')}
+        </div>
         <div class="wrap-row" id="walkKindRow" role="group" aria-label="${escHtml(t('Solution'))} / ${escHtml(t('Lesson'))}" style="gap:6px;padding:2px 18px 6px">
           <button class="pill on" data-walk="solution" aria-pressed="true">${escHtml(t('Solution'))}</button>
           <button class="pill" data-walk="lesson" aria-pressed="false">${escHtml(t('Lesson'))}</button>
@@ -3900,6 +4163,11 @@ const cubeScreen = (screenMode) => {
       $('#viewCube', root).appendChild(cube);
       applyNetColors();
       const paintNet = buildNet($('#viewNet', root));
+      // A second net for the TARGET. Built once with the screen, painted per walk — the same
+      // renderer the initial state uses, so a stage picture and a cube are drawn by one thing and
+      // cannot come to disagree about which sticker is where.
+      const aimNet = $('#stageAimNet', root);
+      const paintAim = aimNet ? buildNet(aimNet) : () => {};
       paintNet(scrambling ? SOLVED : state.cube.facelets);
       // The reconnect answer, wired before any await: the solver can take seconds or fail, and
       // the question must be answerable either way.
@@ -4125,6 +4393,14 @@ const cubeScreen = (screenMode) => {
       // closure, so loadWalk() can replace the walk underneath them without rebuilding anything.
       // A `const` here would put us straight back to needing a new screen for a new cube.
       let setup, alg, moves = [], steps = [], target = null, total = 0;
+      /**
+       * The repair this walk came from, or null when the walk is a whole-cube solution.
+       *
+       * Carries the CLAIM as well as the route — whether the length may be called the shortest,
+       * and whether the answer overshot to a solved cube — so the sentence beside the count is
+       * derived from the same object the moves came from and the two cannot drift.
+       */
+      let route = null;
       // Which of the two objects this screen is showing. `let`, and deliberately NOT a setting:
       // it is a view of this screen, not a preference about every cube, so it lives as long as
       // the screen does and is never written to storage. A learner who wants the lesson wants it
@@ -4140,6 +4416,18 @@ const cubeScreen = (screenMode) => {
       // case: the position is simply already right.
       let cubePos = 0;
       let liveModel = null; // cubejs cube in truth frame; seeded below, resynced by every snapshot
+      /**
+       * Has `liveModel` advanced past the snapshot it was seeded from?
+       *
+       * TWO DEFECTS TURN ON THIS, and neither is visible without it. Adopting whenever the model
+       * merely DIFFERS from the subject overwrote a reconnect answer with the previous screen's
+       * model — the answer had just established the truth, and the model belonged to the cube
+       * before it. And the walk reset reseeds from `state.live`, so turns arriving DURING a search
+       * were discarded, which then defeated the adoption on the next load. Both reproduced by an
+       * audit. "Advanced by moves we tracked" is the fact both of them actually need; "differs" is
+       * not it.
+       */
+      let liveMoved = false;
       let drawn = 0;        // index the renderer's QUEUE will end at; meaningful only while following
       let lastSerial = null;
       // For each half-turn step i, the two states one quarter turn in: the cube passes through
@@ -4445,6 +4733,23 @@ const cubeScreen = (screenMode) => {
         };
       }
 
+      // WHERE THIS WALK IS GOING, and it is a walk REPLACEMENT rather than a screen change — which
+      // is exactly what `retarget()` exists for (§6). Nothing here rebuilds: the composition does
+      // not depend on the target, only the walk inside it does.
+      for (const pill of root.querySelectorAll('[data-stage]')) {
+        pill.onclick = () => {
+          const want = pill.dataset.stage;
+          if (want === state.stageTarget) return; // re-solving to the same target throws away the
+          state.stageTarget = want;               // transport position for no change on screen
+          for (const p of root.querySelectorAll('[data-stage]')) {
+            const on = p.dataset.stage === want;
+            p.classList.toggle('on', on);
+            p.setAttribute('aria-pressed', String(on));
+          }
+          void loadWalk();
+        };
+      }
+
       $('#repeatBtn', root).onclick = () => {
         takeOver();
         // Not merely belt-and-braces with the disabled attribute: stepBack() self-guards at step 0
@@ -4552,11 +4857,81 @@ const cubeScreen = (screenMode) => {
         };
       }
 
+      /**
+       * How far the cube in your hand is from the target, refreshed on every turn.
+       *
+       * FIVE THINGS THE PLAN CORRECTS ABOUT THIS PATH, and each one is a line here (§5):
+       *
+       *   1. It reads `liveModel`, not `state.cube.facelets`. `liveMove` advances the local model
+       *      while the global subject lags until `adoptCube`, so the global would build an answer
+       *      for a cube that no longer exists — the trap `#resolveBtn` already documents.
+       *   2. It is the OFFSET-CORRECTED state by construction, because `liveModel` is seeded from
+       *      `state.live` — the corrected report stream — and never from the raw one. A repair
+       *      computed on the raw report would be labelled for the wrong faces, and would look
+       *      perfectly plausible.
+       *   3. It does NOT go through `refreshScreen()`. That path reaches `loadWalk` → `beginWalk`,
+       *      which clears `moves`, `steps`, `chips`, `total`, `target` and `lesson` and points
+       *      back at step 0 — it would destroy the walk the child is halfway through following.
+       *   4. It has its OWN generation counter. `walkGen` deliberately does not move on a per-turn
+       *      update, so without a second counter a result about cube A lands on cube B.
+       *   5. It writes its own line, never `#moveCount`. That count belongs to the route and
+       *      reports progress against the route's total.
+       *
+       * And the gate is `chainTrusted()`, not `cubeRefused()`: trust is lost in ways that never
+       * set a verdict — `onMovesLost` calls `markStale`, which clears trust with no verdict at all
+       * — and naming the wrong predicate would let a stale cube drive advice.
+       */
+      let liveGen = 0;
+      const liveSay = () => $('#stageLive', root);
+      /**
+       * Stop believing anything still in flight, and take the last number off the screen.
+       *
+       * ONE HELPER, called from every place a live answer stops being about the cube in hand: the
+       * early returns below, a lost move, and trust lapsing. The early returns used to clear the
+       * line WITHOUT moving the generation, so an answer already on its way repainted over the
+       * clearing — and `onTrustLost` did neither. Both reproduced by an audit.
+       */
+      function dropLiveDistance() {
+        liveGen += 1;
+        const el = liveSay();
+        if (el) el.textContent = '';
+      }
+      async function refreshLiveDistance() {
+        const el = liveSay();
+        if (!el) return;
+        const aimingAt = stageTargetNow();
+        if (!aimingAt || !liveModel || !chainTrusted()) { dropLiveDistance(); return; }
+        const mine = ++liveGen;
+        const facelets = liveModel.asString();
+        // AND THE OLD NUMBER GOES NOW, not when the new one arrives. If both requests come back
+        // unavailable neither branch below writes anything, and cube A's "exact 3" stood over cube
+        // B indefinitely — reproduced. A blank line is honest; a stale one is not.
+        el.textContent = '';
+        // The BOUND first, because it is a table read and arrives in one message — §3's split runs
+        // all the way out to here. Then the exact search, for the SELECTED target only: four
+        // searches a turn is not what a per-turn update should cost.
+        const bounds = await stageAsk({ want: 'bounds', facelets });
+        if (mine !== liveGen || !root.isConnected || !chainTrusted()) return;
+        if (bounds?.bounds) {
+          el.textContent = t('your cube now: %1', STAGE_COPY.atLeast(bounds.bounds[aimingAt.id] ?? 0));
+        }
+        const answer = await stageAsk({
+          want: 'route', target: aimingAt.id, facelets, nodeBudget: CHIP_NODE_BUDGET, maxDepth: 12,
+        });
+        if (mine !== liveGen || !root.isConnected || !chainTrusted()) return;
+        if (!answer) return;
+        el.textContent = answer.moves === null
+          ? t('your cube now: %1', STAGE_COPY.unknown())
+          : t('your cube now: %1', STAGE_COPY.shortest(answer.moves));
+      }
+
       liveMove = (m) => {
         if (!liveModel) return; // nothing to track against until a first reading seeds the model
         liveModel.move(m.notation);
+        liveMoved = true;
         act(locate(liveModel.asString()), `That was ${m.notation} — the next move is ${moves[cubePos] ?? '—'}.`);
         tripwire(m.serial);
+        void refreshLiveDistance();
       };
 
       // Snapshots are authoritative: they share the moves' FIFO channel, so every one delivered
@@ -4566,8 +4941,10 @@ const cubeScreen = (screenMode) => {
       // moving picture — what the cube does live is the 3D cube's and the transport's story.
       liveUpdate = (f, serial) => {
         liveModel = Cube.fromString(f);
+        liveMoved = false; // a snapshot IS the truth, so the model is no longer ahead of anything
         act(locate(f), 'This cube is not on the plan any more.');
         tripwire(serial);
+        void refreshLiveDistance();
       };
 
       // Trust has already lapsed by the time this runs — onGap() owns that, with or without a
@@ -4579,6 +4956,18 @@ const cubeScreen = (screenMode) => {
         // happened. Disabled, not merely un-highlighted: following matches your turns against an
         // arrangement we have just said we cannot vouch for.
         refuseFollow('Your cube missed a turn — read it again before following');
+        // AND THE LIVE DISTANCE GOES WITH IT (§5.4). A lost packet means the local model and the
+        // cube have stopped agreeing, so every number derived from the model is about a cube that
+        // is not in anyone's hand. Bumping the generation is what stops an answer already in
+        // flight arriving to contradict this; clearing the line is what stops the last one
+        // standing. A lost move is reported, never absorbed.
+        dropLiveDistance();
+        // AND THE MODEL IS NO LONGER AHEAD OF ANYTHING KNOWN. A lost packet means the model and the
+        // cube have stopped agreeing, so the turns it holds are not turns anybody can vouch for —
+        // carrying them across a walk reset, or adopting them as the subject, would be adopting a
+        // guess. `onTrustLost` clears this too; both are here because a lost move is the case where
+        // the screen has something of its own to say.
+        liveMoved = false;
         // No count. Reconciliation proves a turn was lost; it cannot say how many, and the old
         // "Missed 2 turns" came from a serial the app no longer has. Silence here would look
         // exactly like a wrong turn; it is neither, and the next snapshot will resync.
@@ -4590,6 +4979,19 @@ const cubeScreen = (screenMode) => {
       onTrustLost = () => {
         setFollow(false);
         refuseFollow(`Read the cube first — ${state.cube.staleWhy || 'its position is unverified'}`);
+        // AND THE MODEL STOPS BEING AHEAD OF ANYTHING. `liveMoved` says "this model has turns in it
+        // that no snapshot has confirmed", which is a claim about the CURRENT connection — and it
+        // survived a disconnect. Reproduced: scan `R`, report `U`, disconnect, reconnect, confirm
+        // `R`, and the adoption overwrote the confirmed truth with `R U` AND marked it trusted.
+        // That is §9a's severe failure — a route for a cube other than the one in their hands,
+        // passing every internal check. Trust lapsing is the one event that covers all of them:
+        // a disconnect, a refused report and a lost move all go through `markStale` to get here.
+        liveMoved = false;
+        // AND THE LIVE NUMBER. Trust is the gate `refreshLiveDistance` reads, so a number computed
+        // while it held is about a cube nobody can vouch for the moment it lapses — and an answer
+        // already in flight would repaint over the clearing without this. `onTrustLost` did neither
+        // until an audit reproduced both.
+        dropLiveDistance();
       };
 
       $('#resolveBtn', root).onclick = () => {
@@ -4617,6 +5019,85 @@ const cubeScreen = (screenMode) => {
         if (note && !note.hidden) noteMsg.textContent = 'Watching for it — turn it back and the guide picks up.';
       };
 
+      /**
+       * The target this screen is walking to, or null when it is the whole cube.
+       *
+       * Read through a FUNCTION rather than captured, because this screen retargets in place: the
+       * selector changes `state.stageTarget` and calls the same `loadWalk` the mount did, and a
+       * const here would freeze the first choice for the life of the screen.
+       *
+       * An unknown id is treated as the whole cube rather than throwing. It can only get there
+       * from storage or a hand-edited URL, and a screen that fails to mount is a worse answer to
+       * "I do not recognise this" than a screen that solves the cube.
+       */
+      function stageTargetNow() {
+        const id = state.stageTarget;
+        if (!id || id === 'solved') return null;
+        const target = TARGET_BY_ID[id];
+        if (!target) {
+          console.warn(`unknown stage target "${id}" — walking the whole cube instead`);
+          state.stageTarget = 'solved';
+          return null;
+        }
+        return target;
+      }
+
+      /**
+       * The best route into `target`, from the three sources of §4.
+       *
+       * Every source is injected rather than reached for, which is what lets the race be tested
+       * without a worker: `lib/stage-route.js` knows nothing about this app. What it does know is
+       * that a route is replayed before it is yielded, so nothing that fails the target's own
+       * predicate can come back from here.
+       *
+       * The generator's intermediate yields are dropped on the floor — this returns the LAST one.
+       * A screen that painted each in turn would show a fallback for a few hundred milliseconds
+       * and then replace it, which is the "working…" flicker the repository already removed once;
+       * the chips on Restore are where a bound-then-answer sequence belongs, because there the
+       * first number arrives instantly and the second is an upgrade rather than a correction.
+       */
+      async function lastRoute(target, cubie, facelets, signal, wholeDone) {
+        let last = null;
+        const deps = {
+          exact: async () => {
+            if (signal?.aborted) return null;
+            const reply = await stageAsk({
+              want: 'route', target: target.id, facelets, nodeBudget: STAGE_NODE_BUDGET, maxDepth: 12,
+            });
+            return reply?.moves === null || !reply ? null : { alg: reply.alg, moves: reply.moves };
+          },
+          // AWAITED, not read. The whole-cube search is running beside this one rather than in
+          // front of it, so the pool source is "whatever that search produces, when it produces
+          // it" — which is exactly a third racer. Reading `state.cube.solution` synchronously made
+          // this source empty whenever it was asked first, which after the reordering is always.
+          pool: async () => {
+            await wholeDone;
+            return state.cube.solution || null;
+          },
+          /**
+           * The method route — SCHEDULED, not called inline, and the yield is the point.
+           *
+           * `solveByMethod` is synchronous and unbounded: 0.45 to 24 ms measured, median 6.6.
+           * Called straight from the race it runs before anything awaits, so it blocked this
+           * thread between the exact request being built and it being sent — the one source that
+           * leaves the machine, delayed by the one that cannot. A macrotask first puts it behind
+           * the worker message and the pool's already-known answer, which costs it a tick and
+           * costs the other two nothing.
+           *
+           * §4 keeps it in the race even so, and the measurement is why it is worth saying: over
+           * the 156 corpus states where the fallback actually fires it was shorter in ZERO of
+           * them. It is not here to win; it is here because the pool source is
+           * `state.cube.solution`, and when that search failed there is nothing else.
+           */
+          method: async () => {
+            await new Promise((resolve) => { setTimeout(resolve, 0); });
+            return solveByMethod(cubie).alg;
+          },
+        };
+        for await (const found of routesToTarget(target, cubie, deps)) last = found;
+        return last;
+      }
+
       // ---- loading a walk into this screen ----------------------------------------------------
       /** Work out the walk for whatever the subject is NOW, and put it on the screen already
        *  standing. Called once by mount, and again by `update` every time the subject changes.
@@ -4632,6 +5113,13 @@ const cubeScreen = (screenMode) => {
        */
       function beginWalk() {
         moves = []; steps = []; chips = []; total = 0; target = null;
+        // The live number and the aim describe the walk being replaced. An answer already in flight
+        // for the OLD target would otherwise repaint after a new one is chosen — and a reload that
+        // then fails would leave the old aim standing beside no walk at all.
+        route = null;
+        dropLiveDistance();
+        const oldAim = $('#stageAim', root);
+        if (oldAim) oldAim.hidden = true;
         // The lesson describes the walk that is being replaced. Cleared here, with everything
         // else, so no cue survives into the gap: focus and highlight name PIECES, and pointing at
         // a piece on a cube that has just changed is worse than pointing at nothing.
@@ -4694,6 +5182,60 @@ const cubeScreen = (screenMode) => {
         // new one starts, so the pool is free rather than working through a dead search first.
         walkAbort?.abort();
         const abort = walkAbort = new AbortController();
+        // THE CUBE IN HAND, BEFORE ANYTHING IS DRAWN OR SEARCHED — and the placement is the whole
+        // of it. `liveMove` advances the local model on every reported turn while
+        // `state.cube.facelets` waits for a snapshot or an `adoptCube`, so a target chosen after a
+        // few turns was answered for a cube that no longer exists: scan `R`, turn `U`, ask for the
+        // first layer, and the app offered `R'`. Reproduced by an audit.
+        //
+        // ADOPTED HERE rather than inside the search, and the first fix put it inside. That left
+        // two things describing the older cube: `beginWalk` had already painted the net, and the
+        // whole-cube locals had already been read off `state.cube` — so a repair that then found
+        // nothing committed the PREVIOUS cube's algorithm over the new subject. Both reproduced by
+        // the verify pass on that very fix, which is the argument for adopting before the screen
+        // and the search rather than between them.
+        //
+        // ON EVERY RELOAD, and gating it on the selector was wrong. The reset at the end of this
+        // function clears `liveModel` and reseeds it from `state.live`, which is the last SNAPSHOT
+        // — so any walk reload that did not adopt first silently rewound the model past the turns
+        // since that snapshot, and a later target press then had nothing to notice. Reproduced by
+        // a verify pass: scan `R`, turn `U`, switch Solution → Lesson, choose the first layer, and
+        // the app is back to offering `R'`. Adopting here CAPTURES those turns instead of losing
+        // them, which is better than the behaviour it replaces rather than merely different.
+        //
+        // `isPhysical` is what keeps it honest. A generated subject — the die's cube — is not the
+        // cube in anybody's hand, and adopting a connected cube's position over it would throw the
+        // rolled cube away. `chainTrusted()` alone does not say that: it is about the connection.
+        if (!scrambling && liveMoved && liveModel && chainTrusted() && state.cube.isPhysical) {
+          const now = liveModel.asString();
+          if (now !== state.cube.facelets) {
+            adoptCube(now, { physical: true, source: 'cube' });
+            // `live` too, or the follow precondition compares the fresh walk against a snapshot
+            // from before those turns and refuses for the rest of the visit — the same sentence
+            // `#resolveBtn` carries, for the same reason.
+            state.live = now;
+          }
+        }
+        // THE CUBE MAY BE SOMETHING ELSE ENTIRELY, whether or not THIS load is what changed it.
+        // Turning `R'` after a scanned `R` leaves a solved cube, which has no walk at all — so the
+        // composition this screen was built for is gone and `deriveCube` would throw "nothing to
+        // walk", reaching the child as "could not work it out" about a cube that is finished.
+        //
+        // UNCONDITIONAL, and nesting it inside the adoption was the bug: a snapshot that had
+        // already ingested the solved cube made the adoption a no-op, so the check never ran and
+        // the defect came back by another path. Reproduced by an audit, twice, which is what a
+        // guard placed inside a branch earns.
+        if (!scrambling) {
+          const after = classifyCube();
+          if (after.solvable !== walking || after.unsolvable !== unsolvable) {
+            // DEFERRED past any refresh that is already running. `refreshScreen` guards itself with
+            // `refreshing`, so calling it from a load that `refreshScreen` ITSELF started is
+            // swallowed — and `update()` has already reported success by then, so no rebuild
+            // happens at all. A microtask runs after that guard has been released.
+            queueMicrotask(() => { if (!stale()) refreshScreen(); });
+            return false;
+          }
+        }
         beginWalk();
         // A retarget replaces the SUBJECT, and a native proof about the old subject must not
         // outlive it — same rule as renderScreen's teardown, for the path that never renders.
@@ -4708,6 +5250,52 @@ const cubeScreen = (screenMode) => {
         // that disagreement exists at all.
         let gotSetup = '', gotAlg = '', gotMoves = [], gotSteps = [], gotTarget = null, gotRoll = null;
         let gotLesson = null;
+        // The repair, when one was asked for. Null on the Scramble side and whenever the target is
+        // the whole cube, which is what every read of it below is guarded on.
+        let gotRoute = null;
+        const stageTarget = scrambling ? null : stageTargetNow();
+        /** The whole-cube search's failure, or null. See where it is rethrown. */
+        let wholeFailed = null;
+        /**
+         * The cube a repair was computed FOR.
+         *
+         * Declared out here because the walk is committed a long way below the search, and the two
+         * must agree about which cube they are describing. A live snapshot can change the subject
+         * between them without touching `walkGen` — that is deliberate, since a snapshot is not a
+         * new question — so the renderer is handed THIS string rather than whatever the subject
+         * has since become. An audit reproduced the alternative: the walk described `R` while the
+         * 3D cube was handed `R F`.
+         */
+        let startedFrom = null;
+        /**
+         * The whole-cube search's OWN cancellation, chained to the walk's.
+         *
+         * It needs one because it is no longer the thing being waited for: a repair that answers
+         * makes it pointless, and letting it run on is not free — it holds a worker, and its
+         * progress callbacks keep writing to a status line that now belongs to the repair.
+         */
+        //
+        // NOT ON THE SCRAMBLE PATH, which never runs a whole-cube search — and the die's own
+        // cancellation test is what said so: it spies on every `AbortController` a walk builds and
+        // requires all but the current one to have been called off, which a second controller that
+        // nothing ever uses quietly broke. One per thing that can actually be cancelled.
+        const wholeAbort = scrambling ? null : new AbortController();
+        if (wholeAbort) abort.signal.addEventListener('abort', () => wholeAbort.abort(), { once: true });
+        /** Set the moment a repair has an algorithm. Read by the callbacks below, which must stop
+         *  talking once the line they write to is describing something else. */
+        let stageAnswered = false;
+        /** `deriveCube`, with its failure captured rather than thrown — the repair runs either way. */
+        const deriveWhole = async (opts) => {
+          try {
+            await deriveCube(opts);
+          } catch (err) {
+            // A search THIS screen called off is not a failure to absorb: the subject it was about
+            // is gone, and the outer catch already knows what to do with it. Nor is one WE called
+            // off because a repair had already answered — that is a saving, not a failure.
+            if (abort.signal.aborted) throw err;
+            if (!wholeAbort?.signal.aborted) wholeFailed = err;
+          }
+        };
         try {
           if (scrambling) {
             if (!solverReady && !(await loadSolver())) throw new Error('solver unavailable');
@@ -4743,22 +5331,97 @@ const cubeScreen = (screenMode) => {
             //
             // deriveCube, not solve: the walk and the setup alg the twin animates from are one
             // answer now, so there is one ask. `gotSetup` below reads the alg this produced.
-            await deriveCube({
-              signal: abort.signal,
-              onImprovement: (step) => { if (fresh()) setStatus(String(step.moves)); },
+            // STARTED, NOT AWAITED. The repair's own source is a worker message and owes nothing
+            // to this search — but awaiting here made every repair wait out a whole-cube solve
+            // first, including one whose answer was already known and one whose target the cube
+            // was already at. The pool source below awaits this promise instead, which is what
+            // §4's "race" actually means: three sources, each arriving when it arrives.
+            const wholeDone = deriveWhole({
+              signal: wholeAbort.signal,
+              // `!stageAnswered`, and the browser suite is what found it: an abandoned whole-cube
+              // search kept reporting improvements into the status line AFTER a repair had
+              // committed, so "your cube is already at the two bottom layers" became "7". The
+              // count belongs to whatever is on screen, and once a repair is there it is not this.
+              onImprovement: (step) => { if (fresh() && !stageAnswered) setStatus(String(step.moves)); },
               onProgress: ({ attempt }) => {
                 // `attempt` is 0-BASED (solve-target's contract), and only the first escalating
                 // search reports at all. Nothing is said for attempt 0: that is the ordinary
                 // case and needs no apology. From the first ESCALATION on, the count is shown
                 // one-based, because "attempt 2" is what a person would call it. Never a
                 // percentage or a time — nothing here knows either.
-                if (fresh() && attempt >= 1) setStatus(t('still searching (attempt %1)', attempt + 1));
+                if (fresh() && !stageAnswered && attempt >= 1) setStatus(t('still searching (attempt %1)', attempt + 1));
               },
             });
-            gotSetup = state.cube.setupAlg; gotAlg = state.cube.solution; gotMoves = state.cube.moves;
-            // Snapshotted: setFacelets() clears stepFacelets on every live update, and following a
-            // physical cube needs the states to compare against to outlive the next turn.
-            gotSteps = state.cube.stepFacelets.slice();
+            // NOBODY MAY BE LEFT TO AWAIT IT. A repair that answers — or a target the cube is
+            // already at, which returns before the pool source is ever reached — leaves this
+            // promise with no awaiter, and its abort path rethrows. Reproduced as an unhandled
+            // `solve: superseded` by choosing the cross on `SOLVED·U` and leaving at once. The
+            // handler makes the rejection observed; every `await wholeDone` below still sees it.
+            wholeDone.catch(() => {});
+            // A WHOLE-CUBE FAILURE MUST NOT TAKE THE REPAIR WITH IT. The repair's own source is the
+            // worker's exact search, which knows nothing about the two-phase pool; the pool's
+            // answer is one of three sources and, where the exact search answers, the least
+            // important of them. Letting `deriveCube` throw straight out of here meant an
+            // unrelated failure produced "could not work it out" over a cube whose cross repair
+            // was one move — reproduced by an audit.
+            //
+            // Rethrown at once when there is no repair to fall back on, because then the
+            // whole-cube answer IS the walk and its failure is the screen's.
+            // …and the repair, first, because it is the one that can answer while the whole-cube
+            // search is still running.
+            if (stageTarget) {
+              startedFrom = state.cube.facelets;
+              const cubie = fromCube(Cube.fromString(startedFrom));
+              gotRoute = await lastRoute(stageTarget, cubie, startedFrom, abort.signal, wholeDone);
+              if (!fresh()) return false;
+              stageAnswered = Boolean(gotRoute && gotRoute.alg !== null);
+              // Nothing is waiting for the whole-cube answer any more: the pool source has already
+              // been raced, and the locals below are read only when there is no repair. Calling it
+              // off frees the worker for the next question rather than leaving a four-million-node
+              // search running for nobody.
+              if (stageAnswered) wholeAbort.abort();
+            }
+            // A REPAIR THAT ANSWERED DOES NOT WAIT FOR THE SOLVE AT ALL. Awaiting here made the
+            // reordering above buy nothing: the repair was asked for first and then held at
+            // "working…" until a whole-cube search it does not need had finished. The whole-cube
+            // locals are only read when there is no repair to commit, so the wait goes with them.
+            if (!stageAnswered) {
+              await wholeDone;
+              if (!fresh()) return false;
+              // Nothing answered, and the whole-cube search failed too: there is no walk of any
+              // kind, so the screen says what failed rather than standing over an empty one.
+              if (wholeFailed !== null) throw wholeFailed;
+              gotSetup = state.cube.setupAlg; gotAlg = state.cube.solution; gotMoves = state.cube.moves;
+              // Snapshotted: setFacelets() clears stepFacelets on every live update, and following
+              // a physical cube needs the states to compare against to outlive the next turn.
+              gotSteps = state.cube.stepFacelets.slice();
+            }
+            // ---- the repair, when the target is a STAGE rather than the whole cube -------------
+            //
+            // Three sources race (§4) and the pool's answer above is one of them, already paid
+            // for: it is the fallback, truncated at the first prefix that reaches the target, and
+            // it is also what "solve the whole cube instead" offers when nothing shorter exists.
+            // The exact search is the second, on the worker; the method route is the third, and
+            // its throw is absorbed.
+            //
+            // EVERY ROUTE IS REPLAYED against the target's independent predicate before it is
+            // yielded, inside `routesToTarget` — so a prefix scan off by one, a corrupted table
+            // and a wrong worker reply all become "no route was worked out" rather than a wrong
+            // route in a child's hands (§9a).
+            if (gotRoute) {
+              if (gotRoute.alg !== null) {
+                gotAlg = gotRoute.alg;
+                gotMoves = movesOf(gotAlg);
+                gotSteps = stepStates(startedFrom, gotMoves);
+                // No verified path from SOLVED to a stage route's start, and there cannot be one:
+                // the walk begins where the cube is. `scramble=""` would draw a solved cube under
+                // a scrambled walk, so the arrangement is drawn instead — the same branch the
+                // solve side already takes when `takeSetupAlg` refuses.
+                gotSetup = '';
+                gotTarget = gotSteps.at(-1) ?? null;
+                gotLesson = null;
+              }
+            }
             // The lesson is worked out AFTER the search and never instead of it, so both objects
             // exist for this cube and switching between them costs nothing (§3). It reuses the
             // setup alg the search produced: the two walks start from the same arrangement, and
@@ -4768,7 +5431,12 @@ const cubeScreen = (screenMode) => {
             // screen. Losing both objects because one of them could not be built would be the
             // worst of the three outcomes, and the pill goes back to Solution so the screen and
             // the switch agree about what is showing.
-            if (walkKind === 'lesson') {
+            // A STAGE ROUTE HAS NO LESSON, and that is §9.4's finding rather than an omission: the
+            // app orients the top corners before permuting them, so it cannot resume a lesson at
+            // "corners home" — the screen offers the repair and then the solve, not the next
+            // lesson step. The pair of pills is hidden below for the same reason, so the switch
+            // and the screen agree about what is showing.
+            if (!stageAnswered && !stageTarget && walkKind === 'lesson') {
               gotLesson = lessonFor(state.cube);
               if (gotLesson) {
                 gotAlg = gotLesson.alg;
@@ -4795,6 +5463,7 @@ const cubeScreen = (screenMode) => {
         putInPlay(gotRoll);
         setup = gotSetup; alg = gotAlg; moves = gotMoves; steps = gotSteps; target = gotTarget;
         lesson = gotLesson;
+        route = gotRoute;
         total = moves.length;
         if (scrambling) paintNet(target);
         // The Scramble side genuinely starts from solved, so an empty setup alg is its normal
@@ -4809,9 +5478,42 @@ const cubeScreen = (screenMode) => {
           cube.removeAttribute('facelets');
         } else {
           cube.removeAttribute('scramble');
-          cube.setAttribute('facelets', state.cube.facelets);
+          // THE WALK'S OWN STARTING CUBE, not whatever the subject has become. `steps[0]` is the
+          // state this walk begins at, by construction; `state.cube.facelets` can have moved under
+          // it since the search started, and handing that to the renderer put a picture of one cube
+          // over a move list for another.
+          cube.setAttribute('facelets', steps[0] ?? state.cube.facelets);
         }
         cube.setAttribute('alg', alg);
+        // WHAT THE CHILD IS AIMING AT, with everything the target leaves free drawn as an empty
+        // well. Repainted per walk, because a retarget changes the target and a stale picture
+        // would be pointing at a stage nobody is walking to. Hidden for the whole cube, where the
+        // picture is a solved cube and says nothing a person did not already know.
+        const aim = $('#stageAim', root);
+        if (aim) {
+          const aimingAt = stageTargetNow();
+          aim.hidden = !aimingAt;
+          if (aimingAt) {
+            const say = $('#stageAimSay', root);
+            if (say) say.textContent = t('aiming at the %1 — grey doesn’t matter yet', aimingAt.name);
+            paintAim(targetPicture(aimingAt));
+          }
+          // WHICH WAY UP TO DRAW IT (§5.6). The upside-down cube is a DISPLAY problem and not a
+          // state one: the cube reports faces in its own colour frame however it is held, and the
+          // predicates live in that frame with the cross on D. What changes when a child turns the
+          // cube over to build the cross is which way the drawing should face, and the renderer
+          // already takes `camera-up` for exactly that.
+          //
+          // DEFAULTED FROM THE TARGET, which §5 says is enough. A GAN 16 streams gyro data and
+          // `packages/gan-driver` detects that capability, so the held orientation could be read
+          // instead of assumed — that is a nice-to-have, and a cube that reports no gyro would
+          // still need this default underneath it.
+          cube.setAttribute('camera-up', aimingAt && BOTTOM_LAYER_TARGETS.has(aimingAt.id) ? 'D' : 'U');
+        }
+        // The pair of pills belongs to the whole-cube walk. A repair has no lesson to switch to
+        // (§9.4), so the switch is taken away rather than left pointing at nothing.
+        const kindRow = $('#walkKindRow', root);
+        if (kindRow) kindRow.hidden = Boolean(route);
         // Just the number, unless the search fell short of the tier — and then a sentence about
         // the SEARCH, never about the cube. This used to read "18 was not possible here", which
         // two-phase has no way to know: it cannot prove a minimum, so it cannot prove one absent
@@ -4847,10 +5549,15 @@ const cubeScreen = (screenMode) => {
           rungLine.textContent = lesson ? lesson.summary : '';
         }
         setStatus(
+          // A REPAIR SAYS WHAT KIND OF ANSWER IT IS, first, because the three sources make three
+          // different claims and only one of them may call itself the shortest. The sentences are
+          // `STAGE_COPY` in lib/stage-report.js — one named region, which is how `optimal.test.mjs`
+          // can hold the app to them (AGENTS.md: a minimality claim has three sources).
+          route ? routeSentence(route, stageTargetNow())
           // Both counts through `plural`, because both can be 1. A one-move lesson read
           // "1 moves · 1 steps" — and this is the file whose i18n note says a hard-coded English
           // plural is both untranslatable and wrong for most languages.
-          lesson ? t('%1 · %2',
+          : lesson ? t('%1 · %2',
             plural(total, { one: '%1 move', other: '%1 moves' }),
             plural(lesson.steps.length, { one: '%1 step', other: '%1 steps' }))
             : showingProof ? provenMinimumLabel(total)
@@ -4879,7 +5586,10 @@ const cubeScreen = (screenMode) => {
         // a desktop must be behind them, and a state the library already proved has nothing left
         // to ask for.
         const proveBtn = $('#proveBtn', root);
-        if (proveBtn && optimalCapability() && !scrambling && !proved && settings.proveMinimum) {
+        // `!route`: the native prover proves a WHOLE CUBE minimal. A repair is a route into a set of
+        // millions of cubes, so there is nothing here for it to be asked about, and offering it
+        // would put a whole-cube claim under a stage-route count.
+        if (proveBtn && optimalCapability() && !scrambling && !proved && settings.proveMinimum && !route) {
           proveBtn.hidden = false;
           proveBtn.disabled = false;
           proveBtn.textContent = PROVE_COPY.button;
@@ -4927,7 +5637,12 @@ const cubeScreen = (screenMode) => {
         const chipsFor = (from, to) => moves.slice(from, to)
           .map((m, k) => `<button class="chip-m" data-i="${from + k}" title="${escHtml(t('Jump to this move'))}">${escHtml(m)}</button>`)
           .join('');
-        solList.innerHTML = lesson
+        solList.innerHTML = route && route.moves === 0
+          // AN EMPTY ROUTE MUST NEVER RENDER AS A WALK (§9a). With no moves the grid below draws
+          // nothing at all, and a heading with an empty space under it reads as a list that failed
+          // to load rather than as a cube that is already where it was asked to be.
+          ? `<div style="padding:6px 18px 12px" class="sub">${escHtml(t('Nothing to do here — turn to another stage, or solve the whole cube.'))}</div>`
+          : lesson
           ? lesson.sections.map((s) => `<div style="padding:6px 18px 10px">
               <div class="sub" style="color:var(--ink-4);font-weight:600;padding-bottom:4px">${escHtml(s.name)} <span style="font-weight:400">${escHtml(t('%1 steps · %2 moves', s.steps, s.moves))}</span></div>
               <div class="move-chips">${chipsFor(s.from, s.to)}</div></div>`).join('')
@@ -4940,7 +5655,13 @@ const cubeScreen = (screenMode) => {
         at = 0;
         playing = false;
         cubePos = 0;
-        liveModel = null;
+        // THE MODEL SURVIVES IF IT IS AHEAD OF THE SNAPSHOT. Clearing it unconditionally and
+        // reseeding from `state.live` below discarded every turn reported DURING the search — and
+        // since the adoption at the top of the next load reads this model, the rewind then defeated
+        // that too. Reproduced by an audit: start at `R`, turn `U` while the reply is in flight,
+        // and the model comes back as `R`. `liveMoved` is the precise condition, and it is why that
+        // flag exists rather than a comparison against the subject.
+        if (!liveMoved) liveModel = null;
         drawn = 0;
         lastSerial = null;
         setPlaying(false);
@@ -4984,11 +5705,18 @@ const cubeScreen = (screenMode) => {
               ? 'This is not the cube in your hand — read your cube to follow along'
               : 'Waiting to hear from your cube…');
           } else {
-            liveModel = Cube.fromString(state.live);
+            // …and only seed a NEW model where the carried one is not already ahead. Reseeding over
+            // a model with untracked turns in it is the rewind this walk just avoided.
+            if (!liveMoved) liveModel = Cube.fromString(state.live);
             setFollow(true);
           }
         }
         sync(0);
+        // THE LIVE NUMBER, AFTER THE MODEL IT READS. Asked from the aim block above, it ran before
+        // `liveModel` was reset to null and re-seeded thirty lines down — so a fresh mount produced
+        // no number at all and a retarget asked the PREVIOUS model about the NEW target. Both are
+        // the same mistake: a question asked before its subject exists. Found by an audit.
+        void refreshLiveDistance();
         return true;
       }
 

@@ -1,10 +1,10 @@
 // Stage-target distances: the projections, the predicates, the frozen answers, and the one check
 // that makes a wrong route undisplayable.
 //
-// The engine under test is still `bench/solve-to-state-spike.mjs` — Phase 0 of
-// dev-docs/solve-to-state-plan.md, deliberately a spike. This file is NOT a spike: the fixture it
-// grades against is frozen, and when the production module lands it takes the spike's place in the
-// import below and every assertion here still has to hold.
+// The engine under test is `lib/stage-targets.js` and `lib/stage-distance.js` — Phase C of
+// dev-docs/solve-to-state-plan.md. Through Phase 0 it was a bench spike, since deleted, which was
+// the only engine there was; the swap was an import and nothing else, because the fixture this
+// file grades against is FROZEN and every assertion below had to hold across it.
 //
 // Four things are checked, in the order they can go wrong, and the ORDER is the argument:
 //
@@ -30,10 +30,21 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { MOVE_NAMES, SOLVED, applyAlg, applyMove } from '../lib/cube-pieces.js';
-import { P, TARGETS, atGoal, codesFor, heuristic, searchExact } from '../bench/solve-to-state-spike.mjs';
-import { PREDICATE, fullCubeDistance, goalBall, meetInTheMiddle } from '../bench/solve-to-state-oracle.mjs';
+import { PROJECTIONS, TARGETS } from '../lib/stage-targets.js';
+import { lowerBound, projectionTable, solveToState } from '../lib/stage-distance.js';
+import { fullCubeDistance, goalBall, meetInTheMiddle } from '../bench/solve-to-state-oracle.mjs';
+
 import { STAGE_TARGET_CASES, TARGET_IDS } from './fixtures/stage-targets.mjs';
 import { seededStates } from './fixtures/seeded-scrambles.mjs';
+
+/** Each target's INDEPENDENT predicate — `methods/engine.js`'s, not the conjunction of projected
+ *  goals. `lib/stage-targets.js` explains why it ships rather than living in a test fixture. */
+const PREDICATE = Object.fromEntries(TARGETS.map((t) => [t.id, t.verify]));
+/** The engine, at the budget the frozen fixture was established against. */
+const searchExact = (target, state, opts = { nodeBudget: 4_000_000, maxDepth: 14 }) =>
+  solveToState(target, state, opts);
+/** The tables, as copies. Built once here so the whole file reads one set. */
+const TABLE = Object.fromEntries(Object.keys(PROJECTIONS).map((id) => [id, projectionTable(id)]));
 
 /** Seeded, never drawn: a projection claim that moved with the shuffle would not be a claim. */
 const SAMPLE = seededStates(40, 0x5747);
@@ -43,7 +54,7 @@ const ALL = [...SAMPLE, ...FROZEN.map((r) => r.state), SOLVED];
 // ---- 1. the projection steps with the cube -----------------------------------------------------
 
 test('every projection steps with the cube, on all 18 moves', () => {
-  for (const [id, proj] of Object.entries(P)) {
+  for (const [id, proj] of Object.entries(PROJECTIONS)) {
     for (const state of ALL) {
       const code = proj.codeOf(state);
       for (let m = 0; m < MOVE_NAMES.length; m++) {
@@ -66,12 +77,12 @@ test('a projection is blind to exactly what it does not track', () => {
     cp: [...SOLVED.cp], co: [1, 2, 0, 0, 0, 0, 0, 0],
     ep: [...SOLVED.ep], eo: [...SOLVED.eo],
   };
-  assert.equal(P.crossEdges.codeOf(twisted), P.crossEdges.codeOf(SOLVED), 'a cross table cannot see a top corner');
-  assert.equal(P.dCorners.codeOf(twisted), P.dCorners.codeOf(SOLVED), 'a D-corner table cannot see a U corner');
-  assert.notEqual(P.uCorners.codeOf(twisted), P.uCorners.codeOf(SOLVED), 'the U-corner table is what makes `solved` expressible');
+  assert.equal(PROJECTIONS.crossEdges.codeOf(twisted), PROJECTIONS.crossEdges.codeOf(SOLVED), 'a cross table cannot see a top corner');
+  assert.equal(PROJECTIONS.dCorners.codeOf(twisted), PROJECTIONS.dCorners.codeOf(SOLVED), 'a D-corner table cannot see a U corner');
+  assert.notEqual(PROJECTIONS.uCorners.codeOf(twisted), PROJECTIONS.uCorners.codeOf(SOLVED), 'the U-corner table is what makes `solved` expressible');
   // And the slot-only table is deliberately blind to the same twist, which is why `corners-home` is
-  // one projected goal rather than 81 — see CORNER_SLOT_STEP in the spike.
-  assert.equal(P.uCornerSlots.codeOf(twisted), P.uCornerSlots.codeOf(SOLVED), 'the slot-only table must not see a twist');
+  // one projected goal rather than 81 — see CORNER_SLOT_STEP in lib/stage-targets.js.
+  assert.equal(PROJECTIONS.uCornerSlots.codeOf(twisted), PROJECTIONS.uCornerSlots.codeOf(SOLVED), 'the slot-only table must not see a twist');
 });
 
 // ---- 2. the conjunction is the app's predicate --------------------------------------------------
@@ -82,7 +93,7 @@ test('each target\'s projected goals agree with the app\'s own predicate', () =>
     assert.ok(independent, `${target.id} has no independently written predicate to check against`);
     for (const state of ALL) {
       assert.equal(
-        atGoal(target, codesFor(target, state)), independent(state),
+        target.predicate(state), independent(state),
         `${target.id}: the conjunction of projected goals disagrees with methods/engine.js`,
       );
     }
@@ -115,13 +126,14 @@ test('the targets nest, so the distances cannot decrease', () => {
 // ---- 3. every table is a true distance function -------------------------------------------------
 
 test('every table is zero at its goal, one above its cheapest neighbour, and sentinel elsewhere', () => {
-  for (const [id, proj] of Object.entries(P)) {
+  for (const [id, proj] of Object.entries(PROJECTIONS)) {
+    const { dist } = TABLE[id];
     let reachable = 0, sentinels = 0;
-    for (let code = 0; code < proj.dist.length; code++) {
-      const d = proj.dist[code];
+    for (let code = 0; code < dist.length; code++) {
+      const d = dist[code];
       if (d === 255) { sentinels++; continue; }
       reachable++;
-      if (proj.goalCodes.has(code)) {
+      if (proj.isGoal(code)) {
         assert.equal(d, 0, `${id}: code ${code} is a goal and must be 0`);
         continue;
       }
@@ -129,13 +141,13 @@ test('every table is zero at its goal, one above its cheapest neighbour, and sen
         + ' wrongly zero returns an empty route for an unsolved cube, for the life of the process');
       let cheapest = 255;
       for (let m = 0; m < MOVE_NAMES.length; m++) {
-        const n = proj.dist[proj.stepCode(code, m)];
+        const n = dist[proj.stepCode(code, m)];
         if (n < cheapest) cheapest = n;
       }
       assert.equal(d, cheapest + 1, `${id}: code ${code} is ${d} with a cheapest neighbour of ${cheapest}`);
     }
-    assert.equal(reachable, proj.reachable, `${id}: reachable count drifted`);
-    assert.equal(reachable + sentinels, proj.dist.length, `${id}: every code is reachable or sentinel`);
+    assert.equal(reachable, TABLE[id].reachable, `${id}: reachable count drifted`);
+    assert.equal(reachable + sentinels, dist.length, `${id}: every code is reachable or sentinel`);
   }
 });
 
@@ -146,16 +158,16 @@ test('the tables are the sizes and diameters they were measured at', () => {
     crossEdges: [190080, 8], midEdges: [190080, 8], topEdges: [190080, 8],
     dCorners: [136080, 7], uCorners: [136080, 7], uCornerSlots: [1680, 4], flip: [2048, 7],
   };
-  assert.deepEqual(Object.keys(P).sort(), Object.keys(EXPECTED).sort(), 'a projection was added or removed');
+  assert.deepEqual(Object.keys(PROJECTIONS).sort(), Object.keys(EXPECTED).sort(), 'a projection was added or removed');
   for (const [id, [reachable, diameter]] of Object.entries(EXPECTED)) {
-    assert.equal(P[id].reachable, reachable, `${id}: reachable states`);
-    assert.equal(P[id].diameter, diameter, `${id}: diameter`);
+    assert.equal(TABLE[id].reachable, reachable, `${id}: reachable states`);
+    assert.equal(TABLE[id].diameter, diameter, `${id}: diameter`);
   }
   // The middle-edge group's first shell is 12 where the other two edge groups are 15, because six
   // moves leave the E slice in place against three. A transcription slip could not produce that.
-  assert.equal(P.midEdges.layers[1], 12, 'the E-slice first shell is what proves the projection');
-  assert.equal(P.crossEdges.layers[1], 15);
-  assert.equal(P.topEdges.layers[1], 15);
+  assert.equal(TABLE.midEdges.layers[1], 12, 'the E-slice first shell is what proves the projection');
+  assert.equal(TABLE.crossEdges.layers[1], 15);
+  assert.equal(TABLE.topEdges.layers[1], 15);
 });
 
 // ---- 4. the frozen answers --------------------------------------------------------------------
@@ -203,9 +215,9 @@ test('every table is a LOWER bound on the frozen distance, and the cross table i
     for (const target of TARGETS) {
       const want = row.d[target.id];
       if (want === null) continue;
-      const codes = codesFor(target, row.state);
+      const codes = target.codesOf(row.state);
       target.parts.forEach((part, i) => {
-        const bound = P[part].dist[codes[i]];
+        const bound = TABLE[part].dist[codes[i]];
         assert.ok(bound <= want,
           `${target.id} / ${row.scramble}: ${part} bounds the distance at ${bound}, above the true ${want}`
           + ' — an inadmissible heuristic makes a search return something that is not the minimum, and'
@@ -214,8 +226,8 @@ test('every table is a LOWER bound on the frozen distance, and the cross table i
       // And the FUNCTION the search actually calls, not only the tables it reads. The first version
       // of this test checked the tables alone and stayed green against a heuristic deliberately made
       // wrong high, because the break was in the combination and nothing looked at the combination.
-      assert.ok(heuristic(target, codes) <= want,
-        `${target.id} / ${row.scramble}: the heuristic returns ${heuristic(target, codes)} for a true`
+      assert.ok(lowerBound(target, row.state) <= want,
+        `${target.id} / ${row.scramble}: the heuristic returns ${lowerBound(target, row.state)} for a true`
         + ` distance of ${want} — it is the function the search prunes with, so this is the claim`);
     }
   }
@@ -225,7 +237,7 @@ test('every table is a LOWER bound on the frozen distance, and the cross table i
   for (const row of FROZEN) {
     const want = row.d.cross;
     if (want === null) continue;
-    assert.equal(P.crossEdges.dist[P.crossEdges.codeOf(row.state)], want,
+    assert.equal(TABLE.crossEdges.dist[PROJECTIONS.crossEdges.codeOf(row.state)], want,
       `${row.scramble}: the cross table must equal the cross distance, not merely bound it`);
   }
 });
@@ -246,49 +258,63 @@ test('every route the engine returns actually reaches its target', () => {
 test('a corrupted goal set returns a route that does not reach the target, and only the replay notices', () => {
   // One row of the plan's break table, and the most valuable one, because it is the failure no
   // amount of internal consistency can catch: every check that consults the same tables agrees with
-  // them. The break is the one the plan keeps naming — a goal the cube is not actually at — and its
-  // consequence is the one `methods/cross.js` keeps its distance table private to prevent: an EMPTY
-  // route for an unsolved cube, returned confidently, for the life of the process.
+  // them. The break is the one the plan keeps naming — a goal code the cube is not actually at —
+  // and its consequence is the one `methods/cross.js` keeps its distance table private to prevent:
+  // an EMPTY route for an unsolved cube, returned confidently, for the life of the process.
+  //
+  // BUILT AS A WRONG TARGET RATHER THAN BY MUTATING THE RIGHT ONE. The first version of this case
+  // reached into the shipped projection and added a goal code to it. That is no longer possible —
+  // `lib/stage-targets.js` keeps the goal set private behind `isGoal`, because a projection is
+  // shared between up to five targets and a stray `add` would change all of them at once — and the
+  // construction here is the better model anyway: a real corruption would SHIP that way, not be
+  // applied at runtime and taken back.
   //
   // `cross` is used because it has exactly one projection, so one wrong code is the whole break.
-  const target = TARGETS.find((t) => t.id === 'cross');
-  const part = P[target.parts[0]];
+  const real = PROJECTIONS.crossEdges;
   const state = applyAlg(SOLVED, "F2 R D'");
   assert.equal(PREDICATE.cross(state), false, 'the fixture state must NOT have a solved cross');
 
-  const honest = searchExact(target, state);
+  const honest = searchExact(TARGETS.find((t) => t.id === 'cross'), state);
   assert.ok(honest.moves > 0, 'the honest search must have work to do, or this proves nothing');
   assert.ok(PREDICATE.cross(applyAlg(state, honest.alg)), 'and its route must be real');
 
-  const bogus = part.codeOf(state);
-  assert.ok(!part.goalCodes.has(bogus), 'the state must not already project onto a goal');
-  part.goalCodes.add(bogus);
-  let corrupted, selfConsistent;
-  try {
-    corrupted = searchExact(target, state);
-    // Asked INSIDE the corruption on purpose: the point is what the mechanism believes while it is
-    // broken, and reading it after the cleanup would be reading the repaired tables and asserting
-    // nothing. The first draft of this test did exactly that and went green for the wrong reason.
-    selfConsistent = atGoal(target, codesFor(target, applyAlg(state, corrupted.alg)));
-  } finally {
-    part.goalCodes.delete(bogus);
-  }
+  const here = real.codeOf(state);
+  assert.equal(real.isGoal(here), false, 'the state must not already project onto a goal');
+  const corruptedProjection = {
+    ...real,
+    id: 'crossEdges-corrupted', // its own id, so it builds its own table rather than borrowing
+    goals: [...real.goals, here],
+    isGoal: (code) => real.isGoal(code) || code === here,
+  };
+  const wrongTarget = {
+    id: 'cross-corrupted',
+    parts: ['crossEdges-corrupted'],
+    projections: [corruptedProjection],
+    predicate: (s) => corruptedProjection.isGoal(corruptedProjection.codeOf(s)),
+    verify: PREDICATE.cross,
+    codesOf: (s) => [corruptedProjection.codeOf(s)],
+    atGoal: (codes) => corruptedProjection.isGoal(codes[0]),
+  };
 
-  // The search is now wrong, and wrong in the worst available way: it is certain, instant, and
-  // internally consistent.
-  assert.equal(corrupted.alg, '', 'the corrupted search should report the cube already there');
-  assert.equal(corrupted.moves, 0);
-  // Nothing inside the mechanism can tell. This is the assertion that earns the runtime replay.
-  assert.equal(selfConsistent, true,
-    'the projections agree with themselves, which is exactly why they cannot be the check');
-  // The replay, reading the app's own predicate, is the only thing that refuses it.
-  assert.equal(PREDICATE.cross(applyAlg(state, corrupted.alg)), false,
-    'the replay must refuse this route before a child ever sees it');
+  // The mechanism is now wrong, and wrong in the worst available way: it is certain, instant, and
+  // internally consistent. Nothing that reads the projections can tell.
+  assert.equal(wrongTarget.predicate(state), true,
+    'the corrupted conjunction says the cube is already there — the projections agree with'
+    + ' themselves, which is exactly why they cannot be the check');
+  assert.equal(wrongTarget.atGoal(wrongTarget.codesOf(state)), true);
 
-  // And the tables are back, so nothing after this test runs against a corrupted projection.
-  const after = searchExact(target, state);
-  assert.equal(after.moves, honest.moves, 'the corruption was not cleaned up');
-  assert.equal(part.goalCodes.has(bogus), false);
+  // And the engine returns NOTHING, because the replay asks a predicate the corruption never
+  // touched. This is the guarantee that makes every other bug in this feature harmless: a route is
+  // replayed or it is not returned, so a wrong route cannot exist to be displayed.
+  const corrupted = solveToState(wrongTarget, state, { nodeBudget: 400_000, maxDepth: 8 });
+  assert.equal(corrupted.alg, null, 'a corrupted goal set must produce NO answer, never an empty one');
+  assert.equal(corrupted.moves, null);
+  assert.match(corrupted.why, /replay/, 'and it must say the replay is what refused it');
+
+  // The shipped projection is untouched: the corruption was never able to reach it.
+  const after = searchExact(TARGETS.find((t) => t.id === 'cross'), state);
+  assert.equal(after.moves, honest.moves, 'the shipped target answered exactly as it did before');
+  assert.equal(real.isGoal(here), false);
 });
 
 test('the ORACLES are exercised, not just the answers they once produced', () => {
@@ -331,9 +357,9 @@ test('the ORACLES are exercised, not just the answers they once produced', () =>
   assert.ok(reached >= 5, `oracle A only reached ${reached} of them — it is capped at 5 and needs shallow cases`);
 
   // And the ball must be a ball: zero at the goal, and every entry no further than its radius.
-  const solvedCodes = target.parts.map((p) => P[p].codeOf(SOLVED));
+  const solvedCodes = target.codesOf(SOLVED);
   assert.equal(meetInTheMiddle(SOLVED, target, ball, 5), 0, 'a solved cube is zero moves from two-layers');
-  assert.ok(atGoal(target, solvedCodes), 'and it is at the goal by the projections too');
+  assert.ok(target.atGoal(solvedCodes), 'and it is at the goal by the projections too');
   const depths = new Set([...ball.ball.values()]);
   assert.deepEqual([...depths].sort((a, b) => a - b), [0, 1, 2, 3, 4, 5], 'the ball must hold exactly depths 0..5');
   // And a ball built for one target must refuse another's question rather than answer it quietly.
