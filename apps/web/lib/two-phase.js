@@ -806,6 +806,26 @@ const CENTERS = [4, 13, 22, 31, 40, 49];
 const FACE_LETTERS = 'URFDLB';
 
 /**
+ * Which facelet indices belong to which slot, and which letter each face's centre carries.
+ *
+ * Exported for `lib/stage-picture.js`, which draws a TARGET rather than a state: a target leaves
+ * some pieces free, and the only honest way to draw one is to blank the stickers it does not
+ * constrain. Doing that needs to know which stickers belong to which piece, and this module is
+ * where that fact already lives — a second copy of these tables somewhere else would be a second
+ * place for the facelet layout to be wrong, and the failure would be a picture that quietly points
+ * at the wrong sticker.
+ *
+ * READ-ONLY BY CONSTRUCTION: the arrays inside are frozen too, because `Object.freeze` is shallow
+ * and these are the tables every facelet string in the app is built from.
+ */
+export const SLOT_FACELETS = Object.freeze({
+  corners: Object.freeze(CORNER_FACELETS.map((f) => Object.freeze([...f]))),
+  edges: Object.freeze(EDGE_FACELETS.map((f) => Object.freeze([...f]))),
+  centers: Object.freeze([...CENTERS]),
+  faces: FACE_LETTERS,
+});
+
+/**
  * A facelet string as a cubie state, or null when it is not a solvable cube.
  *
  * null covers every way a scan can be wrong: colors that are not the six, a center out of
