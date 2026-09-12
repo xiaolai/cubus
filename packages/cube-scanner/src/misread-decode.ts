@@ -670,6 +670,56 @@ export function diagnoseAcrossSchemes(
   options: DecodeOptions = {},
   schemes: readonly Scheme[] = SCHEMES,
 ): SchemeDiagnosis {
+  // DEEPEN THE CAP ACROSS ALL SCHEMES TOGETHER, rather than asking each for a full-depth answer.
+  //
+  // The answer only ever uses the MINIMUM count, so a filing that cannot beat the best floor so far
+  // does not need its exact count — only the knowledge that it is higher. Searching every scheme at a
+  // shared cap of 0, then 1, and so on until one of them answers inside the cap delivers exactly that,
+  // and the cost of a cap is dominated by the rotations `priceRotations` keeps for it.
+  //
+  // Measured on `R U R' U'` with k stickers changed, both filings, uncapped against deepened, and the
+  // answer was deeply identical in all ten cases:
+  //
+  //       k   western uncapped -> deepened    japanese uncapped -> deepened
+  //       1        5240 ms ->  352 ms              3417 ms ->  332 ms
+  //       2        3704 ms ->  686 ms              3184 ms ->  584 ms
+  //       3        3131 ms ->  834 ms              2409 ms -> 2292 ms
+  //       4        1924 ms -> 3831 ms              3370 ms -> 2429 ms
+  //
+  // One misread is the common case and the only one that yields a sticker to tap, and it is 10x to
+  // 15x faster. Four is slower, and the trade is still the right way round: the WORST case over every
+  // input falls from 5.2 s to 3.8 s, because the old shape paid full depth even when the answer was 1.
+  //
+  // The floor stays honest, which is the property this module's history is about. A scheme capped at
+  // `d` that finds nothing returns `beyond` and therefore a COUNT of `d + 1` — never the empty answer
+  // — so "every scheme must answer or nothing is claimed" is untouched, and a scheme that loses at a
+  // cap genuinely exceeds the floor rather than merely having been cut short. `unknown`, which is the
+  // empty answer, still comes only from the node budget, and it still abandons the whole diagnosis.
+  const given = options.maxDistance;
+  if (given !== undefined && (!Number.isInteger(given) || given < 0)) {
+    // An invalid cap is the existing path's business: `decodeMisread` throws on it, `diagnoseMisread`
+    // logs and returns nothing, and this function must keep doing exactly that rather than throwing
+    // out of a loop it would never enter.
+    return diagnoseAtCap(bySlot, options, schemes);
+  }
+  const cap = given ?? DEFAULT_MAX_DISTANCE;
+  let answer: SchemeDiagnosis = {};
+  for (let d = 0; d <= cap; d++) {
+    answer = diagnoseAtCap(bySlot, { ...options, maxDistance: d }, schemes);
+    if (typeof answer.misreadCount !== 'number') return answer; // a scheme could claim nothing
+    if (answer.misreadCount <= d) return answer; // the floor is real at this cap
+  }
+  // Every scheme was `beyond` at the full cap, so every count is `cap + 1` and the last answer is the
+  // loose floor the uncapped call would have produced.
+  return answer;
+}
+
+/** Every scheme asked at one shared cap, and the minimum taken across them. */
+function diagnoseAtCap(
+  bySlot: Record<Face, ColorFaces>,
+  options: DecodeOptions,
+  schemes: readonly Scheme[],
+): SchemeDiagnosis {
   const toSlot = (position: Face, scheme: Scheme): Face => slotOf(colourOf(position, scheme));
   const results: { scheme: Scheme; diagnosis: MisreadDiagnosis }[] = [];
   for (const scheme of schemes) {

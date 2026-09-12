@@ -2,35 +2,44 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    // A LIVENESS BOUND, not a performance assertion. The decoder tests do real work, so vitest's 5 s
-    // default is a hang detector that fires on legitimate work; one budget for the class, sized so a
-    // genuine hang still fails. Two tests had grown explicit 60 s budgets one at a time before the
-    // gate found two more, which is why it is one number here and not four.
+    // ONE BUDGET FOR THE DECODER TESTS, and what it is and is not.
     //
-    // RE-SIZED 2026-09-12, because the old value's own justification had gone stale. It was 60 s
-    // against measurements of ~1 s alone, ~2.7 s under v8 coverage and 7 s under contention
-    // (2026-09-05) — a margin of about 8x. ADR 0001's colour-scheme dimension then made the heaviest
-    // cases try both filings, and they now cost far more than the number the bound was a multiple of:
+    // WHAT IT IS. vitest's 5 s default is a hang detector, and these tests do seconds of real search,
+    // so it fires on legitimate work. This is the budget for that class. It is NOT a performance
+    // assertion: nothing here is trying to hold the decoder to a speed.
     //
-    //   a one-sticker misread on a Japanese cube     7.1 s alone · 26.3 s under coverage
-    //   the same misread on a Western cube          11.2 s alone · 20.7 s under coverage
+    // WHAT IT CANNOT DO, corrected 2026-09-12 after an audit checked it. The comment here used to say
+    // a hang is an infinite loop in a synchronous call and that this catches it. It does not. These
+    // tests are synchronous, the deadline is a timer on the same thread, and a timer cannot run while
+    // a synchronous call is on the stack — so a wedged loop is never interrupted, and an overrun is
+    // reported only once control comes back. What this bound actually buys is a report that a test
+    // took too long, plus a real interrupt for anything asynchronous. A genuinely wedged loop is the
+    // pool's problem, not this number's.
     //
-    // So the margin had fallen to about 2.3x without anyone choosing that, and on 2026-09-12 it went
-    // negative: inside a full `pnpm check` the heaviest case passed 60 s and failed the gate. That run
-    // was about 2.6x slower than any other measurement of the same work on this machine — the same
-    // file took 241 s where it takes 71 s to 91 s — and the cause of the excursion is NOT known. It was
-    // not a second gate running: the deliberate reproduction, web tier first and the scanner
-    // immediately after, came in at 91 s with the heaviest case at 17.6 s.
+    // WHY 180 s, from measurements and not from an estimate. It was 60 s against figures from
+    // 2026-09-05 (~1 s alone, ~2.7 s under v8 coverage, 7 s under contention). Two things then moved.
     //
-    // 180 s is about 7x the heaviest instrumented measurement, which restores the margin the bound was
-    // chosen with, and covers the 2.6x excursion that actually happened with room to spare. The cost of
-    // the extra headroom is two more minutes before a genuine hang is reported, once.
+    //   ADR 0001's colour-scheme dimension made the heaviest `ai-assemble` cases search both filings,
+    //   taking them to 7.1 s and 11.2 s alone. That WAS a cause rather than a bound, and it is fixed:
+    //   `diagnoseAcrossSchemes` now deepens one shared cap across the schemes instead of asking each
+    //   for a full-depth answer, which is 5x on those two cases and halves the file (27.9 s to 14.9 s,
+    //   same machine, same minute). The bound is not carrying that any more.
     //
-    // THERE IS NO AUTOMATIC GUARD ON THIS, and that is deliberate. The thing that rotted is the
-    // RELATIONSHIP between the bound and the cost, and any check on it would be a wall-clock assertion
-    // on a machine that has just been shown to vary by 2.6x — it would fail for the same reason this
-    // bound did. The numbers above are the guard: they say what the bound is a multiple of, so the next
-    // person to make the decoder three times slower can see that they have spent the margin.
+    //   What remains is machine variance, and it is large: the same package's coverage run measures
+    //   between 151 s and 277 s here, and the same file between 27.9 s and 57.5 s, with no code
+    //   changing in between. In the slow regime `misread-decode.test.ts`'s overstatement case — 5.7 s
+    //   alone, untouched by the optimisation above — passed 60 s and failed the gate. That case is now
+    //   the binding one, and a bound it can cross on a quiet laptop is not a bound.
+    //
+    // 180 s is roughly 30x the binding case's uncontended cost and about 4.5x the worst single-case
+    // figure ever measured here (40 s, in the slow regime under coverage). The cost of the headroom is
+    // a couple of extra minutes before a slow test is reported, once.
+    //
+    // NO AUTOMATIC GUARD ON THE MARGIN, deliberately. What rots is the relationship between the bound
+    // and the cost, and any check on it would be a wall-clock assertion on a machine that varies by
+    // 1.8x — it would fail for the reason this bound did. The figures above are the guard: they say
+    // what the bound is a multiple of, so the next person to make the decoder slower can see whether
+    // the margin has been spent.
     testTimeout: 180_000,
     coverage: {
       provider: 'v8',
