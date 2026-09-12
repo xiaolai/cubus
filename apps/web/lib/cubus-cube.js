@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from './cube-frame.js';
+import { isFace, orientationMatrix, sameAxis } from './cube-orientation.js';
 import { parseHighlight, pieceKey, resolveHighlight, slotVector } from './cube-highlight.js';
 
 // The six sticker colours of each set, BY POSITION on a Western cube — the arrangement every
@@ -98,6 +99,7 @@ class CubusCube extends HTMLElement {
     'camera-longitude', 'cameralongitude',
     'camera-fit', 'camerafit',
     'camera-up', 'cameraup',
+    'orientation',
     'facelet-scale', 'faceletscale',
     'tempo-scale', 'temposcale',
     'back-view', 'backview',
@@ -126,6 +128,8 @@ class CubusCube extends HTMLElement {
   set cameraLatitude(v) { this._set('camera-latitude', v); }
   set cameraLongitude(v) { this._set('camera-longitude', v); }
   set cameraUp(v) { this._set('camera-up', v); }
+  set orientation(v) { this._set('orientation', v); }
+  get orientation() { return this._attrs.orientation; }
   set faceletScale(v) { this._set('facelet-scale', v); }
   set tempoScale(v) { this._set('tempo-scale', v); }
   set backView(v) { this._set('back-view', v); }
@@ -137,6 +141,20 @@ class CubusCube extends HTMLElement {
     // Defaults match the codebase player's control panel, except ghosts:
     // those are opt-in here because they crowd a small embedded cube.
     this._attrs = { ...CubusCube.DEFAULTS };
+    // How the cube is held, as a turn between two orientations at a phase in [0,1]. A SETTLED
+    // orientation is phase 1 with `from` equal to `to`; everything else is mid-turn.
+    //
+    // The phase is the primitive and the animation is a caller of it, never the other way round.
+    // Written as an animator with a seek bolted on, the two disagree the first time anyone scrubs
+    // into a turn: a lesson's cube is a pure function of `t`, so landing on a timestamp by seeking
+    // backwards has to give the same pose as playing forwards into it, and an easing that starts
+    // from "wherever the cube is now" cannot.
+    this._turn = { from: 'U F', to: 'U F', phase: 1 };
+    // The autorotate angle, kept as a number rather than written into `root.rotation.y`, because
+    // the root now carries the orientation too and two writers of one property is how one of them
+    // silently wins.
+    this._spin = 0;
+    this._turning = null; // an in-flight turnTo(): { from, to, t0, ms, settle }
   }
   /** Attribute defaults. Also what a REMOVED attribute falls back to — see _set(). */
   static DEFAULTS = {
@@ -154,6 +172,18 @@ class CubusCube extends HTMLElement {
     // express it: they place the eye and leave the roll fixed at +Y, so the picture arrives
     // vertically mirrored — worse than not moving the camera, because it looks deliberate.
     'camera-up': 'U',
+    // WHICH WAY THE CUBE IS HELD — two face letters, "<up> <front>". A different statement from
+    // the camera's, and it needs a different mechanism: `camera-up` moves the OBSERVER, and
+    // `_placeLights` bolts the lighting rig to the camera, so rolling the eye rolls the sun.
+    // Turning the OBJECT leaves the lamp where it is, which is what "you turned it over in your
+    // hands" looks like. Absolute, never relative: "D B" is idempotent and reads the same in a
+    // still picture as in an animated one, where a relative `y` accumulates and cannot be
+    // asserted without replaying the history that produced it.
+    //
+    // NOT part of `alg`, ever. If `alg` took `y`, an `R` after it would mean the new right or the
+    // old right, and a letter that sometimes names a fixed face and sometimes a moving one is the
+    // exact defect the fixed frame exists to prevent.
+    orientation: 'U F',
     // 'view' fits the silhouette THIS angle draws — tightest framing, and what a view that never
     // moves programmatically wants. 'stable' fits every angle at once, so swinging the camera
     // rotates the cube without resizing it. Default stays 'view': stable costs ~11% of apparent
@@ -185,6 +215,9 @@ class CubusCube extends HTMLElement {
     else if (name === 'facelet-scale') { this._applyScale(); this._applyCamera(); } // the scale is part of the silhouette
     else if (name === 'camera-latitude' || name === 'camera-longitude' || name === 'camera-fit'
              || name === 'camera-up') this._applyCamera();
+    // Writing the attribute is a CUT, not a turn: it states where the cube is, and a state that
+    // takes 400ms to become true cannot be read back or asserted. `turnTo()` is the animation.
+    else if (name === 'orientation') this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
     else if (name === 'back-view') this._dirty = true;
     else if (name === 'orbit') this._applyOrbit();
     else if (name === 'facelets' || name === 'scramble') this.reset();
@@ -320,6 +353,11 @@ class CubusCube extends HTMLElement {
     this._readHighlight();
     this._readFocus();
     this._ghostVisible();
+    // An orientation written before the element connected has not been read yet — `_set()` returns
+    // early until the meshes exist — and `connectedCallback` draws immediately, so without this the
+    // first frame is of a cube held the way nobody asked for. The same ordering trap that once made
+    // a mounted cube draw itself framed for a ghostless one.
+    this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
     this.reset();
 
     this._resize = () => {
@@ -384,7 +422,19 @@ class CubusCube extends HTMLElement {
           this._dirty = true;
         }
       }
-      if (this._attrs.autorotate != null) { root.rotation.y += 0.0035; this._dirty = true; }
+      // An in-flight turnTo() is the only thing that WRITES the phase on a clock. Everything else
+      // — the attribute, a scrubber — sets it directly, which is why this is a caller of
+      // showTurn() rather than a second way to pose the cube.
+      if (this._turning) {
+        const t = this._turning;
+        const k = Math.min(1, (performance.now() - t.t0) / t.ms);
+        this._setTurn(t.from, t.to, EASE(k));
+        // Settle AFTER the last pose is written, and re-anchor on the destination so the next
+        // turn starts from a settled orientation rather than from a finished turn's `from`.
+        if (k >= 1) { this._setTurn(t.to, t.to, 1); this._settleTurn(true); }
+        this._dirty = true;
+      }
+      if (this._attrs.autorotate != null) { this._spin += 0.0035; this._applyRoot(); }
       const moving = this.controls.update();
       if (moving) this._placeLights();
       if (moving || this._dirty) { this._draw(); this._dirty = false; }
@@ -428,6 +478,9 @@ class CubusCube extends HTMLElement {
   /** Release the GPU. The element is spent afterwards — connecting it again builds a new one. */
   dispose() {
     this._stop();
+    // The loop that would have finished this turn has just been cancelled, so nothing else will
+    // ever answer its caller. An `await cube.turnTo(…)` on a disposed element would hang forever.
+    this._settleTurn(false);
     clearTimeout(this._release);
     // OrbitControls registers a capture-phase keydown listener on the canvas's root node, so
     // dropping the reference is not releasing it. Worse, it unbinds from `getRootNode()` as it
@@ -470,7 +523,16 @@ class CubusCube extends HTMLElement {
    */
   recycle() {
     for (const name of CubusCube.observedAttributes) this.removeAttribute(name);
-    this.root?.rotation.set(0, 0, 0);
+    // A turn in flight belongs to the screen being torn down, and its caller is owed an answer
+    // before the cube is handed to the next one. Settled first, so the pose reset below cannot be
+    // undone by a frame of the old animation still running.
+    this._settleTurn(false);
+    this._spin = 0;
+    this._turn = { from: 'U F', to: 'U F', phase: 1 };
+    this._fitTurned = undefined; // so the next pose re-asks for the fit rather than assuming it
+    // The quaternion is the only writer now — `.rotation` is three.js's derived Euler view of it,
+    // so zeroing that instead would be undone the next time the quaternion is written.
+    this.root?.quaternion.identity();
     this.reset();
     this._applyCamera();
   }
@@ -505,6 +567,176 @@ class CubusCube extends HTMLElement {
    *  it to `minDistance` with no way back, because the drag that would restore the view is the
    *  thing that was disabled (found by audit, 2026-09-04). Pan was already off in both states:
    *  the camera is fitted to the slot (lib/cube-frame.js), so a panned cube is a clipped one. */
+  /**
+   * Parse `"<up> <front>"` into a quaternion, or null if it does not name an orientation.
+   *
+   * Refuses a pair on one axis rather than picking some third thing: `U D` and `F F` are not
+   * orientations, and a renderer that resolved them to something would be inventing a cube.
+   */
+  _pose(spec) {
+    const parts = String(spec ?? '').trim().toUpperCase().split(/\s+/);
+    const [up, front] = parts;
+    if (parts.length !== 2 || !up || !front) return null;
+    // `isFace`, not `'URFDLB'.includes(up)` — that is a SUBSTRING test, so it accepted "UR" and
+    // "RFD", and `orientationMatrix` then THREW from inside what is supposed to be a refusal that
+    // returns null and warns. One definition of a legal face letter, shared with the module that
+    // will have to draw it.
+    if (!isFace(up) || !isFace(front) || sameAxis(up, front)) return null;
+    // `Matrix4.set` takes its arguments in ROW-major order, and `orientationMatrix` returns rows,
+    // so the rows go in as rows. Feeding the columns instead builds the TRANSPOSE, which for a
+    // rotation is its inverse — a cube that turns the wrong way while passing every count, every
+    // centre check and the determinant. This file shipped that for an hour: the comment here
+    // warned about it and the code below did it, and the only case that noticed was the browser
+    // check that asks where the named face actually ended up.
+    const m = orientationMatrix(up, front);
+    const basis = new THREE.Matrix4().set(
+      m[0][0], m[0][1], m[0][2], 0,
+      m[1][0], m[1][1], m[1][2], 0,
+      m[2][0], m[2][1], m[2][2], 0,
+      0, 0, 0, 1,
+    );
+    // The canonical spelling travels with the quaternion: `_turned()` compares specs, and it must
+    // not be defeated by "u f" or a double space.
+    return { q: new THREE.Quaternion().setFromRotationMatrix(basis), spec: `${up} ${front}` };
+  }
+
+  /**
+   * Hold the cube at `phase` of a turn from one orientation to another. THE PRIMITIVE.
+   *
+   * Synchronous, idempotent, and a pure function of its three arguments — which is what a lesson
+   * scrubber needs: the same `t` gives the same pose whether it was reached by playing forwards,
+   * seeking backwards, or landing on it while paused.
+   *
+   * The path between two poses is the shortest arc, which is deterministic because three.js's
+   * slerp flips the sign of the far quaternion when the dot product is negative. Two orientations
+   * a half-turn apart have no unique shortest arc; they get a consistent one, which is the
+   * property that matters here.
+   */
+  showTurn(from, to, phase) {
+    // VALIDATE FIRST, then cancel. Cancelling first meant a REFUSED orientation — a typo in an
+    // attribute — killed a perfectly good turn in flight and left the cube stranded part-way
+    // through it. A request the element rejects must change nothing at all.
+    if (!this._pose(from) || !this._pose(to)) return this._setTurn(from, to, phase);
+    // A public pose change cancels an animation in flight: without this, the pose was written and
+    // the very next frame overwrote it from the old animation, whose promise went on running. The
+    // animation's own per-frame updates go through `_setTurn`, or a turn would cancel itself.
+    this._settleTurn(false);
+    return this._setTurn(from, to, phase);
+  }
+
+  /** Set the pose without touching an animation in flight. The tick's path. */
+  _setTurn(from, to, phase) {
+    const a = this._pose(from);
+    const b = this._pose(to);
+    if (!a || !b) {
+      console.warn(`<cubus-cube> refusing orientation "${!a ? from : to}" — expected two perpendicular faces of URFDLB, as in "U F"`);
+      return false;
+    }
+    const p = Number(phase);
+    this._turn = {
+      from: a.spec,
+      to: b.spec,
+      phase: Number.isFinite(p) ? Math.min(1, Math.max(0, p)) : 1,
+    };
+    this._applyRoot(a.q, b.q);
+    // The fit depends on WHETHER the cube is turned, not on how far — see `_turned()`. So it is
+    // re-asked when that boolean flips, not on every pose write: `_applyCamera` rebuilds the
+    // silhouette and refits, and calling it once per frame of a turn spent that work sixty times a
+    // second to arrive at the same distance.
+    const turned = this._turned();
+    if (turned !== this._fitTurned) {
+      this._fitTurned = turned;
+      this._applyCamera();
+    }
+    return true;
+  }
+
+  /**
+   * Turn the cube to `up`/`front` over `ms`, resolving when it settles. Sugar over `showTurn`.
+   *
+   * Resolves rather than rejects when it is superseded, recycled or disposed: the caller asked to
+   * be told when the turn is over, and a promise left pending forever is the leak. Callers that
+   * need to know whether they were interrupted get `false`.
+   */
+  turnTo(up, front, { ms = 400 } = {}) {
+    const to = `${up} ${front}`;
+    if (!this._pose(to)) {
+      console.warn(`<cubus-cube> refusing turnTo("${up}", "${front}") — expected two perpendicular faces of URFDLB`);
+      return Promise.resolve(false);
+    }
+    // Settle the old promise rather than leaving its caller waiting on a turn that will never
+    // finish. Where the new turn STARTS is the nearest named orientation, not the exact pose the
+    // cube is in: the primitive interpolates between two NAMED orientations, which is what makes a
+    // scrubber's `t` reproducible, and an arbitrary starting quaternion would give that up. So
+    // superseding a turn half way through can step at most half a turn — visible, bounded, and
+    // preferable to a pose no `showTurn(from, to, phase)` could ever reproduce.
+    const from = this._nearestSpec();
+    this._settleTurn(false);
+    // A non-finite duration is not a long turn, it is a turn that never ends: `(now - t0) / NaN`
+    // is NaN, `NaN >= 1` is false forever, and the promise stays pending until something else
+    // cancels it. Treated as "no animation" rather than accepted.
+    if (!Number.isFinite(ms) || reducedMotion() || ms <= 0) {
+      this.showTurn(to, to, 1);
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+      this._turning = { from, to, t0: performance.now(), ms, settle: resolve };
+      // `_setTurn`, not `showTurn`: the public one cancels an animation in flight, and the one in
+      // flight is the one this line just created.
+      this._setTurn(from, to, 0);
+      this._dirty = true;
+    });
+  }
+
+  /** The named orientation the cube is nearest to — its own when settled, the closer end mid-turn. */
+  _nearestSpec() {
+    return this._turn.phase >= 0.5 ? this._turn.to : this._turn.from;
+  }
+
+  /** Finish an in-flight turnTo without moving the cube, telling its caller what happened. */
+  _settleTurn(completed) {
+    const t = this._turning;
+    this._turning = null;
+    t?.settle(completed);
+  }
+
+  /** Write the root's rotation: the held pose, with the autorotate spin on top of it. */
+  _applyRoot(a = this._pose(this._turn.from)?.q, b = this._pose(this._turn.to)?.q) {
+    if (!this.root || !a || !b) return;
+    const q = (this._q0 ||= new THREE.Quaternion());
+    if (this._turn.phase >= 1) q.copy(b);
+    else if (this._turn.phase <= 0) q.copy(a);
+    else q.copy(a).slerp(b, this._turn.phase);
+    if (this._spin) {
+      // A turntable turns about the WORLD's up, so the spin is applied AFTER the pose. Composed
+      // the other way it would spin about the cube's own axis, which for a cube held on its side
+      // is a different motion entirely.
+      const s = (this._qs ||= new THREE.Quaternion());
+      s.setFromAxisAngle(AXES.y, this._spin);
+      q.premultiply(s);
+    }
+    this.root.quaternion.copy(q);
+    this._dirty = true;
+  }
+
+  /**
+   * Is the cube held any way other than the way `silhouette()` assumes?
+   *
+   * Mid-turn is the obvious case — a pose partway between two orientations has an outline that is
+   * not a cube's at all. But a SETTLED turn counts too, and that was not obvious: the 24
+   * orientations are the cube's own symmetries, so the full point set is unchanged, yet the `view`
+   * fit does not use the full set. It culls to the ghosts THIS eye would see, and which ghosts
+   * those are depends on how the cube is held — a fact `silhouette()` is never told. So a settled
+   * quarter turn under `view` was measured fitting the wrong ghosts and pushing a corner 27% past
+   * the frame edge.
+   */
+  _turned() {
+    const { from, to, phase } = this._turn;
+    if (from === to || phase >= 1) return to !== 'U F';
+    if (phase <= 0) return from !== 'U F';
+    return true;
+  }
+
   _applyOrbit() {
     if (!this.controls) return;
     const free = this._attrs.orbit !== 'locked';
@@ -526,7 +758,15 @@ class CubusCube extends HTMLElement {
     const worldUp = this._cameraUp();
     // A stable fit has to bound the ghosts on the faces THIS eye can see too, because some other
     // angle will show them and the distance must already have room for them.
-    const stable = this._attrs['camera-fit'] === 'stable';
+    // A TURNED cube gets the stable fit whether or not the attribute asked for it, because `view`
+    // is computed from a silhouette that assumes the cube is upright (see `_turned`). Stable needs
+    // no such assumption: it bounds the points' enclosing SPHERE, which no rotation can change, so
+    // one number frames every pose the cube can take.
+    //
+    // Costs the real consumer nothing: every surface cubus-im builds already sets `camera-fit` to
+    // `stable`. For anyone else it trades about 11% of apparent size for corners that stay on
+    // screen, and only while the cube is held some way other than upright.
+    const stable = this._attrs['camera-fit'] === 'stable' || this._turned();
     const points = silhouette({
       eye,
       elevation: this._ghostsEnabled() ? this._num('ghost-elevation', 4) : null,
