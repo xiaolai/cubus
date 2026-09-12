@@ -34,9 +34,12 @@ import {
   type AiScanResult,
   assembleColors,
   assemblePainted,
+  type CentreResolution,
   type ColorFace,
   type Confirmation,
   type ConfirmRequest,
+  matchingRotations,
+  resolveCentreCollision,
   rotateFace,
   type StickerSuspect,
 } from '../src/ai-assemble.js';
@@ -543,6 +546,17 @@ export class AiScanPanel extends HTMLElement {
    * camera does, and a tap on a sticker changes the reading without touching the camera at all.
    */
   private diagnosisEpoch = 0;
+  /**
+   * A side held back because its centre reads as a colour another side already claims — at most one.
+   *
+   * It used to be turned away with "Already have the BLUE side — still need WHITE", and when the
+   * cause is a blue logo printed on the white centre that sentence is a dead end: the user is holding
+   * the white side, it reads blue every time, and six sides can never be collected. Measured on real
+   * cubes, logos caused four of seven such collisions. So a DIFFERENT side is kept here, counted
+   * towards six, and `resolveCentreCollision` decides at check time which of the two is really the
+   * unclaimed colour — by legality, never by reading the centre again.
+   */
+  private contested: ColorFace | null = null;
 
   constructor() {
     super();
@@ -947,6 +961,7 @@ export class AiScanPanel extends HTMLElement {
     this.settled.clear();
     this.pendingOpening = null;
     for (const f of FACES) delete (this.faces as Partial<Record<Face, ColorFace>>)[f];
+    this.contested = null;
     // The next cube is a different cube; what the last verdict said about this one's colours
     // must not outlive it.
     this.scheme = null;
@@ -1259,6 +1274,15 @@ export class AiScanPanel extends HTMLElement {
         this.scheduleCheck(this.tinted('ok', `Re-read the ${GUIDE[face].color} side — checking…`));
         return;
       }
+      // THE SAME SIDE AGAIN, OR A DIFFERENT SIDE WITH THE SAME CENTRE? Re-showing a side is the
+      // common case and is answered as it always was. A side that matches the filed one under no
+      // rotation is a different side, and turning it away is the dead end `contested` documents.
+      // One contest at a time: a second is past what the resolution can decide, so it falls through
+      // to the plain answer rather than pretending otherwise.
+      if (this.contested === null && matchingRotations(this.faces[face], read).size === 0) {
+        this.hold(face, read);
+        return;
+      }
       const named = this.missingSides();
       this.report(
         'scanning',
@@ -1271,6 +1295,34 @@ export class AiScanPanel extends HTMLElement {
     this.capture(face, read);
   }
 
+  /**
+   * Keep a side whose centre reads as the colour of a side already filed. See `contested`.
+   *
+   * The words do not claim to know which of the two is which — that is decided at check time — only
+   * that one of them must be a different colour, which a cube with one centre of each guarantees.
+   */
+  private hold(shared: Face, read: ColorFace): void {
+    this.contested = read;
+    this.still.reset();
+    this.flash();
+    const held = this.sidesHeld();
+    if (held >= FACES.length) {
+      this.scheduleCheck(
+        this.tinted(
+          'ok',
+          `Two sides read with a ${GUIDE[shared].color} centre — working out which is which…`,
+        ),
+      );
+      return;
+    }
+    this.report(
+      'scanning',
+      'That side also reads with a ',
+      this.bold(GUIDE[shared].color),
+      ` centre — kept; a logo printed on a centre often does this. ${held}/6. Show another side…`,
+    );
+  }
+
   /** File a freshly-recognised face under its own letter, then keep scanning (or finish at six). */
   private capture(face: Face, read: ColorFace): void {
     this.faces[face] = read;
@@ -1280,7 +1332,7 @@ export class AiScanPanel extends HTMLElement {
     this.still.reset();
     this.buildDots();
     this.flash();
-    const done = this.capturedFaces().length;
+    const done = this.sidesHeld();
     if (done >= FACES.length) {
       this.scheduleCheck(this.tinted('ok', 'All six sides captured — checking…'));
       return;
@@ -1338,6 +1390,11 @@ export class AiScanPanel extends HTMLElement {
       if (read) out.push({ face, colors: [...read.colors] });
     }
     return out;
+  }
+
+  /** Sides in hand: those filed, plus the one held back because its centre collided. */
+  private sidesHeld(): number {
+    return this.capturedFaces().length + (this.contested ? 1 : 0);
   }
 
   /**
@@ -1647,6 +1704,9 @@ export class AiScanPanel extends HTMLElement {
 
   /** "YELLOW and BLUE" — the sides still to show, named once there are few enough to name. */
   private missingSides(): string | null {
+    // With a side held back, which slot it fills is exactly what is undecided — so naming the
+    // "missing" sides could tell the user to show the side they have already shown.
+    if (this.contested) return null;
     const missing = FACES.filter((f) => !this.faces[f]);
     if (missing.length === 0 || missing.length > 2) return null;
     return missing.map((f) => GUIDE[f].color).join(' and ');
@@ -1744,6 +1804,28 @@ export class AiScanPanel extends HTMLElement {
       this.finish(checked);
       return;
     }
+    // A side held back for a centre collision is decided first, and the filing that fits becomes
+    // the reading. Nothing else on this path has run yet, so there are no confirmations to keep.
+    if (this.contested) {
+      const newcomer = this.contested;
+      this.contested = null;
+      let resolution: CentreResolution;
+      try {
+        resolution = resolveCentreCollision(this.faces, newcomer, undefined, { diagnose: false });
+      } catch (err) {
+        this.checkFailed(err);
+        return;
+      }
+      if (resolution.faces) {
+        for (const f of FACES) {
+          if (this.faces[f] !== resolution.faces[f]) this.settled.delete(f);
+          this.faces[f] = resolution.faces[f];
+        }
+        this.buildDots();
+      }
+      this.finish(resolution.result);
+      return;
+    }
     // A `reread` means a confirmation disagreed with its first capture about colours: adopt the
     // fresh, deliberately-held look as that side's reading and check again. Each adoption pins its
     // side at distance 0, so this settles within six rounds; the cap is a backstop, not a path.
@@ -1753,15 +1835,7 @@ export class AiScanPanel extends HTMLElement {
         // this thread. Only the refusal branch is affected; every accepted scan is untouched.
         result = assembleColors(this.faces, undefined, this.confirmed, { diagnose: false });
       } catch (err) {
-        // Six well-formed faces should never throw — but if they do, never freeze on "checking…"
-        // and never destroy the captures over it: say so and keep scanning.
-        const why = String((err as Error)?.message ?? err);
-        this.notice = {
-          title: 'Something went wrong',
-          tone: 'err',
-          body: `Couldn't check the scan (${why}). Show a side again to retry, or start the scan over.`,
-        };
-        this.loop('scanning', this.tinted('err', 'Couldn’t check the scan — see the note.'));
+        this.checkFailed(err);
         return;
       }
       const face = result.reread;
@@ -1772,6 +1846,21 @@ export class AiScanPanel extends HTMLElement {
       }
       this.faces[face] = fresh;
     }
+  }
+
+  /**
+   * A check threw. Six well-formed faces should never throw — but if they do, never freeze on
+   * "checking…" and never destroy the captures over it: say so and keep scanning. Shared by both
+   * ways a check runs, so the two cannot come to say different things about the same failure.
+   */
+  private checkFailed(err: unknown): void {
+    const why = String((err as Error)?.message ?? err);
+    this.notice = {
+      title: 'Something went wrong',
+      tone: 'err',
+      body: `Couldn't check the scan (${why}). Show a side again to retry, or start the scan over.`,
+    };
+    this.loop('scanning', this.tinted('err', 'Couldn’t check the scan — see the note.'));
   }
 
   /**
@@ -2102,6 +2191,23 @@ export class AiScanPanel extends HTMLElement {
       if (camera.action) {
         line = "That isn't a solvable cube yet — start the scan over, or show one side again.";
       }
+    } else if (result.centreConflict) {
+      // Two sides claimed one centre colour and the resolution could not decide which is the other.
+      // The two ways that happens need different instructions, and the sentence must not swap them:
+      // neither filing legal means something besides the centre was misread; both legal means the
+      // captures genuinely cannot say, which one turn of any face fixes.
+      const { shared, missing, legalFilings } = result.centreConflict;
+      this.notice = {
+        title: 'Two sides read the same centre',
+        tone: 'err',
+        body:
+          legalFilings === 0
+            ? 'Two sides read with a %1 centre, so one of them must really be the %2 side — a logo printed on a centre often does this. Neither way of filing them makes a real cube, so something else was misread too. Start the scan over, with more light and each side held flat.'
+            : 'Two sides read with a %1 centre, so one of them must really be the %2 side — a logo printed on a centre often does this. Both ways make a real cube and nothing in the photos says which. Turn any one face a quarter turn, then start the scan over.',
+        params: [GUIDE[shared].color, GUIDE[missing].color],
+        action: { label: 'Start over', kind: 'restart' },
+      };
+      line = 'Two sides read with the same centre colour — start the scan over.';
     } else if (result.schemeAmbiguous) {
       // The readings left standing are different cubes that differ in nothing but which colour
       // is under white — blue on an older cube, yellow on most — and no hold a child could be
