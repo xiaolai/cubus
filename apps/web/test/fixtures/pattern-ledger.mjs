@@ -4,15 +4,34 @@
 //   re-verify:  node --test apps/web/test/pattern-ledger.test.mjs
 //
 // Every picture within 7 moves of solved that is fixed by at least 4 of the 24
-// whole-cube rotations — which is what "pretty" means once it is made mechanical, and is the property
-// a checkerboard, a ring of dots and a cube-in-a-cube all share. The search was exhaustive for that
-// radius, so an entry's `moves` is a proved minimum over the whole radius and not a best effort.
+// whole-cube rotations AND leaves every piece turned the right way up — which is what "pretty" means
+// once it is made mechanical, and is the property a checkerboard, a ring of dots and a cube-in-a-cube
+// all share. The search was exhaustive for that radius, so an entry's `moves` is a proved minimum
+// over the whole radius and not a best effort.
 //
-// THE CUT IS PART OF THE CLAIM. Pictures fixed by exactly two of the 24 are found and COUNTED and not
-// kept — at depth 7 there are over a hundred thousand such maneuvers, and a ledger of them is a
-// database rather than a list. So this file is complete for order 4 and above, and
-// says nothing about order 2. The first version of this header said "more than one", which claimed a
-// completeness it does not have.
+// TWO CUTS, AND BOTH ARE PART OF THE CLAIM.
+//
+// ORDER. Pictures fixed by exactly two of the 24 are found and COUNTED and not kept — at depth
+// 7 there are over a hundred thousand such maneuvers, and a ledger of them is a database rather
+// than a list. So this file is complete for order 4 and above, and says nothing about
+// order 2. The first version of this header said "more than one", which claimed a completeness it does
+// not have.
+//
+// TWIST. 72 of the 213 pictures above the order cut cannot be
+// reached inside the radius without leaving a corner twisted or an edge flipped, and are cut too
+// (owner's call, 2026-09-12). A permuted piece reads as design, because the whole piece moved; a
+// twisted corner shows ONE sticker of the wrong colour inside an otherwise clean block, and a child
+// cannot tell that from a misscramble.
+//
+// `moves` is the proved minimum among UNTWISTED routes, which could in principle be longer than the
+// proved minimum over all routes. Measured: for every picture kept here it is not — the shortest route to a
+// picture that can be reached straight at all is already a straight one.
+//
+// The cut is on ROUTES and not on pictures, which is the opposite of how it was first written. Twist is
+// measured against the cube's own CENTRES, the only frame a child has, while `canonicalLook` renames
+// colours as it rotates — so two maneuvers can reach one look and disagree about whether a piece is
+// twisted. Of 720 picture-and-view pairs, 192 read differently about orientation under that renaming.
+// An assertion in the generator caught the wrong version on its first run; the notes there say why.
 //
 // `look` is the canonical facelet string: the smallest of the picture's 24 views, so two cubes that
 // are the same picture held differently are one entry. `order` is how many views leave it unchanged.
@@ -34,45 +53,32 @@ export const STATE_PATTERNS = Object.freeze([
   { look: "DDDDUDDDDLLLLRLLLLFBFBFBFBFUUUUDUUUURRRRLRRRRBFBFBFBFB", order: 8, moves: 6, alg: "U2 L2 R2 B2 F2 U2", wrong: 40, blank: 0, designs: 1, variants: [], figures: [341,16,16,341,16,16] },
   { look: "DDDFUBDDDRLRLRLRLRBBBDFUBBBUUUBDFUUULRLRLRLRLFFFDBUFFF", order: 8, moves: 6, alg: "U L2 R2 B2 F2 U'", wrong: 40, blank: 0, designs: 1, variants: ["U' L2 R2 B2 F2 U"], figures: [341,16,16,341,16,16] },
   { look: "DDDUUUDDDRRRRRRRRRBBBFFFBBBUUUDDDUUULLLLLLLLLFFFBBBFFF", order: 8, moves: 6, alg: "U2 R2 D2 U2 R2 D2", wrong: 24, blank: 2, designs: 1, variants: [], figures: [56,56,511,56,56,511] },
-  { look: "FDBFUBFDBRLRLRLRLRDBUDFUDBUBUFBDFBUFLRLRLRLRLDFUDBUDFU", order: 8, moves: 6, alg: "D U L2 R2 B2 F2", wrong: 40, blank: 0, designs: 2, variants: ["D' U' L2 R2 B2 F2","D2 U2 L2 R2 B F","D2 U2 L2 R2 B' F'"], figures: [341,16,16,341,16,16] },
+  { look: "FDBFUBFDBRLRLRLRLRDBUDFUDBUBUFBDFBUFLRLRLRLRLDFUDBUDFU", order: 8, moves: 6, alg: "D U L2 R2 B2 F2", wrong: 40, blank: 0, designs: 2, variants: ["D' U' L2 R2 B2 F2","L2 R2 B2 F2 D U","L2 R2 B2 F2 D' U'"], figures: [341,16,16,341,16,16] },
   { look: "FDBUUUFDBRLRLRLRLRDBUFFFDBUBUFDDDBUFLRLRLRLRLDFUBBBDFU", order: 8, moves: 6, alg: "U L2 R2 B2 F2 D", wrong: 32, blank: 0, designs: 1, variants: ["U' L2 R2 B2 F2 D'"], figures: [341,56,56,341,56,56] },
   { look: "UDUDUDUDURRRLRLRRRFFFBFBFFFDUDUDUDUDLLLRLRLLLBBBFBFBBB", order: 8, moves: 6, alg: "U2 L2 R2 B2 F2 D2", wrong: 16, blank: 0, designs: 1, variants: [], figures: [341,381,381,341,381,381] },
   { look: "BDFBUFBDFRRRRRRRRRUBDUFDUBDFUBFDBFUBLLLLLLLLLUFDUBDUFD", order: 8, moves: 7, alg: "U2 L2 R2 D U' B2 F2", wrong: 32, blank: 2, designs: 1, variants: ["U2 L2 R2 D' U B2 F2"], figures: [511,16,16,511,16,16] },
   { look: "BDFDUDBDFRLRLRLRLRUBDBFBUBDFUBUDUFUBLRLRLRLRLUFDFBFUFD", order: 8, moves: 7, alg: "U L2 R2 B2 F2 D' U2", wrong: 40, blank: 0, designs: 1, variants: ["U' L2 R2 B2 F2 D U2"], figures: [341,16,16,341,16,16] },
-  { look: "BUFFUBBUFRLRLRLRLRUFDDFUUFDFDBBDFFDBLRLRLRLRLUBDDBUUBD", order: 8, moves: 7, alg: "D2 U2 L R' D2 U2 L2", wrong: 32, blank: 0, designs: 2, variants: ["D2 U2 L R' D2 U2 R2","U2 L2 R2 D U' L2 R2","U2 L2 R2 D' U L2 R2"], figures: [56,341,56,56,341,56] },
+  { look: "BUFFUBBUFRLRLRLRLRUFDDFUUFDFDBBDFFDBLRLRLRLRLUBDDBUUBD", order: 8, moves: 7, alg: "L2 R2 D U' L2 R2 D2", wrong: 32, blank: 0, designs: 2, variants: ["L2 R2 D U' L2 R2 U2","U2 L2 R2 D U' L2 R2","U2 L2 R2 D' U L2 R2"], figures: [341,56,56,341,56,56] },
   { look: "UDUBUFUDURLRLRLRLRFBFUFDFBFDUDFDBDUDLRLRLRLRLBFBUBDBFB", order: 8, moves: 7, alg: "U L2 R2 B2 F2 D2 U", wrong: 24, blank: 0, designs: 1, variants: ["U' L2 R2 B2 F2 D2 U'"], figures: [341,341,341,341,341,341] },
   { look: "BUUBUUBUURRRRRRRRRUFFUFFUFFFDDFDDFDDLLLLLLLLLBBDBBDBBD", order: 4, moves: 1, alg: "U", wrong: 12, blank: 2, designs: 1, variants: ["U'"], figures: [511,63,63,511,63,63] },
   { look: "DDDUUUUUURRLRRLRRLFFFFFFFFFDDDDDDUUURLLRLLRLLBBBBBBBBB", order: 4, moves: 1, alg: "U2", wrong: 12, blank: 2, designs: 1, variants: [], figures: [511,63,63,511,63,63] },
   { look: "BUBBUBBUBRRRRRRRRRUFUUFUUFUFDFFDFFDFLLLLLLLLLDBDDBDDBD", order: 4, moves: 2, alg: "D U'", wrong: 24, blank: 2, designs: 1, variants: [], figures: [511,56,56,511,56,56] },
   { look: "BUDBUDBUDRRRRRRRRRUFBUFBUFBFDUFDUFDULLLLLLLLLFBDFBDFBD", order: 4, moves: 2, alg: "D U2", wrong: 24, blank: 2, designs: 1, variants: ["D2 U'"], figures: [511,56,56,511,56,56] },
-  { look: "BBBUUUFFFUBDRRRUFDRRRUFDLLLFFFDDDBBBUFDLLLUBDLLLUBDRRR", order: 4, moves: 4, alg: "D U L R", wrong: 40, blank: 0, designs: 1, variants: ["D' U' L' R'"], figures: [56,56,16,56,56,16] },
-  { look: "BDFBUFBDFLRLLRLLRLDFUDFUDFUFUBFDBFUBRLRRLRRLRDBUDBUDBU", order: 4, moves: 4, alg: "D U L2 R2", wrong: 40, blank: 0, designs: 2, variants: ["D' U' L2 R2","D2 U2 L R","D2 U2 L' R'"], figures: [56,56,16,56,56,16] },
-  { look: "BLFUUUBRFDBUDRUDFURFLRFLRFLFLBDDDFRBDFUDLUDBULBRLBRLBR", order: 4, moves: 4, alg: "D U L' R'", wrong: 40, blank: 0, designs: 1, variants: ["D' U' L R"], figures: [56,56,16,56,56,16] },
+  { look: "BDFBUFBDFLRLLRLLRLDFUDFUDFUFUBFDBFUBRLRRLRRLRDBUDBUDBU", order: 4, moves: 4, alg: "D U L2 R2", wrong: 40, blank: 0, designs: 2, variants: ["D' U' L2 R2","L2 R2 D U","L2 R2 D' U'"], figures: [56,56,16,56,56,16] },
   { look: "DDDDUDDDDLRLLRLLRLFFFFFFFFFUUUUDUUUURLRRLRRLRBBBBBBBBB", order: 4, moves: 4, alg: "U2 L2 R2 D2", wrong: 28, blank: 2, designs: 1, variants: [], figures: [56,511,16,56,511,16] },
   { look: "DDDUUUDDDRLRRRRRLRBBBFFFBBBUUUDDDUUULRLLLLLRLFFFBBBFFF", order: 4, moves: 4, alg: "U2 L2 R2 U2", wrong: 28, blank: 0, designs: 1, variants: [], figures: [56,56,381,56,56,381] },
   { look: "BDFFUBBDFLRLLRLLRLDFUDFUDFUFUBBDFFUBRLRRLRRLRDBUDBUDBU", order: 4, moves: 5, alg: "D U' L2 R2 D2", wrong: 40, blank: 0, designs: 2, variants: ["D U' L2 R2 U2","U2 L2 R2 D U'","U2 L2 R2 D' U"], figures: [56,56,16,56,56,16] },
-  { look: "DDBUUFDDBRLRLRLRLRBBUFFDBBUUUFDDBUUFLRLRLRLRLDFFUBBDFF", order: 4, moves: 5, alg: "D2 U2 L2 R2 F", wrong: 36, blank: 0, designs: 2, variants: ["D2 U2 L2 R2 F'","U L2 R2 B2 F2","U' L2 R2 B2 F2"], figures: [18,18,341,18,18,341] },
+  { look: "DDBUUFDDBRLRLRLRLRBBUFFDBBUUUFDDBUUFLRLRLRLRLDFFUBBDFF", order: 4, moves: 5, alg: "L2 R2 B2 F2 U", wrong: 36, blank: 0, designs: 2, variants: ["L2 R2 B2 F2 U'","U L2 R2 B2 F2","U' L2 R2 B2 F2"], figures: [341,18,18,341,18,18] },
   { look: "DDUUUDDDURLRLRLRLRBBFFFBBBFUUDDDUUUDLRLRLRLRLBFFFBBBFF", order: 4, moves: 5, alg: "D2 U2 L2 R2 F2", wrong: 28, blank: 0, designs: 2, variants: ["U2 L2 R2 B2 F2"], figures: [113,113,341,113,113,341] },
-  { look: "BBBBUFFFFLRLURDLRLUUULFRDDDFFFFDBBBBRLRULDRLRUUURBLDDD", order: 4, moves: 6, alg: "D U L R B F", wrong: 44, blank: 0, designs: 1, variants: ["D' U' L' R' B' F'"], figures: [16,56,16,16,56,16] },
-  { look: "BBBBUFFFFRRRDRURRRDDDRFLUUUFFFFDBBBBLLLDLULLLDDDLBRUUU", order: 4, moves: 6, alg: "D U L R B' F'", wrong: 36, blank: 0, designs: 2, variants: ["D U L' R' B' F'","D' U' L R B F","D' U' L' R' B F"], figures: [16,381,16,16,381,16] },
-  { look: "BBBDUDFFFDBULRLDFULRLDFURLRFFFUDUBBBDFURLRDBURLRDBULRL", order: 4, moves: 6, alg: "D U L2 R2 B F", wrong: 48, blank: 0, designs: 1, variants: ["D' U' L2 R2 B' F'"], figures: [16,16,16,16,16,16] },
-  { look: "BBBUUUFFFDBULRLDFULLLDFURRRFFFDDDBBBDFURLRDBURRRDBULLL", order: 4, moves: 6, alg: "D U L R B2 F2", wrong: 44, blank: 0, designs: 2, variants: ["D' U' L' R' B2 F2","D2 U2 L R B F","D2 U2 L' R' B' F'"], figures: [16,56,16,16,56,16] },
-  { look: "BDBBUBBDBRRRRRRRRRUBUUFUUBUFUFFDFFUFLLLLLLLLLDFDDBDDFD", order: 4, moves: 6, alg: "D2 U2 L R' B2 F2", wrong: 32, blank: 2, designs: 1, variants: [], figures: [16,511,16,16,511,16] },
+  { look: "BDBBUBBDBRRRRRRRRRUBUUFUUBUFUFFDFFUFLLLLLLLLLDFDDBDDFD", order: 4, moves: 6, alg: "L2 R2 D U' B2 F2", wrong: 32, blank: 2, designs: 1, variants: [], figures: [511,16,16,511,16,16] },
   { look: "BDBDUUBDBRLRLRLRLRUBUBFFUBUFUFUDDFUFLRLRLRLRLDFDBBFDFD", order: 4, moves: 6, alg: "U L2 R2 B2 F2 D'", wrong: 36, blank: 0, designs: 1, variants: ["U' L2 R2 B2 F2 D"], figures: [341,18,18,341,18,18] },
   { look: "BDBFUFBDBRLRLRLRLRUBUDFDUBUFUFBDBFUFLRLRLRLRLDFDUBUDFD", order: 4, moves: 6, alg: "D U' L2 R2 B2 F2", wrong: 40, blank: 0, designs: 1, variants: [], figures: [341,16,16,341,16,16] },
   { look: "BDDDUBBDDRLRLRLRLRUBBBFUUBBFUUUDFFUULRLRLRLRLFFDDBFFFD", order: 4, moves: 6, alg: "U L2 R2 B2 F2 U2", wrong: 40, blank: 0, designs: 2, variants: ["U' L2 R2 B2 F2 U2","U2 L2 R2 B2 F2 U","U2 L2 R2 B2 F2 U'"], figures: [341,16,16,341,16,16] },
-  { look: "BDFFUBBDFLLLLRLLLLDFUDFUDFUFUBBDFFUBRRRRLRRRRDBUDBUDBU", order: 4, moves: 6, alg: "D U R2 B2 F2 L2", wrong: 44, blank: 0, designs: 2, variants: ["D' U' R2 B2 F2 L2","U2 L2 R2 D2 B F","U2 L2 R2 D2 B' F'"], figures: [16,16,56,16,16,56] },
-  { look: "BDFLURBDFLBRURDRFLUFULFRDFDFUBLDRFUBRFLULDLBRUBURBLDBD", order: 4, moves: 6, alg: "D U L R D U", wrong: 40, blank: 0, designs: 1, variants: ["D' U' L' R' D' U'"], figures: [56,16,84,56,16,84] },
-  { look: "BFBDUDFBFDBURRRDFULLLDFURRRFBFUDUBFBDFULLLDBURRRDBULLL", order: 4, moves: 6, alg: "D U L' R' D2 U2", wrong: 44, blank: 0, designs: 2, variants: ["D' U' L R D2 U2","D2 U2 L R D' U'","D2 U2 L' R' D U"], figures: [56,16,16,56,16,16] },
-  { look: "BLFBUFBRFDDDRRRUUULBLDFURBRFLBFDBFRBDDDLLLUUURFRDBULFL", order: 4, moves: 6, alg: "D U L' R' B2 F2", wrong: 44, blank: 0, designs: 2, variants: ["D' U' L R B2 F2","D2 U2 L R B' F'","D2 U2 L' R' B F"], figures: [16,56,16,16,56,16] },
-  { look: "BLFBUFBRFDUDLRLUDULFLDFURFRFLBFDBFRBDUDRLRUDURBRDBULBL", order: 4, moves: 6, alg: "D U L R D2 U2", wrong: 44, blank: 0, designs: 2, variants: ["D' U' L' R' D2 U2","D2 U2 L R D U","D2 U2 L' R' D' U'"], figures: [56,16,16,56,16,16] },
-  { look: "BLFFUBBRFDDDLRLUUULBLDFURBRFLBBDFFRBDDDRLRUUURFRDBULFL", order: 4, moves: 6, alg: "D U L2 R2 B' F'", wrong: 48, blank: 0, designs: 1, variants: ["D' U' L2 R2 B F"], figures: [16,16,16,16,16,16] },
+  { look: "BDFFUBBDFLLLLRLLLLDFUDFUDFUFUBBDFFUBRRRRLRRRRDBUDBUDBU", order: 4, moves: 6, alg: "D U R2 B2 F2 L2", wrong: 44, blank: 0, designs: 2, variants: ["D' U' R2 B2 F2 L2","R2 B2 F2 L2 D U","R2 B2 F2 L2 D' U'"], figures: [16,16,56,16,16,56] },
   { look: "BUBBUDBUBLRLLRLLRLDFDBFDDFDFDFFDUFDFRRRLLLRRRUBUUBFUBU", order: 4, moves: 6, alg: "U R2 D2 U2 R2 U'", wrong: 36, blank: 0, designs: 1, variants: ["U' R2 D2 U2 R2 U"], figures: [56,56,56,56,56,56] },
-  { look: "BUBFUFBUBRLRLRLRLRUFUDFDUFUFDFBDBFDFLRLRLRLRLDBDUBUDBD", order: 4, moves: 6, alg: "D2 U2 L R' D2 U2", wrong: 32, blank: 0, designs: 1, variants: [], figures: [56,341,56,56,341,56] },
-  { look: "BUBRULFUFLBRDRURFLDBURFLDBUFDFRDLBDBRFLDLULBRDFULBRDFU", order: 4, moves: 6, alg: "D U L' R' D U", wrong: 40, blank: 0, designs: 1, variants: ["D' U' L R D' U'"], figures: [56,16,84,56,16,84] },
-  { look: "BUFBUFBUFLLLRRRLLLDFUDFUDFUFDBFDBFDBRRRLLLRRRDBUDBUDBU", order: 4, moves: 6, alg: "D U R2 D2 U2 R2", wrong: 36, blank: 0, designs: 2, variants: ["D' U' R2 D2 U2 R2","U2 L2 R2 U2 L R","U2 L2 R2 U2 L' R'"], figures: [56,56,56,56,56,56] },
-  { look: "BUFBUFBUFRLRLRLRLRUFDDFUUFDFDBFDBFDBLRLRLRLRLUBDDBUUBD", order: 4, moves: 6, alg: "D2 U2 L R D2 U2", wrong: 32, blank: 0, designs: 1, variants: ["D2 U2 L' R' D2 U2"], figures: [56,341,56,56,341,56] },
-  { look: "BUFLURBUFRBLDRULFRDFDRFLUFUFDBLDRFDBLFRDLURBLDBDLBRUBU", order: 4, moves: 6, alg: "D U L R D' U'", wrong: 36, blank: 0, designs: 2, variants: ["D U L' R' D' U'","D' U' L R D U","D' U' L' R' D U"], figures: [56,56,84,56,56,84] },
+  { look: "BUBFUFBUBRLRLRLRLRUFUDFDUFUFDFBDBFDFLRLRLRLRLDBDUBUDBD", order: 4, moves: 6, alg: "L2 R2 D U' L2 R2", wrong: 32, blank: 0, designs: 1, variants: [], figures: [341,56,56,341,56,56] },
+  { look: "BUFBUFBUFLLLRRRLLLDFUDFUDFUFDBFDBFDBRRRLLLRRRDBUDBUDBU", order: 4, moves: 6, alg: "D U R2 D2 U2 R2", wrong: 36, blank: 0, designs: 2, variants: ["D' U' R2 D2 U2 R2","R2 D2 U2 R2 D U","R2 D2 U2 R2 D' U'"], figures: [56,56,56,56,56,56] },
+  { look: "BUFBUFBUFRLRLRLRLRUFDDFUUFDFDBFDBFDBLRLRLRLRLUBDDBUUBD", order: 4, moves: 6, alg: "L2 R2 D U L2 R2", wrong: 32, blank: 0, designs: 1, variants: ["L2 R2 D' U' L2 R2"], figures: [341,56,56,341,56,56] },
   { look: "DDDDUDDDDLLLRRRLLLFBFBFBFBFUUUUDUUUURRRLLLRRRBFBFBFBFB", order: 4, moves: 6, alg: "U2 R2 B2 F2 L2 U2", wrong: 36, blank: 0, designs: 1, variants: [], figures: [16,341,56,16,341,56] },
   { look: "DDDDUDDDDLLLRRRLLLFBFFFFFBFUUUUDUUUURRRLLLRRRBFBBBBBFB", order: 4, moves: 6, alg: "U2 R2 B2 F2 R2 U2", wrong: 32, blank: 0, designs: 1, variants: [], figures: [381,56,16,381,56,16] },
   { look: "DDDDUDDDDLLLRRRLLLFFFBFBFFFUUUUDUUUURRRLLLRRRBBBFBFBBB", order: 4, moves: 6, alg: "D U' L2 R2 D U'", wrong: 32, blank: 0, designs: 1, variants: [], figures: [56,381,16,56,381,16] },
@@ -84,34 +90,25 @@ export const STATE_PATTERNS = Object.freeze([
   { look: "DDDUUUDDDLRLRRRLRLFFFFFFFFFUUUDDDUUURLRLLLRLRBBBBBBBBB", order: 4, moves: 6, alg: "U2 L2 R2 U2 L2 R2", wrong: 20, blank: 2, designs: 1, variants: [], figures: [511,56,186,511,56,186], name: "Plus/Minus" },
   { look: "DDDUUUDDDRFRRRRLLLBBBFFFFRFUDUUDUUDULBLLLLRRRFFFBBBBLB", order: 4, moves: 6, alg: "U R2 D2 U2 R2 D", wrong: 28, blank: 0, designs: 1, variants: ["U' R2 D2 U2 R2 D'"], figures: [56,61,61,56,61,61] },
   { look: "DDUFUFDDURLRLRLRLRBBFDFDBBFUUDBDBUUDLRLRLRLRLBFFUBUBFF", order: 4, moves: 6, alg: "U L2 R2 B2 F2 U", wrong: 32, blank: 0, designs: 1, variants: ["U' L2 R2 B2 F2 U'"], figures: [341,21,21,341,21,21] },
-  { look: "DRDUUUDLDBFFBRFBBFRULRFLRDLURUDDDULUFBBFLBFFBLURLBRLDR", order: 4, moves: 6, alg: "D U L' R' B F", wrong: 44, blank: 0, designs: 1, variants: ["D' U' L R B' F'"], figures: [16,56,16,16,56,16] },
-  { look: "FDBBUFFDBRRRLRLRRRDBUDFUDBUBUFFDBBUFLLLRLRLLLDFUDBUDFU", order: 4, moves: 6, alg: "D U R2 B2 F2 R2", wrong: 36, blank: 0, designs: 2, variants: ["D' U' R2 B2 F2 R2","U2 L2 R2 U2 B F","U2 L2 R2 U2 B' F'"], figures: [381,16,16,381,16,16] },
-  { look: "FDBBUFFDBRRRRRRRRRDBUDFUDBUBUFFDBBUFLLLLLLLLLDFUDBUDFU", order: 4, moves: 6, alg: "D2 U2 L R B2 F2", wrong: 32, blank: 2, designs: 1, variants: ["D2 U2 L' R' B2 F2"], figures: [16,511,16,16,511,16] },
+  { look: "FDBBUFFDBRRRLRLRRRDBUDFUDBUBUFFDBBUFLLLRLRLLLDFUDBUDFU", order: 4, moves: 6, alg: "D U R2 B2 F2 R2", wrong: 36, blank: 0, designs: 2, variants: ["D' U' R2 B2 F2 R2","R2 B2 F2 R2 D U","R2 B2 F2 R2 D' U'"], figures: [381,16,16,381,16,16] },
+  { look: "FDBBUFFDBRRRRRRRRRDBUDFUDBUBUFFDBBUFLLLLLLLLLDFUDBUDFU", order: 4, moves: 6, alg: "L2 R2 D U B2 F2", wrong: 32, blank: 2, designs: 1, variants: ["L2 R2 D' U' B2 F2"], figures: [511,16,16,511,16,16] },
   { look: "FDBBUUFDBRLRRRRRLRDBUFFDDBUBUFFDDBUFLLLRLRLLLDFUUBBDFU", order: 4, moves: 6, alg: "U R2 B2 F2 R2 D", wrong: 32, blank: 0, designs: 1, variants: ["U' R2 B2 F2 R2 D'"], figures: [381,18,18,381,18,18] },
-  { look: "FDBFUBFDBRRRRRRRRRDFUDFUDFUBUFBDFBUFLLLLLLLLLDBUDBUDBU", order: 4, moves: 6, alg: "U R2 D2 U2 L2 D", wrong: 28, blank: 2, designs: 1, variants: ["U2 L2 R2 D2 L' R'"], figures: [511,56,16,511,56,16] },
-  { look: "FDUDUBFDURLRLRLRLRDBFBFUDBFBUDUDFBUDLRLRLRLRLBFUDBFBFU", order: 4, moves: 6, alg: "D U2 L2 R2 B2 F2", wrong: 32, blank: 0, designs: 2, variants: ["D2 U' L2 R2 B2 F2","D2 U2 L2 R2 B F2","D2 U2 L2 R2 B2 F'"], figures: [341,21,21,341,21,21] },
+  { look: "FDBFUBFDBRRRRRRRRRDFUDFUDFUBUFBDFBUFLLLLLLLLLDBUDBUDBU", order: 4, moves: 6, alg: "U R2 D2 U2 L2 D", wrong: 28, blank: 2, designs: 1, variants: ["U' R2 D2 U2 L2 D'"], figures: [511,56,16,511,56,16] },
+  { look: "FDUDUBFDURLRLRLRLRDBFBFUDBFBUDUDFBUDLRLRLRLRLBFUDBFBFU", order: 4, moves: 6, alg: "D U2 L2 R2 B2 F2", wrong: 32, blank: 0, designs: 2, variants: ["D2 U' L2 R2 B2 F2","L2 R2 B2 F2 D U2","L2 R2 B2 F2 D2 U'"], figures: [341,21,21,341,21,21] },
   { look: "FDUUUFFDURLRLRLRLRDBFFFDDBFBUDDDBBUDLRLRLRLRLBFUUBBBFU", order: 4, moves: 6, alg: "U L2 R2 B2 F2 D2", wrong: 28, blank: 0, designs: 2, variants: ["U' L2 R2 B2 F2 D2","U2 L2 R2 B2 F2 D","U2 L2 R2 B2 F2 D'"], figures: [341,113,113,341,113,113] },
   { look: "UDUDUDUDURLRLRLRLRFBFFFFFBFDUDUDUDUDLRLRLRLRLBFBBBBBFB", order: 4, moves: 6, alg: "U2 L2 R2 U2 B2 F2", wrong: 20, blank: 0, designs: 1, variants: [], figures: [341,341,381,341,341,381] },
   { look: "UDUDUDUDURLRRRRRLRFFFBFBFFFDUDUDUDUDLRLLLLLRLBBBFBFBBB", order: 4, moves: 6, alg: "U2 R2 B2 F2 R2 D2", wrong: 16, blank: 0, designs: 1, variants: [], figures: [381,341,381,381,341,381] },
   { look: "UDUUUUUDURRRRRRRRRFFFFFFFFFDUDDDDDUDLLLLLLLLLBBBBBBBBB", order: 4, moves: 6, alg: "U2 R2 D2 U2 L2 D2", wrong: 4, blank: 4, designs: 1, variants: [], figures: [511,511,381,511,511,381] },
-  { look: "BBBDUDFFFDBURRRDFULRLDFURLRFFFUDUBBBDFULLLDBURLRDBULRL", order: 4, moves: 7, alg: "D U L R' D2 U2 R2", wrong: 44, blank: 0, designs: 2, variants: ["D' U' L R' D2 U2 L2","U2 L2 R2 D U' L R","U2 L2 R2 D' U L' R'"], figures: [56,16,16,56,16,16] },
-  { look: "BBBUUUFFFDBURRRDFULLLDFURRRFFFDDDBBBDFULLLDBURRRDBULLL", order: 4, moves: 7, alg: "D U R2 D2 U2 L R'", wrong: 40, blank: 0, designs: 2, variants: ["D U' L2 R2 D2 L' R'","D U' L2 R2 U2 L R","D' U' R2 D2 U2 L' R"], figures: [56,56,16,56,56,16] },
-  { look: "BBBUUUFFFDFULRLDBULLLDFURRRFFFDDDBBBDBURLRDFURRRDBULLL", order: 4, moves: 7, alg: "D U L R' B2 F2 L2", wrong: 44, blank: 0, designs: 2, variants: ["D' U' L R' B2 F2 R2","U2 L2 R2 D U' B' F'","U2 L2 R2 D' U B F"], figures: [16,56,16,16,56,16] },
   { look: "BDBBUBBDBRLRLRLRLRUBUUFUUBUFUFFDFFUFLRLRLRLRLDFDDBDDFD", order: 4, moves: 7, alg: "U2 L2 R2 B2 F2 D U", wrong: 40, blank: 0, designs: 1, variants: [], figures: [341,16,16,341,16,16] },
   { look: "BDFDUBBDFRRRLRLRRRUBDDFBUBDFUBUDFFUBLRLLLLLRLUFDFBUUFD", order: 4, moves: 7, alg: "U R2 B2 F2 R2 D' U2", wrong: 36, blank: 0, designs: 1, variants: ["U' R2 B2 F2 R2 D U2"], figures: [381,16,16,381,16,16] },
   { look: "BDFDUUBDFRLRLRLRLRUBDFFBUBDFUBUDDFUBLRLRLRLRLUFDFBBUFD", order: 4, moves: 7, alg: "U L2 R2 D2 B2 F2 D'", wrong: 36, blank: 0, designs: 1, variants: ["U L2 R2 U2 B2 F2 D'"], figures: [341,18,18,341,18,18] },
   { look: "BDUBUUBDURRRRRRRRRUBFUFFUBFFUDFDDFUDLLLLLLLLLBFDBBDBFD", order: 4, moves: 7, alg: "U L2 R2 D U' B2 F2", wrong: 20, blank: 2, designs: 1, variants: ["U' L2 R2 D' U B2 F2"], figures: [511,23,23,511,23,23] },
-  { look: "BFBDUDFBFDBULRLDFULLLDFURRRFBFUDUBFBDFURLRDBURRRDBULLL", order: 4, moves: 7, alg: "D U R2 B2 F2 L' R", wrong: 48, blank: 0, designs: 2, variants: ["D U' L2 R2 D2 B F","D U' L2 R2 U2 B' F'","D' U' R2 B2 F2 L R'"], figures: [16,16,16,16,16,16] },
-  { look: "BLFBUFBRFDDDRRRUUULBLUFDRBRFLBFDBFRBDDDLLLUUURFRUBDLFL", order: 4, moves: 7, alg: "D U L R' B2 F2 R2", wrong: 44, blank: 0, designs: 2, variants: ["D' U' L R' B2 F2 L2","U2 L2 R2 D U' B F","U2 L2 R2 D' U B' F'"], figures: [16,56,16,16,56,16] },
-  { look: "BLFBUFBRFDDDRRRUUULFLDFURFRFLBFDBFRBDDDLLLUUURBRDBULBL", order: 4, moves: 7, alg: "D U R2 D2 U2 L' R", wrong: 40, blank: 0, designs: 2, variants: ["D U' L2 R2 D2 L R","D U' L2 R2 U2 L' R'","D' U' R2 D2 U2 L R'"], figures: [56,56,16,56,56,16] },
-  { look: "BLFBUFBRFDUDLRLUDULBLDFURBRFLBFDBFRBDUDRLRUDURFRDBULFL", order: 4, moves: 7, alg: "D U R2 B2 F2 L R'", wrong: 48, blank: 0, designs: 2, variants: ["D U' L2 R2 D2 B' F'","D U' L2 R2 U2 B F","D' U' R2 B2 F2 L' R"], figures: [16,16,16,16,16,16] },
-  { look: "BLFFUBBRFDDDLRLUUULFLDFURFRFLBBDFFRBDDDRLRUUURBRDBULBL", order: 4, moves: 7, alg: "D U L R' D2 U2 L2", wrong: 44, blank: 0, designs: 2, variants: ["D' U' L R' D2 U2 R2","U2 L2 R2 D U' L' R'","U2 L2 R2 D' U L R"], figures: [56,16,16,56,16,16] },
   { look: "BUBUUBBUBLLLRRRLLLDFDDFFDFDFDFDDFFDFRLRRLRRLRUBUBBUUBU", order: 4, moves: 7, alg: "U R2 D2 U2 R2 D2 U", wrong: 32, blank: 0, designs: 1, variants: ["U' R2 D2 U2 R2 D2 U'"], figures: [56,58,58,56,58,58] },
-  { look: "BUDFUUBUDRLRLRLRLRUFBDFFUFBFDUBDDFDULRLRLRLRLFBDBBUFBD", order: 4, moves: 7, alg: "D2 U2 L R' D2 U2 L'", wrong: 28, blank: 0, designs: 2, variants: ["D2 U2 L R' D2 U2 R","U L2 R2 D U' L2 R2","U' L2 R2 D' U L2 R2"], figures: [58,341,58,58,341,58] },
+  { look: "BUDFUUBUDRLRLRLRLRUFBDFFUFBFDUBDDFDULRLRLRLRLFBDBBUFBD", order: 4, moves: 7, alg: "L2 R2 D U' L2 R2 D'", wrong: 28, blank: 0, designs: 2, variants: ["L2 R2 D U' L2 R2 U","U L2 R2 D U' L2 R2","U' L2 R2 D' U L2 R2"], figures: [341,58,58,341,58,58] },
   { look: "BUFBUFBUFRRRRRRRRRUFDDFUUFDFDBFDBFDBLLLLLLLLLUBDDBUUBD", order: 4, moves: 7, alg: "D U' L2 R2 D2 L2 R2", wrong: 24, blank: 2, designs: 1, variants: ["D U' L2 R2 U2 L2 R2"], figures: [511,56,56,511,56,56] },
-  { look: "BUUFUDBUURLRLRLRLRUFFDFBUFFFDDBDUFDDLRLRLRLRLBBDFBUBBD", order: 4, moves: 7, alg: "D2 U2 L R' D2 U2 L", wrong: 24, blank: 0, designs: 2, variants: ["D2 U2 L R' D2 U2 R'","U L2 R2 D' U L2 R2","U' L2 R2 D U' L2 R2"], figures: [61,341,61,61,341,61] },
+  { look: "BUUFUDBUURLRLRLRLRUFFDFBUFFFDDBDUFDDLRLRLRLRLBBDFBUBBD", order: 4, moves: 7, alg: "L2 R2 D U' L2 R2 D", wrong: 24, blank: 0, designs: 2, variants: ["L2 R2 D U' L2 R2 U'","U L2 R2 D' U L2 R2","U' L2 R2 D U' L2 R2"], figures: [341,61,61,341,61,61] },
   { look: "DDBDUBDDBRRRRRRRRRBBUBFUBBUUUFUDFUUFLLLLLLLLLDFFDBFDFF", order: 4, moves: 7, alg: "U L2 R2 D' U B2 F2", wrong: 32, blank: 2, designs: 1, variants: ["U' L2 R2 D U' B2 F2"], figures: [511,16,16,511,16,16] },
-  { look: "DDBUUFDDBRRRRRRRRRBBUFFDBBUUUFDDBUUFLLLLLLLLLDFFUBBDFF", order: 4, moves: 7, alg: "U R2 F2 L2 R2 F2 L2", wrong: 28, blank: 2, designs: 1, variants: ["U2 R2 D2 U2 R2 D2 F'"], figures: [511,18,18,511,18,18] },
+  { look: "DDBUUFDDBRRRRRRRRRBBUFFDBBUUUFDDBUUFLLLLLLLLLDFFUBBDFF", order: 4, moves: 7, alg: "U R2 F2 L2 R2 F2 L2", wrong: 28, blank: 2, designs: 1, variants: ["U' R2 F2 L2 R2 F2 L2"], figures: [511,18,18,511,18,18] },
   { look: "DDDBUBDDDRLRLRLRLRBBBDFDBBBUUUFDFUUULRLRLRLRLFFFUBUFFF", order: 4, moves: 7, alg: "U L2 R2 D2 B2 F2 U", wrong: 40, blank: 0, designs: 1, variants: [], figures: [341,16,16,341,16,16] },
   { look: "DDDDUDDDDLLLRRRRRRFFFFFFBBBUUUUDUUUURRRLLLLLLBBBBBBFFF", order: 4, moves: 7, alg: "U2 L R B2 F2 L' R'", wrong: 28, blank: 0, designs: 1, variants: [], figures: [16,63,63,16,63,63] },
   { look: "DDDUUUDDDLBLRRRRRRFFFFFFBLBUDUUDUUDURFRLLLLLLBBBBBBFRF", order: 4, moves: 7, alg: "U R2 D2 U2 R2 D' U2", wrong: 24, blank: 0, designs: 1, variants: ["U' R2 D2 U2 R2 D U2"], figures: [56,63,63,56,63,63] },

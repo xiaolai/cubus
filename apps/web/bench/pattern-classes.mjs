@@ -34,7 +34,8 @@ function inverseState(s) {
 }
 
 // EXPAND THE FAMILIES BACK OUT. The ledger now stores one row per family with its variants beside
-// it, so reading the rows alone counts 95 families as 95 rotation classes and reports 95/95/95. The
+// it, so reading the rows alone would count each family as one rotation class and report the same number
+// three times. The
 // census this file exists to produce is over the rotation classes, which are the row plus its
 // variants. Found by audit, after the ledger's dedup changed underneath it.
 const ALGS = STATE_PATTERNS.flatMap((r) => [r.alg, ...r.variants]);
@@ -54,8 +55,8 @@ const rows = ALGS.map((alg) => {
   // more ran it three times. Caught by the count coming out zero when `U2` is plainly an involution.
   const twice = applyAlg(SOLVED, `${r.alg} ${r.alg}`);
   const clears = ['cp', 'co', 'ep', 'eo'].every((k) => twice[k].every((v, i) => v === SOLVED[k][i]));
-  // COMPUTED, not looked up. Only the 95 representatives carry an `order` field in the fixture, so
-  // looking it up left every expanded variant without one and the per-order table read 1/13/81 —
+  // COMPUTED, not looked up. Only the family representatives carry an `order` field in the fixture, so
+  // looking it up left every expanded variant without one and the per-order table read the family counts —
   // three identical columns, which is what a census can never be. A symmetry order is a property of
   // the picture and costs 24 comparisons, so there is no reason to be fetching it.
   const head = STATE_PATTERNS.find((x) => x.alg === r.alg);
@@ -100,7 +101,7 @@ for (const order of [24, 8, 4]) {
   console.log(`${pad(order, 8)} ${num(of.length, 6)} ${num(d, 9)} ${num(fam, 10)}`);
 }
 // The breakdown must add up to the totals above it. It did not, silently, for as long as the expanded
-// variants carried no symmetry order: every column read the same 95 representatives and the table
+// variants carried no symmetry order: every column read the same representatives and the table
 // printed three identical columns. A census whose parts do not sum to its whole is not a census.
 const totals = { rows: rows.length, designs: byDesign.size, families: byFamily.size };
 for (const k of ['rows', 'designs', 'families']) {

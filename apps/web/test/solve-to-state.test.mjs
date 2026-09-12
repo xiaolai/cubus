@@ -296,6 +296,12 @@ test('the ORACLES are exercised, not just the answers they once produced', () =>
   // numbers, so both oracles could be replaced with `return 0` and the suite stayed green. The frozen
   // fixture is only as good as the oracles that made it, and nothing was checking them.
   //
+  // WHAT THIS CASE STILL CANNOT DO, and where it is done instead. Oracle A runs out at five moves, so
+  // this case grades oracle B's claimed range only as far as five. `test/pattern-ledger.test.mjs`
+  // covers six and seven: the pattern ledger's distances come from an exhaustive enumeration of every
+  // canonical maneuver to depth 7, which shares no search, no table and no projection with either
+  // oracle, and 60 of its 73 rows sit past oracle A's ceiling.
+  //
   // Oracle A is full-cube breadth-first search asked of the app's own predicates; oracle B is meet in
   // the middle over a radius-5 goal ball. Where A reaches, the two must agree, and both must agree
   // with the frozen answer. Three things that share no search, on the same cubes.
