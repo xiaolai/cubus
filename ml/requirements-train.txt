@@ -9,7 +9,7 @@
 #
 #   python3.11 -m venv ml/venv && ml/venv/bin/pip install -r ml/requirements-train.txt
 ultralytics==8.4.126
-torch==2.13.0
+torch==2.14.0
 onnx==1.22.0
 onnxruntime==1.29.0
 onnx2tf==1.28.8
