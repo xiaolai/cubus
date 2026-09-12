@@ -83,6 +83,24 @@ BRAND_RED_ORANGE: list[tuple[str, str]] = [
 # scheme (30.8 deg), so it constrains only draws that would have been unphysical anyway.
 MIN_RED_ORANGE_SEPARATION = 18.0 / 360.0
 
+# AND THE SAME FOR YELLOW/ORANGE, because fixing the first pair opened this one.
+#
+# Orange sits between red and yellow on the hue circle, and the red/orange floor above separates
+# that pair about their MIDPOINT -- which moves orange up, toward yellow. Measured over 4000
+# palettes, yellow/orange then became the CLOSEST pair in the whole palette: mean 26.9 deg and a
+# minimum of 2.7, against red/orange's floored 18.0. A 2.7 deg gap is two labels on one colour,
+# which is the exact defect this module exists to prevent, recreated one pair over.
+#
+# It showed up as a real error before it was found here: on 60 rendered fixtures that neither the
+# shipped model nor the candidate trained on, the candidate's dominant mistake was orange read as
+# YELLOW, six times, with red/orange no longer in the top confusions at all.
+#
+# The floor is set from the published schemes, as the red/orange one was: their yellow/orange gaps
+# are 29.4, 25.2 and 34.3 deg, so 15 sits comfortably under the narrowest and constrains only
+# draws that were already unphysical. YELLOW is what moves -- pushing orange back down would
+# undo the red/orange floor and simply return the problem to the other pair.
+MIN_YELLOW_ORANGE_SEPARATION = 15.0 / 360.0
+
 
 def _signed_hue(h: float) -> float:
     """Hue on (-0.5, 0.5] so red (just below 1.0) compares numerically below orange."""
@@ -149,6 +167,13 @@ def cube_palette(
         mid = (oh + rh) / 2.0
         palette[RED] = (mid - MIN_RED_ORANGE_SEPARATION / 2.0, rs, rv)
         palette[ORANGE] = (mid + MIN_RED_ORANGE_SEPARATION / 2.0, os_, ov)
+
+    # Applied AFTER the pair above, and it moves yellow only, so it cannot walk orange back
+    # into red. Ordering is the whole content of this block.
+    oh = palette[ORANGE][0]
+    yh, ys, yv = palette[YELLOW]
+    if yh - oh < MIN_YELLOW_ORANGE_SEPARATION:
+        palette[YELLOW] = (oh + MIN_YELLOW_ORANGE_SEPARATION, ys, yv)
 
     if sat_scope == "cube":
         # Saturation is a PIGMENT property, so it belongs here and not on the tile. See
