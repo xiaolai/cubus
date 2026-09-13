@@ -30,6 +30,7 @@ import {
   TUMBLED,
   WHITE_UP_STAGES,
   fromMethodFrame,
+  holdTable,
   holdForStage,
   holdForTarget,
   holdSentence,
@@ -235,17 +236,54 @@ test('the lesson\'s cross and first-layer sentences describe a white-up hold, an
   const WHITE_UP_SENTENCES = { cross: ['cross.lift', 'cross.insert', 'cross.whole'], 'first-layer': ['firstLayer.lift', 'firstLayer.insert'] };
   assert.deepEqual(Object.keys(WHITE_UP_SENTENCES), [...WHITE_UP_STAGES],
     'every white-up stage has its sentences checked for the white-up hold, and no other stage does');
-  const say = (why, kind = 'goal') => whyText({ kind, why });
-  assert.match(say({ key: 'cross.lift', edge: 0 }), /down to the bottom/);
-  assert.match(say({ key: 'cross.insert', edge: 0 }), /under its home/);
-  assert.match(say({ key: 'cross.whole', moves: 5 }), /cross on top/);
-  assert.match(say({ key: 'cross.whole', moves: 1 }), /cross on top/);
+  const say = (why, stage, kind = 'goal') => whyText({ kind, stage, why });
+  assert.match(say({ key: 'cross.lift', edge: 0 }, 'cross'), /down to the bottom/);
+  assert.match(say({ key: 'cross.insert', edge: 0 }, 'cross'), /under its home/);
+  assert.match(say({ key: 'cross.whole', moves: 5 }, 'cross'), /cross on top/);
+  assert.match(say({ key: 'cross.whole', moves: 1 }, 'cross'), /cross on top/);
   // The first layer is held the same way, so its corners come up from the bottom too.
   assert.deepEqual([...holdForStage('first-layer')], [...SCAN_HOLD]);
-  assert.match(say({ key: 'firstLayer.lift', corner: 0 }), /down to the bottom/);
-  assert.match(say({ key: 'firstLayer.insert', corner: 0 }), /up into its slot above/);
+  assert.match(say({ key: 'firstLayer.lift', corner: 0 }, 'first-layer'), /down to the bottom/);
+  assert.match(say({ key: 'firstLayer.insert', corner: 0 }, 'first-layer'), /up into its slot above/);
   // And the first stage after the tumble still reads the way it always did, because the tumbled
   // hold IS the frame the method describes itself in.
   assert.deepEqual([...holdForStage('middle-layer')], [...TUMBLED]);
-  assert.match(say({ key: 'middleLayer.insert', edge: 0 }), /down into the middle layer/);
+  assert.match(say({ key: 'middleLayer.insert', edge: 0 }, 'middle-layer'), /down into the middle layer/);
+});
+
+test('a sentence that says where a piece goes follows the STAGE\'s hold, never the reason key', () => {
+  // `firstLayer.*` is emitted by the layer-by-layer first layer AND by the joined-pairs rung's
+  // fallback (`pairs.js`, stage `f2l`), which is held turned over. Keyed by reason alone, that
+  // fallback told a child to take a corner "down" that was going up — found by the Codex audit of
+  // 2026-09-13, and reached here through REAL solver steps, because a hand-built step is exactly the
+  // thing that could leave the fallback out. Seed 1 reaches it on every rung above the bottom.
+  const facelets = apply(SOLVED, scramble(1, 25));
+  const seen = { up: 0, over: 0, f2l: 0 };
+  for (const rungs of allRungCombinations()) {
+    const { steps } = solveByMethod(cubie(toMethodFrame(facelets)), methodFor(rungs));
+    for (const step of steps.filter((s) => /^(cross|firstLayer)\./.test(s.why.key))) {
+      const text = whyText(step);
+      const where = `rungs ${JSON.stringify(rungs)}, stage ${step.stage}, ${step.why.key}: "${text}"`;
+      if (WHITE_UP_STAGES.includes(step.stage)) {
+        seen.up += 1;
+        assert.match(text, /down to the bottom|under its home|cross on top|up into its slot above/, where);
+      } else {
+        seen.over += 1;
+        if (step.stage === 'f2l') seen.f2l += 1;
+        assert.match(text, /up to the top|over its home|cross on the bottom|slot underneath/, where);
+      }
+    }
+  }
+  assert.ok(seen.up > 0 && seen.f2l > 0, `both holds must be reached by real steps, the F2L fallback included: ${JSON.stringify(seen)}`);
+  // And a step that cannot say which hold it is in is refused, rather than given one of two opposite
+  // instructions by default.
+  assert.throws(() => whyText({ kind: 'goal', why: { key: 'firstLayer.lift', corner: 0 } }), /has no stage to say which/);
+});
+
+test('a hold table refuses a name it does not hold, in either list', () => {
+  assert.throws(() => holdTable(['first-layer', 'solved']), /does not name the white-up stage "cross"/);
+  assert.throws(() => holdTable(['cross', 'first-layer', 'solved'], ['sloved']),
+    /"sloved" is listed to keep the scan's hold, but it is not a name this table holds/,
+    'a misspelled exception must throw, not be held turned over');
+  assert.equal(holdTable(['cross', 'first-layer', 'solved'], ['solved']).solved.join(' '), 'U F');
 });

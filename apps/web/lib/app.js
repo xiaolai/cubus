@@ -58,9 +58,12 @@ import { targetPicture } from './stage-picture.js';
 // How the cube is held while it is solved, and the renamings between the scan frame, the method
 // frame and the hold (ADR 0003). Every crossing between those frames in this file goes through it.
 import {
-  METHOD_FRAME, METHOD_TO_SCAN, SCAN_HOLD, fromMethodFrame, holdForStage, holdForTarget, holdSentence,
-  holdSpec, renameAlg, renameSelectors, sameHold, showMove, toMethodFrame,
+  METHOD_FRAME, METHOD_TO_SCAN, SCAN_HOLD, fromMethodFrame, holdSentence, renameAlg, renameSelectors,
+  showMove, toMethodFrame,
 } from './solving-hold.js';
+// Which hold the walk on screen is in, and turning the renderer to it — explicit inputs, tested on
+// their own, rather than closure state inside the cube screen's mount.
+import { createHoldCube, holdAtMove, holdChangeAt, walkHoldFor } from './hold-presenter.js';
 import { CHIP, STAGE_COPY, chipFor, chipLabel, routeSentence } from './stage-report.js';
 import { routesToTarget } from './stage-route.js';
 // The BUDGET only. `stage-distance.js` builds nothing at import — its tables are lazy — but this
@@ -613,19 +616,33 @@ function lessonFor(c = state.cube) {
     return null;
   }
   // …and the walk lives in the scan frame, like every other walk: the renderer, `follow` and the
-  // smart cube all compare against scan-frame states. The steps keep the solver's own record — their
-  // `why` names pieces in the method frame, which `pointAtStep` renames on the way to the renderer.
+  // smart cube all compare against scan-frame states. SO DOES EVERY STEP, converted once, here: its
+  // moves renamed, and the pieces it points at worked out and renamed into `focus` and `highlight`,
+  // so nothing downstream has a frame to remember. What stays the solver's is `why`, whose key and
+  // wording are frame-free and whose piece indices have already become those two cues.
   const lessonAlg = renameAlg(result.alg, METHOD_TO_SCAN);
   const moves = movesOf(lessonAlg);
+  const steps = Object.freeze(result.steps.map((step) => {
+    const cues = lessonCues(step);
+    return Object.freeze({
+      ...step,
+      alg: renameAlg(step.alg, METHOD_TO_SCAN),
+      // The solver names pieces in the METHOD frame and the renderer draws the scan frame, so the
+      // white-blue edge a step calls DF is UB on screen. Unrenamed, the pulse lands on the
+      // yellow-green edge — a real piece, pointed at with total confidence.
+      focus: renameSelectors(cues.focus, METHOD_TO_SCAN),
+      highlight: renameSelectors(cues.highlight, METHOD_TO_SCAN),
+    });
+  }));
   c.lesson = {
     facelets: c.facelets,
     method: method.id,
     rungs: result.rungs,
     summary: rungSummary(method),
-    steps: result.steps,
-    sections: lessonSections(result.steps),
+    steps,
+    sections: lessonSections(steps),
     // Which step each move belongs to, so the walk can point at what the move you are on is for.
-    moveStep: moveStepIndex(result.steps),
+    moveStep: moveStepIndex(steps),
     alg: lessonAlg,
     moves,
     stepFacelets: stepStates(c.facelets, moves),
@@ -4404,9 +4421,6 @@ const cubeScreen = (screenMode) => {
       let setup, alg, moves = [], steps = [], target = null, total = 0;
       /** How the walk on screen is held, where a lesson does not decide it per move (ADR 0003). */
       let walkHold = SCAN_HOLD;
-      /** The hold last handed to the renderer. Null until the first walk, so the first one always
-       *  lands — a parked cube's `data-hold` belongs to the screen that parked it. */
-      let heldSpec = null;
       /**
        * The repair this walk came from, or null when the walk is a whole-cube solution.
        *
@@ -4508,52 +4522,13 @@ const cubeScreen = (screenMode) => {
         };
       }
 
-      /**
-       * How the move at index `k` is held (ADR 0003). A lesson decides per move — its cross and
-       * first layer white up, everything after them tumbled — and every other walk is held one way
-       * throughout.
-       *
-       * `k` may equal `total`: at the end of a walk there is no next move, and the last step's hold
-       * stays, the same rule `stepAtMove` applies to the cue.
-       */
-      function holdAt(k) {
-        if (!lesson) return walkHold;
-        const step = lesson.steps[stepAtMove(lesson.moveStep, k)];
-        return step ? holdForStage(step.stage) : walkHold;
-      }
+      /** How move `k` of the walk on screen is held (ADR 0003) — a lesson's per move, any other
+       *  walk's throughout. The rule and its tests are `lib/hold-presenter.js`. */
+      const holdAt = (k) => holdAtMove(lesson, walkHold, k);
 
-      /**
-       * Turn the cube to how it is held — the renderer turning the OBJECT, never the camera.
-       *
-       * Animated, because a cube that jumps upside down between two frames reads as a different
-       * cube, and the turn is what tells a child to turn theirs. `data-hold` records what was asked
-       * for: the renderer's pose is private, and a browser test and a person debugging both need
-       * to read it.
-       */
-      function holdCube(h) {
-        const spec = holdSpec(h);
-        if (spec === heldSpec) return;
-        heldSpec = spec;
-        cube.dataset.hold = spec;
-        if (typeof cube.turnTo === 'function') { void cube.turnTo(h[0], h[1]); return; }
-        // NOT A RENDERER YET — the vendored bundle has not upgraded the tag. The pose waits for it,
-        // and only the hold still current when it arrives is applied, on a screen still standing.
-        // This used to write the `orientation` attribute, which an upgrade does read, but which then
-        // stayed behind naming a pose the renderer had since turned away from.
-        customElements.whenDefined('cubus-cube').then(() => {
-          if (!stale() && heldSpec === spec && typeof cube.turnTo === 'function') void cube.turnTo(h[0], h[1]);
-        });
-      }
-
-      /**
-       * The hold of the move about to happen at head `i`, and the sentence that says so when that
-       * hold is a new one. The sentence belongs only to the step that BEGINS a hold: the drawing
-       * turns, but a child's own cube does not, and every chip from there on is named for it.
-       */
-      function holdChangeAt(i) {
-        const held = holdAt(i);
-        return { held, say: i > 0 && !sameHold(held, holdAt(i - 1)) ? holdSentence(held) : '' };
-      }
+      /** Turns this screen's cube to a hold — the object, never the camera — waiting for the renderer
+       *  when the tag is not one yet, and turning nothing once this screen has been replaced. */
+      const holdCube = createHoldCube({ cube, isStale: stale });
 
       /**
        * Point the cube at what the step under the transport head is about — plan §5.2.
@@ -4585,18 +4560,13 @@ const cubeScreen = (screenMode) => {
           return;
         }
         const step = lesson.steps[stepAtMove(lesson.moveStep, i)];
-        const cues = lessonCues(step);
-        // The solver names pieces in the METHOD frame and the renderer draws the scan frame, so the
-        // white-blue edge the step calls DF is UB on screen. Unrenamed, the pulse lands on the
-        // yellow-green edge — a real piece, pointed at with total confidence.
-        const focus = renameSelectors(cues.focus, METHOD_TO_SCAN);
-        const highlight = renameSelectors(cues.highlight, METHOD_TO_SCAN);
-        // Whole-or-nothing at the renderer: an empty spec removes the channel rather than
-        // setting it to a selector that names nothing.
-        if (focus) cube.setAttribute('focus', focus); else cube.removeAttribute('focus');
-        if (highlight) cube.setAttribute('highlight', highlight); else cube.removeAttribute('highlight');
+        // The step's cues were worked out and renamed into the scan frame when the lesson was built
+        // (`lessonFor`). Whole-or-nothing at the renderer: an empty spec removes the channel rather
+        // than setting it to a selector that names nothing.
+        if (step?.focus) cube.setAttribute('focus', step.focus); else cube.removeAttribute('focus');
+        if (step?.highlight) cube.setAttribute('highlight', step.highlight); else cube.removeAttribute('highlight');
         // The cube turns over as the head crosses a hold, in either direction — a scrub goes back.
-        const { held, say } = holdChangeAt(i);
+        const { held, say } = holdChangeAt(lesson, walkHold, i);
         holdCube(held);
         if (!whyLine) return;
         const reason = whyText(step);
@@ -5563,10 +5533,11 @@ const cubeScreen = (screenMode) => {
         setup = gotSetup; alg = gotAlg; moves = gotMoves; steps = gotSteps; target = gotTarget;
         lesson = gotLesson;
         route = gotRoute;
-        // HOW THIS WALK IS HELD (ADR 0003). A repair that answered is held the way its target is
-        // built; anything else on this screen — the whole cube, a scramble, a repair that fell back
-        // to the whole-cube walk — keeps the scan's hold. A lesson overrides it per move (`holdAt`).
-        walkHold = stageAnswered ? holdForTarget(stageTarget.id) : SCAN_HOLD;
+        // HOW THIS WALK IS HELD (ADR 0003), by the one tested rule. A route that answered is held the
+        // way its target is built — including one that overshot to the whole cube, since the child is
+        // holding the cube for the stage they aimed at. A route that found nothing, no target, and a
+        // scramble keep the scan's hold. A lesson overrides it per move (`holdAt`).
+        walkHold = walkHoldFor(gotRoute, stageTarget);
         total = moves.length;
         if (scrambling) paintNet(target);
         // The Scramble side genuinely starts from solved, so an empty setup alg is its normal
