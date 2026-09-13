@@ -148,6 +148,10 @@ test('the target selector replaces the WALK and does not rebuild the screen', ()
 test('the target is a fact about this cube, not a setting', () => {
   // §6: it does not go in Settings, for the same reason the ladder's rungs are not a preference.
   assert.match(code, /stageTarget: 'solved',/, 'the default is the whole cube, so nothing changes for anyone else');
+  // It outlives the screen it was chosen on, and the Scramble screen shares the mount — so the one
+  // function every reader asks answers "none" there, or a Home target draws its aim over a scramble.
+  assert.match(code, /function stageTargetNow\(\) \{\s*\n\s*if \(scrambling\) return null;/,
+    'a target chosen on Home must not reach the Scramble screen');
   assert.doesNotMatch(code, /settings\.stageTarget/, 'a target in Settings would outlive the cube it is about');
   assert.doesNotMatch(code, /save\('[^']*',\s*\{[^}]*stageTarget/, 'and it is never persisted');
 });
@@ -172,11 +176,41 @@ test('the route says what KIND of answer it is, from the object it came from', (
 test('the target is drawn, with the free pieces ghosted', () => {
   // §6, and it is the part that makes a shortest path acceptable rather than alarming.
   assert.match(code, /id="stageAim"[^>]*hidden/, 'the aim is hidden while the target is the whole cube');
-  assert.match(code, /paintAim\(targetPicture\(aimingAt\)\)/, 'and painted from the target picture');
+  // The picture is drawn in the METHOD frame (white cross on D); the net beside it is the scan
+  // frame's, so it is turned before it is painted or the white cross would be drawn on the bottom.
+  assert.match(code, /paintAim\(fromMethodFrame\(targetPicture\(aimingAt\)\)\)/, 'and painted from the target picture');
   assert.match(code, /aim\.hidden = !aimingAt;/, 'a whole-cube target draws no aim — it would say nothing');
+  // ONE PICTURE (2026-09-13): the target takes the Initial State net's place, because the card that
+  // held both was drawn over the sheet on the small windows — and the next walk gets the net back.
+  assert.match(code, /net\.hidden = Boolean\(aimingAt\);/, 'while a target is shown the Initial State net is not');
+  assert.match(code, /heading\.textContent = t\('Aiming at the %1', aimingAt\.name\)/, 'and the heading says what the picture is');
+  assert.match(code, /if \(oldNet\) oldNet\.hidden = false;/, 'the next walk puts the Initial State back');
   // The renderer has to be able to draw "not fixed" at all.
   assert.match(code, /facelets\[i\] === '\?' \? 'free' : facelets\[i\]/, 'the net must map the unknown mark');
   assert.match(sheet, /\.net \.sticker\.free \{/, 'and the sheet must draw it as an empty well');
+});
+
+test('the engine is asked about the WHITE cross, and every answer comes back in the scan frame', () => {
+  // ADR 0003. The engine and the method solver both put the cross on D, which in the scan frame
+  // is yellow — so each crossing between the frames is a place the app can quietly ask about the
+  // wrong cross, get a correct answer to that question, and show it.
+  assert.match(code, /client\.stageRoute\(\{ \.\.\.payload, facelets: toMethodFrame\(payload\.facelets\) \}\)/,
+    'every question to the engine is turned at its one door');
+  const race = code.match(/async function lastRoute\(target, facelets, signal, wholeDone\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  assert.ok(race, 'the race must take the cube as held and turn it itself');
+  assert.match(race, /const cubie = fromCube\(Cube\.fromString\(toMethodFrame\(facelets\)\)\);/,
+    'the replay judges every source against the white cross');
+  assert.match(race, /renameAlg\(state\.cube\.solution, METHOD_FRAME\)/,
+    'the pool\'s scan-frame solution is renamed before its prefix is scanned on the method frame');
+  assert.match(race, /renameAlg\(last\.alg, METHOD_TO_SCAN\)/, 'and the answer leaves in the scan frame');
+  // The lesson crosses the same two lines.
+  assert.match(code, /solveByMethod\(fromCube\(Cube\.fromString\(toMethodFrame\(c\.facelets\)\)\), method\)/,
+    'the lesson is built white-first too');
+  assert.match(code, /renameAlg\(result\.alg, METHOD_TO_SCAN\)/, 'and walked in the scan frame');
+  assert.match(code, /renameSelectors\(cues\.focus, METHOD_TO_SCAN\)/, 'its cues name pieces the renderer can find');
+  assert.match(code, /renameSelectors\(cues\.highlight, METHOD_TO_SCAN\)/);
+  // And what a child reads is named for how they are holding it.
+  assert.match(code, /renameAlg\(m, holdAt\(from \+ k\)\)/, 'every chip is named for the hold its move is made in');
 });
 
 test('the chips report distances, and never what the child was doing', () => {
