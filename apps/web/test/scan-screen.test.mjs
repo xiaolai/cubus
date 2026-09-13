@@ -1341,3 +1341,59 @@ test('every sentence the scan screen writes into its aside goes through t()', as
   assert.ok(seen >= 20, `precondition: only ${seen} writes to the aside were found — the reader is looking in the wrong place`);
   assert.deepEqual(raw, [], `these writes to the scan screen's aside bypass t(): ${raw.join(' | ')}`);
 });
+
+// ---- the aside's quiet and toned paths ----------------------------------------------------------
+//
+// The card's words are pinned above for a notice, a finished scan and a camera error. A probe
+// of the paths between them (2026-09-13, before the aside became its own unit) found four that
+// nothing held: a report with nothing to say, the tone of a scan being checked, a notice's
+// good-news tone, and the colour sentence waiting out a camera error. A fifth — the notice's
+// action closing an open popover first — is not pinned, because it changes nothing observable:
+// the click that runs it bubbles to the page's own listener, which closes the popover a moment
+// later.
+
+test('a report with nothing to say explains how the scan works, under "How it works"', async () => {
+  await enterScan();
+  progress({ phase: 'scanning', message: 'Show another side.', captured: [], live: null, confirm: null });
+  assert.equal($('#scanHow').textContent, 'Show another side.', 'precondition: a message is said as it came');
+  progress({ phase: 'scanning', message: '', captured: [], live: null, confirm: null });
+  assert.match($('#scanHow').textContent, /no picture is kept/, 'a report with no message left the card saying nothing');
+  assert.equal($('#scanHowTitle').textContent, 'How it works');
+});
+
+test('a scan being checked, or done, is said as good news — and scanning goes back to a plain voice', async () => {
+  await enterScan();
+  for (const phase of ['checking', 'done']) {
+    progress({ phase, message: 'Checking…', captured: [], live: null, confirm: null });
+    assert.ok($('#scanHow').classList.contains('ok'), `the ${phase} phase was not said as good news`);
+  }
+  progress({ phase: 'scanning', message: 'Show another side.', captured: [], live: null, confirm: null });
+  assert.ok(!$('#scanHow').classList.contains('ok'), 'scanning kept the good-news tone');
+});
+
+test("a notice's tone is the card's tone — good news reads as good news", async () => {
+  await enterScan();
+  progress({ phase: 'scanning', message: '', captured: [], live: null, confirm: null,
+    notice: { title: 'All six sides read', tone: 'ok', body: 'Checking the cube.' } });
+  assert.ok($('#scanHow').classList.contains('ok'), 'a good-news notice was not said as one');
+  assert.ok(!$('#scanHow').classList.contains('err'), 'and it is not said as an error');
+});
+
+test('the colour sentence waits out a camera error, and is said once the error has passed', async () => {
+  await enterScan();
+  const quiet = (message) => progress({ phase: 'scanning', message, captured: [], live: null, confirm: null });
+  // A known starting belief, whatever the cases above left stored.
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese' });
+  quiet('x');
+  try {
+    progress({ phase: 'error', message: 'Cannot start: Permission denied', captured: [], live: null, confirm: null,
+      scheme: 'western' });
+    assert.equal($('#scanHowTitle').textContent, 'Camera trouble', 'the colour sentence spoke over a camera error');
+    assert.ok($('#scanHow').classList.contains('err'), 'and the error kept its tone');
+    quiet('Show another side.');
+    assert.equal($('#scanHowTitle').textContent, 'Yellow under white', 'a sentence an error held back is said once it has passed');
+  } finally {
+    progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese' });
+    quiet('x');
+  }
+});
