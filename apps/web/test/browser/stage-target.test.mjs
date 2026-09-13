@@ -28,6 +28,12 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
+import { turnFacelets } from '../../lib/cube-orientation.js';
+import { fromCube } from '../../lib/cube-pieces.js';
+import { moveStepIndex, stepAtMove } from '../../lib/method-lesson.js';
+import { methodFor, solveByMethod } from '../../lib/method-solver.js';
+import { TUMBLED, holdForStage, holdSpec, renameAlg, toMethodFrame } from '../../lib/solving-hold.js';
+import Cube from '../../vendor/cubejs.js';
 import { pace } from '../browser-wait.mjs';
 import { freePort } from '../free-port.mjs';
 
@@ -179,7 +185,11 @@ test('the target is drawn beside the cube, and goes away with the whole-cube wal
 
     await aimAt(page, 'top-cross');
     assert.equal(await page.locator('#stageAim').isVisible(), true);
-    assert.match(await page.textContent('#stageAimSay'), /aiming at the top cross/);
+    assert.equal(await page.textContent('.state-h'), 'Aiming at the top cross', 'the heading says what the picture is');
+    assert.match(await page.textContent('#stageAimSay'), /^Grey doesn’t matter yet\. Hold it with /);
+    // ONE PICTURE: the target takes the Initial State net's place, because the card holding both
+    // was drawn over the sheet on the small windows (geometry.test.mjs measures every fixture).
+    assert.equal(await page.locator('#viewNet').isVisible(), false, 'the Initial State net makes room for the target');
     // The picture must actually be ghosted: `top-cross` fixes 38 of 54 stickers, so 16 are free.
     // A picture with nothing free would be a solved cube wearing the target's name.
     const free = await page.locator('#stageAimNet .sticker.free').count();
@@ -189,6 +199,8 @@ test('the target is drawn beside the cube, and goes away with the whole-cube wal
     await page.click('[data-stage="solved"]');
     await page.waitForFunction(() => document.querySelector('#stageAim')?.hidden === true, null);
     assert.equal(await page.locator('#stageAim').isVisible(), false);
+    assert.equal(await page.locator('#viewNet').isVisible(), true, 'and the Initial State net comes back with the whole cube');
+    assert.equal(await page.textContent('.state-h'), 'Initial State');
   } finally {
     assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
     await context.close();
@@ -324,12 +336,16 @@ test('an untrusted cube produces no live number, and never touches the route\'s 
 });
 
 /**
- * A cube whose first two layers are already done: `R U R' U R U2 R'` from solved.
+ * A cube whose first two layers — the WHITE layer and the middle — are already done:
+ * `R D R' D R D2 R'` from solved, which is the Sune made on the yellow face with the cube held the
+ * way the app scans it (white up). Held tumbled (ADR 0003) it is `R U R' U R U2 R'` on the top.
  *
  * Every OLL and PLL algorithm preserves the first two layers by construction, which makes this the
- * cheapest way to build a cube that satisfies a stage target and is not solved.
+ * cheapest way to build a cube that satisfies a stage target and is not solved. It used to be the
+ * Sune on U, which keeps the YELLOW two layers and was "done" only while the stages were measured
+ * in the scan frame.
  */
-const TWO_LAYERS_DONE = 'FUUUUURUBULLRRRRRRUFLFFFFFFDDDDDDDDDUBBLLLLLLFRRBBBBBB';
+const TWO_LAYERS_DONE = 'UUUUUUUUURRRRRRLLDFFFFFFRRBBDDDDDRDFLLLLLLFFDBBBBBBLBD';
 
 test('a cube already at the target is told so, and is handed no walk to follow', async () => {
   // §9a's edge case, end to end: "already at the target, where the answer is empty and an empty
@@ -365,6 +381,189 @@ test('a cube already at the target is told so, and is handed no walk to follow',
     assert.equal(await page.locator('.chip-m').count(), 0, 'there are no moves, so there are no chips');
     assert.match(await page.textContent('#solList'), /Nothing to do here/,
       'and the list says so, rather than being an empty space under a heading');
+  } finally {
+    assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
+    await context.close();
+  }
+});
+
+// ---- which way up — ADR 0003 ----------------------------------------------------------------------
+//
+// White-first. The cross and the first layer are built white up, green facing you; once the first
+// layer is complete the cube tumbles forward — white underneath, green at the back — for everything
+// after it (the lesson course's ADR 0002). These cases drive the real screen and then check the
+// claim a child depends on with cubejs, off the stickers themselves: that the chips, made on the
+// cube the way the screen says to hold it, build the WHITE layers.
+
+const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+
+function applyMoves(facelets, alg) {
+  const cube = Cube.fromString(facelets);
+  if (String(alg).trim()) cube.move(alg);
+  return cube.asString();
+}
+
+/** What the renderer was handed to walk: its moves, and where they start. */
+async function walkOnScreen(page) {
+  const got = await page.evaluate(() => {
+    const cube = document.querySelector('#viewCube cubus-cube');
+    return { facelets: cube.getAttribute('facelets'), scramble: cube.getAttribute('scramble'), alg: cube.getAttribute('alg') ?? '' };
+  });
+  // A walk with a verified setup is drawn from solved plus that setup; a repair, from its facelets.
+  return { alg: got.alg, start: got.facelets ?? applyMoves(SOLVED_FACELETS, got.scramble ?? '') };
+}
+
+/** The white cross, on top, in the scan frame — U edges home. Read off the stickers, not a predicate. */
+const WHITE_CROSS = [[1, 'U'], [3, 'U'], [5, 'U'], [7, 'U'], [10, 'R'], [19, 'F'], [37, 'L'], [46, 'B']];
+/** The top row of each side face, and the top two rows — the white layer, and it with the middle. */
+const TOP_ROW = [9, 10, 11, 18, 19, 20, 36, 37, 38, 45, 46, 47];
+const TWO_ROWS = [...TOP_ROW, 12, 13, 14, 21, 22, 23, 39, 40, 41, 48, 49, 50];
+/** Is every listed sticker its own face's colour? A sticker's face is its index / 9, in URFDLB. */
+const home = (facelets, at) => facelets[at] === 'URFDLB'[Math.floor(at / 9)];
+
+/** Wait until the app has ASKED for `spec` and the renderer has actually FINISHED turning to it. */
+async function settledHold(page, spec) {
+  await page.waitForFunction((want) => {
+    const cube = document.querySelector('#viewCube cubus-cube');
+    return cube?.dataset.hold === want && cube._turn?.to === want && cube._turn.phase === 1;
+  }, spec, { timeout: 10_000 });
+}
+
+const chipTexts = (page) => page.locator('.chip-m').allTextContents();
+
+test('a stage target chosen on Home does not follow the child onto the Scramble screen', async () => {
+  // `state.stageTarget` outlives the screen it was chosen on, and the cube screen's two modes share
+  // one mount. The Scramble screen's walk is never a repair, so a target set on Home must draw no
+  // aim there, hide nothing, and turn nothing — or its "Target State" net is replaced by a picture
+  // of a stage the scramble has nothing to do with, under a heading naming that stage.
+  const { page, context, errors } = await openHome();
+  try {
+    await scrambled(page);
+    await aimAt(page, 'two-layers');
+    await settledHold(page, 'D B');
+
+    await page.evaluate(() => { location.hash = '#/scramble'; });
+    await page.waitForFunction(() => location.hash === '#/scramble', null);
+    await page.waitForFunction(() => document.querySelectorAll('.chip-m').length > 0, null, { timeout: 60_000 });
+    await settledHold(page, 'U F');
+    assert.equal(await page.locator('#stageAim').isVisible(), false, 'no aim on a scramble walk');
+    assert.equal(await page.locator('#viewNet').isVisible(), true, 'the scramble keeps its own net');
+    assert.equal(await page.textContent('.state-h'), 'Target State', 'and its own heading');
+  } finally {
+    assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
+    await context.close();
+  }
+});
+
+test('a tumbled stage turns the CUBE over, and every chip is named for how it is held', async () => {
+  const { page, context, errors } = await openHome();
+  try {
+    await scrambled(page);
+    await settledHold(page, 'U F');
+    let walk = await walkOnScreen(page);
+    assert.deepEqual(await chipTexts(page), walk.alg.split(' '),
+      'the whole cube is held as scanned, so its chips are exactly its moves');
+
+    await aimAt(page, 'two-layers');
+    await settledHold(page, 'D B');
+    walk = await walkOnScreen(page);
+    assert.notEqual(walk.alg, '', 'a scrambled cube is not already at the two bottom layers');
+    assert.equal(await page.getAttribute('#viewCube cubus-cube', 'camera-up'), null,
+      'and the camera did not move to show it — the eye moving is the defect this replaced');
+    assert.deepEqual(await chipTexts(page), renameAlg(walk.alg, TUMBLED).split(' '),
+      'every chip is the renderer\'s move, named for the tumbled hold');
+    assert.match(await page.textContent('#stageAimSay'), /Hold it with white underneath and green at the back\./);
+
+    // THE PHYSICAL CLAIM. The route builds the white layer and the middle — the scan frame's whole U
+    // face and the top two rows of every side — and the chips, made on the cube as a child holds it,
+    // land on that same cube held the same way.
+    const end = applyMoves(walk.start, walk.alg);
+    assert.equal(end.slice(0, 9), 'UUUUUUUUU', 'the white face is complete');
+    for (const at of TWO_ROWS) assert.ok(home(end, at), `sticker ${at} of the first two layers`);
+    assert.equal(
+      applyMoves(turnFacelets(walk.start, ...TUMBLED), (await chipTexts(page)).join(' ')),
+      turnFacelets(end, ...TUMBLED),
+    );
+
+    // THE FIRST LAYER IS BUILT WHITE UP, and the cube is turned over only once it is complete — so
+    // aiming at it turns the cube back, and its chips are its moves as they are.
+    await aimAt(page, 'first-layer');
+    await settledHold(page, 'U F');
+    walk = await walkOnScreen(page);
+    assert.deepEqual(await chipTexts(page), walk.alg.split(' '), 'the first layer is built white up, so its chips are its moves');
+    assert.match(await page.textContent('#stageAimSay'), /Hold it with white on top and green facing you\./);
+    const layerEnd = applyMoves(walk.start, walk.alg);
+    assert.equal(layerEnd.slice(0, 9), 'UUUUUUUUU', 'the first layer the chips build is the WHITE one, on top');
+    for (const at of TOP_ROW) assert.ok(home(layerEnd, at), `sticker ${at} of the white layer`);
+
+    await aimAt(page, 'cross');
+    await settledHold(page, 'U F');
+    walk = await walkOnScreen(page);
+    assert.deepEqual(await chipTexts(page), walk.alg.split(' '), 'the cross is built white up, so its chips are its moves');
+    assert.match(await page.textContent('#stageAimSay'), /Hold it with white on top and green facing you\./);
+    const crossEnd = applyMoves(walk.start, walk.alg);
+    for (const [at, face] of WHITE_CROSS) {
+      assert.equal(crossEnd[at], face, `sticker ${at}: the cross the chips build is the WHITE one, on top`);
+    }
+  } finally {
+    assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
+    await context.close();
+  }
+});
+
+test('a lesson builds its white cross and first layer white up, then turns the cube over once and says how to hold it', async () => {
+  const { page, context, errors } = await openHome();
+  try {
+    await scrambled(page);
+    await page.click('[data-walk="lesson"]');
+    await page.waitForFunction(() => document.querySelectorAll('#solList .move-chips').length > 1, null, { timeout: 30_000 });
+    const walk = await walkOnScreen(page);
+    const moves = walk.alg.split(' ');
+    const sections = await page.evaluate(() => [...document.querySelectorAll('#solList .move-chips')]
+      .map((s) => ({ heading: s.previousElementSibling?.textContent ?? '', chips: [...s.querySelectorAll('.chip-m')].map((c) => c.textContent) })));
+    assert.match(sections[0].heading, /^Cross/, 'the first section is the cross');
+    const crossCount = sections[0].chips.length;
+    assert.ok(crossCount > 0, 'a scrambled cube has a cross to build');
+
+    // The hold of every move, worked out the way the app works it out — from the method solver's own
+    // steps, fed the method frame — so this also proves the lesson on screen IS that solver's lesson.
+    const { steps } = solveByMethod(fromCube(Cube.fromString(toMethodFrame(walk.start))), methodFor());
+    const index = moveStepIndex(steps);
+    const heldAt = moves.map((_, k) => holdSpec(holdForStage(steps[stepAtMove(index, k)].stage)));
+    const stages = new Set(steps.map((s) => s.stage));
+    assert.ok(stages.has('first-layer') && stages.has('middle-layer'),
+      `the default rungs build the first layer on its own, or the flip point is not being tested: ${[...stages]}`);
+    const flipAt = heldAt.indexOf('D B');
+    assert.ok(flipAt > crossCount, 'the cube is turned over after the first layer, not after the cross');
+    assert.ok(heldAt.slice(flipAt).every((h) => h === 'D B'), 'and it is turned over once, never back');
+    assert.deepEqual(sections.flatMap((s) => s.chips), moves.map((m, k) => (heldAt[k] === 'D B' ? renameAlg(m, TUMBLED) : m)),
+      'every chip is named for the hold its own move is made in');
+
+    // Off the stickers: the white cross on top after the cross section, and the whole white layer on
+    // top at the moment the cube is turned over.
+    const afterCross = applyMoves(walk.start, moves.slice(0, crossCount).join(' '));
+    for (const [at, face] of WHITE_CROSS) {
+      assert.equal(afterCross[at], face, `sticker ${at}: the lesson's cross is the WHITE one, on top`);
+    }
+    const atFlip = applyMoves(walk.start, moves.slice(0, flipAt).join(' '));
+    assert.equal(atFlip.slice(0, 9), 'UUUUUUUUU', 'the first layer is the WHITE one, finished on top before the turn');
+    for (const at of TOP_ROW) assert.ok(home(atFlip, at), `sticker ${at} of the white layer at the turn`);
+
+    // The first step is a cross step, and it points at a WHITE edge — which the scan frame names U*.
+    // The solver names it D* in its own frame; unrenamed, the pulse would sit on a yellow edge.
+    await settledHold(page, 'U F');
+    const lit = (await page.getAttribute('#viewCube cubus-cube', 'highlight')) ?? '';
+    const pieces = lit.split(',').filter((token) => token.startsWith('piece:'));
+    assert.ok(pieces.length > 0, `the first step must point at something — "${lit}"`);
+    for (const token of pieces) assert.match(token, /U/, `${token}: a cross step points at a white edge`);
+
+    // The head on the first tumbled move: the cube turns over, and the line says how to hold it.
+    await page.click(`.chip-m[data-i="${flipAt - 1}"]`);
+    await settledHold(page, 'D B');
+    assert.match(await page.textContent('#whyLine'), /Hold it with white underneath and green at the back\./);
+    // And back across the line turns it back, because a scrub goes both ways.
+    await page.click('#prevBtn');
+    await settledHold(page, 'U F');
   } finally {
     assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
     await context.close();
