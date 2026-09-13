@@ -277,7 +277,7 @@ test('a repair survives a whole-cube search that failed', () => {
   // AND THE REPAIR NEVER WAITS FOR IT. Awaiting the whole-cube search before committing made the
   // reordering buy nothing: the repair was asked for first and then held at "working…" until a
   // search it does not need had finished. Reproduced by a verify pass.
-  const load3 = blockAt(code, 'async function loadWalk(');
+  const load3 = blockAt(code, 'async function resolveWalk(');
   const routeAt3 = load3.indexOf('gotRoute = await lastRoute(');
   const wholeAt3 = load3.indexOf('await wholeDone;');
   assert.ok(routeAt3 >= 0 && wholeAt3 >= 0, 'both landmarks must exist, or the order below compares nothing');
@@ -288,7 +288,7 @@ test('a repair survives a whole-cube search that failed', () => {
   // wait one out — including a target the cube was already at. The pool source awaits that promise
   // instead, which is what §4's "race" means: three sources, each arriving when it arrives.
   assert.match(code, /const wholeDone = deriveWhole\(\{/, 'the whole-cube search is started, not awaited');
-  const load2 = blockAt(code, 'async function loadWalk(');
+  const load2 = blockAt(code, 'async function resolveWalk(');
   const routeAt2 = load2.indexOf('gotRoute = await lastRoute(');
   const wholeAt2 = load2.indexOf('await wholeDone;');
   assert.ok(routeAt2 >= 0 && wholeAt2 >= 0, 'both landmarks must exist, or the order below compares nothing');
@@ -337,7 +337,8 @@ test('every walk reload starts from the cube in hand — BEFORE anything is draw
   const load = blockAt(code, 'async function loadWalk(');
   const adoptAt = load.indexOf('adoptCube(now,');
   const beginAt = load.indexOf('beginWalk();');
-  const readAt = load.indexOf('gotSetup = state.cube.setupAlg;');
+  // The whole-cube answer is read inside the resolver (lib/walk-resolver.js), which loadWalk awaits here.
+  const readAt = load.indexOf('await resolveWalk(');
   assert.ok(adoptAt > 0 && beginAt > 0 && readAt > 0, 'all three landmarks must exist');
   assert.ok(adoptAt < beginAt, 'the subject must be adopted before the screen is painted for it');
   assert.ok(adoptAt < readAt, 'and before the whole-cube answer is read off it');
