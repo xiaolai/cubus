@@ -27,7 +27,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 
-import { readAppSource } from './app-source.mjs';
+import { blockAt, readAppSource } from './app-source.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const appJs = readAppSource();
@@ -73,7 +73,7 @@ test('app.js carries no colour literals outside its two data tables', () => {
   // and the preview traffic lights are a portrait of macOS. Both stripped whole; anything left
   // holding a colour is a finding.
   const stripped = appJs
-    .replace(/const NET_COLORS = \{[\s\S]*?\n\};/, '')
+    .replace(blockAt(appJs, 'const NET_COLORS ='), '')
     .replace(/^.*\['#E8695E', '#E0B341', '#5FB55F'\].*$/m, '');
   const leftovers = colourLiterals(stripped);
   assert.deepEqual(leftovers, [], `app.js colour literals outside the data tables: ${leftovers.join(', ')} — use a token`);

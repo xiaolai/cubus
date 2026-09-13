@@ -235,13 +235,13 @@ test('a repair is offered only for a scan that is still believed', () => {
   // painter is not CALLED from the refusal branch was half of it — the other half is that a card
   // already on screen goes away when a refusal arrives, and an audit reproduced the gap: the Solve
   // button went disabled while the repair card stayed visible and its chips stayed pressable.
-  assert.match(code, /function dropStageChips\(\) \{[\s\S]*?stageGen \+= 1;[\s\S]*?card\.hidden = true;/,
+  assert.match(blockAt(code, 'function dropStageChips()'), /stageGen \+= 1;[\s\S]*?card\.hidden = true;/,
     'one helper must both invalidate the answers in flight and take the row away');
-  const invalid = code.match(/panel\.addEventListener\('scan-invalid'[\s\S]*?\}, \{ signal \}\);/)?.[0] ?? '';
+  const invalid = blockAt(code, "panel.addEventListener('scan-invalid'");
   assert.match(invalid, /dropStageChips\(\)/, 'a scan the SCANNER refused takes the card with it');
   assert.match(code, /if \(!p\.complete \|\| refused\) dropStageChips\(\);/,
     'and so does a scan this screen refused — `complete` survives a refusal, so it cannot be the only test');
-  const click = code.match(/\$\('#stageChips', root\)\?\.addEventListener\('click'[\s\S]*?\}, \{ signal \}\);/)?.[0] ?? '';
+  const click = blockAt(code, "$('#stageChips', root)?.addEventListener('click'");
   assert.match(click, /if \(refused\) return;/, 'and a press over a refused read does nothing');
 });
 
@@ -259,7 +259,7 @@ test('a repair survives a whole-cube search that failed', () => {
   // the worker and knows nothing about the two-phase pool. An audit reproduced the coupling — a
   // cube whose cross repair was one move showed "could not work it out" because an unrelated
   // whole-cube solve had thrown.
-  assert.match(code, /const deriveWhole = async \(opts\) => \{[\s\S]*?wholeFailed = err;/,
+  assert.match(blockAt(code, 'const deriveWhole = async (opts) =>'), /wholeFailed = err;/,
     'the whole-cube failure must be captured rather than thrown out of the load');
   assert.match(code, /stageAnswered = Boolean\(gotRoute && gotRoute\.alg !== null\);/,
     'whether a repair answered must be a named fact, because three things read it');
@@ -302,8 +302,10 @@ test('every walk reload starts from the cube in hand — BEFORE anything is draw
   // reported turn while the subject waits for a snapshot, so a walk rebuilt after a few turns was
   // about a cube that no longer exists — reproduced: scan `R`, turn `U`, ask for the first layer,
   // and the app offered `R'`, which does not reach it on the `R U` cube.
-  assert.match(code, /const ahead = follow\.aheadOfSnapshot\(\);\s*\n\s*if \(!scrambling && ahead && chainTrusted\(\) && state\.cube\.isPhysical\) \{[\s\S]*?adoptCube\(now, \{ physical: true, source: 'cube' \}\);/,
-    'the live model must be adopted, as #resolveBtn already does');
+  assert.match(code, /const ahead = follow\.aheadOfSnapshot\(\);\s*\n\s*if \(!scrambling && ahead && chainTrusted\(\) && state\.cube\.isPhysical\) \{/,
+    'the adoption waits for a cube that is ahead of its snapshot, trusted, and in a hand');
+  assert.match(blockAt(code, 'if (!scrambling && ahead && chainTrusted() && state.cube.isPhysical)'),
+    /adoptCube\(now, \{ physical: true, source: 'cube' \}\);/, 'the live model must be adopted, as #resolveBtn already does');
   // `ahead` is the follow tracker's (lib/walk-follow.js), and it is the tracked-turns flag — never a
   // comparison with the subject, which is the defect the flag was introduced to end.
   assert.match(code, /aheadOfSnapshot: \(\) => \(liveMoved && liveModel \? liveModel\.asString\(\) : null\)/,

@@ -162,10 +162,10 @@ test('pressing a pill moves the pressed state with the colour', async () => {
 });
 
 test('the stylesheet answers prefers-reduced-motion, and the renderer reads it too', () => {
-  const reduced = /@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)\s*\{([\s\S]*?)\n {6}\}/.exec(html);
+  const reduced = blockAt(html, '@media (prefers-reduced-motion: reduce)');
   assert.ok(reduced, 'no reduced-motion rule at all — every pulse and settle runs regardless');
-  assert.match(reduced[1], /animation-duration:\s*\.001ms\s*!important/, 'the pulses must actually stop');
-  assert.match(reduced[1], /transition-duration:\s*\.001ms\s*!important/, 'and the settles with them');
+  assert.match(reduced, /animation-duration:\s*\.001ms\s*!important/, 'the pulses must actually stop');
+  assert.match(reduced, /transition-duration:\s*\.001ms\s*!important/, 'and the settles with them');
   // The cube's turns are SHORTENED rather than stopped: a solve guide with no turn is a slideshow
   // of positions, and the turn is the thing being taught. That decision lives in the renderer.
   const cube = readFileSync(new URL('../lib/cubus-cube.js', import.meta.url), 'utf8');
@@ -415,9 +415,9 @@ test('a second press of the die aborts the first press\'s search', async () => {
 // where re-scanning cannot help. This asserts the four are DISTINCT and that each names its own
 // cause; screen-swap.test.mjs drives the cross-check branch end to end in a real browser.
 test('a walk that cannot be built says which thing failed', () => {
-  const table = /const WALK_FAILURES = \{([\s\S]*?)\};/.exec(appSource);
+  const table = blockAt(appSource, 'const WALK_FAILURES =');
   assert.ok(table, 'the failure table is gone — check this test still describes the code');
-  const messages = [...table[1].matchAll(/:\s*'([^']+)'/g)].map((m) => m[1]);
+  const messages = [...table.matchAll(/:\s*'([^']+)'/g)].map((m) => m[1]);
   assert.ok(messages.length >= 3, `expected a message per cause, found ${messages.length}`);
   assert.equal(new Set(messages).size, messages.length, 'two causes share a sentence');
   for (const m of messages) {

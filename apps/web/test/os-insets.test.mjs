@@ -14,6 +14,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
+import { blockAt } from './app-source.mjs';
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const html = readFileSync(path.join(root, 'index.html'), 'utf8');
 const kotlin = readFileSync(
@@ -94,17 +96,17 @@ test('app.js pulls the insets at boot, and refuses a payload it cannot trust', (
   assert.match(app, /window\?\.cubusInsets/, 'app.js must read the interface MainActivity registers');
   assert.match(app, /if \(platform === 'android'\) pullAndroidInsets\(\);/,
     'and read it during boot, before the first render');
-  const fn = /function pullAndroidInsets\(\) \{([\s\S]*?)\n\}/.exec(app);
+  const fn = blockAt(app, 'function pullAndroidInsets()');
   assert.ok(fn, 'the pull is a named function so this test can read it');
   // `"null"` is the honest answer before the first dispatch, and leaving it alone is what keeps
   // env()'s fallback standing rather than writing four zeroes over it.
-  assert.match(fn[1], /raw === 'null'/, "the pre-dispatch answer must be left alone, not written as 0");
+  assert.match(fn, /raw === 'null'/, "the pre-dispatch answer must be left alone, not written as 0");
   // It crosses a JNI bridge as TEXT. A malformed number reaching setProperty is a silently broken
   // layout rather than an error, which is the one failure mode this whole chain exists to avoid.
-  assert.match(fn[1], /Number\.isFinite/, 'the payload is untrusted input and must be checked');
+  assert.match(fn, /Number\.isFinite/, 'the payload is untrusted input and must be checked');
   for (const [side] of SIDES) {
     assert.ok(
-      fn[1].includes('`--os-inset-${k}`') || fn[1].includes(`--os-inset-${side}`),
+      fn.includes('`--os-inset-${k}`') || fn.includes(`--os-inset-${side}`),
       `the pull must write --os-inset-${side}`,
     );
   }
@@ -143,8 +145,8 @@ test('landscape gives the bottom inset to the window, portrait to the tab bar', 
     'the portrait tab bar should grow by the bottom inset and pad by it',
   );
   assert.match(
-    html,
-    /@container app \(orientation: portrait\) \{[\s\S]*?\.win \{ padding-bottom: 0; \}/,
+    blockAt(html, '@container app (orientation: portrait)'),
+    /\.win \{ padding-bottom: 0; \}/,
     'portrait should hand the bottom inset from .win to .tabs, not apply it twice',
   );
 });

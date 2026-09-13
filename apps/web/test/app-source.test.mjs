@@ -114,3 +114,24 @@ test('blockAt refuses rather than guesses, and every refusal is loud', () => {
   // The scanner's own end-of-input check names the construct left open — here, the block.
   assert.throws(() => blockAt('function e() { if (x) {', 'function e()'), /ended inside a block/);
 });
+
+test('no test reads a block with a lazy regex — blockAt reads it, and refuses when it is not there', () => {
+  // A lazy "anything" span that starts at a block's opening brace, or stops at a closing one, is a
+  // regex standing in for brace matching. It stops at the first brace that fits: re-indent the block
+  // and it runs on into the next one; lose its anchor and the fallback after it hands every negative
+  // assertion an empty string to pass over. Thirty-four such lines stood in eleven files until
+  // 2026-09-13. Spelled both ways a test can write one — a regex literal, and a RegExp string whose
+  // backslashes are doubled — and built from pieces, so this case is not a match for itself.
+  const doubled = (s) => s.replaceAll('\\', '\\\\');
+  const either = (s) => [s, doubled(s)].map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const span = `(?:${either('[\\s\\S]*?')}|${either('[^]*?')})`;
+  const standIn = new RegExp(
+    `(?:${either('\\{')})\\(?${span}|${span}\\)?(?:${either('\\n')})?(?: \\{\\d+\\}| *)(?:${either('\\}')})`,
+  );
+  const found = readdirSync(new URL('.', import.meta.url), { recursive: true })
+    .map(String)
+    .filter((f) => f.endsWith('.mjs'))
+    .sort()
+    .flatMap((f) => read(`test/${f}`).split('\n').flatMap((line, i) => (standIn.test(line) ? [`test/${f}:${i + 1}`] : [])));
+  assert.deepEqual(found, [], `a lazy regex stands in for brace matching — read the block with blockAt: ${found.join(', ')}`);
+});
