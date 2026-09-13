@@ -20,6 +20,7 @@
 
 import { CORNERS, EDGES, moveCount } from './cube-pieces.js';
 import { plural, t } from './i18n.js';
+import { WHITE_UP_STAGES } from './solving-hold.js';
 
 /** The four dials a fine-grained stage name belongs to, and what a learner sees them called. */
 const DIAL_OF = Object.freeze({
@@ -59,25 +60,42 @@ export const SECTION_NAME = Object.freeze({
  * `WHY_TEXT` was English string literals, which is a table that cannot be translated at all.
  */
 const WHY_TEXT = Object.freeze({
-  // THE CROSS IS BUILT WHITE UP (`WHITE_UP_STAGES`, lib/solving-hold.js; ADR 0003), and these three sentences are
-  // written for that hold. The solver builds the cross on its own D and lifts edges to its own U;
-  // held white up, that U layer is the BOTTOM of the cube in the child's hands. They used to say
-  // "up to the top" and "on the bottom", which described the hold the app no longer uses, and
-  // `solving-hold.test.mjs` holds the words to the hold so the two cannot part again.
-  'cross.lift': () => t('Bring this edge down to the bottom, without disturbing the cross so far.'),
-  'cross.insert': () => t('Line it up under its home, then turn it up into place.'),
+  // WHITE UP OR TURNED OVER, AND THE WORDS DIFFER. The solver builds the cross on its own D and lifts
+  // pieces to its own U. Held white up (`WHITE_UP_STAGES`, lib/solving-hold.js; ADR 0003) that U layer
+  // is the BOTTOM of the cube in the child's hands; turned over, it is the top. So each sentence that
+  // says where a piece goes comes in both holds, and `whyText` picks by the step's STAGE — never by
+  // its reason key. `firstLayer.*` is emitted by the layer-by-layer first layer (white up) AND by the
+  // joined-pairs rung's fallback (`pairs.js`, stage `f2l`, turned over): keyed by reason alone, that
+  // fallback told a child to take a corner "down" that was going up (Codex audit, 2026-09-13).
+  'cross.lift': {
+    up: () => t('Bring this edge down to the bottom, without disturbing the cross so far.'),
+    over: () => t('Bring this edge up to the top, without disturbing the cross so far.'),
+  },
+  'cross.insert': {
+    up: () => t('Line it up under its home, then turn it up into place.'),
+    over: () => t('Line it up over its home, then drop it in.'),
+  },
   // `plural`, not `%1 moves`: a one-move cross really happens, and "1 moves" is the kind of
   // sentence that tells a child the app is not paying attention. The helper is the repository's
   // own, and it asks the ACTIVE language rather than an `n === 1` written here.
-  'cross.whole': ({ moves }) => plural(moves, {
-    one: 'Make the cross on top — one move, planned as one.',
-    other: 'Make the cross on top — %1 moves, planned as one.',
-  }),
-  // THE FIRST LAYER IS BUILT WHITE UP TOO — the cube is turned over only once it is complete — so
-  // these two are written for the same hold as the cross's: the solver lifts a corner to its own U
-  // layer, which in the child's hands is the bottom, and inserts it upwards.
-  'firstLayer.lift': () => t('Bring this corner down to the bottom, where you can work with it.'),
-  'firstLayer.insert': () => t('Turn the corner up into its slot above.'),
+  'cross.whole': {
+    up: ({ moves }) => plural(moves, {
+      one: 'Make the cross on top — one move, planned as one.',
+      other: 'Make the cross on top — %1 moves, planned as one.',
+    }),
+    over: ({ moves }) => plural(moves, {
+      one: 'Make the cross on the bottom — one move, planned as one.',
+      other: 'Make the cross on the bottom — %1 moves, planned as one.',
+    }),
+  },
+  'firstLayer.lift': {
+    up: () => t('Bring this corner down to the bottom, where you can work with it.'),
+    over: () => t('Bring this corner up to the top, where you can work with it.'),
+  },
+  'firstLayer.insert': {
+    up: () => t('Turn the corner up into its slot above.'),
+    over: () => t('Drop the corner into its slot underneath.'),
+  },
   'middleLayer.insert': () => t('Send this edge down into the middle layer.'),
   // The same algorithm ejects a wrong edge and inserts the right one. Captioning an ejection
   // "send this edge down" describes the opposite of what is about to happen on screen.
@@ -176,14 +194,21 @@ export function whyText(step) {
   // `hasOwn`, never `WHY_TEXT[key]` alone: the key comes from a step record, and `constructor`
   // would resolve to a function while `__proto__` throws. `cube-highlight.js` records the same
   // lesson about `in` and pays it the same way.
-  const write = typeof key === 'string' && Object.hasOwn(WHY_TEXT, key) ? WHY_TEXT[key] : null;
+  const entry = typeof key === 'string' && Object.hasOwn(WHY_TEXT, key) ? WHY_TEXT[key] : null;
   // A reason nothing can caption is a step with no explanation, and the caller HIDES an empty
   // line — so a missing entry would remove the sentence silently and look like a step that
   // simply had nothing to say. Loud instead; `method-lesson.test.mjs` proves the table covers
   // every key the solver emits, so reaching this is a defect and not an input.
-  if (key !== undefined && !write) {
+  if (key !== undefined && !entry) {
     throw new Error(`method-lesson: no sentence for reason "${key}"`);
   }
+  // A sentence that says where a piece goes is picked by the hold its step is made in. A step with
+  // no stage cannot say which, and guessing would print one of two opposite instructions — so it is
+  // refused, the same way an unknown reason is. Every step the solver emits carries its stage.
+  if (entry && typeof entry !== 'function' && typeof step.stage !== 'string') {
+    throw new Error(`method-lesson: "${key}" reads differently held white up and turned over, and this step has no stage to say which`);
+  }
+  const write = !entry ? null : typeof entry === 'function' ? entry : WHITE_UP_STAGES.includes(step.stage) ? entry.up : entry.over;
   const sentence = write ? write(step.why) : '';
   // A case name is what a learner recognises next time, so it is worth showing — but only for
   // named algorithms, never for a searched sequence, which has no case to name.
