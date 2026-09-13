@@ -12,6 +12,7 @@ private home-2026-09-13 folder and CUBUS_PROPOSE_MODEL to a detector's fp32 ONNX
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import json
 import os
@@ -212,6 +213,120 @@ def test_the_grid_fit_carries_every_score_in_reading_order() -> None:
     print("PASS files: the grid fit keeps all six scores of each sticker, in reading order")
 
 
+def clean_face(conf: float = 0.8) -> list[cube_infer.Detection]:
+    """A clean 3x3 face on the 640 canvas, in reading order."""
+    return [
+        cube_infer.Detection(float(cx), float(cy), 60.0, 60.0, (3 * r + c) % 6, conf, (0.1,) * 6)
+        for r, cy in enumerate((200, 280, 360))
+        for c, cx in enumerate((200, 280, 360))
+    ]
+
+
+def test_the_tolerant_fit_takes_the_nine_that_form_a_face() -> None:
+    face = clean_face()
+    assert propose.fit_photo(face) == ("OK", face, "app"), "a face the app fits is the app's"
+
+    # A bigger, less confident box beside the face, like a sticker of the next side over: it is
+    # among the nine largest, so the app's fit refuses.
+    stray = cube_infer.Detection(520.0, 250.0, 110.0, 110.0, 1, 0.5, (0.1,) * 6)
+    assert cube_infer.fit_grid(face + [stray]) == ("BAD_GEOMETRY", None)
+    assert propose.fit_photo(face + [stray]) == ("BAD_GEOMETRY", face, "tolerant")
+
+    faint = [dataclasses.replace(d, confidence=0.2) if i == 7 else d for i, d in enumerate(face)]
+    assert cube_infer.fit_grid(faint) == ("PARTIAL_FACE", None)
+    assert propose.fit_photo(faint) == ("PARTIAL_FACE", faint, "tolerant"), "found one floor down"
+
+    assert propose.fit_photo(face[:6]) == ("PARTIAL_FACE", None, ""), "six stickers are no face at any floor"
+    print("PASS files: the tolerant fit takes the nine that form a face, and only where the app's fit refuses")
+
+
+def test_reading_down_to_the_tolerant_floor_keeps_the_app_fit_and_feeds_the_tolerant_one() -> None:
+    import numpy as np
+
+    anchors = [(cx, cy, 80.0, 0.9) for cy in (100, 200, 300) for cx in (100, 200, 300)]
+    # A faint box bigger than any sticker: let into the app's fit, it would be among the nine largest
+    # and break the grid.
+    anchors.append((400.0, 200.0, 110.0, 0.15))
+    out = np.zeros((10, len(anchors)), np.float32)
+    for a, (cx, cy, side, conf) in enumerate(anchors):
+        out[:4, a] = (cx, cy, side, side)
+        out[4 + a % 6, a] = conf
+    app = cube_infer.fit_grid(cube_infer.nms(cube_infer.decode(out)))
+    got = propose.read_output(out)
+    assert app[0] == "OK" and got == ("OK", app[1], "app", 0), (app, got)
+
+    # One sticker under the app's floor: the app sees eight, and only a decode that reaches down to the
+    # tolerant floor hands the ninth to the tolerant fit.
+    faint = np.zeros((10, 9), np.float32)
+    for a in range(9):
+        faint[:4, a] = (100 + 100 * (a % 3), 100 + 100 * (a // 3), 80, 80)
+        faint[4 + a % 6, a] = 0.2 if a == 4 else 0.9
+    verdict, grid, fit, beyond = propose.read_output(faint)
+    assert (verdict, fit, beyond) == ("PARTIAL_FACE", "tolerant", 0) and grid is not None and len(grid) == 9, (verdict, fit)
+    print("PASS files: decoding down to the tolerant floor keeps the app's fit as it was and feeds the tolerant one")
+
+
+def test_stickers_beyond_the_grid_reveal_a_bigger_cube() -> None:
+    def sticker(cx: float, cy: float, h: float = 60.0, conf: float = 0.9) -> cube_infer.Detection:
+        return cube_infer.Detection(cx, cy, 60.0, h, 0, conf, (0.1,) * 6)
+
+    face = clean_face()
+    assert propose.beyond_grid(face, face) == 0
+    neighbour = [sticker(cx, 425.0, h=20.0) for cx in (200.0, 280.0, 360.0)]  # the next side, foreshortened
+    half_step = sticker(320.0, 440.0)  # the right size, half a step off the lattice
+    faint = sticker(440.0, 280.0, conf=0.2)  # on the lattice, under the app's floor
+    assert propose.beyond_grid(face, face + neighbour + [half_step, faint]) == 0
+
+    four = [sticker(float(cx), float(cy)) for cy in (200, 280, 360, 440) for cx in (200, 280, 360, 440)]
+    assert propose.fit_photo(four)[1] is not None, "a 4x4 face does fit as a 3x3: the reason this exists"
+    block = [four[4 * r + c] for r in range(3) for c in range(3)]
+    assert propose.beyond_grid(block, four) == 7
+    print("PASS files: same-size stickers one step beyond the grid count, slivers, strays and faint boxes do not")
+
+
+def test_a_set_showing_a_bigger_cube_is_unusable() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        photos, state = make_drop(Path(tmp), {name("big"): 6, name("small"): 6})
+        big = sorted((photos / CONTRIBUTOR / name("big")).glob("*.jpg"))
+        small = sorted((photos / CONTRIBUTOR / name("small")).glob("*.jpg"))
+        half = FakeCubeHalf()
+
+        def read(path: Path) -> PhotoRead:
+            if path == big[5]:
+                return PhotoRead("PARTIAL_FACE")  # a 4x4 photo no fit reads must not turn this into face_not_found
+            got = fake_read(path)
+            if path in big[:2]:
+                return dataclasses.replace(got, beyond=2)
+            return dataclasses.replace(got, beyond=1) if path == small[0] else got  # one stray, as a real 3x3 had
+
+        written = sorted(propose.propose(photos, state, read, half, TOOLS))
+        assert written == [
+            (f"{CONTRIBUTOR}/{name('big')}", "unusable: not_3x3"),
+            (f"{CONTRIBUTOR}/{name('small')}", "confirm, legal, 6 outlined"),
+        ], written
+        proposal = json.loads((state / "reviews" / CONTRIBUTOR / name("big") / "proposal.json").read_text())
+        assert proposal["detail"] == [{"file": big[0].name, "beyond": 2}, {"file": big[1].name, "beyond": 2}], proposal
+        assert half.calls == 1, "only the 3x3 set reaches the cube half"
+    print("PASS files: a set whose photos add up to a bigger cube is unusable as not_3x3; one stray is not")
+
+
+def test_a_tolerantly_fitted_photo_is_checked_sticker_by_sticker() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        photos, state = make_drop(Path(tmp), {name("angled"): 6})
+        files = sorted((photos / CONTRIBUTOR / name("angled")).glob("*.jpg"))
+
+        def read(path: Path) -> PhotoRead:
+            got = fake_read(path)
+            return dataclasses.replace(got, fit="tolerant") if path == files[3] else got
+
+        written = propose.propose(photos, state, read, FakeCubeHalf(), TOOLS)
+        assert written == [(f"{CONTRIBUTOR}/{name('angled')}", "confirm, legal, 14 outlined, 1 by the tolerant fit")], written
+        proposal = json.loads((state / "reviews" / CONTRIBUTOR / name("angled") / "proposal.json").read_text())
+        assert [p["fit"] for p in proposal["photos"]] == ["app", "app", "app", "tolerant", "app", "app"]
+        assert proposal["photos"][3]["uncertain"] == list(range(9)) and proposal["photos"][2]["uncertain"] == [4]
+    print("PASS files: a photo only the tolerant fit could read has every sticker outlined")
+
+
 def make_drop(root: Path, sets: dict[str, int]) -> tuple[Path, Path]:
     photos, state = root / "photos", root / "state"
     state.mkdir(parents=True)
@@ -224,7 +339,7 @@ def make_drop(root: Path, sets: dict[str, int]) -> tuple[Path, Path]:
 
 
 def fake_read(path: Path) -> PhotoRead:
-    return PhotoRead("OK", (WHITE,) * 9, (0.9,) * 9, ((0.9, 0.0, 0.0, 0.0, 0.0, 0.0),) * 9, ((1, 2, 3, 4),) * 9)
+    return PhotoRead("OK", (WHITE,) * 9, (0.9,) * 9, ((0.9, 0.0, 0.0, 0.0, 0.0, 0.0),) * 9, ((1, 2, 3, 4),) * 9, "app")
 
 
 class FakeCubeHalf:
@@ -262,7 +377,7 @@ def test_only_finished_unanswered_cube_sets_are_proposed() -> None:
         done = json.loads((reviews / name("done") / "proposal.json").read_text())
         files = sorted(p.name for p in (photos / CONTRIBUTOR / name("done")).glob("*.jpg"))
         assert [p["file"] for p in done["photos"]] == files, "photo order is file-name order: capture time"
-        assert done["photos"][0] == {"file": files[0], "grid": ["white"] * 9, "uncertain": [4], "boxes": [[1, 2, 3, 4]] * 9}
+        assert done["photos"][0] == {"file": files[0], "grid": ["white"] * 9, "uncertain": [4], "boxes": [[1, 2, 3, 4]] * 9, "fit": "app"}
         assert done["made_from"] == {"photos": [[f, 30] for f in files], **TOOLS}, done["made_from"]
         assert not list(reviews.glob("*/.proposal.*")), "no temporary file left behind"
     print("PASS files: only finished, unanswered sets the drop could have written are proposed")
@@ -322,7 +437,7 @@ def test_asking_for_a_set_that_is_not_there_fails_loudly() -> None:
 def test_the_contract_refuses_what_the_page_could_not_draw() -> None:
     good = {
         "version": 1, "contributor": CONTRIBUTOR, "set": name("a"), "status": "confirm", "legal": True,
-        "photos": [{"file": f"{n}.jpg", "grid": ["white"] * 9, "uncertain": [1, 7], "boxes": [[1, 2, 3, 4]] * 9} for n in range(6)],
+        "photos": [{"file": f"{n}.jpg", "grid": ["white"] * 9, "uncertain": [1, 7], "boxes": [[1, 2, 3, 4]] * 9, "fit": "app"} for n in range(6)],
         "made_from": TOOLS, "made_at": "2026-09-13T09:00:00+08:00",
     }
     propose.check_proposal(good)
@@ -345,6 +460,9 @@ def test_the_contract_refuses_what_the_page_could_not_draw() -> None:
         "legal as a word": lambda p: p.update(legal="yes"),
         "an unknown status": lambda p: p.update(status="maybe"),
         "a bad set id": lambda p: p.update(set="../x"),
+        "no fit named": lambda p: p["photos"][0].pop("fit"),
+        "an unknown fit": photo0(fit="guess"),
+        "a tolerant fit that leaves stickers unoutlined": photo0(fit="tolerant"),
     }
     for label, mutate in breaks.items():
         bad = copy.deepcopy(good)
@@ -414,6 +532,11 @@ def cube_half() -> tuple[Decide | None, str]:
 if __name__ == "__main__":
     test_photos_are_read_upright_and_boxes_land_on_the_upright_photo()
     test_the_grid_fit_carries_every_score_in_reading_order()
+    test_the_tolerant_fit_takes_the_nine_that_form_a_face()
+    test_reading_down_to_the_tolerant_floor_keeps_the_app_fit_and_feeds_the_tolerant_one()
+    test_stickers_beyond_the_grid_reveal_a_bigger_cube()
+    test_a_set_showing_a_bigger_cube_is_unusable()
+    test_a_tolerantly_fitted_photo_is_checked_sticker_by_sticker()
     test_only_finished_unanswered_cube_sets_are_proposed()
     test_a_pass_is_idempotent_and_an_answer_freezes_its_proposal()
     test_a_photo_without_a_whole_face_makes_its_set_unusable()
