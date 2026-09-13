@@ -13,8 +13,9 @@
 //   4. a lost packet absorbed. It invalidates the answer, and it is reported rather than swallowed.
 //   5. per-turn numbers routed through `refreshScreen()`. That path reaches `beginWalk`, which
 //      clears the walk a child is halfway through following.
-//   6. the upside-down cube treated as a state problem. It is a display problem: the predicates
-//      live in the cube's own colour frame, and what changes is which way to draw it.
+//   6. the upside-down cube drawn by moving the CAMERA (corrected by ADR 0003). The camera rolled
+//      the lamp with it and every move stayed named for white up; now the renderer turns the cube,
+//      the moves are named for the hold, and the engine is fed the method frame at one door.
 //
 // Source-text assertions, like the rest of this repository's wiring tests. A DOM harness would
 // answer "does a turn update the number" and none of the six questions above, which are all about
@@ -202,15 +203,21 @@ test('the live number has a line of its own and never the route\'s count', () =>
 
 // ---- 6. which way up ------------------------------------------------------------------------------------
 
-test('the upside-down cube is answered by the drawing, not by the state', () => {
-  assert.match(code, /const BOTTOM_LAYER_TARGETS = new Set\(\['cross', 'first-layer'\]\);/,
-    'which targets are drawn from below is a claim about the METHOD and must be named');
-  assert.match(code, /cube\.setAttribute\('camera-up', aimingAt && BOTTOM_LAYER_TARGETS\.has\(aimingAt\.id\) \? 'D' : 'U'\)/,
-    'the renderer already takes camera-up for exactly this');
-  // And nothing anywhere re-frames the STATE to compensate. The predicates live in the cube's own
-  // colour frame with the cross on D, and rotating the state to match how somebody is holding it
-  // would describe a situation that does not exist.
+test('the cube is turned over by the renderer, never by the camera, and the engine is fed at one door', () => {
+  // ADR 0003 replaced §5.6's answer. `camera-up` moved the EYE: the lamp rolled with it, and every
+  // move stayed named for white up while the face turning on screen was the one at the bottom.
+  assert.doesNotMatch(code, /BOTTOM_LAYER_TARGETS/, 'the list of targets drawn from below went with the camera');
+  assert.doesNotMatch(code, /setAttribute\('camera-up'/, 'nothing on the cube screen moves the eye to show a hold');
+  const holdFn = code.match(/function holdCube\(h\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  assert.match(holdFn, /cube\.turnTo\(h\[0\], h\[1\]\)/, 'the renderer turns the OBJECT');
+  assert.match(code, /walkHold = stageAnswered \? holdForTarget\(stageTarget\.id\) : SCAN_HOLD;/,
+    'a repair is held the way its target is built, and anything else as scanned');
+  // The live path still asks about the cube AS HELD — the corrected scan-frame model — and never
+  // re-frames it itself. The one turn into the method frame is at the door every question passes.
   assert.ok(!live.includes('rotateState'), 'the live path must not re-frame the cube');
+  assert.ok(!live.includes('toMethodFrame'), 'nor turn it into the method frame on its own account');
+  assert.match(code, /client\.stageRoute\(\{ \.\.\.payload, facelets: toMethodFrame\(payload\.facelets\) \}\)/,
+    'the door turns every question, so no caller can ask about the yellow cross by forgetting');
 });
 
 // ---- what was NOT built, and the number that decided it ----------------------------------------------

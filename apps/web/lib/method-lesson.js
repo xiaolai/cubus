@@ -59,17 +59,25 @@ export const SECTION_NAME = Object.freeze({
  * `WHY_TEXT` was English string literals, which is a table that cannot be translated at all.
  */
 const WHY_TEXT = Object.freeze({
-  'cross.lift': () => t('Bring this edge up to the top, without disturbing the cross so far.'),
-  'cross.insert': () => t('Line it up over its home, then drop it in.'),
+  // THE CROSS IS BUILT WHITE UP (lib/solving-hold.js, ADR 0003), and these three sentences are
+  // written for that hold. The solver builds the cross on its own D and lifts edges to its own U;
+  // held white up, that U layer is the BOTTOM of the cube in the child's hands. They used to say
+  // "up to the top" and "on the bottom", which described the hold the app no longer uses, and
+  // `solving-hold.test.mjs` holds the words to the hold so the two cannot part again.
+  'cross.lift': () => t('Bring this edge down to the bottom, without disturbing the cross so far.'),
+  'cross.insert': () => t('Line it up under its home, then turn it up into place.'),
   // `plural`, not `%1 moves`: a one-move cross really happens, and "1 moves" is the kind of
   // sentence that tells a child the app is not paying attention. The helper is the repository's
   // own, and it asks the ACTIVE language rather than an `n === 1` written here.
   'cross.whole': ({ moves }) => plural(moves, {
-    one: 'Make the cross on the bottom — one move, planned as one.',
-    other: 'Make the cross on the bottom — %1 moves, planned as one.',
+    one: 'Make the cross on top — one move, planned as one.',
+    other: 'Make the cross on top — %1 moves, planned as one.',
   }),
-  'firstLayer.lift': () => t('Bring this corner up to the top, where you can work with it.'),
-  'firstLayer.insert': () => t('Drop the corner into its slot underneath.'),
+  // THE FIRST LAYER IS BUILT WHITE UP TOO — the cube is turned over only once it is complete — so
+  // these two are written for the same hold as the cross's: the solver lifts a corner to its own U
+  // layer, which in the child's hands is the bottom, and inserts it upwards.
+  'firstLayer.lift': () => t('Bring this corner down to the bottom, where you can work with it.'),
+  'firstLayer.insert': () => t('Turn the corner up into its slot above.'),
   'middleLayer.insert': () => t('Send this edge down into the middle layer.'),
   // The same algorithm ejects a wrong edge and inserts the right one. Captioning an ejection
   // "send this edge down" describes the opposite of what is about to happen on screen.
