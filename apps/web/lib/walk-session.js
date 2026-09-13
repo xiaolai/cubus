@@ -23,14 +23,14 @@
 
 import { t } from './i18n.js';
 import { SCAN_HOLD, fromMethodFrame, holdSentence, renameAlg } from './solving-hold.js';
-import { createHoldCube, holdAtMove, holdChangeAt, walkHoldFor } from './hold-presenter.js';
-import { stepAtMove, whyText } from './method-lesson.js';
+import { walkHoldFor } from './hold-presenter.js';
 import { TARGET_BY_ID } from './stage-targets.js';
 import { targetPicture } from './stage-picture.js';
 import { cancel as optimalCancel, capability as optimalCapability } from './optimal.js';
 import { createLiveDistance } from './walk-live-distance.js';
 import { createRungOffer } from './walk-offer.js';
 import { createWalkResolver } from './walk-resolver.js';
+import { createWalkPresenter } from './walk-presenter.js';
 import { createFollowTracker } from './walk-follow.js';
 
 /** Destructuring through this refuses, AT CONSTRUCTION, any name `from` does not provide — so a
@@ -109,168 +109,24 @@ export function createWalkSession(screen, app) {
   let walkKind = 'solution';
   /** The lesson on screen, or null while the Solution is showing. Read by sync(). */
   let lesson = null;
-  let chips = [];
-  let at = 0;
-  let playing = false;
   // Which load is current. `screenGen` cannot answer this any more: it counts SCREENS, and a
   // retarget deliberately does not make a new one — so two presses in quick succession would
   // both believe they were still valid, and the slower solve would paint its move list over
   // the cube the faster one left on screen.
   let walkGen = 0;
 
-  // ---- Scramble → Solve hand-off ---------------------------------------------------------
-  // The loop a beginner actually wants: scramble it by following the guide, then solve THAT.
-  // Offered at completion and only on a press — never automatic. Reaching 22/22 by clicking
-  // says nothing about the cube in someone's hand, so without a trusted cube the target is
-  // adopted as a GENERATED subject (exactly what the dev die does) and Home says so. With a
-  // trusted physical cube the subject already IS the cube (its snapshots are ingested), so
-  // nothing is adopted: Home solves whatever the cube really is, and the label only claims
-  // "scrambled" when the cube's own state says so.
-  const solveIt = $('#solveItBtn', root);
-  const cubeTruth = () => state.connected && state.cube.trusted && state.cube.isPhysical;
-  const solveItLabel = () => {
-    if (!cubeTruth()) return 'Solve this scramble';
-    return state.cube.facelets === target ? 'Your cube is scrambled — solve it' : 'Solve your cube';
-  };
-  if (solveIt) {
-    solveIt.onclick = () => {
-      // The target is what this button HANDS OVER, so a press without one has nothing to do.
-      // Guarded here as well as at the point the button is drawn: `hidden` is a property any
-      // later paint could get wrong, and handing `null` to adoptCube stores a subject with no
-      // facelets at all — Home then draws a cube nobody rolled.
-      if (!target) return;
-      // `alg` is this scramble's own setup alg — the walk that just finished, from solved to
-      // `target` — so Home needs no search to know how the cube it is handed was reached.
-      if (!cubeTruth()) adoptCube(target, { physical: false, source: 'generated', setupAlg: alg });
-      go('home');
-    };
-  }
-
-  /** How move `k` of the walk on screen is held (ADR 0003) — a lesson's per move, any other
-   *  walk's throughout. The rule and its tests are `lib/hold-presenter.js`. */
-  const holdAt = (k) => holdAtMove(lesson, walkHold, k);
-
-  /** Turns this screen's cube to a hold — the object, never the camera — waiting for the renderer
-   *  when the tag is not one yet, and turning nothing once this screen has been replaced. */
-  const holdCube = createHoldCube({ cube, isStale: stale });
-
-  /**
-   * Point the cube at what the step under the transport head is about — plan §5.2.
-   *
-   * `focus` drains the hue from every piece the step does not name; `highlight` pulses the
-   * ones it does. The sentence stays, translated and short, but it is no longer the
-   * load-bearing channel: the first attempt had ONLY the sentence, and "join the corner to
-   * its edge" cannot say WHICH corner.
-   *
-   * **The cue is about the move ABOUT TO HAPPEN, and the chips are about the one just made.**
-   * They are two different questions asked of the same index and they used to share an answer:
-   * `cubus-step` fires when move `i` has finished, so reading the step of move `i - 1` meant
-   * the first move of every teaching step animated under the PREVIOUS step's sentence and
-   * highlight. On a lesson whose steps are three or four moves long that is a quarter of the
-   * walk pointing at the wrong pieces — and the sentence and the pulse are the whole of what
-   * makes a step a lesson rather than a move list.
-   *
-   * At 0 the step about to happen is the one described — that is the step you are looking at
-   * before you turn anything — and at the end the last step stays, because there is no move
-   * after it to describe. Silent entirely on the Solution, because a two-phase answer has no
-   * steps and inventing cues for it is exactly what this app does not do.
-   */
-  function pointAtStep(i) {
-    const whyLine = $('#whyLine', root);
-    if (!lesson || scrambling) {
-      cube.removeAttribute('focus');
-      cube.removeAttribute('highlight');
-      if (whyLine) { whyLine.hidden = true; whyLine.textContent = ''; }
-      return;
-    }
-    const step = lesson.steps[stepAtMove(lesson.moveStep, i)];
-    // The step's cues were worked out and renamed into the scan frame when the lesson was built
-    // (`lessonFor`). Whole-or-nothing at the renderer: an empty spec removes the channel rather
-    // than setting it to a selector that names nothing.
-    if (step?.focus) cube.setAttribute('focus', step.focus); else cube.removeAttribute('focus');
-    if (step?.highlight) cube.setAttribute('highlight', step.highlight); else cube.removeAttribute('highlight');
-    // The cube turns over as the head crosses a hold, in either direction — a scrub goes back.
-    const { held, say } = holdChangeAt(lesson, walkHold, i);
-    holdCube(held);
-    if (!whyLine) return;
-    const reason = whyText(step);
-    const text = say ? (reason ? t('%1 %2', say, reason) : say) : reason;
-    whyLine.hidden = !text;
-    whyLine.textContent = text
-      ? t('Step %1 of %2 — %3', lesson.steps.indexOf(step) + 1, lesson.steps.length, text)
-      : '';
-  }
-
-  function sync(i) {
-    const from = at;
-    at = i;
-    // The filled chip is the move just shown — the one you are on. At 0 / 22 nothing has been
-    // shown, so nothing is filled. It used to mark the NEXT move, and a black first chip before
-    // anything had happened read as a step already taken.
-    chips.forEach((ch, k) => { ch.classList.toggle('played', k < i); ch.classList.toggle('cur', k === i - 1); });
-    pointAtStep(i);
-    $('#stepLbl', root).textContent = `${i} / ${total}`;
-    $('#progBar', root).style.width = total ? `${(i / total) * 100}%` : '0%';
-    // A button that cannot do anything says so, rather than swallowing the press.
-    $('#prevBtn', root).disabled = i === 0;
-    $('#repeatBtn', root).disabled = i === 0;
-    $('#nextBtn', root).disabled = i >= total;
-    $('#playBtn', root).disabled = i >= total;
-    // A tick beside the count once the last move lands. It used to be a 46px badge over the
-    // cube, saying "done" where the count beside it already read 22 / 22.
-    $('#doneMark', root).hidden = i < total;
-    // Where the head went, for the rung offer: it counts the moves stepped through, one at a time
-    // and forwards, and credits a lesson followed to its end once per walk (lib/walk-offer.js).
-    offer.onHead(from, i, { lesson, total, walkGen });
-    // And, on Scramble, the way onward — labelled for what is actually known at that moment.
-    // Gated on the TARGET, not on the count: between beginWalk() and the roll landing, and
-    // after a roll that failed, `total` is 0 and `i >= total` is trivially true — so the
-    // button offered to hand Home a scramble while `target` was still null, and the press
-    // stored a subject with no facelets (found by audit, 2026-09-05). There is nothing to
-    // walk onward from until there is something to hand over.
-    if (solveIt) {
-      solveIt.hidden = !target || i < total;
-      if (target && i >= total) solveIt.textContent = solveItLabel();
-    }
-  }
-  // Signalled, because `cube` is parked and re-used between screens now: an unscoped
-  // listener here would arrive at the next screen still calling this screen's sync().
-  cube.addEventListener('cubus-step', (e) => sync(e.detail.index), { signal });
-
-  const setPlaying = (on) => {
-    playing = on;
-    const play = $('#playBtn', root);
-    play.innerHTML = icon(on ? 'pause' : 'play', 18);
-    // The name follows the action: a button drawn as Pause while announcing "Play from here
-    // to the end" claims the wrong deed.
-    play.title = on ? 'Pause' : 'Play from here to the end';
-    play.setAttribute('aria-label', play.title);
-    // Guarded like drawTo below: if the renderer bundle failed to upgrade the element, the
-    // transport still works as position bookkeeping even though nothing animates.
-    if (typeof cube.play !== 'function' || typeof cube.pause !== 'function') return;
-    if (on) cube.play(); else cube.pause();
-  };
-
-  $('#playBtn', root).onclick = () => { follow.takeOver(); setPlaying(!playing); };
-  $('#nextBtn', root).onclick = () => { follow.takeOver(); setPlaying(false); cube.step(); };
-  // Back and repeat are both animated, at the one walking speed, and differ only in where they
-  // leave you. Back undoes the last move and stops there. Repeat answers "show me that again":
-  // it undoes the move and then makes it again, so you end up where you started having watched
-  // it twice. Neither jumps: a cut to a new state teaches nothing about the turn that got there.
-  // The renderer's queue is FIFO and pulls the next move only when the current one finishes,
-  // so pushing both halves of a repeat here plays them in order.
-  $('#prevBtn', root).onclick = () => { follow.takeOver(); setPlaying(false); cube.stepBack(); };
-  // A move in the list is a place in the solution, so clicking one goes there. seek() is instant
-  // on purpose: jumping twelve moves is not something to sit through, which is exactly the case
-  // step()/stepBack() do not cover. It seeks to just AFTER the clicked move: the cube shows that
-  // move made and the clicked chip is the filled one, so the highlight lands where you clicked.
-  solList.onclick = (ev) => {
-    const chip = ev.target.closest('.chip-m');
-    if (!chip) return;
-    follow.takeOver(); // jumping to a move is taking over just as much as pressing Next is
-    setPlaying(false);
-    cube.seek(Number(chip.dataset.i) + 1);
-  };
+  // The walk's view — the transport head, the chips' marks, the play and step buttons, the
+  // renderer's step event and the scramble hand-off — is its own unit (lib/walk-presenter.js). It
+  // reads the walk when it paints, and reaches the follow tracker and the rung offer only once both
+  // exist.
+  const {
+    holdAt, holdCube, pointAtStep, sync, setPlaying, clearChips, takeChips, resetHead,
+  } = createWalkPresenter({
+    root, cube, state, signal, scrambling, stale, solList, icon, adoptCube, go,
+    walkNow: () => ({ total, target, alg, lesson, walkHold, walkGen }),
+    takeOver: () => follow.takeOver(),
+    onHead: (from, to, walk) => offer.onHead(from, to, walk),
+  });
   // ---- the rung offer: its own unit (lib/walk-offer.js) ---------------------------------------
   const offer = createRungOffer({
     root, settings, save, raiseRung,
@@ -326,16 +182,6 @@ export function createWalkSession(screen, app) {
       void loadWalk();
     };
   }
-
-  $('#repeatBtn', root).onclick = () => {
-    follow.takeOver();
-    // Not merely belt-and-braces with the disabled attribute: stepBack() self-guards at step 0
-    // but step() does not, so without this a repeat at the start would go FORWARD one move.
-    if (at === 0) return;
-    setPlaying(false);
-    cube.stepBack();
-    cube.step();
-  };
 
   // How far the cube in your hand is from the target, refreshed on every turn — its own unit, with
   // its own generation counter (lib/walk-live-distance.js). It reads the follow model when it asks,
@@ -396,7 +242,7 @@ export function createWalkSession(screen, app) {
    *  answer has to be searched for, this is what the search is waited out in.
    */
   function beginWalk() {
-    moves = []; steps = []; chips = []; total = 0; target = null;
+    moves = []; steps = []; clearChips(); total = 0; target = null;
     // The live number and the aim describe the walk being replaced. An answer already in flight
     // for the OLD target would otherwise repaint after a new one is chosen — and a reload that
     // then fails would leave the old aim standing beside no walk at all.
@@ -691,13 +537,12 @@ export function createWalkSession(screen, app) {
               <div class="sub" style="color:var(--ink-4);font-weight:600;padding-bottom:4px">${escHtml(s.name)} <span style="font-weight:400">${escHtml(t('%1 steps · %2 moves', s.steps, s.moves))}</span></div>
               <div class="move-chips">${chipsFor(s.from, s.to)}</div></div>`).join('')
       : `<div style="padding:6px 18px 12px"><div class="move-chips">${chipsFor(0, moves.length)}</div></div>`;
-    chips = [...solList.querySelectorAll('.chip-m')];
+    takeChips();
 
     // Nothing may survive from the previous walk. Each of these is a position ON a plan, and
     // the plan has just been replaced: carried over, they describe a cube that is no longer
     // on screen.
-    at = 0;
-    playing = false;
+    resetHead();
     // Following is re-based on the walk just committed (lib/walk-follow.js): its positions reset,
     // the midpoints of this walk's half turns built, and whether the cube may lead judged again.
     follow.rebase({ moves, steps, total });
