@@ -8,7 +8,8 @@
 //
 // Lifted out of lib/cube-connection.js on 2026-09-13 (the connection design's third unit).
 import { state } from './app-state.js';
-import { adoptCube, rememberLastSeen } from './cube-connection.js';
+import { adoptCube } from './cube-connection.js';
+import { rememberLastSeen } from './cube-reports.js';
 import { conn, cubeRefused } from './live-session.js';
 import { clearOffset, markStale } from './cube-trust-state.js';
 import { applyOffset, isIdentity } from './cube-trust.js';
