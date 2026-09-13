@@ -129,8 +129,11 @@ const FIXTURES = [
 const near = (a, b, what, tol = 1) => assert.ok(Math.abs(a - b) <= tol, `${what}: ${a} vs ${b} (±${tol})`);
 const label = (f) => `${f.name} (${f.width}×${f.height}, insets ${f.insets.join('/')}${f.touch ? ', touch' : ''})`;
 
-async function open(fixture, route = 'home') {
+async function open(fixture, route = 'home', settings = null) {
   const context = await freshContext({ viewport: { width: fixture.width, height: fixture.height }, hasTouch: fixture.touch === true });
+  // A stored setting a case needs — the developer die, to put a scrambled cube on Home — goes in
+  // before the page runs, because the app reads its settings at module scope.
+  if (settings) await context.addInitScript((s) => localStorage.setItem('cubusSettings', JSON.stringify(s)), settings);
   // node --test saturates the machine by design, and a WebKit navigation on a saturated
   // machine is queued work, not a hung page — the 30 s default read exactly that as failure
   // (2026-08-29, two fixtures, both clean alone), and even 120 s was exceeded under the full
@@ -398,6 +401,75 @@ const measureCube = (page) =>
       chips, overflow: { cols: cols.scrollWidth - cols.clientWidth, colsV: cols.scrollHeight - cols.clientHeight, doc: document.documentElement.scrollWidth - innerWidth },
     };
   })()`);
+
+// A STAGE TARGET ON THE CUBE SCREEN. The side card grows a picture of the target, and with the
+// Initial State net above it that card was 603px of content in a 470px row on the desktop landscape
+// window — drawn over the sheet, where a child could not press "first layer" (2026-09-13); 86px
+// past the cube on the desktop portrait window and 80px into the sheet on an iPad in landscape.
+// The composition case below never saw it: it measures the Scramble screen, where there is no
+// target. So this measures Home with the longest target shown, on every fixture.
+for (const fixture of FIXTURES) {
+  test(`cube screen with a stage target: ${label(fixture)}`, async () => {
+    const { page, context } = await open(fixture, 'home', { devRandCube: true });
+    try {
+      await page.click('#randCube');
+      await page.waitForSelector('.chip-m');
+      // The longest stage name, so the heading and the line under the picture are at their longest.
+      await page.click('[data-stage="corners-home"]');
+      await page.waitForFunction(
+        () => /way back|couldn’t|already/.test(document.querySelector('#moveCount')?.textContent ?? ''),
+        null,
+        { timeout: 90_000 },
+      );
+      const m = await page.evaluate(`(() => {
+        const rect = ${rect.toString()};
+        const $ = (s) => document.querySelector(s);
+        const card = $('.state-card');
+        const cols = $('.cols');
+        // Hit-tested at each control's centre WITHOUT scrolling anything. Scrolling a clipped stage
+        // to reach one control moves every other box, and the measurement stops meaning anything —
+        // an exploratory probe that scrolled reported controls covered by the stage itself.
+        const covered = [...document.querySelectorAll('[data-stage], #prevBtn, #repeatBtn, #nextBtn, #playBtn, #stepLbl')]
+          .filter((el) => el.getBoundingClientRect().width > 0)
+          .map((el) => {
+            const b = el.getBoundingClientRect();
+            const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+            return hit && hit !== el && !el.contains(hit) ? (el.dataset.stage || el.id) + ' under ' + hit.className : null;
+          })
+          .filter(Boolean);
+        return {
+          netHidden: $('#viewNet').hidden, aimShown: !$('#stageAim').hidden, heading: $('.state-h').textContent,
+          state: rect(card), stateScroll: card.scrollHeight, stateClient: card.clientHeight,
+          aimNet: rect($('#stageAimNet')), primary: rect($('.cols > .primary')), sheet: rect($('.cols .sheet')),
+          asideBox: getComputedStyle($('.cols > .aside')).display !== 'contents',
+          colsV: cols.scrollHeight - cols.clientHeight, covered,
+        };
+      })()`);
+      assert.ok(m.aimShown, 'the target picture is shown');
+      assert.ok(m.netHidden, 'and it takes the Initial State net\'s place — the card cannot hold both');
+      assert.equal(m.heading, 'Aiming at the top corners home', 'the heading says what the picture is');
+      assert.ok(m.stateScroll <= m.stateClient + 1,
+        `the side card holds ${m.stateScroll}px of content in ${m.stateClient}px — the rest is drawn over its neighbours`);
+      assert.ok(inside(m.aimNet, m.state), `the target picture ${JSON.stringify(m.aimNet)} leaves its card ${JSON.stringify(m.state)}`);
+      if (!m.asideBox) {
+        // The grid compositions, where the card has a row of its own and nothing clips it.
+        const portrait = m.sheet.top >= m.primary.bottom - 1;
+        if (portrait) assert.ok(m.state.bottom <= m.primary.bottom + 1, 'portrait: the card is no taller than the cube');
+        else assert.ok(m.state.bottom <= m.sheet.top + 1, 'landscape: the card ends above the sheet');
+      }
+      if (!fixture.touch) assert.ok(m.colsV <= 1, `the composition overflows its box vertically by ${m.colsV}px`);
+      // Covered controls, where an overlap can only be a layout defect: the grid compositions, in
+      // which nothing scrolls and every region has a box of its own. In a finger's portrait the aside
+      // is a scrolling column laid out in flow, so the card cannot overlap a sibling; what sits over
+      // a control there is the fixed tab bar over content scrolled below the fold, which is that
+      // composition working (the iPhone SE's stage buttons, 2026-09-13). The card itself is held by
+      // the two assertions above on every fixture.
+      if (!m.asideBox) assert.deepEqual(m.covered, [], 'nothing is drawn over a stage button or the transport');
+    } finally {
+      await context.close();
+    }
+  });
+}
 
 for (const fixture of FIXTURES) {
   test(`cube screen composition: ${label(fixture)}`, async () => {

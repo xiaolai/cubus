@@ -55,6 +55,12 @@ import { classifyReconnect, confirmCheck } from './cube-reconnect.js';
 import { t, initLocale, locale, plural } from './i18n.js';
 import { OFFERED_TARGETS, TARGET_BY_ID } from './stage-targets.js';
 import { targetPicture } from './stage-picture.js';
+// How the cube is held while it is solved, and the renamings between the scan frame, the method
+// frame and the hold (ADR 0003). Every crossing between those frames in this file goes through it.
+import {
+  METHOD_FRAME, METHOD_TO_SCAN, SCAN_HOLD, fromMethodFrame, holdForStage, holdForTarget, holdSentence,
+  holdSpec, renameAlg, renameSelectors, sameHold, showMove, toMethodFrame,
+} from './solving-hold.js';
 import { CHIP, STAGE_COPY, chipFor, chipLabel, routeSentence } from './stage-report.js';
 import { routesToTarget } from './stage-route.js';
 // The BUDGET only. `stage-distance.js` builds nothing at import — its tables are lazy — but this
@@ -599,12 +605,18 @@ function lessonFor(c = state.cube) {
   if (c.lesson && c.lesson.facelets === c.facelets && c.lesson.method === method.id) return c.lesson;
   let result;
   try {
-    result = solveByMethod(fromCube(Cube.fromString(c.facelets)), method);
+    // IN THE METHOD FRAME, so the cross it builds is the WHITE one (ADR 0003). The solver puts the
+    // cross on its own D; handed the scan frame, where D is yellow, it taught a yellow cross first.
+    result = solveByMethod(fromCube(Cube.fromString(toMethodFrame(c.facelets))), method);
   } catch (err) {
     console.warn('method solver: no lesson for this cube', err);
     return null;
   }
-  const moves = movesOf(result.alg);
+  // …and the walk lives in the scan frame, like every other walk: the renderer, `follow` and the
+  // smart cube all compare against scan-frame states. The steps keep the solver's own record — their
+  // `why` names pieces in the method frame, which `pointAtStep` renames on the way to the renderer.
+  const lessonAlg = renameAlg(result.alg, METHOD_TO_SCAN);
+  const moves = movesOf(lessonAlg);
   c.lesson = {
     facelets: c.facelets,
     method: method.id,
@@ -614,7 +626,7 @@ function lessonFor(c = state.cube) {
     sections: lessonSections(result.steps),
     // Which step each move belongs to, so the walk can point at what the move you are on is for.
     moveStep: moveStepIndex(result.steps),
-    alg: result.alg,
+    alg: lessonAlg,
     moves,
     stepFacelets: stepStates(c.facelets, moves),
   };
@@ -765,7 +777,12 @@ async function stageAsk(payload) {
   try {
     const client = solverWorker();
     if (typeof client?.stageRoute !== 'function') return null;
-    const reply = await client.stageRoute(payload);
+    // THE ENGINE'S CROSS IS ON D, AND THE METHOD'S CROSS IS WHITE (ADR 0003). Every caller hands
+    // over the cube as the app holds it — the scan frame, where D is yellow — and this door turns
+    // it, so no caller can ask about the yellow cross by forgetting to. A reply's `alg` is therefore
+    // in the METHOD frame; `lastRoute` is its one reader and renames it back. A move COUNT is the
+    // same in every frame, which is all the chips and the live line read.
+    const reply = await client.stageRoute({ ...payload, facelets: toMethodFrame(payload.facelets) });
     return reply?.ok === true ? reply : null;
   } catch (err) {
     // A repair nobody can compute is not an error worth a banner: the chip says so in its own
@@ -786,16 +803,6 @@ async function stageAsk(payload) {
  * the chip runs the full search on the cube screen.
  */
 const CHIP_NODE_BUDGET = 400_000;
-
-/**
- * The targets whose work is on the BOTTOM of the cube, and which are therefore drawn from below.
- *
- * The app's convention puts the cross on D (`methods/engine.js`), so a child building it is
- * looking at the face the renderer would otherwise hide. Named rather than inlined because it is
- * a claim about the METHOD — change the convention and this list is one of the things that has to
- * move with it.
- */
-const BOTTOM_LAYER_TARGETS = new Set(['cross', 'first-layer']);
 
 let solverWarmed = false;
 /**
@@ -4054,7 +4061,9 @@ const cubeScreen = (screenMode) => {
              as an empty well — follows it. Without this the first alarming route costs the feature
              its credibility, and no amount of correct arithmetic buys that back (§6). Hidden while
              the target is the whole cube, where the picture would be a solved cube beside a
-             scrambled one and say nothing.
+             scrambled one and say nothing. While it IS shown it takes the Initial State net's
+             place: the two together did not fit this card's row on the small windows, and the
+             card was drawn over the sheet (loadWalk records the measurement).
              (This comment lives inside a template literal, so optimal.test.mjs's scanner reads it
              as a string that could reach a screen. It therefore avoids the claim vocabulary — and
              that is the scanner being right rather than a nuisance: it cannot tell markup from
@@ -4393,6 +4402,11 @@ const cubeScreen = (screenMode) => {
       // closure, so loadWalk() can replace the walk underneath them without rebuilding anything.
       // A `const` here would put us straight back to needing a new screen for a new cube.
       let setup, alg, moves = [], steps = [], target = null, total = 0;
+      /** How the walk on screen is held, where a lesson does not decide it per move (ADR 0003). */
+      let walkHold = SCAN_HOLD;
+      /** The hold last handed to the renderer. Null until the first walk, so the first one always
+       *  lands — a parked cube's `data-hold` belongs to the screen that parked it. */
+      let heldSpec = null;
       /**
        * The repair this walk came from, or null when the walk is a whole-cube solution.
        *
@@ -4495,6 +4509,38 @@ const cubeScreen = (screenMode) => {
       }
 
       /**
+       * How the move at index `k` is held (ADR 0003). A lesson decides per move — its cross and
+       * first layer white up, everything after them tumbled — and every other walk is held one way
+       * throughout.
+       *
+       * `k` may equal `total`: at the end of a walk there is no next move, and the last step's hold
+       * stays, the same rule `stepAtMove` applies to the cue.
+       */
+      function holdAt(k) {
+        if (!lesson) return walkHold;
+        const step = lesson.steps[stepAtMove(lesson.moveStep, k)];
+        return step ? holdForStage(step.stage) : walkHold;
+      }
+
+      /**
+       * Turn the cube to how it is held — the renderer turning the OBJECT, never the camera.
+       *
+       * Animated, because a cube that jumps upside down between two frames reads as a different
+       * cube, and the turn is what tells a child to turn theirs. `data-hold` records what was asked
+       * for: the renderer's pose is private, and a browser test and a person debugging both need
+       * to read it. Before the tag is upgraded there is no `turnTo`, and the attribute is what the
+       * upgrade reads.
+       */
+      function holdCube(h) {
+        const spec = holdSpec(h);
+        if (spec === heldSpec) return;
+        heldSpec = spec;
+        cube.dataset.hold = spec;
+        if (typeof cube.turnTo === 'function') void cube.turnTo(h[0], h[1]);
+        else cube.setAttribute('orientation', spec);
+      }
+
+      /**
        * Point the cube at what the step under the transport head is about — plan §5.2.
        *
        * `focus` drains the hue from every piece the step does not name; `highlight` pulses the
@@ -4524,13 +4570,26 @@ const cubeScreen = (screenMode) => {
           return;
         }
         const step = lesson.steps[stepAtMove(lesson.moveStep, i)];
-        const { focus, highlight } = lessonCues(step);
+        const cues = lessonCues(step);
+        // The solver names pieces in the METHOD frame and the renderer draws the scan frame, so the
+        // white-blue edge the step calls DF is UB on screen. Unrenamed, the pulse lands on the
+        // yellow-green edge — a real piece, pointed at with total confidence.
+        const focus = renameSelectors(cues.focus, METHOD_TO_SCAN);
+        const highlight = renameSelectors(cues.highlight, METHOD_TO_SCAN);
         // Whole-or-nothing at the renderer: an empty spec removes the channel rather than
         // setting it to a selector that names nothing.
         if (focus) cube.setAttribute('focus', focus); else cube.removeAttribute('focus');
         if (highlight) cube.setAttribute('highlight', highlight); else cube.removeAttribute('highlight');
+        // The cross and first layer are built white up and the rest tumbled, so the cube turns over
+        // as the head crosses from one to the other — in either direction, since a scrub goes back.
+        const held = holdAt(i);
+        holdCube(held);
         if (!whyLine) return;
-        const text = whyText(step);
+        // AND THE STEP THAT BEGINS A NEW HOLD SAYS SO. The drawing turns, but a child's own cube does
+        // not, and every chip from here on is named for the new hold.
+        const turnOver = i > 0 && !sameHold(held, holdAt(i - 1)) ? holdSentence(held) : '';
+        const reason = whyText(step);
+        const text = turnOver ? (reason ? t('%1 %2', turnOver, reason) : turnOver) : reason;
         whyLine.hidden = !text;
         whyLine.textContent = text
           ? t('Step %1 of %2 — %3', lesson.steps.indexOf(step) + 1, lesson.steps.length, text)
@@ -4929,7 +4988,11 @@ const cubeScreen = (screenMode) => {
         if (!liveModel) return; // nothing to track against until a first reading seeds the model
         liveModel.move(m.notation);
         liveMoved = true;
-        act(locate(liveModel.asString()), `That was ${m.notation} — the next move is ${moves[cubePos] ?? '—'}.`);
+        // Both moves named for the hold the walk is in: the cube reports in its own colour frame,
+        // which is the scan frame, and the child is holding it the way the chips say.
+        const heldNow = holdAt(cubePos);
+        act(locate(liveModel.asString()),
+          `That was ${showMove(m.notation, heldNow)} — the next move is ${cubePos < moves.length ? showMove(moves[cubePos], heldNow) : '—'}.`);
         tripwire(m.serial);
         void refreshLiveDistance();
       };
@@ -5031,6 +5094,12 @@ const cubeScreen = (screenMode) => {
        * "I do not recognise this" than a screen that solves the cube.
        */
       function stageTargetNow() {
+        // NEVER ON THE SCRAMBLE SCREEN. `state.stageTarget` outlives the screen it was chosen on and
+        // both modes share this mount, so without this a target chosen on Home drew its aim over a
+        // scramble walk — replacing that screen's own "Target State" net with a stage the scramble
+        // has nothing to do with. One guard here, because every reader asks here: the walk, the
+        // aim, the live line, the route's sentence.
+        if (scrambling) return null;
         const id = state.stageTarget;
         if (!id || id === 'solved') return null;
         const target = TARGET_BY_ID[id];
@@ -5056,7 +5125,12 @@ const cubeScreen = (screenMode) => {
        * the chips on Restore are where a bound-then-answer sequence belongs, because there the
        * first number arrives instantly and the second is an upgrade rather than a correction.
        */
-      async function lastRoute(target, cubie, facelets, signal, wholeDone) {
+      async function lastRoute(target, facelets, signal, wholeDone) {
+        // THE RACE RUNS IN THE METHOD FRAME, and only its answer leaves it (ADR 0003). All three
+        // sources and the replay must agree about which cross is "the cross": the replay checks the
+        // target's predicate on THIS cubie, so a source answering in the scan frame would be judged
+        // against the white cross while having aimed at the yellow one.
+        const cubie = fromCube(Cube.fromString(toMethodFrame(facelets)));
         let last = null;
         const deps = {
           exact: async () => {
@@ -5072,7 +5146,9 @@ const cubeScreen = (screenMode) => {
           // this source empty whenever it was asked first, which after the reordering is always.
           pool: async () => {
             await wholeDone;
-            return state.cube.solution || null;
+            // The whole-cube solution is a scan-frame walk; the prefix scan runs on the method
+            // frame's cubie, so it is renamed first. A throw here is absorbed by the race.
+            return state.cube.solution ? renameAlg(state.cube.solution, METHOD_FRAME) : null;
           },
           /**
            * The method route — SCHEDULED, not called inline, and the yield is the point.
@@ -5095,7 +5171,10 @@ const cubeScreen = (screenMode) => {
           },
         };
         for await (const found of routesToTarget(target, cubie, deps)) last = found;
-        return last;
+        // Back to the scan frame, where the walk, the renderer and `follow` live. Same moves, same
+        // count, same claim — only the names change, so `minimal` and `overshoot` carry over as-is.
+        if (!last || last.alg === null) return last;
+        return Object.freeze({ ...last, alg: renameAlg(last.alg, METHOD_TO_SCAN) });
       }
 
       // ---- loading a walk into this screen ----------------------------------------------------
@@ -5120,6 +5199,10 @@ const cubeScreen = (screenMode) => {
         dropLiveDistance();
         const oldAim = $('#stageAim', root);
         if (oldAim) oldAim.hidden = true;
+        // …and the Initial State net comes back in its place, beside the heading written below:
+        // the subject with no walk yet is exactly what that net and that heading describe.
+        const oldNet = $('#viewNet', root);
+        if (oldNet) oldNet.hidden = false;
         // The lesson describes the walk that is being replaced. Cleared here, with everything
         // else, so no cue survives into the gap: focus and highlight name PIECES, and pointing at
         // a piece on a cube that has just changed is worse than pointing at nothing.
@@ -5371,8 +5454,7 @@ const cubeScreen = (screenMode) => {
             // search is still running.
             if (stageTarget) {
               startedFrom = state.cube.facelets;
-              const cubie = fromCube(Cube.fromString(startedFrom));
-              gotRoute = await lastRoute(stageTarget, cubie, startedFrom, abort.signal, wholeDone);
+              gotRoute = await lastRoute(stageTarget, startedFrom, abort.signal, wholeDone);
               if (!fresh()) return false;
               stageAnswered = Boolean(gotRoute && gotRoute.alg !== null);
               // Nothing is waiting for the whole-cube answer any more: the pool source has already
@@ -5464,6 +5546,10 @@ const cubeScreen = (screenMode) => {
         setup = gotSetup; alg = gotAlg; moves = gotMoves; steps = gotSteps; target = gotTarget;
         lesson = gotLesson;
         route = gotRoute;
+        // HOW THIS WALK IS HELD (ADR 0003). A repair that answered is held the way its target is
+        // built; anything else on this screen — the whole cube, a scramble, a repair that fell back
+        // to the whole-cube walk — keeps the scan's hold. A lesson overrides it per move (`holdAt`).
+        walkHold = stageAnswered ? holdForTarget(stageTarget.id) : SCAN_HOLD;
         total = moves.length;
         if (scrambling) paintNet(target);
         // The Scramble side genuinely starts from solved, so an empty setup alg is its normal
@@ -5493,23 +5579,31 @@ const cubeScreen = (screenMode) => {
         if (aim) {
           const aimingAt = stageTargetNow();
           aim.hidden = !aimingAt;
+          // ONE PICTURE, NOT TWO (the owner's call, 2026-09-13). The card held the Initial State net
+          // AND the target, and on the small desktop windows and an iPad in landscape it grew past
+          // its grid row and was drawn over the sheet — 603px of card in a 470px row on the 840×682
+          // window, where a child could not press "first layer". So while a target is shown it
+          // takes the net's place and the heading says what the picture is. The 3D cube still
+          // shows where the walk starts, and `beginWalk` puts the Initial State back for the next.
+          const net = $('#viewNet', root);
+          if (net) net.hidden = Boolean(aimingAt);
           if (aimingAt) {
+            const heading = root.querySelector('.state-h');
+            if (heading) heading.textContent = t('Aiming at the %1', aimingAt.name);
             const say = $('#stageAimSay', root);
-            if (say) say.textContent = t('aiming at the %1 — grey doesn’t matter yet', aimingAt.name);
-            paintAim(targetPicture(aimingAt));
+            // What grey means, and how to hold the cube for the walk under it — named by white,
+            // green and position, which are the same on every cube (`holdSentence` says why).
+            if (say) say.textContent = t('%1 %2', t('Grey doesn’t matter yet.'), holdSentence(walkHold));
+            // The picture is the target in the METHOD frame; the renderer and the net draw the
+            // scan frame, so it is turned before it is painted.
+            paintAim(fromMethodFrame(targetPicture(aimingAt)));
           }
-          // WHICH WAY UP TO DRAW IT (§5.6). The upside-down cube is a DISPLAY problem and not a
-          // state one: the cube reports faces in its own colour frame however it is held, and the
-          // predicates live in that frame with the cross on D. What changes when a child turns the
-          // cube over to build the cross is which way the drawing should face, and the renderer
-          // already takes `camera-up` for exactly that.
-          //
-          // DEFAULTED FROM THE TARGET, which §5 says is enough. A GAN 16 streams gyro data and
-          // `packages/gan-driver` detects that capability, so the held orientation could be read
-          // instead of assumed — that is a nice-to-have, and a cube that reports no gyro would
-          // still need this default underneath it.
-          cube.setAttribute('camera-up', aimingAt && BOTTOM_LAYER_TARGETS.has(aimingAt.id) ? 'D' : 'U');
         }
+        // WHICH WAY UP (ADR 0003): the CUBE turns, never the camera. This used to set `camera-up`,
+        // which moves the eye — the lamp rolled with it, and every move stayed named for white up
+        // while the face turning on screen was the one at the bottom. The renderer turns the object,
+        // and the chips below are named for the same hold, so the drawing and the words agree.
+        holdCube(holdAt(0));
         // The pair of pills belongs to the whole-cube walk. A repair has no lesson to switch to
         // (§9.4), so the switch is taken away rather than left pointing at nothing.
         const kindRow = $('#walkKindRow', root);
@@ -5635,7 +5729,10 @@ const cubeScreen = (screenMode) => {
         // reaching innerHTML, and "this particular source is trusted" is exactly the reasoning
         // that stops being true when a source is added. Every other template here escapes.
         const chipsFor = (from, to) => moves.slice(from, to)
-          .map((m, k) => `<button class="chip-m" data-i="${from + k}" title="${escHtml(t('Jump to this move'))}">${escHtml(m)}</button>`)
+          // NAMED FOR THE HOLD the move is made in (ADR 0003): the walk is stored in the scan frame,
+          // and a child holding the cube tumbled turns the face at the bottom when the cube's own
+          // white face is meant — which, held that way, is called D.
+          .map((m, k) => `<button class="chip-m" data-i="${from + k}" title="${escHtml(t('Jump to this move'))}">${escHtml(renameAlg(m, holdAt(from + k)))}</button>`)
           .join('');
         solList.innerHTML = route && route.moves === 0
           // AN EMPTY ROUTE MUST NEVER RENDER AS A WALK (§9a). With no moves the grid below draws
