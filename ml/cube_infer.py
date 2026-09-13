@@ -101,6 +101,9 @@ class Detection:
     h: float
     class_id: int
     confidence: float
+    # Every class's score, like the optional `scores` on the TypeScript Detection. Only propose.py
+    # reads them — the nine-of-each repair needs the runner-up colours argmax throws away.
+    scores: tuple[float, ...] | None = None
 
 
 def decode(output: np.ndarray, conf_threshold: float = 0.25, num_classes: int = NUM_CLASSES) -> list[Detection]:
@@ -115,7 +118,12 @@ def decode(output: np.ndarray, conf_threshold: float = 0.25, num_classes: int = 
     conf = scores[cls, np.arange(o.shape[1])]
     out: list[Detection] = []
     for a in np.nonzero(conf >= conf_threshold)[0]:
-        out.append(Detection(float(o[0, a]), float(o[1, a]), float(o[2, a]), float(o[3, a]), int(cls[a]), float(conf[a])))
+        out.append(
+            Detection(
+                float(o[0, a]), float(o[1, a]), float(o[2, a]), float(o[3, a]), int(cls[a]), float(conf[a]),
+                tuple(float(s) for s in scores[:, a]),
+            )
+        )
     return out
 
 
@@ -184,16 +192,22 @@ class FaceRead:
     confidence: tuple[float, ...] | None
 
 
-def fit_face(dets: list[Detection], min_conf: float = 0.25) -> FaceRead:
+def fit_grid(dets: list[Detection], min_conf: float = 0.25) -> tuple[str, list[Detection] | None]:
+    """`fit_face` one step short: the verdict and the nine detections in reading order, boxes and all."""
     good = [d for d in dets if d.confidence >= min_conf and 0 <= d.class_id < NUM_CLASSES]
     if not good:
-        return FaceRead("NO_FACE", None, None)
+        return "NO_FACE", None
     if len(good) < 9:
-        return FaceRead("PARTIAL_FACE", None, None)
+        return "PARTIAL_FACE", None
     nine = sorted(good, key=lambda d: -(d.w * d.h))[:9]
     grid = _to_grid(nine)
+    return ("BAD_GEOMETRY", None) if grid is None else ("OK", grid)
+
+
+def fit_face(dets: list[Detection], min_conf: float = 0.25) -> FaceRead:
+    verdict, grid = fit_grid(dets, min_conf)
     if grid is None:
-        return FaceRead("BAD_GEOMETRY", None, None)
+        return FaceRead(verdict, None, None)
     return FaceRead("OK", tuple(d.class_id for d in grid), tuple(d.confidence for d in grid))
 
 
