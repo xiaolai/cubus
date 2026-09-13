@@ -81,7 +81,9 @@ test('the chain from the cube\'s raw report to this number passes through the co
   // asks where the cube says it is after a turn, and the reconnect derivation asks it of a
   // candidate. The first draft of this case counted all four and failed, which is the assertion
   // being wrong rather than the app.
-  const onFacelets = code.match(/function onFacelets\(reported, serial\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  // Brace-matched rather than read to the first column-0 `}`: the connection code is to move into
+  // factories, where this path's closing brace is indented and that match would run on past it.
+  const onFacelets = blockAt(code, 'function onFacelets(reported, serial)');
   assert.ok(onFacelets, 'the snapshot path must exist');
   assert.match(onFacelets, /const f = applyOffset\(state\.cube\.offset, reported, Cube\);/,
     'the stream is corrected before anything downstream sees it');
