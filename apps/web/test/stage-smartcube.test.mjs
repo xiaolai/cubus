@@ -25,20 +25,27 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+import { blockAt, readAppSource } from './app-source.mjs';
+
+const app = readAppSource();
 const code = app
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^\s*\/\/[^\n]*$/gm, '')
   .replace(/([^:'"`])\/\/[^\n]*/g, '$1');
 
-/** The live-distance path, as source. Every case below is about what is and is not inside it. */
-const live = code.match(/async function refreshLiveDistance\(\)[\s\S]*?\n {6}\}/)?.[0] ?? '';
+/** The live-distance path, as source. Every case below is about what is and is not inside it — and
+ *  `blockAt` throws when the path is gone, so no negative case here can pass over an empty one. */
+const live = blockAt(code, 'async function refreshLiveDistance()');
 
 test('the live distance exists at all, and is its own function', () => {
   assert.ok(live, 'there must be one named path for a per-turn number, or the rules below have no subject');
-  assert.match(code, /liveMove = \(m\) => \{[\s\S]*?void refreshLiveDistance\(\);/,
+  // The walk session's own hooks, read by their declarations. The Timer screen installs a
+  // `liveMove` and a `liveUpdate` of its own, and with app.js read first a lazy match starting at
+  // either name begins at the Timer's and runs on into the session's — passing whatever the
+  // session's hook does or does not call.
+  assert.match(blockAt(code, 'const liveMove = (m) =>'), /void refreshLiveDistance\(\);/,
     'a reported turn must refresh it');
-  assert.match(code, /liveUpdate = \(f, serial\) => \{[\s\S]*?void refreshLiveDistance\(\);/,
+  assert.match(blockAt(code, 'const liveUpdate = (f, serial) =>'), /void refreshLiveDistance\(\);/,
     'and so must a snapshot, which is the drift correction');
 });
 
@@ -62,7 +69,7 @@ test('the chain from the cube\'s raw report to this number passes through the co
   //   the cube reports         onFacelets(reported, serial)
   //   the ONE correction       f = applyOffset(state.cube.offset, reported, Cube)
   //   the corrected stream     state.live = f          …and liveUpdate(f, serial)
-  //   the local model          liveModel = Cube.fromString(f)   — and Cube.fromString(state.live)
+  //   the local model          liveModel = cubejs().fromString(f)   — and cubejs().fromString(state.live)
   //   this number              liveModel.asString()
   //
   // THAT THE CORRECTION IS RIGHT is a different claim and is not this file's: it is proved by a
@@ -83,9 +90,9 @@ test('the chain from the cube\'s raw report to this number passes through the co
   assert.match(onFacelets, /state\.live = f;[\s\S]*?if \(liveUpdate\) liveUpdate\(f, serial\);/,
     'the corrected value is what reaches the screen, not the raw report beside it');
   assert.ok(!/liveUpdate\(reported/.test(onFacelets), 'and never the raw one');
-  assert.match(code, /liveUpdate = \(f, serial\) => \{\s*\n\s*liveModel = Cube\.fromString\(f\);/,
+  assert.match(code, /liveUpdate = \(f, serial\) => \{\s*\n\s*liveModel = cubejs\(\)\.fromString\(f\);/,
     'and it is what seeds the local model');
-  assert.match(code, /liveModel = Cube\.fromString\(state\.live\)/,
+  assert.match(code, /liveModel = cubejs\(\)\.fromString\(state\.live\)/,
     'the walk seeds it from the corrected stream too, never from state.reported');
 });
 
@@ -112,17 +119,17 @@ test('every way a live answer stops being about the cube goes through ONE invali
   // generation, so an answer in flight repainted over the clearing; `onTrustLost` did neither; and
   // a new query left the previous number standing when both of its replies came back unavailable.
   // They are one function now, and this case is what stops a fourth site inventing a fourth answer.
-  const drop = code.match(/function dropLiveDistance\(\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const drop = blockAt(code, 'function dropLiveDistance()');
   assert.ok(drop, 'the invalidation must be one named thing');
   assert.match(drop, /liveGen \+= 1;/, 'it moves the generation, so an answer in flight cannot land');
   assert.match(drop, /el\.textContent = ''/, 'and it takes the last number off the screen');
 
   for (const site of [
-    [/liveGap = \(\) => \{[\s\S]*?\n {6}\};/, 'a lost turn'],
-    [/onTrustLost = \(\) => \{[\s\S]*?\n {6}\};/, 'trust lapsing'],
+    ['const liveGap = () =>', 'a lost turn'],
+    ['const onTrustLost = () =>', 'trust lapsing'],
   ]) {
-    const [pattern, what] = site;
-    const block = code.match(pattern)?.[0] ?? '';
+    const [anchor, what] = site;
+    const block = blockAt(code, anchor);
     assert.ok(block, `${what}: the hook must exist`);
     assert.match(block, /dropLiveDistance\(\)/, `${what} must invalidate the live number`);
     // AND THE MODEL STOPS BEING "AHEAD". `liveMoved` is a claim about the CURRENT connection, and
@@ -150,7 +157,7 @@ test('nothing here asks the cube to restore its own trust', () => {
 // ---- 4. a lost packet invalidates the answer ---------------------------------------------------------
 
 test('a lost turn takes the number with it, and one already in flight cannot land after', () => {
-  const gap = code.match(/liveGap = \(\) => \{[\s\S]*?\n {6}\};/)?.[0] ?? '';
+  const gap = blockAt(code, 'const liveGap = () =>');
   assert.ok(gap, 'the lost-move hook must exist');
   assert.match(gap, /dropLiveDistance\(\)/,
     'a request already in flight is about a cube the model no longer matches, and the last number'

@@ -169,6 +169,8 @@ test('the checks a proof must pass are drivable without a native side at all', (
 
 import { readFileSync } from 'node:fs';
 
+import { readAppSource, walk } from './app-source.mjs';
+
 /** Strip // and /* comments, for the STRUCTURAL matches below — the ones that locate a named
  *  region with a regex. Quoted strings survive (a // inside a string is rare enough in app.js
  *  that the simpler strip is the right trade). The wording scanner does not use this: it skips
@@ -185,7 +187,7 @@ const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s
 //     so the claim lands BETWEEN two matches and is invisible. app.js has 38 nested-template
 //     sites. The negative fixture below is exactly this, and it is checked against the old
 //     scanner too, so the bypass stays demonstrated rather than described.
-//   * A REGEX LITERAL holding a quote — `/[&<>"']/g` is on line 52 of app.js. The old scanner
+//   * A REGEX LITERAL holding a quote — `/[&<>"']/g` is app.js's own `escHtml`. The old scanner
 //     read the `"` as the start of a string and paired it with the next one, desynchronising
 //     everything after it. Nothing said so, because a desynchronised scan still returns a list.
 //
@@ -195,116 +197,9 @@ const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s
 // instead of returning a shorter list, because a quietly incomplete scan is precisely how this
 // invariant stopped holding without failing.
 
-const REGEX_MAY_FOLLOW = new Set([...'(,=:[!&|?{};+-*%~^<>']);
-const REGEX_KEYWORDS = new Set(['return', 'typeof', 'case', 'in', 'of', 'new', 'delete', 'void',
-  'instanceof', 'do', 'else', 'yield', 'await']);
-
-/** Is the `/` at `at` a regex literal rather than a division? The standard heuristic: look back
- *  at the last significant token. A regex can only follow an operator, a punctuator or one of a
- *  few keywords; after an identifier, a `)` or a `]` it is division. */
-function startsRegex(src, at) {
-  let k = at - 1;
-  while (k >= 0 && /\s/.test(src[k])) k -= 1;
-  if (k < 0) return true;
-  if (REGEX_MAY_FOLLOW.has(src[k])) return true;
-  if (!/[\w$]/.test(src[k])) return false;
-  let s = k;
-  while (s >= 0 && /[\w$]/.test(src[s])) s -= 1;
-  return REGEX_KEYWORDS.has(src.slice(s + 1, k + 1));
-}
-
-function endOfQuoted(src, at) {
-  const quote = src[at];
-  for (let i = at + 1; i < src.length; i += 1) {
-    if (src[i] === '\\') { i += 1; continue; }
-    if (src[i] === '\n') throw new Error(`scan: a ${quote} string ran past the end of its line at ${at}`);
-    if (src[i] === quote) return i + 1;
-  }
-  throw new Error(`scan: unterminated ${quote} string at ${at}`);
-}
-
-function endOfRegex(src, at) {
-  let inClass = false;
-  for (let i = at + 1; i < src.length; i += 1) {
-    const ch = src[i];
-    if (ch === '\\') { i += 1; continue; }
-    if (ch === '\n') throw new Error(`scan: a regex literal ran past the end of its line at ${at}`);
-    if (inClass) { if (ch === ']') inClass = false; continue; }
-    if (ch === '[') { inClass = true; continue; }
-    if (ch === '/') {
-      let end = i + 1;
-      while (end < src.length && /[a-z]/.test(src[end])) end += 1;
-      return end;
-    }
-  }
-  throw new Error(`scan: unterminated regex literal at ${at}`);
-}
-
-/**
- * Walk JavaScript, collecting every literal's TEXT.
- *
- * A template contributes the parts outside its `${}` — its cooked text — and each expression
- * inside is walked as code, so a literal nested three deep is collected exactly once and counts
- * exactly once. (Collecting the whole template as well would double-count every nested claim,
- * and `claims(label) === 1` below is an equality.)
- *
- * With `balanced`, the scan starts at a `{` and stops after the `}` that closes it, ignoring
- * braces inside strings, templates, comments and regexes — which is how a gated block is
- * extracted without depending on how it happens to be indented.
- */
-function walk(src, { from = 0, balanced = false } = {}) {
-  const literals = [];
-  const modes = [];
-  let i = from;
-  let part = '';
-  if (balanced) {
-    if (src[i] !== '{') throw new Error('scan: a balanced walk must start at a {');
-    modes.push('block');
-    i += 1;
-  }
-  while (i < src.length) {
-    const ch = src[i];
-    if (modes[modes.length - 1] === 'template') {
-      if (ch === '\\') { part += src.slice(i, i + 2); i += 2; continue; }
-      if (ch === '`') { literals.push(part); part = ''; modes.pop(); i += 1; continue; }
-      if (ch === '$' && src[i + 1] === '{') { literals.push(part); part = ''; modes.push('expr'); i += 2; continue; }
-      part += ch;
-      i += 1;
-      continue;
-    }
-    if (ch === '/' && src[i + 1] === '/') {
-      const nl = src.indexOf('\n', i);
-      i = nl < 0 ? src.length : nl;
-      continue;
-    }
-    if (ch === '/' && src[i + 1] === '*') {
-      const end = src.indexOf('*/', i + 2);
-      if (end < 0) throw new Error(`scan: unterminated block comment at ${i}`);
-      i = end + 2;
-      continue;
-    }
-    if (ch === '/' && startsRegex(src, i)) { i = endOfRegex(src, i); continue; }
-    if (ch === "'" || ch === '"') {
-      const end = endOfQuoted(src, i);
-      literals.push(src.slice(i + 1, end - 1));
-      i = end;
-      continue;
-    }
-    if (ch === '`') { modes.push('template'); i += 1; continue; }
-    if (ch === '{') { modes.push('block'); i += 1; continue; }
-    if (ch === '}') {
-      if (modes.length === 0) throw new Error(`scan: a } closing nothing at ${i}`);
-      modes.pop();
-      i += 1;
-      if (balanced && modes.length === 0) return { literals, end: i };
-      continue;
-    }
-    i += 1;
-  }
-  if (modes.length > 0) throw new Error(`scan: ended inside a ${modes[modes.length - 1]}`);
-  if (balanced) throw new Error('scan: the block never closed');
-  return { literals, end: i };
-}
+// The scanner itself — `walk`, and the string, regex and template readers under it — lives in
+// `app-source.mjs`, where the wiring tests' `blockAt` reads blocks with it too. One scanner, and
+// the negative fixtures below are what keep it from being walked past.
 
 /** Every string and template literal in the source, so wording checks look at what can
  *  actually reach a screen rather than at identifiers or module paths. */
@@ -367,7 +262,7 @@ test('the app can claim a minimum from exactly three places, and nowhere else', 
   //      "Offer to prove a solution is the shortest possible" would have been the same
   //      sentence chosen for the regex rather than for the reader.
   // A fourth region, or an unguarded use of the Settings copy, still fails here.
-  const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+  const app = readAppSource();
   const gated = gatedProveBlock(app);
   assert.ok(gated, 'the gated prove block must exist');
   const label = app.match(/const provenMinimumLabel = [^\n]*\n/)?.[0] ?? '';
@@ -444,8 +339,10 @@ test('the stage repair claims a minimum from ONE named sentence, and only for a 
 
   // The app must reach it ONLY through that function. A template that spelled the sentence out
   // would be a claim nobody could find, which is the failure the naming exists to expose.
-  const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
-  assert.equal(claimsIn(app.replace(gatedProveBlock(app), '')
+  const app = readAppSource();
+  const gated = gatedProveBlock(app);
+  assert.ok(gated, 'the gated prove block must exist, or removing it from the count below removes nothing');
+  assert.equal(claimsIn(app.replace(gated, '')
     .replace(app.match(/const provenMinimumLabel = [^\n]*\n/)?.[0] ?? '~', '')
     .replace(app.match(/const PROVE_COPY = \{[\s\S]*?\n\};/)?.[0] ?? '~', '')), 0,
   'app.js may not spell a stage claim out — it calls routeSentence, which is the one that may');
@@ -469,7 +366,7 @@ test('the wording scanner cannot be walked past — the two ways it could be, pi
   assert.equal(naiveClaims(nested), 0, 'the fixture must actually bypass the old scanner');
   assert.equal(claims(nested), 1, 'a claim nested in a ${} template must still be seen');
 
-  // 2. A regex holding a quote — app.js line 52 — desynchronises the naive scan, so a claim
+  // 2. A regex holding a quote — app.js's `escHtml` — desynchronises the naive scan, so a claim
   //    after it can be read as part of a "string" that started inside the regex.
   const afterRegex = 'const esc = (s) => s.replace(/[&<>"\']/g, e); const t = "proved the minimum";';
   assert.equal(naiveClaims(afterRegex), 0, 'the fixture must actually bypass the old scanner');
@@ -509,7 +406,7 @@ test('the wording scanner cannot be walked past — the two ways it could be, pi
 });
 
 test('every prove call carries the two-phase answer as its upper bound', () => {
-  const app = stripComments(readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8'));
+  const app = stripComments(readAppSource());
   // Balanced-paren extraction, not a regex: nested calls in an argument must not truncate
   // the scan, and a comment mentioning upperBound must not satisfy it (comments are gone).
   const calls = [];

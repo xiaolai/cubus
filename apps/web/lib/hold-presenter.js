@@ -8,7 +8,8 @@
 // It used to be closure state inside the cube screen's mount — a function of some 1,700 lines — and
 // a mini audit of the branch (2026-09-13) found the two things that position hides: the overshoot
 // rule stated one way in a comment and another in the code, and the renderer-upgrade path reached by
-// no test. Functions with explicit inputs make both testable (`test/hold-presenter.test.mjs`).
+// no test. Functions with explicit inputs make both testable (`test/hold-presenter.test.mjs`). The rest
+// of that mount's walk followed the same day, into `lib/walk-session.js`, which is what calls these.
 
 import { stepAtMove } from './method-lesson.js';
 import { SCAN_HOLD, holdForStage, holdForTarget, holdSentence, holdSpec, sameHold } from './solving-hold.js';

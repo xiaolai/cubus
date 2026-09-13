@@ -31,16 +31,16 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { webkit } from 'playwright';
 
 import { pace } from '../browser-wait.mjs';
 import { freePort } from '../free-port.mjs';
+import { readAppSource } from '../app-source.mjs';
 
 const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
-const app = readFileSync(new URL('../../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 
 /** A deliberately impossible cube: the URF corner twisted in place, nothing else moved.
  *  Right colour counts, centres pinned, and it survives cubejs's fromString/asString round-trip —

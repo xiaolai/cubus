@@ -9,11 +9,11 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
 
 import { TIERS } from '../lib/solve-target.js';
+import { readAppSource } from './app-source.mjs';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 
 test('every rung has a label and a description on the Settings screen', () => {
   const labels = app.match(/const TIER_LABEL = \{([^}]*)\}/)?.[1] ?? '';
