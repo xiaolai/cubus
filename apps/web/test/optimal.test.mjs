@@ -169,7 +169,7 @@ test('the checks a proof must pass are drivable without a native side at all', (
 
 import { readFileSync } from 'node:fs';
 
-import { readAppSource, walk } from './app-source.mjs';
+import { blockAt, readAppSource, walk } from './app-source.mjs';
 
 /** Strip // and /* comments, for the STRUCTURAL matches below — the ones that locate a named
  *  region with a regex. Quoted strings survive (a // inside a string is rare enough in app.js
@@ -274,7 +274,7 @@ test('the app can claim a minimum from exactly three places, and nowhere else', 
   assert.ok(gated, 'the gated prove block must exist');
   const label = app.match(/const provenMinimumLabel = [^\n]*\n/)?.[0] ?? '';
   assert.ok(label, 'the library\'s one sanctioned sentence must exist, and be named');
-  const setting = app.match(/const PROVE_COPY = \{[\s\S]*?\n\};/)?.[0] ?? '';
+  const setting = blockAt(app, 'const PROVE_COPY =');
   assert.ok(setting, 'the feature\'s own wording must exist, and be named');
 
   const claims = claimsIn;
@@ -327,7 +327,7 @@ test('the stage repair claims a minimum from ONE named sentence, and only for a 
   // two-phase pool, whose answer is an upper bound by construction, and §9.5 leaves the
   // whole-cube proof this mechanism could give as an open decision for the owner.
   const report = readFileSync(new URL('../lib/stage-report.js', import.meta.url), 'utf8');
-  const stageCopy = report.match(/export const STAGE_COPY = Object\.freeze\(\{[\s\S]*?\n\}\);/)?.[0] ?? '';
+  const stageCopy = blockAt(report, 'export const STAGE_COPY = Object.freeze(');
   assert.ok(stageCopy, 'the stage wording must exist, and be named, so there is one region to sanction');
   assert.equal(claimsIn(stageCopy), 1, 'one claim, in one sentence, in one object');
   assert.equal(
@@ -339,7 +339,7 @@ test('the stage repair claims a minimum from ONE named sentence, and only for a 
   // And the gate: the claim is reachable only from a route that says it is minimal. A fallback of
   // the same length must reach the other branch, which is the whole reason the two are worded
   // differently. Asserted on the SOURCE of the function, because that is where the branch is.
-  const sentence = report.match(/export function routeSentence\([\s\S]*?\n\}/)?.[0] ?? '';
+  const sentence = blockAt(report, 'export function routeSentence(');
   assert.ok(sentence, 'routeSentence must exist — it is the only caller of the claim');
   assert.match(sentence, /route\.minimal \? STAGE_COPY\.shortest/,
     'the claim must be gated on the route calling itself minimal');
@@ -351,7 +351,7 @@ test('the stage repair claims a minimum from ONE named sentence, and only for a 
   assert.ok(gated, 'the gated prove block must exist, or removing it from the count below removes nothing');
   assert.equal(claimsIn(app.replace(gated, '')
     .replace(app.match(/const provenMinimumLabel = [^\n]*\n/)?.[0] ?? '~', '')
-    .replace(app.match(/const PROVE_COPY = \{[\s\S]*?\n\};/)?.[0] ?? '~', '')), 0,
+    .replace(blockAt(app, 'const PROVE_COPY ='), '')), 0,
   'the app may not spell a stage claim out — it calls routeSentence, which is the one that may');
 });
 

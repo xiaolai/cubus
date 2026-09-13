@@ -28,7 +28,7 @@ test('the warm cube is actually solved, so warming costs only the tables', () =>
   // then failed for the naming rather than for the fact, which is the wrong thing to notice. The
   // fact is that the string warmSolver hands the pool is a solved cube; whatever it is called,
   // it must be the one the warm request actually sends.
-  const name = app.match(/warmSolver\(\) \{[\s\S]*?\.solve\(\s*([A-Za-z_$][\w$]*)\s*,/)?.[1];
+  const name = blockAt(app, 'function warmSolver()').match(/\.solve\(\s*([A-Za-z_$][\w$]*)\s*,/)?.[1];
   assert.ok(name, 'warmSolver no longer solves a named constant');
   const facelets = app.match(new RegExp(`const ${name} = '([A-Z]{54})'`))?.[1];
   assert.ok(facelets, `${name} is gone or no longer a 54-character literal`);
@@ -44,7 +44,7 @@ test('the warm budget reaches EVERY worker, not just the first few', () => {
   // matters is the number it comes to. An earlier draft of this test only matched the
   // `N * VIEW_COUNT` form and then asserted that form divides evenly, which is true for every
   // N and so proved nothing; the defect it is aimed at is a bare `probeMax: 3`.
-  const warm = app.match(/warmSolver\(\) \{[\s\S]*?probeMax:\s*([\w*\s]+?)\s*\}/)?.[1];
+  const warm = blockAt(app, 'function warmSolver()').match(/probeMax:\s*([\w*\s]+?)\s*\}/)?.[1];
   assert.ok(warm, 'the warm-up no longer passes a numeric probeMax');
   const budget = warm.split('*').map((t) => t.trim())
     .reduce((a, t) => a * (t === 'VIEW_COUNT' ? VIEW_COUNT : Number(t)), 1);
@@ -58,13 +58,13 @@ test('the warm budget reaches EVERY worker, not just the first few', () => {
 test('warming happens at most once a session', () => {
   // Not a micro-optimisation: without the guard every screen entry queues another solve into
   // the pool, and on the scan screen that is one per re-render.
-  const body = app.match(/function warmSolver\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  const body = blockAt(app, 'function warmSolver()');
   assert.match(body, /if \(solverWarmed\) return;/, 'warmSolver must be guarded');
   assert.match(body, /solverWarmed = true;/, 'and must set the guard before it can throw');
 });
 
 test('warming never becomes something a screen waits on, or is broken by', () => {
-  const body = app.match(/function warmSolver\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  const body = blockAt(app, 'function warmSolver()');
   assert.doesNotMatch(body, /\bawait\b/,
     'an awaited warm-up puts the table build back in front of the user, which is the whole bug');
   assert.match(body, /\.catch\(/, 'an unhandled rejection here would surface as a page error');

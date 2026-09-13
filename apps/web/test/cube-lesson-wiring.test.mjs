@@ -136,11 +136,11 @@ test('a STAGE route has no lesson, and the switch goes with it', () => {
 });
 
 test('the lesson is thrown away with the arrangement it was about', () => {
-  const ingest = code.match(/function ingestFacelets\(f\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  const ingest = blockAt(code, 'function ingestFacelets(f)');
   assert.match(ingest, /c\.lesson = null/, 'a new arrangement must not keep the old cube\'s lesson');
   // And the cache key is the arrangement AND the rungs, so raising a rung produces a new lesson
   // rather than the old one under a new name.
-  const fn = code.match(/function lessonFor\([\s\S]*?\n\}/)?.[0] ?? '';
+  const fn = blockAt(code, 'function lessonFor(');
   assert.match(fn, /c\.lesson\.facelets === c\.facelets/);
   assert.match(fn, /c\.lesson\.method === method\.id/);
 });
@@ -150,7 +150,7 @@ test('every step points at something, and the cue is cleared when there is nothi
   assert.ok(point, 'the screen must have a function that applies a step\'s cues');
   // Worked out once, when the lesson is built, and renamed into the frame the renderer draws — then
   // applied from the step under the head.
-  const build = code.match(/function lessonFor\([\s\S]*?\n\}/)?.[0] ?? '';
+  const build = blockAt(code, 'function lessonFor(');
   assert.match(build, /lessonCues\(step\)/, 'every step\'s cues are worked out when the lesson is built');
   assert.match(point, /step\?\.focus/);
   assert.match(point, /step\?\.highlight/);
@@ -174,7 +174,7 @@ test('the move list is cut by the lesson\'s own stages, never by a proportion', 
 
 test('the rungs are stored as four dials, repaired on load, and defaulted to the bottom', () => {
   assert.match(code, /settings\.rungs = repairRungs\(settings\.rungs\)/, 'the stored record must be repaired');
-  const repair = code.match(/function repairRungs\(stored\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  const repair = blockAt(code, 'function repairRungs(stored)');
   assert.match(repair, /DEFAULT_RUNGS/, 'the default is the bottom rung everywhere');
   assert.match(repair, /Number\.isInteger\(want\)/, 'localStorage is untrusted input');
   assert.match(repair, /TOP_RUNG\[id\]/, 'a rung above the ladder must not be believed');
