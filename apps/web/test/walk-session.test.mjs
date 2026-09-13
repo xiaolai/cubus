@@ -491,3 +491,58 @@ test('a cube the method cannot teach falls back to its solution, and the switch 
   assert.equal(await w.session.load(), true);
   assert.equal(lessonAsks, 1, 'the next load asked again for a lesson the switch says is not showing');
 });
+
+// ---- step 0 of the resolver: the search leaving loadWalk -------------------------------------------------
+//
+// stage-wiring.test.mjs checks the order of the whole-cube search and the repair as positions inside
+// loadWalk, which the resolver's extraction moves out of it. These pin what that order is FOR, so the
+// extraction is held to the screen's behaviour rather than to where the lines stood.
+
+test('a whole-cube search that fails does not take a repair that answered with it', async () => {
+  const w = world({ subject: { facelets: turned('R U') } }, () => ({
+    deriveCube: async () => { throw new Error('solver unavailable'); },
+    // The repair answers only AFTER the whole-cube search has failed: the order an audit reproduced.
+    lastRoute: async (_target, _from, _signal, wholeDone) => {
+      await wholeDone;
+      return { kind: 'exact', alg: "U'", moves: 1, minimal: true, overshoot: false };
+    },
+  }));
+  w.state.stageTarget = 'cross';
+  assert.equal(await within(w.session.load()), true, 'a whole-cube failure took the repair that answered down with it');
+  assert.deepEqual(w.chips(), ["U'"], "the repair's moves are not the walk on screen");
+  assert.notEqual(w.$('#moveCount').textContent, 'no solver', 'the failure of a search nobody needed was shown over the repair');
+});
+
+test('with nothing to fall back on, a search that fails is what the screen says', async () => {
+  const whole = world({}, () => ({ deriveCube: async () => { throw new Error('solver unavailable'); } }));
+  assert.equal(await within(whole.session.load()), false, 'a whole-cube search that failed was committed as a walk');
+  assert.equal(whole.$('#moveCount').textContent, 'no solver', 'a whole-cube walk whose search failed said nothing about it');
+  assert.deepEqual(whole.chips(), [], 'a failed search left moves on screen');
+
+  // A repair that found nothing leaves the whole-cube answer as the walk — and its failure as the screen's.
+  const stage = world({ subject: { facelets: turned('R U') } }, () => ({
+    deriveCube: async () => { throw new Error('solver unavailable'); },
+    lastRoute: async () => ({ kind: 'none', alg: null, moves: null, minimal: false, overshoot: false }),
+  }));
+  stage.state.stageTarget = 'cross';
+  assert.equal(await within(stage.session.load()), false,
+    'a repair that found nothing, over a whole-cube search that failed, was committed as a walk');
+  assert.equal(stage.$('#moveCount').textContent, 'no solver',
+    'a repair that found nothing, over a whole-cube search that failed, said nothing about the failure');
+});
+
+test('once a repair is on screen, the abandoned whole-cube search no longer writes the count', async () => {
+  let reports = null;
+  const w = world({ subject: { facelets: turned('R U') } }, () => ({
+    deriveCube: (opts) => { reports = opts; return new Promise(() => {}); },
+    lastRoute: async () => ({ kind: 'exact', alg: "U'", moves: 1, minimal: true, overshoot: false }),
+  }));
+  w.state.stageTarget = 'cross';
+  assert.equal(await within(w.session.load()), true, 'precondition: the repair was committed');
+  const count = w.$('#moveCount').textContent;
+  assert.ok(reports, 'precondition: the whole-cube search was given its two ways to report');
+  reports.onImprovement({ moves: 7 });
+  assert.equal(w.$('#moveCount').textContent, count, "the abandoned search wrote its move count over the repair's");
+  reports.onProgress({ attempt: 2 });
+  assert.equal(w.$('#moveCount').textContent, count, "the abandoned search wrote its progress over the repair's count");
+});
