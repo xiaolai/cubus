@@ -15,10 +15,12 @@ import { HIDEABLE, PALETTES, THEMES, navHidden, save, settings } from '../app-se
 import { applyNetColors, applyTheme, buildNet, netPalette } from '../cube-drawing.js';
 import { isTauri } from '../window-chrome.js';
 import {
-  bleReach, bleReachNote, canPair, clearOffset, conn, cubeRefused, doConnect, markStale,
-  markTrusted, onDisconnect, refreshBattery, repaintSettings, settingsRepaintPending,
-  wireReconnectAnswers,
+  bleReach, bleReachNote, canPair, conn, cubeRefused, doConnect, markTrusted, onDisconnect,
+  refreshBattery, wireReconnectAnswers,
 } from '../cube-connection.js';
+import {
+  clearOffset, markStale, repaintSettings, settingsRepaintPending,
+} from '../cube-trust-state.js';
 import {
   cubes, forgetKnownCube, idWords, liveCubeLabel, registryWriteBad, renameKnownCube, whenWords,
 } from '../cube-memory.js';

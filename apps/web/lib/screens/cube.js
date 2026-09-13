@@ -25,7 +25,8 @@ import { CHIP_NODE_BUDGET, Cube, loadSolver, solverReady, stageAsk, warmSolver }
 import { classifyCube, deriveCube, lessonFor, raiseRung, stepStates } from '../cube-subject.js';
 import { applyNetColors, buildNet, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
-import { adoptCube, chainTrusted, markStale, wireReconnectAnswers } from '../cube-connection.js';
+import { adoptCube, wireReconnectAnswers } from '../cube-connection.js';
+import { chainTrusted, markStale } from '../cube-trust-state.js';
 import { whenWords } from '../cube-memory.js';
 import { parkRoll, putInPlay, randomScramble, schedulePreroll } from '../scramble-roll.js';
 import { PROVE_COPY, sayWalkLength } from '../prove-affordance.js';
