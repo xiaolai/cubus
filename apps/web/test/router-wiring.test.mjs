@@ -1854,8 +1854,9 @@ test('phase 4: every timer-screen sentence goes through t()', async () => {
   // screen was the last one wired, and a raw `say('...')` is invisible until a catalog exists —
   // by which time the sentence is old and nobody remembers it was skipped.
   const { readFileSync } = await import('node:fs');
-  const src = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
-  const body = src.slice(src.indexOf('SCREENS.timer = () => {'), src.indexOf('SCREENS.settings = () => {'));
+  // The Timer is its own module now, so the whole file is the screen — no slice by position.
+  const body = readFileSync(new URL('../lib/screens/timer.js', import.meta.url), 'utf8');
+  assert.match(body, /SCREENS\.timer = \(\) => \{/, 'the Timer screen moved — find it again rather than deleting this test');
   const raw = [...body.matchAll(/say\((['"])(?!.*\$\{)([A-Z][^'"]{4,})\1\)/g)].map((m) => m[2]);
   assert.deepEqual(raw, [], `these timer sentences bypass t(): ${raw.join(' | ')}`);
 });

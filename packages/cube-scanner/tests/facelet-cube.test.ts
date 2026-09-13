@@ -112,11 +112,11 @@ describe('solvability gate agrees with cubejs (independent oracle)', () => {
 });
 
 // The scan screen paints each face tile's four edges in its neighbours' colours, so a user can
-// see which way up to hold a side without being told. That table lives in apps/web/lib/app.js
-// (which cannot import TypeScript), so this pins the copy against the derivation. If the facelet
-// layout ever changed, this fails here and names the file to update.
+// see which way up to hold a side without being told. That table lives in
+// apps/web/lib/screens/scan.js (which cannot import TypeScript), so this pins the copy against the
+// derivation. If the facelet layout ever changed, this fails here and names the file to update.
 describe('FACE_NEIGHBOURS', () => {
-  it('matches the table apps/web/lib/app.js paints the scan tiles from', () => {
+  it('matches the table apps/web/lib/screens/scan.js paints the scan tiles from', () => {
     expect(FACE_NEIGHBOURS).toEqual({
       U: { top: 'B', right: 'R', bottom: 'F', left: 'L' },
       R: { top: 'U', right: 'B', bottom: 'D', left: 'F' },

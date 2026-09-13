@@ -18,7 +18,7 @@ import { test } from 'node:test';
 import { shareBudget } from '../lib/solve-client.js';
 import { VIEW_COUNT } from '../lib/solver-engine.js';
 import Cube from '../vendor/cubejs.js';
-import { readAppSource } from './app-source.mjs';
+import { blockAt, readAppSource } from './app-source.mjs';
 
 const app = readAppSource();
 
@@ -86,7 +86,7 @@ test('the pool that gets a shared word also gets shared TABLES', () => {
   // that branch would be asking a page with no SharedArrayBuffer to publish 9.82 MiB into one;
   // one left off entirely would put six table builds back into every cold session with nothing
   // to say so, because the pool falls back quietly and correctly.
-  const pool = app.match(/return createParallelSolveClient\(\{([\s\S]*?)\n {2}\}\);/)?.[1];
+  const pool = blockAt(app, 'return createParallelSolveClient(');
   assert.ok(pool, 'the parallel client is no longer constructed where this test can read it');
   assert.match(pool, /shareTables:\s*true/,
     'the pool must build its tables once and share them, or a cold session pays six builds');
