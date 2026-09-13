@@ -87,7 +87,7 @@ test('the chain from the cube\'s raw report to this number passes through the co
     'the stream is corrected before anything downstream sees it');
   assert.equal([...onFacelets.matchAll(/applyOffset\(/g)].length, 1,
     'a second correction inside this path is a second answer to "where is this cube"');
-  assert.match(onFacelets, /state\.live = f;[\s\S]*?if \(liveUpdate\) liveUpdate\(f, serial\);/,
+  assert.match(onFacelets, /state\.live = f;[\s\S]*?if \(hooks\.liveUpdate\) hooks\.liveUpdate\(f, serial\);/,
     'the corrected value is what reaches the screen, not the raw report beside it');
   assert.ok(!/liveUpdate\(reported/.test(onFacelets), 'and never the raw one');
   assert.match(code, /liveUpdate = \(f, serial\) => \{\s*\n\s*liveModel = cubejs\(\)\.fromString\(f\);/,

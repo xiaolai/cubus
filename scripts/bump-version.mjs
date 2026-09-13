@@ -2,7 +2,7 @@
 // Bump the app's version everywhere it is written — `pnpm bump 0.5.0`.
 //
 // The web app is a static site with no build step to inject a manifest's version into, so the
-// number the About card shows is a constant in apps/web/lib/app.js — and the same number sits in
+// number the About card shows is a constant in apps/web/lib/version.js — and the same number sits in
 // four manifests and the Cargo lockfile beside it. A test ("every manifest carries the same
 // version the app displays", apps/web/test/router-wiring.test.mjs) fails when any of them
 // drifts; this script is how they move together. Exact matches only: every file must carry its
@@ -20,7 +20,7 @@ const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
  *  `cubus-desktop` entry and no other package's. The three capture groups are (before, version,
  *  after). */
 export const SITES = [
-  { file: 'apps/web/lib/app.js', re: /^(export const VERSION = ')([^']+)(';)$/m },
+  { file: 'apps/web/lib/version.js', re: /^(export const VERSION = ')([^']+)(';)$/m },
   { file: 'apps/web/package.json', re: /^(  "version": ")([^"]+)(",)$/m },
   { file: 'apps/desktop/package.json', re: /^(  "version": ")([^"]+)(",)$/m },
   { file: 'apps/desktop/src-tauri/tauri.conf.json', re: /^(  "version": ")([^"]+)(",)$/m },
