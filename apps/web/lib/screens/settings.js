@@ -16,8 +16,9 @@ import { applyNetColors, applyTheme, buildNet, netPalette } from '../cube-drawin
 import { isTauri } from '../window-chrome.js';
 import {
   bleReach, bleReachNote, canPair, conn, cubeRefused, doConnect, markTrusted, onDisconnect,
-  refreshBattery, wireReconnectAnswers,
+  refreshBattery,
 } from '../cube-connection.js';
+import { wireReconnectAnswers } from '../reconnect-answer.js';
 import {
   clearOffset, markStale, repaintSettings, settingsRepaintPending,
 } from '../cube-trust-state.js';
