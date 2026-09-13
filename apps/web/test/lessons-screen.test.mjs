@@ -12,6 +12,7 @@
 // so app.js boots exactly once here.
 
 import assert from 'node:assert/strict';
+import { isAbsent } from './dom-assert.mjs';
 import { readFileSync } from 'node:fs';
 import { before, test } from 'node:test';
 
@@ -134,7 +135,7 @@ test('a raised stage that has run out says so, and its button is gone', async ()
   // top, it must look exactly like OLL and PLL do.
   const card = () => $$('#stage .card.tight')[0];
   assert.equal(stored().rungs.cross, TOP_RUNG.cross, 'precondition: cross is at its top');
-  assert.equal(card().querySelector('[data-raise]'), null, 'a topped-out stage still offers a way up');
+  isAbsent(card().querySelector('[data-raise]'), 'a topped-out stage still offers a way up');
   assert.match(card().textContent, /highest rung there is/);
 });
 
@@ -143,7 +144,7 @@ test('the offer lives on the cube screen and is answerable both ways', async () 
   // elements — an offer with no way to decline is an ask, and that is the rule it would break.
   win.location.hash = '#/lessons';
   await tick();
-  assert.equal($('#rungOffer'), null, 'the offer must not be on the Lessons screen');
+  isAbsent($('#rungOffer'), 'the offer must not be on the Lessons screen');
 
   // A cube with a solution first. The offer belongs to the moment a solve ENDS, so the row is part
   // of the solve view and there is no solve view without one — asking for it on an empty Home gets
