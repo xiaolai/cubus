@@ -2,9 +2,9 @@
 // sends. What the app remembers about a cube across connections is lib/cube-memory.js; whether it
 // knows what the connected cube looks like, and what on screen says so, is lib/cube-trust-state.js;
 // the answer to the reconnect question is lib/reconnect-answer.js, which sits above this module.
-// Trust is GRANTED here (markTrusted), because granting it first asks the session whether it has
-// refused the cube, and the session is this module's. It sits beneath the screens, so it reaches
-// the shell only through `shell` and a mounted screen only through `hooks`.
+// The session itself is held in lib/live-session.js, beneath all of them, and only this module
+// takes hold of one or lets it go. It sits beneath the screens, so it reaches the shell only
+// through `shell` and a mounted screen only through `hooks`.
 //
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
@@ -34,14 +34,11 @@ import {
   cubes, lastCubeMac, rememberArrangement, rememberConnection, sessionIdentity,
 } from './cube-memory.js';
 import {
-  chainTrusted, clearOffset, markStale, repaintSettings, setConnected, trustChanged,
+  chainTrusted, clearOffset, markStale, markTrusted, repaintSettings, setConnected,
 } from './cube-trust-state.js';
+import { conn, cubeRefused, holdSession, turnsReported } from './live-session.js';
 
 // ---- smart cube: the connection and its reports (recovered from v0) -----------------------------
-
-// The live session (lib/cube-session.js), or null. It owns the transport, the protocol layer
-// and the self-check; the app only ever holds this one handle, here.
-export let conn = null;
 
 /** The connected cube's remembered record at the moment it connected — what the reconnect
  *  reading compares the first report against. Cleared with the connection. */
@@ -73,14 +70,6 @@ let lastSerialSeen = null;
 export function rememberLastSeen(how, { force = false } = {}) {
   if (rememberArrangement(how, { force, serial: lastSerialSeen ?? null })) repaintSettings();
 }
-
-/** Has the session PROVED this cube's own reports do not add up?
- *
- *  One predicate, because it now gates three different things — the report stream, the repair
- *  scan, and re-trusting after one — and three copies of a verdict comparison is how a refusal
- *  comes to mean different things per screen. A session that is not there refuses nothing:
- *  "no cube" and "a cube known to be wrong" are not the same state. */
-export const cubeRefused = () => conn?.verdict === VERDICT.REFUSED;
 
 /** Repair tracking from one camera reading, WITHOUT solving the cube.
  *
@@ -185,7 +174,7 @@ export function repairTracking(scanned, { reconciling = false } = {}) {
 /** The cube is gone — dropped, or deliberately let go. ONE body, used by the driver's event, the
  *  Disconnect button and the failure path in connectOnce. Idempotent. */
 export function onDisconnect() {
-  conn = null;
+  holdSession(null);
   // The memory's timestamp is the last moment the app was SURE — which is now, if the chain was
   // trusted when it broke. The content is already stored; this is the one write that keeps
   // "as we last saw it, Tuesday 21:40" naming the break rather than the last turn.
@@ -234,14 +223,6 @@ function onMovesLost() {
   markStale('a turn went unrecorded');
   if (hooks.liveGap) hooks.liveGap();
 }
-
-/** How many turns this connection has reported, as the SESSION counts them. The self-check is
- *  shown every MOVE event before any listener of ours is, so this is the cube's own record rather
- *  than a tally of what happened to reach this file — which is exactly what makes it worth asking
- *  a second time at the report. Zero with no session, and zero for a session that counts nothing:
- *  a count that cannot move can only ever say "nothing turned", which is what a cube reporting no
- *  moves at all is in fact saying. */
-const turnsReported = () => conn?.evidence?.moveReports ?? 0;
 
 /**
  * Throw away a scan held for a first report, and say where trust is shown why.
@@ -410,21 +391,6 @@ export async function refreshBattery() {
   }
 }
 
-/** We now know what the cube looks like, and by what means. */
-export function markTrusted(source) {
-  // A refusal is about the CUBE, and only a fresh connection can revisit it. Trust sourced from
-  // 'cube' means "its own reports say so", which is exactly the claim the checker has disproved —
-  // so an anchor or a confirmation must not be able to buy it back. 'camera' and 'generated' are
-  // knowledge from elsewhere and are unaffected; the guard is at this choke point rather than at
-  // each caller for the same reason every other trust change passes through here.
-  if (source === 'cube' && cubeRefused()) return;
-  if (state.cube.trusted && state.cube.source === source) return;
-  state.cube.trusted = true;
-  state.cube.source = source;
-  state.cube.staleWhy = '';
-  trustChanged();
-}
-
 let connecting = null;
 export async function doConnect(macFromUi) {
   // Single-flight: two overlapping attempts raced through the shared transport/conn state, the
@@ -437,7 +403,7 @@ export async function doConnect(macFromUi) {
 }
 
 async function connectOnce(macFromUi) {
-  if (conn) { try { await conn.disconnect(); } catch {} conn = null; }
+  if (conn) { try { await conn.disconnect(); } catch {} holdSession(null); }
   try {
     // The self-check needs cubejs, and a cube paired before the solver finished loading would be
     // REFUSED for a reason that has nothing to do with the cube — an alarming verdict caused by
@@ -489,7 +455,7 @@ async function connectOnce(macFromUi) {
     // happened all live behind onMovesLost, and this is the door they arrive through.
     session.onMovesLost(() => { if (conn === session) onMovesLost(); });
 
-    conn = session;
+    holdSession(session);
     adoptConnection(sessionIdentity(session), session.name || 'Smart cube');
     // The reply is NOT fed to onFacelets here. It arrives on the event stream too, and the
     // permanent listener above already handles it — passing it on as well delivered the
@@ -661,7 +627,7 @@ window.cubusFeed = {
    *  its own `mac` (including the empty one five of the ten protocols report) overrides it, which
    *  is how an addressless cube can be driven through this seam at all. */
   useConnection: (fake, mac = 'AA:BB:CC:DD:EE:FF') => {
-    conn = fake;
+    holdSession(fake);
     if (fake) {
       const session = { mac: fake.mac ?? mac, name: fake.name ?? 'Test cube' };
       adoptConnection(sessionIdentity(session), session.name);
