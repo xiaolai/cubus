@@ -242,7 +242,8 @@ test('a repair is offered only for a scan that is still believed', () => {
   assert.match(code, /if \(!p\.complete \|\| refused\) dropStageChips\(\);/,
     'and so does a scan this screen refused — `complete` survives a refusal, so it cannot be the only test');
   const click = blockAt(code, "$('#stageChips', root)?.addEventListener('click'");
-  assert.match(click, /if \(refused\) return;/, 'and a press over a refused read does nothing');
+  assert.match(click, /if \(isRefused\(\)\) return;/, 'and a press over a refused read does nothing');
+  assert.match(code, /isRefused: \(\) => refused/, 'which the row asks of the screen, whose verdict a refusal is');
 });
 
 test('a chip answer is about the cube it was asked about, not merely the cube of its generation', () => {
