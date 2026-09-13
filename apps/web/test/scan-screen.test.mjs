@@ -1010,3 +1010,226 @@ test('a refusal never establishes an arrangement', () => {
   assert.equal(after.scheme, before.scheme);
   assert.equal(after.schemeSource, before.schemeSource);
 });
+
+// ---- what the screen leaves behind when it goes ------------------------------------------------
+//
+// A screen's listeners on `document` and on `navigator.mediaDevices` outlive its DOM unless the
+// screen's abort signal takes them away, and an event already in flight at the scanner still lands
+// after the navigation. Nothing on screen shows either mistake — the handlers run against a board
+// that is no longer on the page — so each case keeps the OLD screen's parts, leaves, and asserts
+// they heard nothing, after first proving on the live screen that the same event reaches them.
+// Written before the screen is broken up into units (2026-09-13), so the units have to keep it.
+
+/** Enter the scan screen fresh, from another one, and let it mount. */
+const enterScan = async () => {
+  win.cubusGo('viewer');
+  await tick();
+  win.location.hash = '#/scan';
+  await tick();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(panel(), 'the scan screen mounted');
+};
+const leaveScan = async () => {
+  win.cubusGo('viewer');
+  await tick();
+  assert.equal(panel(), null, 'the scan screen is gone');
+};
+/** A real cube: `alg` applied to a solved one, so cubejs accepts it and no search runs for ever. */
+const cubeAfter = (alg) => {
+  const c = new Cube();
+  c.move(alg);
+  return c.asString();
+};
+
+test('once the screen is gone, a click or an Escape on the page reaches none of its popovers', async () => {
+  await enterScan();
+  const camBtn = $('#scanCamBtn');
+  const menu = $('.menu');
+  camBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, false, 'the camera menu opened');
+  win.document.body.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, true, 'on the live screen, a click elsewhere closes the menu');
+  camBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, false, 'opened again, to be left open');
+  await leaveScan();
+  win.document.body.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, false, "a click after leaving reached the old screen's camera menu");
+
+  await enterScan();
+  progress({ phase: 'scanning', message: '', captured: [face('R')], live: null, device: null, confirm: null });
+  const pick = $('.swatches');
+  const cell = () => all('.scan-face[data-face="R"] .tgrid > .cell')[1];
+  cell().click();
+  assert.equal(pick.hidden, false, 'the colour picker opened');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(pick.hidden, true, 'on the live screen, Escape closes the picker');
+  cell().click();
+  assert.equal(pick.hidden, false, 'opened again, to be left open');
+  await leaveScan();
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(pick.hidden, false, "an Escape after leaving reached the old screen's colour picker");
+});
+
+test('once the screen is gone, a camera coming or going no longer rebuilds its camera menu', async () => {
+  // happy-dom has no mediaDevices, and the screen listens at mount, so the stand-in goes on first.
+  const devices = new win.EventTarget();
+  Object.defineProperty(win.navigator, 'mediaDevices', { value: devices, configurable: true });
+  try {
+    await enterScan();
+    const old = panel();
+    let asked = 0;
+    old.cameras = async () => { asked += 1; return []; };
+    devices.dispatchEvent(new win.Event('devicechange'));
+    await tick();
+    assert.equal(asked, 1, 'on the live screen, a device change asks the scanner for its cameras again');
+    await leaveScan();
+    devices.dispatchEvent(new win.Event('devicechange'));
+    await tick();
+    assert.equal(asked, 1, "a device change after leaving still drove the old screen's camera menu");
+  } finally {
+    delete win.navigator.mediaDevices;
+  }
+});
+
+test('a scan that finishes after the screen is gone adopts nothing and moves no one', async () => {
+  const { state } = await import('../lib/app.js');
+  const live = cubeAfter('R U');
+  const late = cubeAfter('F D');
+  await enterScan();
+  const old = panel();
+  old.dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: live, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  assert.equal(state.cube.facelets, live, 'on the live screen, a finished scan is adopted');
+  await leaveScan();
+  const hash = win.location.hash;
+  old.dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: late, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  await tick();
+  assert.equal(state.cube.facelets, live, 'a scan that landed after leaving was adopted as the cube in hand');
+  assert.equal(win.location.hash, hash, 'a scan that landed after leaving navigated from a screen that is gone');
+});
+
+test('a scan that moves the colour arrangement says so once, and never over the scanner\'s notice', async () => {
+  await enterScan();
+  const title = () => $('#scanHowTitle').textContent;
+  const body = () => $('#scanHow').textContent;
+  const quiet = (message) => progress({ phase: 'scanning', message, captured: [], live: null, confirm: null });
+  // A known starting belief, whatever the cases above left stored: settle on the Japanese colours
+  // and let whatever that says pass.
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese' });
+  quiet('x');
+
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'western' });
+  assert.equal(title(), 'Yellow under white', 'a scan that moved the belief says which colours it found');
+  assert.match(body(), /^Your cube has yellow under white/);
+  assert.ok($('#scanHow').classList.contains('ok'), 'and says it as good news');
+  quiet('Show another side.');
+  assert.equal(body(), 'Show another side.', 'the colour sentence was said twice');
+  assert.equal(title(), 'How it works');
+
+  progress({
+    phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese',
+    notice: { title: 'Hold it still', tone: 'info', body: 'Keep the side flat to the camera.' },
+  });
+  assert.equal(title(), 'Hold it still', "the colour sentence spoke over the scanner's notice");
+  assert.equal(body(), 'Keep the side flat to the camera.');
+  quiet('x');
+  assert.equal(title(), 'Blue under white', 'a sentence a notice held back is said once the notice is gone');
+  assert.match(body(), /^Your cube has blue under white/);
+  quiet('Show another side.');
+  assert.equal(title(), 'How it works', 'and it is said only that once');
+});
+
+// ---- the chip row, on the screen that draws it -------------------------------------------------
+//
+// stage-wiring.test.mjs reads the row's wiring as source, and stage-target.test.mjs drives its
+// answers in a real browser. Neither pins, on this screen, what the row does when the scan under it
+// stops being believed, or when a chip is pressed over a cube it was not drawn for. There is no
+// worker here, so every question the row asks is refused and every chip is a dash — a state the row
+// already has, and enough to hold what it does around its answers. The press that DOES walk comes
+// first: it is what keeps the two presses that must not from passing over a click nothing heard.
+
+/** A scan the screen believes, of the cube `alg` makes from solved, and the turns its row needs. */
+const believedScan = async (alg = 'R U') => {
+  const { settings } = await import('../lib/app-settings.js');
+  assert.equal(Boolean(settings.autosolve), false, 'precondition: auto-solve is off, or a believed scan leaves the screen');
+  const facelets = cubeAfter(alg);
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  for (let i = 0; i < 5; i += 1) await tick();
+  return facelets;
+};
+
+test('a believed scan draws the chip row; with nothing to ask, every chip is a dash and the row offers the whole solve', async () => {
+  const { OFFERED_TARGETS } = await import('../lib/stage-targets.js');
+  const { STAGE_COPY } = await import('../lib/stage-report.js');
+  await enterScan();
+  assert.equal($('#stageCard').hidden, true, 'no row before a scan: a number about a cube nobody has read is about nothing');
+  await believedScan();
+  assert.equal($('#stageCard').hidden, false, 'a believed scan draws the row');
+  assert.deepEqual(all('.stage-chip').map((c) => c.dataset.target), OFFERED_TARGETS.map((x) => x.id),
+    'one chip per offered target, in order');
+  assert.deepEqual(all('.stage-chip .howfar').map((e) => e.textContent), OFFERED_TARGETS.map(() => '—'),
+    'a question nobody could answer is a dash, never a number');
+  assert.equal($('#stageSay').textContent, STAGE_COPY.offerSolve(), 'and the row offers the whole solve in its place');
+});
+
+test('a refusal takes the chip row away, whichever side of the scan refuses', async () => {
+  await enterScan();
+  await believedScan();
+  assert.equal($('#stageCard').hidden, false, 'the row stands over a believed scan');
+  panel().dispatchEvent(new win.CustomEvent('scan-invalid', { detail: {} }));
+  assert.equal($('#stageCard').hidden, true, 'a scan the scanner refused kept the chip row on screen');
+  await believedScan('F D');
+  assert.equal($('#stageCard').hidden, false, 'the next believed scan draws it again');
+  progress({ phase: 'scanning', message: 'x', captured: [face('R')], live: null, confirm: null, complete: false });
+  assert.equal($('#stageCard').hidden, true, 'a scan that is no longer complete kept the chip row on screen');
+});
+
+test('a chip pressed on the row about the cube in hand takes its target to the cube screen', async () => {
+  const { state } = await import('../lib/app.js');
+  await enterScan();
+  await believedScan();
+  try {
+    $('[data-target="two-layers"]').click();
+    await tick();
+    assert.equal(state.stageTarget, 'two-layers', 'the press carries its target');
+    assert.equal(win.location.hash, '#/home', 'to the screen a walk lives on');
+  } finally {
+    // Off the cube screen before its walk is worked out, and the target back where the file expects it.
+    win.cubusGo('viewer');
+    await tick();
+    state.stageTarget = 'solved';
+  }
+});
+
+test('a chip pressed over a refused read walks nothing', async () => {
+  const { state } = await import('../lib/app.js');
+  await enterScan();
+  await believedScan();
+  const before = state.stageTarget;
+  panel().dispatchEvent(new win.CustomEvent('scan-invalid', { detail: {} }));
+  $('[data-target="two-layers"]').click();
+  await tick();
+  assert.equal(win.location.hash, '#/scan', 'a chip pressed over a refused read navigated');
+  assert.equal(state.stageTarget, before, 'a chip pressed over a refused read set its target');
+});
+
+test('a chip pressed on a row about a cube that has since changed takes the row away instead of walking', async () => {
+  const { state } = await import('../lib/app.js');
+  const { adoptCube } = await import('../lib/cube-connection.js');
+  await enterScan();
+  await believedScan();
+  const before = state.stageTarget;
+  const card = $('#stageCard');
+  // The subject replaced without the scan screen hearing of it: the call a smart cube's snapshot ends in.
+  adoptCube(cubeAfter('F D'), { physical: true, source: 'cube' });
+  $('[data-target="two-layers"]').click();
+  await tick();
+  assert.equal(win.location.hash, '#/scan', 'a chip about a cube nobody is holding navigated');
+  assert.equal(state.stageTarget, before, 'a chip about a cube nobody is holding set its target');
+  assert.equal(card.hidden, true, 'a row about a cube nobody is holding stayed on screen after a press');
+});
