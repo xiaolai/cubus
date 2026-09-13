@@ -50,6 +50,8 @@ let win;
  *  as a wrapper BEFORE first use, because happy-dom's Storage proxy caches the method it hands
  *  out on first access, after which a prototype patch is invisible. */
 let failWrites = false;
+/** Every registry write that reached storage, counted — so a case can see a write that did NOT happen. */
+let cubesWrites = 0;
 const $ = (sel) => win.document.querySelector(sel);
 const feed = () => win.cubusFeed;
 const appState = async () => (await import('../lib/app.js')).state;
@@ -93,6 +95,7 @@ before(async () => {
     const orig = proto.setItem;
     proto.setItem = function (...args) {
       if (failWrites) throw new Error('quota exceeded (test)');
+      if (args[0] === 'cubusCubes') cubesWrites += 1;
       return orig.apply(this, args);
     };
   }
@@ -446,4 +449,85 @@ test('a cube turned between the question and the check still confirms', async ()
   await tick();
   assert.equal(state.reconnect, null, 'two adjacent sides of the turned cube are still the Yes');
   assert.equal(state.cube.trusted, true);
+});
+
+// ---- orderings the connection code keeps, pinned before it is split ------------------------------------
+//
+// Nothing failed if any of these broke. Each fails when the line it guards is removed — checked by
+// removing it — and they hold the connection code to the same behaviour once it moves into units.
+
+/** Reconnect the remembered cube and answer Yes, so the chain is trusted. */
+async function trustedChain() {
+  const state = await appState();
+  feed().useConnection(null);
+  state.reconnect = null;
+  feed().useConnection(fakeConn());
+  feed().facelets(storedLast().reported, 0);
+  await tick();
+  await go('home');
+  const yes = $('#reconnectAsk [data-reconnect="yes"]');
+  assert.ok(yes, 'precondition: the question offers a Yes');
+  yes.click();
+  await tick();
+  assert.equal(state.cube.trusted, true, 'precondition: a trusted chain');
+  return state;
+}
+
+test('a disconnect on a trusted chain remembers the last report with its serial, at the moment it ended', async () => {
+  const state = await trustedChain();
+  feed().facelets(move(storedLast().reported, 'R'), 7);
+  await tick();
+  const before = storedLast();
+  assert.equal(before.serial, 7, 'precondition: the trusted update was remembered with its serial');
+  await new Promise((r) => setTimeout(r, 5));
+  feed().disconnect();
+  const after = storedLast();
+  // The forced write runs while the connection's serial is still held. Clearing it first would
+  // remember the last report with no serial, and a reconnect could not tell a resend from a turn.
+  assert.equal(after.serial, 7, 'the disconnect forgot the serial of the last report it had');
+  assert.ok(after.at > before.at, 'the disconnect did not stamp the moment the chain ended');
+  state.reconnect = null;
+});
+
+test('an identical report resent on a trusted chain writes nothing; one with a new serial writes', async () => {
+  const state = await trustedChain();
+  const report = move(storedLast().reported, 'U');
+  feed().facelets(report, 8);
+  await tick();
+  const writes = cubesWrites;
+  // A resting cube resends its state about once a second: a write per resend is a storage write per
+  // second for as long as it sits on the desk.
+  feed().facelets(report, 8);
+  await tick();
+  assert.equal(cubesWrites, writes, 'an unchanged resend was written to storage again');
+  feed().facelets(report, 9);
+  await tick();
+  assert.equal(cubesWrites, writes + 1, 'a report with a new serial is a new memory and must be written');
+  feed().useConnection(null);
+  state.reconnect = null;
+});
+
+test('Yes on a cube whose reports stopped adding up grants nothing, and the Yes is withdrawn', async () => {
+  const state = await appState();
+  feed().useConnection(null);
+  state.reconnect = null;
+  let refused = false;
+  const conn = fakeConn();
+  Object.defineProperty(conn, 'verdict', { get: () => (refused ? 'refused' : 'unverified'), configurable: true });
+  feed().useConnection(conn);
+  feed().facelets(storedLast().reported, 0);
+  await tick();
+  await go('home');
+  assert.ok($('#reconnectAsk [data-reconnect="yes"]'), 'precondition: the question offers a Yes');
+  const remembered = JSON.stringify(storedLast());
+  refused = true; // the checker refuses the stream while the question is open
+  $('#reconnectAsk [data-reconnect="yes"]').click();
+  await tick();
+  assert.equal(state.cube.trusted, false, 'a refused cube was trusted on the user\'s word');
+  assert.equal(state.cube.staleWhy, 'its reports stopped adding up', 'the indicator says why');
+  isAbsent($('#reconnectAsk [data-reconnect="yes"]'), 'the Yes that cannot work is withdrawn');
+  assert.ok($('#reconnectAsk [data-reconnect="scan"]'), 'the camera remains the door');
+  assert.equal(JSON.stringify(storedLast()), remembered, 'a refused cube was remembered as confirmed');
+  feed().useConnection(null);
+  state.reconnect = null;
 });

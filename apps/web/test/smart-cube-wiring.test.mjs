@@ -11,7 +11,7 @@
 // Every test here drives the real index.html + lib/app.js through the same seam the driver uses.
 
 import assert from 'node:assert/strict';
-import { isAbsent } from './dom-assert.mjs';
+import { isAbsent, isSame } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -19,7 +19,7 @@ import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
 import { createSelfCheck } from '../lib/cube-selfcheck.js';
 import { NAME_PREFIX } from '../lib/cube-registry.js';
-import { readAppSource } from './app-source.mjs';
+import { blockAt, readAppSource } from './app-source.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -439,8 +439,16 @@ test('the driver resolves identity through the same call the seam does', () => {
   // and not a lookalike. Source, because the real path needs a radio, the vendored protocol
   // bundle and a browser with Web Bluetooth — none of which exist in this harness.
   const app = readAppSource();
-  assert.match(app, /adoptConnection\(sessionIdentity\(session\), session\.name/,
-    'connectOnce must file the connection under the SESSION\'s identity, with no address from elsewhere');
+  // IN EACH of the two paths, not somewhere in the source: the seam makes the same call, and a match
+  // over the whole source was satisfied by the seam's copy alone — the driver's path could drift and
+  // this would still pass.
+  for (const [anchor, where] of [
+    ['async function connectOnce(macFromUi)', 'connectOnce'],
+    ["useConnection: (fake, mac = 'AA:BB:CC:DD:EE:FF') =>", 'the test seam'],
+  ]) {
+    assert.match(blockAt(app, anchor), /adoptConnection\(sessionIdentity\(session\), session\.name/,
+      `${where} must file the connection under the SESSION's identity, with no address from elsewhere`);
+  }
   assert.doesNotMatch(app, /sessionIdentity\([^)]*typed/, 'the typed/remembered address is not an identity');
 });
 
@@ -480,4 +488,71 @@ test('a solved cube turned in the hand grows a solution card, not just a repaint
 
   feed().useConnection(null);
   await tick();
+});
+
+// ---- orderings the connection code keeps, pinned before it is split ------------------------------------
+//
+// An address no other case uses (11:22:33:44:55:66 was tried first and already had a remembered
+// arrangement from an earlier case, so it opened a question). Remembered with no last arrangement, it
+// opens no reconnect question, so the setup checklist and its anchor are on screen.
+const FRESH_MAC = 'C0:FF:EE:5E:55:10';
+
+test('a battery reply that lands after its cube has gone is not published', async () => {
+  const state = await appState();
+  feed().useConnection(null);
+  let answer;
+  feed().useConnection(fakeConn({ requestBattery: () => new Promise((r) => { answer = r; }) }), FRESH_MAC);
+  assert.ok(answer, 'precondition: connecting asked the cube for its battery');
+  feed().useConnection(null);
+  answer(37);
+  await settle(10);
+  assert.notEqual(state.battery, 37, 'a reply from a session that has disconnected was published as the battery');
+});
+
+test('a second press during an anchor is told one is in flight — even after Settings is rebuilt', async () => {
+  const state = await appState();
+  feed().useConnection(null);
+  state.reconnect = null;
+  let calls = 0;
+  let release;
+  feed().useConnection(fakeConn({
+    anchorSolved: () => { calls += 1; return new Promise((r) => { release = r; }); },
+  }), FRESH_MAC);
+  await go('settings');
+  assert.equal(state.reconnect, null, 'precondition: a cube with nothing remembered opens no reconnect question');
+  assert.ok($('#anchorBtn'), 'precondition: a connected cube that is not set up offers the anchor');
+  $('#anchorBtn').click();
+  await tick();
+  assert.equal(calls, 1, 'precondition: the first press reached the cube');
+  // Rebuilt while the first anchor is awaiting — as dropping trust rebuilds it — which hands back a
+  // fresh, enabled button with a fresh mount behind it.
+  await go('settings');
+  assert.ok($('#anchorBtn') && !$('#anchorBtn').disabled, 'precondition: the rebuilt card offers an enabled anchor');
+  $('#anchorBtn').click();
+  await tick();
+  assert.equal($('#pairMsg').textContent, 'already anchoring…', 'the second press was not told an anchor is in flight');
+  assert.equal(calls, 1, 'two anchors reached the cube at once');
+  release();
+  await settle(10);
+  feed().useConnection(null);
+});
+
+test('a Settings repaint that arrives mid-typing waits for the typing to stop, then lands', async () => {
+  feed().useConnection(null);
+  let answer;
+  feed().useConnection(fakeConn({ requestBattery: () => new Promise((r) => { answer = r; }) }), FRESH_MAC);
+  await go('settings');
+  const input = $(`[data-rename-cube="${NAME_PREFIX}GoCube-42"]`);
+  assert.ok(input, 'precondition: a remembered cube offers its nickname field');
+  input.dataset.stamp = 'typing';
+  input.focus();
+  isSame(win.document.activeElement, input, 'precondition: the nickname field has focus');
+  answer(64); // the battery lands, which repaints this card
+  await settle(10);
+  assert.ok($('[data-stamp="typing"]'), 'the card was rebuilt under the field being typed in, and the text went with it');
+  input.blur();
+  input.dispatchEvent(new win.Event('focusout', { bubbles: true }));
+  await settle(10);
+  isAbsent($('[data-stamp="typing"]'), 'the deferred repaint never landed — deferred became dropped');
+  feed().useConnection(null);
 });
