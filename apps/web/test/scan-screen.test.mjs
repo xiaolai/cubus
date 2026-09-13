@@ -714,6 +714,7 @@ test('a scan contradicting a tracking cube adopts nothing and disables Solve', a
   assert.equal(state.cube.trusted, false, 'and nobody is trusted until one is confirmed');
   assert.equal($('#scanSolveBtn').disabled, true, 'Solve stays off a cube the screen refused');
   assert.match($('#scanHow').textContent, /One of the two is wrong/);
+  assert.ok($('#scanHow').classList.contains('err'), 'a repair the scan contradicted was not said as trouble');
   win.cubusFeed.useConnection(null);
   state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
   state.live = null; state.reported = null;
@@ -1395,5 +1396,30 @@ test('the colour sentence waits out a camera error, and is said once the error h
   } finally {
     progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese' });
     quiet('x');
+  }
+});
+
+// ---- a scanner that never loads ----------------------------------------------------------------
+//
+// The screen waits 15 s for the scanner's bundle to register, then says it did not load and names
+// the way out. A test cannot sit through that wait, so the clock is node:test's for this one case:
+// the screen is on #/scan already, so go('scan') has no hash to change and mounts it again at
+// once, and that mount's wait is the one the mocked clock runs out.
+
+test('a scanner that never loads is said as trouble once its wait runs out, with the way out named', async () => {
+  const { mock } = await import('node:test');
+  await enterScan();
+  const first = panel();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    win.cubusGo('scan');
+    assert.ok(panel() && panel() !== first, 'precondition: the screen mounted again, under the mocked clock');
+    assert.equal($('#scanHow').textContent, 'Loading the scanner…', 'precondition: the wait has begun');
+    mock.timers.tick(15000);
+    assert.equal($('#scanHowTitle').textContent, 'The scanner did not load', 'a scanner that never loaded was never said');
+    assert.ok($('#scanHow').classList.contains('err'), 'a scanner that never loaded was not said as trouble');
+    assert.match($('#scanHow').textContent, /Reloading the app/, 'and the way out is named');
+  } finally {
+    mock.timers.reset();
   }
 });
