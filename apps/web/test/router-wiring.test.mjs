@@ -11,6 +11,7 @@
 // therefore ordered and share that one booted app, driving it the way a user would.
 
 import assert from 'node:assert/strict';
+import { isAbsent } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -141,7 +142,7 @@ test('the screen name reaches the window title, and nothing else draws it', asyn
   win.location.hash = '#/settings';
   await tick();
   assert.equal(win.document.title, 'Settings · Cubus');
-  assert.equal(win.document.querySelector('#title'), null, 'the title chip is gone; the tab is the name');
+  isAbsent(win.document.querySelector('#title'), 'the title chip is gone; the tab is the name');
   win.location.hash = '#/scan';
   await tick();
   assert.equal(win.document.title, 'Restore · Cubus', 'and it follows the screen');
@@ -215,7 +216,7 @@ test('the cube screen is the cube, one transport row, and nothing else', async (
     'the cube card carries exactly one control',
   );
   for (const gone of ['#coach', '#scrub', '#validity', '#copyState', '#viewCard']) {
-    assert.equal(win.document.querySelector(gone), null, `${gone} should be gone`);
+    isAbsent(win.document.querySelector(gone), `${gone} should be gone`);
   }
   // Nothing paces the walk but you, so there is no pacing control — only a speed preference.
   // "Slowest" was a switch with one position: it named the only behaviour the screen has.
@@ -232,7 +233,7 @@ test('the cube screen is the cube, one transport row, and nothing else', async (
   // inert flexible gap left in it.
   const row = [...win.document.querySelector('.transport').children].map((el) => el.id || el.className);
   assert.equal(row.indexOf('progress'), row.indexOf('playBtn') + 1, 'progress bar follows play');
-  assert.equal(win.document.querySelector('.transport .spacer'), null, 'the spacer is gone');
+  isAbsent(win.document.querySelector('.transport .spacer'), 'the spacer is gone');
   assert.ok(win.document.querySelector('#progBar'), 'the bar has a fill element to drive');
 });
 
@@ -336,13 +337,13 @@ test('the state card is the net plus a dice, and says which state it is', async 
   const card = cards[0];
   assert.equal(card.querySelector('.state-h').textContent, 'Initial State');
   assert.ok(cards[1]?.querySelector('#solList'), 'the move list comes second');
-  assert.equal(win.document.querySelector('#viewState'), null, 'the facelet string is gone');
+  isAbsent(win.document.querySelector('#viewState'), 'the facelet string is gone');
   assert.ok(card.querySelector('#viewNet'), 'the net stays');
 
   // The dice is a developer shortcut on this side of the screen — it loads a random cube that is
   // NOT the one in anyone's hand — so by default it is not rendered at all. The Advanced toggle
   // brings it back (tested with the other Advanced toggles below); Scramble keeps its own die.
-  assert.equal(card.querySelector('#randCube'), null, 'no dev die on the solve side by default');
+  isAbsent(card.querySelector('#randCube'), 'no dev die on the solve side by default');
   assert.equal(card.querySelector('.eyebrow-row .state-h').textContent, 'Initial State',
     'the eyebrow row stays, so the layout does not shift when the die is toggled on');
 });
@@ -481,9 +482,9 @@ test('a solved cube on Home is a cube to look at, not a walk of zero moves', asy
     assert.equal(state.cube.solvable, false, 'a solved cube is not "solvable"');
     assert.equal(state.cube.setupAlg, '', 'and needs no setup to reach itself');
     assert.ok(!win.document.querySelector('.cols').classList.contains('walking'), 'Home does not walk it');
-    assert.equal(win.document.querySelector('.transport'), null, 'no transport');
-    assert.equal(win.document.querySelector('#solList'), null, 'no solution list');
-    assert.equal(win.document.querySelector('#speedBtn'), null, 'no speed for an animation that does not exist');
+    isAbsent(win.document.querySelector('.transport'), 'no transport');
+    isAbsent(win.document.querySelector('#solList'), 'no solution list');
+    isAbsent(win.document.querySelector('#speedBtn'), 'no speed for an animation that does not exist');
     const net = [...win.document.querySelectorAll('#viewNet .sticker')].map((e) => e.className.split(' ')[1]).join('');
     assert.equal(net, SOLVED_FACELETS, 'the net shows the solved cube');
   } finally { Object.assign(state.cube, prev); }
@@ -500,7 +501,7 @@ test('a screen navigated away from mid-mount does not clobber the next one', asy
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(win.document.querySelector('.nav-item.active')?.dataset.nav, 'scan');
   assert.ok(win.document.querySelector('ai-scan-panel'), 'the scan screen is the one mounted');
-  assert.equal(win.document.querySelector('#viewCube'), null, 'no cube card left behind');
+  isAbsent(win.document.querySelector('#viewCube'), 'no cube card left behind');
 });
 
 // ⌃⌥⌘D reveals an Advanced section in Settings that can take the placeholder screens out of the
@@ -776,7 +777,7 @@ test('the Advanced toggle brings the dev die back, and turning it off takes it a
   await tick();
   win.location.hash = '#/home';
   await tick();
-  assert.equal(win.document.querySelector('#randCube'), null, 'and gone again');
+  isAbsent(win.document.querySelector('#randCube'), 'and gone again');
   win.localStorage.removeItem('cubusSettings');
 });
 
@@ -851,8 +852,8 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
   assert.ok(!labels.some((l) => l.includes('Session stats')), 'and it is not called Session stats');
   // Nothing groups the list any more, so there is no heading left over to point at a screen that
   // no longer exists.
-  assert.equal(win.document.querySelector('#nav .nav-group'), null, 'the tab row is flat');
-  assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'and carries no section titles');
+  isAbsent(win.document.querySelector('#nav .nav-group'), 'the tab row is flat');
+  isAbsent(win.document.querySelector('#nav .eyebrow'), 'and carries no section titles');
 });
 
 
@@ -862,9 +863,9 @@ test('the toolbar no longer offers 3D viewer or Smart cube, and Stats is renamed
 test('the shell no longer carries a permanent connection box', async () => {
   win.location.hash = '#/home';
   await tick();
-  assert.equal(win.document.querySelector('#cubeStatus'), null);
-  assert.equal(win.document.querySelector('#cubeStatusLabel'), null);
-  assert.equal(win.document.querySelector('.cube-status'), null);
+  isAbsent(win.document.querySelector('#cubeStatus'));
+  isAbsent(win.document.querySelector('#cubeStatusLabel'));
+  isAbsent(win.document.querySelector('.cube-status'));
 });
 
 
@@ -916,8 +917,8 @@ test('the toolbar is one flat row of tabs, with Settings as its own button', asy
     assert.notEqual(svg.innerHTML.trim(), FALLBACK, `a tab fell back to the placeholder dot: ${svg.closest('[data-nav]').dataset.nav}`);
     assert.ok(svg.innerHTML.length > 0, 'a tab icon is empty');
   }
-  assert.equal(win.document.querySelector('#nav .nav-group'), null, 'no grouping wrapper');
-  assert.equal(win.document.querySelector('#nav .eyebrow'), null, 'no SOLVE / PRACTICE / LEARN');
+  isAbsent(win.document.querySelector('#nav .nav-group'), 'no grouping wrapper');
+  isAbsent(win.document.querySelector('#nav .eyebrow'), 'no SOLVE / PRACTICE / LEARN');
   // #nav holds one capsule (the segmented control's pill; the nav itself is the box the
   // stylesheet floats over the bar or lays at the foot of the window), and every child of the
   // capsule is a page button — nothing else lives in there.
@@ -929,7 +930,7 @@ test('the toolbar is one flat row of tabs, with Settings as its own button', asy
   // handed this test the indicator under the name "gear".
   const gear = win.document.querySelector('#tbTrail [aria-label="Settings"]');
   assert.ok(gear, 'Settings is the trailing toolbar button');
-  assert.equal(win.document.querySelector('#nav [data-nav="settings"]'), null, 'and not a tab');
+  isAbsent(win.document.querySelector('#nav [data-nav="settings"]'), 'and not a tab');
   gear.click();
   await tick();
   assert.equal(win.location.hash, '#/settings');
@@ -1107,7 +1108,7 @@ test('a hostile solve history cannot inject markup into Timer or Stats', async (
       await new Promise((r) => setTimeout(r, 30));
 
       const stage = win.document.querySelector('#stage');
-      assert.equal(stage.querySelector('img'), null, `${screen} rendered stored markup as an element`);
+      isAbsent(stage.querySelector('img'), `${screen} rendered stored markup as an element`);
       // And the premise: the payload actually reached the screen, as TEXT. Without this the test
       // passes whenever the record fails to render for some unrelated reason.
       assert.ok(
@@ -1314,7 +1315,7 @@ test('the pacing toggle appears only with a smart cube, and defaults to followin
     await tick();
     win.location.hash = '#/scramble';
     await tick();
-    assert.equal(win.document.querySelector('[data-mode="cube"]'), null,
+    isAbsent(win.document.querySelector('[data-mode="cube"]'),
       'no cube, no toggle — a switch with one position');
     const moves = await followSetup(state);
     assert.ok(moves.length > 2, 'precondition: a scramble was generated');
@@ -1630,7 +1631,7 @@ test('Settings offers a compatibility report, and says so loudest when the cube 
     win.cubusFeed.useConnection(null);
     win.cubusGo('settings');
     await tick();
-    assert.equal(win.document.querySelector('#cubeReportBtn'), null, 'with no cube there is nothing to report');
+    isAbsent(win.document.querySelector('#cubeReportBtn'), 'with no cube there is nothing to report');
   } finally { resetCubeModel(state); }
 });
 

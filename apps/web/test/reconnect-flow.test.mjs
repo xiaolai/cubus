@@ -18,6 +18,7 @@
 //     full repair scan with the captured sides kept.
 
 import assert from 'node:assert/strict';
+import { isAbsent } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -133,7 +134,7 @@ test('a reconnect with a memory shows it at once — and the silence is a said t
   const ask = $('#reconnectAsk');
   assert.ok(ask, 'the question block renders');
   assert.match(ask.textContent, /hasn’t said where it is/, 'the line that used to vanish into an empty catch');
-  assert.equal(ask.querySelector('[data-reconnect="yes"]'), null, 'no Yes over a silent cube — there is no report to derive a correction from');
+  isAbsent(ask.querySelector('[data-reconnect="yes"]'), 'no Yes over a silent cube — there is no report to derive a correction from');
   assert.ok(ask.querySelector('[data-reconnect="scan"]'), 'the camera stays the recovery door');
   assert.ok($('.state-h').textContent.startsWith('Your cube — as we last saw it'), 'the twin is dressed as a memory with a timestamp, never as the truth');
 });
@@ -264,7 +265,7 @@ test('a Yes that cannot do its job refuses on screen — the button never just l
   assert.equal(state.cube.staleWhy, 'its confirmation could not be checked', 'the indicator explains');
   const ask = $('#reconnectAsk');
   assert.ok(ask, 'the question stands');
-  assert.equal(ask.querySelector('[data-reconnect="yes"]'), null, 'the Yes that cannot work is withdrawn');
+  isAbsent(ask.querySelector('[data-reconnect="yes"]'), 'the Yes that cannot work is withdrawn');
   assert.ok(ask.querySelector('[data-reconnect="scan"]'), 'the camera remains the door');
   feed().useConnection(null);
   state.reconnect = null;
@@ -293,7 +294,7 @@ test('a registry write that fails is announced, not smoothed over — and a writ
   await tick();
   assert.equal(state.cube.trusted, true, 'precondition: a trusted chain to write memories on');
   await go('settings');
-  assert.equal($('#registryWriteWarn'), null, 'a write that landed is not still announced');
+  isAbsent($('#registryWriteWarn'), 'a write that landed is not still announced');
 
   // And the memory write ITSELF announces — not only the connect-time registry write: a trusted
   // update arrives, its save fails, and the word goes up where the user is standing.
@@ -323,7 +324,7 @@ test('silence over nothing remembered is still a said thing — the line the emp
     const ask = $('#reconnectAsk');
     assert.ok(ask, 'the line renders where the user is');
     assert.match(ask.textContent, /hasn’t said where it is/);
-    assert.equal(ask.querySelector('[data-reconnect="yes"]'), null, 'nothing to confirm');
+    isAbsent(ask.querySelector('[data-reconnect="yes"]'), 'nothing to confirm');
     assert.ok(ask.querySelector('[data-reconnect="scan"]'), 'the camera reads it as it is');
     assert.equal($('.state-h').textContent, 'Initial State', 'no candidate, no memory dress');
   } finally {

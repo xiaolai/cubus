@@ -17,6 +17,7 @@
 // that draws no solution card and therefore has no move count to write a failure into.
 
 import assert from 'node:assert/strict';
+import { isAbsent } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -80,7 +81,7 @@ test('a roll that produces nothing is said on a screen with no solution card', a
     await settle(100);
 
     assert.equal(state.cube.facelets, SOLVED, 'precondition: the subject is a solved cube');
-    assert.equal($('#moveCount'), null, 'precondition: a solved cube draws no solution card, so there is no count to write into');
+    isAbsent($('#moveCount'), 'precondition: a solved cube draws no solution card, so there is no count to write into');
     const die = $('#randCube');
     assert.ok(die, 'precondition: Advanced put the dev die on the solve screen');
     const say = $('#rollSay');
