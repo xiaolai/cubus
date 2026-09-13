@@ -794,8 +794,9 @@ SCREENS.scan = () => {
           void paintStageChips(fl);
         }
         if (repaired) {
-          sayTitle.textContent = repaired.ok ? 'Tracking repaired' : 'These do not match';
-          say.textContent = repaired.text;
+          sayTitle.textContent = repaired.ok ? t('Tracking repaired') : t('These do not match');
+          // The session's sentence is an English key, like the scanner's notices; translated here.
+          say.textContent = t(repaired.text);
           say.className = 'sub scan-say' + (repaired.ok ? ' ok' : ' err');
         }
         // Stay put. Jumping to another screen took the six tiles away at the moment they finally
