@@ -19,8 +19,9 @@ import { CHIP_NODE_BUDGET, Cube, stageAsk, warmSolver } from '../solver-service.
 import { NET_COLORS, NET_FACES, adoptScheme, netPalette, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
 import {
-  adoptCube, confirmReconnect, markStale, rememberLastSeen, repairTracking,
+  adoptCube, confirmReconnect, rememberLastSeen, repairTracking,
 } from '../cube-connection.js';
+import { markStale } from '../cube-trust-state.js';
 import { SCREENS, go, placeMenuUnder, placePopoverV, screenAbort, stageRect } from '../screen-shell.js';
 
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
