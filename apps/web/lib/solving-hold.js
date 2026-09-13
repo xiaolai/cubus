@@ -75,16 +75,14 @@ export function undoHold([up, front]) {
   throw new Error(`solving-hold: "${up} ${front}" has no undo, which a rotation always has`);
 }
 
-const FROM_METHOD_FRAME = undoHold(METHOD_FRAME);
+/** The hold that takes a method-frame cube, move or piece name back to the scan frame. */
+export const METHOD_TO_SCAN = undoHold(METHOD_FRAME);
 
 /** Scan-frame facelets as the method sees them: white on D. */
 export const toMethodFrame = (facelets) => turnFacelets(facelets, ...METHOD_FRAME);
 
 /** Method-frame facelets back in the scan frame. */
-export const fromMethodFrame = (facelets) => turnFacelets(facelets, ...FROM_METHOD_FRAME);
-
-/** The hold that takes a method-frame name back to the scan frame. */
-export const METHOD_TO_SCAN = FROM_METHOD_FRAME;
+export const fromMethodFrame = (facelets) => turnFacelets(facelets, ...METHOD_TO_SCAN);
 
 const FACE_TURN = /^([URFDLB])(2|'|)$/;
 
@@ -136,19 +134,47 @@ export function renameSelectors(spec, [up, front]) {
   );
 }
 
-/** How each stage target is held. EVERY target has an entry, and the test holds the list to `TARGETS`. */
-const TARGET_HOLD = Object.freeze({
-  cross: SCAN_HOLD,
-  // Built white up, and the cube is turned over only once it is complete — so a child sent back to
-  // it is holding white up, as the course's practice card for this stage does.
-  'first-layer': SCAN_HOLD,
-  'two-layers': TUMBLED,
-  'top-cross': TUMBLED,
-  'corners-home': TUMBLED,
-  // A pattern rather than a stage, and not offered. Symmetric, so the scan's hold says no less.
-  'six-cross': SCAN_HOLD,
-  solved: SCAN_HOLD,
-});
+/**
+ * WHERE THE CUBE IS TURNED OVER — declared once, here. These stages are built white up; every stage
+ * after them, tumbled.
+ *
+ * Both vocabularies below — the stage targets' ids and the method solver's stage names — call these
+ * two stages by these two words, so both tables are DERIVED from this list rather than each stating
+ * the flip point again. The lesson's sentences for these stages are written for the white-up hold
+ * (`method-lesson.js`), and `solving-hold.test.mjs` holds its list of those sentences to this one.
+ */
+export const WHITE_UP_STAGES = Object.freeze(['cross', 'first-layer']);
+
+/**
+ * A hold for every name in `names`: white up for the white-up stages and for any name in
+ * `alsoAsScanned`, tumbled for the rest.
+ *
+ * Every name a caller may ask about must be listed, so an unlisted one throws at lookup rather than
+ * defaulting. And every white-up stage must be among them — a table that does not name one is not
+ * describing the same method, and that throws here, when the module loads.
+ */
+function holdTable(names, alsoAsScanned = []) {
+  for (const stage of WHITE_UP_STAGES) {
+    if (!names.includes(stage)) throw new Error(`solving-hold: a hold table does not name the white-up stage "${stage}"`);
+  }
+  return Object.freeze(Object.fromEntries(names.map((name) => [
+    name,
+    WHITE_UP_STAGES.includes(name) || alsoAsScanned.includes(name) ? SCAN_HOLD : TUMBLED,
+  ])));
+}
+
+/**
+ * How each stage target is held. EVERY target has an entry, and the test holds the list to `TARGETS`.
+ *
+ * A target sends the child BACK to a stage, so it is held the way that stage was built: a child sent
+ * back to the first layer is holding white up, as the course's practice card for it does.
+ */
+const TARGET_HOLD = holdTable(
+  ['cross', 'first-layer', 'two-layers', 'top-cross', 'corners-home', 'six-cross', 'solved'],
+  // A pattern rather than a stage, and not offered — symmetric, so the scan's hold says no less —
+  // and the whole cube, which keeps the scan's hold.
+  ['six-cross', 'solved'],
+);
 
 /** The hold for a stage target, or the scan's hold for the whole cube (`null`). Loud on an unknown id. */
 export function holdForTarget(id) {
@@ -163,23 +189,15 @@ export const HELD_TARGETS = Object.freeze(Object.keys(TARGET_HOLD));
 /**
  * How each of the method solver's fine-grained stages is held.
  *
- * The cross and the first layer are built white up; the middle layer and everything after it,
- * tumbled. `f2l` places each corner WITH its middle edge, so it has no moment at which the first
- * layer alone is complete: it tumbles straight after the cross, and each pair goes in from the top,
- * which is how every F2L algorithm is written. A stage the solver emits with no entry here throws
- * rather than defaulting, because a default would decide which way up a child holds the cube for a
- * stage nobody thought about.
+ * `f2l` places each corner WITH its middle edge, so it has no moment at which the first layer alone
+ * is complete: it tumbles straight after the cross, and each pair goes in from the top, which is how
+ * every F2L algorithm is written. A stage the solver emits with no entry here throws rather than
+ * defaulting, because a default would decide which way up a child holds the cube for a stage nobody
+ * thought about.
  */
-const STAGE_HOLD = Object.freeze({
-  cross: SCAN_HOLD,
-  'first-layer': SCAN_HOLD,
-  'middle-layer': TUMBLED,
-  f2l: TUMBLED,
-  'top-cross': TUMBLED,
-  'top-face': TUMBLED,
-  'top-corners': TUMBLED,
-  'top-edges': TUMBLED,
-});
+const STAGE_HOLD = holdTable(
+  ['cross', 'first-layer', 'middle-layer', 'f2l', 'top-cross', 'top-face', 'top-corners', 'top-edges'],
+);
 
 export function holdForStage(stage) {
   if (typeof stage !== 'string' || !Object.hasOwn(STAGE_HOLD, stage)) {
@@ -189,7 +207,7 @@ export function holdForStage(stage) {
 }
 
 /** Where a SCAN-frame face ends up under hold `h`: `U` is on top, `F` facing you, and so on. */
-export function whereFaceGoes(face, [up, front]) {
+function whereFaceGoes(face, [up, front]) {
   return orientationRelabel(up, front)[face];
 }
 
