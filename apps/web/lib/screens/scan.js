@@ -3,8 +3,6 @@
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
 import { isDesktopHost } from '../host.js';
-import { applyOffset, deriveOffset } from '../cube-trust.js';
-import { confirmCheck } from '../cube-reconnect.js';
 import { t } from '../i18n.js';
 import {
   COLOUR_NAMES, colourOf, colourOfSlot, isColour, isScheme, positionOf, slotAt, slotOf,
@@ -13,18 +11,18 @@ import {
 import { $, escHtml, icon, state } from '../app-state.js';
 import { DEFAULT_PALETTE, settings } from '../app-settings.js';
 import { hooks } from '../screen-slots.js';
-import { CHIP_NODE_BUDGET, Cube, stageAsk, warmSolver } from '../solver-service.js';
+import { CHIP_NODE_BUDGET, stageAsk, warmSolver } from '../solver-service.js';
 import { NET_COLORS, NET_FACES, adoptScheme, netPalette, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
 import { adoptCube } from '../cube-connection.js';
 import { rememberLastSeen, repairTracking } from '../cube-reports.js';
-import { confirmReconnect } from '../reconnect-answer.js';
 import { markStale } from '../cube-trust-state.js';
 import { SCREENS, go, placePopoverV, screenAbort, stageRect } from '../screen-shell.js';
 
 import { createStageChips } from './scan/stage-chips.js';
 import { createScanVoice } from './scan/voice.js';
 import { createCameraMenu } from './scan/camera-menu.js';
+import { createReconnectCheck } from './scan/reconnect-check.js';
 
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
 // renaming it is not worth breaking every #/scan link and bookmark already in the wild.
@@ -264,40 +262,10 @@ SCREENS.scan = () => {
           speak(t('The scanner did not load'), t('The camera part of cubus failed to start, so there is nothing to scan with. Reloading the app usually fixes it. Everything else — the solver, the guide, a smart cube — still works.'), 'err');
         }, SCANNER_WAIT_MS);
       }
-      // The reconnect confirmation runs INSIDE this screen's own flow, not beside it: the panel's
-      // captures are private to it and die with it, so "the repair scan continues from the sides
-      // already captured" is true only if the confirmation IS this screen in a confirm mode. Two
-      // adjacent matching sides take the user's Yes; one mismatch and the same panel instance
-      // simply keeps capturing into the full six-side repair, two sides in.
-      let confirming = Boolean(state.reconnect?.candidate);
-      const confirmEntry = confirming;
-      /**
-       * What the camera should see NOW if the remembered arrangement is right.
-       *
-       * NOT the frozen candidate, which is what this compared against and is wrong the moment
-       * anybody turns the cube: the question is asked on reconnect, the check happens seconds
-       * later with the cube in a hand, and a single quarter turn in between made every side
-       * mismatch — a false "not what we remembered" that cost the user a full six-side scan
-       * (found by audit, 2026-09-04).
-       *
-       * The candidate carried forward by whatever the cube has reported since. If the candidate
-       * is right then `candidate · raw⁻¹` is the correction, it is constant under later turns
-       * (cube-trust.js), and applying it to the LATEST report says where the cube is now. This is
-       * a PREDICTION to compare a scan against, not a correction being adopted — which is why it
-       * derives here instead of going through the session's checker, whose business is evidence.
-       * With nothing to carry forward it is the candidate, exactly as before.
-       */
-      const expectedNow = () => {
-        const rc = state.reconnect;
-        if (!rc?.candidate) return null;
-        if (!rc.raw || !state.reported || state.reported === rc.raw) return rc.candidate;
-        const off = deriveOffset(rc.candidate, rc.raw, Cube);
-        return (off && applyOffset(off, state.reported, Cube)) || rc.candidate;
-      };
-      const CONFIRM_HOW = 'We remember this cube. Show any two sides that meet along an edge — the front, then the top, works well. If both match what we remember, that’s your cube confirmed with no full scan; if either differs, keep going and the camera reads all six.';
-      if (confirming) {
-        speak(t('Checking your cube'), t(CONFIRM_HOW));
-      }
+      // The two-side reconnect check — confirm mode's opening words, what the camera should see
+      // now, and the answer the captured sides give — is its own unit
+      // (lib/screens/scan/reconnect-check.js).
+      const reconnectCheck = createReconnectCheck({ speak, tileOf, tileSchemeNow: () => tileScheme, go });
       // "Solve this cube" is a promise about THIS screen's scan, so it is only pressable once a
       // scan stands complete — and a correction that re-opens the verdict takes it away again.
       const solveBtn = $('#scanSolveBtn', root);
@@ -422,48 +390,6 @@ SCREENS.scan = () => {
         panel.restart?.();
       };
 
-      /** The two-side reconnect check, folded into a running scan. Its own job, lifted out of the
-       *  scan-progress handler along with the words (2026-09-05): the handler was writing status
-       *  messages, painting stickers, discovering cameras and answering a question about the
-       *  user's cube, all in one body. Called LAST, for the reason its own comment gives. */
-      const answerFromSides = (p) => {
-        // ---- reconnect confirmation ----------------------------------------------------------
-        // Each captured side is compared with the candidate — by its centre colour (the scanner
-        // names a side by its centre, the one sticker a turn cannot move), up to rotation, and
-        // EXACTLY: the scanner's own two-sticker tolerance is one short of a quarter turn's
-        // three, so here a misread costs a full scan and never a false yes. Last, so its words
-        // stand over the generic caption — but never over the scanner's own pinned notice.
-        if (confirming && state.reconnect?.candidate && !p.notice && p.phase !== 'error') {
-          // The remembered state is positional, so both halves of each side are translated out
-          // of colour: which position this capture sits at, and which position each of its
-          // sticker colours belongs to.
-          const sides = p.captured.map((c) => ({
-            face: tileOf(c.face),
-            stickers: c.colors.map((ci) => (isColour(ci) ? positionOf(ci, tileScheme) : '?')).join(''),
-          }));
-          const check = confirmCheck(expectedNow(), sides, Cube);
-          if (check.verdict === 'confirmed') {
-            confirming = false;
-            // The user's Yes, well founded and taken: same derivation, same trust, same words a
-            // Yes on Home earns — and back to the screen the question was asked on.
-            if (confirmReconnect()) {
-              go('home');
-              return;
-            }
-            // Refused — the derivation could not do its job. The scan is already running, so
-            // the full read is the honest continuation, and this says so.
-            speak(t('Keep going'), t('The match could not be taken as an answer, so the camera will read the whole cube instead — keep showing sides, the ones already read still count.'));
-          } else if (check.verdict === 'mismatch') {
-            confirming = false;
-            speak(t('Not what we remembered'), t('That side is not what we remembered, so the camera will read the whole cube instead. Keep showing sides — the ones already read still count.'));
-          } else if (check.matched.length) {
-            speak(t('One more side'), t('That side matches. Now show one that touches it along an edge — two neighbouring sides are what the check needs.'), 'ok');
-          } else if (!p.captured.length && !p.message) {
-            speak(t('Checking your cube'), t(CONFIRM_HOW));
-          }
-        }
-      };
-
       // The chip row — its two passes, its generation, its freshness test and its press — is its
       // own unit (lib/screens/scan/stage-chips.js). It asks this screen one thing, at a press:
       // whether the scan under the row was refused.
@@ -536,7 +462,7 @@ SCREENS.scan = () => {
         // The twin follows the scan side by side rather than waiting for all six.
         if (!settled) stateCube.setAttribute('facelets', partialFacelets(p.captured));
         camera.paintCameraRow(p);
-        answerFromSides(p);
+        reconnectCheck.answerFromSides(p);
         // Last, so it stands over the generic caption — and it declines to speak over a notice,
         // which is why it is safe to run after everything else has had its say.
         sayScheme(p);
@@ -610,7 +536,7 @@ SCREENS.scan = () => {
           // two sides could only spot-check — so the question closes before the adoption that
           // would otherwise mark a cube trusted with its own question still open.
           state.reconnect = null;
-          confirming = false;
+          reconnectCheck.close();
           adoptCube(fl, { physical: true, source: 'camera' });
           // The moment the chain became trusted is a moment worth remembering: truth from the
           // scan, the cube's own raw claim beside it.
@@ -634,7 +560,7 @@ SCREENS.scan = () => {
         showState(e.detail.facelets);
         // A scan entered as a reconnect confirmation goes back to the question's screen once the
         // question is answered — "then back here" — exactly as a two-side confirmation does.
-        if ((settings.autosolve || confirmEntry) && adopted) go('home');
+        if ((settings.autosolve || reconnectCheck.cameAsConfirmation()) && adopted) go('home');
       });
       // The detector is good, not perfect, so let a person overrule it: on a side the camera has
       // READ, click any sticker and pick the right colour. Delegated rather than 54 listeners. The
