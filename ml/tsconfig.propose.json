@@ -1,0 +1,8 @@
+{
+  "extends": "../packages/cube-scanner/tsconfig.json",
+  "compilerOptions": {
+    "typeRoots": ["../packages/cube-scanner/node_modules/@types"]
+  },
+  "include": [],
+  "files": ["propose_assemble.ts", "../packages/cube-scanner/src/types/cubejs.d.ts"]
+}

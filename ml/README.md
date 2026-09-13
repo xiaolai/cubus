@@ -40,6 +40,7 @@ environments), **glossy materials** (physically-correct glare), **perspective**,
 | `train.sh` | v3n fine-tune in the pinned NGC arm64 container → `best.pt` | the near GPU box |
 | `export.py` | ONE checkpoint → `models/` (ONNX fp32 + int8, CoreML, TFLite) + `MANIFEST.json` | — |
 | `golden_frames.py` | the parity gate: every runtime reads 20 fixtures as pinned in `golden/expected.json` | CI |
+| `propose.py` | the photo drop's proposal tool: the colours of each finished cube set, for its contributor to confirm. Its cube half, `propose_assemble.ts`, is the scanner's own assembly, bundled | ✅ `test_propose.py` (CI: the `ts` job) |
 | `metrics_table.py` | the mAP tables of `MODEL_CARD.md` / `OOD_EVAL.md`, from `detector val` | — |
 | `data.yaml` | 6-class dataset config | — |
 
