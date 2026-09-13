@@ -166,6 +166,8 @@ test('the webcam button is the camera menu', () => {
   assert.equal($('.menu').hidden, true, 'closed until asked for');
   btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.menu').hidden, false, 'clicking it opens the camera list');
+  assert.ok($('.menu').contains(win.document.activeElement), 'opening the menu left focus behind the button');
+  assert.equal($('.menu').getAttribute('role'), 'menu', 'the camera menu is not said as a menu');
   const items = [...$('.menu').querySelectorAll('button')].map((b) => b.textContent);
   assert.equal(items[0], 'Default camera', 'first entry hands the choice back to the platform');
   // Cameras and nothing else — starting over has its own button beside the webcam.
@@ -189,6 +191,8 @@ test('the menu lists the cameras and marks the one in use', async () => {
   // not what gets used — the panel falls back to the platform default, so that is what is ticked.
   // Ticking nothing would leave the menu mute about which camera is in force.
   assert.deepEqual([...$('.menu').querySelectorAll('.now')].map((b) => b.textContent), ['Default camera']);
+  assert.deepEqual([...$('.menu').querySelectorAll('[data-value]')].map((b) => b.getAttribute('aria-checked')),
+    ['true', 'false', 'false'], 'the tick is shown and not said');
   $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
 });
 
@@ -1449,4 +1453,74 @@ test('a scanner that never loads is said as trouble once its wait runs out, with
   } finally {
     mock.timers.reset();
   }
+});
+
+// ---- the camera row and its menu, before they leave the screen --------------------------------
+//
+// The menu's list and its tick are pinned above. A probe of the rest (2026-09-13, before the menu
+// became its own unit) found what nothing held: the row's word for a camera that answered, the
+// cache that keeps the menu from being rebuilt under a keyboard user's focus, and choosing a
+// camera while painting. The row and the menu's own naming are pinned on the cases above.
+
+test('the webcam button says which camera answered, to the eye and to a screen reader, and the lens reads as live', async () => {
+  await enterScan();
+  const row = $('.scan-cam');
+  const btn = $('#scanCamBtn');
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null,
+    device: { deviceId: 'builtin', label: 'MacBook Air Camera' } });
+  assert.ok(row.classList.contains('on'), 'a camera that answered did not read as live');
+  assert.equal(btn.title, 'MacBook Air Camera — camera and scan', 'the webcam button did not name the camera that answered');
+  assert.equal(btn.getAttribute('aria-label'), btn.title, "the webcam button's name did not follow its title");
+  progress({ phase: 'error', message: 'Cannot start: Permission denied', captured: [], live: null, confirm: null, device: null });
+  assert.ok(!row.classList.contains('on'), 'a camera that went dark still read as live');
+  assert.match(btn.title, /click to turn it on/);
+  assert.equal(btn.getAttribute('aria-label'), btn.title, 'and its name follows the title back');
+});
+
+test('a device change that changes nothing leaves the camera menu, and the focus in it, where they were', async () => {
+  const devices = new win.EventTarget();
+  Object.defineProperty(win.navigator, 'mediaDevices', { value: devices, configurable: true });
+  try {
+    await enterScan();
+    panel().cameras = async () => [{ deviceId: 'builtin', label: 'MacBook Air Camera' }];
+    // The list the mount filled had no cameras to ask about; this one does.
+    devices.dispatchEvent(new win.Event('devicechange'));
+    await tick();
+    $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    const focused = win.document.activeElement;
+    assert.ok($('.menu').contains(focused), 'precondition: focus went into the open menu');
+    await tick();
+    devices.dispatchEvent(new win.Event('devicechange'));
+    await tick();
+    assert.ok(focused.isConnected, 'a device change that changed nothing rebuilt the camera menu under the focus');
+    isSame(win.document.activeElement, focused, 'and the focus is where the keyboard left it');
+  } finally {
+    delete win.navigator.mediaDevices;
+  }
+});
+
+test('choosing a camera while painting stops painting, rather than opening a camera under it', async () => {
+  await enterScan();
+  let started = 0;
+  panel().start = () => { started += 1; };
+  panel().cameras = async () => [{ deviceId: 'builtin', label: 'MacBook Air Camera' }];
+  $('#scanPaintBtn').click();
+  assert.equal($('#scanPaintBtn').title, 'Stop painting and use the camera', 'precondition: painting is on');
+  $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await tick();
+  [...$('.menu').querySelectorAll('[data-value]')].find((b) => b.dataset.value === 'builtin')
+    .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('#scanPaintBtn').title, 'Paint the cube by hand instead of scanning it',
+    'choosing a camera while painting left painting on');
+  assert.equal(started, 0, 'leaving painting hands the cube back to the camera; the camera is not opened a second time');
+});
+
+test('Escape closes the camera menu and hands focus back to the webcam button', async () => {
+  await enterScan();
+  $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('.menu').hidden, false, 'precondition: the camera menu is open');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal($('.menu').hidden, true, 'Escape left the camera menu open');
+  isSame(win.document.activeElement, $('#scanCamBtn'),
+    'Escape dropped focus instead of handing it back to the webcam button');
 });
