@@ -354,9 +354,23 @@ test('in the scanner, two adjacent matching sides take the Yes — any way up', 
     detail: { phase: 'scanning', complete: false, captured, suspects: [], message: '' },
   }));
 
+  // Before any side is shown, a report with nothing to say leaves the check's own words on the
+  // card — what to show and why — rather than the scanner's general explanation.
+  progress([]);
+  assert.equal($('#scanHowTitle').textContent, 'Checking your cube',
+    'with nothing captured yet, the check did not say what it needs');
   progress([{ face: 'F', colors: colorsOf(sideOf(candidate, 'F')) }]);
   assert.equal($('#scanHowTitle').textContent, 'One more side', 'one side is a third of a proof, so the check asks for its neighbour');
   assert.ok($('#scanHow').classList.contains('ok'), 'a matching side was not said as good news');
+  // The scanner's own notice, and a camera error, outrank the check: it waits rather than talking
+  // over either.
+  const F = { face: 'F', colors: colorsOf(sideOf(candidate, 'F')) };
+  panel.dispatchEvent(new win.CustomEvent('scan-progress', { detail: { phase: 'scanning', complete: false, captured: [F],
+    suspects: [], message: '', notice: { title: 'Hold it still', tone: 'info', body: 'Keep the side flat to the camera.' } } }));
+  assert.equal($('#scanHowTitle').textContent, 'Hold it still', "the check spoke over the scanner's notice");
+  panel.dispatchEvent(new win.CustomEvent('scan-progress', { detail: { phase: 'error', complete: false, captured: [F],
+    suspects: [], message: 'Cannot start: Permission denied' } }));
+  assert.equal($('#scanHowTitle').textContent, 'Camera trouble', 'the check spoke over a camera error');
   assert.equal(state.reconnect?.reading, 'unchanged', 'still open — one side confirms nothing');
 
   progress([
@@ -367,6 +381,46 @@ test('in the scanner, two adjacent matching sides take the Yes — any way up', 
   assert.equal(state.reconnect, null, 'two adjacent matching sides are the user\'s Yes, taken');
   assert.equal(state.cube.trusted, true);
   assert.equal(win.location.hash, '#/home', 'and back to the screen the question was asked on');
+});
+
+// The check compares what the camera SAW with a remembered arrangement that is POSITIONAL, so
+// each captured side has to be filed at the tile it sits on and its stickers read as positions —
+// both through the tile arrangement. On a Western cube those translations are the identity and
+// cannot be wrong; on a Japanese one blue sits under white, so a check that skipped either would
+// compare the wrong side, or the right side's stickers as the wrong positions, and turn the
+// user's own cube down.
+test("a Japanese cube's two matching sides take the Yes — each side read at the tile it sits on", async () => {
+  const state = await appState();
+  const { settings } = await import('../lib/app-settings.js');
+  const { colourOf, slotAt } = await import('../lib/scheme.js');
+  const scheme = settings.scheme;
+  feed().useConnection(null);
+  feed().useConnection(fakeConn());
+  try {
+    const memory = storedLast();
+    feed().facelets(memory.reported, 0);
+    await tick();
+    assert.equal(state.reconnect?.reading, 'unchanged', 'precondition: the question is open');
+    const candidate = state.reconnect.candidate;
+    assert.match(sideOf(candidate, 'F') + sideOf(candidate, 'D'), /[DB]/,
+      'precondition: the two sides carry a colour the two arrangements put in different places');
+    settings.scheme = 'japanese';
+    await go('scan');
+    const panel = $('#stage ai-scan-panel');
+    // What the camera reports of a Japanese cube: a side filed under its centre's colour, and a
+    // colour per sticker.
+    const seen = (f) => ({ face: slotAt(f, 'japanese'), colors: [...sideOf(candidate, f)].map((letter) => colourOf(letter, 'japanese')) });
+    panel.dispatchEvent(new win.CustomEvent('scan-progress', {
+      detail: { phase: 'scanning', complete: false, captured: [seen('F'), seen('D')], suspects: [], message: '' },
+    }));
+    await tick();
+    assert.equal(state.reconnect, null, "a Japanese cube's two matching sides were not taken as the Yes");
+    assert.equal(win.location.hash, '#/home', 'and the screen goes back to the question');
+  } finally {
+    settings.scheme = scheme;
+    feed().useConnection(null);
+    state.reconnect = null;
+  }
 });
 
 test('one mismatched side continues into the full repair scan, sides kept — and the scan answers the question', async () => {
@@ -428,6 +482,15 @@ test('a finished scan with a side that does not match is not said as good news',
     }));
     assert.equal($('#scanHowTitle').textContent, 'Not what we remembered', 'precondition: the finished scan did not match');
     assert.ok(!$('#scanHow').classList.contains('ok'), 'a side that did not match was said as good news');
+    // One mismatch ends the check: the scan goes on to read the whole cube, and sides that match
+    // after it are part of that scan, not a second try at the Yes.
+    const matching = [...FACES].map((f) => ({ face: f, colors: colorsOf(sideOf(candidate, f)) }));
+    panel.dispatchEvent(new win.CustomEvent('scan-progress', {
+      detail: { phase: 'scanning', complete: false, captured: matching, suspects: [], message: '' },
+    }));
+    await tick();
+    assert.equal(win.location.hash, '#/scan', 'a mismatch did not end the check: sides matching after it took the Yes');
+    assert.ok(state.reconnect, 'and the question stays open for the full scan to answer');
   } finally {
     feed().useConnection(null);
     state.reconnect = null;
@@ -454,6 +517,12 @@ test('a finished scan whose Yes the check cannot take is said plainly', async ()
     assert.equal($('#scanHowTitle').textContent, 'Keep going', 'precondition: the Yes was refused, and the scan goes on');
     assert.ok(!$('#scanHow').classList.contains('ok'), 'a Yes the check could not take was said as good news');
     assert.equal(win.location.hash, '#/scan', 'and the screen stays to read the whole cube');
+    // A Yes refused is said once. The check has ended, so the scanner's next report is in the
+    // scanner's own words.
+    panel.dispatchEvent(new win.CustomEvent('scan-progress', {
+      detail: { phase: 'scanning', complete: false, captured, suspects: [], message: 'Show another side.' },
+    }));
+    assert.equal($('#scanHowTitle').textContent, 'How it works', "a refused Yes was said again over the scanner's next words");
   } finally {
     feed().useConnection(null);
     state.reconnect = null;
