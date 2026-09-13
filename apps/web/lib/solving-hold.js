@@ -150,12 +150,16 @@ export const WHITE_UP_STAGES = Object.freeze(['cross', 'first-layer']);
  * `alsoAsScanned`, tumbled for the rest.
  *
  * Every name a caller may ask about must be listed, so an unlisted one throws at lookup rather than
- * defaulting. And every white-up stage must be among them — a table that does not name one is not
- * describing the same method, and that throws here, when the module loads.
+ * defaulting. Every white-up stage must be among them — a table that does not name one is not
+ * describing the same method. And every name in `alsoAsScanned` must be one of them, or a misspelling
+ * there is silently held turned over. Both throw here, when the module loads. Exported for its test.
  */
-function holdTable(names, alsoAsScanned = []) {
+export function holdTable(names, alsoAsScanned = []) {
   for (const stage of WHITE_UP_STAGES) {
     if (!names.includes(stage)) throw new Error(`solving-hold: a hold table does not name the white-up stage "${stage}"`);
+  }
+  for (const name of alsoAsScanned) {
+    if (!names.includes(name)) throw new Error(`solving-hold: "${name}" is listed to keep the scan's hold, but it is not a name this table holds`);
   }
   return Object.freeze(Object.fromEntries(names.map((name) => [
     name,

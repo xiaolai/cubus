@@ -208,10 +208,12 @@ test('the cube is turned over by the renderer, never by the camera, and the engi
   // move stayed named for white up while the face turning on screen was the one at the bottom.
   assert.doesNotMatch(code, /BOTTOM_LAYER_TARGETS/, 'the list of targets drawn from below went with the camera');
   assert.doesNotMatch(code, /setAttribute\('camera-up'/, 'nothing on the cube screen moves the eye to show a hold');
-  const holdFn = code.match(/function holdCube\(h\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
-  assert.match(holdFn, /cube\.turnTo\(h\[0\], h\[1\]\)/, 'the renderer turns the OBJECT');
-  assert.match(code, /walkHold = stageAnswered \? holdForTarget\(stageTarget\.id\) : SCAN_HOLD;/,
-    'a repair is held the way its target is built, and anything else as scanned');
+  assert.match(code, /const holdCube = createHoldCube\(\{ cube, isStale: stale \}\);/,
+    'the cube screen turns its cube through the hold presenter');
+  const presenter = readFileSync(new URL('../lib/hold-presenter.js', import.meta.url), 'utf8');
+  assert.match(presenter, /cube\.turnTo\(h\[0\], h\[1\]\)/, 'the renderer turns the OBJECT');
+  assert.match(code, /walkHold = walkHoldFor\(gotRoute, stageTarget\);/,
+    'a walk is held by the one tested rule — a repair the way its target is built, anything else as scanned');
   // The live path still asks about the cube AS HELD — the corrected scan-frame model — and never
   // re-frames it itself. The one turn into the method frame is at the door every question passes.
   assert.ok(!live.includes('rotateState'), 'the live path must not re-frame the cube');
