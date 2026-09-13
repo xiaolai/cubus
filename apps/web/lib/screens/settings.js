@@ -5,10 +5,7 @@
 import { TIERS } from '../solve-target.js';
 import { capability as optimalCapability } from '../optimal.js';
 import { isDesktopHost } from '../host.js';
-import {
-  cubeLabel, forgetCube, listCubes, MAX_LABEL, NAME_PREFIX, normaliseIdentity, normaliseMac,
-  renameCube,
-} from '../cube-registry.js';
+import { cubeLabel, listCubes, MAX_LABEL, NAME_PREFIX, normaliseMac } from '../cube-registry.js';
 import { forgetLibraryMac } from '../ble-bridge.js';
 import { locale, t } from '../i18n.js';
 import { VERSION } from '../version.js';
@@ -18,10 +15,13 @@ import { HIDEABLE, PALETTES, THEMES, navHidden, save, settings } from '../app-se
 import { applyNetColors, applyTheme, buildNet, netPalette } from '../cube-drawing.js';
 import { isTauri } from '../window-chrome.js';
 import {
-  bleReach, bleReachNote, canPair, clearOffset, conn, cubeRefused, cubes, doConnect, idWords,
-  liveCubeLabel, markStale, markTrusted, onDisconnect, refreshBattery, registryWriteBad,
-  repaintSettings, setCubes, settingsRepaintPending, whenWords, wireReconnectAnswers,
+  bleReach, bleReachNote, canPair, clearOffset, conn, cubeRefused, doConnect, markStale,
+  markTrusted, onDisconnect, refreshBattery, repaintSettings, settingsRepaintPending,
+  wireReconnectAnswers,
 } from '../cube-connection.js';
+import {
+  cubes, forgetKnownCube, idWords, liveCubeLabel, registryWriteBad, renameKnownCube, whenWords,
+} from '../cube-memory.js';
 import { PROVE_COPY } from '../prove-affordance.js';
 import {
   appUpdater, hideUpdateProgress, privacySentence, reportUpdateOutcome, showUpdateProgress,
@@ -449,10 +449,9 @@ SCREENS.settings = () => {
       // which is what makes accepting an unverifiable label honest.
       for (const el of root.querySelectorAll('[data-rename-cube]')) {
         el.onchange = () => {
-          setCubes(renameCube(cubes, el.dataset.renameCube, el.value));
-          const rec = cubes[normaliseIdentity(el.dataset.renameCube)];
+          const { saved, record: rec } = renameKnownCube(el.dataset.renameCube, el.value);
           const named = cubeLabel({ ...rec, mac: el.dataset.renameCube });
-          if (save('cubusCubes', cubes)) say(`Saved — this cube is "${named}".`, 'var(--ok-ink)');
+          if (saved) say(`Saved — this cube is "${named}".`, 'var(--ok-ink)');
           else say('Could not save that name — this browser is refusing to store anything.', 'var(--err-ink)');
         };
       }
@@ -472,8 +471,7 @@ SCREENS.settings = () => {
             return;
           }
           const id = el.dataset.forgetCube;
-          setCubes(forgetCube(cubes, id));
-          const stored = save('cubusCubes', cubes);
+          const stored = forgetKnownCube(id);
           // The app's own registry is not the only place this cube's address is written down. The
           // protocol layer caches a resolved address under `smartcube-ble-mac:<device id>`, and on
           // Windows, Linux and Android the device id IS that address — so a "forgotten" cube kept
