@@ -1233,3 +1233,111 @@ test('a chip pressed on a row about a cube that has since changed takes the row 
   assert.equal(state.stageTarget, before, 'a chip about a cube nobody is holding set its target');
   assert.equal(card.hidden, true, 'a row about a cube nobody is holding stayed on screen after a press');
 });
+
+// ---- the aside speaks the reader's language ----------------------------------------------------
+//
+// dev-docs/i18n.md lists the scan aside as wired: notices, completion copy, camera hints and
+// titles. The repair's words were not — a title set as a raw literal, and the session's sentence
+// written as it came — and nothing noticed, because English was right on screen and a raw string
+// is invisible until a catalog exists. The first case proves the repair's words translate; the
+// second holds every other write to the aside to the same rule, as router-wiring.test.mjs holds
+// the Timer's say() calls.
+
+test("the repair's words reach the aside in the reader's language — its title and its sentence both", async () => {
+  const { state } = await import('../lib/app.js');
+  const { registerLocale, setLocale } = await import('../lib/i18n.js');
+  const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  const OTHER = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+  /** A scan that contradicts a cube tracking at S: the repair refuses, and the aside says so. */
+  const contradict = async () => {
+    await enterScan();
+    win.cubusFeed.useConnection(fakeConn());
+    try {
+      win.cubusFeed.facelets(S);
+      state.cube.trusted = true; state.cube.source = 'cube';
+      panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+        detail: { facelets: OTHER, valid: true, confidence: 1, lowConfidence: [] },
+      }));
+      return { title: $('#scanHowTitle').textContent, body: $('#scanHow').textContent };
+    } finally {
+      win.cubusFeed.useConnection(null);
+      state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
+      state.live = null; state.reported = null;
+    }
+  };
+  const english = await contradict();
+  assert.match(english.body, /One of the two is wrong/, 'precondition: the contradiction was reported, in English');
+  // The catalog is made from what the screen actually said, so no sentence is copied here to drift.
+  registerLocale('qa', { [english.title]: '«title»', [english.body]: '«body»' });
+  try {
+    assert.equal(setLocale('qa'), true, 'precondition: the test catalog is active');
+    const translated = await contradict();
+    assert.equal(translated.title, '«title»', "the repair's title did not go through t()");
+    assert.equal(translated.body, '«body»', "the repair's sentence did not go through t()");
+  } finally {
+    setLocale('en');
+  }
+});
+
+test('every sentence the scan screen writes into its aside goes through t()', async () => {
+  const { readdirSync } = await import('node:fs');
+  const files = ['lib/screens/scan.js', ...readdirSync(new URL('../lib/screens/scan/', import.meta.url))
+    .filter((f) => f.endsWith('.js')).map((f) => `lib/screens/scan/${f}`)];
+  assert.ok(files.length >= 2, "precondition: the scan screen's own parts are read too");
+  /** From `i`, past the string or template that opens there. */
+  const pastQuote = (src, i) => {
+    const q = src[i];
+    let j = i + 1;
+    while (j < src.length && src[j] !== q) j += src[j] === '\\' ? 2 : 1;
+    return j + 1;
+  };
+  /** The right-hand side of an assignment whose `=` ends at `from`: up to its `;`, outside any
+   *  bracket or string. */
+  const rhsAt = (src, from) => {
+    let depth = 0;
+    for (let i = from; i < src.length;) {
+      const c = src[i];
+      if (c === "'" || c === '"' || c === '`') { i = pastQuote(src, i); continue; }
+      if ('([{'.includes(c)) depth += 1;
+      else if (')]}'.includes(c)) depth -= 1;
+      else if (c === ';' && depth === 0) return src.slice(from, i);
+      i += 1;
+    }
+    throw new Error(`an assignment at ${from} never ends`);
+  };
+  /** The expression with every t(…) call replaced by a marker: what is inside one is translated
+   *  by definition. */
+  const withoutT = (expr) => {
+    let s = expr;
+    for (let at = s.search(/\bt\(/); at >= 0; at = s.search(/\bt\(/)) {
+      let depth = 0;
+      let i = at + 1;
+      for (; i < s.length; i += 1) {
+        if (s[i] === "'" || s[i] === '"' || s[i] === '`') { i = pastQuote(s, i) - 1; continue; }
+        if (s[i] === '(') depth += 1;
+        else if (s[i] === ')' && --depth === 0) break;
+      }
+      s = `${s.slice(0, at)}T${s.slice(i + 1)}`;
+    }
+    return s;
+  };
+  let seen = 0;
+  const raw = [];
+  for (const rel of files) {
+    const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
+    for (const m of src.matchAll(/\b(sayTitle|say|hint|action)\.textContent = /g)) {
+      seen += 1;
+      const rhs = rhsAt(src, m.index + m[0].length);
+      const left = withoutT(rhs).trim();
+      // A sentence literal outside t(), or another module's words (a text, message, body, title
+      // or label) read out and written as they came — the whole value, or one branch of a choice.
+      // A read used only as a condition is not the value.
+      const sentence = /['"`][A-Z]/.test(left);
+      const handedOver = /^[\w$.?]+\.(text|message|body|title|label)$/.test(left)
+        || /[?:]\s*[\w$.?]+\.(text|message|body|title|label)\b/.test(left);
+      if (sentence || handedOver) raw.push(`${rel}: ${m[1]}.textContent = ${rhs.trim().slice(0, 80)}`);
+    }
+  }
+  assert.ok(seen >= 20, `precondition: only ${seen} writes to the aside were found — the reader is looking in the wrong place`);
+  assert.deepEqual(raw, [], `these writes to the scan screen's aside bypass t(): ${raw.join(' | ')}`);
+});
