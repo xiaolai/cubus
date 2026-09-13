@@ -29,8 +29,9 @@
 // states and builds in 1.4 s.
 //
 // Convention, as everywhere else in this app: the cross goes on D, and a target is measured in the
-// lesson's frame (plan §9.1). Slot index equals cubie index, so `EDGE.DF` is both "the DF slot" and
-// "the cubie that belongs there".
+// METHOD frame — the scan frame tumbled so white is on D, which the app turns every cube into before
+// it asks (lib/solving-hold.js, ADR 0003). So "the cross" here is the WHITE cross. Slot index equals
+// cubie index, so `EDGE.DF` is both "the DF slot" and "the cubie that belongs there".
 
 import { CORNER, EDGE, MOVES, MOVE_NAMES } from './cube-pieces.js';
 import * as eng from './methods/engine.js';

@@ -67,7 +67,13 @@ const PAYLOAD = {
   'topCorners.permute': { corners: [0, 1] },
   'topEdges.permute': { edges: [0, 1] },
 };
-const stepFor = (key) => ({ kind: 'goal', why: { key, ...PAYLOAD[key] } });
+/** The stage a step for each hold-sensitive reason carries — `whyText` refuses one without it, since
+ *  those sentences read differently held white up and turned over (ADR 0003). */
+const STAGE_OF = {
+  'cross.lift': 'cross', 'cross.insert': 'cross', 'cross.whole': 'cross',
+  'firstLayer.lift': 'first-layer', 'firstLayer.insert': 'first-layer',
+};
+const stepFor = (key) => ({ kind: 'goal', stage: STAGE_OF[key], why: { key, ...PAYLOAD[key] } });
 
 /** app.js with its comments removed — the history of a rule belongs in the source, and a test
  *  that could not tell a comment from a string would forbid recording it. */
@@ -137,7 +143,12 @@ test('the lesson is thrown away with the arrangement it was about', () => {
 test('every step points at something, and the cue is cleared when there is nothing to point at', () => {
   const point = code.match(/function pointAtStep\(i\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
   assert.ok(point, 'the screen must have a function that applies a step\'s cues');
-  assert.match(point, /lessonCues\(step\)/);
+  // Worked out once, when the lesson is built, and renamed into the frame the renderer draws — then
+  // applied from the step under the head.
+  const build = code.match(/function lessonFor\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(build, /lessonCues\(step\)/, 'every step\'s cues are worked out when the lesson is built');
+  assert.match(point, /step\?\.focus/);
+  assert.match(point, /step\?\.highlight/);
   assert.match(point, /setAttribute\('focus'/);
   assert.match(point, /setAttribute\('highlight'/);
   assert.match(point, /removeAttribute\('focus'\)/, 'no lesson means no focus, not a focus on nothing');
@@ -233,6 +244,6 @@ test('the reason line assists the cube rather than carrying it alone', () => {
   assert.match(code, /id="whyLine"/);
   assert.match(code, /whyLine\.hidden = !text/);
   const point = code.match(/function pointAtStep\(i\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
-  assert.ok(point.includes('whyText(step)') && point.includes('lessonCues(step)'),
+  assert.ok(point.includes('whyText(step)') && point.includes('step?.focus'),
     'the sentence and the cue must be applied together, from the same step');
 });
