@@ -348,6 +348,7 @@ test('in the scanner, two adjacent matching sides take the Yes — any way up', 
 
   await go('scan');
   assert.equal($('#scanHowTitle').textContent, 'Checking your cube', 'the confirm mode explains itself');
+  assert.match($('#scanHow').textContent, /two sides that meet along an edge/, 'confirm mode did not say what the check needs');
   const panel = $('#stage ai-scan-panel');
   const progress = (captured) => panel.dispatchEvent(new win.CustomEvent('scan-progress', {
     detail: { phase: 'scanning', complete: false, captured, suspects: [], message: '' },
@@ -355,6 +356,7 @@ test('in the scanner, two adjacent matching sides take the Yes — any way up', 
 
   progress([{ face: 'F', colors: colorsOf(sideOf(candidate, 'F')) }]);
   assert.equal($('#scanHowTitle').textContent, 'One more side', 'one side is a third of a proof, so the check asks for its neighbour');
+  assert.ok($('#scanHow').classList.contains('ok'), 'a matching side was not said as good news');
   assert.equal(state.reconnect?.reading, 'unchanged', 'still open — one side confirms nothing');
 
   progress([
@@ -400,6 +402,63 @@ test('one mismatched side continues into the full repair scan, sides kept — an
   assert.equal(storedLast().facelets, W);
   assert.equal(win.location.hash, '#/home', 'then back to the question\'s screen');
   feed().useConnection(null);
+});
+
+// A tone is a claim too, and the check answers after the scanner's own words: the report that
+// finishes a scan paints "Scanned" as good news first. So whatever the check says of a finished
+// scan has to set its own tone rather than inherit that one — a side that does not match, and a Yes
+// the check cannot take, are both said plainly. Neither case trusts the cube, so the memory the
+// cases below read is the memory the case above left.
+test('a finished scan with a side that does not match is not said as good news', async () => {
+  const state = await appState();
+  feed().useConnection(null);
+  feed().useConnection(fakeConn());
+  try {
+    const memory = storedLast();
+    feed().facelets(memory.reported, 0);
+    await tick();
+    const candidate = state.reconnect.candidate;
+    await go('scan');
+    const panel = $('#stage ai-scan-panel');
+    const wrongU = [...sideOf(candidate, 'U')];
+    wrongU[0] = wrongU[0] === 'F' ? 'B' : 'F';
+    const captured = [...FACES].map((f) => ({ face: f, colors: colorsOf(f === 'U' ? wrongU.join('') : sideOf(candidate, f)) }));
+    panel.dispatchEvent(new win.CustomEvent('scan-progress', {
+      detail: { phase: 'done', complete: true, captured, suspects: [], message: '' },
+    }));
+    assert.equal($('#scanHowTitle').textContent, 'Not what we remembered', 'precondition: the finished scan did not match');
+    assert.ok(!$('#scanHow').classList.contains('ok'), 'a side that did not match was said as good news');
+  } finally {
+    feed().useConnection(null);
+    state.reconnect = null;
+  }
+});
+
+test('a finished scan whose Yes the check cannot take is said plainly', async () => {
+  const state = await appState();
+  feed().useConnection(null);
+  // A session that cannot derive a correction: the one way matching sides are refused as a Yes.
+  feed().useConnection(fakeConn({ cameraScan: () => null }));
+  try {
+    const memory = storedLast();
+    feed().facelets(memory.reported, 0);
+    await tick();
+    const candidate = state.reconnect.candidate;
+    await go('scan');
+    const panel = $('#stage ai-scan-panel');
+    const captured = [...FACES].map((f) => ({ face: f, colors: colorsOf(sideOf(candidate, f)) }));
+    panel.dispatchEvent(new win.CustomEvent('scan-progress', {
+      detail: { phase: 'done', complete: true, captured, suspects: [], message: '' },
+    }));
+    await tick();
+    assert.equal($('#scanHowTitle').textContent, 'Keep going', 'precondition: the Yes was refused, and the scan goes on');
+    assert.ok(!$('#scanHow').classList.contains('ok'), 'a Yes the check could not take was said as good news');
+    assert.equal(win.location.hash, '#/scan', 'and the screen stays to read the whole cube');
+  } finally {
+    feed().useConnection(null);
+    state.reconnect = null;
+    state.cube.staleWhy = '';
+  }
 });
 
 // A cube TURNED between the question and the check is still the same cube, and the check has to
