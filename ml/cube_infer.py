@@ -160,7 +160,7 @@ MAX_COLUMN_SPREAD = 3.0
 MAX_AREA_RATIO = 5.0
 
 
-def _to_grid(nine: list[Detection]) -> list[Detection] | None:
+def to_grid(nine: list[Detection]) -> list[Detection] | None:
     by_y = sorted(nine, key=lambda d: d.cy)
     rows = [sorted(by_y[i : i + 3], key=lambda d: d.cx) for i in (0, 3, 6)]
     size = sum((d.w + d.h) / 2 for d in nine) / 9
@@ -200,7 +200,7 @@ def fit_grid(dets: list[Detection], min_conf: float = 0.25) -> tuple[str, list[D
     if len(good) < 9:
         return "PARTIAL_FACE", None
     nine = sorted(good, key=lambda d: -(d.w * d.h))[:9]
-    grid = _to_grid(nine)
+    grid = to_grid(nine)
     return ("BAD_GEOMETRY", None) if grid is None else ("OK", grid)
 
 

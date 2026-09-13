@@ -12,7 +12,8 @@ nothing may train on a set without a confirmed answer that is itself a legal cub
 
 TWO HALVES, ONE OWNER EACH. This file owns pixels and files. It turns each photo upright by its EXIF
 Orientation, reads it through `cube_infer` (the app's exact letterbox, decode, NMS and grid fit),
-and maps the nine boxes back onto the upright photo. The cube half (is this a legal cube, the
+and maps the nine boxes back onto the upright photo. Where the app's grid fit refuses a photo, a more
+tolerant one takes over (`fit_photo`), and every sticker on that photo is outlined. The cube half (is this a legal cube, the
 nine-of-each repair, a centre read as the wrong colour) is the scanner's own TypeScript, bundled
 into one file by `bundle` from `propose_assemble.ts`. So a proposal and the app cannot disagree
 about what a real cube is.
@@ -30,10 +31,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -52,9 +55,32 @@ FACES_PER_CUBE = 6  # cube-drop's FACES_PER_CUBE
 OTHER_SET = "other"  # cube-drop's folder for photos with no cube in them; never proposed
 # cube-drop's ID_RE, verbatim: a folder name the drop could not have minted was not written by it.
 ID_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
-UNUSABLE_REASONS = frozenset({"too_many_photos", "face_not_found", "same_side_twice"})
+UNUSABLE_REASONS = frozenset({"too_many_photos", "not_3x3", "face_not_found", "same_side_twice"})
 DEFAULT_ASSEMBLER = HERE / "out" / "propose-assemble.mjs"
 ESBUILD = HERE.parent / "packages" / "cube-scanner" / "node_modules" / ".bin" / "esbuild"
+
+# THE TOLERANT FIT. The app's grid fit is built for a live camera, which simply reads the next frame
+# when one is refused; a contributor's photo gets one read, and one refusal sinks a set of six. On the
+# drop's first 15 real sets (2026-09-13) five photos sank four sets. In three, the detector had found
+# all nine stickers and the app's "nine largest boxes" rule took in one larger stray box; in two, only
+# seven or eight stickers cleared 0.25. Taking the most confident nine that form a grid, then lowering
+# the floor, found a face in all five; and the four rescued sets matched what their contributor later
+# confirmed on a re-shoot of the same scramble in 22 of 24 photos (the other two: one misread sticker
+# each). Every sticker on such a photo is outlined, because a tolerant fit can box the wrong ones.
+TOLERANT_FLOORS = (0.25, 0.15, 0.10)
+TOLERANT_POOL = 12  # the most confident detections the nine are chosen from: C(12, 9) = 220 grids
+FITS = frozenset({"app", "tolerant"})
+
+# A BIGGER CUBE. A 4x4 face holds 3x3 blocks of stickers, and both fits will box one: the drop's first
+# 4x4 sets were proposed as 3x3 faces. What gives it away is stickers of the grid's own size exactly
+# one lattice step outside it, along the grid's own rows and columns (a foreshortened neighbouring
+# side is smaller, and off the lattice). Measured per set on 2026-09-13: every 3x3 set — 17 from the
+# drop and the 7 home cubes, 144 photos — summed at most 1 such sticker; the 8 sets from a 4x4 summed
+# 8 to 20.
+BEYOND_FLOOR = 0.25  # the app's own detection floor: a faint box is not evidence of a sticker
+BEYOND_SIZE = (0.5, 2.0)  # a sticker's area, against the grid's median
+BEYOND_SLACK = 0.3  # how far from a lattice point, in steps, still counts as on it
+BIGGER_CUBE_STICKERS = 4  # a set summing this many is not a 3x3
 
 
 @dataclass(frozen=True)
@@ -75,6 +101,8 @@ class PhotoRead:
     confidence: tuple[float, ...] = ()
     scores: tuple[tuple[float, ...], ...] = ()
     boxes: tuple[tuple[int, int, int, int], ...] = ()  # [x, y, w, h] in upright photo pixels
+    fit: str = ""  # which fit found the grid, "app" or "tolerant"; empty when none did
+    beyond: int = 0  # stickers of the grid's size one lattice step outside it (BIGGER_CUBE_STICKERS)
 
 
 def find_sets(photo_dir: Path) -> list[CubeSet]:
@@ -105,6 +133,62 @@ def upright_box(d: cube_infer.Detection, width: int, height: int) -> tuple[int, 
     return left, top, right - left, bottom - top
 
 
+def fit_photo(dets: list[cube_infer.Detection]) -> tuple[str, list[cube_infer.Detection] | None, str]:
+    """The app's grid fit first; if it refuses, the most confident nine that form a grid, at falling floors.
+
+    Returns the app's verdict, the grid in reading order (or None), and which fit found it.
+    """
+    verdict, grid = cube_infer.fit_grid(dets)
+    if grid is not None:
+        return verdict, grid, "app"
+    for floor in TOLERANT_FLOORS:
+        eligible = (d for d in dets if d.confidence >= floor and 0 <= d.class_id < cube_infer.NUM_CLASSES)
+        pool = sorted(eligible, key=lambda d: -d.confidence)[:TOLERANT_POOL]
+        best: tuple[float, list[cube_infer.Detection]] | None = None
+        for nine in itertools.combinations(pool, 9):
+            candidate = cube_infer.to_grid(list(nine))
+            score = sum(d.confidence for d in nine)
+            if candidate is not None and (best is None or score > best[0]):
+                best = (score, candidate)
+        if best is not None:
+            return verdict, best[1], "tolerant"
+    return verdict, None, ""
+
+
+def beyond_grid(grid: list[cube_infer.Detection], dets: list[cube_infer.Detection]) -> int:
+    """How many detections of the grid's own size sit exactly one lattice step outside the fitted 3x3."""
+    area = statistics.median(d.w * d.h for d in grid)
+    rows = [grid[0:3], grid[3:6], grid[6:9]]
+    across = [statistics.mean(getattr(rows[r][c + 1], k) - getattr(rows[r][c], k) for r in range(3) for c in range(2)) for k in ("cx", "cy")]
+    down = [statistics.mean(getattr(rows[r + 1][c], k) - getattr(rows[r][c], k) for r in range(2) for c in range(3)) for k in ("cx", "cy")]
+    det = across[0] * down[1] - across[1] * down[0]
+    if det == 0:
+        return 0
+    centre, inside, count = grid[4], {id(d) for d in grid}, 0
+    for d in dets:
+        if id(d) in inside or d.confidence < BEYOND_FLOOR or not BEYOND_SIZE[0] * area <= d.w * d.h <= BEYOND_SIZE[1] * area:
+            continue
+        dx, dy = d.cx - centre.cx, d.cy - centre.cy
+        steps_across = (dx * down[1] - dy * down[0]) / det
+        steps_down = (across[0] * dy - across[1] * dx) / det
+        on_lattice = all(abs(s - round(s)) <= BEYOND_SLACK for s in (steps_across, steps_down))
+        if on_lattice and max(abs(round(steps_across)), abs(round(steps_down))) == 2:
+            count += 1
+    return count
+
+
+def read_output(output) -> tuple[str, list[cube_infer.Detection] | None, str, int]:  # output: the model's raw tensor
+    """Raw detector output to a fitted face, decoded down to the tolerant fit's lowest floor.
+
+    Returns `fit_photo`'s three answers and `beyond_grid`'s count (0 when nothing fitted). Decoding
+    lower changes nothing the app's fit sees: NMS keeps boxes in falling confidence, so a box under
+    0.25 never suppresses one above it, and `fit_grid` drops everything under 0.25 before it looks.
+    """
+    dets = cube_infer.nms(cube_infer.decode(output, conf_threshold=TOLERANT_FLOORS[-1]))
+    verdict, grid, fit = fit_photo(dets)
+    return verdict, grid, fit, (beyond_grid(grid, dets) if grid is not None else 0)
+
+
 def load_upright(path: Path):  # -> np.ndarray, H×W×3 uint8
     """The photo as it is shown: EXIF Orientation applied, which cube-drop keeps and does not bake in."""
     import numpy as np
@@ -126,7 +210,7 @@ class Detector:
     def __call__(self, path: Path) -> PhotoRead:
         rgb = load_upright(path)
         output = self.session.run(None, {self.input: cube_infer.letterbox(rgb)[None]})[0]
-        verdict, grid = cube_infer.fit_grid(cube_infer.nms(cube_infer.decode(output)))
+        verdict, grid, fit, beyond = read_output(output)
         if grid is None:
             return PhotoRead(verdict)
         height, width = rgb.shape[:2]
@@ -137,6 +221,8 @@ class Detector:
             # decode always fills scores; were one missing, the cube half refuses the read as malformed
             tuple(d.scores or () for d in grid),
             tuple(upright_box(d, width, height) for d in grid),
+            fit,
+            beyond,
         )
 
 
@@ -195,6 +281,8 @@ def check_proposal(p: dict) -> None:
             and all(isinstance(b, list) and len(b) == 4 and all(type(v) is int and v >= 0 for v in b) for b in boxes),
             f"boxes {boxes!r}",
         )
+        require(photo.get("fit") in FITS, f"fit {photo.get('fit')!r}")
+        require(photo.get("fit") != "tolerant" or uncertain == list(range(9)), "a tolerant fit outlines every sticker")
 
 
 def write_proposal(review_dir: Path, proposal: dict) -> None:
@@ -259,6 +347,13 @@ def propose(
             written.append((cube.key, "unusable: too_many_photos"))
             continue
         reads = [read(p) for p in cube.photos]
+        # Before the face check: a 4x4 set often has photos no fit reads too, and "not a 3x3" is the
+        # thing its contributor needs to hear.
+        beyond = [{"file": p.name, "beyond": r.beyond} for p, r in zip(cube.photos, reads) if r.beyond]
+        if sum(b["beyond"] for b in beyond) >= BIGGER_CUBE_STICKERS:
+            write_proposal(review_dir, {**head, "status": "unusable", "reason": "not_3x3", "detail": beyond, **stamp})
+            written.append((cube.key, "unusable: not_3x3"))
+            continue
         missed = [{"file": p.name, "verdict": r.verdict} for p, r in zip(cube.photos, reads) if r.verdict != "OK"]
         if missed:
             write_proposal(review_dir, {**head, "status": "unusable", "reason": "face_not_found", "detail": missed, **stamp})
@@ -277,15 +372,19 @@ def propose(
             {
                 "file": path.name,
                 "grid": [cube_infer.CLASS_NAMES[c] for c in shown["colors"]],
-                "uncertain": shown["uncertain"],
+                # A tolerant fit can box the wrong stickers, so that photo is checked sticker by sticker.
+                "uncertain": list(range(9)) if r.fit == "tolerant" else shown["uncertain"],
                 "boxes": [list(b) for b in r.boxes],
+                "fit": r.fit,
             }
             for path, r, shown in zip(cube.photos, reads, decision["photos"], strict=True)
         ]
         write_proposal(review_dir, {**base, "status": "confirm", "legal": decision["legal"], "photos": photos})
         outlined = sum(len(p["uncertain"]) for p in photos)
         legality = "legal" if decision["legal"] else f"NOT legal ({decision['verdict']})"
-        written.append((cube.key, f"confirm, {legality}, {outlined} outlined"))
+        tolerant = sum(p["fit"] == "tolerant" for p in photos)
+        by_tolerant = f", {tolerant} by the tolerant fit" if tolerant else ""
+        written.append((cube.key, f"confirm, {legality}, {outlined} outlined{by_tolerant}"))
     return written
 
 
