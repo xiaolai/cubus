@@ -531,3 +531,39 @@ test('Yes on a cube whose reports stopped adding up grants nothing, and the Yes 
   feed().useConnection(null);
   state.reconnect = null;
 });
+
+// Settings renames and forgets through the registry's owner (lib/cube-memory.js), which answers
+// whether storage took the change; the words under the Pair button are that answer. LAST in the file:
+// the forget below drops the remembered cube from this session.
+test('a rename or a forget that storage refuses is said in Settings — and a rename that lands names what was saved', async () => {
+  const state = await appState();
+  feed().useConnection(null);
+  state.reconnect = null;
+  await go('settings');
+  const stored = () => JSON.parse(win.localStorage.getItem('cubusCubes'))[MAC];
+  const renameTo = (value) => {
+    const field = $(`[data-rename-cube="${MAC}"]`);
+    assert.ok(field, 'precondition: the remembered cube has a row');
+    field.value = value;
+    field.dispatchEvent(new win.Event('change'));
+    return $('#pairMsg').textContent;
+  };
+  assert.equal(renameTo('The green one'), 'Saved — this cube is "The green one".',
+    'a saved name is named back from the stored record');
+  assert.equal(stored().nickname, 'The green one', 'precondition: the name reached storage');
+
+  failWrites = true;
+  try {
+    assert.match(renameTo('Another name'), /^Could not save that name/, 'a name storage refused was reported as saved');
+    assert.equal(stored().nickname, 'The green one', 'precondition: storage refused the name');
+    $(`[data-forget-cube="${MAC}"]`).click(); // arms
+    await tick();
+    $(`[data-forget-cube="${MAC}"]`).click(); // confirms
+    await tick();
+    assert.match($('#pairMsg').textContent, /will not store the change/, 'a forget storage refused was reported as done');
+    assert.ok(stored(), 'precondition: storage kept the record it refused to change');
+    isAbsent($(`[data-forget-cube="${MAC}"]`), 'forgotten for now: the row is gone for this session');
+  } finally {
+    failWrites = false;
+  }
+});

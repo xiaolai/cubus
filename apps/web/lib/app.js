@@ -4,16 +4,15 @@
 // the tests read off the app.
 
 import { STARTUP_DELAY_MS } from './app-update.js';
-import { parseRegistry } from './cube-registry.js';
 import { initLocale } from './i18n.js';
 
 import { $, state } from './app-state.js';
 import { settings } from './app-settings.js';
-import { Cube, loadSolver } from './solver-service.js';
+import { loadSolver } from './solver-service.js';
 import { setFacelets } from './cube-subject.js';
 import { applyNetColors, applyTheme } from './cube-drawing.js';
 import { buildChrome, detectPlatform, isTauri } from './window-chrome.js';
-import { cubes, setCubes } from './cube-connection.js';
+import { reparseRegistry } from './cube-memory.js';
 import { schedulePreroll } from './scramble-roll.js';
 import { appUpdater, hideUpdateProgress, showUpdateProgress } from './update-ui.js';
 import {
@@ -142,7 +141,7 @@ async function boot() {
     // The registry was parsed before the cube library existed, so its remembered arrangements
     // have passed only the structural checks. Re-parse with the full reachability round-trip:
     // a forged state that merely looks like facelets is dropped whole here, not shown later.
-    setCubes(parseRegistry(cubes, Cube));
+    reparseRegistry();
     setFacelets(state.cube.facelets);
     schedulePreroll(); // so the first press of the die is as cheap as every one after it
     // NO RE-RENDER. Both screens that could want one already await loadSolver() inside their own
