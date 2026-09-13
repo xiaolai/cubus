@@ -21,8 +21,9 @@ import { test } from 'node:test';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { DEFAULT_RUNGS, LADDER, STAGE_IDS, TOP_RUNG } from '../lib/method-solver.js';
 import { WHY_KEYS, whyText } from '../lib/method-lesson.js';
+import { blockAt, readAppSource } from './app-source.mjs';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 const lessonSrc = readFileSync(new URL('../lib/method-lesson.js', import.meta.url), 'utf8');
 
 /**
@@ -75,8 +76,8 @@ const STAGE_OF = {
 };
 const stepFor = (key) => ({ kind: 'goal', stage: STAGE_OF[key], why: { key, ...PAYLOAD[key] } });
 
-/** app.js with its comments removed — the history of a rule belongs in the source, and a test
- *  that could not tell a comment from a string would forbid recording it. */
+/** The app's source with its comments removed — the history of a rule belongs in the source, and a
+ *  test that could not tell a comment from a string would forbid recording it. */
 const code = app
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^\s*\/\/[^\n]*$/gm, '')
@@ -101,7 +102,7 @@ test('both objects are offered, and neither stands where the other was', () => {
 test('the lesson is worked out beside the solution, never instead of it', () => {
   // If the lesson replaced the search, switching back to Solution would need a new one — and a
   // cube whose lesson failed would have no walk at all.
-  const load = code.match(/if \(!stageAnswered && !stageTarget && walkKind === 'lesson'\) \{[\s\S]*?\n {12}\}/)?.[0] ?? '';
+  const load = blockAt(code, "if (!stageAnswered && !stageTarget && walkKind === 'lesson')");
   assert.ok(load, 'loadWalk must have a lesson branch');
   assert.match(load, /gotLesson = lessonFor\(state\.cube\)/);
   assert.match(load, /walkKind = 'solution'/, 'a cube with no lesson must fall back rather than fail the screen');
@@ -141,7 +142,7 @@ test('the lesson is thrown away with the arrangement it was about', () => {
 });
 
 test('every step points at something, and the cue is cleared when there is nothing to point at', () => {
-  const point = code.match(/function pointAtStep\(i\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const point = blockAt(code, 'function pointAtStep(i)');
   assert.ok(point, 'the screen must have a function that applies a step\'s cues');
   // Worked out once, when the lesson is built, and renamed into the frame the renderer draws — then
   // applied from the step under the head.
@@ -243,7 +244,7 @@ test('the reason line assists the cube rather than carrying it alone', () => {
   // hidden when there is nothing to say rather than rendering as an empty row.
   assert.match(code, /id="whyLine"/);
   assert.match(code, /whyLine\.hidden = !text/);
-  const point = code.match(/function pointAtStep\(i\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const point = blockAt(code, 'function pointAtStep(i)');
   assert.ok(point.includes('whyText(step)') && point.includes('step?.focus'),
     'the sentence and the cue must be applied together, from the same step');
 });

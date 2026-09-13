@@ -8,13 +8,13 @@
 // questions about wiring.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { LADDER, STAGE_IDS } from '../lib/method-solver.js';
 import { FOLLOWS_TO_OFFER, RE_OFFER_GAP } from '../lib/method-ladder.js';
+import { blockAt, readAppSource } from './app-source.mjs';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 const code = app
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^\s*\/\/[^\n]*$/gm, '')
@@ -71,7 +71,7 @@ test('the screen states measurements, never claims about a course nobody took', 
 });
 
 test('raising a rung from the ladder is deliberate, and clears the lesson it invalidates', () => {
-  const handler = lessons.match(/data-raise\]'\)\)[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const handler = blockAt(lessons, "querySelectorAll('[data-raise]'))");
   assert.ok(handler, 'the ladder must offer a way up');
   // Through the SHARED operation. The four steps — take the offer, write both halves back, throw
   // the cached lesson away, persist — used to be spelt out here and again in the cube screen's
@@ -90,7 +90,7 @@ test('the offer is on the cube screen, once per lesson, and answerable both ways
   assert.match(code, /id="rungOffer"/);
   assert.match(code, /id="rungYes"/);
   assert.match(code, /id="rungNot"/, 'an offer with no way to decline is an ask');
-  const answer = code.match(/const answerOffer = \(yes\) => \{[\s\S]*?\n {6}\};/)?.[0] ?? '';
+  const answer = blockAt(code, 'const answerOffer = (yes) =>');
   assert.ok(answer, 'the offer must have a handler');
   assert.match(answer, /raiseRung\(offer\)/, 'accepting must go through the shared operation');
   assert.match(answer, /declineOffer\(/);

@@ -18,6 +18,7 @@ import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
 import { createSelfCheck } from '../lib/cube-selfcheck.js';
 import { NAME_PREFIX } from '../lib/cube-registry.js';
+import { readAppSource } from './app-source.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -436,7 +437,7 @@ test('the driver resolves identity through the same call the seam does', () => {
   // The seam above is only worth what connectOnce does, so this pins that the two are one call
   // and not a lookalike. Source, because the real path needs a radio, the vendored protocol
   // bundle and a browser with Web Bluetooth — none of which exist in this harness.
-  const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+  const app = readAppSource();
   assert.match(app, /adoptConnection\(sessionIdentity\(session\), session\.name/,
     'connectOnce must file the connection under the SESSION\'s identity, with no address from elsewhere');
   assert.doesNotMatch(app, /sessionIdentity\([^)]*typed/, 'the typed/remembered address is not an identity');

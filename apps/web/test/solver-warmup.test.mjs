@@ -14,13 +14,13 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
 
 import { shareBudget } from '../lib/solve-client.js';
 import { VIEW_COUNT } from '../lib/solver-engine.js';
 import Cube from '../vendor/cubejs.js';
+import { readAppSource } from './app-source.mjs';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 
 test('the warm cube is actually solved, so warming costs only the tables', () => {
   // Matched by VALUE and not by name: this looked for `SOLVED_FACELETS` until 2026-09-04, when

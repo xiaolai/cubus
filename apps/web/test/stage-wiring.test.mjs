@@ -25,8 +25,9 @@ import { test } from 'node:test';
 
 import { OFFERED_TARGETS } from '../lib/stage-targets.js';
 import { NODE_BUDGET } from '../lib/stage-distance.js';
+import { blockAt, readAppSource } from './app-source.mjs';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 const code = app
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^\s*\/\/[^\n]*$/gm, '')
@@ -80,12 +81,12 @@ test('chips are painted only for a scan the app BELIEVED', () => {
   // §9a: no repair runs on a read the scanner did not accept. The feature inherits the scan's
   // refusal rather than forming an opinion of its own — which here means the call sits in the
   // branch that adopts the cube, never beside the one that refuses it.
-  const complete = code.match(/panel\.addEventListener\('scan-complete'[\s\S]*?\n {6}\}\);/)?.[0] ?? '';
+  const complete = blockAt(code, "panel.addEventListener('scan-complete'");
   assert.ok(complete, 'the scan-complete handler must exist');
-  const adopted = complete.match(/\} else \{[\s\S]*?adoptCube\(fl,[\s\S]*?\n {8}\}/)?.[0] ?? '';
-  assert.ok(adopted, 'the adoption branch must exist');
+  const adopted = blockAt(complete, '} else {');
+  assert.match(adopted, /adoptCube\(fl,/, 'the adoption branch must exist, and be the one that adopts the cube');
   assert.match(adopted, /paintStageChips\(fl\)/, 'the chips are painted from the adoption branch');
-  const refusedBranch = complete.match(/if \(!adopted\) \{[\s\S]*?\n {8}\}/)?.[0] ?? '';
+  const refusedBranch = blockAt(complete, 'if (!adopted)');
   assert.ok(refusedBranch, 'the refusal branch must exist');
   assert.doesNotMatch(refusedBranch, /paintStageChips/, 'a refused read must produce no numbers at all');
 });
@@ -94,7 +95,7 @@ test('a late chip answer cannot land on a cube that has been replaced', () => {
   // The failure §5 spends three corrections on, one screen earlier: a correction to one sticker
   // re-scans and re-paints, and without a generation counter the previous cube's fifth chip
   // arrives and overwrites the new cube's.
-  const painter = code.match(/async function paintStageChips\(facelets\)[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const painter = blockAt(code, 'async function paintStageChips(facelets)');
   assert.ok(painter, 'the painter must exist');
   assert.match(painter, /const mine = \+\+stageGen;/, 'each paint must take a generation');
   assert.match(painter, /mine === stageGen/, 'and check it is still the current one');
@@ -112,7 +113,7 @@ test('a late chip answer cannot land on a cube that has been replaced', () => {
 });
 
 test('the chip row upgrades bounds to answers, and never the other way', () => {
-  const painter = code.match(/async function paintStageChips\(facelets\)[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const painter = blockAt(code, 'async function paintStageChips(facelets)');
   assert.match(painter, /want: 'bounds'/, 'the instant pass is a table read for every target at once');
   assert.match(painter, /want: 'route'/, 'and the second pass is a budgeted search');
   // `solved` is deliberately not searched: §6 gives its chip the "a route, not a distance" state
@@ -136,7 +137,7 @@ test('the target selector replaces the WALK and does not rebuild the screen', ()
   // A rebuild would tear down the transport, the 3D element and the walk a child is halfway
   // through. `retarget()` — which is `loadWalk` — is the seam for exactly this (§6), and
   // `refreshScreen()` is the one that must NOT appear here.
-  const handler = code.match(/for \(const pill of root\.querySelectorAll\('\[data-stage\]'\)\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const handler = blockAt(code, "for (const pill of root.querySelectorAll('[data-stage]'))");
   assert.ok(handler, 'the selector must be wired');
   assert.match(handler, /void loadWalk\(\);/, 'a target change is a walk replacement');
   assert.doesNotMatch(handler, /refreshScreen|renderScreen/, 'and never a rebuild');
@@ -196,7 +197,7 @@ test('the engine is asked about the WHITE cross, and every answer comes back in 
   // wrong cross, get a correct answer to that question, and show it.
   assert.match(code, /client\.stageRoute\(\{ \.\.\.payload, facelets: toMethodFrame\(payload\.facelets\) \}\)/,
     'every question to the engine is turned at its one door');
-  const race = code.match(/async function lastRoute\(target, facelets, signal, wholeDone\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const race = blockAt(code, 'async function lastRoute(target, facelets, signal, wholeDone)');
   assert.ok(race, 'the race must take the cube as held and turn it itself');
   assert.match(race, /const cubie = fromCube\(Cube\.fromString\(toMethodFrame\(facelets\)\)\);/,
     'the replay judges every source against the white cross');
@@ -244,7 +245,7 @@ test('a chip answer is about the cube it was asked about, not merely the cube of
   // A smart-cube snapshot can replace the subject without touching the generation or the DOM.
   // Reproduced by an audit: scan `R`, report `R F`, and the cross chip still read 1 where the
   // distance had become 2. The freshness test compares the CUBE as well.
-  const painter = code.match(/async function paintStageChips\(facelets\)[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const painter = blockAt(code, 'async function paintStageChips(facelets)');
   assert.match(painter, /state\.cube\.facelets === facelets/,
     'the answer must be discarded when the subject is no longer the cube the question was about');
 });
@@ -272,18 +273,22 @@ test('a repair survives a whole-cube search that failed', () => {
   // AND THE REPAIR NEVER WAITS FOR IT. Awaiting the whole-cube search before committing made the
   // reordering buy nothing: the repair was asked for first and then held at "working…" until a
   // search it does not need had finished. Reproduced by a verify pass.
-  const load3 = code.slice(code.indexOf('async function loadWalk('));
-  assert.ok(load3.indexOf('gotRoute = await lastRoute(') < load3.indexOf('await wholeDone;'),
-    'the repair is asked for before the whole-cube answer is waited on');
+  const load3 = blockAt(code, 'async function loadWalk(');
+  const routeAt3 = load3.indexOf('gotRoute = await lastRoute(');
+  const wholeAt3 = load3.indexOf('await wholeDone;');
+  assert.ok(routeAt3 >= 0 && wholeAt3 >= 0, 'both landmarks must exist, or the order below compares nothing');
+  assert.ok(routeAt3 < wholeAt3, 'the repair is asked for before the whole-cube answer is waited on');
   assert.match(code, /wholeDone\.catch\(\(\) => \{\}\);/,
     'and the promise nobody may be left to await must never be an unhandled rejection');
   // AND IT RUNS FIRST. Awaiting the whole-cube search before starting the repair made every repair
   // wait one out — including a target the cube was already at. The pool source awaits that promise
   // instead, which is what §4's "race" means: three sources, each arriving when it arrives.
   assert.match(code, /const wholeDone = deriveWhole\(\{/, 'the whole-cube search is started, not awaited');
-  const load2 = code.slice(code.indexOf('async function loadWalk('));
-  assert.ok(load2.indexOf('gotRoute = await lastRoute(') < load2.indexOf('await wholeDone;'),
-    'the repair must be asked for before the whole-cube answer is waited on');
+  const load2 = blockAt(code, 'async function loadWalk(');
+  const routeAt2 = load2.indexOf('gotRoute = await lastRoute(');
+  const wholeAt2 = load2.indexOf('await wholeDone;');
+  assert.ok(routeAt2 >= 0 && wholeAt2 >= 0, 'both landmarks must exist, or the order below compares nothing');
+  assert.ok(routeAt2 < wholeAt2, 'the repair must be asked for before the whole-cube answer is waited on');
   assert.match(code, /pool: async \(\) => \{\s*\n\s*await wholeDone;/,
     'and the pool source awaits it, rather than reading a solution that has not landed yet');
 });
@@ -301,7 +306,7 @@ test('every walk reload starts from the cube in hand — BEFORE anything is draw
   assert.match(code, /liveMoved = true;/, 'a tracked turn is what sets it');
   // Asserted on the BLOCK, not on a trailing comment: `code` is comment-stripped, so a regex
   // reaching for the explanation matches nothing however right the code is.
-  const snapshot = code.match(/liveUpdate = \(f, serial\) => \{[\s\S]*?\n {6}\};/)?.[0] ?? '';
+  const snapshot = blockAt(code, 'const liveUpdate = (f, serial) =>');
   assert.match(snapshot, /liveMoved = false;/,
     'and a snapshot clears it: the model is no longer ahead of anything');
   assert.match(code, /adoptCube\(now, \{ physical: true, source: 'cube' \}\);\s*\n[\s\S]{0,400}?state\.live = now;/,
@@ -325,7 +330,7 @@ test('every walk reload starts from the cube in hand — BEFORE anything is draw
   // whole-cube locals had already been read off `state.cube` — so a repair that then found nothing
   // committed the PREVIOUS cube's algorithm over the new subject. Reproduced by a verify pass:
   // subject `R U`, algorithm `R'`, steps starting at `R`.
-  const load = code.slice(code.indexOf('async function loadWalk('));
+  const load = blockAt(code, 'async function loadWalk(');
   const adoptAt = load.indexOf('adoptCube(now,');
   const beginAt = load.indexOf('beginWalk();');
   const readAt = load.indexOf('gotSetup = state.cube.setupAlg;');
@@ -336,9 +341,9 @@ test('every walk reload starts from the cube in hand — BEFORE anything is draw
   // adoption up by brace-matching put `beginWalk()` INSIDE the `if`, so a walk was painted only
   // when a trusted cube happened to be ahead of the subject. Every ordering assertion above still
   // passed. The indentation is what tells them apart, so the indentation is what is asserted.
-  assert.match(load.slice(0, beginAt + 20), /\n {8}beginWalk\(\);/,
+  assert.match(load.slice(0, beginAt + 20), /\n {4}beginWalk\(\);/,
     "beginWalk must sit at the function's own indentation, not inside the adoption branch");
-  assert.match(load.slice(0, adoptAt + 20), /\n {12}adoptCube\(now,/,
+  assert.match(load.slice(0, adoptAt + 20), /\n {8}adoptCube\(now,/,
     'and the adoption two levels in, inside its own guard');
 });
 
@@ -348,11 +353,11 @@ test('a cube that the adoption FINISHES gets a rebuild, not an error', () => {
   // reaching the child as "could not work it out" about a cube that is done. Reproduced by a
   // verify pass. A composition change is a rebuild, which is what the live-snapshot path in this
   // same file already does with one.
-  const load = code.slice(code.indexOf('async function loadWalk('));
+  const load = blockAt(code, 'async function loadWalk(');
   // UNCONDITIONAL. Nesting it inside the adoption was the bug: a snapshot that had already ingested
   // the solved cube made the adoption a no-op, so the check never ran and the defect came back by
   // another path — reproduced twice, which is what a guard placed inside a branch earns.
-  assert.match(load, /\n {8}if \(!scrambling\) \{\s*\n\s*const after = classifyCube\(\);/,
+  assert.match(load, /\n {4}if \(!scrambling\) \{\s*\n\s*const after = classifyCube\(\);/,
     'the composition check must sit outside the adoption branch, at the function\'s own level');
   // DEFERRED past any refresh already running: `refreshScreen` guards itself with `refreshing`, so
   // calling it from a load that `refreshScreen` itself started is swallowed — and `update()` has
