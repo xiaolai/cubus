@@ -6,6 +6,7 @@
 // backwards, the single-flight gate, and the rule that nothing downloads before the user says yes.
 
 import assert from 'node:assert/strict';
+import { readAppSource } from './app-source.mjs';
 import { readFileSync } from 'node:fs';
 import { describe, test } from 'node:test';
 
@@ -408,7 +409,7 @@ describe('the updater is actually wired to a key', () => {
   });
 
   test('the app hands progress to both paths and draws it in a live region', () => {
-    const appJs = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+    const appJs = readAppSource();
     assert.match(appJs, /checkNow\(\{\s*onProgress/, 'the Settings press reports no progress');
     assert.match(appJs, /checkOnLaunch\(\{\s*onProgress/, 'a launch-path install would be invisible');
     assert.match(appJs, /setAttribute\('aria-live', 'polite'\)/, 'the chip is not announced');

@@ -232,6 +232,11 @@ const PROVE_ANCHOR = 'if (proveBtn && optimalCapability()';
 function gatedProveBlock(src) {
   const at = src.indexOf(PROVE_ANCHOR);
   if (at < 0) return '';
+  // Exactly one. The app's source is several files, and a first match would silently read whichever
+  // copy came first — a comment quoting the condition, a second gate — as the sanctioned block.
+  if (src.indexOf(PROVE_ANCHOR, at + 1) >= 0) {
+    throw new Error('scan: the prove condition appears more than once — the block found could be the wrong one');
+  }
   const brace = src.indexOf('{', at);
   if (brace < 0) return '';
   // The `{` must really be the body's: nothing between it and the anchor may open a literal, or
@@ -243,12 +248,14 @@ function gatedProveBlock(src) {
 }
 
 test('the app can claim a minimum from exactly three places, and nowhere else', () => {
-  // Three sanctioned regions IN app.js, in two categories — and the categories are what keep this
-  // test meaningful as the feature grows, rather than accumulating one exception per string.
-  // A FOURTH source exists and is not in this file at all: the stage repair's `STAGE_COPY`, in
+  // Three sanctioned regions in the app's own source (app.js and the modules lifted out of it; the
+  // gated block and the library sentence are in lib/prove-affordance.js), in two categories — and
+  // the categories are what keep this test meaningful as the feature grows, rather than
+  // accumulating one exception per string.
+  // A FOURTH source exists and is not in the app's source at all: the stage repair's `STAGE_COPY`, in
   // lib/stage-report.js, which the case below owns. It is deliberately somewhere else — the
   // sentence belongs beside the five chip states it is one of — and the split is why this case
-  // asserts that app.js itself carries no claim outside its three.
+  // asserts that the app's source itself carries no claim outside its three.
   //
   // A CLAIM about a particular cube. Exactly two ways to hold one, and both are gated on
   // actually holding it:
@@ -345,7 +352,7 @@ test('the stage repair claims a minimum from ONE named sentence, and only for a 
   assert.equal(claimsIn(app.replace(gated, '')
     .replace(app.match(/const provenMinimumLabel = [^\n]*\n/)?.[0] ?? '~', '')
     .replace(app.match(/const PROVE_COPY = \{[\s\S]*?\n\};/)?.[0] ?? '~', '')), 0,
-  'app.js may not spell a stage claim out — it calls routeSentence, which is the one that may');
+  'the app may not spell a stage claim out — it calls routeSentence, which is the one that may');
 });
 
 test('the wording scanner cannot be walked past — the two ways it could be, pinned', () => {
