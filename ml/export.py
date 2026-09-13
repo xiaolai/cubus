@@ -93,6 +93,11 @@ ARTEFACT_LABELS: dict[str, dict[str, str]] = {
 }
 
 
+# `cubedet.model.CSP_BACKBONE`, mirrored because that module imports torch and this file is read by
+# ml/test_pipeline.py in the golden job, which installs none. `_load_cubedet` asserts they agree.
+FROM_SCRATCH_BACKBONE = "csp"
+
+
 def sha256(path: Path) -> str:
     """Hash a file, or a directory (an .mlpackage) by its sorted relative paths and contents."""
     h = hashlib.sha256()
@@ -274,6 +279,12 @@ def _load_cubedet(pt: Path):
     sys.path.insert(0, str(HERE))
     from cubedet.model import CSP_BACKBONE, CubeDet
 
+    # The one place both names exist: `cubedet.model` needs torch, which the golden job does not
+    # install, so `licence_note` mirrors the value instead of importing it. If they ever drift, an
+    # export says so here rather than stamping a manifest with the wrong provenance sentence.
+    if CSP_BACKBONE != FROM_SCRATCH_BACKBONE:
+        raise RuntimeError(f"cubedet.model names the from-scratch backbone {CSP_BACKBONE!r}, export.py {FROM_SCRATCH_BACKBONE!r}")
+
     state = torch.load(pt, map_location="cpu", weights_only=True)
     weights = state.get("model", state)
     # EVERY ARCHITECTURAL SWITCH COMES FROM THE CHECKPOINT, not from this function's defaults.
@@ -415,6 +426,29 @@ def int8_only(out: Path, work: Path) -> None:
     print(f"manifest → {manifest_path} (int8 bytes and hash; labels refreshed; nothing else)")
 
 
+def licence_note(backbone: str) -> str:
+    """Where this checkpoint's weights started, which the backbone decides and a fixed sentence cannot.
+
+    This was one string saying "from random initialisation" for every cubedet export, and it stopped
+    being true on 2026-09-10, when `--backbone` began starting the feature extractor from ImageNet
+    weights (`cubedet/model.py::PretrainedBackbone`). Only `csp` starts from noise. The licence claim
+    is unchanged either way — torchvision's weights are BSD-3 and timm's are Apache-2.0 — which is
+    exactly why the wrong sentence sat here unnoticed: nothing it got wrong was the licence.
+    PERMISSIVE_DETECTOR_PROVENANCE.md §"The pretrained backbone" carries the argument in full.
+    """
+    start = (
+        "from random initialisation"
+        if backbone == FROM_SCRATCH_BACKBONE
+        else f"with the {backbone} feature extractor from ImageNet weights (torchvision BSD-3 or "
+        "timm Apache-2.0) and the neck and head from random initialisation"
+    )
+    return (
+        f"Trained by ml/cubedet (PyTorch/torchvision, BSD-3), {start}. "
+        "No Ultralytics code and no Ultralytics pretrained weights. "
+        "See ml/PERMISSIVE_DETECTOR_PROVENANCE.md."
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pt", type=Path, default=HERE / "out" / "cube_v3_best.pt", help="the ONE checkpoint (default: the shipped v3)")
@@ -466,11 +500,8 @@ def main() -> None:
         state = torch.load(args.pt, map_location="cpu", weights_only=True)
         manifest["stack"] = "cubedet"
         manifest["training_environment"] = state.get("environment", {})
-        manifest["licence_note"] = (
-            "Trained by ml/cubedet (PyTorch/torchvision, BSD-3), from random initialisation. "
-            "No Ultralytics code and no Ultralytics pretrained weights. "
-            "See ml/PERMISSIVE_DETECTOR_PROVENANCE.md."
-        )
+        manifest["backbone"] = state.get("backbone", FROM_SCRATCH_BACKBONE)
+        manifest["licence_note"] = licence_note(manifest["backbone"])
     else:
         import ultralytics
 

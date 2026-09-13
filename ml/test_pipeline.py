@@ -326,6 +326,27 @@ def test_manifest_labels_match_export_py() -> None:
     print("PASS models: MANIFEST.json labels are export.py's, verbatim")
 
 
+def test_licence_note_says_where_the_weights_started():
+    """The manifest's provenance sentence must follow the backbone, not be a constant.
+
+    It said "from random initialisation" for every cubedet export, and that stopped being true when
+    `--backbone` started the feature extractor from ImageNet weights: BASE, MNV4, V6 and V6FT all
+    carry it wrongly. The licence claim was never affected, which is why nothing caught it.
+    """
+    import export
+
+    csp = export.licence_note("csp")
+    assert "BSD-3), from random initialisation." in csp, csp
+    for backbone in ("mobilenet_v3_large", "mobilenetv4_conv_small.e2400_r224_in1k"):
+        note = export.licence_note(backbone)
+        assert backbone in note and "ImageNet weights" in note, note
+        assert "BSD-3), from random initialisation." not in note, note
+        assert "neck and head from random initialisation" in note, note
+    for note in (csp, export.licence_note("mobilenet_v3_large")):
+        assert "No Ultralytics code and no Ultralytics pretrained weights." in note, note
+    print("PASS export: the licence note says where a checkpoint's weights started")
+
+
 if __name__ == "__main__":
     test_cube_geometry()
     test_one_cube_has_one_pigment_per_colour()
@@ -336,4 +357,5 @@ if __name__ == "__main__":
     test_split_order_is_the_same_in_every_process()
     test_shipped_int8_is_derived_from_the_shipped_fp32()
     test_manifest_labels_match_export_py()
+    test_licence_note_says_where_the_weights_started()
     print("ALL PASS")
