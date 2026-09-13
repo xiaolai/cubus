@@ -11,7 +11,7 @@ import {
 } from '../scheme.js';
 
 import { $, escHtml, icon, state } from '../app-state.js';
-import { DEFAULT_PALETTE, save, settings } from '../app-settings.js';
+import { DEFAULT_PALETTE, settings } from '../app-settings.js';
 import { hooks } from '../screen-slots.js';
 import { CHIP_NODE_BUDGET, Cube, stageAsk, warmSolver } from '../solver-service.js';
 import { NET_COLORS, NET_FACES, adoptScheme, netPalette, newCube } from '../cube-drawing.js';
@@ -20,10 +20,11 @@ import { adoptCube } from '../cube-connection.js';
 import { rememberLastSeen, repairTracking } from '../cube-reports.js';
 import { confirmReconnect } from '../reconnect-answer.js';
 import { markStale } from '../cube-trust-state.js';
-import { SCREENS, go, placeMenuUnder, placePopoverV, screenAbort, stageRect } from '../screen-shell.js';
+import { SCREENS, go, placePopoverV, screenAbort, stageRect } from '../screen-shell.js';
 
 import { createStageChips } from './scan/stage-chips.js';
 import { createScanVoice } from './scan/voice.js';
+import { createCameraMenu } from './scan/camera-menu.js';
 
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
 // renaming it is not worth breaking every #/scan link and bookmark already in the wild.
@@ -387,12 +388,6 @@ SCREENS.scan = () => {
       };
       // First called below, once `painting` exists — this definition precedes that declaration.
 
-      // Which camera. This machine class routinely has several — a built-in, a virtual camera, a
-      // Continuity Camera (an iPhone) — and with no video preview the user cannot tell which one
-      // answered. The pin is an ATTRIBUTE, not a property: mount() runs before the element's
-      // deferred autostart, but a property set before the element upgrades would be clobbered by
-      // its own class fields, whereas an attribute survives and start() re-reads it.
-      const camRow = $('.scan-cam', root), camBtn = $('#scanCamBtn', root);
       const resetBtn = $('#scanResetBtn', root), paintBtn = $('#scanPaintBtn', root);
       // Painting and the camera are exclusive: one authors the cube, the other reads it.
       let painting = false;
@@ -401,7 +396,7 @@ SCREENS.scan = () => {
       let suspects = [];
       const setPainting = (on) => {
         painting = on;
-        camRow.classList.toggle('paint', on);
+        camera.showPainting(on);
         // The tiles read this: outer stickers only wear a pointer when a click will be heard —
         // on a read side, or while painting. The class is what lets the stylesheet know.
         root.classList.toggle('painting', on);
@@ -413,85 +408,18 @@ SCREENS.scan = () => {
       };
       refreshCellNames();
       paintBtn.onclick = () => { closePops(); setPainting(!painting); };
-      const pin = (id) => { if (id) panel.setAttribute('device-id', id); else panel.removeAttribute('device-id'); };
-      pin(settings.cameraId);
-      // The webcam button IS the camera menu: one control in the corner rather than a button and a
-      // dropdown competing for the same space. Its lens fills and pulses while a camera is open,
-      // so a screen that shows no picture still says plainly whether one is running. The menu also
-      // carries the scan action, which would otherwise have nowhere left to live.
-      const menu = document.createElement('div');
-      menu.className = 'menu';
-      menu.hidden = true;
-      // A menu, said as one: without a role it is a div of buttons, and a screen reader gives no
-      // hint that Escape closes it or that its items belong together.
-      menu.setAttribute('role', 'menu');
-      menu.setAttribute('aria-label', t('Camera and scan'));
-      root.appendChild(menu);
-      let camOn = false;
-      let camsKey = null;
-      const choose = (id) => {
-        settings.cameraId = id; save('cubusSettings', settings);
-        pin(id);
-        closePops();
-        // Picking a camera is asking to scan, so it leaves painting; otherwise the camera would
-        // open under a mode that exists to keep it shut.
-        if (painting) setPainting(false);
-        else void panel.start?.();
-      };
-      const markActive = () => {
-        const items = [...menu.querySelectorAll('[data-value]')];
-        // A pinned camera that is no longer attached is not what will be used — the panel falls
-        // back to the platform default — so mark THAT rather than ticking nothing and leaving the
-        // menu mute about which camera is in force.
-        const active = items.some((b) => b.dataset.value === settings.cameraId) ? settings.cameraId : '';
-        for (const b of items) {
-          const now = b.dataset.value === active;
-          b.classList.toggle('now', now);
-          b.setAttribute('aria-checked', String(now)); // the tick is the look; this is the fact
-        }
-      };
-      const fillCams = async () => {
-        let list = [];
-        try { list = (await panel.cameras?.()) ?? []; } catch { list = []; }
-        const key = list.map((d) => d.deviceId).join('|');
-        if (key === camsKey) { markActive(); return; }
-        camsKey = key;
-        menu.textContent = '';
-        // Device labels come from the OS — set as text, never interpolated into HTML.
-        const add = (value, label) => {
-          const b = document.createElement('button');
-          b.type = 'button'; b.dataset.value = value; b.textContent = label;
-          b.setAttribute('role', 'menuitemradio');
-          b.onclick = () => choose(value);
-          menu.appendChild(b);
-        };
-        add('', 'Default camera');
-        for (const d of list) add(d.deviceId, d.label);
-        markActive();
-      };
-      void fillCams();
-      // Cameras come and go — a webcam is plugged in, an iPhone wanders out of Continuity range —
-      // and the menu is built once, so without this a newly attached camera would never appear.
-      const onDevices = () => { void fillCams(); };
-      navigator.mediaDevices?.addEventListener?.('devicechange', onDevices, { signal });
-      let shownDevice = null;
+      // The camera menu — the webcam button and its list, the camera the scanner is pinned to, and
+      // the row's word for whether one is on — is its own unit (lib/screens/scan/camera-menu.js).
+      // `closePops` is declared further down the mount, so the unit is handed a way to reach it.
+      const camera = createCameraMenu({
+        root, panel, signal, closePops: () => closePops(),
+        isPainting: () => painting, stopPainting: () => setPainting(false),
+      });
       // Throw the whole scan away — the panel's restart() also turns the camera back on when it
       // is dark, so this one call is the whole contract.
       resetBtn.onclick = () => {
         closePops();
         panel.restart?.();
-      };
-      camBtn.onclick = (ev) => {
-        const open = menu.hidden;
-        closePops();
-        if (!open) return;
-        void fillCams();
-        menu.hidden = false;
-        placeMenuUnder(camBtn, menu);
-        // Focus goes IN. A popover that opens behind the focus ring is one a keyboard cannot
-        // reach without tabbing through everything after the button that opened it.
-        (menu.querySelector('.now') ?? menu.firstElementChild)?.focus();
-        ev.stopPropagation();
       };
 
       /** The two-side reconnect check, folded into a running scan. Its own job, lifted out of the
@@ -533,23 +461,6 @@ SCREENS.scan = () => {
           } else if (!p.captured.length && !p.message) {
             speak(t('Checking your cube'), t(CONFIRM_HOW));
           }
-        }
-      };
-
-      /** The camera row: which device is on, and what it is called. Cameras come and go, and the
-       *  menu is built once — so a device answering for the first time is also the moment its
-       *  LABEL becomes readable (permission), which is why the list is rebuilt here rather than
-       *  only on `devicechange`. Lifted out of the scan-progress handler, 2026-09-05. */
-      const paintCameraRow = (p) => {
-        camOn = Boolean(p.device);
-        camRow.classList.toggle('on', camOn);
-        camBtn.title = camOn ? `${p.device.label} — camera and scan` : 'Camera off — click to turn it on';
-        camBtn.setAttribute('aria-label', camBtn.title);
-        // Labels are only readable once permission is granted, so the list is worth rebuilding the
-        // first time a camera actually answers.
-        if (p.device && p.device.deviceId !== shownDevice) {
-          shownDevice = p.device.deviceId;
-          void fillCams();
         }
       };
 
@@ -624,7 +535,7 @@ SCREENS.scan = () => {
         refreshCellNames();
         // The twin follows the scan side by side rather than waiting for all six.
         if (!settled) stateCube.setAttribute('facelets', partialFacelets(p.captured));
-        paintCameraRow(p);
+        camera.paintCameraRow(p);
         answerFromSides(p);
         // Last, so it stands over the generic caption — and it declines to speak over a notice,
         // which is why it is safe to run after everything else has had its say.
@@ -747,7 +658,7 @@ SCREENS.scan = () => {
         root.querySelector('.scan-face .cell.editing')?.classList.remove('editing');
         back?.focus();
       };
-      const closePops = () => { closeSwatches(); menu.hidden = true; };
+      const closePops = () => { closeSwatches(); camera.closeMenu(); };
       // Six COLOURS, named as colours. The picker used to iterate the six face letters and pass
       // the letter's index as the colour class — the Western identity again, and the one place a
       // user could have picked "the Back side's colour" and got blue on a cube whose back is
@@ -811,15 +722,15 @@ SCREENS.scan = () => {
       };
       const onAway = (ev) => {
         if (!swatches.hidden && !swatches.contains(ev.target)) closeSwatches();
-        if (!menu.hidden && !menu.contains(ev.target) && ev.target !== camBtn) menu.hidden = true;
+        camera.closeMenuUnless(ev.target);
       };
       const onEsc = (ev) => {
         if (ev.key !== 'Escape') return;
         // Escape returns focus to the control the popover came from, rather than dropping it on
         // <body> — closeSwatches already does that for the picker; the menu's owner is the button.
-        const hadMenu = !menu.hidden;
+        const hadMenu = camera.menuOpen();
         closePops();
-        if (hadMenu) camBtn.focus();
+        if (hadMenu) camera.focusButton();
       };
       // `{ signal }` rather than a removal pair in cleanup: the screen's abort is cut on every
       // navigation, so these cannot outlive their screen — the same mechanism the parked
