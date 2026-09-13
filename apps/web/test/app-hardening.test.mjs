@@ -9,6 +9,7 @@
 // are pinned here rather than being left to a careful reader.
 
 import assert from 'node:assert/strict';
+import { blockAt, readAppSource } from './app-source.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -17,7 +18,7 @@ import Cube from '../vendor/cubejs.js';
 
 const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-const appSource = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const appSource = readAppSource();
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const settle = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
@@ -432,10 +433,9 @@ test('a walk that cannot be built says which thing failed', () => {
 test('the Timer offers a working way out when the solver never loads', () => {
   // The retry used to be handed `false` and do nothing at all, leaving "solver loading…" on
   // screen forever with nothing suggesting what to press.
-  const retry = /void loadSolver\(\)\.then\(\(ok\) => \{([\s\S]*?)\n {10}\}\);/.exec(appSource);
-  assert.ok(retry, 'the Timer no longer retries the solver load — check this test still applies');
-  assert.match(retry[1], /if \(ok\)/, 'the success and failure paths must differ');
-  assert.match(retry[1], /solver did not load/, 'and the failure must reach the screen');
+  const retry = blockAt(appSource, 'void loadSolver().then((ok) =>');
+  assert.match(retry, /if \(ok\)/, 'the success and failure paths must differ');
+  assert.match(retry, /solver did not load/, 'and the failure must reach the screen');
 });
 
 // ---- Undo ---------------------------------------------------------------------------------

@@ -10,6 +10,7 @@
 // for every state. This file is the guarantee.
 
 import assert from 'node:assert/strict';
+import { readAppSource } from './app-source.mjs';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -19,7 +20,7 @@ import { randomCube } from '../lib/random-state.js';
 import * as twoPhase from '../lib/two-phase.js';
 import Cube from '../vendor/cubejs.js';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 const engine = createSolver(twoPhase);
 const solve = async (f, bounds) => engine(f, bounds);
 const invert = (alg) => alg.trim().split(/\s+/).reverse()

@@ -20,7 +20,40 @@
 import { readFileSync } from 'node:fs';
 
 /** Every module whose text is the app's UI thread, app.js first. Paths are relative to apps/web. */
-export const APP_SOURCES = Object.freeze(['lib/app.js', 'lib/walk-session.js', 'lib/hold-presenter.js']);
+export const APP_SOURCES = Object.freeze([
+  'lib/app.js',
+  // lifted out of app.js, 2026-09-13
+  'lib/walk-session.js', 'lib/hold-presenter.js',
+  'lib/version.js', 'lib/app-state.js', 'lib/app-settings.js', 'lib/screen-slots.js', 'lib/solver-service.js',
+  'lib/cube-subject.js', 'lib/cube-drawing.js', 'lib/wake-lock.js', 'lib/window-chrome.js',
+  'lib/cube-connection.js', 'lib/scramble-roll.js', 'lib/prove-affordance.js', 'lib/update-ui.js',
+  'lib/screen-shell.js',
+  'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
+  'lib/screens/stats.js', 'lib/screens/lessons.js',
+]);
+
+/** Every other module under lib/: the engines, drivers, pure helpers, workers and bundle entries
+ *  the app USES but that are not its own screens or services. They answer to their own tests, not
+ *  to the app's source scans — the stage engine calls its own search, which the app must never do.
+ *
+ *  A module is put in one list or the other ON PURPOSE: the classification case in
+ *  app-source.test.mjs fails until it is, and a "library" that imports the app's own modules is
+ *  refused, because that is app code filed where the scans cannot see it. */
+export const LIBRARY_SOURCES = Object.freeze([
+  'lib/app-update.js', 'lib/ble-bridge.js', 'lib/ble-polyfill.js', 'lib/cube-frame.js',
+  'lib/cube-highlight.js', 'lib/cube-kit.js', 'lib/cube-orientation.js', 'lib/cube-pieces.js',
+  'lib/cube-reconnect.js', 'lib/cube-registry.js', 'lib/cube-report.js', 'lib/cube-selfcheck.js',
+  'lib/cube-session.js', 'lib/cube-trust.js', 'lib/cube-view.js', 'lib/cubejs-entry.js',
+  'lib/cubus-cube.js', 'lib/data/case-tables.js', 'lib/host.js', 'lib/i18n.js', 'lib/lesson-format.js',
+  'lib/lesson-player.js', 'lib/lesson-schedule.js', 'lib/method-ladder.js', 'lib/method-lesson.js',
+  'lib/method-solver.js', 'lib/methods/cross.js', 'lib/methods/engine.js', 'lib/methods/index.js',
+  'lib/methods/last-layer.js', 'lib/methods/pairs.js', 'lib/optimal-challenges.js', 'lib/optimal.js',
+  'lib/random-state.js', 'lib/router.js', 'lib/scheme.js', 'lib/smartcube-entry.js',
+  'lib/solve-client.js', 'lib/solve-stats.js', 'lib/solve-target.js', 'lib/solve-timer.js',
+  'lib/solve-worker.js', 'lib/solver-engine.js', 'lib/solving-hold.js', 'lib/stage-distance.js',
+  'lib/stage-picture.js', 'lib/stage-report.js', 'lib/stage-route.js', 'lib/stage-targets.js',
+  'lib/stage.js', 'lib/tauri-mcp-guest-entry.js', 'lib/two-phase.js',
+]);
 
 /** The app's source: every file in `APP_SOURCES`, joined. A missing file throws. */
 export function readAppSource() {

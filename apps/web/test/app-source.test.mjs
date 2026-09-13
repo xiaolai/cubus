@@ -6,25 +6,48 @@
 // was written to end — so its refusals are pinned here, not assumed.
 
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
 
-import { APP_SOURCES, blockAt, readAppSource } from './app-source.mjs';
+import { APP_SOURCES, LIBRARY_SOURCES, blockAt, readAppSource } from './app-source.mjs';
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
+/** Every relative module a file names — static, side-effect, re-export and dynamic — resolved against it. */
+const importsOf = (q) => [...read(q).matchAll(/(?:^|\s)(?:import|export)\s[^'";]*?['"](\.{1,2}\/[^'"]+)['"]|import\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)|^import\s+['"](\.{1,2}\/[^'"]+)['"]/gm)]
+  .map((m) => path.posix.normalize(path.posix.join(path.posix.dirname(q), m[1] ?? m[2] ?? m[3])));
 
 test('the source list names real files, app.js first, and carries no module the app does not use', () => {
   assert.equal(APP_SOURCES[0], 'lib/app.js', 'app.js leads, so a first match in it is still found first');
   for (const p of APP_SOURCES) assert.ok(existsSync(new URL(`../${p}`, import.meta.url)), `${p} is listed and missing`);
   // A listed module nothing imports is a stale entry: the scans would go on reading code the app
   // no longer runs, and a claim there would be checked while the one that replaced it is not.
+  const imported = new Set(APP_SOURCES.flatMap(importsOf));
   for (const p of APP_SOURCES.slice(1)) {
-    const specifier = `from './${p.slice('lib/'.length)}'`;
-    assert.ok(APP_SOURCES.some((q) => q !== p && read(q).includes(specifier)),
-      `${p} is listed, but nothing in the app's source imports it`);
+    assert.ok(imported.has(p), `${p} is listed, but nothing in the app's source imports it`);
   }
   const src = readAppSource();
   for (const p of APP_SOURCES) assert.ok(src.includes(read(p)), `readAppSource() left out ${p}`);
+});
+
+test('every module under lib/ is the app\'s own source or a library it uses — never both, never neither', () => {
+  // The scans read APP_SOURCES only, so a module in neither list is a module no scan covers and
+  // nothing says so. That is how an extracted screen would escape the rules the rest of the app
+  // is held to — the reverse of the check above, and the one that fails on a NEW file.
+  const onDisk = readdirSync(new URL('../lib/', import.meta.url), { recursive: true })
+    .map((f) => `lib/${f.replaceAll('\\', '/')}`).filter((f) => f.endsWith('.js'));
+  const app = new Set(APP_SOURCES);
+  const library = new Set(LIBRARY_SOURCES);
+  for (const f of onDisk) {
+    assert.ok(app.has(f) !== library.has(f),
+      `${f} must be in exactly one of APP_SOURCES and LIBRARY_SOURCES (test/app-source.mjs) — decide which`);
+  }
+  for (const f of LIBRARY_SOURCES) assert.ok(onDisk.includes(f), `${f} is listed as a library and missing`);
+  // A library that imports the app's own modules is app code filed where the scans cannot see it.
+  for (const f of LIBRARY_SOURCES) {
+    const intoApp = importsOf(f).filter((i) => app.has(i));
+    assert.deepEqual(intoApp, [], `${f} imports the app's own modules — it belongs in APP_SOURCES`);
+  }
 });
 
 test('a block is read to its own closing brace, however it is indented', () => {

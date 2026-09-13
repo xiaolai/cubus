@@ -82,8 +82,8 @@ const SIDE_OF_POSITION: Readonly<Record<number, Side>> = {
  * would let it drift from the layout the solvability gate uses.
  *
  * The scan screen paints each face tile's four edges in these colours, so a user can see which
- * way up to hold a side. `apps/web/lib/app.js` carries a copy (it cannot import TypeScript);
- * `tests/facelet-cube.test.ts` pins the two equal.
+ * way up to hold a side. `apps/web/lib/screens/scan.js` carries a copy (it cannot import
+ * TypeScript); `tests/facelet-cube.test.ts` pins the two equal.
  */
 export const FACE_NEIGHBOURS: Readonly<Record<Face, Readonly<Record<Side, Face>>>> = (() => {
   const out = {} as Record<Face, Record<Side, Face>>;

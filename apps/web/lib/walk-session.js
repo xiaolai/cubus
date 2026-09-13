@@ -14,11 +14,12 @@
 // moved line for line; what changed is that every input is a parameter, so a session can be driven
 // with a fake renderer and fake searches (`test/walk-session.test.mjs`).
 //
-// Two things deliberately stayed in app.js, and each arrives as a function. The WORDS that may
-// claim a minimum: there are three sanctioned sources (AGENTS.md, fourth seam) and
-// `optimal.test.mjs` finds the app's two by name in app.js, so `sayWalkLength` comes in here the
-// way `runProof` receives `sayProved`. And the route race, `lastRoute`, which reads no screen state
-// and belongs beside `stageAsk` and the one budget app.js may import from the stage engine.
+// Two things deliberately stay outside this module, and each arrives as a function. The WORDS that
+// may claim a minimum: there are three sanctioned sources (AGENTS.md, fourth seam) and
+// `optimal.test.mjs` finds the app's two by name, in lib/prove-affordance.js — so `sayWalkLength`
+// comes in here the way `runProof` receives `sayProved`. And the route race, `lastRoute`, which reads
+// no screen state and sits with the cube screen (lib/screens/cube.js), beside the one budget the app
+// may import from the stage engine.
 
 import { t } from './i18n.js';
 import { SCAN_HOLD, fromMethodFrame, holdSentence, renameAlg, showMove } from './solving-hold.js';
@@ -53,8 +54,8 @@ const provided = (from, what) => new Proxy(from, {
  *   `stale()`, its generation check; `signal`, its abort; `paintNet` and `paintAim`;
  *   `syncReconnectAsk()`; and `applyTempo()`, the speed menu's.
  * @param {object} app what the APP owns: shared `state` and `settings`, and every service a walk
- *   reaches for — listed once, as `WALK_APP` in app.js. `cubejs()` and `solverReady()` are functions
- *   because `loadSolver` assigns both long after that object exists.
+ *   reaches for — listed once, as `WALK_APP` in lib/screens/cube.js. `cubejs()` and
+ *   `solverReady()` are functions because `loadSolver` assigns both long after that object exists.
  */
 export function createWalkSession(screen, app) {
   const {
@@ -1225,7 +1226,7 @@ export function createWalkSession(screen, app) {
       rungLine.textContent = lesson ? lesson.summary : '';
     }
     // The count beside the heading and the offer to prove it are the APP's to say: a minimality
-    // claim has three sanctioned sources, and two of them are found by name in app.js.
+    // claim has three sanctioned sources, and two of them are found by name in lib/prove-affordance.js.
     sayWalkLength({ root, setStatus, scrambling, route, stageTargetNow, lesson, total, steps, fresh });
     // ONE GRID for a Solution, SECTIONS for a Lesson — and the difference is not decoration.
     //

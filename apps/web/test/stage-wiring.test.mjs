@@ -47,13 +47,17 @@ test('the app asks a WORKER for a repair, and never searches on this thread', ()
   assert.doesNotMatch(code, /\bsolveToState\s*\(/, 'app.js must never call the search directly');
   assert.doesNotMatch(code, /\blowerBounds?\s*\(/, 'app.js must never read a distance table directly');
   // The budget constant may be imported — it is a number — but nothing else from that module.
-  const imported = code.match(/import \{([^}]*)\} from '\.\/stage-distance\.js';/)?.[1] ?? '';
-  assert.ok(imported.trim(), 'the budget must come from the engine rather than be typed again here');
-  assert.deepEqual(
-    imported.split(',').map((n) => n.trim().split(/\s+as\s+/)[0]).filter(Boolean),
-    ['NODE_BUDGET'],
-    'only the budget crosses into app.js — importing the search invites calling it',
-  );
+  // EVERY import of the engine, from whichever module and folder: a first match over the app's
+  // joined source would check one importer and pass a second that brought in the search.
+  const imports = [...code.matchAll(/import \{([^}]*)\} from '(?:\.\.?\/)+stage-distance\.js';/g)].map((m) => m[1]);
+  assert.ok(imports.length > 0, 'the budget must come from the engine rather than be typed again here');
+  for (const imported of imports) {
+    assert.deepEqual(
+      imported.split(',').map((n) => n.trim().split(/\s+as\s+/)[0]).filter(Boolean),
+      ['NODE_BUDGET'],
+      'only the budget crosses into the app — importing the search invites calling it',
+    );
+  }
 });
 
 test('the two budgets are the measured ones, and the chip row uses the cheaper', () => {
