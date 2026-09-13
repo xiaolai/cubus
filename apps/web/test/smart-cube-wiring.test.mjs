@@ -11,6 +11,7 @@
 // Every test here drives the real index.html + lib/app.js through the same seam the driver uses.
 
 import assert from 'node:assert/strict';
+import { isAbsent } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -109,7 +110,7 @@ before(async () => {
 test('Android is not offered Pair at all, and the row says why in its own terms', async () => {
   await go('settings');
   assert.equal(win.document.documentElement.dataset.platform, 'android', 'precondition: pinned to android');
-  assert.equal($('#pairBtn'), null,
+  isAbsent($('#pairBtn'),
     'Pair was offered on a host whose native Bluetooth the bridge refuses — a press that could only fail');
   const note = $('#btReach');
   assert.ok(note, 'the row must still say what this platform can do');
@@ -118,7 +119,7 @@ test('Android is not offered Pair at all, and the row says why in its own terms'
   // The old copy, which was drawn under any Tauri build and was simply false here.
   assert.doesNotMatch(note.textContent, /cubus finds the cube itself/);
   // The address field only helps where a connect can happen.
-  assert.equal($('#macRow'), null, 'no address field on a host that cannot pair');
+  isAbsent($('#macRow'), 'no address field on a host that cannot pair');
 });
 
 // ---- A cube with no address -------------------------------------------------------------------
@@ -132,7 +133,7 @@ test('a cube remembered by NAME has a row, and the row does not print its storag
   assert.match(row.textContent, /no address/i, 'it says the fact');
   assert.doesNotMatch(row.textContent, /name:/, 'and never prints the key, which reads as a typo-able address');
   // "Use" hands a MAC to the protocol layer, so it is meaningless without one.
-  assert.equal(row.querySelector(`[data-use-cube="${NAME_PREFIX}GoCube-42"]`), null,
+  isAbsent(row.querySelector(`[data-use-cube="${NAME_PREFIX}GoCube-42"]`),
     'no Use button on a record with no address to use');
 });
 
@@ -468,7 +469,7 @@ test('a solved cube turned in the hand grows a solution card, not just a repaint
   await go('home');
   assert.equal(state.cube.facelets, SOLVED, 'precondition: the cube in hand is the subject');
   assert.equal(state.cube.isPhysical, true);
-  assert.equal($('#stage .solution-card'), null, 'precondition: a solved cube has no walk, so no card');
+  isAbsent($('#stage .solution-card'), 'precondition: a solved cube has no walk, so no card');
 
   const turned = move(SOLVED, "R U R'");
   feed().facelets(turned);

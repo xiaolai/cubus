@@ -9,6 +9,7 @@
 // are pinned here rather than being left to a careful reader.
 
 import assert from 'node:assert/strict';
+import { isNotSame, isSame } from './dom-assert.mjs';
 import { blockAt, readAppSource } from './app-source.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -91,13 +92,13 @@ test('boot renders the landing screen exactly once', () => {
 test('every navigation moves focus into the new screen, and names it', async () => {
   await go('settings');
   const screen = $('#stage .screen.active');
-  assert.equal(win.document.activeElement, screen, 'focus was left on <body> — a navigation nobody was told about');
+  isSame(win.document.activeElement, screen, 'focus was left on <body> — a navigation nobody was told about');
   assert.equal(screen.getAttribute('tabindex'), '-1', 'focusable, but not a new tab stop');
   assert.equal(screen.getAttribute('role'), 'region');
   assert.equal(screen.getAttribute('aria-label'), 'Settings', 'the region carries the screen name');
 
   await go('stats');
-  assert.equal(win.document.activeElement, $('#stage .screen.active'), 'and again on the next one');
+  isSame(win.document.activeElement, $('#stage .screen.active'), 'and again on the next one');
   assert.equal($('#stage .screen.active').getAttribute('aria-label'), 'Stats');
 });
 
@@ -106,12 +107,12 @@ test('a REPAINT of the screen you are on does not steal focus', async () => {
   const field = $('[data-rename-cube], #macIn, .field');
   if (!field) return; // no cube card on this build state; the toggle below is the general case
   field.focus();
-  assert.equal(win.document.activeElement, field, 'precondition: focus is in a control');
+  isSame(win.document.activeElement, field, 'precondition: focus is in a control');
   // A toggle re-renders Settings. Focus must not jump to the screen wrapper: the caret would
   // leave whatever was being typed.
   $('[data-toggle="autosolve"]').click();
   await tick();
-  assert.notEqual(win.document.activeElement, $('#stage .screen.active'), 'a repaint pulled focus to the screen');
+  isNotSame(win.document.activeElement, $('#stage .screen.active'), 'a repaint pulled focus to the screen');
   $('[data-toggle="autosolve"]').click(); // leave the setting as it was
   await tick();
 });

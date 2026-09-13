@@ -11,6 +11,7 @@
 // assert on what the screen draws from them.
 
 import assert from 'node:assert/strict';
+import { isAbsent, isSame } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -79,7 +80,7 @@ before(async () => {
 });
 
 test('entering the screen mounts the scanner itself — no modal, no click', () => {
-  assert.equal($('#scanModal'), null, 'the scan modal must be gone');
+  isAbsent($('#scanModal'), 'the scan modal must be gone');
   const el = panel();
   assert.ok(el, 'the scan screen must mount <ai-scan-panel>');
   assert.ok(el.hasAttribute('autostart'), 'autostart is what opens the camera on entry');
@@ -87,7 +88,7 @@ test('entering the screen mounts the scanner itself — no modal, no click', () 
 });
 
 test('the screen never shows the camera picture', () => {
-  assert.equal($('#stage video'), null, 'no <video> may be drawn into the screen');
+  isAbsent($('#stage video'), 'no <video> may be drawn into the screen');
 });
 
 test('an absent scanner bundle says so rather than claiming a camera is opening', () => {
@@ -101,8 +102,8 @@ test('the six sides start pending, with nothing captured', () => {
   assert.equal(tiles.length, 6);
   assert.deepEqual(tiles.map((t) => t.dataset.face), FACES);
   assert.equal(tiles.filter((t) => t.classList.contains('done')).length, 0);
-  assert.equal($('#scanLive'), null, 'no separate viewfinder — the tiles and the aside say it all');
-  assert.equal($('#scanBar'), null, 'no progress bar — the tiles are the progress');
+  isAbsent($('#scanLive'), 'no separate viewfinder — the tiles and the aside say it all');
+  isAbsent($('#scanBar'), 'no progress bar — the tiles are the progress');
 });
 
 // Must run before anything repaints the tiles.
@@ -543,7 +544,7 @@ test('a completed scan stays on the screen and shows what was found', () => {
   }));
   assert.equal(win.location.hash, '#/scan', 'it must not navigate away');
   assert.ok($('#stage ai-scan-panel'), 'the scanner is still mounted');
-  assert.equal($('#scanState'), null, 'the 54-char string belongs on the Cube screen, with its Copy button');
+  isAbsent($('#scanState'), 'the 54-char string belongs on the Cube screen, with its Copy button');
   assert.equal($('#scanCube').firstElementChild.getAttribute('facelets'), scrambled,
     'the 3D twin shows what was found, without re-rendering the screen');
 });
@@ -958,7 +959,7 @@ test('activating a read sticker opens the picker with focus in it, and Escape ha
   assert.ok(pick.contains(win.document.activeElement), 'focus moved into the picker — a keyboard user is not left stranded on the cell');
   win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   assert.equal(pick.hidden, true, 'Escape closes it');
-  assert.equal(win.document.activeElement, cell, 'and hands focus back to the sticker that opened it');
+  isSame(win.document.activeElement, cell, 'and hands focus back to the sticker that opened it');
 });
 
 // ---- the cube's colour arrangement, on the screen that reads it (ADR 0001) -------------------
