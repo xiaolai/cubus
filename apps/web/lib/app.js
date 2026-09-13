@@ -4528,16 +4528,31 @@ const cubeScreen = (screenMode) => {
        * Animated, because a cube that jumps upside down between two frames reads as a different
        * cube, and the turn is what tells a child to turn theirs. `data-hold` records what was asked
        * for: the renderer's pose is private, and a browser test and a person debugging both need
-       * to read it. Before the tag is upgraded there is no `turnTo`, and the attribute is what the
-       * upgrade reads.
+       * to read it.
        */
       function holdCube(h) {
         const spec = holdSpec(h);
         if (spec === heldSpec) return;
         heldSpec = spec;
         cube.dataset.hold = spec;
-        if (typeof cube.turnTo === 'function') void cube.turnTo(h[0], h[1]);
-        else cube.setAttribute('orientation', spec);
+        if (typeof cube.turnTo === 'function') { void cube.turnTo(h[0], h[1]); return; }
+        // NOT A RENDERER YET — the vendored bundle has not upgraded the tag. The pose waits for it,
+        // and only the hold still current when it arrives is applied, on a screen still standing.
+        // This used to write the `orientation` attribute, which an upgrade does read, but which then
+        // stayed behind naming a pose the renderer had since turned away from.
+        customElements.whenDefined('cubus-cube').then(() => {
+          if (!stale() && heldSpec === spec && typeof cube.turnTo === 'function') void cube.turnTo(h[0], h[1]);
+        });
+      }
+
+      /**
+       * The hold of the move about to happen at head `i`, and the sentence that says so when that
+       * hold is a new one. The sentence belongs only to the step that BEGINS a hold: the drawing
+       * turns, but a child's own cube does not, and every chip from there on is named for it.
+       */
+      function holdChangeAt(i) {
+        const held = holdAt(i);
+        return { held, say: i > 0 && !sameHold(held, holdAt(i - 1)) ? holdSentence(held) : '' };
       }
 
       /**
@@ -4580,16 +4595,12 @@ const cubeScreen = (screenMode) => {
         // setting it to a selector that names nothing.
         if (focus) cube.setAttribute('focus', focus); else cube.removeAttribute('focus');
         if (highlight) cube.setAttribute('highlight', highlight); else cube.removeAttribute('highlight');
-        // The cross and first layer are built white up and the rest tumbled, so the cube turns over
-        // as the head crosses from one to the other — in either direction, since a scrub goes back.
-        const held = holdAt(i);
+        // The cube turns over as the head crosses a hold, in either direction — a scrub goes back.
+        const { held, say } = holdChangeAt(i);
         holdCube(held);
         if (!whyLine) return;
-        // AND THE STEP THAT BEGINS A NEW HOLD SAYS SO. The drawing turns, but a child's own cube does
-        // not, and every chip from here on is named for the new hold.
-        const turnOver = i > 0 && !sameHold(held, holdAt(i - 1)) ? holdSentence(held) : '';
         const reason = whyText(step);
-        const text = turnOver ? (reason ? t('%1 %2', turnOver, reason) : turnOver) : reason;
+        const text = say ? (reason ? t('%1 %2', say, reason) : say) : reason;
         whyLine.hidden = !text;
         whyLine.textContent = text
           ? t('Step %1 of %2 — %3', lesson.steps.indexOf(step) + 1, lesson.steps.length, text)
@@ -5250,6 +5261,12 @@ const cubeScreen = (screenMode) => {
           ?? (/cross-check/i.test(key) ? WALK_FAILURES['cross-check'] : null)
           ?? 'could not work it out';
         setStatus(t(why));
+        // NO WALK, SO NO HOLD. A load that failed after a turned-over walk left the cube drawn upside
+        // down under the failure, about a subject with no hold of its own. Put back HERE rather than
+        // in `beginWalk`, where a retarget between two tumbled stages would turn the cube up and back
+        // down again while the search ran. `hold-wiring.test.mjs` fails without this.
+        walkHold = SCAN_HOLD;
+        holdCube(SCAN_HOLD);
       }
 
       async function loadWalk() {
