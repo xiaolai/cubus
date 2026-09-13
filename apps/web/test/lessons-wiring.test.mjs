@@ -29,9 +29,9 @@ const code = app
  * renderers — reading only `SCREENS.lessons` would have turned every one of them green by looking
  * somewhere the code no longer is.
  */
-const named = (name) => code.match(new RegExp(`function ${name}\\([\\w, ]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0] ?? '';
+const named = (name) => blockAt(code, `function ${name}(`);
 const lessons = [
-  code.match(/SCREENS\.lessons = \(\) => \{[\s\S]*?\n\};/)?.[0] ?? '',
+  blockAt(code, 'SCREENS.lessons = () =>'),
   named('ladderCard'),
   named('rungLine'),
   named('rungNote'),
@@ -77,7 +77,7 @@ test('raising a rung from the ladder is deliberate, and clears the lesson it inv
   // the cached lesson away, persist — used to be spelt out here and again in the cube screen's
   // `answerOffer`, and the one most easily forgotten is the third.
   assert.match(handler, /raiseRung\(\{ id, to: at \+ 1 \}\)/);
-  const raise = code.match(/function raiseRung\(offer\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  const raise = blockAt(code, 'function raiseRung(offer)');
   assert.match(raise, /acceptOffer\(settings\.rungs, settings\.rungProgress/);
   assert.match(raise, /state\.cube\.lesson = null/,
     'the cached lesson was worked out at the OLD rungs and must not be relabelled');
@@ -94,7 +94,7 @@ test('the offer is on the cube screen, once per lesson, and answerable both ways
   assert.ok(answer, 'the offer must have a handler');
   assert.match(answer, /raiseRung\(offer\)/, 'accepting must go through the shared operation');
   assert.match(answer, /declineOffer\(/);
-  const raise = code.match(/function raiseRung\(offer\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  const raise = blockAt(code, 'function raiseRung(offer)');
   assert.match(raise, /state\.cube\.lesson = null/, 'accepting invalidates the lesson on screen');
   // Once per WALK: sync() fires on every step and every seek, and a learner scrubbing back and
   // forth must not be credited with a dozen solves.
@@ -117,7 +117,7 @@ test('nothing is raised without an answer, and nothing is stored unrepaired', ()
   assert.deepEqual(writes.sort(), ['next.rungs', 'repairRungs(settings.rungs)'].sort(),
     `settings.rungs is written from somewhere else: ${writes.join(' | ')}`);
   // And that one function is reached from both answers, so neither screen grew its own again.
-  const raise = code.match(/function raiseRung\(offer\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  const raise = blockAt(code, 'function raiseRung(offer)');
   assert.ok(raise, 'the shared rung-raising operation is gone');
   assert.match(raise, /state\.cube\.lesson = null/,
     'raising a rung must throw away a lesson worked out at the old ones');
@@ -132,7 +132,7 @@ test('the cross table is warmed for a learner who raised the rung LATER', () => 
   // the cross warm-up was called after that return. A learner on rung 0 at first warm who is later
   // offered rung 1 would therefore never warm the table, and their first lesson at the new rung
   // would pay the 804 ms the warm-up exists to move. The call has to come BEFORE the early return.
-  const fn = code.match(/function warmSolver\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  const fn = blockAt(code, 'function warmSolver()');
   assert.ok(fn, 'warmSolver is gone');
   const warm = fn.indexOf('warmCrossTable()');
   const bail = fn.indexOf('if (solverWarmed) return;');
@@ -141,7 +141,7 @@ test('the cross table is warmed for a learner who raised the rung LATER', () => 
   assert.ok(warm < bail,
     'warmCrossTable() is after the early return, so a rung raised later never warms the table');
   // And it only builds for a learner who is actually on that rung.
-  const table = code.match(/function warmCrossTable\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  const table = blockAt(code, 'function warmCrossTable()');
   assert.match(table, /settings\.rungs\?\.cross \?\? 0\) < 1/, 'rung 0 must not pay for rung 1');
   assert.match(table, /setTimeout\(/, 'the build must not run in the turn that triggered it');
   // And it is not ONE task once it starts. `warmCross` expands a bounded number of positions per

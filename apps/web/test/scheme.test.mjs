@@ -23,6 +23,7 @@ import {
   slotOf,
   unsafeColourPairs,
 } from '../lib/scheme.js';
+import { blockAt } from './app-source.mjs';
 
 const scannerSource = readFileSync(
   new URL('../../../packages/cube-scanner/src/scheme.ts', import.meta.url),
@@ -32,7 +33,7 @@ const scannerSource = readFileSync(
 /** The renderer's positional palettes, read out of its source: six hexes per set, by position. */
 const rendererPalettes = (() => {
   const src = readFileSync(new URL('../lib/cubus-cube.js', import.meta.url), 'utf8');
-  const block = src.match(/const PALETTES = \{([\s\S]*?)\n\};/)?.[1];
+  const block = blockAt(src, 'const PALETTES =');
   assert.ok(block, 'lib/cubus-cube.js no longer declares PALETTES as a literal');
   const out = {};
   for (const m of block.matchAll(/(\w+):\s*\{([^}]*)\}/g)) {
