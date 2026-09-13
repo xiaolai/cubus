@@ -103,9 +103,13 @@ test('the lesson is worked out beside the solution, never instead of it', () => 
   // If the lesson replaced the search, switching back to Solution would need a new one — and a
   // cube whose lesson failed would have no walk at all.
   const load = blockAt(code, "if (!stageAnswered && !stageTarget && walkKind === 'lesson')");
-  assert.ok(load, 'loadWalk must have a lesson branch');
+  assert.ok(load, 'the walk resolver must have a lesson branch');
   assert.match(load, /gotLesson = lessonFor\(state\.cube\)/);
-  assert.match(load, /walkKind = 'solution'/, 'a cube with no lesson must fall back rather than fail the screen');
+  // The fallback is the screen's to make — the walk kind and its switch are the session's — so the
+  // branch asks for it by name (lib/walk-resolver.js), and the session's helper moves the switch back.
+  assert.match(load, /fallBackToSolution\(\)/, 'a cube with no lesson must fall back rather than fail the screen');
+  assert.match(blockAt(code, 'function fallBackToSolution()'), /walkKind = 'solution'/,
+    'and falling back must put the walk kind back to the solution');
   // The search runs first, unconditionally: `gotAlg` is assigned from the solution above this
   // branch and only then overridden.
   const before = code.indexOf('gotSetup = state.cube.setupAlg;');
