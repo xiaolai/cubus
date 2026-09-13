@@ -1,18 +1,18 @@
 // Whether the app KNOWS what the connected cube looks like, and everything on screen that says so:
-// trust lapsing (markStale), the tracking correction thrown away (clearOffset), "connected" itself
-// (setConnected), the title-bar indicator, and the Settings repaint that waits for typing to stop.
+// trust granted (markTrusted) and lapsing (markStale), the tracking correction thrown away
+// (clearOffset), "connected" itself (setConnected), the title-bar indicator, and the Settings
+// repaint that waits for typing to stop.
 //
-// Trust is GRANTED in lib/cube-connection.js (markTrusted), because granting it first asks the
-// session whether it has refused the cube — a question this module cannot ask without reaching up
-// to the connection. That grant repaints through trustChanged, here. This module sits beneath the
-// connection code and the screens: it reaches the shell only through `shell`, and a mounted screen
-// only through `hooks`.
+// It sits beneath the connection code and the screens. What it asks of the session — whether it has
+// refused the cube — it asks lib/live-session.js, beneath it. It reaches the shell only through
+// `shell`, and a mounted screen only through `hooks`.
 //
 // Lifted out of lib/cube-connection.js on 2026-09-13 (the connection design's second unit).
 import { $, state } from './app-state.js';
 import { liveCubeLabel } from './cube-memory.js';
 import { normaliseIdentity } from './cube-registry.js';
 import { hooks, shell } from './screen-slots.js';
+import { cubeRefused } from './live-session.js';
 
 /** Is the live CHAIN trusted — trusted knowledge of the cube itself, not of a generated
  *  subject? 'generated' sets `trusted` too (a scramble is perfectly known), but that is
@@ -51,7 +51,7 @@ export const repaintSettings = () => {
 
 /** Everything on screen that is derived from trust, repainted together. Trust is the one claim
  *  this model exists to make honestly; every place that repeats it changes at the same moment. */
-export function trustChanged() {
+function trustChanged() {
   const live = $('#cubeLive');
   if (live) paintTrust(live);
   // The read-from-cube button this used to relabel is gone: its job — naming whether the screen's
@@ -120,4 +120,19 @@ export function setConnected(on, name = '', mac = '') {
   if (state.screen === 'settings' && before !== `${state.connected}|${state.cubeName}|${state.cubeMac}`) {
     shell.renderScreen();
   }
+}
+
+/** We now know what the cube looks like, and by what means. */
+export function markTrusted(source) {
+  // A refusal is about the CUBE, and only a fresh connection can revisit it. Trust sourced from
+  // 'cube' means "its own reports say so", which is exactly the claim the checker has disproved —
+  // so an anchor or a confirmation must not be able to buy it back. 'camera' and 'generated' are
+  // knowledge from elsewhere and are unaffected; the guard is at this choke point rather than at
+  // each caller for the same reason every other trust change passes through here.
+  if (source === 'cube' && cubeRefused()) return;
+  if (state.cube.trusted && state.cube.source === source) return;
+  state.cube.trusted = true;
+  state.cube.source = source;
+  state.cube.staleWhy = '';
+  trustChanged();
 }

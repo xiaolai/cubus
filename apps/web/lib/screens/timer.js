@@ -8,7 +8,7 @@ import { t } from '../i18n.js';
 import { $, escHtml, state } from '../app-state.js';
 import { hooks } from '../screen-slots.js';
 import { loadSolver, solverReady, warmSolver } from '../solver-service.js';
-import { conn } from '../cube-connection.js';
+import { conn } from '../live-session.js';
 import { chainTrusted } from '../cube-trust-state.js';
 import {
   dropLastSolve, parkRoll, pushSolve, putInPlay, randomScramble, recentSolves, schedulePreroll,
