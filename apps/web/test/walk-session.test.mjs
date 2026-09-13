@@ -546,3 +546,79 @@ test('once a repair is on screen, the abandoned whole-cube search no longer writ
   reports.onProgress({ attempt: 2 });
   assert.equal(w.$('#moveCount').textContent, count, "the abandoned search wrote its progress over the repair's count");
 });
+
+// ---- step 0 of the follow tracker: turns that are ahead of a snapshot ------------------------------------
+//
+// stage-wiring.test.mjs and stage-smartcube.test.mjs check these as lines inside the four live hooks and
+// inside loadWalk's adoption, which the follow tracker's extraction moves. Each case pins what one of
+// those lines is FOR: when the model's turns stop being turns anybody can vouch for, and what a lost turn
+// or lapsed trust takes off the screen.
+
+/** A trusted cube at `R` that the walk follows, turned `U` since its last snapshot. */
+async function turnedAhead(extra = {}) {
+  const R = turned('R');
+  const w = world({ subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, state.cube.facelets === R ? "R'" : "U' R'"); },
+    ...extra,
+  }));
+  w.state.live = R;
+  assert.equal(await w.session.load(), true);
+  assert.equal(w.session.following(), true, 'precondition: the cube leads, so its turns are tracked');
+  w.session.liveMove({ notation: 'U', serial: 1 });
+  return { w, R, RU: turned('U', R) };
+}
+
+test('a snapshot ends the model being ahead: a subject changed after it is not overwritten by old turns', async () => {
+  const { w, RU } = await turnedAhead();
+  w.session.liveUpdate(RU, 2); // the cube's own report catches the subject up
+  // And then the subject changes for another reason — a reconnect answered, say — to a cube the model
+  // never saw. The model's turns were confirmed by that snapshot; they are not news about this cube.
+  const F = turned('F');
+  w.state.cube.facelets = F;
+  w.state.live = F;
+  w.log.length = 0;
+  await w.session.load();
+  assert.ok(!w.log.some((entry) => entry.startsWith('adopt ')),
+    'a snapshot left the model claiming to be ahead of it, and its turns were adopted over a newer subject');
+});
+
+test('trust lapsing ends the model being ahead: a cube confirmed afterwards keeps its confirmed arrangement', async () => {
+  const { w, R, RU } = await turnedAhead();
+  // Disconnect, reconnect, confirm R: trust lapses, then is granted again for the arrangement the user confirmed.
+  w.state.cube.trusted = false;
+  w.session.onTrustLost();
+  w.state.cube.trusted = true;
+  w.state.cube.facelets = R;
+  w.state.live = R;
+  w.log.length = 0;
+  await w.session.load();
+  assert.ok(!w.log.includes(`adopt ${RU}`),
+    'the model from before trust lapsed overwrote the arrangement the user confirmed, and was trusted');
+});
+
+test('a lost turn ends the model being ahead: its turns are not adopted as the cube in hand', async () => {
+  const { w, RU } = await turnedAhead();
+  w.session.liveGap();
+  w.log.length = 0;
+  await w.session.load();
+  assert.ok(!w.log.includes(`adopt ${RU}`),
+    'after a turn went unrecorded, a model nobody can vouch for was adopted as the subject');
+});
+
+test('a lost turn, and trust lapsing, each take the live number off the screen', async () => {
+  for (const [what, hook] of [['a lost turn', 'liveGap'], ['trust lapsing', 'onTrustLost']]) {
+    const R = turned('R');
+    const w = world({ subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' } }, () => ({
+      deriveCube: () => new Promise(() => {}),
+      lastRoute: async () => ({ kind: 'exact', alg: "R'", moves: 1, minimal: true, overshoot: false }),
+      stageAsk: async (q) => (q.want === 'bounds' ? { bounds: { cross: 1 } } : { moves: 1 }),
+    }));
+    w.state.stageTarget = 'cross';
+    w.state.live = R;
+    assert.equal(await within(w.session.load()), true);
+    for (let i = 0; i < 5; i += 1) await settle();
+    assert.match(w.$('#stageLive').textContent, /your cube now/, `${what}: precondition: a live number is showing`);
+    w.session[hook]();
+    assert.equal(w.$('#stageLive').textContent, '', `${what} left the live number standing over a cube it no longer describes`);
+  }
+});
