@@ -70,12 +70,10 @@ import { routesToTarget } from './stage-route.js';
 import { NODE_BUDGET as STAGE_NODE_BUDGET } from './stage-distance.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
-/** The app's version — written HERE and nowhere else by hand. The About card renders it, and a
- * test pins the manifests (apps/web/package.json, tauri.conf.json, the desktop Cargo.toml) equal
- * to it, so the five version fields this repo carries can no longer drift apart silently — the
- * About card spent months claiming 0.4.2 over manifests that all said 0.1.0. Exported for that
- * test, not as API. */
-export const VERSION = '0.5.0';
+// The version lives in lib/version.js: the Settings screen and the updater UI show it, and they
+// must not import this entry. Re-exported for the tests that read it off the app.
+import { VERSION } from './version.js';
+export { VERSION };
 /** A cube with nothing wrong with it: the solved state, and the one search that costs only the
  *  tables. There used to be a second copy of this string under the name SOLVED_FACELETS, which is
  *  how two identical 54-character literals come to disagree. */
@@ -1398,7 +1396,7 @@ function buildChrome(platform) {
     if (captions) wireWindowButtons(trail);
   }
   // All of them: the gear AND the cube-live indicator both land on Settings.
-  for (const b of trail.querySelectorAll('[data-nav="settings"]')) b.onclick = () => go('settings');
+  for (const b of trail.querySelectorAll('[data-nav="settings"]')) b.onclick = () => shell.go('settings');
 }
 
 /**
@@ -1436,6 +1434,9 @@ let conn = null;
 // battery and the anchor flag are properties of a CONNECTION and are deliberately excluded
 // (see lib/cube-registry.js).
 let cubes = parseRegistry(load('cubusCubes', {}));
+/** The one way code outside this region replaces the registry — Settings renames and forgets a cube,
+ *  boot repairs what storage held — because a module cannot assign a binding it imports. */
+function setCubes(next) { cubes = next; }
 
 /** The address a bare "Pair" should try: whichever cube was used most recently — and only if it
  *  HAS one. Since a cube with no address is remembered under `name:<its name>` (normaliseIdentity),
@@ -1497,18 +1498,39 @@ function rememberLastSeen(how, { force = false } = {}) {
   if (ok !== !registryWriteBad) { registryWriteBad = !ok; repaintSettings(); }
 }
 
-/** The cube screen installs these while following. Moves are the SIGNAL — the cube reports one
- * per turn, immediately. Facelet snapshots arrive at ~1Hz and are the CORRECTION: they say where
- * the cube really is when the move stream and the guide have drifted apart. */
-let liveMove = null;
-let liveGap = null;
+/** The hooks a mounted screen installs and the code beneath the screens calls.
+ *
+ *  One object rather than five module-level `let`s, because three screens and the shell assign
+ *  them and a module cannot assign a binding it imports. `renderScreen` clears every one on each
+ *  navigation, so a hook can never outlive the screen that installed it. */
+const hooks = {
+  /** The cube screen installs these while following. Moves are the SIGNAL — the cube reports one
+   * per turn, immediately. Facelet snapshots arrive at ~1Hz and are the CORRECTION: they say where
+   * the cube really is when the move stream and the guide have drifted apart. */
+  liveMove: null,
+  liveGap: null,
+  /** A screen's reaction to trust LAPSING — gap, disconnect, a report that failed validation, a
+   *  contradicted scan. One hook covers them all because they all pass through markStale, which is
+   *  the whole point of routing trust through one function. Cleared on navigation. */
+  onTrustLost: null,
+  cleanup: null,
+  // Set by a screen that can take a new cube state in place, so a fresh scan repaints rather than
+  // re-mounting — which on the cube screen would restart an animation the user is halfway through.
+  liveUpdate: null,
+};
+
+/** The shell's own calls, for the code BENEATH the screens — the smart cube's session and the
+ *  window chrome — which must not import the shell that imports them. The shell registers the
+ *  real functions when it loads; a call before that is a bug in the load order, and says so. */
+const shell = {
+  go: () => { throw new Error('shell.go was called before the screen shell registered it'); },
+  refreshScreen: () => { throw new Error('shell.refreshScreen was called before the screen shell registered it'); },
+  renderScreen: () => { throw new Error('shell.renderScreen was called before the screen shell registered it'); },
+};
+
 /** An anchor in flight. Module-level on purpose: dropping trust re-renders Settings, so a flag
  *  declared inside the mount would be reset by the very repaint the guard exists to survive. */
 let anchoring = false;
-/** A screen's reaction to trust LAPSING — gap, disconnect, a report that failed validation, a
- *  contradicted scan. One hook covers them all because they all pass through markStale, which is
- *  the whole point of routing trust through one function. Cleared on navigation. */
-let onTrustLost = null;
 
 /** Has the session PROVED this cube's own reports do not add up?
  *
@@ -1647,7 +1669,7 @@ function onDisconnect() {
   clearOffset();
   setConnected(false);
   // setConnected repaints Settings; the question block on Home is this screen's own furniture.
-  if (hadQuestion && state.screen === 'home') refreshScreen();
+  if (hadQuestion && state.screen === 'home') shell.refreshScreen();
 }
 
 /** Throw the correction away. NOT called on `gap`: a serial skip means moves were missed, not
@@ -1676,7 +1698,7 @@ function clearOffset() {
  */
 function onMovesLost() {
   markStale('a turn went unrecorded');
-  if (liveGap) liveGap();
+  if (hooks.liveGap) hooks.liveGap();
 }
 
 /** How many turns this connection has reported, as the SESSION counts them. The self-check is
@@ -1725,7 +1747,7 @@ function onCubeMove(m) {
   // where the cube is. A session that is not there refuses nothing, exactly as cubeRefused()
   // reads it: "no cube" and "a cube known to be wrong" are not the same state.
   if (conn?.mayFollow?.() === false) return;
-  liveMove?.(m);
+  hooks.liveMove?.(m);
 }
 
 /** Record a live connection. The registry write and the connected flag are ONE step on purpose:
@@ -1763,7 +1785,7 @@ function adoptConnection(mac, name) {
   }
   markStale('it has just connected, and has not been checked yet');
   setConnected(true, name, mac);
-  if (state.reconnect && state.screen === 'home') refreshScreen();
+  if (state.reconnect && state.screen === 'home') shell.refreshScreen();
 }
 
 /** The cube answered nothing — getState timed out or rejected. This used to be swallowed with an
@@ -1776,7 +1798,7 @@ function reportSilence() {
     state.reconnect = { reading: 'no-report', candidate: null, raw: null, seenAt: 0 };
   }
   // Settings goes through the deferral, like every other async repaint of it.
-  if (state.screen === 'home') refreshScreen();
+  if (state.screen === 'home') shell.refreshScreen();
   else repaintSettings();
 }
 
@@ -1854,8 +1876,8 @@ function confirmReconnect() {
 function wireReconnectAnswers(root) {
   for (const b of root.querySelectorAll('[data-reconnect]')) {
     b.onclick = () => {
-      if (b.dataset.reconnect === 'yes') { confirmReconnect(); refreshScreen(); }
-      else go('scan');
+      if (b.dataset.reconnect === 'yes') { confirmReconnect(); shell.refreshScreen(); }
+      else shell.go('scan');
     };
   }
 }
@@ -1961,7 +1983,7 @@ const repaintSettings = () => {
   if (state.screen !== 'settings') return;
   if (editingCubeSettings()) { settingsRepaintPending = true; return; }
   settingsRepaintPending = false;
-  renderScreen();
+  shell.renderScreen();
 };
 
 /** Read the cube's battery and publish it. The cube answers on request only. */
@@ -2028,7 +2050,7 @@ function markStale(why) {
   state.cube.staleWhy = why;
   // Only an actual lapse notifies — a stale cube going stale for a new reason is a wording
   // change, not an event a screen needs to stand down for.
-  if (lapsed && onTrustLost) { try { onTrustLost(); } catch {} }
+  if (lapsed && hooks.onTrustLost) { try { hooks.onTrustLost(); } catch {} }
   trustChanged();
 }
 
@@ -2075,7 +2097,7 @@ function setConnected(on, name = '', mac = '') {
   const live = $('#cubeLive');
   if (live) paintTrust(live);
   if (state.screen === 'settings' && before !== `${state.connected}|${state.cubeName}|${state.cubeMac}`) {
-    renderScreen();
+    shell.renderScreen();
   }
 }
 
@@ -2358,7 +2380,7 @@ function onFacelets(reported, serial) {
       // about a second after pairing, exactly when a nickname is likely mid-typing.
       ingestFacelets(r.candidate);
       state.cube.isPhysical = true;
-      if (state.screen === 'home') refreshScreen();
+      if (state.screen === 'home') shell.refreshScreen();
       else repaintSettings();
       return;
     }
@@ -2368,7 +2390,7 @@ function onFacelets(reported, serial) {
     const hadQuestion = Boolean(state.reconnect);
     state.reconnect = null;
     if (hadQuestion) {
-      if (state.screen === 'home') refreshScreen();
+      if (state.screen === 'home') shell.refreshScreen();
       else repaintSettings();
     }
   }
@@ -2401,8 +2423,8 @@ function onFacelets(reported, serial) {
   if (chainTrusted()) {
     rememberLastSeen('cube');
   }
-  if (liveUpdate) liveUpdate(f, serial);
-  else if (changed && state.screen === 'home') refreshScreen();
+  if (hooks.liveUpdate) hooks.liveUpdate(f, serial);
+  else if (changed && state.screen === 'home') shell.refreshScreen();
 }
 
 // ---- session store (recent solves) -----------------------------------------------------------
@@ -2685,7 +2707,6 @@ const placeMenuUnder = (btn, menu) => {
   placePopoverV(menu, r);
 };
 
-let cleanup = null;
 
 /** Aborted by the next render. A listener a mount puts on something that OUTLIVES its screen —
  *  the document, or the parked <cubus-cube> — must carry this signal, or the handlers stack up
@@ -2698,9 +2719,6 @@ let screenAbort = null;
  * outlive the screen that started it; comparing this on the far side of an await is how such a
  * mount learns it is obsolete and stops before writing to shared state like `liveUpdate`. */
 let screenGen = 0;
-// Set by a screen that can take a new cube state in place, so a fresh scan repaints rather than
-// re-mounting — which on the cube screen would restart an animation the user is halfway through.
-let liveUpdate = null;
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
 // renaming it is not worth breaking every #/scan link and bookmark already in the wild.
 // The camera opens the moment this screen mounts — <ai-scan-panel headless autostart>
@@ -3708,7 +3726,7 @@ SCREENS.scan = () => {
       document.addEventListener('keydown', onEsc, { signal });
 
 
-      cleanup = () => {
+      hooks.cleanup = () => {
         clearTurns();
         releaseScanAwake();
         panel.stop?.();
@@ -4471,7 +4489,7 @@ const cubeScreen = (screenMode) => {
       const releaseWalkAwake = walking ? keepAwake() : () => {};
       // The screen's own teardown, now that the listeners carry their own: a search this screen
       // started must not go on burning the pool for a cube nobody is looking at.
-      cleanup = () => { session?.dispose(); releaseWalkAwake(); };
+      hooks.cleanup = () => { session?.dispose(); releaseWalkAwake(); };
 
       // A new cube is a new SUBJECT, not a new screen. This used to re-enter the screen, because
       // the solution, the move list and the step count were all built at mount and there was no
@@ -4557,7 +4575,7 @@ const cubeScreen = (screenMode) => {
         } finally { die.disabled = false; }
       };
 
-      liveUpdate = (f) => {
+      hooks.liveUpdate = (f) => {
         // Walking screens install their own handler further down (the follow machinery); until it
         // lands — and on the failure path where it never does — snapshots must not repaint the
         // net either: its label names a fixed reference state.
@@ -4593,10 +4611,10 @@ const cubeScreen = (screenMode) => {
         root, cube, scrambling, walking, unsolvable, label, stateHeading, stale, signal,
         paintNet, paintAim, syncReconnectAsk, applyTempo: () => applyTempo(),
       }, WALK_APP);
-      liveMove = session.liveMove;
-      liveUpdate = session.liveUpdate;
-      liveGap = session.liveGap;
-      onTrustLost = session.onTrustLost;
+      hooks.liveMove = session.liveMove;
+      hooks.liveUpdate = session.liveUpdate;
+      hooks.liveGap = session.liveGap;
+      hooks.onTrustLost = session.onTrustLost;
       retarget = session.load;
       await session.load();
     },
@@ -4683,7 +4701,7 @@ SCREENS.timer = () => {
       // on a cube that does not number its moves — which is three of the brands the app speaks to.
       // The clock keeps running: a solve in progress is still a solve. It is the RESULT that is
       // refused, and solve-timer already owns those words.
-      liveGap = () => auto.interrupted();
+      hooks.liveGap = () => auto.interrupted();
 
       warmSolver();      // New scramble is one press away here; see cubeScreen's mount
       schedulePreroll(); // and it should never be the press that waits for a search
@@ -4881,12 +4899,12 @@ SCREENS.timer = () => {
       // same doors every other screen uses, so the test seam (window.cubusFeed) drives this
       // exactly as the driver does — the reason phase 4's absence went unnoticed is that nothing
       // could exercise it without a physical cube.
-      liveMove = (m) => {
+      hooks.liveMove = (m) => {
         if (untimeable) return;
         const before = auto.state;
         if (auto.move(m) === 'running' && before === 'armed' && !running) startFromCube();
       };
-      liveUpdate = (f, serial) => {
+      hooks.liveUpdate = (f, serial) => {
         if (untimeable) return;
         const before = auto.state;
         const now = auto.facelets(f, serial);
@@ -4905,15 +4923,15 @@ SCREENS.timer = () => {
         if (before === 'running' && now === 'stopped' && byCube) stopFromCube();
       };
 
-      cleanup = () => {
+      hooks.cleanup = () => {
         // `running` first: tick() re-schedules itself, so cancelling the pending frame while the
         // flag is still true leaves an in-flight callback free to queue another one — a clock that
         // animates forever on a screen that no longer exists.
         running = false;
         cancelAnimationFrame(raf);
         // Release the cube stream with the screen, or a torn-down closure keeps timing.
-        liveMove = null;
-        liveUpdate = null;
+        hooks.liveMove = null;
+        hooks.liveUpdate = null;
       };
       renderLast(); void newScr();
     },
@@ -5329,7 +5347,7 @@ SCREENS.settings = () => {
       // which is what makes accepting an unverifiable label honest.
       for (const el of root.querySelectorAll('[data-rename-cube]')) {
         el.onchange = () => {
-          cubes = renameCube(cubes, el.dataset.renameCube, el.value);
+          setCubes(renameCube(cubes, el.dataset.renameCube, el.value));
           const rec = cubes[normaliseIdentity(el.dataset.renameCube)];
           const named = cubeLabel({ ...rec, mac: el.dataset.renameCube });
           if (save('cubusCubes', cubes)) say(`Saved — this cube is "${named}".`, 'var(--ok-ink)');
@@ -5352,7 +5370,7 @@ SCREENS.settings = () => {
             return;
           }
           const id = el.dataset.forgetCube;
-          cubes = forgetCube(cubes, id);
+          setCubes(forgetCube(cubes, id));
           const stored = save('cubusCubes', cubes);
           // The app's own registry is not the only place this cube's address is written down. The
           // protocol layer caches a resolved address under `smartcube-ble-mac:<device id>`, and on
@@ -5912,9 +5930,9 @@ function renderScreen({ navigated = false } = {}) {
   // Logged, not swallowed. A teardown that throws half-way leaves the half after it undone — a
   // camera still open, a wake lock still held, a search still running — and an empty catch made
   // that indistinguishable from a clean teardown.
-  if (cleanup) {
-    try { cleanup(); } catch (err) { console.error('screen teardown failed part-way', err); }
-    cleanup = null;
+  if (hooks.cleanup) {
+    try { hooks.cleanup(); } catch (err) { console.error('screen teardown failed part-way', err); }
+    hooks.cleanup = null;
   }
   // A multi-hour native proof must not outlive the screen that asked for it. Cancelling on
   // every switch is a cheap no-op when nothing runs, and the one reliable teardown when it
@@ -5928,10 +5946,10 @@ function renderScreen({ navigated = false } = {}) {
   // one more 'cubus-step' handler on it, each driving a chip row that is no longer on screen.
   screenAbort?.abort();
   screenAbort = new AbortController();
-  liveUpdate = null;
-  liveMove = null;
-  liveGap = null;
-  onTrustLost = null;
+  hooks.liveUpdate = null;
+  hooks.liveMove = null;
+  hooks.liveGap = null;
+  hooks.onTrustLost = null;
   setTitle(t(TITLES[state.screen] ?? 'Cubus'));
   const build = SCREENS[state.screen] || SCREENS.home;
   // A builder that throws must not leave the PREVIOUS screen's DOM standing under the new
@@ -6000,6 +6018,8 @@ function applyRoute() { state.screen = router.current(); renderNav(); renderScre
 // screen already showing would do nothing. go() renders directly in that case, preserving the
 // always-re-render behaviour the scan flow depends on (go('home') while on home).
 function go(id) { if (!router.go(id)) applyRoute(); }
+// The code beneath the screens reaches these through `shell` (declared with `hooks`), never by import.
+Object.assign(shell, { go, refreshScreen, renderScreen });
 window.addEventListener('hashchange', () => { resolveAlias(); applyRoute(); });
 window.cubusGo = go;
 /** Test seam for the cube stream. In production the driver is the only caller of these (see
@@ -6270,7 +6290,7 @@ async function boot() {
     // The registry was parsed before the cube library existed, so its remembered arrangements
     // have passed only the structural checks. Re-parse with the full reachability round-trip:
     // a forged state that merely looks like facelets is dropped whole here, not shown later.
-    cubes = parseRegistry(cubes, Cube);
+    setCubes(parseRegistry(cubes, Cube));
     setFacelets(state.cube.facelets);
     schedulePreroll(); // so the first press of the die is as cheap as every one after it
     // NO RE-RENDER. Both screens that could want one already await loadSolver() inside their own
