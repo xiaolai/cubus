@@ -100,8 +100,8 @@ test('every attribute the preset names is one the shipped bundle reads', async (
 // inline preset with the original call left in a COMMENT satisfied both assertions. This asks the
 // module what it actually does with an empty store.
 test('app.js reads the preset rather than keeping a second copy of it', async () => {
-  const { readFileSync } = await import('node:fs');
-  const src = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+  const { readAppSource } = await import('./app-source.mjs');
+  const src = readAppSource();
   // Comments stripped first, so a commented-out call cannot stand in for a live one.
   const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   assert.match(code, /load\('cubeView',\s*CUBE_VIEW\)/,

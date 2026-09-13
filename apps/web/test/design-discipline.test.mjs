@@ -27,8 +27,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 
+import { readAppSource } from './app-source.mjs';
+
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-const appJs = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const appJs = readAppSource();
 const tokensCss = readFileSync(new URL('../tokens.css', import.meta.url), 'utf8');
 
 const rawSheet = html.slice(html.indexOf('<style>') + '<style>'.length, html.indexOf('</style>'));

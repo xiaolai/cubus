@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
+import { readAppSource } from './app-source.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -133,7 +134,7 @@ test('a roll that failed leaves no hand-off standing, and a press stores nothing
 // the inline replay THREW where stepStates warns and returns a short array, so one end of the
 // walk called a failed replay a failed roll and the other end shipped the short array.
 test('the scramble branch tokenizes and replays through the shared helpers, not its own copies', () => {
-  const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+  const app = readAppSource();
   const at = app.indexOf('const rolled = await randomScramble();');
   assert.notEqual(at, -1, 'the scramble branch moved — find it again rather than deleting this test');
   const end = app.indexOf('} else {', at);

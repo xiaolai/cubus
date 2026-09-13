@@ -14,10 +14,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
 
+import { readAppSource } from './app-source.mjs';
+
 const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
 const css = read('../tokens.css');
 const html = read('../index.html');
-const appJs = read('../lib/app.js');
+const appJs = readAppSource();
 
 /** Every `--name: value` pair inside one brace-delimited block, comments stripped. */
 const declsIn = (text) =>
