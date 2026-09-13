@@ -1324,19 +1324,46 @@ test('every sentence the scan screen writes into its aside goes through t()', as
   };
   let seen = 0;
   const raw = [];
+  // A sentence literal outside t(), or another module's words (a text, message, body, title or
+  // label) read out and written as they came — the whole value, or one branch of a choice. A read
+  // used only as a condition is not the value.
+  const bypasses = (expr) => {
+    const left = withoutT(expr).trim();
+    return /['"`][A-Z]/.test(left) || /^[\w$.?]+\.(text|message|body|title|label)$/.test(left)
+      || /[?:]\s*[\w$.?]+\.(text|message|body|title|label)\b/.test(left);
+  };
+  /** The top-level arguments of the call whose `(` is at `open`. */
+  const argsAt = (src, open) => {
+    const args = [];
+    let depth = 0;
+    let start = open + 1;
+    for (let i = open; i < src.length;) {
+      const c = src[i];
+      if (c === "'" || c === '"' || c === '`') { i = pastQuote(src, i); continue; }
+      if ('([{'.includes(c)) depth += 1;
+      else if (')]}'.includes(c)) {
+        depth -= 1;
+        if (depth === 0) { args.push(src.slice(start, i)); return args; }
+      } else if (c === ',' && depth === 1) { args.push(src.slice(start, i)); start = i + 1; }
+      i += 1;
+    }
+    throw new Error(`a call at ${open} never closes`);
+  };
   for (const rel of files) {
     const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
     for (const m of src.matchAll(/\b(sayTitle|say|hint|action)\.textContent = /g)) {
       seen += 1;
       const rhs = rhsAt(src, m.index + m[0].length);
-      const left = withoutT(rhs).trim();
-      // A sentence literal outside t(), or another module's words (a text, message, body, title
-      // or label) read out and written as they came — the whole value, or one branch of a choice.
-      // A read used only as a condition is not the value.
-      const sentence = /['"`][A-Z]/.test(left);
-      const handedOver = /^[\w$.?]+\.(text|message|body|title|label)$/.test(left)
-        || /[?:]\s*[\w$.?]+\.(text|message|body|title|label)\b/.test(left);
-      if (sentence || handedOver) raw.push(`${rel}: ${m[1]}.textContent = ${rhs.trim().slice(0, 80)}`);
+      if (bypasses(rhs)) raw.push(`${rel}: ${m[1]}.textContent = ${rhs.trim().slice(0, 80)}`);
+    }
+    // The card's other door, speak(title, sentence, tone): its title and sentence are held to the
+    // same rule. The tone is a class name, not a word anyone reads.
+    for (const m of src.matchAll(/\bspeak\(/g)) {
+      seen += 1;
+      const [title = '', body = ''] = argsAt(src, m.index + m[0].length - 1);
+      for (const expr of [title, body]) {
+        if (bypasses(expr)) raw.push(`${rel}: speak(${expr.trim().slice(0, 80)}, …)`);
+      }
     }
   }
   assert.ok(seen >= 20, `precondition: only ${seen} writes to the aside were found — the reader is looking in the wrong place`);
