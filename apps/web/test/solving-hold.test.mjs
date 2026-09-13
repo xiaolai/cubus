@@ -28,6 +28,7 @@ import {
   METHOD_TO_SCAN,
   SCAN_HOLD,
   TUMBLED,
+  WHITE_UP_STAGES,
   fromMethodFrame,
   holdForStage,
   holdForTarget,
@@ -134,6 +135,14 @@ test('the stages are held the way the owner decided, and every target has a hold
     'a target added without a hold would be held however a default happened to say');
   assert.throws(() => holdForTarget('nope'), /no hold for target "nope"/);
 
+  // THE FLIP POINT IS DECLARED ONCE. The two vocabularies share three names, and each is one stage:
+  // held the same way whichever table is asked. It used to be stated in both tables by hand, where
+  // moving it in one and not the other would have passed every other case in this file.
+  assert.deepEqual([...WHITE_UP_STAGES], ['cross', 'first-layer']);
+  for (const name of ['cross', 'first-layer', 'top-cross']) {
+    assert.deepEqual([...holdForTarget(name)], [...holdForStage(name)], `"${name}" is held the same in both vocabularies`);
+  }
+
   // The engine is fed the tumbled hold, which is why a tumbled route needs no renaming to be shown.
   assert.deepEqual([...METHOD_FRAME], [...TUMBLED]);
 });
@@ -221,6 +230,11 @@ test('the lesson\'s cross and first-layer sentences describe a white-up hold, an
   // method's U layer — where it lifts a cross edge to — is the BOTTOM of the cube in the child's
   // hands, so the old sentences ("up to the top", "on the bottom") described a different hold.
   assert.deepEqual([...holdForStage('cross')], [...SCAN_HOLD]);
+  // The sentences checked below, per white-up stage. Held to the one declaration of the flip point,
+  // so moving it cannot leave a stage's words describing the other hold without this going red.
+  const WHITE_UP_SENTENCES = { cross: ['cross.lift', 'cross.insert', 'cross.whole'], 'first-layer': ['firstLayer.lift', 'firstLayer.insert'] };
+  assert.deepEqual(Object.keys(WHITE_UP_SENTENCES), [...WHITE_UP_STAGES],
+    'every white-up stage has its sentences checked for the white-up hold, and no other stage does');
   const say = (why, kind = 'goal') => whyText({ kind, why });
   assert.match(say({ key: 'cross.lift', edge: 0 }), /down to the bottom/);
   assert.match(say({ key: 'cross.insert', edge: 0 }), /under its home/);

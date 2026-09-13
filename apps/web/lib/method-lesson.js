@@ -59,7 +59,7 @@ export const SECTION_NAME = Object.freeze({
  * `WHY_TEXT` was English string literals, which is a table that cannot be translated at all.
  */
 const WHY_TEXT = Object.freeze({
-  // THE CROSS IS BUILT WHITE UP (lib/solving-hold.js, ADR 0003), and these three sentences are
+  // THE CROSS IS BUILT WHITE UP (`WHITE_UP_STAGES`, lib/solving-hold.js; ADR 0003), and these three sentences are
   // written for that hold. The solver builds the cross on its own D and lifts edges to its own U;
   // held white up, that U layer is the BOTTOM of the cube in the child's hands. They used to say
   // "up to the top" and "on the bottom", which described the hold the app no longer uses, and
