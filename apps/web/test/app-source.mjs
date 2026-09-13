@@ -23,7 +23,8 @@ import { readFileSync } from 'node:fs';
 export const APP_SOURCES = Object.freeze([
   'lib/app.js',
   // lifted out of app.js, 2026-09-13
-  'lib/walk-session.js', 'lib/walk-live-distance.js', 'lib/walk-offer.js', 'lib/hold-presenter.js',
+  'lib/walk-session.js', 'lib/walk-live-distance.js', 'lib/walk-offer.js', 'lib/walk-resolver.js',
+  'lib/hold-presenter.js',
   'lib/version.js', 'lib/app-state.js', 'lib/app-settings.js', 'lib/screen-slots.js', 'lib/solver-service.js',
   'lib/cube-subject.js', 'lib/cube-drawing.js', 'lib/wake-lock.js', 'lib/window-chrome.js',
   'lib/cube-memory.js', 'lib/cube-trust-state.js',
@@ -182,7 +183,8 @@ export function walk(src, { from = 0, balanced = false } = {}) {
 
 /**
  * The source of the block `anchor` opens: from the anchor to the `}` that closes the first `{` at or
- * after it, however the block is indented.
+ * after it — after the parameter list, when the anchor opens a function's — however the block is
+ * indented.
  *
  * Refuses rather than guesses, and every refusal throws — so a case built on a block can never pass
  * over an empty one, which is the silent pass the old `?.[0] ?? ''` extractions allowed. The anchor
@@ -193,7 +195,33 @@ export function blockAt(src, anchor) {
   const at = src.indexOf(anchor);
   if (at < 0) throw new Error(`blockAt: ${JSON.stringify(anchor)} is not in the source`);
   if (src.indexOf(anchor, at + 1) >= 0) throw new Error(`blockAt: ${JSON.stringify(anchor)} appears more than once`);
-  const brace = src.indexOf('{', at);
+  // A FUNCTION's parameters can open a brace of their own: `function f({ a, b }) { … }`. Anchored
+  // inside that list — `'function f('` — the first brace is the destructuring pattern, and the "block"
+  // was the parameters: a case needing two lines of the body failed only because neither was there,
+  // and a negative assertion on it would have passed over nothing (2026-09-13, `resolveWalk`). So a
+  // definition's list is closed before the body's brace is looked for. Only a definition's: after a
+  // call's open paren the first brace is the callback's body, which is the block those anchors want.
+  //
+  // From the anchor itself otherwise, not from its end: an anchor may carry its own brace (`'} else {'`),
+  // and that brace is the block's. The first version of this rule searched after every anchor, and read
+  // the scan screen's adoption branch as the options object two lines inside it.
+  let from = at;
+  const unclosed = (anchor.match(/\(/g) ?? []).length - (anchor.match(/\)/g) ?? []).length;
+  if (unclosed > 0 && /\bfunction\b[^(]*\(/.test(anchor)) {
+    let depth = unclosed;
+    from = at + anchor.length;
+    while (from < src.length && depth > 0) {
+      const ch = src[from];
+      if (ch === "'" || ch === '"' || ch === '`') {
+        throw new Error(`blockAt: a literal opens in the parameters after ${JSON.stringify(anchor)} — anchor on the whole signature`);
+      }
+      if (ch === '(') depth += 1;
+      else if (ch === ')') depth -= 1;
+      from += 1;
+    }
+    if (depth > 0) throw new Error(`blockAt: the parameters after ${JSON.stringify(anchor)} never close`);
+  }
+  const brace = src.indexOf('{', from);
   if (brace < 0) throw new Error(`blockAt: nothing opens a block after ${JSON.stringify(anchor)}`);
   if (/['"`]/.test(src.slice(at + anchor.length, brace))) {
     throw new Error(`blockAt: a literal opens between ${JSON.stringify(anchor)} and its brace — anchor closer to the block`);

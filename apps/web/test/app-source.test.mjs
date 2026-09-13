@@ -71,6 +71,39 @@ test('a block is read to its own closing brace, however it is indented', () => {
   }
 });
 
+test('a function whose parameters destructure an object is read to its body, never its parameter pattern', () => {
+  // Anchored inside the parameter list, the first brace after the anchor is the destructuring pattern.
+  // Read as the block, it held no body at all: the case that found it needed two lines of the body to
+  // exist, and a negative assertion on that "block" would have passed over nothing.
+  for (const head of ['function subject(', 'async function subject(']) {
+    const src = [
+      'function before() { return 1; }',
+      `${head}{ scrambling, fresh = () => true }) {`,
+      '  if (scrambling) { return fresh(); }',
+      '  return null;',
+      '}',
+      'function after() { return 2; }',
+    ].join('\n');
+    const block = blockAt(src, head);
+    assert.ok(block.includes('return null;'), `${head}: the block stopped at the parameter pattern`);
+    assert.ok(block.endsWith('return null;\n}'), `${head}: the block did not end at the body's own brace`);
+    assert.doesNotMatch(block, /after/, `${head}: the block ran on into the next function`);
+  }
+  // A CALL's open paren is not a parameter list: the first brace after it is the callback's body, which
+  // is the block every anchor like `panel.addEventListener('scan-complete'` wants.
+  let callBlock = '';
+  assert.doesNotThrow(() => { callBlock = blockAt('on(() => { go(); }, { once: true });', 'on('); },
+    "a call's open paren was read as a function's parameter list");
+  assert.match(callBlock, /go\(\);/, "a call's open paren was read as a function's parameter list");
+  assert.doesNotMatch(callBlock, /once/, 'the callback block ran on past its own brace');
+  // An anchor that carries its own brace opens the block with it: the else branch, not the first object
+  // literal inside it.
+  const elseBlock = blockAt('if (a) { x(); } else { y({ z: 1 }); w(); }', '} else {');
+  assert.ok(elseBlock.includes('w();'), "an anchor's own brace was skipped, and the block was an object inside it");
+  // And a string in the parameters is refused, as a string before any brace already is.
+  assert.throws(() => blockAt("function f({ a = '}' }) { return a; }", 'function f('), /a literal opens/);
+});
+
 test('blockAt refuses rather than guesses, and every refusal is loud', () => {
   const src = 'const a = () => { x(); };\nconst b = () => { y(); };\n';
   assert.throws(() => blockAt(src, 'const c = () =>'), /is not in the source/);
