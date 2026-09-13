@@ -9,10 +9,7 @@ import { hostPlatform } from './host.js';
 // browser, native BLE events under Tauri), one durable record per cube, and the trust model that
 // keeps "connected" from standing in for "known".
 import { connectCube, VERDICT } from './cube-session.js';
-import {
-  cubeLabel, listCubes, NAME_PREFIX, normaliseIdentity, normaliseMac, parseRegistry, rememberCube,
-  rememberLast,
-} from './cube-registry.js';
+import { normaliseIdentity, normaliseMac } from './cube-registry.js';
 import { applyOffset, isIdentity } from './cube-trust.js';
 // What the host can actually reach a radio with. Imported rather than re-derived: the list of
 // platforms whose native BLE is not yet proved on a device is one line in one file by design
@@ -23,34 +20,21 @@ import { NATIVE_BLE_UNSUPPORTED } from './ble-bridge.js';
 // the two-adjacent-side camera check that supports the user's answer. Never the trust — only the
 // user's answer grants that (dev-docs/smart-cube-ux-prd.md, "Reconnecting a known cube").
 import { classifyReconnect } from './cube-reconnect.js';
-import { locale } from './i18n.js';
 
 import { $, state } from './app-state.js';
-import { load, save } from './app-settings.js';
 import { hooks, shell } from './screen-slots.js';
 import { Cube, loadSolver } from './solver-service.js';
 import { ingestFacelets, takeDerivation } from './cube-subject.js';
 import { isTauri } from './window-chrome.js';
+import {
+  cubes, lastCubeMac, liveCubeLabel, rememberArrangement, rememberConnection, sessionIdentity,
+} from './cube-memory.js';
 
 // ---- smart cube: connection, registry, trust (recovered from v0) -----------------------------
 
 // The live session (lib/cube-session.js), or null. It owns the transport, the protocol layer
 // and the self-check; the app only ever holds this one handle, here.
 export let conn = null;
-
-// One durable record per cube. Only durable facts live here — trust, the tracking offset, the
-// battery and the anchor flag are properties of a CONNECTION and are deliberately excluded
-// (see lib/cube-registry.js).
-export let cubes = parseRegistry(load('cubusCubes', {}));
-/** The one way code outside this region replaces the registry — Settings renames and forgets a cube,
- *  boot repairs what storage held — because a module cannot assign a binding it imports. */
-export function setCubes(next) { cubes = next; }
-
-/** The address a bare "Pair" should try: whichever cube was used most recently — and only if it
- *  HAS one. Since a cube with no address is remembered under `name:<its name>` (normaliseIdentity),
- *  the most recent record's key is not necessarily an address, and handing `name:green cube` to
- *  the protocol layer as a Bluetooth address is a connect that cannot work and cannot say why. */
-const lastCubeMac = () => listCubes(cubes).map((c) => normaliseMac(c.mac)).find(Boolean) || '';
 
 /** The connected cube's remembered record at the moment it connected — what the reconnect
  *  reading compares the first report against. Cleared with the connection. */
@@ -75,10 +59,6 @@ const TURNED_SINCE_SCAN = 'it was turned after the camera saw it, and before it 
  *  beside the memory as information for wording, never proof: the GAN16's counter is
  *  per-connection and says nothing across a break. */
 let lastSerialSeen = null;
-/** Did the last registry write fail? Announced in Settings: a memory that failed to save must
- *  not look like one that saved — on the next reconnect the app would ask its question over
- *  nothing and call a known cube new. */
-export let registryWriteBad = false;
 
 /** Is the live CHAIN trusted — trusted knowledge of the cube itself, not of a generated
  *  subject? 'generated' sets `trusted` too (a scramble is perfectly known), but that is
@@ -88,22 +68,11 @@ export let registryWriteBad = false;
 export const chainTrusted = () =>
   state.cube.trusted && (state.cube.source === 'cube' || state.cube.source === 'camera');
 
-/** Write the remembered arrangement: the truth the app is currently sure of, and the cube's own
- *  raw report at the same moment. Called on every update that arrives on a trusted chain;
- *  deduplicated on content so the ~1 Hz resend of an unchanged state does not become a storage
- *  write per second — and `force` refreshes the timestamp anyway at moments worth naming (a
- *  confirmation, a repair, the disconnect that ends the chain). */
+/** Remember the arrangement the app is sure of (lib/cube-memory.js) with this connection's serial,
+ *  and repaint Settings when the write's health flipped — which the memory, beneath the screens,
+ *  does not do itself. */
 export function rememberLastSeen(how, { force = false } = {}) {
-  if (!state.connected || !state.cubeMac || !state.live || !state.reported) return;
-  const prev = cubes[state.cubeMac]?.last;
-  const serial = lastSerialSeen ?? null;
-  if (!force && prev && prev.facelets === state.live && prev.reported === state.reported
-    && prev.serial === serial && prev.how === how) return;
-  cubes = rememberLast(cubes, state.cubeMac, {
-    facelets: state.live, reported: state.reported, serial, at: Date.now(), how,
-  }, Cube);
-  const ok = save('cubusCubes', cubes);
-  if (ok !== !registryWriteBad) { registryWriteBad = !ok; repaintSettings(); }
+  if (rememberArrangement(how, { force, serial: lastSerialSeen ?? null })) repaintSettings();
 }
 
 /** Has the session PROVED this cube's own reports do not add up?
@@ -327,10 +296,7 @@ function onCubeMove(m) {
 /** Record a live connection. The registry write and the connected flag are ONE step on purpose:
  *  as two, the test seam and the real path each had a copy, and a regression passed every test. */
 function adoptConnection(mac, name) {
-  cubes = rememberCube(cubes, { mac, name, at: Date.now() }, Cube);
-  // A memory that failed to save must not look like one that saved: on the next reconnect the
-  // app would greet a known cube as a stranger. save() already logs; Settings says it in words.
-  registryWriteBad = !save('cubusCubes', cubes);
+  rememberConnection(mac, name);
   // A new connection starts knowing nothing about this cube. Trust and the last report belong to
   // the chain that just ended: inheriting them let a freshly paired cube be treated as verified
   // on the strength of a camera scan of some *other* cube.
@@ -457,32 +423,6 @@ export function wireReconnectAnswers(root) {
 }
 
 /**
- * "Tuesday 21:40" — the dress a memory wears. A remembered arrangement is a memory with a
- * timestamp and is shown as one, never as the truth. Empty parts when the stamp is missing.
- *
- * Through `Intl`, in the app's locale, for two separate reasons. The weekday names were a
- * hard-coded English array and the clock a hard-coded 24-hour pad, so a translated app would have
- * said "Tuesday" in the middle of a Chinese sentence and shown 21:40 to a reader whose region
- * writes 9:40 PM — the mechanism was there, this was simply outside it.
- *
- * And a weekday ALONE IS A DATE THAT LIES once it is more than a week old. "Tuesday 21:40" for a
- * cube last seen five weeks ago names this week's Tuesday to every reader. Inside six days a
- * weekday is the friendliest true form; past that it takes a date (found by audit, 2026-09-04).
- */
-const SIX_DAYS_MS = 6 * 24 * 60 * 60 * 1000;
-export function whenWords(ts, now = Date.now()) {
-  if (!ts) return { day: '', full: '' };
-  const d = new Date(ts);
-  const fmt = (opts) => {
-    try { return new Intl.DateTimeFormat(locale(), opts).format(d); } catch { return ''; }
-  };
-  const recent = now - ts < SIX_DAYS_MS && ts <= now;
-  const day = recent ? fmt({ weekday: 'long' }) : fmt({ day: 'numeric', month: 'short' });
-  const time = fmt({ hour: 'numeric', minute: '2-digit' });
-  return { day, full: day && time ? `${day} ${time}` : day || time };
-}
-
-/**
  * Can this host reach a radio at all, and by which route?
  *
  * The SAME ladder `installBleBridge` walks, asked without building a bridge: a bridge registers
@@ -531,16 +471,6 @@ export function bleReachNote() {
       return 'This browser cannot use Bluetooth. Chrome, Edge or the desktop app can — and the camera works either way.';
   }
 }
-
-/** How a registry KEY reads on screen. An address is shown as itself; a `name:` key is a filing
- *  detail and is shown as the fact behind it, so no screen ever prints a string a user might
- *  mistake for something they could type into the address field. */
-export const idWords = (id) => (String(id).startsWith(NAME_PREFIX) ? '(no address)' : `at ${id}`);
-
-/** What to call the connected cube. The user's own word wins; the cube's own name is the
- *  fallback. One helper so a nickname cannot appear on one screen and not another. */
-export const liveCubeLabel = () =>
-  cubeLabel({ ...cubes[state.cubeMac], mac: state.cubeMac, name: state.cubeName }) || 'Smart cube';
 
 /** Is someone mid-typing in a cube-settings input? Async repaints of Settings defer rather than
  *  discard what is being typed. ONE predicate on purpose — it had two copies, and two copies of
@@ -673,34 +603,6 @@ function setConnected(on, name = '', mac = '') {
   if (state.screen === 'settings' && before !== `${state.connected}|${state.cubeName}|${state.cubeMac}`) {
     shell.renderScreen();
   }
-}
-
-/**
- * The identity a connected cube is remembered under — ITS OWN, and nothing else's.
- *
- * A cube with no address is remembered under its NAME rather than under an empty string. Only the
- * GAN protocols expose a MAC; the others report '', and keying the registry on that makes every
- * such cube the same cube — one nickname, one shared last-seen record, and a reconnect that
- * greets a stranger with another cube's memory.
- *
- * `name:` is the registry's own prefix (NAME_PREFIX), spelled once there: every path that stores
- * or looks up a record runs the id through `normaliseIdentity`, which is what makes this a key
- * rather than a string that merely looks like one. It was a bare template literal here and
- * `normaliseMac` everywhere else, so these cubes were documented as remembered and were in fact
- * never written at all.
- *
- * ONE ARGUMENT, and that is the fix of 2026-09-05. This used to fall back to the address the
- * connect attempt had been GIVEN — `macFromUi` or, failing that, `lastCubeMac()`, the most
- * recently used remembered cube. So connecting an addressless cube while a GAN was the last cube
- * used filed it under the GAN's MAC: two cubes, one record, each inheriting the other's nickname,
- * history and remembered arrangement, and a reconnect question about the wrong cube. The session's
- * resolved address is the only evidence there is — the protocol layer publishes `deviceMAC` when
- * it has one, including one it took from the provider and then VERIFIED against the cube — so an
- * empty one means no address was established, and the name is the honest key.
- */
-function sessionIdentity(session) {
-  return normaliseIdentity(session?.mac)
-    || normaliseIdentity(NAME_PREFIX + (session?.name || 'cube'));
 }
 
 let connecting = null;
