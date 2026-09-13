@@ -622,3 +622,63 @@ test('a lost turn, and trust lapsing, each take the live number off the screen',
     assert.equal(w.$('#stageLive').textContent, '', `${what} left the live number standing over a cube it no longer describes`);
   }
 });
+
+// ---- step 0 of the presenter: the transport as the learner sees it -----------------------------------------
+//
+// The chips' marks, a chip press, and taking over from a cube that leads are pinned through the whole app
+// in router-wiring.test.mjs. These pin the three transport behaviours nothing checked, before the presenter
+// that owns them leaves the session.
+
+test('repeat at the first move does nothing — even if the button is pressable', async () => {
+  const w = world({}, ({ state }) => ({ deriveCube: async () => { solvedBy(state, "R' U'"); } }));
+  assert.equal(await w.session.load(), true);
+  const turns = () => w.cube.calls.filter((c) => c === 'step' || c === 'stepBack');
+  // The guard is not the disabled attribute's backup: stepBack() refuses at the start and step() does not,
+  // so a repeat that reached the renderer at 0 would move the cube FORWARD one move.
+  w.$('#repeatBtn').disabled = false;
+  w.cube.calls.length = 0;
+  w.$('#repeatBtn').click();
+  assert.deepEqual(turns(), [], 'a repeat at the start stepped the cube');
+
+  // After a move, a repeat undoes it and makes it again.
+  w.cube.dispatchEvent(new w.win.CustomEvent('cubus-step', { detail: { index: 1 } }));
+  w.cube.calls.length = 0;
+  w.$('#repeatBtn').click();
+  assert.deepEqual(turns(), ['stepBack', 'step'], 'a repeat did not show the last move again');
+});
+
+test('the play button is named for what pressing it will do', async () => {
+  const w = world({}, ({ state }) => ({ deriveCube: async () => { solvedBy(state, "R' U'"); } }));
+  assert.equal(await w.session.load(), true);
+  const play = w.$('#playBtn');
+  assert.equal(play.getAttribute('aria-label'), 'Play from here to the end');
+  play.click();
+  assert.ok(w.cube.calls.includes('play'), 'precondition: the walk is playing');
+  assert.equal(play.getAttribute('aria-label'), 'Pause', 'a playing walk offered to play');
+  play.click();
+  assert.equal(play.getAttribute('aria-label'), 'Play from here to the end', 'a paused walk offered to pause');
+});
+
+test('at each end, the buttons that cannot act are disabled, and the done mark shows only at the end', async () => {
+  const w = world({}, ({ state }) => ({ deriveCube: async () => { solvedBy(state, "R' U'"); } }));
+  assert.equal(await w.session.load(), true);
+  const step = (index) => w.cube.dispatchEvent(new w.win.CustomEvent('cubus-step', { detail: { index } }));
+  const disabled = (id) => w.$(`#${id}`).disabled;
+
+  assert.equal(disabled('prevBtn'), true, 'Back was pressable before any move');
+  assert.equal(disabled('repeatBtn'), true, 'Repeat was pressable before any move');
+  assert.equal(disabled('nextBtn'), false);
+  assert.equal(disabled('playBtn'), false);
+  assert.equal(w.$('#doneMark').hidden, true, 'the walk was marked done before it started');
+
+  step(2);
+  assert.equal(disabled('nextBtn'), true, 'Next stayed pressable at the end');
+  assert.equal(disabled('playBtn'), true, 'Play stayed pressable at the end');
+  assert.equal(disabled('prevBtn'), false);
+  assert.equal(w.$('#doneMark').hidden, false, 'the last move landed and the walk was not marked done');
+  assert.equal(w.$('#progBar').style.width, '100%');
+
+  step(1);
+  assert.equal(w.$('#doneMark').hidden, true, 'a step back from the end left the walk marked done');
+  assert.equal(w.$('#progBar').style.width, '50%');
+});
