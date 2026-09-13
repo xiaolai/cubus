@@ -35,6 +35,8 @@ export const APP_SOURCES = Object.freeze([
   'lib/screen-shell.js',
   'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
   'lib/screens/stats.js', 'lib/screens/lessons.js',
+  // the scan screen's own parts, 2026-09-13
+  'lib/screens/scan/stage-chips.js',
 ]);
 
 /** Every other module under lib/: the engines, drivers, pure helpers, workers and bundle entries
