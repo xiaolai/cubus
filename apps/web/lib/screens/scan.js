@@ -23,6 +23,7 @@ import { markStale } from '../cube-trust-state.js';
 import { SCREENS, go, placeMenuUnder, placePopoverV, screenAbort, stageRect } from '../screen-shell.js';
 
 import { createStageChips } from './scan/stage-chips.js';
+import { createScanVoice } from './scan/voice.js';
 
 // Restore — the screen that reads your cube so it can be solved. Its route id stays `scan`, and
 // renaming it is not worth breaking every #/scan link and bookmark already in the wild.
@@ -81,11 +82,6 @@ SCREENS.scan = () => {
   // The panel is registered by a module script; if that has not landed yet the element is still
   // inert, so say so rather than claiming a camera is opening.
   const registered = Boolean(customElements.get('ai-scan-panel'));
-  // Shown when the scanner is not saying anything more specific. The scan's own messages replace
-  // it, so the aside is one voice rather than a caption competing with a status line.
-  const HOW = 'The camera opens with this screen and the detector scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still. Each tile is edged in the colours of its neighbours: hold a side that way up and the scan needs nothing more from you. Got a sticker wrong? Click it and pick the right colour.';
-  // What to call the aside while the scanner is speaking, so "How it works" never heads an error.
-  const SAY_TITLE = { error: 'Camera trouble', confirm: 'One more look', checking: 'Checking', done: 'Scanned' };
   // --primary-share 0.66, not the default 0.58: the net wants the room, and the sheet is a cube
   // twin and a paragraph. `twin-low`: in portrait the twin sits beside the sheet, not beside the
   // cross — the cross is the same cross in both windows and wants the width (index.html). Only a
@@ -245,7 +241,13 @@ SCREENS.scan = () => {
       // The largest of the warm windows: a scan is seconds of camera and then a solve, so the
       // tables can be built entirely inside time the user is already spending.
       warmSolver();
-      const say = $('#scanHow', root), sayTitle = $('#scanHowTitle', root), hint = $('#scanHint', root);
+      // The aside's words — the scanner's notices and hints, the colour sentence, and every other
+      // title and sentence this screen puts in the card — are their own unit
+      // (lib/screens/scan/voice.js), and the card is written only through it. `closePops` is
+      // declared further down the mount, so the unit is handed a way to reach it.
+      const { speak, paintSay, sayScheme, noteScheme } = createScanVoice({
+        root, panel, closePops: () => closePops(),
+      });
       // "Loading the scanner…" was INITIAL COPY and nothing else: if the bundle never registers —
       // a failed fetch, a parse error, a blocked module — the element stays inert forever and the
       // sentence stays on screen forever, promising a camera that is never opening. A registration
@@ -257,10 +259,8 @@ SCREENS.scan = () => {
         void customElements.whenDefined('ai-scan-panel').then(() => { landed = true; });
         setTimeout(() => {
           // Guarded on the SCREEN, not only on the flag: this outlives its screen by design.
-          if (landed || !root.isConnected || !say.isConnected) return;
-          sayTitle.textContent = t('The scanner did not load');
-          say.textContent = t('The camera part of cubus failed to start, so there is nothing to scan with. Reloading the app usually fixes it. Everything else — the solver, the guide, a smart cube — still works.');
-          say.className = 'sub scan-say err';
+          if (landed || !root.isConnected) return;
+          speak(t('The scanner did not load'), t('The camera part of cubus failed to start, so there is nothing to scan with. Reloading the app usually fixes it. Everything else — the solver, the guide, a smart cube — still works.'), 'err');
         }, SCANNER_WAIT_MS);
       }
       // The reconnect confirmation runs INSIDE this screen's own flow, not beside it: the panel's
@@ -295,8 +295,7 @@ SCREENS.scan = () => {
       };
       const CONFIRM_HOW = 'We remember this cube. Show any two sides that meet along an edge — the front, then the top, works well. If both match what we remember, that’s your cube confirmed with no full scan; if either differs, keep going and the camera reads all six.';
       if (confirming) {
-        sayTitle.textContent = t('Checking your cube');
-        say.textContent = t(CONFIRM_HOW);
+        speak(t('Checking your cube'), t(CONFIRM_HOW));
       }
       // "Solve this cube" is a promise about THIS screen's scan, so it is only pressable once a
       // scan stands complete — and a correction that re-opens the verdict takes it away again.
@@ -304,9 +303,6 @@ SCREENS.scan = () => {
       /** Did this screen refuse the finished scan? Screen-local, and cleared only by a scan that
        *  is no longer complete — see the scan-progress handler. */
       let refused = false;
-      /** Set when a scan MOVED the app's belief about this cube's colours, so the screen can say
-       *  so once. Null the rest of the time — including when a scan merely confirms it. */
-      let schemeNote = null;
       const tiles = [...root.querySelectorAll('.scan-face')];
       const paint = (cells, colors) => cells.forEach((c, i) => { c.style.backgroundColor = classColor(colors[i]); });
       /**
@@ -498,81 +494,10 @@ SCREENS.scan = () => {
         ev.stopPropagation();
       };
 
-      /** The two voices of the scan, and the only thing this writes: a pinned notice (what the
-       *  scanner needs and why — it stands until the situation changes) and the transient camera
-       *  hint. Lifted out of the scan-progress handler (2026-09-05), which had grown to hold four
-       *  unrelated jobs; this one is the words, and it touches nothing but the three elements
-       *  that carry them.
-       *
-       *  The hint used to overwrite the explanation within one tick, which made every refusal
-       *  look like a silent crash. The scanner's prose passes through t(): its sentences are
-       *  exact English strings, so a catalog can translate them here without the scanner package
-       *  knowing languages exist. Sentences with colour words baked in pass through untranslated
-       *  until their call sites move to placeholder form — the seam dev-docs/i18n.md tracks. */
-      const paintSay = (p) => {
-        const n = p.notice;
-        // The notice's one recommended action, as a button in the same card as the sentence. A
-        // refusal that can name no sticker says "start the scan over"; pointing at the toolbar's
-        // ↻ from a sentence in the aside was the confusion (2026-09-06), so the button is here.
-        const action = $('#scanAction', root);
-        if (action) {
-          const a = n?.action;
-          action.hidden = !a;
-          if (a) {
-            action.textContent = t(a.label);
-            action.onclick = () => { closePops(); if (a.kind === 'restart') panel.restart?.(); };
-          }
-        }
-        if (n) {
-          sayTitle.textContent = t(n.title);
-          // Translate FIRST, substitute after: a notice carrying a count or a side name keeps its
-          // sentence whole in the catalog instead of arriving pre-assembled and untranslatable.
-          say.textContent = t(n.body, ...(n.params ?? []));
-          say.className = 'sub scan-say' + (n.tone === 'err' ? ' err' : n.tone === 'ok' ? ' ok' : '');
-          // The hint is noise when it just restates the notice (the confirm ask opens the loop
-          // with the same sentence the notice carries).
-          const dup = !p.message || n.body.includes(p.message);
-          hint.textContent = dup ? '' : t(p.message);
-          hint.hidden = dup;
-        } else if (p.complete) {
-          // A finished scan answers "what do I do now?", and only this file can: the next action
-          // is THIS screen's button. The scanner says the scan is complete; the words naming
-          // "Solve this cube" belong to the screen the button lives on.
-          sayTitle.textContent = t('Scanned');
-          say.textContent = t('That’s the whole cube, checked and solvable — press "Solve this cube" when you’re ready. Spotted a wrong sticker? Click it and pick the right colour. Different cube? Start over with the ↻ button.');
-          say.className = 'sub scan-say ok';
-          // With the camera reopened over a finished scan, the camera's own line still matters
-          // ("this cube is already scanned…"); with it off there is nothing to hint about.
-          hint.textContent = p.device && p.message ? t(p.message) : '';
-          hint.hidden = !hint.textContent;
-        } else {
-          say.textContent = t(p.message || HOW);
-          sayTitle.textContent = (p.message && t(SAY_TITLE[p.phase] ?? '')) || t('How it works');
-          say.className = 'sub scan-say' + (p.phase === 'error' ? ' err' : p.phase === 'checking' || p.phase === 'done' ? ' ok' : '');
-          hint.textContent = '';
-          hint.hidden = true;
-        }
-      };
-
       /** The two-side reconnect check, folded into a running scan. Its own job, lifted out of the
        *  scan-progress handler along with the words (2026-09-05): the handler was writing status
        *  messages, painting stickers, discovering cameras and answering a question about the
        *  user's cube, all in one body. Called LAST, for the reason its own comment gives. */
-      /**
-       * The one sentence this screen owes when a scan has proved the cube's colours are not what
-       * the app assumed. Said once, over the generic caption only — never over the scanner's own
-       * pinned notice, which is about the scan and outranks a remark about colours.
-       */
-      const sayScheme = (p) => {
-        if (!schemeNote || p.notice || p.phase === 'error') return;
-        sayTitle.textContent = t(schemeNote === 'japanese' ? 'Blue under white' : 'Yellow under white');
-        say.textContent = t(schemeNote === 'japanese'
-          ? 'Your cube has blue under white — the Japanese colours, common on older cubes. Nothing to do: the colours on screen now match it, and they will next time too.'
-          : 'Your cube has yellow under white — the usual colours. The colours on screen now match it, and they will next time too.');
-        say.className = 'sub scan-say ok';
-        schemeNote = null;
-      };
-
       const answerFromSides = (p) => {
         // ---- reconnect confirmation ----------------------------------------------------------
         // Each captured side is compared with the candidate — by its centre colour (the scanner
@@ -599,22 +524,14 @@ SCREENS.scan = () => {
             }
             // Refused — the derivation could not do its job. The scan is already running, so
             // the full read is the honest continuation, and this says so.
-            sayTitle.textContent = t('Keep going');
-            say.textContent = t('The match could not be taken as an answer, so the camera will read the whole cube instead — keep showing sides, the ones already read still count.');
-            say.className = 'sub scan-say';
+            speak(t('Keep going'), t('The match could not be taken as an answer, so the camera will read the whole cube instead — keep showing sides, the ones already read still count.'));
           } else if (check.verdict === 'mismatch') {
             confirming = false;
-            sayTitle.textContent = t('Not what we remembered');
-            say.textContent = t('That side is not what we remembered, so the camera will read the whole cube instead. Keep showing sides — the ones already read still count.');
-            say.className = 'sub scan-say';
+            speak(t('Not what we remembered'), t('That side is not what we remembered, so the camera will read the whole cube instead. Keep showing sides — the ones already read still count.'));
           } else if (check.matched.length) {
-            sayTitle.textContent = t('One more side');
-            say.textContent = t('That side matches. Now show one that touches it along an edge — two neighbouring sides are what the check needs.');
-            say.className = 'sub scan-say ok';
+            speak(t('One more side'), t('That side matches. Now show one that touches it along an edge — two neighbouring sides are what the check needs.'), 'ok');
           } else if (!p.captured.length && !p.message) {
-            sayTitle.textContent = t('Checking your cube');
-            say.textContent = t(CONFIRM_HOW);
-            say.className = 'sub scan-say';
+            speak(t('Checking your cube'), t(CONFIRM_HOW));
           }
         }
       };
@@ -678,7 +595,7 @@ SCREENS.scan = () => {
           tileScheme = p.scheme;
           repaintTileFurniture();
         }
-        if (isScheme(p.scheme) && adoptScheme(p.scheme)) schemeNote = p.scheme;
+        if (isScheme(p.scheme) && adoptScheme(p.scheme)) noteScheme(p.scheme);
         paintSay(p);
         suspects = p.suspects ?? [];
         for (const tile of tiles) {
@@ -794,10 +711,8 @@ SCREENS.scan = () => {
           void paintStageChips(fl);
         }
         if (repaired) {
-          sayTitle.textContent = repaired.ok ? t('Tracking repaired') : t('These do not match');
           // The session's sentence is an English key, like the scanner's notices; translated here.
-          say.textContent = t(repaired.text);
-          say.className = 'sub scan-say' + (repaired.ok ? ' ok' : ' err');
+          speak(repaired.ok ? t('Tracking repaired') : t('These do not match'), t(repaired.text), repaired.ok ? 'ok' : 'err');
         }
         // Stay put. Jumping to another screen took the six tiles away at the moment they finally
         // mean something, and with them the chance to check the read or fix a sticker. The aside
