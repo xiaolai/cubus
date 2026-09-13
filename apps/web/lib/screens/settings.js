@@ -14,9 +14,8 @@ import { $, SOLVED, escHtml, icon, state } from '../app-state.js';
 import { HIDEABLE, PALETTES, THEMES, navHidden, save, settings } from '../app-settings.js';
 import { applyNetColors, applyTheme, buildNet, netPalette } from '../cube-drawing.js';
 import { isTauri } from '../window-chrome.js';
-import {
-  bleReach, bleReachNote, canPair, doConnect, onDisconnect, refreshBattery,
-} from '../cube-connection.js';
+import { bleReach, bleReachNote, canPair, doConnect, refreshBattery } from '../cube-connection.js';
+import { onDisconnect } from '../cube-reports.js';
 import { conn, cubeRefused } from '../live-session.js';
 import { wireReconnectAnswers } from '../reconnect-answer.js';
 import {

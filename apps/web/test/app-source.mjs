@@ -29,6 +29,7 @@ export const APP_SOURCES = Object.freeze([
   'lib/cube-memory.js', 'lib/cube-trust-state.js',
   'lib/reconnect-answer.js',
   'lib/live-session.js',
+  'lib/cube-reports.js',
   'lib/cube-connection.js', 'lib/scramble-roll.js', 'lib/prove-affordance.js', 'lib/update-ui.js',
   'lib/screen-shell.js',
   'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
