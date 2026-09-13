@@ -25,12 +25,12 @@ import { t } from './i18n.js';
 import { SCAN_HOLD, fromMethodFrame, holdSentence, renameAlg, showMove } from './solving-hold.js';
 import { createHoldCube, holdAtMove, holdChangeAt, walkHoldFor } from './hold-presenter.js';
 import { stepAtMove, whyText } from './method-lesson.js';
-import { declineOffer, nextOffer, recordCleanFollow } from './method-ladder.js';
 import { TARGET_BY_ID } from './stage-targets.js';
 import { targetPicture } from './stage-picture.js';
 import { movesOf } from './cube-pieces.js';
 import { cancel as optimalCancel, capability as optimalCapability } from './optimal.js';
 import { createLiveDistance } from './walk-live-distance.js';
+import { createRungOffer } from './walk-offer.js';
 
 /** Destructuring through this refuses, AT CONSTRUCTION, any name `from` does not provide — so a
  *  service missing from `WALK_APP` fails the mount, not the one rare press that would first call it.
@@ -257,9 +257,7 @@ export function createWalkSession(screen, app) {
   }
 
   function sync(i) {
-    // One move forward is one move followed. Anything else — a seek, a scrub, a reload — moves
-    // the head without the learner having watched what it passed over.
-    if (i === at + 1) followed.add(at);
+    const from = at;
     at = i;
     // The filled chip is the move just shown — the one you are on. At 0 / 22 nothing has been
     // shown, so nothing is filled. It used to mark the NEXT move, and a black first chip before
@@ -276,27 +274,9 @@ export function createWalkSession(screen, app) {
     // A tick beside the count once the last move lands. It used to be a 46px badge over the
     // cube, saying "done" where the count beside it already read 22 / 22.
     $('#doneMark', root).hidden = i < total;
-    // The last move of a LESSON is one clean follow of every stage it contained — and once
-    // per walk, not once per arrival at the end.
-    //
-    // **FOLLOWED, not merely arrived at.** Reaching the last chip was the whole test, and a
-    // chip press seeks straight there: tapping the final chip credited every stage in the
-    // lesson as practised. So did switching Solution → Lesson, which starts a new walk and
-    // reset the once-per-walk guard with the head already at the end. A learner could earn a
-    // rung offer without watching a single move.
-    //
-    // What counts is a move STEPPED THROUGH: the head advancing by exactly one, forwards.
-    // Rewinding to re-watch something is still following — the moves already stepped stay
-    // counted — but a jump credits nothing, because nothing was shown.
-    if (lesson && total > 0 && i >= total && followed.size >= total && creditedWalk !== walkGen) {
-      creditedWalk = walkGen;
-      settings.rungProgress = recordCleanFollow(
-        settings.rungProgress,
-        lesson.sections.map((sec) => sec.id),
-      );
-      noteWrite(save('cubusSettings', settings));
-      showOffer();
-    }
+    // Where the head went, for the rung offer: it counts the moves stepped through, one at a time
+    // and forwards, and credits a lesson followed to its end once per walk (lib/walk-offer.js).
+    offer.onHead(from, i, { lesson, total, walkGen });
     // And, on Scramble, the way onward — labelled for what is actually known at that moment.
     // Gated on the TARGET, not on the count: between beginWalk() and the roll landing, and
     // after a roll that failed, `total` is 0 and `i >= total` is trivially true — so the
@@ -357,77 +337,21 @@ export function createWalkSession(screen, app) {
     setPlaying(false);
     cube.seek(Number(chip.dataset.i) + 1);
   };
-  // ---- offer, never ask ------------------------------------------------------------------
-  //
-  // A lesson followed to its last move is one clean follow of every stage that lesson actually
-  // contained — read off the solve, never assumed, because a cube whose cross was already
-  // solved taught nothing about the cross. Counted once per walk: `sync` fires on every step
-  // and on every seek, and a learner who scrubs back and forth would otherwise be credited
-  // with a dozen solves.
-  let creditedWalk = -1;
-  /** The moves this walk has been stepped through, one at a time and forwards. */
-  const followed = new Set();
-  /**
-   * Whether this learner's progress is actually reaching storage.
-   *
-   * A write can fail — a full quota, a private window with storage off — and `save` warns to
-   * the console, which nobody is reading. Progress that is not persisted means the follows
-   * never accumulate and the offer never comes, and the screen would look exactly like a
-   * learner who had not practised enough. So it is said, in the row that would otherwise be
-   * carrying the offer.
-   */
-  let progressUnsaved = false;
-  const noteWrite = (ok) => { if (!ok) progressUnsaved = true; };
-  const offerRow = $('#rungOffer', root);
-  /** The offer currently ON SCREEN — answered as shown, not recomputed on the way out. */
-  let shownOffer = null;
-  const showOffer = () => {
-    if (!offerRow) return;
-    const msg = $('#rungOfferMsg', root);
-    if (progressUnsaved) {
-      shownOffer = null;
-      offerRow.hidden = false;
-      msg.textContent = t('This device is not saving your progress, so rungs will not be offered.');
-      $('#rungYes', root).hidden = true;
-      $('#rungNot', root).hidden = true;
-      return;
-    }
-    shownOffer = nextOffer(settings.rungs, settings.rungProgress);
-    offerRow.hidden = !shownOffer;
-    if (!shownOffer) return;
-    $('#rungYes', root).hidden = false;
-    $('#rungNot', root).hidden = false;
-    msg.textContent =
-      t('You have followed this a few times. Ready for %1? %2', t(shownOffer.label), t(shownOffer.blurb));
-  };
-  const answerOffer = (yes) => {
-    // The offer the learner was LOOKING AT. Recomputing it here answered whatever `nextOffer`
-    // says now, which is not necessarily what the row said when they pressed the button.
-    const offer = shownOffer;
-    if (!offer) { if (offerRow) offerRow.hidden = true; return; }
-    if (yes) {
-      noteWrite(raiseRung(offer));
-    } else {
-      settings.rungProgress = declineOffer(settings.rungProgress, offer);
-      noteWrite(save('cubusSettings', settings));
-    }
-    shownOffer = null;
-    if (offerRow) offerRow.hidden = true;
-    if (progressUnsaved) showOffer();
-    // **Not when there is nothing left to solve.** The offer arrives at the END of a walk, and
-    // a learner following on a physical cube has by then actually solved it — so `state.cube`
-    // is the solved arrangement. Reloading asked the solver for a walk from solved to solved,
-    // got nothing, and replaced the lesson the learner had just finished with "could not work
-    // it out" — blaming the cube for a question nobody should have asked. The finished walk
-    // stays on screen; the raised rung applies to the next cube, which is the one it is for.
-    // `state.cube.lesson` is cleared above either way, so that next lesson is built at the new
-    // rungs rather than served from a cache made at the old ones.
-    if (yes && walkKind === 'lesson' && state.cube.facelets !== SOLVED) void loadWalk();
-  };
-  if (offerRow) {
-    $('#rungYes', root).onclick = () => answerOffer(true);
-    $('#rungNot', root).onclick = () => answerOffer(false);
-  }
+  // ---- the rung offer: its own unit (lib/walk-offer.js) ---------------------------------------
+  const offer = createRungOffer({
+    root, settings, save, raiseRung,
+    onRaised: () => {
+      // **Not when there is nothing left to solve.** The offer arrives at the END of a walk, and
+      // a learner following on a physical cube has by then actually solved it — so `state.cube`
+      // is the solved arrangement. Reloading asked the solver for a walk from solved to solved,
+      // got nothing, and replaced the lesson the learner had just finished with "could not work
+      // it out" — blaming the cube for a question nobody should have asked. The finished walk
+      // stays on screen; the raised rung applies to the next cube, which is the one it is for.
+      // `state.cube.lesson` is cleared by raising the rung either way, so that next lesson is
+      // built at the new rungs rather than served from a cache made at the old ones.
+      if (walkKind === 'lesson' && state.cube.facelets !== SOLVED) void loadWalk();
+    },
+  });
 
   /** The selected walk, said in both channels — the class for the eye, `aria-pressed` for the
    *  screen reader that cannot see it. */
@@ -742,7 +666,7 @@ export function createWalkSession(screen, app) {
     // a piece on a cube that has just changed is worse than pointing at nothing.
     lesson = null;
     pointAtStep(0);
-    if (offerRow) offerRow.hidden = true;
+    offer.hide();
     const rungLine = $('#rungLine', root);
     if (rungLine) { rungLine.hidden = true; rungLine.textContent = ''; }
     midpoints.clear();
@@ -797,7 +721,7 @@ export function createWalkSession(screen, app) {
     // A new walk has been followed nowhere yet. Without this, switching Solution → Lesson
     // would inherit the moves the previous walk had stepped through and credit the new one on
     // the strength of them.
-    followed.clear();
+    offer.newWalk();
     // Two ways to become obsolete: the screen was replaced (screenGen), or another press
     // started a newer walk on this same screen (walkGen). Both must stop this one writing.
     const fresh = () => !stale() && mine === walkGen;
