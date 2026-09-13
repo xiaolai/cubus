@@ -24,7 +24,7 @@ export const APP_SOURCES = Object.freeze([
   'lib/app.js',
   // lifted out of app.js, 2026-09-13
   'lib/walk-session.js', 'lib/walk-live-distance.js', 'lib/walk-offer.js', 'lib/walk-resolver.js',
-  'lib/walk-follow.js', 'lib/hold-presenter.js',
+  'lib/walk-follow.js', 'lib/walk-presenter.js', 'lib/hold-presenter.js',
   'lib/version.js', 'lib/app-state.js', 'lib/app-settings.js', 'lib/screen-slots.js', 'lib/solver-service.js',
   'lib/cube-subject.js', 'lib/cube-drawing.js', 'lib/wake-lock.js', 'lib/window-chrome.js',
   'lib/cube-memory.js', 'lib/cube-trust-state.js',
