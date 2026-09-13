@@ -26,11 +26,11 @@ import { SCAN_HOLD, fromMethodFrame, holdSentence, renameAlg, showMove } from '.
 import { createHoldCube, holdAtMove, holdChangeAt, walkHoldFor } from './hold-presenter.js';
 import { stepAtMove, whyText } from './method-lesson.js';
 import { declineOffer, nextOffer, recordCleanFollow } from './method-ladder.js';
-import { STAGE_COPY } from './stage-report.js';
 import { TARGET_BY_ID } from './stage-targets.js';
 import { targetPicture } from './stage-picture.js';
 import { movesOf } from './cube-pieces.js';
 import { cancel as optimalCancel, capability as optimalCapability } from './optimal.js';
+import { createLiveDistance } from './walk-live-distance.js';
 
 /** Destructuring through this refuses, AT CONSTRUCTION, any name `from` does not provide — so a
  *  service missing from `WALK_APP` fails the mount, not the one rare press that would first call it.
@@ -576,73 +576,12 @@ export function createWalkSession(screen, app) {
     };
   }
 
-  /**
-   * How far the cube in your hand is from the target, refreshed on every turn.
-   *
-   * FIVE THINGS THE PLAN CORRECTS ABOUT THIS PATH, and each one is a line here (§5):
-   *
-   *   1. It reads `liveModel`, not `state.cube.facelets`. `liveMove` advances the local model
-   *      while the global subject lags until `adoptCube`, so the global would build an answer
-   *      for a cube that no longer exists — the trap `#resolveBtn` already documents.
-   *   2. It is the OFFSET-CORRECTED state by construction, because `liveModel` is seeded from
-   *      `state.live` — the corrected report stream — and never from the raw one. A repair
-   *      computed on the raw report would be labelled for the wrong faces, and would look
-   *      perfectly plausible.
-   *   3. It does NOT go through `refreshScreen()`. That path reaches `loadWalk` → `beginWalk`,
-   *      which clears `moves`, `steps`, `chips`, `total`, `target` and `lesson` and points
-   *      back at step 0 — it would destroy the walk the child is halfway through following.
-   *   4. It has its OWN generation counter. `walkGen` deliberately does not move on a per-turn
-   *      update, so without a second counter a result about cube A lands on cube B.
-   *   5. It writes its own line, never `#moveCount`. That count belongs to the route and
-   *      reports progress against the route's total.
-   *
-   * And the gate is `chainTrusted()`, not `cubeRefused()`: trust is lost in ways that never
-   * set a verdict — `onMovesLost` calls `markStale`, which clears trust with no verdict at all
-   * — and naming the wrong predicate would let a stale cube drive advice.
-   */
-  let liveGen = 0;
-  const liveSay = () => $('#stageLive', root);
-  /**
-   * Stop believing anything still in flight, and take the last number off the screen.
-   *
-   * ONE HELPER, called from every place a live answer stops being about the cube in hand: the
-   * early returns below, a lost move, and trust lapsing. The early returns used to clear the
-   * line WITHOUT moving the generation, so an answer already on its way repainted over the
-   * clearing — and `onTrustLost` did neither. Both reproduced by an audit.
-   */
-  function dropLiveDistance() {
-    liveGen += 1;
-    const el = liveSay();
-    if (el) el.textContent = '';
-  }
-  async function refreshLiveDistance() {
-    const el = liveSay();
-    if (!el) return;
-    const aimingAt = stageTargetNow();
-    if (!aimingAt || !liveModel || !chainTrusted()) { dropLiveDistance(); return; }
-    const mine = ++liveGen;
-    const facelets = liveModel.asString();
-    // AND THE OLD NUMBER GOES NOW, not when the new one arrives. If both requests come back
-    // unavailable neither branch below writes anything, and cube A's "exact 3" stood over cube
-    // B indefinitely — reproduced. A blank line is honest; a stale one is not.
-    el.textContent = '';
-    // The BOUND first, because it is a table read and arrives in one message — §3's split runs
-    // all the way out to here. Then the exact search, for the SELECTED target only: four
-    // searches a turn is not what a per-turn update should cost.
-    const bounds = await stageAsk({ want: 'bounds', facelets });
-    if (mine !== liveGen || !root.isConnected || !chainTrusted()) return;
-    if (bounds?.bounds) {
-      el.textContent = t('your cube now: %1', STAGE_COPY.atLeast(bounds.bounds[aimingAt.id] ?? 0));
-    }
-    const answer = await stageAsk({
-      want: 'route', target: aimingAt.id, facelets, nodeBudget: CHIP_NODE_BUDGET, maxDepth: 12,
-    });
-    if (mine !== liveGen || !root.isConnected || !chainTrusted()) return;
-    if (!answer) return;
-    el.textContent = answer.moves === null
-      ? t('your cube now: %1', STAGE_COPY.unknown())
-      : t('your cube now: %1', STAGE_COPY.shortest(answer.moves));
-  }
+  // How far the cube in your hand is from the target, refreshed on every turn — its own unit, with
+  // its own generation counter (lib/walk-live-distance.js). It reads the follow model when it asks,
+  // so it is handed a function for it rather than the model.
+  const { refresh: refreshLiveDistance, drop: dropLiveDistance } = createLiveDistance({
+    root, stageAsk, chainTrusted, CHIP_NODE_BUDGET, stageTargetNow, modelNow: () => liveModel,
+  });
 
   const liveMove = (m) => {
     if (!liveModel) return; // nothing to track against until a first reading seeds the model
