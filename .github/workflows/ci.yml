@@ -143,6 +143,19 @@ jobs:
           git diff --exit-code -- apps/web/vendor/ \
             || { echo "::error::a vendored bundle is behind its source — rebuild and commit it"; exit 1; }
 
+      # The photo drop's proposal tool (ml/propose.py) runs THIS package's assembly, bundled from
+      # these sources, so its tests run here: where node_modules exist, on every pull request. The
+      # golden job has no Node, and a scanner-only change skips it. Under CI the Node cases fail
+      # rather than skip when node or esbuild is missing.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - name: ml/propose.py — the proposal tool against the scanner's current assembly
+        run: |
+          # The golden harness's pins (ml/requirements-golden.txt). No model is loaded, so no onnxruntime.
+          pip install --quiet numpy==2.3.5 pillow==12.3.0
+          python ml/test_propose.py
+
       # THE FAST TIER'S WEB TESTS: every suite under apps/web/test/ except test/browser/, run by
       # apps/web/run-tests.mjs, which refuses a pattern that matches nothing and a test file that
       # belongs to no tier — so this cannot become a green step that ran nothing.
