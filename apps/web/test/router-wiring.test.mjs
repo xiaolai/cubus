@@ -740,7 +740,7 @@ test('every manifest carries the same version the app displays', async () => {
     'apps/desktop/src-tauri/gen/apple/cubus-desktop_iOS/Info.plist',
     'apps/desktop/src-tauri/gen/apple/project.yml',
     'apps/desktop/src-tauri/gen/apple/project.yml',
-    'apps/desktop/src-tauri/tauri.conf.json', 'apps/web/lib/app.js', 'apps/web/package.json',
+    'apps/desktop/src-tauri/tauri.conf.json', 'apps/web/lib/version.js', 'apps/web/package.json',
   ]);
 });
 

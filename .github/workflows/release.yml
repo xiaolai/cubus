@@ -109,7 +109,7 @@ jobs:
               exit 1 ;;
           esac
           tag="${GITHUB_REF_NAME#v}"
-          app=$(sed -n "s/^export const VERSION = '\(.*\)';$/\1/p" apps/web/lib/app.js)
+          app=$(sed -n "s/^export const VERSION = '\(.*\)';$/\1/p" apps/web/lib/version.js)
           echo "tag=$tag  app=$app"
           if [ "$tag" != "$app" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match VERSION $app — run 'pnpm bump $tag'"
