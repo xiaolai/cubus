@@ -70,14 +70,18 @@ after(async () => { for (const win of windows) await win.happyDOM.close(); });
  * One mounted walking screen with a session on it, and nothing loaded.
  *
  * `make({ state, log })` returns the services a case wants to control; everything else is an inert
- * stand-in. `omit` removes names from the app or the screen, for the construction check.
+ * stand-in. `screen` replaces what the screen hands the session (its composition, or a painter a case
+ * wants to watch). `omit` removes names from the app or the screen, for the construction check.
  */
-function world({ subject = {}, omit = [] } = {}, make = () => ({})) {
+function world({ subject = {}, omit = [], screen: screenOver = {} } = {}, make = () => ({})) {
   const win = new Window();
   windows.push(win);
   const doc = win.document;
   const root = doc.createElement('div');
   root.innerHTML = MARKUP;
+  // IN the document, as a mounted screen is: the session drops a live answer for a root that is no
+  // longer connected, so a detached one would make every such answer look like a screen left behind.
+  doc.body.appendChild(root);
 
   // The renderer, reduced to the calls a walk makes on it. Attributes are the element's own.
   const cube = doc.createElement('div');
@@ -102,6 +106,7 @@ function world({ subject = {}, omit = [] } = {}, make = () => ({})) {
     root, cube, scrambling: false, walking: true, unsolvable: false, label: 'Solution',
     stateHeading: () => 'Initial State', stale: () => false, signal: screenAbort.signal,
     paintNet: () => {}, paintAim: () => {}, syncReconnectAsk: () => {}, applyTempo: () => {},
+    ...screenOver,
   };
   const app = {
     state,
@@ -145,6 +150,10 @@ function world({ subject = {}, omit = [] } = {}, make = () => ({})) {
     session,
     state,
     log,
+    win,
+    cube,
+    /** Tear the screen down, as renderScreen does when it navigates away. */
+    abortScreen: () => screenAbort.abort(),
     $: (sel) => root.querySelector(sel),
     chips: () => [...root.querySelectorAll('.chip-m')].map((chip) => chip.textContent),
   };
@@ -263,4 +272,222 @@ test('the screen\'s teardown calls off the search in flight', async () => {
   assert.ok(opts, 'precondition: a search is in flight');
   w.session.dispose();
   assert.equal(opts.signal.aborted, true, 'leaving the screen left its search burning the pool');
+});
+
+// ---- step 0 of breaking this module up ----------------------------------------------------------------
+//
+// The next change splits the session into units: the follow tracker, the presenter, the rung offer,
+// the live distance and the resolver. Each case below pins an ordering the session keeps today that
+// stage-wiring.test.mjs could check only as the position of a line in the source, or that nothing
+// checked at all, so the split is held to what the screen does rather than to where its lines were.
+// Each fails when the line it guards is removed — checked by removing it.
+
+test('the moment a load starts, the old walk is gone and its prove button disarmed — before any search answers', async () => {
+  let searches = 0;
+  const second = deferred();
+  const w = world({}, ({ state }) => ({
+    deriveCube: async () => {
+      searches += 1;
+      if (searches === 2) await second.promise;
+      solvedBy(state, "R'");
+    },
+  }));
+  assert.equal(await w.session.load(), true);
+  assert.deepEqual(w.chips(), ["R'"], 'precondition: a walk is on screen');
+  // What the previous walk left armed: its prove button, and a heading about its target.
+  const prove = w.$('#proveBtn');
+  prove.hidden = false;
+  prove.disabled = false;
+  prove.onclick = () => {};
+  w.$('.state-h').textContent = 'Aiming at the cross';
+
+  const loading = w.session.load();
+  await settle();
+  assert.equal(searches, 2, 'precondition: the second search is in flight');
+  assert.deepEqual(w.chips(), [], 'the old walk\'s moves stood under the new subject while it was searched');
+  assert.equal(w.$('#moveCount').textContent, 'working…');
+  assert.equal(prove.hidden, true, 'the previous walk\'s prove button stayed on screen through the search');
+  assert.equal(prove.disabled, true, 'and it could still be pressed');
+  assert.equal(prove.onclick, null, 'and a press would still have started a proof of the previous walk');
+  assert.equal(w.$('.state-h').textContent, 'Initial State',
+    'the heading waited for the search instead of describing the new subject at once');
+  second.resolve();
+  assert.equal(await loading, true);
+});
+
+test('a load adopts the turned cube before it paints anything for it', async () => {
+  const R = turned('R');
+  const RU = turned('U', R);
+  const events = [];
+  const w = world({
+    subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' },
+    screen: { paintNet: (f) => { events.push(`net ${f}`); } },
+  }, ({ state }) => ({
+    adoptCube: (f) => { events.push(`adopt ${f}`); state.cube.facelets = f; },
+    deriveCube: async () => { solvedBy(state, state.cube.facelets === R ? "R'" : "U' R'"); },
+  }));
+  w.state.live = R;
+  assert.equal(await w.session.load(), true);
+  assert.equal(w.session.following(), true, 'precondition: the cube leads, so its turns are tracked');
+  w.session.liveMove({ notation: 'U', serial: 1 });
+
+  events.length = 0;
+  assert.equal(await w.session.load(), true);
+  assert.deepEqual(events.slice(0, 2), [`adopt ${RU}`, `net ${RU}`],
+    'the net was painted before the turned cube was adopted');
+});
+
+test('a turn reported while a walk is being searched for survives into the next load', async () => {
+  const R = turned('R');
+  const RU = turned('U', R);
+  const searched = [];
+  let hold = null;
+  const w = world({ subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' } }, ({ state }) => ({
+    deriveCube: async () => {
+      searched.push(state.cube.facelets);
+      const wait = hold;
+      if (wait) await wait.promise;
+      solvedBy(state, state.cube.facelets === R ? "R'" : "U' R'");
+    },
+  }));
+  w.state.live = R;
+  assert.equal(await w.session.load(), true);
+  assert.equal(w.session.following(), true, 'precondition: the cube leads, so the model is seeded');
+
+  hold = deferred();
+  const second = w.session.load();
+  await settle();
+  w.session.liveMove({ notation: 'U', serial: 1 }); // turned while the reply is in flight
+  const release = hold;
+  hold = null;
+  release.resolve();
+  assert.equal(await second, true);
+
+  assert.equal(await w.session.load(), true);
+  assert.equal(searched.at(-1), RU, 'the turn made during the search was thrown away by the walk reset');
+});
+
+test('a stage walk the cube follows shows its live distance at once, asked about the cube in hand', async () => {
+  const R = turned('R');
+  const asked = [];
+  const w = world({ subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' } }, () => ({
+    deriveCube: () => new Promise(() => {}),
+    lastRoute: async () => ({ kind: 'exact', alg: "R'", moves: 1, minimal: true, overshoot: false }),
+    stageAsk: async (q) => { asked.push(q); return q.want === 'bounds' ? { bounds: { cross: 1 } } : { moves: 1 }; },
+  }));
+  w.state.stageTarget = 'cross';
+  w.state.live = R;
+  assert.equal(await within(w.session.load()), true);
+  assert.equal(w.session.following(), true, 'precondition: the walk starts where the cube is');
+  for (let i = 0; i < 5; i += 1) await settle();
+  assert.ok(asked.length > 0, 'a fresh mount asked nothing — the number was requested before the model existed');
+  assert.deepEqual([...new Set(asked.map((q) => q.facelets))], [R],
+    'the live distance was asked about a cube other than the one in hand');
+  assert.match(w.$('#stageLive').textContent, /your cube now/);
+});
+
+test('following is judged again for every walk: refused on one, allowed on the next, refused again', async () => {
+  const R = turned('R');
+  const w = world({ subject: { facelets: R, trusted: true, isPhysical: true, source: 'cube' } }, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "R'"); },
+  }));
+  const follow = w.$('[data-mode="cube"]');
+
+  w.state.live = turned('U'); // the cube reports another arrangement: this walk does not start at it
+  assert.equal(await w.session.load(), true);
+  assert.equal(follow.disabled, true, 'precondition: a walk that does not start where the cube is may not be followed');
+  assert.equal(w.session.following(), false);
+
+  w.state.live = R;
+  assert.equal(await w.session.load(), true);
+  assert.equal(follow.disabled, false, 'a refusal from the previous walk outlived it');
+  assert.equal(w.session.following(), true);
+
+  w.state.cube.trusted = false;
+  w.state.cube.staleWhy = 'it disconnected';
+  assert.equal(await w.session.load(), true);
+  assert.equal(follow.disabled, true);
+  assert.equal(w.session.following(), false, 'the previous walk\'s following carried into one that may not follow');
+  assert.match(follow.title, /Read the cube first — it disconnected/);
+});
+
+test('a roll overtaken by a newer one is parked for later, and only the newer one is put in play', async () => {
+  const rolls = [];
+  const played = [];
+  const parked = [];
+  const w = world({ screen: { scrambling: true } }, () => ({
+    randomScramble: () => { const d = deferred(); rolls.push(d); return d.promise; },
+    putInPlay: (r) => { played.push(r); },
+    parkRoll: (r) => { parked.push(r); },
+  }));
+  const first = w.session.load();
+  await settle();
+  const second = w.session.load();
+  await settle();
+  assert.equal(rolls.length, 2, 'precondition: both loads are rolling');
+
+  const older = { facelets: turned('R U'), alg: 'R U' };
+  const newer = { facelets: turned('F'), alg: 'F' };
+  rolls[1].resolve(newer);
+  assert.equal(await second, true);
+  rolls[0].resolve(older);
+  assert.equal(await first, false);
+  assert.deepEqual(played, [newer], 'the overtaken roll was put in play');
+  assert.deepEqual(parked, [older], 'a roll nobody showed was thrown away instead of kept for the next press');
+});
+
+test('once the screen is torn down, a step event from the parked renderer moves nothing', async () => {
+  const w = world({}, ({ state }) => ({ deriveCube: async () => { solvedBy(state, "R'"); } }));
+  assert.equal(await w.session.load(), true);
+  const step = (index) => w.cube.dispatchEvent(new w.win.CustomEvent('cubus-step', { detail: { index } }));
+  step(1);
+  assert.equal(w.$('#stepLbl').textContent, '1 / 1', 'precondition: the renderer drives the transport');
+  w.abortScreen();
+  step(0);
+  assert.equal(w.$('#stepLbl').textContent, '1 / 1',
+    'the parked renderer, at the next screen, still drove this screen\'s transport');
+});
+
+test('leaving while a repair is still being worked out leaves no unhandled rejection behind', async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(String(reason)); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    // Both searches end as the real ones do when called off: they reject.
+    const rejectOnAbort = (signal, why) => new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(new Error(why)), { once: true });
+    });
+    const w = world({ subject: { facelets: turned('U') } }, () => ({
+      deriveCube: (opts) => rejectOnAbort(opts.signal, 'solve: superseded'),
+      lastRoute: (_target, _from, signal) => rejectOnAbort(signal, 'route: superseded'),
+    }));
+    w.state.stageTarget = 'cross';
+    const loading = w.session.load();
+    await settle();
+    w.session.dispose(); // chose the cross and left at once
+    assert.equal(await loading, false, 'precondition: the load was called off');
+    for (let i = 0; i < 5; i += 1) await settle();
+    assert.deepEqual(unhandled, [], 'the abandoned whole-cube search rejected with nobody listening');
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('a cube the method cannot teach falls back to its solution, and the switch stays there for the next load', async () => {
+  let lessonAsks = 0;
+  const w = world({}, ({ state }) => ({
+    deriveCube: async () => { solvedBy(state, "R'"); },
+    lessonFor: () => { lessonAsks += 1; return null; },
+  }));
+  assert.equal(await w.session.load(), true);
+  const lessonPill = w.$('[data-walk="lesson"]');
+  const solutionPill = w.$('[data-walk="solution"]');
+  lessonPill.click();
+  for (let i = 0; i < 3; i += 1) await settle();
+  assert.equal(lessonAsks, 1, 'precondition: the lesson was asked for');
+  assert.equal(solutionPill.getAttribute('aria-pressed'), 'true', 'the switch still said Lesson over a Solution');
+  assert.equal(lessonPill.getAttribute('aria-pressed'), 'false');
+
+  assert.equal(await w.session.load(), true);
+  assert.equal(lessonAsks, 1, 'the next load asked again for a lesson the switch says is not showing');
 });
