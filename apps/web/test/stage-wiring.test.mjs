@@ -302,8 +302,12 @@ test('every walk reload starts from the cube in hand — BEFORE anything is draw
   // reported turn while the subject waits for a snapshot, so a walk rebuilt after a few turns was
   // about a cube that no longer exists — reproduced: scan `R`, turn `U`, ask for the first layer,
   // and the app offered `R'`, which does not reach it on the `R U` cube.
-  assert.match(code, /if \(!scrambling && liveMoved && liveModel && chainTrusted\(\) && state\.cube\.isPhysical\) \{[\s\S]*?adoptCube\(now, \{ physical: true, source: 'cube' \}\);/,
+  assert.match(code, /const ahead = follow\.aheadOfSnapshot\(\);\s*\n\s*if \(!scrambling && ahead && chainTrusted\(\) && state\.cube\.isPhysical\) \{[\s\S]*?adoptCube\(now, \{ physical: true, source: 'cube' \}\);/,
     'the live model must be adopted, as #resolveBtn already does');
+  // `ahead` is the follow tracker's (lib/walk-follow.js), and it is the tracked-turns flag — never a
+  // comparison with the subject, which is the defect the flag was introduced to end.
+  assert.match(code, /aheadOfSnapshot: \(\) => \(liveMoved && liveModel \? liveModel\.asString\(\) : null\)/,
+    'the model is ahead only when it holds turns no snapshot has confirmed');
   // `liveMoved`, and it is the fact both defects actually needed. Adopting whenever the model
   // merely DIFFERS overwrote a reconnect answer with the previous screen's model — the answer had
   // just established the truth, and the model belonged to the cube before it.
