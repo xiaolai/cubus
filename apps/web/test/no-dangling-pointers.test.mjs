@@ -86,6 +86,9 @@ const SIBLING_ROOTS = [
   'apps/desktop/src-tauri/src',
   'packages/gan-driver/src',
   'packages/cube-scanner',
+  // The renderer, its build and its manifest reader, since 2026-09-14. Without this root every
+  // comment that names one of them dangles — which is how the move was noticed here first.
+  'packages/cubus-cube',
   'scripts',
   'ml',
 ];

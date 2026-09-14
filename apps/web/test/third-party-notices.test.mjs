@@ -47,7 +47,13 @@ const prose = notices.replace(/\s+/g, ' ');
 // vendor-bundles.test.mjs uses, so an entry added there is covered here without being remembered.
 function bundleEntries() {
   const out = [];
-  for (const [pkgJson, base] of [['../package.json', '../'], ['../../../packages/cube-scanner/package.json', '../../../packages/cube-scanner/']]) {
+  for (const [pkgJson, base] of [
+    ['../package.json', '../'],
+    ['../../../packages/cube-scanner/package.json', '../../../packages/cube-scanner/'],
+    // The renderer builds from its own package since 2026-09-14, and three ships inside its
+    // bundle — a list that stopped at two packages stopped seeing three at all.
+    ['../../../packages/cubus-cube/package.json', '../../../packages/cubus-cube/'],
+  ]) {
     for (const cmd of Object.values(JSON.parse(read(pkgJson)).scripts ?? {})) {
       const m = /^esbuild (\S+) .*--outfile=\S*vendor\/([\w.-]+\.js)/.exec(String(cmd));
       if (m) out.push({ entry: `${base}${m[1]}`, bundle: m[2] });

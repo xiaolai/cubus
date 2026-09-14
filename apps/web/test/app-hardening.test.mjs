@@ -174,7 +174,7 @@ test('the stylesheet answers prefers-reduced-motion, and the renderer reads it t
   assert.match(reduced, /transition-duration:\s*\.001ms\s*!important/, 'and the settles with them');
   // The cube's turns are SHORTENED rather than stopped: a solve guide with no turn is a slideshow
   // of positions, and the turn is the thing being taught. That decision lives in the renderer.
-  const cube = readFileSync(new URL('../lib/cubus-cube.js', import.meta.url), 'utf8');
+  const cube = readFileSync(new URL('../../../packages/cubus-cube/src/cubus-cube.js', import.meta.url), 'utf8');
   assert.match(cube, /prefers-reduced-motion/, 'the renderer must ask too');
   assert.match(cube, /Math\.min\(dur,/, 'and shorten the turn rather than removing it');
 });

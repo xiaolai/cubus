@@ -28682,7 +28682,7 @@ var RoundedBoxGeometry = class _RoundedBoxGeometry extends BoxGeometry {
   }
 };
 
-// lib/cube-frame.js
+// ../../apps/web/lib/cube-frame.js
 var NORMALS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 var CUBE_HALF = 1.51;
 var GHOST_HALF = 0.39;
@@ -28752,7 +28752,7 @@ function fitDistanceStable({ points, vfovDeg, aspect: aspect2, margin = 0.06 }) 
   return r * Math.max(Math.sqrt(1 + 1 / (tanV * tanV)), Math.sqrt(1 + 1 / (tanH * tanH)));
 }
 
-// lib/cube-orientation.js
+// ../../apps/web/lib/cube-orientation.js
 var FACE_LETTERS = "URFDLB";
 var NORMAL = Object.freeze({
   U: Object.freeze([0, 1, 0]),
@@ -28834,7 +28834,7 @@ function orientationMatrix(up, front) {
   return Object.freeze([cross2(u, f), Object.freeze([...u]), Object.freeze([...f])]);
 }
 
-// lib/cube-highlight.js
+// ../../apps/web/lib/cube-highlight.js
 var FACE_AXIS = { R: [0, 1], L: [0, -1], U: [1, 1], D: [1, -1], F: [2, 1], B: [2, -1] };
 var KIND = Object.freeze({ centers: 1, edges: 2, corners: 3 });
 function slotVector(letters) {
@@ -28906,14 +28906,14 @@ function resolveHighlight(selectors, cubies) {
   return { indices, empty };
 }
 
-// lib/sticker-palettes.js
+// ../../apps/web/lib/sticker-palettes.js
 var STICKER_PALETTES = Object.freeze({
   muted: Object.freeze({ U: "#E8E3D6", D: "#D8B84A", F: "#4E8C6A", B: "#3C6E9E", R: "#B8503F", L: "#C87A3C" }),
   classic: Object.freeze({ U: "#F4F2EC", D: "#F0C000", F: "#00A651", B: "#0051BA", R: "#C41E3A", L: "#FF6C00" }),
   colorsafe: Object.freeze({ U: "#EFEAE0", D: "#E9C46A", F: "#6A9FB5", B: "#20405C", R: "#D1495B", L: "#8C5E8A" })
 });
 
-// lib/cubus-cube.js
+// src/cubus-cube.js
 var PALETTES = STICKER_PALETTES;
 var SWAPPED = { U: "U", R: "R", F: "F", L: "L", D: "B", B: "D" };
 function paletteFor(name, scheme) {

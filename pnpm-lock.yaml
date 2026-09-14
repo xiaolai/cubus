@@ -41,9 +41,6 @@ importers:
       tauri-plugin-mcp:
         specifier: 0.3.1
         version: 0.3.1
-      three:
-        specifier: ^0.185.1
-        version: 0.185.1
 
   packages/cube-scanner:
     dependencies:
@@ -84,6 +81,16 @@ importers:
       vitest:
         specifier: ^5.0.0
         version: 5.0.0(@types/node@24.13.3)(@vitest/coverage-v8@5.0.0)(happy-dom@20.14.0)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(tsx@4.23.13))
+
+  packages/cubus-cube:
+    dependencies:
+      three:
+        specifier: ^0.185.1
+        version: 0.185.1
+    devDependencies:
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
 
   packages/gan-driver:
     dependencies:

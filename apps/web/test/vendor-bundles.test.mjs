@@ -1,6 +1,6 @@
 // The renderer ships as a bundle, so editing the source is only half of a change.
 //
-// apps/web/lib/cubus-cube.js is bundled to apps/web/vendor/cubus-cube.js by `pnpm build:cube`, and
+// packages/cubus-cube/src/cubus-cube.js is bundled to apps/web/vendor/cubus-cube.js, and
 // the page loads the BUNDLE. Editing the source and forgetting the build fails in the quietest way
 // there is: every test that reads the source passes, the app loads, and the new method is simply
 // not there at runtime. Nothing goes red until someone clicks the button.
@@ -31,11 +31,13 @@ import { fileURLToPath } from 'node:url';
 const BUNDLES = [
   {
     name: 'cubus-cube',
-    build: 'pnpm build:cube',
+    build: 'pnpm --filter cubus-cube build',
     bundle: '../vendor/cubus-cube.js',
+    // The entry is its own package since 2026-09-14; the four it imports are cube DOMAIN and stay
+    // in this app, where browser-loaded modules reach them by relative path.
     sources: [
-      '../lib/cubus-cube.js', '../lib/cube-frame.js', '../lib/cube-highlight.js', '../lib/cube-orientation.js',
-      '../lib/sticker-palettes.js',
+      '../../../packages/cubus-cube/src/cubus-cube.js', '../lib/cube-frame.js',
+      '../lib/cube-highlight.js', '../lib/cube-orientation.js', '../lib/sticker-palettes.js',
     ],
     // The renderer imports three of cube-orientation.js's exports (isFace, orientationMatrix,
     // sameAxis); esbuild drops the rest, and the messages inside them. Same delete-when-used
@@ -196,6 +198,7 @@ test('every repo file a bundle is built from is one its checks read', async () =
   const packages = [
     { dir: new URL('../', import.meta.url), json: '../package.json' },
     { dir: new URL('../../../packages/cube-scanner/', import.meta.url), json: '../../../packages/cube-scanner/package.json' },
+    { dir: new URL('../../../packages/cubus-cube/', import.meta.url), json: '../../../packages/cubus-cube/package.json' },
   ];
   const here = fileURLToPath(new URL('./', import.meta.url));
   const unlisted = [];
@@ -301,7 +304,7 @@ test('the renderer animation floor in the bundle is the one the source sets', ()
   // The floor stops a non-positive tempo producing an Infinite duration, which freezes the cube
   // mid-turn. It also bounds the slowest speed the app can ask for, so a stale bundle here means
   // the app silently animates at the old speed.
-  const src = read('../lib/cubus-cube.js');
+  const src = read('../../../packages/cubus-cube/src/cubus-cube.js');
   const floor = src.match(/Math\.max\((0\.\d+), this\._num\('tempo-scale'/);
   assert.ok(floor, 'tempo floor not found in the source — update this test');
   assert.ok(

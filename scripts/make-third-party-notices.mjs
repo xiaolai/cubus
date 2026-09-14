@@ -40,7 +40,7 @@ const fail = (msg) => { throw new Error(`make-third-party-notices: ${msg}`); };
 // (vendor/tauri-mcp-guest.js) and deliberately absent here: build.mjs excludes that bundle from
 // every dist, so it ships nowhere.
 const NPM = [
-  { name: 'three', dir: 'apps/web/node_modules/three', into: '`vendor/cubus-cube.js` (the cube renderer)' },
+  { name: 'three', dir: 'packages/cubus-cube/node_modules/three', into: '`vendor/cubus-cube.js` (the cube renderer)' },
   { name: 'cubejs', dir: 'apps/web/node_modules/cubejs', into: '`vendor/cubejs.js` (the cube-state model and the solver\'s independent oracle)' },
   {
     name: 'onnxruntime-web',
