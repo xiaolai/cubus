@@ -30075,7 +30075,6 @@ var CubusCube = class _CubusCube extends HTMLElement {
     }
     for (const [c, letters] of carried) c.userData.piece = letters === null ? null : pieceKey(letters);
   }
-  /** Re-read the highlight attribute into selectors, naming a bad token rather than dropping it. */
   /** Which pieces still matter. Same grammar as `highlight`, opposite job: highlight says "look at
    *  this one", focus says "none of the others exist". For a whole stage the second is far stronger
    *  — you cannot glow four pieces and expect the eye to ignore twenty-two.
@@ -30088,17 +30087,29 @@ var CubusCube = class _CubusCube extends HTMLElement {
     if (invalid !== null) console.warn(`<cubus-cube> refusing focus \u2014 invalid selector "${invalid}"`);
     this._fcSels = selectors;
   }
+  /**
+   * What a selector reads off each cubie: the slot it is in and the piece it carries.
+   *
+   * ONE reading for `focus` and `highlight`. They share a grammar, so `slot:UR` must name the same
+   * cubie for both; each used to build this list itself, and two copies of it are two chances to
+   * disagree about which cubie that is.
+   */
+  _selectable() {
+    return this.cubies.map((c) => ({
+      // Rounded because a selector names SLOTS, and mid-turn a cubie is between two of them: it
+      // answers for the one it is nearer rather than for a fractional position nobody can name. At
+      // rest the rounding changes nothing — `_writePose` puts a settled cubie on exact integers.
+      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
+      piece: c.userData.piece ?? null
+    }));
+  }
   /** Grey every sticker and ghost NOT named by `focus`. Called from _paint(), after the colour
    *  loop has written each sticker's true colour — so this is always applied to fresh colours and
    *  never compounds on itself. */
   _applyFocus() {
     const sels = this._fcSels || [];
     if (!sels.length) return;
-    const cubies = this.cubies.map((c) => ({
-      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
-      piece: c.userData.piece ?? null
-    }));
-    const { indices } = resolveHighlight(sels, cubies);
+    const { indices } = resolveHighlight(sels, this._selectable());
     const keep = new Set(indices);
     for (const [i, c] of this.cubies.entries()) {
       if (keep.has(i)) continue;
@@ -30111,6 +30122,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       }
     }
   }
+  /** Re-read the highlight attribute into selectors, naming a bad token rather than dropping it. */
   _readHighlight() {
     const { selectors, invalid } = parseHighlight(this._attrs.highlight);
     if (invalid !== null) console.warn(`<cubus-cube> refusing highlight \u2014 invalid selector "${invalid}"`);
@@ -30133,14 +30145,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._dirty = true;
       return;
     }
-    const cubies = this.cubies.map((c) => ({
-      // Rounded because a selector names SLOTS, and mid-turn a cubie is between two of them: it
-      // answers for the one it is nearer rather than for a fractional position nobody can name. At
-      // rest the rounding changes nothing — `_writePose` puts a settled cubie on exact integers.
-      pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
-      piece: c.userData.piece ?? null
-    }));
-    const { indices, empty } = resolveHighlight(sels, cubies);
+    const { indices, empty } = resolveHighlight(sels, this._selectable());
     if (empty.length) {
       console.warn(`<cubus-cube> highlight matched nothing for ${empty.join(", ")} \u2014 this cube has no known identity for it (unread stickers?)`);
     }

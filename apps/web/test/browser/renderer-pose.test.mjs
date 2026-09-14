@@ -173,6 +173,31 @@ test('reset puts the cubies home before it paints, so focus names the cube in fr
     + 'before the turn — it did not, so focus resolved against the geometry of the turned cube');
 });
 
+// `focus` and `highlight` share a grammar, so on the same cube at the same moment one selector names
+// the same cubies for both. Each built its own reading of the cubies until 2026-09-14; this is the
+// case that notices two readings drifting apart. Set on a settled cube with no turn in between,
+// because focus latching across a turn is a separate, deliberate difference (see above).
+test('focus and highlight name the same cubies for the same selectors', async () => {
+  await build({ scramble: "R U F' L2 D B'" });
+  const named = await page.evaluate(async () => {
+    const el = window.__cube;
+    const spec = 'slot:UR,piece:UF,slot:DFR';
+    el.setAttribute('highlight', spec);
+    el.setAttribute('focus', spec);
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    const lit = [...el._hlSet].map((c) => el.cubies.indexOf(c)).sort((a, b) => a - b);
+    // Out of focus is exactly grey: every palette colour has a hue, so r = g = b only when greyed.
+    const grey = (m) => Math.abs(m.material.color.r - m.material.color.g) < 1e-9
+      && Math.abs(m.material.color.g - m.material.color.b) < 1e-9;
+    const kept = el.cubies.flatMap((c, i) => (c.children.some((m) => m.userData?.face && !grey(m)) ? [i] : []));
+    return { lit, kept, total: el.cubies.length };
+  });
+  // Three DISTINCT cubies, so no selector is covered by another: were `piece:UF` sitting in UR, or a
+  // kind like `edges` in the list, a reading that lost the piece identity would light the same set.
+  assert.equal(named.lit.length, 3, `precondition: three selectors name three cubies (${named.lit})`);
+  assert.deepEqual(named.kept, named.lit, 'focus kept different cubies from the ones highlight lit');
+});
+
 // And where it actually bit: the parser. An alg naming something every object has must be refused
 // whole, as any other bad token is — not played, and not thrown on the first frame.
 test('an alg naming what every object inherits is refused, not played', async () => {
