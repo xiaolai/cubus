@@ -32,7 +32,11 @@ const PALETTES = STICKER_PALETTES;
  */
 const SWAPPED = { U: 'U', R: 'R', F: 'F', L: 'L', D: 'B', B: 'D' };
 function paletteFor(name, scheme) {
-  const base = PALETTES[name] || PALETTES.muted;
+  // hasOwn: `palette` is whatever an author wrote, and `PALETTES.toString` is a function — which
+  // skipped the fallback and painted every sticker `undefined`, leaving the old colours standing
+  // (found by audit, 2026-09-14). The third time this class of lookup has turned up in this
+  // package's reach, after the move parser and lib/cube-highlight.js.
+  const base = Object.hasOwn(PALETTES, name) ? PALETTES[name] : PALETTES.muted;
   if (scheme !== 'japanese') return base;
   const out = {};
   for (const position of Object.keys(base)) out[position] = base[SWAPPED[position]];
@@ -49,13 +53,15 @@ function paletteFor(name, scheme) {
 // unread face still reads as absent rather than as another sticker colour.
 const UNKNOWN_STICKER = '#C4BFB4';
 
+// Each face's letter and outward normal — what the sticker meshes are built from. Axis and sign
+// used to sit here too, for the move parser; the parser takes its moves from pose.js now.
 const FACES = [
-  { key:'R', axis:'x', sign: 1, n:[ 1, 0, 0] },
-  { key:'L', axis:'x', sign:-1, n:[-1, 0, 0] },
-  { key:'U', axis:'y', sign: 1, n:[ 0, 1, 0] },
-  { key:'D', axis:'y', sign:-1, n:[ 0,-1, 0] },
-  { key:'F', axis:'z', sign: 1, n:[ 0, 0, 1] },
-  { key:'B', axis:'z', sign:-1, n:[ 0, 0,-1] },
+  { key:'R', n:[ 1, 0, 0] },
+  { key:'L', n:[-1, 0, 0] },
+  { key:'U', n:[ 0, 1, 0] },
+  { key:'D', n:[ 0,-1, 0] },
+  { key:'F', n:[ 0, 0, 1] },
+  { key:'B', n:[ 0, 0,-1] },
 ];
 // Facelet index for a sticker at cubie (x,y,z) on face `key`, in URFDLB order.
 const FACELET_INDEX = {
@@ -67,7 +73,10 @@ const FACELET_INDEX = {
   B: (x, y, z) => 45 + (1 - y) * 3 + (1 - x),
 };
 const EASE = (t) => (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2);
-const AXES = { x: new THREE.Vector3(1,0,0), y: new THREE.Vector3(0,1,0), z: new THREE.Vector3(0,0,1) };
+/** The autorotate axis — the one axis this file still turns anything about itself. */
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+/** Autorotate's rate: the 0.0035 rad a frame it used to add, at the 60 Hz it was tuned on. */
+const SPIN_PER_MS = 0.0035 * 60 / 1000;
 /** The identity frame handed to `poseAll`. How the cube is HELD stays where it has always been —
  *  on the root group, which also carries the autorotate spin and interpolates `turnTo`. The pose
  *  module's own frame argument is for a caller that has no scene graph to put it on. */
@@ -431,7 +440,11 @@ class CubusCube extends HTMLElement {
         if (!a) a = { m: this._queue.shift() };
         this._completeMove(a);
       }
-      if (!this._visible) return;
+      // Off screen the loop keeps running but draws nothing, so autorotate's reference time is let
+      // go HERE as well as when the loop stops: kept, the first frame back added the whole hidden
+      // stretch at once — a cube scrolled away for a minute leapt 12.6 rad on its return (found by
+      // verification, 2026-09-14).
+      if (!this._visible) { this._spinAt = null; return; }
       // The drain above completes moves without calling _next(), which breaks the pull chain
       // step() and the completion handler otherwise maintain: queued moves — and a playing
       // walk — would sit forever with nothing in flight. Re-arm it.
@@ -475,7 +488,19 @@ class CubusCube extends HTMLElement {
         if (k >= 1) { this._setTurn(t.to, t.to, 1); this._settleTurn(true); }
         this._dirty = true;
       }
-      if (this._attrs.autorotate != null) { this._spin += 0.0035; this._applyRoot(); }
+      // By ELAPSED TIME, on the element's own clock. A fixed step a frame turned the cube twice as
+      // fast on a 120 Hz display, and kept turning under a pinned clock — which is the one
+      // instrument meant to make a frame reproducible (found by audit, 2026-09-14). `_spinAt` is
+      // cleared whenever the loop stops, so resuming continues from where it was rather than
+      // leaping by however long the cube was off screen.
+      if (this._attrs.autorotate != null) {
+        const now = this._now();
+        if (this._spinAt != null) this._spin += (now - this._spinAt) * SPIN_PER_MS;
+        this._spinAt = now;
+        this._applyRoot();
+      } else {
+        this._spinAt = null;
+      }
       const moving = this.controls.update();
       if (moving) this._placeLights();
       if (moving || this._dirty) { this._draw(); this._dirty = false; }
@@ -500,6 +525,7 @@ class CubusCube extends HTMLElement {
   /** Stop drawing, keeping everything needed to start again. */
   _stop() {
     this._running = false;
+    this._spinAt = null;
     cancelAnimationFrame(this._raf);
     this._ro?.disconnect();
     this._io?.disconnect();
@@ -753,7 +779,7 @@ class CubusCube extends HTMLElement {
       // the other way it would spin about the cube's own axis, which for a cube held on its side
       // is a different motion entirely.
       const s = (this._qs ||= new THREE.Quaternion());
-      s.setFromAxisAngle(AXES.y, this._spin);
+      s.setFromAxisAngle(Y_AXIS, this._spin);
       q.premultiply(s);
     }
     this.root.quaternion.copy(q);
