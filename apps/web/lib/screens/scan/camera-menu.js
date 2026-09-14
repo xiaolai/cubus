@@ -7,11 +7,13 @@
 // paint the row from a scan report, close its menu, and say whether the menu is open; it asks the
 // screen whether painting is on, to stop painting when a camera is chosen, and to close every
 // popover first. Lifted out of lib/screens/scan.js on 2026-09-13; pinned by the camera cases in
-// test/scan-screen.test.mjs.
+// test/scan-screen.test.mjs. The menu itself — its opening and closing, placing, focus, arrow keys
+// and ticks — is lib/menu-popover.js, which the cube screen's speed menu is built on too.
 
 import { $ } from '../../app-state.js';
 import { save, settings } from '../../app-settings.js';
 import { t } from '../../i18n.js';
+import { createMenu } from '../../menu-popover.js';
 import { placeMenuUnder } from '../../screen-shell.js';
 
 /**
@@ -35,77 +37,137 @@ export function createCameraMenu({ root, panel, signal, closePops, isPainting, s
   pin(settings.cameraId);
   // The webcam button IS the camera menu: one control in the corner rather than a button and a
   // dropdown competing for the same space. Its lens fills and pulses while a camera is open,
-  // so a screen that shows no picture still says plainly whether one is running. The menu also
-  // carries the scan action, which would otherwise have nowhere left to live.
-  const menu = document.createElement('div');
-  menu.className = 'menu';
-  menu.hidden = true;
-  // A menu, said as one: without a role it is a div of buttons, and a screen reader gives no
-  // hint that Escape closes it or that its items belong together.
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', t('Camera and scan'));
-  root.appendChild(menu);
+  // so a screen that shows no picture still says plainly whether one is running. The menu holds
+  // the cameras and nothing else; starting the scan over has its own button beside it.
+  // A press on the button closes every popover first, and asks for the cameras again as it opens.
+  const popover = createMenu({
+    root, button: camBtn, label: t('Camera and scan'), signal, place: placeMenuUnder,
+    closeFirst: closePops, beforeOpen: () => { void fillCams(); },
+  });
+  const menu = popover.el;
   let camOn = false;
   let camsKey = null;
+  /** The device the scanner last reported running, or null while none is. */
+  let shownDevice = null;
   const choose = (id) => {
     settings.cameraId = id; save('cubusSettings', settings);
     pin(id);
     closePops();
+    // The menu that just closed held the focus. It goes back to the control it came from, where
+    // Escape puts it; closing left it inside a hidden list (found by audit, 2026-09-13).
+    camBtn.focus();
     // Picking a camera is asking to scan, so it leaves painting; otherwise the camera would
     // open under a mode that exists to keep it shut.
     if (isPainting()) stopPainting();
-    else void panel.start?.();
+    // A camera that will not open is the scanner's to say, on scan-progress. Its refused promise
+    // is caught here, rather than left to become an unhandled rejection on top of that.
+    else void Promise.resolve(panel.start?.()).catch((err) => console.warn('the chosen camera did not open', err));
+  };
+  const cameraButton = (value, label) => {
+    // Device labels come from the OS — set as text, never interpolated into HTML.
+    const b = popover.radio(label, () => choose(value));
+    b.dataset.value = value;
+    return b;
   };
   const markActive = () => {
-    const items = [...menu.querySelectorAll('[data-value]')];
-    // A pinned camera that is no longer attached is not what will be used — the panel falls
-    // back to the platform default — so mark THAT rather than ticking nothing and leaving the
-    // menu mute about which camera is in force.
-    const active = items.some((b) => b.dataset.value === settings.cameraId) ? settings.cameraId : '';
-    for (const b of items) {
-      const now = b.dataset.value === active;
-      b.classList.toggle('now', now);
-      b.setAttribute('aria-checked', String(now)); // the tick is the look; this is the fact
+    const cams = [...menu.querySelectorAll('[data-value]')];
+    const listed = (id) => cams.some((b) => b.dataset.value === id);
+    // WHICH CAMERA ANSWERED, not only which was asked for: a listed camera can refuse to open and
+    // the scanner run another, and a tick on a camera that is not running is wrong about the one
+    // fact this menu exists to tell (found by audit, 2026-09-13). With none answering, a pin to a
+    // camera no longer attached is not what will be used either — the panel falls back to the
+    // platform default — so THAT is marked, rather than nothing.
+    const active = shownDevice !== null && listed(shownDevice)
+      ? shownDevice
+      : (listed(settings.cameraId) ? settings.cameraId : '');
+    popover.mark((b) => b.dataset.value === active);
+  };
+  /** Said IN the menu, where the cameras should be: the list could not be read, and a retry. */
+  const sayListFailed = () => {
+    // With nothing found yet, the platform's default is still a choice there is to make.
+    if (!menu.querySelector('[data-value]')) menu.appendChild(cameraButton('', t('Default camera')));
+    if (!menu.querySelector('[data-retry]')) {
+      const retry = document.createElement('button');
+      retry.type = 'button'; retry.dataset.retry = '';
+      retry.setAttribute('role', 'menuitem');
+      retry.textContent = t('Could not list the cameras — try again');
+      retry.onclick = () => { void fillCams(); };
+      menu.appendChild(retry);
+    }
+    markActive();
+  };
+  /**
+   * Put `buttons` in the menu in this order, and never by moving the one holding the focus: a moved
+   * button loses the focus. Putting each in place in turn moved whichever one a reordered list
+   * reached out of place first, the focused one included, and the focus fell out of the menu (found
+   * by verification, 2026-09-14). The others are put around it instead.
+   */
+  const arrange = (buttons) => {
+    const held = buttons.indexOf(document.activeElement);
+    // Back from the focused button, or from the end: each goes directly before the one after it.
+    let next = held < 0 ? null : buttons[held];
+    for (let i = (held < 0 ? buttons.length : held) - 1; i >= 0; i -= 1) {
+      const b = buttons[i];
+      if (b.parentNode !== menu || b.nextElementSibling !== next) menu.insertBefore(b, next);
+      next = b;
+    }
+    // On from it: each goes directly after the one before it.
+    for (let i = held + 1; held >= 0 && i < buttons.length; i += 1) {
+      const prev = buttons[i - 1];
+      if (prev.nextElementSibling !== buttons[i]) menu.insertBefore(buttons[i], prev.nextElementSibling);
     }
   };
+  /** Which list the menu is still waiting for: a device change, an open and a report each ask. */
+  let camsGen = 0;
   const fillCams = async () => {
+    const mine = ++camsGen;
     let list = [];
-    try { list = (await panel.cameras?.()) ?? []; } catch { list = []; }
-    const key = list.map((d) => d.deviceId).join('|');
+    let failed = null;
+    try { list = (await panel.cameras?.()) ?? []; } catch (err) { failed = err; }
+    // An answer that is not the newest, or one that lands after the screen went, is about a menu
+    // nobody is looking at. The older of two, landing last, replaced the newer list and cached
+    // its key (found by audit, 2026-09-13).
+    if (mine !== camsGen || signal?.aborted) return;
+    if (failed) {
+      // A REFUSAL IS NOT AN EMPTY LIST. Read as one, it blanked the cameras already found down to
+      // "Default camera" and hid why (found by audit, 2026-09-13).
+      console.warn('the camera list could not be read', failed);
+      // The menu now holds more than the list its key names, so the next list read is drawn
+      // whatever it holds: an unchanged list matched the key, and the failure stayed standing
+      // (found by verification, 2026-09-14).
+      camsKey = null;
+      sayListFailed();
+      return;
+    }
+    // Ids AND labels: a label is readable only once permission is granted, so the same ids coming
+    // back named is exactly the change paintCameraRow's refresh exists to draw.
+    const key = list.map((d) => `${d.deviceId}\u0000${d.label}`).join('|');
     if (key === camsKey) { markActive(); return; }
     camsKey = key;
-    menu.textContent = '';
-    // Device labels come from the OS — set as text, never interpolated into HTML.
-    const add = (value, label) => {
-      const b = document.createElement('button');
-      b.type = 'button'; b.dataset.value = value; b.textContent = label;
-      b.setAttribute('role', 'menuitemradio');
-      b.onclick = () => choose(value);
-      menu.appendChild(b);
-    };
-    add('', 'Default camera');
-    for (const d of list) add(d.deviceId, d.label);
+    // RECONCILED, NOT REBUILT. A camera still listed keeps its button, so a list that changes while
+    // the menu is open no longer takes the keyboard's focus with it (found by audit, 2026-09-13).
+    const want = [['', t('Default camera')], ...list.map((d) => [d.deviceId, d.label])];
+    const keep = new Set(want.map(([value]) => value));
+    let lostFocus = false;
+    for (const b of [...menu.querySelectorAll('[data-value], [data-retry]')]) {
+      if (b.dataset.retry === undefined && keep.has(b.dataset.value)) continue;
+      if (b === document.activeElement) lostFocus = true;
+      b.remove();
+    }
+    const have = new Map([...menu.querySelectorAll('[data-value]')].map((b) => [b.dataset.value, b]));
+    arrange(want.map(([value, label]) => {
+      const b = have.get(value) ?? cameraButton(value, label);
+      if (b.textContent !== label) b.textContent = label;
+      return b;
+    }));
     markActive();
+    if (lostFocus) popover.focusIn();
   };
   void fillCams();
   // Cameras come and go — a webcam is plugged in, an iPhone wanders out of Continuity range —
   // and the menu is built once, so without this a newly attached camera would never appear.
   const onDevices = () => { void fillCams(); };
   navigator.mediaDevices?.addEventListener?.('devicechange', onDevices, { signal });
-  let shownDevice = null;
-
-  camBtn.onclick = (ev) => {
-    const open = menu.hidden;
-    closePops();
-    if (!open) return;
-    void fillCams();
-    menu.hidden = false;
-    placeMenuUnder(camBtn, menu);
-    // Focus goes IN. A popover that opens behind the focus ring is one a keyboard cannot
-    // reach without tabbing through everything after the button that opened it.
-    (menu.querySelector('.now') ?? menu.firstElementChild)?.focus();
-    ev.stopPropagation();
-  };
 
   /** The camera row: which device is on, and what it is called. Cameras come and go, and the
    *  menu is built once — so a device answering for the first time is also the moment its
@@ -114,24 +176,26 @@ export function createCameraMenu({ root, panel, signal, closePops, isPainting, s
   const paintCameraRow = (p) => {
     camOn = Boolean(p.device);
     camRow.classList.toggle('on', camOn);
-    camBtn.title = camOn ? `${p.device.label} — camera and scan` : 'Camera off — click to turn it on';
+    // Through t(), in placeholder form: the device's name comes from the OS and is never part of
+    // the sentence (these two bypassed the catalog; found by audit, 2026-09-13).
+    camBtn.title = camOn ? t('%1 — camera and scan', p.device.label) : t('Camera off — click to turn it on');
     camBtn.setAttribute('aria-label', camBtn.title);
     // Labels are only readable once permission is granted, so the list is worth rebuilding the
-    // first time a camera actually answers.
-    if (p.device && p.device.deviceId !== shownDevice) {
-      shownDevice = p.device.deviceId;
-      void fillCams();
+    // first time a camera actually answers; with none answering, the tick goes back to the pin.
+    const running = p.device?.deviceId ?? null;
+    if (running !== shownDevice) {
+      shownDevice = running;
+      if (running) void fillCams();
+      else markActive();
     }
   };
 
   /** Close the menu: the screen's closePops calls this beside its other popovers. */
-  const closeMenu = () => { menu.hidden = true; };
+  const closeMenu = () => { popover.close(); };
   /** Whether the menu is open, so Escape knows to hand focus back to the button that opened it. */
-  const menuOpen = () => !menu.hidden;
+  const menuOpen = () => popover.isOpen();
   /** A press anywhere but the menu, or the button that toggles it, closes it. */
-  const closeMenuUnless = (target) => {
-    if (!menu.hidden && !menu.contains(target) && target !== camBtn) menu.hidden = true;
-  };
+  const closeMenuUnless = (target) => { popover.closeUnless(target); };
   /** Focus back on the webcam button, the control the menu came from. */
   const focusButton = () => { camBtn.focus(); };
   /** Painting and the camera are exclusive, and the row shows which one is in charge. */
