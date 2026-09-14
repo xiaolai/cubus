@@ -185,6 +185,37 @@ test('a press carries its target home — unless the scan was refused, or the ro
   assert.equal(r.state.stageTarget, 'two-layers', 'and neither refused press moved the target');
 });
 
+test('a row told its cube has changed takes itself away, and one about the cube in hand stays', async () => {
+  const r = rig();
+  void r.chips.paintStageChips('A');
+  r.replies[0].resolve(null); // no pool: a finished row of dashes, with nothing left to reply
+  await settle();
+  r.chips.dropIfStale();
+  assert.equal(r.card.hidden, false, 'a row about the cube in hand was taken away');
+  r.state.cube.facelets = 'A turned';
+  r.chips.dropIfStale();
+  assert.equal(r.card.hidden, true, 'a finished row outlived the cube it was about');
+});
+
+test("a target's name reaches its caption, its tooltip and its chip in the reader's language", async () => {
+  const { registerLocale, setLocale } = await import('../lib/i18n.js');
+  registerLocale('qa-chip', { cross: '«cross»', 'Take this cube back to the %1': '«back to %1»' });
+  setLocale('qa-chip');
+  try {
+    const r = rig();
+    void r.chips.paintStageChips('A');
+    const chip = r.root.querySelector('[data-target="cross"]');
+    assert.equal(chip.querySelector('.who').textContent, '«cross»', 'the caption kept the English name');
+    assert.equal(chip.getAttribute('title'), '«back to «cross»»', 'the tooltip translated around an English name');
+    r.replies[0].resolve({ bounds: BOUNDS });
+    await settle();
+    assert.match(chip.getAttribute('aria-label'), /^«cross»:/, "the chip's accessible name kept the English name");
+    assert.equal(chip.dataset.target, 'cross', 'the id is a key, and stays untranslated');
+  } finally {
+    setLocale('en');
+  }
+});
+
 test("the press goes with the screen's signal", () => {
   const r = rig();
   void r.chips.paintStageChips('A');
