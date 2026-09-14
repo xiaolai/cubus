@@ -53,6 +53,7 @@ export {
 export {
   type Detection,
   decodeDetections,
+  dropNested,
   type FaceFit,
   type FitReason,
   type FitResult,

@@ -182,9 +182,11 @@ def read_output(output) -> tuple[str, list[cube_infer.Detection] | None, str, in
 
     Returns `fit_photo`'s three answers and `beyond_grid`'s count (0 when nothing fitted). Decoding
     lower changes nothing the app's fit sees: NMS keeps boxes in falling confidence, so a box under
-    0.25 never suppresses one above it, and `fit_grid` drops everything under 0.25 before it looks.
+    0.25 never suppresses one above it; `drop_nested` is floored at the app's threshold, so a faint
+    box never removes one the app keeps; and `fit_grid` drops everything under 0.25 before it looks.
     """
-    dets = cube_infer.nms(cube_infer.decode(output, conf_threshold=TOLERANT_FLOORS[-1]))
+    dets = cube_infer.drop_nested(cube_infer.nms(cube_infer.decode(output, conf_threshold=TOLERANT_FLOORS[-1])),
+                                  floor=cube_infer.APP_MIN_CONFIDENCE)
     verdict, grid, fit = fit_photo(dets)
     return verdict, grid, fit, (beyond_grid(grid, dets) if grid is not None else 0)
 

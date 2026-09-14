@@ -87,7 +87,7 @@ def margins(out: np.ndarray, read: cube_infer.FaceRead) -> float:
     """The smallest (best − runner-up) class score over the nine fitted stickers."""
     if read.verdict != "OK":
         return 0.0
-    dets = cube_infer.nms(cube_infer.decode(out))
+    dets = cube_infer.drop_nested(cube_infer.nms(cube_infer.decode(out)))
     good = sorted((d for d in dets if d.confidence >= 0.25), key=lambda d: -(d.w * d.h))[:9]
     o = out[0]
     best = 1.0
@@ -109,7 +109,8 @@ def robust_refusal(out: np.ndarray) -> bool:
     Re-running the app's decode → NMS → fitFace at each threshold stands in for the score drift a
     quantised or fp16 leg introduces.
     """
-    return all(cube_infer.fit_face(cube_infer.nms(cube_infer.decode(out[0], th)), th).verdict != "OK" for th in ABSTAIN_THRESHOLDS)
+    return all(cube_infer.fit_face(cube_infer.drop_nested(cube_infer.nms(cube_infer.decode(out[0], th))), th).verdict != "OK"
+               for th in ABSTAIN_THRESHOLDS)
 
 
 def to_fixture(rgb: np.ndarray, shape: str) -> np.ndarray:

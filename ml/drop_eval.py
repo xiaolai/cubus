@@ -249,7 +249,8 @@ def main(argv: list[str] | None = None) -> int:
         tensor = cube_infer.letterbox(rgb)[None]
         height, width = rgb.shape[:2]
         for name, (session, inp) in sessions.items():
-            _, grid = cube_infer.fit_grid(cube_infer.nms(cube_infer.decode(session.run(None, {inp: tensor})[0])))
+            detections = cube_infer.drop_nested(cube_infer.nms(cube_infer.decode(session.run(None, {inp: tensor})[0])))
+            _, grid = cube_infer.fit_grid(detections)
             yield name, grid, [propose.upright_box(d, width, height) for d in grid or []]
 
     scores: list[PhotoScore] = []

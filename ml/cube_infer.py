@@ -148,6 +148,37 @@ def nms(dets: list[Detection], iou_threshold: float = 0.45) -> list[Detection]:
     return kept
 
 
+# `dropNested` in packages/cube-scanner/src/onnx-postprocess.ts, where the measurement that set these
+# is written. Both implementations answer the shared cases in
+# packages/cube-scanner/tests/fixtures/nested-detections.json, and test_pipeline.py reads them here.
+NESTED_INSIDE = 0.7
+NESTED_MAX_AREA_RATIO = 4.0
+APP_MIN_CONFIDENCE = 0.25  # MIN_STICKER_CONFIDENCE: the lowest box the app ever decodes
+
+
+def drop_nested(dets: list[Detection], floor: float = 0.0) -> list[Detection]:
+    """Every box not nested in a larger box of similar scale, in the order given. Mirrors `dropNested`.
+
+    `floor` is for callers that decode below the app's threshold (propose.py's tolerant fit reads down
+    to 0.10): only a box the app itself would have decoded may remove another, so a faint large box can
+    never take away a sticker the app keeps. Every box the app decodes is above it, so the app's own
+    chain passes nothing.
+    """
+
+    def overlap(a: Detection, b: Detection) -> float:
+        iw = max(0.0, min(a.cx + a.w / 2, b.cx + b.w / 2) - max(a.cx - a.w / 2, b.cx - b.w / 2))
+        ih = max(0.0, min(a.cy + a.h / 2, b.cy + b.h / 2) - max(a.cy - a.h / 2, b.cy - b.h / 2))
+        return iw * ih
+
+    kept = []
+    for d in dets:
+        area = d.w * d.h
+        if not any(o is not d and o.confidence >= floor and o.w * o.h > area and o.w * o.h <= NESTED_MAX_AREA_RATIO * area
+                   and overlap(d, o) >= NESTED_INSIDE * area for o in dets):
+            kept.append(d)
+    return kept
+
+
 # The three bounds `toGrid` in packages/cube-scanner/src/onnx-postprocess.ts applies, with the
 # same values and in the same order. That file carries the derivation; the short version is that
 # every one was measured over all 20 fixtures in ml/golden/frames/ and set high enough that no
@@ -212,8 +243,8 @@ def fit_face(dets: list[Detection], min_conf: float = 0.25) -> FaceRead:
 
 
 def read_face(output: np.ndarray) -> FaceRead:
-    """The whole post-processing chain on one raw output tensor: decode → NMS → fit."""
-    return fit_face(nms(decode(output)))
+    """The whole post-processing chain on one raw output tensor: decode → NMS → drop nested → fit."""
+    return fit_face(drop_nested(nms(decode(output))))
 
 
 def load_rgb(path: str) -> np.ndarray:
