@@ -48,7 +48,8 @@ export const APP_SOURCES = Object.freeze([
   'lib/screens/settings/smart-cube.js', 'lib/screens/settings/window-orientation.js',
   'lib/screens/settings/preferences.js',
   // the Timer's own parts, 2026-09-14
-  ]);
+  'lib/screens/timer/scramble-request.js',
+]);
 
 /** Every other module under lib/: the engines, drivers, pure helpers, workers and bundle entries
  *  the app USES but that are not its own screens or services. They answer to their own tests, not

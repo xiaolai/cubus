@@ -17,11 +17,9 @@ export let Cube = null, solverReady = false;
 /** States whose minimum is already PROVED, by facelets. Empty until the solver loads, and empty
  *  forever if the library did not validate — both of which a lookup answers with a miss. */
 export let challenges = NO_CHALLENGES;
-const invMove = (m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : m + "'");
-/** An alg undone: the same turns, backwards, each reversed. The ONE place that rule is written.
- *  It is an involution on every move form (R->R'->R, R2->R2, R'->R->R'), which is what lets the
- *  same function turn a solution into a setup alg and a setup alg back into a solution. */
-export const invertAlg = (a) => (String(a).trim() ? String(a).trim().split(/\s+/).reverse().map(invMove).join(' ') : '');
+/** An alg undone: `invert` in lib/cube-pieces.js, the one place that rule is written, under the
+ *  name the solve path has always used for it. */
+export { invert as invertAlg } from './cube-pieces.js';
 
 // Single-flight: boot and an async screen mount both call this, and two callers racing on `Cube`
 // would each import and each publish. The in-flight promise is shared; a failure clears it so a
@@ -113,14 +111,19 @@ export const solverWorker = () => (solveClient ??= (() => {
   // blocking the page with a sixth of the budget each — strictly worse than one searching every
   // view, and the pool's stop cannot help because nothing runs concurrently to be stopped.
   const threaded = typeof Worker === 'function';
-  if (!isolated || !threaded || SOLVER_WORKERS < 2) return createSolveClient({ spawn: spawnSolveWorker });
+  // A fresh word per solve, not one for the client's lifetime: overlapping solves would
+  // otherwise publish each other's depths into the same channel.
+  const newWord = () => new Int32Array(new SharedArrayBuffer(4));
+  // ONE WORKER CALLS A REPAIR OFF TOO, where the page can share memory. The pool was the only
+  // thing that made a repair's word, so with too few cores for a pool a superseded repair ran out
+  // its budget on the one worker there is (found by audit, 2026-09-13). A page that cannot share
+  // memory has nowhere to put a word, and its repairs still cannot be called off.
+  if (!isolated || !threaded || SOLVER_WORKERS < 2) return createSolveClient({ spawn: spawnSolveWorker, makeShared: isolated ? newWord : null });
   return createParallelSolveClient({
     spawn: spawnSolveWorker,
     workers: SOLVER_WORKERS,
     viewCount: VIEW_COUNT,
-    // A fresh word per solve, not one for the client's lifetime: overlapping solves would
-    // otherwise publish each other's depths into the same channel.
-    makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
+    makeShared: newWord,
     // Build once and publish (2026-09-05, dev-docs/deferred-plans-2026-09-05.md §2). Every worker
     // used to build the engine's eleven tables itself — 9.82 MiB and 0.4-2.6 s each — so a cold
     // session paid six builds and then carried six identical copies. One worker builds into a
@@ -176,6 +179,7 @@ export async function stageAsk(payload) {
  */
 export const CHIP_NODE_BUDGET = 400_000;
 
+/** True while a warm-up is running and once one has worked; a failure lifts it again. */
 let solverWarmed = false;
 /**
  * Build the pool's pruning tables before a user is waiting on them.
@@ -208,13 +212,20 @@ export function warmSolver() {
   warmCrossTable();
   if (solverWarmed) return;
   solverWarmed = true;
+  // A warm-up that FAILED is not a warm pool, so the guard is lifted and the next screen that warms
+  // tries again, rather than leaving the build to the first solve somebody waits on.
+  const tryAgainLater = (err) => {
+    solverWarmed = false;
+    console.warn('solver warm-up failed; the next screen that warms will try again', err);
+  };
   try {
     void solverWorker()
       .solve(SOLVED, { solLen: LOOSEST_BOUND, probeMax: 1000 * VIEW_COUNT })
-      .catch(() => {});
-  } catch {
-    // A client that cannot even be constructed is the real solve's problem to report, loudly,
-    // where a user is actually waiting. Warming must never be the thing that breaks a screen.
+      .catch(tryAgainLater);
+  } catch (err) {
+    // A client that cannot even be constructed is the real solve's problem to report, where a user
+    // is actually waiting. Warming must never be the thing that breaks a screen.
+    tryAgainLater(err);
   }
 }
 
@@ -252,7 +263,8 @@ function warmCrossTable() {
     void Promise.resolve()
       .then(() => warmCross())
       .catch((err) => {
-        console.warn('cross table warm-up failed; the first lesson will build it', err);
+        crossTableWarmed = false; // lifted, as the pool's is: a later screen tries again
+        console.warn('cross table warm-up failed; a later screen or the first lesson will build it', err);
       });
   }, 0);
 }

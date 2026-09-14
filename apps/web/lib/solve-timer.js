@@ -65,8 +65,10 @@
 //
 // Pure: no DOM, no storage, no globals, no timers.
 
+import { SOLVED_FACELETS } from './solved.js';
+
 /** The solved cube in Kociemba facelet order — the arrangement that stops the clock. */
-export const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+export const SOLVED = SOLVED_FACELETS;
 
 /** Longest solve this will report. Past an hour the cube was put down, not solved. */
 const MAX_SOLVE_MS = 60 * 60 * 1000;

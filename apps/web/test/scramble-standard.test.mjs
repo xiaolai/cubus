@@ -71,7 +71,7 @@ test('a scramble is never rolled by cubejs, whose bound is 22', () => {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/[^\n]*$/gm, '')
     .replace(/([^:'"`])\/\/[^\n]*/g, '$1');
-  const roll = blockAt(code, 'async function rollScramble()');
+  const roll = blockAt(code, 'export async function rollScramble(');
   assert.ok(roll, 'rollScramble is gone or is no longer async');
   assert.doesNotMatch(roll, /\br\.solve\(|cube\.solve\(/,
     'rolling must not call cubejs\'s search — its default maxDepth is 22, and asking it for 20 '

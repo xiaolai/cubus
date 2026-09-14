@@ -14,8 +14,6 @@ import { $, state } from './app-state.js';
 import { settings } from './app-settings.js';
 import { Cube } from './solver-service.js';
 
-// How the four rungs read on the Settings screen. A rung with no label here would render as
-// "undefined", so solve-tier-wiring.test.mjs checks every TIERS entry has one.
 /** How long a proof may run before it has to account for itself.
  *
  *  Proof cost tracks DEPTH, not the incumbent: a cube a few turns from solved proves in
@@ -66,6 +64,49 @@ const provenMinimumLabel = (moves) => `${moves} — proved the minimum`;
  *  from a cleanup that must still release ITS OWN timers and listeners whatever the answer is. */
 let proofRun = 0;
 
+/** Every proof the native prover finished, by the arrangement it is about. A proof is a fact about
+ *  the CUBE, so showing any proved cube again must neither drop the sentence nor offer hours of
+ *  search for an answer already held. Only the last one was kept, so proving a second cube lost the
+ *  first (verification, 2026-09-14). */
+const nativeProofs = new Map();
+
+/** Whether the tables a proof needs are ready — building them first when they are not, with the
+ *  percentage the build reports on the button. False when the walk went while it waited. */
+async function tablesReady({ proveBtn, fresh, signal }) {
+  let readiness = await optimalStatus();
+  if (!fresh()) return false;
+  if (readiness === 'ready') return true;
+  proveBtn.textContent = 'preparing…';
+  let unlisten = null;
+  const letGo = () => { const off = unlisten; unlisten = null; off?.(); };
+  // Let go the moment the walk is gone, not when the native side next answers: generation is
+  // minutes, and the heartbeat outlived its walk for all of them (verification, 2026-09-14).
+  signal?.addEventListener('abort', letGo, { once: true });
+  try {
+    try {
+      unlisten = await window.__TAURI__?.event?.listen?.('optimal-progress', (ev) => {
+        const p = ev?.payload;
+        if (fresh() && p?.total) proveBtn.textContent = `${p.stage} ${Math.round((p.done / p.total) * 100)}%`;
+      });
+    } catch (err) {
+      console.warn('optimal: no progress events; preparation will look quiet', err);
+    }
+    if (!fresh()) return false;
+    await optimalPrepare();
+    for (;;) {
+      if (!fresh()) return false;
+      readiness = await optimalStatus();
+      if (!fresh()) return false;
+      if (readiness === 'ready') return true;
+      if (readiness !== 'preparing') throw new Error(`optimal: preparation ended ${readiness}, not ready`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  } finally {
+    signal?.removeEventListener('abort', letGo);
+    letGo();
+  }
+}
+
 /**
  * Run one native minimality proof, from the press to the state it leaves the button in.
  *
@@ -73,20 +114,21 @@ let proofRun = 0;
  * a walk load: two waits with different shapes, an optional table generation with a percentage, a
  * readiness poll, two event subscriptions, a stop, and exactly one cleanup path. Everything it
  * needs is an argument, and `fresh()` is the one thing that ties it back to the screen — the walk
- * it was wired for must still be the walk on show, or it writes nothing at all.
+ * it was wired for must still be the walk on show, or it writes nothing at all. `signal` is that
+ * walk's abort, which is when what it listens to is let go.
  *
  * `sayProved` comes IN rather than being written here; the reason is at the line that passes it.
  *
  * @param {{proveBtn: HTMLElement, cancelBtn: HTMLElement|null, startFacelets: string,
- *          shown: number, fresh: () => boolean, sayProved: (proof: object) => void}} o
+ *          shown: number, fresh: () => boolean, signal: AbortSignal|undefined,
+ *          sayProved: (proof: object) => void}} o
  */
-async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sayProved }) {
+async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, signal, sayProved }) {
   // Two waits with different shapes, and they must not be dressed the same. Table
   // GENERATION is known-slow and has a denominator, so it announces itself and shows
   // a percentage. The PROOF has neither: it is milliseconds on a shallow cube and
   // hours on a deep one, and no fraction of it is knowable — so it stays silent until
   // it has actually taken time, and then reports the only honest number it has.
-  let unlisten = null;
   let unlistenProof = null;
   let ticking = null;
   let reveal = null;
@@ -131,47 +173,21 @@ async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sayP
     if (cancelBtn) { cancelBtn.hidden = true; cancelBtn.onclick = null; }
   };
 
+  const letGoContours = () => { const off = unlistenProof; unlistenProof = null; off?.(); };
   proveBtn.disabled = true;
+  // Let go of the contours the moment the walk is gone. Leaving calls the proof off, but a stop the
+  // native side does not take leaves it running for hours (verification, 2026-09-14).
+  signal?.addEventListener('abort', letGoContours, { once: true });
   try {
     // Ask before announcing. Preparation is minutes, so a run that needs it says so at
     // once; a run that does not must never flash the word at a person for whom it is
     // already done.
-    let readiness = await optimalStatus();
-    if (!fresh()) return;
-    if (readiness !== 'ready') {
-      proveBtn.textContent = 'preparing…';
-      try {
-        unlisten = await window.__TAURI__?.event?.listen?.('optimal-progress', (ev) => {
-          const p = ev?.payload;
-          if (fresh() && p?.total) proveBtn.textContent = `${p.stage} ${Math.round((p.done / p.total) * 100)}%`;
-        });
-      } catch (err) {
-        // Preparation still works without the heartbeat — but a silent subscribe
-        // failure would make minutes of generation look like a hang, so say it once.
-        console.warn('optimal: no progress events; preparation will look quiet', err);
-      }
-      if (!fresh()) return; // the listen await is an await like any other
-      // prepare() answers "preparing" when another call started the generation — the
-      // readiness contract is polling status to "ready", not trusting the first resolve.
-      await optimalPrepare();
-      if (!fresh()) return; // left during generation — the finally still frees the listener
-      for (;;) {
-        readiness = await optimalStatus();
-        if (!fresh()) return; // walked away during generation — start no proof at all
-        if (readiness === 'ready') break;
-        if (readiness !== 'preparing') {
-          // 'cold' here means the generation this call was waiting on DIED in another
-          // call — polling a corpse forever was the bug this loop once had.
-          throw new Error(`optimal: preparation ended ${readiness}, not ready`);
-        }
-        await new Promise((r) => setTimeout(r, 500));
-      }
-    }
+    if (!(await tablesReady({ proveBtn, fresh, signal }))) return;
 
     try {
       unlistenProof = await window.__TAURI__?.event?.listen?.('optimal-proof-progress', (ev) => {
         const depth = ev?.payload?.ruled_out;
-        if (!fresh() || !Number.isInteger(depth)) return;
+        if (!fresh() || ev?.payload?.proof !== myRun || !Number.isInteger(depth)) return;
         ruledOut = depth;
         if (ticking) paintWait(); // only once the wait is on screen; before that, nothing to repaint
       });
@@ -186,11 +202,16 @@ async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sayP
       cancelBtn.onclick = () => {
         cancelBtn.disabled = true;
         cancelBtn.textContent = 'stopping…';
-        void optimalCancel().catch((err) => console.warn('optimal cancel failed', err));
+        void optimalCancel().catch((err) => {
+          console.warn('optimal cancel failed', err);
+          if (!owns() || !fresh()) return;
+          cancelBtn.disabled = false;
+          cancelBtn.textContent = 'stop — try again';
+        });
       };
     }
     reveal = setTimeout(showWaiting, PROOF_WAIT_VISIBLE_MS);
-    const proof = await optimalProve(startFacelets, { Cube, upperBound: shown });
+    const proof = await optimalProve(startFacelets, { Cube, upperBound: shown, proof: myRun });
     if (!fresh()) return; // the finally below is the ONE cleanup path
 
     // The sentence is the CALLER's to write, and it is written inside the capability-gated
@@ -211,8 +232,8 @@ async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sayP
     else console.error('optimal proof failed', err);
   } finally {
     endWaiting();
-    unlisten?.();
-    unlistenProof?.();
+    signal?.removeEventListener('abort', letGoContours);
+    letGoContours();
   }
 }
 
@@ -227,9 +248,9 @@ async function runProof({ proveBtn, cancelBtn, startFacelets, shown, fresh, sayP
  * where the app says what may be claimed about it.
  *
  * `stageTargetNow` is the session's reader, passed rather than its answer, so the route's sentence
- * asks at the moment it always did.
+ * asks at the moment it always did. `signal` is the walk's abort, handed to a proof pressed for it.
  */
-export function sayWalkLength({ root, setStatus, scrambling, route, stageTargetNow, lesson, total, steps, fresh }) {
+export function sayWalkLength({ root, setStatus, scrambling, route, stageTargetNow, lesson, total, steps, fresh, signal }) {
   // Just the number, unless the search fell short of the tier — and then a sentence about
   // the SEARCH, never about the cube. This used to read "18 was not possible here", which
   // two-phase has no way to know: it cannot prove a minimum, so it cannot prove one absent
@@ -281,19 +302,17 @@ export function sayWalkLength({ root, setStatus, scrambling, route, stageTargetN
   // arrangement eligible for hours of search again the moment the learner switched to
   // Lesson, where the sentence is not shown.
   // `settings.proveMinimum`: off by default. Proving is minutes to hours on a typical cube
-  // (optimal-solver-plan.md), so the affordance is not something to put in front of a
-  // beginner who did not ask for it — it is opt-in from Settings, where the row explains
-  // the cost. Everything else about the gate is unchanged: the commands must be injected,
-  // a desktop must be behind them, and a state the library already proved has nothing left
-  // to ask for.
+  // (optimal-solver-plan.md), so the OFFER is not something to put in front of a beginner who
+  // did not ask for it — it is opt-in from Settings, where the row explains the cost. It gates
+  // the offer and nothing else: a proof already held is a fact about the cube, and turning the
+  // offer off unsaid one (found by verification, 2026-09-14). Everything else about the gate is
+  // unchanged: the commands must be injected, a desktop must be behind them, and a state the
+  // library already proved has nothing left to ask for.
   const proveBtn = $('#proveBtn', root);
   // `!route`: the native prover proves a WHOLE CUBE minimal. A repair is a route into a set of
   // millions of cubes, so there is nothing here for it to be asked about, and offering it
   // would put a whole-cube claim under a stage-route count.
-  if (proveBtn && optimalCapability() && !scrambling && !proved && settings.proveMinimum && !route) {
-    proveBtn.hidden = false;
-    proveBtn.disabled = false;
-    proveBtn.textContent = PROVE_COPY.button;
+  if (proveBtn && optimalCapability() && !scrambling && !proved && !route) {
     // The pair being proved is the WALK's, captured at wiring: steps[0] IS the start
     // state this walk displays and total IS its length. Reading state.cube at click
     // time would race live ingestion (a snapshot can swap the subject or zero the move
@@ -305,16 +324,30 @@ export function sayWalkLength({ root, setStatus, scrambling, route, stageTargetN
     // The press hands off to the controller: the proof's lifecycle is its own, and a walk
     // load is not the place to keep one. What stays here is the pair being proved and the
     // SENTENCE, which may only be said from a region the wording invariant sanctions.
+    const sayProved = (proof) => {
+      const saved = proof.tablesPersisted ? '' : ' · tables not saved';
+      setStatus((proof.moves === shown
+        ? `${shown} — proved the minimum`
+        : `${shown} shown — the minimum is ${proof.moves}, proved`) + saved);
+    };
+    const held = nativeProofs.get(startFacelets);
+    if (held && held.moves <= shown) {
+      proveBtn.hidden = true;
+      if (!lesson) sayProved(held);
+      return;
+    }
+    if (!settings.proveMinimum) {
+      proveBtn.hidden = true;
+      return;
+    }
+    proveBtn.hidden = false;
+    proveBtn.disabled = false;
+    proveBtn.textContent = PROVE_COPY.button;
     proveBtn.onclick = () => void runProof({
-      proveBtn, cancelBtn, startFacelets, shown, fresh,
-      // The sentence this seam exists for — and the honest split when the shown solution
-      // is longer than the proved minimum. A failed table save rides along: the proof
-      // stands, the next launch regenerates, and nobody wonders why.
+      proveBtn, cancelBtn, startFacelets, shown, fresh, signal,
       sayProved: (proof) => {
-        const saved = proof.tablesPersisted ? '' : ' · tables not saved';
-        setStatus((proof.moves === shown
-          ? `${shown} — proved the minimum`
-          : `${shown} shown — the minimum is ${proof.moves}, proved`) + saved);
+        nativeProofs.set(startFacelets, proof);
+        sayProved(proof);
       },
     // The controller reports every failure a proof can have; this catches the one thing it
     // cannot — itself — rather than leaving a press to end in an unhandled rejection.
