@@ -37,7 +37,9 @@ export function createRungOffer({ root, settings, save, raiseRung, onRaised }) {
    * carrying the offer.
    */
   let progressUnsaved = false;
-  const noteWrite = (ok) => { if (!ok) progressUnsaved = true; };
+  // The LATEST write decides: one that lands saves the whole settings object, the progress an
+  // earlier failure kept only in memory included, so a device that recovered is saving again.
+  const noteWrite = (ok) => { progressUnsaved = !ok; };
   const offerRow = root.querySelector('#rungOffer');
   /** The offer currently ON SCREEN — answered as shown, not recomputed on the way out. */
   let shownOffer = null;
@@ -98,10 +100,12 @@ export function createRungOffer({ root, settings, save, raiseRung, onRaised }) {
    *
    * What counts is a move STEPPED THROUGH: the head advancing by exactly one, forwards. Rewinding to
    * re-watch something is still following — the moves already stepped stay counted — but a jump
-   * credits nothing, because nothing was shown.
+   * credits nothing, because nothing was shown. A jump of ONE is still a jump: pressing chips in
+   * order moves the head one move at a time with no turn animated. So the presenter says which it
+   * was, and a head move it did not say was shown (`jumped === false`) credits nothing.
    */
-  function onHead(from, to, { lesson, total, walkGen }) {
-    if (to === from + 1) followed.add(from);
+  function onHead(from, to, { lesson, total, walkGen, jumped }) {
+    if (jumped === false && to === from + 1) followed.add(from);
     if (lesson && total > 0 && to >= total && followed.size >= total && creditedWalk !== walkGen) {
       creditedWalk = walkGen;
       settings.rungProgress = recordCleanFollow(
@@ -118,7 +122,9 @@ export function createRungOffer({ root, settings, save, raiseRung, onRaised }) {
     /** A new walk has been followed nowhere yet: without this, switching Solution → Lesson would
      *  inherit the moves the previous walk had stepped through and credit the new one on them. */
     newWalk: () => { followed.clear(); },
-    /** The walk the row was about is being replaced. */
-    hide: () => { if (offerRow) offerRow.hidden = true; },
+    /** The walk the row was about is being replaced. Its offer goes with it; the warning that this
+     *  device is not saving stays, because it is about the device and a new walk does not change
+     *  it. */
+    hide: () => { if (offerRow && !progressUnsaved) offerRow.hidden = true; },
   });
 }

@@ -8,6 +8,7 @@
 // convention and for the surfaces still to be converted.
 import { plural, t } from './i18n.js';
 import { isScheme, paletteFor } from './scheme.js';
+import { STICKER_PALETTES } from './sticker-palettes.js';
 
 import { $, SOLVED, state } from './app-state.js';
 import { DEFAULT_PALETTE, save, settings } from './app-settings.js';
@@ -17,9 +18,9 @@ import { classifyCube } from './cube-subject.js';
 //
 // ONE renderer is kept alive across screen renders. Building a <cubus-cube> costs a WebGL
 // context, ~150 meshes and a shader compile — 21-24ms measured in WebKit — and renderScreen()
-// throws the whole screen away every time, including on renders that are not navigations at all:
-// pressing Random re-enters the screen it is already on. Rebuilding the renderer to show the
-// same kind of picture is the largest remaining cost of that.
+// throws the whole screen away on every navigation, and on every subject change a screen cannot
+// take in place (`refreshScreen`). Rebuilding the renderer to show the same kind of picture is
+// the largest remaining cost of that.
 //
 // At most one is ever held, so the page never carries more than one idle GL context — and a cube
 // that is neither re-attached nor parked releases itself rather than sitting on one (see
@@ -61,8 +62,15 @@ function reuseCube() {
 /** What the 3D cube is SHOWING, in words. A canvas is nothing to a screen reader — the element
  *  had no role and no name at all, so the largest thing on most screens was silent. The label
  *  names the state rather than the picture, because the state is the information. */
-function cubeLabelWords() {
-  const c = state.cube;
+function cubeLabelWords(c) {
+  // A cube still being read says how much of it has been: the scan twin was "A solved cube" over
+  // a scan's first side (found by audit, 2026-09-13). A side is read once its centre is.
+  if (c.facelets.includes('?')) {
+    const read = [0, 1, 2, 3, 4, 5].filter((side) => c.facelets[side * 9 + 4] !== '?').length;
+    return read
+      ? plural(read, { one: 'A cube being read — %1 side so far', other: 'A cube being read — %1 sides so far' })
+      : t('A cube not read yet');
+  }
   if (c.facelets === SOLVED) return t('A solved cube');
   const who = c.isPhysical ? t('Your cube') : t('A scrambled cube');
   return c.moves.length
@@ -70,23 +78,32 @@ function cubeLabelWords() {
     : who;
 }
 
-export function newCube({ animate = false } = {}) {
-  const el = reuseCube();
+/** Say which cube `el` shows — wherever a renderer is handed a subject, not only where one is
+ *  built: a subject taken in place kept the words of the cube it replaced (found by audit,
+ *  2026-09-13). */
+export function describeCube(el, subject = state.cube) {
   // A drawing, with a description. `role="img"` is what makes the label be READ rather than the
   // element being walked into as a container of nothing.
   el.setAttribute('role', 'img');
-  el.setAttribute('aria-label', cubeLabelWords());
+  el.setAttribute('aria-label', cubeLabelWords(subject));
+}
+
+export function newCube({ animate = false, subject = state.cube } = {}) {
+  const el = reuseCube();
+  describeCube(el, subject);
   // The stored key IS the renderer's attribute value — validated at load, so there is nothing
   // left to map. There used to be a PALETTE_ATTR identity map here, which read as a translation
   // between two vocabularies that have always been the same one.
   el.setAttribute('palette', settings.palette);
-  // …and the arrangement that palette is read in: the scan's verdict for this cube, else what
-  // the app assumes. Without it a Japanese cube is solved correctly and drawn wrong.
-  el.setAttribute('scheme', drawScheme());
+  // …and the arrangement that palette is read in: the app's one belief, which a decisive scan
+  // updates (adoptScheme) and the net is painted in too, so the two drawings cannot disagree. No
+  // cube carries a scheme of its own (colour-scheme-switch.md §7.3 is not built). Without it a
+  // Japanese cube is solved correctly and drawn wrong.
+  el.setAttribute('scheme', settings.scheme);
   // Off by default: every cube in the app is set up at a chosen angle (the ghost faces depend on
   // it), and a stray drag on a touch screen or a trackpad swung it away with no way back.
   el.setAttribute('orbit', settings.dragRotate ? 'free' : 'locked');
-  const c = state.cube;
+  const c = subject;
   // A walk is animated only when the alg it would animate is KNOWN — which now means the pool has
   // answered and `reaches()` has agreed the alg builds this very cube (takeSetupAlg). The setup
   // alg used to be a Kociemba search this call could force on the UI thread, so "walking" and
@@ -123,13 +140,8 @@ export function buildNet(root) {
     for (let i = 0; i < 54; i++) cells[i].className = `sticker ${facelets[i] === '?' ? 'free' : facelets[i]}`;
   };
 }
-// Net sticker colours track the selected palette (puzzle data lives in cubus-cube's PALETTES; we
-// mirror the muted set here for the flat net).
-export const NET_COLORS = {
-  muted: { U: '#E8E3D6', D: '#D8B84A', F: '#4E8C6A', B: '#3C6E9E', R: '#B8503F', L: '#C87A3C' },
-  classic: { U: '#F4F2EC', D: '#F0C000', F: '#00A651', B: '#0051BA', R: '#C41E3A', L: '#FF6C00' },
-  colorsafe: { U: '#EFEAE0', D: '#E9C46A', F: '#6A9FB5', B: '#20405C', R: '#D1495B', L: '#8C5E8A' },
-};
+// Net sticker colours track the selected palette: the renderer's own table, not a copy of it.
+export const NET_COLORS = STICKER_PALETTES;
 /**
  * The net's colours for the cube being SHOWN — the palette remapped for its arrangement.
  *
@@ -142,13 +154,7 @@ export function netPalette(scheme = settings.scheme) {
 }
 
 /**
- * The arrangement to DRAW a cube in: the one a scan established for it, else what the app
- * assumes. `'undetermined'` is a verdict about the colours, not a scheme — the state is known and
- * which colour sits under white is not — so it falls back to the assumption, and the scan screen
- * says so in words rather than silently picking (ADR 0001 §8.3).
- */
-/**
- * Take a scan's verdict as the app's belief, and say so when it changes something.
+ * Take a scan's verdict as the app's belief, and return whether that changed anything.
  *
  * A DECISIVE scan is the only evidence there is about a cube's colours, so it outranks whatever
  * the app assumed and is remembered for the next one (`schemeSource: 'scan'`). The source is
@@ -170,10 +176,6 @@ export function adoptScheme(scheme) {
   // belongs to the screen the user is looking at — the same rule that keeps "press Solve this
   // cube" out of the scanner package. Returns true when the belief actually moved.
   return changed;
-}
-
-function drawScheme(cube = state.cube) {
-  return isScheme(cube?.scheme) ? cube.scheme : settings.scheme;
 }
 
 export function applyNetColors() {

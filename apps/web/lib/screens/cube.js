@@ -2,16 +2,19 @@
 //
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
-import { fromCube } from '../cube-pieces.js';
 import { CUBE_VIEW } from '../cube-view.js';
 import { solveByMethod } from '../method-solver.js';
 import { t } from '../i18n.js';
 import { OFFERED_TARGETS } from '../stage-targets.js';
-import { METHOD_FRAME, METHOD_TO_SCAN, renameAlg, toMethodFrame } from '../solving-hold.js';
 // Everything one cube screen's walk owns, from the load to the smart cube following it — the screen
 // keeps its composition and hands the walk the parts of it the walk writes to.
 import { createWalkSession } from '../walk-session.js';
-import { routesToTarget } from '../stage-route.js';
+// The route race into a stage target — one of this screen's own parts, built below.
+import { createRouteRace } from './cube/route-race.js';
+// The rest of its own parts: the speed menu, the die and the reconnect question.
+import { createSpeedMenu } from './cube/speed-menu.js';
+import { createDie } from './cube/die.js';
+import { createReconnectAsk } from './cube/reconnect-ask.js';
 // The BUDGET only. `stage-distance.js` builds nothing at import — its tables are lazy — but this
 // thread must never call its search: §8 is not negotiable and a table build of a few hundred
 // milliseconds is exactly the 723 ms block that was removed from `loadSolver`. The search runs on
@@ -23,15 +26,14 @@ import { load, save, settings } from '../app-settings.js';
 import { hooks } from '../screen-slots.js';
 import { CHIP_NODE_BUDGET, Cube, loadSolver, solverReady, stageAsk, warmSolver } from '../solver-service.js';
 import { classifyCube, deriveCube, lessonFor, raiseRung, stepStates } from '../cube-subject.js';
-import { applyNetColors, buildNet, newCube } from '../cube-drawing.js';
+import { applyNetColors, buildNet, describeCube, newCube } from '../cube-drawing.js';
 import { keepAwake } from '../wake-lock.js';
 import { adoptCube } from '../cube-connection.js';
 import { wireReconnectAnswers } from '../reconnect-answer.js';
 import { chainTrusted, markStale } from '../cube-trust-state.js';
-import { whenWords } from '../cube-memory.js';
 import { parkRoll, putInPlay, randomScramble, schedulePreroll } from '../scramble-roll.js';
 import { PROVE_COPY, sayWalkLength } from '../prove-affordance.js';
-import { SCREENS, go, placeMenuUnder, refreshScreen, screenAbort, screenGen } from '../screen-shell.js';
+import { SCREENS, go, refreshScreen, screenAbort, screenGen } from '../screen-shell.js';
 
 // The cube screen: where a sequence of moves gets FOLLOWED, and where a cube gets looked at.
 //
@@ -51,15 +53,8 @@ import { SCREENS, go, placeMenuUnder, refreshScreen, screenAbort, screenGen } fr
 // A new reading updates this screen IN PLACE (see liveUpdate): a full re-render on every
 // quarter turn would restart an animation the user is halfway through following.
 
-/** The three walking speeds, as renderer tempo-scale values. The renderer divides a 190ms base by
- * this, so a LARGER number is faster. None of them is quick: Fast is 0.95s per quarter turn, still
- * slower than the 760ms that used to be the only speed and was the complaint that prompted this. */
-const SPEEDS = [
-  { id: 'slow', label: 'Slow', tempo: 0.05 },     // 3.8s per quarter turn
-  { id: 'normal', label: 'Normal', tempo: 0.1 },  // 1.9s
-  { id: 'fast', label: 'Fast', tempo: 0.2 },      // 0.95s
-];
-const DEFAULT_SPEED = 'normal';
+/** Scramble's subject before its roll lands: solved, which is where a scramble starts. */
+const SCRAMBLE_START = Object.freeze({ facelets: SOLVED, isPhysical: false, moves: [] });
 
 /**
  * Why there turned out to be no walk.
@@ -83,70 +78,14 @@ const WALK_FAILURES = {
 };
 
 /**
- * The best route into `target`, from the three sources of §4.
+ * The best route into a stage target: the race of §4, in lib/screens/cube/route-race.js.
  *
- * Every source is injected rather than reached for, which is what lets the race be tested
- * without a worker: `lib/stage-route.js` knows nothing about this app. What it does know is
- * that a route is replayed before it is yielded, so nothing that fails the target's own
- * predicate can come back from here.
- *
- * The generator's intermediate yields are dropped on the floor — this returns the LAST one.
- * A screen that painted each in turn would show a fallback for a few hundred milliseconds
- * and then replace it, which is the "working…" flicker the repository already removed once;
- * the chips on Restore are where a bound-then-answer sequence belongs, because there the
- * first number arrives instantly and the second is an upgrade rather than a correction.
+ * Built here, beside the one budget the app may import from the stage engine. `cubejs` is a
+ * function because `loadSolver` assigns `Cube` long after this module has loaded.
  */
-async function lastRoute(target, facelets, signal, wholeDone) {
-  // THE RACE RUNS IN THE METHOD FRAME, and only its answer leaves it (ADR 0003). All three
-  // sources and the replay must agree about which cross is "the cross": the replay checks the
-  // target's predicate on THIS cubie, so a source answering in the scan frame would be judged
-  // against the white cross while having aimed at the yellow one.
-  const cubie = fromCube(Cube.fromString(toMethodFrame(facelets)));
-  let last = null;
-  const deps = {
-    exact: async () => {
-      if (signal?.aborted) return null;
-      const reply = await stageAsk({
-        want: 'route', target: target.id, facelets, nodeBudget: STAGE_NODE_BUDGET, maxDepth: 12,
-      });
-      return reply?.moves === null || !reply ? null : { alg: reply.alg, moves: reply.moves };
-    },
-    // AWAITED, not read. The whole-cube search is running beside this one rather than in
-    // front of it, so the pool source is "whatever that search produces, when it produces
-    // it" — which is exactly a third racer. Reading `state.cube.solution` synchronously made
-    // this source empty whenever it was asked first, which after the reordering is always.
-    pool: async () => {
-      await wholeDone;
-      // The whole-cube solution is a scan-frame walk; the prefix scan runs on the method
-      // frame's cubie, so it is renamed first. A throw here is absorbed by the race.
-      return state.cube.solution ? renameAlg(state.cube.solution, METHOD_FRAME) : null;
-    },
-    /**
-     * The method route — SCHEDULED, not called inline, and the yield is the point.
-     *
-     * `solveByMethod` is synchronous and unbounded: 0.45 to 24 ms measured, median 6.6.
-     * Called straight from the race it runs before anything awaits, so it blocked this
-     * thread between the exact request being built and it being sent — the one source that
-     * leaves the machine, delayed by the one that cannot. A macrotask first puts it behind
-     * the worker message and the pool's already-known answer, which costs it a tick and
-     * costs the other two nothing.
-     *
-     * §4 keeps it in the race even so, and the measurement is why it is worth saying: over
-     * the 156 corpus states where the fallback actually fires it was shorter in ZERO of
-     * them. It is not here to win; it is here because the pool source is
-     * `state.cube.solution`, and when that search failed there is nothing else.
-     */
-    method: async () => {
-      await new Promise((resolve) => { setTimeout(resolve, 0); });
-      return solveByMethod(cubie).alg;
-    },
-  };
-  for await (const found of routesToTarget(target, cubie, deps)) last = found;
-  // Back to the scan frame, where the walk, the renderer and `follow` live. Same moves, same
-  // count, same claim — only the names change, so `minimal` and `overshoot` carry over as-is.
-  if (!last || last.alg === null) return last;
-  return Object.freeze({ ...last, alg: renameAlg(last.alg, METHOD_TO_SCAN) });
-}
+const lastRoute = createRouteRace({
+  state, cubejs: () => Cube, stageAsk, solveByMethod, STAGE_NODE_BUDGET,
+});
 
 /** Everything a cube screen's walk session reaches for that the APP owns — listed here, once.
  *
@@ -159,7 +98,7 @@ const WALK_APP = Object.freeze({
   solverReady: () => solverReady,
   loadSolver, randomScramble, deriveCube, classifyCube, adoptCube, chainTrusted, markStale,
   lessonFor, stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung,
-  escHtml, icon, lastRoute, sayWalkLength,
+  escHtml, icon, lastRoute, sayWalkLength, describeCube,
 });
 
 /** Solve and Scramble are the same screen walked from opposite ends.
@@ -200,55 +139,16 @@ const cubeScreen = (screenMode) => {
   const unsolvable = !scrambling && state.cube.unsolvable;
   const label = scrambling ? 'Scramble' : 'Solution';
   const walked = scrambling ? 'scramble' : 'solution';
-  // The open reconnect question, on the solve side only — Scramble's subject is always the
-  // generated walk. The unconfirmed DRESS (the twin's heading) is worn only while the subject IS
-  // the candidate; the question itself stands as long as it is open, because it is about the
-  // cube, not about whatever the screen happens to show.
-  // Read through a FUNCTION, not captured: this screen retargets in place now (see `update`
-  // below), so a question that opens or closes has to be able to change the heading and the ask
-  // on a screen that is not being rebuilt. A const here would freeze both at first render.
-  const rcNow = () => (scrambling ? null : state.reconnect);
-  const stateHeading = () => {
-    const rc = rcNow();
-    const rcDress = Boolean(rc?.candidate && state.cube.facelets === rc.candidate);
-    if (scrambling) return 'Target State';
-    if (!rcDress) return 'Initial State';
-    if (rc.reading === 'turned') return 'Your cube — as it reports it';
-    const when = whenWords(rc.seenAt).full;
-    return `Your cube — as we last saw it${when ? `, ${when}` : ''}`;
-  };
-  // The question: at the top of the sheet, ABOVE the moves, not instead of them — a disconnect or
-  // a reconnect must not wipe the guide (the floor never rises), so the walk of the candidate
-  // stays walkable while the answer is open, and trust gates what it gates today: Follow.
-  const reconnectAsk = () => {
-    const rc = rcNow();
-    if (!rc) return '';
-    const when = whenWords(rc.seenAt);
-    let ask = '';
-    let sub = '';
-    if (rc.reading === 'no-report') {
-      ask = 'Your cube hasn’t said where it is.';
-      sub = rc.candidate
-        ? `It’s connected but hasn’t reported an arrangement — this is how we last saw it${when.full ? `, ${when.full}` : ''}.`
-        : 'It’s connected but hasn’t reported an arrangement. The camera can read it as it is.';
-    } else if (rc.reading === 'turned') {
-      ask = `Your cube says it has been turned since${when.day ? ` ${when.day}` : ''} — is this it now?`;
-    } else {
-      ask = rc.candidate === SOLVED ? 'Is it solved right now?' : 'Is this your cube right now?';
-      sub = `As we last saw it${when.full ? `, ${when.full}` : ''}.`;
-    }
-    // Yes needs a report to derive the correction from; a silent cube leaves the camera as the
-    // only door. No reading grants trust — these two buttons are how the user does.
-    const yes = rc.raw && rc.candidate
-      ? '<button class="btn sm primary" data-reconnect="yes">Yes, that’s it</button>' : '';
-    return `<div class="follow-note reconnect-ask" id="reconnectAsk" style="border-top:0">
-      <b>${escHtml(ask)}</b>${sub ? `<span class="sub" style="color:var(--ink-4)">${escHtml(sub)}</span>` : ''}
-      <div class="acts">${yes}<button class="btn sm outline" data-reconnect="scan">Check with the camera</button></div>
-    </div>`;
-  };
+  // The open reconnect question — the heading it dresses the state card in, the question itself,
+  // and putting it back into a sheet already standing — is its own unit
+  // (lib/screens/cube/reconnect-ask.js). Its words are read through functions, because this screen
+  // retargets in place (see `update` below).
+  const { rcNow, stateHeading, reconnectAsk, sync: syncAsk } = createReconnectAsk({ scrambling });
   /** Set by mount, once this screen has a walk it can reload. Null while it has none — a solved
    *  cube draws no transport and no solution card, so there is nothing to retarget INTO. */
   let retarget = null;
+  /** The load `update()` last started: the die holds its press until that walk is on screen. */
+  let loading = null;
   // Saved key → renderer attribute. Named for what it is now that the sliders it fed are gone.
   const VIEW_ATTRS = [
     ['hintElev', 'ghost-elevation'],
@@ -404,7 +304,10 @@ const cubeScreen = (screenMode) => {
       // solves on entry and on every press of the die; see warmSolver.
       warmSolver();
       if (scrambling || settings.devRandCube) schedulePreroll();
-      const cube = newCube({ animate: walking });
+      // Scramble starts solved. Drawn from Home's subject, it showed that cube's setup alg beside
+      // a solved net until the roll landed, and for good when the roll failed (found by audit,
+      // 2026-09-13).
+      const cube = newCube(scrambling ? { subject: SCRAMBLE_START } : { animate: walking });
       // The view goes on BEFORE the element is connected, the way the scan screen's twin does it.
       // connectedCallback draws immediately, so attributes set after appendChild leave that first
       // drawing framed for the renderer's OWN defaults — no ghosts, and a camera fitted to a
@@ -425,94 +328,17 @@ const cubeScreen = (screenMode) => {
       // The reconnect answer, wired before any await: the solver can take seconds or fail, and
       // the question must be answerable either way.
       wireReconnectAnswers(root);
-      /** Put the open question — or its absence — into the sheet of a screen already standing.
-       *  A question opening or closing used to be a reason to rebuild the whole screen, which on
-       *  a walking one threw away the walk to change a paragraph above it. Replaces the node in
-       *  place rather than wrapping it, so no stylesheet rule learns a new box. */
-      const syncReconnectAsk = () => {
-        const card = root.querySelector('.solution-card');
-        if (!card) return;
-        const showing = card.querySelector(':scope > .reconnect-ask');
-        const html = reconnectAsk();
-        if (!html) { showing?.remove(); return; }
-        const holder = document.createElement('div');
-        holder.innerHTML = html;
-        const asked = holder.firstElementChild;
-        if (showing) showing.replaceWith(asked); else card.prepend(asked);
-        wireReconnectAnswers(root);
-      };
-
-      // Set by the speed menu, and called by the walk session whenever the driver changes: tempo
-      // DEPENDS on who drives (`following()` in lib/walk-session.js says why).
-      let applyTempo = () => {};
+      /** The open question — or its absence — put into this screen's sheet, in place. */
+      const syncReconnectAsk = () => { syncAsk(root); };
 
       // Speed sits in the card's corner, not in the transport row: it is a preference you set once
       // and forget, whereas the row is the solution you are walking. Same idiom as the scan
       // screen's camera menu. Wired before the solve so a screen that fails to solve still honours
       // the setting. The renderer reads tempo-scale per move, so a change lands on the next turn.
-      const speedBtn = $('#speedBtn', root);
-      const speedMenu = document.createElement('div');
-      let speedId = DEFAULT_SPEED;
-      let closeSpeed = () => {};
-      if (speedBtn) {
-        speedMenu.className = 'menu';
-        speedMenu.hidden = true;
-        speedMenu.setAttribute('role', 'menu');
-        speedMenu.setAttribute('aria-label', t('Animation speed'));
-        root.appendChild(speedMenu);
-        // localStorage is untrusted input: an id no longer in SPEEDS must not reach setAttribute.
-        const saved = load('walkSpeed', { id: DEFAULT_SPEED }).id;
-        if (SPEEDS.some((o) => o.id === saved)) speedId = saved;
-        closeSpeed = () => { speedMenu.hidden = true; speedBtn.classList.remove('open'); };
-
-        const applySpeed = () => {
-          const chosen = SPEEDS.find((o) => o.id === speedId);
-          // The ONE place tempo is written. While the cube drives, the choice is stored but not
-          // applied — it takes effect the moment the user takes over.
-          cube.setAttribute('tempo-scale', String(session?.following() ? 1 : chosen.tempo));
-          speedBtn.title = `Animation speed — ${chosen.label}`;
-          speedBtn.setAttribute('aria-label', speedBtn.title);
-          speedMenu.textContent = '';
-          for (const o of SPEEDS) {
-            const b = document.createElement('button');
-            b.textContent = t(o.label);
-            b.dataset.speed = o.id;
-            b.setAttribute('role', 'menuitemradio');
-            b.setAttribute('aria-checked', String(o.id === speedId));
-            if (o.id === speedId) b.className = 'now';
-            b.onclick = () => { speedId = o.id; save('walkSpeed', { id: o.id }); applySpeed(); closeSpeed(); speedBtn.focus(); };
-            speedMenu.appendChild(b);
-          }
-        };
-        applySpeed();
-        applyTempo = applySpeed;
-
-        speedBtn.onclick = (ev) => {
-          const wasClosed = speedMenu.hidden;
-          closeSpeed();
-          if (!wasClosed) return;
-          speedMenu.hidden = false;
-          speedBtn.classList.add('open');
-          placeMenuUnder(speedBtn, speedMenu);
-          (speedMenu.querySelector('.now') ?? speedMenu.firstElementChild)?.focus();
-          ev.stopPropagation();
-        };
-        const onAway = (ev) => {
-          if (!speedMenu.hidden && !speedMenu.contains(ev.target) && !speedBtn.contains(ev.target)) closeSpeed();
-        };
-        const onEsc = (ev) => {
-          if (ev.key !== 'Escape' || speedMenu.hidden) return;
-          closeSpeed();
-          speedBtn.focus(); // Escape returns you to the control you opened it from
-        };
-        // `{ signal }`, not a hand-written removal pair: this screen's abort is cut by
-        // renderScreen on every navigation, so a listener that carries it cannot outlive its
-        // screen — which is the same mechanism the parked <cubus-cube>'s listener relies on, and
-        // one fewer place for a teardown to be written correctly. The pair it replaces was the
-        // whole of `cleanup` here.
-        document.addEventListener('click', onAway, { signal });
-        document.addEventListener('keydown', onEsc, { signal });
-      }
+      // Its own unit (lib/screens/cube/speed-menu.js), and what it hands back is called by the walk
+      // session whenever the driver changes: tempo DEPENDS on who drives (`following()` in
+      // lib/walk-session.js says why).
+      const applyTempo = createSpeedMenu({ root, cube, signal, following: () => session?.following() });
       // Turning a cube and reading the next move is minutes with no input at all, so the same
       // reasoning as the scan screen's: taken only where there IS a walk, because a cube being
       // looked at is not a cube being followed.
@@ -521,89 +347,15 @@ const cubeScreen = (screenMode) => {
       // started must not go on burning the pool for a cube nobody is looking at.
       hooks.cleanup = () => { session?.dispose(); releaseWalkAwake(); };
 
-      // A new cube is a new SUBJECT, not a new screen. This used to re-enter the screen, because
-      // the solution, the move list and the step count were all built at mount and there was no
-      // other way to replace them — which destroyed every node, listener and animation on the
-      // screen to change one fact about it. loadWalk() is that other way now; refreshScreen()
-      // asks for it and falls back to a rebuild only when the composition itself has to change.
-      // Absent on the solve side unless the Advanced dev toggle shows it.
-      //
-      // The ANSWER IS STILL FOUND BEFORE ANYTHING ON SCREEN CHANGES. Adopting a cube and then
-      // retargeting would put an empty chip grid and a count reading "working…" on the screen
-      // until the solver answered — one whole presented frame, measured, and the blink this
-      // button was reported for. Solving first spends the same milliseconds with the screen still
-      // complete, and every await in loadWalk then resolves as a microtask.
-      /** A roll produced nothing — said WHERE THE PRESS WAS, always.
-       *
-       *  The count beside the solution heading is this screen's status line while there is a
-       *  walk: it is where failWalk reports the identical failure on the Scramble side, so the
-       *  same press gets the same words wherever it is made. A screen with no walk has no such
-       *  line — a solved cube draws no solution card — and there this reported to the console
-       *  alone, which for the person pressing the button is indistinguishable from a button that
-       *  does nothing (found by audit, 2026-09-05). `#rollSay` is the die's own line, drawn
-       *  wherever the die is, so there is no composition in which the press can fail in silence.
-       *  The die stays enabled either way, so the answer is the one it prints: try again.
-       *  Silence was what both branches did before: an empty roll returned, and a rejected one
-       *  escaped this handler entirely as an unhandled promise. */
-      const sayRollFailed = (err) => {
-        console.error('a random cube could not be rolled', err ?? 'the roller produced no cube');
-        const status = $('#moveCount', root) ?? $('#rollSay', root);
-        if (status) status.textContent = t(WALK_FAILURES['no scramble']);
-      };
-      /** Which press of the die owns the screen. Neither of the two generations already here can
-       *  answer that: `stale()` counts SCREENS and this one is not being replaced, and `walkGen`
-       *  counts walks, which a press has not started yet while it is still rolling. Rolling is a
-       *  real Kociemba search — seconds, in the pool, alongside whatever else is queued — so two
-       *  presses can be in flight at once and land in either order, and the OLDER one adopting
-       *  its cube afterwards replaces the newer one on a screen already showing it (found by
-       *  audit, 2026-09-05). */
-      let rollGen = 0;
-      const die = $('#randCube', root);
-      if (die) die.onclick = async () => {
-        if (!solverReady || die.disabled) return;
-        const mine = ++rollGen;
-        // Held from BEFORE the first await, not from after the roll: the press used to stay live
-        // for the length of the search it started, so a second press could roll a second cube
-        // over the first. Released in the `finally` at the end, because a roll that fails must
-        // leave behind the button that retries it.
-        die.disabled = true;
-        try {
-          // Scramble rolls its own inside loadWalk — the walk IS the scramble there, so there is
-          // no subject to adopt first.
-          if (!scrambling) {
-            // Known by construction, and NOT the cube in your hand. Marking this 'camera' was the
-            // bug behind a solved physical cube instantly completing a random solve: the guide
-            // accepted the real cube's snapshots as progress through an arrangement it had never
-            // been in.
-            let rolled;
-            try {
-              rolled = await randomScramble();
-            } catch (err) {
-              // Rolling IS a solve (2026-08-31), so it fails the way a solve fails — eight budget
-              // escalations, or a pool that could not spawn a worker. The press must not end in
-              // silence and an unhandled rejection.
-              if (!stale() && mine === rollGen) sayRollFailed(err);
-              return;
-            }
-            // Superseded, by the screen or by a later press. Either way this cube is nobody's
-            // subject — and rolling is a real search, so it is parked rather than wasted.
-            if (stale() || mine !== rollGen) { parkRoll(rolled); return; }
-            if (!rolled.facelets) { sayRollFailed(null); return; }
-            putInPlay(rolled);
-            adoptCube(rolled.facelets, { physical: false, source: 'generated', setupAlg: rolled.alg });
-          }
-          // A failure is not swallowed into silence — it leaves `solution` empty, and the screen
-          // says "could not work it out" the way it does for any walk it cannot build.
-          try { if (!scrambling) await deriveCube({ signal }); }
-          catch (err) {
-            // A search the screen's own teardown called off is not a failure worth a line: the
-            // subject is gone and nobody is waiting on it.
-            if (err?.name !== 'AbortError') console.warn('random cube could not be solved', err);
-          }
-          if (stale() || mine !== rollGen) return; // navigated away, or overtaken, while solving
-          refreshScreen();
-        } finally { die.disabled = false; }
-      };
+      // The die — the press that loads a new cube, what the press holds while it rolls, and where
+      // a roll that produced nothing is said — is its own unit (lib/screens/cube/die.js), handed
+      // the app's services through WALK_APP. It takes the new subject through `update()`, which
+      // records the load it starts in `loading`, and holds its press until that walk is on
+      // screen. A rebuild leaves `loading` null.
+      createDie({
+        root, scrambling, signal, stale,
+        takeNewSubject: () => { loading = null; refreshScreen(); return loading; },
+      }, WALK_APP);
 
       hooks.liveUpdate = (f) => {
         // Walking screens install their own handler further down (the follow machinery); until it
@@ -639,7 +391,7 @@ const cubeScreen = (screenMode) => {
       // load keeps turns the model is ahead by rather than rewinding past them.
       session = createWalkSession({
         root, cube, scrambling, walking, unsolvable, label, stateHeading, stale, signal,
-        paintNet, paintAim, syncReconnectAsk, applyTempo: () => applyTempo(),
+        paintNet, paintAim, syncReconnectAsk, applyTempo,
       }, WALK_APP);
       hooks.liveMove = session.liveMove;
       hooks.liveUpdate = session.liveUpdate;
@@ -658,9 +410,8 @@ const cubeScreen = (screenMode) => {
      */
     update() {
       if (!retarget) return false;                            // nothing mounted, or nothing to walk
-      if (!walking) return false;                             // this screen has no walk to replace
       if (!(scrambling || classifyCube().solvable)) return false; // and now there is none to show
-      void retarget();
+      loading = retarget();
       return true;
     },
   };
