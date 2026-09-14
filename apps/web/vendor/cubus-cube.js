@@ -29321,8 +29321,36 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * again — the opposite of what `clock = null` says.
    */
   set clock(v) {
-    this._clock = v == null || !Number.isFinite(Number(v)) ? null : Number(v);
+    const next = v == null || !Number.isFinite(Number(v)) ? null : Number(v);
+    if ((this._clock ?? null) === null !== (next === null)) this._changeTimeline(next);
+    this._clock = next;
     this._dirty = true;
+  }
+  /**
+   * Carry every stored instant from the timeline in use onto the one `next` selects: a pinned
+   * clock when `next` is a number, the real one when it is null. Stepping a pinned clock is not a
+   * change of timeline and moves time instead.
+   *
+   * Four instants are kept — a move's start, a turnTo()'s start, the highlight's breath origin and
+   * autorotate's last reading — and each was taken on whichever timeline was running then. Left
+   * alone, releasing a clock pinned at 1,000,000 mid-turn measured elapsed time against
+   * `performance.now()`, a large negative number, and the turn did not finish. So a move and a
+   * turn keep their elapsed time across the change, and autorotate's reading is simply dropped.
+   *
+   * The breath does NOT keep its elapsed time onto a pinned clock: it restarts at the top at the
+   * pinned instant, as a highlight set at that instant would. Kept, the phase at a pinned instant
+   * depended on how long the cube had run in real time before it was pinned, so the same pinned
+   * clock drew a different highlight on every launch — the golden-image run found it, a fixture
+   * that differed on every launch of the same browser (2026-09-15). A breath is decoration with no
+   * state behind it; restarting it is what makes it reproducible, which is the seam's purpose.
+   */
+  _changeTimeline(next) {
+    const to = next ?? performance.now();
+    const shift = to - this._now();
+    if (this._anim?.t0 != null) this._anim.t0 += shift;
+    if (this._turning) this._turning.t0 += shift;
+    if (this._hlT0 != null) this._hlT0 = next === null ? this._hlT0 + shift : next - HL_PERIOD / 2;
+    this._spinAt = null;
   }
   get clock() {
     return this._clock ?? null;

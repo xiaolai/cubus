@@ -118,3 +118,83 @@ test('a turn held at a pinned clock is the same frame every time', async () => {
   assert.ok(twice[0].some((m) => m.some((v) => !Number.isInteger(v))),
     'nothing was caught mid-turn — the clock did not freeze the animation where it was asked to');
 });
+
+// THE SEAM'S OWN PROMISE, which the cases above test only relative to itself: a pinned clock makes
+// a highlight at a chosen point in its breath REPRODUCIBLE. The breath was anchored to real time
+// when the highlight was read, so pinning the same instant after 0, 250 and 700 ms of real time
+// read phases 0.20, 0.36 and 0.997 — and the golden-image run found a highlight fixture that
+// differed on every launch of the same browser (2026-09-15).
+test('the same pinned instant is the same breath, however long the cube ran before it', async () => {
+  const phases = [];
+  for (const wait of [0, 250, 700]) {
+    await cube();
+    phases.push(await page.evaluate(async (ms) => {
+      await new Promise((r) => setTimeout(r, ms));
+      window.__cube.clock = 7000;
+      return window.__cube._hlPhase();
+    }, wait));
+  }
+  assert.equal(new Set(phases).size, 1, `pinning 7000 after different real delays read ${phases.join(', ')}`);
+});
+
+// And releasing it. A move started on a pinned clock at 1,000,000 was measured against
+// performance.now() once let go — a large negative elapsed time — and was still in flight 2 s later.
+test('a turn released from a pinned clock finishes on real time, from where it was', async () => {
+  await cube();
+  const out = await page.evaluate(async () => {
+    const el = window.__cube;
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    el.setAttribute('alg', 'R');
+    el.clock = 1_000_000;
+    el.step();
+    el.clock = 1_000_000 + 95;       // half-way through a 190ms quarter turn
+    await tick();
+    el.clock = null;
+    const t = performance.now();
+    while (el._anim && performance.now() - t < 2000) await tick();
+    return { finished: el._anim === null, applied: el._applied, took: performance.now() - t };
+  });
+  assert.equal(out.finished, true, 'the turn never finished once the clock was let go');
+  assert.equal(out.applied, 1, 'the released turn did not complete as a move');
+  assert.ok(out.took < 1000, `a turn with ~95 ms left took ${out.took} ms after the release`);
+});
+
+// The same for turnTo(), the other timed thing: its promise must still resolve once released.
+test('a turnTo() released from a pinned clock still arrives', async () => {
+  await cube();
+  const out = await page.evaluate(async () => {
+    const el = window.__cube;
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    el.clock = 2_000_000;
+    let arrived = null;
+    el.turnTo('D', 'B', { ms: 400 }).then((ok) => { arrived = ok; });
+    el.clock = 2_000_000 + 200;      // half-way
+    await tick();
+    el.clock = null;
+    const t = performance.now();
+    while (arrived === null && performance.now() - t < 2000) await tick();
+    return { arrived, took: performance.now() - t };
+  });
+  assert.equal(out.arrived, true, 'the turn never arrived once the clock was let go');
+  assert.ok(out.took < 1000, `a turn with ~200 ms left took ${out.took} ms after the release`);
+});
+
+// And autorotate, whose last reading is dropped on a change of timeline: carried, the first frame
+// after releasing a clock pinned at 3,000,000 spun the cube by the difference between the two.
+test('autorotate does not leap when its clock is released', async () => {
+  await cube();
+  const leap = await page.evaluate(async () => {
+    const el = window.__cube;
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    el.setAttribute('autorotate', '');
+    el.clock = 3_000_000;
+    await tick(); await tick();
+    const before = el._spin;
+    el.clock = null;
+    await tick(); await tick();
+    const after = el._spin;
+    el.removeAttribute('autorotate');
+    return after - before;
+  });
+  assert.ok(Math.abs(leap) < 0.05, `releasing the clock turned the cube ${leap} rad in two frames`);
+});
