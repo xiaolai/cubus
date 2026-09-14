@@ -3017,6 +3017,28 @@ function nms(dets, iouThreshold = 0.45) {
   }
   return kept;
 }
+var NESTED_INSIDE = 0.7;
+var NESTED_MAX_AREA_RATIO = 4;
+function overlapArea(a, b) {
+  const iw = Math.max(
+    0,
+    Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2)
+  );
+  const ih = Math.max(
+    0,
+    Math.min(a.cy + a.h / 2, b.cy + b.h / 2) - Math.max(a.cy - a.h / 2, b.cy - b.h / 2)
+  );
+  return iw * ih;
+}
+function dropNested(dets) {
+  return dets.filter((d) => {
+    const area = d.w * d.h;
+    return !dets.some((o) => {
+      const outer = o.w * o.h;
+      return o !== d && outer > area && outer <= NESTED_MAX_AREA_RATIO * area && overlapArea(d, o) >= NESTED_INSIDE * area;
+    });
+  });
+}
 var MAX_STEP = 2.5;
 var MAX_COLUMN_SPREAD = 3;
 var MAX_AREA_RATIO = 5;
@@ -3132,9 +3154,8 @@ function fitFromOutput(output, opts = {}) {
       `model output has ${output.rows} rows, not the ${expected} a ${numClasses}-class detect head produces${why}`
     );
   }
-  const dets = nms(
-    decodeDetections(output.data, numClasses, output.anchors, confThreshold),
-    iouThreshold
+  const dets = dropNested(
+    nms(decodeDetections(output.data, numClasses, output.anchors, confThreshold), iouThreshold)
   );
   return fitFace(dets, minConf);
 }

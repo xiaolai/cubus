@@ -125,6 +125,53 @@ export function nms(dets: Detection[], iouThreshold = 0.45): Detection[] {
 }
 
 /**
+ * A box at least this much inside a larger one, of at most NESTED_MAX_AREA_RATIO its area, is a second
+ * box on the same sticker, not a second sticker.
+ *
+ * WHY. When a face fills the frame (stickers near 200 px at the model's input, against ~74 px in
+ * training) the permissive detectors drew two boxes on a sticker, one around it and one inside it.
+ * Their IoU is about the ratio of their areas, under NMS's 0.45, so both survived, and `fitFace`'s nine
+ * largest then held one sticker twice and missed another. Measured on 40 checked community sets (2,160
+ * stickers, 22 contributors, 2026-09-15), dropping the inner box recovered stickers for every model
+ * tried (v3 +0.9, V6FT +0.5, MNV4 +0.6 points of stickers read), changed none of the 20 golden reads,
+ * and made the fit accept no photo of a 4x4 or of no cube that it did not already accept.
+ *
+ * The AREA bound is what keeps a box spanning several stickers (a whole face is about 9x one) from
+ * removing the stickers inside it. The shared cases in `tests/fixtures/nested-detections.json` hold this
+ * and `ml/cube_infer.py::drop_nested` to the same answers.
+ */
+export const NESTED_INSIDE = 0.7;
+export const NESTED_MAX_AREA_RATIO = 4;
+
+function overlapArea(a: Detection, b: Detection): number {
+  const iw = Math.max(
+    0,
+    Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2),
+  );
+  const ih = Math.max(
+    0,
+    Math.min(a.cy + a.h / 2, b.cy + b.h / 2) - Math.max(a.cy - a.h / 2, b.cy - b.h / 2),
+  );
+  return iw * ih;
+}
+
+/** Every box that is not nested in a larger box of similar scale, in the order given. */
+export function dropNested(dets: Detection[]): Detection[] {
+  return dets.filter((d) => {
+    const area = d.w * d.h;
+    return !dets.some((o) => {
+      const outer = o.w * o.h;
+      return (
+        o !== d &&
+        outer > area &&
+        outer <= NESTED_MAX_AREA_RATIO * area &&
+        overlapArea(d, o) >= NESTED_INSIDE * area
+      );
+    });
+  });
+}
+
+/**
  * The largest step between adjacent rows or columns, as a multiple of the mean sticker size.
  *
  * There was a MINIMUM step and no maximum, so nine boxes scattered across the frame — a column
