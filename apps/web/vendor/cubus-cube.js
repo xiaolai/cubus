@@ -29212,6 +29212,47 @@ var HL_PERIOD = 1200;
 var GHOST_OPACITY = 0.45;
 var GHOST_HL_PEAK = 0.8;
 var reducedMotion = () => globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+var REACTIONS = Object.freeze({
+  __proto__: null,
+  palette: (el) => el._paint(),
+  scheme: (el) => el._paint(),
+  ghosts: (el) => {
+    el._ghostVisible();
+    el._paint();
+    el._applyCamera();
+  },
+  "ghost-elevation": (el) => {
+    el._ghostPlace();
+    el._applyCamera();
+  },
+  // The scale is part of the silhouette the camera fits.
+  "facelet-scale": (el) => {
+    el._applyScale();
+    el._applyCamera();
+  },
+  "camera-latitude": (el) => el._applyCamera(),
+  "camera-longitude": (el) => el._applyCamera(),
+  "camera-fit": (el) => el._applyCamera(),
+  "camera-up": (el) => el._applyCamera(),
+  // Writing the attribute is a CUT, not a turn: it states where the cube is, and a state that
+  // takes 400ms to become true cannot be read back or asserted. `turnTo()` is the animation.
+  orientation: (el) => el.showTurn(el._attrs.orientation, el._attrs.orientation, 1),
+  // Splitting the view halves the aspect the fit is for.
+  "back-view": (el) => el._applyCamera(),
+  orbit: (el) => el._applyOrbit(),
+  facelets: (el) => el.reset(),
+  scramble: (el) => el.reset(),
+  alg: (el) => el._replaceAlg(),
+  highlight: (el) => {
+    el._readHighlight();
+    el._syncHighlight();
+  },
+  // focus repaints rather than syncing: it changes sticker COLOUR, which only _paint() writes.
+  focus: (el) => {
+    el._readFocus();
+    el._paint();
+  }
+});
 var CubusCube = class _CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
   // on the DOM-lowercased spelling, so both are observed and normalized in _set().
@@ -29413,6 +29454,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   _set(name, val) {
     name = _CubusCube.ALIAS[String(name).toLowerCase()] || name;
+    this._store(name, val);
+    if (!this._ghostMeshes) return;
+    if (Object.hasOwn(REACTIONS, name)) REACTIONS[name](this);
+  }
+  /** Record an attribute's value in `_attrs`, the one place the element reads attributes from. */
+  _store(name, val) {
     if (val == null) {
       const spellings = [name, ...Object.keys(_CubusCube.ALIAS).filter((a) => _CubusCube.ALIAS[a] === name)];
       const alive = spellings.map((s) => this.getAttribute?.(s)).find((v) => v != null);
@@ -29420,39 +29467,23 @@ var CubusCube = class _CubusCube extends HTMLElement {
     } else {
       this._attrs[name] = val;
     }
-    if (!this._ghostMeshes) return;
-    if (name === "palette" || name === "scheme") this._paint();
-    else if (name === "ghosts") {
-      this._ghostVisible();
-      this._paint();
-      this._applyCamera();
-    } else if (name === "ghost-elevation") {
-      this._ghostPlace();
-      this._applyCamera();
-    } else if (name === "facelet-scale") {
-      this._applyScale();
-      this._applyCamera();
-    } else if (name === "camera-latitude" || name === "camera-longitude" || name === "camera-fit" || name === "camera-up") this._applyCamera();
-    else if (name === "orientation") this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
-    else if (name === "back-view") this._applyCamera();
-    else if (name === "orbit") this._applyOrbit();
-    else if (name === "facelets" || name === "scramble") this.reset();
-    else if (name === "alg") {
-      this._anim = null;
-      this._queue = [];
-      this._writePose();
-      this._sol = this._parse(this._attrs.alg || "");
-      this._cursor = 0;
-      this._applied = 0;
-      this._playing = false;
-      this._dirty = true;
-    } else if (name === "highlight") {
-      this._readHighlight();
-      this._syncHighlight();
-    } else if (name === "focus") {
-      this._readFocus();
-      this._paint();
-    }
+  }
+  /**
+   * A new walk calls off the old one's moves, the one in flight AND the ones queued behind it —
+   * exactly what `reset()` does for a new cube. Resetting only the counters left R and U of the
+   * old alg playing on and reporting themselves as steps of the new one (found by audit,
+   * 2026-09-14). The state only advances when a move COMPLETES, so dropping the move in flight
+   * and writing the pose puts the cube back where its last finished move left it.
+   */
+  _replaceAlg() {
+    this._anim = null;
+    this._queue = [];
+    this._writePose();
+    this._sol = this._parse(this._attrs.alg || "");
+    this._cursor = 0;
+    this._applied = 0;
+    this._playing = false;
+    this._dirty = true;
   }
   connectedCallback() {
     clearTimeout(this._release);
@@ -29473,6 +29504,15 @@ var CubusCube = class _CubusCube extends HTMLElement {
    *  frame loop. `this.scene` is published at the very end, as the mark that all of it exists. */
   _build() {
     const scene = new Scene();
+    this._buildView();
+    this._buildLights(scene);
+    this._buildCubies(scene);
+    this._initWalk();
+    this._buildLoop();
+    this.scene = scene;
+  }
+  /** The camera, the WebGL renderer and its canvas, and the orbit controls. */
+  _buildView() {
     const camera = this.camera = new PerspectiveCamera(30, 1, 0.1, 100);
     const renderer = this.renderer = new WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -29488,6 +29528,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
     controls.rotateSpeed = 0.75;
     this._applyCamera();
     this._applyOrbit();
+  }
+  /** The light rig, added to `scene`, with each light's direction fixed relative to the eye. */
+  _buildLights(scene) {
     const hemi = new HemisphereLight(16775920, 4866096, 1);
     const key2 = new DirectionalLight(16777215, 0.95);
     const fill = new DirectionalLight(14673663, 0.45);
@@ -29504,6 +29547,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
       [fill, new Vector3(-6, 2, -4).applyQuaternion(inv)]
     ];
     this._placeLights();
+  }
+  /** The 26 cubies, each with its body, its stickers and a ghost per sticker, under `root`. */
+  _buildCubies(scene) {
     const root = this.root = new Group();
     scene.add(root);
     const bodyGeo = new RoundedBoxGeometry(0.94, 0.94, 0.94, 4, 0.1);
@@ -29554,6 +29600,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
       root.add(c);
       this.cubies.push(c);
     }
+  }
+  /** The walk's starting state, with every attribute read in: `_set()` skips an unbuilt cube. */
+  _initWalk() {
     this._anim = null;
     this._queue = [];
     this._cursor = 0;
@@ -29566,11 +29615,14 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._ghostVisible();
     this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
     this.reset();
+  }
+  /** The resize and visibility observers, and the frame loop itself. */
+  _buildLoop() {
     this._resize = () => {
       const w = this.clientWidth || 1, h = this.clientHeight || 1;
-      renderer.setSize(w, h, false);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
+      this.renderer.setSize(w, h, false);
+      this.camera.aspect = w / h;
+      this.camera.updateProjectionMatrix();
       this._applyCamera();
     };
     this._ro = new ResizeObserver(this._resize);
@@ -29579,62 +29631,87 @@ var CubusCube = class _CubusCube extends HTMLElement {
     }, { threshold: 0 });
     this._tick = () => {
       this._raf = requestAnimationFrame(this._tick);
-      while (this._queue.length + (this._anim ? 1 : 0) > 2 || !this._visible && (this._anim || this._queue.length)) {
-        let a = this._anim;
-        if (!a) a = { m: this._queue.shift() };
-        this._completeMove(a);
-        if (!this._running) return;
-      }
-      if (!this._visible) {
-        this._spinAt = null;
-        return;
-      }
-      if (!this._anim && (this._queue.length || this._playing)) this._next();
-      if (this._anim) {
-        const a = this._anim;
-        const k = Math.min(1, (this._now() - a.t0) / a.dur);
-        this._writePose(a.m, EASE(k));
-        if (k >= 1) {
-          this._completeMove(a);
-          if (!this._running) return;
-          this._next();
-        }
-        this._dirty = true;
-      }
-      if (this._hlSet?.size) {
-        const k = this._hlPhase();
-        if (k !== this._hlK) {
-          this._applyHighlight(k);
-          this._hlK = k;
-          this._dirty = true;
-        }
-      }
-      if (this._turning) {
-        const t = this._turning;
-        const k = Math.min(1, (this._now() - t.t0) / t.ms);
-        this._setTurn(t.from, t.to, EASE(k));
-        if (k >= 1) {
-          this._setTurn(t.to, t.to, 1);
-          this._settleTurn(true);
-        }
-        this._dirty = true;
-      }
-      if (this._attrs.autorotate != null) {
-        const now = this._now();
-        if (this._spinAt != null) this._spin += (now - this._spinAt) * SPIN_PER_MS;
-        this._spinAt = now;
-        this._applyRoot();
-      } else {
-        this._spinAt = null;
-      }
-      const moving = this.controls.update();
-      if (moving) this._placeLights();
-      if (moving || this._dirty) {
-        this._draw();
-        this._dirty = false;
-      }
+      this._frame();
     };
-    this.scene = scene;
+  }
+  /** One frame of the loop: settle any backlog, advance whatever is timed, and draw if needed. */
+  _frame() {
+    if (!this._drainBacklog()) return;
+    if (!this._visible) {
+      this._spinAt = null;
+      return;
+    }
+    if (!this._anim && (this._queue.length || this._playing)) this._next();
+    if (!this._advanceMove()) return;
+    this._breathe();
+    this._advanceTurn();
+    this._advanceSpin();
+    const moving = this.controls.update();
+    if (moving) this._placeLights();
+    if (moving || this._dirty) {
+      this._draw();
+      this._dirty = false;
+    }
+  }
+  /** Complete every move past the backlog limit. False when a completion stopped the loop. */
+  _drainBacklog() {
+    while (this._queue.length + (this._anim ? 1 : 0) > 2 || !this._visible && (this._anim || this._queue.length)) {
+      let a = this._anim;
+      if (!a) a = { m: this._queue.shift() };
+      this._completeMove(a);
+      if (!this._running) return false;
+    }
+    return true;
+  }
+  /** Pose the move in flight now, completing it at its end. False when that stopped the loop. */
+  _advanceMove() {
+    if (this._anim) {
+      const a = this._anim;
+      const k = Math.min(1, (this._now() - a.t0) / a.dur);
+      this._writePose(a.m, EASE(k));
+      if (k >= 1) {
+        this._completeMove(a);
+        if (!this._running) return false;
+        this._next();
+      }
+      this._dirty = true;
+    }
+    return true;
+  }
+  /** The highlight's breath, written only when its phase changed. */
+  _breathe() {
+    if (this._hlSet?.size) {
+      const k = this._hlPhase();
+      if (k !== this._hlK) {
+        this._applyHighlight(k);
+        this._hlK = k;
+        this._dirty = true;
+      }
+    }
+  }
+  /** An in-flight turnTo(), posed at this instant and settled at its end. */
+  _advanceTurn() {
+    if (this._turning) {
+      const t = this._turning;
+      const k = Math.min(1, (this._now() - t.t0) / t.ms);
+      this._setTurn(t.from, t.to, EASE(k));
+      if (k >= 1) {
+        this._setTurn(t.to, t.to, 1);
+        this._settleTurn(true);
+      }
+      this._dirty = true;
+    }
+  }
+  /** Autorotate, by the time elapsed since its last reading. */
+  _advanceSpin() {
+    if (this._attrs.autorotate != null) {
+      const now = this._now();
+      if (this._spinAt != null) this._spin += (now - this._spinAt) * SPIN_PER_MS;
+      this._spinAt = now;
+      this._applyRoot();
+    } else {
+      this._spinAt = null;
+    }
   }
   /** Begin drawing into whatever slot this is in now. Idempotent. */
   _start() {
@@ -30345,6 +30422,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: target, total: this._sol.length } }));
   }
 };
+for (const name of Object.keys(REACTIONS)) {
+  if (!CubusCube.observedAttributes.includes(name)) throw new Error(`<cubus-cube> reacts to "${name}", which it does not observe`);
+}
 customElements.define("cubus-cube", CubusCube);
 /*! Bundled license information:
 
