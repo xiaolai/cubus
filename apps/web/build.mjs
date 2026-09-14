@@ -52,6 +52,17 @@ export const FILES = ['index.html', 'tokens.css', 'manifest.webmanifest', 'THIRD
 //       REMOVED on 2026-08-29: a note about code that is not in the app.
 export const NEVER_SHIPPED = ['vendor/tauri-mcp-guest.js', 'vendor/min2phase.PROVENANCE.md'];
 
+/**
+ * Where the renderer's source lives, named from this app's root.
+ *
+ * It is not under `lib/` any more — `<cubus-cube>` is `packages/cubus-cube/` since 2026-09-14 —
+ * and the bundle it produces still lands in this app's `vendor/`. A constant rather than an
+ * inline join, because the disposability guard and the freshness check both have to know, and a stale
+ * copy of this path would make it check nothing while staying green.
+ */
+const CUBE_ENTRY = '../../packages/cubus-cube/src/cubus-cube.js';
+
+
 // ONE grammar for the onnxruntime assets, written once as a source string and used for BOTH
 // directions of the scanner check below — what the shipped loader NAMES, and what vendor/ HOLDS.
 // It is copy-ort.mjs's `OWNED_ASSET` predicate, and that file records why it is one string: the
@@ -199,6 +210,18 @@ function assertDistIsDisposable(src, out) {
       );
     }
   }
+  // AND THE RENDERER, which stopped being inside `src` when it became its own package
+  // (packages/cubus-cube, 2026-09-14). Everything above asks whether the destination is this app
+  // or something this app copies from; the renderer's SOURCE is neither, so `assembleDist({ dist:
+  // 'packages/cubus-cube' })` walked straight past every guard to the recursive delete, and the
+  // freshness check that would have noticed runs afterwards (found by audit, 2026-09-14). Named
+  // from CUBE_ENTRY so the two cannot come to mean different directories.
+  const renderer = dirname(dirname(resolve(src, CUBE_ENTRY)));
+  if (beneath(out, renderer) || beneath(renderer, out)) {
+    throw new Error(
+      `build: refusing to assemble into ${out} — it is the renderer package at ${renderer} (or holds it), whose source this build is built from, and the destination is deleted first`,
+    );
+  }
 }
 
 /** Everything the browser loads, and nothing else. Whole directories on purpose (a new import is
@@ -322,16 +345,6 @@ function assertScannerAssets(root, dist) {
     );
   }
 }
-
-/**
- * Where the renderer's source lives, named from this app's root.
- *
- * It is not under `lib/` any more — `<cubus-cube>` is `packages/cubus-cube/` since 2026-09-14 —
- * and the bundle it produces still lands in this app's `vendor/`. A constant rather than an
- * inline join, because the freshness check below is the one place that has to know, and a stale
- * copy of this path would make it check nothing while staying green.
- */
-const CUBE_ENTRY = '../../packages/cubus-cube/src/cubus-cube.js';
 
 /** The bundle must be newer than every source that went into it. */
 function assertBundleFresh(root, entry = resolve(root, CUBE_ENTRY)) {

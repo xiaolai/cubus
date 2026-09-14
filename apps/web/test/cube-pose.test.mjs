@@ -20,7 +20,7 @@ import {
   CORNERS, EDGES, SOLVED, applyAlg, applyMove,
 } from '../lib/cube-pieces.js';
 import {
-  CUBIES, HOME, after, poseAll,
+  CUBIES, HOME, MOVE_DESCRIPTORS, after, poseAll,
 } from '../../../packages/cubus-cube/src/pose.js';
 
 const I3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
@@ -86,6 +86,36 @@ test('a move at phase 1 is the cube the move leaves behind — over a thousand o
     assert.deepEqual(landed.state.ep, state.ep, `${name} #${i}: edge permutation`);
     assert.deepEqual(landed.state.eo, state.eo, `${name} #${i}: edge flips`);
   }
+});
+
+// THE SAME INVARIANT, OVER EVERY MASK. The case above walks face turns only, and an audit showed
+// what that leaves open: empty the list of layers a middle-layer move has to turn BACK and every
+// test still passed, while settled slice and wide states were wrong. A mask is the whole point of
+// the descriptor, so the endpoint equality is asserted over all seven of them per axis, both ways
+// round and at both turn counts — 126 moves, every cubie's position and rotation compared.
+test('a move at phase 1 is the cube it leaves behind — for every layer mask, not just faces', () => {
+  const state = applyAlg(SOLVED, "R U R' U' F2 L D B'");
+  const masks = [[1], [-1], [0], [1, 0], [-1, 0], [1, -1], [1, 0, -1]];
+  let checked = 0;
+  for (const axis of ['x', 'y', 'z']) {
+    for (const layers of masks) {
+      for (const turns of [1, 2]) {
+        for (const dir of [1, -1]) {
+          const move = { axis, layers, turns, angle: dir * turns * QUARTER };
+          const ran = poseAll(I3, state, move, 1);
+          const landed = after(I3, state, move);
+          const settled = poseAll(landed.frame, landed.state, null, 0);
+          for (const [k, p] of ran.entries()) {
+            const where = `${axis}[${layers}] x${turns} ${dir > 0 ? '+' : '-'}: ${CUBIES[k].name}`;
+            assert.ok(closeVec(p.pos, settled[k].pos), `${where} lands somewhere else`);
+            assert.ok(closeMat(p.m, settled[k].m), `${where} lands turned differently`);
+          }
+          checked++;
+        }
+      }
+    }
+  }
+  assert.equal(checked, 3 * 7 * 2 * 2, 'the sweep did not cover every mask');
 });
 
 test('every pose is a rotation, at rest and mid-turn', () => {
@@ -208,5 +238,16 @@ test('the cubie list is the renderer\'s own order, and every home is a real slot
   for (const [i, c] of CUBIES.entries()) {
     const span = Math.abs(HOME[i][0]) + Math.abs(HOME[i][1]) + Math.abs(HOME[i][2]);
     assert.equal(span, { corner: 3, edge: 2, centre: 1 }[c.kind], `${c.name} does not sit where a ${c.kind} sits`);
+  }
+});
+
+// A token is whatever an author typed. On an ordinary object `constructor`, `toString` and
+// `__proto__` are all present, and the renderer's parser once turned `alg="toString"` into an empty
+// descriptor that threw at play time instead of being refused (found by verification, 2026-09-14).
+test('the move table answers for the eighteen moves and nothing an object inherits', () => {
+  assert.equal(Object.getPrototypeOf(MOVE_DESCRIPTORS), null, 'the move table has a prototype to inherit from');
+  assert.equal(Object.keys(MOVE_DESCRIPTORS).length, 18, 'six faces, three turns each');
+  for (const inherited of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    assert.equal(MOVE_DESCRIPTORS[inherited], undefined, `"${inherited}" answered as if it were a move`);
   }
 });
