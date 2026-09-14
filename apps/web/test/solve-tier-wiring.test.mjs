@@ -26,7 +26,8 @@ test('every rung has a label and a description on the Settings screen', () => {
 
 test('the chosen target is stored, and the solver reads it', () => {
   assert.match(app, /solveTier: 'twenty'/, 'the setting must have a default, or the first solve is untargeted');
-  assert.match(app, /tier: settings\.solveTier/, 'solve() must read the stored tier, not a hardcoded one');
+  assert.match(blockAt(app, 'async function solve('), /const tier = settings\.solveTier;/,
+    'solve() must read the stored tier, not a hardcoded one');
   assert.match(app, /data-set-tier/, 'the Settings screen must offer the pills');
 });
 

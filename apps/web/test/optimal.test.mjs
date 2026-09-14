@@ -162,6 +162,17 @@ test('the checks a proof must pass are drivable without a native side at all', (
   );
 });
 
+test('a proof request carries its number to the native side, and a bad number is refused first', async () => {
+  const scrambled = new Cube();
+  scrambled.move("R U R' F2");
+  const facelets = scrambled.asString();
+  const calls = fakeNative({ optimal_prove: () => ({ length: 4, solution: "F2 R U' R'", nodes: 1, millis: 1, tables_persisted: true }) });
+  await prove(facelets, { Cube, upperBound: 6, proof: 7 });
+  assert.deepEqual(calls.find((c) => c.cmd === 'optimal_prove').args, { facelets, proof: 7 });
+  await assert.rejects(() => prove(facelets, { Cube, proof: -1 }), /u32 request number/);
+  noNative();
+});
+
 // ---- the wording rule, pinned in the app's source ---------------------------------------------
 // AGENTS.md's seam entry: "optimal" (here: "proved…minimum") may appear ONLY as the result of a
 // native proof. The browser build must be unable to say it — which is a property of app.js's
@@ -292,8 +303,10 @@ test('the app can claim a minimum from exactly three places, and nowhere else', 
   // The Settings row is drawn only where the affordance can exist. A toggle for a button that
   // can never appear is a promise the build cannot keep, and it would be the same failure the
   // gate on the button itself exists to prevent.
-  const settingsRow = stripComments(app).match(/\$\{optimalCapability\(\) \? `[\s\S]*?` : ''\}/)?.[0] ?? '';
-  assert.ok(settingsRow, 'the Settings row must sit behind optimalCapability()');
+  // Read brace-matched from its own `${`, whatever draws the row: the lazy match to a template's
+  // closing backtick stopped finding it when the row became a switchRow call (2026-09-14).
+  const settingsRow = blockAt(stripComments(app), '${optimalCapability() ?');
+  assert.match(settingsRow, /^\$\{optimalCapability\(\) \? [\s\S]* : ''\}$/, 'the Settings row must sit behind optimalCapability()');
   const uses = [...stripComments(app).matchAll(/PROVE_COPY\.setting/g)].length;
   assert.ok(uses > 0, 'the Settings wording must actually be used');
   assert.equal(

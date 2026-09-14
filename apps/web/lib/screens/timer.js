@@ -11,9 +11,10 @@ import { loadSolver, solverReady, warmSolver } from '../solver-service.js';
 import { conn } from '../live-session.js';
 import { chainTrusted } from '../cube-trust-state.js';
 import {
-  dropLastSolve, parkRoll, pushSolve, putInPlay, randomScramble, recentSolves, schedulePreroll,
+  dropLastSolve, parkRoll, pushSolve, putInPlay, randomScramble, recentSolves, schedulePreroll, takeOutOfPlay,
 } from '../scramble-roll.js';
 import { SCREENS, screenAbort } from '../screen-shell.js';
+import { createScrambleRequests } from './timer/scramble-request.js';
 
 SCREENS.timer = () => {
   // width:100% — the screen centres its child, and a column without a width would shrink to
@@ -79,61 +80,47 @@ SCREENS.timer = () => {
 
       warmSolver();      // New scramble is one press away here; see cubeScreen's mount
       schedulePreroll(); // and it should never be the press that waits for a search
-      const newScr = async () => {
-        // The scramble on screen is the one the RUNNING solve is recorded against — replacing
-        // it mid-solve would file the time under a scramble the solver never saw, and disarm
-        // the cube-driven stop. Stop the clock first; then roll.
-        if (running) return;
-        if (!solverReady) {
-          $('#scr', root).textContent = t('working out a scramble…');
-          // Retry when it lands. Without this, opening Timer before the solver finished left
-          // "solver loading…" on screen permanently — the only way out was pressing New scramble
-          // again, which nothing on the screen suggested.
-          //
-          // And when the load FAILS, say so about the APP rather than about the cube: the retry
-          // used to be handed `false` and do nothing at all, leaving the screen waiting forever
-          // on something that had already given up (found by audit, 2026-09-04).
-          void loadSolver().then((ok) => {
-            if (!root.isConnected || state.screen !== 'timer') return;
-            if (ok) { void newScr(); return; }
-            $('#scr', root).textContent = t('the solver did not load — reload the app');
-            say(t('Scrambles need the solver, and it did not load. Reloading the app is the fix; the clock below still times by hand.'));
-          });
-          return;
-        }
-        // A roll that THREW says the same thing to a user as one that came back empty: there is
-        // no scramble, and the button is the retry. It used to say nothing at all — `newScr` is
-        // wired straight to onclick, so the rejection left the click handler as an unhandled
-        // promise and the screen sat on the old scramble with no explanation. The engine raises
-        // here for real (eight budget escalations, or a pool that cannot spawn a worker).
-        let rolled;
-        try {
-          rolled = await randomScramble();
-        } catch (err) {
-          if (!root.isConnected || state.screen !== 'timer') return;
-          console.error('scramble could not be rolled', err);
-          // The scramble already in play is left exactly as it is: it is still the one this
-          // screen would record a solve against, and blanking it would lose that too.
-          say(t('A scramble could not be worked out — press New scramble to try again.'));
-          return;
-        }
-        // RE-CHECKED after the await, not only before it. A roll is a real Kociemba search now,
-        // so seconds can pass inside this call — long enough to press the clock and start a solve.
-        // Landing then would file that solve under a scramble shown after it began, and disarm the
-        // cube-driven stop. The rolled cube is not thrown away: it is parked as the next roll, so
-        // the press after this one is instant rather than paying for the search twice.
-        if (!root.isConnected) { parkRoll(rolled); return; }
-        if (running) { parkRoll(rolled); return; }
-        // The CALLER puts it in play, so a roll that arrives at a bad moment changes nothing the
-        // solve history is recorded against.
+      /** Put a roll in play. The CALLER puts it in play, so a roll that arrives at a bad moment
+       *  changes nothing the solve history is recorded against. */
+      const commitRoll = (rolled) => {
         putInPlay(rolled);
         scrTarget = rolled.facelets || null;
         auto.reset();
         untimeable = false;
-        $('#scr', root).textContent = rolled.alg || '—';
-        if (!rolled.alg) say(t('A scramble could not be worked out — press New scramble to try again.'));
-        else if (scrTarget && chainTrusted()) say(t('Scramble your cube — the clock starts itself'));
+        $('#scr', root).textContent = rolled.alg;
+        // Said on EVERY roll that lands: the line described the attempt before this one, and a
+        // failure sentence beside a fresh scramble is a lie (found by audit, 2026-09-13).
+        say(scrTarget && chainTrusted() ? t('Scramble your cube — the clock starts itself') : MANUAL);
       };
+      // A press asks for a scramble, and the newest press is the one shown: an older or abandoned
+      // search is called off, and a roll that lands on a running solve is parked for the next
+      // press (lib/screens/timer/scramble-request.js).
+      const requests = createScrambleRequests({
+        roll: randomScramble,
+        park: parkRoll,
+        ready: () => solverReady,
+        load: loadSolver,
+        live: () => root.isConnected && state.screen === 'timer',
+        busy: () => running,
+        // Said, and retried when the solver lands: opening Timer before it finished used to leave
+        // "solver loading…" on screen with nothing suggesting what to press.
+        onWaiting: () => { $('#scr', root).textContent = t('working out a scramble…'); },
+        // About the APP rather than the cube: the retry used to be handed `false` and do nothing
+        // at all, leaving the screen waiting forever on something that had given up (found by
+        // audit, 2026-09-04).
+        onLoadFailed: () => {
+          $('#scr', root).textContent = t('the solver did not load — reload the app');
+          say(t('Scrambles need the solver, and it did not load. Reloading the app is the fix; the clock below still times by hand.'));
+        },
+        onRolled: commitRoll,
+        // A roll that THREW says what an empty one says: there is no scramble, and the button is
+        // the retry. The scramble in play is left as it is — it is still the one this screen would
+        // record a solve against, and blanking it would lose that too.
+        onFailed: (err) => {
+          if (err) console.error('scramble could not be rolled', err);
+          say(t('A scramble could not be worked out — press New scramble to try again.'));
+        },
+      });
       /** Record a finished solve, and say so when the browser refused to keep it.
        *
        *  A solve that was not stored still showed on the clock and then vanished from "last five"
@@ -144,20 +131,31 @@ SCREENS.timer = () => {
         say(t('That time is on the clock but was NOT saved — this browser is refusing to store anything, so it will be gone on reload.'));
         return false;
       };
-      const stop = () => {
+      /** Stop the clock. The counterpart of `runClock`: the flag the frame loop reads, the pending
+       *  frame, the colour, the name the button announces and who owns the clock are the same
+       *  shutdown whoever ordered it, and they were written out twice (found by audit). */
+      const haltClock = () => {
         running = false;
         cancelAnimationFrame(raf);
+        clock.style.color = 'var(--ink)';
+        nameClock();
+        byCube = false;
+      };
+      /** A finished solve, said. The clock's own text is a button's content, which a screen reader
+       *  does not announce; the hint line is the status region, and it said only "Click or hold
+       *  space to start" over every result (found by audit, 2026-09-13). */
+      const sayResult = (secs) => say(t('%1 seconds. Click or hold space to start.', secs));
+      const stop = () => {
+        haltClock();
         // `secs`, not `t`: a local named `t` here shadowed the imported translator for the rest of
         // this function, so every sentence below it would silently stop being translatable.
         const secs = fmt(performance.now() - t0);
         clock.textContent = secs;
-        clock.style.color = 'var(--ink)';
-        nameClock();
-        say(MANUAL);
+        // BEFORE record(), so a refused write still overwrites it with its own warning.
+        sayResult(secs);
         // A hand-stopped solve is hand-timed even if the cube started it: the moment recorded is
         // the click, not a move. Recording it as cube-timed would put a click into a turn rate.
         record(secs, { source: 'manual' });
-        byCube = false;
         auto.reset();
         renderLast();
       };
@@ -188,11 +186,7 @@ SCREENS.timer = () => {
 
       /** The cube reached solved. The cube's clock decides the number, not this screen's. */
       const stopFromCube = () => {
-        running = false;
-        cancelAnimationFrame(raf);
-        clock.style.color = 'var(--ink)';
-        nameClock();
-        byCube = false;
+        haltClock();
         const r = auto.result();
         if (!r) {
           // Refusing is the designed outcome, not an error path: a solve that cannot be timed
@@ -219,12 +213,12 @@ SCREENS.timer = () => {
         // matters most: nobody pressed anything, so a time that quietly failed to store looks
         // like the app deciding the solve did not count. The hand-stopped path says MANUAL
         // BEFORE it records, which is why it never had this bug.
-        if (saved) say(MANUAL);
+        if (saved) sayResult(r.seconds);
         renderLast();
       };
       clock.onclick = toggle;
       nameClock();
-      $('#newScr', root).onclick = newScr;
+      $('#newScr', root).onclick = () => requests.request();
       // escHtml: solve times come from localStorage, which is untrusted input, and they were
       // going into innerHTML raw — a stored-XSS hole reachable by anything that can write to the
       // origin's storage.
@@ -260,10 +254,14 @@ SCREENS.timer = () => {
       // dozens of times a second and wrote a run of nonsense times into the solve history.
       const onKey = (e) => {
         if (e.repeat || e.code !== 'Space' || state.screen !== 'timer') return;
-        // A press of the clock button arrives here as well as through onclick — Space is a
-        // button's own activation key — and toggling twice per press would start and stop in the
-        // same instant. The button's own handler owns that case.
-        if (document.activeElement === clock) return;
+        if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        // Space is every control's own activation key, and this handler cancels the keydown. A
+        // focused New scramble, Undo or toolbar button was silenced and the clock toggled in its
+        // place (found by audit, 2026-09-13); on the clock itself, the press arrived twice and
+        // started and stopped it in one instant. A control owns its own press; only a Space on
+        // the screen itself runs the clock from here.
+        const on = document.activeElement;
+        if (on && on !== document.body && on.closest?.('button, a, input, select, textarea, [contenteditable]')) return;
         e.preventDefault();
         toggle();
       };
@@ -280,6 +278,10 @@ SCREENS.timer = () => {
       };
       hooks.liveUpdate = (f, serial) => {
         if (untimeable) return;
+        // A hand-started solve OWNS the clock. Arming behind it promised a start that cannot come
+        // and wrote over the line saying how to stop (found by audit, 2026-09-13). A cube-started
+        // clock is still heard: its stop arrives through this same stream.
+        if (running && !byCube) { auto.reset(); return; }
         const before = auto.state;
         const now = auto.facelets(f, serial);
         // "Ready" is a recorded instant, not a mood: the timer captured WHEN the cube reached the
@@ -297,6 +299,16 @@ SCREENS.timer = () => {
         if (before === 'running' && now === 'stopped' && byCube) stopFromCube();
       };
 
+      // Trust lapsing is not a stop: nothing measured the span, so nothing is recorded. But a clock
+      // the cube started can no longer be stopped by it, and the line beside it said the cube would
+      // — so it says how to stop it by hand instead (found by audit, 2026-09-13).
+      hooks.onTrustLost = () => {
+        auto.reset();
+        if (!running || !byCube) return;
+        byCube = false;
+        say(t('The cube can no longer be vouched for, so it will not stop this clock. Click or press space to stop.'));
+      };
+
       hooks.cleanup = () => {
         // `running` first: tick() re-schedules itself, so cancelling the pending frame while the
         // flag is still true leaves an in-flight callback free to queue another one — a clock that
@@ -306,8 +318,13 @@ SCREENS.timer = () => {
         // Release the cube stream with the screen, or a torn-down closure keeps timing.
         hooks.liveMove = null;
         hooks.liveUpdate = null;
+        // And the roll that is out: a search for a screen that has gone is called off.
+        requests.dispose();
       };
-      renderLast(); void newScr();
+      // This screen shows no scramble until its own lands, so none is in play until then: a solve
+      // timed first was filed under one another screen had put there (verification, 2026-09-14).
+      takeOutOfPlay();
+      renderLast(); void requests.request();
     },
   };
 };

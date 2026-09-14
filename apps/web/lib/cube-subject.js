@@ -3,7 +3,7 @@
 //
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
-import { describe, refine } from './solve-target.js';
+import { GODS_NUMBER, describe, refine, tierByName } from './solve-target.js';
 import { provenAnswer } from './optimal-challenges.js';
 // The explaining solver, returned 2026-09-08 (dev-docs/method-solver-return-plan.md). It answers
 // a different question from the two-phase solver — "why is this move right" rather than "how
@@ -32,7 +32,7 @@ import { Cube, challenges, invertAlg, solverWorker } from './solver-service.js';
 export function ingestFacelets(f) {
   const c = state.cube;
   c.facelets = f;
-  c.solution = ''; c.moves = []; c.stepFacelets = []; c.solveResult = null;
+  c.solution = ''; c.moves = []; c.stepFacelets = []; c.solveResult = null; c.solvedFor = null;
   // The lesson is about the arrangement it was worked out for. Carried across a new one it would
   // caption a walk with another cube's steps — the exact failure that made the first attempt look
   // like a broken solver.
@@ -248,6 +248,23 @@ function finishSolve(c, alg) {
   return solution;
 }
 
+/** Commit an answer and what it is. The oracle runs first (finishSolve); only an answer it did not
+ *  refute gets its verdict and its tier, so a refuted one leaves no "target met" over an empty
+ *  solution and no proof label over a cube nobody proved. */
+function commitAnswer(c, alg, verdict, solvedFor) {
+  const solution = finishSolve(c, alg);
+  c.solveResult = verdict;
+  c.solvedFor = solvedFor;
+  return solution;
+}
+
+/** Tiers an answer can answer beyond its own: a proven minimum answers every one, and a carried
+ *  answer kept only the God's-number promise (rollScramble asks for nothing more). */
+const ANY_TIER = '*';
+const GODS_NUMBER_ONLY = 'gods-number';
+const answersTier = (solvedFor, tier) => solvedFor === ANY_TIER || solvedFor === tier
+  || (solvedFor === GODS_NUMBER_ONLY && tierByName(tier).target === GODS_NUMBER);
+
 /**
  * Work out the solution, as short as this learner's tier asks for, and cross-check it.
  *
@@ -275,8 +292,12 @@ async function solve({ onImprovement, onProgress, signal } = {}) {
   // deriveCube for a second Kociemba search on this thread. The setup alg is now the INVERSE of
   // the answer this function is about to produce (takeSetupAlg, from finishSolve), so a stale one
   // is repaired by the search that was going to run anyway rather than by one of its own.
-  if (c.solution && c.crossChecked) return c.solution;
-  if (c.solution) {
+  // Reused only under a tier it answers: a carried answer under <= 18 is searched again, not shown
+  // as though it met a tier nobody asked it about (found by audit, 2026-09-13).
+  const tier = settings.solveTier;
+  const held = Boolean(c.solution) && answersTier(c.solvedFor, tier);
+  if (held && c.crossChecked) return c.solution;
+  if (held) {
     // A solution that arrived WITHOUT a search — the inverse of a setup alg the worker already
     // found (the scramble hand-off). There is nothing to search for, but the oracle discipline
     // is unchanged: finishSolve applies it through cubejs — move application, ~µs, no search —
@@ -291,9 +312,9 @@ async function solve({ onImprovement, onProgress, signal } = {}) {
   // every searched answer gets; what it skips is the search, not the check.
   const proven = provenAnswer(challenges, c.facelets);
   if (proven) {
-    c.solveResult = { key: 'solve.provenMinimum', moves: proven.moves };
+    const solution = commitAnswer(c, proven.alg, { key: 'solve.provenMinimum', moves: proven.moves }, ANY_TIER);
     onImprovement?.({ alg: proven.alg, moves: proven.moves, target: null, met: true, stopped: 'met' });
-    return finishSolve(c, proven.alg);
+    return solution;
   }
 
   const client = solverWorker();
@@ -302,30 +323,46 @@ async function solve({ onImprovement, onProgress, signal } = {}) {
   // with a cube it does not solve. (The oracle in finishSolve would catch it loudly — this
   // makes it a clean refusal instead of a confusing one.)
   const searched = c.facelets;
+  /** Replaced while this ran — by the caller's abort, or by a live report, which ingests without
+   *  cancelling anybody. Asked at every yield, so nothing more is shown or searched for a cube that
+   *  is no longer the subject: leaving the loop is what ends refine's searches. */
+  const superseded = () => signal?.aborted || c.facelets !== searched;
   let result = null;
-  for await (const step of refine(searched, {
-    solve: (facelets, bounds) => client.solve(facelets, bounds),
-    tier: settings.solveTier,
-    signal,
-    onProgress,
-  })) {
-    result = step;
-    // A yield that arrives WITH the abort is real work and refine reports it, but it describes a
-    // cube this screen has already replaced. Nothing is shown for it.
-    if (signal?.aborted) throw aborted();
-    onImprovement?.(step);
+  try {
+    for await (const step of refine(searched, {
+      // Asked before every request, not only at a yield: a first search the engine keeps refusing
+      // escalates without yielding, and went on asking for a cube that had gone (found by
+      // verification, 2026-09-14). Thrown in the superseded shape, which refine does not catch.
+      solve: (facelets, bounds) => {
+        if (superseded()) throw aborted();
+        return client.solve(facelets, bounds);
+      },
+      tier,
+      signal,
+      onProgress: onProgress && ((p) => { if (!superseded()) onProgress(p); }),
+      // A carried answer this tier does not accept still bounds the search: it starts below it, so a
+      // budget that stops longer cannot replace it (found by verification, 2026-09-14).
+      start: c.solution || null,
+    })) {
+      result = step;
+      if (superseded()) throw aborted();
+      onImprovement?.(step);
+    }
+  } catch (err) {
+    // No request follows the last attempt the first search is allowed, so the guard above never
+    // saw a subject replaced while that one ran: the search ended in refine's own escalation
+    // error, an ordinary Error about a cube nobody is looking at (found by verification,
+    // 2026-09-14). Whatever ends a superseded search, it ends as supersession.
+    if (superseded()) throw aborted();
+    throw err;
   }
   // Two ways to come back with nothing: cancelled before the first answer (refine yields nothing
   // at all), or cancelled between yields. Both are superseded, and neither may reach
   // `finishSolve` — `result.alg` on null is a TypeError dressed as a solver failure.
-  if (signal?.aborted || result === null) throw aborted();
-  if (c.facelets !== searched) {
-    throw new Error('solve: the cube changed mid-search — this answer is about the previous one');
-  }
+  if (superseded() || result === null) throw aborted();
   // Never inferred from the move count: a tier the cube cannot reach (18 does not exist for
   // every position) must read as "the shortest I found", not as the target met.
-  c.solveResult = describe(result);
-  return finishSolve(c, result.alg);
+  return commitAnswer(c, result.alg, describe(result), tier);
 }
 
 /**
@@ -355,6 +392,9 @@ export function takeDerivation(facelets, setupAlg) {
     console.error('setup alg does not reach the cube it came with — deriving instead', { setupAlg });
     return;
   }
+  // Whether there is a walk is a fact about the ARRANGEMENT, never about an alg having come with
+  // it: `R R'` reaches the solved cube, which has nothing to walk.
+  if (!classifyCube().solvable) return;
   // Written BEFORE the commit, so takeSetupAlg inside finishSolve takes its "already carried in
   // and already checked" branch instead of re-deriving and re-checking the alg handed in here.
   c.setupAlg = setupAlg;
@@ -377,7 +417,7 @@ export function takeDerivation(facelets, setupAlg) {
     // Undoing the setup alg solves the cube by construction, which is why no search follows:
     // the app used to hand this state to a second Kociemba search and then discard an answer it
     // already held — the longest thing a press of the die waited on.
-    finishSolve(c, invertAlg(setupAlg));
+    commitAnswer(c, invertAlg(setupAlg), null, GODS_NUMBER_ONLY);
   } catch (err) {
     // A DEFINITE refutation is the only thing that reaches here — finishSolve throws on one and
     // commits nothing before it. The cube is left underived and with no setup alg, exactly as
@@ -389,13 +429,6 @@ export function takeDerivation(facelets, setupAlg) {
     console.error('the inverse of the setup alg does not solve the cube — deriving instead', err);
     return;
   }
-  // It took moves to get here, so there are moves back — and an arrangement a real alg reaches is
-  // a real arrangement, which is what the check above has just established. `unsolvable` is
-  // written beside `solvable` rather than left to whoever ingested: the two are one verdict, and
-  // a record carrying both as true is a state nothing downstream can read correctly.
-  c.solvable = true;
-  c.unsolvable = false;
-  c.derived = true;
 }
 
 /** The state after each move of a walk, so the 2D net and the move list can co-move with the 3D
@@ -413,25 +446,6 @@ export function stepStates(facelets, moves) {
   return sf;
 }
 
-// ---- Preview screens ---------------------------------------------------------------------
-//
-// Trainer, Drill and Lessons are LAYOUTS, not features: the compositions exist, nothing behind
-// them does. That is a legitimate state for a screen to be in — the design work is real and the
-// rows are how it was reviewed — but until 2026-09-04 they said it by showing invented figures.
-// "82% recall", "2.14 average execution, 9 reps", "4/4 Done", a queue with due dates, five case
-// cards with per-case mastery bars: every one of those numbers described nothing, and they were
-// one Advanced toggle away from a beginner who would read them as their own.
-//
-// The app's own rule is that a statistic that cannot be computed is a dash, never a number, and
-// it is enforced everywhere else — Stats replaced its whole invented dashboard with computed
-// figures or em dashes, and the Timer's "last five" starts empty rather than seeded. These three
-// screens were the exception, and an exception one URL away is not an exception, it is the rule
-// being broken quietly.
-//
-// So: every figure is an em dash, every screen states in words that nothing here is measured,
-// and the controls that would pretend to do something are disabled rather than silently inert.
-// A layout can be reviewed perfectly well with dashes in it. When one of these grows a real
-// engine, the dash is exactly the place the real number goes.
 /**
  * Raise one dial, and everything that has to follow from it.
  *
