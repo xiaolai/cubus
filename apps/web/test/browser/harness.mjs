@@ -6,18 +6,23 @@
 // about to be written.
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { webkit } from 'playwright';
+import { chromium, webkit } from 'playwright';
 
 import { freePort } from '../free-port.mjs';
 
 const SERVE = fileURLToPath(new URL('../../serve.mjs', import.meta.url));
 
 /**
- * Start the dev server and a WebKit browser.
+ * Start the dev server and a browser: WebKit, the engine the desktop app runs in, unless a suite
+ * asks for Chromium — the appearance goldens do, because Chromium draws with the same software
+ * rasteriser on every machine they are compared on. `launch` is passed to Playwright's launch().
  *
+ * @param {{ engine?: 'webkit' | 'chromium', launch?: import('playwright').LaunchOptions }} [options]
  * @returns {Promise<{base: string, browser: import('playwright').Browser, close: () => Promise<void>}>}
  */
-export async function startBrowserFixture() {
+export async function startBrowserFixture({ engine = 'webkit', launch = {} } = {}) {
+  const engines = { webkit, chromium };
+  if (!Object.hasOwn(engines, engine)) throw new Error(`startBrowserFixture: no engine "${engine}"`);
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const proc = spawn(process.execPath, [SERVE], {
@@ -54,10 +59,10 @@ export async function startBrowserFixture() {
 
   let browser;
   try {
-    browser = await webkit.launch();
+    browser = await engines[engine].launch(launch);
   } catch (cause) {
     proc.kill('SIGTERM');
-    throw new Error('WebKit for Playwright is not installed — run: pnpm --filter cubus-web exec playwright install webkit', { cause });
+    throw new Error(`${engine} for Playwright did not launch — if it is not installed: pnpm --filter cubus-web exec playwright install ${engine}`, { cause });
   }
 
   let closed = null;
