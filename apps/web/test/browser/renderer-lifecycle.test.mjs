@@ -181,3 +181,74 @@ test('a step listener that disposes the cube does not break the frame it was cal
   });
   assert.deepEqual(errors, [], `the frame went on after the cube was disposed: ${errors.join('; ')}`);
 });
+
+// ---- the camera and its light rig, measured against the right reference ----------------------
+
+/** Read the drawn pixels and report which pane edges any ink touches. */
+const edgeInk = (splitAt) => page.evaluate((split) => {
+  const el = window.__cube;
+  el._dirty = true;
+  el._draw();
+  const gl = el.renderer.getContext();
+  const w = gl.drawingBufferWidth; const h = gl.drawingBufferHeight;
+  const px = new Uint8Array(w * h * 4);
+  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const inkIn = (col) => { let n = 0; for (let y = 0; y < h; y++) if (px[(y * w + col) * 4 + 3] > 0) n++; return n; };
+  const left = split ? Math.floor(w / 2) : w;
+  return split
+    ? { leftPaneOuter: inkIn(0), leftPaneInner: inkIn(left - 1), rightPaneInner: inkIn(left), rightPaneOuter: inkIn(w - 1) }
+    : { outerLeft: inkIn(0), outerRight: inkIn(w - 1) };
+}, splitAt);
+
+// Side-by-side halves the drawing aspect, but the distance was fitted to the FULL width and a
+// `back-view` change never refitted it: at 320x240 the cube ran past both edges of its pane.
+test('a side-by-side cube fits inside each pane, and refits when the split comes and goes', async () => {
+  await page.evaluate(async () => {
+    if (window.__cube) { window.__cube.dispose?.(); window.__cube.remove?.(); }
+    const el = document.createElement('cubus-cube');
+    el.style.cssText = 'position:fixed;left:0;top:0;width:320px;height:240px';
+    el.setAttribute('scramble', "F R U");
+    el.setAttribute('ghosts', 'on');
+    document.body.appendChild(el);
+    window.__cube = el;
+    await new Promise((r) => requestAnimationFrame(() => r()));
+  });
+  const whole = await edgeInk(false);
+  assert.deepEqual(whole, { outerLeft: 0, outerRight: 0 }, 'precondition: the whole view fits');
+  await page.evaluate(() => window.__cube.setAttribute('back-view', 'side-by-side'));
+  const split = await edgeInk(true);
+  assert.deepEqual(split, { leftPaneOuter: 0, leftPaneInner: 0, rightPaneInner: 0, rightPaneOuter: 0 },
+    `the split view runs off its panes: ${JSON.stringify(split)}`);
+  await page.evaluate(() => window.__cube.setAttribute('back-view', 'none'));
+  const back = await page.evaluate(() => window.__cube.camera.position.length());
+  await page.evaluate(() => window.__cube.setAttribute('back-view', 'side-by-side'));
+  const splitDistance = await page.evaluate(() => window.__cube.camera.position.length());
+  assert.ok(splitDistance > back, `a narrower pane must stand further back: ${splitDistance} vs ${back}`);
+});
+
+// The light rig keeps each light's direction relative to the camera, taken from the view the look
+// was tuned under. It was taken from the camera AS CONFIGURED at build time instead, so the same
+// final attributes lit the cube two ways depending on whether they were set before connecting.
+test('the light rig is the same whether the camera was set before the cube connected or after', async () => {
+  const rigs = await page.evaluate(async () => {
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const make = async (before) => {
+      const el = document.createElement('cubus-cube');
+      el.style.cssText = 'position:fixed;left:0;top:0;width:240px;height:240px';
+      el.setAttribute('facelets', 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB');
+      const cam = { 'camera-up': 'D', 'camera-latitude': '10', 'camera-longitude': '120' };
+      if (before) for (const [k, v] of Object.entries(cam)) el.setAttribute(k, v);
+      document.body.appendChild(el);
+      await tick();
+      if (!before) for (const [k, v] of Object.entries(cam)) el.setAttribute(k, v);
+      await tick();
+      const out = el._lights.map(([light]) => [light.position.x, light.position.y, light.position.z]
+        .map((v) => Math.round(v * 1e6) / 1e6 + 0));
+      el.dispose(); el.remove();
+      return out;
+    };
+    if (window.__cube) { window.__cube.dispose?.(); window.__cube.remove?.(); window.__cube = null; }
+    return { before: await make(true), after: await make(false) };
+  });
+  assert.deepEqual(rigs.before, rigs.after, 'the same camera lit the cube differently depending on when it was set');
+});
