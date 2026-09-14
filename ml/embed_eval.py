@@ -63,6 +63,7 @@ def load_model(pt: Path):
         context=state.get("context", False),
         backbone=state.get("backbone"),
         embed_dim=state["embed_dim"],
+        input_normalised=state.get("input_normalised", False),  # absent: trained on raw 0-1 pixels
     )
     model.load_state_dict(state["model"])
     return model.eval(), state["imgsz"], state["embed_dim"]
