@@ -1,12 +1,12 @@
-// The walk on the cube screen: loading it, stepping through it, and following a smart cube along it.
+// The walk on the cube screen: loading it, stepping through it, following a smart cube along it.
 //
 // A walk SESSION is everything one mounted cube screen owns about its walk, and it outlives every
 // single walk shown on that screen: the walk itself (the moves, the state after each, the target, a
 // lesson or a stage route), the transport that steps through it, following a physical cube along
 // it, the live distance to a stage, the rung offer at its end, and the load that replaces the walk
 // when the subject changes. The SCREEN keeps its composition — the markup, the renderer element,
-// the two nets, the speed menu, the die, the reconnect question — and hands this module the parts of
-// it a walk writes to.
+// the two nets, the speed menu, the die, the reconnect question — and hands this module the parts
+// of it a walk writes to.
 //
 // These were the 1,400 walk lines of `cubeScreen`'s mount in app.js, a closure that read 63 of that
 // file's module-level names and wrote four without naming any of them. `lib/hold-presenter.js` took
@@ -17,9 +17,9 @@
 // Two things deliberately stay outside this module, and each arrives as a function. The WORDS that
 // may claim a minimum: there are three sanctioned sources (AGENTS.md, fourth seam) and
 // `optimal.test.mjs` finds the app's two by name, in lib/prove-affordance.js — so `sayWalkLength`
-// comes in here the way `runProof` receives `sayProved`. And the route race, `lastRoute`, which reads
-// no screen state and sits with the cube screen (lib/screens/cube.js), beside the one budget the app
-// may import from the stage engine.
+// comes in here the way `runProof` receives `sayProved`. And the route race, `lastRoute`, which
+// reads no screen state: the cube screen builds it (lib/screens/cube/route-race.js) beside the one
+// budget the app may import from the stage engine.
 
 import { t } from './i18n.js';
 import { SCAN_HOLD, fromMethodFrame, holdSentence, renameAlg } from './solving-hold.js';
@@ -34,8 +34,9 @@ import { createWalkPresenter } from './walk-presenter.js';
 import { createFollowTracker } from './walk-follow.js';
 
 /** Destructuring through this refuses, AT CONSTRUCTION, any name `from` does not provide — so a
- *  service missing from `WALK_APP` fails the mount, not the one rare press that would first call it.
- *  The names are written once, in the destructuring itself, so there is no second list to drift. */
+ *  service missing from `WALK_APP` fails the mount, not the one rare press that would first call
+ *  it. The names are written once, in the destructuring itself, so there is no second list to
+ *  drift. */
 const provided = (from, what) => new Proxy(from, {
   get(target, key) {
     if (!(key in target)) throw new TypeError(`walk session: the ${what} does not provide "${String(key)}"`);
@@ -51,9 +52,9 @@ const provided = (from, what) => new Proxy(from, {
  * first search already reaches this walk's follow model.
  *
  * @param {object} screen what the SCREEN owns and a walk writes to: `root`; the renderer `cube`;
- *   `scrambling`, `walking`, `unsolvable` and `label`, as the screen was composed; `stateHeading()`;
- *   `stale()`, its generation check; `signal`, its abort; `paintNet` and `paintAim`;
- *   `syncReconnectAsk()`; and `applyTempo()`, the speed menu's.
+ *   `scrambling`, `walking`, `unsolvable` and `label`, as the screen was composed;
+ *   `stateHeading()`; `stale()`, its generation check; `signal`, its abort; `paintNet` and
+ *   `paintAim`; `syncReconnectAsk()`; and `applyTempo()`, the speed menu's.
  * @param {object} app what the APP owns: shared `state` and `settings`, and every service a walk
  *   reaches for — listed once, as `WALK_APP` in lib/screens/cube.js. `cubejs()` and
  *   `solverReady()` are functions because `loadSolver` assigns both long after that object exists.
@@ -67,7 +68,7 @@ export function createWalkSession(screen, app) {
     state, settings, SOLVED, CHIP_NODE_BUDGET, WALK_FAILURES, cubejs, solverReady, loadSolver,
     randomScramble, deriveCube, classifyCube, adoptCube, chainTrusted, markStale, lessonFor,
     stageAsk, stepStates, putInPlay, parkRoll, refreshScreen, go, save, raiseRung, escHtml, icon,
-    lastRoute, sayWalkLength,
+    lastRoute, sayWalkLength, describeCube,
   } = provided(app, 'app');
   const $ = (sel, from) => from.querySelector(sel);
 
@@ -114,6 +115,9 @@ export function createWalkSession(screen, app) {
   // both believe they were still valid, and the slower solve would paint its move list over
   // the cube the faster one left on screen.
   let walkGen = 0;
+  /** Whether a walk is committed on screen: false from beginWalk until a load commits one, so also
+   *  after a load that failed. `total` cannot say it — a stage already reached is a walk of 0. */
+  let walkLoaded = false;
 
   // The walk's view — the transport head, the chips' marks, the play and step buttons, the
   // renderer's step event and the scramble hand-off — is its own unit (lib/walk-presenter.js). It
@@ -123,7 +127,7 @@ export function createWalkSession(screen, app) {
     holdAt, holdCube, pointAtStep, sync, setPlaying, clearChips, takeChips, resetHead,
   } = createWalkPresenter({
     root, cube, state, signal, scrambling, stale, solList, icon, adoptCube, go,
-    walkNow: () => ({ total, target, alg, lesson, walkHold, walkGen }),
+    walkNow: () => ({ total, target, alg, lesson, walkHold, walkGen, walkLoaded }),
     takeOver: () => follow.takeOver(),
     onHead: (from, to, walk) => offer.onHead(from, to, walk),
   });
@@ -143,51 +147,46 @@ export function createWalkSession(screen, app) {
     },
   });
 
-  /** The selected walk, said in both channels — the class for the eye, `aria-pressed` for the
-   *  screen reader that cannot see it. */
-  const setWalkPill = (pill, kind) => {
-    const on = pill.dataset.walk === kind;
-    pill.classList.toggle('on', on);
-    pill.setAttribute('aria-pressed', String(on));
+  /** A group of pills with one on, said in both channels — the class for the eye, `aria-pressed`
+   *  for the screen reader that cannot see it. */
+  const paintGroup = (key, chosen) => {
+    for (const pill of root.querySelectorAll(`[data-${key}]`)) {
+      const on = pill.dataset[key] === chosen;
+      pill.classList.toggle('on', on);
+      pill.setAttribute('aria-pressed', String(on));
+    }
   };
 
-  // The two objects, and the switch between them (§3). Wired once per MOUNT, like every other
-  // control here: a retarget replaces the walk beneath these, not the buttons.
-  //
-  // Pressing the one already showing does nothing — re-solving to arrive at the same walk
-  // would throw away the transport position for no change on screen.
-  for (const pill of root.querySelectorAll('[data-walk]')) {
-    pill.onclick = () => {
-      const want = pill.dataset.walk;
-      if (want === walkKind) return;
-      walkKind = want;
-      for (const p of root.querySelectorAll('[data-walk]')) setWalkPill(p, walkKind);
-      void loadWalk();
-    };
-  }
-
-  // WHERE THIS WALK IS GOING, and it is a walk REPLACEMENT rather than a screen change — which
-  // is exactly what `retarget()` exists for (§6). Nothing here rebuilds: the composition does
-  // not depend on the target, only the walk inside it does.
-  for (const pill of root.querySelectorAll('[data-stage]')) {
-    pill.onclick = () => {
-      const want = pill.dataset.stage;
-      if (want === state.stageTarget) return; // re-solving to the same target throws away the
-      state.stageTarget = want;               // transport position for no change on screen
-      for (const p of root.querySelectorAll('[data-stage]')) {
-        const on = p.dataset.stage === want;
-        p.classList.toggle('on', on);
-        p.setAttribute('aria-pressed', String(on));
-      }
-      void loadWalk();
-    };
-  }
+  /**
+   * Wire a group of pills, once per MOUNT like every other control here: a retarget replaces the
+   * walk beneath these, not the buttons. A press is a walk REPLACEMENT, never a screen change —
+   * the composition does not depend on which pill is on, only the walk inside it does (§6).
+   *
+   * Pressing the one already on does nothing: re-solving to arrive at the same walk would throw
+   * away the transport position for no change on screen.
+   */
+  const wireGroup = (key, now, choose) => {
+    for (const pill of root.querySelectorAll(`[data-${key}]`)) {
+      pill.onclick = () => {
+        const want = pill.dataset[key];
+        if (want === now()) return;
+        choose(want);
+        paintGroup(key, want);
+        void loadWalk();
+      };
+    }
+  };
+  // The two objects, and the switch between them (§3).
+  wireGroup('walk', () => walkKind, (want) => { walkKind = want; });
+  // WHERE THIS WALK IS GOING — which is exactly what `retarget()` exists for.
+  wireGroup('stage', () => state.stageTarget, (want) => { state.stageTarget = want; });
 
   // How far the cube in your hand is from the target, refreshed on every turn — its own unit, with
   // its own generation counter (lib/walk-live-distance.js). It reads the follow model when it asks,
   // so it is handed a function for it rather than the model.
   const { refresh: refreshLiveDistance, drop: dropLiveDistance } = createLiveDistance({
     root, stageAsk, chainTrusted, CHIP_NODE_BUDGET, stageTargetNow, modelNow: () => follow.model(),
+    signal,
   });
 
   // Following a smart cube along the walk — the model of where the cube is, the four live hooks,
@@ -195,7 +194,7 @@ export function createWalkSession(screen, app) {
   // (lib/walk-follow.js). It reads the walk when it acts.
   const follow = createFollowTracker({
     root, cube, state, cubejs, applyTempo, setPlaying, holdAt, markStale, adoptCube, go, scrambling,
-    refreshLiveDistance, dropLiveDistance, walkNow: () => ({ moves, steps }),
+    refreshLiveDistance, dropLiveDistance, chainTrusted, walkNow: () => ({ moves, steps }),
   });
 
   /**
@@ -227,11 +226,7 @@ export function createWalkSession(screen, app) {
     return target;
   }
 
-
   // ---- loading a walk into this screen ----------------------------------------------------
-  /** Work out the walk for whatever the subject is NOW, and put it on the screen already
-   *  standing. Called once by mount, and again by `update` every time the subject changes.
-   *  Returns false when it was overtaken and wrote nothing. */
   /** Put the screen into "this cube, no walk yet" — the honest state to wait in.
    *
    *  Called BEFORE the solve, not after it. The moment the subject changes, everything the
@@ -242,7 +237,7 @@ export function createWalkSession(screen, app) {
    *  answer has to be searched for, this is what the search is waited out in.
    */
   function beginWalk() {
-    moves = []; steps = []; clearChips(); total = 0; target = null;
+    moves = []; steps = []; clearChips(); total = 0; target = null; walkLoaded = false;
     // The live number and the aim describe the walk being replaced. An answer already in flight
     // for the OLD target would otherwise repaint after a new one is chosen — and a reload that
     // then fails would leave the old aim standing beside no walk at all.
@@ -285,6 +280,7 @@ export function createWalkSession(screen, app) {
       cube.removeAttribute('scramble'); cube.removeAttribute('alg');
       cube.setAttribute('facelets', state.cube.facelets);
       paintNet(state.cube.facelets);
+      describeCube(cube, state.cube);
     }
     sync(0);
     setStatus('working…');
@@ -292,7 +288,7 @@ export function createWalkSession(screen, app) {
 
   function failWalk(err) {
     const key = String(err?.message ?? err ?? '');
-    follow.refuse('Needs a solve worked out on this screen');
+    follow.refuse(t('Needs a solve worked out on this screen'));
     // A cross-check refusal names itself in prose rather than in a code (finishSolve throws
     // 'solver cross-check failed — re-scan'), so it is matched rather than looked up.
     const why = WALK_FAILURES[key]
@@ -311,46 +307,35 @@ export function createWalkSession(screen, app) {
    *  kind and the pills are this screen's, so the resolver asks for the fallback, not makes it. */
   function fallBackToSolution() {
     walkKind = 'solution';
-    for (const p of root.querySelectorAll('[data-walk]')) setWalkPill(p, 'solution');
+    paintGroup('walk', 'solution');
   }
   const { resolveWalk } = createWalkResolver({
     state, SOLVED, solverReady, loadSolver, randomScramble, deriveCube, lastRoute, lessonFor, stepStates,
     setStatus, fallBackToSolution,
   });
 
-  async function loadWalk() {
-    const mine = ++walkGen;
-    // A new walk has been followed nowhere yet. Without this, switching Solution → Lesson
-    // would inherit the moves the previous walk had stepped through and credit the new one on
-    // the strength of them.
-    offer.newWalk();
-    // Two ways to become obsolete: the screen was replaced (screenGen), or another press
-    // started a newer walk on this same screen (walkGen). Both must stop this one writing.
-    const fresh = () => !stale() && mine === walkGen;
-    // The previous walk's search is about a cube this one is replacing. Aborted BEFORE the
-    // new one starts, so the pool is free rather than working through a dead search first.
-    walkAbort?.abort();
-    const abort = walkAbort = new AbortController();
+  /** The turns the cube in hand has made since its last snapshot, adopted where it is trusted to
+   *  have made them — before anything is drawn or searched for. */
+  function adoptTurnsAhead() {
     // THE CUBE IN HAND, BEFORE ANYTHING IS DRAWN OR SEARCHED — and the placement is the whole
     // of it. `liveMove` advances the local model on every reported turn while
     // `state.cube.facelets` waits for a snapshot or an `adoptCube`, so a target chosen after a
     // few turns was answered for a cube that no longer exists: scan `R`, turn `U`, ask for the
     // first layer, and the app offered `R'`. Reproduced by an audit.
     //
-    // ADOPTED HERE rather than inside the search, and the first fix put it inside. That left
+    // ADOPTED BEFORE the search rather than inside it, and the first fix put it inside. That left
     // two things describing the older cube: `beginWalk` had already painted the net, and the
     // whole-cube locals had already been read off `state.cube` — so a repair that then found
     // nothing committed the PREVIOUS cube's algorithm over the new subject. Both reproduced by
     // the verify pass on that very fix, which is the argument for adopting before the screen
     // and the search rather than between them.
     //
-    // ON EVERY RELOAD, and gating it on the selector was wrong. The reset at the end of this
-    // function clears `liveModel` and reseeds it from `state.live`, which is the last SNAPSHOT
-    // — so any walk reload that did not adopt first silently rewound the model past the turns
-    // since that snapshot, and a later target press then had nothing to notice. Reproduced by
-    // a verify pass: scan `R`, turn `U`, switch Solution → Lesson, choose the first layer, and
-    // the app is back to offering `R'`. Adopting here CAPTURES those turns instead of losing
-    // them, which is better than the behaviour it replaces rather than merely different.
+    // ON EVERY RELOAD, and gating it on the selector was wrong. The walk reset of the time cleared
+    // the model and reseeded it from `state.live`, the last SNAPSHOT — so a reload that did not
+    // adopt first rewound the model past the turns since that snapshot, and a later target press
+    // had nothing left to notice. Reproduced by a verify pass: scan `R`, turn `U`, switch
+    // Solution → Lesson, choose the first layer, and the app was back to offering `R'`. Adopting
+    // here CAPTURES those turns instead of losing them.
     //
     // `isPhysical` is what keeps it honest. A generated subject — the die's cube — is not the
     // cube in anybody's hand, and adopting a connected cube's position over it would throw the
@@ -366,58 +351,37 @@ export function createWalkSession(screen, app) {
         state.live = now;
       }
     }
+  }
+
+  /** Whether the subject has stopped fitting the composition this screen was built for — in which
+   *  case the rebuild has been asked for, and the load must stop. */
+  function compositionGone() {
     // THE CUBE MAY BE SOMETHING ELSE ENTIRELY, whether or not THIS load is what changed it.
     // Turning `R'` after a scanned `R` leaves a solved cube, which has no walk at all — so the
     // composition this screen was built for is gone and `deriveCube` would throw "nothing to
     // walk", reaching the child as "could not work it out" about a cube that is finished.
     //
-    // UNCONDITIONAL, and nesting it inside the adoption was the bug: a snapshot that had
-    // already ingested the solved cube made the adoption a no-op, so the check never ran and
-    // the defect came back by another path. Reproduced by an audit, twice, which is what a
-    // guard placed inside a branch earns.
-    if (!scrambling) {
-      const after = classifyCube();
-      if (after.solvable !== walking || after.unsolvable !== unsolvable) {
-        // DEFERRED past any refresh that is already running. `refreshScreen` guards itself with
-        // `refreshing`, so calling it from a load that `refreshScreen` ITSELF started is
-        // swallowed — and `update()` has already reported success by then, so no rebuild
-        // happens at all. A microtask runs after that guard has been released.
-        queueMicrotask(() => { if (!stale()) refreshScreen(); });
-        return false;
-      }
-    }
-    beginWalk();
-    // A retarget replaces the SUBJECT, and a native proof about the old subject must not
-    // outlive it — same rule as renderScreen's teardown, for the path that never renders.
-    if (optimalCapability()) optimalCancel().catch((err) => console.warn('optimal cancel failed', err));
-    // WORKED OUT INTO LOCALS, COMMITTED AFTER THE FRESHNESS CHECK — not before it. Two loads
-    // can be in flight at once (a reconnect answered while the die's is still solving), and
-    // the slower one finishes last. Assigning the shared `moves` / `steps` / `target` inside
-    // the search and only THEN noticing it had been overtaken left the screen showing one
-    // cube while every closure that reads those — follow's `locate`, the midpoint table,
-    // "Solve this scramble" — had been handed the other one. Nothing crosses out of here
-    // until this load is known to still be the current one, so there is no window in which
-    // that disagreement exists at all.
-    const stageTarget = scrambling ? null : stageTargetNow();
-    let got;
-    try {
-      // The search, and the race inside it, are the resolver's (lib/walk-resolver.js): it works
-      // the walk out into one record and hands it back, and nothing in it is committed until below.
-      got = await resolveWalk({ scrambling, stageTarget, walkKind, fresh, signal: abort.signal });
-    } catch (err) {
-      // A search this screen itself called off is not a failure to report: the subject it was
-      // about is gone, and the walk that replaced it owns the screen now. Superseded, silent.
-      if (abort.signal.aborted) return false;
-      if (fresh()) failWalk(err);
-      return false;
-    }
-    if (!got) return false; // overtaken while it searched: a newer load owns the screen
+    // ITS OWN CALL, never inside the adoption: a snapshot that had already ingested the solved
+    // cube made the adoption a no-op, so a check nested in it never ran and the defect came back
+    // by another path. Reproduced by an audit, twice, which is what a guard placed inside a
+    // branch earns.
+    if (scrambling) return false;
+    const after = classifyCube();
+    if (after.solvable === walking && after.unsolvable === unsolvable) return false;
+    // DEFERRED past any refresh that is already running. `refreshScreen` guards itself with
+    // `refreshing`, so calling it from a load that `refreshScreen` ITSELF started is swallowed
+    // — and `update()` has already reported success by then, so no rebuild happens at all. A
+    // microtask runs after that guard has been released.
+    queueMicrotask(() => { if (!stale()) refreshScreen(); });
+    return true;
+  }
+
+  /** The walk a load resolved, in place of the last one — only ever after its freshness check. */
+  function commitWalk(got, stageTarget) {
     const {
       setup: gotSetup, alg: gotAlg, moves: gotMoves, steps: gotSteps, target: gotTarget,
       roll: gotRoll, lesson: gotLesson, route: gotRoute,
     } = got;
-    if (!fresh()) { parkRoll(gotRoll); return false; } // navigated away, or a newer load took over
-
     // The scramble in play is committed HERE, with everything else, and not inside the search:
     // a slower load finishing last would otherwise have left the solve history recording
     // against a scramble that is not the one on screen.
@@ -431,6 +395,11 @@ export function createWalkSession(screen, app) {
     // scramble keep the scan's hold. A lesson overrides it per move (`holdAt`).
     walkHold = walkHoldFor(gotRoute, stageTarget);
     total = moves.length;
+    walkLoaded = true;
+  }
+
+  /** The walk on the renderer: where it starts, the moves it animates, and which way up. */
+  function drawWalk() {
     if (scrambling) paintNet(target);
     // The Scramble side genuinely starts from solved, so an empty setup alg is its normal
     // case and `scramble=""` says exactly that. On the SOLVE side an empty one means
@@ -451,39 +420,44 @@ export function createWalkSession(screen, app) {
       cube.setAttribute('facelets', steps[0] ?? state.cube.facelets);
     }
     cube.setAttribute('alg', alg);
-    // WHAT THE CHILD IS AIMING AT, with everything the target leaves free drawn as an empty
-    // well. Repainted per walk, because a retarget changes the target and a stale picture
-    // would be pointing at a stage nobody is walking to. Hidden for the whole cube, where the
-    // picture is a solved cube and says nothing a person did not already know.
-    const aim = $('#stageAim', root);
-    if (aim) {
-      const aimingAt = stageTargetNow();
-      aim.hidden = !aimingAt;
-      // ONE PICTURE, NOT TWO (the owner's call, 2026-09-13). The card held the Initial State net
-      // AND the target, and on the small desktop windows and an iPad in landscape it grew past
-      // its grid row and was drawn over the sheet — 603px of card in a 470px row on the 840×682
-      // window, where a child could not press "first layer". So while a target is shown it
-      // takes the net's place and the heading says what the picture is. The 3D cube still
-      // shows where the walk starts, and `beginWalk` puts the Initial State back for the next.
-      const net = $('#viewNet', root);
-      if (net) net.hidden = Boolean(aimingAt);
-      if (aimingAt) {
-        const heading = root.querySelector('.state-h');
-        if (heading) heading.textContent = t('Aiming at the %1', aimingAt.name);
-        const say = $('#stageAimSay', root);
-        // What grey means, and how to hold the cube for the walk under it — named by white,
-        // green and position, which are the same on every cube (`holdSentence` says why).
-        if (say) say.textContent = t('%1 %2', t('Grey doesn’t matter yet.'), holdSentence(walkHold));
-        // The picture is the target in the METHOD frame; the renderer and the net draw the
-        // scan frame, so it is turned before it is painted.
-        paintAim(fromMethodFrame(targetPicture(aimingAt)));
-      }
-    }
     // WHICH WAY UP (ADR 0003): the CUBE turns, never the camera. This used to set `camera-up`,
     // which moves the eye — the lamp rolled with it, and every move stayed named for white up
     // while the face turning on screen was the one at the bottom. The renderer turns the object,
     // and the chips below are named for the same hold, so the drawing and the words agree.
     holdCube(holdAt(0));
+  }
+
+  /** WHAT THE CHILD IS AIMING AT, with everything the target leaves free drawn as an empty well. */
+  function presentTarget() {
+    // Repainted per walk, because a retarget changes the target and a stale picture would be
+    // pointing at a stage nobody is walking to. Hidden for the whole cube, where the picture is a
+    // solved cube and says nothing a person did not already know.
+    const aim = $('#stageAim', root);
+    if (!aim) return;
+    const aimingAt = stageTargetNow();
+    aim.hidden = !aimingAt;
+    // ONE PICTURE, NOT TWO (the owner's call, 2026-09-13). The card held the Initial State net
+    // AND the target, and on the small desktop windows and an iPad in landscape it grew past
+    // its grid row and was drawn over the sheet — 603px of card in a 470px row on the 840×682
+    // window, where a child could not press "first layer". So while a target is shown it
+    // takes the net's place and the heading says what the picture is. The 3D cube still
+    // shows where the walk starts, and `beginWalk` puts the Initial State back for the next.
+    const net = $('#viewNet', root);
+    if (net) net.hidden = Boolean(aimingAt);
+    if (!aimingAt) return;
+    const heading = root.querySelector('.state-h');
+    if (heading) heading.textContent = t('Aiming at the %1', aimingAt.name);
+    const say = $('#stageAimSay', root);
+    // What grey means, and how to hold the cube for the walk under it — named by white,
+    // green and position, which are the same on every cube (`holdSentence` says why).
+    if (say) say.textContent = t('%1 %2', t('Grey doesn’t matter yet.'), holdSentence(walkHold));
+    // The picture is the target in the METHOD frame; the renderer and the net draw the
+    // scan frame, so it is turned before it is painted.
+    paintAim(fromMethodFrame(targetPicture(aimingAt)));
+  }
+
+  /** Which object is on screen, and how long it is — said beside the move list. */
+  function labelWalk(fresh) {
     // The pair of pills belongs to the whole-cube walk. A repair has no lesson to switch to
     // (§9.4), so the switch is taken away rather than left pointing at nothing.
     const kindRow = $('#walkKindRow', root);
@@ -504,14 +478,19 @@ export function createWalkSession(screen, app) {
       rungLine.textContent = lesson ? lesson.summary : '';
     }
     // The count beside the heading and the offer to prove it are the APP's to say: a minimality
-    // claim has three sanctioned sources, and two of them are found by name in lib/prove-affordance.js.
-    sayWalkLength({ root, setStatus, scrambling, route, stageTargetNow, lesson, total, steps, fresh });
-    // ONE GRID for a Solution, SECTIONS for a Lesson — and the difference is not decoration.
-    //
-    // The solve side used to cut its list at fixed 16 / 62 / 82% and head the pieces CROSS /
-    // F2L / OLL / PLL: proportional slices of a two-phase solution wearing the names of stages
-    // it does not have. That was removed for being invented structure on the screen a beginner
-    // trusts most, and one flat grid is the honest rendering of an object with no stages.
+    // claim has three sanctioned sources, and two of them are found by name in
+    // lib/prove-affordance.js. `signal` is this walk's: it aborts when the walk is replaced or the
+    // screen goes, and a proof pressed for it lets go of what it listens to then.
+    sayWalkLength({ root, setStatus, scrambling, route, stageTargetNow, lesson, total, steps, fresh, signal: walkAbort?.signal });
+  }
+
+  /** The moves themselves: ONE GRID for a Solution, SECTIONS for a Lesson. */
+  function renderMoveList() {
+    // The difference is not decoration. The solve side used to cut its list at fixed 16 / 62 / 82%
+    // and head the pieces CROSS / F2L / OLL / PLL: proportional slices of a two-phase solution
+    // wearing the names of stages it does not have. That was removed for being invented structure
+    // on the screen a beginner trusts most, and one flat grid is the honest rendering of an object
+    // with no stages.
     //
     // A lesson IS an object with stages, so it gets them — read off its own steps, never
     // proportioned (§5.1). Each heading carries the step count for that stage, which is the
@@ -538,7 +517,59 @@ export function createWalkSession(screen, app) {
               <div class="move-chips">${chipsFor(s.from, s.to)}</div></div>`).join('')
       : `<div style="padding:6px 18px 12px"><div class="move-chips">${chipsFor(0, moves.length)}</div></div>`;
     takeChips();
+  }
 
+  /** Work out the walk for whatever the subject is NOW, and put it on the screen already
+   *  standing. Called once by mount, and again by `update` every time the subject changes.
+   *  Returns false when it was overtaken and wrote nothing. */
+  async function loadWalk() {
+    const mine = ++walkGen;
+    // A new walk has been followed nowhere yet. Without this, switching Solution → Lesson
+    // would inherit the moves the previous walk had stepped through and credit the new one on
+    // the strength of them.
+    offer.newWalk();
+    // Two ways to become obsolete: the screen was replaced (screenGen), or another press
+    // started a newer walk on this same screen (walkGen). Both must stop this one writing.
+    const fresh = () => !stale() && mine === walkGen;
+    // The previous walk's search is about a cube this one is replacing. Aborted BEFORE the
+    // new one starts, so the pool is free rather than working through a dead search first.
+    walkAbort?.abort();
+    const abort = walkAbort = new AbortController();
+    // The cube in hand first, then whether this screen can still show it, then the empty screen to
+    // wait in — three calls in this order, and none of them inside another.
+    adoptTurnsAhead();
+    if (compositionGone()) return false;
+    beginWalk();
+    // A retarget replaces the SUBJECT, and a native proof about the old subject must not
+    // outlive it — same rule as renderScreen's teardown, for the path that never renders.
+    if (optimalCapability()) optimalCancel().catch((err) => console.warn('optimal cancel failed', err));
+    // WORKED OUT INTO A RECORD, COMMITTED AFTER THE FRESHNESS CHECK — not before it. Two loads
+    // can be in flight at once (a reconnect answered while the die's is still solving), and
+    // the slower one finishes last. Assigning the shared `moves` / `steps` / `target` inside
+    // the search and only THEN noticing it had been overtaken left the screen showing one
+    // cube while every closure that reads those — follow's `locate`, the midpoint table,
+    // "Solve this scramble" — had been handed the other one. Nothing crosses out of here
+    // until this load is known to still be the current one, so there is no window in which
+    // that disagreement exists at all.
+    const stageTarget = scrambling ? null : stageTargetNow();
+    let got;
+    try {
+      // The search, and the race inside it, are the resolver's (lib/walk-resolver.js).
+      got = await resolveWalk({ scrambling, stageTarget, walkKind, fresh, signal: abort.signal });
+    } catch (err) {
+      // A search this screen itself called off is not a failure to report: the subject it was
+      // about is gone, and the walk that replaced it owns the screen now. Superseded, silent.
+      if (abort.signal.aborted) return false;
+      if (fresh()) failWalk(err);
+      return false;
+    }
+    if (!got) return false; // overtaken while it searched: a newer load owns the screen
+    if (!fresh()) { parkRoll(got.roll); return false; } // navigated away, or a newer load took over
+    commitWalk(got, stageTarget);
+    drawWalk();
+    presentTarget();
+    labelWalk(fresh);
+    renderMoveList();
     // Nothing may survive from the previous walk. Each of these is a position ON a plan, and
     // the plan has just been replaced: carried over, they describe a cube that is no longer
     // on screen.
@@ -547,10 +578,10 @@ export function createWalkSession(screen, app) {
     // the midpoints of this walk's half turns built, and whether the cube may lead judged again.
     follow.rebase({ moves, steps, total });
     sync(0);
-    // THE LIVE NUMBER, AFTER THE MODEL IT READS. Asked from the aim block above, it ran before
-    // `liveModel` was reset to null and re-seeded thirty lines down — so a fresh mount produced
-    // no number at all and a retarget asked the PREVIOUS model about the NEW target. Both are
-    // the same mistake: a question asked before its subject exists. Found by an audit.
+    // THE LIVE NUMBER, AFTER THE MODEL IT READS. Asked from the aim block, it once ran before the
+    // model was reset and re-seeded — so a fresh mount produced no number at all and a retarget
+    // asked the PREVIOUS model about the NEW target. Both are the same mistake: a question asked
+    // before its subject exists. Found by an audit.
     void refreshLiveDistance();
     return true;
   }
@@ -566,7 +597,8 @@ export function createWalkSession(screen, app) {
     /** Whether the physical cube is driving the guide. The speed menu's tempo reads it: a mirror of
      *  turns the hand has already made must never play slower than the hand. */
     following: () => follow.following(),
-    /** The live hooks. The screen installs them into the app's slots, which a module cannot write. */
+    /** The live hooks. The screen installs them into the app's slots, which a module cannot
+     *  write. */
     liveMove: follow.liveMove, liveUpdate: follow.liveUpdate,
     liveGap: follow.liveGap, onTrustLost: follow.onTrustLost,
   });

@@ -56,11 +56,11 @@ test('a lesson is held per move, turns over once after the first layer, and says
   assert.equal(held[total], 'D B', 'past the last move, the last step\'s hold stays');
 
   for (let i = 0; i <= total; i++) {
-    assert.equal(holdChangeAt(lesson, SCAN_HOLD, i).say, i === flip ? holdSentence(TUMBLED) : '',
+    assert.equal(holdChangeAt(lesson, SCAN_HOLD, i, i > 0 ? holdAtMove(lesson, SCAN_HOLD, i - 1) : SCAN_HOLD).say, i === flip ? holdSentence(TUMBLED) : '',
       `head ${i}: only the move that begins a hold says how to hold the cube`);
   }
   assert.equal(spec(holdAtMove(null, TUMBLED, 3)), 'D B', 'with no lesson, the walk\'s own hold holds throughout');
-  assert.equal(holdChangeAt(null, TUMBLED, 3).say, '', 'and never changes');
+  assert.equal(holdChangeAt(null, TUMBLED, 3, TUMBLED).say, '', 'and never changes');
 });
 
 /** A renderer that records what it was asked to do, and refuses to be given a pose attribute. */
@@ -124,4 +124,33 @@ test('a hold that waited for the renderer does nothing on a screen that has been
   reg.define();
   await flush();
   assert.deepEqual(turns, [], 'a parked cube belongs to the next screen, and must not be turned for this one');
+});
+
+/** A lesson as the walk session gets one: worked in the method frame from `alg` applied to
+ *  solved. */
+const lessonOf = (alg) => {
+  const scan = Cube.fromString(SOLVED);
+  scan.move(alg);
+  const { steps } = solveByMethod(fromCube(Cube.fromString(toMethodFrame(scan.asString()))), methodFor());
+  return { steps, moveStep: moveStepIndex(steps) };
+};
+
+// The sentence follows the hold the screen last SHOWED, not move `i - 1`: a lesson begun turned
+// over never said to turn the cube, and a jump or a step back across the turn landed silently
+// (found by audit, 2026-09-13).
+test('the hold sentence follows the hold the screen showed — begun turned over, a jump, a step back', () => {
+  const late = lessonOf('D');
+  assert.equal(spec(holdAtMove(late, SCAN_HOLD, 0)), 'D B', 'precondition: this lesson begins after the turn');
+  assert.equal(holdChangeAt(late, SCAN_HOLD, 0, SCAN_HOLD).say, holdSentence(TUMBLED),
+    'a lesson that begins turned over never says to turn the cube over');
+
+  const lesson = lessonOf(randomAlg(lcg(1), 25));
+  const total = lesson.moveStep.length;
+  const flip = Array.from({ length: total + 1 }, (_, k) => spec(holdAtMove(lesson, SCAN_HOLD, k))).indexOf('D B');
+  assert.ok(flip > 1 && flip + 3 <= total, 'precondition: a turn with room either side');
+  assert.equal(holdChangeAt(lesson, SCAN_HOLD, flip + 3, SCAN_HOLD).say, holdSentence(TUMBLED),
+    'a jump past the turn landed silently');
+  assert.equal(holdChangeAt(lesson, SCAN_HOLD, flip - 1, TUMBLED).say, holdSentence(SCAN_HOLD),
+    'a step back across the turn landed silently');
+  assert.equal(holdChangeAt(lesson, SCAN_HOLD, flip + 1, TUMBLED).say, '', 'a hold already shown is said again');
 });

@@ -39,14 +39,17 @@ function rig({ saveOk = true, raiseOk = true } = {}) {
   const offer = createRungOffer({
     root,
     settings,
-    save: (key, value) => { saves.push({ key, follows: value.rungProgress.follows.cross }); return saveOk; },
+    save: (key, value) => {
+      saves.push({ key, follows: value.rungProgress.follows.cross });
+      return typeof saveOk === 'function' ? saveOk() : saveOk;
+    },
     raiseRung: (o) => { raises.push(o); return raiseOk; },
     onRaised: () => { raised += 1; },
   });
   const $ = (sel) => root.querySelector(sel);
   /** Step the head forward one move at a time from `from` to `to`. */
   const stepThrough = (from, to, walkGen) => {
-    for (let k = from; k < to; k += 1) offer.onHead(k, k + 1, { lesson: LESSON, total: to, walkGen });
+    for (let k = from; k < to; k += 1) offer.onHead(k, k + 1, { lesson: LESSON, total: to, walkGen, jumped: false });
   };
   return { offer, settings, saves, raises, raisedCount: () => raised, $, stepThrough };
 }
@@ -62,14 +65,14 @@ test('a lesson stepped through to its last move is credited once, and the row of
   assert.match(r.$('#rungOfferMsg').textContent, /Ready for/);
 
   // Back one and forward again: the same walk, arriving at the end a second time.
-  r.offer.onHead(2, 1, { lesson: LESSON, total: 2, walkGen: 1 });
-  r.offer.onHead(1, 2, { lesson: LESSON, total: 2, walkGen: 1 });
+  r.offer.onHead(2, 1, { lesson: LESSON, total: 2, walkGen: 1, jumped: false });
+  r.offer.onHead(1, 2, { lesson: LESSON, total: 2, walkGen: 1, jumped: false });
   assert.equal(r.saves.length, 1, 'one walk was credited twice for arriving at its end twice');
 });
 
 test('a jump to the last move credits nothing, because nothing was watched', () => {
   const r = rig();
-  r.offer.onHead(0, 2, { lesson: LESSON, total: 2, walkGen: 1 });
+  r.offer.onHead(0, 2, { lesson: LESSON, total: 2, walkGen: 1, jumped: false });
   assert.deepEqual(r.saves, [], 'a chip pressed at the end credited the whole lesson');
   assert.equal(r.$('#rungOffer').hidden, true);
 });
@@ -79,7 +82,7 @@ test('a new walk starts with nothing followed, and is credited on its own', () =
   r.stepThrough(0, 2, 1);
   assert.equal(r.saves.length, 1, 'precondition: the first walk was credited');
   r.offer.newWalk();
-  r.offer.onHead(0, 2, { lesson: LESSON, total: 2, walkGen: 2 });
+  r.offer.onHead(0, 2, { lesson: LESSON, total: 2, walkGen: 2, jumped: false });
   assert.equal(r.saves.length, 1, 'the new walk was credited on the moves the previous walk had followed');
   r.stepThrough(0, 2, 2);
   assert.equal(r.saves.length, 2, 'the new walk, followed through, was not credited');
@@ -130,4 +133,39 @@ test('a raise that cannot be saved is said in the row', () => {
   r.$('#rungYes').click();
   assert.equal(r.$('#rungOffer').hidden, false, 'a rung raise that did not reach storage was said nowhere');
   assert.match(r.$('#rungOfferMsg').textContent, /not saving your progress/);
+});
+
+test('a head moved one move at a time by jumps credits nothing — pressing chips in order shows no turn', () => {
+  const r = rig();
+  r.offer.onHead(0, 1, { lesson: LESSON, total: 2, walkGen: 1, jumped: true });
+  r.offer.onHead(1, 2, { lesson: LESSON, total: 2, walkGen: 1, jumped: true });
+  assert.deepEqual(r.saves, [], 'a lesson pressed through chip by chip was credited as followed');
+  // A head move nobody said was shown is not a step either: the credit fails closed.
+  r.offer.onHead(0, 1, { lesson: LESSON, total: 1, walkGen: 2 });
+  assert.deepEqual(r.saves, [], 'a head move with no word on how it moved was credited');
+});
+
+test('a write that fails and then lands stops saying the device is not saving, and offers again', () => {
+  const results = [false, true];
+  const r = rig({ saveOk: () => results.shift() });
+  r.stepThrough(0, 2, 1);
+  assert.match(r.$('#rungOfferMsg').textContent, /not saving your progress/, 'precondition: the failed write is said');
+  r.offer.newWalk();
+  r.stepThrough(0, 2, 2);
+  assert.equal(r.saves.length, 2, 'precondition: the second follow was written');
+  assert.doesNotMatch(r.$('#rungOfferMsg').textContent, /not saving/,
+    'one failed write said "not saving" for the rest of the visit, after writes had started landing');
+  assert.equal(r.$('#rungYes').hidden, false, 'and the offer the saved progress earned was never made');
+});
+
+test('replacing the walk hides an offer, but not the warning that progress is not saving', () => {
+  const failing = rig({ saveOk: false });
+  failing.stepThrough(0, 2, 1);
+  failing.offer.hide();
+  assert.equal(failing.$('#rungOffer').hidden, false, 'a new walk hid a warning about the device');
+  const saving = rig();
+  saving.stepThrough(0, 2, 1);
+  assert.equal(saving.$('#rungOffer').hidden, false, 'precondition: an offer is on screen');
+  saving.offer.hide();
+  assert.equal(saving.$('#rungOffer').hidden, true, 'an offer about the old walk outlived it');
 });
