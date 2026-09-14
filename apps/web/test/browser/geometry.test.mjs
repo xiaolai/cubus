@@ -740,7 +740,7 @@ for (const fixture of FIXTURES) {
       const floor = narrow ? 11 : fixture.touch ? 34 : 24;
       for (const t of m.tiles) assert.ok(t.sticker.width >= floor, `${t.face} sticker ${t.sticker.width}px < ${floor}`);
       // Every side is drawn at the same size — the net is six equal faces, not a hierarchy.
-      const widths = m.tiles.map((t) => Math.round(t.tile.width));
+      const widths = m.tiles.map((t) => Math.round(t.tile.width) + 0);
       assert.equal(new Set(widths).size, 1, `the six faces are not the same size: ${widths.join(', ')}`);
       // The card's tools park top-right; no tile may run under them.
       for (const t of m.tiles) assert.ok(!overlaps(m.tools, t.tile), `the tools overlap the ${t.face} tile`);
