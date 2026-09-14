@@ -40,7 +40,9 @@ export const APP_SOURCES = Object.freeze([
   // the cube screen's own parts, 2026-09-14
   // the scan screen's own parts, 2026-09-13
   'lib/screens/scan/stage-chips.js', 'lib/screens/scan/voice.js',
-  'lib/screens/scan/camera-menu.js', 'lib/screens/scan/reconnect-check.js', // the settings screen's own parts, 2026-09-14
+  'lib/screens/scan/camera-menu.js', 'lib/screens/scan/reconnect-check.js', 'lib/screens/scan/refusal.js',
+  'lib/screens/scan/board.js', 'lib/screens/scan/sticker-picker.js', 'lib/screens/scan/capture-record.js',
+  // the settings screen's own parts, 2026-09-14
   // the Timer's own parts, 2026-09-14
   ]);
 

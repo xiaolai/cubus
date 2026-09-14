@@ -18,6 +18,14 @@ import { t } from '../../i18n.js';
 const HOW = 'The camera opens with this screen and the detector scanner reads the stickers on device — no picture is kept, and none leaves it. Show the sides in any order; each is captured as soon as it holds still. Each tile is edged in the colours of its neighbours: hold a side that way up and the scan needs nothing more from you. Got a sticker wrong? Click it and pick the right colour.';
 // What to call the aside while the scanner is speaking, so "How it works" never heads an error.
 const SAY_TITLE = { error: 'Camera trouble', confirm: 'One more look', checking: 'Checking', done: 'Scanned' };
+// What a finished scan says to do next. A constant because the colour sentence must be able to keep
+// it: the panel stops the camera BEFORE it reports 'done', so nothing would say it a second time.
+const DONE_BODY = 'That’s the whole cube, checked and solvable — press "Solve this cube" when you’re ready. Spotted a wrong sticker? Click it and pick the right colour. Different cube? Start over with the ↻ button.';
+/** A notice's tone, and a phase's, as the card's class: one table each, so 'err' and 'ok' cannot
+ *  come to mean different things in the four places that wrote them by hand (found by audit,
+ *  2026-09-13). */
+const NOTICE_TONE = Object.freeze({ err: 'err', ok: 'ok' });
+const PHASE_TONE = Object.freeze({ error: 'err', checking: 'ok', done: 'ok' });
 
 /**
  * The aside of one mounted scan screen.
@@ -53,25 +61,12 @@ export function createScanVoice({ root, panel, closePops }) {
    *  knowing languages exist. Sentences with colour words baked in pass through untranslated
    *  until their call sites move to placeholder form — the seam dev-docs/i18n.md tracks. */
   const paintSay = (p) => {
+    wireAction(p.notice);
     const n = p.notice;
-    // The notice's one recommended action, as a button in the same card as the sentence. A
-    // refusal that can name no sticker says "start the scan over"; pointing at the toolbar's
-    // ↻ from a sentence in the aside was the confusion (2026-09-06), so the button is here.
-    const action = $('#scanAction', root);
-    if (action) {
-      const a = n?.action;
-      action.hidden = !a;
-      if (a) {
-        action.textContent = t(a.label);
-        action.onclick = () => { closePops(); if (a.kind === 'restart') panel.restart?.(); };
-      }
-    }
     if (n) {
-      sayTitle.textContent = t(n.title);
       // Translate FIRST, substitute after: a notice carrying a count or a side name keeps its
       // sentence whole in the catalog instead of arriving pre-assembled and untranslatable.
-      say.textContent = t(n.body, ...(n.params ?? []));
-      say.className = 'sub scan-say' + (n.tone === 'err' ? ' err' : n.tone === 'ok' ? ' ok' : '');
+      speak(t(n.title), t(n.body, ...(n.params ?? [])), NOTICE_TONE[n.tone] ?? '');
       // The hint is noise when it just restates the notice (the confirm ask opens the loop
       // with the same sentence the notice carries).
       const dup = !p.message || n.body.includes(p.message);
@@ -81,20 +76,29 @@ export function createScanVoice({ root, panel, closePops }) {
       // A finished scan answers "what do I do now?", and only this file can: the next action
       // is THIS screen's button. The scanner says the scan is complete; the words naming
       // "Solve this cube" belong to the screen the button lives on.
-      sayTitle.textContent = t('Scanned');
-      say.textContent = t('That’s the whole cube, checked and solvable — press "Solve this cube" when you’re ready. Spotted a wrong sticker? Click it and pick the right colour. Different cube? Start over with the ↻ button.');
-      say.className = 'sub scan-say ok';
+      speak(t('Scanned'), t(DONE_BODY), 'ok');
       // With the camera reopened over a finished scan, the camera's own line still matters
       // ("this cube is already scanned…"); with it off there is nothing to hint about.
       hint.textContent = p.device && p.message ? t(p.message) : '';
       hint.hidden = !hint.textContent;
     } else {
-      say.textContent = t(p.message || HOW);
-      sayTitle.textContent = (p.message && t(SAY_TITLE[p.phase] ?? '')) || t('How it works');
-      say.className = 'sub scan-say' + (p.phase === 'error' ? ' err' : p.phase === 'checking' || p.phase === 'done' ? ' ok' : '');
+      speak((p.message && t(SAY_TITLE[p.phase] ?? '')) || t('How it works'), t(p.message || HOW), PHASE_TONE[p.phase] ?? '');
       hint.textContent = '';
       hint.hidden = true;
     }
+  };
+
+  /** The notice's one recommended action, as a button in the same card as the sentence. A refusal
+   *  that can name no sticker says "start the scan over"; pointing at the toolbar's ↻ from a
+   *  sentence in the aside was the confusion (2026-09-06), so the button is here. */
+  const wireAction = (n) => {
+    const action = $('#scanAction', root);
+    if (!action) return;
+    const a = n?.action;
+    action.hidden = !a;
+    if (!a) return;
+    action.textContent = t(a.label);
+    action.onclick = () => { closePops(); if (a.kind === 'restart') panel.restart?.(); };
   };
 
   /**
@@ -104,11 +108,15 @@ export function createScanVoice({ root, panel, closePops }) {
    */
   const sayScheme = (p) => {
     if (!schemeNote || p.notice || p.phase === 'error') return;
-    sayTitle.textContent = t(schemeNote === 'japanese' ? 'Blue under white' : 'Yellow under white');
-    say.textContent = t(schemeNote === 'japanese'
+    const colours = t(schemeNote === 'japanese'
       ? 'Your cube has blue under white — the Japanese colours, common on older cubes. Nothing to do: the colours on screen now match it, and they will next time too.'
       : 'Your cube has yellow under white — the usual colours. The colours on screen now match it, and they will next time too.');
-    say.className = 'sub scan-say ok';
+    // A finished scan's instruction is not a caption to speak over. The panel stops the camera
+    // BEFORE it reports 'done', so "press Solve this cube" was replaced by the colour sentence
+    // with nothing left to say it again (found by audit, 2026-09-13): on a finished scan the two
+    // are said together.
+    if (p.complete) speak(t('Scanned'), `${colours} ${t(DONE_BODY)}`, 'ok');
+    else speak(t(schemeNote === 'japanese' ? 'Blue under white' : 'Yellow under white'), colours, 'ok');
     schemeNote = null;
   };
 
