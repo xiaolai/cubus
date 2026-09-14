@@ -7,6 +7,7 @@ import { TIERS } from './solve-target.js';
 import { DEFAULT_RUNGS, STAGE_IDS, TOP_RUNG } from './method-solver.js';
 import { repairProgress } from './method-ladder.js';
 import { isScheme } from './scheme.js';
+import { STICKER_PALETTES } from './sticker-palettes.js';
 
 export const load = (k, fb) => { try { return { ...fb, ...JSON.parse(localStorage.getItem(k) || '{}') }; } catch { return { ...fb }; } };
 /** Persist, and say whether it worked. Storage can be full, or disabled outright in a private
@@ -38,11 +39,22 @@ export const save = (k, v) => {
  * `hostile-settings.test.mjs` pins the repair against this constant rather than a copy of it.
  */
 export const DEFAULT_PALETTE = 'classic';
-export const settings = load('cubusSettings', { theme: 'auto', palette: DEFAULT_PALETTE, scheme: 'western', schemeSource: 'default', autosolve: false, cameraId: '', navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty', proveMinimum: false });
-// localStorage is untrusted input, and `load` merges it raw. The string "false" is truthy, so
-// a hand-edited or half-migrated value could opt someone in to an operation that runs for
-// hours — the one setting where "off unless explicitly true" is the whole point.
-settings.proveMinimum = settings.proveMinimum === true;
+/** What a fresh install gets and what every repair below falls back to — one table, so the two
+ *  cannot come to disagree about a default. */
+export const DEFAULT_SETTINGS = Object.freeze({
+  theme: 'auto', palette: DEFAULT_PALETTE, scheme: 'western', schemeSource: 'default', autosolve: false, cameraId: '',
+  navHidden: null, navDefaults: 0, devRandCube: false, language: '', dragRotate: false, solveTier: 'twenty',
+  proveMinimum: false,
+});
+/** The record exactly as storage held it, so the one write at the end of this file happens only when a
+ *  repair or a migration changed something — or on a first launch, when storage held nothing. */
+const storedRecord = (() => { try { return localStorage.getItem('cubusSettings'); } catch { return null; } })();
+export const settings = load('cubusSettings', DEFAULT_SETTINGS);
+// localStorage is untrusted input, and `load` merges it raw. The string "false" is truthy, so a
+// hand-edited or half-migrated flag reads as ON: proveMinimum would opt someone in to an operation
+// that runs for hours, and a Settings toggle flips `!settings[k]`, so a stored "false" showed as on
+// while auto-solve left a believed scan. Off unless explicitly true — for every flag, not one.
+for (const flag of ['autosolve', 'dragRotate', 'devRandCube', 'proveMinimum']) settings[flag] = settings[flag] === true;
 // The inspection flag is gone (it toggled a label, never a behaviour); drop the stored leftover
 // rather than letting save() keep rewriting a field nothing reads — the advancedOpen precedent.
 delete settings.inspection;
@@ -84,22 +96,27 @@ settings.rungProgress = repairProgress(settings.rungProgress);
 export const THEMES = ['auto', 'white', 'cream', 'night'];
 // The names changed when White arrived: the kit's "light" is Cream and its "dark" is Night. A
 // stored value from before is mapped rather than dropped, so nobody's window changes colour on
-// update; anything else in that field is not a theme and falls back to auto.
+// update; anything else in that field is not a theme and falls back to the default. Looked up
+// only as an OWN name of a string: an object carrying `toString: null` threw out of the lookup at
+// import, so the app never booted, and "__proto__" found Object.prototype and kept it (found by
+// audit, 2026-09-13).
 {
-  const mapped = { light: 'cream', dark: 'night' }[settings.theme]
-    ?? (THEMES.includes(settings.theme) ? settings.theme : 'auto');
-  if (mapped !== settings.theme) { settings.theme = mapped; save('cubusSettings', settings); }
+  const LEGACY_THEMES = { light: 'cream', dark: 'night' };
+  const stored = settings.theme;
+  settings.theme = typeof stored === 'string' && Object.hasOwn(LEGACY_THEMES, stored)
+    ? LEGACY_THEMES[stored]
+    : (THEMES.includes(stored) ? stored : DEFAULT_SETTINGS.theme);
 }
 
-/** The cube palettes, as stored — and the same three keys `NET_COLORS` and the renderer's own
- *  PALETTES use. Validated at load for the same reason the theme is: localStorage is untrusted
+/** The cube palettes, as stored: the keys of the one sticker table (lib/sticker-palettes.js).
+ *  Validated at load for the same reason the theme is: localStorage is untrusted
  *  input, and an unknown value here was not a cosmetic fallback but a crash. `NET_COLORS[p]`
  *  returned undefined at three sites with no `||`, so Trainer, Drill and the Settings swatch
  *  threw on the first property read and left the previous screen's DOM under the new title
  *  (found by audit, 2026-09-04). Repaired ONCE, here, and saved — so a hand-edited value is
  *  corrected rather than re-read on every render — with the `||` kept at every read as the
  *  belt: this validation is what makes them unreachable, not what replaces them. */
-export const PALETTES = ['muted', 'classic', 'colorsafe'];
+export const PALETTES = Object.freeze(Object.keys(STICKER_PALETTES));
 /** Where the app's belief about the cube's colour arrangement came from (ADR 0001 §8.3):
  *  nobody has said (the default), the user set it, or a decisive scan established it. */
 const SCHEME_SOURCES = ['default', 'user', 'scan'];
@@ -113,24 +130,21 @@ const SCHEME_SOURCES = ['default', 'user', 'scan'];
  *  produce, trusted because it was in storage — so each is repaired the same way and at the same
  *  moment, rather than being caught at whichever call site happens to reach it first. */
 const repairs = [
-  [() => PALETTES.includes(settings.palette), () => { settings.palette = DEFAULT_PALETTE; }],
+  [() => PALETTES.includes(settings.palette), () => { settings.palette = DEFAULT_SETTINGS.palette; }],
   // The cube's colour arrangement, and WHERE THAT BELIEF CAME FROM (ADR 0001 §8.3). A stored
   // value replaced by the fallback carries no evidence, so the source falls back with it — a
   // repaired scheme is a default, never a scan's verdict.
-  [() => isScheme(settings.scheme), () => { settings.scheme = 'western'; settings.schemeSource = 'default'; }],
-  [() => SCHEME_SOURCES.includes(settings.schemeSource), () => { settings.schemeSource = 'default'; }],
-  [() => TIERS.some((tier) => tier.name === settings.solveTier), () => { settings.solveTier = 'twenty'; }],
-  [() => typeof settings.language === 'string', () => { settings.language = ''; }],
-  [() => typeof settings.cameraId === 'string', () => { settings.cameraId = ''; }],
-  [() => Number.isFinite(settings.navDefaults), () => { settings.navDefaults = 0; }],
+  [() => isScheme(settings.scheme), () => {
+    settings.scheme = DEFAULT_SETTINGS.scheme; settings.schemeSource = DEFAULT_SETTINGS.schemeSource;
+  }],
+  [() => SCHEME_SOURCES.includes(settings.schemeSource), () => { settings.schemeSource = DEFAULT_SETTINGS.schemeSource; }],
+  [() => TIERS.some((tier) => tier.name === settings.solveTier), () => { settings.solveTier = DEFAULT_SETTINGS.solveTier; }],
+  [() => typeof settings.language === 'string', () => { settings.language = DEFAULT_SETTINGS.language; }],
+  [() => typeof settings.cameraId === 'string', () => { settings.cameraId = DEFAULT_SETTINGS.cameraId; }],
+  [() => Number.isFinite(settings.navDefaults), () => { settings.navDefaults = DEFAULT_SETTINGS.navDefaults; }],
 ];
-{
-  let repaired = false;
-  for (const [ok, fix] of repairs) if (!ok()) { fix(); repaired = true; }
-  // Written back, so a hand-edited value is corrected once rather than re-read and re-repaired on
-  // every launch — the theme migration's precedent.
-  if (repaired) save('cubusSettings', settings);
-}
+// Written back by the one write at the end of this file, with every other repair and migration.
+for (const [ok, fix] of repairs) if (!ok()) fix();
 
 /** Is the Advanced section revealed? Deliberately NOT part of `settings`, so it is not persisted:
  * a section you reach with an undocumented chord should start closed every time, not stay open
@@ -170,12 +184,19 @@ settings.navHidden = (Array.isArray(settings.navHidden) ? settings.navHidden : D
 
 // A stored preference outranks a changed default, so shipping a new default alone would do nothing
 // for anyone who has already run the app — their saved `navHidden: []` wins forever. Applied once,
-// marked, and saved, so it neither repeats nor re-hides something deliberately brought back.
+// marked, and saved (by the one write below), so it neither repeats nor re-hides something deliberately
+// brought back.
 if (settings.navDefaults < NAV_DEFAULTS_VERSION) {
   settings.navHidden = [...new Set([...settings.navHidden, ...DEFAULT_HIDDEN])];
   settings.navDefaults = NAV_DEFAULTS_VERSION;
-  save('cubusSettings', settings);
 }
+
+// ONE write, after every repair and migration above. Each used to save on its own, and only three of
+// them did: the rung and progress repairs, the dropped leftover keys, the nav filter and the flag
+// coercion changed the record in memory and left storage as it was, so a hand-edited value was
+// re-read and re-repaired on every launch — the opposite of what the repair table promised. Compared
+// with what storage held, so a clean record is not rewritten each launch (found by audit, 2026-09-13).
+if (JSON.stringify(settings) !== storedRecord) save('cubusSettings', settings);
 // Checked per call, not just once at load: a stored id that is not hideable must never be able to
 // hide some OTHER nav entry (a stray "home" in there would take Home out of the toolbar).
 export const navHidden = (id) => HIDEABLE_IDS.has(id) && settings.navHidden.includes(id);

@@ -102,21 +102,20 @@ test('both objects are offered, and neither stands where the other was', () => {
 test('the lesson is worked out beside the solution, never instead of it', () => {
   // If the lesson replaced the search, switching back to Solution would need a new one — and a
   // cube whose lesson failed would have no walk at all.
-  const load = blockAt(code, "if (!stageAnswered && !stageTarget && walkKind === 'lesson')");
-  assert.ok(load, 'the walk resolver must have a lesson branch');
-  assert.match(load, /gotLesson = lessonFor\(state\.cube\)/);
+  const lesson = blockAt(code, 'function lessonWalk(solution)');
+  assert.match(lesson, /const lesson = lessonFor\(state\.cube\);/, 'the walk resolver must build a lesson');
   // The fallback is the screen's to make — the walk kind and its switch are the session's — so the
-  // branch asks for it by name (lib/walk-resolver.js), and the session's helper moves the switch back.
-  assert.match(load, /fallBackToSolution\(\)/, 'a cube with no lesson must fall back rather than fail the screen');
+  // resolver asks for it by name (lib/walk-resolver.js), and the session's helper moves the switch
+  // back.
+  assert.match(lesson, /fallBackToSolution\(\)/, 'a cube with no lesson must fall back rather than fail the screen');
   assert.match(blockAt(code, 'function fallBackToSolution()'), /walkKind = 'solution'/,
     'and falling back must put the walk kind back to the solution');
-  // The search runs first, unconditionally: `gotAlg` is assigned from the solution above this
-  // branch and only then overridden.
-  const before = code.indexOf('gotSetup = state.cube.setupAlg;');
-  // The FULL condition, not a fragment of it: `walkKind === 'lesson'` also appears in the rung
-  // offer's handler, several thousand characters earlier, so the loose form found that one and
-  // compared against the wrong position.
-  assert.ok(before > 0 && before < code.indexOf("if (!stageAnswered && !stageTarget && walkKind === 'lesson')"),
+  // The search runs first, unconditionally: the lesson is built from the solution it produced. Both
+  // landmarks are read inside the one function, so neither can be found somewhere else in the app.
+  const solve = blockAt(code, 'async function solveWalk(');
+  const searched = solve.indexOf('await whole.done;');
+  const taught = solve.indexOf('lessonWalk(solution)');
+  assert.ok(searched > 0 && searched < taught,
     'the two-phase search must run before the lesson branch, so both objects exist');
 });
 
@@ -128,9 +127,12 @@ test('a STAGE route has no lesson, and the switch goes with it', () => {
   // Two halves, and only together do they mean anything. The lesson must not be COMPUTED for a
   // stage target — it would overwrite the route, since the branch runs after it — and the pair of
   // pills must not be SHOWN, or the switch would point at an object the screen cannot produce.
-  assert.match(code, /if \(!stageAnswered && !stageTarget && walkKind === 'lesson'\)/,
-    'the lesson branch must be skipped for a stage target, or it overwrites the repair — and for a'
-    + ' repair that answered, whose whole-cube locals were never even read');
+  assert.match(code, /return !stageTarget && walkKind === 'lesson' \? lessonWalk\(solution\) : solution;/,
+    'the lesson branch must be skipped for a stage target, or it overwrites the repair');
+  const solve = blockAt(code, 'async function solveWalk(');
+  const repaired = solve.indexOf('return repairWalk(');
+  assert.ok(repaired > 0 && repaired < solve.indexOf('lessonWalk(solution)'),
+    'and a repair that answered returns before the lesson is ever considered');
   assert.match(code, /kindRow\.hidden = Boolean\(route\)/,
     'the Solution / Lesson switch must be hidden while a repair is showing');
 });

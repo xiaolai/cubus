@@ -353,6 +353,44 @@ describe('makeUpdater', () => {
     assert.equal((await launch).status, 'silent-current', 'the launch path stays quiet');
     assert.equal((await press).status, 'current', 'the press must not inherit that silence');
   });
+
+  // A dialog that was missing or refused to open used to count as the user's "Not now", so the
+  // update was passed over in silence. Nobody was asked, and that is its own answer.
+  test('a question that could not be asked is not a decline, and downloads nothing', async () => {
+    const f = fakeApi({ events: [{ event: 'Finished' }] });
+    const f2 = fakeApi({ update: f.available('0.9.0') });
+    const warned = [];
+    const u = makeUpdater({
+      api: f2.api, storage: fakeStorage(), now: () => 1,
+      confirm: async () => { throw new Error('no dialog to ask with (test)'); },
+      warn: (m) => warned.push(m),
+    });
+    const r = await u.checkNow();
+    assert.equal(r.status, 'unasked');
+    assert.equal(r.version, '0.9.0');
+    assert.equal(f.calls.install, 0, 'an update installed that nobody agreed to');
+    assert.ok(warned.some((m) => /could not ask/.test(m)), 'the failure to ask went unlogged');
+  });
+
+  // The launch path says a failed install itself, unless a Settings press shares the flight: the
+  // press says it too, and one answer must not arrive as two dialogs.
+  test('a launch check knows whether a Settings press shares its flight, in either order', async () => {
+    const launchResult = async (order) => {
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      const api = { updater: { check: async () => { await gate; return { available: false, version: '0.3.3' }; } } };
+      const u = makeUpdater({ api, storage: fakeStorage(), now: () => 1, confirm: async () => true });
+      const launch = order === 'launch first' ? u.checkOnLaunch() : (u.checkNow(), u.checkOnLaunch());
+      if (order === 'launch first') u.checkNow();
+      release();
+      return launch;
+    };
+    assert.equal((await launchResult('launch first')).userAsked, true, 'a press that joined the launch check went unrecorded');
+    assert.equal((await launchResult('press first')).userAsked, true, 'a launch check that joined a press went unrecorded');
+    const api = { updater: { check: async () => ({ available: false, version: '0.3.3' }) } };
+    const alone = makeUpdater({ api, storage: fakeStorage(), now: () => 1, confirm: async () => true });
+    assert.equal((await alone.checkOnLaunch()).userAsked, undefined, 'a launch check on its own was marked as asked for');
+  });
 });
 
 describe('progressLabel', () => {

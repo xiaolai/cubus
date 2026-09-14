@@ -15,6 +15,8 @@ import { isAbsent } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
+import { APP_SOURCES, blockAt, walk } from './app-source.mjs';
+
 import { Window } from 'happy-dom';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -326,6 +328,71 @@ test('a junk saved speed falls back to the default instead of being trusted', as
   }
 });
 
+// The speed menu is the same kind of control as the camera menu, and it had half of what a
+// keyboard and a screen reader need: its button never said that it opens a menu or whether it is
+// open, and the arrow keys did nothing inside it (found by audit, 2026-09-14). The rest was held by
+// nothing: a probe mutating the menu's opening, placing, focus, Escape and click-away found every
+// one unheld.
+test('the speed button says it opens a menu, and the menu takes the keyboard as the camera menu does', async () => {
+  await scrambledHome();
+  const btn = win.document.querySelector('#speedBtn');
+  const menu = win.document.querySelector('[data-speed]').closest('.menu');
+  const key = (k) => win.document.activeElement.dispatchEvent(new win.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+  assert.equal(btn.getAttribute('aria-haspopup'), 'menu', 'the speed button does not say it opens a menu');
+  assert.equal(btn.getAttribute('aria-expanded'), 'false', 'a closed menu is not said as closed');
+  assert.equal(menu.hidden, true, 'the menu is open before anyone asked for it');
+  btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, false, 'pressing the speed button did not open its menu');
+  assert.equal(btn.getAttribute('aria-expanded'), 'true', 'an open menu is not said as open');
+  assert.ok(btn.classList.contains('open'), 'the speed button does not look pressed while its menu is open');
+  assert.notEqual(menu.style.maxWidth, '', 'the menu was never placed under its button');
+  assert.ok(win.document.activeElement === menu.querySelector('.now'), 'opening the menu did not put focus on the speed in force');
+  key('ArrowDown');
+  assert.equal(win.document.activeElement?.dataset.speed, 'fast', 'ArrowDown did not move to the next speed');
+  key('ArrowDown');
+  assert.equal(win.document.activeElement?.dataset.speed, 'slow', 'ArrowDown from the last speed did not wrap to the first');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(menu.hidden, true, 'Escape left the speed menu open');
+  assert.equal(btn.getAttribute('aria-expanded'), 'false', 'the menu closed and the button still says it is open');
+  assert.ok(!btn.classList.contains('open'), 'the menu closed and the button still looks pressed');
+  assert.ok(win.document.activeElement === btn, 'Escape dropped focus instead of handing it back to the speed button');
+  btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  win.document.body.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, true, 'a click elsewhere left the speed menu open');
+});
+
+// What choosing does: the menu closes, focus goes back to the button, and which speed is in force
+// is said to a screen reader as well as ticked — none of it held before (probe, 2026-09-14).
+test('choosing a speed closes the menu, hands focus back, and says which speed is in force', async () => {
+  await scrambledHome();
+  const btn = win.document.querySelector('#speedBtn');
+  const menu = win.document.querySelector('[data-speed]').closest('.menu');
+  try {
+    assert.equal(btn.getAttribute('aria-label'), 'Animation speed — Normal', "the speed button's name does not say the speed in force");
+    btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    menu.querySelector('[data-speed="slow"]').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    assert.equal(menu.hidden, true, 'the menu stayed open after a speed was chosen');
+    assert.ok(win.document.activeElement === btn, 'choosing a speed left focus inside a closed menu');
+    assert.deepEqual([...menu.querySelectorAll('[data-speed]')].map((b) => b.getAttribute('aria-checked')),
+      ['true', 'false', 'false'], 'the tick moved and a screen reader was not told');
+    assert.equal(btn.getAttribute('aria-label'), 'Animation speed — Slow', "the speed button's name did not follow the choice");
+  } finally {
+    win.localStorage.removeItem('walkSpeed');
+  }
+});
+
+test('once the cube screen is gone, a click or an Escape on the page reaches none of its speed menu', async () => {
+  await scrambledHome();
+  const menu = win.document.querySelector('[data-speed]').closest('.menu');
+  win.document.querySelector('#speedBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, false, 'precondition: the speed menu is open');
+  win.location.hash = '#/timer';
+  await tick();
+  win.document.body.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(menu.hidden, false, "a click or an Escape after leaving reached the old screen's speed menu");
+});
+
 // The state card names what it shows and carries one tool. The raw 54-character facelet string it
 // used to print said nothing the net beside it was not already showing in colour.
 test('the state card is the net plus a dice, and says which state it is', async () => {
@@ -490,6 +557,54 @@ test('a solved cube on Home is a cube to look at, not a walk of zero moves', asy
   } finally { Object.assign(state.cube, prev); }
 });
 
+// The reconnect question on the two screens no case reached (probe, 2026-09-14, before the
+// question became its own unit). Over a SOLVED cube Home has no walk, so the question stands in a
+// card of its own, asks whether the cube is solved, and the heading wears the memory with its
+// time. Scramble never asks: its subject is always the walk it generated.
+test('an open reconnect question stands in its own card over a solved cube, and Scramble never asks it', async () => {
+  const { state } = await import('../lib/app.js');
+  const { whenWords } = await import('../lib/cube-memory.js');
+  const prev = { ...state.cube };
+  const seenAt = Date.UTC(2026, 7, 25, 13, 40);
+  try {
+    win.location.hash = '#/scramble';
+    await tick();
+    assert.ok(await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0), 'no solver');
+    state.reconnect = { reading: 'unchanged', candidate: SOLVED_FACELETS, raw: SOLVED_FACELETS, seenAt };
+    Object.assign(state.cube, { facelets: SOLVED_FACELETS, derived: false, setupAlg: '', solution: '', moves: [], stepFacelets: [] });
+    win.location.hash = '#/home';
+    await tick();
+    const card = win.document.querySelector('.reconnect-card');
+    assert.ok(card, 'a question over a cube with no walk had nowhere to stand');
+    assert.match(card.querySelector('#reconnectAsk').textContent, /Is it solved right now\?/,
+      'a solved candidate was asked about as if it were any cube');
+    assert.equal(win.document.querySelector('.state-h').textContent, `Your cube — as we last saw it, ${whenWords(seenAt).full}`,
+      'the remembered cube is not dressed as a memory with its time');
+    win.location.hash = '#/scramble';
+    await tick();
+    isAbsent(win.document.querySelector('#reconnectAsk'), 'Scramble asked about a cube it is not showing');
+    assert.equal(win.document.querySelector('.state-h').textContent, 'Target State');
+  } finally {
+    state.reconnect = null;
+    Object.assign(state.cube, prev);
+  }
+});
+
+test('an alg that reaches the solved cube does not give it a walk', async () => {
+  const { state } = await import('../lib/app.js');
+  const { classifyCube, ingestFacelets, takeDerivation } = await import('../lib/cube-subject.js');
+  const prev = { ...state.cube };
+  try {
+    win.location.hash = '#/scramble';
+    await tick();
+    assert.ok(await waitFor(() => win.document.querySelectorAll('#solList .chip-m').length > 0), 'no solver');
+    ingestFacelets(SOLVED_FACELETS);
+    takeDerivation(SOLVED_FACELETS, "R R'");
+    assert.equal(classifyCube().solvable, false, "a carried R R' gave the solved cube a walk");
+    assert.deepEqual(state.cube.moves, [], 'and moves to make');
+  } finally { Object.assign(state.cube, prev); }
+});
+
 // An async mount outliving its screen is invisible until it writes: cubeScreen awaits a solver
 // load and a Kociemba search, and on the far side installs liveUpdate and paints a cube that may
 // belong to a screen the user already left. The generation counter is what makes it notice.
@@ -540,6 +655,70 @@ test('the Advanced section is hidden until the chord asks for it', async () => {
   win.document.dispatchEvent(chord());
   await tick();
   assert.ok(!win.document.querySelector('[data-nav-toggle]'), 'the same chord puts it away');
+});
+
+// A press on a Settings control whose change rebuilds the screen dropped keyboard focus to <body>:
+// focus is put back by id, and none of these had one. The mechanism audit row 132 found on the
+// nickname fields (verification, 2026-09-14), and the same on every control here that repaints.
+test('a press on a Settings control that rebuilds the screen leaves focus on that control', async () => {
+  const { settings, save } = await import('../lib/app-settings.js');
+  const was = { palette: settings.palette, theme: settings.theme, tier: settings.solveTier, source: settings.schemeSource };
+  win.location.hash = '#/settings';
+  await tick();
+  win.document.dispatchEvent(chord());
+  await tick();
+  const controls = ['[data-pal="muted"]', '[data-set-theme="night"]', '[data-set-tier="nineteen"]', '[data-scheme]',
+    '[data-nav-toggle="drill"]'];
+  try {
+    const lost = [];
+    for (const sel of controls) {
+      const control = win.document.querySelector(sel);
+      assert.ok(control, `precondition: ${sel} is on Settings`);
+      control.focus();
+      control.click();
+      await tick();
+      if (!win.document.activeElement?.matches?.(sel)) lost.push(sel);
+    }
+    assert.deepEqual(lost, [], 'focus fell off these controls when Settings rebuilt');
+  } finally {
+    // Back through the same controls, so what is stored and drawn is what it was.
+    for (const sel of ['[data-nav-toggle="drill"]', '[data-scheme]', `[data-set-tier="${was.tier}"]`,
+      `[data-set-theme="${was.theme}"]`, `[data-pal="${was.palette}"]`]) {
+      win.document.querySelector(sel)?.click();
+      await tick();
+    }
+    settings.schemeSource = was.source;
+    save('cubusSettings', settings);
+    win.document.dispatchEvent(chord()); // Advanced shut again
+    await tick();
+  }
+});
+
+// The shell puts focus back only on a control with an id, and Settings repaints under whoever is
+// on it. Some of its controls are drawn only on a desktop build or beside a radio (the window's
+// shape, a remembered cube's Use), so the screen's source is read for every one of them.
+test('every control Settings draws carries an id, and a switch row cannot be drawn without one', async () => {
+  const missing = [];
+  let rows = 0;
+  for (const path of ['lib/screens/settings.js', 'lib/screens/settings/smart-cube.js', 'lib/screens/settings/preferences.js']) {
+    assert.ok(APP_SOURCES.includes(path), `${path} is not one of the app's sources`);
+    const src = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+    // The markup is the literals' text: comments left out, and every `${}` walked as code.
+    const tags = [...walk(src).literals.join('').matchAll(/<(?:button|a|input|select|textarea)\b[^>]*>/g)].map((m) => m[0]);
+    assert.ok(tags.length > 0, `${path}: no control was found, so nothing was checked`);
+    for (const tag of tags) if (!/\sid="/.test(tag)) missing.push(`${path}: ${tag.slice(0, 90)}`);
+    for (const m of src.matchAll(/switchRow\(\{/g)) {
+      const open = m.index + 'switchRow('.length;
+      const row = src.slice(open, walk(src, { from: open, balanced: true }).end);
+      rows += 1;
+      if (!/\bid:/.test(row)) missing.push(`${path}: switchRow(${row.slice(0, 90)}`);
+    }
+  }
+  assert.deepEqual(missing, [], 'these controls carry no id, so a repaint drops focus off them');
+  assert.ok(rows >= 6, `only ${rows} switch rows were found, so not every row was checked`);
+  const { switchRow } = await import('../lib/screens/settings/preferences.js');
+  assert.throws(() => switchRow({ style: '', title: 'x', blurb: 'x', on: false, attrs: 'data-toggle="x"', label: 'x' }),
+    /no id/, 'a switch row was drawn with no id');
 });
 
 // The disclosure must not be sticky. Persisting it meant that once you pressed the chord, the
@@ -1189,6 +1368,129 @@ test('a corrupt solve keeps its place, so an average refuses instead of reaching
   }
 });
 
+// AO5 and AO12 were one card written out twice, beside one shared note (found by audit,
+// 2026-09-13; still two copies at verification, 2026-09-14). Both copies render the same today, so
+// no screen can tell a copy from the one renderer: the source is read.
+test('the average cards are drawn by one renderer, never written out by hand', () => {
+  const src = readFileSync(new URL('../lib/screens/stats.js', import.meta.url), 'utf8');
+  const card = blockAt(src, 'function averageCard(');
+  assert.match(card, /class="card stat"/, 'averageCard does not draw the stat card');
+  assert.equal((src.match(/<div class="eyebrow">AO(?:5|12)</g) ?? []).length, 0,
+    'an average card is written out by hand beside the renderer');
+});
+
+// ---- Stats, audited 2026-09-13: one rule per question, and a chart that had no assertion at all
+
+/** A Stats card, found by its eyebrow. */
+const statCard = (eyebrow) => [...win.document.querySelectorAll('#stage .card')]
+  .find((c) => c.querySelector('.eyebrow')?.textContent === eyebrow);
+/** Stats, drawn over exactly this history. */
+const openStats = async (list) => {
+  win.localStorage.setItem('cubusSolves', JSON.stringify({ list }));
+  win.location.hash = '#/home';
+  await tick();
+  win.location.hash = '#/stats';
+  await tick();
+};
+
+test('a corrupt newest solve explains itself the same way at every average size', async () => {
+  const now = Date.now();
+  const clean = (n) => Array.from({ length: n }, (_, i) => ({ n: n - i, time: '20.00', scramble: 'R U', at: now }));
+  try {
+    await openStats([{ n: 13, time: '', at: now }, ...clean(12)]);
+    assert.equal(statCard('AO5').querySelector('.d').textContent, 'a recent solve is unreadable');
+    assert.equal(statCard('AO12').querySelector('.d').textContent, 'a recent solve is unreadable',
+      'AO12 said it needed more solves over a window that was full but had a hole in it');
+    await openStats(clean(9));
+    assert.equal(statCard('AO12').querySelector('.d').textContent, 'needs 3 more', 'a short session still says how many');
+    // Short AND holed: one more solve would still leave the hole inside the window, so no count.
+    await openStats([{ n: 11, time: '', at: now }, ...clean(10)]);
+    assert.equal(statCard('AO12').querySelector('.d').textContent, 'a recent solve is unreadable',
+      'a count was promised that the next solve cannot keep — the unreadable one is still in the window');
+  } finally {
+    win.localStorage.removeItem('cubusSolves');
+  }
+});
+
+test('a row Stats draws is a row Stats counted', async () => {
+  const now = Date.now();
+  try {
+    await openStats([
+      { n: 4, time: 'bad', scramble: 'R U', at: now },
+      { n: 3, time: '0', scramble: 'R U', at: now },
+      { n: 2, time: '-3', scramble: 'R U', at: now },
+      { n: 1, time: '10.00', scramble: 'R U', at: now },
+    ]);
+    const rows = win.document.querySelectorAll('#stage .list .row').length;
+    const counted = win.document.querySelector('#stage .card-h .num').textContent;
+    assert.equal(counted, '1', 'precondition: one of the four records is a solve');
+    assert.equal(rows, 1, `${rows} rows drawn beside a count of ${counted}`);
+  } finally {
+    win.localStorage.removeItem('cubusSolves');
+  }
+});
+
+test('the session chart draws the last twenty solves oldest-first, and marks the fastest of them', async () => {
+  const now = Date.now();
+  // Newest first. The fastest overall (5.00) is the OLDEST record, outside the twenty drawn; the
+  // fastest of the twenty (8.00) is the one the marker must land on.
+  const list = Array.from({ length: 22 }, (_, i) => ({ n: 22 - i, time: '20.00', scramble: 'R U', at: now }));
+  list[21].time = '5.00';
+  list[10].time = '8.00';
+  list[19].time = '30.00'; // the oldest of the twenty
+  try {
+    await openStats(list);
+    const bars = [...statCard('LAST 20 SOLVES').querySelectorAll('div[title]')];
+    assert.equal(bars.length, 20);
+    assert.equal(bars[0].getAttribute('title'), '30.00s', 'the oldest of the twenty is on the left');
+    const marked = bars.filter((b) => (b.getAttribute('style') || '').includes('var(--accent)'));
+    assert.deepEqual(marked.map((b) => b.getAttribute('title')), ['8.00s'], 'the fastest of the bars drawn is marked');
+  } finally {
+    win.localStorage.removeItem('cubusSolves');
+  }
+});
+
+test("a chart bar's height is proportional to the slowest solve drawn", async () => {
+  const now = Date.now();
+  try {
+    await openStats([{ n: 2, time: '10.00', scramble: 'R U', at: now }, { n: 1, time: '20.00', scramble: 'R U', at: now }]);
+    const heights = [...statCard('LAST 2 SOLVES').querySelectorAll('div[title]')]
+      .map((b) => (b.getAttribute('style') || '').match(/height:(\d+)%/)?.[1]);
+    assert.deepEqual(heights, ['100', '50'], 'oldest first: 20.00 is the full height, 10.00 half of it');
+  } finally {
+    win.localStorage.removeItem('cubusSolves');
+  }
+});
+
+test("the week chart says each day's count and best, and only dated solves appear", async () => {
+  const now = Date.now();
+  try {
+    await openStats([
+      { n: 2, time: '12.34', scramble: 'R U', at: now },
+      { n: 1, time: '9.00', scramble: 'R U' }, // no date: a solve, but nobody's day
+    ]);
+    const days = [...statCard('WEEK').querySelectorAll('div[title]')];
+    assert.equal(days.length, 7);
+    assert.equal(days[6].getAttribute('title'), '1 solve · best 12.34', 'today holds the dated solve, and only it');
+    assert.ok(days.slice(0, 6).every((d) => d.getAttribute('title') === '0 solves'), 'another day was given a solve');
+  } finally {
+    win.localStorage.removeItem('cubusSolves');
+  }
+});
+
+test('the chart eyebrow counts the bars it drew, not the records it read', async () => {
+  const now = Date.now();
+  const list = Array.from({ length: 20 }, (_, i) => ({ n: 20 - i, time: i % 4 === 0 ? 'junk' : '15.00', scramble: 'R U', at: now }));
+  try {
+    await openStats(list);
+    const card = statCard('LAST 15 SOLVES');
+    assert.ok(card, 'fifteen readable solves among twenty records are not "LAST 15 SOLVES"');
+    assert.equal(card.querySelectorAll('div[title]').length, 15);
+  } finally {
+    win.localStorage.removeItem('cubusSolves');
+  }
+});
+
 
 
 test('a turn rate is never fabricated from a time that is not a number', async () => {
@@ -1196,12 +1498,15 @@ test('a turn rate is never fabricated from a time that is not a number', async (
   // Infinity is caught on the way in; a vanishingly small one is not — it is finite and positive,
   // and 40 divided by it is Infinity on the way out. A finite input does not guarantee a finite
   // result, and testing only the first left the second guard unexercised.
+  // Both records are CUBE-timed: a turn rate is computed from nothing else, so without `source`
+  // neither reached the division this is about — and the second guard went unexercised anyway
+  // (found by audit, 2026-09-13).
   const huge = `${'9'.repeat(400)}.0`;
   const tiny = `0.${'0'.repeat(320)}1`;
   win.localStorage.setItem('cubusSolves', JSON.stringify({
     list: [
-      { n: 2, time: huge, scramble: 'R U', moves: 40, at: Date.now() },
-      { n: 1, time: tiny, scramble: 'R U', moves: 40, at: Date.now() },
+      { n: 2, time: huge, scramble: 'R U', moves: 40, source: 'cube', at: Date.now() },
+      { n: 1, time: tiny, scramble: 'R U', moves: 40, source: 'cube', at: Date.now() },
     ],
   }));
   try {
@@ -1215,6 +1520,10 @@ test('a turn rate is never fabricated from a time that is not a number', async (
         !/tps/.test(win.document.querySelector('#stage').textContent),
         `${screen} invented a turn rate from an unusable time`,
       );
+      if (screen === '#/stats') {
+        assert.equal(statCard('TURN RATE')?.querySelector('.v')?.textContent, '—',
+          'a turn rate was drawn from a time too small to divide by');
+      }
     }
   } finally {
     win.localStorage.removeItem('cubusSolves');
@@ -1635,6 +1944,194 @@ test('Settings offers a compatibility report, and says so loudest when the cube 
   } finally { resetCubeModel(state); }
 });
 
+test('two quick presses on Save report warn about the address first, and save nothing', async (t) => {
+  const { state } = await import('../lib/app.js');
+  const saved = t.mock.method(globalThis.URL, 'createObjectURL', () => 'blob:test');
+  try {
+    const report = () => ({ format: 'smartcube-fixture', version: 1, capturedAt: '2026-08-31T00:00:00.000Z',
+      device: { name: 'Test cube', id: 'AA:BB:CC:DD:EE:FF' }, protocol: { id: 'gan-gen4', name: 'GAN Gen4' },
+      services: [], traffic: [], events: [] });
+    win.cubusFeed.useConnection({ requestBattery: async () => 80, disconnect: async () => {}, verdict: 'stream', report });
+    win.cubusGo('settings');
+    await tick();
+    const btn = win.document.querySelector('#cubeReportBtn');
+    btn.click();
+    btn.click();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(saved.mock.callCount(), 0, 'the second press saved the address-carrying file before the warning was read');
+    assert.match(win.document.querySelector('#pairMsg').textContent, /Bluetooth address/, 'the warning went unsaid');
+  } finally { resetCubeModel(state); }
+});
+
+/** A connected cube whose recording carries `id` as its device id: an address, so a press warns
+ *  first. */
+const reportingCube = (id) => ({
+  requestBattery: async () => 80, disconnect: async () => {}, verdict: 'stream',
+  report: () => ({ format: 'smartcube-fixture', version: 1, capturedAt: '2026-08-31T00:00:00.000Z',
+    device: { name: 'Test cube', id }, protocol: { id: 'gan-gen4', name: 'GAN Gen4' },
+    services: [], traffic: [], events: [] }),
+});
+
+// The address warning is about one cube's recording. A press on one cube that landed after another
+// had replaced it armed the new cube's button, and that cube's first press saved its address
+// unwarned.
+test('a Save report press on one cube does not answer for the cube that replaced it', async (t) => {
+  const { state } = await import('../lib/app.js');
+  const saved = t.mock.method(globalThis.URL, 'createObjectURL', () => 'blob:test');
+  const wait = () => new Promise((r) => setTimeout(r, 50));
+  try {
+    win.cubusFeed.useConnection(reportingCube('AA:BB:CC:DD:EE:FF'));
+    win.cubusGo('settings');
+    await tick();
+    win.document.querySelector('#cubeReportBtn').click(); // cube A's press, still loading the report module
+    win.cubusFeed.useConnection(reportingCube('0A:0B:0C:0D:0E:0F')); // cube B takes A's place meanwhile
+    win.cubusGo('settings');
+    await wait();
+    const armed = /anyway/.test(win.document.querySelector('#cubeReportBtn').textContent);
+    win.document.querySelector('#cubeReportBtn').click(); // cube B's first press
+    await wait();
+    assert.deepEqual({ armed, saves: saved.mock.callCount() }, { armed: false, saves: 0 },
+      "A's press answered for cube B: it armed B's button, or B's first press saved its address unwarned");
+    assert.match(win.document.querySelector('#pairMsg').textContent, /Bluetooth address/, "cube B's warning went unsaid");
+  } finally { resetCubeModel(state); }
+});
+
+test('a warned cube keeps its question through a repaint, and its next press saves', async (t) => {
+  const { state } = await import('../lib/app.js');
+  const saved = t.mock.method(globalThis.URL, 'createObjectURL', () => 'blob:test');
+  const wait = () => new Promise((r) => setTimeout(r, 50));
+  try {
+    win.cubusFeed.useConnection(reportingCube('AA:BB:CC:DD:EE:FF'));
+    win.cubusGo('settings');
+    await tick();
+    win.document.querySelector('#cubeReportBtn').click();
+    await wait();
+    assert.match(win.document.querySelector('#pairMsg').textContent, /Bluetooth address/, 'precondition: the first press warned');
+    win.cubusGo('settings'); // the same cube on a fresh card, as a battery reply or a trust change draws it
+    await tick();
+    const btn = win.document.querySelector('#cubeReportBtn');
+    assert.match(btn?.textContent ?? '', /Save it anyway/, 'the fresh card says Save report over a press that saves without asking');
+    btn.click();
+    await wait();
+    assert.equal(saved.mock.callCount(), 1, 'the press after the warning saved nothing');
+  } finally { resetCubeModel(state); }
+});
+
+test('a Bluetooth answer that lands after a cube paired does not disable its Disconnect', async () => {
+  const { state } = await import('../lib/app.js');
+  let answer;
+  Object.defineProperty(win.navigator, 'bluetooth', {
+    configurable: true, value: { getAvailability: () => new Promise((r) => { answer = r; }) },
+  });
+  try {
+    resetCubeModel(state);
+    win.cubusGo('settings');
+    await tick();
+    assert.ok(answer, 'precondition: the disconnected card asked whether there is a radio');
+    win.cubusFeed.useConnection({ requestBattery: async () => 80, disconnect: async () => {}, verdict: 'stream', report: () => ({}) });
+    win.cubusGo('settings');
+    await tick();
+    answer(false);
+    await tick();
+    await tick();
+    const pair = win.document.querySelector('#pairBtn');
+    assert.match(pair?.textContent ?? '', /Disconnect/, 'precondition: the connected card offers Disconnect');
+    assert.equal(pair.disabled, false, 'a late "no radio" answer disabled the Disconnect of a connected cube');
+    assert.doesNotMatch(win.document.querySelector('#btNote').textContent, /No Bluetooth radio/, 'and wrote over the connected note');
+  } finally {
+    delete win.navigator.bluetooth;
+    resetCubeModel(state);
+  }
+});
+
+test('a "no radio" answer to a card no longer drawn does not overrule the card on screen', async () => {
+  const { state } = await import('../lib/app.js');
+  const answers = [];
+  Object.defineProperty(win.navigator, 'bluetooth', {
+    configurable: true, value: { getAvailability: () => new Promise((r) => { answers.push(r); }) },
+  });
+  try {
+    resetCubeModel(state);
+    win.cubusGo('settings');
+    await tick();
+    const first = answers[answers.length - 1];
+    assert.ok(first, 'precondition: the disconnected card asked whether there is a radio');
+    win.cubusFeed.useConnection({ requestBattery: async () => 80, disconnect: async () => {}, verdict: 'stream', report: () => ({}) });
+    win.cubusGo('settings');
+    await tick();
+    win.cubusFeed.useConnection(null);
+    win.cubusGo('settings');
+    await tick();
+    const fresh = answers[answers.length - 1];
+    assert.ok(fresh !== first, 'precondition: the card on screen asked for itself');
+    fresh(true);
+    await tick();
+    await tick();
+    first(false); // the first card's answer, landing last
+    await tick();
+    await tick();
+    const pair = win.document.querySelector('#pairBtn');
+    assert.match(pair?.textContent ?? '', /Pair a cube/, 'precondition: the disconnected card offers Pair');
+    assert.equal(pair.disabled, false, 'an answer to a card no longer drawn disabled Pair on the card told there is a radio');
+    assert.doesNotMatch(win.document.querySelector('#btNote').textContent, /No Bluetooth radio/, 'and wrote over its note');
+  } finally {
+    delete win.navigator.bluetooth;
+    resetCubeModel(state);
+  }
+});
+
+// A cube can connect while an address is being typed, and Settings then waits for the typing to
+// stop before it redraws — so the card that asked is still the one drawn, over a connected cube.
+test('a "no radio" answer landing after a cube connected under a typed address changes nothing', async () => {
+  const { state } = await import('../lib/app.js');
+  let answer;
+  Object.defineProperty(win.navigator, 'bluetooth', {
+    configurable: true, value: { getAvailability: () => new Promise((r) => { answer = r; }) },
+  });
+  let mac;
+  try {
+    resetCubeModel(state);
+    win.cubusGo('settings');
+    await tick();
+    mac = win.document.querySelector('#macIn');
+    assert.ok(mac && answer, 'precondition: the disconnected card asks for an address and whether there is a radio');
+    mac.focus();
+    win.cubusFeed.useConnection({ requestBattery: async () => 80, disconnect: async () => {}, verdict: 'stream', report: () => ({}) });
+    assert.equal(state.connected, true, 'precondition: the cube connected');
+    assert.ok(win.document.querySelector('#macIn') === mac, 'precondition: the card waits for the typing to stop');
+    answer(false);
+    await tick();
+    await tick();
+    assert.doesNotMatch(win.document.querySelector('#btNote').textContent, /No Bluetooth radio/, "a connected cube's card was told there is no radio");
+    assert.equal(win.document.querySelector('#pairBtn').disabled, false, 'and its button was disabled');
+  } finally {
+    mac?.blur();
+    mac?.dispatchEvent(new win.Event('focusout', { bubbles: true }));
+    await tick();
+    delete win.navigator.bluetooth;
+    resetCubeModel(state);
+  }
+});
+
+test('a remembered cube is offered Use only where this browser has Bluetooth to use', async () => {
+  const { state } = await import('../lib/app.js');
+  const settingsAgain = async () => { win.cubusGo('home'); await tick(); win.cubusGo('settings'); await tick(); };
+  try {
+    resetCubeModel(state);
+    win.cubusFeed.useConnection({ requestBattery: async () => 80, disconnect: async () => {}, verdict: 'stream', report: () => ({}) });
+    win.cubusFeed.useConnection(null);
+    await settingsAgain();
+    assert.ok(win.document.querySelector('[data-forget-cube="AA:BB:CC:DD:EE:FF"]'), 'precondition: the cube is remembered');
+    isAbsent(win.document.querySelector('[data-use-cube]'), 'a browser with no Bluetooth was offered a connect it cannot make');
+    Object.defineProperty(win.navigator, 'bluetooth', { configurable: true, value: { getAvailability: async () => true } });
+    await settingsAgain();
+    assert.ok(win.document.querySelector('[data-use-cube="AA:BB:CC:DD:EE:FF"]'), 'and a browser that has it lost the Use it can make');
+  } finally {
+    delete win.navigator.bluetooth;
+    resetCubeModel(state);
+  }
+});
+
 // The 2D net is the ANCHOR, not a follower: its card says Initial/Target State, and a label
 // naming a fixed reference must never sit over a moving picture. What the cube does live is the
 // 3D cube's and the transport's story. Before this, snapshots repainted the net whenever follow
@@ -1901,12 +2398,49 @@ test('the Timer says a scramble could not be rolled, and keeps the one in play',
     await waitFor(said, 1000);
     const inPlay = scr().textContent;
     win.document.querySelector('#newScr').click();
-    await waitFor(said, 2000);
-    assert.ok(said(),
+    // The short wait above is patience BETWEEN presses — how long to give one before pressing
+    // again. What the press was answered with is waited for at this file's own deadline instead,
+    // because a roll can only fail once the solver has loaded, and that is 0.4–2.6 s of table
+    // building on this thread: at load ~100 no per-press patience was enough and the suite went
+    // red, where the same file passes 95/95 alone at load ~30 (measured 2026-09-14).
+    assert.ok(await waitFor(said),
       `the press was answered with "${hint().textContent}" — and, before that, with an unhandled rejection`);
     assert.equal(scr().textContent, inPlay,
       'the scramble already in play is what a solve would be recorded against; a failed roll must not lose it');
+    // And a solve timed now is filed under THAT scramble, the one on screen. The same commit gate
+    // refuses an empty roll, which no seam here can produce; this is the path it shares.
+    const clock = win.document.querySelector('#clock');
+    clock.click();
+    await tick();
+    clock.click();
+    await tick();
+    const saved = JSON.parse(win.localStorage.getItem('cubusSolves') || '{"list":[]}').list;
+    assert.equal(saved[0]?.scramble, inPlay, 'the solve was filed under a scramble that is not on screen');
   });
+});
+
+test('a scramble that works after one that failed takes the failure off the line', async () => {
+  win.location.hash = '#/timer';
+  await tick();
+  const scr = () => win.document.querySelector('#scr');
+  const hint = () => win.document.querySelector('#timerHint');
+  const said = () => /scramble could not be worked out/i.test(hint().textContent || '');
+  assert.ok(await waitFor(() => /^[URFDLB]/.test(scr().textContent || '')), 'precondition: a scramble is on screen');
+  await withoutEntropy(async () => {
+    // A press may be handed the cube rolled ahead of it, so press until one has to roll and fails.
+    for (let i = 0; i < 3 && !said(); i++) {
+      win.document.querySelector('#newScr').click();
+      await waitFor(said, 2000);
+    }
+    // Patience between presses above; the failure itself waited for at this file's deadline, for
+    // the reason the test before this one gives.
+    assert.ok(await waitFor(said), 'precondition: the failure is on the line');
+  });
+  const failedBeside = scr().textContent;
+  win.document.querySelector('#newScr').click();
+  assert.ok(await waitFor(() => scr().textContent !== failedBeside && /^[URFDLB]/.test(scr().textContent || '')),
+    'precondition: a new scramble arrived');
+  assert.ok(!said(), `a fresh scramble stands beside "${hint().textContent}"`);
 });
 
 test('the die on the cube screen says a roll failed, where it says everything else', async () => {
@@ -1935,7 +2469,9 @@ test('the die on the cube screen says a roll failed, where it says everything el
         if (!die.disabled) die.click();
         await waitFor(said, 1500);
       }
-      assert.ok(said(),
+      // Patience between presses above; what the press said waited for at this file's deadline,
+      // for the reason the Timer's own "could not be rolled" test gives.
+      assert.ok(await waitFor(said),
         `the press changed nothing and said "${status()?.textContent}" — a count still describing the previous cube`);
     });
   } finally {
