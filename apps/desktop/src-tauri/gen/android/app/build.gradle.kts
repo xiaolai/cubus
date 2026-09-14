@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.gradle.api.artifacts.dsl.LockMode
 
 plugins {
     id("com.android.application")
@@ -126,6 +127,21 @@ val cubusModel = tasks.register<Copy>("copyCubeModel") {
     into(layout.projectDirectory.dir("src/main/assets"))
 }
 tasks.named("preBuild") { dependsOn(cubusModel) }
+
+// THE RELEASE CLASSPATH IS LOCKED, because the third-party notices list every library it carries.
+// scripts/make-third-party-notices.mjs reads gradle.lockfile beside this file, and a lockfile
+// nothing enforces is a list that drifts from the APK. Locked, a release resolution that differs
+// from it fails the build instead of shipping a library the notices do not name; STRICT, so a
+// missing lockfile fails too rather than switching the check off. Reading the `implementation`
+// lines instead saw neither the Tauri modules' libraries nor anything transitive (audit,
+// 2026-09-14). After a dependency change: `./gradlew :app:dependencies --write-locks`, then
+// `node scripts/android-licences.mjs` and `pnpm notices`.
+dependencyLocking {
+    lockMode.set(LockMode.STRICT)
+}
+configurations.matching { it.name.endsWith("ReleaseRuntimeClasspath") }.configureEach {
+    resolutionStrategy.activateDependencyLocking()
+}
 
 dependencies {
     // Native capture and inference for Android (VisionPlugin.kt). CameraX for frames, TFLite for

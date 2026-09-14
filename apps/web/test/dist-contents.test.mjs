@@ -48,6 +48,10 @@ test('dist never carries the MCP guest or the min2phase provenance note, and doe
     const notices = join(dist, 'THIRD_PARTY_NOTICES.md');
     assert.ok(existsSync(notices), 'THIRD_PARTY_NOTICES.md did not reach dist/');
     assert.match(readFileSync(notices, 'utf8'), /^# Third-party notices/m);
+    // And every notices file it links: ONNX Runtime's own, for the releases that ship.
+    const linked = [...readFileSync(notices, 'utf8').matchAll(/\]\((notices\/[^)]+)\)/g)].map((m) => m[1]);
+    assert.ok(linked.length >= 2, `precondition: the notices link ONNX Runtime's notices (${linked})`);
+    for (const f of linked) assert.ok(existsSync(join(dist, f)), `${f} is linked from the notices and did not reach dist/`);
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }
@@ -86,6 +90,7 @@ function makeRoot(parent = tmpdir()) {
   put('tokens.css', ':root{}');
   put('manifest.webmanifest', JSON.stringify({ icons: [{ src: './icons/icon.png' }] }));
   put('THIRD_PARTY_NOTICES.md', '# Third-party notices\n');
+  put('notices/onnxruntime-0.0.0-ThirdPartyNotices.txt', 'THIRD PARTY SOFTWARE NOTICES AND INFORMATION\n');
   put('icons/icon.png', 'png');
   put('lib/app.js', 'export {};');
   for (const f of ['two-phase', 'solver-engine', 'solve-worker', 'solve-client', 'cube-pieces']) put(`lib/${f}.js`, 'export {};');
