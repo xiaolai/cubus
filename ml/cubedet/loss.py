@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .assign import EPS, TaskAlignedAssigner
+from .assign import EPS, TaskAlignedAssigner, points_in_boxes
 from .model import REG_MAX, boxes_to_distances, distances_to_boxes
 
 # Term weights. Box dominates because classification here is nearly free — six saturated colours,
@@ -113,9 +113,17 @@ class DetectionLoss(nn.Module):
         # batch legitimately has no box or DFL term, and its classification term is still real.
         score_mass = target_scores.sum().clamp(min=1.0)
 
-        loss_cls = F.binary_cross_entropy_with_logits(
-            cls_logits, target_scores, reduction="sum"
-        ) / score_mass
+        per_anchor = F.binary_cross_entropy_with_logits(cls_logits, target_scores, reduction="none")
+        if "ignore_mask" in targets and bool(targets["ignore_mask"].any()):
+            # UNLABELLED IS NOT BACKGROUND. An anchor inside an ignore region that the assigner did
+            # not give to a real sticker has no known answer, so it contributes nothing — rather
+            # than being taught that a sticker nobody labelled is empty table. A positive anchor
+            # keeps its term even there: a labelled sticker is a labelled sticker. See
+            # data.py IGNORE_CLASS for where these regions come from.
+            inside = points_in_boxes(points, targets["ignore"]) & targets["ignore_mask"][..., None]
+            unknown = inside.any(dim=1) & ~positive
+            per_anchor = per_anchor * (~unknown)[..., None]
+        loss_cls = per_anchor.sum() / score_mass
 
         if bool(positive.any()):
             idx = positive.nonzero(as_tuple=True)
