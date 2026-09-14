@@ -196,7 +196,7 @@ const beneath = (inner, outer) => {
  * Named and thrown from here rather than inlined, because the order is the contract — this must
  * be the thing that happens before the delete, not beside it.
  */
-function assertDistIsDisposable(src, out) {
+function assertDistIsDisposable(src, out, entry) {
   if (beneath(src, out)) {
     throw new Error(
       `build: refusing to assemble into ${out} — it is the source tree ${src} (or holds it), and the first thing an assembly does is delete its destination`,
@@ -214,9 +214,14 @@ function assertDistIsDisposable(src, out) {
   // (packages/cubus-cube, 2026-09-14). Everything above asks whether the destination is this app
   // or something this app copies from; the renderer's SOURCE is neither, so `assembleDist({ dist:
   // 'packages/cubus-cube' })` walked straight past every guard to the recursive delete, and the
-  // freshness check that would have noticed runs afterwards (found by audit, 2026-09-14). Named
-  // from CUBE_ENTRY so the two cannot come to mean different directories.
-  const renderer = dirname(dirname(resolve(src, CUBE_ENTRY)));
+  // freshness check that would have noticed runs afterwards (found by audit, 2026-09-14).
+  //
+  // `entry` is the ONE resolved renderer entry this assembly uses, handed in by assembleDist. This
+  // guard used to name its own from CUBE_ENTRY while the freshness check honoured a caller's
+  // `cubeEntry`, so a caller that supplied one had its renderer checked for freshness and the
+  // default protected from deletion — two halves of one change describing different directories
+  // (found by audit, 2026-09-14).
+  const renderer = dirname(dirname(entry));
   if (beneath(out, renderer) || beneath(renderer, out)) {
     throw new Error(
       `build: refusing to assemble into ${out} — it is the renderer package at ${renderer} (or holds it), whose source this build is built from, and the destination is deleted first`,
@@ -347,7 +352,7 @@ function assertScannerAssets(root, dist) {
 }
 
 /** The bundle must be newer than every source that went into it. */
-function assertBundleFresh(root, entry = resolve(root, CUBE_ENTRY)) {
+function assertBundleFresh(root, entry) {
   // The esbuild bundle must be newer than its source, or beforeBuildCommand ran
   // out of order and we would ship a stale renderer that still looks fine.
   //
@@ -402,14 +407,16 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
   // '.', which would hide every real ancestor from the guard.
   const src = resolve(root);
   const out = resolve(dist);
-  assertDistIsDisposable(src, out);
+  // Resolved once, before anything is deleted, and handed to BOTH checks that need it.
+  const entry = cubeEntry ? resolve(cubeEntry) : resolve(src, CUBE_ENTRY);
+  assertDistIsDisposable(src, out, entry);
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   copyWebAssets(src, out);
   const referenced = assertReferencedAssets(out);
   assertSolverAssets(out);
   assertScannerAssets(src, out);
-  if (freshness) assertBundleFresh(src, cubeEntry ? resolve(cubeEntry) : undefined);
+  if (freshness) assertBundleFresh(src, entry);
   return { dist: out, referenced };
 }
 

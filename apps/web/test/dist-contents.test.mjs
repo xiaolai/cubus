@@ -420,3 +420,26 @@ test('assembling into the renderer package is refused, not carried out', () => {
     (err) => /refusing to assemble into/.test(err.message),
     'a build aimed at packages/ would have taken the renderer with it');
 });
+
+// The guard and the freshness check once resolved the renderer's entry separately: the guard from
+// the default, the freshness check from a caller's `cubeEntry`. So a caller that supplied its own
+// entry had that renderer checked for freshness while the DEFAULT was the one protected from the
+// delete (found by audit, 2026-09-14).
+test('the renderer a caller names is the renderer the deletion guard protects', () => {
+  withRoot(({ root }) => {
+    // A renderer outside the synthetic root, named through `cubeEntry` — and the destination aimed
+    // straight at the package that holds it.
+    const outside = mkdtempSync(join(tmpdir(), 'cubus-renderer-'));
+    try {
+      mkdirSync(join(outside, 'src'), { recursive: true });
+      writeFileSync(join(outside, 'src', 'cubus-cube.js'), 'export {};');
+      assert.throws(
+        () => assembleDist({ root, dist: outside, freshness: false, cubeEntry: join(outside, 'src', 'cubus-cube.js') }),
+        (err) => /refusing to assemble into/.test(err.message),
+        'a build aimed at the renderer the caller named would have deleted it');
+      assert.ok(existsSync(join(outside, 'src', 'cubus-cube.js')), 'and the renderer it named is gone');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});

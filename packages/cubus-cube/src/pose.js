@@ -95,6 +95,15 @@ function rotation(axis, angle) {
 }
 
 /**
+ * The rotation table's key: which kind of cubie, which one, in which slot, twisted how far.
+ *
+ * At module scope because two places use it — the table's builder writes by it and `settled()`
+ * reads by it — and each had its own spelling (found by audit, 2026-09-14). A key written two ways
+ * is a lookup that can start missing every row the day one of them changes.
+ */
+const tableKey = (kind, home, slot, twist) => `${kind}${home},${slot},${twist}`;
+
+/**
  * `geo` with the layer `face` names given one quarter turn, in the direction cube-pieces turns it.
  * `-sign` is what the independent derivation found for all six faces (measurements/pose-derivation).
  */
@@ -118,8 +127,8 @@ const TURNED = (() => {
   const table = new Map();
   /** The geometric cube: every cubie at home, turned by nothing. */
   const solved = [
-    ...CORNER_POS.map((pos, home) => ({ kind: 'c', home, pos, m: I3 })),
-    ...EDGE_POS.map((pos, home) => ({ kind: 'e', home, pos, m: I3 })),
+    ...CORNER_POS.map((pos) => ({ kind: 'c', pos, m: I3 })),
+    ...EDGE_POS.map((pos) => ({ kind: 'e', pos, m: I3 })),
   ];
   /** Whichever cubie of `geo` is standing at `pos`. Geometry is a PARAMETER: it used to be one
    *  captured array that every branch of the walk had to empty and refill before recording, so
@@ -127,10 +136,9 @@ const TURNED = (() => {
   const at = (geo, kind, pos) => geo.find(
     (c) => c.kind === kind && c.pos[0] === pos[0] && c.pos[1] === pos[1] && c.pos[2] === pos[2],
   );
-  const key = (kind, home, slot, twist) => `${kind}${home},${slot},${twist}`;
   const note = (geo, state) => {
-    for (let slot = 0; slot < 8; slot++) table.set(key('c', state.cp[slot], slot, state.co[slot]), at(geo, 'c', CORNER_POS[slot]).m);
-    for (let slot = 0; slot < 12; slot++) table.set(key('e', state.ep[slot], slot, state.eo[slot]), at(geo, 'e', EDGE_POS[slot]).m);
+    for (let slot = 0; slot < 8; slot++) table.set(tableKey('c', state.cp[slot], slot, state.co[slot]), at(geo, 'c', CORNER_POS[slot]).m);
+    for (let slot = 0; slot < 12; slot++) table.set(tableKey('e', state.ep[slot], slot, state.eo[slot]), at(geo, 'e', EDGE_POS[slot]).m);
   };
   // Breadth-first over quarter turns, carrying geometry and piece state side by side. The keyspace
   // is 480 entries and every state visited fills 20 of them, so this closes quickly; the walk
@@ -181,7 +189,7 @@ function settled(state, i) {
   // Which slot holds this cubie, and how it is twisted there.
   const slot = perm.indexOf(c.index);
   if (slot < 0) throw new Error(`pose: no slot holds ${c.name} — the state is not a permutation`);
-  const m = TURNED.get(`${kind}${c.index},${slot},${orient[slot]}`);
+  const m = TURNED.get(tableKey(kind, c.index, slot, orient[slot]));
   if (!m) throw new Error(`pose: no rotation for ${c.name} in slot ${slot} twisted ${orient[slot]}`);
   return { pos: slots[slot], m };
 }
@@ -211,7 +219,7 @@ export function poseAll(frame, state, move = null, phase = 1) {
 
 /** The face whose outward normal is `sign` along `axis`. */
 const faceAt = (axis, sign) => Object.keys(NORMAL).find(
-  (f) => NORMAL[f][AXIS_OF[axis]] === sign && NORMAL[f].filter(Boolean).length === 1,
+  (f) => NORMAL[f][AXIS_OF[axis]] === sign,
 );
 
 /** cube-pieces' name for a quarter/half turn of one outer layer, in this module's angle sign. */

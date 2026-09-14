@@ -93,3 +93,35 @@ test('the bundle can be read twice, and says the same thing both times', async (
   assert.deepEqual(second.methods, first.methods, 'a second read found different methods');
   assert.equal(second.digest, first.digest, 'a second read hashed different bytes');
 });
+
+// What `read-element.mjs` guarantees, tested where it could fail: the capabilities it reports and
+// the digest it reports describe the SAME bytes. It reads the bundle once and imports those exact
+// bytes as a `data:` URL; an implementation that hashed the file but imported it by path would
+// agree with itself right up until the bundle changed on disk — and then Node's module cache would
+// hand back the OLD element under the NEW digest. That is the rebuild race the snapshot exists to
+// close, and nothing noticed an in-memory mutation that reopened it (found by audit, 2026-09-14).
+test('a bundle that changes between two reads is described by its new bytes, not a cached element', async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'cubus-read-element-'));
+  try {
+    const path = join(dir, 'cubus-cube.js');
+    const original = readFileSync(BUNDLE, 'utf8');
+    const anchor = '  static observedAttributes = [\n';
+    assert.equal(original.split(anchor).length, 2, 'precondition: the bundle has one attribute list to extend');
+    writeFileSync(path, original);
+    const before = await readElement(pathToFileURL(path));
+    // The same file, rebuilt with one more attribute: what a rebuild during a read would look like.
+    writeFileSync(path, original.replace(anchor, `${anchor}    "only-in-the-rebuild",\n`));
+    const after = await readElement(pathToFileURL(path));
+    assert.notEqual(after.digest, before.digest, 'precondition: the second read hashed different bytes');
+    assert.equal(before.attributes.includes('only-in-the-rebuild'), false, 'precondition: the first bytes do not have it');
+    assert.equal(after.attributes.includes('only-in-the-rebuild'), true,
+      'the digest describes the rebuilt bytes and the capabilities describe the old ones — a cached element under a new digest');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
