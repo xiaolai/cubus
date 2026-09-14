@@ -522,22 +522,42 @@ class CubeDataset(Dataset):
         return tensor, torch.from_numpy(boxes)
 
 
+# A label row with this class is not a sticker: it marks a region where stickers are visible but
+# carry no label. A photo from the community drop labels only the face its contributor checked, and
+# the side faces in the same frame are real stickers nobody named. Scored as background they would
+# teach the model to miss every sticker it is not looking straight at, so they travel through every
+# augmentation as ordinary boxes and `collate` hands them to the loss separately.
+IGNORE_CLASS = -1
+
+
+def _padded(rows: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Rows of (class, x0, y0, x1, y1) per image → padded labels, boxes and a validity mask."""
+    width = max(1, max(len(r) for r in rows))
+    labels = torch.zeros(len(rows), width, dtype=torch.long)
+    boxes = torch.zeros(len(rows), width, 4, dtype=torch.float32)
+    mask = torch.zeros(len(rows), width, dtype=torch.bool)
+    for i, r in enumerate(rows):
+        if len(r):
+            labels[i, : len(r)] = r[:, 0].long()
+            boxes[i, : len(r)] = r[:, 1:]
+            mask[i, : len(r)] = True
+    return labels, boxes, mask
+
+
 def collate(batch):
     """Pad each image's targets to the batch's widest, and carry a validity mask.
 
     The mask is what the assigner uses to ignore padding; a padded row is a zero-area box at the
     origin, which would otherwise be a real ground truth of class 0 (white) in the corner.
+
+    Rows of `IGNORE_CLASS` never reach `labels`: they come out as `ignore` and `ignore_mask`, which
+    only the loss reads, so validation and the assigner see exactly the stickers they always did.
     """
     images = torch.stack([item[0] for item in batch])
-    counts = [len(item[1]) for item in batch]
-    width = max(1, max(counts))
-    labels = torch.zeros(len(batch), width, dtype=torch.long)
-    boxes = torch.zeros(len(batch), width, 4, dtype=torch.float32)
-    mask = torch.zeros(len(batch), width, dtype=torch.bool)
-    for i, (_, target) in enumerate(batch):
-        n = len(target)
-        if n:
-            labels[i, :n] = target[:, 0].long()
-            boxes[i, :n] = target[:, 1:]
-            mask[i, :n] = True
-    return images, {"labels": labels, "boxes": boxes, "mask": mask}
+    targets = [item[1] for item in batch]
+    for i, target in enumerate(targets):
+        if len(target) and bool((target[:, 0] < IGNORE_CLASS).any()):
+            raise ValueError(f"batch item {i} has a class below IGNORE_CLASS={IGNORE_CLASS}: {target[:, 0].tolist()}")
+    labels, boxes, mask = _padded([t[t[:, 0] >= 0] if len(t) else t for t in targets])
+    _, ignore, ignore_mask = _padded([t[t[:, 0] == IGNORE_CLASS] if len(t) else t for t in targets])
+    return images, {"labels": labels, "boxes": boxes, "mask": mask, "ignore": ignore, "ignore_mask": ignore_mask}

@@ -514,6 +514,64 @@ def test_collate_masks_padding_rather_than_inventing_a_white_sticker():
     assert targets["mask"][1].tolist() == [False]
 
 
+def test_collate_keeps_unlabelled_regions_out_of_the_stickers():
+    a = (torch.zeros(3, IMG_SIZE, IMG_SIZE), torch.tensor([[2.0, 10.0, 10.0, 20.0, 20.0], [-1.0, 30.0, 30.0, 60.0, 60.0]]))
+    b = (torch.zeros(3, IMG_SIZE, IMG_SIZE), torch.tensor([[4.0, 100.0, 100.0, 120.0, 120.0]]))
+    _, targets = collate([a, b])
+    assert targets["labels"][targets["mask"]].tolist() == [2, 4], "an ignore row became a sticker"
+    assert targets["ignore_mask"].tolist() == [[True], [False]]
+    assert targets["ignore"][0, 0].tolist() == [30.0, 30.0, 60.0, 60.0]
+    with pytest.raises(ValueError):
+        collate([(torch.zeros(3, IMG_SIZE, IMG_SIZE), torch.tensor([[-2.0, 1.0, 1.0, 5.0, 5.0]]))])
+
+
+def test_the_drop_dataset_writes_the_ignore_class_the_trainer_reads():
+    # drop_dataset.py mirrors the value because it runs without torch; this is where both are importable.
+    import drop_dataset
+    from cubedet.data import IGNORE_CLASS
+
+    assert drop_dataset.IGNORE_CLASS == IGNORE_CLASS
+
+
+def _loss_and_class_gradient(targets):
+    torch.manual_seed(0)
+    model = CubeDet()
+    outputs = model(torch.rand(1, 3, IMG_SIZE, IMG_SIZE))
+    outputs[0].retain_grad()
+    total, parts = DetectionLoss(NUM_CLASSES)(outputs, targets)
+    total.backward()
+    points = outputs[2]
+    return float(total), parts, outputs[0].grad[0].abs().sum(dim=-1), points
+
+
+def test_an_unlabelled_region_is_not_taught_as_background():
+    sticker = {"labels": torch.tensor([[1]]), "boxes": torch.tensor([[[100.0, 100.0, 160.0, 160.0]]]),
+               "mask": torch.ones(1, 1, dtype=torch.bool)}
+    region = torch.tensor([[[300.0, 300.0, 420.0, 420.0]]])
+    plain, _, plain_grad, points = _loss_and_class_gradient(dict(sticker))
+    _, _, grad, _ = _loss_and_class_gradient({**sticker, "ignore": region, "ignore_mask": torch.ones(1, 1, dtype=torch.bool)})
+    inside = points_in_boxes(points, region)[0, 0]
+    assert inside.sum() > 0
+    assert float(grad[inside].abs().max()) == 0.0, "anchors in an unlabelled region still learned 'background'"
+    assert float(plain_grad[inside].abs().min()) > 0.0, "the control: without the region those anchors do learn"
+    outside = ~inside
+    assert torch.allclose(grad[outside], plain_grad[outside]), "the region changed anchors outside it"
+
+    # An empty ignore list is the same loss as no ignore list at all: old datasets train unchanged.
+    empty, _, _, _ = _loss_and_class_gradient({**sticker, "ignore": torch.zeros(1, 1, 4), "ignore_mask": torch.zeros(1, 1, dtype=torch.bool)})
+    assert empty == plain
+
+
+def test_a_labelled_sticker_inside_an_unlabelled_region_still_trains():
+    sticker = {"labels": torch.tensor([[1]]), "boxes": torch.tensor([[[100.0, 100.0, 160.0, 160.0]]]),
+               "mask": torch.ones(1, 1, dtype=torch.bool)}
+    covering = {"ignore": torch.tensor([[[80.0, 80.0, 180.0, 180.0]]]), "ignore_mask": torch.ones(1, 1, dtype=torch.bool)}
+    _, parts, grad, points = _loss_and_class_gradient({**sticker, **covering})
+    assert parts["positives"] > 0
+    in_sticker = points_in_boxes(points, sticker["boxes"])[0, 0]
+    assert float(grad[in_sticker].abs().max()) > 0.0, "the sticker's own anchors stopped learning"
+
+
 def _accelerator() -> str | None:
     """CUDA on the training box, MPS on the maintainer's Mac, otherwise nothing.
 

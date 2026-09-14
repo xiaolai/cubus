@@ -155,6 +155,7 @@ jobs:
           # The golden harness's pins (ml/requirements-golden.txt). No model is loaded, so no onnxruntime.
           pip install --quiet numpy==2.3.5 pillow==12.3.0
           python ml/test_propose.py
+          python ml/test_drop_dataset.py
 
       # THE FAST TIER'S WEB TESTS: every suite under apps/web/test/ except test/browser/, run by
       # apps/web/run-tests.mjs, which refuses a pattern that matches nothing and a test file that
