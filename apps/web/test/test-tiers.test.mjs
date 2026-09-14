@@ -135,6 +135,17 @@ test('the scripts and the pre-push hook run the tiers through the runner', () =>
     assert.match(s.check, /coverage/, `${pkg}'s full tier dropped coverage`);
   }
 
+  // `packages/cubus-cube` has NO check of its own, deliberately, and this states it rather than
+  // leaving `pnpm -r run check` to skip it in silence. Everything that verifies the renderer is in
+  // this app, where its only consumer is: the drift guard rebuilds its bundle
+  // (vendor-bundles.test.mjs), cube-manifest.test.mjs reads the built element back, scheme and
+  // app-hardening read its source, and thirteen browser suites drive it. A check here would be a
+  // second copy of one of those. Add one the day the package has a consumer this app cannot see —
+  // and then add it to the loop above.
+  const renderer = JSON.parse(readFileSync(`${ROOT}packages/cubus-cube/package.json`, 'utf8')).scripts;
+  assert.deepEqual(Object.keys(renderer), ['build'],
+    'the renderer package grew a script — if it is a check, wire it into the loop above');
+
   // Comments stripped: the hook's own header is allowed to SAY what `pnpm check` means.
   const hook = readFileSync(`${ROOT}.githooks/pre-push`, 'utf8')
     .split('\n')

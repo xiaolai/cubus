@@ -35,13 +35,13 @@ const scannerSource = readFileSync(
 const rendererPalettes = STICKER_PALETTES;
 
 test('the sticker colours are written once: neither the renderer nor the app carries a copy', () => {
-  const renderer = readFileSync(new URL('../lib/cubus-cube.js', import.meta.url), 'utf8');
-  assert.match(renderer, /import \{ STICKER_PALETTES \} from '\.\/sticker-palettes\.js';/,
+  const renderer = readFileSync(new URL('../../../packages/cubus-cube/src/cubus-cube.js', import.meta.url), 'utf8');
+  assert.match(renderer, /import \{ STICKER_PALETTES \} from '\.\.\/\.\.\/\.\.\/apps\/web\/lib\/sticker-palettes\.js';/,
     'the renderer no longer paints from the shared table');
   const app = readAppSource();
   for (const [name, palette] of Object.entries(STICKER_PALETTES)) {
     for (const hex of Object.values(palette)) {
-      assert.ok(!renderer.includes(hex), `lib/cubus-cube.js carries its own copy of ${name}'s ${hex}`);
+      assert.ok(!renderer.includes(hex), `the renderer carries its own copy of ${name}'s ${hex}`);
       assert.ok(!app.includes(hex), `the app carries its own copy of ${name}'s ${hex}`);
     }
   }
@@ -177,9 +177,9 @@ test('the renderer remaps the same two positions this module does', () => {
   // depends on nothing in the app — so the two must be held equal or they can come to disagree
   // about what Japanese means. Read out of the renderer's source, not imported: importing it
   // would pull in three.js and a WebGL context to check a table.
-  const src = readFileSync(new URL('../lib/cubus-cube.js', import.meta.url), 'utf8');
+  const src = readFileSync(new URL('../../../packages/cubus-cube/src/cubus-cube.js', import.meta.url), 'utf8');
   const m = src.match(/const SWAPPED = \{([^}]*)\}/);
-  assert.ok(m, 'lib/cubus-cube.js no longer declares SWAPPED as a literal');
+  assert.ok(m, 'the renderer no longer declares SWAPPED as a literal');
   const swapped = Object.fromEntries([...m[1].matchAll(/([URFDLB]):\s*'([URFDLB])'/g)].map((x) => [x[1], x[2]]));
   // What the renderer does to a palette, expressed as this module's own remap.
   for (const position of POSITIONS) {

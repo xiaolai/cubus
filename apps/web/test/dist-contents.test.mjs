@@ -111,7 +111,10 @@ function makeRoot(parent = tmpdir()) {
 function withRoot(fn) {
   const root = makeRoot();
   const dist = mkdtempSync(join(tmpdir(), 'cubus-dist-'));
-  try { return fn({ root, dist, build: (o = {}) => assembleDist({ root, dist, ...o }) }); }
+  // `cubeEntry`: the renderer is its own package now, so its real entry is outside any root
+  // this test can assemble. The check under test is the timestamp comparison, not the path.
+  const cubeEntry = join(root, 'lib', 'cubus-cube.js');
+  try { return fn({ root, dist, build: (o = {}) => assembleDist({ root, dist, cubeEntry, ...o }) }); }
   finally { rmSync(root, { recursive: true, force: true }); rmSync(dist, { recursive: true, force: true }); }
 }
 
@@ -371,14 +374,14 @@ test('an assembly into a macOS firmlink twin of the source tree is refused', (t)
 // it reached esbuild as `absWorkingDir` — which refuses anything relative, so this threw before
 // it could look at one import (found by audit, 2026-09-05).
 test('a relative entry is scanned for its imports, not refused for being relative', () => {
-  const rel = relative(process.cwd(), fileURLToPath(new URL('lib/cubus-cube.js', WEB)));
+  const rel = relative(process.cwd(), fileURLToPath(new URL('../../packages/cubus-cube/src/cubus-cube.js', WEB)));
   assert.ok(!rel.startsWith('/'), 'precondition: the entry under test is a relative path');
   const inputs = bundleInputs(rel);
   assert.ok(inputs.length > 1, 'a relative entry yielded no module graph');
   assert.ok(inputs.every((f) => f.startsWith('/')), 'inputs must come back absolute, whatever went in');
   assert.deepEqual(
     new Set(inputs),
-    new Set(bundleInputs(fileURLToPath(new URL('lib/cubus-cube.js', WEB)))),
+    new Set(bundleInputs(fileURLToPath(new URL('../../packages/cubus-cube/src/cubus-cube.js', WEB)))),
     'the same entry named two ways must yield the same inputs',
   );
 });
@@ -390,7 +393,7 @@ test('a relative root reaches the freshness check the same way an absolute one d
     const rel = relative(process.cwd(), root);
     const soon = Date.now() / 1000 + 600;
     utimesSync(join(root, 'lib', 'cube-frame.js'), soon, soon);
-    assert.throws(() => assembleDist({ root: rel, dist, freshness: true }),
+    assert.throws(() => assembleDist({ root: rel, dist, freshness: true, cubeEntry: join(root, 'lib', 'cubus-cube.js') }),
       (err) => err.message.includes('cube-frame.js'),
       'the freshness check must fail over the STALE BUNDLE, not over how its root was spelled');
   });

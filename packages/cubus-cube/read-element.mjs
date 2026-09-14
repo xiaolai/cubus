@@ -14,7 +14,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const BUNDLE = new URL('./vendor/cubus-cube.js', import.meta.url);
+const BUNDLE = new URL('../../apps/web/vendor/cubus-cube.js', import.meta.url);
 
 /**
  * Import the bundle in a bare Node process and report what it registered.
