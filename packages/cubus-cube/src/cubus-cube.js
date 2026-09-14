@@ -1131,11 +1131,21 @@ class CubusCube extends HTMLElement {
     // the projection — below a few pixels the main view alone is the honest picture.
     if (bv === 'top-right' && Math.floor(w * 0.32) > 0 && Math.floor(h * 0.32) > 0) {
       const iw = Math.floor(w * 0.32), ih = Math.floor(h * 0.32);
+      const [x, y] = [w - iw - 10, h - ih - 10];
+      const autoClear = r.autoClear;
       r.setScissorTest(true);
       try {
+        // The inset is drawn OVER the main view, so only depth is cleared, and only inside it. The
+        // explicit clearDepth() always said so, but render() clears colour too while autoClear is
+        // on, and it cut a hard-edged transparent hole through the main cube's corner — every
+        // pixel of the inset's rectangle came back 0,0,0,0 (seen in the appearance golden,
+        // 2026-09-15). The scissor is set before the clear because a stale one, left by a
+        // side-by-side frame, would clear somewhere else.
+        r.setScissor(x, y, iw, ih);
         r.clearDepth();
-        this._renderOpposite(w - iw - 10, h - ih - 10, iw, ih);
-      } finally { r.setScissorTest(false); }
+        r.autoClear = false;
+        this._renderOpposite(x, y, iw, ih);
+      } finally { r.autoClear = autoClear; r.setScissorTest(false); }
     }
   }
 
