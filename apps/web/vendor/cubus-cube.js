@@ -29052,6 +29052,7 @@ function rotation(axis, angle) {
   if (axis === "z") return [[c, -s, 0], [s, c, 0], [0, 0, 1]];
   throw new Error(`pose: unknown axis "${axis}" \u2014 one of x, y, z`);
 }
+var tableKey = (kind, home, slot, twist) => `${kind}${home},${slot},${twist}`;
 var turnGeometry = (geo, face) => {
   const { axis, sign } = axisOf(face);
   const M = rotation(axis, -sign * (Math.PI / 2));
@@ -29060,16 +29061,15 @@ var turnGeometry = (geo, face) => {
 var TURNED = (() => {
   const table = /* @__PURE__ */ new Map();
   const solved = [
-    ...CORNER_POS.map((pos, home) => ({ kind: "c", home, pos, m: I3 })),
-    ...EDGE_POS.map((pos, home) => ({ kind: "e", home, pos, m: I3 }))
+    ...CORNER_POS.map((pos) => ({ kind: "c", pos, m: I3 })),
+    ...EDGE_POS.map((pos) => ({ kind: "e", pos, m: I3 }))
   ];
   const at = (geo, kind, pos) => geo.find(
     (c) => c.kind === kind && c.pos[0] === pos[0] && c.pos[1] === pos[1] && c.pos[2] === pos[2]
   );
-  const key2 = (kind, home, slot, twist) => `${kind}${home},${slot},${twist}`;
   const note = (geo, state) => {
-    for (let slot = 0; slot < 8; slot++) table.set(key2("c", state.cp[slot], slot, state.co[slot]), at(geo, "c", CORNER_POS[slot]).m);
-    for (let slot = 0; slot < 12; slot++) table.set(key2("e", state.ep[slot], slot, state.eo[slot]), at(geo, "e", EDGE_POS[slot]).m);
+    for (let slot = 0; slot < 8; slot++) table.set(tableKey("c", state.cp[slot], slot, state.co[slot]), at(geo, "c", CORNER_POS[slot]).m);
+    for (let slot = 0; slot < 12; slot++) table.set(tableKey("e", state.ep[slot], slot, state.eo[slot]), at(geo, "e", EDGE_POS[slot]).m);
   };
   let frontier = [{
     state: { cp: [...Array(8).keys()], co: Array(8).fill(0), ep: [...Array(12).keys()], eo: Array(12).fill(0) },
@@ -29104,7 +29104,7 @@ function settled(state, i) {
   const [perm, orient, slots] = kind === "c" ? [state.cp, state.co, CORNER_POS] : [state.ep, state.eo, EDGE_POS];
   const slot = perm.indexOf(c.index);
   if (slot < 0) throw new Error(`pose: no slot holds ${c.name} \u2014 the state is not a permutation`);
-  const m = TURNED.get(`${kind}${c.index},${slot},${orient[slot]}`);
+  const m = TURNED.get(tableKey(kind, c.index, slot, orient[slot]));
   if (!m) throw new Error(`pose: no rotation for ${c.name} in slot ${slot} twisted ${orient[slot]}`);
   return { pos: slots[slot], m };
 }
@@ -29120,7 +29120,7 @@ function poseAll(frame, state, move = null, phase = 1) {
   });
 }
 var faceAt = (axis, sign) => Object.keys(NORMAL2).find(
-  (f) => NORMAL2[f][AXIS_OF[axis]] === sign && NORMAL2[f].filter(Boolean).length === 1
+  (f) => NORMAL2[f][AXIS_OF[axis]] === sign
 );
 function nameOf(axis, sign, angle) {
   const quarters = Math.round(angle / (Math.PI / 2));
