@@ -182,6 +182,25 @@ test('the frame is applied to everything, and nothing else', () => {
   }
 });
 
+// The plan names this one: `(R U R' U)x5` returns {cp,co,ep,eo} to solved and leaves a centre
+// turned. It is the sharpest statement of why the 20-piece state cannot be the whole model — the
+// cube is back, and one cubie is not.
+test('a word that solves the pieces can still leave a centre turned', () => {
+  let state = SOLVED;
+  let frame = I3;
+  for (let i = 0; i < 5; i++) {
+    for (const name of ['R', 'U', "R'", 'U']) ({ frame, state } = after(frame, state, moveOf(name)));
+  }
+  for (const half of ['cp', 'co', 'ep', 'eo']) {
+    assert.deepEqual(state[half], SOLVED[half], `${half} did not come back — the premise of this case is wrong`);
+  }
+  assert.notDeepEqual(state.ct, [0, 0, 0, 0, 0, 0],
+    'every centre came back unturned, so the twenty-piece state WOULD have been the whole model');
+  const centres = poseAll(I3, state, null, 0).slice(20);
+  assert.ok(centres.some((c) => !closeMat(c.m, I3)),
+    'the pose draws every centre unturned on a cube whose centres are not');
+});
+
 test('the cubie list is the renderer\'s own order, and every home is a real slot', () => {
   assert.deepEqual(CUBIES.slice(0, 8).map((c) => c.name), CORNERS, 'corners are not in cube-pieces order');
   assert.deepEqual(CUBIES.slice(8, 20).map((c) => c.name), EDGES, 'edges are not in cube-pieces order');
