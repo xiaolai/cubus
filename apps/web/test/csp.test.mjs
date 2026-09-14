@@ -97,7 +97,7 @@ test('devCsp only ADDS sources to the release policy, never removes or widens a 
 
 test('Tauri is told to leave style-src alone, so unsafe-inline actually applies to style attributes', () => {
   // MEASURED, not reasoned: the first probe build reported 13 `style-src-attr` violations at boot
-  // (app.js 770, 4172, 4232 — `style="…"` attributes in rendered templates), with the policy
+  // (all of them `style="…"` attributes in the templates app.js renders), with the policy
   // reading `style-src 'self' 'unsafe-inline' 'nonce-…'`. Tauri appends a nonce to style-src for
   // the <style> block it nonces in index.html, and the CSP spec says a directive that carries a
   // nonce or hash IGNORES 'unsafe-inline' — so Tauri's own hardening silently turned the

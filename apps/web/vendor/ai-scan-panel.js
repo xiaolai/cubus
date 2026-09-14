@@ -2026,13 +2026,15 @@ var EDGE_FACELET = [
   [50, 39],
   [48, 14]
 ];
-var CORNER_COLOR = CORNER_FACELET.map(
-  (t) => t.map((i) => SOLVED[i])
+var CORNER_COLOR = Object.freeze(
+  CORNER_FACELET.map((t) => Object.freeze(t.map((i) => SOLVED[i])))
 );
-var EDGE_COLOR = EDGE_FACELET.map((t) => t.map((i) => SOLVED[i]));
+var EDGE_COLOR = Object.freeze(
+  EDGE_FACELET.map((t) => Object.freeze(t.map((i) => SOLVED[i])))
+);
 var ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2];
 function rotateFace(a, k) {
-  let out = a;
+  let out = a.slice();
   for (let t = 0; t < (k % 4 + 4) % 4; t++) out = ROT90.map((i) => out[i]);
   return out;
 }
@@ -2067,6 +2069,11 @@ var CENTER_INDEX = {
 };
 function decodeFacelets(f) {
   if (f.length !== 54) return null;
+  const corners = decodeCorners(f);
+  const edges = corners && decodeEdges(f);
+  return corners && edges ? { ...corners, ...edges } : null;
+}
+function decodeCorners(f) {
   const cp = new Array(8);
   const co = new Array(8);
   for (let i = 0; i < 8; i++) {
@@ -2092,6 +2099,9 @@ function decodeFacelets(f) {
     cp[i] = found;
     co[i] = ori;
   }
+  return { cp, co };
+}
+function decodeEdges(f) {
   const ep = new Array(12);
   const eo = new Array(12);
   for (let i = 0; i < 12; i++) {
@@ -2117,7 +2127,7 @@ function decodeFacelets(f) {
     ep[i] = found;
     eo[i] = ori;
   }
-  return { cp, co, ep, eo };
+  return { ep, eo };
 }
 function isPermutation(a, n) {
   if (a.length !== n) return false;

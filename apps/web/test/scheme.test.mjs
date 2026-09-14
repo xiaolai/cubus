@@ -23,28 +23,34 @@ import {
   slotOf,
   unsafeColourPairs,
 } from '../lib/scheme.js';
+import { readAppSource } from './app-source.mjs';
+import { STICKER_PALETTES } from '../lib/sticker-palettes.js';
 
 const scannerSource = readFileSync(
   new URL('../../../packages/cube-scanner/src/scheme.ts', import.meta.url),
   'utf8',
 );
 
-/** The renderer's positional palettes, read out of its source: six hexes per set, by position. */
-const rendererPalettes = (() => {
-  const src = readFileSync(new URL('../lib/cubus-cube.js', import.meta.url), 'utf8');
-  const block = src.match(/const PALETTES = \{([\s\S]*?)\n\};/)?.[1];
-  assert.ok(block, 'lib/cubus-cube.js no longer declares PALETTES as a literal');
-  const out = {};
-  for (const m of block.matchAll(/(\w+):\s*\{([^}]*)\}/g)) {
-    out[m[1]] = Object.fromEntries([...m[2].matchAll(/([URFDLB]):'(#[0-9A-Fa-f]{6})'/g)].map((x) => [x[1], x[2]]));
+/** The positional palettes: one table, which the renderer and the app's nets both paint from. */
+const rendererPalettes = STICKER_PALETTES;
+
+test('the sticker colours are written once: neither the renderer nor the app carries a copy', () => {
+  const renderer = readFileSync(new URL('../lib/cubus-cube.js', import.meta.url), 'utf8');
+  assert.match(renderer, /import \{ STICKER_PALETTES \} from '\.\/sticker-palettes\.js';/,
+    'the renderer no longer paints from the shared table');
+  const app = readAppSource();
+  for (const [name, palette] of Object.entries(STICKER_PALETTES)) {
+    for (const hex of Object.values(palette)) {
+      assert.ok(!renderer.includes(hex), `lib/cubus-cube.js carries its own copy of ${name}'s ${hex}`);
+      assert.ok(!app.includes(hex), `the app carries its own copy of ${name}'s ${hex}`);
+    }
   }
-  return out;
-})();
+});
 
 test('the app’s scheme table is the scanner’s, entry for entry', () => {
   // The TypeScript source is the ONE table; this file carries a copy because app.js cannot
   // import it. Read the copy's source of truth back out of the .ts rather than trusting a hand
-  // transcription — the same pin FACE_NEIGHBOURS has.
+  // transcription — the same pin the scan screen's FACE_EDGES copy has in scan-screen.test.mjs.
   for (const scheme of SCHEMES) {
     const m = scannerSource.match(new RegExp(`${scheme}: Object\\.freeze\\(\\{([^}]*)\\}`));
     assert.ok(m, `packages/cube-scanner/src/scheme.ts declares no ${scheme} row`);

@@ -19,6 +19,52 @@ import { createCaptureRecorder } from './cube-report.js';
 import { VERDICT, createSelfCheck, mayFollowMoves, maySourceOffset } from './cube-selfcheck.js';
 import { IDENTITY } from './cube-trust.js';
 
+/** An Error for whatever was thrown, so a reader of the answer can always take its `.message`. */
+const asError = (e) => (e instanceof Error ? e : new Error(String(e)));
+
+/**
+ * Ask the radio again to let go of `held` — `[{ id, error }]`, as the polyfill's `whenReleased`
+ * answers it — over a bridge installed for the purpose, since a released one refuses every
+ * command, and released once it has asked. Answers what is still held, in the same shape.
+ */
+async function askRadioAgain(installBridge, held) {
+  const fresh = installBridge({});
+  const still = [];
+  for (const peripheral of held) {
+    try {
+      await fresh.bridge.disconnect(peripheral.id);
+    } catch (e) {
+      still.push({ id: peripheral.id, error: asError(e) });
+    }
+  }
+  await fresh.uninstall();
+  return still;
+}
+
+/**
+ * What a failed handshake throws, once what it left the radio holding is known.
+ *
+ * The protocol layer fires `gatt.disconnect()` on its way out of a failed handshake and never
+ * waits for it, so that release is still in flight here. It is settled over the bridge it was sent
+ * through, and only then is the bridge released: released first, the bridge refused it, and the
+ * radio went on holding a cube nothing could ask about again. With nothing held this is the
+ * handshake's own error. Otherwise it carries `unreleased`, whose `disconnect()` asks the radio
+ * again and answers why something is still held, or null once nothing is — a session's answer,
+ * so a caller keeps it the way it keeps a session.
+ */
+async function failedHandshake(error, bridge, installBridge) {
+  let held = (await bridge.bluetooth?.whenReleased?.()) ?? [];
+  await bridge.uninstall();
+  if (held.length === 0) return error;
+  const unreleased = {
+    async disconnect() {
+      if (held.length > 0) held = await askRadioAgain(installBridge, held);
+      return held[0]?.error ?? null;
+    },
+  };
+  return Object.assign(new Error(asError(error).message, { cause: error }), { unreleased });
+}
+
 /**
  * Connect to a cube and start watching it.
  *
@@ -78,8 +124,7 @@ export async function connectCube({
       onStatus,
     });
   } catch (e) {
-    bridge.uninstall();
-    throw e;
+    throw await failedHandshake(e, bridge, installBridge);
   }
 
   // The MAC is the only per-DEVICE identifier the protocol layer exposes; `protocol.id` names the
@@ -110,6 +155,12 @@ export async function connectCube({
   let lastReportedAt = 0;
   /** Why the last `disconnect()` did not complete, or null. Never swallowed — see `disconnect`. */
   let disconnectError = null;
+  /** What the radio still held when the goodbye ended, as the polyfill's `whenReleased` answers it
+   *  (`[{ id, error }]`), less whatever asking again has since released. See `disconnect`. */
+  let held = [];
+  /** The goodbye, then each later ask after the one before it; null until the goodbye. See
+   *  `disconnect`. */
+  let asked = null;
 
   const sub = conn.events$.subscribe({
     next: (ev) => {
@@ -221,10 +272,16 @@ export async function connectCube({
     return bridge.uninstall();
   }
 
-  /** The cube went away on its own: nothing more will be sent, so the transport goes too. */
+  /**
+   * The cube went away on its own: nothing more will be sent, so the session says its own goodbye,
+   * and the transport goes once it has, never before. The protocol layer can end a connection
+   * itself without touching the radio, and a transport released on the spot left a link that was
+   * still up held by the native side, with nothing that could ask it again. A microtask later, not
+   * now: this runs inside the protocol layer's own teardown, and the goodbye must not re-enter it.
+   */
   function teardown() {
     if (!stopConsuming()) return;
-    releaseBridge();
+    asked = Promise.resolve().then(sayGoodbye);
   }
 
   return {
@@ -356,8 +413,8 @@ export async function connectCube({
       // reference has drifted reports unsolved WHILE SITTING SOLVED on the desk, and a reset is
       // the only repair. Nothing here can tell that from a scrambled cube; the user can.
       //
-      // The wording matters — Settings matches /refusing to anchor/ to decide whether to offer the
-      // override — so it is asserted by test rather than left to a careful edit.
+      // The wording matters — Settings matches /does not report itself solved/ to decide whether
+      // to offer the override — so it is asserted by test rather than left to a careful edit.
       if (!force) {
         // Bounded staleness rather than a blind cache OR an unconditional round trip.
         //
@@ -435,29 +492,51 @@ export async function connectCube({
      * worst available answer: the app tears down its own state either way, so a peripheral the
      * native side never released looked exactly like a clean goodbye until the next connect failed
      * for reasons nothing could explain.
+     *
+     * The goodbye is said once: by the first call, or by the session itself when the cube goes
+     * away on its own. Every later call waits for the one before it, then asks the radio again for
+     * what the goodbye left held — by id, over a bridge built for it, since the goodbye released
+     * this session's own — and answers why something is still held, or null once nothing is.
      */
-    async disconnect() {
-      // Stop listening first, so a late report cannot land as the current cube's anything — but
-      // keep the transport alive, because the disconnect has to travel over it.
-      stopConsuming();
-      disconnectError = null;
-      try {
-        await conn.disconnect();
-        // And then the radio itself. The protocol layer calls `gatt.disconnect()` without awaiting
-        // it — correct against the real Web Bluetooth, where it returns void — so its promise
-        // resolves while the native side still holds the peripheral. On the browser path there is
-        // no such handle and none is needed; this is the native seam both builds satisfy.
-        await bridge.bluetooth?.whenReleased?.();
-      } catch (e) {
-        disconnectError = e instanceof Error ? e : new Error(String(e));
-        console.error('cube-session: the cube was not released cleanly', disconnectError);
-      }
-      // Last, and awaited: `dispose()` waits for listener registration to settle, so a caller that
-      // connects the next cube on the following line would otherwise get the old listeners too.
-      await releaseBridge();
-      return disconnectError;
+    disconnect() {
+      asked = asked === null ? sayGoodbye() : asked.then(askAgain, askAgain);
+      return asked;
     },
   };
+
+  /** The goodbye itself, in the order the bytes travel. See `disconnect`. */
+  async function sayGoodbye() {
+    // Stop listening first, so a late report cannot land as the current cube's anything — but
+    // keep the transport alive, because the disconnect has to travel over it.
+    stopConsuming();
+    try {
+      await conn.disconnect();
+    } catch (e) {
+      disconnectError = asError(e);
+    }
+    // And then the radio itself. The protocol layer calls `gatt.disconnect()` without awaiting
+    // it — correct against the real Web Bluetooth, where it returns void — so its promise
+    // resolves while the native side still holds the peripheral. On the browser path there is
+    // no such handle and none is needed; this is the native seam both builds satisfy. What it
+    // answers is what may still be held, and the only place a refused native release is said.
+    held = (await bridge.bluetooth?.whenReleased?.()) ?? [];
+    if (held.length > 0) disconnectError ??= held[0].error ?? new Error('the radio still holds the cube');
+    if (disconnectError) console.error('cube-session: the cube was not released cleanly', disconnectError);
+    // Last, and awaited: `dispose()` waits for listener registration to settle, so a caller that
+    // connects the next cube on the following line would otherwise get the old listeners too.
+    await releaseBridge();
+    return disconnectError;
+  }
+
+  /** Ask the radio again for every peripheral the goodbye left held, and answer why one still is,
+   *  or null. Null too when nothing was held, whatever the goodbye said: a failure that left the
+   *  radio holding nothing is not a release to go on asking about. */
+  async function askAgain() {
+    if (held.length > 0) held = await askRadioAgain(installBridge, held);
+    disconnectError = held[0]?.error ?? null;
+    if (disconnectError) console.error('cube-session: the cube is still not released', disconnectError);
+    return disconnectError;
+  }
 
   /** Send a command and wait for the event it should produce. */
   function awaitEvent(type, send, timeoutMs) {

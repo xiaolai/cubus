@@ -3,9 +3,9 @@
 //
 // A COPY of the table in `packages/cube-scanner/src/scheme.ts`, not an import: app.js cannot
 // import TypeScript, and reaching into the scanner's bundle for six numbers would make the app's
-// colour tables load-bearing on a 200 KB module that exists to drive a camera. The same rule
-// `FACE_NEIGHBOURS` follows ("apps/web/lib/app.js carries a copy … tests pin the two equal"):
-// `scheme.test.mjs` reads the TypeScript source and fails the moment the two tables differ.
+// colour tables load-bearing on a 200 KB module that exists to drive a camera. The same rule the
+// scan screen's `FACE_EDGES` copy follows, and the same kind of pin: `scheme.test.mjs` reads the
+// TypeScript source and fails the moment the two tables differ.
 //
 // Two vocabularies, kept apart (the scanner's file says why at length):
 //   * a COLOUR is a detector class, 0..5, in ml/data.yaml order — white, red, green, yellow,

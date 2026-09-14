@@ -10,6 +10,7 @@
 // for every state. This file is the guarantee.
 
 import assert from 'node:assert/strict';
+import { blockAt, readAppSource } from './app-source.mjs';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -19,7 +20,7 @@ import { randomCube } from '../lib/random-state.js';
 import * as twoPhase from '../lib/two-phase.js';
 import Cube from '../vendor/cubejs.js';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 const engine = createSolver(twoPhase);
 const solve = async (f, bounds) => engine(f, bounds);
 const invert = (alg) => alg.trim().split(/\s+/).reverse()
@@ -70,7 +71,7 @@ test('a scramble is never rolled by cubejs, whose bound is 22', () => {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/[^\n]*$/gm, '')
     .replace(/([^:'"`])\/\/[^\n]*/g, '$1');
-  const roll = code.match(/async function rollScramble\(\)[\s\S]*?\n\}/)?.[0];
+  const roll = blockAt(code, 'export async function rollScramble(');
   assert.ok(roll, 'rollScramble is gone or is no longer async');
   assert.doesNotMatch(roll, /\br\.solve\(|cube\.solve\(/,
     'rolling must not call cubejs\'s search — its default maxDepth is 22, and asking it for 20 '
@@ -99,7 +100,7 @@ test('the WCA minimum is enforced on the STATE, not on the answer', () => {
   }
 
   const code = app.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
-  const fn = code.match(/function trivialState\(cube\)[\s\S]*?\n\}/)?.[0] ?? '';
+  const fn = blockAt(code, 'function trivialState(cube)');
   assert.match(fn, /cube\.isSolved\(\)/, 'the solved state itself must be rejected');
   assert.match(fn, /SINGLE_MOVES/, 'and every one-turn state with it');
   assert.doesNotMatch(fn, /solveWithinGodsNumber|solverWorker/,

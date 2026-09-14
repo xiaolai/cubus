@@ -9,14 +9,11 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from './cube-frame.js';
 import { isFace, orientationMatrix, sameAxis } from './cube-orientation.js';
 import { parseHighlight, pieceKey, resolveHighlight, slotVector } from './cube-highlight.js';
+import { STICKER_PALETTES } from './sticker-palettes.js';
 
-// The six sticker colours of each set, BY POSITION on a Western cube — the arrangement every
-// entry here was chosen in, and the one the `scheme` attribute remaps (ADR 0001).
-const PALETTES = {
-  muted:    { U:'#E8E3D6', D:'#D8B84A', F:'#4E8C6A', B:'#3C6E9E', R:'#B8503F', L:'#C87A3C' },
-  classic:  { U:'#F4F2EC', D:'#F0C000', F:'#00A651', B:'#0051BA', R:'#C41E3A', L:'#FF6C00' },
-  colorsafe:{ U:'#EFEAE0', D:'#E9C46A', F:'#6A9FB5', B:'#20405C', R:'#D1495B', L:'#8C5E8A' },
-};
+// The six sticker colours of each set, by position on a Western cube: the one table, shared with
+// the app's flat nets (lib/sticker-palettes.js). The `scheme` attribute remaps it (ADR 0001).
+const PALETTES = STICKER_PALETTES;
 
 /**
  * The palette a cube of `scheme` wears. Only D and B trade places: on a Japanese cube blue is
