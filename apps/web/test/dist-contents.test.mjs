@@ -443,3 +443,42 @@ test('the renderer a caller names is the renderer the deletion guard protects', 
     }
   });
 });
+
+// A SYMLINK INTO A NESTED SOURCE DIRECTORY. The guard's ancestry walked `dirname()` as TEXT while
+// `statSync` followed the link: through `alias -> <root>/lib/screens`, the walk visited `screens`
+// and then stepped to the alias's own lexical parent, never reaching `lib` or the root — so a
+// destination of `alias/cube` passed every check and reached the recursive delete of a real
+// source directory (found by audit, 2026-09-14). Aimed at a SYNTHETIC tree on purpose: when this
+// guard fails, the delete runs.
+test('a destination reached through a symlink into the source is refused, however deep the link', () => {
+  withRoot(({ root }) => {
+    const nested = join(root, 'lib', 'screens', 'cube');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, 'keep.js'), 'export {};');
+    const links = mkdtempSync(join(tmpdir(), 'cubus-alias-'));
+    try {
+      symlinkSync(join(root, 'lib', 'screens'), join(links, 'alias'));
+      assert.throws(() => assembleDist({ root, dist: join(links, 'alias', 'cube'), freshness: false }),
+        (err) => /refusing to assemble into/.test(err.message),
+        'a destination reached through a symlink into lib/ passed the guard');
+      assert.ok(existsSync(join(nested, 'keep.js')), 'and the source directory it pointed at is gone');
+
+      // The renderer's package, reached the same way.
+      const renderer = mkdtempSync(join(tmpdir(), 'cubus-renderer-alias-'));
+      try {
+        mkdirSync(join(renderer, 'src'), { recursive: true });
+        writeFileSync(join(renderer, 'src', 'cubus-cube.js'), 'export {};');
+        symlinkSync(join(renderer, 'src'), join(links, 'renderer-src'));
+        assert.throws(
+          () => assembleDist({ root, dist: join(links, 'renderer-src'), freshness: false, cubeEntry: join(renderer, 'src', 'cubus-cube.js') }),
+          (err) => /refusing to assemble into/.test(err.message),
+          'a destination reached through a symlink into the renderer passed the guard');
+        assert.ok(existsSync(join(renderer, 'src', 'cubus-cube.js')), 'and the renderer source is gone');
+      } finally {
+        rmSync(renderer, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(links, { recursive: true, force: true });
+    }
+  });
+});
