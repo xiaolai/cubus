@@ -38,6 +38,8 @@ export const APP_SOURCES = Object.freeze([
   'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
   'lib/screens/stats.js', 'lib/screens/lessons.js',
   // the cube screen's own parts, 2026-09-14
+  'lib/screens/cube/route-race.js', 'lib/screens/cube/speed-menu.js', 'lib/screens/cube/die.js',
+  'lib/screens/cube/reconnect-ask.js',
   // the scan screen's own parts, 2026-09-13
   'lib/screens/scan/stage-chips.js', 'lib/screens/scan/voice.js',
   'lib/screens/scan/camera-menu.js', 'lib/screens/scan/reconnect-check.js', 'lib/screens/scan/refusal.js',

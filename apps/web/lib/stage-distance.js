@@ -224,6 +224,16 @@ export const RADIUS = 10;
 export const MAX_DEPTH = 14;
 
 /**
+ * How often a search asks whether it has been called off, in SEARCH NODES.
+ *
+ * A search is synchronous, so a stop can reach it only through something it reads while it runs:
+ * the stop word a worker's request carries (lib/solve-client.js). A power of two, so the poll is a
+ * mask. At the rates `NODE_BUDGET` records, 4,096 nodes is 0.8 to 2.3 ms of search, which is how
+ * long a called-off search goes on holding its worker.
+ */
+export const STOP_POLL = 4096;
+
+/**
  * The shortest maneuver from `state` into `target`, or a refusal.
  *
  * Returns `{ alg, moves, nodes, exact, why }`. `alg` is null exactly when `moves` is null, and a
@@ -235,8 +245,14 @@ export const MAX_DEPTH = 14;
  * exhausted contour. It holds only when the search finished a contour, so a budget refusal returns
  * nothing rather than the best route found so far — an upper bound presented as a distance is the
  * minimality claim the engine cannot make (plan §6, `AGENTS.md`).
+ *
+ * `stop`, when given, is asked before a node is spent, once every `STOP_POLL` nodes from the
+ * first. Once it answers true the search refuses with `why: 'stopped'` — a statement about whoever
+ * asked, never about the cube, and never dressed as the budget running out.
  */
-export function solveToState(targetOrId, state, { nodeBudget = NODE_BUDGET, maxDepth = MAX_DEPTH } = {}) {
+export function solveToState(targetOrId, state, {
+  nodeBudget = NODE_BUDGET, maxDepth = MAX_DEPTH, stop = null,
+} = {}) {
   const target = typeof targetOrId === 'string' ? targetById(targetOrId) : targetOrId;
   const projections = target.projections;
   const width = projections.length;
@@ -254,6 +270,8 @@ export function solveToState(targetOrId, state, { nodeBudget = NODE_BUDGET, maxD
   codes.set(start, 0);
   const path = new Array(maxDepth + 1);
   let nodes = 0;
+  /** Set when `stop` ended the search, so the refusal says so rather than blaming the budget. */
+  let stopped = false;
 
   // The SAME function `lowerBound` returns, over this frame of the buffer. Not a second maximum.
   const heuristicAt = (frame) => maxDistance(dists, codes, frame * width, width, names);
@@ -274,6 +292,13 @@ export function solveToState(targetOrId, state, { nodeBudget = NODE_BUDGET, maxD
       // accepted before the next one ran. `nodes <= nodeBudget` is an invariant now, and a search
       // that cannot afford the node that would find the answer refuses instead of finding it.
       if (nodes >= nodeBudget) return null;
+      // CALLED OFF, asked on the same terms as the budget: before the node is spent. Every
+      // STOP_POLL nodes rather than every node — the search runs millions a second, and nothing
+      // that calls one off is waiting on the difference.
+      if (stop !== null && (nodes & (STOP_POLL - 1)) === 0 && stop()) {
+        stopped = true;
+        return null;
+      }
       nodes++;
       const from = frame * width;
       const to = (frame + 1) * width;
@@ -288,7 +313,9 @@ export function solveToState(targetOrId, state, { nodeBudget = NODE_BUDGET, maxD
   for (let bound = heuristicAt(0); bound <= maxDepth; bound++) {
     const got = descend(0, 0, bound, '', -1);
     if (got === true) return believe(target, state, path.slice(0, bound).join(' '), bound, nodes);
-    if (got === null) return { alg: null, moves: null, nodes, exact: false, why: 'budget' };
+    if (got === null) {
+      return { alg: null, moves: null, nodes, exact: false, why: stopped ? 'stopped' : 'budget' };
+    }
   }
   return { alg: null, moves: null, nodes, exact: false, why: `nothing within ${maxDepth}` };
 }
