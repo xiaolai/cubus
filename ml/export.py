@@ -303,6 +303,8 @@ def _load_cubedet(pt: Path):
         # trace it: forward_export never touches it.
         embed_dim=state.get("embed_dim", 0),
         backbone=state.get("backbone", CSP_BACKBONE),
+        # Absent means trained before the input scale was recorded, which was raw 0-1 pixels.
+        input_normalised=state.get("input_normalised", False),
         # Never fetch ImageNet weights in order to export: the checkpoint is about to overwrite
         # every one of them, and an exporter that reaches for the network is an exporter that
         # fails on a machine without one.

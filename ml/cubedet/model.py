@@ -268,10 +268,19 @@ class PretrainedBackbone(nn.Module):
     was. This is a substitution.
     """
 
-    def __init__(self, name: str = "mobilenet_v3_large", width: float = 1.0, pretrained: bool = True):
+    def __init__(self, name: str = "mobilenet_v3_large", width: float = 1.0, pretrained: bool = True,
+                 input_normalised: bool = False):
         super().__init__()
         self.name = name
         self.c1, self.c2, self.c3 = detection_widths(width)
+        # THE WEIGHTS' OWN INPUT SCALE. ImageNet weights were trained on pixels shifted and scaled by
+        # the dataset's mean and std, and this class handed them raw 0-1 RGB until 2026-09-14, so
+        # every pretrained run started from features computed on inputs they had never seen (found
+        # by an independent review, not by a failing test). The statistics are read from the
+        # library that published the weights rather than typed in. The default stays False because
+        # every checkpoint trained before the fix was trained without it: a loader must reproduce
+        # what a checkpoint was trained on, and train.py records which that was.
+        self.input_normalised = input_normalised
 
         # TIMM FIRST when the name is not torchvision's, because timm publishes backbones
         # torchvision does not -- MobileNetV4 among them, which is 1.26M parameters against
@@ -301,6 +310,8 @@ class PretrainedBackbone(nn.Module):
             self.reduce4 = ConvBNAct(source[1], self.c2, 1)
             self.reduce5 = ConvBNAct(source[2], self.c3, 1)
             self.sppf = SPPF(self.c3, self.c3)
+            cfg = getattr(net, "pretrained_cfg", None) or net.default_cfg
+            self._input_scale(cfg["mean"], cfg["std"])
             return
 
         self.timm_indices = None
@@ -319,8 +330,18 @@ class PretrainedBackbone(nn.Module):
         self.reduce4 = ConvBNAct(source[1], self.c2, 1)
         self.reduce5 = ConvBNAct(source[2], self.c3, 1)
         self.sppf = SPPF(self.c3, self.c3)
+        transforms = torchvision.models.get_model_weights(name).DEFAULT.transforms()
+        self._input_scale(transforms.mean, transforms.std)
+
+    def _input_scale(self, mean, std) -> None:
+        # Not persistent: the values are the published weights', not something training learns, so
+        # a checkpoint neither needs them nor gains keys that would break loading one written before.
+        self.register_buffer("input_mean", torch.tensor(mean, dtype=torch.float32).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer("input_std", torch.tensor(std, dtype=torch.float32).view(1, 3, 1, 1), persistent=False)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.input_normalised:
+            x = (x - self.input_mean) / self.input_std
         if self.timm_indices is not None:
             feats = self.features(x)
             a, b, c = (feats[i] for i in self.timm_indices)
@@ -576,8 +597,12 @@ class CubeDet(nn.Module):
 
     def __init__(self, num_classes: int = NUM_CLASSES, width: float = 1.0, image_size: int = 640,
                  embed_dim: int = 0,
-                 context: bool = False, backbone: str = CSP_BACKBONE, pretrained: bool = True):
+                 context: bool = False, backbone: str = CSP_BACKBONE, pretrained: bool = True,
+                 input_normalised: bool = False):
         super().__init__()
+        if input_normalised and backbone == CSP_BACKBONE:
+            raise ValueError("the from-scratch CSP backbone has no published input statistics to normalise by")
+        self.input_normalised = input_normalised
         self.num_classes = num_classes
         self.image_size = image_size
         self.width = width
@@ -589,7 +614,7 @@ class CubeDet(nn.Module):
         # then loads the checkpoint, so no export ever waits on a download.
         self.backbone = (
             Backbone(width) if backbone == CSP_BACKBONE
-            else PretrainedBackbone(backbone, width=width, pretrained=pretrained)
+            else PretrainedBackbone(backbone, width=width, pretrained=pretrained, input_normalised=input_normalised)
         )
         self.neck = PANNeck(self.backbone.c1, self.backbone.c2, self.backbone.c3)
         self.head = DetectHead(self.neck.out_channels, num_classes, image_size=image_size,
