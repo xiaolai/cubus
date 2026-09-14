@@ -8,7 +8,8 @@
 // It used to be closure state inside the cube screen's mount — a function of some 1,700 lines — and
 // a mini audit of the branch (2026-09-13) found the two things that position hides: the overshoot
 // rule stated one way in a comment and another in the code, and the renderer-upgrade path reached by
-// no test. Functions with explicit inputs make both testable (`test/hold-presenter.test.mjs`).
+// no test. Functions with explicit inputs make both testable (`test/hold-presenter.test.mjs`). The rest
+// of that mount's walk followed the same day, into `lib/walk-session.js`, which is what calls these.
 
 import { stepAtMove } from './method-lesson.js';
 import { SCAN_HOLD, holdForStage, holdForTarget, holdSentence, holdSpec, sameHold } from './solving-hold.js';
@@ -40,14 +41,15 @@ export function holdAtMove(lesson, walkHold, k) {
 }
 
 /**
- * The hold of the move about to happen at head `i`, and the sentence that says so when that hold is
- * a new one. The sentence belongs only to the step that BEGINS a hold: the drawing turns, but a
- * child's own cube does not, and every chip from there on is named for it.
+ * The hold of the move about to happen at head `i`, and the sentence that says so when it is not
+ * `shown`, the hold the screen showed before this head. The drawing turns, but a child's own cube
+ * does not, and every chip from here on is named for it. So the sentence follows what was SHOWN,
+ * not move `i - 1`: a lesson begun turned over says so at its first move, and a jump or a step
+ * back across the turn says so where it lands.
  */
-export function holdChangeAt(lesson, walkHold, i) {
+export function holdChangeAt(lesson, walkHold, i, shown) {
   const held = holdAtMove(lesson, walkHold, i);
-  const before = i > 0 ? holdAtMove(lesson, walkHold, i - 1) : held;
-  return { held, say: sameHold(held, before) ? '' : holdSentence(held) };
+  return { held, say: sameHold(held, shown) ? '' : holdSentence(held) };
 }
 
 /**

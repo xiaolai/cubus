@@ -9,7 +9,7 @@
 
 const DEFAULT = 'home';
 
-export function makeRouter({ screens, defaultScreen = DEFAULT, location, history }) {
+export function makeRouter({ screens, defaultScreen = DEFAULT, location, history, aliases = {} }) {
   // hasOwnProperty, never `id in screens` or a bare truthiness test: a hash is whatever the user
   // typed, and inherited keys like `constructor` or `toString` would otherwise resolve to a
   // function that the caller would try to render.
@@ -25,7 +25,12 @@ export function makeRouter({ screens, defaultScreen = DEFAULT, location, history
       return defaultScreen; // malformed percent-encoding; treat as unroutable
     }
     const id = raw.trim();
-    return isKnown(id) ? id : defaultScreen;
+    // A screen that MOVED keeps its old links, resolved here behind the same decoding as every id.
+    // The shell's own second parser decoded nothing and read inherited names: `#/%70air` fell to
+    // home and `#/constructor` wrote Object's source into the address bar (found by audit,
+    // 2026-09-13). The target must be a real screen too, or an alias is just another unknown id.
+    const target = Object.hasOwn(aliases, id) ? aliases[id] : id;
+    return isKnown(target) ? target : defaultScreen;
   }
 
   const current = () => parse(location.hash);

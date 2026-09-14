@@ -14,10 +14,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, readdirSync } from 'node:fs';
 
+import { readAppSource } from './app-source.mjs';
+
 const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
 const html = read('../index.html');
 const tokens = read('../tokens.css');
-const libFiles = readdirSync(new URL('../lib/', import.meta.url)).filter((f) => f.endsWith('.js'));
+// Recursive: the screens live in lib/screens/, and a scan that stops at lib/ would pass over them.
+const libFiles = readdirSync(new URL('../lib/', import.meta.url), { recursive: true })
+  .map((f) => f.replaceAll('\\', '/')).filter((f) => f.endsWith('.js'));
 const lib = Object.fromEntries(libFiles.map((f) => [f, read(`../lib/${f}`)]));
 const sources = { 'index.html': html, 'tokens.css': tokens, ...Object.fromEntries(Object.entries(lib).map(([f, s]) => [`lib/${f}`, s])) };
 
@@ -52,7 +56,7 @@ test('the only media queries left are the allowed features', () => {
 
 test('app.js no longer reads the viewport to place anything', () => {
   // The popovers were clamped to window.innerWidth/innerHeight; they are clamped to the stage now.
-  assert.doesNotMatch(code(lib['app.js']), /window\.inner(?:Width|Height)|documentElement\.client(?:Width|Height)/);
+  assert.doesNotMatch(code(readAppSource()), /window\.inner(?:Width|Height)|documentElement\.client(?:Width|Height)/);
 });
 
 // ---- the foundation index.html must declare ---------------------------------------------------

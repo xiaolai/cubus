@@ -56,6 +56,24 @@ test('a met target stops the spending, not the improving', async () => {
     'below the target only the bonus budget is ever spent');
 });
 
+// A carried answer searched again under a tier it does not answer (a scramble's inverse under
+// "shortest") once began from scratch, and a budget that stopped longer replaced it (found by
+// verification, 2026-09-14). A known answer opens the descent now, so it can only be shortened.
+test('a known answer opens the descent in place of the first search, and is only ever shortened', async () => {
+  const asked = [];
+  const solve = async (_facelets, options) => { asked.push(options); return options.solLen > 12 ? algOf(12) : null; };
+  const steps = await collect(refine('F', { solve, tier: 'shortest', start: algOf(10) }));
+  assert.deepEqual(asked.map((a) => a.solLen), [10], 'the first search ran anyway, from God\'s number');
+  assert.deepEqual(steps.map((s) => s.moves), [10, 10], 'the descent did not begin at the known answer');
+  assert.equal(steps.at(-1).stopped, STOPPED.EXHAUSTED);
+});
+
+test('a known answer is held to every answer\'s contract: face turns, within God\'s number', async () => {
+  await assert.rejects(() => collect(refine('F', { solve: scripted([]), start: algOf(GODS_NUMBER + 1) })),
+    /moves when asked for fewer than/);
+  await assert.rejects(() => collect(refine('F', { solve: scripted([]), start: 'R X' })), /not a face turn/);
+});
+
 test('an easy cube descends past the target to its real answer', async () => {
   // The complaint that forced this: a cube seven turns from solved was answered with twenty
   // moves, because twenty was the promise and the search stopped there. Now the met target

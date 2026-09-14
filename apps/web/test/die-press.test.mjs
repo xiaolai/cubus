@@ -17,6 +17,7 @@
 // that draws no solution card and therefore has no move count to write a failure into.
 
 import assert from 'node:assert/strict';
+import { isAbsent } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -32,6 +33,8 @@ let win;
 let state;
 const $ = (sel) => win.document.querySelector(sel);
 const go = async (id) => { win.cubusGo(id); await tick(); };
+/** The cube `alg` turns a solved one into. */
+const turned = (alg) => { const c = new Cube(); c.move(alg); return c.asString(); };
 
 before(async () => {
   win = new Window({
@@ -80,7 +83,7 @@ test('a roll that produces nothing is said on a screen with no solution card', a
     await settle(100);
 
     assert.equal(state.cube.facelets, SOLVED, 'precondition: the subject is a solved cube');
-    assert.equal($('#moveCount'), null, 'precondition: a solved cube draws no solution card, so there is no count to write into');
+    isAbsent($('#moveCount'), 'precondition: a solved cube draws no solution card, so there is no count to write into');
     const die = $('#randCube');
     assert.ok(die, 'precondition: Advanced put the dev die on the solve screen');
     const say = $('#rollSay');
@@ -115,4 +118,84 @@ test('the die is held from the press, not from after the roll', async () => {
   await settle(3000);
   assert.notEqual(state.cube.facelets, before, 'the press produced a cube');
   assert.equal($('#randCube').disabled, false, 'and the die comes back, or one roll costs the screen its button');
+});
+
+// On Scramble the roll IS the walk's load, and refreshScreen() only starts it: the press was let go
+// the moment the click returned, with the count still "working…" and a second roll a click away
+// (found by audit, 2026-09-13). The release is observed as it happens, not polled for.
+test('on Scramble the die is held until the walk it rolled is on screen', async () => {
+  await go('scramble');
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && !($('#solList .chip-m') && $('#randCube') && !$('#randCube').disabled)) {
+    await settle(50);
+  }
+  const die = $('#randCube');
+  assert.ok(die && !die.disabled && $('#solList .chip-m'), 'precondition: a scramble is walked and the die is available');
+  const chips = () => [...win.document.querySelectorAll('#solList .chip-m')].map((chip) => chip.textContent).join(' ');
+  const walked = chips();
+  // Read in the setter that lets the press go, at that instant: a MutationObserver's record is
+  // delivered later, by which time a walk still loading has had the chance to land.
+  const own = Object.getOwnPropertyDescriptor(win.HTMLButtonElement.prototype, 'disabled');
+  let atRelease = null;
+  Object.defineProperty(die, 'disabled', {
+    configurable: true,
+    get() { return own.get.call(this); },
+    set(on) {
+      own.set.call(this, on);
+      if (!on && atRelease === null) atRelease = { count: $('#moveCount')?.textContent ?? '', chips: chips() };
+    },
+  });
+  try {
+    die.click();
+    assert.equal(die.disabled, true, 'the Scramble die came back while the roll it started was still running');
+    const t1 = Date.now();
+    while (Date.now() - t1 < 20000 && atRelease === null) await settle(50);
+  } finally {
+    delete die.disabled;
+  }
+  assert.ok(atRelease !== null, 'and the die comes back');
+  // At release the walk on screen is the one the press rolled: not the last one, and not none.
+  assert.ok(atRelease.chips && atRelease.chips !== walked, 'the die came back before the walk it rolled was on screen');
+  const countAtRelease = atRelease.count;
+  assert.notEqual(countAtRelease, 'working…', 'the die came back before the walk it rolled was on screen');
+});
+
+// Scramble walks from solved, so it draws solved until its roll lands — and says so. It was built
+// from Home's subject: that cube's setup alg beside a solved net, and for good when the roll failed
+// (found by audit, 2026-09-13). Read before any roll can land: renderScreen draws it synchronously.
+test('Scramble starts from a solved cube, whatever Home was showing', async () => {
+  const { adoptCube } = await import('../lib/cube-connection.js');
+  const { deriveCube } = await import('../lib/cube-subject.js');
+  const { renderScreen } = await import('../lib/screen-shell.js');
+  adoptCube(turned('R U F'), { physical: false, source: 'generated', setupAlg: 'R U F' });
+  await deriveCube();
+  state.screen = 'scramble';
+  renderScreen({ navigated: true });
+  const cube = $('#viewCube > cubus-cube');
+  assert.ok(cube, 'precondition: Scramble drew a cube');
+  assert.equal(cube.getAttribute('scramble'), null, "Scramble drew Home's cube, not the solved one it starts from");
+  assert.equal(cube.getAttribute('facelets'), SOLVED, 'and not a solved cube');
+  assert.equal(cube.getAttribute('aria-label'), 'A solved cube', "and described Home's cube");
+});
+
+// A subject taken in place is the same renderer handed a new cube. It kept the words of the cube it
+// replaced, because only building one wrote them (found by audit, 2026-09-13).
+test('a cube taken in place is described as the cube it now is', async () => {
+  const { adoptCube } = await import('../lib/cube-connection.js');
+  const { deriveCube } = await import('../lib/cube-subject.js');
+  adoptCube(turned('R'), { physical: true, source: 'camera' });
+  await deriveCube();
+  await go('home');
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && win.document.querySelectorAll('#solList .chip-m').length !== 1) await settle(50);
+  const cube = $('#viewCube > cubus-cube');
+  assert.ok(cube, 'precondition: Home drew the cube');
+  assert.equal(cube.getAttribute('aria-label'), 'Your cube — 1 move from solved', 'precondition: described as it was built');
+  const before = state.cube.facelets;
+  $('#randCube').click();
+  while (Date.now() - t0 < 40000 && !(state.cube.facelets !== before && !$('#randCube').disabled)) await settle(50);
+  assert.ok(state.cube.facelets !== before, 'precondition: the die rolled a new cube');
+  assert.ok($('#viewCube > cubus-cube') === cube, 'precondition: the new cube was taken in place');
+  assert.equal(cube.getAttribute('aria-label'), `A scrambled cube — ${state.cube.moves.length} moves from solved`,
+    'the renderer still describes the cube the die replaced');
 });

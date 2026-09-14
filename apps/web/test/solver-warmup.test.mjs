@@ -13,25 +13,33 @@
 // turns a free table build into a real search on the main path.
 
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
 
 import { shareBudget } from '../lib/solve-client.js';
 import { VIEW_COUNT } from '../lib/solver-engine.js';
 import Cube from '../vendor/cubejs.js';
+import { blockAt, readAppSource } from './app-source.mjs';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 
-test('the warm cube is actually solved, so warming costs only the tables', () => {
+test('the warm cube is actually solved, so warming costs only the tables', async () => {
   // Matched by VALUE and not by name: this looked for `SOLVED_FACELETS` until 2026-09-04, when
   // app.js merged its two identical 54-character literals into one named `SOLVED` — and the test
   // then failed for the naming rather than for the fact, which is the wrong thing to notice. The
   // fact is that the string warmSolver hands the pool is a solved cube; whatever it is called,
   // it must be the one the warm request actually sends.
-  const name = app.match(/warmSolver\(\) \{[\s\S]*?\.solve\(\s*([A-Za-z_$][\w$]*)\s*,/)?.[1];
+  const name = blockAt(app, 'function warmSolver()').match(/\.solve\(\s*([A-Za-z_$][\w$]*)\s*,/)?.[1];
   assert.ok(name, 'warmSolver no longer solves a named constant');
-  const facelets = app.match(new RegExp(`const ${name} = '([A-Z]{54})'`))?.[1];
-  assert.ok(facelets, `${name} is gone or no longer a 54-character literal`);
+  // Followed to its VALUE through the module that exports it, not looked for as a literal in the app's
+  // own source. Since 2026-09-13 the 54 characters are written once, in lib/solved.js — a library the
+  // app imports — and this test then failed for WHERE the string is written rather than for what it is.
+  const service = readFileSync(new URL('../lib/solver-service.js', import.meta.url), 'utf8');
+  const from = service.match(new RegExp(`import \\{[^}]*\\b${name}\\b[^}]*\\} from '\\./([\\w-]+\\.js)'`))?.[1];
+  assert.ok(from, `warmSolver's ${name} is not imported by lib/solver-service.js from a sibling module`);
+  const facelets = (await import(`../lib/${from}`))[name];
+  assert.equal(typeof facelets, 'string', `lib/${from} does not export ${name} as a string`);
+  assert.match(facelets, /^[URFDLB]{54}$/, `${name} is not a 54-facelet string`);
   assert.equal(Cube.fromString(facelets).isSolved(), true,
     'the warm request must be a solved cube — anything else makes the warm-up a real search');
 });
@@ -44,7 +52,7 @@ test('the warm budget reaches EVERY worker, not just the first few', () => {
   // matters is the number it comes to. An earlier draft of this test only matched the
   // `N * VIEW_COUNT` form and then asserted that form divides evenly, which is true for every
   // N and so proved nothing; the defect it is aimed at is a bare `probeMax: 3`.
-  const warm = app.match(/warmSolver\(\) \{[\s\S]*?probeMax:\s*([\w*\s]+?)\s*\}/)?.[1];
+  const warm = blockAt(app, 'function warmSolver()').match(/probeMax:\s*([\w*\s]+?)\s*\}/)?.[1];
   assert.ok(warm, 'the warm-up no longer passes a numeric probeMax');
   const budget = warm.split('*').map((t) => t.trim())
     .reduce((a, t) => a * (t === 'VIEW_COUNT' ? VIEW_COUNT : Number(t)), 1);
@@ -55,16 +63,61 @@ test('the warm budget reaches EVERY worker, not just the first few', () => {
   assert.ok(shares.every((n) => n > 0), 'and every share must be real work');
 });
 
-test('warming happens at most once a session', () => {
+test('warming is asked for once while it runs, and not again once it worked', () => {
   // Not a micro-optimisation: without the guard every screen entry queues another solve into
-  // the pool, and on the scan screen that is one per re-render.
-  const body = app.match(/function warmSolver\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  // the pool, and on the scan screen that is one per re-render. Not once a session, though: a
+  // warm-up that FAILED is tried again by the next screen, which the case after this one drives.
+  const body = blockAt(app, 'function warmSolver()');
   assert.match(body, /if \(solverWarmed\) return;/, 'warmSolver must be guarded');
   assert.match(body, /solverWarmed = true;/, 'and must set the guard before it can throw');
 });
 
+// Driven, not read: a scripted worker whose first warm-up fails and whose second works. The guard
+// stayed set after the failure, so the tables were never built for the rest of the session (found
+// by audit, 2026-09-13).
+test('a warm-up that failed is tried again by the next screen, and one that worked is not', async () => {
+  const store = new Map();
+  globalThis.localStorage ??= {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => { store.set(k, String(v)); },
+    removeItem: (k) => { store.delete(k); },
+  };
+  const settle = (ms = 10) => new Promise((r) => { setTimeout(r, ms); });
+  const posts = [];
+  const replies = [{ ok: false, error: 'tables did not build (test)' }, { ok: true, alg: '' }];
+  class ScriptedWorker extends EventTarget {
+    postMessage(data) {
+      posts.push(data);
+      const reply = replies.shift();
+      setTimeout(() => {
+        this.dispatchEvent(Object.assign(new Event('message'), { data: { id: data.id, ...reply } }));
+      }, 0);
+    }
+    terminate() {}
+  }
+  const realWorker = globalThis.Worker;
+  const realWarn = console.warn;
+  globalThis.Worker = ScriptedWorker;
+  console.warn = () => {};
+  try {
+    const { warmSolver } = await import('../lib/solver-service.js');
+    warmSolver();
+    warmSolver();
+    assert.equal(posts.length, 1, 'two screens entered while one warm-up ran queued two');
+    await settle();
+    warmSolver();
+    assert.equal(posts.length, 2, 'a warm-up that failed was never tried again');
+    await settle();
+    warmSolver();
+    assert.equal(posts.length, 2, 'a warm-up that worked ran again');
+  } finally {
+    globalThis.Worker = realWorker;
+    console.warn = realWarn;
+  }
+});
+
 test('warming never becomes something a screen waits on, or is broken by', () => {
-  const body = app.match(/function warmSolver\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  const body = blockAt(app, 'function warmSolver()');
   assert.doesNotMatch(body, /\bawait\b/,
     'an awaited warm-up puts the table build back in front of the user, which is the whole bug');
   assert.match(body, /\.catch\(/, 'an unhandled rejection here would surface as a page error');
@@ -86,7 +139,7 @@ test('the pool that gets a shared word also gets shared TABLES', () => {
   // that branch would be asking a page with no SharedArrayBuffer to publish 9.82 MiB into one;
   // one left off entirely would put six table builds back into every cold session with nothing
   // to say so, because the pool falls back quietly and correctly.
-  const pool = app.match(/return createParallelSolveClient\(\{([\s\S]*?)\n {2}\}\);/)?.[1];
+  const pool = blockAt(app, 'return createParallelSolveClient(');
   assert.ok(pool, 'the parallel client is no longer constructed where this test can read it');
   assert.match(pool, /shareTables:\s*true/,
     'the pool must build its tables once and share them, or a cold session pays six builds');

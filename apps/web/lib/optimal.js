@@ -91,7 +91,7 @@ export async function status() {
  * BEFORE this proof was asked for is the stale one the fence exists to absorb, and a cancel issued
  * AFTER it is aimed at this proof or at everything, so the queued proof never starts.
  */
-function scheduleProof(invoke, facelets) {
+function scheduleProof(invoke, facelets, proof) {
   const generation = cancelGeneration;
   const predecessor = lastProve;
   const fenced = (async () => {
@@ -108,7 +108,7 @@ function scheduleProof(invoke, facelets) {
       // off after, and must read the same on screen.
       throw new Error('optimal: cancelled before the proof started');
     }
-    return invoke('optimal_prove', { facelets });
+    return invoke('optimal_prove', { facelets, proof });
   })();
   lastProve = fenced.then(
     () => {},
@@ -172,7 +172,7 @@ export function validateProof(proof, { facelets, Cube, upperBound = null }) {
  * claimed minimum above an existing solution is a proof of a bug, refused here rather than
  * shown (§5 check 3 — the one cross-solver invariant, enforced where the two solvers meet).
  */
-export async function prove(facelets, { Cube, upperBound = null }) {
+export async function prove(facelets, { Cube, upperBound = null, proof = 0 }) {
   const invoke = surface();
   if (!invoke) throw new Error('optimal: no native solver here');
   // A NaN or Infinity bound would make the cross-solver comparison silently false — the one
@@ -180,7 +180,11 @@ export async function prove(facelets, { Cube, upperBound = null }) {
   if (upperBound !== null && (!Number.isSafeInteger(upperBound) || upperBound < 0)) {
     throw new Error('optimal: upperBound must be null or a non-negative integer');
   }
-  return validateProof(await scheduleProof(invoke, facelets), { facelets, Cube, upperBound });
+  // The native side echoes this on every contour it reports, and a u32 is what it takes.
+  if (!Number.isInteger(proof) || proof < 0 || proof > 0xffff_ffff) {
+    throw new Error('optimal: proof must be a u32 request number');
+  }
+  return validateProof(await scheduleProof(invoke, facelets, proof), { facelets, Cube, upperBound });
 }
 
 /** EVERY outstanding cancellation round trip, aggregated — replacing rather than

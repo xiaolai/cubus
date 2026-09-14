@@ -28906,12 +28906,15 @@ function resolveHighlight(selectors, cubies) {
   return { indices, empty };
 }
 
+// lib/sticker-palettes.js
+var STICKER_PALETTES = Object.freeze({
+  muted: Object.freeze({ U: "#E8E3D6", D: "#D8B84A", F: "#4E8C6A", B: "#3C6E9E", R: "#B8503F", L: "#C87A3C" }),
+  classic: Object.freeze({ U: "#F4F2EC", D: "#F0C000", F: "#00A651", B: "#0051BA", R: "#C41E3A", L: "#FF6C00" }),
+  colorsafe: Object.freeze({ U: "#EFEAE0", D: "#E9C46A", F: "#6A9FB5", B: "#20405C", R: "#D1495B", L: "#8C5E8A" })
+});
+
 // lib/cubus-cube.js
-var PALETTES = {
-  muted: { U: "#E8E3D6", D: "#D8B84A", F: "#4E8C6A", B: "#3C6E9E", R: "#B8503F", L: "#C87A3C" },
-  classic: { U: "#F4F2EC", D: "#F0C000", F: "#00A651", B: "#0051BA", R: "#C41E3A", L: "#FF6C00" },
-  colorsafe: { U: "#EFEAE0", D: "#E9C46A", F: "#6A9FB5", B: "#20405C", R: "#D1495B", L: "#8C5E8A" }
-};
+var PALETTES = STICKER_PALETTES;
 var SWAPPED = { U: "U", R: "R", F: "F", L: "L", D: "B", B: "D" };
 function paletteFor(name, scheme) {
   const base = PALETTES[name] || PALETTES.muted;

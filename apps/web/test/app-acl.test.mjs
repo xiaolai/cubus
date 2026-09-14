@@ -68,6 +68,21 @@ test('the desktop-only commands live in a capability no phone platform gets', ()
   }
 });
 
+test('the window permissions are granted by the desktop capability and by no other', () => {
+  // window-chrome.js names desktop.json as the file a refused window control points at. A
+  // dangling-pointer check cannot hold that — every capability file exists — so this holds the
+  // pointer to what the file grants.
+  const windowPermissions = [
+    'core:window:allow-start-dragging', 'core:window:allow-minimize',
+    'core:window:allow-close', 'core:window:allow-set-title',
+  ];
+  for (const { name, cap } of capabilities) {
+    for (const p of windowPermissions) {
+      assert.equal(granted(cap).includes(p), name === 'desktop', `${p} in ${name}.json`);
+    }
+  }
+});
+
 test('the BLE bridge is granted everywhere, because every build reaches the same cube', () => {
   const def = capabilities.find(({ name }) => name === 'default').cap;
   assert.equal(def.platforms, undefined, 'default.json applies to every platform');

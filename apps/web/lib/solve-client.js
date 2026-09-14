@@ -288,8 +288,15 @@ function routeReply(reply, target) {
  * request kind, and `control`'s `{ id, ...message }` let it overwrite the generated id — passing
  * `id: 77` posted 77 while the pending map held 1, so the reply was discarded and the promise never
  * settled. Reproduced by an audit. The whitelist below is the other half: only these fields cross.
+ *
+ * A REPAIR IS CALLED OFF THE WAY A SOLVE IS. `shared` is this request's stop word — the client's,
+ * handed in by a pool that can make one, and never read off the payload — and `payload.signal`
+ * aborting writes STOP_NOW into it. The worker's search sees that at its next poll and refuses with
+ * `why: 'stopped'`, keeping its thread and its tables, and the reply settles this request like any
+ * other. With no word an abort changes nothing and the search runs out its budget; the thread is
+ * never ended for it, because it is also the thread of a pooled solve's first slice.
  */
-async function stageRequest(client, payload = {}) {
+async function stageRequest(client, payload = {}, shared = null) {
   const worker = client.ensureWorker?.();
   // §8 IS NOT NEGOTIABLE: no search and no distance table on the UI thread. `spawnSolveWorker`
   // answers with a main-thread worker where it cannot build a real one, and a repair on one of
@@ -299,11 +306,26 @@ async function stageRequest(client, payload = {}) {
   if (worker?.inline === true) {
     throw new Error('stage route: this page has no worker, and a repair may not run on the UI thread');
   }
-  const { want = 'route', target = null, facelets = null, nodeBudget, maxDepth } = payload;
-  const reply = await client.control({
-    want, target, facelets, nodeBudget, maxDepth, kind: SOLVE_TO_STATE,
-  });
-  return stageReply(reply, want, target);
+  const {
+    want = 'route', target = null, facelets = null, nodeBudget, maxDepth, signal = null,
+  } = payload;
+  // Hung on the caller's signal only while the request is out, and taken off however it settles:
+  // a screen's signal outlives every request it makes, and a listener left on it holds a word.
+  const stop = () => Atomics.store(shared, 0, STOP_NOW);
+  const listening = shared !== null && signal !== null;
+  if (listening) {
+    if (signal.aborted) stop();
+    else signal.addEventListener('abort', stop, { once: true });
+  }
+  try {
+    const reply = await client.control({
+      shared: stopDescriptor(shared),
+      want, target, facelets, nodeBudget, maxDepth, kind: SOLVE_TO_STATE,
+    });
+    return stageReply(reply, want, target);
+  } finally {
+    if (listening) signal.removeEventListener('abort', stop);
+  }
 }
 
 /**
@@ -317,9 +339,15 @@ async function stageRequest(client, payload = {}) {
  * per offered target and is instant; `route` is a budgeted search and is not. A caller that wants a
  * chip row asks for the first, and a caller that wants a walk asks for the second — never both in
  * one message, so nothing can present a bound as an answer by accident.
+ *
+ * A route request may carry a stop word (`shared`, see `stageRequest`), and the search is handed a
+ * `stop` that READS it at every poll: the thread that asked writes it while this search runs, so a
+ * value read once at the start would stop nothing. No word, no stop, and no poll.
  */
 export function handleStageRequest(engine, request) {
-  const { id, target, facelets, nodeBudget, maxDepth, want = 'route' } = request ?? {};
+  const {
+    id, target, facelets, nodeBudget, maxDepth, want = 'route', shared = null,
+  } = request ?? {};
   try {
     const state = engine.parseFacelets(facelets);
     // A cube the app could not parse is not a search that failed — it is a question that cannot be
@@ -329,7 +357,9 @@ export function handleStageRequest(engine, request) {
     if (want === 'bounds') {
       return { id, ok: true, kind: STAGE_REPLY, want, bounds: engine.lowerBounds(state) };
     }
-    const got = engine.solveToState(target, state, { nodeBudget, maxDepth });
+    const word = stopWord(shared);
+    const stop = word === null ? null : () => Atomics.load(word, 0) === STOP_NOW;
+    const got = engine.solveToState(target, state, { nodeBudget, maxDepth, stop });
     return { id, ok: true, kind: STAGE_REPLY, want, target, ...got };
   } catch (err) {
     return { id, ok: false, error: errorText(err) };
@@ -396,8 +426,11 @@ export const isWorkerFailure = (err) => err?.workerFailure === true;
 
 /**
  * @param {() => Worker} spawn  makes a fresh worker. Injected so tests can supply a fake.
+ * @param {(() => Int32Array)|null} [makeShared]  makes a stop word for a repair that can be called
+ *   off and was handed none: a lone client's, on a page that can share memory. Without it such a
+ *   repair cannot be called off.
  */
-export function createSolveClient({ spawn } = {}) {
+export function createSolveClient({ spawn, makeShared = null } = {}) {
   if (typeof spawn !== 'function') throw new TypeError('createSolveClient needs a spawn function');
 
   let worker = null;
@@ -582,13 +615,14 @@ export function createSolveClient({ spawn } = {}) {
   }
 
   /**
-   * A control request on this client's worker — table sharing, and nothing else so far.
+   * A control request on this client's worker — the table handshake, and the repair.
    *
    * It rides the SAME id space, the same pending map and the same listener as a search, so a
    * control reply cannot be mistaken for a search's and a worker that dies mid-handshake rejects
-   * it exactly as it rejects a search. It carries no signal and no stop word: preparing tables is
-   * neither long enough to want stopping nor safe to abandon halfway — the reply is what the
-   * other five workers are waiting for.
+   * it exactly as it rejects a search. It takes no signal: preparing tables is neither long enough
+   * to want stopping nor safe to abandon halfway — the reply is what the other five workers are
+   * waiting for — and a repair that can be called off carries its stop word as a field of its
+   * message (`stageRequest`).
    */
   function control(message) {
     const id = nextId++;
@@ -618,8 +652,13 @@ export function createSolveClient({ spawn } = {}) {
     control,
     /** A repair, on this client's worker. Rides the control channel because it is not a search of
      *  the two-phase engine and must not be validated as one — `stageRequest` is what validates it
-     *  instead, and what refuses to put one on a main-thread worker at all. */
-    stageRoute: (payload) => stageRequest({ ensureWorker: () => attach(), control }, payload),
+     *  instead, and what refuses to put one on a main-thread worker at all. `shared` is the stop
+     *  word a pool hands a repair that can be called off; asked with none, a client that can make
+     *  words makes one — fresh per repair, as a pool's is — and a client that cannot has none. */
+    stageRoute: (payload, shared = null) => stageRequest(
+      { ensureWorker: () => attach(), control }, payload,
+      shared ?? (payload?.signal ? (makeShared?.() ?? null) : null),
+    ),
     /** Make the worker now, and hand it back, so a caller can see WHAT it got before committing
      *  work to it. The pool needs exactly that: `spawnSolveWorker` answers with a main-thread
      *  worker where it cannot build a real one, and dividing a budget between several of those
@@ -700,10 +739,12 @@ export function pickWinner(replies) {
  * would have reached — which held for 40 of 40 cubes offline and 90 of 90 in a browser at the
  * shipped 50M budget. Under budget PRESSURE it diverges, because a slice can exhaust its quota
  * where the sequential search would have spent another view's unused nodes: at 3,000,000 nodes
- * sequential answers (11,1) on `RBBFUDDBBLL…` while six 500,000-node slices answer (11,2), and at
- * 10,002 nodes sequential finds an answer that every slice misses. Both are valid solutions
- * inside the bound and the same length; they are not the same algorithm. `parallel-divergence`
- * in solve-client.test.mjs pins that boundary so nobody re-derives it.
+ * sequential answers (11,1) on `RBBFUDDBBLL…` while six 500,000-node slices answer (11,2) — a
+ * different algorithm of the same length — and on `FFLFURUDFUB…` sequential answers from view 0
+ * where every slice misses. Even at the shipped budget a difference can be a LENGTH: one worker
+ * answers `DIVERGENT_CUBES.longerInThePool` in 19 moves and the pool in 20, because the view that
+ * finds 19 starves on a slice. Every answer is still a valid solution inside the bound, and
+ * test/parallel-divergence.test.mjs pins each of these so nobody re-derives them.
  *
  * Requires SharedArrayBuffer — not for the answer, but for the stop. A search is synchronous, so
  * a worker that cannot possibly win still runs to its budget unless something reaches inside it,
@@ -1012,8 +1053,13 @@ export function createParallelSolveClient({ spawn, workers, viewCount, makeShare
      * distance tables are per-thread and about 14 MiB steady. Dealing this round the pool the way
      * a solve's views are dealt would build them on every thread for a question asked one at a
      * time, which is the arithmetic that killed the scramble worker.
+     *
+     * A repair that can be called off gets a stop word of its own, fresh for the reason a solve's
+     * is: two requests sharing one would stop each other. One with no signal gets none, since
+     * nothing could ever write it.
      */
-    stageRoute: (payload) => (lone ?? clients[0]).stageRoute(payload),
+    stageRoute: (payload) => (lone ?? clients[0])
+      .stageRoute(payload, payload?.signal ? (makeShared?.() ?? null) : null),
     // The fallback counts for both: a solve running on it is not idle, and a pool that has
     // fallen back reports the one worker it actually has rather than the six it wanted.
     get idle() { return clients.every((c) => c.idle) && (lone?.idle ?? true); },

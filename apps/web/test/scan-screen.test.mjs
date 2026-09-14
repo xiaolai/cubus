@@ -1,5 +1,5 @@
-// The Restore screen (route id `scan`): the camera opens with the screen, and the six-face scan happens on the
-// screen itself — no modal, and no camera picture.
+// The Restore screen (route id `scan`): the camera opens with the screen, and the six-face scan
+// happens on the screen itself — no modal, and no camera picture.
 //
 // Both of those are easy to break invisibly. Drop `autostart` and the screen looks identical but
 // waits for a click that no longer exists; drop `headless` and the raw feed reappears; forget to
@@ -11,12 +11,28 @@
 // assert on what the screen draws from them.
 
 import assert from 'node:assert/strict';
+import { isAbsent, isSame } from './dom-assert.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
+import { registerHooks } from 'node:module';
 
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
 import { createSelfCheck } from '../lib/cube-selfcheck.js';
+
+// The scanner is TypeScript whose imports name `.js`, its compiler's convention. Node strips the
+// types but does not map the extension, so inside the scanner's src a relative `.js` import is
+// resolved to its `.ts` sibling — which lets the edge case below import the scanner's real
+// FACE_NEIGHBOURS.
+const SCANNER_SRC = new URL('../../../packages/cube-scanner/src/', import.meta.url).href;
+registerHooks({
+  resolve(specifier, context, next) {
+    if (context.parentURL?.startsWith(SCANNER_SRC) && specifier.startsWith('./') && specifier.endsWith('.js')) {
+      return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };
+    }
+    return next(specifier, context);
+  },
+});
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -79,7 +95,7 @@ before(async () => {
 });
 
 test('entering the screen mounts the scanner itself — no modal, no click', () => {
-  assert.equal($('#scanModal'), null, 'the scan modal must be gone');
+  isAbsent($('#scanModal'), 'the scan modal must be gone');
   const el = panel();
   assert.ok(el, 'the scan screen must mount <ai-scan-panel>');
   assert.ok(el.hasAttribute('autostart'), 'autostart is what opens the camera on entry');
@@ -87,7 +103,7 @@ test('entering the screen mounts the scanner itself — no modal, no click', () 
 });
 
 test('the screen never shows the camera picture', () => {
-  assert.equal($('#stage video'), null, 'no <video> may be drawn into the screen');
+  isAbsent($('#stage video'), 'no <video> may be drawn into the screen');
 });
 
 test('an absent scanner bundle says so rather than claiming a camera is opening', () => {
@@ -101,12 +117,12 @@ test('the six sides start pending, with nothing captured', () => {
   assert.equal(tiles.length, 6);
   assert.deepEqual(tiles.map((t) => t.dataset.face), FACES);
   assert.equal(tiles.filter((t) => t.classList.contains('done')).length, 0);
-  assert.equal($('#scanLive'), null, 'no separate viewfinder — the tiles and the aside say it all');
-  assert.equal($('#scanBar'), null, 'no progress bar — the tiles are the progress');
+  isAbsent($('#scanLive'), 'no separate viewfinder — the tiles and the aside say it all');
+  isAbsent($('#scanBar'), 'no progress bar — the tiles are the progress');
 });
 
 // Must run before anything repaints the tiles.
-test('each face tile is edged in its neighbours colours, so the way to hold it is visible', () => {
+test('each face tile is edged in its neighbours colours, so the way to hold it is visible', async () => {
   // Read the palette out of the tiles themselves: with nothing captured yet, each tile's centre
   // cell is painted its own face colour. So this asserts the RELATIONSHIP rather than a set of
   // hex values, and keeps working if the palette changes.
@@ -114,13 +130,17 @@ test('each face tile is edged in its neighbours colours, so the way to hold it i
     [t.dataset.face, t.querySelectorAll('.tgrid > .cell')[4].style.backgroundColor]));
   const bordersOf = (f) => $(`.scan-face[data-face="${f}"] .tile`)
     .getAttribute('style').replace('border-color:', '').trim().split(/\s+/);
-  // The canonical URFDLB layout — derived from EDGE_FACELET in the scanner package and pinned by
-  // its own test. Up is the one worth reading against a cube: white centre, blue above, red to
-  // the right, green below, orange to the left.
-  const EXPECT = {
-    U: ['B', 'R', 'F', 'L'], R: ['U', 'B', 'D', 'F'], F: ['U', 'R', 'D', 'L'],
-    D: ['F', 'R', 'B', 'L'], L: ['U', 'F', 'D', 'B'], B: ['U', 'L', 'D', 'R'],
-  };
+  // The canonical URFDLB layout is the scanner's own FACE_NEIGHBOURS, IMPORTED: scan.js paints
+  // the tiles from a copy it keeps because it cannot import TypeScript, so this is the check that
+  // fails when that copy and the scanner's table disagree. The first version compared nothing to
+  // the copy (found by audit, 2026-09-13); the second re-derived the table from EDGE_FACELET's
+  // source text, so a mistake in the scanner's own derivation passed it (found by verification,
+  // 2026-09-14). Up is the one worth reading against a cube: white centre, blue above, red to the
+  // right, green below, orange to the left.
+  const { FACE_NEIGHBOURS } = await import('../../../packages/cube-scanner/src/facelet-cube.ts');
+  const SIDES = ['top', 'right', 'bottom', 'left']; // the order border-color takes
+  const EXPECT = Object.fromEntries(FACES.map((f) => [f, SIDES.map((side) => FACE_NEIGHBOURS[f]?.[side])]));
+  assert.ok(FACES.every((f) => EXPECT[f].every(Boolean)), 'the scanner does not give every face four sides');
   for (const [face, sides] of Object.entries(EXPECT)) {
     assert.deepEqual(bordersOf(face), sides.map((n) => colourOf[n]), `${face} tile edges`);
   }
@@ -165,6 +185,8 @@ test('the webcam button is the camera menu', () => {
   assert.equal($('.menu').hidden, true, 'closed until asked for');
   btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   assert.equal($('.menu').hidden, false, 'clicking it opens the camera list');
+  assert.ok($('.menu').contains(win.document.activeElement), 'opening the menu left focus behind the button');
+  assert.equal($('.menu').getAttribute('role'), 'menu', 'the camera menu is not said as a menu');
   const items = [...$('.menu').querySelectorAll('button')].map((b) => b.textContent);
   assert.equal(items[0], 'Default camera', 'first entry hands the choice back to the platform');
   // Cameras and nothing else — starting over has its own button beside the webcam.
@@ -184,10 +206,13 @@ test('the menu lists the cameras and marks the one in use', async () => {
   $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   const cams = [...$('.menu').querySelectorAll('[data-value]')].map((b) => b.textContent);
   assert.deepEqual(cams, ['Default camera', 'MacBook Air Camera', 'iPhone Camera']);
-  // The camera pinned earlier in this file is not attached now, and a pin to a missing device is
-  // not what gets used — the panel falls back to the platform default, so that is what is ticked.
-  // Ticking nothing would leave the menu mute about which camera is in force.
-  assert.deepEqual([...$('.menu').querySelectorAll('.now')].map((b) => b.textContent), ['Default camera']);
+  // The camera pinned earlier in this file is not attached now, and the one that ANSWERED is the
+  // built-in — the report above says so — so that is what is ticked. Worked out from the pin alone,
+  // the tick marked "Default camera" here: a guess about what the platform would pick, beside a
+  // report of what it did pick (found by audit, 2026-09-13).
+  assert.deepEqual([...$('.menu').querySelectorAll('.now')].map((b) => b.textContent), ['MacBook Air Camera']);
+  assert.deepEqual([...$('.menu').querySelectorAll('[data-value]')].map((b) => b.getAttribute('aria-checked')),
+    ['false', 'true', 'false'], 'the tick is shown and not said');
   $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
 });
 
@@ -543,7 +568,7 @@ test('a completed scan stays on the screen and shows what was found', () => {
   }));
   assert.equal(win.location.hash, '#/scan', 'it must not navigate away');
   assert.ok($('#stage ai-scan-panel'), 'the scanner is still mounted');
-  assert.equal($('#scanState'), null, 'the 54-char string belongs on the Cube screen, with its Copy button');
+  isAbsent($('#scanState'), 'the 54-char string belongs on the Cube screen, with its Copy button');
   assert.equal($('#scanCube').firstElementChild.getAttribute('facelets'), scrambled,
     'the 3D twin shows what was found, without re-rendering the screen');
 });
@@ -713,6 +738,7 @@ test('a scan contradicting a tracking cube adopts nothing and disables Solve', a
   assert.equal(state.cube.trusted, false, 'and nobody is trusted until one is confirmed');
   assert.equal($('#scanSolveBtn').disabled, true, 'Solve stays off a cube the screen refused');
   assert.match($('#scanHow').textContent, /One of the two is wrong/);
+  assert.ok($('#scanHow').classList.contains('err'), 'a repair the scan contradicted was not said as trouble');
   win.cubusFeed.useConnection(null);
   state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
   state.live = null; state.reported = null;
@@ -958,7 +984,7 @@ test('activating a read sticker opens the picker with focus in it, and Escape ha
   assert.ok(pick.contains(win.document.activeElement), 'focus moved into the picker — a keyboard user is not left stranded on the cell');
   win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   assert.equal(pick.hidden, true, 'Escape closes it');
-  assert.equal(win.document.activeElement, cell, 'and hands focus back to the sticker that opened it');
+  isSame(win.document.activeElement, cell, 'and hands focus back to the sticker that opened it');
 });
 
 // ---- the cube's colour arrangement, on the screen that reads it (ADR 0001) -------------------
@@ -1008,4 +1034,1123 @@ test('a refusal never establishes an arrangement', () => {
   const after = JSON.parse(win.localStorage.getItem('cubusSettings'));
   assert.equal(after.scheme, before.scheme);
   assert.equal(after.schemeSource, before.schemeSource);
+});
+
+// ---- what the screen leaves behind when it goes ------------------------------------------------
+//
+// A screen's listeners on `document` and on `navigator.mediaDevices` outlive its DOM unless the
+// screen's abort signal takes them away, and an event already in flight at the scanner still lands
+// after the navigation. Nothing on screen shows either mistake — the handlers run against a board
+// that is no longer on the page — so each case keeps the OLD screen's parts, leaves, and asserts
+// they heard nothing, after first proving on the live screen that the same event reaches them.
+// Written before the screen is broken up into units (2026-09-13), so the units have to keep it.
+
+/** Enter the scan screen fresh, from another one, and let it mount. */
+const enterScan = async () => {
+  win.cubusGo('viewer');
+  await tick();
+  win.location.hash = '#/scan';
+  await tick();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(panel(), 'the scan screen mounted');
+};
+const leaveScan = async () => {
+  win.cubusGo('viewer');
+  await tick();
+  assert.equal(panel(), null, 'the scan screen is gone');
+};
+/** A real cube: `alg` applied to a solved one, so cubejs accepts it and no search runs for ever. */
+const cubeAfter = (alg) => {
+  const c = new Cube();
+  c.move(alg);
+  return c.asString();
+};
+
+test('once the screen is gone, a click or an Escape on the page reaches none of its popovers', async () => {
+  await enterScan();
+  const camBtn = $('#scanCamBtn');
+  const menu = $('.menu');
+  camBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, false, 'the camera menu opened');
+  win.document.body.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, true, 'on the live screen, a click elsewhere closes the menu');
+  camBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, false, 'opened again, to be left open');
+  await leaveScan();
+  win.document.body.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(menu.hidden, false, "a click after leaving reached the old screen's camera menu");
+
+  await enterScan();
+  progress({ phase: 'scanning', message: '', captured: [face('R')], live: null, device: null, confirm: null });
+  const pick = $('.swatches');
+  const cell = () => all('.scan-face[data-face="R"] .tgrid > .cell')[1];
+  cell().click();
+  assert.equal(pick.hidden, false, 'the colour picker opened');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(pick.hidden, true, 'on the live screen, Escape closes the picker');
+  cell().click();
+  assert.equal(pick.hidden, false, 'opened again, to be left open');
+  await leaveScan();
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(pick.hidden, false, "an Escape after leaving reached the old screen's colour picker");
+});
+
+test('once the screen is gone, a camera coming or going no longer rebuilds its camera menu', async () => {
+  // happy-dom has no mediaDevices, and the screen listens at mount, so the stand-in goes on first.
+  const devices = new win.EventTarget();
+  Object.defineProperty(win.navigator, 'mediaDevices', { value: devices, configurable: true });
+  try {
+    await enterScan();
+    const old = panel();
+    let asked = 0;
+    old.cameras = async () => { asked += 1; return []; };
+    devices.dispatchEvent(new win.Event('devicechange'));
+    await tick();
+    assert.equal(asked, 1, 'on the live screen, a device change asks the scanner for its cameras again');
+    await leaveScan();
+    devices.dispatchEvent(new win.Event('devicechange'));
+    await tick();
+    assert.equal(asked, 1, "a device change after leaving still drove the old screen's camera menu");
+  } finally {
+    delete win.navigator.mediaDevices;
+  }
+});
+
+test('a scan that finishes after the screen is gone adopts nothing and moves no one', async () => {
+  const { state } = await import('../lib/app.js');
+  const live = cubeAfter('R U');
+  const late = cubeAfter('F D');
+  await enterScan();
+  const old = panel();
+  old.dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: live, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  assert.equal(state.cube.facelets, live, 'on the live screen, a finished scan is adopted');
+  await leaveScan();
+  const hash = win.location.hash;
+  old.dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: late, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  await tick();
+  assert.equal(state.cube.facelets, live, 'a scan that landed after leaving was adopted as the cube in hand');
+  assert.equal(win.location.hash, hash, 'a scan that landed after leaving navigated from a screen that is gone');
+});
+
+test('a scan that moves the colour arrangement says so once, and never over the scanner\'s notice', async () => {
+  await enterScan();
+  const title = () => $('#scanHowTitle').textContent;
+  const body = () => $('#scanHow').textContent;
+  const quiet = (message) => progress({ phase: 'scanning', message, captured: [], live: null, confirm: null });
+  // A known starting belief, whatever the cases above left stored: settle on the Japanese colours
+  // and let whatever that says pass.
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese' });
+  quiet('x');
+
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'western' });
+  assert.equal(title(), 'Yellow under white', 'a scan that moved the belief says which colours it found');
+  assert.match(body(), /^Your cube has yellow under white/);
+  assert.ok($('#scanHow').classList.contains('ok'), 'and says it as good news');
+  quiet('Show another side.');
+  assert.equal(body(), 'Show another side.', 'the colour sentence was said twice');
+  assert.equal(title(), 'How it works');
+
+  progress({
+    phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese',
+    notice: { title: 'Hold it still', tone: 'info', body: 'Keep the side flat to the camera.' },
+  });
+  assert.equal(title(), 'Hold it still', "the colour sentence spoke over the scanner's notice");
+  assert.equal(body(), 'Keep the side flat to the camera.');
+  quiet('x');
+  assert.equal(title(), 'Blue under white', 'a sentence a notice held back is said once the notice is gone');
+  assert.match(body(), /^Your cube has blue under white/);
+  quiet('Show another side.');
+  assert.equal(title(), 'How it works', 'and it is said only that once');
+});
+
+// adoptScheme returns whether the BELIEF moved, and only a move is said. A first decisive scan
+// of the colours the app already assumed moves nothing: it records the scan as the evidence and
+// stays quiet. A return that always said "moved" survived every other case (verification,
+// 2026-09-14).
+test('a scan that only confirms the assumed colours records it, and says nothing', async () => {
+  await enterScan();
+  const { settings } = await import('../lib/app-settings.js');
+  const was = { scheme: settings.scheme, source: settings.schemeSource };
+  try {
+    settings.scheme = 'western';
+    settings.schemeSource = 'default';
+    progress({ phase: 'scanning', message: 'Show another side.', captured: [], live: null, confirm: null, scheme: 'western' });
+    assert.equal(settings.schemeSource, 'scan', 'precondition: the scan was recorded as the evidence');
+    assert.equal($('#scanHowTitle').textContent, 'How it works', 'a scan that moved nothing announced colours');
+    assert.equal($('#scanHow').textContent, 'Show another side.');
+  } finally {
+    settings.scheme = was.scheme;
+    settings.schemeSource = was.source;
+  }
+});
+
+test('a finished scan that also moved the colour arrangement keeps "press Solve this cube" beside it', async () => {
+  await enterScan();
+  const quiet = (message) => progress({ phase: 'scanning', message, captured: [], live: null, confirm: null });
+  // A known belief first, and whatever that says let pass.
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese' });
+  quiet('x');
+  // The scan finishes, the panel having already stopped the camera, and establishes the other
+  // colours.
+  progress({
+    phase: 'done', message: '', complete: true, device: null, captured: FACES.map(face),
+    live: null, confirm: null, scheme: 'western',
+  });
+  assert.equal($('#scanHowTitle').textContent, 'Scanned', 'the colour sentence took a finished scan\'s title');
+  assert.match($('#scanHow').textContent, /press "Solve this cube"/,
+    'the one instruction a finished scan owes was spoken over, with no camera left to say it again');
+  assert.match($('#scanHow').textContent, /yellow under white/, 'and the colours it found are still said');
+});
+
+// The twin is described as the cube it shows while a scan still reads it. It kept the words of
+// whatever it was built from — "A solved cube" over a scan's first side (found by audit,
+// 2026-09-13).
+test('the scan twin says how much of the cube it shows has been read', async () => {
+  await enterScan();
+  const twin = $('#scanCube > cubus-cube');
+  assert.ok(twin, 'precondition: the twin is drawn');
+  progress({ phase: 'scanning', message: 'x', captured: [face('U')], live: null, confirm: null });
+  assert.equal(twin.getAttribute('aria-label'), 'A cube being read — 1 side so far', 'the twin was described as a cube it is not showing');
+  progress({ phase: 'scanning', message: 'x', captured: [face('U'), face('R')], live: null, confirm: null });
+  assert.equal(twin.getAttribute('aria-label'), 'A cube being read — 2 sides so far', 'and did not keep count as the scan read on');
+});
+
+// The twin draws positions, so it reads them in the arrangement the scan established: the tiles
+// took a Japanese verdict and the twin beside them stayed Western (found beside audit row 12,
+// 2026-09-13).
+test('the scan twin reads positions in the arrangement a scan established', async () => {
+  await enterScan();
+  const twin = $('#scanCube > cubus-cube');
+  assert.ok(twin, 'precondition: the twin is drawn');
+  try {
+    progress({ phase: 'scanning', message: 'x', captured: [face('U')], live: null, confirm: null, scheme: 'japanese' });
+    assert.equal(twin.getAttribute('scheme'), 'japanese',
+      'the tiles took the Japanese arrangement and the twin beside them did not');
+  } finally {
+    progress({ phase: 'scanning', message: 'x', captured: [face('U')], live: null, confirm: null, scheme: 'western' });
+  }
+});
+
+// ---- the chip row, on the screen that draws it -------------------------------------------------
+//
+// stage-wiring.test.mjs reads the row's wiring as source, and stage-target.test.mjs drives its
+// answers in a real browser. Neither pins, on this screen, what the row does when the scan under it
+// stops being believed, or when a chip is pressed over a cube it was not drawn for. There is no
+// worker here, so every question the row asks is refused and every chip is a dash — a state the row
+// already has, and enough to hold what it does around its answers. The press that DOES walk comes
+// first: it is what keeps the two presses that must not from passing over a click nothing heard.
+
+/** A scan the screen believes, of the cube `alg` makes from solved, and the turns its row needs. */
+const believedScan = async (alg = 'R U') => {
+  const { settings } = await import('../lib/app-settings.js');
+  assert.equal(Boolean(settings.autosolve), false, 'precondition: auto-solve is off, or a believed scan leaves the screen');
+  const facelets = cubeAfter(alg);
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets, valid: true, confidence: 1, lowConfidence: [] },
+  }));
+  for (let i = 0; i < 5; i += 1) await tick();
+  return facelets;
+};
+
+test('a believed scan draws the chip row; with nothing to ask, every chip is a dash and the row offers the whole solve', async () => {
+  const { OFFERED_TARGETS } = await import('../lib/stage-targets.js');
+  const { STAGE_COPY } = await import('../lib/stage-report.js');
+  await enterScan();
+  assert.equal($('#stageCard').hidden, true, 'no row before a scan: a number about a cube nobody has read is about nothing');
+  await believedScan();
+  assert.equal($('#stageCard').hidden, false, 'a believed scan draws the row');
+  assert.deepEqual(all('.stage-chip').map((c) => c.dataset.target), OFFERED_TARGETS.map((x) => x.id),
+    'one chip per offered target, in order');
+  assert.deepEqual(all('.stage-chip .howfar').map((e) => e.textContent), OFFERED_TARGETS.map(() => '—'),
+    'a question nobody could answer is a dash, never a number');
+  assert.equal($('#stageSay').textContent, STAGE_COPY.offerSolve(), 'and the row offers the whole solve in its place');
+});
+
+test('a refusal takes the chip row away, whichever side of the scan refuses', async () => {
+  await enterScan();
+  await believedScan();
+  assert.equal($('#stageCard').hidden, false, 'the row stands over a believed scan');
+  panel().dispatchEvent(new win.CustomEvent('scan-invalid', { detail: {} }));
+  assert.equal($('#stageCard').hidden, true, 'a scan the scanner refused kept the chip row on screen');
+  await believedScan('F D');
+  assert.equal($('#stageCard').hidden, false, 'the next believed scan draws it again');
+  progress({ phase: 'scanning', message: 'x', captured: [face('R')], live: null, confirm: null, complete: false });
+  assert.equal($('#stageCard').hidden, true, 'a scan that is no longer complete kept the chip row on screen');
+});
+
+test('a chip pressed on the row about the cube in hand takes its target to the cube screen', async () => {
+  const { state } = await import('../lib/app.js');
+  await enterScan();
+  await believedScan();
+  try {
+    $('[data-target="two-layers"]').click();
+    await tick();
+    assert.equal(state.stageTarget, 'two-layers', 'the press carries its target');
+    assert.equal(win.location.hash, '#/home', 'to the screen a walk lives on');
+  } finally {
+    // Off the cube screen before its walk is worked out, and the target back where the file
+    // expects it.
+    win.cubusGo('viewer');
+    await tick();
+    state.stageTarget = 'solved';
+  }
+});
+
+test('a cube that changes after the row has finished painting takes the row away', async () => {
+  // A smart cube's snapshot replaces the subject while the row stands. The checks inside a paint
+  // fire only when a reply lands, and this row has none left to land.
+  await enterScan();
+  await believedScan();
+  assert.equal($('#stageCard').hidden, false, 'precondition: a believed scan drew the row');
+  win.cubusFeed.facelets(cubeAfter('R U F'), 1);
+  await tick();
+  assert.equal($('#stageCard').hidden, true, 'the row stayed on screen over a cube nobody is holding');
+});
+
+test('a chip pressed over a refused read walks nothing', async () => {
+  const { state } = await import('../lib/app.js');
+  await enterScan();
+  await believedScan();
+  const before = state.stageTarget;
+  panel().dispatchEvent(new win.CustomEvent('scan-invalid', { detail: {} }));
+  $('[data-target="two-layers"]').click();
+  await tick();
+  assert.equal(win.location.hash, '#/scan', 'a chip pressed over a refused read navigated');
+  assert.equal(state.stageTarget, before, 'a chip pressed over a refused read set its target');
+});
+
+test('a chip pressed on a row about a cube that has since changed takes the row away instead of walking', async () => {
+  const { state } = await import('../lib/app.js');
+  const { adoptCube } = await import('../lib/cube-connection.js');
+  await enterScan();
+  await believedScan();
+  const before = state.stageTarget;
+  const card = $('#stageCard');
+  // The subject replaced without the scan screen hearing of it: the call a smart cube's snapshot
+  // ends in.
+  adoptCube(cubeAfter('F D'), { physical: true, source: 'cube' });
+  $('[data-target="two-layers"]').click();
+  await tick();
+  assert.equal(win.location.hash, '#/scan', 'a chip about a cube nobody is holding navigated');
+  assert.equal(state.stageTarget, before, 'a chip about a cube nobody is holding set its target');
+  assert.equal(card.hidden, true, 'a row about a cube nobody is holding stayed on screen after a press');
+});
+
+// ---- the aside speaks the reader's language ----------------------------------------------------
+//
+// dev-docs/i18n.md lists the scan aside as wired: notices, completion copy, camera hints and
+// titles. The repair's words were not — a title set as a raw literal, and the session's sentence
+// written as it came — and nothing noticed, because English was right on screen and a raw string
+// is invisible until a catalog exists. The first case proves the repair's words translate; the
+// second holds every other write to the aside to the same rule, as router-wiring.test.mjs holds
+// the Timer's say() calls.
+
+test("the repair's words reach the aside in the reader's language — its title and its sentence both", async () => {
+  const { state } = await import('../lib/app.js');
+  const { registerLocale, setLocale } = await import('../lib/i18n.js');
+  const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  const OTHER = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+  /** A scan that contradicts a cube tracking at S: the repair refuses, and the aside says so. */
+  const contradict = async () => {
+    await enterScan();
+    win.cubusFeed.useConnection(fakeConn());
+    try {
+      win.cubusFeed.facelets(S);
+      state.cube.trusted = true; state.cube.source = 'cube';
+      panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+        detail: { facelets: OTHER, valid: true, confidence: 1, lowConfidence: [] },
+      }));
+      return { title: $('#scanHowTitle').textContent, body: $('#scanHow').textContent };
+    } finally {
+      win.cubusFeed.useConnection(null);
+      state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
+      state.live = null; state.reported = null;
+    }
+  };
+  const english = await contradict();
+  assert.match(english.body, /One of the two is wrong/, 'precondition: the contradiction was reported, in English');
+  // The catalog is made from what the screen actually said, so no sentence is copied here to drift.
+  registerLocale('qa', { [english.title]: '«title»', [english.body]: '«body»' });
+  try {
+    assert.equal(setLocale('qa'), true, 'precondition: the test catalog is active');
+    const translated = await contradict();
+    assert.equal(translated.title, '«title»', "the repair's title did not go through t()");
+    assert.equal(translated.body, '«body»', "the repair's sentence did not go through t()");
+  } finally {
+    setLocale('en');
+  }
+});
+
+test('every sentence the scan screen writes into its aside goes through t()', async () => {
+  const { readdirSync } = await import('node:fs');
+  const files = ['lib/screens/scan.js', ...readdirSync(new URL('../lib/screens/scan/', import.meta.url))
+    .filter((f) => f.endsWith('.js')).map((f) => `lib/screens/scan/${f}`)];
+  assert.ok(files.length >= 2, "precondition: the scan screen's own parts are read too");
+  /** From `i`, past the string or template that opens there. */
+  const pastQuote = (src, i) => {
+    const q = src[i];
+    let j = i + 1;
+    while (j < src.length && src[j] !== q) j += src[j] === '\\' ? 2 : 1;
+    return j + 1;
+  };
+  /** The right-hand side of an assignment whose `=` ends at `from`: up to its `;`, outside any
+   *  bracket or string. */
+  const rhsAt = (src, from) => {
+    let depth = 0;
+    for (let i = from; i < src.length;) {
+      const c = src[i];
+      if (c === "'" || c === '"' || c === '`') { i = pastQuote(src, i); continue; }
+      if ('([{'.includes(c)) depth += 1;
+      else if (')]}'.includes(c)) depth -= 1;
+      else if (c === ';' && depth === 0) return src.slice(from, i);
+      i += 1;
+    }
+    throw new Error(`an assignment at ${from} never ends`);
+  };
+  /** The expression with every t(…) call replaced by a marker: what is inside one is translated
+   *  by definition. */
+  const withoutT = (expr) => {
+    let s = expr;
+    for (let at = s.search(/\bt\(/); at >= 0; at = s.search(/\bt\(/)) {
+      let depth = 0;
+      let i = at + 1;
+      for (; i < s.length; i += 1) {
+        if (s[i] === "'" || s[i] === '"' || s[i] === '`') { i = pastQuote(s, i) - 1; continue; }
+        if (s[i] === '(') depth += 1;
+        else if (s[i] === ')' && --depth === 0) break;
+      }
+      s = `${s.slice(0, at)}T${s.slice(i + 1)}`;
+    }
+    return s;
+  };
+  let seen = 0;
+  const raw = [];
+  // A sentence literal outside t(), or another module's words (a text, message, body, title or
+  // label) read out and written as they came — the whole value, or one branch of a choice. A read
+  // used only as a condition is not the value.
+  const bypasses = (expr) => {
+    const left = withoutT(expr).trim();
+    return /['"`][A-Z]/.test(left) || /^[\w$.?]+\.(text|message|body|title|label)$/.test(left)
+      || /[?:]\s*[\w$.?]+\.(text|message|body|title|label)\b/.test(left);
+  };
+  /** The top-level arguments of the call whose `(` is at `open`. */
+  const argsAt = (src, open) => {
+    const args = [];
+    let depth = 0;
+    let start = open + 1;
+    for (let i = open; i < src.length;) {
+      const c = src[i];
+      if (c === "'" || c === '"' || c === '`') { i = pastQuote(src, i); continue; }
+      if ('([{'.includes(c)) depth += 1;
+      else if (')]}'.includes(c)) {
+        depth -= 1;
+        if (depth === 0) { args.push(src.slice(start, i)); return args; }
+      } else if (c === ',' && depth === 1) { args.push(src.slice(start, i)); start = i + 1; }
+      i += 1;
+    }
+    throw new Error(`a call at ${open} never closes`);
+  };
+  for (const rel of files) {
+    const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
+    for (const m of src.matchAll(/\b(sayTitle|say|hint|action)\.textContent = /g)) {
+      seen += 1;
+      const rhs = rhsAt(src, m.index + m[0].length);
+      if (bypasses(rhs)) raw.push(`${rel}: ${m[1]}.textContent = ${rhs.trim().slice(0, 80)}`);
+    }
+    // The card's other door, speak(title, sentence, tone): its title and sentence are held to the
+    // same rule. The tone is a class name, not a word anyone reads.
+    for (const m of src.matchAll(/\bspeak\(/g)) {
+      seen += 1;
+      const [title = '', body = ''] = argsAt(src, m.index + m[0].length - 1);
+      for (const expr of [title, body]) {
+        if (bypasses(expr)) raw.push(`${rel}: speak(${expr.trim().slice(0, 80)}, …)`);
+      }
+    }
+  }
+  assert.ok(seen >= 20, `precondition: only ${seen} writes to the aside were found — the reader is looking in the wrong place`);
+  assert.deepEqual(raw, [], `these writes to the scan screen's aside bypass t(): ${raw.join(' | ')}`);
+});
+
+// ---- the aside's quiet and toned paths ----------------------------------------------------------
+//
+// The card's words are pinned above for a notice, a finished scan and a camera error. A probe
+// of the paths between them (2026-09-13, before the aside became its own unit) found four that
+// nothing held: a report with nothing to say, the tone of a scan being checked, a notice's
+// good-news tone, and the colour sentence waiting out a camera error. A fifth — the notice's
+// action closing an open popover first — is not pinned, because it changes nothing observable:
+// the click that runs it bubbles to the page's own listener, which closes the popover a moment
+// later.
+
+test('a report with nothing to say explains how the scan works, under "How it works"', async () => {
+  await enterScan();
+  progress({ phase: 'scanning', message: 'Show another side.', captured: [], live: null, confirm: null });
+  assert.equal($('#scanHow').textContent, 'Show another side.', 'precondition: a message is said as it came');
+  progress({ phase: 'scanning', message: '', captured: [], live: null, confirm: null });
+  assert.match($('#scanHow').textContent, /no picture is kept/, 'a report with no message left the card saying nothing');
+  assert.equal($('#scanHowTitle').textContent, 'How it works');
+});
+
+test('a scan being checked, or done, is said as good news — and scanning goes back to a plain voice', async () => {
+  await enterScan();
+  for (const phase of ['checking', 'done']) {
+    progress({ phase, message: 'Checking…', captured: [], live: null, confirm: null });
+    assert.ok($('#scanHow').classList.contains('ok'), `the ${phase} phase was not said as good news`);
+  }
+  progress({ phase: 'scanning', message: 'Show another side.', captured: [], live: null, confirm: null });
+  assert.ok(!$('#scanHow').classList.contains('ok'), 'scanning kept the good-news tone');
+});
+
+test("a notice's tone is the card's tone — good news reads as good news", async () => {
+  await enterScan();
+  progress({ phase: 'scanning', message: '', captured: [], live: null, confirm: null,
+    notice: { title: 'All six sides read', tone: 'ok', body: 'Checking the cube.' } });
+  assert.ok($('#scanHow').classList.contains('ok'), 'a good-news notice was not said as one');
+  assert.ok(!$('#scanHow').classList.contains('err'), 'and it is not said as an error');
+});
+
+test('the colour sentence waits out a camera error, and is said once the error has passed', async () => {
+  await enterScan();
+  const quiet = (message) => progress({ phase: 'scanning', message, captured: [], live: null, confirm: null });
+  // A known starting belief, whatever the cases above left stored.
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese' });
+  quiet('x');
+  try {
+    progress({ phase: 'error', message: 'Cannot start: Permission denied', captured: [], live: null, confirm: null,
+      scheme: 'western' });
+    assert.equal($('#scanHowTitle').textContent, 'Camera trouble', 'the colour sentence spoke over a camera error');
+    assert.ok($('#scanHow').classList.contains('err'), 'and the error kept its tone');
+    quiet('Show another side.');
+    assert.equal($('#scanHowTitle').textContent, 'Yellow under white', 'a sentence an error held back is said once it has passed');
+  } finally {
+    progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese' });
+    quiet('x');
+  }
+});
+
+// ---- a scanner that never loads ----------------------------------------------------------------
+//
+// The screen waits 15 s for the scanner's bundle to register, then says it did not load and names
+// the way out. A test cannot sit through that wait, so the clock is node:test's for this one case:
+// the screen is on #/scan already, so go('scan') has no hash to change and mounts it again at
+// once, and that mount's wait is the one the mocked clock runs out.
+
+test('a scanner that never loads is said as trouble once its wait runs out, with the way out named', async () => {
+  const { mock } = await import('node:test');
+  await enterScan();
+  const first = panel();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    win.cubusGo('scan');
+    assert.ok(panel() && panel() !== first, 'precondition: the screen mounted again, under the mocked clock');
+    assert.equal($('#scanHow').textContent, 'Loading the scanner…', 'precondition: the wait has begun');
+    mock.timers.tick(15000);
+    assert.equal($('#scanHowTitle').textContent, 'The scanner did not load', 'a scanner that never loaded was never said');
+    assert.ok($('#scanHow').classList.contains('err'), 'a scanner that never loaded was not said as trouble');
+    assert.match($('#scanHow').textContent, /Reloading the app/, 'and the way out is named');
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+// ---- the camera row and its menu, before they leave the screen --------------------------------
+//
+// The menu's list and its tick are pinned above. A probe of the rest (2026-09-13, before the menu
+// became its own unit) found what nothing held: the row's word for a camera that answered, the
+// cache that keeps the menu from being rebuilt under a keyboard user's focus, and choosing a
+// camera while painting. The row and the menu's own naming are pinned on the cases above.
+
+test('the webcam button says which camera answered, to the eye and to a screen reader, and the lens reads as live', async () => {
+  await enterScan();
+  const row = $('.scan-cam');
+  const btn = $('#scanCamBtn');
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null,
+    device: { deviceId: 'builtin', label: 'MacBook Air Camera' } });
+  assert.ok(row.classList.contains('on'), 'a camera that answered did not read as live');
+  assert.equal(btn.title, 'MacBook Air Camera — camera and scan', 'the webcam button did not name the camera that answered');
+  assert.equal(btn.getAttribute('aria-label'), btn.title, "the webcam button's name did not follow its title");
+  progress({ phase: 'error', message: 'Cannot start: Permission denied', captured: [], live: null, confirm: null, device: null });
+  assert.ok(!row.classList.contains('on'), 'a camera that went dark still read as live');
+  assert.match(btn.title, /click to turn it on/);
+  assert.equal(btn.getAttribute('aria-label'), btn.title, 'and its name follows the title back');
+});
+
+test('a device change that changes nothing leaves the camera menu, and the focus in it, where they were', async () => {
+  const devices = new win.EventTarget();
+  Object.defineProperty(win.navigator, 'mediaDevices', { value: devices, configurable: true });
+  try {
+    await enterScan();
+    panel().cameras = async () => [{ deviceId: 'builtin', label: 'MacBook Air Camera' }];
+    // The list the mount filled had no cameras to ask about; this one does.
+    devices.dispatchEvent(new win.Event('devicechange'));
+    await tick();
+    $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    const focused = win.document.activeElement;
+    assert.ok($('.menu').contains(focused), 'precondition: focus went into the open menu');
+    await tick();
+    devices.dispatchEvent(new win.Event('devicechange'));
+    await tick();
+    assert.ok(focused.isConnected, 'a device change that changed nothing rebuilt the camera menu under the focus');
+    isSame(win.document.activeElement, focused, 'and the focus is where the keyboard left it');
+  } finally {
+    delete win.navigator.mediaDevices;
+  }
+});
+
+test('choosing a camera while painting stops painting, rather than opening a camera under it', async () => {
+  await enterScan();
+  let started = 0;
+  panel().start = () => { started += 1; };
+  panel().cameras = async () => [{ deviceId: 'builtin', label: 'MacBook Air Camera' }];
+  $('#scanPaintBtn').click();
+  assert.equal($('#scanPaintBtn').title, 'Stop painting and use the camera', 'precondition: painting is on');
+  $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await tick();
+  [...$('.menu').querySelectorAll('[data-value]')].find((b) => b.dataset.value === 'builtin')
+    .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('#scanPaintBtn').title, 'Paint the cube by hand instead of scanning it',
+    'choosing a camera while painting left painting on');
+  assert.equal(started, 0, 'leaving painting hands the cube back to the camera; the camera is not opened a second time');
+});
+
+test('Escape closes the camera menu and hands focus back to the webcam button', async () => {
+  await enterScan();
+  $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal($('.menu').hidden, false, 'precondition: the camera menu is open');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal($('.menu').hidden, true, 'Escape left the camera menu open');
+  isSame(win.document.activeElement, $('#scanCamBtn'),
+    'Escape dropped focus instead of handing it back to the webcam button');
+});
+
+// ---- the camera menu, audited 2026-09-13 ------------------------------------------------------
+//
+// Each case enters the screen fresh. `cameras` is the panel's own door to the platform's list, so a
+// case decides what the list says and when it answers; `devicechange` is how the platform asks.
+
+const openCameraMenu = async () => {
+  $('#scanCamBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await tick();
+};
+const closeWithEscape = () => win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+const cameraLabels = () => [...$('.menu').querySelectorAll('[data-value]')].map((b) => b.textContent);
+const TWO_CAMERAS = [
+  { deviceId: 'builtin', label: 'MacBook Air Camera' },
+  { deviceId: 'iphone', label: 'iPhone Camera' },
+];
+/** Run `fn` with a platform whose camera list can be told it changed. */
+const withDevices = async (fn) => {
+  const devices = new win.EventTarget();
+  Object.defineProperty(win.navigator, 'mediaDevices', { value: devices, configurable: true });
+  const changed = async () => { devices.dispatchEvent(new win.Event('devicechange')); await tick(); };
+  try { await fn(changed); } finally { delete win.navigator.mediaDevices; closeWithEscape(); }
+};
+
+test('the camera menu takes the arrow keys, and the webcam button says whether it is open', async () => {
+  await enterScan();
+  panel().cameras = async () => TWO_CAMERAS;
+  const btn = $('#scanCamBtn');
+  assert.equal(btn.getAttribute('aria-haspopup'), 'menu', 'the button does not say it opens a menu');
+  assert.equal(btn.getAttribute('aria-expanded'), 'false', 'a closed menu is not said as closed');
+  await openCameraMenu();
+  assert.equal(btn.getAttribute('aria-expanded'), 'true', 'an open menu is not said as open');
+  const items = () => [...$('.menu').querySelectorAll('[data-value]')];
+  items()[0].focus();
+  const key = (k) => win.document.activeElement.dispatchEvent(new win.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+  key('ArrowDown');
+  assert.ok(win.document.activeElement === items()[1], 'ArrowDown did not move to the next camera');
+  key('ArrowUp');
+  key('ArrowUp');
+  assert.ok(win.document.activeElement === items()[2], 'ArrowUp from the first camera did not wrap to the last');
+  closeWithEscape();
+  assert.equal(btn.getAttribute('aria-expanded'), 'false', 'the menu closed and the button still says it is open');
+});
+
+// The camera menu and the cube screen's speed menu are one control now (lib/menu-popover.js), and
+// the speed button had a look the webcam button did not: pressed while its menu is open. The one
+// door that says a menu is open sets it, on both (2026-09-14).
+test('the webcam button looks pressed while its menu is open, and stops when it closes', async () => {
+  await enterScan();
+  panel().cameras = async () => TWO_CAMERAS;
+  const btn = $('#scanCamBtn');
+  assert.ok(!btn.classList.contains('open'), 'the webcam button looks pressed over a closed menu');
+  await openCameraMenu();
+  assert.ok(btn.classList.contains('open'), 'the webcam button does not look pressed while its menu is open');
+  closeWithEscape();
+  assert.ok(!btn.classList.contains('open'), 'the menu closed and the webcam button still looks pressed');
+});
+
+// Two paths the menu's move onto lib/menu-popover.js rewired, pinned with it (2026-09-14): the
+// webcam button closes every popover on the screen before it opens, not only its own menu; and a
+// camera that goes away while it holds the focus hands the focus on rather than dropping it.
+test('pressing the webcam button closes an open colour picker before it opens the menu', async () => {
+  await enterScan();
+  progress({ phase: 'scanning', message: '', captured: [face('R')], live: null, device: null, confirm: null });
+  const pick = $('.swatches');
+  all('.scan-face[data-face="R"] .tgrid > .cell')[1].click();
+  assert.equal(pick.hidden, false, 'precondition: the colour picker is open');
+  await openCameraMenu();
+  assert.equal($('.menu').hidden, false, 'precondition: the camera menu opened');
+  assert.equal(pick.hidden, true, 'the colour picker stayed open under the camera menu');
+  closeWithEscape();
+});
+
+test('a camera that goes away while it holds the focus hands the focus to the camera in force', async () => {
+  await withDevices(async (changed) => {
+    await enterScan();
+    panel().cameras = async () => TWO_CAMERAS;
+    await changed();
+    await openCameraMenu();
+    const menu = $('.menu');
+    menu.querySelector('[data-value="iphone"]').focus();
+    panel().cameras = async () => [TWO_CAMERAS[0]];
+    await changed();
+    assert.ok(menu.querySelector('.now'), 'precondition: a camera is ticked');
+    assert.ok(win.document.activeElement === menu.querySelector('.now'),
+      'the camera holding the focus went away and took the focus with it');
+  });
+});
+
+test('the tick follows the camera that answered, not the one that was asked for', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const was = settings.cameraId;
+  await enterScan();
+  panel().cameras = async () => TWO_CAMERAS;
+  settings.cameraId = 'iphone'; // asked for the iPhone…
+  try {
+    progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null,
+      device: { deviceId: 'builtin', label: 'MacBook Air Camera' } }); // …and the built-in answered
+    await tick();
+    await openCameraMenu();
+    assert.deepEqual([...$('.menu').querySelectorAll('[aria-checked="true"]')].map((b) => b.textContent),
+      ['MacBook Air Camera'], 'the tick sits on a camera that is not running');
+  } finally {
+    settings.cameraId = was;
+    closeWithEscape();
+  }
+});
+
+test('a camera list that answers out of order leaves the newest one standing', async () => {
+  await withDevices(async (changed) => {
+    await enterScan();
+    const answers = [];
+    panel().cameras = () => new Promise((resolve) => { answers.push(resolve); });
+    await changed(); // the older question
+    await changed(); // the newer one
+    answers[1]([{ deviceId: 'new', label: 'New Camera' }]);
+    await tick();
+    answers[0]([{ deviceId: 'old', label: 'Old Camera' }]);
+    await tick();
+    assert.deepEqual(cameraLabels(), ['Default camera', 'New Camera'], 'the older answer, landing last, replaced the newer list');
+  });
+});
+
+test('a camera list that answers after the screen has gone builds nothing into its menu', async () => {
+  await withDevices(async (changed) => {
+    await enterScan();
+    let answer;
+    panel().cameras = () => new Promise((resolve) => { answer = resolve; });
+    const oldMenu = $('.menu');
+    await changed();
+    await leaveScan();
+    answer([{ deviceId: 'late', label: 'Late Camera' }]);
+    await tick();
+    assert.ok(![...oldMenu.querySelectorAll('[data-value]')].some((b) => b.textContent === 'Late Camera'),
+      'a list that landed after its screen went was built into that screen\'s menu');
+  });
+});
+
+test('a camera list that cannot be read keeps the cameras already found, and says it could not', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  await withDevices(async (changed) => {
+    await enterScan();
+    panel().cameras = async () => [TWO_CAMERAS[0]];
+    await changed();
+    panel().cameras = async () => { throw new Error('NotReadableError (test)'); };
+    await changed();
+    assert.deepEqual(cameraLabels(), ['Default camera', 'MacBook Air Camera'], 'a failed listing blanked the cameras already found');
+    assert.match($('.menu').textContent, /could not list the cameras/i, 'the failure went unsaid');
+  });
+});
+
+test('a camera that gains its real name once permission lands is renamed in the menu', async () => {
+  await withDevices(async (changed) => {
+    await enterScan();
+    panel().cameras = async () => [{ deviceId: 'builtin', label: '' }]; // before permission: no names
+    await changed();
+    panel().cameras = async () => [TWO_CAMERAS[0]];
+    await changed();
+    assert.deepEqual(cameraLabels(), ['Default camera', 'MacBook Air Camera'], 'the same camera, now named, kept its blank name');
+  });
+});
+
+test('a camera list that grows while the menu is open keeps the keyboard where it was', async () => {
+  await withDevices(async (changed) => {
+    await enterScan();
+    panel().cameras = async () => [TWO_CAMERAS[0]];
+    await changed();
+    await openCameraMenu();
+    const focused = win.document.activeElement;
+    assert.ok($('.menu').contains(focused), 'precondition: focus went into the open menu');
+    panel().cameras = async () => TWO_CAMERAS;
+    await changed();
+    assert.ok(focused.isConnected, 'the list grew and the focused camera was rebuilt out from under the keyboard');
+    assert.ok(win.document.activeElement === focused, 'and the focus is no longer where the keyboard left it');
+  });
+});
+
+test('choosing a camera hands focus back to the webcam button', async () => {
+  await enterScan();
+  panel().cameras = async () => TWO_CAMERAS;
+  panel().start = () => {};
+  await openCameraMenu();
+  [...$('.menu').querySelectorAll('[data-value]')].find((b) => b.dataset.value === 'builtin')
+    .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.ok(win.document.activeElement === $('#scanCamBtn'), 'the menu closed with the focus still inside it');
+});
+
+test('an open camera menu is placed again once the list it was opened on has changed', async () => {
+  await withDevices(async (changed) => {
+    await enterScan();
+    panel().cameras = async () => [TWO_CAMERAS[0]];
+    await changed();
+    await openCameraMenu();
+    const menu = $('.menu');
+    // What a placement writes. Cleared, so a second one shows: the clamp is worked out from the
+    // menu's width, and the list that sets the width lands after the open. (Where it lands on a
+    // real stage is the geometry suite's to measure; happy-dom has no layout.)
+    menu.style.maxWidth = '';
+    panel().cameras = async () => [TWO_CAMERAS[0], { deviceId: 'long', label: 'A camera with a much longer name than the first' }];
+    await changed();
+    assert.notEqual(menu.style.maxWidth, '', 'the list changed under an open menu, and it was never placed again');
+  });
+});
+
+// Three more, found on verification (2026-09-14): a list read again after a failure left the
+// failure standing when the cameras came back unchanged; a reordered list moved the button holding
+// the focus, and the focus fell out of the menu; and a failure notice or a tick moving to a camera
+// with a longer name changed an open menu's size without placing it again.
+
+test('a camera list read again after failing takes the failure down, though the cameras are the same', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  await withDevices(async (changed) => {
+    await enterScan();
+    panel().cameras = async () => TWO_CAMERAS;
+    await changed();
+    panel().cameras = async () => { throw new Error('NotReadableError (test)'); };
+    await changed();
+    await openCameraMenu();
+    const retry = $('.menu [data-retry]');
+    assert.ok(retry !== null, 'precondition: the failure is said in the menu, with a way to try again');
+    panel().cameras = async () => TWO_CAMERAS; // the list it read before the failure
+    retry.focus();
+    retry.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await tick();
+    assert.deepEqual(cameraLabels(), ['Default camera', 'MacBook Air Camera', 'iPhone Camera'], 'the cameras did not survive the retry');
+    assert.doesNotMatch($('.menu').textContent, /could not list the cameras/i, 'the list was read, and the menu still says it could not be');
+    assert.ok($('.menu').contains(win.document.activeElement), 'the retry holding the focus went, and took the focus out of the menu');
+  });
+});
+
+test('a camera list that changes order under an open menu keeps the keyboard on the camera it was on', async () => {
+  await withDevices(async (changed) => {
+    await enterScan();
+    const three = [...TWO_CAMERAS, { deviceId: 'virtual', label: 'Virtual Camera' }];
+    panel().cameras = async () => three;
+    await changed();
+    await openCameraMenu();
+    // The middle of three, the list reversed: a walk putting buttons in place from either end
+    // moves this one.
+    const iphone = $('.menu [data-value="iphone"]');
+    iphone.focus();
+    isSame(win.document.activeElement, iphone, 'precondition: the iPhone holds the focus');
+    panel().cameras = async () => [...three].reverse();
+    await changed();
+    assert.deepEqual(cameraLabels(), ['Default camera', 'Virtual Camera', 'iPhone Camera', 'MacBook Air Camera'], 'the menu did not take the new order');
+    assert.ok(iphone.isConnected, 'the focused camera was rebuilt rather than kept');
+    isSame(win.document.activeElement, iphone, 'the camera holding the focus was moved, and the focus fell out of the menu');
+  });
+});
+
+test('an open camera menu is placed again when it grows a failure notice', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  await withDevices(async (changed) => {
+    await enterScan();
+    panel().cameras = async () => [TWO_CAMERAS[0]];
+    await changed();
+    await openCameraMenu();
+    const menu = $('.menu');
+    menu.style.maxWidth = ''; // what a placement writes, cleared so a second one shows
+    panel().cameras = async () => { throw new Error('NotReadableError (test)'); };
+    await changed();
+    assert.match(menu.textContent, /could not list the cameras/i, 'precondition: the failure is said in the open menu');
+    assert.notEqual(menu.style.maxWidth, '', 'a failure notice changed the open menu, and it was never placed again');
+  });
+});
+
+test('an open camera menu is placed again when its tick moves to another camera', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const was = settings.cameraId;
+  settings.cameraId = 'iphone'; // asked for, so it is what is ticked while no camera answers
+  try {
+    await withDevices(async (changed) => {
+      await enterScan();
+      panel().cameras = async () => TWO_CAMERAS;
+      await changed();
+      progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null,
+        device: { deviceId: 'builtin', label: 'MacBook Air Camera' } });
+      await openCameraMenu();
+      const menu = $('.menu');
+      const ticked = () => [...menu.querySelectorAll('[aria-checked="true"]')].map((b) => b.textContent);
+      assert.deepEqual(ticked(), ['MacBook Air Camera'], 'precondition: the camera that answered is ticked');
+      menu.style.maxWidth = '';
+      progress({ phase: 'error', message: 'Cannot start: Permission denied', captured: [], live: null,
+        confirm: null, device: null });
+      await tick();
+      assert.deepEqual(ticked(), ['iPhone Camera'], 'precondition: with none answering, the tick went to the camera asked for');
+      assert.notEqual(menu.style.maxWidth, '', 'the tick moved in the open menu, and it was never placed again');
+    });
+  } finally {
+    settings.cameraId = was;
+  }
+});
+
+test("the camera menu and the webcam button speak the reader's language", async () => {
+  const { registerLocale, setLocale } = await import('../lib/i18n.js');
+  registerLocale('qa-cam', {
+    'Default camera': '«default»',
+    '%1 — camera and scan': '«%1, cam»',
+    'Camera off — click to turn it on': '«cam off»',
+  });
+  try {
+    setLocale('qa-cam');
+    await enterScan(); // the menu is built at mount, in the language in force then
+    progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null,
+      device: { deviceId: 'builtin', label: 'MacBook Air Camera' } });
+    assert.equal($('#scanCamBtn').title, '«MacBook Air Camera, cam»');
+    progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, device: null });
+    assert.equal($('#scanCamBtn').title, '«cam off»');
+    assert.equal($('.menu').querySelector('[data-value=""]').textContent, '«default»');
+  } finally {
+    setLocale('en');
+    await enterScan();
+  }
+});
+
+test('a camera chosen while painting is the one the scanner is handed back when painting stops', async () => {
+  await enterScan();
+  const handed = [];
+  panel().setPainting = (on) => { handed.push([on, panel().getAttribute('device-id')]); };
+  panel().cameras = async () => TWO_CAMERAS;
+  $('#scanPaintBtn').click();
+  await openCameraMenu();
+  [...$('.menu').querySelectorAll('[data-value]')].find((b) => b.dataset.value === 'builtin')
+    .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(handed.at(-1), [false, 'builtin'], 'leaving painting did not hand the scanner the camera just chosen');
+});
+
+test("a camera that will not open is the scanner's to say, not an unhandled rejection", async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  await enterScan();
+  panel().cameras = async () => TWO_CAMERAS;
+  panel().start = async () => { throw new Error('NotAllowedError (test)'); };
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(String(reason)); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    await openCameraMenu();
+    [...$('.menu').querySelectorAll('[data-value]')].find((b) => b.dataset.value === 'builtin')
+      .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await tick();
+    await tick();
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+  assert.deepEqual(unhandled, [], 'the refused open escaped as an unhandled rejection');
+  assert.equal(panel().getAttribute('device-id'), 'builtin', 'the choice is still pinned, so the next open tries it again');
+});
+
+test('a scan report that lands after its screen has gone establishes nothing', async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const was = { scheme: settings.scheme, source: settings.schemeSource };
+  await enterScan();
+  const old = panel();
+  const other = settings.scheme === 'japanese' ? 'western' : 'japanese';
+  await leaveScan();
+  try {
+    old.dispatchEvent(new win.CustomEvent('scan-progress', { detail: {
+      phase: 'scanning', complete: false, captured: [], suspects: [], message: '', scheme: other,
+    } }));
+    await tick();
+    assert.equal(settings.scheme, was.scheme, "a panel whose screen had gone moved the app's colour arrangement");
+  } finally {
+    settings.scheme = was.scheme;
+    settings.schemeSource = was.source;
+  }
+});
+
+// ---- found by audit, 2026-09-13: the board after a verdict, and the picker over it ------------
+
+test('a finished scan of a Japanese cube paints every sticker in the colour its label names', async () => {
+  await enterScan();
+  const FL = cubeAfter('R U');
+  // Independent of the app's palette code: the classic hexes, blue and yellow trading places.
+  const JAPANESE_HEX = { ...NET_HEX, D: NET_HEX.B, B: NET_HEX.D };
+  const misdrawn = () => FACES.flatMap((f, fi) => all(`.scan-face[data-face="${f}"] .tgrid > .cell`)
+    .flatMap((c, i) => (c.style.backgroundColor === JAPANESE_HEX[FL[fi * 9 + i]] ? [] : [`${f}${i}`])));
+  try {
+    for (const rotations of [[0, 0, 0, 0, 0, 0], [1, 2, 3, 1, 2, 3]]) {
+      progress({ phase: 'done', complete: true, message: '', device: null, captured: FACES.map(face),
+        live: null, confirm: null, scheme: 'japanese' });
+      panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+        detail: { facelets: FL, valid: true, confidence: 1, lowConfidence: [], rotations } }));
+      await new Promise((r) => setTimeout(r, 900));
+      assert.deepEqual(misdrawn(), [], `rotations ${rotations}: these stickers were drawn in Western colours`);
+    }
+    const d = FL.indexOf('D', 27) - 27; // a Down-letter sticker on the Down tile
+    const cell = all('.scan-face[data-face="D"] .tgrid > .cell')[d];
+    assert.match(cell.getAttribute('aria-label'), /read as blue$/, 'precondition: the label names blue');
+    assert.equal(cell.style.backgroundColor, NET_HEX.B, 'and the sticker is painted blue beside it');
+  } finally {
+    progress({ phase: 'scanning', complete: false, message: 'x', captured: [], live: null, confirm: null,
+      scheme: 'western' });
+  }
+});
+
+test("a scan that proves the other colours hands them to the scanner as the host's assumption", async () => {
+  await enterScan();
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'western' });
+  await enterScan(); // the template now renders the belief just set
+  assert.equal(panel().getAttribute('scheme'), 'western', 'precondition: the scanner assumes Western');
+  try {
+    progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'japanese' });
+    assert.equal(panel().getAttribute('scheme'), 'japanese',
+      'the scanner still assumes Western: a restart or a painting lays the cube out in colours the tiles stopped drawing');
+  } finally {
+    progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'western' });
+  }
+});
+
+test('a picker open over a capture that moves, or is read again, closes and writes nothing', async () => {
+  await enterScan();
+  progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'western' });
+  const yellow = { face: 'D', colors: Array(9).fill(3) };
+  const blue = { face: 'B', colors: Array(9).fill(5) };
+  const report = (extra = {}) => progress({ phase: 'scanning', message: 'x', captured: [yellow, blue],
+    live: null, confirm: null, ...extra });
+  report();
+  const sets = [];
+  panel().setSticker = (...args) => sets.push(args);
+  const down = () => all('.scan-face[data-face="D"] .tgrid > .cell')[0];
+  const choose = () => $('.swatches').querySelectorAll('button')[1].click();
+  try {
+    down().click();
+    assert.equal($('.swatches').hidden, false, 'precondition: the picker opened on the Down tile');
+    report({ scheme: 'japanese' });
+    assert.equal($('.swatches').hidden, true, 'the picker stayed open over a Down tile now showing the blue capture');
+    choose();
+    assert.deepEqual(sets, [], 'a colour chosen after the move was written to the yellow capture, which left the tile');
+    down().click();
+    choose();
+    assert.deepEqual(sets, [['B', 0, 1]], 'opened afresh, the sticker writes to the capture it shows');
+    down().click();
+    progress({ phase: 'scanning', message: 'x', live: null, confirm: null,
+      captured: [yellow, { face: 'B', colors: [1, 5, 5, 5, 5, 5, 5, 5, 5] }] });
+    assert.equal($('.swatches').hidden, true, 'the picker stayed open over a side that was read again');
+  } finally {
+    progress({ phase: 'scanning', message: 'x', captured: [], live: null, confirm: null, scheme: 'western' });
+  }
+});
+
+test('a tile turning into its settled place takes no correction, and a picker it turns under closes', async () => {
+  await enterScan();
+  const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+  progress({ phase: 'scanning', message: 'x', captured: FACES.map(face), live: null, device: null, confirm: null });
+  const sets = [];
+  panel().setSticker = (...args) => sets.push(args);
+  const up = () => all('.scan-face[data-face="U"] .tgrid > .cell')[0];
+  const choose = () => $('.swatches').querySelectorAll('button')[1].click();
+  up().click();
+  assert.equal($('.swatches').hidden, false, 'precondition: the picker opened on the Up tile');
+  // A settle whose colours read the same as what was shown, so only the turn tells them apart.
+  panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets: SOLVED, valid: true, confidence: 1, lowConfidence: [], rotations: [1, 0, 0, 0, 0, 0] } }));
+  assert.equal($('.swatches').hidden, true, 'a picker stayed open over a tile the settle turned under it');
+  up().click();
+  assert.equal($('.swatches').hidden, true, 'a sticker on a tile still turning opened the picker');
+  choose();
+  assert.deepEqual(sets, [], 'a correction made mid-turn reached the panel under an index it stores elsewhere');
+  await new Promise((r) => setTimeout(r, 600));
+  up().click();
+  assert.equal($('.swatches').hidden, false, 'once the tile has landed its stickers are correctable again');
+  choose();
+  assert.deepEqual(sets, [['U', 0, 1]]);
+});
+
+test('a refusal the app made keeps its words, and the next believed scan hands Solve back', async () => {
+  const { state } = await import('../lib/app.js');
+  const { settings } = await import('../lib/app-settings.js');
+  const was = { scheme: settings.scheme, source: settings.schemeSource };
+  const other = was.scheme === 'japanese' ? 'western' : 'japanese';
+  const S = 'UULUUFUUFRRUBRRURRFFDFFUFFFDDRDDDDDDBLLLLLLLLBRRBBBBBB';
+  const OTHER = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+  const deliver = (facelets) => panel().dispatchEvent(new win.CustomEvent('scan-complete', {
+    detail: { facelets, valid: true, confidence: 1, lowConfidence: [] } }));
+  const finished = (extra = {}) => progress({ phase: 'done', complete: true, captured: FACES.map(face),
+    device: null, message: '', ...extra });
+  const title = () => $('#scanHowTitle').textContent;
+  await enterScan();
+  win.cubusFeed.useConnection(fakeConn());
+  try {
+    win.cubusFeed.facelets(S);
+    state.cube.trusted = true; state.cube.source = 'cube';
+    deliver(OTHER);
+    assert.equal(title(), 'These do not match', 'precondition: the app refused the reading');
+    finished();
+    assert.equal(title(), 'These do not match', 'the next report said "Scanned" over the Solve button the refusal took away');
+    assert.match($('#scanHow').textContent, /One of the two is wrong/);
+    assert.ok($('#scanHow').classList.contains('err'));
+    finished({ notice: { title: 'Hold it still', tone: 'info', body: 'Keep the side flat.' } });
+    assert.equal(title(), 'Hold it still', "the refusal spoke over the scanner's notice");
+    finished({ scheme: other });
+    assert.equal(title(), 'These do not match', 'a refusal a notice held back was not said again');
+    deliver(S);
+    assert.equal(state.cube.facelets, S, 'precondition: the agreeing scan was adopted');
+    assert.equal($('#scanSolveBtn').disabled, false, 'a believed scan after a refused one was adopted with Solve left off');
+    finished();
+    assert.equal(title(), 'Scanned', 'a refusal outlived the scan that answered it');
+    assert.match($('#scanHow').textContent, /under white/, 'the colour sentence owed meanwhile was spoken over and lost');
+  } finally {
+    win.cubusFeed.useConnection(null);
+    state.cube.trusted = false; state.cube.source = 'none'; state.cube.staleWhy = '';
+    state.live = null; state.reported = null;
+    progress({ phase: 'scanning', complete: false, message: 'x', captured: [], live: null, confirm: null, scheme: was.scheme });
+    settings.scheme = was.scheme; settings.schemeSource = was.source;
+  }
+});
+
+// ---- a scanner that registers late ------------------------------------------------------------
+//
+// LAST IN THE FILE: it registers <ai-scan-panel> for the rest of the process, and every case above
+// depends on the element staying inert.
+
+test('painting chosen before the scanner registers is the mode the scanner starts in', async () => {
+  await enterScan();
+  const el = panel();
+  assert.equal(typeof el.setPainting, 'undefined', 'precondition: the scanner has not registered');
+  $('#scanPaintBtn').click();
+  assert.ok($('.scan-cam').classList.contains('paint'), 'precondition: the board took the press');
+  const calls = [];
+  win.customElements.define('ai-scan-panel', class extends win.HTMLElement {
+    connectedCallback() { if (this.hasAttribute('autostart')) queueMicrotask(() => this.start()); }
+    start() { calls.push('start'); }
+    setPainting(on) { calls.push(`painting:${on}`); }
+    stop() {}
+  });
+  await tick();
+  isSame(panel(), el, 'precondition: the element on screen is the one that upgraded');
+  assert.deepEqual(calls, ['painting:true'], 'the scanner registered and opened its camera under a board that says it is painting');
 });
