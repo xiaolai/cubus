@@ -118,6 +118,38 @@ const GHOST_HL_PEAK = 0.80;  // ghosts are unlit and have no emissive, so they b
 // it is how the narration says which piece it means — and dropping it loses the sentence.
 const reducedMotion = () => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
 
+/**
+ * What changing each attribute does to an element that is already built, by canonical name. An
+ * attribute with no entry here is read where it is used, every frame (`autorotate`,
+ * `tempo-scale`), and needs no reaction. Checked against `observedAttributes` when the module
+ * loads, so a misspelt key throws there instead of being a reaction that never runs.
+ */
+const REACTIONS = Object.freeze({
+  __proto__: null,
+  palette: (el) => el._paint(),
+  scheme: (el) => el._paint(),
+  ghosts: (el) => { el._ghostVisible(); el._paint(); el._applyCamera(); },
+  'ghost-elevation': (el) => { el._ghostPlace(); el._applyCamera(); },
+  // The scale is part of the silhouette the camera fits.
+  'facelet-scale': (el) => { el._applyScale(); el._applyCamera(); },
+  'camera-latitude': (el) => el._applyCamera(),
+  'camera-longitude': (el) => el._applyCamera(),
+  'camera-fit': (el) => el._applyCamera(),
+  'camera-up': (el) => el._applyCamera(),
+  // Writing the attribute is a CUT, not a turn: it states where the cube is, and a state that
+  // takes 400ms to become true cannot be read back or asserted. `turnTo()` is the animation.
+  orientation: (el) => el.showTurn(el._attrs.orientation, el._attrs.orientation, 1),
+  // Splitting the view halves the aspect the fit is for.
+  'back-view': (el) => el._applyCamera(),
+  orbit: (el) => el._applyOrbit(),
+  facelets: (el) => el.reset(),
+  scramble: (el) => el.reset(),
+  alg: (el) => el._replaceAlg(),
+  highlight: (el) => { el._readHighlight(); el._syncHighlight(); },
+  // focus repaints rather than syncing: it changes sticker COLOUR, which only _paint() writes.
+  focus: (el) => { el._readFocus(); el._paint(); },
+});
+
 class CubusCube extends HTMLElement {
   // Kebab is canonical, but a host that writes camelCase props as attributes lands
 // on the DOM-lowercased spelling, so both are observed and normalized in _set().
@@ -276,6 +308,14 @@ class CubusCube extends HTMLElement {
   attributeChangedCallback(name, _old, val) { this._set(name, val); }
   _set(name, val) {
     name = CubusCube.ALIAS[String(name).toLowerCase()] || name;
+    this._store(name, val);
+    // Before the build nothing exists to react; `_build()` reads every attribute itself.
+    if (!this._ghostMeshes) return;
+    if (Object.hasOwn(REACTIONS, name)) REACTIONS[name](this);
+  }
+
+  /** Record an attribute's value in `_attrs`, the one place the element reads attributes from. */
+  _store(name, val) {
     // removeAttribute() arrives here with val === null. Storing that raw meant `ghosts` read as
     // neither 'none' nor 'false' and so counted as ENABLED — removing the attribute turned ghosts
     // on rather than off. A removed attribute means "back to the default", not "null" — UNLESS
@@ -288,35 +328,22 @@ class CubusCube extends HTMLElement {
     } else {
       this._attrs[name] = val;
     }
-    if (!this._ghostMeshes) return;
-    if (name === 'palette' || name === 'scheme') this._paint();
-    else if (name === 'ghosts') { this._ghostVisible(); this._paint(); this._applyCamera(); }
-    else if (name === 'ghost-elevation') { this._ghostPlace(); this._applyCamera(); }
-    else if (name === 'facelet-scale') { this._applyScale(); this._applyCamera(); } // the scale is part of the silhouette
-    else if (name === 'camera-latitude' || name === 'camera-longitude' || name === 'camera-fit'
-             || name === 'camera-up') this._applyCamera();
-    // Writing the attribute is a CUT, not a turn: it states where the cube is, and a state that
-    // takes 400ms to become true cannot be read back or asserted. `turnTo()` is the animation.
-    else if (name === 'orientation') this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
-    else if (name === 'back-view') this._applyCamera(); // splitting halves the aspect the fit is for
-    else if (name === 'orbit') this._applyOrbit();
-    else if (name === 'facelets' || name === 'scramble') this.reset();
-    else if (name === 'alg') {
-      // A new walk calls off the old one's moves, the one in flight AND the ones queued behind it —
-      // exactly what `reset()` does for a new cube. Resetting only the counters left R and U of the
-      // old alg playing on and reporting themselves as steps of the new one (found by audit,
-      // 2026-09-14). The state only advances when a move COMPLETES, so dropping the move in flight
-      // and writing the pose puts the cube back where its last finished move left it.
-      this._anim = null;
-      this._queue = [];
-      this._writePose();
-      this._sol = this._parse(this._attrs.alg || '');
-      this._cursor = 0; this._applied = 0; this._playing = false;
-      this._dirty = true;
-    }
-    else if (name === 'highlight') { this._readHighlight(); this._syncHighlight(); }
-    // focus repaints rather than syncing: it changes sticker COLOUR, which only _paint() writes.
-    else if (name === 'focus') { this._readFocus(); this._paint(); }
+  }
+
+  /**
+   * A new walk calls off the old one's moves, the one in flight AND the ones queued behind it —
+   * exactly what `reset()` does for a new cube. Resetting only the counters left R and U of the
+   * old alg playing on and reporting themselves as steps of the new one (found by audit,
+   * 2026-09-14). The state only advances when a move COMPLETES, so dropping the move in flight
+   * and writing the pose puts the cube back where its last finished move left it.
+   */
+  _replaceAlg() {
+    this._anim = null;
+    this._queue = [];
+    this._writePose();
+    this._sol = this._parse(this._attrs.alg || '');
+    this._cursor = 0; this._applied = 0; this._playing = false;
+    this._dirty = true;
   }
 
   connectedCallback() {
@@ -349,6 +376,16 @@ class CubusCube extends HTMLElement {
    *  frame loop. `this.scene` is published at the very end, as the mark that all of it exists. */
   _build() {
     const scene = new THREE.Scene();
+    this._buildView();
+    this._buildLights(scene);
+    this._buildCubies(scene);
+    this._initWalk();
+    this._buildLoop();
+    this.scene = scene;
+  }
+
+  /** The camera, the WebGL renderer and its canvas, and the orbit controls. */
+  _buildView() {
     const camera = this.camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
 
     const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
@@ -373,7 +410,10 @@ class CubusCube extends HTMLElement {
     controls.rotateSpeed = 0.75;
     this._applyCamera();
     this._applyOrbit();
+  }
 
+  /** The light rig, added to `scene`, with each light's direction fixed relative to the eye. */
+  _buildLights(scene) {
     // Lights ride with the camera's ORIENTATION, not the world. Fixed in the world they lit the
     // cube for one angle, and the moment anyone orbited underneath, the underside was lit by the
     // hemisphere's ground colour alone — yellow stickers read as black. Each light keeps a
@@ -402,7 +442,10 @@ class CubusCube extends HTMLElement {
       [fill, new THREE.Vector3(-6, 2, -4).applyQuaternion(inv)],
     ];
     this._placeLights();
+  }
 
+  /** The 26 cubies, each with its body, its stickers and a ghost per sticker, under `root`. */
+  _buildCubies(scene) {
     const root = this.root = new THREE.Group();
     scene.add(root);
 
@@ -459,7 +502,10 @@ class CubusCube extends HTMLElement {
       root.add(c);
       this.cubies.push(c);
     }
+  }
 
+  /** The walk's starting state, with every attribute read in: `_set()` skips an unbuilt cube. */
+  _initWalk() {
     this._anim = null;
     this._queue = [];
     this._cursor = 0;
@@ -478,12 +524,15 @@ class CubusCube extends HTMLElement {
     // a mounted cube draw itself framed for a ghostless one.
     this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
     this.reset();
+  }
 
+  /** The resize and visibility observers, and the frame loop itself. */
+  _buildLoop() {
     this._resize = () => {
       const w = this.clientWidth || 1, h = this.clientHeight || 1;
-      renderer.setSize(w, h, false);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
+      this.renderer.setSize(w, h, false);
+      this.camera.aspect = w / h;
+      this.camera.updateProjectionMatrix();
       this._applyCamera(); // the distance depends on the aspect (see there); it sets _dirty
     };
     this._ro = new ResizeObserver(this._resize);
@@ -492,94 +541,125 @@ class CubusCube extends HTMLElement {
 
     this._tick = () => {
       this._raf = requestAnimationFrame(this._tick);
-      // The backlog rule, visible or not: at most two turns may exist as pending ANIMATION;
-      // everything older completes instantly. A deeper queue means the element was scrolled out
-      // (rAF runs, _visible false), the window was occluded (rAF pauses entirely, so this runs
-      // at the first frame back), or a burst outran the tempo — and in every one of those,
-      // replaying a stale film move by move helps nobody. Same policy the app's drawTo applies
-      // from its side. Off screen the drain is total: animating for nobody banks pure backlog.
-      // Only queued work drains — play() pulls from the solution one move at a time, and
-      // draining that would fast-forward a whole walk.
-      while (
-        this._queue.length + (this._anim ? 1 : 0) > 2 ||
-        (!this._visible && (this._anim || this._queue.length))
-      ) {
-        let a = this._anim;
-        if (!a) a = { m: this._queue.shift() };
-        this._completeMove(a);
-        if (!this._running) return; // see the same line below
-      }
-      // Off screen the loop keeps running but draws nothing, so autorotate's reference time is let
-      // go HERE as well as when the loop stops: kept, the first frame back added the whole hidden
-      // stretch at once — a cube scrolled away for a minute leapt 12.6 rad on its return (found by
-      // verification, 2026-09-14).
-      if (!this._visible) { this._spinAt = null; return; }
-      // The drain above completes moves without calling _next(), which breaks the pull chain
-      // step() and the completion handler otherwise maintain: queued moves — and a playing
-      // walk — would sit forever with nothing in flight. Re-arm it.
-      if (!this._anim && (this._queue.length || this._playing)) this._next();
-      if (this._anim) {
-        const a = this._anim;
-        const k = Math.min(1, (this._now() - a.t0) / a.dur);
-        this._writePose(a.m, EASE(k));
-        if (k >= 1) {
-          this._completeMove(a);
-          // `_completeMove` dispatches `cubus-step`, and a listener is the host's code: a screen that
-          // leaves when its walk ends disposes the cube right there. The frame went on and read the
-          // controls it had just released (found by audit, 2026-09-14). Disposing or detaching
-          // stops the loop, so a stopped loop is the sign to stop using the element.
-          if (!this._running) return;
-          this._next();
-        }
-        this._dirty = true;
-      }
-      // The highlight breathes on its own clock, independent of the move animation: a piece can be
-      // named while the cube is still, and it must keep pulsing while a turn plays over it.
-      //
-      // The phase is evaluated every frame and never branched around, because the reduced-motion
-      // preference can flip WHILE a pulse is in flight. Skipping the update in that case froze the
-      // highlight at whatever intensity it happened to hold — and at the trough of the breath that
-      // is invisible, so the indicator silently vanished for exactly the users who asked for less
-      // motion. Writing only on change keeps the static case free: under reduced motion the phase
-      // is a constant, so this settles after one frame and stops marking the scene dirty.
-      if (this._hlSet?.size) {
-        const k = this._hlPhase();
-        if (k !== this._hlK) {
-          this._applyHighlight(k);
-          this._hlK = k;
-          this._dirty = true;
-        }
-      }
-      // An in-flight turnTo() is the only thing that WRITES the phase on a clock. Everything else
-      // — the attribute, a scrubber — sets it directly, which is why this is a caller of
-      // showTurn() rather than a second way to pose the cube.
-      if (this._turning) {
-        const t = this._turning;
-        const k = Math.min(1, (this._now() - t.t0) / t.ms);
-        this._setTurn(t.from, t.to, EASE(k));
-        // Settle AFTER the last pose is written, and re-anchor on the destination so the next
-        // turn starts from a settled orientation rather than from a finished turn's `from`.
-        if (k >= 1) { this._setTurn(t.to, t.to, 1); this._settleTurn(true); }
-        this._dirty = true;
-      }
-      // By ELAPSED TIME, on the element's own clock. A fixed step a frame turned the cube twice as
-      // fast on a 120 Hz display, and kept turning under a pinned clock — which is the one
-      // instrument meant to make a frame reproducible (found by audit, 2026-09-14). `_spinAt` is
-      // cleared whenever the loop stops, so resuming continues from where it was rather than
-      // leaping by however long the cube was off screen.
-      if (this._attrs.autorotate != null) {
-        const now = this._now();
-        if (this._spinAt != null) this._spin += (now - this._spinAt) * SPIN_PER_MS;
-        this._spinAt = now;
-        this._applyRoot();
-      } else {
-        this._spinAt = null;
-      }
-      const moving = this.controls.update();
-      if (moving) this._placeLights();
-      if (moving || this._dirty) { this._draw(); this._dirty = false; }
+      this._frame();
     };
-    this.scene = scene;
+  }
+
+  /** One frame of the loop: settle any backlog, advance whatever is timed, and draw if needed. */
+  _frame() {
+    if (!this._drainBacklog()) return;
+    // Off screen the loop keeps running but draws nothing, so autorotate's reference time is let
+    // go HERE as well as when the loop stops: kept, the first frame back added the whole hidden
+    // stretch at once — a cube scrolled away for a minute leapt 12.6 rad on its return (found by
+    // verification, 2026-09-14).
+    if (!this._visible) { this._spinAt = null; return; }
+    // The drain above completes moves without calling _next(), which breaks the pull chain
+    // step() and the completion handler otherwise maintain: queued moves — and a playing
+    // walk — would sit forever with nothing in flight. Re-arm it.
+    if (!this._anim && (this._queue.length || this._playing)) this._next();
+    if (!this._advanceMove()) return;
+    this._breathe();
+    this._advanceTurn();
+    this._advanceSpin();
+    const moving = this.controls.update();
+    if (moving) this._placeLights();
+    if (moving || this._dirty) { this._draw(); this._dirty = false; }
+  }
+
+  /** Complete every move past the backlog limit. False when a completion stopped the loop. */
+  _drainBacklog() {
+    // The backlog rule, visible or not: at most two turns may exist as pending ANIMATION;
+    // everything older completes instantly. A deeper queue means the element was scrolled out
+    // (rAF runs, _visible false), the window was occluded (rAF pauses entirely, so this runs
+    // at the first frame back), or a burst outran the tempo — and in every one of those,
+    // replaying a stale film move by move helps nobody. Same policy the app's drawTo applies
+    // from its side. Off screen the drain is total: animating for nobody banks pure backlog.
+    // Only queued work drains — play() pulls from the solution one move at a time, and
+    // draining that would fast-forward a whole walk.
+    while (
+      this._queue.length + (this._anim ? 1 : 0) > 2 ||
+      (!this._visible && (this._anim || this._queue.length))
+    ) {
+      let a = this._anim;
+      if (!a) a = { m: this._queue.shift() };
+      this._completeMove(a);
+      if (!this._running) return false; // see `_advanceMove`
+    }
+    return true;
+  }
+
+  /** Pose the move in flight now, completing it at its end. False when that stopped the loop. */
+  _advanceMove() {
+    if (this._anim) {
+      const a = this._anim;
+      const k = Math.min(1, (this._now() - a.t0) / a.dur);
+      this._writePose(a.m, EASE(k));
+      if (k >= 1) {
+        this._completeMove(a);
+        // `_completeMove` dispatches `cubus-step`, and a listener is the host's code: a screen that
+        // leaves when its walk ends disposes the cube right there. The frame went on and read the
+        // controls it had just released (found by audit, 2026-09-14). Disposing or detaching
+        // stops the loop, so a stopped loop is the sign to stop using the element.
+        if (!this._running) return false;
+        this._next();
+      }
+      this._dirty = true;
+    }
+    return true;
+  }
+
+  /** The highlight's breath, written only when its phase changed. */
+  _breathe() {
+    // The highlight breathes on its own clock, independent of the move animation: a piece can be
+    // named while the cube is still, and it must keep pulsing while a turn plays over it.
+    //
+    // The phase is evaluated every frame and never branched around, because the reduced-motion
+    // preference can flip WHILE a pulse is in flight. Skipping the update in that case froze the
+    // highlight at whatever intensity it happened to hold — and at the trough of the breath that
+    // is invisible, so the indicator silently vanished for exactly the users who asked for less
+    // motion. Writing only on change keeps the static case free: under reduced motion the phase
+    // is a constant, so this settles after one frame and stops marking the scene dirty.
+    if (this._hlSet?.size) {
+      const k = this._hlPhase();
+      if (k !== this._hlK) {
+        this._applyHighlight(k);
+        this._hlK = k;
+        this._dirty = true;
+      }
+    }
+  }
+
+  /** An in-flight turnTo(), posed at this instant and settled at its end. */
+  _advanceTurn() {
+    // An in-flight turnTo() is the only thing that WRITES the phase on a clock. Everything else
+    // — the attribute, a scrubber — sets it directly, which is why this is a caller of
+    // showTurn() rather than a second way to pose the cube.
+    if (this._turning) {
+      const t = this._turning;
+      const k = Math.min(1, (this._now() - t.t0) / t.ms);
+      this._setTurn(t.from, t.to, EASE(k));
+      // Settle AFTER the last pose is written, and re-anchor on the destination so the next
+      // turn starts from a settled orientation rather than from a finished turn's `from`.
+      if (k >= 1) { this._setTurn(t.to, t.to, 1); this._settleTurn(true); }
+      this._dirty = true;
+    }
+  }
+
+  /** Autorotate, by the time elapsed since its last reading. */
+  _advanceSpin() {
+    // By ELAPSED TIME, on the element's own clock. A fixed step a frame turned the cube twice as
+    // fast on a 120 Hz display, and kept turning under a pinned clock — which is the one
+    // instrument meant to make a frame reproducible (found by audit, 2026-09-14). `_spinAt` is
+    // cleared whenever the loop stops, so resuming continues from where it was rather than
+    // leaping by however long the cube was off screen.
+    if (this._attrs.autorotate != null) {
+      const now = this._now();
+      if (this._spinAt != null) this._spin += (now - this._spinAt) * SPIN_PER_MS;
+      this._spinAt = now;
+      this._applyRoot();
+    } else {
+      this._spinAt = null;
+    }
   }
 
   /** Begin drawing into whatever slot this is in now. Idempotent. */
@@ -1456,5 +1536,8 @@ class CubusCube extends HTMLElement {
     this._dirty = true;
     this.dispatchEvent(new CustomEvent('cubus-step', { detail: { index: target, total: this._sol.length } }));
   }
+}
+for (const name of Object.keys(REACTIONS)) {
+  if (!CubusCube.observedAttributes.includes(name)) throw new Error(`<cubus-cube> reacts to "${name}", which it does not observe`);
 }
 customElements.define('cubus-cube', CubusCube);

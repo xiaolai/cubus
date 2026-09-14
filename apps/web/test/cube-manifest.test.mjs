@@ -125,6 +125,28 @@ test('a read that fails does not hold up the reads queued behind it', async () =
   assert.equal(next.value.tag, 'cubus-cube');
 });
 
+// The element reacts to attribute changes through a table keyed by attribute name, and a key that
+// names no observed attribute is a reaction that can never run — a typo that fails silently. The
+// bundle checks its table when it loads, so the typo throws there; this is that check going red.
+test('a reaction to an attribute the element does not observe stops the bundle loading', async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  const original = readFileSync(BUNDLE, 'utf8');
+  const anchor = '  scheme: (el) => el._paint(),\n';
+  assert.equal(original.split(anchor).length, 2, 'precondition: the bundle has one `scheme` reaction to misspell');
+  const dir = mkdtempSync(join(tmpdir(), 'cubus-reactions-'));
+  try {
+    const path = join(dir, 'cubus-cube.js');
+    writeFileSync(path, original.replace(anchor, '  schemes: (el) => el._paint(),\n'));
+    await assert.rejects(() => readElement(pathToFileURL(path)), /reacts to "schemes", which it does not observe/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // What `read-element.mjs` guarantees, tested where it could fail: the capabilities it reports and
 // the digest it reports describe the SAME bytes. It reads the bundle once and imports those exact
 // bytes as a `data:` URL; an implementation that hashed the file but imported it by path would
