@@ -98,12 +98,12 @@ test('app.js pulls the insets at boot, and refuses a payload it cannot trust', (
     'and read it during boot, before the first render');
   const fn = blockAt(app, 'function pullAndroidInsets()');
   assert.ok(fn, 'the pull is a named function so this test can read it');
-  // `"null"` is the honest answer before the first dispatch, and leaving it alone is what keeps
-  // env()'s fallback standing rather than writing four zeroes over it.
-  assert.match(fn, /raw === 'null'/, "the pre-dispatch answer must be left alone, not written as 0");
-  // It crosses a JNI bridge as TEXT. A malformed number reaching setProperty is a silently broken
-  // layout rather than an error, which is the one failure mode this whole chain exists to avoid.
-  assert.match(fn, /Number\.isFinite/, 'the payload is untrusted input and must be checked');
+  // What the payload MEANS — "null" before the first dispatch left alone, anything but four
+  // finite non-negative numbers refused — is lib/os-insets.js's readAndroidInsets, driven with
+  // real payloads in os-insets-read.test.mjs rather than matched as source text here (the
+  // 2026-09-13 audit); the order, pulled before the first render, is proven on a real boot by
+  // android-insets-boot.test.mjs.
+  assert.match(fn, /readAndroidInsets\(/, 'the pull must decide through readAndroidInsets');
   for (const [side] of SIDES) {
     assert.ok(
       fn.includes('`--os-inset-${k}`') || fn.includes(`--os-inset-${side}`),

@@ -33,12 +33,16 @@ export const APP_SOURCES = Object.freeze([
   'lib/cube-reports.js',
   'lib/cube-connection.js', 'lib/scramble-roll.js', 'lib/prove-affordance.js', 'lib/update-ui.js',
   'lib/screen-shell.js',
+  // the menu both screens' corner menus are built on, 2026-09-14
+  'lib/menu-popover.js',
   'lib/screens/scan.js', 'lib/screens/cube.js', 'lib/screens/timer.js', 'lib/screens/settings.js',
   'lib/screens/stats.js', 'lib/screens/lessons.js',
+  // the cube screen's own parts, 2026-09-14
   // the scan screen's own parts, 2026-09-13
   'lib/screens/scan/stage-chips.js', 'lib/screens/scan/voice.js',
-  'lib/screens/scan/camera-menu.js', 'lib/screens/scan/reconnect-check.js',
-]);
+  'lib/screens/scan/camera-menu.js', 'lib/screens/scan/reconnect-check.js', // the settings screen's own parts, 2026-09-14
+  // the Timer's own parts, 2026-09-14
+  ]);
 
 /** Every other module under lib/: the engines, drivers, pure helpers, workers and bundle entries
  *  the app USES but that are not its own screens or services. They answer to their own tests, not
@@ -56,11 +60,11 @@ export const LIBRARY_SOURCES = Object.freeze([
   'lib/lesson-player.js', 'lib/lesson-schedule.js', 'lib/method-ladder.js', 'lib/method-lesson.js',
   'lib/method-solver.js', 'lib/methods/cross.js', 'lib/methods/engine.js', 'lib/methods/index.js',
   'lib/methods/last-layer.js', 'lib/methods/pairs.js', 'lib/optimal-challenges.js', 'lib/optimal.js',
-  'lib/random-state.js', 'lib/router.js', 'lib/scheme.js', 'lib/smartcube-entry.js',
+  'lib/os-insets.js', 'lib/random-state.js', 'lib/router.js', 'lib/scheme.js', 'lib/smartcube-entry.js',
   'lib/solve-client.js', 'lib/solve-stats.js', 'lib/solve-target.js', 'lib/solve-timer.js',
-  'lib/solve-worker.js', 'lib/solver-engine.js', 'lib/solving-hold.js', 'lib/stage-distance.js',
+  'lib/solve-worker.js', 'lib/solved.js', 'lib/solver-engine.js', 'lib/solving-hold.js', 'lib/stage-distance.js',
   'lib/stage-picture.js', 'lib/stage-report.js', 'lib/stage-route.js', 'lib/stage-targets.js',
-  'lib/stage.js', 'lib/tauri-mcp-guest-entry.js', 'lib/two-phase.js',
+  'lib/stage.js', 'lib/sticker-palettes.js', 'lib/tauri-mcp-guest-entry.js', 'lib/two-phase.js',
 ]);
 
 /** The app's source: every file in `APP_SOURCES`, joined. A missing file throws. */
