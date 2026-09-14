@@ -32,6 +32,20 @@ const NORMAL = { R: [1, 0, 0], L: [-1, 0, 0], U: [0, 1, 0], D: [0, -1, 0], F: [0
 const CENTRES = ['U', 'R', 'F', 'D', 'L', 'B'];
 const AXIS_OF = { x: 0, y: 1, z: 2 };
 
+/**
+ * The axis a face's normal lies along, and which end of it the face sits on.
+ *
+ * Written ONCE. The rotation table's builder, the centres and the move descriptors all need it,
+ * and they each spelled it out — `normal[0] ? 'x' : normal[1] ? 'y' : 'z'` three times over (found
+ * by audit, 2026-09-14). Three spellings of one convention are three chances for one of them to
+ * have the sign the other way round.
+ */
+const axisOf = (face) => {
+  const n = NORMAL[face];
+  const axis = n[0] ? 'x' : n[1] ? 'y' : 'z';
+  return { axis, sign: n[AXIS_OF[axis]] };
+};
+
 /** A slot's home position: the sum of the outward normals of the faces its name lists. */
 const posOf = (name) => [...name].reduce(
   (p, letter) => p.map((v, i) => v + NORMAL[letter][i]),
@@ -81,6 +95,18 @@ function rotation(axis, angle) {
 }
 
 /**
+ * `geo` with the layer `face` names given one quarter turn, in the direction cube-pieces turns it.
+ * `-sign` is what the independent derivation found for all six faces (measurements/pose-derivation).
+ */
+const turnGeometry = (geo, face) => {
+  const { axis, sign } = axisOf(face);
+  const M = rotation(axis, -sign * (Math.PI / 2));
+  return geo.map((c) => (c.pos[AXIS_OF[axis]] * sign === 1
+    ? { ...c, pos: applyTo(M, c.pos), m: mul(M, c.m) }
+    : c));
+};
+
+/**
  * The rotation a cubie of `home` wears when it sits in `slot`, for corners and edges.
  *
  * DERIVED, never typed: the tables are built by walking the cube group once at load and reading
@@ -119,15 +145,7 @@ const TURNED = (() => {
     const next = [];
     for (const { state, geo } of frontier) {
       for (const face of faces) {
-        const normal = NORMAL[face];
-        const axis = normal[0] ? 'x' : normal[1] ? 'y' : 'z';
-        const sign = normal[AXIS_OF[axis]];
-        // The direction that reproduces cube-pieces' own permutation. Stated as arithmetic on the
-        // face's normal rather than looked up: `-sign` is what the derivation found for all six.
-        const M = rotation(axis, -sign * (Math.PI / 2));
-        const moved = geo.map((c) => (c.pos[AXIS_OF[axis]] * sign === 1
-          ? { ...c, pos: applyTo(M, c.pos), m: mul(M, c.m) }
-          : c));
+        const moved = turnGeometry(geo, face);
         const before = table.size;
         const landed = applyMove(state, face);
         note(moved, landed);
@@ -141,7 +159,7 @@ const TURNED = (() => {
 })();
 
 /** The axis a centre spins about: its own outward normal. */
-const CENTRE_AXIS = CENTRES.map((f) => (NORMAL[f][0] ? 'x' : NORMAL[f][1] ? 'y' : 'z'));
+const CENTRE_AXIS = CENTRES.map((f) => axisOf(f).axis);
 
 /** Where cubie `i` sits and how it is turned, on a cube in `state`, in the cube's own frame. */
 function settled(state, i) {
@@ -254,10 +272,7 @@ export function after(frame, state, move) {
  */
 export const MOVE_DESCRIPTORS = Object.freeze(Object.assign(Object.create(null), Object.fromEntries(
   Object.keys(MOVES).map((name) => {
-    const face = name[0];
-    const normal = NORMAL[face];
-    const axis = normal[0] ? 'x' : normal[1] ? 'y' : 'z';
-    const sign = normal[AXIS_OF[axis]];
+    const { axis, sign } = axisOf(name[0]);
     const turns = name.endsWith('2') ? 2 : 1;
     const dir = name.endsWith("'") ? -1 : 1;
     return [name, Object.freeze({ axis, layers: Object.freeze([sign]), turns, angle: -dir * sign * turns * (Math.PI / 2) })];

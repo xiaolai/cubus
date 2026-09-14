@@ -29020,6 +29020,11 @@ var Y_INVERSE = inverseOf(Y_STATE);
 var NORMAL2 = { R: [1, 0, 0], L: [-1, 0, 0], U: [0, 1, 0], D: [0, -1, 0], F: [0, 0, 1], B: [0, 0, -1] };
 var CENTRES = ["U", "R", "F", "D", "L", "B"];
 var AXIS_OF = { x: 0, y: 1, z: 2 };
+var axisOf = (face) => {
+  const n = NORMAL2[face];
+  const axis = n[0] ? "x" : n[1] ? "y" : "z";
+  return { axis, sign: n[AXIS_OF[axis]] };
+};
 var posOf = (name) => [...name].reduce(
   (p, letter) => p.map((v, i) => v + NORMAL2[letter][i]),
   [0, 0, 0]
@@ -29047,6 +29052,11 @@ function rotation(axis, angle) {
   if (axis === "z") return [[c, -s, 0], [s, c, 0], [0, 0, 1]];
   throw new Error(`pose: unknown axis "${axis}" \u2014 one of x, y, z`);
 }
+var turnGeometry = (geo, face) => {
+  const { axis, sign } = axisOf(face);
+  const M = rotation(axis, -sign * (Math.PI / 2));
+  return geo.map((c) => c.pos[AXIS_OF[axis]] * sign === 1 ? { ...c, pos: applyTo(M, c.pos), m: mul(M, c.m) } : c);
+};
 var TURNED = (() => {
   const table = /* @__PURE__ */ new Map();
   const solved = [
@@ -29071,11 +29081,7 @@ var TURNED = (() => {
     const next = [];
     for (const { state, geo } of frontier) {
       for (const face of faces) {
-        const normal = NORMAL2[face];
-        const axis = normal[0] ? "x" : normal[1] ? "y" : "z";
-        const sign = normal[AXIS_OF[axis]];
-        const M = rotation(axis, -sign * (Math.PI / 2));
-        const moved = geo.map((c) => c.pos[AXIS_OF[axis]] * sign === 1 ? { ...c, pos: applyTo(M, c.pos), m: mul(M, c.m) } : c);
+        const moved = turnGeometry(geo, face);
         const before = table.size;
         const landed = applyMove(state, face);
         note(moved, landed);
@@ -29087,7 +29093,7 @@ var TURNED = (() => {
   if (table.size !== 480) throw new Error(`pose: the rotation table closed at ${table.size} of 480 entries`);
   return table;
 })();
-var CENTRE_AXIS = CENTRES.map((f) => NORMAL2[f][0] ? "x" : NORMAL2[f][1] ? "y" : "z");
+var CENTRE_AXIS = CENTRES.map((f) => axisOf(f).axis);
 function settled(state, i) {
   const c = CUBIES[i];
   if (c.kind === "centre") {
@@ -29144,10 +29150,7 @@ function after(frame, state, move) {
 }
 var MOVE_DESCRIPTORS = Object.freeze(Object.assign(/* @__PURE__ */ Object.create(null), Object.fromEntries(
   Object.keys(MOVES).map((name) => {
-    const face = name[0];
-    const normal = NORMAL2[face];
-    const axis = normal[0] ? "x" : normal[1] ? "y" : "z";
-    const sign = normal[AXIS_OF[axis]];
+    const { axis, sign } = axisOf(name[0]);
     const turns = name.endsWith("2") ? 2 : 1;
     const dir = name.endsWith("'") ? -1 : 1;
     return [name, Object.freeze({ axis, layers: Object.freeze([sign]), turns, angle: -dir * sign * turns * (Math.PI / 2) })];
@@ -29158,7 +29161,7 @@ var MOVE_DESCRIPTORS = Object.freeze(Object.assign(/* @__PURE__ */ Object.create
 var PALETTES = STICKER_PALETTES;
 var SWAPPED = { U: "U", R: "R", F: "F", L: "L", D: "B", B: "D" };
 function paletteFor(name, scheme) {
-  const base = PALETTES[name] || PALETTES.muted;
+  const base = Object.hasOwn(PALETTES, name) ? PALETTES[name] : PALETTES.muted;
   if (scheme !== "japanese") return base;
   const out = {};
   for (const position of Object.keys(base)) out[position] = base[SWAPPED[position]];
@@ -29166,12 +29169,12 @@ function paletteFor(name, scheme) {
 }
 var UNKNOWN_STICKER = "#C4BFB4";
 var FACES = [
-  { key: "R", axis: "x", sign: 1, n: [1, 0, 0] },
-  { key: "L", axis: "x", sign: -1, n: [-1, 0, 0] },
-  { key: "U", axis: "y", sign: 1, n: [0, 1, 0] },
-  { key: "D", axis: "y", sign: -1, n: [0, -1, 0] },
-  { key: "F", axis: "z", sign: 1, n: [0, 0, 1] },
-  { key: "B", axis: "z", sign: -1, n: [0, 0, -1] }
+  { key: "R", n: [1, 0, 0] },
+  { key: "L", n: [-1, 0, 0] },
+  { key: "U", n: [0, 1, 0] },
+  { key: "D", n: [0, -1, 0] },
+  { key: "F", n: [0, 0, 1] },
+  { key: "B", n: [0, 0, -1] }
 ];
 var FACELET_INDEX = {
   U: (x, y, z) => 0 + (z + 1) * 3 + (x + 1),
@@ -29182,7 +29185,8 @@ var FACELET_INDEX = {
   B: (x, y, z) => 45 + (1 - y) * 3 + (1 - x)
 };
 var EASE = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-var AXES = { x: new Vector3(1, 0, 0), y: new Vector3(0, 1, 0), z: new Vector3(0, 0, 1) };
+var Y_AXIS = new Vector3(0, 1, 0);
+var SPIN_PER_MS = 35e-4 * 60 / 1e3;
 var UPRIGHT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 var SOLVED_STATE = Object.freeze({
   cp: [0, 1, 2, 3, 4, 5, 6, 7],
@@ -29532,7 +29536,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
         if (!a) a = { m: this._queue.shift() };
         this._completeMove(a);
       }
-      if (!this._visible) return;
+      if (!this._visible) {
+        this._spinAt = null;
+        return;
+      }
       if (!this._anim && (this._queue.length || this._playing)) this._next();
       if (this._anim) {
         const a = this._anim;
@@ -29563,8 +29570,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
         this._dirty = true;
       }
       if (this._attrs.autorotate != null) {
-        this._spin += 35e-4;
+        const now = this._now();
+        if (this._spinAt != null) this._spin += (now - this._spinAt) * SPIN_PER_MS;
+        this._spinAt = now;
         this._applyRoot();
+      } else {
+        this._spinAt = null;
       }
       const moving = this.controls.update();
       if (moving) this._placeLights();
@@ -29589,6 +29600,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
   /** Stop drawing, keeping everything needed to start again. */
   _stop() {
     this._running = false;
+    this._spinAt = null;
     cancelAnimationFrame(this._raf);
     this._ro?.disconnect();
     this._io?.disconnect();
@@ -29786,7 +29798,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     else q.copy(a).slerp(b, this._turn.phase);
     if (this._spin) {
       const s = this._qs ||= new Quaternion();
-      s.setFromAxisAngle(AXES.y, this._spin);
+      s.setFromAxisAngle(Y_AXIS, this._spin);
       q.premultiply(s);
     }
     this.root.quaternion.copy(q);

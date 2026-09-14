@@ -207,3 +207,62 @@ test('an alg naming what every object inherits is refused, not played', async ()
   assert.ok(outcome.warned >= 4, 'the refusal went unsaid');
   assert.deepEqual(outcome.errors, [], 'a refused alg still threw when asked to play');
 });
+
+// The third instance of one class of defect: a palette name is whatever an author typed, and on an
+// ordinary object `toString` is a function. It skipped the fallback and painted every sticker
+// `undefined`, which left the previous colours standing (found by audit, 2026-09-14).
+test('a palette named after something every object has falls back, like any unknown palette', async () => {
+  await build({ facelets: SOLVED, palette: 'no-such-palette' });
+  const unknown = await paint();
+  for (const inherited of ['toString', 'constructor', '__proto__']) {
+    await build({ facelets: SOLVED, palette: inherited });
+    assert.deepEqual(await paint(), unknown,
+      `palette="${inherited}" did not fall back the way an unknown palette does`);
+  }
+});
+
+// The Stage-0 clock exists to make a frame reproducible, and autorotate went on turning under it:
+// it added a fixed step every frame, so it also turned twice as fast on a 120 Hz display.
+test('autorotate turns by time on the element\'s clock, and holds still when the clock does', async () => {
+  const spins = await page.evaluate(async () => {
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const el = window.__cube;
+    el.setAttribute('autorotate', '');
+    el.clock = 7_000_000;
+    await tick();
+    const pinned = [];
+    for (let i = 0; i < 6; i++) { await tick(); pinned.push(el._spin); }
+    el.clock = 7_000_000 + 1000;
+    await tick();
+    const oneSecond = el._spin - pinned[0];
+    el.removeAttribute('autorotate');
+    return { pinned, oneSecond };
+  });
+  assert.equal(new Set(spins.pinned).size, 1, `autorotate moved under a pinned clock: ${spins.pinned.join(', ')}`);
+  // 0.0035 rad a frame at the 60 Hz it was tuned on is 0.21 rad a second — whatever the display.
+  assert.ok(Math.abs(spins.oneSecond - 0.21) < 1e-9, `one second of clock turned the cube ${spins.oneSecond} rad, not 0.21`);
+});
+
+// The regression the round-2 verification reproduced: off screen the loop keeps running and returns
+// before the spin code, so the reference time was kept, and the first frame back added the whole
+// hidden stretch at once — a minute away leapt the cube 12.6 rad.
+test('autorotate does not leap when the cube comes back on screen', async () => {
+  const leap = await page.evaluate(async () => {
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const el = window.__cube;
+    el.setAttribute('autorotate', '');
+    el.clock = 9_000_000;
+    await tick(); await tick();
+    const before = el._spin;
+    el._visible = false;                 // what the IntersectionObserver reports off screen
+    for (let i = 0; i < 3; i++) await tick();
+    el.clock = 9_000_000 + 60_000;       // a minute passes while nobody can see it
+    await tick();
+    el._visible = true;
+    await tick();
+    const back = el._spin;
+    el.removeAttribute('autorotate');
+    return back - before;
+  });
+  assert.ok(Math.abs(leap) < 0.05, `a minute off screen turned the cube ${leap} rad on its return`);
+});
