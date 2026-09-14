@@ -30074,11 +30074,16 @@ var CubusCube = class _CubusCube extends HTMLElement {
     r.render(this.scene, this.camera);
     if (bv === "top-right" && Math.floor(w * 0.32) > 0 && Math.floor(h * 0.32) > 0) {
       const iw = Math.floor(w * 0.32), ih = Math.floor(h * 0.32);
+      const [x, y] = [w - iw - 10, h - ih - 10];
+      const autoClear = r.autoClear;
       r.setScissorTest(true);
       try {
+        r.setScissor(x, y, iw, ih);
         r.clearDepth();
-        this._renderOpposite(w - iw - 10, h - ih - 10, iw, ih);
+        r.autoClear = false;
+        this._renderOpposite(x, y, iw, ih);
       } finally {
+        r.autoClear = autoClear;
         r.setScissorTest(false);
       }
     }
