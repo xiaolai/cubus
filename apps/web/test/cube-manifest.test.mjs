@@ -94,6 +94,37 @@ test('the bundle can be read twice, and says the same thing both times', async (
   assert.equal(second.digest, first.digest, 'a second read hashed different bytes');
 });
 
+// Overlapping reads, which the build never makes and a caller easily could (`Promise.all` over two
+// bundles). The stubs are process globals, and interleaved reads refused two of three and left the
+// process holding the stubs. Each read must get the element, and the globals must come back.
+test('overlapping reads each get the element, and leave the globals as they found them', async () => {
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  const realElement = class RealHTMLElement {};
+  const realRegistry = { real: true };
+  const [savedElement, savedRegistry] = [globalThis.HTMLElement, globalThis.customElements];
+  globalThis.HTMLElement = realElement;
+  globalThis.customElements = realRegistry;
+  try {
+    const settled = await Promise.allSettled([readElement(), readElement(), readElement()]);
+    assert.deepEqual(settled.map((s) => (s.status === 'fulfilled' ? s.value.tag : String(s.reason))),
+      ['cubus-cube', 'cubus-cube', 'cubus-cube'], 'an overlapping read lost its element to another');
+    assert.equal(globalThis.HTMLElement, realElement, 'HTMLElement was left as a stub');
+    assert.equal(globalThis.customElements, realRegistry, 'customElements was left as a stub');
+  } finally {
+    globalThis.HTMLElement = savedElement;
+    globalThis.customElements = savedRegistry;
+  }
+});
+
+test('a read that fails does not hold up the reads queued behind it', async () => {
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  const missing = new URL('./no-such-bundle.js', import.meta.url);
+  const [failed, next] = await Promise.allSettled([readElement(missing), readElement()]);
+  assert.equal(failed.status, 'rejected', 'precondition: a missing bundle is refused');
+  assert.equal(next.status, 'fulfilled', `the read after a failure never ran: ${next.reason}`);
+  assert.equal(next.value.tag, 'cubus-cube');
+});
+
 // What `read-element.mjs` guarantees, tested where it could fail: the capabilities it reports and
 // the digest it reports describe the SAME bytes. It reads the bundle once and imports those exact
 // bytes as a `data:` URL; an implementation that hashed the file but imported it by path would
