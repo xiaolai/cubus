@@ -34,8 +34,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 // Whole directories, so a new import never silently misses the bundle. lib/ is
 // source (app.js and its siblings load as ES modules directly); vendor/ is
-// esbuild output plus the onnxruntime wasm and the detector model.
-export const DIRS = ['lib', 'vendor', 'icons'];
+// esbuild output plus the onnxruntime wasm and the detector model; notices/ is
+// ONNX Runtime's own third-party notices, which THIRD_PARTY_NOTICES.md links.
+export const DIRS = ['lib', 'vendor', 'icons', 'notices'];
 // THIRD_PARTY_NOTICES.md ships beside the app: the About card links it, and a
 // licence notice that is not in the bundle is a notice nobody received.
 export const FILES = ['index.html', 'tokens.css', 'manifest.webmanifest', 'THIRD_PARTY_NOTICES.md'];
@@ -59,8 +60,8 @@ export const NEVER_SHIPPED = ['vendor/tauri-mcp-guest.js', 'vendor/min2phase.PRO
  *
  * It is not under `lib/` any more — `<cubus-cube>` is `packages/cubus-cube/` since 2026-09-14 —
  * and the bundle it produces still lands in this app's `vendor/`. A constant rather than an
- * inline join, because the disposability guard and the freshness check both have to know, and a stale
- * copy of this path would make it check nothing while staying green.
+ * inline join, because the disposability guard and the freshness check both have to know, and a
+ * stale copy of this path would make it check nothing while staying green.
  */
 const CUBE_ENTRY = '../../packages/cubus-cube/src/cubus-cube.js';
 
@@ -168,11 +169,11 @@ const walkUp = (start, ids) => {
  * components that do not exist yet appended as written.
  *
  * WHY BOTH WALKS. `identity()` stats through a symlink but `dirname()` steps up the path as TEXT,
- * so the lexical walk alone went from the target of a link straight to the link's own parent: through
- * `alias -> apps/web/lib/screens`, `alias/cube` visited `screens` and then `/tmp`, never `lib` or
- * the app root, and reached the recursive delete of a real source directory (found by audit,
- * 2026-09-14). The canonical walk closes that. The lexical one stays because realpath is not the
- * whole answer either — it does not resolve a macOS firmlink, which is why this guard compares
+ * so the lexical walk alone went from the target of a link straight to the link's own parent:
+ * through `alias -> apps/web/lib/screens`, `alias/cube` visited `screens` and then `/tmp`, never
+ * `lib` or the app root, and reached the recursive delete of a real source directory (found by
+ * audit, 2026-09-14). The canonical walk closes that. The lexical one stays because realpath is not
+ * the whole answer either — it does not resolve a macOS firmlink, which is why this guard compares
  * device and inode rather than strings at all. A destination is refused if EITHER walk reaches a
  * protected tree.
  */

@@ -51,6 +51,9 @@ export const FILTERS = Object.freeze({
     'scripts/', '.githooks/',
     'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'package.json', 'Cargo.lock', 'Cargo.toml',
     'THIRD_PARTY_NOTICES.md',
+    // What the notices generator reads besides the lockfiles above, so a change to any of them
+    // runs `pnpm notices --check`.
+    'apps/web/notices/', 'gradle.lockfile', 'dependency-licences.json',
   ]),
 });
 

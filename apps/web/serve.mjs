@@ -48,6 +48,7 @@ const MIME = {
   '.ico': 'image/x-icon',
   '.webmanifest': 'application/manifest+json',
   '.md': 'text/markdown; charset=utf-8', // THIRD_PARTY_NOTICES.md, linked from the About card
+  '.txt': 'text/plain; charset=utf-8', // notices/*.txt, linked from THIRD_PARTY_NOTICES.md
 };
 
 /** The host name inside a Host header, lower-cased and without its port; null when there is none. */

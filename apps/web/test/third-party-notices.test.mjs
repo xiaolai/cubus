@@ -121,10 +121,12 @@ test('the load-bearing native crates are listed at the versions Cargo.lock pins'
   assert.match(prose, /Rust standard library[^.]*MIT OR Apache-2\.0/);
 });
 
+// The Android libraries are held to the locked release classpath in notices-generator.test.mjs.
+// The `implementation(...)` lines this once read are what one file declares, not what the APK
+// carries: no Tauri module's libraries, nothing transitive, and declared rather than resolved
+// versions.
 test('the platform runtimes that are not crates are named: DirectML, the Swift runtime, TensorFlow Lite', () => {
   assert.match(prose, /DirectML\.dll[^.]*Microsoft Software License Terms/);
   assert.match(prose, /Swift standard libraries[^;]*?Apache License 2\.0 with the Runtime Library Exception/);
-  for (const coord of [...read('../../../apps/desktop/src-tauri/gen/android/app/build.gradle.kts').matchAll(/^\s*implementation\("([^"]+)"\)/gm)].map((m) => m[1])) {
-    assert.ok(notices.includes(`\`${coord}\``), `Android dependency ${coord} is not in the notices`);
-  }
+  assert.match(prose, /TensorFlow Lite \(LiteRT\) is the runtime for the `\.tflite` export/);
 });
