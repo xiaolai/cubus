@@ -16,13 +16,30 @@ import { fileURLToPath } from 'node:url';
 
 const BUNDLE = new URL('../../apps/web/vendor/cubus-cube.js', import.meta.url);
 
+// The read in progress, if any. Every call waits for the one before it to settle.
+let turn = Promise.resolve();
+
 /**
  * Import the bundle in a bare Node process and report what it registered.
  *
- * Mutates globals, so it is for a fresh process: the build script and the suite that checks it,
- * never a test that shares a process with something else that cares about `globalThis`.
+ * Stubs globals for the length of the import, so it is for a process where nothing else reads
+ * `globalThis.HTMLElement` or `customElements` meanwhile: the build script and the suite that
+ * checks it.
+ *
+ * ONE READ AT A TIME, because the stubs are process-wide. Two overlapping reads interleaved their
+ * save and restore: the second saved the first's stubs as the "real" globals and put them back
+ * after the first had restored the real ones, and the first read's `define` landed in the
+ * second's capture. Three overlapping reads measured two refused as "defined no custom element"
+ * and a process left holding the stubs (found by audit, 2026-09-14). Queued, each read's bracket
+ * closes before the next one opens. A read that fails does not hold up the ones behind it.
  */
-export async function readElement(bundle = BUNDLE) {
+export function readElement(bundle = BUNDLE) {
+  const mine = turn.then(() => readOnce(bundle));
+  turn = mine.catch(() => {});
+  return mine;
+}
+
+async function readOnce(bundle) {
   let captured = null;
   // Import a SNAPSHOT, and hash that same snapshot. Reading the file twice and comparing catches a
   // rebuild in the middle, but not an A→B→A replacement — and the whole point of the digest is
