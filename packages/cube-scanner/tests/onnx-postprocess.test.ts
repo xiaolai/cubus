@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { LOW_CONFIDENCE_THRESHOLD } from '../src/ai-assemble.js';
+import { fitFromOutput } from '../src/onnx-detect.js';
 import {
   type Detection,
   decodeDetections,
+  dropNested,
   fitFace,
   MIN_STICKER_CONFIDENCE,
   nms,
@@ -60,6 +63,62 @@ describe('nms', () => {
     const kept = nms([a, dup, far], 0.45);
     expect(kept).toHaveLength(2);
     expect(kept.map((d) => d.confidence).sort()).toEqual([0.7, 0.9]);
+  });
+});
+
+describe('dropNested', () => {
+  // The same file ml/test_pipeline.py reads for cube_infer.drop_nested, so the two cannot drift apart.
+  const shared = JSON.parse(
+    readFileSync(new URL('./fixtures/nested-detections.json', import.meta.url), 'utf8'),
+  ) as { cases: { name: string; detections: Detection[]; kept: number[] }[] };
+  for (const c of shared.cases) {
+    it(c.name, () => {
+      expect(dropNested(c.detections).map((d) => c.detections.indexOf(d))).toEqual(c.kept);
+    });
+  }
+
+  /**
+   * A close-up face: six stickers with a full box, three of those also with an inner box whose IoU with
+   * it (0.39) is under NMS's 0.45, and three stickers whose only box is smaller than those inner ones.
+   * The nine largest boxes therefore hold three stickers twice. ml/test_pipeline.py builds the same.
+   */
+  const closeUpColors = [0, 1, 2, 3, 4, 5, 0, 1, 2];
+  function closeUp(): Detection[] {
+    const dets: Detection[] = [];
+    closeUpColors.forEach((classId, i) => {
+      const cx = 100 + (i % 3) * 45;
+      const cy = 100 + Math.floor(i / 3) * 45;
+      if (i < 6) dets.push({ cx, cy, w: 40, h: 40, classId, confidence: 0.9 });
+      if (i < 3) dets.push({ cx, cy, w: 25, h: 25, classId, confidence: 0.8 });
+      if (i >= 6) dets.push({ cx, cy, w: 24, h: 24, classId, confidence: 0.9 });
+    });
+    return dets;
+  }
+
+  it('lets fitFace read a close-up face whose nine largest held three stickers twice', () => {
+    const dets = closeUp();
+    expect(nms(dets)).toHaveLength(12);
+    expect(fitFace(nms(dets)).ok).toBe(false);
+    const fit = fitFace(dropNested(nms(dets)));
+    expect(fit.ok).toBe(true);
+    if (fit.ok) expect(fit.face.colors).toEqual(closeUpColors);
+  });
+
+  it('is applied where the app reads a face: fitFromOutput on the raw tensor', () => {
+    const dets = closeUp();
+    const anchors = dets.length;
+    const rows = 4 + 6;
+    const data = new Float32Array(rows * anchors);
+    dets.forEach((d, a) => {
+      data[a] = d.cx;
+      data[anchors + a] = d.cy;
+      data[2 * anchors + a] = d.w;
+      data[3 * anchors + a] = d.h;
+      data[(4 + d.classId) * anchors + a] = d.confidence;
+    });
+    const fit = fitFromOutput({ data, anchors, rows });
+    expect(fit.ok).toBe(true);
+    if (fit.ok) expect(fit.face.colors).toEqual(closeUpColors);
   });
 });
 

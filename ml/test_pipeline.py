@@ -326,6 +326,45 @@ def test_manifest_labels_match_export_py() -> None:
     print("PASS models: MANIFEST.json labels are export.py's, verbatim")
 
 
+def test_nested_boxes_are_dropped_exactly_as_the_app_drops_them():
+    """cube_infer.drop_nested answers the cases dropNested (TypeScript) is tested on, and read_face applies it."""
+    import numpy as np
+
+    import cube_infer
+
+    shared = json.loads((HERE.parent / "packages/cube-scanner/tests/fixtures/nested-detections.json").read_text())
+    for case in shared["cases"]:
+        dets = [cube_infer.Detection(d["cx"], d["cy"], d["w"], d["h"], d["classId"], d["confidence"]) for d in case["detections"]]
+        kept = [next(i for i, d in enumerate(dets) if d is k) for k in cube_infer.drop_nested(dets)]
+        assert kept == case["kept"], (case["name"], kept)
+
+    # The close-up the TypeScript test builds, as a raw output tensor through the whole Python chain.
+    colors = [0, 1, 2, 3, 4, 5, 0, 1, 2]
+    boxes = []
+    for i, c in enumerate(colors):
+        cx, cy = 100 + (i % 3) * 45, 100 + (i // 3) * 45
+        if i < 6:
+            boxes.append((cx, cy, 40, 40, c, 0.9))
+        if i < 3:
+            boxes.append((cx, cy, 25, 25, c, 0.8))
+        if i >= 6:
+            boxes.append((cx, cy, 24, 24, c, 0.9))
+    out = np.zeros((4 + cube_infer.NUM_CLASSES, len(boxes)), dtype=np.float32)
+    for a, (cx, cy, w, h, c, conf) in enumerate(boxes):
+        out[:4, a] = (cx, cy, w, h)
+        out[4 + c, a] = conf
+    assert cube_infer.fit_face(cube_infer.nms(cube_infer.decode(out))).verdict != "OK", "the case no longer needs the filter"
+    read = cube_infer.read_face(out)
+    assert read.verdict == "OK" and list(read.colors) == colors, read
+
+    faint = cube_infer.Detection(100, 100, 40, 40, 1, 0.12)
+    sticker = cube_infer.Detection(100, 100, 30, 30, 1, 0.9)
+    assert cube_infer.drop_nested([faint, sticker]) == [faint]
+    assert cube_infer.drop_nested([faint, sticker], floor=cube_infer.APP_MIN_CONFIDENCE) == [faint, sticker], \
+        "a box below the app's threshold removed a sticker the app keeps"
+    print("PASS inference: nested boxes are dropped as the app drops them, and read_face applies it")
+
+
 def test_licence_note_says_where_the_weights_started():
     """The manifest's provenance sentence must follow the backbone, not be a constant.
 
@@ -358,4 +397,5 @@ if __name__ == "__main__":
     test_shipped_int8_is_derived_from_the_shipped_fp32()
     test_manifest_labels_match_export_py()
     test_licence_note_says_where_the_weights_started()
+    test_nested_boxes_are_dropped_exactly_as_the_app_drops_them()
     print("ALL PASS")
