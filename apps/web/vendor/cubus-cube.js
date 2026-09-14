@@ -3152,9 +3152,9 @@ var Matrix3 = class _Matrix3 {
    * @param {number} cy - Center y of rotation
    * @return {Matrix3} A reference to this matrix.
    */
-  setUvTransform(tx, ty, sx, sy, rotation, cx, cy) {
-    const c = Math.cos(rotation);
-    const s = Math.sin(rotation);
+  setUvTransform(tx, ty, sx, sy, rotation2, cx, cy) {
+    const c = Math.cos(rotation2);
+    const s = Math.sin(rotation2);
     this.set(
       sx * c,
       sx * s,
@@ -6511,16 +6511,16 @@ var Object3D = class _Object3D extends EventDispatcher {
     this.children = [];
     this.up = _Object3D.DEFAULT_UP.clone();
     const position = new Vector3();
-    const rotation = new Euler();
+    const rotation2 = new Euler();
     const quaternion = new Quaternion();
     const scale = new Vector3(1, 1, 1);
     function onRotationChange() {
-      quaternion.setFromEuler(rotation, false);
+      quaternion.setFromEuler(rotation2, false);
     }
     function onQuaternionChange() {
-      rotation.setFromQuaternion(quaternion, void 0, false);
+      rotation2.setFromQuaternion(quaternion, void 0, false);
     }
-    rotation._onChange(onRotationChange);
+    rotation2._onChange(onRotationChange);
     quaternion._onChange(onQuaternionChange);
     Object.defineProperties(this, {
       /**
@@ -6545,7 +6545,7 @@ var Object3D = class _Object3D extends EventDispatcher {
       rotation: {
         configurable: true,
         enumerable: true,
-        value: rotation
+        value: rotation2
       },
       /**
        * Represents the object's local rotation as Quaternions.
@@ -28913,6 +28913,246 @@ var STICKER_PALETTES = Object.freeze({
   colorsafe: Object.freeze({ U: "#EFEAE0", D: "#E9C46A", F: "#6A9FB5", B: "#20405C", R: "#D1495B", L: "#8C5E8A" })
 });
 
+// ../../apps/web/lib/cube-pieces.js
+var CORNERS = ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"];
+var EDGES = ["UR", "UF", "UL", "UB", "DR", "DF", "DL", "DB", "FR", "FL", "BL", "BR"];
+var CORNER = Object.fromEntries(CORNERS.map((n, i) => [n, i]));
+var EDGE = Object.fromEntries(EDGES.map((n, i) => [n, i]));
+var QUARTER = {
+  U: {
+    cp: [3, 0, 1, 2, 4, 5, 6, 7],
+    co: [0, 0, 0, 0, 0, 0, 0, 0],
+    ep: [3, 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11],
+    eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  R: {
+    cp: [4, 1, 2, 0, 7, 5, 6, 3],
+    co: [2, 0, 0, 1, 1, 0, 0, 2],
+    ep: [8, 1, 2, 3, 11, 5, 6, 7, 4, 9, 10, 0],
+    eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  F: {
+    cp: [1, 5, 2, 3, 0, 4, 6, 7],
+    co: [1, 2, 0, 0, 2, 1, 0, 0],
+    ep: [0, 9, 2, 3, 4, 8, 6, 7, 1, 5, 10, 11],
+    eo: [0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0]
+  },
+  D: {
+    cp: [0, 1, 2, 3, 5, 6, 7, 4],
+    co: [0, 0, 0, 0, 0, 0, 0, 0],
+    ep: [0, 1, 2, 3, 5, 6, 7, 4, 8, 9, 10, 11],
+    eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  L: {
+    cp: [0, 2, 6, 3, 4, 1, 5, 7],
+    co: [0, 1, 2, 0, 0, 2, 1, 0],
+    ep: [0, 1, 10, 3, 4, 5, 9, 7, 8, 2, 6, 11],
+    eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  B: {
+    cp: [0, 1, 3, 7, 4, 5, 2, 6],
+    co: [0, 0, 1, 2, 0, 0, 2, 1],
+    ep: [0, 1, 2, 11, 4, 5, 6, 10, 8, 9, 3, 7],
+    eo: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1]
+  }
+};
+var SOLVED = Object.freeze({
+  cp: [0, 1, 2, 3, 4, 5, 6, 7],
+  co: [0, 0, 0, 0, 0, 0, 0, 0],
+  ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+});
+function compose(a, b) {
+  const cp = new Array(8);
+  const co = new Array(8);
+  for (let i = 0; i < 8; i++) {
+    cp[i] = a.cp[b.cp[i]];
+    co[i] = (a.co[b.cp[i]] + b.co[i]) % 3;
+  }
+  const ep = new Array(12);
+  const eo = new Array(12);
+  for (let i = 0; i < 12; i++) {
+    ep[i] = a.ep[b.ep[i]];
+    eo[i] = (a.eo[b.ep[i]] + b.eo[i]) % 2;
+  }
+  return { cp, co, ep, eo };
+}
+var MOVES = (() => {
+  const all = {};
+  for (const [face, q] of Object.entries(QUARTER)) {
+    const twice = compose(q, q);
+    all[face] = q;
+    all[`${face}2`] = twice;
+    all[`${face}'`] = compose(twice, q);
+  }
+  return Object.freeze(all);
+})();
+var MOVE_NAMES = Object.freeze(Object.keys(MOVES));
+function applyMove(state, move) {
+  const m = MOVES[move];
+  if (!m) throw new Error(`unknown move: ${move}`);
+  return compose(state, m);
+}
+var Y_STATE = Object.freeze({
+  cp: [1, 2, 3, 0, 5, 6, 7, 4],
+  co: [0, 0, 0, 0, 0, 0, 0, 0],
+  ep: [1, 2, 3, 0, 5, 6, 7, 4, 9, 10, 11, 8],
+  eo: [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]
+});
+function inverseOf(state) {
+  const cp = new Array(8);
+  const co = new Array(8);
+  for (let i = 0; i < 8; i++) {
+    cp[state.cp[i]] = i;
+    co[state.cp[i]] = (3 - state.co[i]) % 3;
+  }
+  const ep = new Array(12);
+  const eo = new Array(12);
+  for (let i = 0; i < 12; i++) {
+    ep[state.ep[i]] = i;
+    eo[state.ep[i]] = state.eo[i];
+  }
+  return { cp, co, ep, eo };
+}
+var Y_INVERSE = inverseOf(Y_STATE);
+
+// src/pose.js
+var NORMAL2 = { R: [1, 0, 0], L: [-1, 0, 0], U: [0, 1, 0], D: [0, -1, 0], F: [0, 0, 1], B: [0, 0, -1] };
+var CENTRES = ["U", "R", "F", "D", "L", "B"];
+var AXIS_OF = { x: 0, y: 1, z: 2 };
+var posOf = (name) => [...name].reduce(
+  (p, letter) => p.map((v, i) => v + NORMAL2[letter][i]),
+  [0, 0, 0]
+);
+var CUBIES = Object.freeze([
+  ...CORNERS.map((name, index) => Object.freeze({ kind: "corner", index, name })),
+  ...EDGES.map((name, index) => Object.freeze({ kind: "edge", index, name })),
+  ...CENTRES.map((name, index) => Object.freeze({ kind: "centre", index, name }))
+]);
+var HOME = Object.freeze(CUBIES.map((c) => Object.freeze(posOf(c.name))));
+var CORNER_POS = CORNERS.map(posOf);
+var EDGE_POS = EDGES.map(posOf);
+var mul = (A, B) => [0, 1, 2].map((i) => [0, 1, 2].map(
+  (j) => A[i][0] * B[0][j] + A[i][1] * B[1][j] + A[i][2] * B[2][j]
+));
+var applyTo = (M, v) => [0, 1, 2].map((i) => M[i][0] * v[0] + M[i][1] * v[1] + M[i][2] * v[2]);
+var I3 = Object.freeze([Object.freeze([1, 0, 0]), Object.freeze([0, 1, 0]), Object.freeze([0, 0, 1])]);
+function rotation(axis, angle) {
+  const quarters = angle / (Math.PI / 2);
+  const exact = Number.isInteger(quarters);
+  const c = exact ? [1, 0, -1, 0][(quarters % 4 + 4) % 4] : Math.cos(angle);
+  const s = exact ? [0, 1, 0, -1][(quarters % 4 + 4) % 4] : Math.sin(angle);
+  if (axis === "x") return [[1, 0, 0], [0, c, -s], [0, s, c]];
+  if (axis === "y") return [[c, 0, s], [0, 1, 0], [-s, 0, c]];
+  if (axis === "z") return [[c, -s, 0], [s, c, 0], [0, 0, 1]];
+  throw new Error(`pose: unknown axis "${axis}" \u2014 one of x, y, z`);
+}
+var TURNED = (() => {
+  const table = /* @__PURE__ */ new Map();
+  const cubies = [
+    ...CORNER_POS.map((pos, home) => ({ kind: "c", home, pos, m: I3 })),
+    ...EDGE_POS.map((pos, home) => ({ kind: "e", home, pos, m: I3 }))
+  ];
+  const at = (kind, pos) => cubies.find(
+    (c) => c.kind === kind && c.pos[0] === pos[0] && c.pos[1] === pos[1] && c.pos[2] === pos[2]
+  );
+  const key2 = (kind, home, slot, twist) => `${kind}${home},${slot},${twist}`;
+  const note = (state) => {
+    for (let slot = 0; slot < 8; slot++) table.set(key2("c", state.cp[slot], slot, state.co[slot]), at("c", CORNER_POS[slot]).m);
+    for (let slot = 0; slot < 12; slot++) table.set(key2("e", state.ep[slot], slot, state.eo[slot]), at("e", EDGE_POS[slot]).m);
+  };
+  let frontier = [{ state: { cp: [...Array(8).keys()], co: Array(8).fill(0), ep: [...Array(12).keys()], eo: Array(12).fill(0) }, geo: cubies.map((c) => ({ ...c })) }];
+  note(frontier[0].state);
+  const faces = Object.keys(NORMAL2);
+  for (let depth = 0; depth < 12 && table.size < 480; depth++) {
+    const next = [];
+    for (const { state, geo } of frontier) {
+      for (const face of faces) {
+        const normal = NORMAL2[face];
+        const axis = normal[0] ? "x" : normal[1] ? "y" : "z";
+        const sign = normal[AXIS_OF[axis]];
+        const M = rotation(axis, -sign * (Math.PI / 2));
+        const moved = geo.map((c) => c.pos[AXIS_OF[axis]] * sign === 1 ? { ...c, pos: applyTo(M, c.pos), m: mul(M, c.m) } : c);
+        const before = table.size;
+        const after2 = applyMove(state, face);
+        cubies.length = 0;
+        cubies.push(...moved);
+        note(after2);
+        if (table.size > before) next.push({ state: after2, geo: moved });
+      }
+    }
+    frontier = next;
+  }
+  if (table.size !== 480) throw new Error(`pose: the rotation table closed at ${table.size} of 480 entries`);
+  return table;
+})();
+var CENTRE_AXIS = CENTRES.map((f) => NORMAL2[f][0] ? "x" : NORMAL2[f][1] ? "y" : "z");
+function settled(state, i) {
+  const c = CUBIES[i];
+  if (c.kind === "centre") {
+    const twist = state.ct?.[c.index] ?? 0;
+    return { pos: HOME[i], m: twist ? rotation(CENTRE_AXIS[c.index], twist * (Math.PI / 2)) : I3 };
+  }
+  const kind = c.kind === "corner" ? "c" : "e";
+  const [perm, orient, slots] = kind === "c" ? [state.cp, state.co, CORNER_POS] : [state.ep, state.eo, EDGE_POS];
+  const slot = perm.indexOf(c.index);
+  if (slot < 0) throw new Error(`pose: no slot holds ${c.name} \u2014 the state is not a permutation`);
+  const m = TURNED.get(`${kind}${c.index},${slot},${orient[slot]}`);
+  if (!m) throw new Error(`pose: no rotation for ${c.name} in slot ${slot} twisted ${orient[slot]}`);
+  return { pos: slots[slot], m };
+}
+var inMove = (move, pos) => move.layers.includes(pos[AXIS_OF[move.axis]]);
+function poseAll(frame, state, move = null, phase = 1) {
+  const turning = move ? rotation(move.axis, move.angle * phase) : null;
+  return CUBIES.map((_, i) => {
+    const base = settled(state, i);
+    const inFlight = turning && inMove(move, base.pos);
+    const pos = inFlight ? applyTo(turning, base.pos) : base.pos;
+    const m = inFlight ? mul(turning, base.m) : base.m;
+    return { pos: applyTo(frame, pos), m: mul(frame, m) };
+  });
+}
+var faceAt = (axis, sign) => Object.keys(NORMAL2).find(
+  (f) => NORMAL2[f][AXIS_OF[axis]] === sign && NORMAL2[f].filter(Boolean).length === 1
+);
+function nameOf(axis, sign, angle) {
+  const quarters = Math.round(angle / (Math.PI / 2));
+  const face = faceAt(axis, sign);
+  const k = (-sign * quarters % 4 + 4) % 4;
+  return [null, face, `${face}2`, `${face}'`][k];
+}
+function after(frame, state, move) {
+  if (!move) return { frame, state };
+  const { axis, layers, angle } = move;
+  const quarters = Math.round(angle / (Math.PI / 2));
+  const whole = layers.includes(0);
+  const outers = whole ? [1, -1].filter((s) => !layers.includes(s)) : layers.filter((s) => s !== 0);
+  let next = state;
+  const ct = [...state.ct ?? [0, 0, 0, 0, 0, 0]];
+  const spin = whole ? -quarters : quarters;
+  for (const sign of outers) {
+    const face = faceAt(axis, sign);
+    const name = nameOf(axis, sign, whole ? -angle : angle);
+    if (name) next = applyMove(next, name);
+    ct[CENTRES.indexOf(face)] = ((ct[CENTRES.indexOf(face)] + spin) % 4 + 4) % 4;
+  }
+  return {
+    frame: whole ? mul(frame, rotation(axis, quarters * (Math.PI / 2))) : frame,
+    state: { ...next, ct }
+  };
+}
+var MOVE_DESCRIPTORS = Object.freeze(Object.fromEntries(
+  Object.keys(MOVES).map((name) => {
+    const face = name[0];
+    const normal = NORMAL2[face];
+    const axis = normal[0] ? "x" : normal[1] ? "y" : "z";
+    const sign = normal[AXIS_OF[axis]];
+    const turns = name.endsWith("2") ? 2 : 1;
+    const dir = name.endsWith("'") ? -1 : 1;
+    return [name, Object.freeze({ axis, layers: Object.freeze([sign]), turns, angle: -dir * sign * turns * (Math.PI / 2) })];
+  })
+));
+
 // src/cubus-cube.js
 var PALETTES = STICKER_PALETTES;
 var SWAPPED = { U: "U", R: "R", F: "F", L: "L", D: "B", B: "D" };
@@ -28942,6 +29182,24 @@ var FACELET_INDEX = {
 };
 var EASE = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 var AXES = { x: new Vector3(1, 0, 0), y: new Vector3(0, 1, 0), z: new Vector3(0, 0, 1) };
+var UPRIGHT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+var SOLVED_STATE = Object.freeze({
+  cp: [0, 1, 2, 3, 4, 5, 6, 7],
+  co: [0, 0, 0, 0, 0, 0, 0, 0],
+  ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  ct: [0, 0, 0, 0, 0, 0]
+});
+var POSE_OF = (() => {
+  const out = [];
+  for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
+    if (!x && !y && !z) continue;
+    const at = HOME.findIndex((h) => h[0] === x && h[1] === y && h[2] === z);
+    if (at < 0) throw new Error(`<cubus-cube> no cubie of pose.js sits at ${x},${y},${z}`);
+    out.push(at);
+  }
+  return out;
+})();
 var HL_PEAK = 0.38;
 var FOCUS_FLATTEN = 0.62;
 var FOCUS_MID = 0.44;
@@ -29044,6 +29302,29 @@ var CubusCube = class _CubusCube extends HTMLElement {
   }
   get highlight() {
     return this._attrs.highlight;
+  }
+  /**
+   * A pinned clock, in milliseconds, or null to run on the real one.
+   *
+   * WHY IT IS A PROPERTY AND NOT AN ATTRIBUTE: the manifest is built from `observedAttributes`,
+   * so an attribute here would be advertised to consumers as a capability. This is a test seam —
+   * it exists so a mid-turn frame and a highlight at a chosen point in its breath are
+   * reproducible, which is what lets one render be compared with another.
+   *
+   * `v == null` is tested FIRST, before `Number()`: `Number(null)` is 0, so a setter written
+   * `Number.isFinite(Number(v)) ? Number(v) : null` freezes time at zero when asked to let it go
+   * again — the opposite of what `clock = null` says.
+   */
+  set clock(v) {
+    this._clock = v == null || !Number.isFinite(Number(v)) ? null : Number(v);
+    this._dirty = true;
+  }
+  get clock() {
+    return this._clock ?? null;
+  }
+  /** The clock everything timed reads: the pinned one when there is one, the real one otherwise. */
+  _now() {
+    return this._clock ?? performance.now();
   }
   constructor() {
     super();
@@ -29247,19 +29528,15 @@ var CubusCube = class _CubusCube extends HTMLElement {
       this._raf = requestAnimationFrame(this._tick);
       while (this._queue.length + (this._anim ? 1 : 0) > 2 || !this._visible && (this._anim || this._queue.length)) {
         let a = this._anim;
-        if (!a) {
-          const m = this._queue.shift();
-          a = { temp: this._grab(m), m };
-        }
-        a.temp.setRotationFromAxisAngle(AXES[a.m.axis], a.m.angle);
+        if (!a) a = { m: this._queue.shift() };
         this._completeMove(a);
       }
       if (!this._visible) return;
       if (!this._anim && (this._queue.length || this._playing)) this._next();
       if (this._anim) {
         const a = this._anim;
-        const k = Math.min(1, (performance.now() - a.t0) / a.dur);
-        a.temp.setRotationFromAxisAngle(AXES[a.m.axis], a.m.angle * EASE(k));
+        const k = Math.min(1, (this._now() - a.t0) / a.dur);
+        this._writePose(a.m, EASE(k));
         if (k >= 1) {
           this._completeMove(a);
           this._next();
@@ -29276,7 +29553,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       }
       if (this._turning) {
         const t = this._turning;
-        const k = Math.min(1, (performance.now() - t.t0) / t.ms);
+        const k = Math.min(1, (this._now() - t.t0) / t.ms);
         this._setTurn(t.from, t.to, EASE(k));
         if (k >= 1) {
           this._setTurn(t.to, t.to, 1);
@@ -29484,7 +29761,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       return Promise.resolve(true);
     }
     return new Promise((resolve) => {
-      this._turning = { from, to, t0: performance.now(), ms, settle: resolve };
+      this._turning = { from, to, t0: this._now(), ms, settle: resolve };
       this._setTurn(from, to, 0);
       this._dirty = true;
     });
@@ -29683,7 +29960,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
       }
       const turns = m[2] === "2" ? 2 : 1;
       const dir = m[2] === "'" ? -1 : 1;
-      out.push({ axis: f.axis, layer: f.sign, angle: -dir * f.sign * turns * Math.PI / 2, turns });
+      out.push({ axis: f.axis, layers: [f.sign], angle: -dir * f.sign * turns * Math.PI / 2, turns });
     }
     return out;
   }
@@ -29722,10 +29999,11 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * Record which piece each cubie carries, while the cube is still at home.
    *
    * This is the ONE moment the answer is readable: reset() paints BEFORE it applies `scramble`, so
-   * at this instant a cubie's letters are exactly its facelet letters. Afterwards the group travels
-   * — _bake() moves it — and the stamp travels with it. That is what makes `piece:UF` mean "the UF
-   * piece, wherever it went" rather than "whatever is in the UF slot", which is a different
-   * sentence and the one a scrambled cube gets wrong.
+   * at this instant a cubie's letters are exactly its facelet letters. Afterwards the cubie moves
+   * — `_writePose` puts it where the state says — and the stamp stays on it, because the group is
+   * the cubie and nothing re-parents it. That is what makes `piece:UF` mean "the UF piece, wherever
+   * it went" rather than "whatever is in the UF slot", which is a different sentence and the one a
+   * scrambled cube gets wrong.
    */
   _stampPieces(letterOf) {
     const carried = /* @__PURE__ */ new Map();
@@ -29776,12 +30054,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const { selectors, invalid } = parseHighlight(this._attrs.highlight);
     if (invalid !== null) console.warn(`<cubus-cube> refusing highlight \u2014 invalid selector "${invalid}"`);
     this._hlSels = selectors;
-    this._hlT0 = performance.now() - HL_PERIOD / 2;
+    this._hlT0 = this._now() - HL_PERIOD / 2;
   }
   /** Where in the breath we are, 0..1. One expression, so the tick and the first paint agree. */
   _hlPhase() {
     if (reducedMotion()) return 1;
-    return 0.5 - 0.5 * Math.cos((performance.now() - this._hlT0) / HL_PERIOD * 2 * Math.PI);
+    return 0.5 - 0.5 * Math.cos((this._now() - this._hlT0) / HL_PERIOD * 2 * Math.PI);
   }
   /** Re-resolve the highlight against the cube as it stands now, and paint one frame of it. */
   _syncHighlight() {
@@ -29795,9 +30073,9 @@ var CubusCube = class _CubusCube extends HTMLElement {
       return;
     }
     const cubies = this.cubies.map((c) => ({
-      // Rounded because that is what a baked position IS: _bake() writes integers, so the parity
-      // test needs no epsilon, and a cubie riding a temp group mid-turn still answers for the slot
-      // it is travelling between rather than for a fractional position nobody can name.
+      // Rounded because a selector names SLOTS, and mid-turn a cubie is between two of them: it
+      // answers for the one it is nearer rather than for a fractional position nobody can name. At
+      // rest the rounding changes nothing — `_writePose` puts a settled cubie on exact integers.
       pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
       piece: c.userData.piece ?? null
     }));
@@ -29828,8 +30106,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
    * reads as "this one" and a white centre stays white.
    *
    * It lives on the cubie's materials, not on an overlay mesh, and that is what makes it survive a
-   * turn: _grab() re-parents cubies into a temporary group on every move, so anything positioned in
-   * world space would tear loose the moment the layer rotated.
+   * turn: the cubie is what moves, so anything positioned in world space would tear loose the
+   * moment the layer rotated.
    */
   _applyHighlight(k) {
     if (!this._hlSet?.size) return;
@@ -29867,27 +30145,35 @@ var CubusCube = class _CubusCube extends HTMLElement {
    *  carries delta -1: it undoes a solution move, so the step index counts down; anything else
    *  counts up. Host apps sync a move list / 2D net / scrubber to the event. */
   _completeMove(a) {
-    this._bake(a.temp);
+    const landed = after(UPRIGHT, this._state, a.m);
+    this._state = landed.state;
+    this._writePose();
     this._syncHighlight();
     this._anim = null;
     this._applied += a.m.delta ?? 1;
     this.dispatchEvent(new CustomEvent("cubus-step", { detail: { index: this._applied, total: this._sol.length } }));
     this._dirty = true;
   }
-  _bake(temp) {
-    temp.updateMatrix();
-    for (const c of [...temp.children]) {
-      c.applyMatrix4(temp.matrix);
-      c.position.set(Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z));
-      this.root.add(c);
+  /**
+   * Put every cubie where the cube's STATE says it is — the one place geometry is written.
+   *
+   * What this replaces: `_grab` re-parented a layer's cubies into a temporary group, `_tick`
+   * rotated that group, and `_bake` multiplied the result back into each cubie and rounded its
+   * position to the nearest integer. So where a cubie sat was the accumulated residue of every
+   * turn it had been in, and the rounding was there because that residue drifts. A pose derived
+   * from the state cannot drift, needs no rounding, and makes seeking to a move and playing into
+   * it the same picture by construction rather than by care (lib pose.js, A1 of the plan).
+   */
+  _writePose(move = null, phase = 0) {
+    const poses = poseAll(UPRIGHT, this._state, move, phase);
+    for (let i = 0; i < this.cubies.length; i++) {
+      const { pos, m } = poses[POSE_OF[i]];
+      const c = this.cubies[i];
+      c.position.set(pos[0], pos[1], pos[2]);
+      this._m4 ||= new Matrix4();
+      this._m4.set(m[0][0], m[0][1], m[0][2], 0, m[1][0], m[1][1], m[1][2], 0, m[2][0], m[2][1], m[2][2], 0, 0, 0, 0, 1);
+      c.quaternion.setFromRotationMatrix(this._m4);
     }
-    this.root.remove(temp);
-  }
-  _grab(m) {
-    const temp = new Group();
-    this.root.add(temp);
-    for (const c of this.cubies) if (Math.round(c.position[m.axis]) === m.layer) temp.add(c);
-    return temp;
   }
   _next() {
     if (this._anim) return;
@@ -29900,32 +30186,21 @@ var CubusCube = class _CubusCube extends HTMLElement {
     const tempo = Math.max(0.05, this._num("tempo-scale", 1));
     const reduced = reducedMotion();
     const dur = 190 / tempo * m.turns;
-    this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
+    this._anim = { m, t0: this._now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
   }
   reset() {
-    if (this._anim) this.root.remove(this._anim.temp);
     this._queue = [];
     this._anim = null;
     this._cursor = 0;
     this._playing = false;
     this._applied = 0;
-    let i = 0;
-    for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
-      if (!x && !y && !z) continue;
-      const c = this.cubies[i++];
-      c.position.set(x, y, z);
-      c.quaternion.identity();
-      this.root.add(c);
-    }
+    this._state = SOLVED_STATE;
     const fl = this._facelets();
     this._paint(fl);
     if (!fl) {
-      for (const m of this._parse(this._attrs.scramble || "")) {
-        const t = this._grab(m);
-        t.rotateOnAxis(AXES[m.axis], m.angle);
-        this._bake(t);
-      }
+      for (const m of this._parse(this._attrs.scramble || "")) this._state = after(UPRIGHT, this._state, m).state;
     }
+    this._writePose();
     this._syncHighlight();
     this._dirty = true;
     if (!this._quiet) {
@@ -29966,12 +30241,8 @@ var CubusCube = class _CubusCube extends HTMLElement {
     } finally {
       this._quiet = false;
     }
-    for (let i = 0; i < target; i++) {
-      const m = this._sol[i];
-      const t = this._grab(m);
-      t.rotateOnAxis(AXES[m.axis], m.angle);
-      this._bake(t);
-    }
+    for (let i = 0; i < target; i++) this._state = after(UPRIGHT, this._state, this._sol[i]).state;
+    this._writePose();
     this._syncHighlight();
     this._cursor = target;
     this._applied = target;

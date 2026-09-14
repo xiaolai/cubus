@@ -10,6 +10,7 @@ import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from '../../
 import { isFace, orientationMatrix, sameAxis } from '../../../apps/web/lib/cube-orientation.js';
 import { parseHighlight, pieceKey, resolveHighlight, slotVector } from '../../../apps/web/lib/cube-highlight.js';
 import { STICKER_PALETTES } from '../../../apps/web/lib/sticker-palettes.js';
+import { CUBIES, HOME, after, poseAll } from './pose.js';
 
 // The six sticker colours of each set, by position on a Western cube: the one table, shared with
 // the app's flat nets (lib/sticker-palettes.js). The `scheme` attribute remaps it (ADR 0001).
@@ -67,6 +68,28 @@ const FACELET_INDEX = {
 };
 const EASE = (t) => (t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2);
 const AXES = { x: new THREE.Vector3(1,0,0), y: new THREE.Vector3(0,1,0), z: new THREE.Vector3(0,0,1) };
+/** The identity frame handed to `poseAll`. How the cube is HELD stays where it has always been —
+ *  on the root group, which also carries the autorotate spin and interpolates `turnTo`. The pose
+ *  module's own frame argument is for a caller that has no scene graph to put it on. */
+const UPRIGHT = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+/** A solved cube, as the pose module wants it: pieces, and the twist of each centre. */
+const SOLVED_STATE = Object.freeze({
+  cp: [0, 1, 2, 3, 4, 5, 6, 7], co: [0, 0, 0, 0, 0, 0, 0, 0],
+  ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  ct: [0, 0, 0, 0, 0, 0],
+});
+/** `this.cubies` is built in a plain x,y,z sweep; the pose module speaks in cube-pieces' order.
+ *  Resolved once, by home position, so neither list has to know the other's ordering. */
+const POSE_OF = (() => {
+  const out = [];
+  for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
+    if (!x && !y && !z) continue;
+    const at = HOME.findIndex((h) => h[0] === x && h[1] === y && h[2] === z);
+    if (at < 0) throw new Error(`<cubus-cube> no cubie of pose.js sits at ${x},${y},${z}`);
+    out.push(at);
+  }
+  return out;
+})();
 
 // The highlight pulse — the channel a lesson uses to say "these pieces" while it narrates.
 // Subtle by intent: it points, it does not shout, and it has to stay legible under a turn playing
@@ -132,6 +155,28 @@ class CubusCube extends HTMLElement {
   set backView(v) { this._set('back-view', v); }
   set highlight(v) { this._set('highlight', v); }
   get highlight() { return this._attrs.highlight; }
+
+  /**
+   * A pinned clock, in milliseconds, or null to run on the real one.
+   *
+   * WHY IT IS A PROPERTY AND NOT AN ATTRIBUTE: the manifest is built from `observedAttributes`,
+   * so an attribute here would be advertised to consumers as a capability. This is a test seam —
+   * it exists so a mid-turn frame and a highlight at a chosen point in its breath are
+   * reproducible, which is what lets one render be compared with another.
+   *
+   * `v == null` is tested FIRST, before `Number()`: `Number(null)` is 0, so a setter written
+   * `Number.isFinite(Number(v)) ? Number(v) : null` freezes time at zero when asked to let it go
+   * again — the opposite of what `clock = null` says.
+   */
+  set clock(v) {
+    this._clock = v == null || !Number.isFinite(Number(v)) ? null : Number(v);
+    this._dirty = true;
+  }
+
+  get clock() { return this._clock ?? null; }
+
+  /** The clock everything timed reads: the pinned one when there is one, the real one otherwise. */
+  _now() { return this._clock ?? performance.now(); }
 
   constructor() {
     super();
@@ -383,8 +428,7 @@ class CubusCube extends HTMLElement {
         (!this._visible && (this._anim || this._queue.length))
       ) {
         let a = this._anim;
-        if (!a) { const m = this._queue.shift(); a = { temp: this._grab(m), m }; }
-        a.temp.setRotationFromAxisAngle(AXES[a.m.axis], a.m.angle);
+        if (!a) a = { m: this._queue.shift() };
         this._completeMove(a);
       }
       if (!this._visible) return;
@@ -394,8 +438,8 @@ class CubusCube extends HTMLElement {
       if (!this._anim && (this._queue.length || this._playing)) this._next();
       if (this._anim) {
         const a = this._anim;
-        const k = Math.min(1, (performance.now() - a.t0) / a.dur);
-        a.temp.setRotationFromAxisAngle(AXES[a.m.axis], a.m.angle * EASE(k));
+        const k = Math.min(1, (this._now() - a.t0) / a.dur);
+        this._writePose(a.m, EASE(k));
         if (k >= 1) {
           this._completeMove(a);
           this._next();
@@ -424,7 +468,7 @@ class CubusCube extends HTMLElement {
       // showTurn() rather than a second way to pose the cube.
       if (this._turning) {
         const t = this._turning;
-        const k = Math.min(1, (performance.now() - t.t0) / t.ms);
+        const k = Math.min(1, (this._now() - t.t0) / t.ms);
         this._setTurn(t.from, t.to, EASE(k));
         // Settle AFTER the last pose is written, and re-anchor on the destination so the next
         // turn starts from a settled orientation rather than from a finished turn's `from`.
@@ -677,7 +721,7 @@ class CubusCube extends HTMLElement {
       return Promise.resolve(true);
     }
     return new Promise((resolve) => {
-      this._turning = { from, to, t0: performance.now(), ms, settle: resolve };
+      this._turning = { from, to, t0: this._now(), ms, settle: resolve };
       // `_setTurn`, not `showTurn`: the public one cancels an animation in flight, and the one in
       // flight is the one this line just created.
       this._setTurn(from, to, 0);
@@ -924,7 +968,7 @@ class CubusCube extends HTMLElement {
       }
       const turns = m[2] === '2' ? 2 : 1;
       const dir = m[2] === "'" ? -1 : 1;
-      out.push({ axis: f.axis, layer: f.sign, angle: -dir * f.sign * turns * Math.PI / 2, turns });
+      out.push({ axis: f.axis, layers: [f.sign], angle: -dir * f.sign * turns * Math.PI / 2, turns });
     }
     return out;
   }
@@ -972,10 +1016,11 @@ class CubusCube extends HTMLElement {
    * Record which piece each cubie carries, while the cube is still at home.
    *
    * This is the ONE moment the answer is readable: reset() paints BEFORE it applies `scramble`, so
-   * at this instant a cubie's letters are exactly its facelet letters. Afterwards the group travels
-   * — _bake() moves it — and the stamp travels with it. That is what makes `piece:UF` mean "the UF
-   * piece, wherever it went" rather than "whatever is in the UF slot", which is a different
-   * sentence and the one a scrambled cube gets wrong.
+   * at this instant a cubie's letters are exactly its facelet letters. Afterwards the cubie moves
+   * — `_writePose` puts it where the state says — and the stamp stays on it, because the group is
+   * the cubie and nothing re-parents it. That is what makes `piece:UF` mean "the UF piece, wherever
+   * it went" rather than "whatever is in the UF slot", which is a different sentence and the one a
+   * scrambled cube gets wrong.
    */
   _stampPieces(letterOf) {
     const carried = new Map();
@@ -1033,13 +1078,13 @@ class CubusCube extends HTMLElement {
     this._hlSels = selectors;
     // Start at the top of the breath, so a highlight is visible the instant it is set rather than
     // fading in from nothing over half a period.
-    this._hlT0 = performance.now() - HL_PERIOD / 2;
+    this._hlT0 = this._now() - HL_PERIOD / 2;
   }
 
   /** Where in the breath we are, 0..1. One expression, so the tick and the first paint agree. */
   _hlPhase() {
     if (reducedMotion()) return 1;
-    return 0.5 - 0.5 * Math.cos(((performance.now() - this._hlT0) / HL_PERIOD) * 2 * Math.PI);
+    return 0.5 - 0.5 * Math.cos(((this._now() - this._hlT0) / HL_PERIOD) * 2 * Math.PI);
   }
 
   /** Re-resolve the highlight against the cube as it stands now, and paint one frame of it. */
@@ -1052,9 +1097,9 @@ class CubusCube extends HTMLElement {
     // stay on screen until the user happened to orbit.
     if (!sels.length) { this._hlSet = null; this._hlK = null; this._dirty = true; return; }
     const cubies = this.cubies.map((c) => ({
-      // Rounded because that is what a baked position IS: _bake() writes integers, so the parity
-      // test needs no epsilon, and a cubie riding a temp group mid-turn still answers for the slot
-      // it is travelling between rather than for a fractional position nobody can name.
+      // Rounded because a selector names SLOTS, and mid-turn a cubie is between two of them: it
+      // answers for the one it is nearer rather than for a fractional position nobody can name. At
+      // rest the rounding changes nothing — `_writePose` puts a settled cubie on exact integers.
       pos: [Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z)],
       piece: c.userData.piece ?? null,
     }));
@@ -1087,8 +1132,8 @@ class CubusCube extends HTMLElement {
    * reads as "this one" and a white centre stays white.
    *
    * It lives on the cubie's materials, not on an overlay mesh, and that is what makes it survive a
-   * turn: _grab() re-parents cubies into a temporary group on every move, so anything positioned in
-   * world space would tear loose the moment the layer rotated.
+   * turn: the cubie is what moves, so anything positioned in world space would tear loose the
+   * moment the layer rotated.
    */
   _applyHighlight(k) {
     if (!this._hlSet?.size) return;
@@ -1135,7 +1180,12 @@ class CubusCube extends HTMLElement {
    *  carries delta -1: it undoes a solution move, so the step index counts down; anything else
    *  counts up. Host apps sync a move list / 2D net / scrubber to the event. */
   _completeMove(a) {
-    this._bake(a.temp);
+    // The state moves; the geometry follows from it. `after()` hands back the frame too — nothing
+    // this parser emits turns the whole cube, so it is the frame that came in, and taking it
+    // rather than assuming it is what will make `x y z` work the day the parser can say one.
+    const landed = after(UPRIGHT, this._state, a.m);
+    this._state = landed.state;
+    this._writePose();
     // Positions have just changed, so a positional selector (`layer:`, `slot:`) now names a
     // different set. Re-resolved here rather than only on repaint, because a move repaints nothing.
     this._syncHighlight();
@@ -1145,21 +1195,27 @@ class CubusCube extends HTMLElement {
     this._dirty = true;
   }
 
-  _bake(temp) {
-    temp.updateMatrix();
-    for (const c of [...temp.children]) {
-      c.applyMatrix4(temp.matrix);
-      c.position.set(Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z));
-      this.root.add(c);
+  /**
+   * Put every cubie where the cube's STATE says it is — the one place geometry is written.
+   *
+   * What this replaces: `_grab` re-parented a layer's cubies into a temporary group, `_tick`
+   * rotated that group, and `_bake` multiplied the result back into each cubie and rounded its
+   * position to the nearest integer. So where a cubie sat was the accumulated residue of every
+   * turn it had been in, and the rounding was there because that residue drifts. A pose derived
+   * from the state cannot drift, needs no rounding, and makes seeking to a move and playing into
+   * it the same picture by construction rather than by care (lib pose.js, A1 of the plan).
+   */
+  _writePose(move = null, phase = 0) {
+    const poses = poseAll(UPRIGHT, this._state, move, phase);
+    for (let i = 0; i < this.cubies.length; i++) {
+      const { pos, m } = poses[POSE_OF[i]];
+      const c = this.cubies[i];
+      c.position.set(pos[0], pos[1], pos[2]);
+      // Row-major, which is the order Matrix4.set() reads and the order pose.js writes.
+      this._m4 ||= new THREE.Matrix4();
+      this._m4.set(m[0][0], m[0][1], m[0][2], 0, m[1][0], m[1][1], m[1][2], 0, m[2][0], m[2][1], m[2][2], 0, 0, 0, 0, 1);
+      c.quaternion.setFromRotationMatrix(this._m4);
     }
-    this.root.remove(temp);
-  }
-
-  _grab(m) {
-    const temp = new THREE.Group();
-    this.root.add(temp);
-    for (const c of this.cubies) if (Math.round(c.position[m.axis]) === m.layer) temp.add(c);
-    return temp;
   }
 
   _next() {
@@ -1180,34 +1236,24 @@ class CubusCube extends HTMLElement {
     // layer moved; at the Slow setting this is a 32x cut, which is the point.
     const reduced = reducedMotion();
     const dur = (190 / tempo) * m.turns;
-    this._anim = { temp: this._grab(m), m, t0: performance.now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
+    this._anim = { m, t0: this._now(), dur: reduced ? Math.min(dur, 120 * m.turns) : dur };
   }
 
   reset() {
-    // An interrupted animation's carrier group must leave the scene here: _bake() removes it on
-    // completion, but a reset mid-turn never reaches _bake, and the empty group stayed forever.
-    if (this._anim) this.root.remove(this._anim.temp);
+    // Nothing to unpick from the scene: a move in flight is a descriptor and a start time, so
+    // dropping it is enough. It used to be a group of re-parented meshes, and a reset mid-turn
+    // left the empty carrier in the scene forever.
     this._queue = []; this._anim = null; this._cursor = 0; this._playing = false; this._applied = 0;
-    let i = 0;
-    for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
-      if (!x && !y && !z) continue;
-      const c = this.cubies[i++];
-      c.position.set(x, y, z);
-      c.quaternion.identity();
-      this.root.add(c);
-    }
+    this._state = SOLVED_STATE;
     // Resolved ONCE for both jobs — painting and the scramble decision — so an invalid string
     // warns once, not twice. A VALID facelet string already encodes the scramble; only apply
     // moves when there isn't one, and an invalid string does not count.
     const fl = this._facelets();
     this._paint(fl);
     if (!fl) {
-      for (const m of this._parse(this._attrs.scramble || '')) {
-        const t = this._grab(m);
-        t.rotateOnAxis(AXES[m.axis], m.angle);
-        this._bake(t);
-      }
+      for (const m of this._parse(this._attrs.scramble || '')) this._state = after(UPRIGHT, this._state, m).state;
     }
+    this._writePose();
     // AFTER the scramble, not only inside _paint(). _paint() resolves the highlight while every
     // cubie is still at home, and the loop above then moves them — so a positional selector set
     // before reset() named the pre-scramble occupant of the slot. Unconditional rather than tucked
@@ -1244,12 +1290,8 @@ class CubusCube extends HTMLElement {
     // on each jump.
     this._quiet = true;
     try { this.reset(); } finally { this._quiet = false; }
-    for (let i = 0; i < target; i++) {
-      const m = this._sol[i];
-      const t = this._grab(m);
-      t.rotateOnAxis(AXES[m.axis], m.angle);
-      this._bake(t);
-    }
+    for (let i = 0; i < target; i++) this._state = after(UPRIGHT, this._state, this._sol[i]).state;
+    this._writePose();
     // Same reason as reset(): the moves above land after reset() painted, so a highlight set
     // before the seek would still be pointing at wherever those pieces used to be.
     this._syncHighlight();
