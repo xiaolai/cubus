@@ -13,6 +13,7 @@ import { liveCubeLabel } from './cube-memory.js';
 import { normaliseIdentity } from './cube-registry.js';
 import { hooks, shell } from './screen-slots.js';
 import { cubeRefused } from './live-session.js';
+import { applyOffset, isIdentity } from './cube-trust.js';
 
 /** Is the live CHAIN trusted — trusted knowledge of the cube itself, not of a generated
  *  subject? 'generated' sets `trusted` too (a scramble is perfectly known), but that is
@@ -31,6 +32,22 @@ export function clearOffset() {
   state.cube.offsetFrom = '';
 }
 
+/** Install a correction, named for where it came from, and answer the first of `reports` it
+ *  corrects. Null when it corrects none, and then NOTHING is committed: a correction recorded as a
+ *  scan's or an answer's is a claim, and one that could not be applied must not leave it behind. */
+export function installOffset(offset, from, reports, Cube) {
+  const next = isIdentity(offset) ? null : offset;
+  for (const reported of reports) {
+    const corrected = applyOffset(next, reported, Cube);
+    if (corrected === null) continue;
+    state.cube.offset = next;
+    state.cube.offsetAt = next ? Date.now() : 0;
+    state.cube.offsetFrom = next ? from : '';
+    return corrected;
+  }
+  return null;
+}
+
 /** Is someone mid-typing in a cube-settings input? Async repaints of Settings defer rather than
  *  discard what is being typed. ONE predicate on purpose — it had two copies, and two copies of
  *  a focus check is how one repaint path eats input while the other politely waits. */
@@ -42,18 +59,27 @@ const editingCubeSettings = () => {
  *  focusout (wired in the Settings mount), a battery or trust change landing while a nickname
  *  was being typed stayed stale on screen indefinitely. */
 export let settingsRepaintPending = false;
+/** True while a caller that redraws the screen itself is running — see withRepaintsHeld. */
+let repaintsHeld = false;
 export const repaintSettings = () => {
-  if (state.screen !== 'settings') return;
+  if (state.screen !== 'settings' || repaintsHeld) return;
   if (editingCubeSettings()) { settingsRepaintPending = true; return; }
   settingsRepaintPending = false;
   shell.renderScreen();
 };
 
+/** Run `fn` with Settings' repaints held back, for a caller that redraws the screen as soon as it
+ *  returns: one answer is one rebuild, not one per trust change made along the way. */
+export function withRepaintsHeld(fn) {
+  const was = repaintsHeld;
+  repaintsHeld = true;
+  try { return fn(); } finally { repaintsHeld = was; }
+}
+
 /** Everything on screen that is derived from trust, repainted together. Trust is the one claim
  *  this model exists to make honestly; every place that repeats it changes at the same moment. */
 function trustChanged() {
-  const live = $('#cubeLive');
-  if (live) paintTrust(live);
+  repaintIndicator();
   // The read-from-cube button this used to relabel is gone: its job — naming whether the screen's
   // subject is the cube in your hand — is done by the reconnect question's Yes / camera pair,
   // which renders with the screen rather than being repainted here.
@@ -71,7 +97,15 @@ export function markStale(why) {
   state.cube.staleWhy = why;
   // Only an actual lapse notifies — a stale cube going stale for a new reason is a wording
   // change, not an event a screen needs to stand down for.
-  if (lapsed && hooks.onTrustLost) { try { hooks.onTrustLost(); } catch {} }
+  // A screen that throws while standing down is said, and the lapse still reaches the indicator:
+  // trust is already cleared, so a swallowed throw left a screen half stood down, in silence.
+  if (lapsed && hooks.onTrustLost) {
+    try {
+      hooks.onTrustLost();
+    } catch (err) {
+      console.error('a screen failed to stand down as trust lapsed', err);
+    }
+  }
   trustChanged();
 }
 
@@ -87,7 +121,9 @@ function paintTrust(el) {
     if (say) say.textContent = '';
     return;
   }
-  const ok = state.cube.trusted;
+  // The CHAIN's trust, not the subject's: a generated scramble is perfectly known and says nothing
+  // about where the connected cube is, and a refused cube is followed by nothing at all.
+  const ok = chainTrusted() && !cubeRefused();
   el.classList.toggle('stale', !ok);
   const who = liveCubeLabel();
   // The button's NAME says what it is and where it goes — it is a control, and its name has to
@@ -100,6 +136,13 @@ function paintTrust(el) {
   el.title = ok
     ? `${who} connected${Number.isFinite(state.battery) ? ` · ${state.battery}% battery` : ''} · tracking`
     : `${who} connected, but ${state.cube.staleWhy || 'its position is unverified'} — read the cube again`;
+}
+
+/** The title-bar indicator, repainted from the model as it is now. Trust and the connection
+ *  reach it through here, and so does a rename, which changes only what it says. */
+export function repaintIndicator() {
+  const live = $('#cubeLive');
+  if (live) paintTrust(live);
 }
 
 export function setConnected(on, name = '', mac = '') {
@@ -115,11 +158,10 @@ export function setConnected(on, name = '', mac = '') {
   state.battery = null;
   // The anchor belongs to a connection, not to the app.
   if (!on) state.anchored = false;
-  const live = $('#cubeLive');
-  if (live) paintTrust(live);
-  if (state.screen === 'settings' && before !== `${state.connected}|${state.cubeName}|${state.cubeMac}`) {
-    shell.renderScreen();
-  }
+  repaintIndicator();
+  // Through the typing guard, like every other async repaint of Settings: a cube dropping while a
+  // nickname was being typed rebuilt the card under the field, and the text went with it.
+  if (before !== `${state.connected}|${state.cubeName}|${state.cubeMac}`) repaintSettings();
 }
 
 /** We now know what the cube looks like, and by what means. */

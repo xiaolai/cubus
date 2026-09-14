@@ -23,7 +23,10 @@ import { SOLVED, applyAlg, movesOf } from '../lib/cube-pieces.js';
 import { toFacelets, parseFacelets } from '../lib/two-phase.js';
 import { OFFERED_TARGETS } from '../lib/stage-targets.js';
 import { lowerBounds, solveToState } from '../lib/stage-distance.js';
-import { SOLVE_TO_STATE, createSolveClient, handleStageRequest } from '../lib/solve-client.js';
+import {
+  SOLVE_TO_STATE, STOP_NOW, createParallelSolveClient, createSolveClient, handleStageRequest,
+  stopDescriptor, stopWord,
+} from '../lib/solve-client.js';
 
 /** A well-formed bounds payload: EVERY offered target, which is what the validator now demands. */
 const EVERY_BOUND = Object.fromEntries(OFFERED_TARGETS.map((t) => [t.id, 1]));
@@ -61,6 +64,25 @@ function recordingWorker(sent) {
   };
 }
 
+/**
+ * A worker that answers with the real handler only when the case releases the reply — so a request
+ * can be called off while it is out — and that counts every time it is ended.
+ */
+function heldWorker({ sent, held, ended }) {
+  return () => {
+    const listeners = new Map();
+    return {
+      addEventListener: (type, fn) => listeners.set(type, fn),
+      postMessage(request) {
+        sent.push(request);
+        held.push(() => listeners.get('message')?.({ data: handleStageRequest(engine, request) }));
+      },
+      terminate() { ended.count += 1; },
+    };
+  };
+}
+const heldRig = () => ({ sent: [], held: [], ended: { count: 0 } });
+
 // ---- the worker's side ---------------------------------------------------------------------------
 
 test('the handler answers both shapes, and tags which one it answered', () => {
@@ -88,6 +110,61 @@ test('a cube the app cannot read is an ERROR, never a search that found nothing'
   assert.match(bad.error, /not a cube this app can read/);
   const unknown = handleStageRequest(engine, { id: 4, want: 'route', target: 'no-such', facelets: SCRAMBLED });
   assert.equal(unknown.ok, false, 'an unknown target is a caller error, not an empty answer');
+});
+
+test('a search asks whether it was called off every STOP_POLL nodes, and says so', async () => {
+  const { STOP_POLL } = await import('../lib/stage-distance.js');
+  assert.ok(Number.isInteger(STOP_POLL) && STOP_POLL > 0,
+    'the engine must name how often it asks');
+  const state = parseFacelets(SCRAMBLED);
+  const opts = { nodeBudget: 400_000, maxDepth: 12 };
+  const free = solveToState('first-layer', state, opts);
+  assert.ok(free.nodes > 3 * STOP_POLL,
+    `precondition: the search spends more than three polls (${free.nodes} nodes)`);
+  assert.deepEqual(solveToState('first-layer', state, { ...opts, stop: () => false }), free,
+    'a stop never raised changed the answer, or what it cost');
+  // Raised before the search began: the first poll is at node zero, so nothing is spent.
+  assert.deepEqual(solveToState('first-layer', state, { ...opts, stop: () => true }),
+    { alg: null, moves: null, nodes: 0, exact: false, why: 'stopped' },
+    'a search called off before it began spent nodes, or blamed its budget');
+  // Raised at the third poll: two intervals in, and not a node later.
+  let polls = 0;
+  const stopAtThird = () => { polls += 1; return polls === 3; };
+  const late = solveToState('first-layer', state, { ...opts, stop: stopAtThird });
+  assert.equal(late.why, 'stopped', 'a stop was reported as the budget running out');
+  assert.equal(late.nodes, 2 * STOP_POLL, 'the search did not ask once every STOP_POLL nodes');
+});
+
+test('the worker reads a request\'s stop word at every poll, and no word means no poll', () => {
+  // Not at offset 0, on purpose: the word crosses as a descriptor so that its offset survives.
+  const word = new Int32Array(new SharedArrayBuffer(12), 8, 1);
+  const polled = [];
+  const refusal = { alg: null, moves: null, nodes: 0, exact: false, why: 'stopped' };
+  const raising = {
+    ...engine,
+    solveToState: (_target, _state, { stop }) => {
+      polled.push(stop());
+      // Written by the thread that asked, while this search runs.
+      Atomics.store(word, 0, STOP_NOW);
+      polled.push(stop());
+      return refusal;
+    },
+  };
+  const question = {
+    id: 5, want: 'route', target: 'cross', facelets: SCRAMBLED, nodeBudget: 400_000, maxDepth: 12,
+  };
+  const reply = handleStageRequest(raising, { ...question, shared: stopDescriptor(word) });
+  assert.deepEqual(polled, [false, true],
+    'the word was read once when the search began, or never');
+  assert.equal(reply.why, 'stopped');
+  let handed = null;
+  const recording = {
+    ...engine,
+    solveToState: (_target, _state, opts) => { handed = opts; return refusal; },
+  };
+  handleStageRequest(recording, question);
+  assert.equal(handed.stop ?? null, null,
+    'a request with no word was handed a stop that could never fire');
 });
 
 // ---- the client's side: every wrong reply, refused ------------------------------------------------
@@ -209,6 +286,188 @@ test('a main-thread worker is refused before a repair is posted to it', async ()
     /no worker, and a repair may not run on the UI thread/,
   );
   assert.deepEqual(sent, [], 'and nothing was posted — refused before, not after');
+});
+
+// ---- calling a repair off ------------------------------------------------------------------
+//
+// A superseded repair used to run out its budget on the worker that every stage question and a
+// pooled solve's first slice share. It is called off now the way a superseded solve is: STOP_NOW
+// in a word the running search polls, never a terminate — and nothing at all where there is no
+// word to write.
+
+const FIRST_LAYER = {
+  want: 'route', target: 'first-layer', facelets: SCRAMBLED, nodeBudget: 400_000, maxDepth: 12,
+};
+const CROSS_ROUTE = { ...FIRST_LAYER, target: 'cross', maxDepth: 10 };
+
+test('a repair called off writes STOP_NOW into its own word, and its worker lives', async () => {
+  const rig = heldRig();
+  const client = createSolveClient({ spawn: heldWorker(rig) });
+  const word = new Int32Array(new SharedArrayBuffer(4));
+  const walk = new AbortController();
+  const asked = client.stageRoute({ ...FIRST_LAYER, signal: walk.signal }, word);
+  assert.equal(rig.sent.length, 1, 'precondition: the request is out');
+  assert.ok(rig.sent[0].shared, 'the request went out with no word to call it off by');
+  assert.equal(rig.sent[0].signal, undefined, 'a signal cannot be cloned onto another thread');
+  walk.abort();
+  assert.equal(Atomics.load(stopWord(rig.sent[0].shared), 0), STOP_NOW,
+    'the abort did not reach the word the worker reads');
+  rig.held.shift()();
+  const reply = await asked;
+  assert.equal(reply.why, 'stopped', 'the worker ran the whole search anyway');
+  assert.equal(reply.moves, null);
+  assert.equal(rig.ended.count, 0,
+    'a repair was called off by ending the thread a pooled solve slice shares');
+});
+
+test('a repair asked for by a caller already gone goes out already called off', async () => {
+  const rig = heldRig();
+  const client = createSolveClient({ spawn: heldWorker(rig) });
+  const word = new Int32Array(new SharedArrayBuffer(4));
+  const asked = client.stageRoute({ ...FIRST_LAYER, signal: AbortSignal.abort() }, word);
+  assert.equal(Atomics.load(word, 0), STOP_NOW,
+    'the word was not raised before the request went out');
+  rig.held.shift()();
+  assert.equal((await asked).why, 'stopped');
+});
+
+test('a request lets go of its caller\'s signal however it settles', async () => {
+  // A screen's signal outlives every request it makes: a listener left on it holds each request's
+  // word, and writes into it long after anything could read it.
+  const screen = new AbortController();
+  const rig = heldRig();
+  const client = createSolveClient({ spawn: heldWorker(rig) });
+  const answered = new Int32Array(new SharedArrayBuffer(4));
+  const done = client.stageRoute({ ...CROSS_ROUTE, signal: screen.signal }, answered);
+  rig.held.shift()();
+  assert.notEqual((await done).moves, null, 'precondition: the repair answered');
+  const refused = new Int32Array(new SharedArrayBuffer(4));
+  const saying = workerSaying({ alg: "R U R' U'", depth: 3, view: 0 });
+  const wrong = createSolveClient({ spawn: saying });
+  await assert.rejects(() => wrong.stageRoute({ ...CROSS_ROUTE, signal: screen.signal }, refused),
+    /rather than a repair/, 'precondition: the reply was refused');
+  screen.abort();
+  assert.deepEqual([Atomics.load(answered, 0), Atomics.load(refused, 0)], [0, 0],
+    'a settled request was still listening to the signal it was asked with');
+});
+
+test('with no word to write, calling a repair off changes nothing and ends no thread', async () => {
+  const rig = heldRig();
+  const client = createSolveClient({ spawn: heldWorker(rig) });
+  const walk = new AbortController();
+  // A word in the PAYLOAD is not the client's to use: only a word handed to the client crosses.
+  const forged = stopDescriptor(new Int32Array(new SharedArrayBuffer(4)));
+  const asked = client.stageRoute({ ...CROSS_ROUTE, signal: walk.signal, shared: forged });
+  walk.abort();
+  assert.equal(rig.sent[0].shared ?? null, null,
+    'a word read off the payload went out with the request');
+  rig.held.shift()();
+  const direct = solveToState('cross', parseFacelets(SCRAMBLED), CROSS_ROUTE);
+  assert.equal((await asked).alg, direct.alg, 'the search did not run as it always has');
+  assert.equal(rig.ended.count, 0,
+    'a repair nothing could stop was stopped by ending its thread');
+});
+
+test('the pool gives each repair that can be called off a word of its own', async () => {
+  const rig = heldRig();
+  let made = 0;
+  const pool = createParallelSolveClient({
+    spawn: heldWorker(rig),
+    workers: 2,
+    viewCount: 6,
+    makeShared: () => { made += 1; return new Int32Array(new SharedArrayBuffer(4)); },
+  });
+  const first = new AbortController();
+  const second = new AbortController();
+  const asked = [
+    pool.stageRoute({ ...FIRST_LAYER, signal: first.signal }),
+    pool.stageRoute({ ...FIRST_LAYER, signal: second.signal }),
+    pool.stageRoute({ want: 'bounds', facelets: SCRAMBLED }),
+  ];
+  assert.equal(rig.sent.length, 3,
+    'precondition: all three are out, on the one worker repairs go to');
+  assert.equal(made, 2,
+    'each repair that can be called off needs a word of its own, and only those');
+  assert.equal(rig.sent[2].shared ?? null, null,
+    'a request nothing can call off went out with a word');
+  first.abort();
+  const raised = (r) => (r.shared ? Atomics.load(stopWord(r.shared), 0) : 'no word');
+  assert.deepEqual(rig.sent.slice(0, 2).map(raised), [STOP_NOW, 0],
+    'calling off one repair did not stop it, or stopped the other with it');
+  for (const release of rig.held.splice(0)) release();
+  const [one, two] = await Promise.all(asked);
+  assert.deepEqual([one.why, two.why], ['stopped', null]);
+  assert.equal(rig.ended.count, 0);
+});
+
+test('a lone client that can make words gives each repair that can be called off one of its own', async () => {
+  const rig = heldRig();
+  let made = 0;
+  const client = createSolveClient({
+    spawn: heldWorker(rig),
+    makeShared: () => { made += 1; return new Int32Array(new SharedArrayBuffer(4)); },
+  });
+  const first = new AbortController();
+  const second = new AbortController();
+  const asked = [
+    client.stageRoute({ ...FIRST_LAYER, signal: first.signal }),
+    client.stageRoute({ ...FIRST_LAYER, signal: second.signal }),
+    client.stageRoute({ want: 'bounds', facelets: SCRAMBLED }),
+  ];
+  assert.equal(rig.sent.length, 3, 'precondition: all three are out');
+  assert.equal(made, 2, 'each repair that can be called off needs a word of its own, and only those');
+  assert.equal(rig.sent[2].shared ?? null, null, 'a request nothing can call off went out with a word');
+  first.abort();
+  const raised = (r) => (r.shared ? Atomics.load(stopWord(r.shared), 0) : 'no word');
+  assert.deepEqual(rig.sent.slice(0, 2).map(raised), [STOP_NOW, 0],
+    'calling off one repair did not stop it, or stopped the other with it');
+  for (const release of rig.held.splice(0)) release();
+  const [one, two] = await Promise.all(asked);
+  assert.deepEqual([one.why, two.why], ['stopped', null]);
+  assert.equal(rig.ended.count, 0, 'a repair was called off by ending the thread');
+});
+
+test('with one solver worker, a repair called off reaches its search wherever the page can share memory', async () => {
+  // Too few cores for a pool leaves the service one worker, and the pool was the only thing that
+  // made a repair's word. Each case imports its own copy of the service, because the worker count
+  // and the client are settled when it loads and when it is first asked.
+  const saved = Object.fromEntries(['Worker', 'crossOriginIsolated', 'navigator', 'localStorage']
+    .map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  const define = (k, value) => Object.defineProperty(globalThis, k, { value, writable: true, configurable: true });
+  const store = new Map();
+  try {
+    for (const isolated of [true, false]) {
+      const posts = [];
+      define('Worker', class extends EventTarget {
+        postMessage(data) { posts.push(data); }
+        terminate() {}
+      });
+      define('crossOriginIsolated', isolated);
+      define('navigator', { hardwareConcurrency: 3 });
+      define('localStorage', {
+        getItem: (k) => (store.has(k) ? store.get(k) : null),
+        setItem: (k, v) => { store.set(k, String(v)); },
+        removeItem: (k) => { store.delete(k); },
+      });
+      const { stageAsk } = await import(`../lib/solver-service.js?one-worker-isolated=${isolated}`);
+      const walk = new AbortController();
+      void stageAsk({ ...FIRST_LAYER, signal: walk.signal });
+      assert.equal(posts.length, 1, `isolated ${isolated}: precondition: the repair went to the one worker`);
+      if (!isolated) {
+        assert.equal(posts[0].shared ?? null, null, 'a page that cannot share memory was handed a word anyway');
+        continue;
+      }
+      assert.ok(posts[0].shared, 'the repair went out with no word to call it off by');
+      walk.abort();
+      assert.equal(Atomics.load(stopWord(posts[0].shared), 0), STOP_NOW,
+        'the abort did not reach the word the worker reads');
+    }
+  } finally {
+    for (const [k, d] of Object.entries(saved)) {
+      if (d) Object.defineProperty(globalThis, k, d);
+      else delete globalThis[k];
+    }
+  }
 });
 
 // ---- end to end over the boundary -------------------------------------------------------------------

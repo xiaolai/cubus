@@ -18,9 +18,9 @@ import { classifyReconnect } from './cube-reconnect.js';
 import { normaliseIdentity } from './cube-registry.js';
 import { ingestFacelets } from './cube-subject.js';
 import {
-  chainTrusted, clearOffset, markStale, repaintSettings, setConnected,
+  chainTrusted, clearOffset, installOffset, markStale, repaintSettings, setConnected,
 } from './cube-trust-state.js';
-import { applyOffset, isIdentity } from './cube-trust.js';
+import { applyOffset } from './cube-trust.js';
 import { conn, cubeRefused, holdSession, turnsReported } from './live-session.js';
 import { hooks, shell } from './screen-slots.js';
 import { Cube } from './solver-service.js';
@@ -43,16 +43,42 @@ let scanAwaitingReport = null;
 /** Why a held scan was thrown away. One string, said from the two places that can establish it —
  *  the turn itself, and the session's own count at the first report — because two wordings for
  *  one fact would read on screen as two different faults. */
-const TURNED_SINCE_SCAN = 'it was turned after the camera saw it, and before it had reported anything';
+const TURNED_SINCE_SCAN = 'it was turned after the camera saw it, before its next report';
+/** What a repair that established nothing says. Tracking is unchanged, and the scan is not adopted
+ *  over a report it could not be related to. */
+const SCAN_UNCHECKED = 'This scan could not be checked against what your cube reports, so nothing was changed — scan it again.';
 /** The 16-bit serial that came with the latest report, or null when it carried none. Stored
  *  beside the memory as information for wording, never proof: the GAN16's counter is
  *  per-connection and says nothing across a break. */
 let lastSerialSeen = null;
+/** The session's turn count when `state.reported` was recorded. A report says where the cube IS
+ *  only while that count stands: after a turn it describes a cube that has since moved, which for a
+ *  repair is the same as no report at all (repairTracking holds the scan for the next one). */
+let reportedAtTurns = 0;
+
+/**
+ * Does what the cube has said account for every turn it has counted?
+ *
+ * A turn is counted the moment the cube reports it, and the snapshot that shows where it landed
+ * follows about a second later, so in that window the report in force — and anything derived from
+ * it — describes the cube BEFORE the turn. Exported because two readers need the same fact and two
+ * ways of asking it would drift: a camera repair has nothing to derive against (repairTracking),
+ * and the scan screen's reconnect check has no prediction to judge a side against
+ * (lib/screens/scan/reconnect-check.js), which judged a side read after the turn against the cube
+ * before it and called it a mismatch (found by verification, 2026-09-14).
+ *
+ * With no report at all the count is the connection's own zero, which is the moment the remembered
+ * arrangement describes — so a check that has only the memory to go on is current until a turn.
+ */
+export const reportIsCurrent = () => reportedAtTurns === turnsReported();
 
 /** Remember the arrangement the app is sure of (lib/cube-memory.js) with this connection's serial,
  *  and repaint Settings when the write's health flipped — which the memory, beneath the screens,
  *  does not do itself. */
 export function rememberLastSeen(how, { force = false } = {}) {
+  // Not while a scan waits for its report: `live` and the report beside it are from before the
+  // camera looked, and remembering them would date that pair to now.
+  if (scanAwaitingReport) return;
   if (rememberArrangement(how, { force, serial: lastSerialSeen ?? null })) repaintSettings();
 }
 
@@ -73,7 +99,7 @@ export function rememberLastSeen(how, { force = false } = {}) {
  *  @returns {{ok: boolean, text: string}|null} what to tell the user, or null when the scan
  *  changed nothing about tracking (no cube, or it already agreed).
  */
-export function repairTracking(scanned, { reconciling = false } = {}) {
+export function repairTracking(scanned, { tracking = chainTrusted() } = {}) {
   if (!state.connected || !conn) return null;
   // A refused cube cannot be repaired by a camera, and this is the door that used to let one be.
   // The correction is derived FROM the cube's own report; if that report has been proved not to
@@ -89,7 +115,7 @@ export function repairTracking(scanned, { reconciling = false } = {}) {
   // The RAW report, not state.live: live has already had the current offset applied, so deriving
   // against it yields the identity — overwriting a correction the cube still needs.
   const reported = state.reported;
-  if (!reported) {
+  if (!reported || !reportIsCurrent()) {
     // The cube is here and has said nothing yet, so there is nothing to derive a correction
     // AGAINST and this scan cannot put its tracking back in step. Held for the FIRST report,
     // which is the first moment the repair can run at all (onFacelets reconciles it there).
@@ -102,7 +128,12 @@ export function repairTracking(scanned, { reconciling = false } = {}) {
     // it and the report describing the cube AFTER, and a correction derived from that pair is an
     // invented one (found by the same audit's second pass, 2026-09-05). dropHeldScan is the
     // other half.
-    scanAwaitingReport = { facelets: scanned, turns: turnsReported() };
+    //
+    // A report from before the latest turn is the same case (found by audit, 2026-09-13): the pair
+    // derived an offset of exactly that turn, and the next report was corrected by it twice over.
+    // `tracking` travels with the hold, because by the report the trust in force is the scan's own.
+    const heldTracking = scanAwaitingReport ? scanAwaitingReport.tracking : tracking;
+    scanAwaitingReport = { facelets: scanned, turns: turnsReported(), tracking: heldTracking };
     return null;
   }
   // On an UNBROKEN chain the scan and the cube must agree. If they do not, one of them is wrong —
@@ -124,7 +155,7 @@ export function repairTracking(scanned, { reconciling = false } = {}) {
   // tracking" purely because a scramble had been rolled, which is the one moment the repair
   // exists for (found by audit, 2026-09-05). chainTrusted() is the predicate that means what
   // this sentence claims: trusted knowledge of the cube ITSELF.
-  if (chainTrusted() && !reconciling && scanned !== state.live) {
+  if (tracking && scanned !== applyOffset(state.cube.offset, reported, Cube)) {
     return {
       ok: false,
       text: 'This is not what your cube is reporting, and the cube was tracking. One of the two is wrong, so nothing was changed — check that you scanned the cube that is connected.',
@@ -142,15 +173,15 @@ export function repairTracking(scanned, { reconciling = false } = {}) {
       text: 'This scan and the last one imply two different corrections, with nothing lost in between — so what this cube reports cannot be corrected by any fixed amount. cubus has stopped trusting its reports; the camera still solves it.',
     };
   }
-  if (!offset) return null;
-  state.cube.offset = isIdentity(offset) ? null : offset;
-  state.cube.offsetAt = state.cube.offset ? Date.now() : 0;
-  state.cube.offsetFrom = state.cube.offset ? 'scan' : '';
+  // A checker that established nothing repaired nothing, and the scan must not be adopted as if it
+  // had: the next report would replace it, uncorrected, under the camera's trust.
+  if (offset === null) return { ok: false, text: SCAN_UNCHECKED };
   // Recomputed on the spot: live is the last report WITH the correction applied, and leaving it
   // describing the old correction until the next ~1s snapshot lands means everything reading it
   // in between sees a position that is no longer claimed.
-  const corrected = applyOffset(state.cube.offset, reported, Cube);
-  if (corrected !== null) state.live = corrected;
+  const corrected = installOffset(offset, 'scan', [reported], Cube);
+  if (corrected === null) return { ok: false, text: SCAN_UNCHECKED };
+  state.live = corrected;
   return state.cube.offset
     ? { ok: true, text: 'Tracking repaired — your cube is back in step for as long as it stays connected, and you never had to solve it.' }
     : null;
@@ -259,6 +290,10 @@ export function adoptConnection(mac, name) {
   // on the strength of a camera scan of some *other* cube.
   state.live = null;
   state.reported = null;
+  // With the report, the count it was recorded at: the new session counts its own turns from zero,
+  // so the last one's count left behind would say the report is a turn behind, or abreast of one
+  // it never saw.
+  reportedAtTurns = 0;
   lastSerialSeen = null;
   // Including a scan that was waiting to be reconciled: it is evidence about the cube that was in
   // front of the camera, and this may be another one.
@@ -285,6 +320,13 @@ export function adoptConnection(mac, name) {
   if (state.reconnect && state.screen === 'home') shell.refreshScreen();
 }
 
+/** Say that the reconnect question changed: Home refreshes to show it; from any other screen,
+ *  Settings repaints. */
+function questionChanged() {
+  if (state.screen === 'home') shell.refreshScreen();
+  else repaintSettings();
+}
+
 /** The cube answered nothing — getState timed out or rejected. This used to be swallowed with an
  *  empty catch, and the screen showed a connected cube that had said nothing; now it is said. The
  *  reading is already 'no-report' when something is remembered (set at adoptConnection); with
@@ -294,33 +336,13 @@ export function reportSilence() {
   if (!state.reconnect) {
     state.reconnect = { reading: 'no-report', candidate: null, raw: null, seenAt: 0 };
   }
-  // Settings goes through the deferral, like every other async repaint of it.
-  if (state.screen === 'home') shell.refreshScreen();
-  else repaintSettings();
+  questionChanged();
 }
 
-/** A snapshot from the connected cube. Always records what the cube says; only changes the
- *  SUBJECT when the subject is that cube — otherwise pressing Random would have its arrangement
- *  quietly replaced by the real one a second later. */
-export function onFacelets(reported, serial) {
-  if (!reported) return;
-  // The self-check gates the STATE channel too, and this is the half that was missing: only moves
-  // were gated, so a refused cube's reports went on becoming the app's subject — driving the net
-  // and the 3D cube, being written into the registry as "as we last saw it", and standing as the
-  // raw report a camera scan would derive a correction from. A refusal is a PROOF that this
-  // cube's two channels disagree, which makes its state reports exactly as unusable as its moves
-  // and rather more dangerous, because a state is a claim about where the cube IS.
-  //
-  // Here rather than in the session listener, so the test seam (window.cubusFeed) passes through
-  // the same gate the driver does — a seam that skipped it would be a lookalike, and this
-  // behaviour would have no test that could see it. The checker has already been shown this
-  // report by the time either caller runs, so the report that CAUSED the refusal is dropped too,
-  // which is the point.
-  if (cubeRefused()) return;
-  // What the cube literally said, before any correction. A repair derives the offset from the
-  // RAW report — deriving it from a corrected one produces the identity.
-  state.reported = reported;
-  lastSerialSeen = Number.isInteger(serial) ? serial & 0xffff : null;
+/** A camera reading held for this connection's first report, reconciled against that report.
+ *  @returns {boolean} false when the report must go no further: the scan and it could not be
+ *  reconciled. */
+function reconcileHeldScan() {
   // A camera reading taken before this connection had said anything is RECONCILED here, against
   // the report it was waiting for. Two things this is, in order:
   //
@@ -339,20 +361,26 @@ export function onFacelets(reported, serial) {
   // and our door never delivered, and it is the same question either way — an offset between an
   // arrangement the camera saw and one the cube has since turned away from is invented.
   if (scanAwaitingReport && scanAwaitingReport.turns !== turnsReported()) dropHeldScan();
-  if (scanAwaitingReport) {
-    const scanned = scanAwaitingReport.facelets;
-    scanAwaitingReport = null;
-    awaitingReport = false;
-    state.reconnect = null;
-    const repaired = repairTracking(scanned, { reconciling: true });
-    if (repaired && !repaired.ok) {
-      // The camera and this cube cannot be related by any fixed correction. The scan was good
-      // knowledge of the cube in the hand; it is not knowledge of what this stream means, and a
-      // stream nothing could reconcile must not go on being read as the trusted subject.
-      markStale('a scan and the cube’s first report could not be reconciled');
-      return;
-    }
+  if (!scanAwaitingReport) return true;
+  const { facelets: scanned, tracking } = scanAwaitingReport;
+  scanAwaitingReport = null;
+  awaitingReport = false;
+  state.reconnect = null;
+  const repaired = repairTracking(scanned, { tracking });
+  if (repaired && !repaired.ok) {
+    // The camera and this cube cannot be related by any fixed correction. The scan was good
+    // knowledge of the cube in the hand; it is not knowledge of what this stream means, and a
+    // stream nothing could reconcile must not go on being read as the trusted subject.
+    markStale('a scan and the cube’s next report could not be reconciled');
+    return false;
   }
+  return true;
+}
+
+/** The reconnect question, as a report meets it: the connection's first report reads the
+ *  evidence, and every report finds out whether a question is open.
+ *  @returns {boolean} true when a question holds the subject, so the report goes no further. */
+function readFirstReport(reported) {
   // The connection's FIRST report is the reconnect evidence: raw against the remembered raw,
   // and the reading chooses the picture and the words — never the trust.
   if (awaitingReport) {
@@ -364,28 +392,28 @@ export function onFacelets(reported, serial) {
       // not adopted: no reading grants trust, only the user's answer does. Settings repaints
       // through the deferral, like every other async repaint of it — the first report lands
       // about a second after pairing, exactly when a nickname is likely mid-typing.
-      ingestFacelets(r.candidate);
-      state.cube.isPhysical = true;
-      if (state.screen === 'home') shell.refreshScreen();
-      else repaintSettings();
-      return;
+      if (state.cube.isPhysical) ingestFacelets(r.candidate);
+      questionChanged();
+      return true;
     }
-    // Nothing remembered (or nothing derivable): no question to ask — today's flow, below. A
-    // question opened over the memory alone ('no report') closes here: the report is the better
-    // evidence, and it said the memory was not usable after all.
+    // Nothing remembered (or nothing derivable): no question to ask — today's flow, in
+    // publishReport. A question opened over the memory alone ('no report') closes here: the
+    // report is the better evidence, and it said the memory was not usable after all.
     const hadQuestion = Boolean(state.reconnect);
     state.reconnect = null;
-    if (hadQuestion) {
-      if (state.screen === 'home') shell.refreshScreen();
-      else repaintSettings();
-    }
+    if (hadQuestion) questionChanged();
   }
   // The candidate is FROZEN while the reconnect question is open: an untrusted report updating
   // the picture being confirmed would make it a picture nobody can confirm. The raw report is
-  // still recorded above — the Yes derives against it and the repair scan reads it — but `live`
-  // stays unclaimed (the cube's true arrangement is precisely what is being asked) and the
-  // subject and the screens hold still until the answer.
-  if (state.reconnect) return;
+  // still recorded, by onFacelets before this — the Yes derives against it and the repair scan
+  // reads it — but `live` stays unclaimed (the cube's true arrangement is precisely what is being
+  // asked) and the subject and the screens hold still until the answer.
+  return Boolean(state.reconnect);
+}
+
+/** A report no question holds, on its way to the stream: corrected, made the subject when the
+ *  subject is this cube, remembered on a trusted chain, and handed to the screen. */
+function publishReport(reported, serial) {
   // The ONE place a correction is applied to the stream.
   const f = applyOffset(state.cube.offset, reported, Cube);
   if (f === null) {
@@ -411,4 +439,32 @@ export function onFacelets(reported, serial) {
   }
   if (hooks.liveUpdate) hooks.liveUpdate(f, serial);
   else if (changed && state.screen === 'home') shell.refreshScreen();
+}
+
+/** A snapshot from the connected cube. Always records what the cube says; only changes the
+ *  SUBJECT when the subject is that cube — otherwise pressing Random would have its arrangement
+ *  quietly replaced by the real one a second later. */
+export function onFacelets(reported, serial) {
+  if (!reported) return;
+  // The self-check gates the STATE channel too, and this is the half that was missing: only moves
+  // were gated, so a refused cube's reports went on becoming the app's subject — driving the net
+  // and the 3D cube, being written into the registry as "as we last saw it", and standing as the
+  // raw report a camera scan would derive a correction from. A refusal is a PROOF that this
+  // cube's two channels disagree, which makes its state reports exactly as unusable as its moves
+  // and rather more dangerous, because a state is a claim about where the cube IS.
+  //
+  // Here rather than in the session listener, so the test seam (window.cubusFeed) passes through
+  // the same gate the driver does — a seam that skipped it would be a lookalike, and this
+  // behaviour would have no test that could see it. The checker has already been shown this
+  // report by the time either caller runs, so the report that CAUSED the refusal is dropped too,
+  // which is the point.
+  if (cubeRefused()) return;
+  // What the cube literally said, before any correction. A repair derives the offset from the
+  // RAW report — deriving it from a corrected one produces the identity.
+  state.reported = reported;
+  reportedAtTurns = turnsReported();
+  lastSerialSeen = Number.isInteger(serial) ? serial & 0xffff : null;
+  if (!reconcileHeldScan()) return;
+  if (readFirstReport(reported)) return;
+  publishReport(reported, serial);
 }
