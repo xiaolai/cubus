@@ -6,10 +6,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from './cube-frame.js';
-import { isFace, orientationMatrix, sameAxis } from './cube-orientation.js';
-import { parseHighlight, pieceKey, resolveHighlight, slotVector } from './cube-highlight.js';
-import { STICKER_PALETTES } from './sticker-palettes.js';
+import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from '../../../apps/web/lib/cube-frame.js';
+import { isFace, orientationMatrix, sameAxis } from '../../../apps/web/lib/cube-orientation.js';
+import { parseHighlight, pieceKey, resolveHighlight, slotVector } from '../../../apps/web/lib/cube-highlight.js';
+import { STICKER_PALETTES } from '../../../apps/web/lib/sticker-palettes.js';
 
 // The six sticker colours of each set, by position on a Western cube: the one table, shared with
 // the app's flat nets (lib/sticker-palettes.js). The `scheme` attribute remaps it (ADR 0001).

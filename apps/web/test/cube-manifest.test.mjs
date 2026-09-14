@@ -27,8 +27,9 @@ test('it names the element, its bundle, and a schema a reader can check', () => 
   assert.equal(manifest.tag, 'cubus-cube');
   assert.equal(manifest.bundle, 'cubus-cube.js');
   assert.equal(manifest.schema, 1);
-  // No release version, deliberately — see `build-cube-manifest.mjs`. A number to compare is an
-  // invitation to compare numbers instead of asking whether the capability is there.
+  // No release version, deliberately — see the renderer package's `build-cube-manifest.mjs`. A
+  // number to compare is an invitation to compare numbers instead of asking whether the
+  // capability is there.
   assert.equal('version' in manifest, false, 'a release version crept into the manifest');
 });
 
@@ -60,7 +61,7 @@ test('it lists the methods a lesson drives, and nothing private', () => {
 // `nonexistent-attribute`, `nonexistentMethod` and `constructor` into the manifest passed all five.
 // This reads the built bundle and demands exact equality, which is the claim the file is making.
 test('the manifest is exactly what the bundle registers, name for name', async () => {
-  const { readElement } = await import('../read-element.mjs');
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
   const live = await readElement();
   assert.equal(live.tag, manifest.tag);
   assert.deepEqual(manifest.attributes, live.attributes,

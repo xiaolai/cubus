@@ -323,8 +323,18 @@ function assertScannerAssets(root, dist) {
   }
 }
 
+/**
+ * Where the renderer's source lives, named from this app's root.
+ *
+ * It is not under `lib/` any more — `<cubus-cube>` is `packages/cubus-cube/` since 2026-09-14 —
+ * and the bundle it produces still lands in this app's `vendor/`. A constant rather than an
+ * inline join, because the freshness check below is the one place that has to know, and a stale
+ * copy of this path would make it check nothing while staying green.
+ */
+const CUBE_ENTRY = '../../packages/cubus-cube/src/cubus-cube.js';
+
 /** The bundle must be newer than every source that went into it. */
-function assertBundleFresh(root) {
+function assertBundleFresh(root, entry = resolve(root, CUBE_ENTRY)) {
   // The esbuild bundle must be newer than its source, or beforeBuildCommand ran
   // out of order and we would ship a stale renderer that still looks fine.
   //
@@ -337,8 +347,13 @@ function assertBundleFresh(root) {
   // is where the silhouette and the camera fit live — so editing it and shipping without a
   // rebuild passed this check while dist/ carried a renderer that behaves differently from its
   // source. That is the same defect the check exists for, one import away from where it looked.
+  // Loud when the entry is not there: the renderer moved out of this package once, and a check
+  // pointed at a file that no longer exists is a check that passes for the wrong reason.
+  if (!existsSync(entry)) {
+    throw new Error(`build: the renderer's entry is not at ${entry} — CUBE_ENTRY is out of date`);
+  }
   const built = statSync(join(root, 'vendor', 'cubus-cube.js')).mtimeMs;
-  const newer = bundleInputs(join(root, 'lib', 'cubus-cube.js'))
+  const newer = bundleInputs(entry)
     .filter((f) => statSync(f).mtimeMs > built)
     .map((f) => posix(root, f));
   if (newer.length) {
@@ -357,7 +372,9 @@ function assertBundleFresh(root) {
  * bundle. They ran here as one body, which made the order look like a detail rather than the
  * contract it is — nothing may be checked before the copy that produces it.
  *
- * @param {{ root?: string, dist?: string, freshness?: boolean }} [o]
+ * @param {{ root?: string, dist?: string, freshness?: boolean, cubeEntry?: string }} [o]
+ *   `cubeEntry` is the renderer's source entry, defaulting to the package beside this one. A
+ *   parameter because the dist tests assemble a synthetic root and need an entry inside it.
  *   `freshness` (default on) is the bundle-newer-than-source check at the end: the CLI's
  *   guarantee that beforeBuildCommand ran its steps in order. A test of what dist CONTAINS
  *   turns it off, because a working tree with an edited source and a not-yet-rebuilt bundle is
@@ -365,7 +382,7 @@ function assertBundleFresh(root) {
  *   comparing content — which is the better message for it.
  * @returns {{ dist: string, referenced: number }}
  */
-export function assembleDist({ root = here, dist = join(root, 'dist'), freshness = true } = {}) {
+export function assembleDist({ root = here, dist = join(root, 'dist'), freshness = true, cubeEntry } = {}) {
   // Absolute from here down, so "is the destination inside the source" is a question about
   // directories rather than about whoever's cwd this ran under — and so the walk up to the
   // filesystem root that answers it has a root to reach: `dirname` on a relative path stops at
@@ -379,7 +396,7 @@ export function assembleDist({ root = here, dist = join(root, 'dist'), freshness
   const referenced = assertReferencedAssets(out);
   assertSolverAssets(out);
   assertScannerAssets(src, out);
-  if (freshness) assertBundleFresh(src);
+  if (freshness) assertBundleFresh(src, cubeEntry ? resolve(cubeEntry) : undefined);
   return { dist: out, referenced };
 }
 
