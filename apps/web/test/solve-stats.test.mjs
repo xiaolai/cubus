@@ -195,6 +195,12 @@ test('turn rate pools the session rather than averaging per-solve rates', () => 
   assert.equal(r.solves, 2);
 });
 
+test('a time too small to divide by is no turn rate, not an infinite one', () => {
+  // Finite and positive going in, and 42 divided by it is Infinity coming out, which the card
+  // would print as the word. averageOf already refuses a non-finite mean; turnRate did not.
+  assert.equal(turnRate([{ time: `0.${'0'.repeat(320)}1`, moves: 42, source: 'cube' }]), null);
+});
+
 test('cubeTimedCount says how many, so the card can explain an absent rate', () => {
   assert.equal(cubeTimedCount([{ time: '1.00', source: 'cube', moves: 5 }, { time: '2.00', source: 'manual' }]), 1);
   assert.equal(cubeTimedCount([]), 0);

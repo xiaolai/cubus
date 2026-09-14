@@ -35,12 +35,21 @@ export function recentSolves() {
   // solves" becomes five solves that were not the last five — and an ao5 computed over them looks
   // perfectly reasonable. An unusable row stays in place as a record with no usable time, which
   // is what makes averageOf() refuse rather than quietly reach further back.
-  const ok = (s) => s && typeof s === 'object' && !Array.isArray(s);
-  return raw.map((s) => ({
-    n: ok(s) && Number.isSafeInteger(s.n) && s.n > 0 ? s.n : 0,
-    time: ok(s) && typeof s.time === 'string' ? s.time : '',
-    scramble: ok(s) && typeof s.scramble === 'string' ? s.scramble : '',
-    at: ok(s) && Number.isSafeInteger(s.at) && s.at > 0 ? s.at : 0,
+  return raw.map((s) => normaliseSolve(s));
+}
+
+const isRecord = (s) => Boolean(s) && typeof s === 'object' && !Array.isArray(s);
+const positiveSafeInteger = (v) => Number.isSafeInteger(v) && v > 0;
+
+/** One stored row, as `recentSolves` hands it on: a record that is not an object is a blank that
+ *  keeps its place, and a record's fields are each kept only when usable. */
+function normaliseSolve(s) {
+  if (!isRecord(s)) return { n: 0, time: '', scramble: '', at: 0 };
+  return {
+    n: positiveSafeInteger(s.n) ? s.n : 0,
+    time: typeof s.time === 'string' ? s.time : '',
+    scramble: typeof s.scramble === 'string' ? s.scramble : '',
+    at: positiveSafeInteger(s.at) ? s.at : 0,
     // What a CUBE-timed solve knows and a hand-timed one cannot — and, until 2026-09-05, what
     // this whitelist silently ate. `pushSolve` writes them and then reads the list back THROUGH
     // here to write it out again, so every recorded solve erased them from every older record:
@@ -50,11 +59,20 @@ export function recentSolves() {
     // Per field, and only when usable. A missing key is the ABSENCE this app owes the reader —
     // `moves: 0` or `source: 'cube'` over a hand-timed row would be a fabricated fact about a
     // solve, which is the one thing the statistics module exists to refuse.
-    ...(ok(s) && SOLVE_SOURCES.has(s.source) ? { source: s.source } : {}),
-    ...(ok(s) && Number.isSafeInteger(s.moves) && s.moves > 0 ? { moves: s.moves } : {}),
-    ...(ok(s) && Number.isFinite(s.inspectionMs) && s.inspectionMs >= 0 && s.inspectionMs <= MAX_INSPECTION_MS
+    ...(SOLVE_SOURCES.has(s.source) ? { source: s.source } : {}),
+    ...(positiveSafeInteger(s.moves) ? { moves: s.moves } : {}),
+    ...(Number.isFinite(s.inspectionMs) && s.inspectionMs >= 0 && s.inspectionMs <= MAX_INSPECTION_MS
       ? { inspectionMs: s.inspectionMs } : {}),
-  }));
+  };
+}
+
+/** The history, and the number the next solve takes. The reader refuses an `n` past
+ *  MAX_SAFE_INTEGER, so a history already at it is renumbered by age: written as one more, the new
+ *  solve would read back as 0, and every solve after it would too. */
+function numbered(list) {
+  const hi = list.reduce((top, s) => Math.max(top, s.n), 0);
+  if (Number.isSafeInteger(hi + 1)) return { list, next: hi + 1 };
+  return { list: list.map((s, i) => (s.n > 0 ? { ...s, n: list.length - i } : s)), next: list.length + 1 };
 }
 
 /** Record a solve. RETURNS whether the browser actually kept it: a private window or a full
@@ -62,14 +80,14 @@ export function recentSolves() {
  *  with nothing said is indistinguishable from a bug in the timer. The caller says so on screen;
  *  save() already warns to the console. */
 export function pushSolve(time, extra = {}) {
-  const list = recentSolves();
+  const { list, next } = numbered(recentSolves());
   return save('cubusSolves', {
     list: [
       // Highest n, not the first row's. Corrupt rows keep their place with a placeholder n of 0,
       // so reading position zero could restart numbering at 1 half-way through a session.
       // `moves` and `source` are what a cube-timed solve knows and a hand-timed one cannot:
       // a turn rate is a fact about a move stream, so it may only ever be computed from these.
-      { n: list.reduce((hi, s) => Math.max(hi, s.n || 0), 0) + 1, time, scramble: currentScramble || '—', at: Date.now(), ...extra },
+      { n: next, time, scramble: currentScramble || '—', at: Date.now(), ...extra },
       ...list,
       // 100, not 50. Stats offers an ao100, and a 50-record history made that statistic
       // unreachable by construction — a number on screen that could never stop being an em dash.
@@ -152,19 +170,23 @@ function trivialState(cube) {
  * roll that happens before anyone asked for one must not touch it. Rolling ahead while it did
  * would have filed a solve under a scramble the solver never saw.
  */
-async function rollScramble() {
+export async function rollScramble({
+  signal = null,
+  // Crypto random-state, never Cube.random(): the uniform draw is the project's scramble rule
+  // (AGENTS.md), and Math.random is exactly the quiet weakening it forbids.
+  draw = () => randomCube(Cube),
+  solve = (f, bounds) => solverWorker().solve(f, bounds),
+} = {}) {
   // cubejs no longer SEARCHES here, but it is still the parser and the oracle: a state has to
   // be drawn into a Cube, and the answer has to be checked by applying it.
   if (!solverReady) return null;
-  for (let draw = 0; draw < MAX_TRIVIAL_REDRAWS; draw++) {
-    // Crypto random-state, never Cube.random(): the uniform draw is the project's scramble rule
-    // (AGENTS.md), and Math.random is exactly the quiet weakening it forbids.
-    const r = randomCube(Cube);
+  for (let tries = 0; tries < MAX_TRIVIAL_REDRAWS; tries++) {
+    const r = draw();
     if (trivialState(r)) continue;
     const facelets = r.asString();
-    const solution = await solveWithinGodsNumber(facelets, {
-      solve: (f, bounds) => solverWorker().solve(f, bounds),
-    });
+    // The caller's signal rides into every attempt, so a superseded roll stops the pool's search
+    // and its budget escalation rather than running both to the end for nobody.
+    const solution = await solveWithinGodsNumber(facelets, { solve, signal });
     if (solution === undefined) return null; // aborted before an answer; nothing to show
     const alg = invertAlg(solution);
     // Zero trust at the boundary — unchanged in substance and now worth MORE than it was. The
@@ -224,11 +246,13 @@ export function schedulePreroll() {
  * (found by audit, 2026-09-04). Rolling is a real Kociemba search now, so that window is seconds
  * wide rather than notional.
  */
-export async function randomScramble() {
+export async function randomScramble({ signal = null } = {}) {
+  // Called off before it began: nothing is taken, so a roll waiting for the next press still is.
+  if (signal?.aborted) return { facelets: '', alg: '' };
   // Taken BEFORE any await: two presses must not be handed the same pre-rolled cube.
   const ready = nextRoll;
   nextRoll = null;
-  const rolled = ready ?? await rollScramble();
+  const rolled = ready ?? await rollScramble({ signal });
   schedulePreroll(); // there should always be one waiting
   if (!rolled) return { facelets: '', alg: '' };
   return rolled;
@@ -236,6 +260,10 @@ export async function randomScramble() {
 
 /** This roll is the one a solve will be recorded against. */
 export const putInPlay = (rolled) => { if (rolled?.alg) currentScramble = rolled.alg; };
+
+/** No roll is in play: a screen that shows no scramble must not have a solve filed under one it
+ *  never showed. The Timer opens this way (verification, 2026-09-14). */
+export const takeOutOfPlay = () => { currentScramble = ''; };
 
 /** This roll arrived at a moment nothing could use it — hold it for the next press rather than
  *  throwing away a search somebody has already paid for. Never over a roll already waiting: the
