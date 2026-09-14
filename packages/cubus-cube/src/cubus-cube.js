@@ -269,7 +269,7 @@ class CubusCube extends HTMLElement {
     // Writing the attribute is a CUT, not a turn: it states where the cube is, and a state that
     // takes 400ms to become true cannot be read back or asserted. `turnTo()` is the animation.
     else if (name === 'orientation') this.showTurn(this._attrs.orientation, this._attrs.orientation, 1);
-    else if (name === 'back-view') this._dirty = true;
+    else if (name === 'back-view') this._applyCamera(); // splitting halves the aspect the fit is for
     else if (name === 'orbit') this._applyOrbit();
     else if (name === 'facelets' || name === 'scramble') this.reset();
     else if (name === 'alg') {
@@ -356,7 +356,17 @@ class CubusCube extends HTMLElement {
     const key = new THREE.DirectionalLight(0xffffff, 0.95);
     const fill = new THREE.DirectionalLight(0xdfe6ff, 0.45);
     scene.add(hemi, key, fill);
-    const inv = camera.quaternion.clone().invert();
+    // The DEFAULT view is the reference, never `camera` as it stands. By this point `_applyCamera()`
+    // has already posed the camera from whatever camera attributes were present at connect, so
+    // taking the inverse of THAT quaternion rotated the rig by the host's settings — and the same
+    // final attributes lit the cube two ways depending on whether they were written before
+    // connecting or after (found by audit, 2026-09-14). Built from DEFAULTS so the two cannot drift.
+    const reference = new THREE.PerspectiveCamera();
+    const tuned = eyeDirection(Number(CubusCube.DEFAULTS['camera-latitude']), Number(CubusCube.DEFAULTS['camera-longitude']));
+    reference.position.set(tuned[0], tuned[1], tuned[2]);
+    reference.up.set(0, 1, 0);
+    reference.lookAt(0, 0, 0);
+    const inv = reference.quaternion.clone().invert();
     this._lights = [
       [hemi, new THREE.Vector3(0, 1, 0).applyQuaternion(inv)],
       [key, new THREE.Vector3(5, 8, 6).applyQuaternion(inv)],
@@ -897,7 +907,7 @@ class CubusCube extends HTMLElement {
       scale: this._num('facelet-scale', 0.9),
       cull: !stable,
     });
-    const geom = { points, vfovDeg: this.camera.fov, aspect: this.camera.aspect || 1, eye, worldUp };
+    const geom = { points, vfovDeg: this.camera.fov, aspect: this._drawAspect(), eye, worldUp };
     const d = stable ? fitDistanceStable(geom) : fitDistance(geom);
     // The controls clamp the distance on every update(), so their limits follow the fit: a user
     // may zoom in to look closer, never out past the frame — and a resize puts the fit back.
@@ -939,6 +949,26 @@ class CubusCube extends HTMLElement {
     return v;
   }
 
+  /**
+   * The aspect ratio the cube is actually drawn at: half the width when `back-view` splits the
+   * element, the whole of it otherwise. The top-right inset keeps the element's own shape, so it
+   * needs nothing of its own.
+   *
+   * ONE definition, for the fit and for `_draw()`. The fit used to read `camera.aspect`, which
+   * `_resize()` sets to the WHOLE element — so a side-by-side pane half as wide was framed for
+   * twice its width, and at 320x240 the cube ran off both edges of both panes (found by audit,
+   * 2026-09-14).
+   */
+  _drawAspect() {
+    const w = this.clientWidth || 1, h = this.clientHeight || 1;
+    return this._split(w) ? Math.floor(w / 2) / h : w / h;
+  }
+
+  /** Is this element drawn as two panes? Below 4px there is no meaningful split. */
+  _split(w = this.clientWidth || 1) {
+    return (this._attrs['back-view'] || 'none') === 'side-by-side' && w >= 4;
+  }
+
   /** Turn the light rig with the given camera (the main one by default). */
   _placeLights(cam = this.camera) {
     if (!this._lights || !cam) return;
@@ -967,12 +997,10 @@ class CubusCube extends HTMLElement {
     this._cullGhosts();
     const bv = this._attrs['back-view'] || 'none';
 
-    // Below 4px there is no meaningful split — fall through to the single view rather than
-    // build a zero-width projection.
-    if (bv === 'side-by-side' && w >= 4) {
+    if (this._split(w)) {
       // The right pane takes the remainder, so an odd width leaves no stale pixel column.
       const left = Math.floor(w / 2), right = w - left;
-      this.camera.aspect = left / h;
+      this.camera.aspect = this._drawAspect();
       this.camera.updateProjectionMatrix();
       // finally, because scissor state outlives this frame: a render throw would otherwise
       // leave every later full-frame draw clipped to the last scissor rectangle.
