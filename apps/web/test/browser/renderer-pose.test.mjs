@@ -117,3 +117,42 @@ test('every settled cubie sits on exact integers, with nothing rounded into plac
     .filter((p) => p.some((v) => !Number.isInteger(v))));
   assert.deepEqual(off, [], 'a settled cubie is off the lattice — the pose is drifting');
 });
+
+// The signed angle, checked where it actually matters — the transport, not the module. The plan
+// names this case: finish `step()` on `R2`, then sample `stepBack()` halfway. A half turn has two
+// ways round and both share their endpoints, so a descriptor carrying a TOKEN rather than a signed
+// angle cannot tell them apart — and an undo that canonicalises puts the moving layer 180 degrees
+// from where the forward playback has it at the mirrored instant.
+test('an undone half turn retraces the way it came, not the other way round', async () => {
+  await build({ facelets: SOLVED });
+  const sample = (backwards) => page.evaluate(async (back) => {
+    const el = window.__cube;
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    el.clock = null;
+    el.reset();
+    el.setAttribute('alg', 'R2');
+    el.clock = 1_000_000;
+    el.step();                        // a half turn runs 380ms at tempo 1
+    if (back) {
+      el.clock = 1_000_000 + 380;     // let it finish
+      await tick();
+      el.clock = 2_000_000;
+      el.stepBack();                  // and undo it
+      el.clock = 2_000_000 + 285;     // three quarters through the undo
+    } else {
+      el.clock = 1_000_000 + 95;      // one quarter through the turn
+    }
+    await tick();
+    el.root.updateMatrixWorld(true);
+    return el.cubies.map((c) => [...c.matrixWorld.elements].map((v) => Math.round(v * 1e5) / 1e5));
+  }, backwards);
+
+  const forward = await sample(false);
+  const undone = await sample(true);
+  // The easing is symmetric, so a quarter of the way forward and three quarters of the way back
+  // are the same instant of the same rotation — reached from opposite ends.
+  assert.deepEqual(undone, forward,
+    'the undo took the other way round: the descriptor has lost the sign of its angle');
+  assert.ok(forward.some((m) => m.some((v) => !Number.isInteger(v))),
+    'precondition: the sample was taken mid-turn, not at an endpoint');
+});
