@@ -24,7 +24,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Every (source, bundle) pair the repo builds. Adding one here is what makes it guarded.
 const BUNDLES = [
@@ -32,7 +33,18 @@ const BUNDLES = [
     name: 'cubus-cube',
     build: 'pnpm build:cube',
     bundle: '../vendor/cubus-cube.js',
-    sources: ['../lib/cubus-cube.js'],
+    sources: [
+      '../lib/cubus-cube.js', '../lib/cube-frame.js', '../lib/cube-highlight.js', '../lib/cube-orientation.js',
+      '../lib/sticker-palettes.js',
+    ],
+    // The renderer imports three of cube-orientation.js's exports (isFace, orientationMatrix,
+    // sameAxis); esbuild drops the rest, and the messages inside them. Same delete-when-used
+    // contract as the panel's list below.
+    treeShaken: ['CENTERS', 'orientationPerm', 'orientationRelabel', 'permCache', 'turnFacelets'],
+    treeShakenMessages: [
+      'cube-orientation: sticker', 'cube-orientation: rotation is not a bijection',
+      'relabelling is not a bijection', 'cube-orientation: expected 54 facelets, got',
+    ],
   },
   {
     name: 'cubejs',
@@ -75,6 +87,7 @@ const BUNDLES = [
       '../../../packages/cube-scanner/src/misread-decode.ts',
       '../../../packages/cube-scanner/src/onnx-detect.ts',
       '../../../packages/cube-scanner/src/onnx-postprocess.ts',
+      '../../../packages/cube-scanner/src/scheme.ts',
       '../../../packages/cube-scanner/src/types.ts',
       // The misread decode's client half: the panel spawns the worker below and falls back to
       // running the decode here when a page has no `Worker`, so both halves ship in this bundle.
@@ -86,7 +99,11 @@ const BUNDLES = [
     // the panel ever starts using one, delete it here and the guard covers it again.
     // `detectFace` is the composed preprocess→run→fit convenience the package entry offers and the
     // tests exercise; the panel drives the two halves through a `Detector`, so esbuild drops it.
-    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets', 'detectFace'],
+    // `COLOUR_NAMES` is scheme.ts's table of colour words, which the panel does not import.
+    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets', 'detectFace', 'COLOUR_NAMES'],
+    // encodeFacelets' refusal of a malformed state (2026-09-13) leaves with the function: the
+    // message is in facelet-cube.ts and, correctly, nowhere in a bundle that never encodes.
+    treeShakenMessages: ['encodeFacelets: not a well-formed cube state'],
   },
   {
     // The misread decoder, on its own thread (2026-09-05). A refusal used to spend up to 3.0 s of
@@ -106,11 +123,18 @@ const BUNDLES = [
       '../../../packages/cube-scanner/view/misread-protocol.ts',
       '../../../packages/cube-scanner/src/misread-decode.ts',
       '../../../packages/cube-scanner/src/facelet-cube.ts',
+      '../../../packages/cube-scanner/src/scheme.ts',
       '../../../packages/cube-scanner/src/types.ts',
     ],
     // The two facelet-cube exports the decoder never calls; same delete-when-used contract as the
     // panel's list above.
-    treeShaken: ['SOLVED_FACELETS', 'encodeFacelets'],
+    // And scheme.ts, of which the decoder imports five exports (colourOf, colourOfSlot, positionOf,
+    // SCHEMES, slotOf); esbuild drops the rest.
+    treeShaken: [
+      'SOLVED_FACELETS', 'encodeFacelets', 'COLOURS', 'COLOUR_NAMES', 'adjacentIn', 'commonNeighbours',
+      'heldUpColour', 'holdOffset', 'isColour', 'neighbourColour', 'neighbourColours', 'schemeOfCentres',
+    ],
+    treeShakenMessages: ['encodeFacelets: not a well-formed cube state'],
   },
   {
     // The protocol layer for every smart cube: an unpublished git dependency, pinned by commit
@@ -160,6 +184,44 @@ test('every source -> bundle pair in the repo is guarded here', () => {
   const guarded = BUNDLES.map((b) => b.bundle.split('/').pop());
   const unguarded = [...new Set(emitted)].filter((f) => !guarded.includes(f)).sort();
   assert.deepEqual(unguarded, [], 'a build script emits a bundle nothing in BUNDLES checks');
+});
+
+// The `sources` above are what the two checks below READ, so a file a bundle is built from that
+// no list names is guarded by nothing: an edit to it ships in a stale bundle with every check
+// green. Hand-kept, the lists had drifted for three bundles at once (found by audit, 2026-09-13),
+// so esbuild is asked, from the build script that emits each bundle. A listed file esbuild drops
+// (a type-only seam) is allowed; an unlisted one it keeps is not.
+test('every repo file a bundle is built from is one its checks read', async () => {
+  const { build } = await import('esbuild');
+  const packages = [
+    { dir: new URL('../', import.meta.url), json: '../package.json' },
+    { dir: new URL('../../../packages/cube-scanner/', import.meta.url), json: '../../../packages/cube-scanner/package.json' },
+  ];
+  const here = fileURLToPath(new URL('./', import.meta.url));
+  const unlisted = [];
+  for (const b of BUNDLES) {
+    const file = b.bundle.split('/').pop();
+    const emitters = packages.flatMap(({ dir, json }) => Object.values(JSON.parse(read(json)).scripts ?? {})
+      .map(String)
+      .filter((cmd) => cmd.split(/\s+/).some((w) => w.startsWith('--outfile=') && w.endsWith(`vendor/${file}`)))
+      .map((cmd) => ({ cwd: fileURLToPath(dir), cmd })));
+    assert.equal(emitters.length, 1, `${b.name}: ${emitters.length} build scripts emit ${file}`);
+    const words = emitters[0].cmd.split('&&')[0].trim().split(/\s+/);
+    assert.equal(words[0], 'esbuild', `${b.name}: its build is not a plain esbuild command, so its inputs cannot be derived`);
+    const flag = (name) => words.find((w) => w.startsWith(`--${name}=`))?.slice(name.length + 3);
+    const { metafile } = await build({
+      absWorkingDir: emitters[0].cwd,
+      entryPoints: [words.slice(1).find((w) => !w.startsWith('-'))],
+      bundle: true, write: false, metafile: true, logLevel: 'silent',
+      format: flag('format'), target: flag('target'),
+    });
+    for (const input of Object.keys(metafile.inputs)) {
+      if (input.includes('node_modules')) continue;
+      const listed = relative(here, resolve(emitters[0].cwd, input)).split(sep).join('/');
+      if (!b.sources.includes(listed)) unlisted.push(`${b.name}: ${listed}`);
+    }
+  }
+  assert.deepEqual(unlisted.sort(), [], 'a bundle is built from a file its sources do not name, so nothing guards it');
 });
 
 for (const b of BUNDLES) {

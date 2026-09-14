@@ -38,11 +38,16 @@ export const EDGE_FACELET: readonly (readonly number[])[] = [
   [48, 14],
 ];
 
-// Solved-color letters of each cubie, in the slot's own facelet order.
-export const CORNER_COLOR: readonly string[][] = CORNER_FACELET.map((t) =>
-  t.map((i) => SOLVED[i]!),
+// Solved-color letters of each cubie, in the slot's own facelet order. Frozen, table and rows,
+// not only typed readonly: the type left each row a mutable array at run time, and one
+// `CORNER_COLOR[0][0] = 'X'` failed every later scan for the life of the process (found by
+// audit, 2026-09-13).
+export const CORNER_COLOR: readonly (readonly string[])[] = Object.freeze(
+  CORNER_FACELET.map((t) => Object.freeze(t.map((i) => SOLVED[i]!))),
 );
-export const EDGE_COLOR: readonly string[][] = EDGE_FACELET.map((t) => t.map((i) => SOLVED[i]!));
+export const EDGE_COLOR: readonly (readonly string[])[] = Object.freeze(
+  EDGE_FACELET.map((t) => Object.freeze(t.map((i) => SOLVED[i]!))),
+);
 
 /** 90° clockwise position map for a 3x3 face in reading order; the centre (index 4) is fixed. */
 const ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2] as const;
@@ -54,9 +59,12 @@ const ROT90 = [6, 3, 0, 7, 4, 1, 8, 5, 2] as const;
  * it — the rotation search in `ai-assemble` and the misread decoder — read the same table. Called
  * on the identity array it yields the position map itself, which is how a canonical position is
  * translated back to the one a user actually sees: `rotateFace([0..8], k)[canonical] === asShown`.
+ *
+ * The result is always a fresh array, so a caller may keep or change it. At the multiples of four
+ * it used to be the caller's own array handed back (found by audit, 2026-09-13).
  */
-export function rotateFace<T>(a: T[], k: number): T[] {
-  let out = a;
+export function rotateFace<T>(a: readonly T[], k: number): T[] {
+  let out = a.slice();
   for (let t = 0; t < ((k % 4) + 4) % 4; t++) out = ROT90.map((i) => out[i]!);
   return out;
 }
@@ -83,7 +91,9 @@ const SIDE_OF_POSITION: Readonly<Record<number, Side>> = {
  *
  * The scan screen paints each face tile's four edges in these colours, so a user can see which
  * way up to hold a side. `apps/web/lib/screens/scan.js` carries a copy (it cannot import
- * TypeScript); `tests/facelet-cube.test.ts` pins the two equal.
+ * TypeScript); `apps/web/test/scan-screen.test.mjs` imports THIS export and asserts the tiles are
+ * painted from it, so the copy cannot drift from this table. (This once said
+ * `tests/facelet-cube.test.ts` pinned the two equal; it compared nothing to the copy.)
  */
 export const FACE_NEIGHBOURS: Readonly<Record<Face, Readonly<Record<Side, Face>>>> = (() => {
   const out = {} as Record<Face, Record<Side, Face>>;
@@ -126,7 +136,13 @@ export const CENTER_INDEX: Readonly<Record<Face, number>> = {
  */
 export function decodeFacelets(f: string): CubeState | null {
   if (f.length !== 54) return null;
+  const corners = decodeCorners(f);
+  const edges = corners && decodeEdges(f);
+  return corners && edges ? { ...corners, ...edges } : null;
+}
 
+/** The eight corner slots of `f`, or null when one holds no real corner cubie. */
+function decodeCorners(f: string): Pick<CubeState, 'cp' | 'co'> | null {
   const cp = new Array<number>(8);
   const co = new Array<number>(8);
   for (let i = 0; i < 8; i++) {
@@ -153,7 +169,11 @@ export function decodeFacelets(f: string): CubeState | null {
     cp[i] = found;
     co[i] = ori;
   }
+  return { cp, co };
+}
 
+/** The twelve edge slots of `f`, or null when one holds no real edge cubie. */
+function decodeEdges(f: string): Pick<CubeState, 'ep' | 'eo'> | null {
   const ep = new Array<number>(12);
   const eo = new Array<number>(12);
   for (let i = 0; i < 12; i++) {
@@ -179,12 +199,24 @@ export function decodeFacelets(f: string): CubeState | null {
     ep[i] = found;
     eo[i] = ori;
   }
-
-  return { cp, co, ep, eo };
+  return { ep, eo };
 }
 
-/** Encode cubie permutation + orientation back into a facelet string. */
+/**
+ * Encode cubie permutation + orientation back into a facelet string.
+ *
+ * Throws on a state that is not well formed. An orientation outside its domain indexed the slot
+ * table with NaN, wrote a named property `join()` drops, and returned the SOLVED string, which the
+ * gate then called a valid cube (found by audit, 2026-09-13). Only the SHAPE is checked: a
+ * well-formed state no legal turn reaches is encoded, because the misread decoder works with those.
+ */
 export function encodeFacelets(s: CubeState): string {
+  const wellFormed =
+    isPermutation(s.cp, 8) &&
+    isPermutation(s.ep, 12) &&
+    inDomain(s.co, 8, 2) &&
+    inDomain(s.eo, 12, 1);
+  if (!wellFormed) throw new TypeError('encodeFacelets: not a well-formed cube state');
   const f = SOLVED.split('');
   for (let i = 0; i < 8; i++) {
     const dst = CORNER_FACELET[i]!;
