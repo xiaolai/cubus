@@ -161,7 +161,7 @@ async function runUnder(executionProviders) {
         chosen,
         ms: Math.round(performance.now() - t0),
         anchors: out.anchors,
-        head: Array.from(out.data.slice(0, 8), (v) => Number(v.toFixed(3))),
+        head: Array.from(out.data.slice(0, 8), (v) => Number(v.toFixed(3)) + 0),
       };
     }, executionProviders);
   } finally {
