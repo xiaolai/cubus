@@ -78,3 +78,18 @@ test('the manifest is a statement about what may be ASKED, not about what works'
   assert.ok(manifest.attributes.includes('orientation'));
   // The behaviour behind it is proved in test/browser/orientation.test.mjs, not here.
 });
+
+// Reading the bundle TWICE, which nothing did until an audit pointed it out (2026-09-14). Node
+// caches an ES module by URL, and a `data:` URL's identity is its content — so without the nonce
+// `read-element.mjs` appends, a second read returns the cached module, nothing calls
+// `customElements.define`, and the call fails with "defined no custom element". The safeguard was
+// there with its reasoning written down; what was missing was anything that would notice it going.
+test('the bundle can be read twice, and says the same thing both times', async () => {
+  const { readElement } = await import('../../../packages/cubus-cube/read-element.mjs');
+  const first = await readElement();
+  const second = await readElement();
+  assert.equal(second.tag, first.tag, 'a second read named a different element');
+  assert.deepEqual(second.attributes, first.attributes, 'a second read found different attributes');
+  assert.deepEqual(second.methods, first.methods, 'a second read found different methods');
+  assert.equal(second.digest, first.digest, 'a second read hashed different bytes');
+});

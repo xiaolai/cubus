@@ -29049,20 +29049,23 @@ function rotation(axis, angle) {
 }
 var TURNED = (() => {
   const table = /* @__PURE__ */ new Map();
-  const cubies = [
+  const solved = [
     ...CORNER_POS.map((pos, home) => ({ kind: "c", home, pos, m: I3 })),
     ...EDGE_POS.map((pos, home) => ({ kind: "e", home, pos, m: I3 }))
   ];
-  const at = (kind, pos) => cubies.find(
+  const at = (geo, kind, pos) => geo.find(
     (c) => c.kind === kind && c.pos[0] === pos[0] && c.pos[1] === pos[1] && c.pos[2] === pos[2]
   );
   const key2 = (kind, home, slot, twist) => `${kind}${home},${slot},${twist}`;
-  const note = (state) => {
-    for (let slot = 0; slot < 8; slot++) table.set(key2("c", state.cp[slot], slot, state.co[slot]), at("c", CORNER_POS[slot]).m);
-    for (let slot = 0; slot < 12; slot++) table.set(key2("e", state.ep[slot], slot, state.eo[slot]), at("e", EDGE_POS[slot]).m);
+  const note = (geo, state) => {
+    for (let slot = 0; slot < 8; slot++) table.set(key2("c", state.cp[slot], slot, state.co[slot]), at(geo, "c", CORNER_POS[slot]).m);
+    for (let slot = 0; slot < 12; slot++) table.set(key2("e", state.ep[slot], slot, state.eo[slot]), at(geo, "e", EDGE_POS[slot]).m);
   };
-  let frontier = [{ state: { cp: [...Array(8).keys()], co: Array(8).fill(0), ep: [...Array(12).keys()], eo: Array(12).fill(0) }, geo: cubies.map((c) => ({ ...c })) }];
-  note(frontier[0].state);
+  let frontier = [{
+    state: { cp: [...Array(8).keys()], co: Array(8).fill(0), ep: [...Array(12).keys()], eo: Array(12).fill(0) },
+    geo: solved
+  }];
+  note(solved, frontier[0].state);
   const faces = Object.keys(NORMAL2);
   for (let depth = 0; depth < 12 && table.size < 480; depth++) {
     const next = [];
@@ -29074,11 +29077,9 @@ var TURNED = (() => {
         const M = rotation(axis, -sign * (Math.PI / 2));
         const moved = geo.map((c) => c.pos[AXIS_OF[axis]] * sign === 1 ? { ...c, pos: applyTo(M, c.pos), m: mul(M, c.m) } : c);
         const before = table.size;
-        const after2 = applyMove(state, face);
-        cubies.length = 0;
-        cubies.push(...moved);
-        note(after2);
-        if (table.size > before) next.push({ state: after2, geo: moved });
+        const landed = applyMove(state, face);
+        note(moved, landed);
+        if (table.size > before) next.push({ state: landed, geo: moved });
       }
     }
     frontier = next;
@@ -29141,7 +29142,7 @@ function after(frame, state, move) {
     state: { ...next, ct }
   };
 }
-var MOVE_DESCRIPTORS = Object.freeze(Object.fromEntries(
+var MOVE_DESCRIPTORS = Object.freeze(Object.assign(/* @__PURE__ */ Object.create(null), Object.fromEntries(
   Object.keys(MOVES).map((name) => {
     const face = name[0];
     const normal = NORMAL2[face];
@@ -29151,7 +29152,7 @@ var MOVE_DESCRIPTORS = Object.freeze(Object.fromEntries(
     const dir = name.endsWith("'") ? -1 : 1;
     return [name, Object.freeze({ axis, layers: Object.freeze([sign]), turns, angle: -dir * sign * turns * (Math.PI / 2) })];
   })
-));
+)));
 
 // src/cubus-cube.js
 var PALETTES = STICKER_PALETTES;
@@ -29952,15 +29953,12 @@ var CubusCube = class _CubusCube extends HTMLElement {
   _parse(alg) {
     const out = [];
     for (const tok of String(alg).trim().split(/\s+/).filter(Boolean)) {
-      const m = /^([URFDLB])(2|')?$/.exec(tok);
-      const f = m && FACES.find((x) => x.key === m[1]);
-      if (!f) {
+      const d = Object.hasOwn(MOVE_DESCRIPTORS, tok) ? MOVE_DESCRIPTORS[tok] : null;
+      if (!d) {
         console.warn(`<cubus-cube> refusing alg \u2014 invalid move token "${tok}"`);
         return [];
       }
-      const turns = m[2] === "2" ? 2 : 1;
-      const dir = m[2] === "'" ? -1 : 1;
-      out.push({ axis: f.axis, layers: [f.sign], angle: -dir * f.sign * turns * Math.PI / 2, turns });
+      out.push({ ...d });
     }
     return out;
   }
@@ -30195,6 +30193,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
     this._playing = false;
     this._applied = 0;
     this._state = SOLVED_STATE;
+    this._writePose();
     const fl = this._facelets();
     this._paint(fl);
     if (!fl) {
