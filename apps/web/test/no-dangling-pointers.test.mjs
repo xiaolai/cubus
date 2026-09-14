@@ -16,7 +16,9 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -31,9 +33,20 @@ const LIVING = [
   'apps/web/lib',
   'apps/web/test',
   'apps/web/bench',
-  'crates/cube-ble/src',
-  'crates/cube-ble/tests',
   'apps/desktop/src-tauri/src',
+  // Every crate, every package and the repository's scripts, since 2026-09-14. Moving the renderer
+  // out of apps/web/lib took its comments out of this scan with nothing noticing, and most of the
+  // rest had never been in. Widened, the scan found two stale pointers, both to that move.
+  'crates',
+  'packages/cubus-cube',
+  'packages/cube-scanner/src',
+  'packages/cube-scanner/view',
+  'packages/cube-scanner/tests',
+  'packages/cube-scanner/scripts',
+  'packages/gan-driver/src',
+  'packages/gan-driver/tests',
+  'packages/gan-driver/scripts',
+  'scripts',
 ];
 
 const SOURCE_EXT = /\.(js|mjs|ts|rs)$/;
@@ -43,15 +56,25 @@ const SOURCE_EXT = /\.(js|mjs|ts|rs)$/;
  *  marker is something another file could copy to opt out. */
 const SELF = 'no-dangling-pointers.test.mjs';
 
-function sources(dir, out = []) {
-  const abs = ROOT + dir;
-  if (!existsSync(abs)) return out;
-  for (const name of readdirSync(abs)) {
-    const rel = `${dir}/${name}`;
-    if (statSync(ROOT + rel).isDirectory()) sources(rel, out);
-    else if (SOURCE_EXT.test(name) && name !== SELF) out.push(rel);
-  }
-  return out;
+/**
+ * The repository's files as a clone has them: tracked, plus untracked files git does not ignore.
+ *
+ * Asked of git, never walked off the disk. A walk counted whatever was lying there, and
+ * `apps/web/dist/` is ignored build output: a stale local build still held `lib/cubus-cube.js`
+ * after the renderer left that path, so a comment naming the old path resolved on the one machine
+ * with the stale build and would not have on any clone (found 2026-09-14). No node_modules, no
+ * target/, no dist/ — by construction, not by a skip list.
+ */
+const REPO_FILES = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
+  cwd: ROOT,
+  encoding: 'utf8',
+  maxBuffer: 1 << 26,
+})
+  .split('\n')
+  .filter((f) => f && existsSync(ROOT + f));
+
+function sources(dir) {
+  return REPO_FILES.filter((f) => f.startsWith(`${dir}/`) && SOURCE_EXT.test(f) && basename(f) !== SELF);
 }
 
 /**
@@ -59,17 +82,22 @@ function sources(dir, out = []) {
  *
  * Two shapes, both unambiguous:
  *   - a path with a directory, rooted at a real top-level dir: `apps/web/lib/foo.js`, `crates/x`
- *   - a bare module filename: `cube-session.js`, `ble-polyfill.test.mjs`
+ *   - a module, bare or with the directories the comment wrote before it: `cube-session.js`,
+ *     `lib/cube-session.js`, `../src/gen4/crypto.js`
  *
- * A bare name is resolved against the sibling directories a comment would plausibly mean, which
- * is where this class of rot actually happens — a module referring to the one next to it.
+ * A module is resolved against the sibling directories a comment would plausibly mean, which is
+ * where this class of rot actually happens — a module referring to the one next to it.
  */
 const ROOTED = /\b((?:apps|crates|packages|scripts|ml|dev-docs)\/[\w./-]*[\w-])/g;
 // The leading lookbehind, not `\b`: after a dot, `\b` matches inside a longer name and captures
 // its tail — `ort.bundle.min.mjs` yielded "min.mjs" and `foo.test.mjs` yielded "test.mjs", both
 // reported as missing modules that were never named. A checker's own false positives are the
 // fastest way to get it deleted.
-const BARE = /(?<![\w.-])([a-z][\w-]*\.(?:test\.)?(?:js|mjs|ts|rs))\b/g;
+//
+// And not after a `/` either, so a module is captured with its directories rather than from its
+// last segment. Reading `lib/cubus-cube.js` as `cubus-cube.js` resolved it against the renderer's
+// new home in packages/, and a pointer to the path it had left stood green (found 2026-09-14).
+const MODULE = /(?<![\w./-])((?:\.{1,2}\/)*(?:[\w-]+\/)*[a-z][\w-]*\.(?:test\.)?(?:js|mjs|ts|rs))\b/g;
 
 /** Roots a bare filename is looked for under, searched RECURSIVELY.
  *
@@ -89,6 +117,8 @@ const SIBLING_ROOTS = [
   // The renderer, its build and its manifest reader, since 2026-09-14. Without this root every
   // comment that names one of them dangles — which is how the move was noticed here first.
   'packages/cubus-cube',
+  'packages/gan-driver/tests',
+  'packages/gan-driver/scripts',
   'scripts',
   'ml',
 ];
@@ -100,14 +130,15 @@ const SIBLING_ROOTS = [
  * file in this repository. A real dangling pointer must be FIXED, never added here.
  */
 const NOT_REPO_FILES = new Set([
-  // npm packages and their entry points, named in comments as dependencies.
-  'aes-js', 'index.mjs', 'index.cjs', 'ort.mjs', 'three.js', 'cubejs.js',
+  // npm packages and their entry points, named in comments as dependencies. `cubing.js` is the
+  // library the app drew with before <cubus-cube>, named where that history is told.
+  'aes-js', 'index.mjs', 'index.cjs', 'ort.mjs', 'three.js', 'cubejs.js', 'cubing.js',
   // Files inside dependencies, discussed by name.
   'gan-cube-protocol.ts', 'gan.ts', 'types.ts', 'connect.ts', 'ble-utils.ts',
   'address-hints.ts', 'profile-rank.ts', 'build-picker-options.ts', 'gan-mac-salt.ts',
   'gan-cube-encrypter.ts', 'gan-cube-definitions.ts', 'gan-gen234-packet-validate.ts',
   'mock-bluetooth.ts', 'traffic-replayer.ts', 'load-fixture.ts', 'fixture-replay.ts',
-  'events.ts', 'gan-bit-reader.ts', 'gan-driver-select.ts',
+  'events.ts', 'gan-bit-reader.ts', 'gan-driver-select.ts', 'gan-smart-cube.ts',
   // Generated or platform files referenced by name.
   'info.plist', 'project.yml', 'ic_launcher.xml', 'ic_launcher_round.xml',
   // Another project's file, cited for where a technique came from: app.js credits paper-one's
@@ -124,28 +155,35 @@ function extractCandidates(text) {
   const joined = comments.join('\n');
   return {
     rooted: [...new Set([...joined.matchAll(ROOTED)].map((m) => m[1]))],
-    bare: [...new Set([...joined.matchAll(BARE)].map((m) => m[1]))],
+    modules: [...new Set([...joined.matchAll(MODULE)].map((m) => m[1]))],
   };
 }
 
-/** Every filename under the sibling roots, computed once. */
-const KNOWN_FILES = (() => {
-  const names = new Set();
-  const walk = (dir, depth = 0) => {
-    const abs = ROOT + dir;
-    if (depth > 6 || !existsSync(abs)) return;
-    for (const name of readdirSync(abs)) {
-      if (name === 'node_modules' || name === 'target' || name === '.git') continue;
-      const rel = `${dir}/${name}`;
-      if (statSync(ROOT + rel).isDirectory()) walk(rel, depth + 1);
-      else names.add(name);
-    }
-  };
-  for (const r of SIBLING_ROOTS) walk(r);
-  return names;
-})();
+/** Every repository file under the sibling roots, computed once. */
+const KNOWN_PATHS = REPO_FILES.filter((f) => SIBLING_ROOTS.some((r) => f.startsWith(`${r}/`)));
 
-const resolvesBare = (name) => KNOWN_FILES.has(name);
+/**
+ * Does `name` — a bare filename or a partial path — end some file under the sibling roots?
+ *
+ * Leading `./` and `../` are dropped: a comment quoting an import is relative to the file that
+ * does the importing, which is rarely the file the comment sits in. And a `.js` name also matches
+ * its `.ts` source, because that is how a TypeScript ES module import names one.
+ */
+function resolvesModule(name) {
+  const tail = name.replace(/^(?:\.{1,2}\/)+/, '');
+  const spellings = tail.endsWith('.js') ? [tail, `${tail.slice(0, -3)}.ts`] : [tail];
+  return KNOWN_PATHS.some((p) => spellings.some((sp) => p === sp || p.endsWith(`/${sp}`)));
+}
+
+/** The nearest package or crate above `file`: inside one, `scripts/x.ts` is ITS scripts. */
+function packageRootOf(file) {
+  for (let d = dirname(file); d !== '.' && d !== '/'; d = dirname(d)) {
+    if (existsSync(`${ROOT}${d}/package.json`) || existsSync(`${ROOT}${d}/Cargo.toml`)) return d;
+  }
+  return null;
+}
+
+const ROOTED_SHAPE = /^(?:apps|crates|packages|scripts|ml|dev-docs)\//;
 
 /**
  * A file that no longer exists may be named, PROVIDED the text says it is gone.
@@ -198,7 +236,9 @@ test('every repo path a living comment names actually exists', (t) => {
         unchecked += 1;
         continue;
       }
-      if (!existsSync(ROOT + clean)) dangling.push(`${file}: ${clean}`);
+      const home = packageRootOf(file);
+      if (existsSync(ROOT + clean) || (home && existsSync(`${ROOT}${home}/${clean}`))) continue;
+      dangling.push(`${file}: ${clean}`);
     }
   }
   if (unchecked) {
@@ -216,10 +256,15 @@ test('every sibling module a living comment names actually exists', () => {
   const dangling = [];
   for (const file of LIVING.flatMap((d) => sources(d))) {
     const text = readFileSync(ROOT + file, 'utf8');
-    const { bare } = extractCandidates(text);
-    for (const name of bare) {
-      if (NOT_REPO_FILES.has(name.toLowerCase())) continue;
-      if (resolvesBare(name)) continue;
+    const { modules, rooted } = extractCandidates(text);
+    for (const name of modules) {
+      if (ROOTED_SHAPE.test(name)) continue; // a rooted path, which the case above checks exactly
+      if (NOT_REPO_FILES.has(basename(name).toLowerCase())) continue;
+      // Named beside its full path — `state.js (dev-docs/spikes/cube-state/state.js)` — which the
+      // rooted case checks exactly, dev-docs rule and all. Resolving the short name as well would
+      // check it against the wrong set of files.
+      if (rooted.some((r) => r.endsWith(`/${basename(name)}`) && r.endsWith(name.replace(/^(?:\.{1,2}\/)+/, '')))) continue;
+      if (resolvesModule(name)) continue;
       if (namedAsGone(text, name)) continue;
       dangling.push(`${file}: ${name}`);
     }
@@ -243,13 +288,24 @@ test('the scan is looking at something, and would notice a break', () => {
     const real = 'apps/web/lib/not-a-comment.js';
   `);
   assert.ok(probe.rooted.includes('apps/web/lib/definitely-not-here.js'), 'must see rooted paths');
-  assert.ok(probe.bare.includes('cube-session.js'), 'must see bare module names');
+  assert.ok(probe.modules.includes('cube-session.js'), 'must see bare module names');
   assert.ok(
     !probe.rooted.includes('apps/web/lib/not-a-comment.js'),
     'must NOT read code as a comment — that would make every string literal a pointer',
   );
   assert.equal(existsSync(ROOT + 'apps/web/lib/definitely-not-here.js'), false);
-  assert.ok(resolvesBare('cube-session.js'), 'and must resolve a real sibling');
+  assert.ok(resolvesModule('cube-session.js'), 'and must resolve a real sibling');
+
+  // A path is read whole and resolved whole. The real file's NAME behind a wrong directory must
+  // not resolve — that is exactly how `lib/cubus-cube.js` stood green after the renderer moved.
+  assert.ok(extractCandidates('// see lib/cube-session.js').modules.includes('lib/cube-session.js'),
+    'must capture a module with its directories, not only its last segment');
+  assert.ok(resolvesModule('lib/cube-session.js'), 'must resolve a real partial path');
+  assert.equal(resolvesModule('nowhere/cube-session.js'), false, 'a real name under a wrong directory resolved');
+  assert.ok(resolvesModule('../src/gen4/crypto.js'), 'must resolve a TypeScript import spelling');
+  // And the files it resolves against are the repository's, not the disk's.
+  const outputs = REPO_FILES.filter((f) => /(^|\/)(node_modules|dist|target)\//.test(f));
+  assert.deepEqual(outputs, [], 'ignored build output is being counted as repository files');
 });
 
 test('a deleted file may be named only when the text says it is gone', () => {

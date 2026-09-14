@@ -16,7 +16,7 @@ import { after, before, test } from 'node:test';
 import { startBrowserFixture } from './harness.mjs';
 
 const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
-/** lib/cubus-cube.js HL_PERIOD — one full breath of the highlight. */
+/** packages/cubus-cube/src/cubus-cube.js HL_PERIOD — one full breath of the highlight. */
 const HL_PERIOD = 1200;
 let fixture; let page;
 
