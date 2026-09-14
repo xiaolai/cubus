@@ -252,3 +252,87 @@ test('the light rig is the same whether the camera was set before the cube conne
   });
   assert.deepEqual(rigs.before, rigs.after, 'the same camera lit the cube differently depending on when it was set');
 });
+
+// The top-right inset draws the far side OVER the main view. It used to clear colour inside its
+// rectangle as well, cutting a transparent hole through the main cube's corner: every pixel there
+// came back 0,0,0,0. Measured on the output: no pixel the main view inks may be left empty by the
+// inset.
+test('the top-right inset draws over the main view, not a hole through it', async () => {
+  const shots = await page.evaluate(async () => {
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const alphaOf = async (backView) => {
+      if (window.__cube) { window.__cube.dispose?.(); window.__cube.remove?.(); }
+      const el = document.createElement('cubus-cube');
+      el.style.cssText = 'position:fixed;left:0;top:0;width:320px;height:240px';
+      el.setAttribute('scramble', "R U R' U'");
+      el.setAttribute('back-view', backView);
+      document.body.appendChild(el);
+      window.__cube = el;
+      await tick();
+      el._dirty = true;
+      el._draw();
+      const gl = el.renderer.getContext();
+      const w = gl.drawingBufferWidth; const h = gl.drawingBufferHeight;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return { w, h, alpha: Array.from({ length: w * h }, (_, i) => px[i * 4 + 3]) };
+    };
+    return { none: await alphaOf('none'), inset: await alphaOf('top-right') };
+  });
+  const { w, h } = shots.none;
+  // The inset's rectangle, in readPixels' bottom-up rows: 32% of each side, 10px from the corner.
+  const iw = Math.floor(w * 0.32); const ih = Math.floor(h * 0.32);
+  let inked = 0; let holes = 0;
+  for (let y = h - ih - 10; y < h - 10; y++) {
+    for (let x = w - iw - 10; x < w - 10; x++) {
+      if (!shots.none.alpha[y * w + x]) continue;
+      inked++;
+      if (!shots.inset.alpha[y * w + x]) holes++;
+    }
+  }
+  assert.ok(inked > 100, `precondition: the main cube reaches into the inset's rectangle (${inked} pixels)`);
+  assert.equal(holes, 0, `${holes} of the ${inked} pixels the main view inks there were left empty by the inset`);
+});
+
+// And the order inside it: depth is cleared after the inset's scissor is set. A side-by-side frame
+// leaves the scissor on its right pane. At the same size that pane contains the inset, which is
+// why the stale box looked harmless; after the element grows it does not, and a clear against it
+// leaves the main view's depth in the inset, hiding the far side's cube where the two overlap.
+test('a cube switched from side-by-side to top-right, at a new size, draws what a fresh one draws', async () => {
+  const differ = await page.evaluate(async () => {
+    const tick = () => new Promise((r) => requestAnimationFrame(() => r()));
+    const pixels = (el) => {
+      el._dirty = true;
+      el._draw();
+      const gl = el.renderer.getContext();
+      const px = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+      gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return px;
+    };
+    const make = async (backView, width, height) => {
+      if (window.__cube) { window.__cube.dispose?.(); window.__cube.remove?.(); }
+      const el = document.createElement('cubus-cube');
+      el.style.cssText = `position:fixed;left:0;top:0;width:${width}px;height:${height}px`;
+      el.setAttribute('scramble', "R U R' U'");
+      el.setAttribute('back-view', backView);
+      document.body.appendChild(el);
+      window.__cube = el;
+      await tick();
+      return el;
+    };
+    const fresh = pixels(await make('top-right', 480, 360));
+    const switched = await make('side-by-side', 240, 180);
+    pixels(switched);
+    switched.style.width = '480px';
+    switched.style.height = '360px';
+    switched._resize();
+    switched.setAttribute('back-view', 'top-right');
+    const after = pixels(switched);
+    let n = 0;
+    for (let i = 0; i < fresh.length; i += 4) {
+      if (fresh[i] !== after[i] || fresh[i + 1] !== after[i + 1] || fresh[i + 2] !== after[i + 2] || fresh[i + 3] !== after[i + 3]) n++;
+    }
+    return n;
+  });
+  assert.equal(differ, 0, `${differ} pixels differ between a switched top-right cube and a fresh one`);
+});
