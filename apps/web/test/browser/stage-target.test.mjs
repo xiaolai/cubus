@@ -2,7 +2,7 @@
 //
 // Plan §6 of dev-docs/solve-to-state-plan.md, Phase D. Everything else about this feature is
 // tested without a browser: the engine against oracles, the wording against its own vocabulary,
-// the wiring against the source. Three things are only true in a browser, and each of them is a
+// the wiring against the source. Four things are only true in a browser, and each of them is a
 // way the feature can be entirely correct and still not work:
 //
 //   1. THE WORKER ANSWERS AT ALL. `stageAsk` goes through the solve pool's control channel to a
@@ -14,6 +14,9 @@
 //      transport that has forgotten where it was.
 //   3. THE ROUTE IS SHORTER THAN THE SOLVE, and says which kind of answer it is. That is the whole
 //      product claim, and it is the one thing no unit test can observe end to end.
+//   4. A REPAIR CALLED OFF LETS GO OF ITS WORKER. The stop is a word the page writes while the
+//      worker's search is running and polling it, and only a browser has both threads and the
+//      memory they share — a stop that never crosses still returns a right answer, late.
 //
 // The Restore chip row IS driven here, through the one door that does not need a camera: the
 // scanner panel's own `scan-complete` event, dispatched with a facelet string. That is the same
@@ -384,6 +387,112 @@ test('a cube already at the target is told so, and is handed no walk to follow',
   } finally {
     assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
     await context.close();
+  }
+});
+
+// ---- calling a repair off — audit row 44b -------------------------------------------------------
+//
+// A superseded repair used to run out its whole budget on the pool's first worker — the thread
+// every stage question and a pooled solve's first slice share. It is called off now by STOP_NOW in
+// a word its running search polls (lib/solve-client.js). test/stage-protocol.test.mjs pins each
+// piece of that on ONE thread: a word raised before the search, or by a fake engine between polls.
+// This case is the crossing itself: a real module worker, a SharedArrayBuffer the page and the
+// worker both hold, and a search already running when the page writes the word.
+
+test('a repair called off mid-search lets go of its worker', async () => {
+  const { NODE_BUDGET, STOP_POLL, solveToState } = await import('../../lib/stage-distance.js');
+  const { parseFacelets } = await import('../../lib/two-phase.js');
+  const page = pace(await browser.newPage());
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e));
+  try {
+    await page.goto(`${BASE}/index.html`);
+    const out = await page.evaluate(async ({ facelets, budget }) => {
+      if (typeof SharedArrayBuffer === 'undefined' || self.crossOriginIsolated !== true) {
+        return { isolated: false };
+      }
+      const { createParallelSolveClient, spawnSolveWorker } = await import('/lib/solve-client.js');
+      const { VIEW_COUNT } = await import('/lib/solver-engine.js');
+      // The pool as lib/solver-service.js builds it, on threads of its own: the app's pool rolls
+      // the die's next scramble at boot, and nothing here may queue behind that.
+      let spawned = 0;
+      const pool = createParallelSolveClient({
+        spawn: () => { spawned += 1; return spawnSolveWorker(); },
+        workers: 2,
+        viewCount: VIEW_COUNT,
+        makeShared: () => new Int32Array(new SharedArrayBuffer(4)),
+      });
+      // The whole cube, from a twelve-turn scramble: a target the repair budget does not reach,
+      // which is what makes this a search long enough to call off. The precondition says so.
+      const solved = (nodeBudget, signal) => pool.stageRoute({
+        want: 'route', target: 'solved', facelets, nodeBudget, maxDepth: 14, signal,
+      });
+      const clock = () => performance.now();
+      try {
+        // Every distance table built and the search run once, so nothing below times a warm-up.
+        await pool.stageRoute({ want: 'bounds', facelets });
+        await solved(Math.floor(budget / 8), new AbortController().signal);
+        // Unstopped, with a word nobody raises: the same request, and how long it holds the worker.
+        let from = clock();
+        const full = await solved(budget, new AbortController().signal);
+        const fullMs = clock() - from;
+        // Called off an eighth of the way through, by that same clock.
+        const walk = new AbortController();
+        const asked = solved(budget, walk.signal);
+        await new Promise((resolve) => { setTimeout(resolve, fullMs / 8); });
+        from = clock();
+        walk.abort();
+        // Posted while the stopped search still holds the worker, so the worker reads it only once
+        // that search has returned.
+        const next = pool.stageRoute({
+          want: 'route', target: 'cross', facelets, nodeBudget: 400_000, maxDepth: 10,
+        });
+        const stopped = await asked;
+        const answered = await next;
+        const freedMs = clock() - from;
+        return { isolated: true, spawned, full, fullMs, stopped, answered, freedMs };
+      } finally {
+        pool.cancel();
+      }
+    }, { facelets: SCANNED, budget: NODE_BUDGET });
+
+    assert.equal(out.isolated, true,
+      'the page is not cross-origin isolated, so no stop word can be shared with a worker');
+    // THE PRECONDITION, in nodes: unstopped, this request holds its worker for the whole budget.
+    assert.deepEqual([out.full.why, out.full.nodes], ['budget', NODE_BUDGET],
+      'unstopped, the search did not run out its budget, so there is nothing here to call off');
+    // CALLED OFF — and said so, rather than blamed on the budget.
+    assert.equal(out.stopped.why, 'stopped',
+      `called off, the search ran on to "${out.stopped.why}" after ${out.stopped.nodes} nodes`);
+    assert.equal(out.stopped.moves, null, 'a stopped search has no route to offer');
+    // WHILE IT RAN. The first poll is at node zero, so a word up before the search began stops it
+    // there; a positive multiple of STOP_POLL is a running search that the word reached at a poll.
+    assert.ok(out.stopped.nodes > 0, 'the word was up before the search began, not during it');
+    assert.equal(out.stopped.nodes % STOP_POLL, 0,
+      `${out.stopped.nodes} nodes is not a poll, so the word is not what stopped the search`);
+    // An eighth of the way in by the clock; half the budget leaves the two runs' speeds a factor
+    // of four to differ by before this bound is reached.
+    assert.ok(out.stopped.nodes <= NODE_BUDGET / 2,
+      `called off an eighth of the way in, the search still spent ${out.stopped.nodes} nodes`);
+    // AND ITS WORKER IS FREE: the next request, read only after the stopped search returned, is
+    // answered as the engine answers it, on the one thread the pool ever spawned for a repair.
+    const direct = solveToState('cross', parseFacelets(SCANNED), {
+      nodeBudget: 400_000, maxDepth: 10,
+    });
+    assert.deepEqual([out.answered.alg, out.answered.exact], [direct.alg, true],
+      'the worker that was called off did not answer the next repair as the engine does');
+    assert.equal(out.spawned, 1,
+      'a thread was ended and replaced — calling a repair off must keep the one it runs on');
+    // THE ONE WALL-CLOCK ASSERTION, and why a stop that works cannot fail it. The worker is free
+    // after one STOP_POLL of search and a cross route; left grinding, it is free only after the
+    // remaining seven eighths of `fullMs`. The bound is half of `fullMs`, read off the same clock
+    // on the same page, so a slow machine stretches the bound along with the work.
+    assert.ok(out.freedMs < out.fullMs / 2,
+      `the next repair was answered ${Math.round(out.freedMs)} ms after the call-off, against`
+      + ` ${Math.round(out.fullMs)} ms for the whole budget`);
+  } finally {
+    assert.deepEqual(errors.map(String), [], 'the page must raise nothing');
+    await page.close();
   }
 });
 

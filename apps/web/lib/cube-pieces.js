@@ -195,7 +195,9 @@ export function rotateState(state, k) {
   return { cp: [...out.cp], co: [...out.co], ep: [...out.ep], eo: [...out.eo] };
 }
 
-/** The alg that undoes `alg`. */
+/** The alg that undoes `alg`: the same turns, backwards, each reversed. An involution on every
+ *  face-turn form (R->R'->R, R2->R2), which is what lets one function turn a solution into a setup
+ *  alg and a setup alg back into a solution. */
 export function invert(alg) {
   return String(alg).trim().split(/\s+/).filter(Boolean).reverse()
     .map((m) => (m.endsWith('2') ? m : m.endsWith("'") ? m[0] : `${m}'`))

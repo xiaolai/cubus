@@ -242,6 +242,9 @@ pub struct OptimalProgress {
 /// invitation to start trusting a number no test covers.
 #[derive(serde::Serialize, Clone)]
 pub struct OptimalProofProgress {
+    /// The number the webview gave this proof. A contour reported by one it has since replaced is
+    /// then someone else's, not a lower bound for the cube now shown (found by audit, 2026-09-13).
+    proof: u32,
     ruled_out: u8,
 }
 
@@ -420,6 +423,7 @@ pub fn optimal_status(state: tauri::State<'_, OptimalState>) -> String {
 pub async fn optimal_prove(
     app: AppHandle,
     facelets: String,
+    proof: u32,
     state: tauri::State<'_, OptimalState>,
 ) -> Result<OptimalProof, String> {
     // Parse before claiming anything: a malformed request should never occupy the proof slot.
@@ -448,9 +452,10 @@ pub async fn optimal_prove(
         // and the search carries on.
         let mut warned = false;
         let mut on_progress = |ruled_out: u8, _nodes: u64| {
-            if let Err(e) =
-                emitter.emit("optimal-proof-progress", OptimalProofProgress { ruled_out })
-            {
+            if let Err(e) = emitter.emit(
+                "optimal-proof-progress",
+                OptimalProofProgress { proof, ruled_out },
+            ) {
                 if !warned {
                     warned = true;
                     log::warn!("optimal: proof progress is not reaching the webview: {e}");
@@ -1143,6 +1148,18 @@ mod tests {
             |_| Ok(()),
         );
         assert_eq!(out, Err("a move table is wrong".into()));
+    }
+
+    #[test]
+    fn a_proof_contour_names_the_proof_it_belongs_to() {
+        // lib/prove-affordance.js reads exactly these two fields, and drops a contour whose `proof`
+        // is not the number it asked with.
+        let json = serde_json::to_value(OptimalProofProgress {
+            proof: 7,
+            ruled_out: 3,
+        })
+        .unwrap();
+        assert_eq!(json, serde_json::json!({ "proof": 7, "ruled_out": 3 }));
     }
 
     #[test]

@@ -69,3 +69,15 @@ export const WORKER_CUBES = Object.freeze({
    *  (parallel-divergence.test.mjs pins where it stops holding). */
   pooled: 'LFUUUDDULDRBLRUFBDFBBDFFRRRBFUUDDBBFURRRLLUFDLDFLBBLLR',
 });
+
+/** parallel-divergence.test.mjs's pool-versus-worker differences beyond a different algorithm.
+ *
+ *  Measured through the engine directly (`solvePattern` at solLen 21 and the shipped 50M budget),
+ *  not `refine`, because that is the comparison the test makes. */
+export const DIVERGENT_CUBES = Object.freeze({
+  /** A difference in LENGTH. Drawn by the test's own fresh-draw case on 2026-09-14, which went red
+   *  on it: one worker answers in 19 moves, from view 0 at phase-1 depth 13 after 49.3M phase-1
+   *  nodes; of the six 8.33M-node slices only view 4's answers, in 20. View 0 alone at a slice's
+   *  share answers nothing, so the difference is the quota. */
+  longerInThePool: 'DFDDUFUBUFDFDRBDRULRLRFBFLRUDFFDFDURRRBULULURLLBLBLBBB',
+});

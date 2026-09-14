@@ -75,12 +75,13 @@ jobs:
       # is that a pushed one is never moved; the next step is what holds that rule when a tag is
       # moved anyway.
       #
-      # NOT A PRERELEASE. `pnpm bump 0.3.0-beta.1` is accepted by the bump tool, the build runs
-      # for forty minutes, and then make-updater-manifest.mjs refuses the version (Tauri parses
-      # it with semver, and the manifest would read as "no update" to every client), the updater
-      # endpoint is releases/latest/download — which a prerelease never becomes — and
-      # update-homebrew.yml refuses the tap write. Prereleases are not supported end to end;
-      # refusing the tag here costs seconds instead of the whole matrix.
+      # NOT A PRERELEASE. The bump tool refuses one (since 2026-09-13), but a version edited by
+      # hand or a tag pushed by hand still arrives here — and then the build runs for forty
+      # minutes, make-updater-manifest.mjs refuses the version (Tauri parses it with semver, and
+      # the manifest would read as "no update" to every client), the updater endpoint is
+      # releases/latest/download — which a prerelease never becomes — and update-homebrew.yml
+      # refuses the tap write. Prereleases are not supported end to end; refusing the tag here
+      # costs seconds instead of the whole matrix.
       #
       # AND THE VERSION THE APP WILL SHOW. A release named v0.2.0 whose About card says 0.1.9 is
       # a support problem that outlives the release, and it is one grep to prevent.
@@ -109,7 +110,7 @@ jobs:
               exit 1 ;;
           esac
           tag="${GITHUB_REF_NAME#v}"
-          app=$(sed -n "s/^export const VERSION = '\(.*\)';$/\1/p" apps/web/lib/app.js)
+          app=$(sed -n "s/^export const VERSION = '\(.*\)';$/\1/p" apps/web/lib/version.js)
           echo "tag=$tag  app=$app"
           if [ "$tag" != "$app" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match VERSION $app — run 'pnpm bump $tag'"

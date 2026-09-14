@@ -12,6 +12,7 @@
 // so app.js boots exactly once here.
 
 import assert from 'node:assert/strict';
+import { isAbsent } from './dom-assert.mjs';
 import { readFileSync } from 'node:fs';
 import { before, test } from 'node:test';
 
@@ -134,8 +135,51 @@ test('a raised stage that has run out says so, and its button is gone', async ()
   // top, it must look exactly like OLL and PLL do.
   const card = () => $$('#stage .card.tight')[0];
   assert.equal(stored().rungs.cross, TOP_RUNG.cross, 'precondition: cross is at its top');
-  assert.equal(card().querySelector('[data-raise]'), null, 'a topped-out stage still offers a way up');
+  isAbsent(card().querySelector('[data-raise]'), 'a topped-out stage still offers a way up');
   assert.match(card().textContent, /highest rung there is/);
+});
+
+test('with several stages ready at once, only the one offered first is promised the offer', async () => {
+  // One offer at a time, lowest stage first (method-ladder.js nextOffer). Every ready card used to
+  // promise the offer "after your next solve", and only one of them could be kept.
+  const { settings } = await import('../lib/app-settings.js');
+  const { FOLLOWS_TO_OFFER } = await import('../lib/method-ladder.js');
+  const was = structuredClone(settings.rungProgress);
+  try {
+    // Cross is at its top (the case above); pairs, OLL and PLL are all ready at once.
+    for (const id of ['pairs', 'oll', 'pll']) settings.rungProgress.follows[id] = FOLLOWS_TO_OFFER;
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/lessons';
+    await tick();
+    const promised = STAGE_IDS.filter((id, i) => /will be offered/.test($$('#stage .card.tight')[i].textContent));
+    assert.deepEqual(promised, ['pairs'], 'more than one stage was promised the one offer the ladder makes');
+  } finally {
+    settings.rungProgress = was;
+    win.location.hash = '#/home';
+    await tick();
+    win.location.hash = '#/lessons';
+    await tick();
+  }
+});
+
+test('a rung raised from the keyboard keeps focus on the button that raised it', async () => {
+  const raise = () => $('[data-raise="pairs"]');
+  raise().focus();
+  assert.ok(win.document.activeElement === raise(), 'precondition: the button has the focus');
+  raise().click(); // pairs 0 -> 1, and its top is 2, so the button is still there
+  await tick();
+  assert.ok(raise(), 'precondition: pairs has a rung left');
+  assert.ok(win.document.activeElement === raise(), 'the raise redrew the ladder and dropped the focus on the page');
+});
+
+test('a stage raised to its top leaves focus on its own card, not on the page', async () => {
+  const card = () => $$('#stage .card.tight')[STAGE_IDS.indexOf('pairs')];
+  $('[data-raise="pairs"]').focus();
+  $('[data-raise="pairs"]').click(); // pairs 1 -> 2, its top
+  await tick();
+  isAbsent(card().querySelector('[data-raise]'), 'precondition: pairs is at its top');
+  assert.ok(win.document.activeElement === card(), 'the button went, and the focus went with it to the page');
 });
 
 test('the offer lives on the cube screen and is answerable both ways', async () => {
@@ -143,7 +187,7 @@ test('the offer lives on the cube screen and is answerable both ways', async () 
   // elements — an offer with no way to decline is an ask, and that is the rule it would break.
   win.location.hash = '#/lessons';
   await tick();
-  assert.equal($('#rungOffer'), null, 'the offer must not be on the Lessons screen');
+  isAbsent($('#rungOffer'), 'the offer must not be on the Lessons screen');
 
   // A cube with a solution first. The offer belongs to the moment a solve ENDS, so the row is part
   // of the solve view and there is no solve view without one — asking for it on an empty Home gets
@@ -165,4 +209,27 @@ test('the offer lives on the cube screen and is answerable both ways', async () 
   assert.equal($('#rungOffer').hidden, true, 'the offer is showing before anything was followed');
   assert.ok($('#rungYes'), 'the offer cannot be accepted');
   assert.ok($('#rungNot'), 'the offer cannot be declined, which makes it an ask');
+});
+
+// A well is a position's colour, so it follows the colour arrangement: the top layer is the colour
+// opposite white, blue on a Japanese cube. The class table lit it yellow there — the scan board's
+// defect, in two more screens (found by audit, 2026-09-13).
+test("the Trainer and the Drill light a Japanese cube's last layer in that cube's colour", async () => {
+  const { settings } = await import('../lib/app-settings.js');
+  const was = settings.scheme;
+  settings.scheme = 'japanese';
+  try {
+    for (const screen of ['trainer', 'drill']) {
+      win.cubusGo(screen);
+      await tick();
+      const lit = $$('#stage [style*="background:#"]').map((el) => el.getAttribute('style'));
+      assert.ok(lit.length > 0, `precondition: ${screen} lights some wells`);
+      assert.ok(lit.every((s) => /#0051BA/i.test(s)),
+        `${screen} lit the last layer yellow on a cube whose colour opposite white is blue`);
+    }
+  } finally {
+    settings.scheme = was;
+    win.cubusGo('lessons');
+    await tick();
+  }
 });

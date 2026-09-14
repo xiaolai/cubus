@@ -21,8 +21,9 @@ import { test } from 'node:test';
 import { registerLocale, setLocale } from '../lib/i18n.js';
 import { DEFAULT_RUNGS, LADDER, STAGE_IDS, TOP_RUNG } from '../lib/method-solver.js';
 import { WHY_KEYS, whyText } from '../lib/method-lesson.js';
+import { blockAt, readAppSource } from './app-source.mjs';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 const lessonSrc = readFileSync(new URL('../lib/method-lesson.js', import.meta.url), 'utf8');
 
 /**
@@ -75,8 +76,8 @@ const STAGE_OF = {
 };
 const stepFor = (key) => ({ kind: 'goal', stage: STAGE_OF[key], why: { key, ...PAYLOAD[key] } });
 
-/** app.js with its comments removed — the history of a rule belongs in the source, and a test
- *  that could not tell a comment from a string would forbid recording it. */
+/** The app's source with its comments removed — the history of a rule belongs in the source, and a
+ *  test that could not tell a comment from a string would forbid recording it. */
 const code = app
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^\s*\/\/[^\n]*$/gm, '')
@@ -101,17 +102,20 @@ test('both objects are offered, and neither stands where the other was', () => {
 test('the lesson is worked out beside the solution, never instead of it', () => {
   // If the lesson replaced the search, switching back to Solution would need a new one — and a
   // cube whose lesson failed would have no walk at all.
-  const load = code.match(/if \(!stageAnswered && !stageTarget && walkKind === 'lesson'\) \{[\s\S]*?\n {12}\}/)?.[0] ?? '';
-  assert.ok(load, 'loadWalk must have a lesson branch');
-  assert.match(load, /gotLesson = lessonFor\(state\.cube\)/);
-  assert.match(load, /walkKind = 'solution'/, 'a cube with no lesson must fall back rather than fail the screen');
-  // The search runs first, unconditionally: `gotAlg` is assigned from the solution above this
-  // branch and only then overridden.
-  const before = code.indexOf('gotSetup = state.cube.setupAlg;');
-  // The FULL condition, not a fragment of it: `walkKind === 'lesson'` also appears in the rung
-  // offer's handler, several thousand characters earlier, so the loose form found that one and
-  // compared against the wrong position.
-  assert.ok(before > 0 && before < code.indexOf("if (!stageAnswered && !stageTarget && walkKind === 'lesson')"),
+  const lesson = blockAt(code, 'function lessonWalk(solution)');
+  assert.match(lesson, /const lesson = lessonFor\(state\.cube\);/, 'the walk resolver must build a lesson');
+  // The fallback is the screen's to make — the walk kind and its switch are the session's — so the
+  // resolver asks for it by name (lib/walk-resolver.js), and the session's helper moves the switch
+  // back.
+  assert.match(lesson, /fallBackToSolution\(\)/, 'a cube with no lesson must fall back rather than fail the screen');
+  assert.match(blockAt(code, 'function fallBackToSolution()'), /walkKind = 'solution'/,
+    'and falling back must put the walk kind back to the solution');
+  // The search runs first, unconditionally: the lesson is built from the solution it produced. Both
+  // landmarks are read inside the one function, so neither can be found somewhere else in the app.
+  const solve = blockAt(code, 'async function solveWalk(');
+  const searched = solve.indexOf('await whole.done;');
+  const taught = solve.indexOf('lessonWalk(solution)');
+  assert.ok(searched > 0 && searched < taught,
     'the two-phase search must run before the lesson branch, so both objects exist');
 });
 
@@ -123,29 +127,32 @@ test('a STAGE route has no lesson, and the switch goes with it', () => {
   // Two halves, and only together do they mean anything. The lesson must not be COMPUTED for a
   // stage target — it would overwrite the route, since the branch runs after it — and the pair of
   // pills must not be SHOWN, or the switch would point at an object the screen cannot produce.
-  assert.match(code, /if \(!stageAnswered && !stageTarget && walkKind === 'lesson'\)/,
-    'the lesson branch must be skipped for a stage target, or it overwrites the repair — and for a'
-    + ' repair that answered, whose whole-cube locals were never even read');
+  assert.match(code, /return !stageTarget && walkKind === 'lesson' \? lessonWalk\(solution\) : solution;/,
+    'the lesson branch must be skipped for a stage target, or it overwrites the repair');
+  const solve = blockAt(code, 'async function solveWalk(');
+  const repaired = solve.indexOf('return repairWalk(');
+  assert.ok(repaired > 0 && repaired < solve.indexOf('lessonWalk(solution)'),
+    'and a repair that answered returns before the lesson is ever considered');
   assert.match(code, /kindRow\.hidden = Boolean\(route\)/,
     'the Solution / Lesson switch must be hidden while a repair is showing');
 });
 
 test('the lesson is thrown away with the arrangement it was about', () => {
-  const ingest = code.match(/function ingestFacelets\(f\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  const ingest = blockAt(code, 'function ingestFacelets(f)');
   assert.match(ingest, /c\.lesson = null/, 'a new arrangement must not keep the old cube\'s lesson');
   // And the cache key is the arrangement AND the rungs, so raising a rung produces a new lesson
   // rather than the old one under a new name.
-  const fn = code.match(/function lessonFor\([\s\S]*?\n\}/)?.[0] ?? '';
+  const fn = blockAt(code, 'function lessonFor(');
   assert.match(fn, /c\.lesson\.facelets === c\.facelets/);
   assert.match(fn, /c\.lesson\.method === method\.id/);
 });
 
 test('every step points at something, and the cue is cleared when there is nothing to point at', () => {
-  const point = code.match(/function pointAtStep\(i\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const point = blockAt(code, 'function pointAtStep(i)');
   assert.ok(point, 'the screen must have a function that applies a step\'s cues');
   // Worked out once, when the lesson is built, and renamed into the frame the renderer draws — then
   // applied from the step under the head.
-  const build = code.match(/function lessonFor\([\s\S]*?\n\}/)?.[0] ?? '';
+  const build = blockAt(code, 'function lessonFor(');
   assert.match(build, /lessonCues\(step\)/, 'every step\'s cues are worked out when the lesson is built');
   assert.match(point, /step\?\.focus/);
   assert.match(point, /step\?\.highlight/);
@@ -169,7 +176,7 @@ test('the move list is cut by the lesson\'s own stages, never by a proportion', 
 
 test('the rungs are stored as four dials, repaired on load, and defaulted to the bottom', () => {
   assert.match(code, /settings\.rungs = repairRungs\(settings\.rungs\)/, 'the stored record must be repaired');
-  const repair = code.match(/function repairRungs\(stored\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  const repair = blockAt(code, 'function repairRungs(stored)');
   assert.match(repair, /DEFAULT_RUNGS/, 'the default is the bottom rung everywhere');
   assert.match(repair, /Number\.isInteger\(want\)/, 'localStorage is untrusted input');
   assert.match(repair, /TOP_RUNG\[id\]/, 'a rung above the ladder must not be believed');
@@ -243,7 +250,7 @@ test('the reason line assists the cube rather than carrying it alone', () => {
   // hidden when there is nothing to say rather than rendering as an empty row.
   assert.match(code, /id="whyLine"/);
   assert.match(code, /whyLine\.hidden = !text/);
-  const point = code.match(/function pointAtStep\(i\) \{[\s\S]*?\n {6}\}/)?.[0] ?? '';
+  const point = blockAt(code, 'function pointAtStep(i)');
   assert.ok(point.includes('whyText(step)') && point.includes('step?.focus'),
     'the sentence and the cue must be applied together, from the same step');
 });

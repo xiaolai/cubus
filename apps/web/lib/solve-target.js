@@ -346,6 +346,9 @@ export async function solveWithinGodsNumber(
  * a superseded search inside the engine rather than only between asks, the second is the only
  * window into the escalating first search's wait.
  *
+ * `start`, optional, is an answer already known for this cube: the descent begins at it rather
+ * than at a first search, so no yield is ever longer than it.
+ *
  * @throws if the first search still fails after every sanctioned escalation — the state is not
  *         a solvable cube, the budget was far too small, or the engine is broken. Either way
  *         there is nothing to show, which is what makes it an error and not a result.
@@ -357,6 +360,7 @@ export async function* refine(facelets, {
   bonusBudget = BONUS_BUDGET,
   signal = null,
   onProgress = null,
+  start = null,
 } = {}) {
   const { target } = typeof tier === 'string' ? tierByName(tier) : (tier ?? {});
   if (target !== null && (!Number.isInteger(target) || target < 1)) {
@@ -371,7 +375,13 @@ export async function* refine(facelets, {
   // Cancelled before anything was searched: there is nothing to show, so nothing is yielded.
   if (signal?.aborted) return;
 
-  const first = await solveWithinGodsNumber(facelets, { solve, probeBudget, signal, onProgress });
+  // A known answer opens the descent in place of the first search, so refining can only shorten
+  // it: begun from scratch, a budget that stopped at a longer answer once replaced a shorter one
+  // already known (found by verification, 2026-09-14). It is held to the contract every answer
+  // is — face turns, within God's number — and whether it SOLVES the cube stays the oracle's.
+  const first = start !== null
+    ? validateAnswer(start, FIRST_BOUND)
+    : await solveWithinGodsNumber(facelets, { solve, probeBudget, signal, onProgress });
   // undefined is an abort before the first answer: nothing to show, so nothing is yielded.
   if (first === undefined) return;
 

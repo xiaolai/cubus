@@ -5,12 +5,15 @@
 import Cube from 'cubejs';
 import { describe, expect, it } from 'vitest';
 import {
+  CORNER_COLOR,
   centersOk,
   decodeFacelets,
+  EDGE_COLOR,
   encodeFacelets,
   FACE_NEIGHBOURS,
   isSolvable,
   isStructurallyValid,
+  rotateFace,
   type Side,
   SOLVED_FACELETS,
 } from '../src/facelet-cube.js';
@@ -41,6 +44,64 @@ describe('decodeFacelets / encodeFacelets', () => {
       expect(s).not.toBeNull();
       expect(encodeFacelets(s!)).toBe(f);
     }
+  });
+
+  it('decodes an edge pair no cubie carries to nothing', () => {
+    const f = SOLVED_FACELETS.split('');
+    f[19] = 'D'; // the UF slot now reads (U, D): no edge has both, and every corner is untouched
+    expect(decodeFacelets(f.join(''))).toBeNull();
+  });
+
+  it('refuses a malformed state instead of encoding it as the solved cube', () => {
+    // An orientation outside its domain indexed the slot table with NaN, wrote a named property
+    // that join() drops, and handed back SOLVED, which the gate then called a valid cube.
+    const s = decodeFacelets(SOLVED_FACELETS)!;
+    for (const bad of [
+      { ...s, co: [Number.NaN, 0, 0, 0, 0, 0, 0, 0] },
+      { ...s, eo: [0.5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+      { ...s, cp: [0, 0, 2, 3, 4, 5, 6, 7] },
+      { ...s, ep: [0, 1, 2] },
+    ]) {
+      expect(() => encodeFacelets(bad)).toThrow(TypeError);
+    }
+    // A well-formed state no legal turn reaches is still encoded: the misread decoder works with
+    // those, and the gate is where they are refused.
+    expect(isStructurallyValid(encodeFacelets({ ...s, co: [1, 0, 0, 0, 0, 0, 0, 0] }))).toBe(false);
+  });
+});
+
+describe('the solved colour tables', () => {
+  it('cannot be rewritten, so one bad assignment cannot poison every later scan', () => {
+    // A readonly TYPE left each row a mutable array at run time: one CORNER_COLOR[0][0] = 'X'
+    // made the solved cube fail its own gate for the rest of the process.
+    const corner = CORNER_COLOR[0] as unknown as string[];
+    const edge = EDGE_COLOR[0] as unknown as string[];
+    const table = CORNER_COLOR as unknown as string[][];
+    const was = [corner[0], edge[0]];
+    try {
+      expect(() => {
+        corner[0] = 'X';
+      }).toThrow(TypeError);
+      expect(() => {
+        edge[0] = 'X';
+      }).toThrow(TypeError);
+      expect(() => table.push(['X', 'X', 'X'])).toThrow(TypeError);
+    } finally {
+      if (!Object.isFrozen(corner)) corner[0] = was[0]!;
+      if (!Object.isFrozen(edge)) edge[0] = was[1]!;
+      if (!Object.isFrozen(table) && table.length > 8) table.pop();
+    }
+    expect(isStructurallyValid(SOLVED_FACELETS)).toBe(true);
+  });
+});
+
+describe('rotateFace', () => {
+  it('returns a fresh array at every turn, so a caller may keep or change the one it was given', () => {
+    const a = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    for (const k of [0, 1, 2, 3, 4, -4]) expect(rotateFace(a, k)).not.toBe(a);
+    rotateFace(a, 0)[0] = 99;
+    expect(a[0]).toBe(0);
+    expect(rotateFace(a, 4)).toEqual(a);
   });
 });
 
@@ -112,11 +173,12 @@ describe('solvability gate agrees with cubejs (independent oracle)', () => {
 });
 
 // The scan screen paints each face tile's four edges in its neighbours' colours, so a user can
-// see which way up to hold a side without being told. That table lives in apps/web/lib/app.js
-// (which cannot import TypeScript), so this pins the copy against the derivation. If the facelet
-// layout ever changed, this fails here and names the file to update.
+// see which way up to hold a side without being told. The 24 answers are written out once here,
+// so a change to EDGE_FACELET fails with the expected layout in front of the reader. The scan
+// screen's own copy (apps/web/lib/screens/scan.js, which cannot import TypeScript) is pinned by
+// apps/web/test/scan-screen.test.mjs, which derives it again from this file's EDGE_FACELET.
 describe('FACE_NEIGHBOURS', () => {
-  it('matches the table apps/web/lib/app.js paints the scan tiles from', () => {
+  it('derives the canonical layout: U has B above, R right, F below, L left', () => {
     expect(FACE_NEIGHBOURS).toEqual({
       U: { top: 'B', right: 'R', bottom: 'F', left: 'L' },
       R: { top: 'U', right: 'B', bottom: 'D', left: 'F' },

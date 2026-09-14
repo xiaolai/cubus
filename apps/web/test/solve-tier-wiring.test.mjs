@@ -9,15 +9,15 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
 
 import { TIERS } from '../lib/solve-target.js';
+import { blockAt, readAppSource } from './app-source.mjs';
 
-const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
+const app = readAppSource();
 
 test('every rung has a label and a description on the Settings screen', () => {
   const labels = app.match(/const TIER_LABEL = \{([^}]*)\}/)?.[1] ?? '';
-  const blurbs = app.match(/const TIER_BLURB = \{([\s\S]*?)\n\};/)?.[1] ?? '';
+  const blurbs = blockAt(app, 'const TIER_BLURB =');
   for (const { name } of TIERS) {
     assert.match(labels, new RegExp(`\\b${name}\\s*:`), `no pill label for the "${name}" rung`);
     assert.match(blurbs, new RegExp(`\\b${name}\\s*:`), `no description for the "${name}" rung`);
@@ -26,7 +26,8 @@ test('every rung has a label and a description on the Settings screen', () => {
 
 test('the chosen target is stored, and the solver reads it', () => {
   assert.match(app, /solveTier: 'twenty'/, 'the setting must have a default, or the first solve is untargeted');
-  assert.match(app, /tier: settings\.solveTier/, 'solve() must read the stored tier, not a hardcoded one');
+  assert.match(blockAt(app, 'async function solve('), /const tier = settings\.solveTier;/,
+    'solve() must read the stored tier, not a hardcoded one');
   assert.match(app, /data-set-tier/, 'the Settings screen must offer the pills');
 });
 
@@ -67,7 +68,7 @@ test('a shortfall is never dressed up as an impossibility', () => {
   // seam, and optimal.test.mjs pins that block as one of exactly three places allowed to make a
   // minimality claim. This sweep is about what the SEARCH may say. Removing it by name rather
   // than choosing a regex it slips under keeps both rules legible.
-  const proveCopy = withoutComments.match(/const PROVE_COPY = \{[\s\S]*?\n\};/)?.[0] ?? '';
+  const proveCopy = blockAt(withoutComments, 'const PROVE_COPY =');
   assert.ok(proveCopy, 'PROVE_COPY must still exist and be named — see optimal.test.mjs');
   const screens = withoutComments.replace(proveCopy, '');
   assert.doesNotMatch(

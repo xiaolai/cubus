@@ -12,9 +12,12 @@
 // budgets. Then it showed (2026-09-05): a fresh draw missed in the pool, and WORKER_CUBES.tighter
 // — whose winning view costs 10.8M nodes, more than a sixth of 50M — is answered by the pool with
 // a DIFFERENT 20-move solution from another view's slice. So the property this file pins is not
-// equality. It is: both answers solve the cube in the same number of moves, and every difference
-// is the quota — the sequential winner's own view, given only a slice's share, does not reach
-// its answer. A difference with any other cause is a correctness defect and fails here.
+// equality. It is: both answers solve the cube within the bound, and every difference is the
+// quota — the sequential winner's own view, given only a slice's share, does not reach its
+// answer. A difference can be a LENGTH: on a fresh draw (2026-09-14, frozen as
+// DIVERGENT_CUBES.longerInThePool) one worker answers in 19 moves and the pool in 20, because the
+// view that finds 19 starves on a slice. A difference with any other cause is a correctness defect
+// and fails here.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -22,7 +25,9 @@ import { test } from 'node:test';
 import * as engine from '../lib/two-phase.js';
 import { randomCube } from '../lib/random-state.js';
 import Cube from '../vendor/cubejs.js';
-import { CONTRACT_CUBES, ENGINE_CONTRACT_CUBES, WORKER_CUBES } from './fixtures/solver-cubes.mjs';
+import {
+  CONTRACT_CUBES, DIVERGENT_CUBES, ENGINE_CONTRACT_CUBES, WORKER_CUBES,
+} from './fixtures/solver-cubes.mjs';
 
 /** Run one slice and return its answer with the key the pool would sort on. */
 function slice(facelets, views, probeMax) {
@@ -40,11 +45,12 @@ function pooled(facelets, slices, probeMax) {
 
 const ONE_PER_VIEW = [[0], [1], [2], [3], [4], [5]];
 
-/** The frozen states every gate test draws from — ten cubes, each named in its assertion. */
+/** Every frozen state in fixtures/solver-cubes.mjs, each named in its assertion. */
 const FROZEN = Object.freeze([
   ...CONTRACT_CUBES.map((f, i) => [`CONTRACT_CUBES[${i}]`, f]),
   ...ENGINE_CONTRACT_CUBES.map((f, i) => [`ENGINE_CONTRACT_CUBES[${i}]`, f]),
   ...Object.entries(WORKER_CUBES).map(([k, f]) => [`WORKER_CUBES.${k}`, f]),
+  ...Object.entries(DIVERGENT_CUBES).map(([k, f]) => [`DIVERGENT_CUBES.${k}`, f]),
 ]);
 
 const SHIPPED = 50_000_000;
@@ -58,19 +64,19 @@ function solves(facelets, alg) {
 }
 
 /**
- * The one property that holds at every budget: an answer from either side solves the cube, both
- * sides answer in the same number of moves, and a difference between them — a different
- * algorithm, or a pool that answered nothing — is explained by the quota and by nothing else.
- * "Explained by the quota" is asserted, not assumed: the sequential winner's own view, run alone
- * with a slice's share, must fail to reach the sequential answer. Returns whether they differed.
+ * The one property that holds at every budget: an answer from either side solves the cube within
+ * the bound, and a difference between them — a different algorithm, a different length, or a pool
+ * that answered nothing — is explained by the quota and by nothing else. "Explained by the quota"
+ * is asserted, not assumed: the sequential winner's own view, run alone with a slice's share, must
+ * fail to reach the sequential answer. Returns whether they differed.
  */
 function assertAgreeOrQuota(name, facelets, sequential, seqView, parallel) {
   assert.ok(sequential, `${name}: the sequential answer is missing — this helper is for answered states`);
   assert.ok(solves(facelets, sequential), `${name}: the sequential answer does not solve the cube`);
+  assert.ok(sequential.split(' ').length < 21, `${name}: the sequential answer is outside the bound`);
   if (parallel !== null) {
     assert.ok(solves(facelets, parallel.alg), `${name}: the pooled answer does not solve the cube`);
-    assert.equal(parallel.alg.split(' ').length, sequential.split(' ').length,
-      `${name}: the two sides answered with different lengths`);
+    assert.ok(parallel.alg.split(' ').length < 21, `${name}: the pooled answer is outside the bound`);
     if (parallel.alg === sequential) return false;
   }
   const own = slice(facelets, [seqView], QUOTA);
@@ -85,6 +91,7 @@ test('at the shipped budget every difference between the pool and one worker is 
   // once in ten gate runs. The equality itself is NOT the property (see the header): the
   // WORKER_CUBES.tighter row differs by construction, and the assertion says why.
   const differed = [];
+  const lengths = new Map();
   for (const [name, facelets] of FROZEN) {
     engine.setBounds({ solLen: 21, probeMax: SHIPPED });
     const sequential = engine.solvePattern(facelets);
@@ -92,17 +99,22 @@ test('at the shipped budget every difference between the pool and one worker is 
     const parallel = pooled(facelets, ONE_PER_VIEW, SHIPPED);
     assert.ok(sequential, `${name} must be solvable at the shipped budget — its cost is measured in the fixture`);
     if (assertAgreeOrQuota(name, facelets, sequential, seqView, parallel)) differed.push(name);
+    lengths.set(name, [sequential.split(' ').length, parallel ? parallel.alg.split(' ').length : null]);
   }
   // The measured boundary, recorded so a change in it is a finding rather than a surprise: on
-  // 2026-09-05 exactly one of the ten differed, and it is the one whose cost the fixture names.
-  assert.deepEqual(differed, ['WORKER_CUBES.tighter'],
+  // 2026-09-05 exactly one of the ten differed, and it is the one whose cost the fixture names. A
+  // fresh draw added a second on 2026-09-14, and it differs in LENGTH: 19 moves against 20.
+  assert.deepEqual(differed, ['WORKER_CUBES.tighter', 'DIVERGENT_CUBES.longerInThePool'],
     `the set of frozen states where the pool differs from one worker moved: ${JSON.stringify(differed)}`);
+  assert.deepEqual(lengths.get('DIVERGENT_CUBES.longerInThePool'), [19, 20],
+    'DIVERGENT_CUBES.longerInThePool: one worker and the pool no longer answer in 19 and 20 moves');
 });
 
 test('on fresh draws the two never DISAGREE — a difference is the quota, and only the quota', () => {
   // The fresh draw keeps its evidential value without becoming a lottery: nothing here asserts
-  // that a drawn state is answered by the pool, only that whatever the pool says is a solution of
-  // the sequential length and that a miss or a different answer is the quota, proven each time.
+  // that a drawn state is answered by the pool, only that whatever the pool says solves the cube
+  // within the bound and that a miss, a different answer or a different length is the quota,
+  // proven each time.
   let differed = 0;
   let unanswered = 0;
   for (let i = 0; i < 6; i++) {
@@ -141,6 +153,8 @@ test('under budget pressure it diverges — a valid answer, not the same one', (
   assert.notEqual(parallel.alg, sequential, 'this is the divergence the test exists to pin');
   assert.deepEqual(seqKey, [11, 1]);
   assert.deepEqual([parallel.depth, parallel.view], [11, 2]);
+  assert.equal(parallel.alg.split(' ').length, sequential.split(' ').length,
+    'this pair is of equal length: at this budget the difference is the algorithm alone');
 
   // Divergent, but never WRONG: the pooled answer solves the cube and respects the bound. That
   // is the property the app depends on — the oracle in finishSolve checks it either way.

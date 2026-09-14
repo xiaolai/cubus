@@ -32,6 +32,10 @@ export function times(solves) {
   return (Array.isArray(solves) ? solves : []).map(secondsOf).filter((n) => n !== null);
 }
 
+/** Is this record a solve: the question times() asks of every entry. Exported so a screen that
+ *  DRAWS rows and a figure that COUNTS them cannot come to disagree about which is which. */
+export const usable = (solve) => secondsOf(solve) !== null;
+
 /** Fastest single, or null. */
 export function best(solves) {
   const t = times(solves);
@@ -139,7 +143,10 @@ export function turnRate(solves) {
   const moves = list.reduce((n, s) => n + s.moves, 0);
   const seconds = list.reduce((n, s) => n + secondsOf(s), 0);
   if (!(seconds > 0)) return null;
-  return { tps: moves / seconds, solves: list.length, moves };
+  // A finite input does not promise a finite result: a subnormal time divides into Infinity, and
+  // the card printed it as the word (found by audit, 2026-09-13). averageOf refuses the same way.
+  const tps = moves / seconds;
+  return Number.isFinite(tps) ? { tps, solves: list.length, moves } : null;
 }
 
 /** How many of the session's solves a cube timed. Drives the card's explanation of an absent

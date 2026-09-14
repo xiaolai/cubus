@@ -49,18 +49,32 @@ const waitFor = async (fn, ms = 30000) => {
 const native = {
   calls: [],
   statusGate: null,
+  /** When set, what `optimal_prepare` waits on: table generation is minutes, not a reply. */
+  prepareGate: null,
   proving: null,
+  statuses: [],
+  answer: null,
+  cancelFails: 0,
+  proveArgs: null,
+  listeners: new Map(),
 };
-const invoke = (cmd) => {
+const invoke = (cmd, args) => {
   native.calls.push(cmd);
+  if (cmd === 'optimal_prepare') {
+    return native.prepareGate ? native.prepareGate.promise.then(() => 'preparing') : Promise.resolve('preparing');
+  }
   if (cmd === 'optimal_status') {
+    if (native.statuses.length) return Promise.resolve(native.statuses.shift());
     return native.statusGate ? native.statusGate.promise.then(() => 'ready') : Promise.resolve('ready');
   }
   if (cmd === 'optimal_prove') {
+    native.proveArgs = args;
+    if (native.answer) return Promise.resolve(native.answer(args));
     native.proving = deferred();
     return native.proving.promise;
   }
   if (cmd === 'optimal_cancel') {
+    if (native.cancelFails > 0) { native.cancelFails -= 1; return Promise.reject(new Error('ipc down (test)')); }
     native.proving?.reject(new Error('optimal: cancelled'));
     native.proving = null;
     return Promise.resolve();
@@ -116,7 +130,15 @@ before(async () => {
   await import('../lib/app.js');
   await tick();
   await settle(1500); // the solver loads in the background, and the die does nothing without it
-  win.__TAURI__ = { core: { invoke }, event: { listen: async () => () => {} } };
+  win.__TAURI__ = {
+    core: { invoke },
+    event: {
+      listen: async (name, cb) => {
+        native.listeners.set(name, cb);
+        return () => { if (native.listeners.get(name) === cb) native.listeners.delete(name); };
+      },
+    },
+  };
 });
 
 // A proof that is still waiting holds a 1 Hz repaint, and that interval keeps Node alive. Ended
@@ -126,6 +148,11 @@ after(async () => {
   native.proving?.reject(new Error('optimal: cancelled'));
   native.proving = null;
   await settle(100); // the app's own cleanup runs off that rejection
+  // And off the walk. A waiting state a proof left repainting after it ended clears itself on its
+  // next tick once its walk has gone — the leftover the rejection above cannot reach, and the one a
+  // failing run of the instant-proof case leaves (that run hung, 2026-09-14).
+  win.cubusGo('settings');
+  await settle(1100);
 });
 
 test('the desktop gate is what draws the affordance at all', async () => {
@@ -179,10 +206,235 @@ test('a superseded proof releases its own timers and leaves the running proof it
   assert.equal(cancelBtn().hidden, true, 'and the stop goes away with the proof it belonged to');
 });
 
+test('a stop the native side did not take comes back, and a second press stops the proof', async () => {
+  await newWalkWithProof();
+  proveBtn().click();
+  await settle(400);
+  assert.equal(cancelBtn().hidden, false, 'precondition: the stop is on screen');
+  native.cancelFails = 1;
+  cancelBtn().click();
+  await settle(50);
+  assert.equal(cancelBtn().disabled, false, 'a failed stop stayed disabled while the proof runs on');
+  assert.match(cancelBtn().textContent, /try again/);
+  cancelBtn().click();
+  await settle(150);
+  assert.equal(native.proving, null, 'the second press did not reach the native side');
+  assert.equal(proveBtn().textContent, 'prove the minimum');
+});
+
+test('a contour reported by another proof is not this cube\'s lower bound', async () => {
+  await newWalkWithProof();
+  native.proveArgs = null;
+  proveBtn().click();
+  await settle(400);
+  const contour = native.listeners.get('optimal-proof-progress');
+  assert.equal(typeof contour, 'function', 'precondition: the proof listens for its contours');
+  contour({ payload: { proof: -1, ruled_out: 17 } });
+  assert.doesNotMatch(proveBtn().textContent, /at least 18/, 'another proof\'s contour became this cube\'s lower bound');
+  const mine = native.proveArgs?.proof;
+  assert.ok(Number.isInteger(mine), 'the request carries no number for its contours to echo');
+  contour({ payload: { proof: mine, ruled_out: 11 } });
+  assert.match(proveBtn().textContent, /^at least 12 · /);
+  cancelBtn().click();
+  await settle(150);
+});
+
+test('tables built on the first press: the proof starts once they are ready', async () => {
+  await newWalkWithProof();
+  native.statuses = ['cold', 'preparing', 'ready'];
+  native.proving = null;
+  proveBtn().click();
+  await settle(50);
+  native.listeners.get('optimal-progress')?.({ payload: { stage: 'corners', done: 1, total: 4 } });
+  assert.equal(proveBtn().textContent, 'corners 25%', 'generation is the wait with a denominator');
+  assert.ok(await waitFor(() => native.proving !== null, 3000), 'the proof never started once the tables were ready');
+  cancelBtn().click();
+  await settle(150);
+  assert.equal(native.listeners.has('optimal-progress'), false, 'the generation heartbeat was never let go');
+});
+
+test('a generation that died in another call ends the press as a failure, not a proof', async () => {
+  await newWalkWithProof();
+  native.statuses = ['cold', 'cold'];
+  const before = native.calls.length;
+  proveBtn().click();
+  assert.ok(await waitFor(() => proveBtn().textContent === 'could not prove', 3000), 'a dead generation was polled on');
+  assert.equal(native.calls.slice(before).includes('optimal_prove'), false, 'a proof started without tables');
+  assert.equal(proveBtn().disabled, false);
+  assert.equal(native.listeners.has('optimal-progress'), false, 'the heartbeat was kept after the failure');
+});
+
+test('leaving during generation starts no proof, and lets the heartbeat go', async () => {
+  await newWalkWithProof();
+  native.statuses = ['cold', 'preparing', 'ready'];
+  const before = native.calls.length;
+  proveBtn().click();
+  await settle(50);
+  win.cubusGo('settings');
+  await settle(800);
+  assert.equal(native.calls.slice(before).includes('optimal_prove'), false, 'a proof started for a walk nobody sees');
+  assert.equal(native.listeners.has('optimal-progress'), false, 'the heartbeat outlived the screen');
+  win.cubusGo('home');
+  await settle(300);
+});
+
+test('a proved cube shown again keeps its sentence and is not offered the proof again', async () => {
+  await newWalkWithProof();
+  const { state } = await import('../lib/app.js');
+  native.answer = () => ({ length: state.cube.moves.length, solution: state.cube.solution, nodes: 1, millis: 1, tables_persisted: true });
+  proveBtn().click();
+  await settle(200);
+  native.answer = null;
+  assert.match($('#moveCount').textContent, /— proved the minimum$/, 'precondition: the proof was said');
+  win.cubusGo('settings');
+  await settle(50);
+  win.cubusGo('home');
+  assert.ok(await waitFor(() => /\d/.test($('#moveCount')?.textContent ?? '')), 'Home drew no count');
+  await settle(300);
+  assert.match($('#moveCount').textContent, /— proved the minimum$/, 'the same cube, shown again, lost its proof');
+  assert.equal(proveBtn().hidden, true, 'and hours of search were offered for an answer already held');
+});
+
+// Every case above lets table generation answer at once, and it is minutes. Held open, the
+// heartbeat it listens to outlived the walk it was for until the tables were done, whether a new
+// cube replaced the walk or the screen was left (verification, 2026-09-14).
+test('a walk that goes while its tables are being built lets their heartbeat go at once', async () => {
+  for (const [how, leave, back] of [
+    ['a new cube on the screen', () => newWalkWithProof(), async () => {}],
+    ['the screen left', async () => { win.cubusGo('settings'); await settle(50); },
+      async () => { win.cubusGo('home'); await settle(300); }],
+  ]) {
+    await newWalkWithProof();
+    native.statuses = ['cold'];
+    const held = deferred();
+    native.prepareGate = held;
+    proveBtn().click();
+    await settle(50);
+    try {
+      assert.ok(native.listeners.has('optimal-progress'), `${how}: precondition: the press is waiting on the tables`);
+      await leave();
+      assert.equal(native.listeners.has('optimal-progress'), false,
+        `${how}: the heartbeat outlived its walk, until the tables were done`);
+    } finally {
+      native.prepareGate = null;
+      held.resolve();
+      native.statuses = [];
+      await settle(700); // the old press polls once more, and ends
+      await back();
+    }
+  }
+});
+
+// The same for a proof: leaving calls it off, but a stop the native side does not take leaves it
+// running for hours, and its contour listener with it (verification, 2026-09-14).
+test('a walk that goes while its proof runs lets its contours go at once, even when the stop does not take', async () => {
+  await newWalkWithProof();
+  proveBtn().click();
+  await settle(400);
+  try {
+    assert.ok(native.listeners.has('optimal-proof-progress'), 'precondition: the proof listens for its contours');
+    native.cancelFails = 1; // the stop that leaving sends is refused
+    win.cubusGo('settings');
+    await settle(50);
+    assert.equal(native.listeners.has('optimal-proof-progress'), false,
+      'the contour listener outlived its walk, for as long as the proof runs');
+  } finally {
+    native.cancelFails = 0;
+    native.proving?.reject(new Error('optimal: cancelled'));
+    native.proving = null;
+    await settle(100);
+    win.cubusGo('home');
+    await settle(300);
+  }
+});
+
+// Only the LAST proof was held: proving one cube and then another, and showing the first again,
+// dropped its sentence and offered the search again (verification, 2026-09-14).
+test('every proved cube keeps its sentence when it is shown again, not only the last one proved', async () => {
+  const { state } = await import('../lib/app.js');
+  const { adoptCube } = await import('../lib/cube-connection.js');
+  const { deriveCube } = await import('../lib/cube-subject.js');
+  const { refreshScreen } = await import('../lib/screen-shell.js');
+  const proveThisCube = async () => {
+    await newWalkWithProof();
+    native.answer = () => ({ length: state.cube.moves.length, solution: state.cube.solution, nodes: 1, millis: 1, tables_persisted: true });
+    proveBtn().click();
+    await settle(200);
+    native.answer = null;
+    assert.match($('#moveCount').textContent, /— proved the minimum$/, 'precondition: the proof was said');
+    return { facelets: state.cube.facelets, setupAlg: state.cube.setupAlg };
+  };
+  const first = await proveThisCube();
+  const second = await proveThisCube();
+  assert.notEqual(second.facelets, first.facelets, 'precondition: two different cubes were proved');
+  adoptCube(first.facelets, { physical: false, source: 'generated', setupAlg: first.setupAlg });
+  await deriveCube();
+  refreshScreen();
+  assert.ok(await waitFor(() => state.cube.facelets === first.facelets), 'precondition: the first cube is the subject again');
+  await settle(300);
+  assert.match($('#moveCount').textContent, /— proved the minimum$/, 'the first cube, shown again, lost its proof to the second');
+  assert.equal(proveBtn().hidden, true, 'and the search was offered again for an answer already held');
+});
+
+// Proofs are kept, but saying one sat inside the gate that also asks whether the OFFER is on:
+// turning "Offer to prove the minimum" off turned "4 — proved the minimum" back into "4". The
+// setting decides whether a proof is offered, not whether one already held is said (found by
+// verification, 2026-09-14).
+test('a proof already held is still said when the offer to prove is turned off', async () => {
+  const { state } = await import('../lib/app.js');
+  const { settings } = await import('../lib/app-settings.js');
+  await newWalkWithProof();
+  native.answer = () => ({ length: state.cube.moves.length, solution: state.cube.solution, nodes: 1, millis: 1, tables_persisted: true });
+  proveBtn().click();
+  await settle(200);
+  native.answer = null;
+  assert.match($('#moveCount').textContent, /— proved the minimum$/, 'precondition: the proof was said');
+  settings.proveMinimum = false;
+  try {
+    win.cubusGo('settings');
+    await settle(50);
+    win.cubusGo('home');
+    assert.ok(await waitFor(() => /\d/.test($('#moveCount')?.textContent ?? '')), 'Home drew no count');
+    await settle(300);
+    assert.match($('#moveCount').textContent, /— proved the minimum$/, 'turning the offer off unsaid a proof already held');
+    assert.equal(proveBtn().hidden, true, 'and the offer came back while it was turned off');
+    // And a cube with no proof held is not offered one while the offer is off.
+    const before = state.cube.facelets;
+    $('#randCube').click();
+    assert.ok(await waitFor(() => state.cube.facelets !== before && !$('#randCube').disabled), 'precondition: a new cube was rolled');
+    await settle(300);
+    assert.equal(proveBtn().hidden, true, 'a cube with no proof held was offered one while the offer was off');
+  } finally {
+    settings.proveMinimum = true;
+  }
+});
+
+// PROOF_WAIT_VISIBLE_MS promises a press looks instant when the proof is: no wait, no clock and no
+// stop for a proof that answers under it. Nothing held the promise (verification, 2026-09-14).
+test('a proof that answers at once never shows its wait or its stop', async () => {
+  const { state } = await import('../lib/app.js');
+  await newWalkWithProof();
+  const seen = [];
+  const watch = new win.MutationObserver(() => {
+    seen.push(`${proveBtn()?.textContent} | stop ${cancelBtn()?.hidden ? 'hidden' : 'shown'}`);
+  });
+  watch.observe($('#stage'), { subtree: true, childList: true, characterData: true, attributes: true });
+  native.answer = () => ({ length: state.cube.moves.length, solution: state.cube.solution, nodes: 1, millis: 1, tables_persisted: true });
+  try {
+    proveBtn().click();
+    await settle(400); // past the moment a wait would have shown
+  } finally {
+    native.answer = null;
+    watch.disconnect();
+  }
+  assert.ok(seen.length > 0, 'precondition: the press changed the screen');
+  assert.deepEqual(seen.filter((s) => /proving|at least|stop shown/.test(s)), [], 'an instant proof flashed its wait or its stop');
+});
+
 test('nothing but the proof seam was driven through the injected command surface', () => {
   assert.deepEqual(
     [...new Set(native.calls)].sort(),
-    ['optimal_cancel', 'optimal_prove', 'optimal_status'],
+    ['optimal_cancel', 'optimal_prepare', 'optimal_prove', 'optimal_status'],
     'the fixture drove a command this test does not model',
   );
 });

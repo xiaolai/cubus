@@ -452,11 +452,14 @@ async function withFakeProver(run, { prove = true } = {}) {
     window.__emit = (name, payload) => (window.__listeners[name] ?? []).forEach((cb) => cb({ payload }));
     window.__TAURI__ = {
       core: {
-        invoke: (cmd) => {
+        invoke: (cmd, args) => {
           window.__calls.push(cmd);
           if (cmd === 'optimal_status') return Promise.resolve('ready');
           if (cmd === 'optimal_prepare') return Promise.resolve('ready');
           if (cmd === 'optimal_prove') {
+            // The number the page asked with: the native side names every contour by it
+            // (OptimalProofProgress in optimal.rs), and the page drops a contour with another.
+            window.__proof = args?.proof;
             return new Promise((_res, rej) => { window.__failProve = (why) => rej(new Error(why)); });
           }
           if (cmd === 'optimal_cancel') { window.__failProve?.('cancelled'); return Promise.resolve(true); }
@@ -535,8 +538,8 @@ test('a proof that runs long says what it has ruled out, and can be stopped', as
       const waiting = { text: btn.textContent, cancelHidden: cancel.hidden };
 
       // The native side reports an exhausted contour: no solution of 16 moves exists, so the
-      // answer is at least 17. That is a fact, not a spinner.
-      window.__emit('optimal-proof-progress', { ruled_out: 16, nodes: 1234 });
+      // answer is at least 17. That is a fact, not a spinner. Its payload is { proof, ruled_out }.
+      window.__emit('optimal-proof-progress', { proof: window.__proof, ruled_out: 16 });
       await new Promise((r) => setTimeout(r, 50));
       const bounded = btn.textContent;
 

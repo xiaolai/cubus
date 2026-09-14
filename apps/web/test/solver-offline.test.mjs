@@ -13,6 +13,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
 
+import { APP_SOURCES } from './app-source.mjs';
+
 const vendor = (f) => new URL(`../vendor/${f}`, import.meta.url);
 
 test('the vendored bundles exist', () => {
@@ -71,15 +73,15 @@ test('the two-phase engine solves offline, and honours a length bound', async ()
 
 // A regression guard on the thing that caused all this: no remote imports in the shipped sources.
 test('no source file imports from a CDN', () => {
-  for (const f of ['lib/app.js', 'lib/cubejs-entry.js', 'lib/router.js', 'lib/solve-worker.js', 'lib/random-state.js']) {
+  for (const f of [...APP_SOURCES, 'lib/cubejs-entry.js', 'lib/router.js', 'lib/solve-worker.js', 'lib/random-state.js']) {
     const src = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
     const remote = [...src.matchAll(/import\s*\(\s*['"`](https?:\/\/[^'"`]+)/g)].map((m) => m[1]);
     assert.deepEqual(remote, [], `${f} must not import from the network`);
   }
 });
 
-// The test above scans four JavaScript files and stops. The page itself was never looked at — so
-// a remote resource in index.html could pass a gate named to forbid exactly that.
+// The test above scans a fixed list of JavaScript files and stops. The page itself was never looked
+// at — so a remote resource in index.html could pass a gate named to forbid exactly that.
 //
 // There used to be exactly one accepted exception here: the Google Fonts stylesheet, documented
 // as a known gap. On 2026-08-27 the fonts went system-only, the exception came out, and the gate

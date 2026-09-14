@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 
 import { Window } from 'happy-dom';
 import Cube from '../vendor/cubejs.js';
+import { blockAt, readAppSource } from './app-source.mjs';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -133,21 +134,21 @@ test('a roll that failed leaves no hand-off standing, and a press stores nothing
 // the inline replay THREW where stepStates warns and returns a short array, so one end of the
 // walk called a failed replay a failed roll and the other end shipped the short array.
 test('the scramble branch tokenizes and replays through the shared helpers, not its own copies', () => {
-  const app = readFileSync(new URL('../lib/app.js', import.meta.url), 'utf8');
-  const at = app.indexOf('const rolled = await randomScramble();');
-  assert.notEqual(at, -1, 'the scramble branch moved — find it again rather than deleting this test');
-  const end = app.indexOf('} else {', at);
-  assert.ok(end > at, 'the scramble branch no longer ends at the solve branch');
-  const branch = app.slice(at, end);
+  const app = readAppSource();
+  // Both read with blockAt, which throws when its anchor is missing: a moved function fails here.
+  const roll = blockAt(app, 'async function rollWalk(');
+  const replay = blockAt(app, 'function replay(from, alg, why)');
 
-  assert.match(branch, /movesOf\(/, 'the scramble must be tokenized by the one tokenizer');
-  assert.match(branch, /stepStates\(/, 'and replayed by the one replay');
-  // Comments in this region talk ABOUT the helpers, so the negatives are asked of code only.
-  const code = branch.replace(/\/\/[^\n]*/g, '');
+  assert.match(roll, /const rolled = await randomScramble\(\{ signal \}\);/, 'the scramble is rolled here');
+  assert.match(roll, /replay\(SOLVED, rolled\.alg, 'no scramble'\)/, 'and walked by the one replay');
+  assert.match(replay, /movesOf\(/, 'the scramble must be tokenized by the one tokenizer');
+  assert.match(replay, /stepStates\(/, 'and replayed by the one replay');
+  // Comments in these blocks talk ABOUT the helpers, so the negatives are asked of code only.
+  const code = `${roll}\n${replay}`.replace(/\/\/[^\n]*/g, '');
   assert.doesNotMatch(code, /\.split\(/, 'a second tokenizer is back in the scramble branch');
   assert.doesNotMatch(code, /asString\(/, 'a second per-step replay is back in the scramble branch');
-  // And the shared replay degrades quietly by design (a short array, a warning), so the branch
-  // that cannot use a short one has to say so itself.
-  assert.match(code, /gotSteps\.length !== gotMoves\.length \+ 1/,
+  // And the shared replay degrades quietly by design (a short array, a warning), so the walk that
+  // cannot use a short one has to say so itself.
+  assert.match(replay, /if \(steps\.length !== moves\.length \+ 1\) throw new Error\(why\);/,
     'a replay that came up short must be a failed roll, not a walk with a missing step');
 });

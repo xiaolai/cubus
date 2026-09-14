@@ -15,6 +15,28 @@
 /** The platforms that have a desktop behind them. Not a UA list — a capability list. */
 export const DESKTOP_PLATFORMS = Object.freeze(['macos', 'windows', 'linux']);
 
+/** Every platform the app draws chrome for, and so the only values a design-review pin may name —
+ *  from the URL or from storage. */
+export const PLATFORMS = Object.freeze(['macos', 'windows', 'linux', 'ios', 'android']);
+
+/**
+ * The platform a user agent and a finger describe, when nothing has pinned one. Pure, so the table
+ * of cases is a test rather than a browser (lifted out of window-chrome.js's detectPlatform, where
+ * it shared a function with storage and the URL; found by audit, 2026-09-13).
+ *
+ * iPadOS calls itself a Mac; a finger gives it away — the touch points (5 on a real iPad), or a
+ * coarse pointer (what a touch-emulating WebKit reports, with no touch points at all). No Mac has
+ * either, which is why the iPad test comes before the plain Mac one. A phone or tablet gets plain
+ * bars: no traffic-light gap, no caption buttons — there is no window to drive.
+ */
+export function classifyDevice(ua, finger) {
+  if (/iPhone|iPad|iPod/.test(ua) || (/Mac/.test(ua) && finger)) return 'ios';
+  if (/Android/.test(ua)) return 'android';
+  if (/Mac/.test(ua)) return 'macos';
+  if (/Win/.test(ua)) return 'windows';
+  return 'linux';
+}
+
 /** What boot() published, or null before it ran (and in a plain Node test). */
 export function hostPlatform() {
   return globalThis.document?.documentElement?.dataset?.platform ?? null;

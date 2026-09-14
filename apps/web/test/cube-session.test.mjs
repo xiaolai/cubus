@@ -7,6 +7,8 @@
 
 import assert from 'node:assert/strict';
 import { before, describe, test } from 'node:test';
+import { makeTauriBridge } from '../lib/ble-bridge.js';
+import { createBluetooth } from '../lib/ble-polyfill.js';
 import { VERDICT, connectCube } from '../lib/cube-session.js';
 import { IDENTITY } from '../lib/cube-trust.js';
 
@@ -376,6 +378,8 @@ describe('ending a session', () => {
     f.emit({ type: 'DISCONNECT' });
     assert.equal(told, 1);
     assert.equal(session.alive, false);
+    // After the goodbye the session says for itself, which the transport outlives on purpose.
+    await new Promise((r) => setTimeout(r, 0));
     assert.equal(b.state.uninstalled, true, 'the transport must not outlive the cube');
   });
 
@@ -396,6 +400,8 @@ describe('ending a session', () => {
     f.fail(new Error('transport died'));
     assert.equal(told, 1);
     assert.equal(session.alive, false);
+    // After the goodbye the session says for itself, which the transport outlives on purpose.
+    await new Promise((r) => setTimeout(r, 0));
     assert.equal(b.state.uninstalled, true);
   });
 
@@ -444,6 +450,207 @@ describe('ending a session', () => {
     const { session } = await open();
     assert.equal(await session.disconnect(), null);
     assert.equal(session.disconnectError, null);
+  });
+
+  /**
+   * The native transport exactly as installBleBridge builds it — the real Tauri bridge under the
+   * real polyfill — over a native side the test plays, which decides what `ble_disconnect` does.
+   * The bridge is the real one because its timing is the point: a command waits for the listeners
+   * before it is issued, and one released meanwhile is refused. `log` is what reached the native
+   * side, in order; `drop()` is the native side reporting the link gone.
+   */
+  function nativeRadio(release) {
+    const log = [];
+    let dropped = () => {};
+    const invoke = async (name, args) => {
+      if (name === 'ble_request_device') return { id: 'd', name: 'GAN16ui_C8D3' };
+      if (name !== 'ble_disconnect') return undefined;
+      log.push(`disconnect ${args.id}`);
+      return release();
+    };
+    const listen = async (event, cb) => {
+      if (event === 'ble-disconnect') dropped = cb;
+      return () => {};
+    };
+    const install = () => {
+      log.push('install');
+      const bridge = makeTauriBridge({ core: { invoke }, event: { listen } });
+      return {
+        kind: 'native',
+        bluetooth: createBluetooth(bridge),
+        bridge,
+        uninstall: () => {
+          log.push('uninstall');
+          return bridge.dispose();
+        },
+      };
+    };
+    return { log, install, drop: () => dropped({ payload: { device: 'd' } }) };
+  }
+
+  /** A protocol layer that leaves one of three ways: its own teardown and then `gatt.disconnect()`,
+   *  fired and never awaited; a teardown that throws before the radio is reached; or a goodbye that
+   *  never touches the radio at all. */
+  const protocolOver = (leave) => async ({ bluetooth }) => {
+    const device = await bluetooth.requestDevice({});
+    await device.gatt.connect();
+    const ways = {
+      'through the radio': async () => {
+        if (device.gatt.connected) device.gatt.disconnect();
+      },
+      'by throwing first': async () => {
+        throw new Error('the protocol layer failed on its way out (test)');
+      },
+      'without the radio': async () => {},
+    };
+    return { ...fakeConnection().conn, disconnect: ways[leave] };
+  };
+
+  test('what the radio still holds after the goodbye is answered — through the real polyfill', async (t) => {
+    // The polyfill only warns about a release the native side refused, and the protocol layer
+    // never reads `gatt.disconnect()`, so this answered null for a cube still held and every caller
+    // above it took that for a clean goodbye. Only a fake that threw from its own disconnect ever
+    // reached the error path.
+    t.mock.method(console, 'warn', () => {});
+    t.mock.method(console, 'error', () => {});
+    for (const [leave, said] of [['through the radio', /busy \(test\)/], ['without the radio', /still holds the cube/]]) {
+      const radio = nativeRadio(async () => {
+        throw 'the cube did not release cleanly: busy (test)';
+      });
+      const session = await connectCube({ Cube, connect: protocolOver(leave), installBridge: radio.install });
+      const err = await session.disconnect();
+      assert.match(String(err), said, `a goodbye that left the cube held (${leave}) read as a clean one`);
+      assert.equal(radio.log.at(-1), 'uninstall', 'and the transport was not released last');
+    }
+  });
+
+  test('asked again after a goodbye the radio did not complete, it asks the radio again, and stops once it lets go', async (t) => {
+    // A released bridge refuses every command, and the goodbye had already released this one — so
+    // a second disconnect() could not reach the radio at all, and the retry every caller was told
+    // to make was theatre. It goes by id, over a bridge built for it.
+    t.mock.method(console, 'warn', () => {});
+    t.mock.method(console, 'error', () => {});
+    for (const [leave, refusals] of [['by throwing first', 1], ['through the radio', 2]]) {
+      let asked = 0;
+      const radio = nativeRadio(async () => {
+        asked += 1;
+        if (asked <= refusals) throw 'the cube did not release cleanly: busy (test)';
+      });
+      const session = await connectCube({ Cube, connect: protocolOver(leave), installBridge: radio.install });
+      assert.ok(await session.disconnect(), `precondition: the goodbye (${leave}) left the cube held`);
+      radio.log.length = 0;
+      const again = await session.disconnect();
+      assert.deepEqual(radio.log, ['install', 'disconnect d', 'uninstall'],
+        `asking again (${leave}) did not reach the radio over a live bridge, for the peripheral held`);
+      assert.ok(again instanceof Error && /busy \(test\)/.test(again.message), 'a refused retry was not answered as why');
+      radio.log.length = 0;
+      assert.equal(await session.disconnect(), null, 'the radio let go and the session still answered a refusal');
+      assert.deepEqual(radio.log, ['install', 'disconnect d', 'uninstall'], 'the ask that let go did not reach the radio the same way');
+      radio.log.length = 0;
+      assert.equal(await session.disconnect(), null, 'a session whose cube had let go answered a refusal');
+      assert.deepEqual(radio.log, [], 'a cube that had let go was asked again');
+    }
+  });
+
+  test('a handshake that fails once the link is up lets the radio go before the transport, or hands back what it could not', async (t) => {
+    // connectSmartCube fires `gatt.disconnect()` on its way out of a failed handshake and never
+    // waits for it, and the transport was released on the next line: the release met a bridge
+    // that refused it, and the radio went on holding a cube nothing could ask about again.
+    t.mock.method(console, 'warn', () => {});
+    let refuse = false;
+    const radio = nativeRadio(async () => {
+      if (refuse) throw 'the cube did not release cleanly: busy (test)';
+    });
+    // `fired`: the protocol layer's way out, `gatt.disconnect()` fired. Otherwise it never asks.
+    const handshake = (fired) => async ({ bluetooth }) => {
+      const device = await bluetooth.requestDevice({});
+      await device.gatt.connect();
+      if (fired) device.gatt.disconnect();
+      throw new Error('Timed out waiting for cube data (test)');
+    };
+    const fails = (fired) => connectCube({ Cube, connect: handshake(fired), installBridge: radio.install })
+      .then(() => assert.fail('the handshake did not fail'), (e) => e);
+
+    const clean = await fails(true);
+    assert.deepEqual(radio.log, ['install', 'disconnect d', 'uninstall'],
+      'the release a failed handshake fired did not reach the radio before the transport went');
+    assert.ok(/Timed out waiting for cube data \(test\)/.test(clean.message) && clean.unreleased === undefined,
+      'a handshake the radio let go of was not thrown as itself');
+
+    for (const fired of [true, false]) {
+      const how = fired ? 'its release refused' : 'never asked to let go';
+      refuse = fired;
+      radio.log.length = 0;
+      const err = await fails(fired);
+      assert.match(err.message, /Timed out waiting for cube data \(test\)/, `the handshake error was not the one thrown (${how})`);
+      assert.equal(typeof err.unreleased?.disconnect, 'function',
+        `a cube the radio kept (${how}) was thrown away with nothing that could ask again`);
+      refuse = true;
+      radio.log.length = 0;
+      const again = await err.unreleased.disconnect();
+      assert.ok(again instanceof Error && /busy \(test\)/.test(again.message), `a refused ask (${how}) was not answered as why`);
+      assert.deepEqual(radio.log, ['install', 'disconnect d', 'uninstall'], `asking again (${how}) did not reach the radio over a live bridge`);
+      refuse = false;
+      assert.equal(await err.unreleased.disconnect(), null, `the radio let go (${how}) and the handle still answered a refusal`);
+      radio.log.length = 0;
+      assert.equal(await err.unreleased.disconnect(), null);
+      assert.deepEqual(radio.log, [], `a cube that had let go (${how}) was asked again`);
+    }
+  });
+
+  test('a cube that goes away on its own is let go before the transport goes, and not from inside its own teardown', async (t) => {
+    // The protocol layer can end a connection itself without touching the radio, and the transport
+    // was released on the spot — so a link still up stayed held by the native side, with nothing
+    // left that could ask it again.
+    t.mock.method(console, 'warn', () => {});
+    t.mock.method(console, 'error', () => {});
+    for (const [how, refusals, reached, answered] of [
+      ['a link still up, released when asked', 0, ['install', 'disconnect d', 'uninstall'], null],
+      ['a link still up, refused twice', 2,
+        ['install', 'disconnect d', 'uninstall', 'install', 'disconnect d', 'uninstall'], /busy \(test\)/],
+      ['a link already dropped', 0, ['install', 'uninstall'], null],
+    ]) {
+      let asked = 0;
+      const radio = nativeRadio(async () => {
+        asked += 1;
+        if (asked <= refusals) throw 'the cube did not release cleanly: busy (test)';
+      });
+      const f = fakeConnection();
+      let emitting = false;
+      let reentered = false;
+      const connect = async ({ bluetooth }) => {
+        const device = await bluetooth.requestDevice({});
+        await device.gatt.connect();
+        const disconnect = async () => {
+          reentered ||= emitting;
+          if (device.gatt.connected) device.gatt.disconnect();
+        };
+        return { ...f.conn, disconnect };
+      };
+      const session = await connectCube({ Cube, connect, installBridge: radio.install });
+      if (how === 'a link already dropped') radio.drop();
+      emitting = true;
+      f.emit({ type: 'DISCONNECT' });
+      emitting = false;
+      assert.equal(session.alive, false, `precondition: the session ended (${how})`);
+      // Asked straight away, so an ask that did not wait for the goodbye would find nothing held.
+      const answer = await session.disconnect();
+      assert.equal(reentered, false, `the goodbye (${how}) was said from inside the protocol layer's own DISCONNECT`);
+      assert.deepEqual(radio.log, reached, `a cube that went away on its own (${how}) was not let go before the transport went`);
+      if (answered) assert.match(String(answer), answered, `asked again (${how}), it did not wait for its own goodbye`);
+      else assert.equal(answer, null, `nothing was held (${how}), and asking again answered a refusal`);
+    }
+  });
+
+  test('asked again after a goodbye that failed with nothing left held, it answers that nothing is', async (t) => {
+    // The failure was the protocol layer's and the radio holds nothing, so answering that failure
+    // again on every later ask kept the session unreleased for good, and refused every pairing
+    // after it over a release no radio was withholding.
+    t.mock.method(console, 'error', () => {});
+    const { session } = await open({ connection: { disconnectFails: true } });
+    assert.match(String(await session.disconnect()), /would not let go/, 'precondition: the goodbye failed');
+    assert.equal(await session.disconnect(), null, 'a failed goodbye with nothing held was answered again as a refusal');
+    assert.equal(session.disconnectError, null, 'and still read as why the last disconnect did not complete');
   });
 });
 
@@ -530,12 +737,13 @@ describe('anchoring the cube', () => {
   });
 
   test('the refusal wording is the one Settings matches on', async () => {
-    // Settings tests /refusing to anchor/ to decide whether to offer the override. Reworded, the
+    // Settings tests /does not report itself solved/ to decide whether to offer the override —
+    // /refusing to anchor/ also matched a cube that said nothing (2026-09-13). Reworded, the
     // override silently stops appearing and an honest user with a drifted cube is dead-ended.
     const { session, f } = await open();
     f.emit({ type: 'FACELETS', facelets: after_('R') });
     const err = await session.anchorSolved().then(() => null, (e) => e);
-    assert.match(String(err.message), /refusing to anchor/i);
+    assert.match(String(err.message), /does not report itself solved/i);
   });
 
   test('anchors a cube that does report itself solved, and confirms the reset landed', async () => {
