@@ -107,7 +107,7 @@ test('a turn held at a pinned clock is the same frame every time', async () => {
       // parent group, and after the pose work it will live on the cubies themselves. What the
       // eye gets is the world matrix either way, so that is what an instrument may read.
       el.root.updateMatrixWorld(true);
-      return el.cubies.map((c) => [...c.matrixWorld.elements].map((v) => Math.round(v * 1e6) / 1e6));
+      return el.cubies.map((c) => [...c.matrixWorld.elements].map((v) => Math.round(v * 1e6) / 1e6 + 0));
     };
     return [await read(), await read()];
   });

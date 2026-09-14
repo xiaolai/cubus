@@ -62,18 +62,18 @@ const project = (page, p) => page.evaluate(([x, y, z]) => {
   const c = window.__cube.camera;
   const v = new (Object.getPrototypeOf(c.position).constructor)(x, y, z);
   v.project(c);
-  return { x: +v.x.toFixed(4), y: +v.y.toFixed(4) };
+  return { x: +v.x.toFixed(4) + 0, y: +v.y.toFixed(4) + 0 };
 }, p);
 
 const cameraUp = (page) => page.evaluate(() => {
   const u = window.__cube.camera.up;
-  return [u.x, u.y, u.z].map((n) => Math.round(n));
+  return [u.x, u.y, u.z].map((n) => Math.round(n) + 0);
 });
 
 /** The eye direction, normalised — where latitude and longitude actually put the camera. */
 const eye = (page) => page.evaluate(() => {
   const p = window.__cube.camera.position.clone().normalize();
-  return [p.x, p.y, p.z].map((n) => +n.toFixed(4));
+  return [p.x, p.y, p.z].map((n) => +n.toFixed(4) + 0);
 });
 
 /** What the element actually fitted to, and everything needed to recompute it independently. */
@@ -119,12 +119,12 @@ test('turning it over mirrors the frame rather than moving the subject', async (
   const page = await cube({ 'camera-latitude': '35', 'camera-longitude': '45' });
   const before = [];
   for (const p of probes) before.push(await project(page, p));
-  const dist = await page.evaluate(() => +window.__cube.camera.position.length().toFixed(4));
+  const dist = await page.evaluate(() => +window.__cube.camera.position.length().toFixed(4) + 0);
 
   await page.evaluate(() => window.__cube.setAttribute('camera-up', 'D'));
   const after = [];
   for (const p of probes) after.push(await project(page, p));
-  const dist2 = await page.evaluate(() => +window.__cube.camera.position.length().toFixed(4));
+  const dist2 = await page.evaluate(() => +window.__cube.camera.position.length().toFixed(4) + 0);
 
   for (const [i, p] of probes.entries()) {
     assert.ok(Math.abs(after[i].x + before[i].x) < 1e-3, `${p} x should mirror: ${before[i].x} -> ${after[i].x}`);
@@ -244,7 +244,7 @@ test('the eye lands exactly where latitude and longitude ask, whatever the roll'
   // would satisfy that. The direction is checked against the angles themselves.
   const want = (lat, lon) => {
     const a = (lat * Math.PI) / 180, b = (lon * Math.PI) / 180;
-    return [Math.cos(a) * Math.sin(b), Math.sin(a), Math.cos(a) * Math.cos(b)].map((n) => +n.toFixed(4));
+    return [Math.cos(a) * Math.sin(b), Math.sin(a), Math.cos(a) * Math.cos(b)].map((n) => +n.toFixed(4) + 0);
   };
   const page = await cube({ 'camera-latitude': '-30', 'camera-longitude': '135' });
   const before = await eye(page);

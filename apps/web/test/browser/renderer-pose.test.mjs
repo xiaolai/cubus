@@ -144,7 +144,7 @@ test('an undone half turn retraces the way it came, not the other way round', as
     }
     await tick();
     el.root.updateMatrixWorld(true);
-    return el.cubies.map((c) => [...c.matrixWorld.elements].map((v) => Math.round(v * 1e5) / 1e5));
+    return el.cubies.map((c) => [...c.matrixWorld.elements].map((v) => Math.round(v * 1e5) / 1e5 + 0));
   }, backwards);
 
   const forward = await sample(false);
