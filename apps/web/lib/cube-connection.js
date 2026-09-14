@@ -15,18 +15,15 @@ import { hostPlatform } from './host.js';
 // keeps "connected" from standing in for "known".
 import { connectCube, VERDICT } from './cube-session.js';
 import { normaliseMac } from './cube-registry.js';
-// What the host can actually reach a radio with. Imported rather than re-derived: the list of
-// platforms whose native BLE is not yet proved on a device is one line in one file by design
-// ("THE FLIP IS THIS LINE"), and a second copy here would let the app offer Pair on a platform
-// that file had already refused.
-import { NATIVE_BLE_UNSUPPORTED } from './ble-bridge.js';
+// What the host can actually reach a radio with, asked of the bridge's own resolver: the route
+// Settings offers and the transport the bridge installs are one answer, so they cannot disagree.
+import { bleRoute } from './ble-bridge.js';
 
 import { state } from './app-state.js';
 import { Cube, loadSolver } from './solver-service.js';
 import { ingestFacelets, takeDerivation } from './cube-subject.js';
-import { isTauri } from './window-chrome.js';
 import { lastCubeMac, sessionIdentity } from './cube-memory.js';
-import { markStale, markTrusted, repaintSettings } from './cube-trust-state.js';
+import { markStale, markTrusted, repaintIndicator, repaintSettings } from './cube-trust-state.js';
 import { conn, holdSession } from './live-session.js';
 import {
   adoptConnection, onCubeMove, onDisconnect, onFacelets, onMovesLost, reportSilence,
@@ -37,24 +34,16 @@ import {
 /**
  * Can this host reach a radio at all, and by which route?
  *
- * The SAME ladder `installBleBridge` walks, asked without building a bridge: a bridge registers
- * native event listeners, and one constructed at render time beside a live session would sit
- * there warning about every packet it could not place. The one line that can drift — which
- * native platforms are refused until somebody has run the app on a real device — is imported
- * rather than copied, because that list is deliberately kept in one place ("THE FLIP IS THIS
- * LINE", ble-bridge.js).
+ * The bridge's own resolver (`bleRoute`, lib/ble-bridge.js), asked without building a bridge: a
+ * bridge registers native event listeners, and one constructed at render time beside a live
+ * session would sit there warning about every packet it could not place.
  *
  * Answered at RENDER time, never memoised: `?platform=` pins the answer for design review, and a
  * value cached before boot published `<html data-platform>` would be the wrong one forever.
  *
  * @returns {'native'|'browser'|'refused-host'|'none'}
  */
-export function bleReach() {
-  if (isTauri && NATIVE_BLE_UNSUPPORTED.includes(hostPlatform())) return 'refused-host';
-  if (isTauri) return 'native';
-  if (globalThis.navigator?.bluetooth) return 'browser';
-  return 'none';
-}
+export const bleReach = () => bleRoute();
 
 /** Whether the Pair button is drawn at all. A control that can never work on this platform is
  *  furniture: it invites a press, fails, and explains afterwards in words written for a
@@ -90,40 +79,73 @@ export async function refreshBattery() {
   // Scoped to the connection that asked: a slow reply from a cube you have since disconnected
   // must not land as the current cube's battery level.
   const asked = conn;
+  let answer = null;
   try {
-    // `null` means the cube would not say, and it must stay unknown. `Number(null)` is 0, which
-    // is finite — so the old line drew a flat battery for a cube that simply had not answered,
-    // which is the "never invent data" rule broken in the most alarming direction available.
-    const answer = await conn.requestBattery();
-    if (conn !== asked) return;
-    const level = answer === null || answer === undefined ? Number.NaN : Number(answer);
-    if (Number.isFinite(level)) {
-      state.battery = Math.max(0, Math.min(100, Math.round(level)));
-      // A reply can land while someone is typing a nickname or an address into this very card,
-      // and rebuilding the card discards what they typed — so the redraw is deferred, not faked.
-      repaintSettings();
-    }
+    answer = await asked.requestBattery();
   } catch {
-    if (conn !== asked) return;
-    // A cube that will not answer its battery is still a usable cube. Leave the level unknown
-    // and let the UI say so, rather than drawing a fictional meter.
-    state.battery = null;
+    // A cube that will not answer its battery is still a usable cube: the level is unknown, and
+    // the UI says so rather than drawing a fictional meter.
   }
+  if (conn !== asked) return;
+  // `null` means the cube would not say, and the level becomes unknown: a level from an earlier
+  // ask is not a current one. `Number(null)` is 0, which is finite — so the old line drew a flat
+  // battery for a cube that simply had not answered.
+  const level = answer === null || answer === undefined ? Number.NaN : Number(answer);
+  publishBattery(Number.isFinite(level) ? Math.max(0, Math.min(100, Math.round(level))) : null);
+}
+
+/** The battery level, or null, published to everything that shows it — Settings' meter and the
+ *  title-bar indicator's tooltip. One door, so an answer, a silence and a refusal reach both. */
+function publishBattery(level) {
+  if (state.battery === level) return;
+  state.battery = level;
+  repaintIndicator();
+  // A reply can land while someone is typing a nickname or an address into this very card, and
+  // rebuilding the card discards what they typed — so the redraw is deferred, not faked.
+  repaintSettings();
 }
 
 let connecting = null;
-export async function doConnect(macFromUi) {
+/** Pair a cube, one attempt at a time. `open` is the session factory: lib/cube-session.js's
+ *  connectCube, or a test's stand-in — which is how pairing itself is driven by a test at all. */
+export async function doConnect(macFromUi, { open = connectCube } = {}) {
   // Single-flight: two overlapping attempts raced through the shared transport/conn state, the
   // loser tearing down the winner's transport half-way through its own handshake.
   if (connecting) return connecting;
   connecting = (async () => {
-    try { return await connectOnce(macFromUi); } finally { connecting = null; }
+    try { return await connectOnce(macFromUi, open); } finally { connecting = null; }
   })();
   return connecting;
 }
 
-async function connectOnce(macFromUi) {
-  if (conn) { try { await conn.disconnect(); } catch {} holdSession(null); }
+/** The first line of what went wrong, for a sentence. */
+const said = (e) => String(e?.message || e).split('\n')[0];
+
+/** Let go of every session the radio may still hold before another is paired: first each whose
+ *  release did not complete (see `letGo`), asked again, then the held one, whose app side is ended
+ *  as every goodbye ends it. A release that does not complete stops this attempt and says so, and
+ *  the next attempt asks again: nothing is paired while one is refused, because the native side may
+ *  still hold that peripheral, and pairing over it fails in a way nothing can explain. */
+async function releaseHeld() {
+  for (const kept of [...unreleased]) {
+    const failed = await letGo(kept);
+    if (failed) throw notReleased(failed);
+  }
+  const held = conn;
+  if (!held) return;
+  const failed = await letGo(held);
+  // Scoped to the session let go: one that replaced it meanwhile is not this attempt's to end.
+  if (conn === held) onDisconnect();
+  if (failed) throw notReleased(failed);
+}
+
+/** A release that did not complete, for a sentence. Pairing again asks the radio again. */
+const notReleased = (failed) =>
+  new Error(`the last cube was not released cleanly (${said(failed)}) — pair again to ask it once more`);
+
+async function connectOnce(macFromUi, open) {
+  await releaseHeld();
+  let session = null;
   try {
     // The self-check needs cubejs, and a cube paired before the solver finished loading would be
     // REFUSED for a reason that has nothing to do with the cube — an alarming verdict caused by
@@ -144,59 +166,82 @@ async function connectOnce(macFromUi) {
     // checked against the cube (the library verifies a provided MAC before the connection stands)
     // and comes back as `session.mac` if it holds. Feeding it to the registry directly is what
     // made an addressless cube inherit the last cube's record — see sessionIdentity.
-    const session = await connectCube({
+    session = await open({
       Cube,
       macProvider: typed ? async () => typed : undefined,
     });
-
-    // Every callback is scoped to ITS session: a slow packet or a late disconnect from a
-    // connection since replaced must not mutate the new cube's state or tear it down.
-    session.onFacelets((facelets, serial) => { if (conn === session) onFacelets(facelets, serial); });
-    // Following runs on moves (immediate); snapshots (~1Hz) only correct drift — a turn sequence
-    // completed inside one second has no intermediate snapshots.
-    // Through onCubeMove, not straight to `liveMove`: the self-check's gate lives there so the
-    // test seam passes through the same one the driver does, and so does the one piece of
-    // bookkeeping that must happen on EVERY turn whether or not a screen is following.
-    session.onMove((m) => { if (conn === session) onCubeMove(m); });
-    session.onDisconnect(() => { if (conn === session) onDisconnect(); });
-    // Trust lapses HERE rather than in a screen's handler, so a verdict changing while you are in
-    // Settings is not dropped. This replaces the driver's `gap` event and is a better trigger: the
-    // old one fired on a serial jump, this one fires when the cube's own moves and its own
-    // reported state stop agreeing — which is what a lost turn actually IS, proved rather than
-    // inferred, and available on every brand instead of only those that number their moves.
-    session.onVerdict((verdict) => {
-      if (conn !== session) return;
-      if (verdict === VERDICT.REFUSED) markStale('its reports stopped adding up');
-    });
-    // A lost turn is its OWN signal, not a shade of the verdict (2026-09-04). The whole point of
-    // tolerating a loss is that a trusted cube SURVIVES it — so on the cube this matters most for,
-    // the verdict and the reason are identical before and after, and a screen watching the verdict
-    // announces nothing. Standing follow down, refusing the timer's result and saying what
-    // happened all live behind onMovesLost, and this is the door they arrive through.
-    session.onMovesLost(() => { if (conn === session) onMovesLost(); });
-
+    bindSession(session);
+    // A cube that dropped after the session subscribed and before bindSession told nobody: its
+    // DISCONNECT found no listener. Adopted, it would stand as a connected cube that never reports.
+    if (!session.alive) {
+      throw new Error('the cube disconnected as it connected — turn it to wake it, then pair again');
+    }
     holdSession(session);
     adoptConnection(sessionIdentity(session), session.name || 'Smart cube');
-    // The reply is NOT fed to onFacelets here. It arrives on the event stream too, and the
-    // permanent listener above already handles it — passing it on as well delivered the
-    // connection's first report twice, which runs the reconnect classification against a question
-    // its own first answer had already closed.
-    session.requestState().catch((e) => {
-      // Said, not swallowed: this rejection used to vanish into an empty catch, and the screen
-      // showed a connected cube that had said nothing. The passive stream may still deliver a
-      // first report later; until it does, the reading is 'no report' and the screens say so.
-      if (conn !== session) return;
-      console.warn('the cube did not answer its state request', e);
-      reportSilence();
-    });
-    // Ask the cube rather than inventing a number — a flat battery is what disconnects a cube
-    // mid-solve, and a mid-solve disconnect is what silently desyncs its tracking from reality.
-    void refreshBattery();
+    askFirstReports(session);
   } catch (err) {
-    if (conn) { try { await conn.disconnect(); } catch {} }
-    onDisconnect();
+    // What this attempt leaves is let go (`letGoLeftover`), and a release that did not complete is
+    // said with the error.
+    const failed = await letGoLeftover(session, err);
+    if (!conn || conn === session) onDisconnect();
+    if (failed) {
+      throw new Error(`${said(err)} — and the cube was not released cleanly: ${said(failed)}`, { cause: err });
+    }
     throw err;
   }
+}
+
+/** Route every report `session` sends to lib/cube-reports.js. Every callback is scoped to ITS
+ *  session: a slow packet or a late disconnect from a connection since replaced must not mutate
+ *  the new cube's state or tear it down. */
+function bindSession(session) {
+  session.onFacelets((facelets, serial) => { if (conn === session) onFacelets(facelets, serial); });
+  // Following runs on moves (immediate); snapshots (~1Hz) only correct drift — a turn sequence
+  // completed inside one second has no intermediate snapshots.
+  // Through onCubeMove, not straight to `liveMove`: the self-check's gate lives there so the
+  // test seam passes through the same one the driver does, and so does the one piece of
+  // bookkeeping that must happen on EVERY turn whether or not a screen is following.
+  session.onMove((m) => { if (conn === session) onCubeMove(m); });
+  // A session that ends on its own says its own goodbye (lib/cube-session.js) and is let go like
+  // any other, so one the radio did not release is kept and asked again before the next pairing.
+  session.onDisconnect(() => {
+    if (conn === session) onDisconnect();
+    void letGo(session);
+  });
+  // Trust lapses HERE rather than in a screen's handler, so a verdict changing while you are in
+  // Settings is not dropped. This replaces the driver's `gap` event and is a better trigger: the
+  // old one fired on a serial jump, this one fires when the cube's own moves and its own
+  // reported state stop agreeing — which is what a lost turn actually IS, proved rather than
+  // inferred, and available on every brand instead of only those that number their moves.
+  session.onVerdict((verdict) => {
+    if (conn !== session) return;
+    if (verdict === VERDICT.REFUSED) markStale('its reports stopped adding up');
+  });
+  // A lost turn is its OWN signal, not a shade of the verdict (2026-09-04). The whole point of
+  // tolerating a loss is that a trusted cube SURVIVES it — so on the cube this matters most for,
+  // the verdict and the reason are identical before and after, and a screen watching the verdict
+  // announces nothing. Standing follow down, refusing the timer's result and saying what
+  // happened all live behind onMovesLost, and this is the door they arrive through.
+  session.onMovesLost(() => { if (conn === session) onMovesLost(); });
+}
+
+/** What a new connection asks its cube at once: where it is, and its battery. */
+function askFirstReports(session) {
+  // The reply is NOT fed to onFacelets here. It arrives on the event stream too, and the
+  // permanent listener in bindSession already handles it — passing it on as well delivered the
+  // connection's first report twice, which runs the reconnect classification against a question
+  // its own first answer had already closed.
+  session.requestState().catch((e) => {
+    // Said, not swallowed: this rejection used to vanish into an empty catch, and the screen
+    // showed a connected cube that had said nothing. The passive stream may still deliver a
+    // first report later; until it does, the reading is 'no report' and the screens say so.
+    if (conn !== session) return;
+    console.warn('the cube did not answer its state request', e);
+    reportSilence();
+  });
+  // Ask the cube rather than inventing a number — a flat battery is what disconnects a cube
+  // mid-solve, and a mid-solve disconnect is what silently desyncs its tracking from reality.
+  void refreshBattery();
 }
 
 /** Make `facelets` the arrangement the app is about.
@@ -244,4 +289,39 @@ window.cubusFeed = {
     // looking at the "unknown" state and quietly never exercise the meter at all.
     if (fake) void refreshBattery();
   },
+};
+
+/** Sessions whose release did not complete, or is still being asked for. Kept, because asking one
+ *  to disconnect again asks the radio again (lib/cube-session.js), and a session dropped here is
+ *  a peripheral nothing asks about again. `releaseHeld` asks each before anything is paired; one
+ *  that lets go leaves. */
+const unreleased = new Set();
+
+/**
+ * Let `session` go, and answer what went wrong — or null.
+ *
+ * A session's disconnect() RETURNS a release that did not complete (lib/cube-session.js), and can
+ * still throw from the bridge's teardown; every caller dropped both (found by audit, 2026-09-13).
+ * One answer here, never a rejection, so a caller can do its own teardown and then say the rest.
+ * Every goodbye comes through here, so a session whose release did not complete stays in
+ * `unreleased` whichever caller let it go (found on re-audit, 2026-09-14).
+ */
+export const letGo = async (session) => {
+  // Kept from the moment it is asked, so a pairing pressed meanwhile asks it too and waits.
+  unreleased.add(session);
+  const failed = await Promise.resolve()
+    .then(() => session.disconnect())
+    .then((answer) => answer ?? null, (thrown) => thrown);
+  if (!failed) unreleased.delete(session);
+  return failed;
+};
+
+/** Let go of what a failed attempt leaves, and answer what went wrong, or null: the session it
+ *  opened — alive or not, because one that ended before its listeners were bound is exactly the
+ *  session nothing else would ever ask the radio about again (found by verification, 2026-09-14) —
+ *  or the handle a failed handshake throws on its error for what it left the radio holding
+ *  (`unreleased`, lib/cube-session.js). */
+const letGoLeftover = (session, err) => {
+  const left = session ?? err?.unreleased;
+  return left ? letGo(left) : null;
 };

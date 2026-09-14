@@ -298,6 +298,8 @@ class PolyfillServer {
     this._services = new Map();
     /** The native release currently in flight, or null. See `disconnect`. */
     this._releasing = null;
+    /** Why the native side refused the last release, or null. See `whenReleased`. */
+    this._refused = null;
   }
 
   async connect() {
@@ -338,16 +340,23 @@ class PolyfillServer {
    * cube sitting on the desk. A caller that ignores the return value gets exactly the old
    * behaviour, and this never rejects, so an ignored promise cannot become an unhandled rejection.
    * A failed release is reported instead, because a peripheral the native side never let go of is
-   * the one fault that looks identical to a clean goodbye.
+   * the one fault that looks identical to a clean goodbye — warned about here, and kept for
+   * `whenReleased`, which is where a caller asks.
    */
   disconnect() {
     this.connected = false;
     this._forget();
     const releasing = Promise.resolve()
       .then(() => this.device._bridge.disconnect(this.device.id))
-      .catch((e) => {
-        console.warn('ble-polyfill: native disconnect failed', e);
-      })
+      .then(
+        () => {
+          this._refused = null;
+        },
+        (e) => {
+          console.warn('ble-polyfill: native disconnect failed', e);
+          this._refused = e instanceof Error ? e : new Error(String(e));
+        },
+      )
       .finally(() => {
         // Only if it is still ours: two disconnects in a row would otherwise have the first one's
         // completion clear a release that is still in flight.
@@ -588,6 +597,8 @@ export function createBluetooth(bridge, { onRawPacket, onTraffic } = {}) {
     const dev = devices.get(device);
     if (!dev) return;
     dev.gatt.connected = false;
+    // The link dropped, so nothing is left to release, whatever the last release said.
+    dev.gatt._refused = null;
     // Everything discovered belonged to the link that has just gone. Dropped BEFORE the event, so
     // a listener that reconnects synchronously re-discovers rather than reusing dead handles —
     // which is what made a reconnect through the same polyfill skip `ble_subscribe` entirely and
@@ -625,16 +636,24 @@ export function createBluetooth(bridge, { onRawPacket, onTraffic } = {}) {
     addEventListener: unimplemented('Bluetooth', 'addEventListener'),
 
     /**
-     * Resolve once no native release is still in flight. NOT part of Web Bluetooth.
+     * Resolve once no native release is still in flight, with what may still be held. NOT part of
+     * Web Bluetooth.
      *
      * The protocol layer's own teardown calls `gatt.disconnect()` without awaiting it, which is
      * correct against the real API — there, disconnect returns void — and leaves an app that wants
      * to reconnect with nothing to wait on. This is that something. It is the app's handle, not
      * the library's: the library keeps working unchanged, and a caller who needs the radio to have
      * actually let go can say so.
+     *
+     * The answer is `[{ id, error }]`: one entry per device whose link is still up (`error` null)
+     * or whose last release the native side refused (`error` says why), and none once everything
+     * has let go or dropped. The id is what a caller needs to ask the native side again.
      */
     async whenReleased() {
       for (const dev of devices.values()) await dev.gatt._releasing;
+      return [...devices.values()]
+        .filter((dev) => dev.gatt.connected || dev.gatt._refused)
+        .map((dev) => ({ id: dev.id, error: dev.gatt._refused }));
     },
 
     /** Test and diagnostic access. Not part of the Web Bluetooth surface. */

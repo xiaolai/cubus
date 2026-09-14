@@ -771,6 +771,42 @@ describe('the polyfill itself', () => {
     assert.match(warned.join('\n'), /native disconnect failed/);
   });
 
+  test('whenReleased answers what may still be held: a live link, or a release the native side refused', async (t) => {
+    // The protocol layer fires `gatt.disconnect()` and never reads it, so the warning above was all
+    // a refused release left behind, and a caller waiting here took a cube the native side still
+    // held for a clean goodbye. The id is what lets that caller ask again. The refusal below is a
+    // string, which is not an Error, so the answer has to make it one.
+    t.mock.method(console, 'warn', () => {});
+    let refuse = true;
+    const { bridge, fireDisconnect } = makeUnitBridge({
+      disconnectCommand: async () => {
+        if (refuse) throw 'the cube did not release cleanly: busy (test)';
+      },
+    });
+    const bt = createBluetooth(bridge);
+    const device = await bt.requestDevice({});
+    const heldIds = async () => ((await bt.whenReleased()) ?? []).map((h) => h.id);
+
+    await device.gatt.connect();
+    await device.gatt.disconnect();
+    const held = (await bt.whenReleased()) ?? [];
+    assert.deepEqual(held.map((h) => h.id), ['d'], 'a release the native side refused read as a clean goodbye');
+    assert.ok(held[0].error instanceof Error, 'and why was not answered as an Error');
+    assert.match(held[0].error.message, /busy \(test\)/, 'and it was not the refusal the native side gave');
+
+    refuse = false;
+    await device.gatt.disconnect();
+    assert.deepEqual(await heldIds(), [], 'a release that went through afterwards still read as refused');
+
+    await device.gatt.connect();
+    assert.deepEqual(await heldIds(), ['d'], 'a link nobody had let go of read as released');
+
+    refuse = true;
+    await device.gatt.disconnect();
+    fireDisconnect();
+    assert.deepEqual(await heldIds(), [], 'the link dropping still read as a refused release');
+  });
+
   test('advertisements keep arriving and merging until the caller stops asking', async () => {
     // The failure this prevents: the protocol layer's MAC recovery merges advertisement frames
     // until its own timeout, because a GAN cube's FIRST frame routinely carries an empty
