@@ -38,11 +38,25 @@ const BUNDLES = [
     sources: [
       '../../../packages/cubus-cube/src/cubus-cube.js', '../lib/cube-frame.js',
       '../lib/cube-highlight.js', '../lib/cube-orientation.js', '../lib/sticker-palettes.js',
+      // Where a cubie IS, since the renderer stopped keeping that in its scene graph — and
+      // cube-pieces with it, because the pose is arithmetic over the piece model. So the model
+      // this repository publishes as its API is now IN the bundle it draws with, which is the
+      // whole point of A1: one implementation, not two.
+      '../../../packages/cubus-cube/src/pose.js', '../lib/cube-pieces.js',
     ],
     // The renderer imports three of cube-orientation.js's exports (isFace, orientationMatrix,
     // sameAxis); esbuild drops the rest, and the messages inside them. Same delete-when-used
     // contract as the panel's list below.
-    treeShaken: ['CENTERS', 'orientationPerm', 'orientationRelabel', 'permCache', 'turnFacelets'],
+    //
+    // And from cube-pieces.js the pose needs four — CORNERS, EDGES, MOVES, applyMove — so the
+    // solver-facing half of the piece model is dropped. That list being LONG is the point: the
+    // renderer takes the model's move tables and none of its searching, and an entry that stops
+    // being tree-shaken means the bundle just grew a dependency nobody asked for.
+    treeShaken: [
+      'CENTERS', 'orientationPerm', 'orientationRelabel', 'permCache', 'turnFacelets',
+      'Y_FACES', 'allSolved', 'applyAlg', 'cornerSlot', 'cornerSolved', 'edgeSlot', 'edgeSolved',
+      'fromCube', 'moveCount', 'movesOf', 'rotateAlg', 'rotateState',
+    ],
     treeShakenMessages: [
       'cube-orientation: sticker', 'cube-orientation: rotation is not a bijection',
       'relabelling is not a bijection', 'cube-orientation: expected 54 facelets, got',
