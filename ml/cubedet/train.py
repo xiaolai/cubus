@@ -98,7 +98,22 @@ class Config:
     imgsz: int = 640
     context: bool = False
     backbone: str = CSP_BACKBONE
+    input_normalised: bool = False
     history: list = field(default_factory=list)
+
+
+def input_scale_mismatch(state: dict, mine: bool, source: Path) -> str | None:
+    """Why `source` cannot be continued or warm-started by this run, if its input scale differs.
+
+    A checkpoint written before `input_normalised` existed has no record and was trained on raw 0-1
+    pixels, so absence means False. Carrying weights across the two scales is not a warm start: every
+    feature the backbone computes would be computed on inputs shifted by the ImageNet mean.
+    """
+    theirs = bool(state.get("input_normalised", False))
+    if theirs == mine:
+        return None
+    return (f"{source}: checkpoint input_normalised={theirs} but this run is input_normalised={mine}. "
+            f"Pass --no-input-normalise to match an older checkpoint, or start fresh.")
 
 
 class ModelEMA:
@@ -194,6 +209,10 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"'{CSP_BACKBONE}' for the from-scratch CSP stack, or a torchvision model "
                              "name (e.g. mobilenet_v3_large) to start from its BSD-3 ImageNet weights; "
                              "measured motivation in cubedet/model.py::PretrainedBackbone")
+    parser.add_argument("--no-input-normalise", action="store_true",
+                        help="feed a pretrained backbone raw 0-1 pixels instead of the ImageNet-normalised "
+                             "input its weights expect; only to continue or warm-start a checkpoint "
+                             "trained before 2026-09-14 (see PretrainedBackbone)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--init-from", type=Path, default=None,
@@ -212,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg.imgsz = args.imgsz
     cfg.context = args.context
     cfg.backbone = args.backbone
+    cfg.input_normalised = args.backbone != CSP_BACKBONE and not args.no_input_normalise
     cfg.embed_dim = args.embed_dim
     cfg.out.mkdir(parents=True, exist_ok=True)
     seed_everything(cfg.seed)
@@ -238,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
 
     model = CubeDet(num_classes=NUM_CLASSES, width=cfg.width, image_size=cfg.imgsz,
                     context=cfg.context, backbone=cfg.backbone,
-                    embed_dim=cfg.embed_dim).to(device)
+                    embed_dim=cfg.embed_dim, input_normalised=cfg.input_normalised).to(device)
     criterion = DetectionLoss(NUM_CLASSES, embed_dim=cfg.embed_dim)
     # No weight decay on norms and biases: decaying a BatchNorm scale pulls it towards zero, which
     # is a different and worse regulariser than the one intended.
@@ -268,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         # one exists, so an automatic container restart mid-fine-tune must CONTINUE the fine-tune
         # rather than silently begin it again from the base weights every time the box resets.
         state = torch.load(args.init_from, map_location=device, weights_only=True)
+        if (mismatch := input_scale_mismatch(state, cfg.input_normalised, args.init_from)):
+            raise SystemExit(f"--init-from {mismatch}")
         # Refuse a mismatch rather than let load_state_dict paper over it. A checkpoint whose
         # backbone or resolution differs builds a model that loads, trains and exports, and is
         # quietly wrong -- the same failure mode the stride-cut probe exists to prevent.
@@ -306,6 +328,10 @@ def main(argv: list[str] | None = None) -> int:
         # the permissive unpickler has no reason to be used. A training checkpoint is a file that
         # travels between machines, and `torch.load`'s default would execute whatever it carried.
         state = torch.load(args.resume, map_location=device, weights_only=True)
+        # A restarted container re-runs this with today's defaults, so a run begun before the input
+        # scale existed would otherwise resume under a different one, with nothing to say so.
+        if (mismatch := input_scale_mismatch(state, cfg.input_normalised, args.resume)):
+            raise SystemExit(f"--resume {mismatch}")
         model.load_state_dict(state["model"])
         ema.module.load_state_dict(state["ema"])
         optimiser.load_state_dict(state["optimiser"])
@@ -365,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
                 atomic_save(
                     {"model": ema.module.state_dict(), "width": cfg.width,
                      "imgsz": cfg.imgsz, "context": cfg.context, "backbone": cfg.backbone,
-             "embed_dim": cfg.embed_dim,
+             "embed_dim": cfg.embed_dim, "input_normalised": cfg.input_normalised,
                      "num_classes": NUM_CLASSES, "epoch": epoch, "metrics": metrics,
                      "environment": environment},
                     cfg.out / "best.pt",
@@ -387,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
              "optimiser": optimiser.state_dict(), "scheduler": scheduler.state_dict(),
              "epoch": epoch, "best": best, "history": cfg.history, "width": cfg.width,
              "imgsz": cfg.imgsz, "context": cfg.context, "backbone": cfg.backbone,
-             "embed_dim": cfg.embed_dim,
+             "embed_dim": cfg.embed_dim, "input_normalised": cfg.input_normalised,
              "num_classes": NUM_CLASSES, "environment": environment},
             cfg.out / "last.pt",
         )

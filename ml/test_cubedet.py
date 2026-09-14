@@ -728,6 +728,95 @@ def test_stride_cuts_refuses_a_backbone_that_lacks_a_level():
         stride_cuts(shallow)
 
 
+@pytest.mark.parametrize("name", [PRETRAINED_UNDER_TEST, "mobilenetv4_conv_small.e2400_r224_in1k"])
+def test_a_normalised_backbone_sees_the_input_its_imagenet_weights_were_trained_on(name):
+    """Both publishers' statistics, and switching the scale on is exactly feeding normalised pixels."""
+    if "." in name:
+        pytest.importorskip("timm")
+    torch.manual_seed(0)
+    raw = PretrainedBackbone(name, pretrained=False, input_normalised=False).eval()
+    scaled = PretrainedBackbone(name, pretrained=False, input_normalised=True).eval()
+    scaled.load_state_dict(raw.state_dict())
+    assert scaled.input_mean.flatten().tolist() == pytest.approx([0.485, 0.456, 0.406])
+    assert scaled.input_std.flatten().tolist() == pytest.approx([0.229, 0.224, 0.225])
+    assert not any(k.startswith("input_") for k in scaled.state_dict()), "the statistics became checkpoint keys"
+    x = torch.rand(1, 3, 160, 160)
+    with torch.no_grad():
+        by_hand = raw((x - scaled.input_mean) / scaled.input_std)
+        for got, want in zip(scaled(x), by_hand, strict=True):
+            assert torch.allclose(got, want, atol=1e-5)
+        assert not torch.allclose(scaled(x)[0], raw(x)[0]), "switching the input scale on changed nothing"
+
+
+def test_a_checkpoint_loads_with_the_input_scale_it_was_trained_on(tmp_path):
+    import export
+
+    torch.manual_seed(0)
+    model = CubeDet(backbone=PRETRAINED_UNDER_TEST, pretrained=False, input_normalised=True).eval()
+    x = torch.rand(1, 3, IMG_SIZE, IMG_SIZE)
+    with torch.no_grad():
+        # Backbone features, not the detector's output: an untrained head answers the same boxes and
+        # scores for any input, so the output alone cannot show which input scale a model is using.
+        want = model.backbone(x)[0]
+        for recorded, expected in ((None, False), (False, False), (True, True)):
+            state = {"model": model.state_dict(), "backbone": PRETRAINED_UNDER_TEST, "width": 1.0, "imgsz": IMG_SIZE}
+            if recorded is not None:
+                state["input_normalised"] = recorded
+            torch.save(state, tmp_path / "c.pt")
+            loaded = export._load_cubedet(tmp_path / "c.pt")
+            assert loaded.input_normalised is expected, recorded
+            assert torch.allclose(loaded.backbone(x)[0], want, atol=1e-4) is expected, recorded
+
+
+def test_a_run_refuses_to_continue_across_input_scales(tmp_path):
+    from cubedet.train import input_scale_mismatch
+
+    assert input_scale_mismatch({}, False, tmp_path) is None, "an old checkpoint is raw pixels, like --no-input-normalise"
+    assert input_scale_mismatch({"input_normalised": True}, True, tmp_path) is None
+    assert input_scale_mismatch({}, True, tmp_path) is not None, "a pre-fix checkpoint was warm-started under normalisation"
+    assert input_scale_mismatch({"input_normalised": True}, False, tmp_path) is not None
+
+
+def test_the_from_scratch_backbone_refuses_an_input_scale():
+    with pytest.raises(ValueError, match="no published input statistics"):
+        CubeDet(backbone=CSP_BACKBONE, input_normalised=True)
+
+
+def test_a_normalised_model_carries_the_normalisation_into_the_onnx_graph():
+    ort = pytest.importorskip("onnxruntime")
+    import io
+
+    # THE BACKBONE, not the whole detector: an untrained head answers nearly the same boxes and scores
+    # whatever it is fed (measured: the normalised and raw models agreed to 1e-3 even with random head
+    # weights), so a graph that dropped the normalisation would pass a whole-model comparison. The
+    # backbone's features do depend on the input scale, and its forward is where the normalisation is.
+    torch.manual_seed(0)
+    backbone = PretrainedBackbone(PRETRAINED_UNDER_TEST, pretrained=False, input_normalised=True).eval()
+    buffer = io.BytesIO()
+    torch.onnx.export(backbone, torch.zeros(1, 3, IMG_SIZE, IMG_SIZE), buffer, input_names=["images"],
+                      output_names=["p3", "p4", "p5"], opset_version=12, dynamo=False)
+    backbone.eval()  # the exporter restores the mode it found; say which one the comparison runs in
+    x = torch.rand(1, 3, IMG_SIZE, IMG_SIZE)
+    # Single-threaded, and released before the test returns. The first full run with this test in it
+    # passed every test and then aborted at interpreter exit ("recursive_mutex lock failed", exit 134):
+    # onnxruntime's thread pool outliving the runtime state it locks, beside torch, in one process.
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = options.inter_op_num_threads = 1
+    session = ort.InferenceSession(buffer.getvalue(), options, providers=["CPUExecutionProvider"])
+    got = session.run(None, {"images": x.numpy()})
+    del session
+    import gc
+
+    gc.collect()
+    with torch.no_grad():
+        want = [t.numpy() for t in backbone(x)]
+        backbone.input_normalised = False
+        unscaled = [t.numpy() for t in backbone(x)]
+    assert not np.allclose(unscaled[0], want[0], atol=1e-3), "the features do not depend on the input scale"
+    for g, w in zip(got, want, strict=True):
+        assert np.allclose(g, w, rtol=1e-4, atol=1e-4), float(np.abs(g - w).max())
+
+
 def test_the_size_matched_arm_really_is_size_matched():
     """`mobilenet_v3_small` is the arm that isolates pretraining, and it can only do that at equal size.
 
