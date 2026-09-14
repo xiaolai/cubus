@@ -19,8 +19,8 @@
 // The assembly is a function so a test can run it into a throwaway directory
 // and look at what came out; `node build.mjs` runs it into dist/.
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import path, { join, dirname, relative, resolve, sep } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import path, { basename, join, dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // The same bundler that BUILDS vendor/cubus-cube.js, asked which files went into it. It is
@@ -158,18 +158,48 @@ const identity = (p) => {
   }
 };
 
-/** Every directory that holds `p`, and `p` itself, as identities. A destination that does not
- *  exist yet contributes its nearest existing ancestor and everything above it — the parts that
- *  could already BE something; the missing leading components cannot be, and a delete does not
- *  touch them. */
-const ancestry = (p) => {
-  const ids = new Set();
-  for (let at = p; ; at = dirname(at)) {
+/** Add the identity of `start` and of every lexical parent above it to `ids`. */
+const walkUp = (start, ids) => {
+  for (let at = start; ; at = dirname(at)) {
     const id = identity(at);
     if (id) ids.add(id);
     if (dirname(at) === at) return ids;
   }
 };
+
+/**
+ * `p` with every symlink in it resolved: its nearest existing ancestor through `realpath`, and the
+ * components that do not exist yet appended as written.
+ *
+ * WHY BOTH WALKS. `identity()` stats through a symlink but `dirname()` steps up the path as TEXT,
+ * so the lexical walk alone went from the target of a link straight to the link's own parent: through
+ * `alias -> apps/web/lib/screens`, `alias/cube` visited `screens` and then `/tmp`, never `lib` or
+ * the app root, and reached the recursive delete of a real source directory (found by audit,
+ * 2026-09-14). The canonical walk closes that. The lexical one stays because realpath is not the
+ * whole answer either — it does not resolve a macOS firmlink, which is why this guard compares
+ * device and inode rather than strings at all. A destination is refused if EITHER walk reaches a
+ * protected tree.
+ */
+const canonical = (p) => {
+  const missing = [];
+  for (let at = resolve(p); ;) {
+    try {
+      return join(realpathSync(at), ...missing);
+    } catch (err) {
+      if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err;
+      const up = dirname(at);
+      if (up === at) return resolve(p);
+      missing.unshift(basename(at));
+      at = up;
+    }
+  }
+};
+
+/** Every directory that holds `p`, and `p` itself, as identities. A destination that does not
+ *  exist yet contributes its nearest existing ancestor and everything above it — the parts that
+ *  could already BE something; the missing leading components cannot be, and a delete does not
+ *  touch them. */
+const ancestry = (p) => walkUp(canonical(p), walkUp(p, new Set()));
 
 /** Is `inner` the same directory as `outer`, or somewhere beneath it — however either is SPELLED?
  *  `outer` has to exist to be either: an identity is a thing that is there. A whole path component
