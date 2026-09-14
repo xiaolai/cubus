@@ -29410,10 +29410,14 @@ var CubusCube = class _CubusCube extends HTMLElement {
     else if (name === "orbit") this._applyOrbit();
     else if (name === "facelets" || name === "scramble") this.reset();
     else if (name === "alg") {
+      this._anim = null;
+      this._queue = [];
+      this._writePose();
       this._sol = this._parse(this._attrs.alg || "");
       this._cursor = 0;
       this._applied = 0;
       this._playing = false;
+      this._dirty = true;
     } else if (name === "highlight") {
       this._readHighlight();
       this._syncHighlight();
@@ -29429,7 +29433,18 @@ var CubusCube = class _CubusCube extends HTMLElement {
       return;
     }
     this.style.cssText = "display:block;width:100%;height:100%;" + (this.style.cssText || "");
-    const scene = this.scene = new Scene();
+    try {
+      this._build();
+    } catch (err) {
+      this.dispose();
+      throw err;
+    }
+    this._start();
+  }
+  /** Everything a first connect creates: the scene, the renderer, the meshes, the observers and the
+   *  frame loop. `this.scene` is published at the very end, as the mark that all of it exists. */
+  _build() {
+    const scene = new Scene();
     const camera = this.camera = new PerspectiveCamera(30, 1, 0.1, 100);
     const renderer = this.renderer = new WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -29535,6 +29550,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
         let a = this._anim;
         if (!a) a = { m: this._queue.shift() };
         this._completeMove(a);
+        if (!this._running) return;
       }
       if (!this._visible) {
         this._spinAt = null;
@@ -29547,6 +29563,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
         this._writePose(a.m, EASE(k));
         if (k >= 1) {
           this._completeMove(a);
+          if (!this._running) return;
           this._next();
         }
         this._dirty = true;
@@ -29584,7 +29601,7 @@ var CubusCube = class _CubusCube extends HTMLElement {
         this._dirty = false;
       }
     };
-    this._start();
+    this.scene = scene;
   }
   /** Begin drawing into whatever slot this is in now. Idempotent. */
   _start() {
@@ -29631,10 +29648,17 @@ var CubusCube = class _CubusCube extends HTMLElement {
       canvas.remove();
       canvas.style.display = wasDisplay;
     }
+    const owned = /* @__PURE__ */ new Set();
+    this.scene?.traverse((o) => {
+      if (o.geometry) owned.add(o.geometry);
+      for (const m of [o.material].flat()) if (m) owned.add(m);
+    });
+    for (const r of owned) r.dispose();
     this.renderer?.dispose();
     this.renderer?.domElement?.remove();
     this.scene = this.renderer = this.camera = this.controls = this._controlsRoot = null;
-    this._ghostMeshes = null;
+    this.root = this.cubies = this.stickers = this._ghostMeshes = null;
+    this._tick = this._resize = this._ro = this._io = null;
   }
   /**
    * Hand this element back for a different screen to use: every observed attribute to its
@@ -29648,6 +29672,10 @@ var CubusCube = class _CubusCube extends HTMLElement {
    */
   recycle() {
     for (const name of _CubusCube.observedAttributes) this.removeAttribute(name);
+    for (const name of _CubusCube.observedAttributes) {
+      if (Object.hasOwn(_CubusCube.ALIAS, name)) continue;
+      if (this._attrs[name] !== _CubusCube.DEFAULTS[name]) this._set(name, null);
+    }
     this._settleTurn(false);
     this._spin = 0;
     this._turn = { from: "U F", to: "U F", phase: 1 };
