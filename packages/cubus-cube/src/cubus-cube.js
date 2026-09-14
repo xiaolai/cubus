@@ -272,7 +272,19 @@ class CubusCube extends HTMLElement {
     else if (name === 'back-view') this._dirty = true;
     else if (name === 'orbit') this._applyOrbit();
     else if (name === 'facelets' || name === 'scramble') this.reset();
-    else if (name === 'alg') { this._sol = this._parse(this._attrs.alg || ''); this._cursor = 0; this._applied = 0; this._playing = false; }
+    else if (name === 'alg') {
+      // A new walk calls off the old one's moves, the one in flight AND the ones queued behind it —
+      // exactly what `reset()` does for a new cube. Resetting only the counters left R and U of the
+      // old alg playing on and reporting themselves as steps of the new one (found by audit,
+      // 2026-09-14). The state only advances when a move COMPLETES, so dropping the move in flight
+      // and writing the pose puts the cube back where its last finished move left it.
+      this._anim = null;
+      this._queue = [];
+      this._writePose();
+      this._sol = this._parse(this._attrs.alg || '');
+      this._cursor = 0; this._applied = 0; this._playing = false;
+      this._dirty = true;
+    }
     else if (name === 'highlight') { this._readHighlight(); this._syncHighlight(); }
     // focus repaints rather than syncing: it changes sticker COLOUR, which only _paint() writes.
     else if (name === 'focus') { this._readFocus(); this._paint(); }
@@ -289,8 +301,25 @@ class CubusCube extends HTMLElement {
     clearTimeout(this._release);
     if (this.scene) { this._start(); return; }
     this.style.cssText = 'display:block;width:100%;height:100%;' + (this.style.cssText || '');
+    // TRANSACTIONAL. `this.scene` is what says "built", and it used to be published on the first
+    // line of the build — before the WebGL context existed. A page where the context could not be
+    // created was left with a half-built element, and the next connect took the "already built"
+    // branch above and threw on an observer that was never made (found by audit, 2026-09-14). Now
+    // `_build()` publishes it last, and a build that throws is unwound — context, canvas and
+    // listeners — before the error is let through. Loud, and nothing left half-held.
+    try {
+      this._build();
+    } catch (err) {
+      this.dispose();
+      throw err;
+    }
+    this._start();
+  }
 
-    const scene = this.scene = new THREE.Scene();
+  /** Everything a first connect creates: the scene, the renderer, the meshes, the observers and the
+   *  frame loop. `this.scene` is published at the very end, as the mark that all of it exists. */
+  _build() {
+    const scene = new THREE.Scene();
     const camera = this.camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
 
     const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
@@ -439,6 +468,7 @@ class CubusCube extends HTMLElement {
         let a = this._anim;
         if (!a) a = { m: this._queue.shift() };
         this._completeMove(a);
+        if (!this._running) return; // see the same line below
       }
       // Off screen the loop keeps running but draws nothing, so autorotate's reference time is let
       // go HERE as well as when the loop stops: kept, the first frame back added the whole hidden
@@ -455,6 +485,11 @@ class CubusCube extends HTMLElement {
         this._writePose(a.m, EASE(k));
         if (k >= 1) {
           this._completeMove(a);
+          // `_completeMove` dispatches `cubus-step`, and a listener is the host's code: a screen that
+          // leaves when its walk ends disposes the cube right there. The frame went on and read the
+          // controls it had just released (found by audit, 2026-09-14). Disposing or detaching
+          // stops the loop, so a stopped loop is the sign to stop using the element.
+          if (!this._running) return;
           this._next();
         }
         this._dirty = true;
@@ -505,7 +540,7 @@ class CubusCube extends HTMLElement {
       if (moving) this._placeLights();
       if (moving || this._dirty) { this._draw(); this._dirty = false; }
     };
-    this._start();
+    this.scene = scene;
   }
 
   /** Begin drawing into whatever slot this is in now. Idempotent. */
@@ -572,10 +607,24 @@ class CubusCube extends HTMLElement {
     if (detached) { canvas.style.display = 'none'; host.appendChild(canvas); }
     this.controls?.dispose();
     if (detached) { canvas.remove(); canvas.style.display = wasDisplay; }
+    // What the scene owns is released too. `renderer.dispose()` frees the context and nothing the
+    // scene holds — four geometries and 110 materials went undisposed (found by audit, 2026-09-14).
+    // Collected into sets first because they are shared: every body is one geometry and one
+    // material, and disposing a shared one per mesh would dispose it 26 times.
+    const owned = new Set();
+    this.scene?.traverse((o) => {
+      if (o.geometry) owned.add(o.geometry);
+      for (const m of [o.material].flat()) if (m) owned.add(m);
+    });
+    for (const r of owned) r.dispose();
     this.renderer?.dispose();
     this.renderer?.domElement?.remove();
+    // And let go of it. `root`, `cubies` and `stickers` hold the meshes, and the frame loop and the
+    // resize observer are closures over the renderer and camera — kept, a disposed element went on
+    // holding the whole old scene alive.
     this.scene = this.renderer = this.camera = this.controls = this._controlsRoot = null;
-    this._ghostMeshes = null;
+    this.root = this.cubies = this.stickers = this._ghostMeshes = null;
+    this._tick = this._resize = this._ro = this._io = null;
   }
 
   /**
@@ -590,6 +639,14 @@ class CubusCube extends HTMLElement {
    */
   recycle() {
     for (const name of CubusCube.observedAttributes) this.removeAttribute(name);
+    // A value set through a PROPERTY never became an attribute, so removing attributes did not
+    // reach it: a recycled cube came back with the last screen's palette, alg and scramble (found
+    // by audit, 2026-09-14). Whatever is still not at its default is put back through `_set()`, the
+    // same door a removal uses, so its repaint and refit run exactly as they would have.
+    for (const name of CubusCube.observedAttributes) {
+      if (Object.hasOwn(CubusCube.ALIAS, name)) continue; // one slot per canonical name
+      if (this._attrs[name] !== CubusCube.DEFAULTS[name]) this._set(name, null);
+    }
     // A turn in flight belongs to the screen being torn down, and its caller is owed an answer
     // before the cube is handed to the next one. Settled first, so the pose reset below cannot be
     // undone by a frame of the old animation still running.
