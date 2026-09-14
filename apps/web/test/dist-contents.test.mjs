@@ -118,23 +118,21 @@ function withRoot(fn) {
   finally { rmSync(root, { recursive: true, force: true }); rmSync(dist, { recursive: true, force: true }); }
 }
 
-// The grammar for the runtime's assets is written in two files — copy-ort.mjs owns the COPY,
+// The grammar for the runtime's assets is used in two files — copy-ort.mjs owns the COPY,
 // build.mjs owns the CHECK — and copy-ort's own comment records what happens when two spellings
 // of one rule are kept in step by hand: a rename inside the ort-wasm family stranded a
-// multi-megabyte .wasm in vendor/, and vendor/ ships. Neither file can import the other's private
-// constant, so this is the thing that keeps them one rule.
-test('the copy and the check share one grammar for the runtime\'s assets', () => {
-  const patternIn = (file, name) => {
-    const src = readFileSync(new URL(file, WEB), 'utf8');
-    const m = new RegExp(`const ${name} = '([^']+)';`).exec(src);
-    assert.ok(m, `${file} no longer declares ${name} — the two files must still share one pattern`);
-    return m[1];
-  };
-  assert.equal(
-    patternIn('build.mjs', 'ORT_ASSET'),
-    patternIn('copy-ort.mjs', 'OWNED_ASSET'),
-    'build.mjs checks for a different set of files than copy-ort.mjs publishes',
-  );
+// multi-megabyte .wasm in vendor/, and vendor/ ships. So there is one spelling: copy-ort exports
+// its predicates and build.mjs imports them. Until 2026-09-14 each file had its own copy and this
+// test compared the two strings — which is the hand-kept agreement, moved into a test.
+test('the check imports the copy\'s grammar for the runtime\'s assets, and spells none of its own', () => {
+  const code = readFileSync(new URL('build.mjs', WEB), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+  assert.match(code, /^import \{ isOwnedAsset, ownedAssetsIn \} from '\.\/copy-ort\.mjs';$/m,
+    'build.mjs no longer takes its asset grammar from copy-ort.mjs');
+  for (const spelling of [/ort-wasm\[/, /ort-wasm-simd/]) {
+    assert.doesNotMatch(code, spelling, `build.mjs spells an asset pattern of its own (${spelling})`);
+  }
 });
 
 // The positive control. Without it every assertion below could be passing because the synthetic

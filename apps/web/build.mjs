@@ -28,6 +28,8 @@ import { fileURLToPath } from 'node:url';
 // steps before this file, so a tree that can reach build.mjs can reach esbuild.
 import { buildSync } from 'esbuild';
 
+import { isOwnedAsset, ownedAssetsIn } from './copy-ort.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 
 // Whole directories, so a new import never silently misses the bundle. lib/ is
@@ -63,19 +65,13 @@ export const NEVER_SHIPPED = ['vendor/tauri-mcp-guest.js', 'vendor/min2phase.PRO
 const CUBE_ENTRY = '../../packages/cubus-cube/src/cubus-cube.js';
 
 
-// ONE grammar for the onnxruntime assets, written once as a source string and used for BOTH
-// directions of the scanner check below — what the shipped loader NAMES, and what vendor/ HOLDS.
-// It is copy-ort.mjs's `OWNED_ASSET` predicate, and that file records why it is one string: the
-// two uses need different anchoring (a global scan of a bundle's text, an exact test of a
-// filename), and writing the pattern out twice is how this contract broke before. It broke again
-// here, differently: this file spelled it `ort-wasm-simd-threaded.*.wasm` in two places, so the
-// `.mjs` glue the loader fetches beside the binary was never checked at all.
-const ORT_ASSET = 'ort-wasm[a-z0-9.\\-]*\\.(?:wasm|mjs)';
-/** Every runtime asset `text` names. A bundle cannot fetch a filename it does not contain, so
- *  what the loader names IS the complete set of what it can reach at runtime. */
-const ortAssetsNamedBy = (text) => [...new Set([...text.matchAll(new RegExp(ORT_ASSET, 'g'))].map((m) => m[0]))];
-/** Is this filename one of the runtime's own? Anchored, so it matches a whole name, not a part. */
-const isOrtAsset = (f) => new RegExp(`^${ORT_ASSET}$`).test(f);
+// ONE grammar for the onnxruntime assets, used for BOTH directions of the scanner check below —
+// what the shipped loader NAMES (`ownedAssetsIn`), and what vendor/ HOLDS (`isOwnedAsset`). It is
+// copy-ort.mjs's own, IMPORTED: this file used to carry a second spelling of it that a test held
+// equal to the first by comparing their source text. That was the same rule written twice and
+// agreeing by hand, which is how it broke before — this file once spelled it
+// `ort-wasm-simd-threaded.*.wasm` in two places, so the `.mjs` glue the loader fetches beside the
+// binary was never checked at all.
 
 /**
  * The entry and every LOCAL module it pulls in, transitively — an esbuild bundle's own sources.
@@ -361,7 +357,7 @@ function assertScannerAssets(root, dist) {
   // start), and their expectation came from vendor/, so an unrelated variant sitting there passed
   // both while the loader asked for a file nobody had copied.
   if (!absentScanner.size) {
-    const named = ortAssetsNamedBy(readFileSync(join(dist, 'vendor', 'ort.mjs'), 'utf8'));
+    const named = ownedAssetsIn(readFileSync(join(dist, 'vendor', 'ort.mjs'), 'utf8'));
     // Loud rather than trivially green: a loader that names none of its assets means onnxruntime
     // has changed how it fetches them, and this check would otherwise silently verify nothing.
     if (!named.length) absentScanner.add('vendor/ort.mjs names no ort-wasm-* runtime asset (has onnxruntime-web changed?)');
@@ -369,7 +365,7 @@ function assertScannerAssets(root, dist) {
     // And the other direction, one grammar: everything copy-ort published into vendor/ must
     // survive the copy into dist/. The loader-derived set above cannot see a file the filter
     // dropped on the way in if the loader never names it, and vendor/ is what actually ships.
-    for (const f of readdirSync(join(root, 'vendor')).filter(isOrtAsset)) {
+    for (const f of readdirSync(join(root, 'vendor')).filter(isOwnedAsset)) {
       if (!existsSync(join(dist, 'vendor', f))) absentScanner.add(`vendor/${f}`);
     }
   }
