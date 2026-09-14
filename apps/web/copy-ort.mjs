@@ -80,7 +80,8 @@ const DEST = join(here, 'vendor');
 // makes ONE artifact enough for every target.
 export const ORT_ESM = 'ort.webgpu.bundle.min.mjs';
 
-// ONE grammar for what this script owns, used by discovery, by cleanup, and by nothing else.
+// ONE grammar for what this script owns, used by discovery, by cleanup, and — through the two
+// exported predicates below, never through a copy — by build.mjs's check that dist/ carries it.
 //
 // Written once as a source string because the two uses need different anchoring — a global scan of
 // the loader's text, and an exact test of a filename — and writing the pattern out twice is how the
@@ -107,9 +108,9 @@ const OWNED_ASSET = 'ort-wasm[a-z0-9.\\-]*\\.(?:wasm|mjs)';
  */
 export const ORT_PROXIED = 'ort.proxied.mjs';
 /** Every asset the loader names, anywhere in its text. */
-const ownedAssetsIn = (text) => [...new Set([...text.matchAll(new RegExp(OWNED_ASSET, 'g'))].map((m) => m[0]))];
+export const ownedAssetsIn = (text) => [...new Set([...text.matchAll(new RegExp(OWNED_ASSET, 'g'))].map((m) => m[0]))];
 /** Is this filename one of ours? Anchored, so it matches a whole name and not a substring. */
-const isOwnedAsset = (f) => new RegExp(`^${OWNED_ASSET}$`).test(f);
+export const isOwnedAsset = (f) => new RegExp(`^${OWNED_ASSET}$`).test(f);
 
 /**
  * Publish the runtime from `src` into `dest`, and return the asset names published.
