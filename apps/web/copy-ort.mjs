@@ -29,7 +29,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SRC = join(here, '..', '..', 'packages', 'cube-scanner', 'node_modules', 'onnxruntime-web', 'dist');
+/** Where the runtime is copied FROM, and how the licence notices find the package it is. */
+export const ORT_SOURCE = join(here, '..', '..', 'packages', 'cube-scanner', 'node_modules', 'onnxruntime-web', 'dist');
 const DEST = join(here, 'vendor');
 
 // The ESM runtime the scanner loads, shipped as its OWN module rather than bundled into the panel.
@@ -122,7 +123,7 @@ export const isOwnedAsset = (f) => new RegExp(`^${OWNED_ASSET}$`).test(f);
  * correct rewrite that spells them differently. It did: this refactor turned that assertion red
  * while the behaviour it was guarding got strictly safer.
  */
-export function publishRuntime({ src, dest, ortEsm = ORT_ESM } = { src: SRC, dest: DEST }) {
+export function publishRuntime({ src, dest, ortEsm = ORT_ESM } = { src: ORT_SOURCE, dest: DEST }) {
   if (!existsSync(src)) {
     throw new Error(`onnxruntime-web not found at:\n  ${src}\nRun \`pnpm install\` at the repo root first.`);
   }
@@ -200,7 +201,7 @@ export function publishRuntime({ src, dest, ortEsm = ORT_ESM } = { src: SRC, des
 // anything as a side effect of the import.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const wanted = publishRuntime({ src: SRC, dest: DEST });
+    const wanted = publishRuntime({ src: ORT_SOURCE, dest: DEST });
     console.log(
       `copied ${wanted.length} onnxruntime-web runtime asset(s) (${wanted.join(', ')}) + ort.mjs + ${ORT_PROXIED} into web/vendor/`,
     );
