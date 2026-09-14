@@ -53,7 +53,11 @@ export function whenWords(ts, now = Date.now()) {
     try { return new Intl.DateTimeFormat(locale(), opts).format(d); } catch { return ''; }
   };
   const recent = now - ts < SIX_DAYS_MS && ts <= now;
-  const day = recent ? fmt({ weekday: 'long' }) : fmt({ day: 'numeric', month: 'short' });
+  // And a date alone repeats every year: "1 Sep" from two Septembers ago names this one. The year
+  // is added only when it is not the current one, where it would be noise.
+  const thisYear = d.getFullYear() === new Date(now).getFullYear();
+  const date = thisYear ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' };
+  const day = recent ? fmt({ weekday: 'long' }) : fmt(date);
   const time = fmt({ hour: 'numeric', minute: '2-digit' });
   return { day, full: day && time ? `${day} ${time}` : day || time };
 }
@@ -107,15 +111,14 @@ export function sessionIdentity(session) {
 export function rememberArrangement(how, { force = false, serial = null } = {}) {
   if (!state.connected || !state.cubeMac || !state.live || !state.reported) return false;
   const prev = cubes[state.cubeMac]?.last;
-  if (!force && prev && prev.facelets === state.live && prev.reported === state.reported
-    && prev.serial === serial && prev.how === how) return false;
+  // Deduplicated only against a registry storage HOLDS: while a write is outstanding the record in
+  // memory is ahead of the disk, and a resend matching it is the retry, not a repeat.
+  if (!force && !registryWriteBad && prev && prev.facelets === state.live
+    && prev.reported === state.reported && prev.serial === serial && prev.how === how) return false;
   cubes = rememberLast(cubes, state.cubeMac, {
     facelets: state.live, reported: state.reported, serial, at: Date.now(), how,
   }, Cube);
-  const ok = save('cubusCubes', cubes);
-  if (ok === !registryWriteBad) return false;
-  registryWriteBad = !ok;
-  return true;
+  return persist().flipped;
 }
 
 /** Record a live connection in the registry. A memory that failed to save must not look like one that
@@ -123,20 +126,34 @@ export function rememberArrangement(how, { force = false, serial = null } = {}) 
  *  Settings says it in words. */
 export function rememberConnection(mac, name) {
   cubes = rememberCube(cubes, { mac, name, at: Date.now() }, Cube);
-  registryWriteBad = !save('cubusCubes', cubes);
+  persist();
 }
 
-/** The user's word for a cube. Stored because it is useful, never branched on. A failed save is the
- *  caller's to say — it is not a registry-health change (that flag is about remembering connections). */
+/** The user's word for a cube. Stored because it is useful, never branched on. Answers whether it
+ *  saved, and whether that flipped the registry's health (`flipped`), so the caller can repaint the
+ *  warning — the memory sits beneath the screens. */
 export function renameKnownCube(id, label) {
   cubes = renameCube(cubes, id, label);
-  return { saved: save('cubusCubes', cubes), record: cubes[normaliseIdentity(id)] };
+  const { saved, flipped } = persist();
+  return { saved, flipped, record: cubes[normaliseIdentity(id)] };
 }
 
-/** Forget a cube: the one registry change the app cannot re-derive. Returns whether it was stored. */
+/** Forget a cube: the one registry change the app cannot re-derive. Returns whether it was stored;
+ *  the health it leaves is `registryWriteBad`. */
 export function forgetKnownCube(id) {
   cubes = forgetCube(cubes, id);
-  return save('cubusCubes', cubes);
+  return persist().saved;
+}
+
+/** Write the WHOLE registry, and keep `registryWriteBad` true exactly while storage is behind
+ *  memory. Every writer saves the whole object, so a write that lands carries every change a
+ *  refused one dropped — which is why any writer's success clears the flag and any refusal raises
+ *  it. Answers whether it saved and whether the flag flipped. */
+function persist() {
+  const saved = save('cubusCubes', cubes);
+  const flipped = saved === registryWriteBad;
+  registryWriteBad = !saved;
+  return { saved, flipped };
 }
 
 /** Re-parse what storage held once the cube library exists: the load-time parse had only the

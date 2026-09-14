@@ -324,6 +324,21 @@ export function makeTauriBridge(api = tauri()) {
 }
 
 /**
+ * Which route this host reaches a radio by: 'native' (the Tauri bridge), 'browser' (Web
+ * Bluetooth), 'refused-host' (a native build on a platform in NATIVE_BLE_UNSUPPORTED) or 'none'.
+ *
+ * Asked at call time and building nothing: `installBleBridge` installs by it, and Settings offers
+ * Pair by it (lib/cube-connection.js `bleReach`), so the two cannot disagree about a host.
+ */
+export function bleRoute() {
+  const native = tauri() !== null;
+  if (native && NATIVE_BLE_UNSUPPORTED.includes(hostPlatform())) return 'refused-host';
+  if (native) return 'native';
+  if (globalThis.navigator?.bluetooth) return 'browser';
+  return 'none';
+}
+
+/**
  * Make `navigator.bluetooth` usable on this build, and say which one was used.
  *
  * Returns `{ kind, bluetooth, uninstall }`. `uninstall()` returns a promise on the native path —
@@ -345,14 +360,14 @@ export function makeTauriBridge(api = tauri()) {
  *   conversation the cube was never having.
  */
 export function installBleBridge({ onRawPacket, onTraffic } = {}) {
-  const api = tauri();
-  if (api && NATIVE_BLE_UNSUPPORTED.includes(hostPlatform())) {
+  const route = bleRoute();
+  if (route === 'refused-host') {
     // Same honest answer Safari and Firefox get, for the same reason: the host cannot reach a
     // radio, so say so now rather than at the end of a connect that was never going to work.
     return { kind: 'none', bluetooth: null, bridge: null, uninstall: () => {} };
   }
-  if (api) {
-    const bridge = makeTauriBridge(api);
+  if (route === 'native') {
+    const bridge = makeTauriBridge(tauri());
     const bluetooth = createBluetooth(bridge, { onRawPacket, onTraffic });
     // Handed over, not installed.
     //
@@ -375,7 +390,7 @@ export function installBleBridge({ onRawPacket, onTraffic } = {}) {
       uninstall: () => bridge.dispose(),
     };
   }
-  if (globalThis.navigator?.bluetooth) {
+  if (route === 'browser') {
     // The browser's own, passed the same way, so the caller has ONE path rather than a branch.
     return { kind: 'browser', bluetooth: globalThis.navigator.bluetooth, bridge: null, uninstall: () => {} };
   }

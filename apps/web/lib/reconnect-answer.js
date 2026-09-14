@@ -11,28 +11,34 @@ import { state } from './app-state.js';
 import { adoptCube } from './cube-connection.js';
 import { rememberLastSeen } from './cube-reports.js';
 import { conn, cubeRefused } from './live-session.js';
-import { clearOffset, markStale } from './cube-trust-state.js';
-import { applyOffset, isIdentity } from './cube-trust.js';
+import { installOffset, markStale, withRepaintsHeld } from './cube-trust-state.js';
 import { shell } from './screen-slots.js';
 import { Cube } from './solver-service.js';
+
+/** Withdraw the Yes and say why: the question stands, with the camera as its door. The Yes goes
+ *  BEFORE the stale mark, because the mark repaints Settings, and that repaint must not draw a Yes
+ *  that has just been refused. */
+function refuseAnswer(rc, why) {
+  state.reconnect = { ...rc, raw: null };
+  markStale(why);
+  return false;
+}
 
 /** The user's answer: yes, the candidate is the cube in their hand, right now. The ONE thing that
  *  grants trust on a reconnect — no reading does. The working offset is derived from the
  *  confirmed picture and the cube's report at classification, exactly the derivation a camera
  *  repair makes with the picture standing in for the scan; it is constant under any turns made
- *  while the question was open, so the LATEST report is then corrected by it. State only — the
- *  caller owns navigation and re-rendering, because Home, Settings and the scan screen each need
- *  a different one. */
+ *  while the question was open, so the LATEST report is then corrected by it. Not state alone: the
+ *  trust it grants is said where trust always is, as it changes — the title-bar dot at once, and
+ *  Settings unless the caller holds that repaint (withRepaintsHeld) because it redraws the screen
+ *  itself. The caller owns navigation and the screen it is on, because Home, Settings and the scan
+ *  screen each need a different one. */
 export function confirmReconnect() {
   const rc = state.reconnect;
   if (!rc || !rc.candidate || !rc.raw) return false;
   // A refused cube's Yes cannot be taken either, for the reason a refused cube's repair scan
   // cannot: the correction would be derived against a report already proved not to add up.
-  if (cubeRefused()) {
-    markStale('its reports stopped adding up');
-    state.reconnect = { ...rc, raw: null };
-    return false;
-  }
+  if (cubeRefused()) return refuseAnswer(rc, 'its reports stopped adding up');
   // Through the SESSION, exactly as a camera repair goes: the user is answering a question about
   // the physical cube ("is this it, right now?"), which is the same KIND of evidence a scan is —
   // an outside observation of the cube, paired with what the cube claimed at that moment. The
@@ -49,33 +55,20 @@ export function confirmReconnect() {
     // The refusal reaches the question itself, not only the indicator: dropping `raw` takes the
     // Yes away (it cannot do its job), leaving the camera as the door — and the caller's
     // re-render is what repaints the block either way.
-    markStale('its confirmation could not be checked');
-    state.reconnect = { ...rc, raw: null };
-    return false;
+    return refuseAnswer(rc, 'its confirmation could not be checked');
   }
   // The answer itself can be what refuses the cube: the checker holds every correction it has
   // been shown, and one that MOVED with an unbroken stream between the two is not a correction.
   // `offset` is the previous one in that case, so taking it would keep a correction the checker
   // has just disowned — and call the cube trusted on the strength of it.
-  if (cubeRefused()) {
-    markStale('its reports stopped adding up');
-    state.reconnect = { ...rc, raw: null };
-    return false;
-  }
-  state.cube.offset = isIdentity(offset) ? null : offset;
-  state.cube.offsetAt = state.cube.offset ? Date.now() : 0;
-  state.cube.offsetFrom = state.cube.offset ? 'confirmed' : '';
+  if (cubeRefused()) return refuseAnswer(rc, 'its reports stopped adding up');
   // The LATEST report, corrected — turns made while the question was open are covered, because
   // the offset is constant under them. A latest report that fails validation (recorded raw, on
   // purpose) falls back to the one the reading validated.
-  const corrected = applyOffset(state.cube.offset, state.reported ?? rc.raw, Cube)
-    ?? applyOffset(state.cube.offset, rc.raw, Cube);
+  const corrected = installOffset(offset, 'confirmed', [state.reported ?? rc.raw, rc.raw], Cube);
   if (corrected === null) {
     console.error('reconnect confirmation could not correct the latest report');
-    clearOffset();
-    markStale('its confirmation could not be checked');
-    state.reconnect = { ...rc, raw: null };
-    return false;
+    return refuseAnswer(rc, 'its confirmation could not be checked');
   }
   state.reconnect = null;
   state.live = corrected;
@@ -90,7 +83,7 @@ export function confirmReconnect() {
 export function wireReconnectAnswers(root) {
   for (const b of root.querySelectorAll('[data-reconnect]')) {
     b.onclick = () => {
-      if (b.dataset.reconnect === 'yes') { confirmReconnect(); shell.refreshScreen(); }
+      if (b.dataset.reconnect === 'yes') { withRepaintsHeld(confirmReconnect); shell.refreshScreen(); }
       else shell.go('scan');
     };
   }

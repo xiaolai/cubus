@@ -33,9 +33,11 @@ const code = app
   .replace(/^\s*\/\/[^\n]*$/gm, '')
   .replace(/([^:'"`])\/\/[^\n]*/g, '$1');
 
-/** The live-distance path, as source. Every case below is about what is and is not inside it — and
- *  `blockAt` throws when the path is gone, so no negative case here can pass over an empty one. */
-const live = blockAt(code, 'async function refreshLiveDistance()');
+/** The live-distance path, as source: the one ask a refresh makes about the cube in hand (a refresh
+ *  that arrives while one is out waits for it, in lib/walk-live-distance.js). Every case below is
+ *  about what is and is not inside it — and `blockAt` throws when the path is gone, so no negative
+ *  case here can pass over an empty one. */
+const live = blockAt(code, 'async function askLiveDistance()');
 
 test('the live distance exists at all, and is its own function', () => {
   assert.ok(live, 'there must be one named path for a per-turn number, or the rules below have no subject');
@@ -76,14 +78,18 @@ test('the chain from the cube\'s raw report to this number passes through the co
   // CONJUGATED DECODER in `cube-selfcheck.test.mjs`, which is the only construction that can tell
   // a uniformly relabelled cube from an offset one. Re-deriving it here would be a second, weaker
   // copy of that argument. What this case owns is that the repair sits downstream of it.
-  // ONE correction on the SNAPSHOT STREAM, which is what `onFacelets` says of itself — not one in
-  // the whole file. The other three sites are different questions: the move-reconciliation path
-  // asks where the cube says it is after a turn, and the reconnect derivation asks it of a
+  // ONE correction on the SNAPSHOT STREAM, which is what `publishReport` says of itself — not one
+  // in the whole file. The other three sites are different questions: the move-reconciliation
+  // path asks where the cube says it is after a turn, and the reconnect derivation asks it of a
   // candidate. The first draft of this case counted all four and failed, which is the assertion
   // being wrong rather than the app.
   // Brace-matched rather than read to the first column-0 `}`: the connection code is to move into
   // factories, where this path's closing brace is indented and that match would run on past it.
-  const onFacelets = blockAt(code, 'function onFacelets(reported, serial)');
+  // The path is onFacelets and the three steps it runs, read as one, so a correction added to any
+  // of them is still counted here.
+  const onFacelets = ['function onFacelets(reported, serial)', 'function reconcileHeldScan()',
+    'function readFirstReport(reported)', 'function publishReport(reported, serial)']
+    .map((anchor) => blockAt(code, anchor)).join('\n');
   assert.ok(onFacelets, 'the snapshot path must exist');
   assert.match(onFacelets, /const f = applyOffset\(state\.cube\.offset, reported, Cube\);/,
     'the stream is corrected before anything downstream sees it');
@@ -92,8 +98,8 @@ test('the chain from the cube\'s raw report to this number passes through the co
   assert.match(onFacelets, /state\.live = f;[\s\S]*?if \(hooks\.liveUpdate\) hooks\.liveUpdate\(f, serial\);/,
     'the corrected value is what reaches the screen, not the raw report beside it');
   assert.ok(!/liveUpdate\(reported/.test(onFacelets), 'and never the raw one');
-  assert.match(code, /liveUpdate = \(f, serial\) => \{\s*\n\s*liveModel = cubejs\(\)\.fromString\(f\);/,
-    'and it is what seeds the local model');
+  assert.match(code, /liveUpdate = \(f, serial\) => \{\s*\n\s*liveModel = chainTrusted\(\) \? cubejs\(\)\.fromString\(f\) : null;/,
+    'and it is what seeds the local model — on a trusted chain, and nowhere else');
   assert.match(code, /liveModel = cubejs\(\)\.fromString\(state\.live\)/,
     'the walk seeds it from the corrected stream too, never from state.reported');
 });
@@ -126,21 +132,20 @@ test('every way a live answer stops being about the cube goes through ONE invali
   assert.match(drop, /liveGen \+= 1;/, 'it moves the generation, so an answer in flight cannot land');
   assert.match(drop, /el\.textContent = ''/, 'and it takes the last number off the screen');
 
-  for (const site of [
+  // Both hooks go through the follow tracker's ONE invalidation, which takes the model — not only
+  // its claim to be ahead, which the next connection's turns made true again — and the number.
+  // Behaviour: walk-session.test.mjs, "trust lapsing ends the model" and "a lost turn ends…".
+  const forget = blockAt(code, 'const forget = () =>');
+  assert.match(forget, /dropLiveDistance\(\)/, 'forgetting the model must invalidate the live number made from it');
+  assert.match(forget, /liveModel = null;/, 'and the model itself, not only whether it is ahead');
+  assert.match(forget, /liveMoved = false;/);
+  for (const [anchor, what] of [
     ['const liveGap = () =>', 'a lost turn'],
     ['const onTrustLost = () =>', 'trust lapsing'],
   ]) {
-    const [anchor, what] = site;
     const block = blockAt(code, anchor);
     assert.ok(block, `${what}: the hook must exist`);
-    assert.match(block, /dropLiveDistance\(\)/, `${what} must invalidate the live number`);
-    // AND THE MODEL STOPS BEING "AHEAD". `liveMoved` is a claim about the CURRENT connection, and
-    // it survived a disconnect: scan `R`, report `U`, disconnect, reconnect, confirm `R`, and the
-    // adoption overwrote the confirmed truth with `R U` and marked it trusted. That is §9a's
-    // severe failure — a route for a cube other than the one in their hands, passing every
-    // internal check. Reproduced by a verify pass on the fix that introduced the flag.
-    assert.match(block, /liveMoved = false;/,
-      `${what} must also stop the model claiming to be ahead of a snapshot`);
+    assert.match(block, /forget\(\);/, `${what} must forget the model and the live number made from it`);
   }
   // And a fresh query clears before it asks, rather than after it answers.
   assert.match(live, /el\.textContent = '';\s*\n\s*const bounds = await/,
@@ -161,7 +166,7 @@ test('nothing here asks the cube to restore its own trust', () => {
 test('a lost turn takes the number with it, and one already in flight cannot land after', () => {
   const gap = blockAt(code, 'const liveGap = () =>');
   assert.ok(gap, 'the lost-move hook must exist');
-  assert.match(gap, /dropLiveDistance\(\)/,
+  assert.match(gap, /forget\(\);/,
     'a request already in flight is about a cube the model no longer matches, and the last number'
     + ' on screen is about that cube too — one call takes both');
 });

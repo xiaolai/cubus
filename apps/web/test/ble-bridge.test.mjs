@@ -9,7 +9,9 @@
 
 import assert from 'node:assert/strict';
 import { test, describe } from 'node:test';
-import { NATIVE_BLE_UNSUPPORTED, forgetLibraryMac, installBleBridge, makeTauriBridge } from '../lib/ble-bridge.js';
+import {
+  NATIVE_BLE_UNSUPPORTED, bleRoute, forgetLibraryMac, installBleBridge, makeTauriBridge,
+} from '../lib/ble-bridge.js';
 import { DESKTOP_PLATFORMS } from '../lib/host.js';
 
 /** A Tauri API stub that records every invoke and lets tests fire events. */
@@ -589,4 +591,26 @@ describe('forgetting a cube reaches the protocol layer’s own cache', () => {
       removeItem() {},
     }), 0);
   });
+});
+
+test('the route Pair is offered by is the route the bridge installs, on every host', async () => {
+  const real = { requestDevice: () => {} };
+  const on = (platform) => ({ documentElement: { dataset: { platform } } });
+  const native = () => ({ __TAURI__: fakeTauri().api, performance: globalThis.performance });
+  for (const [host, globals, route, kind] of [
+    ['a desktop build', { window: native(), document: on('macos') }, 'native', 'native'],
+    ['a phone build', { window: native(), document: on('android') }, 'refused-host', 'none'],
+    ['Chromium', { window: undefined, navigator: { bluetooth: real } }, 'browser', 'browser'],
+    ['Safari', { window: undefined, navigator: {} }, 'none', 'none'],
+  ]) {
+    await withGlobals(globals, async () => {
+      assert.equal(bleRoute(), route, `${host}: the route`);
+      const bridge = installBleBridge();
+      try {
+        assert.equal(bridge.kind, kind, `${host}: the bridge installed a transport its route does not name`);
+      } finally {
+        await bridge.uninstall();
+      }
+    });
+  }
 });

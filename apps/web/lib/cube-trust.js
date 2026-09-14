@@ -22,8 +22,10 @@
 // Pure: no DOM, no globals. cubejs is INJECTED rather than imported, so this file is testable in
 // Node under `node --test` exactly like packages/*/src, and so the app keeps one cubejs instance.
 
+import { SOLVED_FACELETS } from './solved.js';
+
 /** The solved cube. Also the identity offset: correcting by it changes nothing. */
-export const IDENTITY = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+export const IDENTITY = SOLVED_FACELETS;
 
 const FACELET_RE = /^[URFDLB]{54}$/;
 
