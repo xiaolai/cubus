@@ -3,11 +3,14 @@
 //
 // Lifted out of app.js on 2026-09-13, when that file was split into modules.
 
+import { SOLVED_FACELETS } from './solved.js';
+
 export const $ = (sel, root = document) => root.querySelector(sel);
 /** A cube with nothing wrong with it: the solved state, and the one search that costs only the
- *  tables. There used to be a second copy of this string under the name SOLVED_FACELETS, which is
- *  how two identical 54-character literals come to disagree. */
-export const SOLVED = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
+ *  tables. Read from lib/solved.js, the one place the 54 characters are written: this file, the
+ *  trust offset and the solve timer each carried a copy, and identical literals are how a cube
+ *  comes to be solved in one place and not in another. */
+export const SOLVED = SOLVED_FACELETS;
 /** Escape text destined for an innerHTML template. Scramble strings, solve times and anything
  * else out of localStorage are untrusted input — storage is writable by anything on the origin —
  * and must never be parsed as markup. Screens that can use textContent do; this is for the ones
@@ -43,7 +46,6 @@ const P = {
   // reader might zoom to. Same technique grid-filled used for its solid cells.
   dice: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="8" cy="16" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="16" r="1.5" fill="currentColor" stroke="none"/>',
   minus: '<path d="M5 12h14"/>',
-  square: '<rect x="5" y="5" width="14" height="14" rx="1"/>',
   webcam: '<circle cx="12" cy="10" r="8"/><circle class="lens" cx="12" cy="10" r="3"/><path d="M7 22h10"/><path d="M12 22v-4"/>',
   'paint-roller': '<rect width="16" height="6" x="2" y="2" rx="2"/><path d="M10 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect width="4" height="6" x="8" y="16" rx="1"/>',
   // The About card's three row markers, drawn by hand in the same 24×24 stroke grammar as the
@@ -53,7 +55,9 @@ const P = {
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.3 4 5.6 4 9s-1.5 6.7-4 9c-2.5-2.3-4-5.6-4-9s1.5-6.7 4-9Z"/>',
   user: '<circle cx="12" cy="7.5" r="3.5"/><path d="M5 20.5c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/>',
 };
-export const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${P[name] || '<circle cx="12" cy="12" r="2"/>'}</svg>`;
+// Only its own names: an inherited one — `toString`, `__proto__` — drew native function text or
+// "[object Object]" where a glyph belongs (found by audit, 2026-09-13).
+export const icon = (name, size = 16) => `<svg class="ic" viewBox="0 0 24 24" style="width:${size}px;height:${size}px">${Object.hasOwn(P, name) ? P[name] : '<circle cx="12" cy="12" r="2"/>'}</svg>`;
 
 // ---- navigation model ------------------------------------------------------------------------
 // One flat list. The SOLVE / PRACTICE / LEARN headings were a taxonomy for nine items, which is
@@ -82,17 +86,15 @@ export const NAV = [
 // Each screen's name. It is shown in the title bar rather than in a bar of its own, so there is no
 // second line of chrome restating what the nav already highlights. The subtitles that used to sit
 // under these were restatements of what each screen says itself, and went with the bar.
-export const TITLES = {
+// Built from NAV, so a tab added or renamed there brings its title with it; only the names that
+// differ from their tab's label are written here — Home is the cube, the trainer's tab is short,
+// and Settings has no tab (it is the toolbar's trailing button).
+export const TITLES = Object.freeze({
+  ...Object.fromEntries(NAV.map(([id, label]) => [id, label])),
   home: 'Cube',
-  scan: 'Restore',
-  scramble: 'Scramble',
-  timer: 'Timer',
-  stats: 'Stats',
   trainer: 'Algorithm trainer',
-  drill: 'Drill',
-  lessons: 'Lessons',
   settings: 'Settings',
-};
+});
 export const state = {
   screen: 'home',
   /**
@@ -115,12 +117,13 @@ export const state = {
   // Not persisted: it describes the live connection, and a new one starts unanchored.
   anchored: false,
   cube: {
-    facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [], solveResult: null,
+    facelets: SOLVED, setupAlg: '', solution: '', moves: [], solvable: false, stepFacelets: [], solveResult: null, solvedFor: null,
     // The explaining solver's answer for THIS arrangement, or null while it has not been asked.
     // A second object beside `solution`, never a replacement for it: the two answer different
     // questions and the screen offers both (§3, "a lesson and a short solution are two different
     // objects, and both stay reachable"). Cached per arrangement and per rung record, because it
-    // costs ~13 ms and the screen may switch back and forth.
+    // is not free — lib/cube-subject.js measures 33 ms to 804 ms — and the screen may switch
+    // back and forth.
     lesson: null,
     // Has this arrangement been classified? Declared here rather than appearing on first write, so
     // the shape of `state.cube` is readable in one place — it was set by ingestFacelets and read

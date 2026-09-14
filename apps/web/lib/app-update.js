@@ -185,7 +185,16 @@ export function makeUpdater({ api, storage, now = Date.now, confirm, warn = () =
     // Neutral: whether "nothing new" is SAID is each caller's decision, applied in `check`.
     if (!update?.available) return { status: 'current', version: update?.version };
 
-    const wanted = await confirm(update);
+    // A question that could not be ASKED is not a "no". A dialog that was missing or refused to
+    // open used to count as a decline, so the update was passed over in silence (found by audit,
+    // 2026-09-13).
+    let wanted;
+    try {
+      wanted = await confirm(update);
+    } catch (err) {
+      warn('app-update: could not ask whether to install', err);
+      return { status: 'unasked', version: update.version, error: err };
+    }
     if (!wanted) return { status: 'declined', version: update.version };
 
     // Progress is the plugin's channel events folded into one running figure: Started carries
@@ -235,6 +244,9 @@ export function makeUpdater({ api, storage, now = Date.now, confirm, warn = () =
       };
     }
     if (onProgress) flight.sinks.add(onProgress);
+    // Recorded on the flight, so a launch check in it knows a press will say the outcome and does
+    // not say it a second time.
+    if (announceNoUpdate) flight.userAsked = true;
     // The answer is shared by everyone in the flight; what each says about "nothing new" is its
     // own. A Settings press that joined a launch check used to inherit the launch check's silence
     // and then announce "finished without a clear answer" for a check that had succeeded.
@@ -248,11 +260,35 @@ export function makeUpdater({ api, storage, now = Date.now, confirm, warn = () =
     /** The launch path: only when one is due, and never announcing "you are up to date". */
     async checkOnLaunch({ onProgress = null } = {}) {
       if (!dueForCheck(now(), readLastCheck(storage))) return { status: 'not-due' };
-      return check({ announceNoUpdate: false, onProgress });
+      const answer = check({ announceNoUpdate: false, onProgress });
+      const joined = flight;
+      const result = await answer;
+      // `userAsked`: a Settings press shares this flight, in either order, and says the outcome.
+      return joined.userAsked ? { ...result, userAsked: true } : result;
     },
     /** The Settings path: always checks, and always says something back. */
     checkNow({ onProgress = null } = {}) {
       return check({ announceNoUpdate: true, onProgress });
     },
+  };
+}
+
+/**
+ * What the launch path does with its answer. Pure, like the throttle.
+ *
+ * `hideProgress`: only a check that RAN joined a flight, and a flight ends for everyone in it at
+ * once. A check that was not due joined nothing, so the chip on screen belongs to somebody else:
+ * a Settings download had stamped the throttle, and the launch check took down its chip and its
+ * stall notice mid-download (found by audit, 2026-09-13).
+ *
+ * `report`: the routine answers stay silent (nothing new, no network, "Not now"). An install that
+ * failed or needs a restart, and an update nobody could be asked about, are said, unless a
+ * Settings press shares the flight, because the press says them itself.
+ */
+export function launchCheckOutcome(result) {
+  const status = result?.status;
+  return {
+    hideProgress: status !== 'not-due',
+    report: ['failed', 'installed-needs-restart', 'unasked'].includes(status) && !result.userAsked,
   };
 }

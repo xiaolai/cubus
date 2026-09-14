@@ -107,3 +107,34 @@ test('normalize() survives a history that rejects replaceState', () => {
 test('href() builds the canonical form', () => {
   assert.equal(router('').r.href('timer'), '#/timer');
 });
+
+// A screen that moved keeps its old links, and the router resolves them itself: an alias gets the
+// same decoding and the same own-property check as every id. A second parser in the shell had
+// neither, so `#/%70air` fell to home and `#/constructor` wrote Object's source into the address
+// bar (the 2026-09-13 audit).
+const withAliases = (h, aliases) => {
+  const host = mockHost(h);
+  return { r: makeRouter({ screens, defaultScreen: 'home', aliases, ...host }), ...host };
+};
+
+test('an alias resolves to the screen it names, decoded and trimmed like any id', () => {
+  const aliases = { pair: 'settings', guide: 'home' };
+  assert.equal(withAliases('#/pair', aliases).r.current(), 'settings');
+  assert.equal(withAliases('#/%70air', aliases).r.current(), 'settings', 'an encoded alias must decode');
+  assert.equal(withAliases('#/ pair ', aliases).r.current(), 'settings');
+});
+
+test('an inherited name is not an alias, and an alias to nowhere lands on the default', () => {
+  const aliases = { lost: 'nowhere' };
+  for (const evil of ['__proto__', 'constructor', 'toString']) {
+    assert.equal(withAliases(`#/${evil}`, aliases).r.current(), 'home', `${evil} must not resolve`);
+  }
+  assert.equal(withAliases('#/lost', aliases).r.current(), 'home', 'an alias must still land on a real screen');
+});
+
+test('normalize() rewrites an alias to the screen it landed on, without a history entry', () => {
+  const { r, calls, location } = withAliases('#/pair', { pair: 'settings' });
+  assert.equal(r.normalize(), 'settings');
+  assert.deepEqual(calls, ['#/settings']);
+  assert.equal(location.hash, '#/settings');
+});

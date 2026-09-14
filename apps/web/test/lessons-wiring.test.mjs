@@ -149,6 +149,9 @@ test('the cross table is warmed for a learner who raised the rung LATER', () => 
   // freezes.
   assert.match(table, /warmCross\(\)\)?\s*\)?/, 'the build must go through warmCross');
   assert.match(table, /\.catch\(/, 'a sliced build is a promise, and its failure must be caught');
+  // And a build that failed is tried again, like the solver's own warm-up (found by audit,
+  // 2026-09-13).
+  assert.match(table, /crossTableWarmed = false;/, 'a cross warm-up that failed is never tried again');
 });
 
 test('the numbers the screen leans on are the module\'s, not a copy', () => {

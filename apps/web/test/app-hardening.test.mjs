@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { isNotSame, isSame } from './dom-assert.mjs';
-import { blockAt, readAppSource } from './app-source.mjs';
+import { blockAt, readAppSource, APP_SOURCES } from './app-source.mjs';
 import { test, before } from 'node:test';
 import { readFileSync } from 'node:fs';
 
@@ -161,6 +161,12 @@ test('pressing a pill moves the pressed state with the colour', async () => {
   assert.equal(pick('muted').getAttribute('aria-pressed'), 'true');
 });
 
+test("Settings' switch is drawn in one place, so every switch row names and states itself alike", () => {
+  const settingsSource = APP_SOURCES.filter((f) => f.startsWith('lib/screens/settings'))
+    .map((f) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8')).join('\n');
+  assert.equal((settingsSource.match(/role="switch"/g) ?? []).length, 1, 'the switch markup is written out more than once');
+});
+
 test('the stylesheet answers prefers-reduced-motion, and the renderer reads it too', () => {
   const reduced = blockAt(html, '@media (prefers-reduced-motion: reduce)');
   assert.ok(reduced, 'no reduced-motion rule at all — every pulse and settle runs regardless');
@@ -230,6 +236,72 @@ test('a preview control that would pretend to work is disabled, not silently ine
   assert.ok(reveal && !reveal.disabled, 'Reveal shows a real algorithm and stays live');
   for (const b of buttons.filter((x) => x !== reveal)) {
     assert.equal(b.disabled, true, `"${b.textContent.trim()}" records nothing, so it must not invite a press`);
+  }
+});
+
+test('a rung the browser refused to store says so on the ladder', async () => {
+  const { settings, save } = await import('../lib/app-settings.js');
+  const was = { rungs: structuredClone(settings.rungs), progress: structuredClone(settings.rungProgress) };
+  await go('lessons');
+  try {
+    failWrites = true;
+    try {
+      $('[data-raise="pll"]').click();
+      await tick();
+    } finally { failWrites = false; }
+    assert.match($('#stage').textContent, /did not save that/,
+      'a raise the browser refused to store was drawn as done, and nothing said it would not survive a reload');
+  } finally {
+    settings.rungs = was.rungs;
+    settings.rungProgress = was.progress;
+    save('cubusSettings', settings);
+    await go('home');
+  }
+});
+
+test('every case diagram on Trainer and Drill is the top face its algorithm solves', async () => {
+  // The case an algorithm solves is its inverse applied to a solved cube; a lit well is a sticker
+  // already the top colour. Worked out here from cubejs, never copied from the screen's own table.
+  const { invert } = await import('../lib/cube-pieces.js');
+  const topOf = (alg) => { const c = new Cube(); c.move(invert(alg)); return c.asString().slice(0, 9); };
+  const lit = (wells) => wells.map((w) => !(w.getAttribute('style') || '').includes('--facelet-off'));
+  await go('trainer');
+  const cards = all('#stage .case-grid > .card');
+  assert.equal(cards.length, 6, 'precondition: the six cases are drawn');
+  for (const card of cards) {
+    const alg = card.querySelector('.num.sub').textContent;
+    const wells = [...card.querySelector('div[style*="grid-template-columns"]').children];
+    assert.deepEqual(lit(wells), [...topOf(alg)].map((ch) => ch === 'U'),
+      `${alg}: the diagram beside it is not the case it solves`);
+  }
+  await go('drill');
+  $('#reveal').click();
+  const alg = $('#drillAlg').textContent;
+  const top = topOf(alg);
+  assert.deepEqual(lit([...$('#stage div[style*="gap:6px;width:180px"]').children]), [...top].map((ch) => ch === 'U'),
+    "the drill's diagram is not the case its algorithm solves");
+  const allEdges = [1, 3, 5, 7].every((i) => top[i] === 'U');
+  assert.doesNotMatch($('#stage').textContent, allEdges ? /DOT CASES/ : /ALL EDGES ORIENTED/,
+    'the drilled case is filed under a shape it does not have');
+});
+
+test('Drill does not say its controls do nothing while Reveal shows the algorithm', async () => {
+  await go('drill');
+  const banner = all('#stage .card').find((c) => /Preview — nothing here is measured yet/.test(c.textContent));
+  assert.ok(banner, 'precondition: the Drill carries its preview banner');
+  assert.doesNotMatch(banner.textContent, /controls do nothing/, 'the banner says the controls do nothing over a Reveal that works');
+});
+
+test('the Trainer filter "Weak first" reaches the reader in their language', async () => {
+  const { registerLocale, setLocale } = await import('../lib/i18n.js');
+  registerLocale('qa-weak', { 'Weak first': '«weak»' });
+  setLocale('qa-weak');
+  try {
+    await go('trainer');
+    assert.ok(all('#stage .pill').some((p) => p.textContent === '«weak»'), 'the filter did not go through the catalog');
+  } finally {
+    setLocale('en');
+    await go('home');
   }
 });
 
@@ -373,6 +445,164 @@ test('a roll that lands while the clock is running is parked, never put in play'
   await tick();
 });
 
+// ---- The Timer: who owns the clock, and what the status line says (audited 2026-09-13) --------
+//
+// The screen learns the cube's timer only through three before/now comparisons in liveUpdate, so a
+// transition the cube timer makes on its own (trust lapsing) and the question of WHO started the
+// clock were both invisible to it; and the line the header calls its status region never carried
+// the one thing a finished solve produces.
+
+/** The Timer on a connected, trusted cube with its scramble on screen; `fn` is handed the
+ *  arrangement that scramble produces. Everything is put back afterwards. */
+const onTrustedTimer = async (fn) => {
+  const { state } = await import('../lib/app.js');
+  const before = { connected: state.connected, trusted: state.cube.trusted, source: state.cube.source };
+  try {
+    state.connected = true;
+    state.cube.trusted = true;
+    state.cube.source = 'cube';
+    state.cube.staleWhy = '';
+    await go('home');
+    await go('timer');
+    const scr = $('#scr');
+    for (let i = 0; i < 200 && !/^[URFDLB]/.test(scr.textContent || ''); i++) await settle(50);
+    assert.match(scr.textContent, /^[URFDLB]/, 'precondition: a scramble is on screen');
+    const c = Cube.fromString(SOLVED_FACELETS);
+    for (const m of scr.textContent.trim().split(/\s+/)) c.move(m);
+    await fn(c.asString());
+  } finally {
+    if ($('#clock')?.getAttribute('aria-label') === 'Stop the timer') { $('#clock').click(); await tick(); }
+    state.connected = before.connected;
+    state.cube.trusted = before.trusted;
+    state.cube.source = before.source;
+    await go('home');
+  }
+};
+
+test('a cube whose trust lapses mid-solve stops promising that it will stop the clock', async () => {
+  await onTrustedTimer(async (target) => {
+    win.cubusFeed.facelets(target, 2);
+    await tick();
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await tick();
+    assert.match($('#timerHint').textContent, /cube stops the clock/, 'precondition: the cube started it');
+
+    win.cubusFeed.disconnect(); // trust lapses: the cube can be turned now where nobody can see
+    await tick();
+    assert.doesNotMatch($('#timerHint').textContent, /cube stops the clock/,
+      'the line still promises the cube will stop a clock it can no longer stop');
+    assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'a solve in progress is still a solve');
+  });
+});
+
+test('a cube reaching the scramble under a hand-started clock does not say the clock is ready', async () => {
+  await onTrustedTimer(async (target) => {
+    $('#clock').click(); // started by hand
+    await tick();
+    win.cubusFeed.facelets(target, 2);
+    await tick();
+    assert.equal($('#timerHint').textContent, 'Running — click or press space to stop',
+      'the cube armed behind a running clock, and the line stopped saying how to stop it');
+  });
+});
+
+test('Space on New scramble presses New scramble, and leaves the clock alone', async () => {
+  await go('timer');
+  const button = $('#newScr');
+  button.focus();
+  const ev = new win.KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true });
+  button.dispatchEvent(ev);
+  await tick();
+  assert.equal($('#clock').getAttribute('aria-label'), 'Start the timer', 'Space on a button started the clock instead');
+  assert.equal(ev.defaultPrevented, false, "the button's own activation was cancelled");
+});
+
+test('Space on the Timer itself still runs the clock', async () => {
+  await go('timer');
+  assert.ok(win.document.activeElement === $('#stage .screen.active'), 'precondition: focus is on the screen');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true }));
+  await tick();
+  assert.equal($('#clock').getAttribute('aria-label'), 'Stop the timer', 'Space on the screen no longer runs the clock');
+  $('#clock').click(); // stop, so the screen is left idle
+  await tick();
+});
+
+test('a finished solve is said on the status line, not only painted on the clock', async () => {
+  await go('timer');
+  $('#clock').click();
+  await tick();
+  $('#clock').click();
+  await tick();
+  const shown = $('#clock').textContent;
+  assert.match(shown, /^\d+\.\d\d$/, 'precondition: the clock shows a time');
+  assert.ok($('#timerHint').textContent.includes(shown),
+    `a hand-timed result was painted on a button whose name is "Start the timer", and the line said "${$('#timerHint').textContent}"`);
+
+  await onTrustedTimer(async (target) => {
+    win.cubusFeed.facelets(target, 2);
+    await tick();
+    win.cubusFeed.move({ notation: 'R', serial: 3, cubeTimestamp: 1000, timestamp: Date.now() });
+    await tick();
+    win.cubusFeed.move({ notation: "R'", serial: 4, cubeTimestamp: 4200, timestamp: Date.now() });
+    win.cubusFeed.facelets(SOLVED_FACELETS, 4);
+    await tick();
+    assert.equal($('#clock').textContent, '3.20', 'precondition: the cube timed the solve');
+    assert.match($('#timerHint').textContent, /3\.20/, 'a cube-timed result went unsaid as well');
+  });
+});
+
+test('two quick presses of New scramble put exactly one scramble in play', async () => {
+  await go('timer');
+  const scr = $('#scr');
+  for (let i = 0; i < 200 && !/^[URFDLB]/.test(scr.textContent || ''); i++) await settle(50);
+  assert.match(scr.textContent, /^[URFDLB]/, 'precondition: a scramble is on screen');
+  // Counted as text nodes ADDED, one per assignment, so batching cannot merge two commits into one.
+  let commits = 0;
+  const observer = new win.MutationObserver((records) => {
+    for (const r of records) commits += [...r.addedNodes].filter((n) => n.nodeType === 3).length;
+  });
+  observer.observe(scr, { childList: true, subtree: true });
+  try {
+    $('#newScr').click();
+    $('#newScr').click();
+    for (let i = 0; i < 100 && commits === 0; i++) await settle(50);
+    await settle(600); // room for a second, slower commit to land if one is coming
+  } finally { observer.disconnect(); }
+  assert.equal(commits, 1, `two presses put ${commits} scrambles on screen — the slower roll wins whichever it is`);
+});
+
+// The Timer rolls its own scramble as it opens, and shows none until one lands. A solve timed in
+// that window was filed under the scramble another screen had put in play, which this screen never
+// showed; a first roll that failed left it that way for good (verification, 2026-09-14).
+test("a solve timed before the Timer's first scramble lands is filed under no scramble", async () => {
+  const { putInPlay, recentSolves, dropLastSolve } = await import('../lib/scramble-roll.js');
+  await go('home');
+  const elsewhere = "R U R' U'";
+  putInPlay({ facelets: 'ROLLED ELSEWHERE', alg: elsewhere });
+  // Timed the moment the Timer is on the paper: happy-dom tells a mutation observer before any
+  // promise the mount started can settle, so its first roll has not landed yet.
+  let seen = null;
+  const observer = new win.MutationObserver(() => {
+    const clock = $('#clock');
+    if (seen || !clock) return;
+    seen = { shown: $('#scr').textContent };
+    clock.click(); // start
+    clock.click(); // stop, and the solve is recorded
+    seen.filed = recentSolves()[0]?.scramble;
+  });
+  observer.observe($('#stage'), { childList: true });
+  try {
+    await go('timer');
+    assert.ok(seen, 'precondition: a solve was timed as the Timer opened');
+    assert.notEqual(seen.shown, elsewhere, 'precondition: the Timer is not showing the scramble in play');
+    assert.equal(seen.filed, '—', `the solve was filed under "${seen.filed}", a scramble this screen never showed`);
+  } finally {
+    observer.disconnect();
+    if (seen) dropLastSolve();
+    await go('home');
+  }
+});
+
 // ---- Superseded searches ---------------------------------------------------------------------
 
 test('a second press of the die aborts the first press\'s search', async () => {
@@ -429,14 +659,6 @@ test('a walk that cannot be built says which thing failed', () => {
   assert.ok(messages.some((m) => /solver did not load/.test(m)), 'a failure of the APP must not read as a failure of the cube');
   assert.ok(messages.some((m) => /scramble/.test(m)), 'a roll that produced nothing says so');
   assert.ok(messages.some((m) => /check out/.test(m)), 'a refused cross-check says so');
-});
-
-test('the Timer offers a working way out when the solver never loads', () => {
-  // The retry used to be handed `false` and do nothing at all, leaving "solver loading…" on
-  // screen forever with nothing suggesting what to press.
-  const retry = blockAt(appSource, 'void loadSolver().then((ok) =>');
-  assert.match(retry, /if \(ok\)/, 'the success and failure paths must differ');
-  assert.match(retry, /solver did not load/, 'and the failure must reach the screen');
 });
 
 // ---- Undo ---------------------------------------------------------------------------------
@@ -620,5 +842,253 @@ test('an old lock\'s release event does not clear the lock that replaced it', as
     delete win.navigator.wakeLock;
     await go('home');
     await settle(20);
+  }
+});
+
+/** WakeLockSentinels as the platform hands them over: `released` turns true when a lock is let
+ *  go, by us or by the platform, and the 'release' event says so a task or more later. */
+const wakeSentinels = () => {
+  const sentinels = [];
+  const make = () => {
+    const listeners = [];
+    const s = {
+      released: false,
+      addEventListener: (type, fn) => { if (type === 'release') listeners.push(fn); },
+      release: async () => { s.released = true; },
+      revoke: () => { s.released = true; }, // the platform lets it go
+      announce: () => { for (const fn of listeners) fn(); },
+    };
+    sentinels.push(s);
+    return s;
+  };
+  Object.defineProperty(win.navigator, 'wakeLock', { value: { request: async () => make() }, configurable: true });
+  return sentinels;
+};
+
+test('a lock the platform revokes while a holder is still on screen is taken again', async () => {
+  const sentinels = wakeSentinels();
+  try {
+    await go('scan');
+    await settle(20);
+    assert.equal(sentinels.length, 1, 'precondition: the scan screen holds the screen awake');
+    sentinels[0].revoke(); // battery saver, OS policy: the platform took it back
+    sentinels[0].announce();
+    await settle(20);
+    assert.equal(sentinels.length, 2, 'the scan screen still wants the screen awake, and nothing asked again');
+    assert.equal(sentinels[1].released, false);
+  } finally {
+    delete win.navigator.wakeLock;
+    await go('home');
+    await settle(20);
+  }
+});
+
+test('a release that lands after the page came back does not leave the screen unlocked', async () => {
+  const sentinels = wakeSentinels();
+  try {
+    await go('scan');
+    await settle(20);
+    assert.equal(sentinels.length, 1, 'precondition: the scan screen holds the screen awake');
+    Object.defineProperty(win.document, 'visibilityState', { value: 'hidden', configurable: true });
+    sentinels[0].revoke(); // hidden: the platform lets it go, and its event is still on its way
+    delete win.document.visibilityState;
+    win.document.dispatchEvent(new win.Event('visibilitychange'));
+    await settle(20);
+    // At the moment it comes back, not only once the late event lands: in between, a handle to a
+    // released lock was believed, and the display was free to sleep for as long as the event took.
+    assert.equal(sentinels.length, 2, 'the page came back holding a released lock, and asked for no new one');
+    sentinels[0].announce(); // ...and lands now, after the page came back
+    await settle(20);
+    assert.ok(sentinels.some((s) => !s.released), 'the page came back with no live lock and the display free to sleep');
+  } finally {
+    delete win.navigator.wakeLock;
+    delete win.document.visibilityState;
+    await go('home');
+    await settle(20);
+  }
+});
+
+test('a platform that keeps refusing the wake lock is reported once, not once per attempt', async (t) => {
+  const refused = [];
+  t.mock.method(console, 'debug', (...args) => { if (/wake lock refused/.test(String(args[0]))) refused.push(args); });
+  Object.defineProperty(win.navigator, 'wakeLock', {
+    value: { request: async () => { throw new Error('NotAllowedError (test)'); } }, configurable: true,
+  });
+  try {
+    await go('scan');
+    await settle(20);
+    for (let i = 0; i < 2; i++) {
+      win.document.dispatchEvent(new win.Event('visibilitychange'));
+      await settle(20);
+    }
+    // At most one: an earlier refusal in this process would already have been the one recorded.
+    assert.ok(refused.length <= 1, `${refused.length} lines for one refusal, repeated — "recorded once" was not`);
+  } finally {
+    delete win.navigator.wakeLock;
+    await go('home');
+    await settle(20);
+  }
+});
+
+/** A wake-lock API whose every request waits for the case to answer it — granted or refused — so
+ *  each ordering a real request can land in is one line of the case. */
+const wakeRequests = () => {
+  const requests = [];
+  const request = () => new Promise((resolve, reject) => {
+    requests.push({
+      grant: () => {
+        const listeners = [];
+        const s = {
+          released: false,
+          addEventListener: (type, fn) => { if (type === 'release') listeners.push(fn); },
+          release: async () => { s.released = true; },
+          revoke: () => { s.released = true; }, // the platform lets it go
+          announce: () => { for (const fn of listeners) fn(); },
+        };
+        resolve(s);
+        return s;
+      },
+      refuse: () => reject(Object.assign(new Error('NotAllowedError (test)'), { name: 'NotAllowedError' })),
+    });
+  });
+  Object.defineProperty(win.navigator, 'wakeLock', { value: { request }, configurable: true });
+  return requests;
+};
+
+/** Settings holds nothing awake, so a case starts at zero holders — and drives the app's own
+ *  module, the instance its screens take and release. */
+const quietScreen = async () => {
+  await go('settings');
+  await settle(20);
+  return (await import('../lib/wake-lock.js')).keepAwake;
+};
+const leaveQuietScreen = async () => {
+  delete win.navigator.wakeLock;
+  delete win.document.visibilityState;
+  await go('home');
+  await settle(20);
+};
+
+test('two holders share one lock: asked for once, kept while either stays, let go when the last leaves', async () => {
+  const requests = wakeRequests();
+  try {
+    const keepAwake = await quietScreen();
+    const scan = keepAwake();
+    const walk = keepAwake(); // the same tick, as a navigation from the scan screen to a walk asks
+    assert.equal(requests.length, 1, 'two holders in one tick each asked the platform for a lock');
+    const lock = requests[0].grant();
+    await settle(10);
+    scan();
+    scan(); // a cleanup that runs twice is still one holder leaving
+    await settle(10);
+    assert.equal(lock.released, false, 'one holder leaving let go of the lock the other still holds');
+    walk();
+    await settle(10);
+    assert.equal(lock.released, true, 'the last holder left and the display was kept awake');
+    assert.equal(requests.length, 1, 'and something asked for a lock nobody holds');
+  } finally {
+    await leaveQuietScreen();
+  }
+});
+
+test('a holder that leaves while its lock is still being granted leaves no lock behind', async () => {
+  const requests = wakeRequests();
+  try {
+    const keepAwake = await quietScreen();
+    const gone = keepAwake();
+    assert.equal(requests.length, 1, 'precondition: the lock was asked for');
+    gone(); // before the platform answered
+    const lock = requests[0].grant();
+    await settle(10);
+    assert.equal(lock.released, true, 'a lock granted after its only holder left was kept — the display never sleeps');
+  } finally {
+    await leaveQuietScreen();
+  }
+});
+
+test('a refused request is not the last word: the page coming back asks again, and that lock is let go', async (t) => {
+  t.mock.method(console, 'debug', () => {});
+  const requests = wakeRequests();
+  try {
+    const keepAwake = await quietScreen();
+    const holder = keepAwake();
+    requests[0].refuse();
+    await settle(10);
+    win.document.dispatchEvent(new win.Event('visibilitychange'));
+    await settle(10);
+    assert.equal(requests.length, 2, 'one refusal left a holder with no lock for the rest of the session');
+    const lock = requests[1].grant();
+    await settle(10);
+    holder();
+    await settle(10);
+    assert.equal(lock.released, true, 'the lock taken after a refusal was never let go');
+  } finally {
+    await leaveQuietScreen();
+  }
+});
+
+test('a lock the platform takes back while the page is hidden is asked for again when it returns, and not before', async () => {
+  const requests = wakeRequests();
+  try {
+    const keepAwake = await quietScreen();
+    const holder = keepAwake();
+    const lock = requests[0].grant();
+    await settle(10);
+    Object.defineProperty(win.document, 'visibilityState', { value: 'hidden', configurable: true });
+    win.document.dispatchEvent(new win.Event('visibilitychange'));
+    lock.revoke(); // hidden: the platform lets every lock go,
+    lock.announce(); // and says so while the page is still hidden
+    await settle(10);
+    assert.equal(requests.length, 1, 'a hidden page asked for a lock, which the platform can only refuse');
+    delete win.document.visibilityState;
+    win.document.dispatchEvent(new win.Event('visibilitychange'));
+    await settle(10);
+    assert.equal(requests.length, 2, 'the page came back and the display was left free to sleep');
+    requests[1].grant();
+    await settle(10);
+    holder();
+  } finally {
+    await leaveQuietScreen();
+  }
+});
+
+// Asked again at once on every take-back, a platform that grants a lock and takes it straight back
+// was asked 12 times in 60 ms (found by verification, 2026-09-14). The first take-back is still
+// asked again at once; the next waits, longer each time, and showing the page again starts over.
+test('a platform that takes the lock back again and again is asked with a growing wait, not in a loop', async () => {
+  const requests = wakeRequests();
+  try {
+    const keepAwake = await quietScreen();
+    const holder = keepAwake();
+    const first = requests[0].grant();
+    await settle(10);
+    first.revoke();
+    first.announce();
+    await settle(10);
+    assert.equal(requests.length, 2, 'precondition: the first take-back is asked again at once');
+    const second = requests[1].grant();
+    await settle(10);
+    second.revoke();
+    second.announce();
+    await settle(50);
+    assert.equal(requests.length, 2, 'a second take-back while the page stayed visible was asked again at once');
+    await settle(1100);
+    assert.equal(requests.length, 3, 'a lock taken back twice was never asked for again');
+    const third = requests[2].grant();
+    await settle(10);
+    Object.defineProperty(win.document, 'visibilityState', { value: 'hidden', configurable: true });
+    win.document.dispatchEvent(new win.Event('visibilitychange'));
+    delete win.document.visibilityState;
+    win.document.dispatchEvent(new win.Event('visibilitychange'));
+    await settle(10);
+    third.revoke();
+    third.announce();
+    await settle(10);
+    assert.equal(requests.length, 4, 'showing the page again did not start the wait over');
+    requests[3].grant();
+    await settle(10);
+    holder();
+  } finally {
+    await leaveQuietScreen();
   }
 });

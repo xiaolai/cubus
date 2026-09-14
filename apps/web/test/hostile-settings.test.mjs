@@ -86,6 +86,14 @@ test('an unknown palette is repaired at load, and the repair is saved', async ()
   // The theme's own migration, which this object also exercises — a value that is not a theme is
   // not a theme, whatever it says.
   assert.equal(stored.theme, 'auto');
+  // Every flag the object carries as a string or a number is a real boolean, in memory and in
+  // storage. "false" is truthy, and a Settings toggle flips `!settings[k]`, so a stored "false"
+  // showed as on — and auto-solve then left a believed scan nobody had asked to leave.
+  const { settings } = await import('../lib/app-settings.js');
+  for (const k of ['autosolve', 'dragRotate', 'devRandCube', 'proveMinimum']) {
+    assert.equal(settings[k], false, `the hostile ${k} was kept truthy`);
+    assert.equal(stored[k], false, `the hostile ${k} was not written back as false`);
+  }
 });
 
 test('every screen renders over hostile settings, and the stage is actually replaced', async () => {
