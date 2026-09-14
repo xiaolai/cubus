@@ -156,3 +156,54 @@ test('an undone half turn retraces the way it came, not the other way round', as
   assert.ok(forward.some((m) => m.some((v) => !Number.isInteger(v))),
     'precondition: the sample was taken mid-turn, not at an endpoint');
 });
+
+// The regression the round-1 audit reproduced: `reset()` wrote the geometry AFTER painting, so
+// `focus` — which resolves inside `_paint()` — answered for whatever the PREVIOUS cube had in the
+// slot. Set focus on UR, turn R, reset, and the FR piece stayed coloured on a solved cube.
+test('reset puts the cubies home before it paints, so focus names the cube in front of you', async () => {
+  await build({ facelets: SOLVED, focus: 'slot:UR' });
+  const solved = await paint();
+  await play('R');
+  await page.evaluate(async () => {
+    window.__cube.reset();
+    await new Promise((r) => requestAnimationFrame(() => r()));
+  });
+  assert.deepEqual(await paint(), solved,
+    'after reset the cube is solved and focus is on slot UR, so it must look exactly as it did '
+    + 'before the turn — it did not, so focus resolved against the geometry of the turned cube');
+});
+
+// And where it actually bit: the parser. An alg naming something every object has must be refused
+// whole, as any other bad token is — not played, and not thrown on the first frame.
+test('an alg naming what every object inherits is refused, not played', async () => {
+  await build({ facelets: SOLVED });
+  const outcome = await page.evaluate(async () => {
+    const el = window.__cube;
+    const warned = [];
+    const real = console.warn;
+    console.warn = (...a) => warned.push(a.join(' '));
+    const errors = [];
+    const onError = (e) => errors.push(String(e.message ?? e));
+    window.addEventListener('error', onError);
+    try {
+      const out = {};
+      for (const tok of ['toString', 'constructor', '__proto__', 'R toString']) {
+        out[tok] = el._parse(tok).length;
+      }
+      el.setAttribute('alg', 'toString');
+      el.clock = 5_000_000;
+      el.step();
+      el.clock = 5_001_000;
+      await new Promise((r) => requestAnimationFrame(() => r()));
+      await new Promise((r) => requestAnimationFrame(() => r()));
+      return { parsed: out, warned: warned.length, errors };
+    } finally {
+      console.warn = real;
+      window.removeEventListener('error', onError);
+    }
+  });
+  assert.deepEqual(outcome.parsed, { toString: 0, constructor: 0, __proto__: 0, 'R toString': 0 },
+    'an inherited key was parsed as a move — and one bad token must refuse the whole alg');
+  assert.ok(outcome.warned >= 4, 'the refusal went unsaid');
+  assert.deepEqual(outcome.errors, [], 'a refused alg still threw when asked to play');
+});

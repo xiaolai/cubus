@@ -90,24 +90,30 @@ function rotation(axis, angle) {
  */
 const TURNED = (() => {
   const table = new Map();
-  // The geometric cube: every cubie at home, turned by nothing.
-  const cubies = [
+  /** The geometric cube: every cubie at home, turned by nothing. */
+  const solved = [
     ...CORNER_POS.map((pos, home) => ({ kind: 'c', home, pos, m: I3 })),
     ...EDGE_POS.map((pos, home) => ({ kind: 'e', home, pos, m: I3 })),
   ];
-  const at = (kind, pos) => cubies.find(
+  /** Whichever cubie of `geo` is standing at `pos`. Geometry is a PARAMETER: it used to be one
+   *  captured array that every branch of the walk had to empty and refill before recording, so
+   *  whether a row was right depended on that sequencing rather than on the arguments. */
+  const at = (geo, kind, pos) => geo.find(
     (c) => c.kind === kind && c.pos[0] === pos[0] && c.pos[1] === pos[1] && c.pos[2] === pos[2],
   );
   const key = (kind, home, slot, twist) => `${kind}${home},${slot},${twist}`;
-  const note = (state) => {
-    for (let slot = 0; slot < 8; slot++) table.set(key('c', state.cp[slot], slot, state.co[slot]), at('c', CORNER_POS[slot]).m);
-    for (let slot = 0; slot < 12; slot++) table.set(key('e', state.ep[slot], slot, state.eo[slot]), at('e', EDGE_POS[slot]).m);
+  const note = (geo, state) => {
+    for (let slot = 0; slot < 8; slot++) table.set(key('c', state.cp[slot], slot, state.co[slot]), at(geo, 'c', CORNER_POS[slot]).m);
+    for (let slot = 0; slot < 12; slot++) table.set(key('e', state.ep[slot], slot, state.eo[slot]), at(geo, 'e', EDGE_POS[slot]).m);
   };
   // Breadth-first over quarter turns, carrying geometry and piece state side by side. The keyspace
   // is 480 entries and every state visited fills 20 of them, so this closes quickly; the walk
   // stops when a whole sweep of moves adds nothing.
-  let frontier = [{ state: { cp: [...Array(8).keys()], co: Array(8).fill(0), ep: [...Array(12).keys()], eo: Array(12).fill(0) }, geo: cubies.map((c) => ({ ...c })) }];
-  note(frontier[0].state);
+  let frontier = [{
+    state: { cp: [...Array(8).keys()], co: Array(8).fill(0), ep: [...Array(12).keys()], eo: Array(12).fill(0) },
+    geo: solved,
+  }];
+  note(solved, frontier[0].state);
   const faces = Object.keys(NORMAL);
   for (let depth = 0; depth < 12 && table.size < 480; depth++) {
     const next = [];
@@ -123,12 +129,9 @@ const TURNED = (() => {
           ? { ...c, pos: applyTo(M, c.pos), m: mul(M, c.m) }
           : c));
         const before = table.size;
-        const after2 = applyMove(state, face);
-        // Re-point `cubies` at this branch so `at()` reads it, then record.
-        cubies.length = 0;
-        cubies.push(...moved);
-        note(after2);
-        if (table.size > before) next.push({ state: after2, geo: moved });
+        const landed = applyMove(state, face);
+        note(moved, landed);
+        if (table.size > before) next.push({ state: landed, geo: moved });
       }
     }
     frontier = next;
@@ -238,9 +241,18 @@ export function after(frame, state, move) {
   };
 }
 
-/** Every move cube-pieces knows, as this module's descriptor — the bridge for a caller that still
- *  speaks in face letters. */
-export const MOVE_DESCRIPTORS = Object.freeze(Object.fromEntries(
+/**
+ * Every move cube-pieces knows, as this module's descriptor — the bridge for a caller that still
+ * speaks in face letters.
+ *
+ * NO PROTOTYPE. A move token is whatever an author typed, and on an ordinary object `constructor`,
+ * `toString` and `__proto__` are all present: the renderer's parser looked them up here, got a
+ * function back, and turned `alg="toString"` into an empty descriptor that threw at play time
+ * instead of being refused (found by verification, 2026-09-14). `lib/cube-highlight.js` learned the
+ * same lesson for its own tokens. A null-prototype table closes it for every caller, not just the
+ * one that was caught.
+ */
+export const MOVE_DESCRIPTORS = Object.freeze(Object.assign(Object.create(null), Object.fromEntries(
   Object.keys(MOVES).map((name) => {
     const face = name[0];
     const normal = NORMAL[face];
@@ -250,4 +262,4 @@ export const MOVE_DESCRIPTORS = Object.freeze(Object.fromEntries(
     const dir = name.endsWith("'") ? -1 : 1;
     return [name, Object.freeze({ axis, layers: Object.freeze([sign]), turns, angle: -dir * sign * turns * (Math.PI / 2) })];
   }),
-));
+)));

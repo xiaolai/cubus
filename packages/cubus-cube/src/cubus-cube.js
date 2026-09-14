@@ -10,7 +10,7 @@ import { eyeDirection, fitDistance, fitDistanceStable, silhouette } from '../../
 import { isFace, orientationMatrix, sameAxis } from '../../../apps/web/lib/cube-orientation.js';
 import { parseHighlight, pieceKey, resolveHighlight, slotVector } from '../../../apps/web/lib/cube-highlight.js';
 import { STICKER_PALETTES } from '../../../apps/web/lib/sticker-palettes.js';
-import { CUBIES, HOME, after, poseAll } from './pose.js';
+import { HOME, MOVE_DESCRIPTORS, after, poseAll } from './pose.js';
 
 // The six sticker colours of each set, by position on a Western cube: the one table, shared with
 // the app's flat nets (lib/sticker-palettes.js). The `scheme` attribute remaps it (ADR 0001).
@@ -960,15 +960,19 @@ class CubusCube extends HTMLElement {
     // confidence — worse than drawing nothing and saying why.
     const out = [];
     for (const tok of String(alg).trim().split(/\s+/).filter(Boolean)) {
-      const m = /^([URFDLB])(2|')?$/.exec(tok);
-      const f = m && FACES.find((x) => x.key === m[1]);
-      if (!f) {
+      // What a token MEANS — which axis, which layers, which way and how far — belongs to the pose
+      // module, which is where the cube's move tables already are. Spelling that arithmetic here
+      // as well left two definitions of one thing, free to drift apart (found by audit,
+      // 2026-09-14). Copied rather than shared, because a caller may negate the angle of what it
+      // gets back (see stepBack) and the descriptors are frozen.
+      // hasOwn as well as a table with no prototype: either alone is one refactor from the
+      // `alg="toString"` crash, and a parser is where an author's arbitrary text first arrives.
+      const d = Object.hasOwn(MOVE_DESCRIPTORS, tok) ? MOVE_DESCRIPTORS[tok] : null;
+      if (!d) {
         console.warn(`<cubus-cube> refusing alg — invalid move token "${tok}"`);
         return [];
       }
-      const turns = m[2] === '2' ? 2 : 1;
-      const dir = m[2] === "'" ? -1 : 1;
-      out.push({ axis: f.axis, layers: [f.sign], angle: -dir * f.sign * turns * Math.PI / 2, turns });
+      out.push({ ...d });
     }
     return out;
   }
@@ -1248,6 +1252,13 @@ class CubusCube extends HTMLElement {
     // Resolved ONCE for both jobs — painting and the scramble decision — so an invalid string
     // warns once, not twice. A VALID facelet string already encodes the scramble; only apply
     // moves when there isn't one, and an invalid string does not count.
+    // HOME BEFORE PAINT. `_paint()` resolves `focus` as it goes, and a positional selector answers
+    // for whatever is in the slot AT THAT MOMENT — so painting before the cubies are put back left
+    // focus naming the piece the previous cube had there (found by audit, 2026-09-14: set
+    // `focus="slot:UR"`, turn R, reset, and the FR piece stayed coloured). The version this
+    // replaced moved every cubie home first for exactly this reason; writing the pose is how that
+    // is said now.
+    this._writePose();
     const fl = this._facelets();
     this._paint(fl);
     if (!fl) {

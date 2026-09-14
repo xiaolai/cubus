@@ -406,3 +406,17 @@ test('app.js tolerates the guest\'s absence — the import is caught, not awaite
   const after = app.slice(site, site + 400);
   assert.match(after, /\.catch\(/, 'the guest import is not caught: a dist without the guest would fail to boot');
 });
+
+// The renderer left this package on 2026-09-14, and every guard above asks whether the destination
+// is this app or something this app copies FROM. The renderer's source is neither, so a destination
+// pointed at it reached the recursive delete with nothing in the way (found by audit, 2026-09-14).
+test('assembling into the renderer package is refused, not carried out', () => {
+  const renderer = fileURLToPath(new URL('../../packages/cubus-cube', WEB));
+  assert.throws(() => assembleDist({ dist: renderer, freshness: false }),
+    (err) => /refusing to assemble into .*cubus-cube/.test(err.message),
+    'a build aimed at the renderer package would have deleted it');
+  // And the other way round: a destination that CONTAINS the renderer is the same delete.
+  assert.throws(() => assembleDist({ dist: fileURLToPath(new URL('../../packages', WEB)), freshness: false }),
+    (err) => /refusing to assemble into/.test(err.message),
+    'a build aimed at packages/ would have taken the renderer with it');
+});
